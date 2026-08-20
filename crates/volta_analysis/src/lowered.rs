@@ -351,6 +351,15 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
+    /// Bit field extract: dst = zero/sign-extended bits [start, start+len) of src_a
+    Bfe {
+        dst: RegId,
+        src_a: Operand,
+        start: Operand,
+        len: Operand,
+        ty: ScalarType,
+    },
+
     // =========================================================================
     // Comparison & Selection
     // =========================================================================
@@ -580,6 +589,7 @@ define_instr_kinds!(
     MulWide,
     MulHi,
     Bfi,
+    Bfe,
     Setp,
     Selp,
     Set,
@@ -659,6 +669,9 @@ impl LoweredInstr {
                 len,
                 ..
             } => from_ops(&[*src_a, *src_b, *start, *len]),
+            Self::Bfe {
+                src_a, start, len, ..
+            } => from_ops(&[*src_a, *start, *len]),
 
             // Comparison & selection
             Self::Setp { src_a, src_b, .. } | Self::Set { src_a, src_b, .. } => {
@@ -750,6 +763,7 @@ impl LoweredInstr {
             | Self::MulWide { dst, .. }
             | Self::MulHi { dst, .. }
             | Self::Bfi { dst, .. }
+            | Self::Bfe { dst, .. }
             | Self::Setp { dst, .. }
             | Self::Selp { dst, .. }
             | Self::Set { dst, .. }

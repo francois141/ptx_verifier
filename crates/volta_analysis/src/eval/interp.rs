@@ -884,6 +884,43 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, Value::Scalar(r));
             }
 
+            LoweredInstr::Bfe {
+                dst,
+                src_a,
+                start,
+                len,
+                ty,
+            } => {
+                let a = self.concrete_operand(t, pc, src_a, "bfe operand")? as u64;
+                let pos = (self.concrete_operand(t, pc, start, "bfe start")? as u64 & 0xff) as u32;
+                let len = (self.concrete_operand(t, pc, len, "bfe len")? as u64 & 0xff) as u32;
+                let msb: u32 = if ty.bits() <= 32 { 31 } else { 63 };
+                let a = if msb < 63 {
+                    a & ((1u64 << (msb + 1)) - 1)
+                } else {
+                    a
+                };
+
+                let sbit: u64 = if !ty.is_signed_int() || len == 0 {
+                    0
+                } else {
+                    let sbit_pos = pos.saturating_add(len).saturating_sub(1).min(msb);
+                    (a >> sbit_pos) & 1
+                };
+
+                let mut d: u64 = 0;
+                for i in 0..=msb {
+                    let bit = if i < len && pos.saturating_add(i) <= msb {
+                        (a >> (pos + i)) & 1
+                    } else {
+                        sbit
+                    };
+                    d |= bit << i;
+                }
+                let r = self.arena.int(d as i64);
+                self.threads[t].regs.write(*dst, Value::Scalar(r));
+            }
+
             LoweredInstr::Setp {
                 cmp,
                 dst,

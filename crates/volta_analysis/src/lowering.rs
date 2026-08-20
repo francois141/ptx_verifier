@@ -1367,6 +1367,31 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Bit Field Extract - Bfe
+        // =========================================================================
+        ParsedInstruction::Bfe(bfe) => {
+            let dst_typed = ctx.resolve_dst_typed(&bfe.dst)?;
+            let src_a_typed = ctx.resolve_operand_typed(&bfe.src_a)?;
+            // start and len are typically u32 immediates or registers
+            let start = ctx.resolve_operand(&bfe.start)?;
+            let len = ctx.resolve_operand(&bfe.len)?;
+
+            ctx.check_dst_type(&dst_typed, bfe.ty, "bfe")?;
+            ctx.check_operand_type(&src_a_typed, bfe.ty, "bfe")?;
+
+            ctx.emit(
+                LoweredInstr::Bfe {
+                    dst: dst_typed.reg,
+                    src_a: src_a_typed.operand,
+                    start,
+                    len,
+                    ty: bfe.ty,
+                },
+                predicate,
+            )?;
+        }
+
+        // =========================================================================
         // Comparison - Setp
         // =========================================================================
         ParsedInstruction::Setp(setp) => {

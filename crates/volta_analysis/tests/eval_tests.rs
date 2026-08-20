@@ -887,6 +887,55 @@ fn test_mul_hi_u32_negative_operand() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
+#[test]
+fn test_bfe_extract_and_sign_fill() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    // 0b1010 = 10; bits [0:4) unsigned = 0b1010 = 10 (no sign bit).
+    mov.u32 %r1, 10;
+    bfe.u32 %r2, %r1, 0, 4;
+    st.global.u32 [%rd1], %r2;
+
+    // Same source, start, and len - but signed: the extracted field's own
+    // top bit (bit 3 of 0b1010) is 1, so the rest of the register gets
+    // sign-filled with 1s: 0xFFFFFFFA, i.e. 2^32 - 6 (this nibble is -6
+    // in 4-bit two's complement).
+    mov.u32 %r3, 10;
+    bfe.s32 %r4, %r3, 0, 4;
+    st.global.u32 [%rd1+4], %r4;
+
+    // start=40 is beyond the s32 msb (31): the whole result is filled with
+    // a's own sign bit (bit 31 of -1 is 1) - not 0, which a plain
+    // `(a >> 40) & mask` would wrongly produce for any width > 0.
+    mov.u32 %r5, -1;
+    bfe.s32 %r6, %r5, 40, 4;
+    st.global.u32 [%rd1+8], %r6;
+
+    // len == 0: the result is always 0, regardless of a's sign.
+    mov.u32 %r7, -1;
+    bfe.u32 %r8, %r7, 4, 0;
+    st.global.u32 [%rd1+12], %r8;
+
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, out_only_config(4, 4)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "10");
+    assert_eq!(display_output(&output, "out", 1), "4294967290");
+    assert_eq!(display_output(&output, "out", 2), "4294967295");
+    assert_eq!(display_output(&output, "out", 3), "0");
+}
+
 /// Output-only config: one `out` array of `len` `elem_width`-byte
 /// elements, passed as the kernel's single parameter.
 fn out_only_config(elem_width: u64, len: u64) -> AnalysisConfig {
