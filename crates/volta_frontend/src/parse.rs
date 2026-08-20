@@ -1269,6 +1269,12 @@ impl<'a> Parser<'a> {
                         ));
                     }
                 }
+                // `.loc` has no semicolon terminator and must be handled as a special case.
+                if let Some((_, Token::DottedIdent(DottedIdent::Simple(s)))) = self.peek()?
+                    && s.as_slice() == ascii("loc")
+                {
+                    return Ok(Statement::Directive(self.parse_loc_directive()?));
+                }
                 // Otherwise it's a directive
                 Ok(Statement::Directive(self.parse_directive()?))
             }
@@ -1704,6 +1710,57 @@ impl<'a> Parser<'a> {
                 end = span.1;
             }
             self.next().unwrap();
+        }
+
+        Ok(Directive {
+            span: Span(start, end),
+            name,
+            arguments,
+        })
+    }
+
+    /// Parse the `.loc` debugging directive.
+    ///
+    /// Unlike every other directive `parse_directive` handles, `.loc` has
+    /// no semicolon terminator at all. This forces the parser to parse the
+    /// loc directives completely in order to find their boundaries.
+    fn parse_loc_directive(&mut self) -> Result<Directive, ParseError> {
+        let (start, name) = match self.next()? {
+            Some((span, Token::DottedIdent(DottedIdent::Simple(s)))) => (span.0, s),
+            _ => unreachable!("parse_loc_directive requires a leading .loc token"),
+        };
+
+        let mut arguments = Vec::new();
+        let mut end = start;
+        let mut take = |p: &mut Self| -> Result<(), ParseError> {
+            let Some((span, tok)) = p.next()? else {
+                return err(ParseErrorKind::UnexpectedEof);
+            };
+            end = span.1;
+            arguments.push(tok);
+            Ok(())
+        };
+
+        // Base form: file_index line_number column_position.
+        take(self)?;
+        take(self)?;
+        take(self)?;
+
+        // Optional inlining form: `, function_name label {+ immediate},
+        // inlined_at file_index2 line_number2 column_position2`.
+        if self.peek_tok()? == Some(&Token::Comma) {
+            take(self)?; // ,
+            take(self)?; // function_name
+            take(self)?; // label
+            if self.peek_tok()? == Some(&Token::Plus) {
+                take(self)?; // +
+                take(self)?; // immediate
+            }
+            take(self)?; // ,
+            take(self)?; // inlined_at
+            take(self)?; // file_index2
+            take(self)?; // line_number2
+            take(self)?; // column_position2
         }
 
         Ok(Directive {
@@ -2708,6 +2765,45 @@ mod tests {
             }
             _ => panic!("Expected Entry"),
         }
+    }
+
+    /// `.loc` has no semicolon terminator, and must be parsed correctly to determine the
+    /// instructions boundaries.
+    #[test]
+    fn test_loc_directive_does_not_swallow_next_statement() {
+        let src = b".version 7.0
+.target sm_70
+.address_size 64
+
+.visible .entry test()
+{
+    .reg .b32 %r<4>;
+    .loc 1 21 0
+    mov.u32 %r1, 1;
+    .loc 1 22 0
+    .loc 1 22 0
+    mov.u32 %r2, 2;
+    .loc 1 9 3, function_name info_string0, inlined_at 1 21 3
+    mov.u32 %r3, 3;
+    ret;
+}
+";
+        let module = parse_module(src).unwrap();
+        let TopLevelItem::Entry(func) = &module.items[0] else {
+            panic!("Expected Entry");
+        };
+        let body = func.body.as_ref().unwrap();
+        let instr_count = body
+            .statements
+            .iter()
+            .filter(|s| matches!(s, Statement::Instruction(_)))
+            .count();
+        assert_eq!(
+            instr_count, 4,
+            "expected all three movs and the ret to survive .loc directives \
+             (base form and inlining form alike), got {:?}",
+            body.statements
+        );
     }
 
     #[test]
