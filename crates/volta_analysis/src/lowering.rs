@@ -3041,7 +3041,7 @@ fn check_vec_arity(
     let ok = match (vec, operand) {
         (Some(v), AstOperand::Vector(elements)) => v.count() as usize == elements.len(),
         (Some(_), _) => false,
-        (None, AstOperand::Vector(_)) => false,
+        (None, AstOperand::Vector(elements)) => elements.len() == 1,
         (None, _) => true,
     };
     if ok {
@@ -5056,5 +5056,9 @@ mod tests {
         }
         assert_lowers("ld.global.v2.u32 {%r1, %r2}, [%rd1];");
         assert_lowers("st.shared.v4.u32 [%r1], {%r2, %r3, %r4, %r5};");
+
+        // Vectors of size 1 are allowed for scalar load/stores
+        assert_lowers("ld.global.b32 {%r1}, [%rd1];");
+        assert_lowers("st.global.b32 [%rd1], {%r1};");
     }
 }
