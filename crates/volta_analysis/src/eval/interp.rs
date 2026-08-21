@@ -738,6 +738,13 @@ impl<'p> Interpreter<'p> {
                 }
             }
 
+            LoweredInstr::CpAsync { .. } => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: "cp.async".to_string(),
+                });
+            }
+
             LoweredInstr::Mov { dst, src, ty } => {
                 let v = self.operand_value(t, pc, src)?;
                 // Rebind the value at the mov's own type: `mov.u32 %r, -1`
@@ -996,6 +1003,13 @@ impl<'p> Interpreter<'p> {
             }
 
             LoweredInstr::Membar { .. } | LoweredInstr::Nop => {}
+
+            LoweredInstr::CpAsyncCommitGroup | LoweredInstr::CpAsyncWaitGroup { .. } => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: "cp.async.commit_group/wait_group".to_string(),
+                });
+            }
 
             LoweredInstr::Shfl { .. } => {
                 return Err(EvalError::Unsupported {

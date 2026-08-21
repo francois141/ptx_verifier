@@ -778,6 +778,10 @@ pub enum ParsedInstruction {
     Ld(LdInstr),
     Ldu(LduInstr),
     St(StInstr),
+    CpAsync(CpAsyncInstr),
+    CpAsyncCommitGroup,
+    CpAsyncWaitGroup(CpAsyncWaitGroupInstr),
+    CpAsyncWaitAll,
     Prefetch(PrefetchInstr),
     Cvt(CvtInstr),
     Cvta(CvtaInstr),
@@ -2091,6 +2095,25 @@ pub struct StInstr {
     pub ty: ScalarType,
     pub addr: Operand,
     pub src: Operand,
+}
+
+/// Asynchronous copies
+#[derive(Debug, Clone)]
+pub struct CpAsyncInstr {
+    pub cache_op: CacheOp,
+    pub dst: Operand,
+    pub src: Operand,
+    /// Always 4, 8, or 16.
+    pub cp_size: Operand,
+    /// The optional `src-size` (register/immediate) or `ignore-src`
+    /// (predicate) trailing operand.
+    pub extra: Option<Operand>,
+}
+
+/// Asynchronous copies wait group
+#[derive(Debug, Clone)]
+pub struct CpAsyncWaitGroupInstr {
+    pub n: Operand,
 }
 
 /// Rounding mode for cvt instruction (mutually exclusive)

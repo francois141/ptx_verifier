@@ -62,6 +62,18 @@ impl Operand {
     }
 }
 
+/// The optional third data operand of `cp.async`.
+#[derive(Debug, Clone, Copy)]
+pub enum CpAsyncSrcSize {
+    /// Neither `src-size` nor `ignore-src` given: all `cp_size` bytes are copied.
+    Full,
+    /// The `src-size` operand: this many bytes (must be <= `cp_size`) are
+    /// copied, the rest of the destination is zero-filled.
+    Sized(Operand),
+    /// The `ignore-src` predicate given: the destination is entirely zero-filled.
+    IgnoreSrc,
+}
+
 /// A predicate guard for an instruction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Predicate {
@@ -267,6 +279,17 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
+    /// Async copy
+    CpAsync {
+        dst_base: Operand,
+        dst_offset: i64,
+        src_base: Operand,
+        src_offset: i64,
+        /// Always 4, 8, or 16 per the ISA.
+        cp_size: u32,
+        src_size: CpAsyncSrcSize,
+    },
+
     /// Move/copy: dst = src
     Mov {
         dst: RegId,
@@ -429,6 +452,14 @@ pub enum LoweredInstr {
     /// Memory fence
     Membar { scope: MembarScope },
 
+    /// Seal all of this thread's uncommitted `CpAsync` copies into a new
+    /// async-group at the back of its completion queue.
+    CpAsyncCommitGroup,
+
+    /// Block until at most `n` of this thread's async-groups remain
+    /// pending.
+    CpAsyncWaitGroup { n: u32 },
+
     // =========================================================================
     // Warp-Level Operations
     // =========================================================================
@@ -580,6 +611,7 @@ define_instr_kinds!(
     LoadVec,
     Store,
     StoreVec,
+    CpAsync,
     Mov,
     Cvta,
     BinOp,
@@ -600,6 +632,8 @@ define_instr_kinds!(
     BarSync,
     BarWarpSync,
     Membar,
+    CpAsyncCommitGroup,
+    CpAsyncWaitGroup,
     Shfl,
     ShflSync,
     Ldmatrix,
@@ -639,6 +673,19 @@ impl LoweredInstr {
             Self::StoreVec { base, src, .. } => {
                 let mut r: Vec<RegId> = from_op(base).into_iter().collect();
                 r.extend(src.iter().copied());
+                r
+            }
+            Self::CpAsync {
+                dst_base,
+                src_base,
+                src_size,
+                ..
+            } => {
+                let mut r: Vec<RegId> = from_op(dst_base).into_iter().collect();
+                r.extend(from_op(src_base));
+                if let CpAsyncSrcSize::Sized(op) = src_size {
+                    r.extend(from_op(op));
+                }
                 r
             }
             Self::Mov { src, .. } => from_op(src).into_iter().collect(),
@@ -694,6 +741,7 @@ impl LoweredInstr {
             Self::BarSync { .. } => vec![],
             Self::BarWarpSync { mask } => from_op(mask).into_iter().collect(),
             Self::Membar { .. } => vec![],
+            Self::CpAsyncCommitGroup | Self::CpAsyncWaitGroup { .. } => vec![],
 
             // Warp shuffle
             Self::Shfl {
@@ -789,6 +837,7 @@ impl LoweredInstr {
             // No destination
             Self::Store { .. }
             | Self::StoreVec { .. }
+            | Self::CpAsync { .. }
             | Self::WmmaStore { .. }
             | Self::Bra { .. }
             | Self::Ret
@@ -797,6 +846,8 @@ impl LoweredInstr {
             | Self::BarSync { .. }
             | Self::BarWarpSync { .. }
             | Self::Membar { .. }
+            | Self::CpAsyncCommitGroup
+            | Self::CpAsyncWaitGroup { .. }
             | Self::Nop => vec![],
         }
     }

@@ -15,11 +15,11 @@ use volta_common::Span;
 use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
-    CmpOp as AstCmpOp, CvtInstr, CvtRounding, DivInstr, FmaInstr, FromAscii, Function,
-    FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr, MemSemantics, MinInstr,
-    MulInstr, MulMode, NegInstr, Operand as AstOperand, ParsedInstruction, ScalarType, SetpInstr,
-    ShflMode as AstShflMode, ShflSyncInstr, StInstr, StateSpace, Statement, SubInstr, VarDecl,
-    VecWidth,
+    CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr,
+    FmaInstr, FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr,
+    MaxInstr, MemSemantics, MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand,
+    ParsedInstruction, ScalarType, SetpInstr, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
+    StateSpace, Statement, SubInstr, VarDecl, VecWidth,
 };
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::{is_cache_perf_hint, parse_instruction};
@@ -29,8 +29,8 @@ use id_collections::{Id, IdVec};
 
 use crate::lower_error::{LowerError, LowerResult};
 use crate::lowered::{
-    BinOp, Clamp, CmpOp, InstrId, LoweredInstr, LoweredProgram, MemSpace, MembarScope,
-    MulMode as LoweredMulMode, Operand, Predicate, ShflMode, UnaryOp,
+    BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
+    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
 use crate::symbols::{RegId, SpecialRegKind, SymbolTable};
@@ -568,6 +568,27 @@ impl LoweringContext {
             }
             _ => None,
         }
+    }
+
+    /// Resolve an operand that must be a compile-time integer immediate, as
+    /// required by `cp.async`'s `cp-size` and `cp.async.wait_group`'s `n`.
+    fn resolve_const_u32(
+        &self,
+        op: &AstOperand,
+        instruction: &str,
+        reason: &'static str,
+    ) -> LowerResult<u32> {
+        let invalid = || LowerError::InvalidOperand {
+            instruction: instruction.to_string(),
+            operand: format!("{:?}", op),
+            reason,
+        };
+        let val = match self.resolve_operand(op)? {
+            Operand::ImmI64(v) => v,
+            Operand::ImmU64(v) => v as i64,
+            _ => return Err(invalid()),
+        };
+        u32::try_from(val).map_err(|_| invalid())
     }
 
     /// Resolve destination register (must not be a special register)
@@ -1509,6 +1530,33 @@ fn lower_parsed_instruction(
         // =========================================================================
         ParsedInstruction::St(st) => {
             lower_store(ctx, st, predicate)?;
+        }
+
+        // =========================================================================
+        // Data Movement - Async Copy (cp.async)
+        // =========================================================================
+        ParsedInstruction::CpAsync(cp) => {
+            lower_cp_async(ctx, cp, predicate)?;
+        }
+
+        ParsedInstruction::CpAsyncCommitGroup => {
+            ctx.emit(LoweredInstr::CpAsyncCommitGroup, predicate)?;
+        }
+
+        ParsedInstruction::CpAsyncWaitGroup(wg) => {
+            let n = ctx.resolve_const_u32(
+                &wg.n,
+                "cp.async.wait_group",
+                "n must be a compile-time integer immediate",
+            )?;
+            ctx.emit(LoweredInstr::CpAsyncWaitGroup { n }, predicate)?;
+        }
+
+        ParsedInstruction::CpAsyncWaitAll => {
+            // cp.async.wait_all is exactly cp.async.commit_group followed
+            // by cp.async.wait_group 0.
+            ctx.emit(LoweredInstr::CpAsyncCommitGroup, predicate)?;
+            ctx.emit(LoweredInstr::CpAsyncWaitGroup { n: 0 }, predicate)?;
         }
 
         // =========================================================================
@@ -3250,6 +3298,75 @@ fn lower_store(
         predicate,
     )?;
     Ok(())
+}
+
+/// Lower `cp.async`: `dst` is always `.shared`, `src` always `.global` (both
+/// mandatory modifiers checked by the frontend parser), so unlike `Load`/
+/// `Store` no `MemSpace` field is threaded through `LoweredInstr::CpAsync`
+/// at all - the eval side hardcodes the two spaces.
+fn lower_cp_async(
+    ctx: &mut LoweringContext,
+    cp: &CpAsyncInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let CpAsyncInstr {
+        cache_op: _cache_op,
+        dst,
+        src,
+        cp_size,
+        extra,
+    } = cp;
+
+    let (dst_base, dst_offset) = match dst {
+        AstOperand::Address(addr) => (ctx.resolve_address(addr)?, ctx.get_address_offset(addr)),
+        _ => (ctx.resolve_operand(dst)?, 0),
+    };
+    let (src_base, src_offset) = match src {
+        AstOperand::Address(addr) => (ctx.resolve_address(addr)?, ctx.get_address_offset(addr)),
+        _ => (ctx.resolve_operand(src)?, 0),
+    };
+
+    let cp_size = ctx.resolve_const_u32(
+        cp_size,
+        "cp.async",
+        "cp-size must be a compile-time immediate (4, 8, or 16)",
+    )?;
+    if !matches!(cp_size, 4 | 8 | 16) {
+        return Err(LowerError::InvalidOperand {
+            instruction: "cp.async".to_string(),
+            operand: format!("{}", cp_size),
+            reason: "cp-size must be 4, 8, or 16",
+        });
+    }
+
+    // The optional 4th operand is either `src-size` (an integer register or
+    // immediate: partial real bytes, rest zero-filled) or `ignore-src` (a
+    // predicate: all zero-filled) - the ISA disambiguates them by operand
+    // type, not position, so lowering does the same via the resolved
+    // operand's register class.
+    let src_size = match extra {
+        None => CpAsyncSrcSize::Full,
+        Some(op) => {
+            let resolved = ctx.resolve_operand_typed(op)?;
+            if resolved.ty == Some(ScalarType::Pred) {
+                CpAsyncSrcSize::IgnoreSrc
+            } else {
+                CpAsyncSrcSize::Sized(resolved.operand)
+            }
+        }
+    };
+
+    ctx.emit(
+        LoweredInstr::CpAsync {
+            dst_base,
+            dst_offset,
+            src_base,
+            src_offset,
+            cp_size,
+            src_size,
+        },
+        predicate,
+    )
 }
 
 /// Extract the `(symbol, offset)` of a param-space address like `[param0+0]`.
@@ -5085,5 +5202,99 @@ mod tests {
         // Vectors of size 1 are allowed for scalar load/stores
         assert_lowers("ld.global.b32 {%r1}, [%rd1];");
         assert_lowers("st.global.b32 [%rd1], {%r1};");
+    }
+
+    #[test]
+    fn test_cp_async_lowering() {
+        let prog =
+            lower_body("cp.async.cg.shared.global [smem+4], [%rd0], 16;").expect("should lower");
+        let smem_base = prog.symbols.get_shared_var("smem").unwrap().offset as u64;
+        let mut found = false;
+        for instr in prog.instructions.values() {
+            if let LoweredInstr::CpAsync {
+                dst_base,
+                dst_offset,
+                src_base,
+                src_offset,
+                cp_size,
+                src_size,
+            } = instr
+            {
+                assert_eq!(*dst_base, Operand::ImmU64(smem_base));
+                assert_eq!(*dst_offset, 4);
+                assert_eq!(*src_offset, 0);
+                assert_eq!(*cp_size, 16);
+                assert!(matches!(src_size, CpAsyncSrcSize::Full));
+                let _ = src_base;
+                found = true;
+            }
+        }
+        assert!(found, "expected a lowered CpAsync instruction");
+
+        // A general-purpose register 4th operand is `src-size`.
+        let prog = lower_body("cp.async.ca.shared.global [smem], [%rd0], 16, %r0;")
+            .expect("should lower");
+        let src_size = prog
+            .instructions
+            .values()
+            .find_map(|i| match i {
+                LoweredInstr::CpAsync { src_size, .. } => Some(src_size.clone()),
+                _ => None,
+            })
+            .expect("expected a lowered CpAsync instruction");
+        assert!(
+            matches!(src_size, CpAsyncSrcSize::Sized(Operand::Reg(_))),
+            "expected Sized(reg), got {:?}",
+            src_size
+        );
+
+        // A predicate register 4th operand is `ignore-src`.
+        let prog = lower_body("cp.async.ca.shared.global [smem], [%rd0], 16, %p0;")
+            .expect("should lower");
+        let src_size = prog
+            .instructions
+            .values()
+            .find_map(|i| match i {
+                LoweredInstr::CpAsync { src_size, .. } => Some(src_size.clone()),
+                _ => None,
+            })
+            .expect("expected a lowered CpAsync instruction");
+        assert!(
+            matches!(src_size, CpAsyncSrcSize::IgnoreSrc),
+            "expected IgnoreSrc, got {:?}",
+            src_size
+        );
+
+        match lower_body("cp.async.ca.shared.global [smem], [%rd0], 5;") {
+            Err(LowerError::InvalidOperand { .. }) => {}
+            other => panic!("expected InvalidOperand for cp-size=5, got {:?}", other),
+        }
+
+        let prog = lower_body("cp.async.commit_group;\ncp.async.wait_group 3;\ncp.async.wait_all;")
+            .expect("should lower");
+        let kinds: Vec<&LoweredInstr> = prog.instructions.values().collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|i| matches!(i, LoweredInstr::CpAsyncCommitGroup))
+                .count(),
+            2,
+            "expected one explicit commit_group plus one from wait_all: {:?}",
+            kinds
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|i| matches!(i, LoweredInstr::CpAsyncWaitGroup { n: 3 })),
+            "missing CpAsyncWaitGroup{{n: 3}}: {:?}",
+            kinds
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|i| matches!(i, LoweredInstr::CpAsyncWaitGroup { n: 0 })),
+            "missing CpAsyncWaitGroup{{n: 0}} from wait_all: {:?}",
+            kinds
+        );
     }
 }

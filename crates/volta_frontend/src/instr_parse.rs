@@ -387,6 +387,10 @@ pub fn parse_instruction(
         InstrKind::Ld => parse_ld(&mut mp, operands),
         InstrKind::Ldu => parse_ldu(&mut mp, operands),
         InstrKind::St => parse_st(&mut mp, operands),
+        InstrKind::CpAsync => parse_cp_async(&mut mp, operands),
+        InstrKind::CpAsyncCommitGroup => parse_cp_async_commit_group(&mut mp, operands),
+        InstrKind::CpAsyncWaitGroup => parse_cp_async_wait_group(&mut mp, operands),
+        InstrKind::CpAsyncWaitAll => parse_cp_async_wait_all(&mut mp, operands),
         InstrKind::Cvt => parse_cvt(&mut mp, operands),
         InstrKind::Cvta => parse_cvta(&mut mp, operands),
         InstrKind::Isspacep => parse_isspacep(&mut mp, operands),
@@ -2811,6 +2815,74 @@ fn parse_st(
         addr,
         src,
     }))
+}
+
+/// Parse asynchronous copies
+fn parse_cp_async(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let cache_op = mp
+        .try_parse::<CacheOp>()
+        .ok_or(InstrParseError::MissingModifier(ascii("ca")))?;
+    mp.try_consume_or_err(ascii("shared"))?;
+    mp.skip_cache_perf_hints();
+    mp.reject_qualified()?;
+    mp.try_consume_or_err(ascii("global"))?;
+    mp.skip_cache_perf_hints();
+    mp.reject_qualified()?;
+
+    // Operands: [dst], [src], cp-size, and an optional 4th (src-size or
+    // ignore-src - which one is resolved during lowering, from the
+    // operand's register class).
+    let (dst, src, cp_size, extra) = if operands.len() == 4 {
+        let [dst, src, cp_size, extra] = expect_operands(operands)?;
+        (dst, src, cp_size, Some(extra))
+    } else {
+        let [dst, src, cp_size] = expect_operands(operands)?;
+        (dst, src, cp_size, None)
+    };
+
+    mp.finish()?;
+    Ok(ParsedInstruction::CpAsync(CpAsyncInstr {
+        cache_op,
+        dst,
+        src,
+        cp_size,
+        extra,
+    }))
+}
+
+/// Parse cp.async.commit_group.
+fn parse_cp_async_commit_group(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [] = expect_operands(operands)?;
+    mp.finish()?;
+    Ok(ParsedInstruction::CpAsyncCommitGroup)
+}
+
+/// Parse cp.async.wait_group.
+fn parse_cp_async_wait_group(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [n] = expect_operands(operands)?;
+    mp.finish()?;
+    Ok(ParsedInstruction::CpAsyncWaitGroup(CpAsyncWaitGroupInstr {
+        n,
+    }))
+}
+
+/// Parse cp.async.wait_all.
+fn parse_cp_async_wait_all(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [] = expect_operands(operands)?;
+    mp.finish()?;
+    Ok(ParsedInstruction::CpAsyncWaitAll)
 }
 
 /// Parse cvt instruction (Blocks 99, 100)

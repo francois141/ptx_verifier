@@ -4270,4 +4270,80 @@ DONE:
             _ => panic!("Expected Ex2Instr::HalfBf16, got {:?}", parsed),
         }
     }
+
+    // --- CpAsync Strongly-Typed Tests ---
+
+    /// Covers the 3- and 4-operand forms of `cp.async` plus all three
+    /// group-completion instructions. The 4th operand (`src-size` or
+    /// `ignore-src`) is captured but left undisambiguated at this layer -
+    /// that happens during lowering, from the resolved operand's register
+    /// class.
+    #[test]
+    fn test_cp_async_forms() {
+        let src = wrap_in_module(
+            ".reg .b64 %rd<3>;
+    cp.async.cg.shared.global [%rd0], [%rd1], 16;",
+        );
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        match parsed {
+            ParsedInstruction::CpAsync(CpAsyncInstr {
+                cache_op, extra, ..
+            }) => {
+                assert_eq!(cache_op, CacheOp::Cg);
+                assert!(extra.is_none(), "expected no 4th operand");
+            }
+            _ => panic!("Expected CpAsync, got {:?}", parsed),
+        }
+
+        let src = wrap_in_module(
+            ".reg .b64 %rd<3>;
+    .reg .b32 %r<2>;
+    cp.async.ca.shared.global [%rd0], [%rd1], 16, %r0;",
+        );
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        match parsed {
+            ParsedInstruction::CpAsync(CpAsyncInstr {
+                cache_op, extra, ..
+            }) => {
+                assert_eq!(cache_op, CacheOp::Ca);
+                assert!(extra.is_some(), "expected a 4th operand");
+            }
+            _ => panic!("Expected CpAsync, got {:?}", parsed),
+        }
+
+        let src = wrap_in_module("cp.async.commit_group;");
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        assert!(
+            matches!(parsed, ParsedInstruction::CpAsyncCommitGroup),
+            "Expected CpAsyncCommitGroup, got {:?}",
+            parsed
+        );
+
+        let src = wrap_in_module("cp.async.wait_group 0;");
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        match parsed {
+            ParsedInstruction::CpAsyncWaitGroup(CpAsyncWaitGroupInstr { n }) => {
+                assert!(matches!(n, Operand::ImmInt(0)), "expected n = 0, got {:?}", n);
+            }
+            _ => panic!("Expected CpAsyncWaitGroup, got {:?}", parsed),
+        }
+
+        let src = wrap_in_module("cp.async.wait_all;");
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        assert!(
+            matches!(parsed, ParsedInstruction::CpAsyncWaitAll),
+            "Expected CpAsyncWaitAll, got {:?}",
+            parsed
+        );
+    }
 }
