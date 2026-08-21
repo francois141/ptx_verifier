@@ -3349,7 +3349,7 @@ fn lower_cp_async(
         Some(op) => {
             let resolved = ctx.resolve_operand_typed(op)?;
             if resolved.ty == Some(ScalarType::Pred) {
-                CpAsyncSrcSize::IgnoreSrc
+                CpAsyncSrcSize::IgnoreSrc(resolved.operand)
             } else {
                 CpAsyncSrcSize::Sized(resolved.operand)
             }
@@ -5260,8 +5260,8 @@ mod tests {
             })
             .expect("expected a lowered CpAsync instruction");
         assert!(
-            matches!(src_size, CpAsyncSrcSize::IgnoreSrc),
-            "expected IgnoreSrc, got {:?}",
+            matches!(src_size, CpAsyncSrcSize::IgnoreSrc(Operand::Reg(_))),
+            "expected IgnoreSrc(reg), got {:?}",
             src_size
         );
 

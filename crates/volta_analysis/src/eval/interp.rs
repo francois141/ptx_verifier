@@ -6,6 +6,8 @@
 //! barrier/warp groups fire; if none can, the program is deadlocked. By the
 //! confluence theorem, this particular schedule is as good as any other.
 
+use std::collections::VecDeque;
+
 use id_collections::IdVec;
 
 use volta_frontend::ast::ScalarType;
@@ -13,12 +15,13 @@ use volta_frontend::ast::ScalarType;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::memory::{MemAccessError, Memory};
-use crate::eval::race::RaceTracker;
+use crate::eval::race::{MemHazard, RaceTracker};
 use crate::eval::value::{RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
-    BinOp, Clamp, CmpOp, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand, UnaryOp,
+    BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
+    UnaryOp,
 };
 use crate::symbolic::{ExprArena, ExprId, Real, StringId};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
@@ -56,11 +59,36 @@ pub(in crate::eval) enum Status {
     Exited,
 }
 
+/// One `cp.async` copy issued but not yet completed: its value is captured
+/// eagerly at issue time, but the write into `shared` is deferred until
+/// `cp.async.wait_group` releases the group it's committed into.
+#[derive(Debug, Clone)]
+struct PendingCopy {
+    dst_addr: u64,
+    src_addr: u64,
+    /// Total slot width in bytes (always 4, 8, or 16).
+    cp_size: u64,
+    /// How many bytes of `src_addr` were actually locked/read (<= cp_size,
+    /// zero if `ignore-src` held).
+    real_bytes: u64,
+    /// One resolved value per 4-byte word (`cp_size / 4` entries), already
+    /// zero-filled where the source's real-byte prefix didn't cover it.
+    words: Vec<Value>,
+    /// The issuing `cp.async` instruction, for lock diagnostics and as the
+    /// attributed pc of the deferred write.
+    pc: InstrId,
+}
+
 #[derive(Debug)]
 pub(in crate::eval) struct ThreadState {
     pub pc: InstrId,
     pub regs: RegFile,
     pub status: Status,
+    /// `cp.async` copies issued since the last `commit_group`.
+    uncommitted: Vec<PendingCopy>,
+    /// Committed async-copy groups, oldest first; `wait_group`/`wait_all`
+    /// pop from the front.
+    groups: VecDeque<Vec<PendingCopy>>,
 }
 
 /// A contiguous validity region within one memory space.
@@ -316,6 +344,8 @@ impl<'p> Interpreter<'p> {
                     pc: program.entry_pc,
                     regs: RegFile::new(&counts),
                     status: Status::Ready,
+                    uncommitted: Vec::new(),
+                    groups: VecDeque::new(),
                 })
                 .collect(),
         );
@@ -738,10 +768,104 @@ impl<'p> Interpreter<'p> {
                 }
             }
 
-            LoweredInstr::CpAsync { .. } => {
-                return Err(EvalError::Unsupported {
+            LoweredInstr::CpAsync {
+                dst_base,
+                dst_offset,
+                src_base,
+                src_offset,
+                cp_size,
+                src_size,
+            } => {
+                let dst_addr = self.effective_addr(t, pc, dst_base, *dst_offset)?;
+                let src_addr = self.effective_addr(t, pc, src_base, *src_offset)?;
+                let cp_size = *cp_size as u64;
+
+                // How many of `cp_size` bytes are real (the rest is
+                // zero-filled); the ISA disambiguates `src-size` vs
+                // `ignore-src` by operand kind (already resolved at
+                // lowering), not by value.
+                let real_bytes = match src_size {
+                    CpAsyncSrcSize::Full => cp_size,
+                    CpAsyncSrcSize::Sized(op) => {
+                        let n = self.concrete_operand(t, pc, op, "cp.async src-size")?;
+                        if n < 0 || n as u64 > cp_size {
+                            return Err(EvalError::Unsupported {
+                                pc,
+                                what: format!(
+                                    "cp.async src-size {} out of range [0, {}]",
+                                    n, cp_size
+                                ),
+                            });
+                        }
+                        n as u64
+                    }
+                    CpAsyncSrcSize::IgnoreSrc(op) => {
+                        let v = self.operand_value(t, pc, op)?;
+                        let ignore = self.as_concrete_bool(t, pc, v, "cp.async ignore-src")?;
+                        if ignore { 0 } else { cp_size }
+                    }
+                };
+                // The copy is decomposed into 4-byte words below (matching
+                // how the corpus actually consumes cp.async destinations,
+                // `ld.shared.v4.b32`), so a real/zero boundary that splits a
+                // word can't be represented without byte-level masking
+                // Volta doesn't model; reject it loudly instead of guessing.
+                if !real_bytes.is_multiple_of(4) {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: format!(
+                            "cp.async src-size {} is not a multiple of 4 bytes",
+                            real_bytes
+                        ),
+                    });
+                }
+
+                // The destination's whole slot is reserved regardless of
+                // how much of it is real; the ISA ties alignment to
+                // `cp_size` for both operands. The source's *bounds* use
+                // `real_bytes`, not `cp_size`, so a boundary-clamped
+                // partial copy (the whole reason `src-size` exists) isn't
+                // rejected as out-of-bounds for the untouched tail. Bounds
+                // before alignment throughout, matching `mem_read`/
+                // `mem_write`'s convention.
+                self.check_bounds(t, pc, MemSpace::Shared, dst_addr, cp_size)?;
+                self.check_alignment(t, pc, MemSpace::Shared, dst_addr, cp_size)?;
+                if real_bytes > 0 {
+                    self.check_bounds(t, pc, MemSpace::Global, src_addr, real_bytes)?;
+                }
+                self.check_alignment(t, pc, MemSpace::Global, src_addr, cp_size)?;
+
+                // Lock the destination (exclusive) and the real-byte prefix
+                // of the source (write-exclusive) for the whole in-flight
+                // window, then read the source now - exact, since the lock
+                // guarantees it cannot change before completion.
+                self.race
+                    .lock_dst(MemSpace::Shared, dst_addr, cp_size, t, pc)
+                    .map_err(Self::mem_hazard_error)?;
+                if real_bytes > 0 {
+                    self.race
+                        .lock_src(MemSpace::Global, src_addr, real_bytes, t, pc);
+                }
+
+                let zero = Value::Scalar(self.arena.int(0));
+                let mut words = Vec::with_capacity((cp_size / 4) as usize);
+                for i in 0..cp_size / 4 {
+                    let byte = i * 4;
+                    let v = if byte < real_bytes {
+                        self.mem_read(t, pc, MemSpace::Global, src_addr + byte, 4)?
+                    } else {
+                        zero
+                    };
+                    words.push(v);
+                }
+
+                self.threads[t].uncommitted.push(PendingCopy {
+                    dst_addr,
+                    src_addr,
+                    cp_size,
+                    real_bytes,
+                    words,
                     pc,
-                    what: "cp.async".to_string(),
                 });
             }
 
@@ -986,6 +1110,20 @@ impl<'p> Interpreter<'p> {
             }
 
             LoweredInstr::Ret | LoweredInstr::Exit => {
+                // A well-formed kernel always waits on its own async copies
+                // before exiting.
+                let pending = self.threads[t].uncommitted.len()
+                    + self.threads[t].groups.iter().map(Vec::len).sum::<usize>();
+                if pending > 0 {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: format!(
+                            "thread exited with {} async-copy operation(s) still pending \
+                             (missing cp.async.wait_group/wait_all)",
+                            pending
+                        ),
+                    });
+                }
                 self.threads[t].status = Status::Exited;
                 return Ok(());
             }
@@ -1004,11 +1142,47 @@ impl<'p> Interpreter<'p> {
 
             LoweredInstr::Membar { .. } | LoweredInstr::Nop => {}
 
-            LoweredInstr::CpAsyncCommitGroup | LoweredInstr::CpAsyncWaitGroup { .. } => {
-                return Err(EvalError::Unsupported {
-                    pc,
-                    what: "cp.async.commit_group/wait_group".to_string(),
-                });
+            LoweredInstr::CpAsyncCommitGroup => {
+                let uncommitted = std::mem::take(&mut self.threads[t].uncommitted);
+                self.threads[t].groups.push_back(uncommitted);
+            }
+
+            LoweredInstr::CpAsyncWaitGroup { n } => {
+                while self.threads[t].groups.len() > *n as usize {
+                    let group = self.threads[t].groups.pop_front().unwrap();
+                    for copy in group {
+                        // Release before writing: the deferred write must
+                        // not trip the copy's own still-held dst lock (and
+                        // an early same-thread peek before this point must
+                        // still be caught by it - see the design writeup).
+                        self.race.release_dst(
+                            MemSpace::Shared,
+                            copy.dst_addr,
+                            copy.cp_size,
+                            t,
+                            copy.pc,
+                        );
+                        if copy.real_bytes > 0 {
+                            self.race.release_src(
+                                MemSpace::Global,
+                                copy.src_addr,
+                                copy.real_bytes,
+                                t,
+                                copy.pc,
+                            );
+                        }
+                        for (i, v) in copy.words.into_iter().enumerate() {
+                            self.mem_write(
+                                t,
+                                copy.pc,
+                                MemSpace::Shared,
+                                copy.dst_addr + i as u64 * 4,
+                                4,
+                                v,
+                            )?;
+                        }
+                    }
+                }
             }
 
             LoweredInstr::Shfl { .. } => {
@@ -1345,6 +1519,23 @@ impl<'p> Interpreter<'p> {
         }
     }
 
+    fn mem_hazard_error(hazard: MemHazard) -> EvalError {
+        match hazard {
+            MemHazard::Race(race) => EvalError::DataRace {
+                space: race.space,
+                addr: race.addr,
+                prior: race.prior,
+                current: race.current,
+            },
+            MemHazard::AsyncCopy(h) => EvalError::AsyncCopyHazard {
+                space: h.space,
+                addr: h.addr,
+                prior: h.prior,
+                current: h.current,
+            },
+        }
+    }
+
     /// Bounds-check, race-check, and read memory.
     ///
     /// Reading in-bounds shared/global bytes that were never written yields
@@ -1373,12 +1564,7 @@ impl<'p> Interpreter<'p> {
             MemSpace::Global | MemSpace::Shared => {
                 self.race
                     .read(space, addr, width, t, pc)
-                    .map_err(|race| EvalError::DataRace {
-                        space: race.space,
-                        addr: race.addr,
-                        prior: race.prior,
-                        current: race.current,
-                    })?;
+                    .map_err(Self::mem_hazard_error)?;
                 if space == MemSpace::Global {
                     &self.global
                 } else {
@@ -1494,12 +1680,7 @@ impl<'p> Interpreter<'p> {
             MemSpace::Global | MemSpace::Shared => {
                 self.race
                     .write(space, addr, width, t, pc)
-                    .map_err(|race| EvalError::DataRace {
-                        space: race.space,
-                        addr: race.addr,
-                        prior: race.prior,
-                        current: race.current,
-                    })?;
+                    .map_err(Self::mem_hazard_error)?;
                 if space == MemSpace::Global {
                     &mut self.global
                 } else {

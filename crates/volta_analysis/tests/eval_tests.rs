@@ -2715,3 +2715,255 @@ fn test_cvta_other_forms_rejected() {
         }
     }
 }
+
+// =========================================================================
+// cp.async: in-flight hazard locking and post-completion visibility
+// =========================================================================
+
+/// A thread reading its own `cp.async` destination before `wait_group` is a
+/// hazard, even same-thread - the destination lock blocks the issuing
+/// thread too, unlike ordinary χ-tracking (which would let a same-thread
+/// access through).
+#[test]
+fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, sdata;
+    cp.async.ca.shared.global [%r1], [%rd1], 4;
+    cp.async.commit_group;
+    ld.shared.u32 %r2, [%r1];
+    ld.param.u64 %rd2, [out];
+    cvta.to.global.u64 %rd2, %rd2;
+    st.global.u32 [%rd2], %r2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
+        "expected an async-copy hazard, got: {}",
+        err
+    );
+}
+
+/// The happy path: `cp.async` + `commit_group` + `wait_group 0` correctly
+/// deposits the source value into shared memory, readable once waited on.
+#[test]
+fn test_cp_async_wait_group_completes_copy() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, sdata;
+    cp.async.ca.shared.global [%r1], [%rd1], 4;
+    cp.async.commit_group;
+    cp.async.wait_group 0;
+    ld.shared.u32 %r2, [%r1];
+    ld.param.u64 %rd2, [out];
+    cvta.to.global.u64 %rd2, %rd2;
+    st.global.u32 [%rd2], %r2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+}
+
+/// A different thread touching the destination while thread 0's copy is
+/// still in flight - blocked at a barrier before its own `wait_group` -
+/// must be a hazard, cross-thread. Requires the barrier to expose the
+/// interleaving: without it, the round-robin scheduler would run thread 0
+/// to completion (including its wait) before thread 1 ever executes.
+#[test]
+fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    mov.u32 %r2, sdata;
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+
+    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
+    @%p1 cp.async.commit_group;
+    @%p1 bar.sync 0;
+    @%p1 cp.async.wait_group 0;
+    @%p1 bra $DONE;
+
+    @!%p1 ld.shared.u32 %r3, [%r2];
+    @!%p1 bar.sync 0;
+
+$DONE:
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
+        "expected an async-copy hazard, got: {}",
+        err
+    );
+}
+
+/// A different thread writing the source while thread 0's copy is still in
+/// flight must also be a hazard (the source-lock half, not just the
+/// destination half).
+#[test]
+fn test_cp_async_cross_thread_write_of_locked_source_is_hazard() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    mov.u32 %r2, sdata;
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+
+    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
+    @%p1 cp.async.commit_group;
+    @%p1 bar.sync 0;
+    @%p1 cp.async.wait_group 0;
+    @%p1 bra $DONE;
+
+    @!%p1 mov.u32 %r4, 7;
+    @!%p1 st.global.u32 [%rd1], %r4;
+    @!%p1 bar.sync 0;
+
+$DONE:
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
+        "expected an async-copy hazard, got: {}",
+        err
+    );
+}
+
+/// `wait_group` only orders the issuing thread's own subsequent
+/// instructions against its own prior copies - it establishes nothing
+/// about visibility to other threads. A different thread reading the
+/// destination after thread 0's `wait_group`, with no synchronization
+/// since, must still be a data race (not an async-copy hazard: the lock is
+/// already released by this point, and ordinary χ-tracking on the deferred
+/// write is what catches it).
+#[test]
+fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    mov.u32 %r2, sdata;
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+
+    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
+    @%p1 cp.async.commit_group;
+    @%p1 cp.async.wait_group 0;
+
+    @!%p1 ld.shared.u32 %r3, [%r2];
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
+        "expected an ordinary data race (missing sync after wait_group), got: {}",
+        err
+    );
+}
+
+/// Same as above, but with the required `bar.sync` between thread 0's
+/// `wait_group` and thread 1's read: this must succeed, confirming the
+/// race in the previous test is exactly about the missing synchronization.
+#[test]
+fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<6>;
+    .shared .align 4 .b8 sdata[4];
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    mov.u32 %r2, sdata;
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+
+    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
+    @%p1 cp.async.commit_group;
+    @%p1 cp.async.wait_group 0;
+    bar.sync 0;
+
+    @!%p1 ld.shared.u32 %r3, [%r2];
+    @!%p1 ld.param.u64 %rd2, [out];
+    @!%p1 cvta.to.global.u64 %rd2, %rd2;
+    @!%p1 st.global.u32 [%rd2], %r3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+}

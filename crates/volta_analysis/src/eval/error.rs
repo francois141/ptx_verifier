@@ -43,6 +43,15 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
+    /// An access conflicted with a still-in-flight `cp.async` copy: its
+    /// destination was touched before completion, or its source was
+    /// modified before completion.
+    AsyncCopyHazard {
+        space: MemSpace,
+        addr: u64,
+        prior: AccessSite,
+        current: AccessSite,
+    },
     /// All live threads are blocked and no barrier or warp group can fire.
     Deadlock {
         /// (thread, pc it is blocked at) for every blocked thread
@@ -145,6 +154,16 @@ impl fmt::Display for EvalError {
             } => write!(
                 f,
                 "data race on {:?}[{:#x}]: {} conflicts with {}",
+                space, addr, current, prior
+            ),
+            Self::AsyncCopyHazard {
+                space,
+                addr,
+                prior,
+                current,
+            } => write!(
+                f,
+                "cp.async hazard on {:?}[{:#x}]: {} conflicts with in-flight {}",
                 space, addr, current, prior
             ),
             Self::Deadlock { blocked } => {

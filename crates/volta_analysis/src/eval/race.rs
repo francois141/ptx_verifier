@@ -15,6 +15,10 @@
 //!
 //! Access sites (thread, pc) are retained so races can be reported with both
 //! source locations.
+//!
+//! Separately, `async_locks` tracks the in-flight window of every
+//! uncompleted `cp.async` copy: its destination range is locked against all
+//! access, its source range against writes only.
 
 use std::collections::HashMap;
 
@@ -33,6 +37,35 @@ pub struct RaceInfo {
     pub current: AccessSite,
 }
 
+/// A detected in-flight `cp.async` hazard: an access that conflicts with a
+/// still-uncompleted copy's lock.
+#[derive(Debug, Clone, Copy)]
+pub struct AsyncHazardInfo {
+    pub space: MemSpace,
+    pub addr: u64,
+    pub prior: AccessSite,
+    pub current: AccessSite,
+}
+
+/// Either kind of memory hazard `read`/`write` can report.
+#[derive(Debug, Clone, Copy)]
+pub enum MemHazard {
+    Race(RaceInfo),
+    AsyncCopy(AsyncHazardInfo),
+}
+
+/// In-flight `cp.async` lock state for one byte.
+#[derive(Debug, Clone, Default)]
+struct AsyncLockCell {
+    /// Set while a destination range covers this byte: blocks all access
+    /// until released. At most one copy may hold a byte this way.
+    dst_holder: Option<(ThreadId, InstrId)>,
+    /// Set while a source range covers this byte: blocks writes only.
+    /// Multiple in-flight copies may legitimately share a source byte for
+    /// reading.
+    src_holders: Vec<(ThreadId, InstrId)>,
+}
+
 /// χ state for one byte.
 #[derive(Debug, Clone, Default)]
 struct ChiCell {
@@ -42,13 +75,15 @@ struct ChiCell {
     wr: Option<(u32, FixedBitSet, InstrId)>,
 }
 
-/// χ-context tracker over all racy memory (shared + global).
+/// χ-context tracker over all racy memory (shared + global), plus in-flight
+/// `cp.async` lock state.
 #[derive(Debug)]
 pub struct RaceTracker {
     n_threads: usize,
     /// Precomputed full thread set (the paper's 𝕀).
     all: FixedBitSet,
     cells: HashMap<(MemSpace, u64), ChiCell>,
+    async_locks: HashMap<(MemSpace, u64), AsyncLockCell>,
 }
 
 impl RaceTracker {
@@ -59,6 +94,7 @@ impl RaceTracker {
             n_threads,
             all,
             cells: HashMap::new(),
+            async_locks: HashMap::new(),
         }
     }
 
@@ -76,20 +112,41 @@ impl RaceTracker {
         width: u64,
         thread: ThreadId,
         pc: InstrId,
-    ) -> Result<(), RaceInfo> {
+    ) -> Result<(), MemHazard> {
         let t = thread.0;
         let current = AccessSite {
             thread,
             pc,
             is_write: false,
         };
+        // Check for async copies
+        if !self.async_locks.is_empty() {
+            for byte in addr..addr + width {
+                if let Some((holder, hpc)) = self
+                    .async_locks
+                    .get(&(space, byte))
+                    .and_then(|cell| cell.dst_holder)
+                {
+                    return Err(MemHazard::AsyncCopy(AsyncHazardInfo {
+                        space,
+                        addr: byte,
+                        prior: AccessSite {
+                            thread: holder,
+                            pc: hpc,
+                            is_write: true,
+                        },
+                        current,
+                    }));
+                }
+            }
+        }
         for byte in addr..addr + width {
             let cell = self.cells.entry((space, byte)).or_default();
             if let Some((writer, pending, wpc)) = &cell.wr
                 && *writer != t
                 && pending.contains(t as usize)
             {
-                return Err(RaceInfo {
+                return Err(MemHazard::Race(RaceInfo {
                     space,
                     addr: byte,
                     prior: AccessSite {
@@ -98,7 +155,7 @@ impl RaceTracker {
                         is_write: true,
                     },
                     current,
-                });
+                }));
             }
             cell.rd.insert(t, (self.all.clone(), pc));
         }
@@ -119,13 +176,45 @@ impl RaceTracker {
         width: u64,
         thread: ThreadId,
         pc: InstrId,
-    ) -> Result<(), RaceInfo> {
+    ) -> Result<(), MemHazard> {
         let t = thread.0;
         let current = AccessSite {
             thread,
             pc,
             is_write: true,
         };
+        // Check for async copies
+        if !self.async_locks.is_empty() {
+            for byte in addr..addr + width {
+                let Some(cell) = self.async_locks.get(&(space, byte)) else {
+                    continue;
+                };
+                if let Some((holder, hpc)) = cell.dst_holder {
+                    return Err(MemHazard::AsyncCopy(AsyncHazardInfo {
+                        space,
+                        addr: byte,
+                        prior: AccessSite {
+                            thread: holder,
+                            pc: hpc,
+                            is_write: true,
+                        },
+                        current,
+                    }));
+                }
+                if let Some(&(holder, hpc)) = cell.src_holders.first() {
+                    return Err(MemHazard::AsyncCopy(AsyncHazardInfo {
+                        space,
+                        addr: byte,
+                        prior: AccessSite {
+                            thread: holder,
+                            pc: hpc,
+                            is_write: false,
+                        },
+                        current,
+                    }));
+                }
+            }
+        }
         for byte in addr..addr + width {
             let cell = self.cells.entry((space, byte)).or_default();
             // Report the lowest-numbered conflicting reader. HashMap
@@ -139,7 +228,7 @@ impl RaceTracker {
                 .map(|(reader, (_, rpc))| (*reader, *rpc))
                 .min_by_key(|&(reader, _)| reader)
             {
-                return Err(RaceInfo {
+                return Err(MemHazard::Race(RaceInfo {
                     space,
                     addr: byte,
                     prior: AccessSite {
@@ -148,13 +237,13 @@ impl RaceTracker {
                         is_write: false,
                     },
                     current,
-                });
+                }));
             }
             if let Some((writer, pending, wpc)) = &cell.wr
                 && *writer != t
                 && pending.contains(t as usize)
             {
-                return Err(RaceInfo {
+                return Err(MemHazard::Race(RaceInfo {
                     space,
                     addr: byte,
                     prior: AccessSite {
@@ -163,11 +252,125 @@ impl RaceTracker {
                         is_write: true,
                     },
                     current,
-                });
+                }));
             }
             cell.wr = Some((t, self.all.clone(), pc));
         }
         Ok(())
+    }
+
+    /// Lock `[addr, addr + width)` in `space` as a `cp.async` destination:
+    /// blocks all access (read or write, by any thread, including the
+    /// issuing one) until [`Self::release_dst`] is called for the same
+    /// range.
+    pub fn lock_dst(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+    ) -> Result<(), MemHazard> {
+        let current = AccessSite {
+            thread,
+            pc,
+            is_write: true,
+        };
+        for byte in addr..addr + width {
+            if let Some((holder, hpc)) = self
+                .async_locks
+                .get(&(space, byte))
+                .and_then(|cell| cell.dst_holder)
+            {
+                return Err(MemHazard::AsyncCopy(AsyncHazardInfo {
+                    space,
+                    addr: byte,
+                    prior: AccessSite {
+                        thread: holder,
+                        pc: hpc,
+                        is_write: true,
+                    },
+                    current,
+                }));
+            }
+        }
+        for byte in addr..addr + width {
+            self.async_locks
+                .entry((space, byte))
+                .or_default()
+                .dst_holder = Some((thread, pc));
+        }
+        Ok(())
+    }
+
+    /// Lock `[addr, addr + width)` in `space` as a `cp.async` source: blocks
+    /// writes only.
+    pub fn lock_src(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+    ) {
+        for byte in addr..addr + width {
+            self.async_locks
+                .entry((space, byte))
+                .or_default()
+                .src_holders
+                .push((thread, pc));
+        }
+    }
+
+    /// Release a destination lock acquired by `lock_dst` for the same
+    /// `(thread, pc)`.
+    pub fn release_dst(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+    ) {
+        for byte in addr..addr + width {
+            if let Some(cell) = self.async_locks.get_mut(&(space, byte)) {
+                debug_assert_eq!(
+                    cell.dst_holder,
+                    Some((thread, pc)),
+                    "releasing a dst lock not held by this copy"
+                );
+                cell.dst_holder = None;
+                if cell.src_holders.is_empty() {
+                    self.async_locks.remove(&(space, byte));
+                }
+            }
+        }
+    }
+
+    /// Release one source lock instance acquired by `lock_src` for the same
+    /// `(thread, pc)`.
+    pub fn release_src(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+    ) {
+        for byte in addr..addr + width {
+            if let Some(cell) = self.async_locks.get_mut(&(space, byte)) {
+                if let Some(pos) = cell
+                    .src_holders
+                    .iter()
+                    .position(|&(h, p)| h == thread && p == pc)
+                {
+                    cell.src_holders.swap_remove(pos);
+                }
+                if cell.dst_holder.is_none() && cell.src_holders.is_empty() {
+                    self.async_locks.remove(&(space, byte));
+                }
+            }
+        }
     }
 
     /// Synchronize the full CTA: every pending set becomes empty, so drop
@@ -221,12 +424,22 @@ mod tests {
         g
     }
 
+    /// Unwrap a `read`/`write` error as a `RaceInfo`, panicking if it was
+    /// actually an async-copy hazard.
+    fn expect_race(result: Result<(), MemHazard>) -> RaceInfo {
+        match result {
+            Err(MemHazard::Race(info)) => info,
+            Err(MemHazard::AsyncCopy(h)) => panic!("expected a race, got an async hazard: {:?}", h),
+            Ok(()) => panic!("expected a race, got Ok"),
+        }
+    }
+
     #[test]
     fn test_write_read_race() {
         let mut chi = RaceTracker::new(4);
         chi.write(S, 0x10, 4, ThreadId(0), pc(1)).unwrap();
         // Another thread reads without a sync: race.
-        let err = chi.read(S, 0x10, 4, ThreadId(1), pc(2)).unwrap_err();
+        let err = expect_race(chi.read(S, 0x10, 4, ThreadId(1), pc(2)));
         assert_eq!(err.prior.thread, ThreadId(0));
         assert!(err.prior.is_write);
     }
@@ -235,7 +448,7 @@ mod tests {
     fn test_read_write_race() {
         let mut chi = RaceTracker::new(4);
         chi.read(S, 0x10, 4, ThreadId(0), pc(1)).unwrap();
-        let err = chi.write(S, 0x10, 4, ThreadId(1), pc(2)).unwrap_err();
+        let err = expect_race(chi.write(S, 0x10, 4, ThreadId(1), pc(2)));
         assert_eq!(err.prior.thread, ThreadId(0));
         assert!(!err.prior.is_write);
     }
@@ -271,7 +484,7 @@ mod tests {
         // Threads 0-31 sync; thread 1 may now read, thread 32 may not.
         chi.sync_group(&group(64, &(0..32).collect::<Vec<_>>()));
         chi.read(S, 0x10, 4, ThreadId(1), pc(2)).unwrap();
-        let err = chi.read(S, 0x10, 4, ThreadId(32), pc(3)).unwrap_err();
+        let err = expect_race(chi.read(S, 0x10, 4, ThreadId(32), pc(3)));
         assert_eq!(err.prior.thread, ThreadId(0));
     }
 
@@ -287,7 +500,7 @@ mod tests {
         let mut chi = RaceTracker::new(4);
         chi.write(S, 0x10, 4, ThreadId(0), pc(1)).unwrap();
         // Writes [0x12, 0x16) overlapping [0x10, 0x14).
-        let err = chi.write(S, 0x12, 4, ThreadId(1), pc(2)).unwrap_err();
+        let err = expect_race(chi.write(S, 0x12, 4, ThreadId(1), pc(2)));
         assert_eq!(err.addr, 0x12);
     }
 
@@ -300,7 +513,7 @@ mod tests {
         chi.read(S, 0x10, 4, ThreadId(0), pc(1)).unwrap();
         chi.sync_group(&group(4, &[0, 1]));
         chi.write(S, 0x10, 4, ThreadId(1), pc(2)).unwrap();
-        let err = chi.write(S, 0x10, 4, ThreadId(2), pc(3)).unwrap_err();
+        let err = expect_race(chi.write(S, 0x10, 4, ThreadId(2), pc(3)));
         assert_eq!(err.prior.thread, ThreadId(0));
         assert!(!err.prior.is_write);
     }
@@ -316,7 +529,7 @@ mod tests {
             for t in order {
                 chi.read(S, 0x10, 1, ThreadId(t), pc(t)).unwrap();
             }
-            let err = chi.write(S, 0x10, 1, ThreadId(0), pc(100)).unwrap_err();
+            let err = expect_race(chi.write(S, 0x10, 1, ThreadId(0), pc(100)));
             assert_eq!(err.prior.thread, ThreadId(2));
             assert_eq!(err.prior.pc, pc(2));
             assert!(!err.prior.is_write);

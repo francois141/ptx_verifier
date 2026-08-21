@@ -70,8 +70,9 @@ pub enum CpAsyncSrcSize {
     /// The `src-size` operand: this many bytes (must be <= `cp_size`) are
     /// copied, the rest of the destination is zero-filled.
     Sized(Operand),
-    /// The `ignore-src` predicate given: the destination is entirely zero-filled.
-    IgnoreSrc,
+    /// The `ignore-src` predicate operand: if true at runtime, the
+    /// destination is entirely zero-filled; if false, behaves as `Full`.
+    IgnoreSrc(Operand),
 }
 
 /// A predicate guard for an instruction
@@ -683,8 +684,11 @@ impl LoweredInstr {
             } => {
                 let mut r: Vec<RegId> = from_op(dst_base).into_iter().collect();
                 r.extend(from_op(src_base));
-                if let CpAsyncSrcSize::Sized(op) = src_size {
-                    r.extend(from_op(op));
+                match src_size {
+                    CpAsyncSrcSize::Sized(op) | CpAsyncSrcSize::IgnoreSrc(op) => {
+                        r.extend(from_op(op));
+                    }
+                    CpAsyncSrcSize::Full => {}
                 }
                 r
             }
