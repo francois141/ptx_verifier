@@ -1909,7 +1909,20 @@ impl<'p> Interpreter<'p> {
                 self.arena.rcp(s)
             }
             UnaryOp::Exp => self.arena.exp(a),
-            UnaryOp::Ex2 | UnaryOp::Lg2 | UnaryOp::Sin | UnaryOp::Cos => {
+            // 2^x = e^(x*ln2), so this stays in the interpreted exp fragment
+            // rather than becoming an opaque atom.
+            UnaryOp::Ex2 => {
+                let ln2 = self
+                    .arena
+                    .float_from_f64(std::f64::consts::LN_2)
+                    .map_err(|e| EvalError::Unsupported {
+                        pc,
+                        what: format!("ex2 ln2 constant: {}", e),
+                    })?;
+                let scaled = self.arena.mul(a, ln2);
+                self.arena.exp(scaled)
+            }
+            UnaryOp::Lg2 | UnaryOp::Sin | UnaryOp::Cos => {
                 return Err(EvalError::Unsupported {
                     pc,
                     what: format!("transcendental {}", op.as_str()),

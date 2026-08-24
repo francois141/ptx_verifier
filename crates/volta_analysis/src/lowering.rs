@@ -1257,6 +1257,23 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Transcendental - Ex2 (2^x, evaluated as exp(x * ln2))
+        // =========================================================================
+        ParsedInstruction::Ex2(ex2) => {
+            let (dst, src) = match ex2 {
+                ast::Ex2Instr::Float32 {
+                    ftz: _ftz,
+                    dst,
+                    src,
+                } => (dst, src),
+                ast::Ex2Instr::HalfF16 { .. } | ast::Ex2Instr::HalfBf16 { .. } => {
+                    return Err(unsupported("ex2", "f16/bf16 packed forms"));
+                }
+            };
+            lower_float_unary(ctx, UnaryOp::Ex2, "ex2", ScalarType::F32, dst, src, predicate)?;
+        }
+
+        // =========================================================================
         // Arithmetic - Abs
         // =========================================================================
         ParsedInstruction::Abs(abs) => {
