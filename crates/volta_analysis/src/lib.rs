@@ -16,6 +16,7 @@ pub mod lowered;
 pub mod lowering;
 pub mod numeric;
 pub mod source_map;
+pub mod spec;
 pub mod symbolic;
 pub mod symbols;
 pub mod tensor_core;

@@ -4,7 +4,9 @@
 //! - `volta parse <file>` - Parse a PTX file and report any errors
 //! - `volta analyze <file>` - Symbolically execute one kernel
 //! - `volta compare <file1> <file2>` - Check two kernels for equivalence
+//! - `volta verify <file>` - Check one kernel against a math spec
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,6 +21,9 @@ use volta_analysis::driver::{
 };
 use volta_analysis::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
+use volta_analysis::spec::{
+    Bound, IndexExpr, OutputSpec, Shape, SpecEnv, SpecError, SpecExpr, unfold,
+};
 use volta_common::run_log;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::{Module, TopLevelItem};
@@ -105,6 +110,12 @@ enum Commands {
     /// data races/deadlocks). Arrays/params/globals are shared by both
     /// kernels unless a `--block2`/`--grid2` override is given.
     Compare(CompareArgs),
+
+    /// Check one kernel against a math specification (also checked for
+    /// data races/deadlocks). The spec is hardcoded to matmul for now -
+    /// `C[i,j] = sum_k A[i,k] * B[k,j]` over arrays literally named "A",
+    /// "B", "C" - proper spec parsing is future work.
+    Verify(VerifyArgs),
 }
 
 /// Launch configuration shared by `analyze` and `compare`: the flags that
@@ -248,6 +259,52 @@ struct CompareArgs {
     from_dump: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct VerifyArgs {
+    /// PTX file to verify
+    file: PathBuf,
+
+    /// Kernel entry name (defaults to the first kernel in the module)
+    #[arg(short, long)]
+    kernel: Option<String>,
+
+    #[command(flatten)]
+    launch: LaunchArgs,
+
+    /// Matmul M (rows of A and C)
+    #[arg(long)]
+    m: u64,
+
+    /// Matmul N (columns of B and C)
+    #[arg(long)]
+    n: u64,
+
+    /// Matmul K (columns of A, rows of B)
+    #[arg(long)]
+    k: u64,
+
+    /// Check at most this many common elements of C (0 = all)
+    #[arg(long, default_value_t = 0)]
+    sample: u64,
+
+    /// Confirm every verdict with the f64 numeric oracle
+    #[arg(long)]
+    verify_numeric: bool,
+
+    /// Recycle the VC intern tables past this many interned terms (0 = never)
+    #[arg(long, default_value_t = DEFAULT_RECYCLE_TERMS)]
+    recycle_terms: usize,
+
+    /// Run the solve phase N times (fresh session each; verdict from
+    /// iteration 1, later iterations must agree)
+    #[arg(long, default_value_t = NonZeroUsize::MIN)]
+    iterations: NonZeroUsize,
+
+    /// Skip the per-instruction-kind execution profile (shown by default)
+    #[arg(long = "no-profile", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    profile: bool,
+}
+
 fn main() -> ExitCode {
     // Must precede everything: if this process was spawned as a z3
     // solver worker, this runs the query and exits (see volta_z3::ffi).
@@ -259,6 +316,7 @@ fn main() -> ExitCode {
         Commands::Parse { .. } => "parse",
         Commands::Analyze(_) => "analyze",
         Commands::Compare(_) => "compare",
+        Commands::Verify(_) => "verify",
     };
     let mut log = run_log::RunLog::open(&cli.log_dir, command_name, cli.no_log_file);
 
@@ -274,6 +332,7 @@ fn main() -> ExitCode {
         Commands::Parse { file } => cmd_parse(&file),
         Commands::Analyze(args) => cmd_analyze(args, &mut log),
         Commands::Compare(args) => cmd_compare(args, &mut log),
+        Commands::Verify(args) => cmd_verify(args, &mut log),
     };
 
     if let Some(path) = log.path() {
@@ -812,6 +871,184 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 }
 
+/// The hardcoded matmul spec: `C[i,j] = sum_k A[i,k] * B[k,j]` over arrays
+/// literally named "A" (M x K), "B" (K x N), "C" (M x N). Stand-in for a
+/// real spec-parsing frontend (see `volta_analysis::spec`'s docs) - the
+/// AST and array names are fixed here until that lands.
+///
+/// `sample` caps each output element list to its first `sample` indices
+/// (0 = all) - see `spec::unfold`'s docs. A caller checking a sampled
+/// footprint must truncate the kernel's own analyzed output the same way
+/// before pairing (see `cmd_verify`).
+fn matmul_spec(m: u64, n: u64, k: u64, sample: u64) -> Result<AnalysisOutput, SpecError> {
+    let body = SpecExpr::sum(
+        "k",
+        Bound::Named("K".to_string()),
+        SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("k")])
+            * SpecExpr::index("B", vec![IndexExpr::var("k"), IndexExpr::var("j")]),
+    );
+    let specs = vec![OutputSpec {
+        array: "C".to_string(),
+        shape: Shape::new(vec![m, n]),
+        vars: vec!["i".to_string(), "j".to_string()],
+        body,
+    }];
+    let env = SpecEnv {
+        dims: HashMap::from([("K".to_string(), k)]),
+        arrays: HashMap::from([
+            ("A".to_string(), Shape::new(vec![m, k])),
+            ("B".to_string(), Shape::new(vec![k, n])),
+        ]),
+    };
+    unfold(&specs, &env, sample)
+}
+
+fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
+    let module = match load_module(&args.file) {
+        Ok(m) => m,
+        Err(code) => return code,
+    };
+
+    let config = match build_config(ConfigInput::from_launch(&args.launch)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Fail fast, before symbolic execution: the hardcoded spec always
+    // checks an array named "C".
+    if !config
+        .arrays
+        .iter()
+        .any(|a| a.kind.is_output() && a.name == "C")
+    {
+        eprintln!(
+            "error: verify requires a declared output array named 'C' \
+             (the hardcoded matmul spec checks that name)"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let start = Instant::now();
+    let mut kernel_output = match analyze_kernel(&module, args.kernel.as_deref(), config) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            log.record(&format!("verify {}: FAILED: {}", args.file.display(), e));
+            return ExitCode::FAILURE;
+        }
+    };
+    let exec_secs = start.elapsed().as_secs_f64();
+
+    if args.profile {
+        let _ = write_op_counts(
+            &mut std::io::stdout().lock(),
+            "instruction",
+            &kernel_output.op_counts,
+        );
+    }
+    println!(
+        "Exec: {:.3}s  instructions: {}  block syncs: {}  warp syncs: {}",
+        exec_secs,
+        kernel_output.stats.instructions,
+        kernel_output.stats.block_syncs,
+        kernel_output.stats.warp_syncs
+    );
+
+    // A real kernel's written footprint can be far larger than is
+    // practical to unroll a Sum-heavy spec over (e.g. one row of a
+    // 4096-cubed matmul is already a 4096-term sum per element), so
+    // --sample also caps *generation*, not just the decision-check phase:
+    // truncate the kernel's own "C" elements to the same ascending-order
+    // prefix `matmul_spec` will build, so the two sides still pair up.
+    if args.sample > 0
+        && let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == "C")
+    {
+        elems.truncate(args.sample as usize);
+    }
+
+    let spec_output = match matmul_spec(args.m, args.n, args.k, args.sample) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: building matmul spec: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let options = EquivCheckOptions {
+        sample: args.sample,
+        verify_numeric: args.verify_numeric,
+        recycle_terms: args.recycle_terms,
+        iterations: args.iterations,
+    };
+    let check_arrays = ["C".to_string()];
+    let vc_start = Instant::now();
+    let report =
+        check_output_equivalence_with(&kernel_output, &spec_output, &check_arrays, &options);
+    let vc_secs = vc_start.elapsed().as_secs_f64();
+
+    match report {
+        Ok(report) => {
+            let elems = if report.elements_checked == report.elements_total {
+                format!("{}", report.elements_total)
+            } else {
+                format!("{}/{}", report.elements_checked, report.elements_total)
+            };
+            println!(
+                "VC check: {:.3}s (decision procedure {:.3}s)  elements: {}",
+                vc_secs,
+                report.check_time().as_secs_f64(),
+                elems
+            );
+            if report.check_iters.len() > 1 {
+                let per_iter: Vec<String> = report
+                    .check_iters
+                    .iter()
+                    .map(|d| format!("{:.3}", d.as_secs_f64()))
+                    .collect();
+                println!(
+                    "  decision procedure iterations (s): [{}]",
+                    per_iter.join(", ")
+                );
+            }
+            match report.outcome {
+                EquivOutcome::Equivalent => {
+                    println!("EQUIVALENT (matches matmul spec)");
+                    log.record(&format!(
+                        "verify: EQUIVALENT ({} elements, exec {:.3}s, vc {:.3}s)",
+                        elems, exec_secs, vc_secs
+                    ));
+                    ExitCode::SUCCESS
+                }
+                EquivOutcome::NotEquivalent { mismatches } => {
+                    println!(
+                        "NOT EQUIVALENT: {} mismatched element(s) vs matmul spec",
+                        mismatches.len()
+                    );
+                    for m in mismatches.iter().take(10) {
+                        println!("  {}[{}]", m.array, m.index);
+                    }
+                    if mismatches.len() > 10 {
+                        println!("  ... ({} more)", mismatches.len() - 10);
+                    }
+                    log.record(&format!(
+                        "verify: NOT EQUIVALENT, {} mismatches",
+                        mismatches.len()
+                    ));
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            log.record(&format!("verify: FAILED: {}", e));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Load and parse a module, reporting errors nicely.
 fn load_module(file: &Path) -> Result<Module, ExitCode> {
     let mut files = FileCache::new();
@@ -946,6 +1183,28 @@ mod tests {
         assert!(Cli::try_parse_from(without).is_err());
         let with = ["volta", "compare", "a.ptx", "b.ptx", "--check-array", "out"];
         assert!(Cli::try_parse_from(with).is_ok());
+    }
+
+    #[test]
+    fn verify_requires_matmul_dims() {
+        // --m/--n/--k have no sensible default while the spec is
+        // hardcoded to matmul, so clap must reject a run missing any of
+        // them rather than silently defaulting to 0.
+        let without = ["volta", "verify", "a.ptx"];
+        assert!(Cli::try_parse_from(without).is_err());
+        let with = [
+            "volta", "verify", "a.ptx", "--m", "2", "--n", "2", "--k", "3",
+        ];
+        assert!(Cli::try_parse_from(with).is_ok());
+    }
+
+    #[test]
+    fn matmul_spec_shapes_match_declared_dims() {
+        let output = matmul_spec(2, 2, 3, 0).unwrap();
+        assert_eq!(output.outputs.len(), 1);
+        let (name, elems) = &output.outputs[0];
+        assert_eq!(name, "C");
+        assert_eq!(elems.len(), 4);
     }
 
     #[test]
