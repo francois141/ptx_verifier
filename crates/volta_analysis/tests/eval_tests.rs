@@ -936,6 +936,35 @@ fn test_bfe_extract_and_sign_fill() {
     assert_eq!(display_output(&output, "out", 3), "0");
 }
 
+#[test]
+fn test_mov_vector_destination_unpack_values() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    // 0x1234ABCD: lo 16 bits = 0xABCD = 43981, hi 16 bits = 0x1234 = 4660.
+    mov.u32 %r1, 0x1234ABCD;
+    mov.b32 {%rs1, %rs2}, %r1;
+    st.global.u16 [%rd1], %rs1;
+    st.global.u16 [%rd1+2], %rs2;
+
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, out_only_config(2, 2)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "43981");
+    assert_eq!(display_output(&output, "out", 1), "4660");
+}
+
 /// Output-only config: one `out` array of `len` `elem_width`-byte
 /// elements, passed as the kernel's single parameter.
 fn out_only_config(elem_width: u64, len: u64) -> AnalysisConfig {

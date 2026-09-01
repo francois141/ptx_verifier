@@ -1467,8 +1467,60 @@ fn lower_parsed_instruction(
         // Data Movement - Mov
         // =========================================================================
         ParsedInstruction::Mov(mov) => {
-            match &mov.src {
-                AstOperand::Vector(elements) if elements.len() == 2 => {
+            match (&mov.dst, &mov.src) {
+                (AstOperand::Vector(_), AstOperand::Vector(_)) => {
+                    return Err(LowerError::UnsupportedInstruction {
+                        instruction: format!("mov.{:?} (vector-to-vector)", mov.ty),
+                        reason: Some(
+                            "vector destination and vector source together are not supported"
+                                .to_string(),
+                        ),
+                    });
+                }
+                (AstOperand::Vector(dst_elems), _) if dst_elems.len() == 2 => {
+                    // Scalar-to-vector unpack: mov.bN {lo, hi}, src
+                    let elem_width = mov.ty.bits() / 2;
+                    let mask = (1i64 << elem_width) - 1;
+
+                    let lo_reg = ctx.resolve_dst(&dst_elems[0])?;
+                    let hi_reg = ctx.resolve_dst(&dst_elems[1])?;
+                    let src = ctx.resolve_operand(&mov.src)?;
+
+                    ctx.emit(
+                        LoweredInstr::BinOp {
+                            op: BinOp::And,
+                            dst: lo_reg,
+                            src_a: src,
+                            src_b: Operand::ImmI64(mask),
+                            ty: mov.ty,
+                            clamp: None,
+                        },
+                        predicate,
+                    )?;
+
+                    ctx.emit(
+                        LoweredInstr::BinOp {
+                            op: BinOp::Shr,
+                            dst: hi_reg,
+                            src_a: src,
+                            src_b: Operand::ImmI64(elem_width as i64),
+                            ty: mov.ty,
+                            clamp: None,
+                        },
+                        predicate,
+                    )?;
+                }
+                (AstOperand::Vector(dst_elems), _) => {
+                    return Err(LowerError::UnsupportedInstruction {
+                        instruction: format!(
+                            "mov.{:?} (vector unpack with {} elements)",
+                            mov.ty,
+                            dst_elems.len()
+                        ),
+                        reason: Some("only 2-element vector unpack is supported".to_string()),
+                    });
+                }
+                (_, AstOperand::Vector(elements)) if elements.len() == 2 => {
                     // Vector-to-scalar pack: mov.bN dst, {lo, hi}
                     // PTX ISA 9.7.9.4 semantics: d = lo | (hi << w)
                     // where w = type_bits / 2
@@ -1505,7 +1557,7 @@ fn lower_parsed_instruction(
                         predicate,
                     )?;
                 }
-                AstOperand::Vector(elements) => {
+                (_, AstOperand::Vector(elements)) => {
                     return Err(LowerError::UnsupportedInstruction {
                         instruction: format!(
                             "mov.{:?} (vector pack with {} elements)",
@@ -5066,6 +5118,33 @@ mod tests {
         assert_rejected("max.u16x2 %r1, %r2, %r3;", "packed SIMD");
         assert_rejected("neg.ftz.f16x2 %r1, %r2;", "packed SIMD");
         assert_rejected("fma.rn.f16x2 %r1, %r2, %r3, %r4;", "packed SIMD");
+    }
+
+    #[test]
+    fn test_mov_vector_destination_unpack() {
+        // The unpack direction (vector destination): mov.b32 {lo, hi}, src -
+        // the mirror image of the already-supported pack direction (vector
+        // source) tested via test_mov_vector_source_pack below.
+        assert_lowers("mov.b32 {%rs1, %rs2}, %r1;");
+        assert_lowers("mov.b64 {%r1, %r2}, %rd1;");
+        // >2-element unpack and vector-to-vector mov stay unsupported - no
+        // faithful model, and the corpus never emits either.
+        assert_rejected("mov.b32 {%rs1, %rs2, %rs3}, %r1;", "2-element vector unpack");
+        assert_rejected(
+            "mov.b32 {%rs1, %rs2}, {%rs3, %rs4};",
+            "vector destination and vector source together",
+        );
+    }
+
+    #[test]
+    fn test_mov_vector_source_pack() {
+        // The pack direction (vector source): mov.b32 dst, {lo, hi}.
+        assert_lowers("mov.b32 %r1, {%rs1, %rs2};");
+        assert_lowers("mov.b64 %rd1, {%r1, %r2};");
+        assert_rejected(
+            "mov.b32 %r1, {%rs1, %rs2, %rs3};",
+            "2-element vector pack",
+        );
     }
 
     #[test]
