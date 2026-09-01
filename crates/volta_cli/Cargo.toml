@@ -15,6 +15,7 @@ logging = ["volta_analysis/logging", "dep:env_logger", "dep:log"]
 volta_analysis.workspace = true
 volta_common.workspace = true
 volta_frontend.workspace = true
+volta_spec.workspace = true
 volta_z3.workspace = true
 
 anyhow.workspace = true

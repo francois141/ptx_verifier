@@ -1,0 +1,8 @@
+[package]
+name = "volta_spec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volta_analysis.workspace = true
+volta_common.workspace = true

@@ -150,6 +150,10 @@ pub enum SpecExpr {
     Neg(Box<SpecExpr>),
     Min(Box<SpecExpr>, Box<SpecExpr>),
     Max(Box<SpecExpr>, Box<SpecExpr>),
+    Exp(Box<SpecExpr>),
+    Log(Box<SpecExpr>),
+    Sqrt(Box<SpecExpr>),
+    Abs(Box<SpecExpr>),
     /// `sum_{var=0}^{bound-1} body`, unrolled into `bound` additions.
     Sum {
         var: String,
@@ -184,6 +188,22 @@ impl SpecExpr {
 
     pub fn max(self, other: Self) -> Self {
         SpecExpr::Max(Box::new(self), Box::new(other))
+    }
+
+    pub fn exp(self) -> Self {
+        SpecExpr::Exp(Box::new(self))
+    }
+
+    pub fn log(self) -> Self {
+        SpecExpr::Log(Box::new(self))
+    }
+
+    pub fn sqrt(self) -> Self {
+        SpecExpr::Sqrt(Box::new(self))
+    }
+
+    pub fn abs(self) -> Self {
+        SpecExpr::Abs(Box::new(self))
     }
 
     pub fn sum(var: impl Into<String>, bound: impl Into<Bound>, body: Self) -> Self {
@@ -388,15 +408,33 @@ fn resolve_bound(bound: &Bound, env: &SpecEnv) -> Result<u64, SpecError> {
     }
 }
 
-fn eval_index(expr: &IndexExpr, bindings: &HashMap<String, u64>) -> Result<u64, SpecError> {
+/// Resolve a bare name in expression/index position: a bound variable
+/// (an output index or a `Sum`'s loop variable) takes precedence, falling
+/// back to a `dim`'s concrete value so e.g. `sum(...) / N` can reference a
+/// declared `dim` directly instead of requiring its value hardcoded as a
+/// literal at every call site.
+fn resolve_var(
+    name: &str,
+    env: &SpecEnv,
+    bindings: &HashMap<String, u64>,
+) -> Result<u64, SpecError> {
+    bindings
+        .get(name)
+        .copied()
+        .or_else(|| env.dims.get(name).copied())
+        .ok_or_else(|| SpecError::UnboundVar(name.to_string()))
+}
+
+fn eval_index(
+    expr: &IndexExpr,
+    env: &SpecEnv,
+    bindings: &HashMap<String, u64>,
+) -> Result<u64, SpecError> {
     match expr {
         IndexExpr::Int(v) => Ok(*v),
-        IndexExpr::Var(name) => bindings
-            .get(name)
-            .copied()
-            .ok_or_else(|| SpecError::UnboundVar(name.clone())),
-        IndexExpr::Add(a, b) => Ok(eval_index(a, bindings)? + eval_index(b, bindings)?),
-        IndexExpr::Mul(a, b) => Ok(eval_index(a, bindings)? * eval_index(b, bindings)?),
+        IndexExpr::Var(name) => resolve_var(name, env, bindings),
+        IndexExpr::Add(a, b) => Ok(eval_index(a, env, bindings)? + eval_index(b, env, bindings)?),
+        IndexExpr::Mul(a, b) => Ok(eval_index(a, env, bindings)? * eval_index(b, env, bindings)?),
     }
 }
 
@@ -421,10 +459,7 @@ fn eval(
         SpecExpr::Int(v) => Ok(arena.int(*v)),
         SpecExpr::Real(v) => Ok(arena.float_from_f64(*v)?),
         SpecExpr::Var(name) => {
-            let v = bindings
-                .get(name)
-                .copied()
-                .ok_or_else(|| SpecError::UnboundVar(name.clone()))?;
+            let v = resolve_var(name, env, bindings)?;
             Ok(arena.int(v as i64))
         }
         SpecExpr::Index { array, indices } => {
@@ -441,7 +476,7 @@ fn eval(
             }
             let idx: Vec<u64> = indices
                 .iter()
-                .map(|e| eval_index(e, bindings))
+                .map(|e| eval_index(e, env, bindings))
                 .collect::<Result<_, _>>()?;
             if idx.iter().zip(shape.dims()).any(|(&i, &d)| i >= d) {
                 return Err(SpecError::IndexOutOfBounds {
@@ -499,6 +534,22 @@ fn eval(
                 eval(b, env, bindings, arena, array_ids)?,
             );
             Ok(arena.max(a, b))
+        }
+        SpecExpr::Exp(a) => {
+            let a = eval(a, env, bindings, arena, array_ids)?;
+            Ok(arena.exp(a))
+        }
+        SpecExpr::Log(a) => {
+            let a = eval(a, env, bindings, arena, array_ids)?;
+            Ok(arena.log(a))
+        }
+        SpecExpr::Sqrt(a) => {
+            let a = eval(a, env, bindings, arena, array_ids)?;
+            Ok(arena.sqrt(a))
+        }
+        SpecExpr::Abs(a) => {
+            let a = eval(a, env, bindings, arena, array_ids)?;
+            Ok(arena.abs(a))
         }
         SpecExpr::Sum { var, bound, body } => {
             let n = resolve_bound(bound, env)?;
@@ -636,5 +687,86 @@ mod tests {
             unfold(&specs, &env, 0),
             Err(SpecError::IndexOutOfBounds { .. })
         ));
+    }
+
+    /// A `dim`'s concrete value must be usable directly as a plain
+    /// numeric value in an expression body (e.g. a mean's divisor), not
+    /// just as a `Sum` bound or an array's shape dimension - regression
+    /// test for the gap where `SpecExpr::Var`/`IndexExpr::Var` only
+    /// checked `bindings` and never fell back to `SpecEnv::dims`.
+    #[test]
+    fn dim_value_is_usable_directly_in_an_expression() {
+        // mean[i] = sum(j in 0..N, A[i,j]) / N
+        let body = SpecExpr::sum(
+            "j",
+            Bound::Named("N".to_string()),
+            SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("j")]),
+        ) / SpecExpr::var("N");
+        let specs = vec![OutputSpec {
+            array: "mean".to_string(),
+            shape: Shape::new(vec![2]),
+            vars: vec!["i".to_string()],
+            body,
+        }];
+        let env = SpecEnv {
+            dims: HashMap::from([("N".to_string(), 4)]),
+            arrays: HashMap::from([("A".to_string(), Shape::new(vec![2, 4]))]),
+        };
+        let output = unfold(&specs, &env, 0).unwrap();
+
+        let mut hand_arena = ExprArena::new();
+        let a = hand_arena.intern_string("A");
+        let mut elems = Vec::new();
+        for i in 0u64..2 {
+            let mut acc = hand_arena.int(0);
+            for j in 0u64..4 {
+                let term = hand_arena.input_element(a, i * 4 + j);
+                acc = hand_arena.add(acc, term);
+            }
+            let n = hand_arena.int(4);
+            elems.push((i, hand_arena.div(acc, n)));
+        }
+        let hand_built = AnalysisOutput {
+            arena: hand_arena,
+            outputs: vec![("mean".to_string(), elems)],
+            stats: Stats::default(),
+            op_counts: Default::default(),
+        };
+
+        let report = check_output_equivalence_with(
+            &output,
+            &hand_built,
+            &["mean".to_string()],
+            &EquivCheckOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(report.outcome, EquivOutcome::Equivalent));
+    }
+
+    /// Sanity check for the transcendental variants added for the spec
+    /// grammar's builtin functions (`exp`/`log`/`sqrt`/`abs`): the
+    /// unfolded tree must land on the matching arena node.
+    #[test]
+    fn transcendental_ops_unfold_to_the_matching_arena_node() {
+        use crate::symbolic::ExprNode;
+        let body = SpecExpr::index("A", vec![IndexExpr::var("i")])
+            .exp()
+            .log()
+            .sqrt()
+            .abs();
+        let specs = vec![OutputSpec {
+            array: "C".to_string(),
+            shape: Shape::new(vec![1]),
+            vars: vec!["i".to_string()],
+            body,
+        }];
+        let env = SpecEnv {
+            dims: HashMap::new(),
+            arrays: HashMap::from([("A".to_string(), Shape::new(vec![1]))]),
+        };
+        let output = unfold(&specs, &env, 0).unwrap();
+        let (_, elems) = &output.outputs[0];
+        let (_, id) = elems[0];
+        assert!(matches!(output.arena.node(id), ExprNode::Abs(_)));
     }
 }

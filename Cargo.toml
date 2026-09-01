@@ -11,6 +11,7 @@ volta_analysis = { path = "./crates/volta_analysis" }
 volta_bench = { path = "./crates/volta_bench" }
 volta_common = { path = "./crates/volta_common" }
 volta_frontend = { path = "./crates/volta_frontend" }
+volta_spec = { path = "./crates/volta_spec" }
 volta_z3 = { path = "./crates/volta_z3" }
 
 anyhow = "1.0"

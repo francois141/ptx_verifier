@@ -672,6 +672,7 @@ dependencies = [
  "volta_analysis",
  "volta_common",
  "volta_frontend",
+ "volta_spec",
  "volta_z3",
 ]
 
@@ -687,6 +688,14 @@ dependencies = [
 name = "volta_frontend"
 version = "0.1.0"
 dependencies = [
+ "volta_common",
+]
+
+[[package]]
+name = "volta_spec"
+version = "0.1.0"
+dependencies = [
+ "volta_analysis",
  "volta_common",
 ]
 

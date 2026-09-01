@@ -21,9 +21,7 @@ use volta_analysis::driver::{
 };
 use volta_analysis::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
-use volta_analysis::spec::{
-    Bound, IndexExpr, OutputSpec, Shape, SpecEnv, SpecError, SpecExpr, unfold,
-};
+use volta_analysis::spec::unfold;
 use volta_common::run_log;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::{Module, TopLevelItem};
@@ -112,9 +110,11 @@ enum Commands {
     Compare(CompareArgs),
 
     /// Check one kernel against a math specification (also checked for
-    /// data races/deadlocks). The spec is hardcoded to matmul for now -
-    /// `C[i,j] = sum_k A[i,k] * B[k,j]` over arrays literally named "A",
-    /// "B", "C" - proper spec parsing is future work.
+    /// data races/deadlocks). SPEC is a path to a `.spec` file, or
+    /// inline spec source (tried as a file path first; if no such file
+    /// exists, parsed as spec text directly) - see `volta_spec`'s docs
+    /// for the grammar. Every array the spec defines an output equation
+    /// for must be a declared output array of the kernel.
     Verify(VerifyArgs),
 }
 
@@ -268,22 +268,20 @@ struct VerifyArgs {
     #[arg(short, long)]
     kernel: Option<String>,
 
+    /// Path to a .spec file, or inline spec source (e.g.
+    /// "dim N; array A[N]; array C[N]; C[i] = A[i];"). Tried as a file
+    /// path first; if no such file exists, parsed directly as spec text.
+    spec: String,
+
     #[command(flatten)]
     launch: LaunchArgs,
 
-    /// Matmul M (rows of A and C)
-    #[arg(long)]
-    m: u64,
+    /// Concrete value for a spec `dim`: "NAME=VALUE" (hex with a 0x
+    /// prefix). Repeatable - one per `dim` the spec declares.
+    #[arg(long = "dim", value_name = "NAME=VALUE")]
+    dims: Vec<String>,
 
-    /// Matmul N (columns of B and C)
-    #[arg(long)]
-    n: u64,
-
-    /// Matmul K (columns of A, rows of B)
-    #[arg(long)]
-    k: u64,
-
-    /// Check at most this many common elements of C (0 = all)
+    /// Check at most this many common elements per output array (0 = all)
     #[arg(long, default_value_t = 0)]
     sample: u64,
 
@@ -871,36 +869,26 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 }
 
-/// The hardcoded matmul spec: `C[i,j] = sum_k A[i,k] * B[k,j]` over arrays
-/// literally named "A" (M x K), "B" (K x N), "C" (M x N). Stand-in for a
-/// real spec-parsing frontend (see `volta_analysis::spec`'s docs) - the
-/// AST and array names are fixed here until that lands.
-///
-/// `sample` caps each output element list to its first `sample` indices
-/// (0 = all) - see `spec::unfold`'s docs. A caller checking a sampled
-/// footprint must truncate the kernel's own analyzed output the same way
-/// before pairing (see `cmd_verify`).
-fn matmul_spec(m: u64, n: u64, k: u64, sample: u64) -> Result<AnalysisOutput, SpecError> {
-    let body = SpecExpr::sum(
-        "k",
-        Bound::Named("K".to_string()),
-        SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("k")])
-            * SpecExpr::index("B", vec![IndexExpr::var("k"), IndexExpr::var("j")]),
-    );
-    let specs = vec![OutputSpec {
-        array: "C".to_string(),
-        shape: Shape::new(vec![m, n]),
-        vars: vec!["i".to_string(), "j".to_string()],
-        body,
-    }];
-    let env = SpecEnv {
-        dims: HashMap::from([("K".to_string(), k)]),
-        arrays: HashMap::from([
-            ("A".to_string(), Shape::new(vec![m, k])),
-            ("B".to_string(), Shape::new(vec![k, n])),
-        ]),
-    };
-    unfold(&specs, &env, sample)
+/// Resolve the `verify` command's `spec` argument: try it as a file path
+/// first (through `files` so a parse error can render a source snippet);
+/// if no such file exists, treat the argument itself as inline spec
+/// text. Any other I/O error (permission denied, is a directory, ...) is
+/// reported directly rather than silently falling through to the inline
+/// interpretation - only a missing file does that.
+fn load_spec_source(files: &mut FileCache, arg: &str) -> Result<(String, Option<PathBuf>), String> {
+    match files.read(arg) {
+        Ok(contents) => Ok((contents.to_string(), Some(PathBuf::from(arg)))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((arg.to_string(), None)),
+        Err(e) => Err(format!("failed to read spec file '{}': {}", arg, e)),
+    }
+}
+
+/// Parse "NAME=VALUE" (hex with a 0x prefix, via `parse_u64_value`).
+fn parse_dim(s: &str) -> Result<(String, u64), String> {
+    let (name, value) = s
+        .split_once('=')
+        .ok_or_else(|| format!("invalid --dim (expected NAME=VALUE): {}", s))?;
+    Ok((name.to_string(), parse_u64_value(value)?))
 }
 
 fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
@@ -908,6 +896,70 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         Ok(m) => m,
         Err(code) => return code,
     };
+
+    let mut spec_files = FileCache::new();
+    let (spec_src, spec_path) = match load_spec_source(&mut spec_files, &args.spec) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let parsed_spec = match volta_spec::parse_spec(&spec_src) {
+        Ok(s) => s,
+        Err(e) => {
+            if spec_path.is_none() {
+                eprintln!(
+                    "note: '{}' is not an existing file, so it was parsed as inline spec text",
+                    args.spec
+                );
+            }
+            let _ = report_error(
+                &mut std::io::stderr(),
+                &spec_files,
+                Report {
+                    path: spec_path.as_deref(),
+                    span: e.span,
+                    title: "spec parse error",
+                    message: Some(&e.error.to_string()),
+                },
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut dim_values = HashMap::with_capacity(args.dims.len());
+    for d in &args.dims {
+        match parse_dim(d) {
+            Ok((name, value)) => {
+                dim_values.insert(name, value);
+            }
+            Err(e) => {
+                eprintln!("error: {}", e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let (env, specs) = match volta_spec::instantiate(&parsed_spec, &dim_values) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The arrays to check: every array the spec defines an output
+    // equation for, in declaration order.
+    let mut check_arrays: Vec<String> = Vec::new();
+    for o in &parsed_spec.outputs {
+        if !check_arrays.contains(&o.array) {
+            check_arrays.push(o.array.clone());
+        }
+    }
+    if check_arrays.is_empty() {
+        eprintln!("error: spec declares no output equations to check");
+        return ExitCode::FAILURE;
+    }
 
     let config = match build_config(ConfigInput::from_launch(&args.launch)) {
         Ok(c) => c,
@@ -917,18 +969,20 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         }
     };
 
-    // Fail fast, before symbolic execution: the hardcoded spec always
-    // checks an array named "C".
-    if !config
-        .arrays
-        .iter()
-        .any(|a| a.kind.is_output() && a.name == "C")
-    {
-        eprintln!(
-            "error: verify requires a declared output array named 'C' \
-             (the hardcoded matmul spec checks that name)"
-        );
-        return ExitCode::FAILURE;
+    // Fail fast, before symbolic execution: every array the spec checks
+    // must be a declared output array of the kernel under this config.
+    for name in &check_arrays {
+        if !config
+            .arrays
+            .iter()
+            .any(|a| a.kind.is_output() && &a.name == name)
+        {
+            eprintln!(
+                "error: verify requires a declared output array named '{}' (the spec defines it)",
+                name
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     let start = Instant::now();
@@ -961,18 +1015,20 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
     // practical to unroll a Sum-heavy spec over (e.g. one row of a
     // 4096-cubed matmul is already a 4096-term sum per element), so
     // --sample also caps *generation*, not just the decision-check phase:
-    // truncate the kernel's own "C" elements to the same ascending-order
-    // prefix `matmul_spec` will build, so the two sides still pair up.
-    if args.sample > 0
-        && let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == "C")
-    {
-        elems.truncate(args.sample as usize);
+    // truncate the kernel's own elements to the same ascending-order
+    // prefix `unfold` will build, so the two sides still pair up.
+    if args.sample > 0 {
+        for name in &check_arrays {
+            if let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == name) {
+                elems.truncate(args.sample as usize);
+            }
+        }
     }
 
-    let spec_output = match matmul_spec(args.m, args.n, args.k, args.sample) {
+    let spec_output = match unfold(&specs, &env, args.sample) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("error: building matmul spec: {}", e);
+            eprintln!("error: building spec: {}", e);
             return ExitCode::FAILURE;
         }
     };
@@ -983,7 +1039,6 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         recycle_terms: args.recycle_terms,
         iterations: args.iterations,
     };
-    let check_arrays = ["C".to_string()];
     let vc_start = Instant::now();
     let report =
         check_output_equivalence_with(&kernel_output, &spec_output, &check_arrays, &options);
@@ -1015,7 +1070,7 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
             }
             match report.outcome {
                 EquivOutcome::Equivalent => {
-                    println!("EQUIVALENT (matches matmul spec)");
+                    println!("EQUIVALENT (matches spec)");
                     log.record(&format!(
                         "verify: EQUIVALENT ({} elements, exec {:.3}s, vc {:.3}s)",
                         elems, exec_secs, vc_secs
@@ -1024,7 +1079,7 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
                 }
                 EquivOutcome::NotEquivalent { mismatches } => {
                     println!(
-                        "NOT EQUIVALENT: {} mismatched element(s) vs matmul spec",
+                        "NOT EQUIVALENT: {} mismatched element(s) vs spec",
                         mismatches.len()
                     );
                     for m in mismatches.iter().take(10) {
@@ -1186,25 +1241,38 @@ mod tests {
     }
 
     #[test]
-    fn verify_requires_matmul_dims() {
-        // --m/--n/--k have no sensible default while the spec is
-        // hardcoded to matmul, so clap must reject a run missing any of
-        // them rather than silently defaulting to 0.
+    fn verify_requires_a_spec_argument() {
         let without = ["volta", "verify", "a.ptx"];
         assert!(Cli::try_parse_from(without).is_err());
-        let with = [
-            "volta", "verify", "a.ptx", "--m", "2", "--n", "2", "--k", "3",
-        ];
+        let with = ["volta", "verify", "a.ptx", "C[i] = A[i];", "--dim", "N=4"];
         assert!(Cli::try_parse_from(with).is_ok());
     }
 
     #[test]
-    fn matmul_spec_shapes_match_declared_dims() {
-        let output = matmul_spec(2, 2, 3, 0).unwrap();
-        assert_eq!(output.outputs.len(), 1);
-        let (name, elems) = &output.outputs[0];
-        assert_eq!(name, "C");
-        assert_eq!(elems.len(), 4);
+    fn parse_dim_splits_name_and_value() {
+        assert_eq!(parse_dim("K=4096").unwrap(), ("K".to_string(), 4096));
+        assert_eq!(parse_dim("K=0x10").unwrap(), ("K".to_string(), 16));
+        assert!(parse_dim("K").is_err());
+    }
+
+    #[test]
+    fn load_spec_source_falls_back_to_inline_text_when_no_such_file() {
+        let mut files = FileCache::new();
+        let (src, path) = load_spec_source(&mut files, "C[i] = A[i];").unwrap();
+        assert_eq!(src, "C[i] = A[i];");
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn load_spec_source_reads_an_existing_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("volta_cli_test_{}.spec", std::process::id()));
+        std::fs::write(&path, "dim N;\narray A[N];\nC[i] = A[i];").unwrap();
+        let mut files = FileCache::new();
+        let (src, resolved) = load_spec_source(&mut files, path.to_str().unwrap()).unwrap();
+        assert!(src.contains("dim N;"));
+        assert_eq!(resolved, Some(path.clone()));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
