@@ -1000,6 +1000,63 @@ fn test_cvt_pack_halves_values() {
     assert_eq!(display_output(&output, "out", 1), "1.5"); // high half: a
 }
 
+#[test]
+fn test_mov_unpack_native_pair_source() {
+    // `ld.global.b32` over a 2-byte-elem_width array produces a native
+    // `Value::Pair` (per `eval/memory.rs`'s granule combining). The
+    // subsequent `mov.b32 {lo,hi}, %r1` unpack must distribute that pair's
+    // two real-valued halves directly rather than reinterpreting them as an
+    // opaque 32-bit integer to bit-mask/shift - the idiom nvcc/Triton emit
+    // for every f16 elementwise kernel in the paper corpus (staging a
+    // 4-byte `ld`/`st` through shared memory, then unpacking to operate on
+    // each f16 lane).
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.b32 %r1, [%rd1];
+    mov.b32 {%rs1, %rs2}, %r1;
+    st.global.u16 [%rd2], %rs1;
+    st.global.u16 [%rd2+2], %rs2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).expect("pair unpack analysis");
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+    assert_eq!(display_output(&output, "out", 1), "in[1]");
+}
+
 /// Output-only config: one `out` array of `len` `elem_width`-byte
 /// elements, passed as the kernel's single parameter.
 fn out_only_config(elem_width: u64, len: u64) -> AnalysisConfig {

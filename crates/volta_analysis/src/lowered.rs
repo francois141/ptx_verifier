@@ -444,6 +444,22 @@ pub enum LoweredInstr {
         src_ty: ScalarType,
     },
 
+    /// Vector-destination unpack: `mov.bN {lo, hi}, src`. `src`'s *runtime*
+    /// value kind decides the semantics, which lowering cannot know
+    /// statically: a `Value::Pair` (e.g. a native packed-f16 granule read
+    /// straight out of memory) distributes its two real-valued halves
+    /// directly, matching every other packed-f16 producer/consumer
+    /// (`CvtPackHalves`, `eval/memory.rs`'s granule combining) - never
+    /// bit-encoded; a `Value::Scalar` falls back to the bitwise `And`/`Shr`
+    /// decomposition this used to always emit.
+    UnpackHalves {
+        lo: RegId,
+        hi: RegId,
+        src: Operand,
+        /// The `mov`'s full-width type (e.g. `B32` for a 2x16 unpack).
+        ty: ScalarType,
+    },
+
     // =========================================================================
     // Control Flow
     // =========================================================================
@@ -643,6 +659,7 @@ define_instr_kinds!(
     Set,
     Cvt,
     CvtPackHalves,
+    UnpackHalves,
     Bra,
     Ret,
     Exit,
@@ -751,6 +768,7 @@ impl LoweredInstr {
             // Type conversion
             Self::Cvt { src, .. } => from_op(src).into_iter().collect(),
             Self::CvtPackHalves { src_hi, src_lo, .. } => from_ops(&[*src_hi, *src_lo]),
+            Self::UnpackHalves { src, .. } => from_op(src).into_iter().collect(),
 
             // Control flow
             Self::Bra { .. } | Self::Ret | Self::Exit | Self::Trap | Self::Nop => vec![],
@@ -855,6 +873,9 @@ impl LoweredInstr {
                 }
                 r
             }
+
+            // Unpack: two destinations
+            Self::UnpackHalves { lo, hi, .. } => vec![*lo, *hi],
 
             // No destination
             Self::Store { .. }

@@ -1122,6 +1122,30 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
             }
 
+            LoweredInstr::UnpackHalves { lo, hi, src, ty } => {
+                match self.operand_value(t, pc, src)? {
+                    // A native packed-f16 granule: the two halves are
+                    // already the real-valued elements, never bit-encoded
+                    // (matching `CvtPackHalves` and `eval/memory.rs`'s
+                    // granule combining) - distribute them directly.
+                    Value::Pair(lo_e, hi_e) => {
+                        self.threads[t].regs.write(*lo, Value::Scalar(lo_e));
+                        self.threads[t].regs.write(*hi, Value::Scalar(hi_e));
+                    }
+                    // A genuine scalar bit pattern: split it the way this
+                    // instruction always used to, via bitwise and/shift.
+                    Value::Scalar(e) => {
+                        let elem_width = ty.bits() / 2;
+                        let mask = self.arena.int((1i64 << elem_width) - 1);
+                        let shift = self.arena.int(elem_width as i64);
+                        let lo_v = self.eval_binop(t, pc, BinOp::And, *ty, e, mask)?;
+                        let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
+                        self.threads[t].regs.write(*lo, Value::Scalar(lo_v));
+                        self.threads[t].regs.write(*hi, Value::Scalar(hi_v));
+                    }
+                }
+            }
+
             LoweredInstr::Bra { target } => {
                 next_pc = *target;
             }

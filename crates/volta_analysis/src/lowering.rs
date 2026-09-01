@@ -1478,34 +1478,21 @@ fn lower_parsed_instruction(
                     });
                 }
                 (AstOperand::Vector(dst_elems), _) if dst_elems.len() == 2 => {
-                    // Scalar-to-vector unpack: mov.bN {lo, hi}, src
-                    let elem_width = mov.ty.bits() / 2;
-                    let mask = (1i64 << elem_width) - 1;
-
+                    // Scalar-to-vector unpack: mov.bN {lo, hi}, src. The
+                    // source's runtime value kind (plain scalar bits, or a
+                    // native packed-f16 `Value::Pair`) isn't known here, so
+                    // both cases are handled at eval time - see
+                    // `UnpackHalves`.
                     let lo_reg = ctx.resolve_dst(&dst_elems[0])?;
                     let hi_reg = ctx.resolve_dst(&dst_elems[1])?;
                     let src = ctx.resolve_operand(&mov.src)?;
 
                     ctx.emit(
-                        LoweredInstr::BinOp {
-                            op: BinOp::And,
-                            dst: lo_reg,
-                            src_a: src,
-                            src_b: Operand::ImmI64(mask),
+                        LoweredInstr::UnpackHalves {
+                            lo: lo_reg,
+                            hi: hi_reg,
+                            src,
                             ty: mov.ty,
-                            clamp: None,
-                        },
-                        predicate,
-                    )?;
-
-                    ctx.emit(
-                        LoweredInstr::BinOp {
-                            op: BinOp::Shr,
-                            dst: hi_reg,
-                            src_a: src,
-                            src_b: Operand::ImmI64(elem_width as i64),
-                            ty: mov.ty,
-                            clamp: None,
                         },
                         predicate,
                     )?;
