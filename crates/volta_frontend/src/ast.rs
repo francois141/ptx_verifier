@@ -2132,6 +2132,7 @@ pub enum CvtRounding {
 /// Cvt instruction with mutually exclusive forms:
 /// - Block 99: Standard conversions with various rounding modes
 /// - Block 100: Pack conversions `cvt.pack.sat.type d, a, b`
+/// - Two-source packed-half conversions `cvt.rnd.f16x2.f32 d, a, b`
 #[derive(Debug, Clone)]
 pub enum CvtInstr {
     /// Standard conversion: `cvt{.rnd}{.ftz}{.sat}{.relu}{.satfinite}.dtype.atype d, a`
@@ -2154,6 +2155,21 @@ pub enum CvtInstr {
         dst: Operand,
         src_a: Operand,
         src_b: Operand,
+    },
+    /// Two-source packed-half conversion: `cvt.rnd.f16x2.f32 d, a, b` /
+    /// `cvt.rnd.bf16x2.f32 d, a, b` - no `.pack` keyword; the packed `x2`
+    /// destination type alone signals the two-source form. Per the PTX
+    /// ISA, `a` converts into the *high* half of `d` and `b` into the
+    /// *low* half - the opposite convention from `mov.b32 d, {lo, hi}`'s
+    /// brace order, hence naming the fields `src_hi`/`src_lo` directly
+    /// rather than `src_a`/`src_b`.
+    PackHalves {
+        rnd: Option<CvtRounding>,
+        dst_type: ScalarType,
+        src_type: ScalarType,
+        dst: Operand,
+        src_hi: Operand,
+        src_lo: Operand,
     },
 }
 

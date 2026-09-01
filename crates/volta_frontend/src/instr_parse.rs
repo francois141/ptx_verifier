@@ -2959,21 +2959,67 @@ fn parse_cvt(
             None
         };
 
-        CvtInstr::Standard {
-            rnd,
-            ftz,
-            sat,
-            relu,
-            satfinite,
-            dst_type,
-            src_type,
-            dst,
-            src,
+        // A second source operand only makes sense for the two-source
+        // "convert and pack" form into a packed x2 destination - no
+        // `.pack` keyword, the destination type alone signals it (e.g.
+        // `cvt.rn.f16x2.f32 d, a, b`). Any other leftover operand is a
+        // genuine error, caught below.
+        match ops.next() {
+            None => CvtInstr::Standard {
+                rnd,
+                ftz,
+                sat,
+                relu,
+                satfinite,
+                dst_type,
+                src_type,
+                dst,
+                src,
+            },
+            Some(src_lo) if matches!(dst_type, ScalarType::F16x2 | ScalarType::Bf16x2) => {
+                if ftz {
+                    return Err(InstrParseError::InvalidModifierForType {
+                        modifier: "ftz",
+                        ty: dst_type,
+                    });
+                }
+                if sat {
+                    return Err(InstrParseError::InvalidModifierForType {
+                        modifier: "sat",
+                        ty: dst_type,
+                    });
+                }
+                if relu {
+                    return Err(InstrParseError::InvalidModifierForType {
+                        modifier: "relu",
+                        ty: dst_type,
+                    });
+                }
+                if satfinite {
+                    return Err(InstrParseError::InvalidModifierForType {
+                        modifier: "satfinite",
+                        ty: dst_type,
+                    });
+                }
+                CvtInstr::PackHalves {
+                    rnd,
+                    dst_type,
+                    src_type,
+                    dst,
+                    src_hi: src,
+                    src_lo,
+                }
+            }
+            Some(_) => {
+                return Err(InstrParseError::WrongOperandCount {
+                    expected: 2,
+                    got: operand_count,
+                });
+            }
         }
     };
 
-    // Leftover operands (e.g. `cvt.rn.f16x2.f32 d, a, b`) would otherwise be
-    // dropped silently.
+    // Leftover operands beyond what each form above already consumed.
     if ops.next().is_some() {
         return Err(InstrParseError::WrongOperandCount {
             expected: if pack { 3 } else { 2 },

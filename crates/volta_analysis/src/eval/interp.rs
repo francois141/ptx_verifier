@@ -1105,6 +1105,23 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, Value::Scalar(r));
             }
 
+            LoweredInstr::CvtPackHalves {
+                dst,
+                src_hi,
+                src_lo,
+                dst_half_ty,
+                src_ty,
+            } => {
+                // Each half converts independently (same identity-over-
+                // reals policy as `Cvt`), then packs as a `Value::Pair` -
+                // never bit-encoded, per every other packed-f16 producer.
+                let hi = self.scalar_operand(t, pc, src_hi)?;
+                let hi = self.eval_cvt(pc, *dst_half_ty, *src_ty, hi)?;
+                let lo = self.scalar_operand(t, pc, src_lo)?;
+                let lo = self.eval_cvt(pc, *dst_half_ty, *src_ty, lo)?;
+                self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+            }
+
             LoweredInstr::Bra { target } => {
                 next_pc = *target;
             }

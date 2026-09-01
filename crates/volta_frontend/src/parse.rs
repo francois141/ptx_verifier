@@ -4346,4 +4346,122 @@ DONE:
             parsed
         );
     }
+
+    // --- CvtInstr::PackHalves Strongly-Typed Tests ---
+
+    /// `cvt.rn.f16x2.f32 d, a, b` - no `.pack` keyword; the packed `x2`
+    /// destination type alone signals the two-source form. Per the PTX
+    /// ISA, the first source operand (`a`) converts into the *high* half
+    /// and the second (`b`) into the *low* half - the opposite convention
+    /// from `mov.b32 d, {lo, hi}`'s brace order.
+    #[test]
+    fn test_cvt_pack_halves_f16x2() {
+        let src = wrap_in_module(
+            ".reg .f32 %f<3>;
+    .reg .b32 %r<2>;
+    cvt.rn.f16x2.f32 %r0, %f1, %f2;",
+        );
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        match parsed {
+            ParsedInstruction::Cvt(CvtInstr::PackHalves {
+                dst_type,
+                src_type,
+                src_hi,
+                src_lo,
+                ..
+            }) => {
+                assert_eq!(dst_type, ScalarType::F16x2);
+                assert_eq!(src_type, ScalarType::F32);
+                assert!(
+                    matches!(&src_hi, Operand::Ident(name) if name.to_string() == "%f1"),
+                    "expected src_hi = %f1 (first operand), got {:?}",
+                    src_hi
+                );
+                assert!(
+                    matches!(&src_lo, Operand::Ident(name) if name.to_string() == "%f2"),
+                    "expected src_lo = %f2 (second operand), got {:?}",
+                    src_lo
+                );
+            }
+            _ => panic!("Expected CvtInstr::PackHalves, got {:?}", parsed),
+        }
+    }
+
+    #[test]
+    fn test_cvt_pack_halves_bf16x2() {
+        let src = wrap_in_module(
+            ".reg .f32 %f<3>;
+    .reg .b32 %r<2>;
+    cvt.rn.bf16x2.f32 %r0, %f1, %f2;",
+        );
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        match parsed {
+            ParsedInstruction::Cvt(CvtInstr::PackHalves { dst_type, .. }) => {
+                assert_eq!(dst_type, ScalarType::Bf16x2);
+            }
+            _ => panic!("Expected CvtInstr::PackHalves, got {:?}", parsed),
+        }
+    }
+
+    /// A plain single-source `f16x2` destination (no third operand) stays
+    /// on the ordinary `Standard` path - only a genuine third operand
+    /// signals the two-source pack form.
+    #[test]
+    fn test_cvt_f16x2_single_source_stays_standard() {
+        let src = wrap_in_module(
+            ".reg .b32 %r<3>;
+    cvt.f16x2.f16x2 %r0, %r1;",
+        );
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        let parsed = parse_instr(instr);
+        assert!(
+            matches!(parsed, ParsedInstruction::Cvt(CvtInstr::Standard { .. })),
+            "Expected CvtInstr::Standard, got {:?}",
+            parsed
+        );
+    }
+
+    /// `.sat`/`.ftz`/`.relu`/`.satfinite` are not modeled on the two-source
+    /// pack form - rejected loudly rather than silently dropped.
+    #[test]
+    fn test_cvt_pack_halves_rejects_unmodeled_modifiers() {
+        for src_instr in [
+            "cvt.rn.sat.f16x2.f32 %r0, %f1, %f2;",
+            "cvt.rn.ftz.f16x2.f32 %r0, %f1, %f2;",
+            "cvt.rn.relu.f16x2.f32 %r0, %f1, %f2;",
+        ] {
+            let src = wrap_in_module(&format!(".reg .f32 %f<3>;\n.reg .b32 %r<2>;\n{src_instr}"));
+            let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
+            let mut parser = Parser::new(ascii);
+            let module = parser
+                .parse_module()
+                .unwrap_or_else(|e| panic!("parse error for {:?}: {:?}", src_instr, e.error));
+            let instr = get_first_instruction(&module);
+            match &instr.op {
+                InstructionOp::Unparsed {
+                    kind,
+                    modifiers,
+                    operands,
+                } => {
+                    let result =
+                        crate::instr_parse::parse_instruction(*kind, modifiers.clone(), operands.clone());
+                    assert!(
+                        matches!(
+                            result,
+                            Err(crate::instr_parse::InstrParseError::InvalidModifierForType { .. })
+                        ),
+                        "expected {:?} to be rejected as InvalidModifierForType, got {:?}",
+                        src_instr,
+                        result
+                    );
+                }
+                _ => panic!("expected an unparsed instruction"),
+            }
+        }
+    }
 }

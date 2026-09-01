@@ -965,6 +965,41 @@ fn test_mov_vector_destination_unpack_values() {
     assert_eq!(display_output(&output, "out", 1), "4660");
 }
 
+#[test]
+fn test_cvt_pack_halves_values() {
+    // cvt.rn.f16x2.f32 d, a, b: per the PTX ISA, the first source operand
+    // (a) converts into the *high* half of d and the second (b) into the
+    // *low* half - opposite mov.b32's brace order. Values are exact reals
+    // here (float conversion is modeled as identity, no rounding), and the
+    // packed destination is a Value::Pair rather than bit-encoded, so this
+    // also exercises storing a Pair to memory and reading its two 2-byte
+    // granules back independently.
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    mov.f32 %f1, 0f3FC00000; // 1.5
+    mov.f32 %f2, 0f40200000; // 2.5
+    cvt.rn.f16x2.f32 %r1, %f1, %f2;
+    st.global.b32 [%rd1], %r1;
+
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, out_only_config(2, 2)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "2.5"); // low half: b
+    assert_eq!(display_output(&output, "out", 1), "1.5"); // high half: a
+}
+
 /// Output-only config: one `out` array of `len` `elem_width`-byte
 /// elements, passed as the kernel's single parameter.
 fn out_only_config(elem_width: u64, len: u64) -> AnalysisConfig {

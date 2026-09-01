@@ -429,6 +429,21 @@ pub enum LoweredInstr {
         clamp: Option<Clamp>,
     },
 
+    /// Two-source packed-half convert: `cvt.rnd.f16x2.f32 dst, src_hi, src_lo`.
+    /// Writes a `Value::Pair` directly (never bit-encoded, matching every
+    /// other producer of packed f16 pairs) rather than composing it via
+    /// `Cvt` + `mov.b32`'s bitwise pack, since the two source values are
+    /// exact reals here, not integer bit patterns.
+    CvtPackHalves {
+        dst: RegId,
+        src_hi: Operand,
+        src_lo: Operand,
+        /// Per-lane destination type (`F16` for an `f16x2` dst, `Bf16` for
+        /// `bf16x2`), precomputed at lowering time.
+        dst_half_ty: ScalarType,
+        src_ty: ScalarType,
+    },
+
     // =========================================================================
     // Control Flow
     // =========================================================================
@@ -627,6 +642,7 @@ define_instr_kinds!(
     Selp,
     Set,
     Cvt,
+    CvtPackHalves,
     Bra,
     Ret,
     Exit,
@@ -734,6 +750,7 @@ impl LoweredInstr {
 
             // Type conversion
             Self::Cvt { src, .. } => from_op(src).into_iter().collect(),
+            Self::CvtPackHalves { src_hi, src_lo, .. } => from_ops(&[*src_hi, *src_lo]),
 
             // Control flow
             Self::Bra { .. } | Self::Ret | Self::Exit | Self::Trap | Self::Nop => vec![],
@@ -820,6 +837,7 @@ impl LoweredInstr {
             | Self::Selp { dst, .. }
             | Self::Set { dst, .. }
             | Self::Cvt { dst, .. }
+            | Self::CvtPackHalves { dst, .. }
             | Self::Activemask { dst } => vec![*dst],
 
             // Vector destinations

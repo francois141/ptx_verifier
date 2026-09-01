@@ -3726,6 +3726,52 @@ fn lower_cvt(
                 "pack conversion (two-source packing)",
             ));
         }
+        CvtInstr::PackHalves {
+            rnd,
+            dst_type,
+            src_type,
+            dst,
+            src_hi,
+            src_lo,
+        } => {
+            // Same rounding policy as Standard: floats are exact reals
+            // here, so only "no rounding" or an FP rounding mode (itself
+            // ignored) are compatible with the identity conversion.
+            match rnd {
+                None | Some(CvtRounding::Float(_)) => {}
+                Some(CvtRounding::Integer(_)) => {
+                    return Err(unsupported(
+                        "cvt",
+                        "integer-rounding modifier (floor/ceil/trunc/rint not modeled)",
+                    ));
+                }
+                Some(CvtRounding::Stochastic) => {
+                    return Err(unsupported("cvt", ".rs stochastic-rounding modifier"));
+                }
+                Some(CvtRounding::Rna) => {
+                    return Err(unsupported("cvt", ".rna rounding modifier"));
+                }
+            }
+            let dst_half_ty = match dst_type {
+                ScalarType::F16x2 => ScalarType::F16,
+                ScalarType::Bf16x2 => ScalarType::Bf16,
+                _ => unreachable!("parse_cvt only builds PackHalves for f16x2/bf16x2 destinations"),
+            };
+
+            let dst = ctx.resolve_dst(dst)?;
+            let src_hi = ctx.resolve_operand(src_hi)?;
+            let src_lo = ctx.resolve_operand(src_lo)?;
+            ctx.emit(
+                LoweredInstr::CvtPackHalves {
+                    dst,
+                    src_hi,
+                    src_lo,
+                    dst_half_ty,
+                    src_ty: *src_type,
+                },
+                predicate,
+            )?;
+        }
     }
     Ok(())
 }
@@ -5145,6 +5191,16 @@ mod tests {
             "mov.b32 %r1, {%rs1, %rs2, %rs3};",
             "2-element vector pack",
         );
+    }
+
+    #[test]
+    fn test_cvt_pack_halves_lowers() {
+        assert_lowers("cvt.rn.f16x2.f32 %r1, %f1, %f2;");
+        assert_lowers("cvt.rn.bf16x2.f32 %r1, %f1, %f2;");
+        // Integer/stochastic/rna rounding aren't compatible with the
+        // identity-over-reals policy, same as the Standard cvt path.
+        assert_rejected("cvt.rni.f16x2.f32 %r1, %f1, %f2;", "integer-rounding");
+        assert_rejected("cvt.rs.f16x2.f32 %r1, %f1, %f2;", ".rs stochastic-rounding");
     }
 
     #[test]
