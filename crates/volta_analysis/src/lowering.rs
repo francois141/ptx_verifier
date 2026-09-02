@@ -69,6 +69,25 @@ fn check_not_packed(ty: ScalarType, instruction: &str) -> LowerResult<()> {
     }
 }
 
+/// Like `check_not_packed`, but lets `F16x2`/`Bf16x2` through: the
+/// `BinOp`/`UnaryOp`/`Fma` eval arms compute each lane of a `Value::Pair`
+/// independently for these two types (see `eval::interp`), so they're no
+/// longer a silent single-lane result - only the still-unmodeled packed
+/// integer (`U16x2`/`S16x2`) and `F32x2` forms stay rejected. Callers that
+/// route through `LoweredInstr::BinOp`/`UnaryOp`/`Fma` for a real packed
+/// PTX arithmetic form (plain add/sub/mul/min/max/neg/abs/fma, not the
+/// mixed-precision or integer-only variants, which never carry a packed
+/// `ty` in practice) use this instead of `check_not_packed`.
+fn check_packed_arithmetic(ty: ScalarType, instruction: &str) -> LowerResult<()> {
+    match ty {
+        ScalarType::U16x2 | ScalarType::S16x2 | ScalarType::F32x2 => Err(unsupported(
+            instruction,
+            format!("packed SIMD arithmetic on {:?}", ty),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Scalar (single-lane) floating-point types - the domain of the modeled
 /// float value clamps (`Clamp`). Excludes the packed float types and tf32.
 fn is_scalar_float(ty: ScalarType) -> bool {
@@ -2036,7 +2055,7 @@ fn lower_add(
             src_a,
             src_b,
         } => {
-            check_not_packed(*ty, "add")?;
+            check_packed_arithmetic(*ty, "add")?;
             lower_half_binop(
                 ctx,
                 BinOp::Add,
@@ -2057,7 +2076,7 @@ fn lower_add(
             src_a,
             src_b,
         } => {
-            check_not_packed(*ty, "add")?;
+            check_packed_arithmetic(*ty, "add")?;
             lower_half_binop(
                 ctx,
                 BinOp::Add,
@@ -2282,7 +2301,7 @@ fn lower_sub(
             src_a,
             src_b,
         } => {
-            check_not_packed(*ty, "sub")?;
+            check_packed_arithmetic(*ty, "sub")?;
             lower_half_binop(
                 ctx,
                 BinOp::Sub,
@@ -2303,7 +2322,7 @@ fn lower_sub(
             src_a,
             src_b,
         } => {
-            check_not_packed(*ty, "sub")?;
+            check_packed_arithmetic(*ty, "sub")?;
             lower_half_binop(
                 ctx,
                 BinOp::Sub,
@@ -2448,7 +2467,7 @@ fn lower_mul(
                     format!(".sat modifier on {:?} (invalid PTX)", ty),
                 ));
             }
-            check_not_packed(*ty, "mul")?;
+            check_packed_arithmetic(*ty, "mul")?;
 
             let dst_typed = ctx.resolve_dst_typed(dst)?;
             let src_a_typed = ctx.resolve_operand_typed(src_a)?;
@@ -2623,7 +2642,7 @@ fn lower_fma(
             src_b,
             src_c,
         } => {
-            check_not_packed(*ty, "fma")?;
+            check_packed_arithmetic(*ty, "fma")?;
             let clamp = sat.then_some(Clamp::Sat);
             (*ty, *ty, "fma.rn.f16", clamp, dst, src_a, src_b, src_c)
         }
@@ -2636,7 +2655,7 @@ fn lower_fma(
             src_b,
             src_c,
         } => {
-            check_not_packed(*ty, "fma")?;
+            check_packed_arithmetic(*ty, "fma")?;
             let clamp = Some(Clamp::Relu);
             (*ty, *ty, "fma.rn.relu.f16", clamp, dst, src_a, src_b, src_c)
         }
@@ -2652,7 +2671,7 @@ fn lower_fma(
             if *relu {
                 return Err(unsupported("fma.rn.bf16", ".relu modifier"));
             }
-            check_not_packed(*ty, "fma")?;
+            check_packed_arithmetic(*ty, "fma")?;
             (*ty, *ty, "fma.rn.bf16", None, dst, src_a, src_b, src_c)
         }
         FmaInstr::Oob { .. } => {
@@ -2790,7 +2809,7 @@ fn lower_neg(
         } => (*ty, "neg.f16", dst, src),
         NegInstr::HalfBf16 { ty, dst, src } => (*ty, "neg.bf16", dst, src),
     };
-    check_not_packed(ty, instr_name)?;
+    check_packed_arithmetic(ty, instr_name)?;
 
     let dst_typed = ctx.resolve_dst_typed(dst)?;
     let src_typed = ctx.resolve_operand_typed(src)?;
@@ -2832,7 +2851,7 @@ fn lower_abs(
         } => (*ty, "abs.f16", dst, src),
         AbsInstr::HalfBf16 { ty, dst, src } => (*ty, "abs.bf16", dst, src),
     };
-    check_not_packed(ty, instr_name)?;
+    check_packed_arithmetic(ty, instr_name)?;
 
     let dst_typed = ctx.resolve_dst_typed(dst)?;
     let src_typed = ctx.resolve_operand_typed(src)?;
@@ -2969,7 +2988,7 @@ fn lower_min(
             (*ty, "min.bf16", dst, src_a, src_b)
         }
     };
-    check_not_packed(ty, instr_name)?;
+    check_packed_arithmetic(ty, instr_name)?;
 
     let dst_typed = ctx.resolve_dst_typed(dst)?;
     let src_a_typed = ctx.resolve_operand_typed(src_a)?;
@@ -3061,7 +3080,7 @@ fn lower_max(
             (*ty, "max.bf16", dst, src_a, src_b)
         }
     };
-    check_not_packed(ty, instr_name)?;
+    check_packed_arithmetic(ty, instr_name)?;
 
     let dst_typed = ctx.resolve_dst_typed(dst)?;
     let src_a_typed = ctx.resolve_operand_typed(src_a)?;
@@ -5067,11 +5086,14 @@ mod tests {
     #[test]
     fn test_float_sat_out_of_scope_forms_stay_rejected() {
         // mad.f and the mixed-precision (.f32.f16) arms are not modeled
-        // with .sat; packed forms are rejected as packed SIMD.
+        // with .sat.
         assert_rejected("mad.sat.f32 %f1, %f2, %f3, %f4;", ".sat");
         assert_rejected("add.rn.sat.f32.f16 %f1, %rs2, %rs3;", ".sat");
         assert_rejected("fma.rn.sat.f32.f16 %f1, %rs2, %rs3, %f4;", ".sat");
-        assert_rejected("add.rn.sat.f16x2 %r1, %r2, %r3;", "packed SIMD");
+        // f16x2 .sat is a legal, modeled form (each lane clamped
+        // independently) - not one of the out-of-scope forms this test
+        // covers; see test_packed_f16x2_bf16x2_arithmetic_lowers.
+        assert_lowers("add.rn.sat.f16x2 %r1, %r2, %r3;");
         // `.sat` on .f64 add/mul/fma is illegal PTX (the ISA allows it on
         // .f32/.f16 only); the instruction parser rejects it loudly.
         assert_rejected("add.rn.sat.f64 %fd1, %fd2, %fd3;", "parsing failed");
@@ -5167,14 +5189,33 @@ mod tests {
 
     #[test]
     fn test_reject_packed_simd_arithmetic() {
+        // Packed 16-bit integer arithmetic has no eval-side lane dispatch
+        // (only f16x2/bf16x2 do - see test_packed_f16x2_bf16x2_arithmetic_lowers)
+        // and stays rejected.
         assert_rejected("add.u16x2 %r1, %r2, %r3;", "packed SIMD");
-        assert_rejected("add.rn.f16x2 %r1, %r2, %r3;", "packed SIMD");
-        assert_rejected("sub.rn.bf16x2 %r1, %r2, %r3;", "packed SIMD");
-        assert_rejected("mul.rn.f16x2 %r1, %r2, %r3;", "packed SIMD");
         assert_rejected("min.s16x2 %r1, %r2, %r3;", "packed SIMD");
         assert_rejected("max.u16x2 %r1, %r2, %r3;", "packed SIMD");
-        assert_rejected("neg.ftz.f16x2 %r1, %r2;", "packed SIMD");
-        assert_rejected("fma.rn.f16x2 %r1, %r2, %r3, %r4;", "packed SIMD");
+    }
+
+    #[test]
+    fn test_packed_f16x2_bf16x2_arithmetic_lowers() {
+        // f16x2/bf16x2 arithmetic computes each lane of a Value::Pair
+        // independently at eval time (eval/interp.rs's BinOp/UnaryOp/Fma
+        // arms) - no longer a silent single-lane result, so these lower
+        // instead of hitting check_packed_arithmetic's rejection.
+        assert_lowers("add.rn.f16x2 %r1, %r2, %r3;");
+        assert_lowers("sub.rn.bf16x2 %r1, %r2, %r3;");
+        assert_lowers("mul.rn.f16x2 %r1, %r2, %r3;");
+        assert_lowers("min.f16x2 %r1, %r2, %r3;");
+        assert_lowers("max.bf16x2 %r1, %r2, %r3;");
+        assert_lowers("neg.ftz.f16x2 %r1, %r2;");
+        assert_lowers("abs.f16x2 %r1, %r2;");
+        assert_lowers("fma.rn.f16x2 %r1, %r2, %r3, %r4;");
+        assert_lowers("fma.rn.relu.f16x2 %r1, %r2, %r3, %r4;");
+        assert_lowers("fma.rn.bf16x2 %r1, %r2, %r3, %r4;");
+        // F32x2 stays rejected - only the two half-precision packed types
+        // are modeled.
+        assert_rejected("add.f32x2 %fd1, %fd2, %fd3;", "packed SIMD");
     }
 
     #[test]
