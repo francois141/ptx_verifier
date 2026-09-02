@@ -899,17 +899,34 @@ impl<'p> Interpreter<'p> {
                 ty,
                 clamp,
             } => {
-                let a = self.scalar_operand(t, pc, src_a)?;
-                let b = self.scalar_operand(t, pc, src_b)?;
-                let r = self.eval_binop(t, pc, *op, *ty, a, b)?;
-                let r = self.apply_clamp(*clamp, r);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                if let Some(lane_ty) = ty.packed_lane() {
+                    let (a_lo, a_hi) = self.pair_operand(t, pc, src_a, lane_ty)?;
+                    let (b_lo, b_hi) = self.pair_operand(t, pc, src_b, lane_ty)?;
+                    let lo = self.eval_binop(t, pc, *op, lane_ty, a_lo, b_lo)?;
+                    let hi = self.eval_binop(t, pc, *op, lane_ty, a_hi, b_hi)?;
+                    let lo = self.apply_clamp(*clamp, lo);
+                    let hi = self.apply_clamp(*clamp, hi);
+                    self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                } else {
+                    let a = self.scalar_operand(t, pc, src_a)?;
+                    let b = self.scalar_operand(t, pc, src_b)?;
+                    let r = self.eval_binop(t, pc, *op, *ty, a, b)?;
+                    let r = self.apply_clamp(*clamp, r);
+                    self.threads[t].regs.write(*dst, Value::Scalar(r));
+                }
             }
 
             LoweredInstr::UnaryOp { op, dst, src, ty } => {
-                let a = self.scalar_operand(t, pc, src)?;
-                let r = self.eval_unop(pc, *op, *ty, a)?;
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                if let Some(lane_ty) = ty.packed_lane() {
+                    let (a_lo, a_hi) = self.pair_operand(t, pc, src, lane_ty)?;
+                    let lo = self.eval_unop(pc, *op, lane_ty, a_lo)?;
+                    let hi = self.eval_unop(pc, *op, lane_ty, a_hi)?;
+                    self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                } else {
+                    let a = self.scalar_operand(t, pc, src)?;
+                    let r = self.eval_unop(pc, *op, *ty, a)?;
+                    self.threads[t].regs.write(*dst, Value::Scalar(r));
+                }
             }
 
             LoweredInstr::Fma {
@@ -917,15 +934,26 @@ impl<'p> Interpreter<'p> {
                 src_a,
                 src_b,
                 src_c,
+                ty,
                 clamp,
-                ..
             } => {
-                let a = self.scalar_operand(t, pc, src_a)?;
-                let b = self.scalar_operand(t, pc, src_b)?;
-                let c = self.scalar_operand(t, pc, src_c)?;
-                let r = self.arena.fma(a, b, c);
-                let r = self.apply_clamp(*clamp, r);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                if let Some(lane_ty) = ty.packed_lane() {
+                    let (a_lo, a_hi) = self.pair_operand(t, pc, src_a, lane_ty)?;
+                    let (b_lo, b_hi) = self.pair_operand(t, pc, src_b, lane_ty)?;
+                    let (c_lo, c_hi) = self.pair_operand(t, pc, src_c, lane_ty)?;
+                    let lo = self.arena.fma(a_lo, b_lo, c_lo);
+                    let hi = self.arena.fma(a_hi, b_hi, c_hi);
+                    let lo = self.apply_clamp(*clamp, lo);
+                    let hi = self.apply_clamp(*clamp, hi);
+                    self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                } else {
+                    let a = self.scalar_operand(t, pc, src_a)?;
+                    let b = self.scalar_operand(t, pc, src_b)?;
+                    let c = self.scalar_operand(t, pc, src_c)?;
+                    let r = self.arena.fma(a, b, c);
+                    let r = self.apply_clamp(*clamp, r);
+                    self.threads[t].regs.write(*dst, Value::Scalar(r));
+                }
             }
 
             LoweredInstr::Mad {
@@ -1373,6 +1401,53 @@ impl<'p> Interpreter<'p> {
                 pc,
                 what: "packed pair used as a scalar",
             }),
+        }
+    }
+
+    /// Resolve an operand that must be a packed pair (the two lanes of a
+    /// `.f16x2`/`.bf16x2` arithmetic operand, `lane_ty` = `F16`/`Bf16`).
+    /// A concrete `Value::Scalar` is a raw 32-bit bit pattern moved into
+    /// the register some other way than a native packed producer - most
+    /// commonly `mov.b32 %r, 0` building a packed-zero clamp constant, or
+    /// a packed polynomial-coefficient literal - so it's decoded bit-for-
+    /// bit into the two lanes real hardware would read from it, the same
+    /// interpretation `UnpackHalves`'s scalar fallback gives an integer
+    /// unpack. A symbolic scalar can't be decoded this way (no bit-level
+    /// reasoning over an exact-real value) and is a clean error, as is a
+    /// concrete value containing a NaN half.
+    pub(in crate::eval) fn pair_operand(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: &Operand,
+        lane_ty: ScalarType,
+    ) -> EvalResult<(ExprId, ExprId)> {
+        match self.operand_value(t, pc, op)? {
+            Value::Pair(lo, hi) => Ok((lo, hi)),
+            Value::Scalar(e) => {
+                let bits = self
+                    .arena
+                    .as_i64(e)
+                    .ok_or(EvalError::ValueKindMismatch {
+                        thread: t,
+                        pc,
+                        what: "symbolic scalar used as a packed pair",
+                    })? as u32;
+                let (lo_v, hi_v) =
+                    decode_packed_bits(bits, lane_ty).ok_or_else(|| EvalError::Unsupported {
+                        pc,
+                        what: "NaN half in a packed-pair bit pattern".to_string(),
+                    })?;
+                let lo = self.arena.float_from_f64(lo_v).map_err(|e| EvalError::Unsupported {
+                    pc,
+                    what: format!("packed-pair lane constant: {}", e),
+                })?;
+                let hi = self.arena.float_from_f64(hi_v).map_err(|e| EvalError::Unsupported {
+                    pc,
+                    what: format!("packed-pair lane constant: {}", e),
+                })?;
+                Ok((lo, hi))
+            }
         }
     }
 
@@ -2324,4 +2399,45 @@ fn canon_int(v: i64, bits: u32, signed: bool) -> i64 {
     } else {
         masked as i64
     }
+}
+
+/// Decode a raw 16-bit IEEE 754 binary16 (`f16`) bit pattern to its real
+/// value. `None` for NaN (the same "reject at ingestion" policy as every
+/// other f64 entry point - see `Real::from_f64`); +/-infinity is `Some`
+/// (finite `f64`, handled fine by `ExprArena::float_from_f64`).
+fn f16_bits_to_f64(bits: u16) -> Option<f64> {
+    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((bits >> 10) & 0x1F) as i32;
+    let mantissa = (bits & 0x3FF) as f64;
+    Some(match exp {
+        0 if mantissa == 0.0 => sign * 0.0,
+        // Subnormal: 2^-14 * (mantissa / 1024) = mantissa * 2^-24.
+        0 => sign * mantissa * 2f64.powi(-24),
+        0x1F if mantissa == 0.0 => sign * f64::INFINITY,
+        0x1F => return None,
+        _ => sign * (1.0 + mantissa / 1024.0) * 2f64.powi(exp - 15),
+    })
+}
+
+/// Decode a raw 16-bit `bf16` bit pattern to its real value. `bf16` is
+/// exactly an `f32`'s high 16 bits (same 8-bit exponent/bias as `f32`,
+/// truncated mantissa), so this is a plain bit-shift into `f32`, not a
+/// hand-rolled decode. `None` for NaN, matching `f16_bits_to_f64`.
+fn bf16_bits_to_f64(bits: u16) -> Option<f64> {
+    let v = f32::from_bits((bits as u32) << 16) as f64;
+    if v.is_nan() { None } else { Some(v) }
+}
+
+/// Split a raw 32-bit packed-pair bit pattern into its two lanes' real
+/// values, per `lane_ty` (`F16` or `Bf16` - the element type of an
+/// `F16x2`/`Bf16x2` operand). `(lo, hi)`, matching `Value::Pair`'s order.
+fn decode_packed_bits(bits: u32, lane_ty: ScalarType) -> Option<(f64, f64)> {
+    let lo_bits = (bits & 0xFFFF) as u16;
+    let hi_bits = (bits >> 16) as u16;
+    let decode = match lane_ty {
+        ScalarType::F16 => f16_bits_to_f64,
+        ScalarType::Bf16 => bf16_bits_to_f64,
+        _ => unreachable!("decode_packed_bits only called for f16x2/bf16x2 lanes"),
+    };
+    Some((decode(lo_bits)?, decode(hi_bits)?))
 }
