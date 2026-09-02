@@ -465,6 +465,27 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
+    /// Vector-source pack: `mov.b32 dst, {lo, hi}`. Always writes a
+    /// `Value::Pair(lo, hi)` rather than bit-shifting - the two source
+    /// halves are frequently real-valued (an f16 element from `cvt.*.f16.*`
+    /// or a plain 2-byte load), and bit ops on a real number silently build
+    /// a nonsense expression rather than erroring. This is exact whether
+    /// the halves are real or genuinely integer: a later `UnpackHalves` or
+    /// a store to a 2-byte-elem_width array round-trips either way: only a
+    /// packed value later used as a true scalar in its own right (added,
+    /// compared, stored as one wide integer) would now loudly fail instead
+    /// of silently computing garbage - preferred, per this codebase's
+    /// convention elsewhere (see `canon_stored`'s docs). Scoped to a 32-bit
+    /// `mov` only: `Value::Pair` is fixed at two 16-bit halves everywhere
+    /// else in this model, so a `mov.b64 dst, {lo, hi}` (two 32-bit
+    /// halves, the idiom for building a 64-bit value/address - unrelated
+    /// to f16 packing) keeps the bitwise `BinOp` pack instead.
+    PackHalves {
+        dst: RegId,
+        lo: Operand,
+        hi: Operand,
+    },
+
     // =========================================================================
     // Control Flow
     // =========================================================================
@@ -665,6 +686,7 @@ define_instr_kinds!(
     Cvt,
     CvtPackHalves,
     UnpackHalves,
+    PackHalves,
     Bra,
     Ret,
     Exit,
@@ -774,6 +796,7 @@ impl LoweredInstr {
             Self::Cvt { src, .. } => from_op(src).into_iter().collect(),
             Self::CvtPackHalves { src_hi, src_lo, .. } => from_ops(&[*src_hi, *src_lo]),
             Self::UnpackHalves { src, .. } => from_op(src).into_iter().collect(),
+            Self::PackHalves { lo, hi, .. } => from_ops(&[*lo, *hi]),
 
             // Control flow
             Self::Bra { .. } | Self::Ret | Self::Exit | Self::Trap | Self::Nop => vec![],
@@ -861,6 +884,7 @@ impl LoweredInstr {
             | Self::Set { dst, .. }
             | Self::Cvt { dst, .. }
             | Self::CvtPackHalves { dst, .. }
+            | Self::PackHalves { dst, .. }
             | Self::Activemask { dst } => vec![*dst],
 
             // Vector destinations

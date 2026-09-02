@@ -1526,36 +1526,47 @@ fn lower_parsed_instruction(
                     // where w = type_bits / 2
                     let dst_typed = ctx.resolve_dst_typed(&mov.dst)?;
                     let dst = dst_typed.reg;
-                    let elem_width = mov.ty.bits() / 2;
 
                     let lo = ctx.resolve_operand(&elements[0])?;
                     let hi = ctx.resolve_operand(&elements[1])?;
 
-                    // Step 1: dst = hi << w
-                    ctx.emit(
-                        LoweredInstr::BinOp {
-                            op: BinOp::Shl,
-                            dst,
-                            src_a: hi,
-                            src_b: Operand::ImmI64(elem_width as i64),
-                            ty: mov.ty,
-                            clamp: None,
-                        },
-                        predicate,
-                    )?;
+                    if mov.ty.bits() == 32 {
+                        // Always writes a Value::Pair - see PackHalves's
+                        // doc comment for why this is exact for both real
+                        // and integer halves, and why it's scoped to b32.
+                        ctx.emit(LoweredInstr::PackHalves { dst, lo, hi }, predicate)?;
+                    } else {
+                        // mov.b64 dst, {lo, hi}: two 32-bit halves building
+                        // a 64-bit value - unrelated to f16 packing, so
+                        // this keeps the plain bitwise pack.
+                        let elem_width = mov.ty.bits() / 2;
 
-                    // Step 2: dst = dst | lo
-                    ctx.emit(
-                        LoweredInstr::BinOp {
-                            op: BinOp::Or,
-                            dst,
-                            src_a: Operand::Reg(dst),
-                            src_b: lo,
-                            ty: mov.ty,
-                            clamp: None,
-                        },
-                        predicate,
-                    )?;
+                        // Step 1: dst = hi << w
+                        ctx.emit(
+                            LoweredInstr::BinOp {
+                                op: BinOp::Shl,
+                                dst,
+                                src_a: hi,
+                                src_b: Operand::ImmI64(elem_width as i64),
+                                ty: mov.ty,
+                                clamp: None,
+                            },
+                            predicate,
+                        )?;
+
+                        // Step 2: dst = dst | lo
+                        ctx.emit(
+                            LoweredInstr::BinOp {
+                                op: BinOp::Or,
+                                dst,
+                                src_a: Operand::Reg(dst),
+                                src_b: lo,
+                                ty: mov.ty,
+                                clamp: None,
+                            },
+                            predicate,
+                        )?;
+                    }
                 }
                 (_, AstOperand::Vector(elements)) => {
                     return Err(LowerError::UnsupportedInstruction {

@@ -1057,6 +1057,89 @@ fn test_mov_unpack_native_pair_source() {
     assert_eq!(display_output(&output, "out", 1), "in[1]");
 }
 
+#[test]
+fn test_mov_pack_b32_always_builds_pair() {
+    // The mirror image of test_mov_unpack_native_pair_source: mov.b32 dst,
+    // {lo, hi} always writes a Value::Pair(lo, hi) rather than bit-packing
+    // - the corpus idiom (two 2-byte loads or two cvt.*.f16.* results,
+    // packed and streamed straight to memory) round-trips exactly through
+    // this, whether the halves are real f16 values or plain integers.
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.u16 %rs1, [%rd1];
+    ld.global.u16 %rs2, [%rd1+2];
+    mov.b32 %r1, {%rs1, %rs2};
+    st.global.b32 [%rd2], %r1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).expect("pair pack analysis");
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+    assert_eq!(display_output(&output, "out", 1), "in[1]");
+}
+
+/// `mov.b64 dst, {lo, hi}` (two 32-bit halves) is a different idiom -
+/// building a wide value/address, unrelated to f16 packing - and must keep
+/// the plain bitwise pack rather than becoming a `Value::Pair` (which only
+/// ever models 16-bit halves elsewhere in this codebase).
+#[test]
+fn test_mov_pack_b64_stays_bitwise() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r1, 5;
+    mov.u32 %r2, 3;
+    mov.b64 %rd2, {%r1, %r2};
+    st.global.u64 [%rd1], %rd2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, out_only_config(8, 1)).expect("b64 pack analysis");
+    // 5 | (3 << 32) = 12884901893
+    assert_eq!(display_output(&output, "out", 0), "12884901893");
+}
+
 /// Output-only config: one `out` array of `len` `elem_width`-byte
 /// elements, passed as the kernel's single parameter.
 fn out_only_config(elem_width: u64, len: u64) -> AnalysisConfig {

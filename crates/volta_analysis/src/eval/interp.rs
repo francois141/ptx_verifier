@@ -1146,6 +1146,16 @@ impl<'p> Interpreter<'p> {
                 }
             }
 
+            LoweredInstr::PackHalves { dst, lo, hi } => {
+                // Always a Value::Pair - see the type's doc comment. lo/hi
+                // are 16-bit-class operands, which can only ever be
+                // Value::Scalar (Pair only lives in a 32-bit slot), so
+                // scalar_operand cannot fail here.
+                let lo_v = self.scalar_operand(t, pc, lo)?;
+                let hi_v = self.scalar_operand(t, pc, hi)?;
+                self.threads[t].regs.write(*dst, Value::Pair(lo_v, hi_v));
+            }
+
             LoweredInstr::Bra { target } => {
                 next_pc = *target;
             }
