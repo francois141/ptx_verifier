@@ -1963,6 +1963,18 @@ impl<'p> Interpreter<'p> {
                 let scaled = self.arena.mul(a, ln2);
                 self.arena.exp(scaled)
             }
+            // tanh(x) = (e^2x - 1) / (e^2x + 1), so this too stays in the
+            // interpreted exp fragment rather than becoming an opaque atom
+            // (same approach as `Ex2` above).
+            UnaryOp::Tanh => {
+                let two = self.arena.int(2);
+                let one = self.arena.int(1);
+                let two_x = self.arena.mul(a, two);
+                let e2x = self.arena.exp(two_x);
+                let num = self.arena.sub(e2x, one);
+                let den = self.arena.add(e2x, one);
+                self.arena.div(num, den)
+            }
             UnaryOp::Lg2 | UnaryOp::Sin | UnaryOp::Cos => {
                 return Err(EvalError::Unsupported {
                     pc,

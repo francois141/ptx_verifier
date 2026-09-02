@@ -169,6 +169,10 @@ pub enum UnaryOp {
     /// Natural exponential e^x (from `call __symexpf`, the paper's hook for
     /// symbolic exp; there is no such PTX instruction)
     Exp,
+    /// Hyperbolic tangent (evaluated as `(e^2x - 1) / (e^2x + 1)`, staying
+    /// in the interpreted exp fragment rather than becoming an opaque atom
+    /// - the same approach as `Ex2`).
+    Tanh,
 }
 
 impl UnaryOp {
@@ -185,6 +189,7 @@ impl UnaryOp {
             Self::Sin => "sin",
             Self::Cos => "cos",
             Self::Exp => "exp",
+            Self::Tanh => "tanh",
         }
     }
 }

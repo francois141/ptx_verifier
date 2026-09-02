@@ -1501,6 +1501,80 @@ fn test_symexpf_callseq() {
     assert_eq!(display_output(&output, "out", 0), "exp(in[0])");
 }
 
+/// `tanh.approx.f32` is evaluated as `(e^2x - 1) / (e^2x + 1)`, staying in
+/// the interpreted exp fragment (same approach as `Ex2`) rather than
+/// becoming an opaque atom - so it must both display in that expanded form
+/// over a symbolic input and fold exactly to zero at the origin.
+#[test]
+fn test_tanh_approx_expands_to_exp_fragment() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %f1, [%rd1];
+    tanh.approx.f32 %f2, %f1;
+    st.global.f32 [%rd2], %f2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    assert_eq!(
+        display_output(&output, "out", 0),
+        "((exp((in[0] * 2)) - 1) / (exp((in[0] * 2)) + 1))"
+    );
+}
+
+/// `tanh(0) = (e^0 - 1) / (e^0 + 1) = 0` - checked through canon's
+/// equivalence check (not raw display), since `exp(0)` is not eagerly
+/// folded to `1` at expression-construction time; canon's rational algebra
+/// is what actually proves the fraction collapses to zero.
+#[test]
+fn test_tanh_approx_zero_equivalent_to_zero() {
+    let tanh_src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.f32 %f1, 0f00000000;
+    tanh.approx.f32 %f2, %f1;
+    st.global.f32 [%rd1], %f2;
+    ret;
+}
+",
+    );
+    let zero_src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.f32 %f1, 0f00000000;
+    st.global.f32 [%rd1], %f1;
+    ret;
+}
+",
+    );
+    let a = analyze_kernel(&parse(&tanh_src), None, out_only_config(4, 1)).expect("tanh analysis");
+    let b = analyze_kernel(&parse(&zero_src), None, out_only_config(4, 1)).expect("zero analysis");
+    assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
+}
+
 /// shfl.sync.idx exchanges lane values (2 lanes, mask 0x3):
 /// out[tid] = in[tid ^ 1].
 #[test]

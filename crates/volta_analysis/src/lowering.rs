@@ -1274,6 +1274,19 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Transcendental - Tanh (evaluated as (e^2x - 1) / (e^2x + 1))
+        // =========================================================================
+        ParsedInstruction::Tanh(tanh) => {
+            // Only the plain scalar .f32 form is modeled - f16/bf16 and the
+            // packed x2 forms (PTX ISA Block 61) are the same deliberate
+            // non-goal as packed f16x2 arithmetic elsewhere in this module.
+            if tanh.ty != ScalarType::F32 {
+                return Err(unsupported("tanh", "only .f32 is modeled"));
+            }
+            lower_float_unary(ctx, UnaryOp::Tanh, "tanh", tanh.ty, &tanh.dst, &tanh.src, predicate)?;
+        }
+
+        // =========================================================================
         // Arithmetic - Abs
         // =========================================================================
         ParsedInstruction::Abs(abs) => {
