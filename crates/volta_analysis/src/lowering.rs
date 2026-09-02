@@ -1296,11 +1296,24 @@ fn lower_parsed_instruction(
         // Transcendental - Tanh (evaluated as (e^2x - 1) / (e^2x + 1))
         // =========================================================================
         ParsedInstruction::Tanh(tanh) => {
-            // Only the plain scalar .f32 form is modeled - f16/bf16 and the
-            // packed x2 forms (PTX ISA Block 61) are the same deliberate
-            // non-goal as packed f16x2 arithmetic elsewhere in this module.
-            if tanh.ty != ScalarType::F32 {
-                return Err(unsupported("tanh", "only .f32 is modeled"));
+            // .f32/.f16/.bf16 (scalar) and .f16x2/.bf16x2 (packed - PTX
+            // ISA Block 61) are all the ISA offers, and all modeled: Tanh
+            // reduces to (e^2x-1)/(e^2x+1), an exact rational-in-exp
+            // expression with nothing type-specific to it (see
+            // UnaryOp::Tanh in eval/interp.rs); the packed forms are
+            // dispatched per-lane the same way check_packed_arithmetic's
+            // callers are. Anything else is invalid PTX - the parser
+            // doesn't itself restrict tanh's type, so this is fail-closed
+            // insurance, not a real-world case.
+            if !matches!(
+                tanh.ty,
+                ScalarType::F32
+                    | ScalarType::F16
+                    | ScalarType::Bf16
+                    | ScalarType::F16x2
+                    | ScalarType::Bf16x2
+            ) {
+                return Err(unsupported("tanh", format!("{:?} (invalid PTX)", tanh.ty)));
             }
             lower_float_unary(ctx, UnaryOp::Tanh, "tanh", tanh.ty, &tanh.dst, &tanh.src, predicate)?;
         }
@@ -5216,6 +5229,20 @@ mod tests {
         // F32x2 stays rejected - only the two half-precision packed types
         // are modeled.
         assert_rejected("add.f32x2 %fd1, %fd2, %fd3;", "packed SIMD");
+    }
+
+    #[test]
+    fn test_tanh_all_isa_types_lower() {
+        // .f32/.f16/.bf16 (scalar) and .f16x2/.bf16x2 (packed) are all
+        // the ISA offers for tanh.approx and all modeled.
+        assert_lowers("tanh.approx.f32 %f1, %f2;");
+        assert_lowers("tanh.approx.f16 %rs1, %rs2;");
+        assert_lowers("tanh.approx.bf16 %rs1, %rs2;");
+        assert_lowers("tanh.approx.f16x2 %r1, %r2;");
+        assert_lowers("tanh.approx.bf16x2 %r1, %r2;");
+        // Not a legal tanh type per the ISA - fail-closed insurance since
+        // the parser itself doesn't restrict the type.
+        assert_rejected("tanh.approx.f64 %fd1, %fd2;", "invalid PTX");
     }
 
     #[test]
