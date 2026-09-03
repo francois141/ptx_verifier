@@ -642,6 +642,109 @@ fn test_misaligned_ldmatrix_row_address() {
     );
 }
 
+/// `ldmatrix.trans` loads the on-the-fly transpose: lane `l` (of a single
+/// `.x1` matrix) receives (row `2*(l%4)`, col `l/4`) as its low half and
+/// (row `2*(l%4)+1`, col `l/4`) as its high half - the mirror of the
+/// non-transposed mapping (row `l/4`, cols `(l%4)*2`/`(l%4)*2+1`), since
+/// the two elements a lane receives now come from two different supplied
+/// rows at the same column instead of two adjacent columns of one row.
+///
+/// Thread 0 alone copies `in[0..64]` (row-major, 8x8) into shared memory
+/// - no store/store race, one writer - then a barrier hands the fully
+/// written matrix to all 32 lanes, which `ldmatrix.trans.x1` and unpack
+/// into `out[2*lane]`/`out[2*lane+1]`. Checking the output expressions
+/// against `in[expected_index]` verifies the exact per-lane mapping above,
+/// not just that the op runs.
+#[test]
+fn test_ldmatrix_trans_mapping() {
+    let mut init = String::new();
+    for k in 0..64u32 {
+        init.push_str(&format!(
+            "    ld.global.u16 %rs1, [%rd1+{off}];\n    st.shared.u16 [%r1+{off}], %rs1;\n",
+            off = k * 2
+        ));
+    }
+    let src = wrap(&format!(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{{
+    .reg .pred %p<2>;
+    .reg .b32 %r<10>;
+    .reg .b16 %rs<5>;
+    .reg .b64 %rd<5>;
+    .shared .align 16 .b8 sdata[128];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, sdata;
+    mov.u32 %r2, %tid.x;
+    setp.eq.u32 %p1, %r2, 0;
+    @!%p1 bra $L1;
+{init}
+$L1:
+    bar.sync 0;
+    shl.b32 %r3, %r2, 4;
+    add.s32 %r4, %r1, %r3;
+    ldmatrix.sync.aligned.x1.trans.m8n8.shared.b16 {{%r5}}, [%r4];
+    mov.b32 {{%rs2, %rs3}}, %r5;
+    shl.b32 %r6, %r2, 2;
+    cvt.s64.s32 %rd3, %r6;
+    add.s64 %rd4, %rd2, %rd3;
+    st.global.u16 [%rd4], %rs2;
+    st.global.u16 [%rd4+2], %rs3;
+    ret;
+}}
+",
+        init = init
+    ));
+
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).expect("ldmatrix.trans mapping");
+
+    for lane in 0u64..32 {
+        let row_lo = 2 * (lane % 4);
+        let row_hi = row_lo + 1;
+        let col = lane / 4;
+        let expect_lo = row_lo * 8 + col;
+        let expect_hi = row_hi * 8 + col;
+        assert_eq!(
+            display_output(&output, "out", 2 * lane),
+            format!("in[{}]", expect_lo),
+            "lane {} low half",
+            lane
+        );
+        assert_eq!(
+            display_output(&output, "out", 2 * lane + 1),
+            format!("in[{}]", expect_hi),
+            "lane {} high half",
+            lane
+        );
+    }
+}
+
 /// One full-warp wmma.load.a body with base `sdata + extra` and the given
 /// stride (in f16 elements).
 fn wmma_load_body(extra: u32, stride: u32) -> String {

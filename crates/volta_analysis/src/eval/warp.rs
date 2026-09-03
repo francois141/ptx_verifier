@@ -170,8 +170,10 @@ impl Interpreter<'_> {
                     clamp,
                 )?;
             }
-            LoweredInstr::Ldmatrix { dst, addr, num, .. } => {
-                self.exec_ldmatrix(pc, members, dst, addr, *num)?;
+            LoweredInstr::Ldmatrix {
+                dst, addr, num, trans,
+            } => {
+                self.exec_ldmatrix(pc, members, dst, addr, *num, *trans)?;
             }
             LoweredInstr::Mma { .. } => self.exec_mma(pc, members, &instr)?,
             LoweredInstr::WmmaLoad { .. } => self.exec_wmma_load(pc, members, &instr)?,
@@ -204,15 +206,7 @@ impl Interpreter<'_> {
             // Both handle exited lanes per-op (Undefined shfl source data,
             // arrived-at-sync semantics), so a partial warp is fine.
             LoweredInstr::BarWarpSync { .. } | LoweredInstr::ShflSync { .. } => Ok(()),
-            LoweredInstr::Ldmatrix {
-                dst, num, trans, ..
-            } => {
-                if *trans {
-                    return Err(EvalError::Unsupported {
-                        pc,
-                        what: "ldmatrix .trans".to_string(),
-                    });
-                }
+            LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // Covers the exited address-supplying lane in particular:
                 // lane `i*8 + r` holds row r's address in a register, and
                 // an exited lane's registers are not observable, so the
@@ -372,13 +366,22 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `ldmatrix.sync.aligned.xN.m8n8.shared.b16`: cooperative load of N
-    /// 8x8 b16 matrices. Lane `i*8 + r` supplies the address of row `r` of
-    /// matrix `i`; lane `l` receives elements (row `l/4`, cols `(l%4)*2`,
-    /// `(l%4)*2+1`) of each matrix as a packed pair.
+    /// `ldmatrix.sync.aligned.xN.m8n8{.trans}.shared.b16`: cooperative load
+    /// of N 8x8 b16 matrices. Lane `i*8 + r` supplies the address of
+    /// (physical, in-memory) row `r` of matrix `i`.
     ///
-    /// `check_warp_op_preconditions` already established: no `.trans`, all
-    /// 32 lanes live, `dst.len() == num`.
+    /// Without `.trans`, lane `l` receives elements (row `l/4`, cols
+    /// `(l%4)*2`, `(l%4)*2+1`) of each matrix as a packed pair - two
+    /// contiguous elements from one supplied row, read as a single 4-byte
+    /// access. With `.trans`, the destination is the on-the-fly transpose:
+    /// lane `l` receives elements (row `(l%4)*2`, col `l/4`) and (row
+    /// `(l%4)*2+1`, col `l/4`) - one element each from two different
+    /// supplied rows, at the same column offset, so each half needs its own
+    /// 2-byte access (the two source elements are 16 bytes apart in memory,
+    /// not contiguous).
+    ///
+    /// `check_warp_op_preconditions` already established: all 32 lanes
+    /// live, `dst.len() == num`.
     fn exec_ldmatrix(
         &mut self,
         pc: InstrId,
@@ -386,10 +389,13 @@ impl Interpreter<'_> {
         dst: &[RegId],
         addr: &Operand,
         num: u32,
+        trans: bool,
     ) -> EvalResult<()> {
         // Row addresses come from the first num*8 lanes. Each row is loaded
         // by a group of four lanes as one 16-byte access, so every row
-        // address must be 16-byte aligned (see `LDMATRIX_ROW_BYTES`).
+        // address must be 16-byte aligned (see `LDMATRIX_ROW_BYTES`) -
+        // regardless of `.trans`, since the address-supplying lanes and the
+        // physical rows they name are the same either way.
         let mut row_addr = vec![[0u64; 8]; num as usize];
         for i in 0..num as usize {
             for r in 0..8 {
@@ -403,11 +409,39 @@ impl Interpreter<'_> {
         for &m in members {
             let lane = m.0 % WARP_SIZE;
             for (i, reg) in dst.iter().enumerate() {
-                // Wrap-free in every profile: the row address passed the
-                // 16-byte alignment check above, so it is at most
-                // `u64::MAX - 15`, and the lane offset is at most 12.
-                let byte = row_addr[i][(lane / 4) as usize] + (lane % 4) as u64 * 4;
-                let v = self.mem_read(m, pc, MemSpace::Shared, byte, 4)?;
+                let v = if trans {
+                    // Column `lane/4`, rows `2*(lane%4)` (lo half) and
+                    // `2*(lane%4)+1` (hi half) - two independent 2-byte
+                    // reads, since the elements are not adjacent in memory.
+                    let col_byte = (lane / 4) as u64 * 2;
+                    let lo_row = 2 * (lane % 4) as usize;
+                    let lo = self.mem_read(
+                        m,
+                        pc,
+                        MemSpace::Shared,
+                        row_addr[i][lo_row] + col_byte,
+                        2,
+                    )?;
+                    let hi = self.mem_read(
+                        m,
+                        pc,
+                        MemSpace::Shared,
+                        row_addr[i][lo_row + 1] + col_byte,
+                        2,
+                    )?;
+                    Value::Pair(
+                        lo.as_scalar()
+                            .expect("2-byte read never yields a Pair"),
+                        hi.as_scalar()
+                            .expect("2-byte read never yields a Pair"),
+                    )
+                } else {
+                    // Wrap-free in every profile: the row address passed
+                    // the 16-byte alignment check above, so it is at most
+                    // `u64::MAX - 15`, and the lane offset is at most 12.
+                    let byte = row_addr[i][(lane / 4) as usize] + (lane % 4) as u64 * 4;
+                    self.mem_read(m, pc, MemSpace::Shared, byte, 4)?
+                };
                 self.threads[m].regs.write(*reg, v);
             }
         }
