@@ -20,6 +20,7 @@
 //!              | "(" expr ")"
 //! args        := reduction | expr ("," expr)*
 //! reduction   := IDENT "in" expr ".." expr "," expr            ; sum(k in 0..K, body)
+//!                                                               ; max(k in 0..K, body)
 //!
 //! index_expr  := index_mul (("+") index_mul)*
 //! index_mul   := index_primary (("*") index_primary)*
@@ -34,15 +35,18 @@
 //! deferred lowering error.
 //!
 //! Builtin calls, dispatched by name in `parse_call`: `exp`, `log`,
-//! `sqrt`, `abs` (direct `SpecExpr` unary ops), `min`/`max` (binary ops),
+//! `sqrt`, `abs` (direct `SpecExpr` unary ops), `min` (binary op only),
 //! `pow(x, N)` (desugars to repeated multiplication - `N` must be a
 //! non-negative integer literal), `tanh(x)` (desugars to
-//! `(exp(2x)-1)/(exp(2x)+1)`; no native `Tanh` node exists), and `sum`
-//! (the reduction form above).
+//! `(exp(2x)-1)/(exp(2x)+1)`; no native `Tanh` node exists), and `sum`/
+//! `max` (both the binary op and the reduction form above - `max(a, b)`
+//! vs. `max(k in 0..K, body)` are disambiguated by a 2-token lookahead
+//! for the `IDENT "in"` reduction head, since both start with an
+//! expression that may itself begin with a bare identifier).
 
 use std::fmt;
 
-use volta_analysis::spec::{Bound, IndexExpr, SpecExpr};
+use volta_analysis::spec::{Bound, IndexExpr, ReduceOp, SpecExpr};
 use volta_common::Span;
 use volta_common::report::Locate;
 
@@ -56,10 +60,10 @@ pub enum ParseErrorKind {
         found: TokenKind,
     },
     UnknownFunction(String),
-    /// `sum`'s range must start at the literal `0` - `Sum` in
-    /// `volta_analysis::spec` only expresses `0..bound`, no arbitrary
-    /// start (see that module's docs).
-    SumRangeMustStartAtZero,
+    /// A reduction's (`sum`/`max`) range must start at the literal `0` -
+    /// `Reduce` in `volta_analysis::spec` only expresses `0..bound`, no
+    /// arbitrary start (see that module's docs).
+    ReductionRangeMustStartAtZero,
     /// A `sum` bound (or an array dim reference) must be an integer
     /// literal or a bare `dim` name - anything else can't become a
     /// `Bound` (`Const`/`Named` only).
@@ -77,10 +81,10 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "expected {}, found {}", expected, found)
             }
             ParseErrorKind::UnknownFunction(name) => write!(f, "unknown function '{}'", name),
-            ParseErrorKind::SumRangeMustStartAtZero => {
+            ParseErrorKind::ReductionRangeMustStartAtZero => {
                 write!(
                     f,
-                    "a sum's range must start at 0, e.g. 'sum(k in 0..K, ...)'"
+                    "a reduction's range must start at 0, e.g. 'sum(k in 0..K, ...)' or 'max(k in 0..K, ...)'"
                 )
             }
             ParseErrorKind::InvalidBound => write!(
@@ -355,21 +359,8 @@ impl Parser {
     fn parse_call(&mut self, name: &str) -> Result<SpecExpr, ParseError> {
         match name {
             "sum" => {
-                let (var, _) = self.eat_ident()?;
-                self.eat_keyword("in")?;
-                let lo = self.parse_expr()?;
-                self.expect(TokenKind::DotDot, "'..'")?;
-                let hi_span = self.peek().span;
-                let hi = self.parse_expr()?;
-                self.expect(TokenKind::Comma, "','")?;
-                let body = self.parse_expr()?;
-                let close = self.expect(TokenKind::RParen, "')'")?;
-                if !matches!(lo, SpecExpr::Int(0)) {
-                    return Err(err_at(close.span, ParseErrorKind::SumRangeMustStartAtZero));
-                }
-                let bound = expr_to_bound(&hi)
-                    .ok_or_else(|| err_at(hi_span, ParseErrorKind::InvalidBound))?;
-                Ok(SpecExpr::sum(var, bound, body))
+                let (var, bound, body) = self.parse_reduction()?;
+                Ok(SpecExpr::reduce(ReduceOp::Sum, var, bound, body))
             }
             "exp" => Ok(self.parse_unary_call()?.exp()),
             "log" => Ok(self.parse_unary_call()?.log()),
@@ -381,8 +372,13 @@ impl Parser {
                 Ok(a.min(b))
             }
             "max" => {
-                let (a, b) = self.parse_binary_call()?;
-                Ok(a.max(b))
+                if self.at_reduction_head() {
+                    let (var, bound, body) = self.parse_reduction()?;
+                    Ok(SpecExpr::reduce(ReduceOp::Max, var, bound, body))
+                } else {
+                    let (a, b) = self.parse_binary_call()?;
+                    Ok(a.max(b))
+                }
             }
             "pow" => {
                 let exp_span_start = self.pos;
@@ -398,6 +394,42 @@ impl Parser {
                 ParseErrorKind::UnknownFunction(other.to_string()),
             )),
         }
+    }
+
+    /// True if the tokens right after a call's `(` are `IDENT "in"` - the
+    /// unambiguous head of a reduction's argument list, as opposed to a
+    /// bare expression that happens to start with an identifier (e.g. the
+    /// `A` in `max(A[i], 0)`).
+    fn at_reduction_head(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Ident(_))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                Some(TokenKind::Ident(w)) if w == "in"
+            )
+    }
+
+    /// Parse a reduction's argument list - `IDENT "in" expr ".." expr ","
+    /// expr ")"` - shared by `sum` and `max`; `(` and the call name are
+    /// already consumed by the caller.
+    fn parse_reduction(&mut self) -> Result<(String, Bound, SpecExpr), ParseError> {
+        let (var, _) = self.eat_ident()?;
+        self.eat_keyword("in")?;
+        let lo = self.parse_expr()?;
+        self.expect(TokenKind::DotDot, "'..'")?;
+        let hi_span = self.peek().span;
+        let hi = self.parse_expr()?;
+        self.expect(TokenKind::Comma, "','")?;
+        let body = self.parse_expr()?;
+        let close = self.expect(TokenKind::RParen, "')'")?;
+        if !matches!(lo, SpecExpr::Int(0)) {
+            return Err(err_at(
+                close.span,
+                ParseErrorKind::ReductionRangeMustStartAtZero,
+            ));
+        }
+        let bound =
+            expr_to_bound(&hi).ok_or_else(|| err_at(hi_span, ParseErrorKind::InvalidBound))?;
+        Ok((var, bound, body))
     }
 
     fn parse_unary_call(&mut self) -> Result<SpecExpr, ParseError> {
@@ -516,7 +548,13 @@ mod tests {
         assert_eq!(spec.outputs.len(), 1);
         assert_eq!(spec.outputs[0].array, "C");
         assert_eq!(spec.outputs[0].vars, vec!["i", "j"]);
-        assert!(matches!(spec.outputs[0].body, SpecExpr::Sum { .. }));
+        assert!(matches!(
+            spec.outputs[0].body,
+            SpecExpr::Reduce {
+                op: ReduceOp::Sum,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -551,6 +589,27 @@ mod tests {
     fn min_and_max_are_binary_builtins() {
         let body = output_body("dim N; array A[N];\nC[i] = min(A[i], 0);");
         assert!(matches!(body, SpecExpr::Min(_, _)));
+        let body = output_body("dim N; array A[N];\nC[i] = max(A[i], 0);");
+        assert!(matches!(body, SpecExpr::Max(_, _)));
+    }
+
+    #[test]
+    fn max_as_reduction_parses_like_sum() {
+        let body = output_body("dim N; array A[N];\nC[i] = max(k in 0..N, A[k]);");
+        assert!(matches!(
+            body,
+            SpecExpr::Reduce {
+                op: ReduceOp::Max,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn max_reduction_does_not_shadow_a_var_named_max_used_as_a_plain_ident() {
+        // `max(A[i], 0)`'s first token is an identifier (`A`) but not
+        // followed by `in`, so it must fall back to the binary form
+        // rather than erroring as a malformed reduction head.
         let body = output_body("dim N; array A[N];\nC[i] = max(A[i], 0);");
         assert!(matches!(body, SpecExpr::Max(_, _)));
     }
@@ -594,7 +653,19 @@ mod tests {
     #[test]
     fn sum_range_must_start_at_zero() {
         let err = parse_spec("dim N; array A[N];\nC[i] = sum(k in 1..N, A[k]);").unwrap_err();
-        assert!(matches!(err.error, ParseErrorKind::SumRangeMustStartAtZero));
+        assert!(matches!(
+            err.error,
+            ParseErrorKind::ReductionRangeMustStartAtZero
+        ));
+    }
+
+    #[test]
+    fn max_reduction_range_must_start_at_zero() {
+        let err = parse_spec("dim N; array A[N];\nC[i] = max(k in 1..N, A[k]);").unwrap_err();
+        assert!(matches!(
+            err.error,
+            ParseErrorKind::ReductionRangeMustStartAtZero
+        ));
     }
 
     #[test]
