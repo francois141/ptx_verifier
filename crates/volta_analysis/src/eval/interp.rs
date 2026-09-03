@@ -761,9 +761,9 @@ impl<'p> Interpreter<'p> {
                 // total size's.
                 self.check_bounds(t, pc, *space, addr, src.len() as u64 * width)?;
                 self.check_alignment(t, pc, *space, addr, src.len() as u64 * width)?;
-                for (k, reg) in src.iter().enumerate() {
-                    let v = self.read_reg(t, pc, *reg)?;
-                    let v = self.canon_stored(t, pc, *ty, Some(reg_bits(*reg)), v)?;
+                for (k, op) in src.iter().enumerate() {
+                    let v = self.operand_value(t, pc, op)?;
+                    let v = self.canon_stored(t, pc, *ty, operand_reg_bits(op), v)?;
                     self.mem_write(t, pc, *space, addr + k as u64 * width, width, v)?;
                 }
             }

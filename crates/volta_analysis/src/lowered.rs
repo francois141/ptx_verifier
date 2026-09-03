@@ -276,12 +276,16 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
-    /// Vector store
+    /// Vector store. Unlike `LoadVec`'s destination (always plain
+    /// registers), each source element may be any operand - a store reads
+    /// its source rather than writing it, so an immediate (e.g. `{%f1,
+    /// %f2, 0f00000000, %f4}`, a common "zero-init one lane" idiom) is
+    /// just as valid as a register.
     StoreVec {
         space: MemSpace,
         base: Operand,
         offset: i64,
-        src: Vec<RegId>,
+        src: Vec<Operand>,
         ty: ScalarType,
     },
 
@@ -553,13 +557,17 @@ pub enum LoweredInstr {
         trans: bool,
     },
 
-    /// Matrix multiply-accumulate via mma.sync API
+    /// Matrix multiply-accumulate via mma.sync API. `src_c` (the
+    /// accumulator) may be any operand, not just a register: nvcc's
+    /// "first tile has no accumulator yet" idiom passes immediate-zero
+    /// literals directly (`{0f00000000, ...}`) rather than zeroing
+    /// registers first.
     Mma {
         shape: crate::tensor_core::MmaShape,
         dst: Vec<RegId>,
         src_a: Vec<RegId>,
         src_b: Vec<RegId>,
-        src_c: Vec<RegId>,
+        src_c: Vec<Operand>,
         a_layout: crate::tensor_core::MmaLayout,
         b_layout: crate::tensor_core::MmaLayout,
         a_type: ScalarType,
@@ -733,7 +741,7 @@ impl LoweredInstr {
             }
             Self::StoreVec { base, src, .. } => {
                 let mut r: Vec<RegId> = from_op(base).into_iter().collect();
-                r.extend(src.iter().copied());
+                r.extend(from_ops(src));
                 r
             }
             Self::CpAsync {
@@ -832,8 +840,14 @@ impl LoweredInstr {
                 src_b,
                 src_c,
                 ..
+            } => {
+                let mut r = Vec::new();
+                r.extend(src_a.iter().copied());
+                r.extend(src_b.iter().copied());
+                r.extend(from_ops(src_c));
+                r
             }
-            | Self::WmmaMma {
+            Self::WmmaMma {
                 src_a,
                 src_b,
                 src_c,

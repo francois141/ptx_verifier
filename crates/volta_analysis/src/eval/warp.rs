@@ -659,6 +659,12 @@ impl Interpreter<'_> {
             unreachable!()
         };
 
+        // `WmmaMma`'s accumulator is always a genuine register (unlike
+        // `Mma`'s, `wmma.mma`'s C operand has no immediate-literal form
+        // in the corpus); `gather_f32_fragment` takes operands to serve
+        // both, so lift these into that shape here.
+        let src_c_ops: Vec<Operand> = src_c.iter().copied().map(Operand::Reg).collect();
+
         let mut a = Grid::new(16, 16);
         let mut b = Grid::new(16, 16);
         let mut c = Grid::new(16, 16);
@@ -666,7 +672,7 @@ impl Interpreter<'_> {
             let lane = m.0 % WARP_SIZE;
             self.gather_f16_fragment(pc, m, src_a, &m16n16k16_f16::matrix_a_row(lane), &mut a)?;
             self.gather_f16_fragment(pc, m, src_b, &m16n16k16_f16::matrix_b_row(lane), &mut b)?;
-            self.gather_f32_fragment(pc, m, src_c, &m16n16k16_f16::matrix_cd_f32(lane), &mut c)?;
+            self.gather_f32_fragment(pc, m, &src_c_ops, &m16n16k16_f16::matrix_cd_f32(lane), &mut c)?;
         }
 
         let d = self.matmul_acc(pc, &a, &b, &c, 16, 16, 16)?;
@@ -818,17 +824,21 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Place one lane's f32 accumulator fragment registers into a grid.
+    /// Place one lane's f32 accumulator fragment into a grid. Unlike the
+    /// f16 multiplicand fragments (always registers, loaded via
+    /// `ldmatrix`), an `mma.sync` accumulator may be an immediate literal
+    /// (nvcc's "first tile has no accumulator yet" idiom), so this takes
+    /// operands rather than bare registers.
     fn gather_f32_fragment(
         &mut self,
         pc: InstrId,
         m: ThreadId,
-        regs: &[RegId],
+        ops: &[Operand],
         elems: &[FragmentElement],
         grid: &mut Grid,
     ) -> EvalResult<()> {
         for elem in elems {
-            let v = self.read_reg(m, pc, regs[elem.reg_idx])?;
+            let v = self.operand_value(m, pc, &ops[elem.reg_idx])?;
             let Value::Scalar(e) = v else {
                 return Err(EvalError::ValueKindMismatch {
                     thread: m,
