@@ -1,3 +1,41 @@
+# NOTICE
+
+This is an experimental fork of Volta, for the original repo see [here](https://github.com/willtunnels/volta).
+
+## Usage
+
+To check a kernel for data races:
+
+```
+volta analyze <path/to/kernel.ptx> \
+  -k kernel -b 128 -g 1 \
+  --array x:0x100000000:4:1048576:in --array output:0x200000000:4:1048576:out \
+  --param ptr:x --param ptr:output --param int:0 --param int:0
+```
+
+Note that the parameters and tensor array addresses and sizes must match the expected parameters of the kernel.
+
+To check a kernel against a spec, first write the spec in a file, e.g. relu.spec:
+
+```
+dim N;
+array x[N];
+array output[N];
+output[i] = max(x[i], 0);
+```
+
+Then invoke `volte verify`:
+
+
+```
+volta verify <path/to/kernel.ptx> relu.spec \
+  -k kernel -b 128 -g 1 --dim N=256 \
+  --array x:0x100000000:4:1048576:in --array output:0x200000000:4:1048576:out \
+  --param ptr:x --param ptr:output --param int:0 --param int:0
+```
+
+Original README below:
+
 # Volta
 
 Volta is a data race and equivalence checker for NVIDIA GPU kernels, implementing "Equivalence Checking of ML GPU Kernels" (OOPSLA 2026). Given a reference kernel and an optimized counterpart, Volta proves them semantically equivalent over the reals — identical outputs on all valid inputs, with floating-point values modeled as real numbers — thereby verifying the correctness of the optimized kernel.
