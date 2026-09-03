@@ -595,6 +595,40 @@ fn test_aligned_vector_load() {
     assert_eq!(display_output(&output, "out", 0), "in[3]");
 }
 
+/// A vector store's source list may mix immediates with registers (e.g.
+/// `{%f1, 0f00000000, %f2, 0f3F800000}`, the "zero/one-init one lane"
+/// idiom nvcc emits) - not just plain registers like a vector load's
+/// destination.
+#[test]
+fn test_vector_store_with_immediate_source() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %f1, [%rd1];
+    ld.global.f32 %f2, [%rd1+4];
+    st.global.v4.f32 [%rd2], {%f1, 0f00000000, %f2, 0f3F800000};
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = in_out_config(1, 8);
+    config.arrays[1].len = 4; // out: exactly the 4 stored elements
+    let output = analyze_kernel(&module, None, config).expect("vector store with immediate");
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+    assert_eq!(display_output(&output, "out", 1), "0");
+    assert_eq!(display_output(&output, "out", 2), "in[1]");
+    assert_eq!(display_output(&output, "out", 3), "1");
+}
+
 /// One full-warp ldmatrix.x4 body; each lane supplies the row address
 /// `sdata + tid*16 + extra` (lane i*8+r owns row r of matrix i).
 fn ldmatrix_body(extra: u32) -> String {
@@ -743,6 +777,67 @@ $L1:
             lane
         );
     }
+}
+
+/// `mma.sync`'s accumulator operand may be an immediate literal, not just a
+/// register - nvcc's "first tile has no accumulator yet" idiom passes
+/// `{0f00000000, ...}` directly. A/B are packed all-zero fragments (built
+/// via `mov.b32 {lo,hi}` so `gather_f16_fragment` sees a genuine
+/// `Value::Pair`, not a bit pattern), so `D = A*B + C` folds exactly to
+/// `C` - thread 0's fragment (`m16n8k16_f16::matrix_cd(0)`, all `reg_idx`
+/// == `i` since its group/thread-in-group are both 0) then pins the
+/// literal accumulator `{1.0, 0, 0, 0}` straight through to its four
+/// destination registers.
+#[test]
+fn test_mma_with_immediate_accumulator() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<9>;
+    .reg .f32 %f<5>;
+    .reg .b64 %rd<4>;
+
+    mov.u16 %rs1, 0;
+    mov.u16 %rs2, 0;
+    mov.b32 %r1, {%rs1, %rs2};
+    mov.b32 %r2, {%rs1, %rs2};
+    mov.b32 %r3, {%rs1, %rs2};
+    mov.b32 %r4, {%rs1, %rs2};
+    mov.b32 %r5, {%rs1, %rs2};
+    mov.b32 %r6, {%rs1, %rs2};
+
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 \
+        {%f1, %f2, %f3, %f4}, {%r1, %r2, %r3, %r4}, {%r5, %r6}, \
+        {0f3F800000, 0f00000000, 0f00000000, 0f00000000};
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r7, %tid.x;
+    mul.lo.u32 %r8, %r7, 16;
+    cvt.u64.u32 %rd2, %r8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v4.f32 [%rd3], {%f1, %f2, %f3, %f4};
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 128,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).expect("mma with immediate accumulator");
+    assert_eq!(display_output(&output, "out", 0), "1");
+    assert_eq!(display_output(&output, "out", 1), "0");
+    assert_eq!(display_output(&output, "out", 2), "0");
+    assert_eq!(display_output(&output, "out", 3), "0");
 }
 
 /// One full-warp wmma.load.a body with base `sdata + extra` and the given

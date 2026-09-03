@@ -632,6 +632,18 @@ impl LoweringContext {
         }
     }
 
+    /// Resolve a vector-store source operand list, e.g. `{%f1, %f2,
+    /// 0f00000000, %f4}`. Unlike `resolve_dst_vector` (destination
+    /// registers only, since a load writes into them), each element here
+    /// may be any operand `resolve_operand` accepts - registers and
+    /// immediates alike - since a store reads its source.
+    fn resolve_operand_vector(&self, op: &AstOperand) -> LowerResult<Vec<Operand>> {
+        match op {
+            AstOperand::Vector(elems) => elems.iter().map(|e| self.resolve_operand(e)).collect(),
+            _ => Ok(vec![self.resolve_operand(op)?]),
+        }
+    }
+
     /// Resolve a vector of destination registers
     fn resolve_dst_vector(&self, op: &AstOperand) -> LowerResult<Vec<RegId>> {
         match op {
@@ -3378,15 +3390,13 @@ fn lower_store(
 
     // Check if source is a vector (e.g., {%f1, %f2, %f3, %f4})
     if let AstOperand::Vector(_) = src {
-        // Vector store - emit StoreVec
-        // For vectors, we'd need to check each element, but for now just resolve
-        let src_regs = ctx.resolve_dst_vector(src)?;
+        let src_ops = ctx.resolve_operand_vector(src)?;
         ctx.emit(
             LoweredInstr::StoreVec {
                 space,
                 base,
                 offset,
-                src: src_regs,
+                src: src_ops,
                 ty: *ty,
             },
             predicate,
@@ -4225,7 +4235,7 @@ fn lower_mma(
     let dst = ctx.resolve_dst_vector(&operands[0])?;
     let src_a = ctx.resolve_dst_vector(&operands[1])?;
     let src_b = ctx.resolve_dst_vector(&operands[2])?;
-    let src_c = ctx.resolve_dst_vector(&operands[3])?;
+    let src_c = ctx.resolve_operand_vector(&operands[3])?;
 
     let a_layout = layouts[0];
     let b_layout = layouts[1];
