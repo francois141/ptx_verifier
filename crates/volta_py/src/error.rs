@@ -50,20 +50,37 @@ fn locate(source: &str, offset: usize) -> (usize, usize, &str) {
     (line, col, line_text)
 }
 
-pub fn parse_error_to_py(source: &str, err: &ParseError) -> PyErr {
-    let title = err.error.title();
-    let message = err.error.message();
+/// Render a title + message + optional span into `parse_error_to_py`'s
+/// plain-text "line N, col M" + source line + caret format, against the
+/// in-memory source the span indexes into.
+fn format_located(source: &str, title: &str, message: Option<&str>, span: Option<Span>) -> String {
     let mut text = title.to_string();
-    if let Some(message) = &message {
+    if let Some(message) = message {
         text.push_str(": ");
         text.push_str(message);
     }
-    if let Some(Span(lo, _hi)) = err.span {
+    if let Some(Span(lo, _hi)) = span {
         let (line, col, line_text) = locate(source, lo);
         text.push_str(&format!("\n  --> line {}, column {}\n", line, col));
         text.push_str(&format!("  | {}\n", line_text));
         text.push_str(&format!("  | {}^", " ".repeat(col.saturating_sub(1))));
     }
+    text
+}
+
+pub fn parse_error_to_py(source: &str, err: &ParseError) -> PyErr {
+    let text = format_located(source, err.error.title(), err.error.message().as_deref(), err.span);
+    VoltaError::new_err(text)
+}
+
+/// Spec-language parse errors (`volta_spec::parse::ParseError`) only
+/// implement `Display`, unlike the PTX parser's `title()`/`message()`
+/// pair, so this uses a fixed title and the error's `Display` text as the
+/// message - same rendering the CLI uses for `Report { title: "spec
+/// parse error", message: Some(&e.error.to_string()), .. }`.
+pub fn spec_parse_error_to_py(source: &str, err: &volta_spec::parse::ParseError) -> PyErr {
+    let message = err.error.to_string();
+    let text = format_located(source, "spec parse error", Some(&message), err.span);
     VoltaError::new_err(text)
 }
 
@@ -73,4 +90,12 @@ pub fn analysis_error_to_py(err: AnalysisError) -> PyErr {
         AnalysisError::Eval(EvalError::Deadlock { .. }) => DeadlockError::new_err(err.to_string()),
         _ => VoltaError::new_err(err.to_string()),
     }
+}
+
+/// Catch-all for error types that only implement `Display` (spec
+/// instantiation, unfolding, and equivalence-check errors) - none of
+/// these are analysis *findings* like `DataRace`/`Deadlock`, just
+/// ordinary failures.
+pub fn other_error_to_py(err: impl std::fmt::Display) -> PyErr {
+    VoltaError::new_err(err.to_string())
 }
