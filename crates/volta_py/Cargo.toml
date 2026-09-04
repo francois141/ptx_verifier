@@ -1,0 +1,15 @@
+[package]
+name = "volta_py"
+version.workspace = true
+edition.workspace = true
+description = "Python bindings for the Volta PTX analysis engine"
+
+[lib]
+name = "volta"
+crate-type = ["cdylib"]
+
+[dependencies]
+volta_analysis.workspace = true
+volta_common.workspace = true
+volta_frontend.workspace = true
+pyo3 = { version = "0.29", features = ["extension-module"] }
