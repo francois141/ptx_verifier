@@ -6,16 +6,21 @@
 //! caret snippet instead of reusing `volta_common::report`'s ANSI-styled,
 //! `FileCache`-backed formatter.
 
+use pyo3::PyErr;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
-use pyo3::PyErr;
 
 use volta_analysis::driver::AnalysisError;
 use volta_analysis::eval::EvalError;
 use volta_common::Span;
 use volta_frontend::parse::ParseError;
 
-create_exception!(volta, VoltaError, PyException, "Base exception for Volta errors.");
+create_exception!(
+    volta,
+    VoltaError,
+    PyException,
+    "Base exception for Volta errors."
+);
 create_exception!(
     volta,
     DataRaceError,
@@ -69,7 +74,12 @@ fn format_located(source: &str, title: &str, message: Option<&str>, span: Option
 }
 
 pub fn parse_error_to_py(source: &str, err: &ParseError) -> PyErr {
-    let text = format_located(source, err.error.title(), err.error.message().as_deref(), err.span);
+    let text = format_located(
+        source,
+        err.error.title(),
+        err.error.message().as_deref(),
+        err.span,
+    );
     VoltaError::new_err(text)
 }
 

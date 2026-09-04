@@ -1425,27 +1425,30 @@ impl<'p> Interpreter<'p> {
         match self.operand_value(t, pc, op)? {
             Value::Pair(lo, hi) => Ok((lo, hi)),
             Value::Scalar(e) => {
-                let bits = self
-                    .arena
-                    .as_i64(e)
-                    .ok_or(EvalError::ValueKindMismatch {
-                        thread: t,
-                        pc,
-                        what: "symbolic scalar used as a packed pair",
-                    })? as u32;
+                let bits = self.arena.as_i64(e).ok_or(EvalError::ValueKindMismatch {
+                    thread: t,
+                    pc,
+                    what: "symbolic scalar used as a packed pair",
+                })? as u32;
                 let (lo_v, hi_v) =
                     decode_packed_bits(bits, lane_ty).ok_or_else(|| EvalError::Unsupported {
                         pc,
                         what: "NaN half in a packed-pair bit pattern".to_string(),
                     })?;
-                let lo = self.arena.float_from_f64(lo_v).map_err(|e| EvalError::Unsupported {
-                    pc,
-                    what: format!("packed-pair lane constant: {}", e),
-                })?;
-                let hi = self.arena.float_from_f64(hi_v).map_err(|e| EvalError::Unsupported {
-                    pc,
-                    what: format!("packed-pair lane constant: {}", e),
-                })?;
+                let lo = self
+                    .arena
+                    .float_from_f64(lo_v)
+                    .map_err(|e| EvalError::Unsupported {
+                        pc,
+                        what: format!("packed-pair lane constant: {}", e),
+                    })?;
+                let hi = self
+                    .arena
+                    .float_from_f64(hi_v)
+                    .map_err(|e| EvalError::Unsupported {
+                        pc,
+                        what: format!("packed-pair lane constant: {}", e),
+                    })?;
                 Ok((lo, hi))
             }
         }

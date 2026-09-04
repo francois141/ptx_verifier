@@ -84,11 +84,7 @@ pub fn print_results_table(
     // to here so their Z3 cells align with the main rows'.
     let pre_z3_width = width;
     if z3 {
-        write!(
-            out,
-            " {:>9}  Z3: equiv/diff/unk/to/unsup/err",
-            "Z3 (s)"
-        )?;
+        write!(out, " {:>9}  Z3: equiv/diff/unk/to/unsup/err", "Z3 (s)")?;
         width += 43;
     }
     writeln!(out)?;

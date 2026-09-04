@@ -15,11 +15,11 @@ use volta_common::Span;
 use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
-    CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr,
-    FmaInstr, FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr,
-    MaxInstr, MemSemantics, MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand,
-    ParsedInstruction, ScalarType, SetpInstr, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
-    SharedStateSpaceQualifier, StateSpace, Statement, SubInstr, VarDecl, VecWidth,
+    CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr, FmaInstr, FromAscii,
+    Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr, MemSemantics,
+    MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand, ParsedInstruction, ScalarType,
+    SetpInstr, SharedStateSpaceQualifier, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
+    StateSpace, Statement, SubInstr, VarDecl, VecWidth,
 };
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::{is_cache_perf_hint, parse_instruction};
@@ -1301,7 +1301,15 @@ fn lower_parsed_instruction(
                     return Err(unsupported("ex2", "f16/bf16 packed forms"));
                 }
             };
-            lower_float_unary(ctx, UnaryOp::Ex2, "ex2", ScalarType::F32, dst, src, predicate)?;
+            lower_float_unary(
+                ctx,
+                UnaryOp::Ex2,
+                "ex2",
+                ScalarType::F32,
+                dst,
+                src,
+                predicate,
+            )?;
         }
 
         // =========================================================================
@@ -1327,7 +1335,15 @@ fn lower_parsed_instruction(
             ) {
                 return Err(unsupported("tanh", format!("{:?} (invalid PTX)", tanh.ty)));
             }
-            lower_float_unary(ctx, UnaryOp::Tanh, "tanh", tanh.ty, &tanh.dst, &tanh.src, predicate)?;
+            lower_float_unary(
+                ctx,
+                UnaryOp::Tanh,
+                "tanh",
+                tanh.ty,
+                &tanh.dst,
+                &tanh.src,
+                predicate,
+            )?;
         }
 
         // =========================================================================
@@ -3444,7 +3460,9 @@ fn lower_cp_async(
     if *dst_qualifier != SharedStateSpaceQualifier::Cta {
         return Err(unsupported(
             "cp.async",
-            format!("shared::{dst_qualifier} (only the executing CTA's own shared memory is modeled)"),
+            format!(
+                "shared::{dst_qualifier} (only the executing CTA's own shared memory is modeled)"
+            ),
         ));
     }
 
@@ -5293,7 +5311,10 @@ mod tests {
         assert_lowers("mov.b64 {%r1, %r2}, %rd1;");
         // >2-element unpack and vector-to-vector mov stay unsupported - no
         // faithful model, and the corpus never emits either.
-        assert_rejected("mov.b32 {%rs1, %rs2, %rs3}, %r1;", "2-element vector unpack");
+        assert_rejected(
+            "mov.b32 {%rs1, %rs2, %rs3}, %r1;",
+            "2-element vector unpack",
+        );
         assert_rejected(
             "mov.b32 {%rs1, %rs2}, {%rs3, %rs4};",
             "vector destination and vector source together",
@@ -5305,10 +5326,7 @@ mod tests {
         // The pack direction (vector source): mov.b32 dst, {lo, hi}.
         assert_lowers("mov.b32 %r1, {%rs1, %rs2};");
         assert_lowers("mov.b64 %rd1, {%r1, %r2};");
-        assert_rejected(
-            "mov.b32 %r1, {%rs1, %rs2, %rs3};",
-            "2-element vector pack",
-        );
+        assert_rejected("mov.b32 %r1, {%rs1, %rs2, %rs3};", "2-element vector pack");
     }
 
     #[test]
@@ -5406,9 +5424,7 @@ mod tests {
         assert_lowers("ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%r1, %r2, %r3, %r4}, [%r5];");
         assert_lowers("ldmatrix.sync.aligned.x2.m8n8.trans.shared.b16 {%r1, %r2}, [%r5];");
         // `::cta` lowers the same as unqualified `.shared`.
-        assert_lowers(
-            "ldmatrix.sync.aligned.x4.m8n8.shared::cta.b16 {%r1, %r2, %r3, %r4}, [%r5];",
-        );
+        assert_lowers("ldmatrix.sync.aligned.x4.m8n8.shared::cta.b16 {%r1, %r2, %r3, %r4}, [%r5];");
         // `::cluster` is not modeled and must be rejected loudly.
         assert_rejected(
             "ldmatrix.sync.aligned.x4.m8n8.shared::cluster.b16 {%r1, %r2, %r3, %r4}, [%r5];",
@@ -5511,8 +5527,8 @@ mod tests {
         assert!(found, "expected a lowered CpAsync instruction");
 
         // A general-purpose register 4th operand is `src-size`.
-        let prog = lower_body("cp.async.ca.shared.global [smem], [%rd0], 16, %r0;")
-            .expect("should lower");
+        let prog =
+            lower_body("cp.async.ca.shared.global [smem], [%rd0], 16, %r0;").expect("should lower");
         let src_size = prog
             .instructions
             .values()
@@ -5528,8 +5544,8 @@ mod tests {
         );
 
         // A predicate register 4th operand is `ignore-src`.
-        let prog = lower_body("cp.async.ca.shared.global [smem], [%rd0], 16, %p0;")
-            .expect("should lower");
+        let prog =
+            lower_body("cp.async.ca.shared.global [smem], [%rd0], 16, %p0;").expect("should lower");
         let src_size = prog
             .instructions
             .values()
@@ -5593,8 +5609,8 @@ mod tests {
                 })
                 .expect("expected a lowered CpAsync instruction")
         }
-        let plain = lower_body("cp.async.cg.shared.global [smem+4], [%rd0], 16;")
-            .expect("should lower");
+        let plain =
+            lower_body("cp.async.cg.shared.global [smem+4], [%rd0], 16;").expect("should lower");
         let qualified = lower_body("cp.async.cg.shared::cta.global [smem+4], [%rd0], 16;")
             .expect("shared::cta should lower the same as shared");
         assert_eq!(cp_async_dst(&plain), cp_async_dst(&qualified));

@@ -10,14 +10,14 @@ use std::num::NonZeroUsize;
 use pyo3::prelude::*;
 
 use volta_analysis::driver::{
-    analyze_kernel, check_output_equivalence_with, EquivCheckOptions, EquivOutcome,
+    EquivCheckOptions, EquivOutcome, analyze_kernel, check_output_equivalence_with,
 };
 use volta_analysis::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_analysis::spec::unfold;
 
-use crate::analyze::{parse_module, StatsPy};
+use crate::analyze::{StatsPy, parse_module};
 use crate::config::ConfigPy;
-use crate::error::{analysis_error_to_py, other_error_to_py, spec_parse_error_to_py, VoltaError};
+use crate::error::{VoltaError, analysis_error_to_py, other_error_to_py, spec_parse_error_to_py};
 
 #[pyclass(name = "VerifyResult")]
 pub struct VerifyResultPy {
@@ -59,12 +59,10 @@ pub fn verify(
 ) -> PyResult<VerifyResultPy> {
     let module = parse_module(source)?;
 
-    let parsed_spec =
-        volta_spec::parse_spec(spec).map_err(|e| spec_parse_error_to_py(spec, &e))?;
+    let parsed_spec = volta_spec::parse_spec(spec).map_err(|e| spec_parse_error_to_py(spec, &e))?;
 
     let dims = dims.unwrap_or_default();
-    let (env, specs) =
-        volta_spec::instantiate(&parsed_spec, &dims).map_err(other_error_to_py)?;
+    let (env, specs) = volta_spec::instantiate(&parsed_spec, &dims).map_err(other_error_to_py)?;
 
     // Every array the spec defines an output equation for, in
     // declaration order - the arrays to check.
@@ -75,10 +73,17 @@ pub fn verify(
         }
     }
     if check_arrays.is_empty() {
-        return Err(VoltaError::new_err("spec declares no output equations to check"));
+        return Err(VoltaError::new_err(
+            "spec declares no output equations to check",
+        ));
     }
     for name in &check_arrays {
-        if !config.0.arrays.iter().any(|a| a.kind.is_output() && &a.name == name) {
+        if !config
+            .0
+            .arrays
+            .iter()
+            .any(|a| a.kind.is_output() && &a.name == name)
+        {
             return Err(VoltaError::new_err(format!(
                 "verify requires a declared output array named '{}' (the spec defines it)",
                 name

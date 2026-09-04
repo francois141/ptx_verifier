@@ -338,10 +338,7 @@ fn translate_uncached(
 /// name via `Debug`, not the full (potentially huge) subtree.
 fn describe(node: &ExprNode) -> String {
     let s = format!("{:?}", node);
-    s.split([' ', '{', '('])
-        .next()
-        .unwrap_or(&s)
-        .to_string()
+    s.split([' ', '{', '(']).next().unwrap_or(&s).to_string()
 }
 
 /// Translate a whole root expression, returning its rendered term text.

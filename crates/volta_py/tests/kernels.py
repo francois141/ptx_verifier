@@ -5,7 +5,9 @@ import volta
 HEADER = ".version 8.0\n.target sm_80\n.address_size 64\n\n"
 
 # out[tid] = in[tid], 4 threads.
-COPY_KERNEL = HEADER + """
+COPY_KERNEL = (
+    HEADER
+    + """
 .visible .entry k(
     .param .u64 k_param_0,
     .param .u64 k_param_1
@@ -28,9 +30,12 @@ COPY_KERNEL = HEADER + """
     ret;
 }
 """
+)
 
 # Two threads write the same shared address without synchronization.
-RACE_KERNEL = HEADER + """
+RACE_KERNEL = (
+    HEADER
+    + """
 .visible .entry k()
 {
     .reg .b32 %r<3>;
@@ -42,10 +47,13 @@ RACE_KERNEL = HEADER + """
     ret;
 }
 """
+)
 
 # Thread 0 waits at bar.sync 1 while the rest wait at bar.sync 0: neither
 # barrier ever gets its full participant set, so both stay blocked forever.
-DEADLOCK_KERNEL = HEADER + """
+DEADLOCK_KERNEL = (
+    HEADER
+    + """
 .visible .entry k()
 {
     .reg .pred %p<2>;
@@ -62,12 +70,15 @@ $L2:
     ret;
 }
 """
+)
 
 BAD_KERNEL = HEADER + ".visible .entry k( { ret; }"
 
 # Two entries, each writing a distinct constant to out[tid] - lets tests
 # tell which one actually ran. kernel_a is declared first in source order.
-MULTI_ENTRY_KERNEL = HEADER + """
+MULTI_ENTRY_KERNEL = (
+    HEADER
+    + """
 .visible .entry kernel_a(
     .param .u64 kernel_a_param_0
 )
@@ -102,15 +113,20 @@ MULTI_ENTRY_KERNEL = HEADER + """
     ret;
 }
 """
+)
 
 
 def copy_config(threads: int = 4) -> "volta.Config":
     config = volta.Config(block=(threads, 1, 1))
     config.add_array(
-        volta.ArrayDef("in", base=0x10000, elem_width=4, len=threads, kind=volta.ArrayKind.Input)
+        volta.ArrayDef(
+            "in", base=0x10000, elem_width=4, len=threads, kind=volta.ArrayKind.Input
+        )
     )
     config.add_array(
-        volta.ArrayDef("out", base=0x20000, elem_width=4, len=threads, kind=volta.ArrayKind.Output)
+        volta.ArrayDef(
+            "out", base=0x20000, elem_width=4, len=threads, kind=volta.ArrayKind.Output
+        )
     )
     config.add_param(volta.Param.array_ptr("in"))
     config.add_param(volta.Param.array_ptr("out"))
@@ -120,7 +136,9 @@ def copy_config(threads: int = 4) -> "volta.Config":
 def single_output_config(threads: int = 2) -> "volta.Config":
     config = volta.Config(block=(threads, 1, 1))
     config.add_array(
-        volta.ArrayDef("out", base=0x20000, elem_width=4, len=threads, kind=volta.ArrayKind.Output)
+        volta.ArrayDef(
+            "out", base=0x20000, elem_width=4, len=threads, kind=volta.ArrayKind.Output
+        )
     )
     config.add_param(volta.Param.array_ptr("out"))
     return config

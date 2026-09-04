@@ -657,7 +657,9 @@ impl<'a> Parser<'a> {
                 Ok(TopLevelItem::Variable(self.parse_var_decl(linkage)?))
             }
             // Generic directive
-            Some((_, Token::DottedIdent(_))) => Ok(TopLevelItem::Directive(self.parse_directive()?)),
+            Some((_, Token::DottedIdent(_))) => {
+                Ok(TopLevelItem::Directive(self.parse_directive()?))
+            }
             Some((span, tok)) => err_at(span, ParseErrorKind::UnexpectedToken(tok.clone())),
             None => err(ParseErrorKind::UnexpectedEof),
         }
@@ -2763,16 +2765,13 @@ mod tests {
                 ".version 7.0\n.target sm_90\n.address_size 64\n\n\
                  .visible .entry test()\n{{\n{decl}\nret;\n}}\n"
             );
-            let module = parse_module(src.as_bytes()).unwrap_or_else(|e| {
-                panic!("expected {:?} to parse, got {:?}", decl, e.error)
-            });
+            let module = parse_module(src.as_bytes())
+                .unwrap_or_else(|e| panic!("expected {:?} to parse, got {:?}", decl, e.error));
             match &module.items[0] {
-                TopLevelItem::Entry(func) => {
-                    match &func.body.as_ref().unwrap().statements[0] {
-                        Statement::Variable(var) => var.space_qualifier,
-                        other => panic!("expected Variable, got {:?}", other),
-                    }
-                }
+                TopLevelItem::Entry(func) => match &func.body.as_ref().unwrap().statements[0] {
+                    Statement::Variable(var) => var.space_qualifier,
+                    other => panic!("expected Variable, got {:?}", other),
+                },
                 other => panic!("expected Entry, got {:?}", other),
             }
         }
@@ -4417,7 +4416,11 @@ DONE:
         let parsed = parse_instr(instr);
         match parsed {
             ParsedInstruction::CpAsyncWaitGroup(CpAsyncWaitGroupInstr { n }) => {
-                assert!(matches!(n, Operand::ImmInt(0)), "expected n = 0, got {:?}", n);
+                assert!(
+                    matches!(n, Operand::ImmInt(0)),
+                    "expected n = 0, got {:?}",
+                    n
+                );
             }
             _ => panic!("Expected CpAsyncWaitGroup, got {:?}", parsed),
         }
@@ -4534,8 +4537,11 @@ DONE:
                     modifiers,
                     operands,
                 } => {
-                    let result =
-                        crate::instr_parse::parse_instruction(*kind, modifiers.clone(), operands.clone());
+                    let result = crate::instr_parse::parse_instruction(
+                        *kind,
+                        modifiers.clone(),
+                        operands.clone(),
+                    );
                     assert!(
                         matches!(
                             result,
