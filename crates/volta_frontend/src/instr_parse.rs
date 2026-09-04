@@ -185,6 +185,42 @@ impl ModifierParser {
         Err(InstrParseError::MissingModifier(value))
     }
 
+    /// Consume a `.shared{::cta|::cluster}` state-space modifier
+    /// (`cp.async`'s and `ldmatrix`'s `.shared` operand). Unqualified and
+    /// `::cta` both consume to `Cta`; `::cluster` consumes to `Cluster` -
+    /// whether it's *supported* is a lowering-time decision. Any other
+    /// `::`-qualified suffix is invalid here and rejected at parse time.
+    pub fn try_consume_shared_state_space_or_err(
+        &mut self,
+        space: &'static [AsciiChar],
+    ) -> Result<SharedStateSpaceQualifier, InstrParseError> {
+        match self.peek() {
+            Some(DottedIdent::Simple(s)) if s.as_slice() == space => {
+                self.pos += 1;
+                Ok(SharedStateSpaceQualifier::Cta)
+            }
+            Some(DottedIdent::Qualified(parts)) => match parts.as_slice() {
+                [base, sub] if base.as_slice() == space => {
+                    match SharedStateSpaceQualifier::from_ascii(sub) {
+                        Some(q) => {
+                            self.pos += 1;
+                            Ok(q)
+                        }
+                        None => Err(InstrParseError::QualifiedModifier(crate::ascii::join(
+                            parts,
+                            ascii("::"),
+                        ))),
+                    }
+                }
+                _ => Err(InstrParseError::QualifiedModifier(crate::ascii::join(
+                    parts,
+                    ascii("::"),
+                ))),
+            },
+            _ => Err(InstrParseError::MissingModifier(space)),
+        }
+    }
+
     /// Try to parse a value of type `T` from the current modifier position.
     /// If successful, advances the position and returns the parsed value.
     pub fn try_parse<T: FromAscii>(&mut self) -> Option<T> {
@@ -2825,7 +2861,7 @@ fn parse_cp_async(
     let cache_op = mp
         .try_parse::<CacheOp>()
         .ok_or(InstrParseError::MissingModifier(ascii("ca")))?;
-    mp.try_consume_or_err(ascii("shared"))?;
+    let dst_qualifier = mp.try_consume_shared_state_space_or_err(ascii("shared"))?;
     mp.skip_cache_perf_hints();
     mp.reject_qualified()?;
     mp.try_consume_or_err(ascii("global"))?;
@@ -2846,6 +2882,7 @@ fn parse_cp_async(
     mp.finish()?;
     Ok(ParsedInstruction::CpAsync(CpAsyncInstr {
         cache_op,
+        dst_qualifier,
         dst,
         src,
         cp_size,

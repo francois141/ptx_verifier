@@ -472,17 +472,77 @@ impl FromAscii for StateSpace {
     }
 }
 
-/// Sub-qualifier for shared/param state spaces
+/// `.shared`'s sub-qualifier: `.shared{::cta|::cluster}`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedStateSpaceQualifier {
+    /// `::cta` (default if unqualified) - shared memory of the executing CTA
+    Cta,
+    /// `::cluster` - distributed shared memory across the thread-block cluster
+    Cluster,
+}
+
+impl FromAscii for SharedStateSpaceQualifier {
+    fn from_ascii(s: &[AsciiChar]) -> Option<Self> {
+        Some(match s.as_bytes() {
+            b"cta" => SharedStateSpaceQualifier::Cta,
+            b"cluster" => SharedStateSpaceQualifier::Cluster,
+            _ => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for SharedStateSpaceQualifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SharedStateSpaceQualifier::Cta => "cta",
+            SharedStateSpaceQualifier::Cluster => "cluster",
+        })
+    }
+}
+
+/// `.param`'s sub-qualifier: `.param{::entry|::func}`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamStateSpaceQualifier {
+    /// `::entry` - a kernel entry point's parameter memory
+    Entry,
+    /// `::func` - a device function call's parameter memory
+    Func,
+}
+
+impl FromAscii for ParamStateSpaceQualifier {
+    fn from_ascii(s: &[AsciiChar]) -> Option<Self> {
+        Some(match s.as_bytes() {
+            b"entry" => ParamStateSpaceQualifier::Entry,
+            b"func" => ParamStateSpaceQualifier::Func,
+            _ => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for ParamStateSpaceQualifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ParamStateSpaceQualifier::Entry => "entry",
+            ParamStateSpaceQualifier::Func => "func",
+        })
+    }
+}
+
+/// A state-space sub-qualifier at a site not pinned to `.shared` or
+/// `.param` ahead of time (e.g. a variable declaration).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateSpaceQualifier {
-    /// `::cta` - CTA-local shared memory
-    Cta,
-    /// `::cluster` - Cluster-wide shared memory
-    Cluster,
-    /// `::entry` - Kernel entry parameter
-    Entry,
-    /// `::func` - Device function parameter
-    Func,
+    Shared(SharedStateSpaceQualifier),
+    Param(ParamStateSpaceQualifier),
+}
+
+impl std::fmt::Display for StateSpaceQualifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateSpaceQualifier::Shared(q) => write!(f, "{q}"),
+            StateSpaceQualifier::Param(q) => write!(f, "{q}"),
+        }
+    }
 }
 
 // =============================================================================
@@ -2101,6 +2161,9 @@ pub struct StInstr {
 #[derive(Debug, Clone)]
 pub struct CpAsyncInstr {
     pub cache_op: CacheOp,
+    /// The `.shared` destination's `::cta`/`::cluster` sub-qualifier.
+    /// Unqualified `.shared` fills in `Cta`.
+    pub dst_qualifier: SharedStateSpaceQualifier,
     pub dst: Operand,
     pub src: Operand,
     /// Always 4, 8, or 16.

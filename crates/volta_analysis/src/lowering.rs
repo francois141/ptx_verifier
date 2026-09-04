@@ -19,7 +19,7 @@ use volta_frontend::ast::{
     FmaInstr, FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr,
     MaxInstr, MemSemantics, MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand,
     ParsedInstruction, ScalarType, SetpInstr, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
-    StateSpace, Statement, SubInstr, VarDecl, VecWidth,
+    SharedStateSpaceQualifier, StateSpace, Statement, SubInstr, VarDecl, VecWidth,
 };
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::{is_cache_perf_hint, parse_instruction};
@@ -3433,11 +3433,20 @@ fn lower_cp_async(
 ) -> LowerResult<()> {
     let CpAsyncInstr {
         cache_op: _cache_op,
+        dst_qualifier,
         dst,
         src,
         cp_size,
         extra,
     } = cp;
+
+    // `::cluster` (distributed shared memory) is not modeled.
+    if *dst_qualifier != SharedStateSpaceQualifier::Cta {
+        return Err(unsupported(
+            "cp.async",
+            format!("shared::{dst_qualifier} (only the executing CTA's own shared memory is modeled)"),
+        ));
+    }
 
     let (dst_base, dst_offset) = match dst {
         AstOperand::Address(addr) => (ctx.resolve_address(addr)?, ctx.get_address_offset(addr)),
@@ -4108,6 +4117,26 @@ fn lower_ldmatrix(
     let mut num: Option<u32> = None;
 
     for modifier in modifiers {
+        // Handled separately so `::cluster` gets its own diagnostic instead
+        // of falling into the generic "modifier .X" catch-all below.
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [base, sub] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"shared"
+        {
+            match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
+                Some(SharedStateSpaceQualifier::Cta) => continue,
+                Some(SharedStateSpaceQualifier::Cluster) => {
+                    return Err(unsupported(
+                        "ldmatrix",
+                        "shared::cluster (only the executing CTA's own shared memory is modeled)",
+                    ));
+                }
+                None => {
+                    return Err(unsupported("ldmatrix", format!("modifier .shared::{sub}")));
+                }
+            }
+        }
+
         let s = modifier.to_string();
         match s.as_str() {
             // The modeled form: ldmatrix.sync.aligned.x{1,2,4}[.trans].m8n8.shared.b16
@@ -4116,8 +4145,8 @@ fn lower_ldmatrix(
             "x1" => num = Some(1),
             "x2" => num = Some(2),
             "x4" => num = Some(4),
-            // Everything else (m8n16, m16n16, b8, shared::cta, dst/src
-            // format types, ...) selects an unmodeled fragment layout.
+            // Everything else (m8n16, m16n16, b8, dst/src format types,
+            // ...) selects an unmodeled fragment layout.
             other => {
                 return Err(unsupported("ldmatrix", format!("modifier .{}", other)));
             }
@@ -5376,6 +5405,15 @@ mod tests {
         );
         assert_lowers("ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%r1, %r2, %r3, %r4}, [%r5];");
         assert_lowers("ldmatrix.sync.aligned.x2.m8n8.trans.shared.b16 {%r1, %r2}, [%r5];");
+        // `::cta` lowers the same as unqualified `.shared`.
+        assert_lowers(
+            "ldmatrix.sync.aligned.x4.m8n8.shared::cta.b16 {%r1, %r2, %r3, %r4}, [%r5];",
+        );
+        // `::cluster` is not modeled and must be rejected loudly.
+        assert_rejected(
+            "ldmatrix.sync.aligned.x4.m8n8.shared::cluster.b16 {%r1, %r2, %r3, %r4}, [%r5];",
+            "shared::cluster",
+        );
     }
 
     #[test]
@@ -5536,6 +5574,36 @@ mod tests {
                 .any(|i| matches!(i, LoweredInstr::CpAsyncWaitGroup { n: 0 })),
             "missing CpAsyncWaitGroup{{n: 0}} from wait_all: {:?}",
             kinds
+        );
+    }
+
+    #[test]
+    fn test_cp_async_shared_cta_qualifier() {
+        // Unqualified `.shared` and `::cta` must lower identically.
+        fn cp_async_dst(prog: &LoweredProgram) -> (Operand, i64) {
+            prog.instructions
+                .values()
+                .find_map(|i| match i {
+                    LoweredInstr::CpAsync {
+                        dst_base,
+                        dst_offset,
+                        ..
+                    } => Some((dst_base.clone(), *dst_offset)),
+                    _ => None,
+                })
+                .expect("expected a lowered CpAsync instruction")
+        }
+        let plain = lower_body("cp.async.cg.shared.global [smem+4], [%rd0], 16;")
+            .expect("should lower");
+        let qualified = lower_body("cp.async.cg.shared::cta.global [smem+4], [%rd0], 16;")
+            .expect("shared::cta should lower the same as shared");
+        assert_eq!(cp_async_dst(&plain), cp_async_dst(&qualified));
+
+        // `::cluster` parses fine but is rejected at lowering, not silently
+        // misread as plain `.shared`.
+        assert_rejected(
+            "cp.async.cg.shared::cluster.global [smem+4], [%rd0], 16;",
+            "shared::cluster",
         );
     }
 }

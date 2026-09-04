@@ -210,6 +210,15 @@ fn err<T>(kind: ParseErrorKind) -> Result<T, ParseError> {
     })
 }
 
+/// The state space named by a declaration-starting token, unqualified
+/// (`.shared`) or `::`-qualified (`.shared::cta`) alike.
+fn dotted_ident_state_space(ident: &DottedIdent) -> Option<StateSpace> {
+    match ident {
+        DottedIdent::Simple(s) => StateSpace::from_ascii(s),
+        DottedIdent::Qualified(parts) => StateSpace::from_ascii(parts.first()?),
+    }
+}
+
 // =============================================================================
 // Binding Power
 // =============================================================================
@@ -624,28 +633,31 @@ impl<'a> Parser<'a> {
         let linkage = self.parse_linkage()?;
 
         match self.peek()? {
-            Some((_, Token::DottedIdent(DottedIdent::Simple(s)))) => {
-                let s = s.clone();
-                match s.as_bytes() {
-                    b"entry" => {
-                        self.next().unwrap();
-                        Ok(TopLevelItem::Entry(self.parse_function(linkage)?))
-                    }
-                    b"func" => {
-                        self.next().unwrap();
-                        Ok(TopLevelItem::Function(self.parse_function(linkage)?))
-                    }
-                    b"file" => {
-                        self.next().unwrap();
-                        Ok(TopLevelItem::File(self.parse_file_directive()?))
-                    }
-                    // State spaces indicate variable declarations
-                    b"reg" | b"sreg" | b"const" | b"global" | b"local" | b"param" | b"shared"
-                    | b"tex" => Ok(TopLevelItem::Variable(self.parse_var_decl(linkage)?)),
-                    // Generic directive
-                    _ => Ok(TopLevelItem::Directive(self.parse_directive()?)),
-                }
+            Some((_, Token::DottedIdent(DottedIdent::Simple(s))))
+                if matches!(s.as_bytes(), b"entry") =>
+            {
+                self.next().unwrap();
+                Ok(TopLevelItem::Entry(self.parse_function(linkage)?))
             }
+            Some((_, Token::DottedIdent(DottedIdent::Simple(s))))
+                if matches!(s.as_bytes(), b"func") =>
+            {
+                self.next().unwrap();
+                Ok(TopLevelItem::Function(self.parse_function(linkage)?))
+            }
+            Some((_, Token::DottedIdent(DottedIdent::Simple(s))))
+                if matches!(s.as_bytes(), b"file") =>
+            {
+                self.next().unwrap();
+                Ok(TopLevelItem::File(self.parse_file_directive()?))
+            }
+            // State spaces indicate variable declarations - unqualified
+            // (`.shared`) or `::`-qualified (`.shared::cta`) alike.
+            Some((_, Token::DottedIdent(ident))) if dotted_ident_state_space(ident).is_some() => {
+                Ok(TopLevelItem::Variable(self.parse_var_decl(linkage)?))
+            }
+            // Generic directive
+            Some((_, Token::DottedIdent(_))) => Ok(TopLevelItem::Directive(self.parse_directive()?)),
             Some((span, tok)) => err_at(span, ParseErrorKind::UnexpectedToken(tok.clone())),
             None => err(ParseErrorKind::UnexpectedEof),
         }
@@ -811,18 +823,22 @@ impl<'a> Parser<'a> {
                     span: Some(span),
                     error: ParseErrorKind::InvalidStateSpace(parts[0].clone()),
                 })?;
+                // Dispatch on the base space: `.shared{::cta|::cluster}` and
+                // `.param{::entry|::func}` are disjoint grammars.
                 let qualifier = if parts.len() > 1 {
-                    match parts[1].as_bytes() {
-                        b"cta" => Some(StateSpaceQualifier::Cta),
-                        b"cluster" => Some(StateSpaceQualifier::Cluster),
-                        b"entry" => Some(StateSpaceQualifier::Entry),
-                        b"func" => Some(StateSpaceQualifier::Func),
-                        _ => {
-                            return err_at(
-                                span,
-                                ParseErrorKind::InvalidStateSpaceQualifier(parts[1].clone()),
-                            );
-                        }
+                    let invalid = || Locate {
+                        path: None,
+                        span: Some(span),
+                        error: ParseErrorKind::InvalidStateSpaceQualifier(parts[1].clone()),
+                    };
+                    match space {
+                        StateSpace::Shared => Some(StateSpaceQualifier::Shared(
+                            SharedStateSpaceQualifier::from_ascii(&parts[1]).ok_or_else(invalid)?,
+                        )),
+                        StateSpace::Param => Some(StateSpaceQualifier::Param(
+                            ParamStateSpaceQualifier::from_ascii(&parts[1]).ok_or_else(invalid)?,
+                        )),
+                        _ => return Err(invalid()),
                     }
                 } else {
                     None
@@ -1193,10 +1209,9 @@ impl<'a> Parser<'a> {
     /// This handles comma-separated variable declarations which expand to multiple statements.
     fn parse_statements_into(&mut self, statements: &mut Vec<Statement>) -> Result<(), ParseError> {
         match self.peek()? {
-            // Variable declaration - may be comma-separated
-            Some((_, Token::DottedIdent(DottedIdent::Simple(s))))
-                if StateSpace::from_ascii(s).is_some() =>
-            {
+            // Variable declaration - may be comma-separated. Unqualified
+            // (`.shared`) or `::`-qualified (`.shared::cta`) alike.
+            Some((_, Token::DottedIdent(ident))) if dotted_ident_state_space(ident).is_some() => {
                 let decls = self.parse_var_decls(Linkage::None)?;
                 for decl in decls {
                     statements.push(Statement::Variable(decl));
@@ -1252,8 +1267,8 @@ impl<'a> Parser<'a> {
             // Variable declaration or directive
             Some((_, Token::DottedIdent(_))) => {
                 // Check if it's a state space (variable decl) or directive
-                if let Some((_, Token::DottedIdent(DottedIdent::Simple(s)))) = self.peek()?
-                    && StateSpace::from_ascii(s).is_some()
+                if let Some((_, Token::DottedIdent(ident))) = self.peek()?
+                    && dotted_ident_state_space(ident).is_some()
                 {
                     // Variable declarations - handled by parse_statements_into
                     // If we get here, we're being called from a context that expects a single statement
@@ -2735,6 +2750,77 @@ mod tests {
                 assert_eq!(func.params[2].ty.scalar, ScalarType::U32);
             }
             _ => panic!("Expected Entry"),
+        }
+    }
+
+    /// `.shared{::cta|::cluster}` and `.param{::entry|::func}` are disjoint
+    /// grammars - no `.param::cta`, no `.shared::entry`, no qualifier at all
+    /// on any other space.
+    #[test]
+    fn test_var_decl_state_space_qualifier_is_space_specific() {
+        fn decl_qualifier(decl: &str) -> Option<StateSpaceQualifier> {
+            let src = format!(
+                ".version 7.0\n.target sm_90\n.address_size 64\n\n\
+                 .visible .entry test()\n{{\n{decl}\nret;\n}}\n"
+            );
+            let module = parse_module(src.as_bytes()).unwrap_or_else(|e| {
+                panic!("expected {:?} to parse, got {:?}", decl, e.error)
+            });
+            match &module.items[0] {
+                TopLevelItem::Entry(func) => {
+                    match &func.body.as_ref().unwrap().statements[0] {
+                        Statement::Variable(var) => var.space_qualifier,
+                        other => panic!("expected Variable, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Entry, got {:?}", other),
+            }
+        }
+
+        assert_eq!(
+            decl_qualifier(".shared::cta .align 4 .b8 smem[64];"),
+            Some(StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta))
+        );
+        assert_eq!(
+            decl_qualifier(".shared::cluster .align 4 .b8 smem[64];"),
+            Some(StateSpaceQualifier::Shared(
+                SharedStateSpaceQualifier::Cluster
+            ))
+        );
+        assert_eq!(
+            decl_qualifier(".param::entry .b32 p0;"),
+            Some(StateSpaceQualifier::Param(ParamStateSpaceQualifier::Entry))
+        );
+        assert_eq!(
+            decl_qualifier(".param::func .b32 p0;"),
+            Some(StateSpaceQualifier::Param(ParamStateSpaceQualifier::Func))
+        );
+
+        for decl in [
+            ".param::cta .b32 p0;",
+            ".param::cluster .b32 p0;",
+            ".shared::entry .align 4 .b8 smem[64];",
+            ".shared::func .align 4 .b8 smem[64];",
+            ".global::cta .align 4 .b8 g[64];",
+            ".reg::cta .b32 %r0;",
+        ] {
+            let src = format!(
+                ".version 7.0\n.target sm_90\n.address_size 64\n\n\
+                 .visible .entry test()\n{{\n{decl}\nret;\n}}\n"
+            );
+            let result = parse_module(src.as_bytes());
+            assert!(
+                matches!(
+                    result,
+                    Err(Locate {
+                        error: ParseErrorKind::InvalidStateSpaceQualifier(_),
+                        ..
+                    })
+                ),
+                "expected {:?} to be rejected as InvalidStateSpaceQualifier, got {:?}",
+                decl,
+                result
+            );
         }
     }
 
@@ -4456,6 +4542,72 @@ DONE:
                             Err(crate::instr_parse::InstrParseError::InvalidModifierForType { .. })
                         ),
                         "expected {:?} to be rejected as InvalidModifierForType, got {:?}",
+                        src_instr,
+                        result
+                    );
+                }
+                _ => panic!("expected an unparsed instruction"),
+            }
+        }
+    }
+
+    /// `cp.async`'s `.shared{::cta|::cluster}` destination: unqualified and
+    /// `::cta` both parse to `Cta`, `::cluster` parses too (support is a
+    /// lowering-time decision), anything else is rejected here.
+    #[test]
+    fn test_cp_async_shared_qualifier_parsing() {
+        fn dst_qualifier(src_instr: &str) -> SharedStateSpaceQualifier {
+            let src = wrap_in_module(&format!(".reg .b64 %rd<3>;\n{src_instr}"));
+            let module = parse_ok(&src);
+            let instr = get_first_instruction(&module);
+            match parse_instr(instr) {
+                ParsedInstruction::CpAsync(CpAsyncInstr { dst_qualifier, .. }) => dst_qualifier,
+                other => panic!("Expected CpAsync, got {:?}", other),
+            }
+        }
+
+        assert_eq!(
+            dst_qualifier("cp.async.cg.shared.global [%rd0], [%rd1], 16;"),
+            SharedStateSpaceQualifier::Cta
+        );
+        assert_eq!(
+            dst_qualifier("cp.async.cg.shared::cta.global [%rd0], [%rd1], 16;"),
+            SharedStateSpaceQualifier::Cta
+        );
+        assert_eq!(
+            dst_qualifier("cp.async.cg.shared::cluster.global [%rd0], [%rd1], 16;"),
+            SharedStateSpaceQualifier::Cluster
+        );
+
+        for src_instr in [
+            "cp.async.cg.shared::entry.global [%rd0], [%rd1], 16;",
+            "cp.async.cg.shared::func.global [%rd0], [%rd1], 16;",
+            "cp.async.cg.shared::bogus.global [%rd0], [%rd1], 16;",
+        ] {
+            let src = wrap_in_module(&format!(".reg .b64 %rd<3>;\n{src_instr}"));
+            let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
+            let mut parser = Parser::new(ascii);
+            let module = parser
+                .parse_module()
+                .unwrap_or_else(|e| panic!("parse error for {:?}: {:?}", src_instr, e.error));
+            let instr = get_first_instruction(&module);
+            match &instr.op {
+                InstructionOp::Unparsed {
+                    kind,
+                    modifiers,
+                    operands,
+                } => {
+                    let result = crate::instr_parse::parse_instruction(
+                        *kind,
+                        modifiers.clone(),
+                        operands.clone(),
+                    );
+                    assert!(
+                        matches!(
+                            result,
+                            Err(crate::instr_parse::InstrParseError::QualifiedModifier(_))
+                        ),
+                        "expected {:?} to be rejected as QualifiedModifier, got {:?}",
                         src_instr,
                         result
                     );
