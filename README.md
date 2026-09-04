@@ -34,7 +34,25 @@ volta verify <path/to/kernel.ptx> relu.spec \
   --param ptr:x --param ptr:output --param int:0 --param int:0
 ```
 
+## Python Bindings
+
+In the other project's pyproject.toml:
+
+```toml
+[project]
+dependencies = ["volta"]
+
+[tool.uv.sources]
+volta = { path = "<path_to_this_root_folder>/crates/volta_py", editable = true }
+```
+
+Then just run `uv sync` and `import volta` should work immediately.
+
+---
+
 Original README below:
+
+---
 
 # Volta
 
