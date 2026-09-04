@@ -12,6 +12,12 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 
+[dependency-groups]
+dev = ["pytest"]
+
 [tool.maturin]
 manifest-path = "Cargo.toml"
 module-name = "volta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
