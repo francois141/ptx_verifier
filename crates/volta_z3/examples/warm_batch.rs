@@ -32,8 +32,8 @@ fn main() {
     let dump_path = args.next().expect(usage);
     let n: usize = args.next().expect(usage).parse().expect(usage);
 
-    let dump = volta_analysis::driver::vc_dump::read_vc_dump(Path::new(&dump_path))
-        .expect("read dump");
+    let dump =
+        volta_analysis::driver::vc_dump::read_vc_dump(Path::new(&dump_path)).expect("read dump");
     let (name, ref_elems) = &dump.reference.outputs[0];
     let opt_elems: std::collections::HashMap<u64, _> = dump
         .optimized
@@ -61,11 +61,19 @@ fn main() {
         let body = b.wrap_in_lets(&format!("(not (= {} {}))", ta, tb));
         let q = format!("{}(assert {})\n(check-sat)\n", b.preamble(), body);
         let (text, secs) = eval("cold", &q);
-        let verdict = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("?").trim();
+        let verdict = text
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("?")
+            .trim();
         println!("  cold {name}[{i:3}]: {verdict:6} {:8.2} ms", secs * 1e3);
         cold_total += secs;
     }
-    println!("cold total ({} solver calls): {:.2} ms", pairs.len(), cold_total * 1e3);
+    println!(
+        "cold total ({} solver calls): {:.2} ms",
+        pairs.len(),
+        cold_total * 1e3
+    );
 
     // --- warm: one worker, one context, push/check/pop per element ---
     let mut b = Builder::with_exp_mode(ExpMode::PowerBounded);
@@ -74,7 +82,10 @@ fn main() {
         let ta = translate_root(&mut b, &dump.reference.arena, *r).expect("translate");
         let tb = translate_root(&mut b, &dump.optimized.arena, *o).expect("translate");
         let body = b.wrap_in_lets(&format!("(not (= {} {}))", ta, tb));
-        checks.push_str(&format!("(push 1)\n(assert {})\n(check-sat)\n(pop 1)\n", body));
+        checks.push_str(&format!(
+            "(push 1)\n(assert {})\n(check-sat)\n(pop 1)\n",
+            body
+        ));
     }
     let q = format!("{}{}", b.preamble(), checks);
     let (text, secs) = eval("warm", &q);
@@ -98,7 +109,11 @@ fn main() {
     let body = b.wrap_in_lets(&format!("(or {})", disjuncts.join(" ")));
     let q = format!("{}(assert {})\n(check-sat)\n", b.preamble(), body);
     let (text, secs) = eval("batched", &q);
-    let verdict = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("?").trim();
+    let verdict = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("?")
+        .trim();
     println!(
         "batched (1 check-sat over {}-way disjunction, query {} KiB): {verdict} in {:.2} ms",
         pairs.len(),

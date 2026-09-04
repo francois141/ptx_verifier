@@ -171,7 +171,10 @@ impl Interpreter<'_> {
                 )?;
             }
             LoweredInstr::Ldmatrix {
-                dst, addr, num, trans,
+                dst,
+                addr,
+                num,
+                trans,
             } => {
                 self.exec_ldmatrix(pc, members, dst, addr, *num, *trans)?;
             }
@@ -415,13 +418,8 @@ impl Interpreter<'_> {
                     // reads, since the elements are not adjacent in memory.
                     let col_byte = (lane / 4) as u64 * 2;
                     let lo_row = 2 * (lane % 4) as usize;
-                    let lo = self.mem_read(
-                        m,
-                        pc,
-                        MemSpace::Shared,
-                        row_addr[i][lo_row] + col_byte,
-                        2,
-                    )?;
+                    let lo =
+                        self.mem_read(m, pc, MemSpace::Shared, row_addr[i][lo_row] + col_byte, 2)?;
                     let hi = self.mem_read(
                         m,
                         pc,
@@ -430,10 +428,8 @@ impl Interpreter<'_> {
                         2,
                     )?;
                     Value::Pair(
-                        lo.as_scalar()
-                            .expect("2-byte read never yields a Pair"),
-                        hi.as_scalar()
-                            .expect("2-byte read never yields a Pair"),
+                        lo.as_scalar().expect("2-byte read never yields a Pair"),
+                        hi.as_scalar().expect("2-byte read never yields a Pair"),
                     )
                 } else {
                     // Wrap-free in every profile: the row address passed
@@ -672,7 +668,13 @@ impl Interpreter<'_> {
             let lane = m.0 % WARP_SIZE;
             self.gather_f16_fragment(pc, m, src_a, &m16n16k16_f16::matrix_a_row(lane), &mut a)?;
             self.gather_f16_fragment(pc, m, src_b, &m16n16k16_f16::matrix_b_row(lane), &mut b)?;
-            self.gather_f32_fragment(pc, m, &src_c_ops, &m16n16k16_f16::matrix_cd_f32(lane), &mut c)?;
+            self.gather_f32_fragment(
+                pc,
+                m,
+                &src_c_ops,
+                &m16n16k16_f16::matrix_cd_f32(lane),
+                &mut c,
+            )?;
         }
 
         let d = self.matmul_acc(pc, &a, &b, &c, 16, 16, 16)?;

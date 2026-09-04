@@ -32,7 +32,9 @@ def test_verify_wrong_spec_reports_mismatches():
 
 
 def test_verify_sample_limits_checked_elements():
-    result = volta.verify(COPY_KERNEL, COPY_SPEC, copy_config(), dims={"N": 4}, sample=2)
+    result = volta.verify(
+        COPY_KERNEL, COPY_SPEC, copy_config(), dims={"N": 4}, sample=2
+    )
 
     assert result.equivalent
     assert result.elements_checked == 2

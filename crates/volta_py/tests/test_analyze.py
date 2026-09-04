@@ -80,6 +80,8 @@ def test_analyze_kernel_none_picks_first_entry_in_source_order():
 
 
 def test_analyze_explicit_kernel_name_selects_named_entry():
-    result = volta.analyze(MULTI_ENTRY_KERNEL, single_output_config(), kernel="kernel_b")
+    result = volta.analyze(
+        MULTI_ENTRY_KERNEL, single_output_config(), kernel="kernel_b"
+    )
     _, elements = result.outputs[0]
     assert elements == [(0, "222"), (1, "222")]

@@ -223,11 +223,12 @@ pub fn eval_smtlib2(query: &str, timeout: Option<Duration>) -> EvalOutcome {
     // worker does not write until it has read everything, so this cannot
     // deadlock on pipe capacity.
     if let Some(mut stdin) = child.stdin.take()
-        && stdin.write_all(query.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return EvalOutcome::ChildDied("failed to write query to worker".to_string());
-        }
+        && stdin.write_all(query.as_bytes()).is_err()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return EvalOutcome::ChildDied("failed to write query to worker".to_string());
+    }
 
     // Read the worker's output on a helper thread so the parent can
     // enforce the hard deadline; on expiry the worker is killed and the
