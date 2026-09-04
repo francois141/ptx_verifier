@@ -66,7 +66,9 @@ enum BackendArg {
     Decision,
     /// Z3, via SMT-LIB2 evaluated worker subprocess through libz3. Covers a
     /// narrower fragment (see `volta_z3::translate`'s docs) and reports
-    /// per-element unsat/sat/unknown rather than a single verdict.
+    /// per-element unsat/sat/unknown rather than a single verdict. Requires
+    /// building with `--features z3`; without it, selecting this backend
+    /// fails at run time with a message to that effect.
     Z3,
 }
 
@@ -306,6 +308,7 @@ struct VerifyArgs {
 fn main() -> ExitCode {
     // Must precede everything: if this process was spawned as a z3
     // solver worker, this runs the query and exits (see volta_z3::ffi).
+    #[cfg(feature = "z3")]
     volta_z3::init_worker();
 
     let cli = Cli::parse();
@@ -537,6 +540,7 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
 /// is a verification command, so only a run that *proved* every element
 /// equivalent may exit 0; an undecided-only run is distinguished from a
 /// real difference purely so we can explain the nonzero exit.
+#[cfg(feature = "z3")]
 #[derive(Debug, PartialEq, Eq)]
 enum Z3Verdict {
     /// Every checked element proved equivalent (vacuously true for an empty
@@ -550,6 +554,7 @@ enum Z3Verdict {
     OnlyUndecided { undecided: usize },
 }
 
+#[cfg(feature = "z3")]
 fn z3_verdict(counts: &volta_z3::Z3Counts) -> Z3Verdict {
     if counts.all_equivalent() {
         Z3Verdict::AllEquivalent
@@ -796,6 +801,16 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                 }
             }
         }
+        #[cfg(not(feature = "z3"))]
+        BackendArg::Z3 => {
+            eprintln!(
+                "error: this build of volta was compiled without z3 support \
+                 (rebuild with `--features z3`)"
+            );
+            log.record("compare (z3): FAILED: built without z3 support");
+            ExitCode::FAILURE
+        }
+        #[cfg(feature = "z3")]
         BackendArg::Z3 => {
             let timeout = volta_z3::timeout_from_secs(args.z3_timeout);
             let mode = if args.exp_axiom {
@@ -1205,8 +1220,10 @@ fn print_module_summary(module: &Module) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "z3")]
     use volta_z3::Z3Counts;
 
+    #[cfg(feature = "z3")]
     fn counts(equivalent: usize, not_equivalent: usize, unknown: usize) -> Z3Counts {
         Z3Counts {
             equivalent,
@@ -1275,6 +1292,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(feature = "z3")]
     #[test]
     fn z3_verdict_all_equivalent_exits_success() {
         assert_eq!(z3_verdict(&counts(3, 0, 0)), Z3Verdict::AllEquivalent);
@@ -1283,6 +1301,7 @@ mod tests {
         assert_eq!(z3_verdict(&counts(0, 0, 0)), Z3Verdict::AllEquivalent);
     }
 
+    #[cfg(feature = "z3")]
     #[test]
     fn z3_verdict_any_difference_exits_failure() {
         assert_eq!(z3_verdict(&counts(2, 1, 0)), Z3Verdict::HasDifference);
@@ -1290,6 +1309,7 @@ mod tests {
         assert_eq!(z3_verdict(&counts(0, 1, 5)), Z3Verdict::HasDifference);
     }
 
+    #[cfg(feature = "z3")]
     #[test]
     fn z3_verdict_undecided_only_exits_failure() {
         // The regression this guards: an all-unknown run used to exit 0.
