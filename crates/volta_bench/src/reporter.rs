@@ -86,8 +86,8 @@ pub fn print_results_table(
     if z3 {
         write!(
             out,
-            " {:>9}  {}",
-            "Z3 (s)", "Z3: equiv/diff/unk/to/unsup/err"
+            " {:>9}  Z3: equiv/diff/unk/to/unsup/err",
+            "Z3 (s)"
         )?;
         width += 43;
     }

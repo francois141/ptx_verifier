@@ -668,15 +668,15 @@ impl ExprArena {
                     id_collections::Id::to_index(child),
                 ));
             }
-            if let Some(sid) = node.string_id() {
-                if id_collections::Id::to_index(sid) as usize >= n_strings {
-                    return Err(format!(
-                        "node {} references string {} but the arena has {} strings",
-                        id,
-                        id_collections::Id::to_index(sid),
-                        n_strings
-                    ));
-                }
+            if let Some(sid) = node.string_id()
+                && id_collections::Id::to_index(sid) as usize >= n_strings
+            {
+                return Err(format!(
+                    "node {} references string {} but the arena has {} strings",
+                    id,
+                    id_collections::Id::to_index(sid),
+                    n_strings
+                ));
             }
         }
         Ok(())

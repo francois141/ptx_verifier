@@ -1088,8 +1088,7 @@ fn consume_name(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     if c.is_alphabetic() {
         let mut pos = start + 1;
         let mut seen_dot = false;
-        loop {
-            let Some(&c) = src.get(pos) else { break };
+        while let Some(&c) = src.get(pos) {
             if c == AsciiChar::FullStop {
                 seen_dot = true;
                 pos += 1;
@@ -1145,11 +1144,7 @@ fn consume_name(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     if c == AsciiChar::FullStop {
         let (mut pos, comp) = consume_followsyms(start + 1, src)?;
         let mut comps = vec![comp];
-        loop {
-            let Some(comp_start) = consume_exact(pos, src, ascii("::")) else {
-                break;
-            };
-
+        while let Some(comp_start) = consume_exact(pos, src, ascii("::")) {
             // Don't set `pos` until we find another component, per case (3) and (4) above.
 
             if let Some((comp_end, comp)) = consume_followsyms(comp_start, src) {
