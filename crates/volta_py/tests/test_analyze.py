@@ -1,89 +1,23 @@
 """Tests for `volta.parse`/`volta.analyze`.
 
-Run via `maturin develop && pytest` from `crates/volta_py/` (the module
-must be built and installed into the active environment first - pytest
-alone does not build the Rust extension).
+Run via `uv run pytest crates/volta_py` (or `maturin develop && pytest`
+from `crates/volta_py/`) - the module must be built and installed into
+the active environment first, since pytest alone does not build the
+Rust extension.
 """
 
 import pytest
 
 import volta
-
-HEADER = ".version 8.0\n.target sm_80\n.address_size 64\n\n"
-
-# out[tid] = in[tid], 4 threads.
-COPY_KERNEL = HEADER + """
-.visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
+from kernels import (
+    BAD_KERNEL,
+    COPY_KERNEL,
+    DEADLOCK_KERNEL,
+    MULTI_ENTRY_KERNEL,
+    RACE_KERNEL,
+    copy_config,
+    single_output_config,
 )
-{
-    .reg .f32 %f<2>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<6>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    mul.wide.u32 %rd3, %r1, 4;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    add.s64 %rd5, %rd2, %rd3;
-    st.global.f32 [%rd5], %f1;
-    ret;
-}
-"""
-
-# Two threads write the same shared address without synchronization.
-RACE_KERNEL = HEADER + """
-.visible .entry k()
-{
-    .reg .b32 %r<3>;
-    .shared .align 4 .b8 sdata[8];
-
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, sdata;
-    st.shared.u32 [%r2], %r1;
-    ret;
-}
-"""
-
-# Thread 0 waits at bar.sync 1 while the rest wait at bar.sync 0: neither
-# barrier ever gets its full participant set, so both stay blocked forever.
-DEADLOCK_KERNEL = HEADER + """
-.visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<2>;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p1, %r1, 0;
-    @%p1 bra $L1;
-    bar.sync 0;
-    bra $L2;
-$L1:
-    bar.sync 1;
-$L2:
-    ret;
-}
-"""
-
-BAD_KERNEL = HEADER + ".visible .entry k( { ret; }"
-
-
-def copy_config(threads: int = 4) -> "volta.Config":
-    config = volta.Config(block=(threads, 1, 1))
-    config.add_array(
-        volta.ArrayDef("in", base=0x10000, elem_width=4, len=threads, kind=volta.ArrayKind.Input)
-    )
-    config.add_array(
-        volta.ArrayDef("out", base=0x20000, elem_width=4, len=threads, kind=volta.ArrayKind.Output)
-    )
-    config.add_param(volta.Param.array_ptr("in"))
-    config.add_param(volta.Param.array_ptr("out"))
-    return config
 
 
 def test_parse_valid_source():
@@ -134,3 +68,18 @@ def test_analyze_deadlock_raises_deadlock_error():
 def test_analyze_unknown_kernel_raises_volta_error():
     with pytest.raises(volta.VoltaError, match="no kernel named"):
         volta.analyze(COPY_KERNEL, copy_config(), kernel="does_not_exist")
+
+
+def test_analyze_kernel_none_picks_first_entry_in_source_order():
+    # kernel_a is declared before kernel_b in MULTI_ENTRY_KERNEL; kernel=None
+    # has no notion of a "default" or "unique" entry, it just takes the
+    # first `.entry` the parser encountered, regardless of name.
+    result = volta.analyze(MULTI_ENTRY_KERNEL, single_output_config())
+    _, elements = result.outputs[0]
+    assert elements == [(0, "111"), (1, "111")]
+
+
+def test_analyze_explicit_kernel_name_selects_named_entry():
+    result = volta.analyze(MULTI_ENTRY_KERNEL, single_output_config(), kernel="kernel_b")
+    _, elements = result.outputs[0]
+    assert elements == [(0, "222"), (1, "222")]

@@ -762,6 +762,7 @@ dependencies = [
  "volta_analysis",
  "volta_common",
  "volta_frontend",
+ "volta_spec",
 ]
 
 [[package]]

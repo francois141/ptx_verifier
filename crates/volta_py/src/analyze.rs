@@ -10,7 +10,7 @@ use volta_frontend::parse as ptx_parse;
 use crate::config::ConfigPy;
 use crate::error::{analysis_error_to_py, parse_error_to_py, VoltaError};
 
-fn parse_module(source: &str) -> PyResult<Module> {
+pub(crate) fn parse_module(source: &str) -> PyResult<Module> {
     let ascii_src: &[AsciiChar] = source
         .as_bytes()
         .as_ascii_slice()
