@@ -10,3 +10,15 @@ test-rust:
 test-python:
     uv run pytest crates/volta_py
 
+# Static checks: cargo check, clippy, and the Python linter
+check: check-rust check-python
+
+# cargo check + clippy, minus the crates that unconditionally link libz3
+check-rust:
+    cargo check --workspace --exclude volta_z3 --exclude volta_bench
+    cargo clippy --workspace --exclude volta_z3 --exclude volta_bench
+
+# Lint the Python bindings (crates/volta_py)
+check-python:
+    uv run ruff check crates/volta_py
+

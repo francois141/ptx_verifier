@@ -13,7 +13,7 @@ classifiers = [
 ]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "ruff"]
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
