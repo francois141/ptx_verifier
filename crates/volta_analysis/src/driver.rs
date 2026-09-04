@@ -239,6 +239,13 @@ impl EquivCheckReport {
     }
 }
 
+/// One array's paired footprint: its name and the common `(index,
+/// reference expr, optimized expr)` triples for the elements both runs
+/// wrote.
+pub type PairedFootprint = (String, Vec<(u64, ExprId, ExprId)>);
+/// Per-array paired footprints, in `paired_elements` order.
+pub type PairedFootprints = Vec<PairedFootprint>;
+
 /// Pair up the two runs' written elements for each array the caller
 /// names: both runs must have written every named array with an
 /// identical index set, element for element (arrays the caller does not
@@ -252,7 +259,7 @@ pub fn paired_elements(
     reference: &AnalysisOutput,
     optimized: &AnalysisOutput,
     arrays: &[String],
-) -> Result<Vec<(String, Vec<(u64, ExprId, ExprId)>)>, EquivCheckError> {
+) -> Result<PairedFootprints, EquivCheckError> {
     if arrays.is_empty() {
         return Err(EquivCheckError::ShapeMismatch {
             message: "no arrays specified to check".to_string(),
@@ -307,7 +314,7 @@ pub fn paired_elements(
 /// re-solve loop all iterate exactly this list, so their per-element
 /// results correspond positionally.
 pub fn sampled_elements(
-    paired: &[(String, Vec<(u64, ExprId, ExprId)>)],
+    paired: &[PairedFootprint],
     sample: u64,
 ) -> Vec<(&str, u64, ExprId, ExprId)> {
     let mut sampled = Vec::new();

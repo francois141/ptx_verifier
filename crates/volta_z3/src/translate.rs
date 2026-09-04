@@ -169,7 +169,7 @@ impl Builder {
             out.push_str(")) ");
         }
         out.push_str(body);
-        out.extend(std::iter::repeat(')').take(self.bindings.len()));
+        out.extend(std::iter::repeat_n(')', self.bindings.len()));
         out
     }
 }
@@ -338,7 +338,7 @@ fn translate_uncached(
 /// name via `Debug`, not the full (potentially huge) subtree.
 fn describe(node: &ExprNode) -> String {
     let s = format!("{:?}", node);
-    s.split(|c: char| c == ' ' || c == '{' || c == '(')
+    s.split([' ', '{', '('])
         .next()
         .unwrap_or(&s)
         .to_string()

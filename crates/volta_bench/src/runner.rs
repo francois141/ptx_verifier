@@ -40,8 +40,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use volta_analysis::driver::{
-    AnalysisError, ElementCheckTime, EquivCheckOptions, EquivOutcome, VcDump, VcSnapshot,
-    analyze_kernel, check_output_equivalence_with, paired_elements, sampled_elements,
+    AnalysisError, ElementCheckTime, EquivCheckOptions, EquivOutcome, PairedFootprints, VcDump,
+    VcSnapshot, analyze_kernel, check_output_equivalence_with, paired_elements, sampled_elements,
     vc_dump::write_vc_dump_to,
 };
 use volta_analysis::eval::{AnalysisOutput, EvalError};
@@ -321,11 +321,6 @@ pub(crate) struct RunOutput {
     pub(crate) dump_path: Option<PathBuf>,
     pub(crate) z3: Option<Z3PhaseOutcome>,
 }
-
-/// One equivalence benchmark's paired footprints: per output array, the
-/// common `(index, reference expr, optimized expr)` element list
-/// (`driver::paired_elements`' shape).
-type PairedFootprints = Vec<(String, Vec<(u64, ExprId, ExprId)>)>;
 
 /// The generation half of the pipeline, as produced by
 /// [`BenchmarkRunner::generate_inner`].
