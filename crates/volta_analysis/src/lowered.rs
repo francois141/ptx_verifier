@@ -553,6 +553,9 @@ pub enum LoweredInstr {
     Ldmatrix {
         dst: Vec<RegId>,
         addr: Operand,
+        /// Constant byte offset folded from a `[reg+imm]` address operand
+        /// (e.g. `[%r202+16384]`); zero for a bare-register address.
+        addr_offset: i64,
         num: u32, // x1, x2, or x4
         trans: bool,
     },
@@ -583,6 +586,9 @@ pub enum LoweredInstr {
         layout: crate::tensor_core::MmaLayout,
         dst: Vec<RegId>,
         addr: Operand,
+        /// Constant byte offset folded from a `[reg+imm]` address operand;
+        /// zero for a bare-register address.
+        addr_offset: i64,
         stride: Operand,
         elem_type: ScalarType,
         space: MemSpace,
@@ -594,6 +600,9 @@ pub enum LoweredInstr {
         layout: crate::tensor_core::MmaLayout,
         src: Vec<RegId>,
         addr: Operand,
+        /// Constant byte offset folded from a `[reg+imm]` address operand;
+        /// zero for a bare-register address.
+        addr_offset: i64,
         stride: Operand,
         elem_type: ScalarType,
         space: MemSpace,
