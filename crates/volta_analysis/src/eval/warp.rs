@@ -173,10 +173,11 @@ impl Interpreter<'_> {
             LoweredInstr::Ldmatrix {
                 dst,
                 addr,
+                addr_offset,
                 num,
                 trans,
             } => {
-                self.exec_ldmatrix(pc, members, dst, addr, *num, *trans)?;
+                self.exec_ldmatrix(pc, members, dst, addr, *addr_offset, *num, *trans)?;
             }
             LoweredInstr::Mma { .. } => self.exec_mma(pc, members, &instr)?,
             LoweredInstr::WmmaLoad { .. } => self.exec_wmma_load(pc, members, &instr)?,
@@ -385,12 +386,14 @@ impl Interpreter<'_> {
     ///
     /// `check_warp_op_preconditions` already established: all 32 lanes
     /// live, `dst.len() == num`.
+    #[allow(clippy::too_many_arguments)]
     fn exec_ldmatrix(
         &mut self,
         pc: InstrId,
         members: &[ThreadId],
         dst: &[RegId],
         addr: &Operand,
+        addr_offset: i64,
         num: u32,
         trans: bool,
     ) -> EvalResult<()> {
@@ -403,7 +406,7 @@ impl Interpreter<'_> {
         for i in 0..num as usize {
             for r in 0..8 {
                 let m = members[i * 8 + r];
-                let a = self.concrete_operand(m, pc, addr, "ldmatrix row address")? as u64;
+                let a = self.effective_addr(m, pc, addr, addr_offset)?;
                 self.check_alignment(m, pc, MemSpace::Shared, a, LDMATRIX_ROW_BYTES)?;
                 row_addr[i][r] = a;
             }
@@ -504,6 +507,7 @@ impl Interpreter<'_> {
             layout,
             dst,
             addr,
+            addr_offset,
             stride,
             elem_type,
             space,
@@ -513,7 +517,8 @@ impl Interpreter<'_> {
             unreachable!()
         };
 
-        let base = self.uniform_concrete(pc, members, addr, "wmma.load address")? as u64;
+        let base = (self.uniform_concrete(pc, members, addr, "wmma.load address")? as u64)
+            .wrapping_add(*addr_offset as u64);
         let stride = self.uniform_concrete(pc, members, stride, "wmma.load stride")?;
         let stride =
             self.check_wmma_addressing(pc, members[0], *space, base, stride, *elem_type)?;
@@ -606,6 +611,7 @@ impl Interpreter<'_> {
             layout,
             src,
             addr,
+            addr_offset,
             stride,
             elem_type,
             space,
@@ -615,7 +621,8 @@ impl Interpreter<'_> {
             unreachable!()
         };
 
-        let base = self.uniform_concrete(pc, members, addr, "wmma.store address")? as u64;
+        let base = (self.uniform_concrete(pc, members, addr, "wmma.store address")? as u64)
+            .wrapping_add(*addr_offset as u64);
         let stride = self.uniform_concrete(pc, members, stride, "wmma.store stride")?;
         let stride =
             self.check_wmma_addressing(pc, members[0], *space, base, stride, *elem_type)?;

@@ -4185,12 +4185,20 @@ fn lower_ldmatrix(
     }
 
     let dst = ctx.resolve_dst_vector(&operands[0])?;
-    let addr = ctx.resolve_operand(&operands[1])?;
+    // `resolve_operand` on an `Address` only resolves the base register and
+    // silently drops a `[reg+imm]` constant offset (that immediate isn't
+    // folded anywhere else for this instruction), so the offset must be
+    // pulled out separately here, matching `lower_cp_async`'s pattern.
+    let (addr, addr_offset) = match &operands[1] {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
 
     ctx.emit(
         LoweredInstr::Ldmatrix {
             dst,
             addr,
+            addr_offset,
             num,
             trans,
         },
@@ -4414,7 +4422,12 @@ fn lower_wmma_load(
     }
 
     let dst = ctx.resolve_dst_vector(&operands[0])?;
-    let addr = ctx.resolve_operand(&operands[1])?;
+    // See `lower_ldmatrix`: `resolve_operand` alone drops a `[reg+imm]`
+    // constant offset.
+    let (addr, addr_offset) = match &operands[1] {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
     let stride = ctx.resolve_operand(&operands[2])?;
 
     ctx.emit(
@@ -4424,6 +4437,7 @@ fn lower_wmma_load(
             layout,
             dst,
             addr,
+            addr_offset,
             stride,
             elem_type,
             space,
@@ -4508,7 +4522,12 @@ fn lower_wmma_store(
         });
     }
 
-    let addr = ctx.resolve_operand(&operands[0])?;
+    // See `lower_ldmatrix`: `resolve_operand` alone drops a `[reg+imm]`
+    // constant offset.
+    let (addr, addr_offset) = match &operands[0] {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
     let src = ctx.resolve_dst_vector(&operands[1])?;
     let stride = ctx.resolve_operand(&operands[2])?;
 
@@ -4518,6 +4537,7 @@ fn lower_wmma_store(
             layout,
             src,
             addr,
+            addr_offset,
             stride,
             elem_type,
             space,
