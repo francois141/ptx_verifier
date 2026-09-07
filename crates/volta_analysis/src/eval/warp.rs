@@ -20,7 +20,8 @@ use crate::lowered::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
 use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::tensor_core::{
-    FragmentElement, MmaLayout, MmaOperand, MmaShape, m16n8k16_f16, m16n16k16_f16,
+    FragmentElement, MmaLayout, MmaOperand, MmaShape, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16,
+    m16n16k16_f16,
 };
 use crate::types::ScalarTypeExt;
 
@@ -228,12 +229,20 @@ impl Interpreter<'_> {
                 shape,
                 a_layout,
                 b_layout,
+                a_type,
                 ..
             } => {
-                if *shape != MmaShape::new(16, 8, 16) {
+                let supported = match a_type {
+                    ScalarType::F16 => *shape == MmaShape::new(16, 8, 16),
+                    ScalarType::Tf32 => {
+                        *shape == MmaShape::new(16, 8, 8) || *shape == MmaShape::new(16, 8, 4)
+                    }
+                    _ => false,
+                };
+                if !supported {
                     return Err(EvalError::Unsupported {
                         pc,
-                        what: format!("mma shape {}", shape),
+                        what: format!("mma shape {} with {:?} multiplicands", shape, a_type),
                     });
                 }
                 if (*a_layout, *b_layout) != (MmaLayout::Row, MmaLayout::Col) {
@@ -447,10 +456,13 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`.
+    /// `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` and the tf32
+    /// forms `m16n8k8` / `m16n8k4` with `.f32.tf32.tf32.f32`.
     ///
-    /// `check_warp_op_preconditions` already established: m16n8k16 shape,
-    /// row.col layouts, all 32 lanes live.
+    /// `check_warp_op_preconditions` already established a supported
+    /// shape/type pair, row.col layouts, and all 32 lanes live. tf32
+    /// multiplicands sit one per 32-bit register and are reals here, so they
+    /// gather like the f32 accumulators rather than as packed halves.
     fn exec_mma(
         &mut self,
         pc: InstrId,
@@ -458,27 +470,66 @@ impl Interpreter<'_> {
         instr: &LoweredInstr,
     ) -> EvalResult<()> {
         let LoweredInstr::Mma {
+            shape,
             dst,
             src_a,
             src_b,
             src_c,
+            a_type,
             ..
         } = instr
         else {
             unreachable!()
         };
 
-        let mut a = Grid::new(16, 16);
-        let mut b = Grid::new(16, 8);
-        let mut c = Grid::new(16, 8);
+        let (m_dim, n_dim, k_dim) = (shape.m, shape.n, shape.k);
+        let mut a = Grid::new(m_dim as usize, k_dim as usize);
+        let mut b = Grid::new(k_dim as usize, n_dim as usize);
+        let mut c = Grid::new(m_dim as usize, n_dim as usize);
         for &m in members {
             let lane = m.0 % WARP_SIZE;
-            self.gather_f16_fragment(pc, m, src_a, &m16n8k16_f16::matrix_a(lane), &mut a)?;
-            self.gather_f16_fragment(pc, m, src_b, &m16n8k16_f16::matrix_b(lane), &mut b)?;
+            match (a_type, k_dim) {
+                (ScalarType::Tf32, 8) => {
+                    self.gather_scalar_fragment(
+                        pc,
+                        m,
+                        src_a,
+                        &m16n8k8_tf32::matrix_a(lane),
+                        &mut a,
+                    )?;
+                    self.gather_scalar_fragment(
+                        pc,
+                        m,
+                        src_b,
+                        &m16n8k8_tf32::matrix_b(lane),
+                        &mut b,
+                    )?;
+                }
+                (ScalarType::Tf32, 4) => {
+                    self.gather_scalar_fragment(
+                        pc,
+                        m,
+                        src_a,
+                        &m16n8k4_tf32::matrix_a(lane),
+                        &mut a,
+                    )?;
+                    self.gather_scalar_fragment(
+                        pc,
+                        m,
+                        src_b,
+                        &m16n8k4_tf32::matrix_b(lane),
+                        &mut b,
+                    )?;
+                }
+                _ => {
+                    self.gather_f16_fragment(pc, m, src_a, &m16n8k16_f16::matrix_a(lane), &mut a)?;
+                    self.gather_f16_fragment(pc, m, src_b, &m16n8k16_f16::matrix_b(lane), &mut b)?;
+                }
+            }
             self.gather_f32_fragment(pc, m, src_c, &m16n8k16_f16::matrix_cd(lane), &mut c)?;
         }
 
-        let d = self.matmul_acc(pc, &a, &b, &c, 16, 8, 16)?;
+        let d = self.matmul_acc(pc, &a, &b, &c, m_dim, n_dim, k_dim)?;
 
         for &m in members {
             let lane = m.0 % WARP_SIZE;
@@ -828,6 +879,30 @@ impl Interpreter<'_> {
                 });
             };
             let e = if elem.high_half == Some(true) { hi } else { lo };
+            grid.set(elem.row, elem.col, e);
+        }
+        Ok(())
+    }
+
+    /// Place one lane's fragment of unpacked 32-bit registers (tf32
+    /// multiplicands) into a matrix grid.
+    fn gather_scalar_fragment(
+        &mut self,
+        pc: InstrId,
+        m: ThreadId,
+        regs: &[RegId],
+        elems: &[FragmentElement],
+        grid: &mut Grid,
+    ) -> EvalResult<()> {
+        for elem in elems {
+            let v = self.read_reg(m, pc, regs[elem.reg_idx])?;
+            let Value::Scalar(e) = v else {
+                return Err(EvalError::ValueKindMismatch {
+                    thread: m,
+                    pc,
+                    what: "tf32 fragment register holds a packed pair",
+                });
+            };
             grid.set(elem.row, elem.col, e);
         }
         Ok(())

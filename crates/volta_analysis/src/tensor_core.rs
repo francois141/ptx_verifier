@@ -176,6 +176,91 @@ pub mod m16n8k16_f16 {
     }
 }
 
+/// Fragment mappings for `mma.m16n8k8` with `.tf32` multiplicands (PTX ISA
+/// "Matrix Fragments for mma.m16n8k8", .tf32 rows). Each 32-bit register
+/// holds one tf32 element, so `high_half` is always `None`.
+pub mod m16n8k8_tf32 {
+    use super::FragmentElement;
+
+    /// Matrix A fragment: 4 registers, one tf32 each. A is m16 x k8.
+    /// a0: (groupID, tig), a1: (groupID+8, tig), a2: (groupID, tig+4),
+    /// a3: (groupID+8, tig+4).
+    pub fn matrix_a(lane_id: u32) -> Vec<FragmentElement> {
+        let group_id = lane_id >> 2;
+        let thread_in_group = lane_id % 4;
+        (0u32..4)
+            .map(|i| FragmentElement {
+                reg_idx: i as usize,
+                row: if i % 2 == 0 { group_id } else { group_id + 8 },
+                col: if i < 2 {
+                    thread_in_group
+                } else {
+                    thread_in_group + 4
+                },
+                high_half: None,
+            })
+            .collect()
+    }
+
+    /// Matrix B fragment: 2 registers, one tf32 each. B is k8 x n8.
+    /// b0: (k = tig, n = groupID), b1: (k = tig+4, n = groupID).
+    pub fn matrix_b(lane_id: u32) -> Vec<FragmentElement> {
+        let group_id = lane_id >> 2;
+        let thread_in_group = lane_id % 4;
+        (0u32..2)
+            .map(|i| FragmentElement {
+                reg_idx: i as usize,
+                row: thread_in_group + 4 * i,
+                col: group_id,
+                high_half: None,
+            })
+            .collect()
+    }
+
+    /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
+    pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {
+        super::m16n8k16_f16::matrix_cd(lane_id)
+    }
+}
+
+/// Fragment mappings for `mma.m16n8k4` with `.tf32` multiplicands (PTX ISA
+/// "Matrix Fragments for mma.m16n8k4", .tf32 rows).
+pub mod m16n8k4_tf32 {
+    use super::FragmentElement;
+
+    /// Matrix A fragment: 2 registers, one tf32 each. A is m16 x k4.
+    /// a0: (groupID, tig), a1: (groupID+8, tig).
+    pub fn matrix_a(lane_id: u32) -> Vec<FragmentElement> {
+        let group_id = lane_id >> 2;
+        let thread_in_group = lane_id % 4;
+        (0u32..2)
+            .map(|i| FragmentElement {
+                reg_idx: i as usize,
+                row: group_id + 8 * i,
+                col: thread_in_group,
+                high_half: None,
+            })
+            .collect()
+    }
+
+    /// Matrix B fragment: 1 register. B is k4 x n8. b0: (k = tig, n = groupID).
+    pub fn matrix_b(lane_id: u32) -> Vec<FragmentElement> {
+        let group_id = lane_id >> 2;
+        let thread_in_group = lane_id % 4;
+        vec![FragmentElement {
+            reg_idx: 0,
+            row: thread_in_group,
+            col: group_id,
+            high_half: None,
+        }]
+    }
+
+    /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
+    pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {
+        super::m16n8k16_f16::matrix_cd(lane_id)
+    }
+}
+
 /// Compute fragment mappings for wmma m16n16k16 with f16 inputs and f32 accumulators.
 ///
 /// The WMMA API uses a different fragment layout than the MMA API.
@@ -321,6 +406,42 @@ mod tests {
         assert_eq!((a[6].row, a[6].col), (8, 8));
         // a7: row=8, col=9
         assert_eq!((a[7].row, a[7].col), (8, 9));
+    }
+
+    #[test]
+    fn test_m16n8k8_tf32_thread5_covers_the_isa_table() {
+        // lane 5: groupID 1, threadID_in_group 1
+        let a = m16n8k8_tf32::matrix_a(5);
+        let a_cells: Vec<(usize, u32, u32)> = a.iter().map(|e| (e.reg_idx, e.row, e.col)).collect();
+        assert_eq!(a_cells, vec![(0, 1, 1), (1, 9, 1), (2, 1, 5), (3, 9, 5)]);
+        let b = m16n8k8_tf32::matrix_b(5);
+        let b_cells: Vec<(usize, u32, u32)> = b.iter().map(|e| (e.reg_idx, e.row, e.col)).collect();
+        assert_eq!(b_cells, vec![(0, 1, 1), (1, 5, 1)]);
+        assert!(a.iter().chain(b.iter()).all(|e| e.high_half.is_none()));
+        // Every A element is owned by exactly one lane.
+        let mut seen = std::collections::HashSet::new();
+        for lane in 0..32 {
+            for e in m16n8k8_tf32::matrix_a(lane) {
+                assert!(seen.insert((e.row, e.col)), "duplicate A element");
+            }
+        }
+        assert_eq!(seen.len(), 16 * 8);
+    }
+
+    #[test]
+    fn test_m16n8k4_tf32_thread5() {
+        let a = m16n8k4_tf32::matrix_a(5);
+        let a_cells: Vec<(usize, u32, u32)> = a.iter().map(|e| (e.reg_idx, e.row, e.col)).collect();
+        assert_eq!(a_cells, vec![(0, 1, 1), (1, 9, 1)]);
+        let b = m16n8k4_tf32::matrix_b(5);
+        assert_eq!((b[0].reg_idx, b[0].row, b[0].col), (0, 1, 1));
+        let mut seen = std::collections::HashSet::new();
+        for lane in 0..32 {
+            for e in m16n8k4_tf32::matrix_b(lane) {
+                assert!(seen.insert((e.row, e.col)), "duplicate B element");
+            }
+        }
+        assert_eq!(seen.len(), 4 * 8);
     }
 
     #[test]

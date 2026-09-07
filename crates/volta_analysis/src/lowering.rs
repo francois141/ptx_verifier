@@ -69,18 +69,18 @@ fn check_not_packed(ty: ScalarType, instruction: &str) -> LowerResult<()> {
     }
 }
 
-/// Like `check_not_packed`, but lets `F16x2`/`Bf16x2` through: the
+/// Like `check_not_packed`, but lets `F16x2`/`Bf16x2`/`F32x2` through: the
 /// `BinOp`/`UnaryOp`/`Fma` eval arms compute each lane of a `Value::Pair`
-/// independently for these two types (see `eval::interp`), so they're no
+/// independently for these types (see `eval::interp`), so they're no
 /// longer a silent single-lane result - only the still-unmodeled packed
-/// integer (`U16x2`/`S16x2`) and `F32x2` forms stay rejected. Callers that
-/// route through `LoweredInstr::BinOp`/`UnaryOp`/`Fma` for a real packed
-/// PTX arithmetic form (plain add/sub/mul/min/max/neg/abs/fma, not the
+/// integer (`U16x2`/`S16x2`) forms stay rejected. Callers that route
+/// through `LoweredInstr::BinOp`/`UnaryOp`/`Fma` for a real packed PTX
+/// arithmetic form (plain add/sub/mul/min/max/neg/abs/fma, not the
 /// mixed-precision or integer-only variants, which never carry a packed
 /// `ty` in practice) use this instead of `check_not_packed`.
 fn check_packed_arithmetic(ty: ScalarType, instruction: &str) -> LowerResult<()> {
     match ty {
-        ScalarType::U16x2 | ScalarType::S16x2 | ScalarType::F32x2 => Err(unsupported(
+        ScalarType::U16x2 | ScalarType::S16x2 => Err(unsupported(
             instruction,
             format!("packed SIMD arithmetic on {:?}", ty),
         )),
@@ -1556,8 +1556,16 @@ fn lower_parsed_instruction(
                     // native packed-f16 `Value::Pair`) isn't known here, so
                     // both cases are handled at eval time - see
                     // `UnpackHalves`.
-                    let lo_reg = ctx.resolve_dst(&dst_elems[0])?;
-                    let hi_reg = ctx.resolve_dst(&dst_elems[1])?;
+                    // Either half may be the `_` sink, e.g. Triton's
+                    // `mov.b64 {_, %r1}, %rd2` to take the high word.
+                    let resolve_half = |elem: &AstOperand| -> LowerResult<Option<RegId>> {
+                        match elem {
+                            AstOperand::Underscore => Ok(None),
+                            other => ctx.resolve_dst(other).map(Some),
+                        }
+                    };
+                    let lo_reg = resolve_half(&dst_elems[0])?;
+                    let hi_reg = resolve_half(&dst_elems[1])?;
                     let src = ctx.resolve_operand(&mov.src)?;
 
                     ctx.emit(
@@ -1590,15 +1598,16 @@ fn lower_parsed_instruction(
                     let lo = ctx.resolve_operand(&elements[0])?;
                     let hi = ctx.resolve_operand(&elements[1])?;
 
-                    if mov.ty.bits() == 32 {
+                    if matches!(mov.ty.bits(), 32 | 64) {
                         // Always writes a Value::Pair - see PackHalves's
                         // doc comment for why this is exact for both real
-                        // and integer halves, and why it's scoped to b32.
+                        // and integer halves. b32 packs hold f16x2/bf16x2
+                        // lanes, b64 packs f32x2 lanes (or two 32-bit
+                        // integer halves, recombined on demand when read
+                        // as one scalar).
                         ctx.emit(LoweredInstr::PackHalves { dst, lo, hi }, predicate)?;
                     } else {
-                        // mov.b64 dst, {lo, hi}: two 32-bit halves building
-                        // a 64-bit value - unrelated to f16 packing, so
-                        // this keeps the plain bitwise pack.
+                        // Any other width: plain bitwise pack.
                         let elem_width = mov.ty.bits() / 2;
 
                         // Step 1: dst = hi << w
@@ -2054,8 +2063,35 @@ fn lower_add(
                 predicate,
             )?;
         }
-        AddInstr::Float32x2 { .. } => {
-            return Err(unsupported("add.f32x2", "packed SIMD arithmetic on F32x2"));
+        AddInstr::Float32x2 {
+            // Packed single precision (sm_100+): two f32 lanes in a 64-bit
+            // register, each evaluated as an exact real like `add.f32`.
+            rnd: _rnd,
+            ftz: _ftz,
+            dst,
+            src_a,
+            src_b,
+        } => {
+            let ty = ScalarType::F32x2;
+            let dst_typed = ctx.resolve_dst_typed(dst)?;
+            let src_a_typed = ctx.resolve_operand_typed(src_a)?;
+            let src_b_typed = ctx.resolve_operand_typed(src_b)?;
+
+            ctx.check_dst_type(&dst_typed, ty, "add.f32x2")?;
+            ctx.check_operand_type(&src_a_typed, ty, "add.f32x2")?;
+            ctx.check_operand_type(&src_b_typed, ty, "add.f32x2")?;
+
+            ctx.emit(
+                LoweredInstr::BinOp {
+                    op: BinOp::Add,
+                    dst: dst_typed.reg,
+                    src_a: src_a_typed.operand,
+                    src_b: src_b_typed.operand,
+                    ty,
+                    clamp: None,
+                },
+                predicate,
+            )?;
         }
         AddInstr::Float64 {
             // Rounding mode doesn't apply over the reals.
@@ -2300,8 +2336,34 @@ fn lower_sub(
                 predicate,
             )?;
         }
-        SubInstr::Float32x2 { .. } => {
-            return Err(unsupported("sub.f32x2", "packed SIMD arithmetic on F32x2"));
+        SubInstr::Float32x2 {
+            // Packed single precision (sm_100+), per lane like `sub.f32`.
+            rnd: _rnd,
+            ftz: _ftz,
+            dst,
+            src_a,
+            src_b,
+        } => {
+            let ty = ScalarType::F32x2;
+            let dst_typed = ctx.resolve_dst_typed(dst)?;
+            let src_a_typed = ctx.resolve_operand_typed(src_a)?;
+            let src_b_typed = ctx.resolve_operand_typed(src_b)?;
+
+            ctx.check_dst_type(&dst_typed, ty, "sub.f32x2")?;
+            ctx.check_operand_type(&src_a_typed, ty, "sub.f32x2")?;
+            ctx.check_operand_type(&src_b_typed, ty, "sub.f32x2")?;
+
+            ctx.emit(
+                LoweredInstr::BinOp {
+                    op: BinOp::Sub,
+                    dst: dst_typed.reg,
+                    src_a: src_a_typed.operand,
+                    src_b: src_b_typed.operand,
+                    ty,
+                    clamp: None,
+                },
+                predicate,
+            )?;
         }
         SubInstr::Float64 {
             // Rounding mode doesn't apply over the reals.
@@ -2657,11 +2719,17 @@ fn lower_fma(
             let clamp = sat.then_some(Clamp::Sat);
             (ty, ty, "fma.rn.f32", clamp, dst, src_a, src_b, src_c)
         }
-        FmaInstr::Float32x2 { .. } => {
-            return Err(unsupported(
-                "fma.rn.f32x2",
-                "packed SIMD arithmetic on F32x2",
-            ));
+        FmaInstr::Float32x2 {
+            // Packed single precision (sm_100+), per lane like `fma.rn.f32`.
+            rnd: _rnd,
+            ftz: _ftz,
+            dst,
+            src_a,
+            src_b,
+            src_c,
+        } => {
+            let ty = ScalarType::F32x2;
+            (ty, ty, "fma.rn.f32x2", None, dst, src_a, src_b, src_c)
         }
         FmaInstr::Float64 {
             rnd: _rnd,
@@ -2940,18 +3008,17 @@ fn lower_float_unary(
     Ok(())
 }
 
-/// Reject the float min/max modifiers we do not model. `.NaN` changes the
-/// NaN-propagation contract (meaningless over the reals but a semantic claim
-/// nonetheless), `.xorsign.abs`/`.abs` change the computed value outright.
+/// Reject the float min/max modifiers we do not model. `.NaN` only changes
+/// what happens when an input is NaN (the result is NaN instead of the other
+/// operand); over the reals no input is NaN, so on every input Volta can
+/// represent the instruction is plain min/max and it is accepted.
+/// `.xorsign.abs`/`.abs` change the computed value outright.
 fn reject_minmax_modifiers(
     instruction: &str,
-    nan: bool,
+    _nan: bool,
     xorsign_abs: bool,
     abs: bool,
 ) -> LowerResult<()> {
-    if nan {
-        return Err(unsupported(instruction, ".NaN modifier"));
-    }
     if xorsign_abs {
         return Err(unsupported(instruction, ".xorsign.abs modifier"));
     }
@@ -3782,8 +3849,14 @@ fn lower_cvt(
                 Some(CvtRounding::Stochastic) => {
                     return Err(unsupported("cvt", ".rs stochastic-rounding modifier"));
                 }
+                // .rna is how PTX rounds f32 to tf32 for tensor cores; tf32
+                // values are reals here, so the conversion is the identity.
+                Some(CvtRounding::Rna) if matches!(dst_type, ScalarType::Tf32) => {}
                 Some(CvtRounding::Rna) => {
-                    return Err(unsupported("cvt", ".rna rounding modifier"));
+                    return Err(unsupported(
+                        "cvt",
+                        ".rna rounding modifier outside a .tf32 destination",
+                    ));
                 }
             }
 
@@ -3828,8 +3901,14 @@ fn lower_cvt(
                 Some(CvtRounding::Stochastic) => {
                     return Err(unsupported("cvt", ".rs stochastic-rounding modifier"));
                 }
+                // .rna is how PTX rounds f32 to tf32 for tensor cores; tf32
+                // values are reals here, so the conversion is the identity.
+                Some(CvtRounding::Rna) if matches!(dst_type, ScalarType::Tf32) => {}
                 Some(CvtRounding::Rna) => {
-                    return Err(unsupported("cvt", ".rna rounding modifier"));
+                    return Err(unsupported(
+                        "cvt",
+                        ".rna rounding modifier outside a .tf32 destination",
+                    ));
                 }
             }
             let dst_half_ty = match dst_type {
@@ -4260,21 +4339,42 @@ fn lower_mma(
         });
     }
 
-    // The evaluator gathers f16 multiplicand fragments and f32 accumulators;
-    // any other type combination would be executed with the wrong layout.
-    if types
-        != [
-            ScalarType::F32,
-            ScalarType::F16,
-            ScalarType::F16,
-            ScalarType::F32,
-        ]
-    {
+    // The evaluator gathers f16 (packed pairs, m16n8k16) or tf32 (one value
+    // per register, m16n8k8 / m16n8k4) multiplicand fragments and f32
+    // accumulators; any other combination would use the wrong layout.
+    let f16_types = [
+        ScalarType::F32,
+        ScalarType::F16,
+        ScalarType::F16,
+        ScalarType::F32,
+    ];
+    let tf32_types = [
+        ScalarType::F32,
+        ScalarType::Tf32,
+        ScalarType::Tf32,
+        ScalarType::F32,
+    ];
+    if types != f16_types && types != tf32_types {
         return Err(unsupported(
             "mma",
             format!(
-                "type combination {:?} (only .f32.f16.f16.f32 is modeled)",
+                "type combination {:?} (only .f32.f16.f16.f32 and .f32.tf32.tf32.f32 \
+                 are modeled)",
                 types
+            ),
+        ));
+    }
+    let shape_supported = match types[1] {
+        ScalarType::F16 => shape == MmaShape::new(16, 8, 16),
+        _ => shape == MmaShape::new(16, 8, 8) || shape == MmaShape::new(16, 8, 4),
+    };
+    if !shape_supported {
+        return Err(unsupported(
+            "mma",
+            format!(
+                "shape {} with {:?} multiplicands (f16 needs m16n8k16; tf32 needs \
+                 m16n8k8 or m16n8k4)",
+                shape, types[1]
             ),
         ));
     }
@@ -5212,8 +5312,10 @@ mod tests {
 
     #[test]
     fn test_reject_minmax_modifiers() {
-        assert_rejected("min.NaN.f32 %f1, %f2, %f3;", ".NaN");
-        assert_rejected("max.NaN.f32 %f1, %f2, %f3;", ".NaN");
+        // `.NaN` is exact over the reals (no input is NaN), so it lowers.
+        assert_lowers("min.NaN.f32 %f1, %f2, %f3;");
+        assert_lowers("max.NaN.f32 %f1, %f2, %f3;");
+        assert_lowers("max.ftz.NaN.f32 %f1, %f2, %f3;");
         assert_rejected("max.xorsign.abs.f32 %f1, %f2, %f3;", ".xorsign.abs");
         assert_rejected("min.abs.f32 %f1, %f2, %f3;", ".abs");
         assert_rejected("max.ftz.f32 %f1, %f2, %f3, %f4;", "3-input");
@@ -5303,9 +5405,14 @@ mod tests {
         assert_lowers("fma.rn.f16x2 %r1, %r2, %r3, %r4;");
         assert_lowers("fma.rn.relu.f16x2 %r1, %r2, %r3, %r4;");
         assert_lowers("fma.rn.bf16x2 %r1, %r2, %r3, %r4;");
-        // F32x2 stays rejected - only the two half-precision packed types
-        // are modeled.
-        assert_rejected("add.f32x2 %fd1, %fd2, %fd3;", "packed SIMD");
+        // Packed single precision (sm_100+) lives in 64-bit registers and
+        // is evaluated per lane like the half-precision pairs.
+        assert_lowers("add.f32x2 %rd1, %rd2, %rd3;");
+        assert_lowers("add.rn.ftz.f32x2 %rd1, %rd2, %rd3;");
+        assert_lowers("sub.f32x2 %rd1, %rd2, %rd3;");
+        assert_lowers("mul.rn.f32x2 %rd1, %rd2, %rd3;");
+        assert_lowers("fma.rn.f32x2 %rd1, %rd2, %rd3, %rd4;");
+        assert_lowers("fma.rn.ftz.f32x2 %rd1, %rd2, %rd3, %rd4;");
     }
 
     #[test]

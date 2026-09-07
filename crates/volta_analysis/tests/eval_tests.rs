@@ -1309,12 +1309,13 @@ fn test_mov_pack_b32_always_builds_pair() {
     assert_eq!(display_output(&output, "out", 1), "in[1]");
 }
 
-/// `mov.b64 dst, {lo, hi}` (two 32-bit halves) is a different idiom -
-/// building a wide value/address, unrelated to f16 packing - and must keep
-/// the plain bitwise pack rather than becoming a `Value::Pair` (which only
-/// ever models 16-bit halves elsewhere in this codebase).
+/// `mov.b64 dst, {lo, hi}` with two concrete 32-bit integer halves - the
+/// idiom for building a wide value/address - still yields the exact 64-bit
+/// integer: the pack is a `Value::Pair` (shared with `f32x2` lanes), and
+/// concrete integer halves are recombined wherever the value is consumed
+/// as one scalar, here when the stored u64 output element is extracted.
 #[test]
-fn test_mov_pack_b64_stays_bitwise() {
+fn test_mov_pack_b64_integer_halves_recombine() {
     let src = wrap(
         ".visible .entry k(
     .param .u64 k_param_0
@@ -3442,4 +3443,303 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
     let module = parse(&src);
     let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
+}
+
+// =========================================================================
+// Packed single precision (f32x2, sm_100+)
+// =========================================================================
+
+/// Two threads, two f32 elements each: `out[i] = in[i] * in[i] + in[i]`,
+/// with `BODY` computing the two elements of one thread from
+/// `{%f1, %f2}` (loaded) into `{%f3, %f4}` (stored) - or, for the 64-bit
+/// memory variants, from `[%rd4]` into `[%rd5]` directly.
+fn f32x2_kernel(body: &str) -> String {
+    wrap(&format!(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{{
+    .reg .f32 %f<5>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<12>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    shl.b32 %r2, %r1, 3;
+    cvt.u64.u32 %rd3, %r2;
+    add.s64 %rd4, %rd1, %rd3;
+    add.s64 %rd5, %rd2, %rd3;
+    {body}
+    ret;
+}}
+",
+    ))
+}
+
+const F32X2_SCALAR_REFERENCE: &str = "ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    fma.rn.f32 %f3, %f1, %f1, %f1;
+    fma.rn.f32 %f4, %f2, %f2, %f2;
+    st.global.v2.f32 [%rd5], {%f3, %f4};";
+
+fn f32x2_outcome(candidate_body: &str) -> EquivOutcome {
+    let reference = analyze_kernel(
+        &parse(&f32x2_kernel(F32X2_SCALAR_REFERENCE)),
+        None,
+        in_out_config(2, 4),
+    )
+    .unwrap();
+    let candidate = analyze_kernel(&parse(&f32x2_kernel(candidate_body)), None, in_out_config(2, 4))
+        .unwrap();
+    check_equiv(&reference, &candidate)
+}
+
+/// `mov.b64 %rd, {%f_lo, %f_hi}` packs two f32 registers, `fma.rn.f32x2`
+/// works per lane, `mov.b64 {%f_lo, %f_hi}, %rd` unpacks the result.
+#[test]
+fn test_f32x2_fma_via_register_pack() {
+    let outcome = f32x2_outcome(
+        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    mov.b64 %rd6, {%f1, %f2};
+    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
+    mov.b64 {%f3, %f4}, %rd7;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// `mul.f32x2` then `add.f32x2` compute the same reals as the fused form.
+#[test]
+fn test_f32x2_mul_add_via_register_pack() {
+    let outcome = f32x2_outcome(
+        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    mov.b64 %rd6, {%f1, %f2};
+    mul.rn.f32x2 %rd8, %rd6, %rd6;
+    add.rn.f32x2 %rd7, %rd8, %rd6;
+    mov.b64 {%f3, %f4}, %rd7;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// A 64-bit load over two adjacent f32 inputs yields the pair directly,
+/// and a 64-bit store of the pair writes both output elements.
+#[test]
+fn test_f32x2_fma_via_64bit_memory_access() {
+    let outcome = f32x2_outcome(
+        "ld.global.b64 %rd6, [%rd4];
+    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
+    st.global.b64 [%rd5], %rd7;",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// A concrete 64-bit bit pattern used as an f32x2 operand decodes into its
+/// two single-precision lanes (here 1.0f in both lanes: x * 1 + x = 2x,
+/// then `sub.f32x2` takes x back out, leaving x, so x*x + x needs the
+/// extra `fma`; the point is that the constant lanes are read correctly).
+#[test]
+fn test_f32x2_constant_bit_pattern_operand() {
+    let outcome = f32x2_outcome(
+        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    mov.b64 %rd6, {%f1, %f2};
+    mov.b64 %rd8, 4575657222473777152;
+    fma.rn.f32x2 %rd9, %rd6, %rd8, %rd6;
+    sub.f32x2 %rd10, %rd9, %rd6;
+    fma.rn.f32x2 %rd7, %rd10, %rd10, %rd10;
+    mov.b64 {%f3, %f4}, %rd7;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// The lanes really are computed: dropping the addend changes the result.
+#[test]
+fn test_f32x2_wrong_lane_math_is_not_equivalent() {
+    let outcome = f32x2_outcome(
+        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    mov.b64 %rd6, {%f1, %f2};
+    mul.rn.f32x2 %rd7, %rd6, %rd6;
+    mov.b64 {%f3, %f4}, %rd7;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(
+        matches!(outcome, EquivOutcome::NotEquivalent { .. }),
+        "{:?}",
+        outcome
+    );
+}
+
+/// `mov.b64 %rd, {%r_lo, %r_hi}` with concrete integer halves still builds
+/// the 64-bit integer (here a byte offset of 8) when read as a scalar.
+#[test]
+fn test_mov_b64_integer_pack_recombines_as_scalar() {
+    let packed = f32x2_kernel(
+        "ld.global.f32 %f1, [%rd4];
+    mov.u32 %r3, 8;
+    mov.u32 %r4, 0;
+    mov.b64 %rd6, {%r3, %r4};
+    add.s64 %rd7, %rd2, %rd6;
+    st.global.f32 [%rd7], %f1;",
+    );
+    let direct = f32x2_kernel(
+        "ld.global.f32 %f1, [%rd4];
+    st.global.f32 [%rd2+8], %f1;",
+    );
+    let a = analyze_kernel(&parse(&packed), None, in_out_config(1, 4)).unwrap();
+    let b = analyze_kernel(&parse(&direct), None, in_out_config(1, 4)).unwrap();
+    assert_eq!(display_output(&a, "out", 2), display_output(&b, "out", 2));
+    assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
+}
+
+/// nvcc/Triton's own way of building an `f32x2` operand: two 32-bit loads
+/// zero-extended into 64-bit registers, `shl.b64` by 32 and `or.b64` to
+/// place them in the two lanes (with an `and.b64` lane mask thrown in).
+#[test]
+fn test_f32x2_operand_assembled_with_shift_and_or() {
+    let outcome = f32x2_outcome(
+        "ld.global.b32 %rd6, [%rd4];
+    ld.global.b32 %rd8, [%rd4+4];
+    shl.b64 %rd9, %rd8, 32;
+    or.b64 %rd10, %rd9, %rd6;
+    and.b64 %rd11, %rd10, 4294967295;
+    or.b64 %rd6, %rd11, %rd9;
+    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
+    mov.b64 {%f3, %f4}, %rd7;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// `shr.u64` by 32 moves the high lane down; the low lane is then read
+/// through a 64-bit-to-32-bit unpack.
+#[test]
+fn test_f32x2_lane_extracted_with_shift() {
+    let outcome = f32x2_outcome(
+        "ld.global.b64 %rd6, [%rd4];
+    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
+    shr.u64 %rd8, %rd7, 32;
+    mov.b64 {%f3, _}, %rd7;
+    mov.b64 {%f4, _}, %rd8;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// `cvt.u64.u32` zero-extension is the other way nvcc/Triton feed one f32
+/// into an `f32x2` lane, and `cvt.u32.u64` truncation reads a lane back.
+#[test]
+fn test_f32x2_operand_assembled_with_cvt_zero_extension() {
+    let outcome = f32x2_outcome(
+        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
+    mov.b32 %r3, %f1;
+    mov.b32 %r4, %f2;
+    cvt.u64.u32 %rd6, %r3;
+    cvt.u64.u32 %rd8, %r4;
+    shl.b64 %rd9, %rd8, 32;
+    or.b64 %rd10, %rd6, %rd9;
+    fma.rn.f32x2 %rd7, %rd10, %rd10, %rd10;
+    shr.u64 %rd11, %rd7, 32;
+    cvt.u32.u64 %r3, %rd7;
+    cvt.u32.u64 %r4, %rd11;
+    mov.b32 %f3, %r3;
+    mov.b32 %f4, %r4;
+    st.global.v2.f32 [%rd5], {%f3, %f4};",
+    );
+    assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
+}
+
+/// Every lane of a warp storing the one reduced value to the same shared
+/// address (the layout-conversion idiom compilers emit after a warp
+/// reduction) is not a race: the bytes hold the same expression whichever
+/// lane runs last. A store of a different value still is.
+#[test]
+fn test_same_value_warp_uniform_store_is_not_a_race() {
+    let body = |value: &str| {
+        wrap(&format!(
+            ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{{
+    .reg .pred %p<2>;
+    .reg .f32 %f<4>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    ld.global.f32 %f1, [%rd1];
+    {value}
+    mov.u32 %r3, sdata;
+    st.shared.f32 [%r3], %f2;
+    bar.sync 0;
+    ld.shared.f32 %f3, [%r3];
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 st.global.f32 [%rd2], %f3;
+    ret;
+}}
+",
+        ))
+    };
+    // Both threads store in[0] * 2: identical expressions, no race.
+    let same = parse(&body("mul.f32 %f2, %f1, 0f40000000;"));
+    let out = analyze_kernel(&same, None, in_out_config(2, 1)).expect("same-value store");
+    assert_eq!(display_output(&out, "out", 0), "(in[0] * 2)");
+    // Thread-dependent values at the same address: a real race.
+    let differ = parse(&body("cvt.rn.f32.u32 %f2, %r1;"));
+    let err = analyze_kernel(&differ, None, in_out_config(2, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
+        "expected data race, got: {}",
+        err
+    );
+}
+
+/// A concrete 32-bit word in shared memory (here the zero a `cp.async`
+/// zero-fill or a plain store leaves behind) can be overwritten and read
+/// back one 16-bit half at a time: its halves are known bit patterns.
+#[test]
+fn test_concrete_scalar_granule_splits_for_half_width_access() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<4>;
+    .reg .f32 %f<5>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<3>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r3, sdata;
+    mov.u32 %r2, 0;
+    st.shared.b32 [%r3], %r2;
+    ld.global.f32 %f1, [%rd1];
+    cvt.rn.f16.f32 %h1, %f1;
+    st.shared.b16 [%r3+2], %h1;
+    ld.shared.b16 %h2, [%r3+2];
+    ld.shared.b16 %h3, [%r3];
+    cvt.f32.f16 %f2, %h2;
+    cvt.f32.f16 %f3, %h3;
+    add.f32 %f4, %f2, %f3;
+    st.global.f32 [%rd2], %f4;
+    ret;
+}
+",
+    );
+    let out = analyze_kernel(&parse(&src), None, in_out_config(1, 1)).expect("split scalar");
+    assert_eq!(display_output(&out, "out", 0), "in[0]");
 }

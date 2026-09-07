@@ -177,6 +177,25 @@ impl RaceTracker {
         thread: ThreadId,
         pc: InstrId,
     ) -> Result<(), MemHazard> {
+        self.write_with(space, addr, width, thread, pc, false)
+    }
+
+    /// [`Self::write`] with `same_value` set when the bytes already hold
+    /// exactly the value being written (the same expression). Such a write
+    /// cannot change the outcome whichever order the writers run in, so a
+    /// write-write conflict with the previous writer is not a race: this is
+    /// the warp-uniform store compilers emit deliberately (every lane of a
+    /// warp storing the one reduced value to the same address). Conflicts
+    /// with readers and with in-flight `cp.async` copies are still reported.
+    pub fn write_with(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+        same_value: bool,
+    ) -> Result<(), MemHazard> {
         let t = thread.0;
         let current = AccessSite {
             thread,
@@ -239,7 +258,8 @@ impl RaceTracker {
                     current,
                 }));
             }
-            if let Some((writer, pending, wpc)) = &cell.wr
+            if !same_value
+                && let Some((writer, pending, wpc)) = &cell.wr
                 && *writer != t
                 && pending.contains(t as usize)
             {

@@ -199,24 +199,29 @@ impl ScalarTypeExt for ScalarType {
         RegClass::from_scalar_type(*self)
     }
 
-    /// True for the two packed half-precision float types whose arithmetic
-    /// is modeled - each lane held as an independent `ExprId` in a
-    /// `Value::Pair`, never bit-encoded (see `eval::value::Value` and the
-    /// packed dispatch in `eval::interp`'s `BinOp`/`UnaryOp`/`Fma` arms).
-    /// Excludes the still-unmodeled packed integer (`U16x2`/`S16x2`) and
-    /// `F32x2` forms.
+    /// True for the packed float types whose arithmetic is modeled - each
+    /// lane held as an independent `ExprId` in a `Value::Pair`, never
+    /// bit-encoded (see `eval::value::Value` and the packed dispatch in
+    /// `eval::interp`'s `BinOp`/`UnaryOp`/`Fma` arms). `F16x2`/`Bf16x2`
+    /// pairs live in 32-bit registers; `F32x2` pairs (sm_100+ packed
+    /// single precision) in 64-bit ones. Excludes the still-unmodeled
+    /// packed integer (`U16x2`/`S16x2`) forms.
     fn is_packed_pair(&self) -> bool {
-        matches!(self, ScalarType::F16x2 | ScalarType::Bf16x2)
+        matches!(
+            self,
+            ScalarType::F16x2 | ScalarType::Bf16x2 | ScalarType::F32x2
+        )
     }
 
     /// The scalar element type held in each lane of a packed pair (`F16x2`
-    /// -> `F16`, `Bf16x2` -> `Bf16`), for evaluating one lane at a time
-    /// through the ordinary scalar arithmetic path. `None` for anything
-    /// `is_packed_pair` doesn't cover.
+    /// -> `F16`, `Bf16x2` -> `Bf16`, `F32x2` -> `F32`), for evaluating one
+    /// lane at a time through the ordinary scalar arithmetic path. `None`
+    /// for anything `is_packed_pair` doesn't cover.
     fn packed_lane(&self) -> Option<ScalarType> {
         match self {
             ScalarType::F16x2 => Some(ScalarType::F16),
             ScalarType::Bf16x2 => Some(ScalarType::Bf16),
+            ScalarType::F32x2 => Some(ScalarType::F32),
             _ => None,
         }
     }
