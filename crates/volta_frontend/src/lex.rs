@@ -1119,11 +1119,21 @@ fn consume_name(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
 
     // An identifier "{[_$%]{followsym}+"
     if c == AsciiChar::LowLine || c == AsciiChar::DollarSign || c == AsciiChar::PercentSign {
-        let (end, rest) = consume_followsyms(start + 1, src)?;
-        let mut ident = AsciiString::with_capacity(1 + rest.len());
-        ident.push(c);
-        ident.push_slice(&rest);
-        return Some((end, Token::Ident(Ident::new(ident))));
+        if let Some((end, rest)) = consume_followsyms(start + 1, src) {
+            let mut ident = AsciiString::with_capacity(1 + rest.len());
+            ident.push(c);
+            ident.push_slice(&rest);
+            return Some((end, Token::Ident(Ident::new(ident))));
+        }
+        if c == AsciiChar::LowLine {
+            // A lone `_` is the sink operand, e.g. `mov.b64 {_, %r1}, %rd2;`,
+            // which the parser maps to `Operand::Underscore`.
+            return Some((
+                start + 1,
+                Token::Ident(Ident::new(ascii("_").to_owned_ascii())),
+            ));
+        }
+        return None;
     }
 
     // A directive, selector, or modifier (dotted identifier).

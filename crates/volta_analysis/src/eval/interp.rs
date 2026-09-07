@@ -23,9 +23,10 @@ use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
     UnaryOp,
 };
-use crate::symbolic::{ExprArena, ExprId, Real, StringId};
+use crate::equiv::EquivSession;
+use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
-use crate::types::ScalarTypeExt;
+use crate::types::{RegClass, ScalarTypeExt};
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
 pub type OutputFootprints = Vec<(String, Vec<(u64, ExprId)>)>;
@@ -394,7 +395,7 @@ impl<'p> Interpreter<'p> {
     /// element the program actually wrote (a single CTA typically writes
     /// only its tile of a large output tensor). Elements are keyed by index
     /// so two kernels' footprints can be compared exactly.
-    pub fn extract_outputs(&self) -> EvalResult<OutputFootprints> {
+    pub fn extract_outputs(&mut self) -> EvalResult<OutputFootprints> {
         let mut outputs = Vec::new();
         for array in &self.config.arrays {
             if !array.kind.is_output() {
@@ -418,6 +419,23 @@ impl<'p> Interpreter<'p> {
                     });
                 }
                 let index = offset / array.elem_width;
+                // A `mov.bN dst, {lo, hi}` pack of two concrete integer
+                // halves stored as one wide element (an integer assembled
+                // from two parts) is that integer, recombined here the way
+                // `scalar_operand` does for register reads.
+                let value = match value {
+                    Value::Pair(lo, hi) if width == array.elem_width => {
+                        match (self.arena.as_int_const(lo), self.arena.as_int_const(hi)) {
+                            (Some(l), Some(h)) => {
+                                let w = width as u32 * 4;
+                                let mask = (1i64 << w) - 1;
+                                Value::Scalar(self.arena.int(((h & mask) << w) | (l & mask)))
+                            }
+                            _ => Value::Pair(lo, hi),
+                        }
+                    }
+                    other => other,
+                };
                 match (value, width == array.elem_width) {
                     (Value::Scalar(e), true) => {
                         if self.arena.is_undefined(e) {
@@ -458,7 +476,7 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Consume the interpreter, producing the analysis output.
-    pub fn into_output(self) -> EvalResult<AnalysisOutput> {
+    pub fn into_output(mut self) -> EvalResult<AnalysisOutput> {
         let outputs = self.extract_outputs()?;
         let op_counts = self
             .op_counts
@@ -907,6 +925,8 @@ impl<'p> Interpreter<'p> {
                     let lo = self.apply_clamp(*clamp, lo);
                     let hi = self.apply_clamp(*clamp, hi);
                     self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                } else if let Some(v) = self.pair_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
+                    self.threads[t].regs.write(*dst, v);
                 } else {
                     let a = self.scalar_operand(t, pc, src_a)?;
                     let b = self.scalar_operand(t, pc, src_b)?;
@@ -1127,10 +1147,38 @@ impl<'p> Interpreter<'p> {
                 src_ty,
                 clamp,
             } => {
-                let a = self.scalar_operand(t, pc, src)?;
-                let r = self.eval_cvt(pc, *dst_ty, *src_ty, a)?;
-                let r = self.apply_clamp(*clamp, r);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                let int_to_int = src_ty.is_integer() && dst_ty.is_integer();
+                let truncates_pair = int_to_int && src_ty.bits() == 64 && dst_ty.bits() == 32;
+                let zero_extends = int_to_int
+                    && src_ty.bits() == 32
+                    && !src_ty.is_signed_int()
+                    && dst_ty.bits() == 64;
+                let result = match self.operand_value(t, pc, src)? {
+                    // `cvt.u32.u64`-style truncation of a packed pair keeps
+                    // its low lane, exactly.
+                    Value::Pair(lo, _) if truncates_pair => Value::Scalar(lo),
+                    value => {
+                        let a = match value {
+                            Value::Pair(_, _) => self.scalar_operand(t, pc, src)?,
+                            Value::Scalar(e) => e,
+                        };
+                        if zero_extends && !self.arena.is_concrete(a) && !self.arena.is_undefined(a)
+                        {
+                            // Zero-extending a symbolic 32-bit value into a
+                            // 64-bit integer register is exactly the pair
+                            // (value, 0), the same idiom as a 32-bit load
+                            // into a 64-bit register (see `canon_loaded`);
+                            // nvcc/Triton use `cvt.u64.u32` this way to put
+                            // one f32 into a lane of an `f32x2` operand.
+                            let zero = self.arena.int(0);
+                            Value::Pair(a, zero)
+                        } else {
+                            let r = self.eval_cvt(pc, *dst_ty, *src_ty, a)?;
+                            Value::Scalar(self.apply_clamp(*clamp, r))
+                        }
+                    }
+                };
+                self.threads[t].regs.write(*dst, result);
             }
 
             LoweredInstr::CvtPackHalves {
@@ -1157,8 +1205,12 @@ impl<'p> Interpreter<'p> {
                     // (matching `CvtPackHalves` and `eval/memory.rs`'s
                     // granule combining) - distribute them directly.
                     Value::Pair(lo_e, hi_e) => {
-                        self.threads[t].regs.write(*lo, Value::Scalar(lo_e));
-                        self.threads[t].regs.write(*hi, Value::Scalar(hi_e));
+                        if let Some(lo) = lo {
+                            self.threads[t].regs.write(*lo, Value::Scalar(lo_e));
+                        }
+                        if let Some(hi) = hi {
+                            self.threads[t].regs.write(*hi, Value::Scalar(hi_e));
+                        }
                     }
                     // A genuine scalar bit pattern: split it the way this
                     // instruction always used to, via bitwise and/shift.
@@ -1166,19 +1218,24 @@ impl<'p> Interpreter<'p> {
                         let elem_width = ty.bits() / 2;
                         let mask = self.arena.int((1i64 << elem_width) - 1);
                         let shift = self.arena.int(elem_width as i64);
-                        let lo_v = self.eval_binop(t, pc, BinOp::And, *ty, e, mask)?;
-                        let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
-                        self.threads[t].regs.write(*lo, Value::Scalar(lo_v));
-                        self.threads[t].regs.write(*hi, Value::Scalar(hi_v));
+                        if let Some(lo) = lo {
+                            let lo_v = self.eval_binop(t, pc, BinOp::And, *ty, e, mask)?;
+                            self.threads[t].regs.write(*lo, Value::Scalar(lo_v));
+                        }
+                        if let Some(hi) = hi {
+                            let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
+                            self.threads[t].regs.write(*hi, Value::Scalar(hi_v));
+                        }
                     }
                 }
             }
 
             LoweredInstr::PackHalves { dst, lo, hi } => {
                 // Always a Value::Pair - see the type's doc comment. lo/hi
-                // are 16-bit-class operands, which can only ever be
-                // Value::Scalar (Pair only lives in a 32-bit slot), so
-                // scalar_operand cannot fail here.
+                // are half-width operands: 16-bit-class for a b32 pack
+                // (always Value::Scalar) and 32-bit-class for a b64 pack,
+                // where a half that is itself an f16x2 pair is rejected by
+                // scalar_operand (nested pairs are not modeled).
                 let lo_v = self.scalar_operand(t, pc, lo)?;
                 let hi_v = self.scalar_operand(t, pc, hi)?;
                 self.threads[t].regs.write(*dst, Value::Pair(lo_v, hi_v));
@@ -1388,6 +1445,123 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Resolve an operand that must be a scalar.
+    /// 64-bit bitwise ops with a packed-pair operand, evaluated lane-wise
+    /// as exact bit semantics on two 32-bit halves: `shl`/`shr` by 32 move
+    /// a lane, `or` merges lanes against a zero lane, `and` keeps or clears
+    /// whole lanes. This is the idiom nvcc/Triton use to assemble `f32x2`
+    /// operands from zero-extended 32-bit loads (`shl.b64 %rd_hi, 32`;
+    /// `or.b64 %rd, %rd_hi, %rd_lo`). Returns `None` when no operand is a
+    /// pair (the ordinary scalar path applies); errors on a pair pattern
+    /// with no exact lane reading.
+    fn pair_bitwise_binop(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: BinOp,
+        ty: ScalarType,
+        src_a: &Operand,
+        src_b: &Operand,
+    ) -> EvalResult<Option<Value>> {
+        if ty.bits() != 64 || !matches!(op, BinOp::Shl | BinOp::Shr | BinOp::And | BinOp::Or) {
+            return Ok(None);
+        }
+        let a = self.operand_value(t, pc, src_a)?;
+        let b = self.operand_value(t, pc, src_b)?;
+        if !matches!(a, Value::Pair(_, _)) && !matches!(b, Value::Pair(_, _)) {
+            return Ok(None);
+        }
+        let unsupported = |what: String| EvalError::Unsupported { pc, what };
+        // A concrete 64-bit scalar splits into two concrete lanes; anything
+        // else alongside a pair has no lane reading.
+        let lanes = |this: &mut Self, v: Value| -> EvalResult<(ExprId, ExprId)> {
+            match v {
+                Value::Pair(lo, hi) => Ok((lo, hi)),
+                Value::Scalar(e) => match this.arena.as_int_const(e) {
+                    Some(c) => {
+                        let lo = this.arena.int(c & 0xFFFF_FFFF);
+                        let hi = this.arena.int((c >> 32) & 0xFFFF_FFFF);
+                        Ok((lo, hi))
+                    }
+                    None => Err(unsupported(
+                        "symbolic 64-bit scalar combined bitwise with a packed pair".to_string(),
+                    )),
+                },
+            }
+        };
+        let is_zero = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0);
+        let is_all_ones = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0xFFFF_FFFF);
+        match op {
+            BinOp::Shl | BinOp::Shr => {
+                let Value::Pair(lo, hi) = a else {
+                    return Err(unsupported(
+                        "shift amount given as a packed pair".to_string(),
+                    ));
+                };
+                let Value::Scalar(amount) = b else {
+                    return Err(unsupported("packed pair shifted by a packed pair".to_string()));
+                };
+                if self.arena.as_int_const(amount) != Some(32) || ty.is_signed_int() {
+                    return Err(unsupported(format!(
+                        "packed pair shifted by other than a logical 32 ({:?} on {:?})",
+                        op, ty
+                    )));
+                }
+                let zero = self.arena.int(0);
+                Ok(Some(if op == BinOp::Shl {
+                    Value::Pair(zero, lo)
+                } else {
+                    Value::Pair(hi, zero)
+                }))
+            }
+            BinOp::Or => {
+                let (a_lo, a_hi) = lanes(self, a)?;
+                let (b_lo, b_hi) = lanes(self, b)?;
+                let mut merge = |x: ExprId, y: ExprId| -> EvalResult<ExprId> {
+                    if is_zero(self, y) {
+                        Ok(x)
+                    } else if is_zero(self, x) {
+                        Ok(y)
+                    } else {
+                        match (self.arena.as_int_const(x), self.arena.as_int_const(y)) {
+                            (Some(p), Some(q)) => Ok(self.arena.int(p | q)),
+                            _ => Err(unsupported(
+                                "or.b64 of two packed pairs with overlapping symbolic lanes"
+                                    .to_string(),
+                            )),
+                        }
+                    }
+                };
+                let lo = merge(a_lo, b_lo)?;
+                let hi = merge(a_hi, b_hi)?;
+                Ok(Some(Value::Pair(lo, hi)))
+            }
+            BinOp::And => {
+                let (a_lo, a_hi) = lanes(self, a)?;
+                let (b_lo, b_hi) = lanes(self, b)?;
+                let mut keep = |x: ExprId, y: ExprId| -> EvalResult<ExprId> {
+                    if is_all_ones(self, y) {
+                        Ok(x)
+                    } else if is_all_ones(self, x) {
+                        Ok(y)
+                    } else if is_zero(self, x) || is_zero(self, y) {
+                        Ok(self.arena.int(0))
+                    } else {
+                        match (self.arena.as_int_const(x), self.arena.as_int_const(y)) {
+                            (Some(p), Some(q)) => Ok(self.arena.int(p & q)),
+                            _ => Err(unsupported(
+                                "and.b64 masking inside a packed pair's lane".to_string(),
+                            )),
+                        }
+                    }
+                };
+                let lo = keep(a_lo, b_lo)?;
+                let hi = keep(a_hi, b_hi)?;
+                Ok(Some(Value::Pair(lo, hi)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(in crate::eval) fn scalar_operand(
         &mut self,
         t: ThreadId,
@@ -1396,11 +1570,34 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<ExprId> {
         match self.operand_value(t, pc, op)? {
             Value::Scalar(e) => Ok(e),
-            Value::Pair(_, _) => Err(EvalError::ValueKindMismatch {
-                thread: t,
-                pc,
-                what: "packed pair used as a scalar",
-            }),
+            Value::Pair(lo, hi) => {
+                // A `mov.bN dst, {lo, hi}` pack of two concrete integer
+                // halves read back as one wide scalar (a 64-bit address or
+                // constant assembled from 32-bit parts): recombine the bit
+                // pattern exactly. Only integer constants qualify - a pair
+                // of real lanes has no scalar reading.
+                let half_bits = match op {
+                    Operand::Reg(reg) => match reg.class {
+                        RegClass::Bits64 => Some(32u32),
+                        RegClass::Bits32 => Some(16u32),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let (Some(w), Some(l), Some(h)) = (
+                    half_bits,
+                    self.arena.as_int_const(lo),
+                    self.arena.as_int_const(hi),
+                ) {
+                    let mask = (1i64 << w) - 1;
+                    return Ok(self.arena.int(((h & mask) << w) | (l & mask)));
+                }
+                Err(EvalError::ValueKindMismatch {
+                    thread: t,
+                    pc,
+                    what: "packed pair used as a scalar",
+                })
+            }
         }
     }
 
@@ -1429,7 +1626,7 @@ impl<'p> Interpreter<'p> {
                     thread: t,
                     pc,
                     what: "symbolic scalar used as a packed pair",
-                })? as u32;
+                })? as u64;
                 let (lo_v, hi_v) =
                     decode_packed_bits(bits, lane_ty).ok_or_else(|| EvalError::Unsupported {
                         pc,
@@ -1638,12 +1835,13 @@ impl<'p> Interpreter<'p> {
                 space,
                 addr,
             },
-            MemAccessError::Reinterpret { addr, width } => EvalError::Reinterpretation {
+            MemAccessError::Reinterpret { addr, width, found } => EvalError::Reinterpretation {
                 thread: t,
                 pc,
                 space,
                 addr,
                 width,
+                found,
             },
         }
     }
@@ -1705,6 +1903,13 @@ impl<'p> Interpreter<'p> {
         };
         match memory.read(addr, width) {
             Ok(v) => Ok(v),
+            Err(MemAccessError::Reinterpret {
+                found: Some((start, found_width, false)),
+                ..
+            }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => self
+                .memory_mut(space, t)
+                .read(addr, width)
+                .map_err(|e| self.mem_error(t, pc, space, e)),
             Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Global => {
                 // Reading an input array materializes its symbols on demand.
                 if self.materialize_input(addr, width) {
@@ -1792,6 +1997,26 @@ impl<'p> Interpreter<'p> {
         any
     }
 
+    /// Whether two values denote the same reals, lane by lane: the same
+    /// node, structural equality, or the canonical equivalence check used
+    /// for output comparison (so a warp's lanes holding one reduced sum in
+    /// different association orders count as equal). Only consulted when a
+    /// write-write conflict has already been found, so its cost is paid
+    /// rarely.
+    fn same_real_value(&self, a: Value, b: Value) -> bool {
+        let lanes = match (a, b) {
+            (Value::Scalar(x), Value::Scalar(y)) => vec![(x, y)],
+            (Value::Pair(x_lo, x_hi), Value::Pair(y_lo, y_hi)) => vec![(x_lo, y_lo), (x_hi, y_hi)],
+            _ => return false,
+        };
+        let mut session = EquivSession::new(&self.arena, &self.arena);
+        lanes.into_iter().all(|(x, y)| {
+            x == y
+                || structurally_equal(&self.arena, x, &self.arena, y)
+                || session.check(x, y).unwrap_or(false)
+        })
+    }
+
     /// Bounds-check, race-check, and write memory.
     pub(in crate::eval) fn mem_write(
         &mut self,
@@ -1807,9 +2032,26 @@ impl<'p> Interpreter<'p> {
         self.check_alignment(t, pc, space, addr, width)?;
         let memory = match space {
             MemSpace::Global | MemSpace::Shared => {
-                self.race
-                    .write(space, addr, width, t, pc)
-                    .map_err(Self::mem_hazard_error)?;
+                // A store of exactly the value already there (the same
+                // expression) is benign against the previous writer - see
+                // `RaceTracker::write_with`.
+                let present = if space == MemSpace::Global {
+                    self.global.read(addr, width).ok()
+                } else {
+                    self.shared.read(addr, width).ok()
+                };
+                let result = self.race.write_with(space, addr, width, t, pc, false);
+                if let Err(MemHazard::Race(info)) = &result
+                    && info.prior.is_write
+                    && let Some(present) = present
+                    && self.same_real_value(present, value)
+                {
+                    self.race
+                        .write_with(space, addr, width, t, pc, true)
+                        .map_err(Self::mem_hazard_error)?;
+                } else {
+                    result.map_err(Self::mem_hazard_error)?;
+                }
                 if space == MemSpace::Global {
                     &mut self.global
                 } else {
@@ -1819,9 +2061,57 @@ impl<'p> Interpreter<'p> {
             MemSpace::Local => &mut self.locals[t],
             _ => unreachable!("bounds check rejects other spaces"),
         };
-        memory
-            .write(addr, width, value)
-            .map_err(|e| self.mem_error(t, pc, space, e))
+        match memory.write(addr, width, value) {
+            Err(MemAccessError::Reinterpret {
+                found: Some((start, found_width, false)),
+                ..
+            }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => {
+                self.memory_mut(space, t)
+                    .write(addr, width, value)
+                    .map_err(|e| self.mem_error(t, pc, space, e))
+            }
+            result => result.map_err(|e| self.mem_error(t, pc, space, e)),
+        }
+    }
+
+    fn memory_mut(&mut self, space: MemSpace, t: ThreadId) -> &mut Memory {
+        match space {
+            MemSpace::Global => &mut self.global,
+            MemSpace::Shared => &mut self.shared,
+            MemSpace::Local => &mut self.locals[t],
+            _ => unreachable!("bounds check rejects other spaces"),
+        }
+    }
+
+    /// Split the concrete scalar granule at `start` (width `found_width`)
+    /// into two exact halves when the access `[addr, addr + width)` is one
+    /// of those halves. Returns whether a split happened, so the access can
+    /// be retried. Symbolic scalars have no bit-level halves and stay a
+    /// reinterpretation error.
+    fn split_concrete_scalar(
+        &mut self,
+        space: MemSpace,
+        t: ThreadId,
+        start: u64,
+        found_width: u64,
+        addr: u64,
+        width: u64,
+    ) -> bool {
+        if found_width != 2 * width || (addr != start && addr != start + width) {
+            return false;
+        }
+        let Some((_, e, _)) = self.memory_mut(space, t).scalar_cell(start) else {
+            return false;
+        };
+        let Some(c) = self.arena.as_int_const(e) else {
+            return false;
+        };
+        let half_bits = (width * 8) as u32;
+        let mask = if half_bits >= 64 { -1 } else { (1i64 << half_bits) - 1 };
+        let lo = self.arena.int(c & mask);
+        let hi = self.arena.int((c >> half_bits) & mask);
+        self.memory_mut(space, t).split_scalar(start, lo, hi);
+        true
     }
 
     // =====================================================================
@@ -2003,6 +2293,33 @@ impl<'p> Interpreter<'p> {
         })
     }
 
+    /// `ex2(v * c)` with `c` within float32 rounding of log2(e) is the PTX
+    /// idiom for `exp(v)`, and `c ~ -log2(e)` the idiom for `exp(-v)`.
+    /// Returns that exact form, or `None` when `a` is not such a product.
+    fn fold_exp_idiom(&mut self, a: ExprId) -> Option<ExprId> {
+        let (lhs, rhs) = match self.arena.node(a) {
+            ExprNode::Mul(l, r) => (*l, *r),
+            _ => return None,
+        };
+        for (constant, other) in [(lhs, rhs), (rhs, lhs)] {
+            let value = match self.arena.node(constant) {
+                ExprNode::RealConst(real) => real.to_f64(),
+                _ => continue,
+            };
+            let log2e = std::f64::consts::LOG2_E;
+            if (value.abs() - log2e).abs() > log2e * 1e-6 {
+                continue;
+            }
+            let argument = if value < 0.0 {
+                self.arena.neg(other)
+            } else {
+                other
+            };
+            return Some(self.arena.exp(argument));
+        }
+        None
+    }
+
     fn eval_unop(
         &mut self,
         pc: InstrId,
@@ -2039,17 +2356,26 @@ impl<'p> Interpreter<'p> {
             }
             UnaryOp::Exp => self.arena.exp(a),
             // 2^x = e^(x*ln2), so this stays in the interpreted exp fragment
-            // rather than becoming an opaque atom.
+            // rather than becoming an opaque atom. PTX has no exp instruction:
+            // compilers and hand-written kernels spell exp(v) as
+            // ex2(v * log2e) with a float32 log2e, which over the reals is
+            // exp(v * 0.99999999...) and would never match a spec's exp(v).
+            // That idiom is folded to an exact exp(v) first, in the same
+            // spirit as reading ex2.approx as an exact 2^x.
             UnaryOp::Ex2 => {
-                let ln2 = self
-                    .arena
-                    .float_from_f64(std::f64::consts::LN_2)
-                    .map_err(|e| EvalError::Unsupported {
-                        pc,
-                        what: format!("ex2 ln2 constant: {}", e),
-                    })?;
-                let scaled = self.arena.mul(a, ln2);
-                self.arena.exp(scaled)
+                if let Some(folded) = self.fold_exp_idiom(a) {
+                    folded
+                } else {
+                    let ln2 = self
+                        .arena
+                        .float_from_f64(std::f64::consts::LN_2)
+                        .map_err(|e| EvalError::Unsupported {
+                            pc,
+                            what: format!("ex2 ln2 constant: {}", e),
+                        })?;
+                    let scaled = self.arena.mul(a, ln2);
+                    self.arena.exp(scaled)
+                }
             }
             // tanh(x) = (e^2x - 1) / (e^2x + 1), so this too stays in the
             // interpreted exp fragment rather than becoming an opaque atom
@@ -2197,6 +2523,20 @@ impl<'p> Interpreter<'p> {
             });
         }
         let dst_bits = reg_bits(dst);
+        if ty.bits() == 32
+            && dst_bits == 64
+            && !ty.is_signed_int()
+            && !self.arena.is_undefined(e)
+            && !self.arena.is_concrete(e)
+        {
+            // Zero-extending a symbolic 32-bit value into a 64-bit
+            // register: exactly the pair (value, 0) in the packed-pair
+            // domain. This is how nvcc/Triton feed one f32 into the lanes
+            // of an `f32x2` operand (`ld.shared.b32 %rd, [..]`, then
+            // `shl.b64`/`or.b64` to place a second value in the high lane).
+            let zero = self.arena.int(0);
+            return Ok(Value::Pair(e, zero));
+        }
         if ty.bits() < dst_bits && !self.arena.is_undefined(e) && !self.arena.is_concrete(e) {
             return Err(EvalError::Unsupported {
                 pc,
@@ -2434,13 +2774,22 @@ fn bf16_bits_to_f64(bits: u16) -> Option<f64> {
 /// Split a raw 32-bit packed-pair bit pattern into its two lanes' real
 /// values, per `lane_ty` (`F16` or `Bf16` - the element type of an
 /// `F16x2`/`Bf16x2` operand). `(lo, hi)`, matching `Value::Pair`'s order.
-fn decode_packed_bits(bits: u32, lane_ty: ScalarType) -> Option<(f64, f64)> {
+fn decode_packed_bits(bits: u64, lane_ty: ScalarType) -> Option<(f64, f64)> {
+    if lane_ty == ScalarType::F32 {
+        // A 64-bit `f32x2` pattern: two IEEE singles, low lane first.
+        let lo = f32::from_bits(bits as u32);
+        let hi = f32::from_bits((bits >> 32) as u32);
+        if lo.is_nan() || hi.is_nan() {
+            return None;
+        }
+        return Some((lo as f64, hi as f64));
+    }
     let lo_bits = (bits & 0xFFFF) as u16;
-    let hi_bits = (bits >> 16) as u16;
+    let hi_bits = ((bits >> 16) & 0xFFFF) as u16;
     let decode = match lane_ty {
         ScalarType::F16 => f16_bits_to_f64,
         ScalarType::Bf16 => bf16_bits_to_f64,
-        _ => unreachable!("decode_packed_bits only called for f16x2/bf16x2 lanes"),
+        _ => unreachable!("decode_packed_bits only called for f16x2/bf16x2/f32x2 lanes"),
     };
     Some((decode(lo_bits)?, decode(hi_bits)?))
 }

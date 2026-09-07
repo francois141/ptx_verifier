@@ -112,6 +112,9 @@ pub enum EvalError {
         space: MemSpace,
         addr: u64,
         width: u64,
+        /// The colliding granule: start, width, and whether it is a packed
+        /// pair (else a scalar), when known.
+        found: Option<(u64, u64, bool)>,
     },
     /// A value that must be concrete (address, branch predicate, shuffle
     /// lane, sync mask, ...) was symbolic: the program is not a
@@ -225,11 +228,24 @@ impl fmt::Display for EvalError {
                 space,
                 addr,
                 width,
-            } => write!(
-                f,
-                "{}: unsupported reinterpretation of {:?} memory at {:#x} (width {}) at {}",
-                thread, space, addr, width, pc
-            ),
+                found,
+            } => {
+                write!(
+                    f,
+                    "{}: unsupported reinterpretation of {:?} memory at {:#x} (width {}) at {}",
+                    thread, space, addr, width, pc
+                )?;
+                if let Some((start, found_width, is_pair)) = found {
+                    write!(
+                        f,
+                        "; the bytes belong to a {}-byte {} granule written at {:#x}",
+                        found_width,
+                        if *is_pair { "packed-pair" } else { "scalar" },
+                        start
+                    )?;
+                }
+                Ok(())
+            }
             Self::NotConcrete { thread, pc, what } => write!(
                 f,
                 "{}: {} is symbolic at {}; the kernel is not a structured-CTA under this configuration",

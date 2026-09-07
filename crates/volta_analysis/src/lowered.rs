@@ -456,34 +456,36 @@ pub enum LoweredInstr {
     /// Vector-destination unpack: `mov.bN {lo, hi}, src`. `src`'s *runtime*
     /// value kind decides the semantics, which lowering cannot know
     /// statically: a `Value::Pair` (e.g. a native packed-f16 granule read
-    /// straight out of memory) distributes its two real-valued halves
-    /// directly, matching every other packed-f16 producer/consumer
+    /// straight out of memory, or an `f32x2` result in a 64-bit register)
+    /// distributes its two real-valued halves
+    /// directly, matching every other packed-pair producer/consumer
     /// (`CvtPackHalves`, `eval/memory.rs`'s granule combining) - never
     /// bit-encoded; a `Value::Scalar` falls back to the bitwise `And`/`Shr`
     /// decomposition this used to always emit.
     UnpackHalves {
-        lo: RegId,
-        hi: RegId,
+        /// `None` when the PTX discards that half with the `_` sink.
+        lo: Option<RegId>,
+        hi: Option<RegId>,
         src: Operand,
         /// The `mov`'s full-width type (e.g. `B32` for a 2x16 unpack).
         ty: ScalarType,
     },
 
-    /// Vector-source pack: `mov.b32 dst, {lo, hi}`. Always writes a
-    /// `Value::Pair(lo, hi)` rather than bit-shifting - the two source
-    /// halves are frequently real-valued (an f16 element from `cvt.*.f16.*`
-    /// or a plain 2-byte load), and bit ops on a real number silently build
-    /// a nonsense expression rather than erroring. This is exact whether
-    /// the halves are real or genuinely integer: a later `UnpackHalves` or
-    /// a store to a 2-byte-elem_width array round-trips either way: only a
-    /// packed value later used as a true scalar in its own right (added,
-    /// compared, stored as one wide integer) would now loudly fail instead
-    /// of silently computing garbage - preferred, per this codebase's
-    /// convention elsewhere (see `canon_stored`'s docs). Scoped to a 32-bit
-    /// `mov` only: `Value::Pair` is fixed at two 16-bit halves everywhere
-    /// else in this model, so a `mov.b64 dst, {lo, hi}` (two 32-bit
-    /// halves, the idiom for building a 64-bit value/address - unrelated
-    /// to f16 packing) keeps the bitwise `BinOp` pack instead.
+    /// Vector-source pack: `mov.b32 dst, {lo, hi}` and `mov.b64 dst, {lo,
+    /// hi}`. Always writes a `Value::Pair(lo, hi)` rather than bit-shifting
+    /// - the two source halves are frequently real-valued (an f16 element
+    /// from `cvt.*.f16.*` or a plain 2-byte load; two f32 values feeding
+    /// packed `f32x2` arithmetic), and bit ops on a real number silently
+    /// build a nonsense expression rather than erroring. This is exact
+    /// whether the halves are real or genuinely integer: a later
+    /// `UnpackHalves` or a store to a half-width-elem_width array
+    /// round-trips either way, and `scalar_operand` recombines a pair of
+    /// concrete integer halves (the `mov.b64` address/constant idiom) into
+    /// the wide bit pattern on demand. Only a packed value with symbolic
+    /// halves later used as a true scalar in its own right (added,
+    /// compared, stored as one wide integer) fails loudly instead of
+    /// silently computing garbage - preferred, per this codebase's
+    /// convention elsewhere (see `canon_stored`'s docs).
     PackHalves {
         dst: RegId,
         lo: Operand,
@@ -927,7 +929,7 @@ impl LoweredInstr {
             }
 
             // Unpack: two destinations
-            Self::UnpackHalves { lo, hi, .. } => vec![*lo, *hi],
+            Self::UnpackHalves { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
 
             // No destination
             Self::Store { .. }
