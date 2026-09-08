@@ -534,3 +534,10 @@ Global, shared, local, param memories are separate `Memory` instances, matching 
    in `instr_parse.rs` (use `expect_operands` for exact-arity operand lists)
 3. **Lowering**: Add `LoweredInstr` variant, lowering case
 4. **Evaluation**: Add evaluation case in `eval/interp.rs`
+
+## Tooling
+
+```sh
+just check # run linters
+just test  # run tests
+```
