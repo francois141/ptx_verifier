@@ -472,20 +472,19 @@ pub enum LoweredInstr {
     },
 
     /// Vector-source pack: `mov.b32 dst, {lo, hi}` and `mov.b64 dst, {lo,
-    /// hi}`. Always writes a `Value::Pair(lo, hi)` rather than bit-shifting
-    /// - the two source halves are frequently real-valued (an f16 element
-    /// from `cvt.*.f16.*` or a plain 2-byte load; two f32 values feeding
-    /// packed `f32x2` arithmetic), and bit ops on a real number silently
-    /// build a nonsense expression rather than erroring. This is exact
-    /// whether the halves are real or genuinely integer: a later
-    /// `UnpackHalves` or a store to a half-width-elem_width array
-    /// round-trips either way, and `scalar_operand` recombines a pair of
-    /// concrete integer halves (the `mov.b64` address/constant idiom) into
-    /// the wide bit pattern on demand. Only a packed value with symbolic
-    /// halves later used as a true scalar in its own right (added,
-    /// compared, stored as one wide integer) fails loudly instead of
-    /// silently computing garbage - preferred, per this codebase's
-    /// convention elsewhere (see `canon_stored`'s docs).
+    /// hi}`. Always writes a `Value::Pair(lo, hi)` rather than bit-shifting -
+    /// the two source halves are frequently real-valued (an f16 element from
+    /// `cvt.*.f16.*` or a plain 2-byte load; two f32 values feeding packed
+    /// `f32x2` arithmetic), and bit ops on a real number silently build a
+    /// nonsense expression rather than erroring. This is exact whether the
+    /// halves are real or genuinely integer: a later `UnpackHalves` or a
+    /// store to a half-width-elem_width array round-trips either way, and
+    /// `scalar_operand` recombines a pair of concrete integer halves (the
+    /// `mov.b64` address/constant idiom) into the wide bit pattern on
+    /// demand. Only a packed value with symbolic halves later used as a true
+    /// scalar in its own right (added, compared, stored as one wide integer)
+    /// fails loudly instead of silently computing garbage - preferred, per
+    /// this codebase's convention elsewhere (see `canon_stored`'s docs).
     PackHalves {
         dst: RegId,
         lo: Operand,
