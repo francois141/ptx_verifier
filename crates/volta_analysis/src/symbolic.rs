@@ -1571,9 +1571,18 @@ impl ExprArena {
     }
 
     /// Convenience method: format an expression to a `String`.
+    ///
+    /// `fmt_expr` re-walks a shared subexpression from every reference (no
+    /// `let`-style memoization, unlike `volta_z3`'s translator), so a DAG
+    /// with heavy internal sharing can print exponentially more text than
+    /// its arena size would suggest - tensor-core accumulator chains have
+    /// hit multi-GB output this way. Past `MAX_DISPLAY_BYTES`, bail out with
+    /// a short placeholder instead of continuing to expand.
     pub fn display_expr(&self, id: ExprId) -> String {
         use std::fmt::Write;
-        let mut buf = String::new();
+
+        const MAX_DISPLAY_BYTES: usize = 50 * 1024 * 1024;
+
         // We use a wrapper that implements Display so we can use write!
         struct ExprDisplay<'a> {
             arena: &'a ExprArena,
@@ -1584,9 +1593,41 @@ impl ExprArena {
                 self.arena.fmt_expr(self.id, f)
             }
         }
-        write!(buf, "{}", ExprDisplay { arena: self, id })
-            .expect("formatting an ExprId to String should not fail");
-        buf
+
+        // A byte-budgeted `fmt::Write` sink: every `write_str` call inside
+        // `fmt_expr`'s recursion routes through here, so exceeding the
+        // budget mid-traversal short-circuits the whole walk via `?`,
+        // rather than first materializing the full (potentially huge)
+        // string.
+        struct LimitedWriter {
+            buf: String,
+            remaining: usize,
+        }
+        impl fmt::Write for LimitedWriter {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                if s.len() > self.remaining {
+                    return Err(fmt::Error);
+                }
+                self.remaining -= s.len();
+                self.buf.push_str(s);
+                Ok(())
+            }
+        }
+
+        let mut writer = LimitedWriter {
+            buf: String::new(),
+            remaining: MAX_DISPLAY_BYTES,
+        };
+        match write!(writer, "{}", ExprDisplay { arena: self, id }) {
+            Ok(()) => writer.buf,
+            Err(_) => format!(
+                "<expression exceeds {}MB when printed - likely heavy internal \
+                 sharing in this unmemoized display path; pass --print-outputs 0 \
+                 to skip printing, or use 'volta verify'/'volta compare', which \
+                 check equivalence without ever formatting raw expressions>",
+                MAX_DISPLAY_BYTES / (1024 * 1024)
+            ),
+        }
     }
 }
 
@@ -2307,5 +2348,22 @@ mod tests {
             vec!["x".to_string()],
         );
         assert!(oob_string.validate().is_err());
+    }
+
+    /// `display_expr` re-walks shared subexpressions from every reference,
+    /// so a DAG that repeatedly self-adds doubles its printed size at every
+    /// level while the arena itself grows by only one node per level - 30
+    /// levels is ~2^30 leaf repetitions, far past the 50MB cap. This must
+    /// terminate quickly with the placeholder rather than hang or OOM.
+    #[test]
+    fn display_expr_caps_exponentially_shared_expressions() {
+        let mut arena = ExprArena::new();
+        let mut e = arena.symbol();
+        for _ in 0..30 {
+            e = arena.add(e, e);
+        }
+        let text = arena.display_expr(e);
+        assert!(text.len() < 51 * 1024 * 1024);
+        assert!(text.contains("exceeds"), "unexpected output: {text}");
     }
 }
