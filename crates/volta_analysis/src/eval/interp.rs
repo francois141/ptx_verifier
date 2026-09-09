@@ -1354,7 +1354,9 @@ impl<'p> Interpreter<'p> {
             // these, same shape as the tensor-core ops above.
             LoweredInstr::Tcgen05Alloc { .. }
             | LoweredInstr::Tcgen05Dealloc { .. }
-            | LoweredInstr::Tcgen05RelinquishAllocPermit => {
+            | LoweredInstr::Tcgen05RelinquishAllocPermit
+            | LoweredInstr::Tcgen05Ld { .. }
+            | LoweredInstr::Tcgen05St { .. } => {
                 self.block_at_warp_op(t, pc, u32::MAX)?;
                 return Ok(());
             }
@@ -1914,6 +1916,12 @@ impl<'p> Interpreter<'p> {
                     num_cols,
                 }
             }
+            TensorMemError::NotAllocated { lane, col } => EvalError::Tcgen05NotAllocated {
+                thread: t,
+                pc,
+                lane,
+                col,
+            },
         }
     }
 

@@ -1985,6 +1985,22 @@ fn lower_parsed_instruction(
             lower_tcgen05_relinquish_alloc_permit(ctx, modifiers, operands, predicate)?;
         }
 
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Ld,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_ld(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05St,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_st(ctx, modifiers, operands, predicate)?;
+        }
+
         // =========================================================================
         // Unsupported instructions
         // =========================================================================
@@ -4495,6 +4511,136 @@ fn lower_tcgen05_relinquish_alloc_permit(
     }
 
     ctx.emit(LoweredInstr::Tcgen05RelinquishAllocPermit, predicate)?;
+    Ok(())
+}
+
+/// Parse the `.x1`/`.x2`/.../`.x128` repeat-factor modifier common to
+/// `tcgen05.ld`/`.st` (PTX ISA 9.7.17.2.3, Table 52/53). Returns `None` for
+/// a modifier that isn't one of these, so callers can fall through.
+fn parse_tcgen05_num(modifier: &str) -> Option<u32> {
+    Some(match modifier {
+        "x1" => 1,
+        "x2" => 2,
+        "x4" => 4,
+        "x8" => 8,
+        "x16" => 16,
+        "x32" => 32,
+        "x64" => 64,
+        "x128" => 128,
+        _ => return None,
+    })
+}
+
+/// Lower `tcgen05.ld.sync.aligned.32x32b.num.b32 r, [taddr]`. Only the
+/// `.32x32b` shape is modeled for now; `.16x64b`/`.16x128b`/`.16x256b`/
+/// `.16x32bx2` (fewer than 32 lanes participate - a different access
+/// pattern) and `.red`/`.pack::16b` are rejected loudly rather than
+/// half-modeled.
+fn lower_tcgen05_ld(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.ld";
+    let mut num: Option<u32> = None;
+
+    for modifier in modifiers {
+        let s = modifier.to_string();
+        if let Some(n) = parse_tcgen05_num(&s) {
+            num = Some(n);
+            continue;
+        }
+        match s.as_str() {
+            "sync" | "aligned" | "b32" | "32x32b" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    let num = num.ok_or_else(|| unsupported(NAME, "missing .x1/.x2/.../.x128 modifier"))?;
+
+    let [dst, taddr] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected destination vector and address operands",
+        });
+    };
+    let dst = ctx.resolve_dst_vector(dst)?;
+    if dst.len() != num as usize {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", dst),
+            reason: "destination vector length does not match .num",
+        });
+    }
+    let (taddr_base, taddr_offset) = match taddr {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
+
+    ctx.emit(
+        LoweredInstr::Tcgen05Ld {
+            dst,
+            taddr_base,
+            taddr_offset,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `tcgen05.st.sync.aligned.32x32b.num.b32 [taddr], r`. Same shape
+/// restriction as `lower_tcgen05_ld`.
+fn lower_tcgen05_st(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.st";
+    let mut num: Option<u32> = None;
+
+    for modifier in modifiers {
+        let s = modifier.to_string();
+        if let Some(n) = parse_tcgen05_num(&s) {
+            num = Some(n);
+            continue;
+        }
+        match s.as_str() {
+            "sync" | "aligned" | "b32" | "32x32b" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    let num = num.ok_or_else(|| unsupported(NAME, "missing .x1/.x2/.../.x128 modifier"))?;
+
+    let [taddr, src] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected address and source vector operands",
+        });
+    };
+    let (taddr_base, taddr_offset) = match taddr {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
+    let src = ctx.resolve_operand_vector(src)?;
+    if src.len() != num as usize {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", src),
+            reason: "source vector length does not match .num",
+        });
+    }
+
+    ctx.emit(
+        LoweredInstr::Tcgen05St {
+            taddr_base,
+            taddr_offset,
+            src,
+        },
+        predicate,
+    )?;
     Ok(())
 }
 

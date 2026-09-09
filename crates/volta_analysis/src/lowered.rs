@@ -643,6 +643,27 @@ pub enum LoweredInstr {
     Tcgen05RelinquishAllocPermit,
 
     // =========================================================================
+    // TensorCore 5th Generation - Tensor Memory Register Load/Store (PTX ISA 9.7.17.8)
+    // =========================================================================
+    /// `tcgen05.ld.sync.aligned.32x32b.num.b32 r, [taddr]`: collective async
+    /// load of `dst.len()` columns starting at `taddr_base + taddr_offset`
+    /// into one register per column, per lane.
+    Tcgen05Ld {
+        dst: Vec<RegId>,
+        taddr_base: Operand,
+        taddr_offset: i64,
+    },
+
+    /// `tcgen05.st.sync.aligned.32x32b.num.b32 [taddr], r`: collective async
+    /// store of `src.len()` columns starting at `taddr_base + taddr_offset`
+    /// from one register per column, per lane.
+    Tcgen05St {
+        taddr_base: Operand,
+        taddr_offset: i64,
+        src: Vec<Operand>,
+    },
+
+    // =========================================================================
     // Special
     // =========================================================================
     /// Query active lanes in the warp: dst = mask of active threads
@@ -743,6 +764,8 @@ define_instr_kinds!(
     Tcgen05Alloc,
     Tcgen05Dealloc,
     Tcgen05RelinquishAllocPermit,
+    Tcgen05Ld,
+    Tcgen05St,
     Activemask,
     Trap,
     Nop,
@@ -912,6 +935,17 @@ impl LoweredInstr {
             Self::Tcgen05Alloc { dst_base, .. } => from_op(dst_base).into_iter().collect(),
             Self::Tcgen05Dealloc { taddr, .. } => from_op(taddr).into_iter().collect(),
             Self::Tcgen05RelinquishAllocPermit => vec![],
+
+            // Tensor Memory register load/store
+            Self::Tcgen05Ld { taddr_base, .. } => from_op(taddr_base).into_iter().collect(),
+            Self::Tcgen05St {
+                taddr_base, src, ..
+            } => {
+                let mut r = Vec::new();
+                r.extend(from_op(taddr_base));
+                r.extend(from_ops(src));
+                r
+            }
         }
     }
 
@@ -944,7 +978,8 @@ impl LoweredInstr {
             | Self::Ldmatrix { dst, .. }
             | Self::Mma { dst, .. }
             | Self::WmmaLoad { dst, .. }
-            | Self::WmmaMma { dst, .. } => dst.clone(),
+            | Self::WmmaMma { dst, .. }
+            | Self::Tcgen05Ld { dst, .. } => dst.clone(),
 
             // Shuffle: dst + optional dst_pred
             Self::Shfl { dst, dst_pred, .. } | Self::ShflSync { dst, dst_pred, .. } => {
@@ -975,6 +1010,7 @@ impl LoweredInstr {
             | Self::Tcgen05Alloc { .. }
             | Self::Tcgen05Dealloc { .. }
             | Self::Tcgen05RelinquishAllocPermit
+            | Self::Tcgen05St { .. }
             | Self::Nop => vec![],
         }
     }
