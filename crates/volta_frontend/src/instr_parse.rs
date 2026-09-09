@@ -185,26 +185,30 @@ impl ModifierParser {
         Err(InstrParseError::MissingModifier(value))
     }
 
-    /// Consume a `.shared{::cta|::cluster}` state-space modifier
+    /// Try to consume a `.shared{::cta|::cluster}` state-space modifier
     /// (`cp.async`'s and `ldmatrix`'s `.shared` operand). Unqualified and
     /// `::cta` both consume to `Cta`; `::cluster` consumes to `Cluster` -
-    /// whether it's *supported* is a lowering-time decision. Any other
-    /// `::`-qualified suffix is invalid here and rejected at parse time.
-    pub fn try_consume_shared_state_space_or_err(
+    /// whether it's *supported* is a lowering-time decision. Optional:
+    /// returns `Ok(None)` (without consuming) if the current modifier isn't
+    /// `.shared` in either form - for instructions where an explicit shared
+    /// state space is itself optional (e.g. `mbarrier.*`, which otherwise
+    /// falls back to generic addressing). Still errors if `.shared` IS
+    /// present with an unrecognized `::` suffix.
+    pub fn try_consume_shared_state_space(
         &mut self,
         space: &'static [AsciiChar],
-    ) -> Result<SharedStateSpaceQualifier, InstrParseError> {
+    ) -> Result<Option<SharedStateSpaceQualifier>, InstrParseError> {
         match self.peek() {
             Some(DottedIdent::Simple(s)) if s.as_slice() == space => {
                 self.pos += 1;
-                Ok(SharedStateSpaceQualifier::Cta)
+                Ok(Some(SharedStateSpaceQualifier::Cta))
             }
             Some(DottedIdent::Qualified(parts)) => match parts.as_slice() {
                 [base, sub] if base.as_slice() == space => {
                     match SharedStateSpaceQualifier::from_ascii(sub) {
                         Some(q) => {
                             self.pos += 1;
-                            Ok(q)
+                            Ok(Some(q))
                         }
                         None => Err(InstrParseError::QualifiedModifier(crate::ascii::join(
                             parts,
@@ -212,13 +216,20 @@ impl ModifierParser {
                         ))),
                     }
                 }
-                _ => Err(InstrParseError::QualifiedModifier(crate::ascii::join(
-                    parts,
-                    ascii("::"),
-                ))),
+                _ => Ok(None),
             },
-            _ => Err(InstrParseError::MissingModifier(space)),
+            _ => Ok(None),
         }
+    }
+
+    /// Same grammar as [`Self::try_consume_shared_state_space`], but the
+    /// state space is required: errors if `.shared` isn't present at all.
+    pub fn try_consume_shared_state_space_or_err(
+        &mut self,
+        space: &'static [AsciiChar],
+    ) -> Result<SharedStateSpaceQualifier, InstrParseError> {
+        self.try_consume_shared_state_space(space)?
+            .ok_or(InstrParseError::MissingModifier(space))
     }
 
     /// Try to parse a value of type `T` from the current modifier position.
@@ -3603,12 +3614,30 @@ fn parse_elect_sync(
 // Mbarrier Parsers
 // =============================================================================
 
+/// Parse mbarrier's optional `{.space{::cta|::cluster}}` prefix. `.shared`
+/// (bare or `::cta`/`::cluster`-qualified) is the common case and is the
+/// only state space with a meaningful qualifier here, so it's tried first;
+/// any other simple state space (or none - generic addressing) falls back
+/// to the plain `StateSpace` parse, matching every mbarrier instruction's
+/// existing `{.space}` grammar.
+fn parse_mbarrier_space(
+    mp: &mut ModifierParser,
+) -> Result<(Option<StateSpace>, Option<StateSpaceQualifier>), InstrParseError> {
+    if let Some(q) = mp.try_consume_shared_state_space(ascii("shared"))? {
+        return Ok((
+            Some(StateSpace::Shared),
+            Some(StateSpaceQualifier::Shared(q)),
+        ));
+    }
+    Ok((mp.try_parse::<StateSpace>(), None))
+}
+
 /// Parse mbarrier.init instruction (Block 146)
 fn parse_mbarrier_init(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?; // mbarrier.init{.ss}.b64 - type is required
 
     let [addr, count] = expect_operands(operands)?;
@@ -3616,7 +3645,7 @@ fn parse_mbarrier_init(
     mp.finish()?;
     Ok(ParsedInstruction::MbarrierInit(MbarrierInitInstr {
         space,
-        space_qualifier: None,
+        space_qualifier,
         addr,
         count,
     }))
@@ -3627,7 +3656,7 @@ fn parse_mbarrier_inval(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?; // mbarrier.inval{.ss}.b64 - type is required
 
     if operands.len() != 1 {
@@ -3640,7 +3669,7 @@ fn parse_mbarrier_inval(
     mp.finish()?;
     Ok(ParsedInstruction::MbarrierInval(MbarrierInvalInstr {
         space,
-        space_qualifier: None,
+        space_qualifier,
         addr: operands.into_iter().next().unwrap(),
     }))
 }
@@ -3652,7 +3681,7 @@ fn parse_mbarrier_expect_tx(
 ) -> Result<ParsedInstruction, InstrParseError> {
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
     let [addr, tx_count] = expect_operands(operands)?;
@@ -3662,7 +3691,7 @@ fn parse_mbarrier_expect_tx(
         sem,
         scope,
         space,
-        space_qualifier: None,
+        space_qualifier,
         addr,
         tx_count,
     }))
@@ -3675,7 +3704,7 @@ fn parse_mbarrier_complete_tx(
 ) -> Result<ParsedInstruction, InstrParseError> {
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
     let [addr, tx_count] = expect_operands(operands)?;
@@ -3686,7 +3715,7 @@ fn parse_mbarrier_complete_tx(
             sem,
             scope,
             space,
-            space_qualifier: None,
+            space_qualifier,
             addr,
             tx_count,
         },
@@ -3700,7 +3729,7 @@ fn parse_mbarrier_arrive(
 ) -> Result<ParsedInstruction, InstrParseError> {
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     let expect_tx = mp.try_consume(ascii("expect_tx"));
     let no_complete = mp.try_consume(ascii("noComplete"));
     mp.try_consume_or_err(ascii("b64"))?;
@@ -3718,7 +3747,7 @@ fn parse_mbarrier_arrive(
         sem,
         scope,
         space,
-        space_qualifier: None,
+        space_qualifier,
         expect_tx,
         no_complete,
         state: ops.next().unwrap(),
@@ -3734,7 +3763,7 @@ fn parse_mbarrier_arrive_drop(
 ) -> Result<ParsedInstruction, InstrParseError> {
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     let expect_tx = mp.try_consume(ascii("expect_tx"));
     let no_complete = mp.try_consume(ascii("noComplete"));
     mp.try_consume_or_err(ascii("b64"))?;
@@ -3753,7 +3782,7 @@ fn parse_mbarrier_arrive_drop(
             sem,
             scope,
             space,
-            space_qualifier: None,
+            space_qualifier,
             expect_tx,
             no_complete,
             state: ops.next().unwrap(),
@@ -3772,7 +3801,7 @@ fn parse_mbarrier_wait(
     let parity = mp.try_consume(ascii("parity"));
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
-    let space = mp.try_parse::<StateSpace>();
+    let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
     if operands.len() < 3 {
@@ -3791,7 +3820,7 @@ fn parse_mbarrier_wait(
             sem,
             scope,
             space,
-            space_qualifier: None,
+            space_qualifier,
             wait_complete: ops.next().unwrap(),
             addr: ops.next().unwrap(),
             state_or_parity: ops.next().unwrap(),
@@ -3802,7 +3831,7 @@ fn parse_mbarrier_wait(
             sem,
             scope,
             space,
-            space_qualifier: None,
+            space_qualifier,
             wait_complete: ops.next().unwrap(),
             addr: ops.next().unwrap(),
             state_or_parity: ops.next().unwrap(),

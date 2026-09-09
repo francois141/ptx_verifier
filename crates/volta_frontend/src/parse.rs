@@ -4636,4 +4636,105 @@ DONE:
             }
         }
     }
+
+    /// `mbarrier.*`'s `{.shared{::cta|::cluster}}` state space: same grammar
+    /// as `cp.async`'s (see `test_cp_async_shared_qualifier_parsing`), but
+    /// optional - `mbarrier.init.b64` with no state space at all is also
+    /// valid (generic addressing). `parse_mbarrier_space` is shared by all
+    /// seven `mbarrier.*` parsers, so `mbarrier.init` alone stands in for
+    /// the family; `mbarrier.arrive` is spot-checked too since it has extra
+    /// modifiers following the state space in its grammar.
+    #[test]
+    fn test_mbarrier_shared_qualifier_parsing() {
+        fn init_space(src_instr: &str) -> (Option<StateSpace>, Option<StateSpaceQualifier>) {
+            let src = wrap_in_module(&format!(".reg .b64 %rd<3>;\n{src_instr}"));
+            let module = parse_ok(&src);
+            let instr = get_first_instruction(&module);
+            match parse_instr(instr) {
+                ParsedInstruction::MbarrierInit(MbarrierInitInstr {
+                    space,
+                    space_qualifier,
+                    ..
+                }) => (space, space_qualifier),
+                other => panic!("Expected MbarrierInit, got {:?}", other),
+            }
+        }
+
+        assert_eq!(init_space("mbarrier.init.b64 [%rd0], 128;"), (None, None));
+        assert_eq!(
+            init_space("mbarrier.init.shared.b64 [%rd0], 128;"),
+            (
+                Some(StateSpace::Shared),
+                Some(StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta))
+            )
+        );
+        assert_eq!(
+            init_space("mbarrier.init.shared::cta.b64 [%rd0], 128;"),
+            (
+                Some(StateSpace::Shared),
+                Some(StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta))
+            )
+        );
+        assert_eq!(
+            init_space("mbarrier.init.shared::cluster.b64 [%rd0], 128;"),
+            (
+                Some(StateSpace::Shared),
+                Some(StateSpaceQualifier::Shared(
+                    SharedStateSpaceQualifier::Cluster
+                ))
+            )
+        );
+
+        let src = wrap_in_module(".reg .b64 %rd<3>;\nmbarrier.init.shared::bogus.b64 [%rd0], 128;");
+        let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
+        let mut parser = Parser::new(ascii);
+        let module = parser
+            .parse_module()
+            .unwrap_or_else(|e| panic!("parse error: {:?}", e.error));
+        let instr = get_first_instruction(&module);
+        match &instr.op {
+            InstructionOp::Unparsed {
+                kind,
+                modifiers,
+                operands,
+            } => {
+                let result = crate::instr_parse::parse_instruction(
+                    *kind,
+                    modifiers.clone(),
+                    operands.clone(),
+                );
+                assert!(
+                    matches!(
+                        result,
+                        Err(crate::instr_parse::InstrParseError::QualifiedModifier(_))
+                    ),
+                    "expected shared::bogus to be rejected as QualifiedModifier, got {:?}",
+                    result
+                );
+            }
+            _ => panic!("expected an unparsed instruction"),
+        }
+
+        // mbarrier.arrive: state space qualifier still works ahead of the
+        // instruction's own extra modifiers (expect_tx/noComplete).
+        let src = wrap_in_module(
+            ".reg .b64 %rd<3>;\n.reg .b64 %rd2;\nmbarrier.arrive.shared::cta.b64 %rd2, [%rd0];",
+        );
+        let module = parse_ok(&src);
+        let instr = get_first_instruction(&module);
+        match parse_instr(instr) {
+            ParsedInstruction::MbarrierArrive(MbarrierArriveInstr {
+                space,
+                space_qualifier,
+                ..
+            }) => {
+                assert_eq!(space, Some(StateSpace::Shared));
+                assert_eq!(
+                    space_qualifier,
+                    Some(StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta))
+                );
+            }
+            other => panic!("Expected MbarrierArrive, got {:?}", other),
+        }
+    }
 }
