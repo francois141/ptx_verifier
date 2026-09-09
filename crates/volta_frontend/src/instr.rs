@@ -24,7 +24,7 @@ impl InstrTrie {
         }
     }
 
-    fn key_segments(key: &[AsciiChar]) -> impl Iterator<Item = &[AsciiChar]> {
+    fn key_segments(key: &[AsciiChar]) -> impl Iterator<Item = &[AsciiChar]> + Clone {
         key.split(|&c| c == AsciiChar::FullStop)
     }
 
@@ -49,13 +49,37 @@ impl InstrTrie {
 
     fn get_ancestor_rec<'a, I>(&self, mut key: I) -> Option<InstrKind>
     where
-        I: Iterator<Item = &'a [AsciiChar]>,
+        I: Iterator<Item = &'a [AsciiChar]> + Clone,
     {
-        if let Some(seg) = key.next()
-            && let Some(child) = self.children.get(&seg)
-            && let Some(result) = child.get_ancestor_rec(key)
+        let Some(seg) = key.next() else {
+            return self.value;
+        };
+
+        if let Some(child) = self.children.get(&seg)
+            && let Some(result) = child.get_ancestor_rec(key.clone())
         {
             return Some(result);
+        }
+
+        // A qualifier can be glued directly onto a mnemonic segment with no `.`
+        // separator - that's simply how the PTX ISA names some instructions
+        // (`tcgen05.wait::st`, `tcgen05.wait::ld`). Segments only split on `.`,
+        // so `seg` here is the whole "wait::st" and never exactly matches a
+        // registered child "wait". Retry against the substring before the
+        // first `::`; the qualifier itself isn't lost by doing this -
+        // `Ident::as_instr` (lex.rs) recovers it later by slicing the original
+        // text at `kind.mnemonic().len()`, which lands exactly on this
+        // boundary regardless of how the trie found the match.
+        if let Some(colon) = seg
+            .windows(2)
+            .position(|w| w[0] == AsciiChar::Colon && w[1] == AsciiChar::Colon)
+        {
+            let stem: &[AsciiChar] = &seg[..colon];
+            if let Some(child) = self.children.get(&stem)
+                && let Some(result) = child.get_ancestor_rec(key)
+            {
+                return Some(result);
+            }
         }
 
         // There is no value in a deeper node extending `key`; return this node's value (if any)
@@ -931,6 +955,30 @@ mod tests {
             trie.get_ancestor(ascii("cp.async.bulk.tensor.extra")),
             Some(InstrKind::CpAsyncBulkTensor)
         );
+    }
+
+    #[test]
+    fn test_qualifier_glued_onto_mnemonic_segment() {
+        let mut trie = InstrTrie::new();
+        trie.insert(ascii("tcgen05.wait"), InstrKind::Tcgen05Wait);
+        trie.insert(ascii("tcgen05.commit"), InstrKind::Tcgen05Commit);
+
+        // `tcgen05.wait::st`/`::ld` are the PTX ISA's own instruction names -
+        // the `::st`/`::ld` qualifier is glued directly onto the "wait"
+        // segment with no `.` separator, unlike a trailing modifier.
+        assert_eq!(
+            trie.get_ancestor(ascii("tcgen05.wait::st.sync.aligned")),
+            Some(InstrKind::Tcgen05Wait)
+        );
+        assert_eq!(
+            trie.get_ancestor(ascii("tcgen05.wait::ld.sync.aligned")),
+            Some(InstrKind::Tcgen05Wait)
+        );
+        // A single `:` is not a qualifier separator and must not match.
+        assert_eq!(trie.get_ancestor(ascii("tcgen05.wait:st")), None);
+        // No bare "tcgen05" instruction exists, so a totally unknown
+        // qualified segment must not spuriously match some other sibling.
+        assert_eq!(trie.get_ancestor(ascii("tcgen05.unknown::st")), None);
     }
 
     #[test]

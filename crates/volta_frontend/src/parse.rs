@@ -1532,28 +1532,27 @@ impl<'a> Parser<'a> {
                 })
             }
 
-            // Address: [base + offset]
+            // Address: [base + offset], or a tensor descriptor + coordinate
+            // vector: [desc, {c0, c1, ...}] (the `cp.async.bulk.tensor`/TMA
+            // operand shape - PTX ISA 9.7.9.26).
             Some((_, Token::LeftBracket)) => {
                 self.next().unwrap();
                 let addr = self.parse_address()?;
+                if self.peek_tok()? == Some(&Token::Comma) {
+                    self.next().unwrap();
+                    let coords = self.parse_brace_list()?;
+                    self.expect(Token::RightBracket)?;
+                    return Ok(Operand::TensorCoordAddress {
+                        descriptor: addr,
+                        coords,
+                    });
+                }
                 self.expect(Token::RightBracket)?;
                 Ok(Operand::Address(addr))
             }
 
             // Vector operand: {%r0, %r1, ...}
-            Some((_, Token::LeftBrace)) => {
-                self.next().unwrap();
-                let mut elements = Vec::new();
-                if self.peek_tok()? != Some(&Token::RightBrace) {
-                    elements.push(self.parse_operand()?);
-                    while self.peek_tok()? == Some(&Token::Comma) {
-                        self.next().unwrap();
-                        elements.push(self.parse_operand()?);
-                    }
-                }
-                self.expect(Token::RightBrace)?;
-                Ok(Operand::Vector(elements))
-            }
+            Some((_, Token::LeftBrace)) => Ok(Operand::Vector(self.parse_brace_list()?)),
 
             // Integer immediate
             Some((_, Token::SIntLit(_))) => {
@@ -1595,6 +1594,21 @@ impl<'a> Parser<'a> {
             Some((span, tok)) => err_at(span, ParseErrorKind::ExpectedOperand(Some(tok.clone()))),
             None => err(ParseErrorKind::ExpectedOperand(None)),
         }
+    }
+
+    /// Parse a brace-delimited operand list: `{a, b, ...}` or `{}`.
+    fn parse_brace_list(&mut self) -> Result<Vec<Operand>, ParseError> {
+        self.expect(Token::LeftBrace)?;
+        let mut elements = Vec::new();
+        if self.peek_tok()? != Some(&Token::RightBrace) {
+            elements.push(self.parse_operand()?);
+            while self.peek_tok()? == Some(&Token::Comma) {
+                self.next().unwrap();
+                elements.push(self.parse_operand()?);
+            }
+        }
+        self.expect(Token::RightBrace)?;
+        Ok(elements)
     }
 
     /// Parse address inside brackets: `base`, `base + offset`, `base - offset`.

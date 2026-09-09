@@ -1002,6 +1002,14 @@ pub enum Operand {
     Expr(Box<Expr>),
     /// Memory address: `[addr]`
     Address(Address),
+    /// Tensor descriptor + coordinate-vector address: `[desc, {c0, c1, ...}]`
+    /// (the `cp.async.bulk.tensor`/TMA operand shape, PTX ISA 9.7.9.26).
+    /// Distinct from `Address`: `tensorCoords` are runtime register operands,
+    /// not a compile-time constant offset.
+    TensorCoordAddress {
+        descriptor: Address,
+        coords: Vec<Operand>,
+    },
     /// Vector register with component: `%v.x`
     VectorElement(AsciiString, VectorComponent),
     /// Vector operand: `{%r0, %r1, %r2, %r3}`
