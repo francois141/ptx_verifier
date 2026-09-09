@@ -12,10 +12,12 @@ use id_collections::IdVec;
 
 use volta_frontend::ast::ScalarType;
 
+use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::memory::{MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
+use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::logging::{info, trace, warn};
@@ -23,7 +25,6 @@ use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
     UnaryOp,
 };
-use crate::equiv::EquivSession;
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::types::{RegClass, ScalarTypeExt};
@@ -153,6 +154,7 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) global: Memory,
     pub(in crate::eval) shared: Memory,
     locals: IdVec<ThreadId, Memory>,
+    pub(in crate::eval) tensor: TensorMemory,
     regions: MemRegions,
     pub(in crate::eval) race: RaceTracker,
     pub(in crate::eval) stats: Stats,
@@ -363,6 +365,7 @@ impl<'p> Interpreter<'p> {
             global,
             shared: Memory::new(),
             locals,
+            tensor: TensorMemory::new(),
             regions,
             race: RaceTracker::new(n_threads as usize),
             stats: Stats::default(),
@@ -1346,6 +1349,16 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
+            // Tensor Memory allocation management: PTX ISA 9.7.17.5 ("Issue
+            // Granularity") requires a single warp to collectively issue
+            // these, same shape as the tensor-core ops above.
+            LoweredInstr::Tcgen05Alloc { .. }
+            | LoweredInstr::Tcgen05Dealloc { .. }
+            | LoweredInstr::Tcgen05RelinquishAllocPermit => {
+                self.block_at_warp_op(t, pc, u32::MAX)?;
+                return Ok(());
+            }
+
             LoweredInstr::Activemask { dst } => {
                 // The OR of `1 << lane` over the executing thread's warp
                 // lanes that exist in the CTA and have not exited (ISA
@@ -1500,7 +1513,9 @@ impl<'p> Interpreter<'p> {
                     ));
                 };
                 let Value::Scalar(amount) = b else {
-                    return Err(unsupported("packed pair shifted by a packed pair".to_string()));
+                    return Err(unsupported(
+                        "packed pair shifted by a packed pair".to_string(),
+                    ));
                 };
                 if self.arena.as_int_const(amount) != Some(32) || ty.is_signed_int() {
                     return Err(unsupported(format!(
@@ -1864,6 +1879,44 @@ impl<'p> Interpreter<'p> {
         }
     }
 
+    pub(in crate::eval) fn tcgen05_error(
+        &self,
+        t: ThreadId,
+        pc: InstrId,
+        e: crate::eval::tensor_memory::TensorMemError,
+    ) -> EvalError {
+        use crate::eval::tensor_memory::TensorMemError;
+        match e {
+            TensorMemError::InvalidColumnCount { num_cols } => {
+                EvalError::Tcgen05InvalidColumnCount {
+                    thread: t,
+                    pc,
+                    num_cols,
+                }
+            }
+            TensorMemError::OutOfSpace {
+                requested,
+                available,
+            } => EvalError::Tcgen05OutOfSpace {
+                thread: t,
+                pc,
+                requested,
+                available,
+            },
+            TensorMemError::AllocAfterRelinquish => {
+                EvalError::Tcgen05AllocAfterRelinquish { thread: t, pc }
+            }
+            TensorMemError::DeallocMismatch { taddr, num_cols } => {
+                EvalError::Tcgen05DeallocMismatch {
+                    thread: t,
+                    pc,
+                    taddr,
+                    num_cols,
+                }
+            }
+        }
+    }
+
     fn mem_hazard_error(hazard: MemHazard) -> EvalError {
         match hazard {
             MemHazard::Race(race) => EvalError::DataRace {
@@ -2088,11 +2141,10 @@ impl<'p> Interpreter<'p> {
             Err(MemAccessError::Reinterpret {
                 found: Some((start, found_width, false)),
                 ..
-            }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => {
-                self.memory_mut(space, t)
-                    .write(addr, width, value)
-                    .map_err(|e| self.mem_error(t, pc, space, e))
-            }
+            }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => self
+                .memory_mut(space, t)
+                .write(addr, width, value)
+                .map_err(|e| self.mem_error(t, pc, space, e)),
             result => result.map_err(|e| self.mem_error(t, pc, space, e)),
         }
     }
@@ -2130,7 +2182,11 @@ impl<'p> Interpreter<'p> {
             return false;
         };
         let half_bits = (width * 8) as u32;
-        let mask = if half_bits >= 64 { -1 } else { (1i64 << half_bits) - 1 };
+        let mask = if half_bits >= 64 {
+            -1
+        } else {
+            (1i64 << half_bits) - 1
+        };
         let lo = self.arena.int(c & mask);
         let hi = self.arena.int((c >> half_bits) & mask);
         self.memory_mut(space, t).split_scalar(start, lo, hi);

@@ -623,6 +623,26 @@ pub enum LoweredInstr {
     },
 
     // =========================================================================
+    // TensorCore 5th Generation - Tensor Memory Allocation (PTX ISA 9.7.17.7)
+    // =========================================================================
+    /// `tcgen05.alloc.cta_group::1...[dst], nCols`: allocate `num_cols`
+    /// Tensor Memory columns, writing the resulting address into shared
+    /// memory at `dst_base + dst_offset`.
+    Tcgen05Alloc {
+        dst_base: Operand,
+        dst_offset: i64,
+        num_cols: u32,
+    },
+
+    /// `tcgen05.dealloc.cta_group::1...taddr, nCols`: deallocate the Tensor
+    /// Memory range starting at `taddr`.
+    Tcgen05Dealloc { taddr: Operand, num_cols: u32 },
+
+    /// `tcgen05.relinquish_alloc_permit.cta_group::1...`: this CTA gives up
+    /// the right to allocate any further Tensor Memory.
+    Tcgen05RelinquishAllocPermit,
+
+    // =========================================================================
     // Special
     // =========================================================================
     /// Query active lanes in the warp: dst = mask of active threads
@@ -720,6 +740,9 @@ define_instr_kinds!(
     WmmaLoad,
     WmmaStore,
     WmmaMma,
+    Tcgen05Alloc,
+    Tcgen05Dealloc,
+    Tcgen05RelinquishAllocPermit,
     Activemask,
     Trap,
     Nop,
@@ -884,6 +907,11 @@ impl LoweredInstr {
                 r.extend(from_op(stride));
                 r
             }
+
+            // Tensor Memory allocation
+            Self::Tcgen05Alloc { dst_base, .. } => from_op(dst_base).into_iter().collect(),
+            Self::Tcgen05Dealloc { taddr, .. } => from_op(taddr).into_iter().collect(),
+            Self::Tcgen05RelinquishAllocPermit => vec![],
         }
     }
 
@@ -944,6 +972,9 @@ impl LoweredInstr {
             | Self::Membar { .. }
             | Self::CpAsyncCommitGroup
             | Self::CpAsyncWaitGroup { .. }
+            | Self::Tcgen05Alloc { .. }
+            | Self::Tcgen05Dealloc { .. }
+            | Self::Tcgen05RelinquishAllocPermit
             | Self::Nop => vec![],
         }
     }

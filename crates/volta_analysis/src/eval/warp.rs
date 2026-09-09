@@ -184,6 +184,19 @@ impl Interpreter<'_> {
             LoweredInstr::WmmaLoad { .. } => self.exec_wmma_load(pc, members, &instr)?,
             LoweredInstr::WmmaStore { .. } => self.exec_wmma_store(pc, members, &instr)?,
             LoweredInstr::WmmaMma { .. } => self.exec_wmma_mma(pc, members, &instr)?,
+            LoweredInstr::Tcgen05Alloc {
+                dst_base,
+                dst_offset,
+                num_cols,
+            } => {
+                self.exec_tcgen05_alloc(pc, members, dst_base, *dst_offset, *num_cols)?;
+            }
+            LoweredInstr::Tcgen05Dealloc { taddr, num_cols } => {
+                self.exec_tcgen05_dealloc(pc, members, taddr, *num_cols)?;
+            }
+            LoweredInstr::Tcgen05RelinquishAllocPermit => {
+                self.tensor.relinquish_alloc_permit();
+            }
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
@@ -257,6 +270,19 @@ impl Interpreter<'_> {
             LoweredInstr::WmmaLoad { shape, .. }
             | LoweredInstr::WmmaStore { shape, .. }
             | LoweredInstr::WmmaMma { shape, .. } => self.check_wmma_shape(pc, members, *shape),
+            // PTX ISA 9.7.17.7: "The behavior of the instruction is
+            // undefined if... any thread in the warp has exited" (stated
+            // for `.alloc`; `.dealloc`/`.relinquish_alloc_permit` share the
+            // same `.sync.aligned` full-warp-convergence contract).
+            LoweredInstr::Tcgen05Alloc { .. } => {
+                self.require_live_warp(pc, members, "tcgen05.alloc")
+            }
+            LoweredInstr::Tcgen05Dealloc { .. } => {
+                self.require_live_warp(pc, members, "tcgen05.dealloc")
+            }
+            LoweredInstr::Tcgen05RelinquishAllocPermit => {
+                self.require_live_warp(pc, members, "tcgen05.relinquish_alloc_permit")
+            }
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),
@@ -858,6 +884,47 @@ impl Interpreter<'_> {
             pc,
             reason: "empty warp group".to_string(),
         })
+    }
+
+    /// `tcgen05.alloc`: allocate `num_cols` Tensor Memory columns and write
+    /// the resulting address into shared memory at `dst`. One allocation
+    /// per firing (not one per lane) - `dst`/`num_cols` are warp-uniform by
+    /// construction (PTX ISA 9.7.17.7 requires the same `nCols` on every
+    /// lane), and the write is attributed to the group's leader lane since
+    /// it has no genuine per-lane owner, unlike a fragment element.
+    fn exec_tcgen05_alloc(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        dst_base: &Operand,
+        dst_offset: i64,
+        num_cols: u32,
+    ) -> EvalResult<()> {
+        let base = self.uniform_concrete(pc, members, dst_base, "tcgen05.alloc dst address")?;
+        let dst_addr = (base as u64).wrapping_add(dst_offset as u64);
+        let leader = members[0];
+        let taddr = self
+            .tensor
+            .alloc(num_cols)
+            .map_err(|e| self.tcgen05_error(leader, pc, e))?;
+        let value = Value::Scalar(self.arena.int(taddr as i64));
+        self.mem_write(leader, pc, MemSpace::Shared, dst_addr, 4, value)
+    }
+
+    /// `tcgen05.dealloc`: deallocate the Tensor Memory range starting at
+    /// `taddr`. `taddr`/`num_cols` must agree across the warp for the same
+    /// reason as `.alloc`'s `dst`/`num_cols`.
+    fn exec_tcgen05_dealloc(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        taddr: &Operand,
+        num_cols: u32,
+    ) -> EvalResult<()> {
+        let taddr = self.uniform_concrete(pc, members, taddr, "tcgen05.dealloc taddr")? as u32;
+        self.tensor
+            .dealloc(taddr, num_cols)
+            .map_err(|e| self.tcgen05_error(members[0], pc, e))
     }
 
     /// Place one lane's packed-f16 fragment registers into a matrix grid.

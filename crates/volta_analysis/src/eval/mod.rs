@@ -11,6 +11,7 @@ pub mod error;
 pub mod interp;
 pub mod memory;
 pub mod race;
+pub mod tensor_memory;
 pub mod value;
 pub mod warp;
 
