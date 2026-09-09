@@ -169,6 +169,14 @@ pub enum EvalError {
         taddr: u32,
         num_cols: u32,
     },
+    /// A `tcgen05.ld`/`.st` touched a Tensor Memory column outside every
+    /// live allocation.
+    Tcgen05NotAllocated {
+        thread: ThreadId,
+        pc: InstrId,
+        lane: u32,
+        col: u32,
+    },
 }
 
 impl fmt::Display for EvalError {
@@ -326,6 +334,16 @@ impl fmt::Display for EvalError {
                 f,
                 "{}: tcgen05.dealloc at {} of (taddr={:#x}, nCols={}) does not match any live allocation",
                 thread, pc, taddr, num_cols
+            ),
+            Self::Tcgen05NotAllocated {
+                thread,
+                pc,
+                lane,
+                col,
+            } => write!(
+                f,
+                "{}: tcgen05.ld/.st at {} touched tensor-memory (lane={}, col={}) outside any live allocation",
+                thread, pc, lane, col
             ),
         }
     }

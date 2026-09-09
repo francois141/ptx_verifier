@@ -18,6 +18,8 @@
 //! synchronizing can't arise the way it can for `.shared`/`.global` - it
 //! would already be undefined behavior per the ISA's own partitioning.
 
+use crate::symbolic::ExprId;
+
 /// Lanes per CTA's Tensor Memory (PTX ISA 9.7.17.1).
 pub const LANES: u32 = 128;
 /// Columns per CTA's Tensor Memory (PTX ISA 9.7.17.1).
@@ -38,11 +40,13 @@ pub enum TensorMemError {
     AllocAfterRelinquish,
     /// `.dealloc`'s `(taddr, nCols)` doesn't match any live allocation.
     DeallocMismatch { taddr: u32, num_cols: u32 },
+    /// A `tcgen05.ld`/`.st` touched a column outside every live allocation.
+    NotAllocated { lane: u32, col: u32 },
 }
 
-/// The Tensor Memory allocator for one CTA (this analysis models a single
-/// CTA's execution, so one instance suffices - like `Interpreter::shared`,
-/// not one per thread).
+/// The Tensor Memory allocator + cell store for one CTA (this analysis
+/// models a single CTA's execution, so one instance suffices - like
+/// `Interpreter::shared`, not one per thread).
 ///
 /// A bump allocator: `.dealloc` removes a range from `allocated` but never
 /// lets a later `.alloc` reuse its columns. This is sound - it never permits
@@ -57,6 +61,9 @@ pub struct TensorMemory {
     /// Never-decreasing bump pointer: the next unallocated column.
     high_water: u32,
     permit_relinquished: bool,
+    /// `LANES * COLUMNS` cells once touched by any `.ld`/`.st`; empty until
+    /// then (see the module doc's "lazily-allocated" note).
+    cells: Vec<Option<ExprId>>,
 }
 
 impl TensorMemory {
@@ -102,6 +109,39 @@ impl TensorMemory {
             }
             None => Err(TensorMemError::DeallocMismatch { taddr, num_cols }),
         }
+    }
+
+    fn is_allocated(&self, col: u32) -> bool {
+        self.allocated
+            .iter()
+            .any(|&(base, cols)| col >= base && col < base + cols)
+    }
+
+    fn index(lane: u32, col: u32) -> usize {
+        (lane * COLUMNS + col) as usize
+    }
+
+    /// Read cell `(lane, col)`: `Ok(None)` for an allocated-but-never-
+    /// written cell (the caller substitutes `Undefined`, matching the
+    /// `.shared`-space convention - Tensor Memory has no host-supplied
+    /// inputs either), `Err` if `col` isn't currently allocated at all.
+    pub fn read(&self, lane: u32, col: u32) -> Result<Option<ExprId>, TensorMemError> {
+        if !self.is_allocated(col) {
+            return Err(TensorMemError::NotAllocated { lane, col });
+        }
+        Ok(self.cells.get(Self::index(lane, col)).copied().flatten())
+    }
+
+    /// Write cell `(lane, col)`. Errors if `col` isn't currently allocated.
+    pub fn write(&mut self, lane: u32, col: u32, value: ExprId) -> Result<(), TensorMemError> {
+        if !self.is_allocated(col) {
+            return Err(TensorMemError::NotAllocated { lane, col });
+        }
+        if self.cells.is_empty() {
+            self.cells = vec![None; (LANES * COLUMNS) as usize];
+        }
+        self.cells[Self::index(lane, col)] = Some(value);
+        Ok(())
     }
 
     /// Mark this CTA as having relinquished its right to allocate further
@@ -190,5 +230,48 @@ mod tests {
         let mut tm = TensorMemory::new();
         tm.relinquish_alloc_permit();
         assert_eq!(tm.alloc(32), Err(TensorMemError::AllocAfterRelinquish));
+    }
+
+    fn fake_expr(n: u32) -> ExprId {
+        use id_collections::Id;
+        Id::from_index(n)
+    }
+
+    #[test]
+    fn read_write_roundtrip_within_an_allocation() {
+        let mut tm = TensorMemory::new();
+        assert_eq!(tm.alloc(32), Ok(0));
+        let e = fake_expr(7);
+        assert_eq!(tm.write(5, 3, e), Ok(()));
+        assert_eq!(tm.read(5, 3), Ok(Some(e)));
+        // A different lane/column at the same allocation is untouched.
+        assert_eq!(tm.read(5, 4), Ok(None));
+        assert_eq!(tm.read(6, 3), Ok(None));
+    }
+
+    #[test]
+    fn read_write_outside_any_allocation_is_rejected() {
+        let mut tm = TensorMemory::new();
+        assert_eq!(tm.alloc(32), Ok(0));
+        assert_eq!(
+            tm.read(0, 32),
+            Err(TensorMemError::NotAllocated { lane: 0, col: 32 })
+        );
+        assert_eq!(
+            tm.write(0, 32, fake_expr(1)),
+            Err(TensorMemError::NotAllocated { lane: 0, col: 32 })
+        );
+    }
+
+    #[test]
+    fn dealloc_makes_reads_and_writes_fail_again() {
+        let mut tm = TensorMemory::new();
+        assert_eq!(tm.alloc(32), Ok(0));
+        assert_eq!(tm.write(0, 0, fake_expr(1)), Ok(()));
+        assert_eq!(tm.dealloc(0, 32), Ok(()));
+        assert_eq!(
+            tm.read(0, 0),
+            Err(TensorMemError::NotAllocated { lane: 0, col: 0 })
+        );
     }
 }

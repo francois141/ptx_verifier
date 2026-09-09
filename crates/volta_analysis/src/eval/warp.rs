@@ -197,6 +197,20 @@ impl Interpreter<'_> {
             LoweredInstr::Tcgen05RelinquishAllocPermit => {
                 self.tensor.relinquish_alloc_permit();
             }
+            LoweredInstr::Tcgen05Ld {
+                dst,
+                taddr_base,
+                taddr_offset,
+            } => {
+                self.exec_tcgen05_ld(pc, members, dst, taddr_base, *taddr_offset)?;
+            }
+            LoweredInstr::Tcgen05St {
+                taddr_base,
+                taddr_offset,
+                src,
+            } => {
+                self.exec_tcgen05_st(pc, members, taddr_base, *taddr_offset, src)?;
+            }
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
@@ -270,10 +284,7 @@ impl Interpreter<'_> {
             LoweredInstr::WmmaLoad { shape, .. }
             | LoweredInstr::WmmaStore { shape, .. }
             | LoweredInstr::WmmaMma { shape, .. } => self.check_wmma_shape(pc, members, *shape),
-            // PTX ISA 9.7.17.7: "The behavior of the instruction is
-            // undefined if... any thread in the warp has exited" (stated
-            // for `.alloc`; `.dealloc`/`.relinquish_alloc_permit` share the
-            // same `.sync.aligned` full-warp-convergence contract).
+            // The behavior of the instruction is undefined if any thread in the warp has exited.
             LoweredInstr::Tcgen05Alloc { .. } => {
                 self.require_live_warp(pc, members, "tcgen05.alloc")
             }
@@ -283,6 +294,8 @@ impl Interpreter<'_> {
             LoweredInstr::Tcgen05RelinquishAllocPermit => {
                 self.require_live_warp(pc, members, "tcgen05.relinquish_alloc_permit")
             }
+            LoweredInstr::Tcgen05Ld { .. } => self.require_live_warp(pc, members, "tcgen05.ld"),
+            LoweredInstr::Tcgen05St { .. } => self.require_live_warp(pc, members, "tcgen05.st"),
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),
@@ -925,6 +938,73 @@ impl Interpreter<'_> {
         self.tensor
             .dealloc(taddr, num_cols)
             .map_err(|e| self.tcgen05_error(members[0], pc, e))
+    }
+
+    /// The physical Tensor Memory lane a thread's `tcgen05.ld`/`.st` reaches.
+    /// PTX ISA 9.7.17.8.1 ("Access restrictions"): the CTA's 128 lanes are
+    /// split into 4 chunks of 32, one per warp *within its warpgroup*
+    /// (warpgroup-relative id 0-3, not CTA-relative) - which is exactly a
+    /// thread's position within its own 128-thread warpgroup.
+    fn tcgen05_lane(t: ThreadId) -> u32 {
+        t.0 % 128
+    }
+
+    /// `tcgen05.ld`: collective async load of `dst.len()` Tensor Memory
+    /// columns (base column from the warp-uniform `taddr`) into `dst.len()`
+    /// registers per lane - one column per register, each thread reading
+    /// its own physical lane (see `tcgen05_lane`).
+    fn exec_tcgen05_ld(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        dst: &[RegId],
+        taddr_base: &Operand,
+        taddr_offset: i64,
+    ) -> EvalResult<()> {
+        let base = self.uniform_concrete(pc, members, taddr_base, "tcgen05.ld taddr")?;
+        let base_col = (base + taddr_offset) as u32;
+        for &m in members {
+            let lane = Self::tcgen05_lane(m);
+            for (k, &reg) in dst.iter().enumerate() {
+                let col = base_col + k as u32;
+                let e = self
+                    .tensor
+                    .read(lane, col)
+                    .map_err(|e| self.tcgen05_error(m, pc, e))?
+                    .unwrap_or_else(|| self.arena.undefined());
+                self.threads[m].regs.write(reg, Value::Scalar(e));
+            }
+        }
+        Ok(())
+    }
+
+    /// `tcgen05.st`: collective async store of `src.len()` Tensor Memory
+    /// columns from `src.len()` registers per lane - the mirror of
+    /// `exec_tcgen05_ld`. Each thread evaluates `src` against its own
+    /// registers (the operand list is shared syntax, not shared values -
+    /// e.g. the driving kernel's zero-fill idiom repeats one register
+    /// holding a per-thread-identical constant across every slot).
+    fn exec_tcgen05_st(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        taddr_base: &Operand,
+        taddr_offset: i64,
+        src: &[Operand],
+    ) -> EvalResult<()> {
+        let base = self.uniform_concrete(pc, members, taddr_base, "tcgen05.st taddr")?;
+        let base_col = (base + taddr_offset) as u32;
+        for &m in members {
+            let lane = Self::tcgen05_lane(m);
+            for (k, op) in src.iter().enumerate() {
+                let col = base_col + k as u32;
+                let e = self.scalar_operand(m, pc, op)?;
+                self.tensor
+                    .write(lane, col, e)
+                    .map_err(|e| self.tcgen05_error(m, pc, e))?;
+            }
+        }
+        Ok(())
     }
 
     /// Place one lane's packed-f16 fragment registers into a matrix grid.
