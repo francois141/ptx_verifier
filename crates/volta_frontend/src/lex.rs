@@ -1733,6 +1733,33 @@ mod tests {
     }
 
     #[test]
+    fn test_instruction_with_glued_double_colon_qualifier() {
+        // `tcgen05.wait::ld`/`::st` glue a qualifier directly onto the
+        // mnemonic segment (no `.` before it) - the trie resolves the full
+        // `wait::ld`/`wait::st` name to its own InstrKind, so the returned
+        // qualifier suffix is clean: no leftover "::ld"/"::st" text, only
+        // the trailing `.sync.aligned` modifiers.
+        assert_eq!(
+            lex("tcgen05.wait::ld.sync.aligned"),
+            Ok(vec![ident("tcgen05.wait::ld.sync.aligned")])
+        );
+
+        let wait_ld = Ident::new(ascii("tcgen05.wait::ld.sync.aligned").to_owned_ascii());
+        let (kind, mut suffix) = wait_ld.as_instr().unwrap();
+        assert_eq!(kind, InstrKind::Tcgen05WaitLd);
+        assert_eq!(suffix.next(), Some(ascii("sync")));
+        assert_eq!(suffix.next(), Some(ascii("aligned")));
+        assert_eq!(suffix.next(), None);
+
+        let wait_st = Ident::new(ascii("tcgen05.wait::st.sync.aligned").to_owned_ascii());
+        let (kind, mut suffix) = wait_st.as_instr().unwrap();
+        assert_eq!(kind, InstrKind::Tcgen05WaitSt);
+        assert_eq!(suffix.next(), Some(ascii("sync")));
+        assert_eq!(suffix.next(), Some(ascii("aligned")));
+        assert_eq!(suffix.next(), None);
+    }
+
+    #[test]
     fn test_identifier_with_instruction_prefix() {
         // These are all Idents now
         assert_eq!(lex("mov"), Ok(vec![ident("mov")]));

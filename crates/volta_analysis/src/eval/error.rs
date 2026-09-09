@@ -177,6 +177,16 @@ pub enum EvalError {
         lane: u32,
         col: u32,
     },
+    /// A `tcgen05.ld`/`.st` touched a Tensor Memory column range that
+    /// overlaps a still-unacknowledged (not `tcgen05.wait`-ed) prior async
+    /// `.ld`/`.st` - see `RaceTracker::tcgen05_begin`.
+    Tcgen05AsyncHazard {
+        quadrant: u32,
+        start_col: u32,
+        num_cols: u32,
+        prior: AccessSite,
+        current: AccessSite,
+    },
 }
 
 impl fmt::Display for EvalError {
@@ -344,6 +354,21 @@ impl fmt::Display for EvalError {
                 f,
                 "{}: tcgen05.ld/.st at {} touched tensor-memory (lane={}, col={}) outside any live allocation",
                 thread, pc, lane, col
+            ),
+            Self::Tcgen05AsyncHazard {
+                quadrant,
+                start_col,
+                num_cols,
+                prior,
+                current,
+            } => write!(
+                f,
+                "tcgen05 async hazard on tensor-memory quadrant {} cols [{}, {}): {} conflicts with in-flight {}",
+                quadrant,
+                start_col,
+                start_col + num_cols,
+                current,
+                prior
             ),
         }
     }

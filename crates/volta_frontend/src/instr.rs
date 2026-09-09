@@ -329,7 +329,8 @@ pub enum InstrKind {
     Tcgen05RelinquishAllocPermit, // tcgen05.relinquish_alloc_permit
     Tcgen05Ld,                    // tcgen05.ld
     Tcgen05St,                    // tcgen05.st
-    Tcgen05Wait,                  // tcgen05.wait
+    Tcgen05WaitLd,                // tcgen05.wait::ld
+    Tcgen05WaitSt,                // tcgen05.wait::st
     Tcgen05Cp,                    // tcgen05.cp
     Tcgen05Shift,                 // tcgen05.shift
     Tcgen05Mma,                   // tcgen05.mma
@@ -581,7 +582,8 @@ impl InstrKind {
             Tcgen05RelinquishAllocPermit => ascii("tcgen05.relinquish_alloc_permit"),
             Tcgen05Ld => ascii("tcgen05.ld"),
             Tcgen05St => ascii("tcgen05.st"),
-            Tcgen05Wait => ascii("tcgen05.wait"),
+            Tcgen05WaitLd => ascii("tcgen05.wait::ld"),
+            Tcgen05WaitSt => ascii("tcgen05.wait::st"),
             Tcgen05Cp => ascii("tcgen05.cp"),
             Tcgen05Shift => ascii("tcgen05.shift"),
             Tcgen05Mma => ascii("tcgen05.mma"),
@@ -854,7 +856,8 @@ pub fn get_instr_trie() -> &'static InstrTrie {
             "tcgen05.relinquish_alloc_permit" => Tcgen05RelinquishAllocPermit,
             "tcgen05.ld" => Tcgen05Ld,
             "tcgen05.st" => Tcgen05St,
-            "tcgen05.wait" => Tcgen05Wait,
+            "tcgen05.wait::ld" => Tcgen05WaitLd,
+            "tcgen05.wait::st" => Tcgen05WaitSt,
             "tcgen05.cp" => Tcgen05Cp,
             "tcgen05.shift" => Tcgen05Shift,
             "tcgen05.mma" => Tcgen05Mma,
@@ -959,26 +962,45 @@ mod tests {
 
     #[test]
     fn test_qualifier_glued_onto_mnemonic_segment() {
+        // Synthetic example, decoupled from any real instruction: PTX names
+        // like `tcgen05.wait::ld`/`::st` glue a `::`-qualifier directly onto
+        // a mnemonic segment with no `.` separator. Those two are registered
+        // as their own exact trie entries (see `Tcgen05WaitLd`/`Tcgen05WaitSt`
+        // above), so this fallback is no longer exercised by them in
+        // practice - it stays as general-purpose infrastructure for any
+        // future instruction with the same shape that isn't registered
+        // explicitly.
         let mut trie = InstrTrie::new();
-        trie.insert(ascii("tcgen05.wait"), InstrKind::Tcgen05Wait);
-        trie.insert(ascii("tcgen05.commit"), InstrKind::Tcgen05Commit);
+        trie.insert(ascii("foo.bar"), InstrKind::Mov);
+        trie.insert(ascii("foo.baz"), InstrKind::Add);
 
-        // `tcgen05.wait::st`/`::ld` are the PTX ISA's own instruction names -
-        // the `::st`/`::ld` qualifier is glued directly onto the "wait"
-        // segment with no `.` separator, unlike a trailing modifier.
         assert_eq!(
-            trie.get_ancestor(ascii("tcgen05.wait::st.sync.aligned")),
-            Some(InstrKind::Tcgen05Wait)
+            trie.get_ancestor(ascii("foo.bar::st.sync.aligned")),
+            Some(InstrKind::Mov)
         );
         assert_eq!(
-            trie.get_ancestor(ascii("tcgen05.wait::ld.sync.aligned")),
-            Some(InstrKind::Tcgen05Wait)
+            trie.get_ancestor(ascii("foo.bar::ld.sync.aligned")),
+            Some(InstrKind::Mov)
         );
         // A single `:` is not a qualifier separator and must not match.
-        assert_eq!(trie.get_ancestor(ascii("tcgen05.wait:st")), None);
-        // No bare "tcgen05" instruction exists, so a totally unknown
+        assert_eq!(trie.get_ancestor(ascii("foo.bar:st")), None);
+        // No bare "foo" instruction exists, so a totally unknown
         // qualified segment must not spuriously match some other sibling.
-        assert_eq!(trie.get_ancestor(ascii("tcgen05.unknown::st")), None);
+        assert_eq!(trie.get_ancestor(ascii("foo.unknown::st")), None);
+    }
+
+    #[test]
+    fn test_tcgen05_wait_ld_st_resolve_via_the_real_trie() {
+        let trie = get_instr_trie();
+
+        assert_eq!(
+            trie.get_ancestor(ascii("tcgen05.wait::ld.sync.aligned")),
+            Some(InstrKind::Tcgen05WaitLd)
+        );
+        assert_eq!(
+            trie.get_ancestor(ascii("tcgen05.wait::st.sync.aligned")),
+            Some(InstrKind::Tcgen05WaitSt)
+        );
     }
 
     #[test]

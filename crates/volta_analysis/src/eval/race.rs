@@ -75,8 +75,43 @@ struct ChiCell {
     wr: Option<(u32, FixedBitSet, InstrId)>,
 }
 
+/// A detected in-flight `tcgen05.ld`/`.st` hazard: an access to Tensor
+/// Memory that conflicts with a still-unacknowledged (not yet `tcgen05.wait`
+/// -ed) async op's column range.
+#[derive(Debug, Clone, Copy)]
+pub struct Tcgen05HazardInfo {
+    pub quadrant: u32,
+    pub start_col: u32,
+    pub num_cols: u32,
+    pub prior: AccessSite,
+    pub current: AccessSite,
+}
+
+/// One warp-quadrant's pending async Tensor Memory `.ld`/`.st` footprints.
+///
+/// PTX ISA 9.7.17.8: a single `.ld`/`.st` always describes one contiguous
+/// column range (`taddr` is warp-uniform, `.num` columns are consecutive)
+/// within one lane quadrant (a warp only ever reaches its own quadrant - see
+/// `eval/warp.rs`'s `tcgen05_lane`), so plain ranges suffice; no per-cell
+/// tracking is needed, unlike the general `(MemSpace, u64)` address space
+/// `cells`/`async_locks` above cover. `.wait::ld`/`::st` aren't scoped to an
+/// address either - they unconditionally release *every* pending op of
+/// their kind - so release is a clear, not a partial removal.
+///
+/// Conflict rule mirrors `AsyncLockCell`: a pending `.st` is a destination
+/// lock (blocks *any* subsequent overlapping access, read or write); a
+/// pending `.ld` is a source lock (blocks only a subsequent overlapping
+/// write - concurrent reads of the same range are harmless).
+#[derive(Debug, Clone, Default)]
+struct Tcgen05Pending {
+    /// `(start_col, num_cols, issuing access)` per un-waited `.ld`.
+    ld: Vec<(u32, u32, AccessSite)>,
+    /// `(start_col, num_cols, issuing access)` per un-waited `.st`.
+    st: Vec<(u32, u32, AccessSite)>,
+}
+
 /// χ-context tracker over all racy memory (shared + global), plus in-flight
-/// `cp.async` lock state.
+/// `cp.async` lock state, plus in-flight `tcgen05.ld`/`.st` lock state.
 #[derive(Debug)]
 pub struct RaceTracker {
     n_threads: usize,
@@ -84,6 +119,8 @@ pub struct RaceTracker {
     all: FixedBitSet,
     cells: HashMap<(MemSpace, u64), ChiCell>,
     async_locks: HashMap<(MemSpace, u64), AsyncLockCell>,
+    /// Indexed by quadrant `0..4` (`(lane % 128) / 32`) - see `Tcgen05Pending`.
+    tcgen05_pending: [Tcgen05Pending; 4],
 }
 
 impl RaceTracker {
@@ -95,7 +132,51 @@ impl RaceTracker {
             all,
             cells: HashMap::new(),
             async_locks: HashMap::new(),
+            tcgen05_pending: Default::default(),
         }
+    }
+
+    /// Check `[start_col, start_col + num_cols)` in `quadrant` against
+    /// pending `tcgen05` ops per the conflict rule on [`Tcgen05Pending`],
+    /// and record `current` as newly pending if clear.
+    pub fn tcgen05_begin(
+        &mut self,
+        quadrant: u32,
+        start_col: u32,
+        num_cols: u32,
+        is_st: bool,
+        current: AccessSite,
+    ) -> Result<(), Tcgen05HazardInfo> {
+        let end = start_col + num_cols;
+        let overlaps = |&(s, n, _): &(u32, u32, AccessSite)| s < end && start_col < s + n;
+        let q = &self.tcgen05_pending[quadrant as usize];
+        let conflict = if is_st {
+            q.ld.iter()
+                .find(|e| overlaps(e))
+                .or_else(|| q.st.iter().find(|e| overlaps(e)))
+        } else {
+            q.st.iter().find(|e| overlaps(e))
+        };
+        if let Some(&(_, _, prior)) = conflict {
+            return Err(Tcgen05HazardInfo {
+                quadrant,
+                start_col,
+                num_cols,
+                prior,
+                current,
+            });
+        }
+        let q = &mut self.tcgen05_pending[quadrant as usize];
+        let list = if is_st { &mut q.st } else { &mut q.ld };
+        list.push((start_col, num_cols, current));
+        Ok(())
+    }
+
+    /// Release every pending `.ld` (`is_st = false`) or `.st`
+    /// (`is_st = true`) footprint in `quadrant` - `tcgen05.wait::ld`/`::st`.
+    pub fn tcgen05_wait(&mut self, quadrant: u32, is_st: bool) {
+        let q = &mut self.tcgen05_pending[quadrant as usize];
+        if is_st { q.st.clear() } else { q.ld.clear() }
     }
 
     /// Record a read of `[addr, addr + width)` by `thread`, checking for a
@@ -554,5 +635,95 @@ mod tests {
             assert_eq!(err.prior.pc, pc(2));
             assert!(!err.prior.is_write);
         }
+    }
+
+    fn site(t: u32, p: u32, is_write: bool) -> AccessSite {
+        AccessSite {
+            thread: ThreadId(t),
+            pc: pc(p),
+            is_write,
+        }
+    }
+
+    #[test]
+    fn test_tcgen05_concurrent_ld_no_conflict() {
+        // Multiple in-flight loads of the same range are fine (src_holders'
+        // "multiple in-flight copies may legitimately share a source byte
+        // for reading" rule, mirrored for tcgen05 pending loads).
+        let mut chi = RaceTracker::new(32);
+        chi.tcgen05_begin(0, 0, 64, false, site(0, 1, false))
+            .unwrap();
+        chi.tcgen05_begin(0, 0, 64, false, site(0, 2, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_tcgen05_st_conflicts_with_pending_ld() {
+        let mut chi = RaceTracker::new(32);
+        chi.tcgen05_begin(0, 0, 64, false, site(0, 1, false))
+            .unwrap();
+        let err = chi
+            .tcgen05_begin(0, 32, 32, true, site(0, 2, true))
+            .unwrap_err();
+        assert_eq!(err.prior.pc, pc(1));
+        assert!(!err.prior.is_write);
+    }
+
+    #[test]
+    fn test_tcgen05_ld_conflicts_with_pending_st() {
+        let mut chi = RaceTracker::new(32);
+        chi.tcgen05_begin(0, 0, 64, true, site(0, 1, true)).unwrap();
+        let err = chi
+            .tcgen05_begin(0, 32, 32, false, site(0, 2, false))
+            .unwrap_err();
+        assert_eq!(err.prior.pc, pc(1));
+        assert!(err.prior.is_write);
+    }
+
+    #[test]
+    fn test_tcgen05_st_conflicts_with_pending_st() {
+        // A second pending write to an overlapping range - "at most one
+        // copy may hold a byte this way" for the destination-lock side.
+        let mut chi = RaceTracker::new(32);
+        chi.tcgen05_begin(0, 0, 64, true, site(0, 1, true)).unwrap();
+        let err = chi
+            .tcgen05_begin(0, 0, 64, true, site(0, 2, true))
+            .unwrap_err();
+        assert_eq!(err.prior.pc, pc(1));
+    }
+
+    #[test]
+    fn test_tcgen05_non_overlapping_ranges_do_not_conflict() {
+        let mut chi = RaceTracker::new(32);
+        chi.tcgen05_begin(0, 0, 32, true, site(0, 1, true)).unwrap();
+        chi.tcgen05_begin(0, 32, 32, true, site(0, 2, true))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_tcgen05_wait_releases_only_its_own_kind_and_quadrant() {
+        let mut chi = RaceTracker::new(32);
+        // Non-overlapping ranges, so the pending .ld and .st below coexist
+        // without conflicting with *each other*.
+        chi.tcgen05_begin(0, 0, 32, false, site(0, 1, false))
+            .unwrap();
+        chi.tcgen05_begin(0, 64, 32, true, site(0, 2, true))
+            .unwrap();
+        // Waiting on .st in quadrant 0 must not release the pending .ld -
+        // a subsequent .st at the .ld's range still conflicts with it.
+        chi.tcgen05_wait(0, true);
+        let err = chi
+            .tcgen05_begin(0, 0, 32, true, site(0, 3, true))
+            .unwrap_err();
+        assert!(!err.prior.is_write);
+
+        // A different quadrant is entirely unaffected by quadrant 0's
+        // pending state.
+        chi.tcgen05_begin(1, 0, 32, true, site(1, 4, true)).unwrap();
+
+        // Waiting on .ld in quadrant 0 releases it; the same range is now free.
+        chi.tcgen05_wait(0, false);
+        chi.tcgen05_begin(0, 0, 32, false, site(0, 5, false))
+            .unwrap();
     }
 }
