@@ -2001,6 +2001,22 @@ fn lower_parsed_instruction(
             lower_tcgen05_st(ctx, modifiers, operands, predicate)?;
         }
 
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05WaitLd,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_wait(ctx, modifiers, operands, predicate, false)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05WaitSt,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_wait(ctx, modifiers, operands, predicate, true)?;
+        }
+
         // =========================================================================
         // Unsupported instructions
         // =========================================================================
@@ -4641,6 +4657,42 @@ fn lower_tcgen05_st(
         },
         predicate,
     )?;
+    Ok(())
+}
+
+/// Lower `tcgen05.wait::ld.sync.aligned` / `tcgen05.wait::st.sync.aligned`.
+///
+/// `tcgen05.wait::ld` and `tcgen05.wait::st` are the PTX ISA's own,
+/// distinct instruction names (the `::ld`/`::st` qualifier is glued
+/// directly onto the `wait` mnemonic segment, no `.` before it) and are
+/// resolved to separate `InstrKind::Tcgen05WaitLd`/`Tcgen05WaitSt` values by
+/// the trie at parse time, so `is_st` arrives here as a plain parameter -
+/// no qualifier text to inspect.
+fn lower_tcgen05_wait(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+    is_st: bool,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.wait";
+
+    for modifier in modifiers {
+        match modifier.to_string().as_str() {
+            "sync" | "aligned" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+
+    if !operands.is_empty() {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected no operands",
+        });
+    }
+
+    ctx.emit(LoweredInstr::Tcgen05Wait { is_st }, predicate)?;
     Ok(())
 }
 

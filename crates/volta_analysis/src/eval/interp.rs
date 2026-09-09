@@ -1356,7 +1356,8 @@ impl<'p> Interpreter<'p> {
             | LoweredInstr::Tcgen05Dealloc { .. }
             | LoweredInstr::Tcgen05RelinquishAllocPermit
             | LoweredInstr::Tcgen05Ld { .. }
-            | LoweredInstr::Tcgen05St { .. } => {
+            | LoweredInstr::Tcgen05St { .. }
+            | LoweredInstr::Tcgen05Wait { .. } => {
                 self.block_at_warp_op(t, pc, u32::MAX)?;
                 return Ok(());
             }

@@ -12,7 +12,7 @@
 
 use volta_frontend::ast::ScalarType;
 
-use crate::eval::error::{EvalError, EvalResult};
+use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::interp::Interpreter;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
@@ -211,6 +211,9 @@ impl Interpreter<'_> {
             } => {
                 self.exec_tcgen05_st(pc, members, taddr_base, *taddr_offset, src)?;
             }
+            LoweredInstr::Tcgen05Wait { is_st } => {
+                self.exec_tcgen05_wait(members, *is_st);
+            }
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
@@ -296,6 +299,11 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Tcgen05Ld { .. } => self.require_live_warp(pc, members, "tcgen05.ld"),
             LoweredInstr::Tcgen05St { .. } => self.require_live_warp(pc, members, "tcgen05.st"),
+            // Unlike `.alloc`/`.dealloc`/`.ld`/`.st`, the ISA text for
+            // `tcgen05.wait::ld`/`::st` does not state an exited-lane UB
+            // clause, so (like `BarWarpSync`/`ShflSync`) a partial warp is
+            // accepted.
+            LoweredInstr::Tcgen05Wait { .. } => Ok(()),
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),
@@ -949,10 +957,27 @@ impl Interpreter<'_> {
         t.0 % 128
     }
 
+    /// Convert a detected async hazard into the corresponding `EvalError`.
+    fn tcgen05_hazard_error(h: crate::eval::race::Tcgen05HazardInfo) -> EvalError {
+        EvalError::Tcgen05AsyncHazard {
+            quadrant: h.quadrant,
+            start_col: h.start_col,
+            num_cols: h.num_cols,
+            prior: h.prior,
+            current: h.current,
+        }
+    }
+
     /// `tcgen05.ld`: collective async load of `dst.len()` Tensor Memory
     /// columns (base column from the warp-uniform `taddr`) into `dst.len()`
     /// registers per lane - one column per register, each thread reading
     /// its own physical lane (see `tcgen05_lane`).
+    ///
+    /// Checked once for the whole op against `RaceTracker::tcgen05_begin`,
+    /// not per cell: PTX ISA 9.7.17.8's `taddr`+`.num` always describes one
+    /// contiguous column range within one lane quadrant (every member
+    /// shares the same quadrant - see `sm100a_support_plan.md`'s hazard
+    /// design), so a single range check covers the whole footprint.
     fn exec_tcgen05_ld(
         &mut self,
         pc: InstrId,
@@ -963,6 +988,15 @@ impl Interpreter<'_> {
     ) -> EvalResult<()> {
         let base = self.uniform_concrete(pc, members, taddr_base, "tcgen05.ld taddr")?;
         let base_col = (base + taddr_offset) as u32;
+        let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
+        let current = AccessSite {
+            thread: members[0],
+            pc,
+            is_write: false,
+        };
+        self.race
+            .tcgen05_begin(quadrant, base_col, dst.len() as u32, false, current)
+            .map_err(Self::tcgen05_hazard_error)?;
         for &m in members {
             let lane = Self::tcgen05_lane(m);
             for (k, &reg) in dst.iter().enumerate() {
@@ -983,7 +1017,8 @@ impl Interpreter<'_> {
     /// `exec_tcgen05_ld`. Each thread evaluates `src` against its own
     /// registers (the operand list is shared syntax, not shared values -
     /// e.g. the driving kernel's zero-fill idiom repeats one register
-    /// holding a per-thread-identical constant across every slot).
+    /// holding a per-thread-identical constant across every slot). Hazard
+    /// footprint checked once for the whole op, same reasoning as `.ld`.
     fn exec_tcgen05_st(
         &mut self,
         pc: InstrId,
@@ -994,6 +1029,15 @@ impl Interpreter<'_> {
     ) -> EvalResult<()> {
         let base = self.uniform_concrete(pc, members, taddr_base, "tcgen05.st taddr")?;
         let base_col = (base + taddr_offset) as u32;
+        let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
+        let current = AccessSite {
+            thread: members[0],
+            pc,
+            is_write: true,
+        };
+        self.race
+            .tcgen05_begin(quadrant, base_col, src.len() as u32, true, current)
+            .map_err(Self::tcgen05_hazard_error)?;
         for &m in members {
             let lane = Self::tcgen05_lane(m);
             for (k, op) in src.iter().enumerate() {
@@ -1005,6 +1049,17 @@ impl Interpreter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `tcgen05.wait::ld`/`::st`: release this warp's quadrant's pending
+    /// async-hazard footprint of the matching kind
+    /// (`RaceTracker::tcgen05_wait`). No data effect: Volta's sequential
+    /// execution already gives `.ld`/`.st` their full effect immediately,
+    /// so there is nothing to actually wait for - this call exists purely
+    /// to clear the hazard tracking those two instructions record.
+    fn exec_tcgen05_wait(&mut self, members: &[ThreadId], is_st: bool) {
+        let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
+        self.race.tcgen05_wait(quadrant, is_st);
     }
 
     /// Place one lane's packed-f16 fragment registers into a matrix grid.

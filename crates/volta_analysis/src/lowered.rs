@@ -663,6 +663,16 @@ pub enum LoweredInstr {
         src: Vec<Operand>,
     },
 
+    /// `tcgen05.wait::ld.sync.aligned` / `tcgen05.wait::st.sync.aligned`:
+    /// release every pending `.ld` (`is_st = false`) or `.st`
+    /// (`is_st = true`) async-hazard footprint this warp's quadrant holds
+    /// (`RaceTracker::tcgen05_wait`). Volta's sequential execution model
+    /// already gives every `tcgen05.ld`/`.st` its full data effect
+    /// immediately, so there is no data effect left to wait for here - this
+    /// exists purely to release the async-hazard tracking those two
+    /// instructions record.
+    Tcgen05Wait { is_st: bool },
+
     // =========================================================================
     // Special
     // =========================================================================
@@ -766,6 +776,7 @@ define_instr_kinds!(
     Tcgen05RelinquishAllocPermit,
     Tcgen05Ld,
     Tcgen05St,
+    Tcgen05Wait,
     Activemask,
     Trap,
     Nop,
@@ -946,6 +957,7 @@ impl LoweredInstr {
                 r.extend(from_ops(src));
                 r
             }
+            Self::Tcgen05Wait { .. } => vec![],
         }
     }
 
@@ -1011,6 +1023,7 @@ impl LoweredInstr {
             | Self::Tcgen05Dealloc { .. }
             | Self::Tcgen05RelinquishAllocPermit
             | Self::Tcgen05St { .. }
+            | Self::Tcgen05Wait { .. }
             | Self::Nop => vec![],
         }
     }
