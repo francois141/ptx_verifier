@@ -144,6 +144,31 @@ pub enum EvalError {
     InstructionLimit { limit: u64 },
     /// Configuration problem detected before/while setting up execution.
     Config { message: String },
+    /// `tcgen05.alloc`'s `nCols` violated the ISA's power-of-2-in-[32,512] rule.
+    Tcgen05InvalidColumnCount {
+        thread: ThreadId,
+        pc: InstrId,
+        num_cols: u32,
+    },
+    /// `tcgen05.alloc` requested more Tensor Memory columns than remain
+    /// unallocated.
+    Tcgen05OutOfSpace {
+        thread: ThreadId,
+        pc: InstrId,
+        requested: u32,
+        available: u32,
+    },
+    /// `tcgen05.alloc` after this CTA already executed
+    /// `tcgen05.relinquish_alloc_permit`.
+    Tcgen05AllocAfterRelinquish { thread: ThreadId, pc: InstrId },
+    /// `tcgen05.dealloc`'s `(taddr, nCols)` doesn't match any live
+    /// allocation.
+    Tcgen05DeallocMismatch {
+        thread: ThreadId,
+        pc: InstrId,
+        taddr: u32,
+        num_cols: u32,
+    },
 }
 
 impl fmt::Display for EvalError {
@@ -268,6 +293,40 @@ impl fmt::Display for EvalError {
                 write!(f, "instruction limit exceeded ({} instructions)", limit)
             }
             Self::Config { message } => write!(f, "configuration error: {}", message),
+            Self::Tcgen05InvalidColumnCount {
+                thread,
+                pc,
+                num_cols,
+            } => write!(
+                f,
+                "{}: tcgen05.alloc nCols={} at {} must be a power of 2 in [32, 512]",
+                thread, num_cols, pc
+            ),
+            Self::Tcgen05OutOfSpace {
+                thread,
+                pc,
+                requested,
+                available,
+            } => write!(
+                f,
+                "{}: tcgen05.alloc requested {} tensor-memory column(s) at {} but only {} remain unallocated",
+                thread, requested, pc, available
+            ),
+            Self::Tcgen05AllocAfterRelinquish { thread, pc } => write!(
+                f,
+                "{}: tcgen05.alloc at {} after this CTA relinquished its allocation permit",
+                thread, pc
+            ),
+            Self::Tcgen05DeallocMismatch {
+                thread,
+                pc,
+                taddr,
+                num_cols,
+            } => write!(
+                f,
+                "{}: tcgen05.dealloc at {} of (taddr={:#x}, nCols={}) does not match any live allocation",
+                thread, pc, taddr, num_cols
+            ),
         }
     }
 }

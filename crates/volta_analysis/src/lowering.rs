@@ -1959,6 +1959,33 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // TensorCore 5th Generation - tcgen05.alloc / .dealloc / .relinquish_alloc_permit
+        // =========================================================================
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Alloc,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_alloc(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Dealloc,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_dealloc(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05RelinquishAllocPermit,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_relinquish_alloc_permit(ctx, modifiers, operands, predicate)?;
+        }
+
+        // =========================================================================
         // Unsupported instructions
         // =========================================================================
         _ => {
@@ -4294,6 +4321,180 @@ fn lower_ldmatrix(
         },
         predicate,
     )?;
+    Ok(())
+}
+
+/// Parse and validate the `.cta_group::{1,2}` qualifier every `tcgen05.*`
+/// instruction requires (PTX ISA 9.7.17.5). `::2` (peer-CTA collective
+/// execution) isn't modeled - Volta has no notion of CTA pairs - so it's
+/// rejected loudly rather than silently treated as `::1`. Returns `None`
+/// for a modifier that isn't `.cta_group::N` at all, so callers can fall
+/// through to their own modifier handling.
+fn parse_tcgen05_cta_group(
+    modifier: &DottedIdent,
+    instruction: &'static str,
+) -> Option<LowerResult<()>> {
+    let DottedIdent::Qualified(parts) = modifier else {
+        return None;
+    };
+    let [base, sub] = parts.as_slice() else {
+        return None;
+    };
+    if base.as_slice().as_bytes() != b"cta_group" {
+        return None;
+    }
+    Some(match sub.as_slice().as_bytes() {
+        b"1" => Ok(()),
+        b"2" => Err(unsupported(
+            instruction,
+            "cta_group::2 (peer-CTA collective execution is not modeled)",
+        )),
+        _ => Err(unsupported(instruction, format!("cta_group::{sub}"))),
+    })
+}
+
+/// Lower `tcgen05.alloc.cta_group::1.sync.aligned{.shared::cta}.b32 [dst], nCols`.
+fn lower_tcgen05_alloc(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.alloc";
+    let mut saw_cta_group = false;
+
+    for modifier in modifiers {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+            result?;
+            saw_cta_group = true;
+            continue;
+        }
+        // `dst`'s state space is always shared memory whether or not this
+        // qualifier is written (PTX ISA 9.7.17.7: "If no state space is
+        // specified then Generic Addressing is used" and dst must land in
+        // `.shared::cta` regardless), so it's consumed but not stored.
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [base, sub] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"shared"
+        {
+            match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
+                Some(SharedStateSpaceQualifier::Cta) => continue,
+                _ => return Err(unsupported(NAME, format!("modifier .shared::{sub}"))),
+            }
+        }
+        match modifier.to_string().as_str() {
+            "sync" | "aligned" | "shared" | "b32" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    if !saw_cta_group {
+        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+    }
+
+    let [dst, num_cols] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected destination address and column-count operands",
+        });
+    };
+    let (dst_base, dst_offset) = match dst {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
+    let num_cols = ctx.resolve_const_u32(
+        num_cols,
+        NAME,
+        "nCols must be a compile-time integer immediate",
+    )?;
+
+    ctx.emit(
+        LoweredInstr::Tcgen05Alloc {
+            dst_base,
+            dst_offset,
+            num_cols,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `tcgen05.dealloc.cta_group::1.sync.aligned.b32 taddr, nCols`.
+fn lower_tcgen05_dealloc(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.dealloc";
+    let mut saw_cta_group = false;
+
+    for modifier in modifiers {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+            result?;
+            saw_cta_group = true;
+            continue;
+        }
+        match modifier.to_string().as_str() {
+            "sync" | "aligned" | "b32" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    if !saw_cta_group {
+        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+    }
+
+    let [taddr, num_cols] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected taddr and column-count operands",
+        });
+    };
+    let taddr = ctx.resolve_operand(taddr)?;
+    let num_cols = ctx.resolve_const_u32(
+        num_cols,
+        NAME,
+        "nCols must be a compile-time integer immediate",
+    )?;
+
+    ctx.emit(LoweredInstr::Tcgen05Dealloc { taddr, num_cols }, predicate)?;
+    Ok(())
+}
+
+/// Lower `tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned`.
+fn lower_tcgen05_relinquish_alloc_permit(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.relinquish_alloc_permit";
+    let mut saw_cta_group = false;
+
+    for modifier in modifiers {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+            result?;
+            saw_cta_group = true;
+            continue;
+        }
+        match modifier.to_string().as_str() {
+            "sync" | "aligned" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    if !saw_cta_group {
+        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+    }
+    if !operands.is_empty() {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected no operands",
+        });
+    }
+
+    ctx.emit(LoweredInstr::Tcgen05RelinquishAllocPermit, predicate)?;
     Ok(())
 }
 
