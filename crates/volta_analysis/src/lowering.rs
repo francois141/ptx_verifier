@@ -377,6 +377,17 @@ impl LoweringContext {
                     ),
                 })
             }
+            AstOperand::TensorCoordAddress { .. } => {
+                // Tensor descriptor + coordinate-vector operand - not handled inline,
+                // should be handled by the instruction (e.g. cp.async.bulk.tensor).
+                Err(LowerError::UnsupportedInstruction {
+                    instruction: "tensor descriptor + coordinate operand".to_string(),
+                    reason: Some(
+                        "Tensor coordinate operands should be handled by the instruction"
+                            .to_string(),
+                    ),
+                })
+            }
             AstOperand::PredicateOperand {
                 negated: _,
                 name: _,
