@@ -716,6 +716,141 @@ fn test_elect_sync_skips_an_already_exited_lane() {
     assert_eq!(display_output(&output, "out", 5), "0");
 }
 
+/// `tcgen05.mma` runs to completion given the real `triton_generated.ptx`
+/// kernel's *exact* `idesc`/descriptor values (dense `.kind::f16`,
+/// `M=128`, `N=256`, `F32` accumulator, `F16` operands, transpose B,
+/// 128B-swizzled descriptors), addressed against freshly-declared shared
+/// buffers via the same `cvta.shared` + `matrix-descriptor-encode`
+/// (`>>4`) + `or.b64` sequence the real kernel's compiler output uses
+/// (confirmed by re-reading `triton_generated.ptx`'s own `or.b64
+/// %rd56/%rd57` lines). Neither buffer's bytes are ever written -
+/// uninitialized shared reads are tolerated during execution (the same
+/// rule `test_uninitialized_shared_read_flows_to_output` below exercises)
+/// and nothing here reads `D` back out to an output, so this only needs
+/// the *addresses* `swizzled_element_addr` computes to land in bounds for
+/// every one of the 128*256*16 `(m, n, k)` triples - a real, if coarse,
+/// end-to-end check that the whole decode -> validate -> address -> read
+/// -> accumulate -> Tensor Memory write pipeline is wired correctly for
+/// this exact real-kernel shape, not just that it decodes.
+#[test]
+fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<5>;
+    .shared .align 1024 .b8 a_buf[16384];
+    .shared .align 1024 .b8 b_buf[32768];
+    .shared .align 4 .b32 taddr_slot;
+
+    // tcgen05.alloc is warp-collective: every lane of this one-warp CTA
+    // issues it unconditionally.
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 256;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+
+    mov.u64 %rd1, a_buf;
+    shr.u64 %rd1, %rd1, 4;
+    or.b64 %rd1, %rd1, 4611756662049472512;
+    mov.u64 %rd2, b_buf;
+    shr.u64 %rd2, %rd2, 4;
+    or.b64 %rd2, %rd2, 4611756662083026944;
+    mov.u32 %r2, 138477584;
+    mov.pred %p0, 0;
+    // tcgen05.mma is single-thread-issued: only the warp's lane 0 issues it.
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, %p0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+}
+
+/// Only `.kind::f16` is modeled; any other `.kind` is rejected at lowering
+/// with a specific reason, not the generic "not yet implemented" every
+/// unhandled `tcgen05.*` mnemonic falls back to.
+#[test]
+fn test_tcgen05_mma_only_kind_f16_is_modeled() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .pred %p0;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    mov.u32 %r1, 0;
+    mov.u64 %rd1, 0;
+    mov.u64 %rd2, 0;
+    mov.u32 %r2, 0;
+    mov.pred %p0, 0;
+    tcgen05.mma.cta_group::1.kind::tf32 [%r1+0], %rd1, %rd2, %r2, %p0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Lower(LowerError::UnsupportedInstruction {
+            instruction,
+            reason,
+        }) => {
+            assert_eq!(instruction, "tcgen05.mma");
+            assert!(
+                reason.as_deref().unwrap_or("").contains("kind::f16"),
+                "expected the reason to mention .kind::f16, got: {:?}",
+                reason
+            );
+        }
+        other => panic!("expected UnsupportedInstruction, got: {}", other),
+    }
+}
+
+/// An `idesc` requesting a bf16 operand type is rejected at eval, with a
+/// message specific to *that* gap - proving validation happens in the
+/// documented order (decode-then-validate-then-fail-at-the-real-gap) and
+/// doesn't just always report the descriptor-addressing error regardless
+/// of what's actually wrong.
+#[test]
+fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .pred %p0;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    mov.u32 %r1, 0;
+    mov.u64 %rd1, 0;
+    mov.u64 %rd2, 0;
+    // dtype=F32, atype=bf16, M=128, N=256 (bit-packed by hand; see the
+    // session notes for the derivation).
+    mov.u32 %r2, 138412176;
+    mov.pred %p0, 0;
+    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, %p0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(
+                what.contains("bf16"),
+                "expected the bf16-operand error, got: {}",
+                what
+            );
+        }
+        other => panic!("expected EvalError::Unsupported, got: {}", other),
+    }
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

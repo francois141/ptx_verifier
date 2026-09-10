@@ -18,6 +18,7 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
+use crate::eval::tcgen05_mma;
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
@@ -1459,6 +1460,33 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
+            // tcgen05.mma: PTX ISA 9.7.17.5 gives `.cta_group::1` the issue
+            // granularity "an issue from a single thread in the current
+            // CTA would initiate the base operation" - unlike the
+            // warp-cooperative ops just above (and unlike `mma.sync`/
+            // `wmma.mma.sync`), this genuinely is single-thread, so it's
+            // evaluated directly rather than through
+            // `block_at_warp_op`/`execute_warp_op`.
+            LoweredInstr::Tcgen05Mma {
+                d_tmem_base,
+                d_tmem_offset,
+                a_desc,
+                b_desc,
+                idesc,
+                enable_input_d,
+            } => {
+                self.exec_tcgen05_mma(
+                    t,
+                    pc,
+                    d_tmem_base,
+                    *d_tmem_offset,
+                    a_desc,
+                    b_desc,
+                    idesc,
+                    enable_input_d,
+                )?;
+            }
+
             // mbarrier: per-thread ops, not warp-cooperative - any single
             // thread issues these independently (unlike the tensor-core
             // family above).
@@ -1626,6 +1654,164 @@ impl<'p> Interpreter<'p> {
             });
         }
         self.threads[t].status = Status::AtWarpOp { mask };
+        Ok(())
+    }
+
+    /// `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc, idesc,
+    /// enable-input-d`: `D = A*B+D` (or `A*B` if `enable-input-d` is
+    /// false), `M x N x 16`, `A`/`B` read from shared memory via their
+    /// matrix descriptors (`eval::tcgen05_mma::swizzled_element_addr` - see
+    /// its doc comment for how the addressing formula was confirmed), `D`
+    /// written into Tensor Memory at lane `m`, column `d_tmem + n` (Layout
+    /// D for `M = 128`/`.cta_group::1`: one CTA-wide `warp-rank % 4`
+    /// grouping of 32 lanes each - confirmed against Figures 211/212,
+    /// fetched this session - matching the existing `tcgen05.ld`/`.st`
+    /// `(lane, column)` addressing this reuses). Decodes and validates
+    /// `idesc`/`a_desc`/`b_desc` first, in order, each with a specific
+    /// reason, against the one form modeled: dense `.kind::f16`, `M =
+    /// 128`, `A`/`B` both f16, `D` f32, no negate, relative
+    /// leading-dimension stride, `SwizzleMode::Swizzle128B` with
+    /// `base_offset == 0` on both descriptors.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_tcgen05_mma(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        d_tmem_base: &Operand,
+        d_tmem_offset: i64,
+        a_desc: &Operand,
+        b_desc: &Operand,
+        idesc: &Operand,
+        enable_input_d: &Operand,
+    ) -> EvalResult<()> {
+        let idesc_val = self.concrete_operand(t, pc, idesc, "tcgen05.mma idesc")? as u32;
+        let id = tcgen05_mma::decode_instruction_descriptor(idesc_val);
+
+        if id.sparse {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "tcgen05.mma.sp (sparse A matrix) is not modeled".to_string(),
+            });
+        }
+        if !id.dtype_f32 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "tcgen05.mma with a f16 (not f32) accumulator is not modeled".to_string(),
+            });
+        }
+        if id.atype_bf16 || id.btype_bf16 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "tcgen05.mma with bf16 operands is not modeled (only f16)".to_string(),
+            });
+        }
+        if id.negate_a || id.negate_b {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "tcgen05.mma's Negate A/B Matrix is not modeled".to_string(),
+            });
+        }
+        if id.m != 128 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "tcgen05.mma with M = {} is not modeled (only M = 128)",
+                    id.m
+                ),
+            });
+        }
+
+        let a_desc_val = self.concrete_operand(t, pc, a_desc, "tcgen05.mma a-desc")? as u64;
+        let b_desc_val = self.concrete_operand(t, pc, b_desc, "tcgen05.mma b-desc")? as u64;
+        let a_md = tcgen05_mma::decode_matrix_descriptor(a_desc_val).map_err(|sw| {
+            EvalError::Unsupported {
+                pc,
+                what: format!("tcgen05.mma a-desc has invalid swizzle-mode encoding {sw}"),
+            }
+        })?;
+        let b_md = tcgen05_mma::decode_matrix_descriptor(b_desc_val).map_err(|sw| {
+            EvalError::Unsupported {
+                pc,
+                what: format!("tcgen05.mma b-desc has invalid swizzle-mode encoding {sw}"),
+            }
+        })?;
+        if a_md.absolute_leading_stride || b_md.absolute_leading_stride {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "tcgen05.mma's absolute leading-dimension stride mode (sm_103a only) \
+                       is not modeled"
+                    .to_string(),
+            });
+        }
+        if a_md.swizzle_mode != tcgen05_mma::SwizzleMode::Swizzle128B
+            || b_md.swizzle_mode != tcgen05_mma::SwizzleMode::Swizzle128B
+        {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "tcgen05.mma with swizzle mode {:?}/{:?} is not modeled (only \
+                     Swizzle128B is confirmed)",
+                    a_md.swizzle_mode, b_md.swizzle_mode
+                ),
+            });
+        }
+        if a_md.base_offset != 0 || b_md.base_offset != 0 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "tcgen05.mma with a nonzero matrix-descriptor base offset is not modeled"
+                    .to_string(),
+            });
+        }
+
+        let enable_input_d =
+            self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
+        let d_col_base = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
+
+        const K: u64 = 16; // fixed for .cta_group::1, dense, .kind::f16 (PTX ISA Table 42)
+        const ELEM_BYTES: u64 = 2; // f16
+
+        for m in 0..id.m as u64 {
+            for n in 0..id.n as u64 {
+                let mut acc = if enable_input_d {
+                    self.tensor
+                        .read(m as u32, d_col_base + n as u32)
+                        .map_err(|e| self.tcgen05_error(t, pc, e))?
+                        .unwrap_or_else(|| self.arena.undefined())
+                } else {
+                    self.arena.int(0)
+                };
+                for k in 0..K {
+                    // K-major (leading = K) unless transposed (leading =
+                    // the matrix's own other axis) - PTX ISA 9.7.17.10.6.
+                    let (a_stride, a_leading) = if id.transpose_a { (k, m) } else { (m, k) };
+                    let (b_stride, b_leading) = if id.transpose_b { (k, n) } else { (n, k) };
+                    let a_addr =
+                        tcgen05_mma::swizzled_element_addr(&a_md, a_stride, a_leading, ELEM_BYTES);
+                    let b_addr =
+                        tcgen05_mma::swizzled_element_addr(&b_md, b_stride, b_leading, ELEM_BYTES);
+                    let av = self.mem_read(t, pc, MemSpace::Shared, a_addr, ELEM_BYTES)?;
+                    let bv = self.mem_read(t, pc, MemSpace::Shared, b_addr, ELEM_BYTES)?;
+                    let Value::Scalar(a_e) = av else {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "tcgen05.mma A element is not a scalar",
+                        });
+                    };
+                    let Value::Scalar(b_e) = bv else {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "tcgen05.mma B element is not a scalar",
+                        });
+                    };
+                    acc = self.arena.fma(a_e, b_e, acc);
+                }
+                self.tensor
+                    .write(m as u32, d_col_base + n as u32, acc)
+                    .map_err(|e| self.tcgen05_error(t, pc, e))?;
+            }
+        }
         Ok(())
     }
 

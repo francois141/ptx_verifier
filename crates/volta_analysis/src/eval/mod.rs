@@ -12,6 +12,7 @@ pub mod interp;
 pub mod mbarrier;
 pub mod memory;
 pub mod race;
+pub mod tcgen05_mma;
 pub mod tensor_memory;
 pub mod value;
 pub mod warp;

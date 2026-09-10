@@ -686,6 +686,29 @@ pub enum LoweredInstr {
     Tcgen05Wait { is_st: bool },
 
     // =========================================================================
+    // TensorCore 5th Generation - Matrix Multiply and Accumulate (PTX ISA 9.7.17.10)
+    // =========================================================================
+    /// `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc, idesc,
+    /// enable-input-d`: single-thread-issued (unlike `mma.sync`/`wmma`)
+    /// `D = A*B+D` (or `A*B` if `enable-input-d` is false) into Tensor
+    /// Memory at `d_tmem_base + d_tmem_offset`. `a_desc`/`b_desc` are
+    /// 64-bit shared-memory matrix descriptors (9.7.17.4.1); `idesc` is the
+    /// 32-bit instruction descriptor (9.7.17.4.2) giving M/N/element
+    /// types/transpose/negate - all decoded from their concrete values at
+    /// eval time (`eval::tcgen05_mma`), since only the register operands
+    /// are visible at lowering. Scoped to dense `.kind::f16` with `A` in
+    /// shared memory (not `[a-tmem]`); the `.sp`/`.ws`/block-scaled forms
+    /// are separate mnemonics, rejected at lowering.
+    Tcgen05Mma {
+        d_tmem_base: Operand,
+        d_tmem_offset: i64,
+        a_desc: Operand,
+        b_desc: Operand,
+        idesc: Operand,
+        enable_input_d: Operand,
+    },
+
+    // =========================================================================
     // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
     // =========================================================================
     /// `mbarrier.init{.shared{::cta}}.b64 [addr], count`: create a fresh
@@ -849,6 +872,7 @@ define_instr_kinds!(
     Tcgen05Ld,
     Tcgen05St,
     Tcgen05Wait,
+    Tcgen05Mma,
     MbarrierInit,
     MbarrierInval,
     MbarrierArrive,
@@ -1037,6 +1061,16 @@ impl LoweredInstr {
             }
             Self::Tcgen05Wait { .. } => vec![],
 
+            // Matrix multiply and accumulate
+            Self::Tcgen05Mma {
+                d_tmem_base,
+                a_desc,
+                b_desc,
+                idesc,
+                enable_input_d,
+                ..
+            } => from_ops(&[*d_tmem_base, *a_desc, *b_desc, *idesc, *enable_input_d]),
+
             // mbarrier
             Self::MbarrierInit {
                 addr_base, count, ..
@@ -1145,6 +1179,7 @@ impl LoweredInstr {
             | Self::Tcgen05RelinquishAllocPermit
             | Self::Tcgen05St { .. }
             | Self::Tcgen05Wait { .. }
+            | Self::Tcgen05Mma { .. }
             | Self::MbarrierInit { .. }
             | Self::MbarrierInval { .. }
             | Self::MbarrierCompleteTx { .. }
