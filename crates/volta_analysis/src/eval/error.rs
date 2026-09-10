@@ -130,6 +130,14 @@ pub enum EvalError {
         pc: InstrId,
         what: &'static str,
     },
+    /// An ordinary (non-`mbarrier`) write clobbered a live `mbarrier`
+    /// object's bytes without an intervening `mbarrier.inval`.
+    MbarrierOverwrite {
+        thread: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+    },
     /// An output array element is (or was computed from) an uninitialized
     /// read that was never resolved.
     UndefinedOutput { array: String, index: u64 },
@@ -297,6 +305,17 @@ impl fmt::Display for EvalError {
             Self::ValueKindMismatch { thread, pc, what } => {
                 write!(f, "{}: value kind mismatch ({}) at {}", thread, what, pc)
             }
+            Self::MbarrierOverwrite {
+                thread,
+                pc,
+                space,
+                addr,
+            } => write!(
+                f,
+                "{}: ordinary write to {:?} memory at {:#x} overwrote a live mbarrier \
+                 object at {}; mbarrier.inval must run first",
+                thread, space, addr, pc
+            ),
             Self::UndefinedOutput { array, index } => write!(
                 f,
                 "output element {}[{}] is undefined (uninitialized read)",
