@@ -903,6 +903,13 @@ impl<'p> Interpreter<'p> {
                 let v = match v {
                     Value::Scalar(e) => Value::Scalar(self.canon_operand(*ty, e)),
                     pair @ Value::Pair(_, _) => pair,
+                    Value::Mbarrier(_) => {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "mbarrier handle used as a mov operand",
+                        });
+                    }
                 };
                 self.threads[t].regs.write(*dst, v);
             }
@@ -1164,6 +1171,13 @@ impl<'p> Interpreter<'p> {
                         let a = match value {
                             Value::Pair(_, _) => self.scalar_operand(t, pc, src)?,
                             Value::Scalar(e) => e,
+                            Value::Mbarrier(_) => {
+                                return Err(EvalError::ValueKindMismatch {
+                                    thread: t,
+                                    pc,
+                                    what: "mbarrier handle used as a cvt operand",
+                                });
+                            }
                         };
                         let zero_extend = if int_to_int {
                             self.zero_extend_to_pair(
@@ -1231,6 +1245,13 @@ impl<'p> Interpreter<'p> {
                             let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
                             self.threads[t].regs.write(*hi, Value::Scalar(hi_v));
                         }
+                    }
+                    Value::Mbarrier(_) => {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "mbarrier handle used as an unpack operand",
+                        });
                     }
                 }
             }
@@ -1504,6 +1525,9 @@ impl<'p> Interpreter<'p> {
                         "symbolic 64-bit scalar combined bitwise with a packed pair".to_string(),
                     )),
                 },
+                Value::Mbarrier(_) => Err(unsupported(
+                    "mbarrier handle combined bitwise with a packed pair".to_string(),
+                )),
             }
         };
         let is_zero = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0);
@@ -1621,6 +1645,11 @@ impl<'p> Interpreter<'p> {
                     what: "packed pair used as a scalar",
                 })
             }
+            Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "mbarrier handle used as a scalar",
+            }),
         }
     }
 
@@ -1684,6 +1713,11 @@ impl<'p> Interpreter<'p> {
                     })?;
                 Ok((lo, hi))
             }
+            Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "mbarrier handle used as a packed pair",
+            }),
         }
     }
 
@@ -1878,6 +1912,12 @@ impl<'p> Interpreter<'p> {
                 addr,
                 width,
                 found,
+            },
+            MemAccessError::MbarrierOverwrite { addr } => EvalError::MbarrierOverwrite {
+                thread: t,
+                pc,
+                space,
+                addr,
             },
         }
     }
@@ -2544,6 +2584,13 @@ impl<'p> Interpreter<'p> {
                 ),
             });
         }
+        if matches!(v, Value::Mbarrier(_)) {
+            return Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "mbarrier handle stored as ordinary program data",
+            });
+        }
         if ty.is_float() || ty.is_predicate() {
             return Ok(v);
         }
@@ -2624,6 +2671,13 @@ impl<'p> Interpreter<'p> {
         dst: RegId,
         v: Value,
     ) -> EvalResult<Value> {
+        if matches!(v, Value::Mbarrier(_)) {
+            return Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "mbarrier handle loaded as ordinary program data",
+            });
+        }
         if ty.is_float() || ty.is_predicate() {
             return Ok(v);
         }

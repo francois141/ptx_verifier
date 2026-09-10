@@ -47,6 +47,12 @@ pub enum MemAccessError {
         width: u64,
         found: Option<(u64, u64, bool)>,
     },
+    /// An ordinary (non-`Mbarrier`) write exactly covered a granule holding
+    /// an `mbarrier` object, at the given granule start. Ordinary program
+    /// data must never silently clobber a live barrier - `mbarrier.inval`
+    /// must run first (whatever replaces the granule afterward is then
+    /// ordinary data, not this error).
+    MbarrierOverwrite { addr: u64 },
 }
 
 /// One memory space (global, shared, or one thread's local).
@@ -181,6 +187,11 @@ impl Memory {
                     continue; // no overlap
                 }
                 if start >= addr && cell_end <= end {
+                    if matches!(cell.value, Value::Mbarrier(_))
+                        && !matches!(value, Value::Mbarrier(_))
+                    {
+                        return Err(MemAccessError::MbarrierOverwrite { addr: start });
+                    }
                     covered.push(start);
                 } else {
                     partial = Some(start);
@@ -314,10 +325,44 @@ impl Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::value::MbarrierId;
     use crate::symbolic::ExprArena;
 
     fn scalars(arena: &mut ExprArena, n: i64) -> Value {
         Value::Scalar(arena.int(n))
+    }
+
+    #[test]
+    fn test_mbarrier_roundtrip() {
+        let mut mem = Memory::new();
+        let v = Value::Mbarrier(MbarrierId(0));
+        mem.write(0x200, 8, v).unwrap();
+        assert_eq!(mem.read(0x200, 8).unwrap(), v);
+    }
+
+    #[test]
+    fn test_ordinary_write_cannot_overwrite_a_live_mbarrier() {
+        let mut arena = ExprArena::new();
+        let mut mem = Memory::new();
+        mem.write(0x200, 8, Value::Mbarrier(MbarrierId(0))).unwrap();
+        assert_eq!(
+            mem.write(0x200, 8, scalars(&mut arena, 1)),
+            Err(MemAccessError::MbarrierOverwrite { addr: 0x200 })
+        );
+        // The mbarrier must still be intact: the rejected write didn't land.
+        assert_eq!(mem.read(0x200, 8).unwrap(), Value::Mbarrier(MbarrierId(0)));
+    }
+
+    #[test]
+    fn test_mbarrier_init_can_claim_ordinary_memory() {
+        // The reverse direction is unguarded: claiming a fresh (or
+        // previously-ordinary) region for a new mbarrier is legitimate.
+        let mut arena = ExprArena::new();
+        let mut mem = Memory::new();
+        mem.write(0x200, 8, scalars(&mut arena, 1)).unwrap();
+        let v = Value::Mbarrier(MbarrierId(1));
+        mem.write(0x200, 8, v).unwrap();
+        assert_eq!(mem.read(0x200, 8).unwrap(), v);
     }
 
     #[test]
@@ -425,7 +470,11 @@ mod tests {
         mem.write(0x10, 4, scalars(&mut arena, 5)).unwrap();
         assert!(matches!(
             mem.read(0x10, 2),
-            Err(MemAccessError::Reinterpret { addr: 0x10, width: 2, .. })
+            Err(MemAccessError::Reinterpret {
+                addr: 0x10,
+                width: 2,
+                ..
+            })
         ));
     }
 
@@ -441,7 +490,11 @@ mod tests {
         // Old halves are gone.
         assert!(matches!(
             mem.read(0x10, 2),
-            Err(MemAccessError::Reinterpret { addr: 0x10, width: 2, .. })
+            Err(MemAccessError::Reinterpret {
+                addr: 0x10,
+                width: 2,
+                ..
+            })
         ));
     }
 
@@ -454,7 +507,11 @@ mod tests {
         let v = scalars(&mut arena, 2);
         assert!(matches!(
             mem.write(0x12, 4, v),
-            Err(MemAccessError::Reinterpret { addr: 0x12, width: 4, .. })
+            Err(MemAccessError::Reinterpret {
+                addr: 0x12,
+                width: 4,
+                ..
+            })
         ));
     }
 }
