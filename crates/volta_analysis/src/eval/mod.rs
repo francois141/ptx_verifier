@@ -9,6 +9,7 @@
 pub mod config;
 pub mod error;
 pub mod interp;
+pub mod mbarrier;
 pub mod memory;
 pub mod race;
 pub mod tensor_memory;

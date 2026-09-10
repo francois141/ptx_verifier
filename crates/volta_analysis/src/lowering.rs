@@ -16,10 +16,12 @@ use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
     CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr, FmaInstr, FromAscii,
-    Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr, MemSemantics,
-    MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand, ParsedInstruction, ScalarType,
-    SetpInstr, SharedStateSpaceQualifier, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
-    StateSpace, Statement, SubInstr, VarDecl, VecWidth,
+    Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
+    MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
+    MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, MinInstr, MulInstr, MulMode,
+    NegInstr, Operand as AstOperand, ParsedInstruction, ScalarType, SetpInstr,
+    SharedStateSpaceQualifier, ShflMode as AstShflMode, ShflSyncInstr, StInstr, StateSpace,
+    Statement, SubInstr, VarDecl, VecWidth,
 };
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::{is_cache_perf_hint, parse_instruction};
@@ -718,6 +720,36 @@ impl LoweringContext {
             None => Err(unsupported(
                 instruction,
                 "generic (spaceless) memory access - the state space must be explicit",
+            )),
+        }
+    }
+
+    /// Validate an `mbarrier.*` operation's state space. PTX's grammar
+    /// allows `{.shared{::cta}}` or falls back to a generic/other-space
+    /// form, but Volta only models `.shared`/`.shared::cta` - the shape
+    /// every real kernel in the corpus uses, and the only one meaningful
+    /// for a single-CTA analysis (`::cluster` addresses another CTA's
+    /// shared memory).
+    fn convert_mbarrier_space(
+        &self,
+        space: Option<StateSpace>,
+        space_qualifier: Option<ast::StateSpaceQualifier>,
+        instruction: &str,
+    ) -> LowerResult<()> {
+        match space_qualifier {
+            None | Some(ast::StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta)) => {}
+            Some(other) => {
+                return Err(unsupported(
+                    instruction,
+                    format!("state space qualifier {other} (single-CTA analysis only)"),
+                ));
+            }
+        }
+        match self.convert_space(space, instruction)? {
+            MemSpace::Shared => Ok(()),
+            other => Err(unsupported(
+                instruction,
+                format!("state space {other:?} (mbarrier objects must be .shared)"),
             )),
         }
     }
@@ -2015,6 +2047,33 @@ fn lower_parsed_instruction(
             operands,
         } => {
             lower_tcgen05_wait(ctx, modifiers, operands, predicate, true)?;
+        }
+
+        // =========================================================================
+        // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
+        // =========================================================================
+        ParsedInstruction::MbarrierInit(init) => {
+            lower_mbarrier_init(ctx, init, predicate)?;
+        }
+
+        ParsedInstruction::MbarrierInval(inval) => {
+            lower_mbarrier_inval(ctx, inval, predicate)?;
+        }
+
+        ParsedInstruction::MbarrierArrive(arrive) => {
+            lower_mbarrier_arrive(ctx, arrive, predicate)?;
+        }
+
+        ParsedInstruction::MbarrierCompleteTx(complete_tx) => {
+            lower_mbarrier_complete_tx(ctx, complete_tx, predicate)?;
+        }
+
+        ParsedInstruction::MbarrierTestWait(wait) => {
+            lower_mbarrier_test_wait(ctx, wait, predicate)?;
+        }
+
+        ParsedInstruction::MbarrierTryWait(wait) => {
+            lower_mbarrier_try_wait(ctx, wait, predicate)?;
         }
 
         // =========================================================================
@@ -4693,6 +4752,247 @@ fn lower_tcgen05_wait(
     }
 
     ctx.emit(LoweredInstr::Tcgen05Wait { is_st }, predicate)?;
+    Ok(())
+}
+
+// =========================================================================
+// mbarrier lowering helpers
+// =========================================================================
+
+fn lower_mbarrier_addr(ctx: &LoweringContext, addr: &AstOperand) -> LowerResult<(Operand, i64)> {
+    match addr {
+        AstOperand::Address(a) => Ok((ctx.resolve_address(a)?, ctx.get_address_offset(a))),
+        other => Ok((ctx.resolve_operand(other)?, 0)),
+    }
+}
+
+/// Reject any `.sem` other than `expected` (`.release` for `arrive`,
+/// `.acquire` for `test_wait`/`try_wait`) - the default the ISA assumes when
+/// `.sem` is omitted (`None`), and the only case the χ happens-before edge
+/// `eval::interp::try_fire_mbarrier` establishes on phase completion is
+/// sound for. In particular `.relaxed`, which the ISA spells out as
+/// providing "no memory ordering semantics and visibility guarantees at
+/// all" (9.7.14.16.16/.19), would make that edge unsound if silently
+/// accepted.
+fn check_mbarrier_sem(
+    instruction: &str,
+    sem: Option<MemSemantics>,
+    expected: MemSemantics,
+) -> LowerResult<()> {
+    match sem {
+        None => Ok(()),
+        Some(s) if s == expected => Ok(()),
+        Some(other) => Err(unsupported(
+            instruction,
+            format!(
+                "memory-ordering qualifier {other:?} (the happens-before edge this analysis \
+                 establishes on phase completion requires the default {expected:?} semantics)"
+            ),
+        )),
+    }
+}
+
+/// Lower `mbarrier.init{.shared{::cta}}.b64 [addr], count`.
+fn lower_mbarrier_init(
+    ctx: &mut LoweringContext,
+    init: &MbarrierInitInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "mbarrier.init";
+    ctx.convert_mbarrier_space(init.space, init.space_qualifier, NAME)?;
+    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &init.addr)?;
+    let count = ctx.resolve_operand(&init.count)?;
+    ctx.emit(
+        LoweredInstr::MbarrierInit {
+            addr_base,
+            addr_offset,
+            count,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `mbarrier.inval{.shared{::cta}}.b64 [addr]`.
+fn lower_mbarrier_inval(
+    ctx: &mut LoweringContext,
+    inval: &MbarrierInvalInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "mbarrier.inval";
+    ctx.convert_mbarrier_space(inval.space, inval.space_qualifier, NAME)?;
+    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &inval.addr)?;
+    ctx.emit(
+        LoweredInstr::MbarrierInval {
+            addr_base,
+            addr_offset,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `mbarrier.arrive{.expect_tx}{.shared{::cta}}.b64 state, [addr]{,
+/// count}`. Per PTX ISA 9.7.14.16.16: "When both qualifiers `.arrive` and
+/// `.expect_tx` are specified, then the count argument of the arrive-on
+/// operation is assumed to be 1" - so with `.expect_tx`, the trailing
+/// operand is `txCount`, not an arrival count. `.noComplete` and
+/// `arrive_drop`'s future-phase-shrink semantics are not modeled - out of
+/// the corpus's scope (`sm100a_support_plan.md`).
+fn lower_mbarrier_arrive(
+    ctx: &mut LoweringContext,
+    arrive: &MbarrierArriveInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "mbarrier.arrive";
+    ctx.convert_mbarrier_space(arrive.space, arrive.space_qualifier, NAME)?;
+    check_mbarrier_sem(NAME, arrive.sem, MemSemantics::Release)?;
+    if arrive.no_complete {
+        return Err(unsupported(NAME, ".noComplete"));
+    }
+    let state = match &arrive.state {
+        AstOperand::Underscore => None,
+        other => Some(ctx.resolve_dst(other)?),
+    };
+    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &arrive.addr)?;
+    let (count, expect_tx) = if arrive.expect_tx {
+        let tx_count = arrive
+            .count
+            .as_ref()
+            .ok_or_else(|| LowerError::InvalidOperand {
+                instruction: NAME.to_string(),
+                operand: "<missing>".to_string(),
+                reason: "mbarrier.arrive.expect_tx requires a txCount operand",
+            })?;
+        (None, Some(ctx.resolve_operand(tx_count)?))
+    } else {
+        let count = arrive
+            .count
+            .as_ref()
+            .map(|c| ctx.resolve_operand(c))
+            .transpose()?;
+        (count, None)
+    };
+    ctx.emit(
+        LoweredInstr::MbarrierArrive {
+            state,
+            addr_base,
+            addr_offset,
+            count,
+            expect_tx,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `mbarrier.complete_tx{.sem.scope}{.space}.b64 [addr], txCount`.
+fn lower_mbarrier_complete_tx(
+    ctx: &mut LoweringContext,
+    complete_tx: &MbarrierCompleteTxInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "mbarrier.complete_tx";
+    ctx.convert_mbarrier_space(complete_tx.space, complete_tx.space_qualifier, NAME)?;
+    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &complete_tx.addr)?;
+    let tx_count = ctx.resolve_operand(&complete_tx.tx_count)?;
+    ctx.emit(
+        LoweredInstr::MbarrierCompleteTx {
+            addr_base,
+            addr_offset,
+            tx_count,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `mbarrier.test_wait.parity{...}.b64 waitComplete, [addr],
+/// phaseParity`. The non-`.parity`, opaque-state-token form is not
+/// modeled - not used anywhere in the corpus, and would need tracking each
+/// `arrive`'s returned token identity rather than a plain parity bit.
+fn lower_mbarrier_test_wait(
+    ctx: &mut LoweringContext,
+    wait: &MbarrierTestWaitInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    lower_mbarrier_wait_parity(
+        ctx,
+        "mbarrier.test_wait",
+        wait.parity,
+        wait.sem,
+        wait.space,
+        wait.space_qualifier,
+        &wait.wait_complete,
+        &wait.addr,
+        &wait.state_or_parity,
+        predicate,
+    )
+}
+
+/// Lower `mbarrier.try_wait.parity{...}.b64 waitComplete, [addr],
+/// phaseParity{, suspendHint}`. `suspendHint` is a pure hardware timing
+/// hint (PTX ISA: "may be used for the time limit instead of the
+/// system-dependent limit") with no effect on `try_wait`'s result, so it's
+/// resolved for operand-list validation and otherwise dropped.
+fn lower_mbarrier_try_wait(
+    ctx: &mut LoweringContext,
+    wait: &MbarrierTryWaitInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    if let Some(hint) = &wait.suspend_hint {
+        ctx.resolve_operand(hint)?;
+    }
+    lower_mbarrier_wait_parity(
+        ctx,
+        "mbarrier.try_wait",
+        wait.parity,
+        wait.sem,
+        wait.space,
+        wait.space_qualifier,
+        &wait.wait_complete,
+        &wait.addr,
+        &wait.state_or_parity,
+        predicate,
+    )
+}
+
+/// Shared lowering for `test_wait`/`try_wait`'s `.parity` form: Volta
+/// collapses both to one blocking `LoweredInstr::MbarrierWaitParity` (see
+/// its doc comment for why).
+#[allow(clippy::too_many_arguments)]
+fn lower_mbarrier_wait_parity(
+    ctx: &mut LoweringContext,
+    name: &str,
+    parity: bool,
+    sem: Option<MemSemantics>,
+    space: Option<StateSpace>,
+    space_qualifier: Option<ast::StateSpaceQualifier>,
+    wait_complete: &AstOperand,
+    addr: &AstOperand,
+    phase_parity: &AstOperand,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    if !parity {
+        return Err(unsupported(
+            name,
+            "non-.parity form (opaque state-token tracking not modeled)",
+        ));
+    }
+    check_mbarrier_sem(name, sem, MemSemantics::Acquire)?;
+    ctx.convert_mbarrier_space(space, space_qualifier, name)?;
+    let wait_complete = ctx.resolve_dst(wait_complete)?;
+    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, addr)?;
+    let phase_parity = ctx.resolve_operand(phase_parity)?;
+    ctx.emit(
+        LoweredInstr::MbarrierWaitParity {
+            wait_complete,
+            addr_base,
+            addr_offset,
+            phase_parity,
+        },
+        predicate,
+    )?;
     Ok(())
 }
 

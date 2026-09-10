@@ -138,6 +138,14 @@ pub enum EvalError {
         space: MemSpace,
         addr: u64,
     },
+    /// An `mbarrier` operation other than `init` targeted an address with
+    /// no live `mbarrier` object there.
+    NoLiveMbarrier {
+        thread: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+    },
     /// An output array element is (or was computed from) an uninitialized
     /// read that was never resolved.
     UndefinedOutput { array: String, index: u64 },
@@ -314,6 +322,17 @@ impl fmt::Display for EvalError {
                 f,
                 "{}: ordinary write to {:?} memory at {:#x} overwrote a live mbarrier \
                  object at {}; mbarrier.inval must run first",
+                thread, space, addr, pc
+            ),
+            Self::NoLiveMbarrier {
+                thread,
+                pc,
+                space,
+                addr,
+            } => write!(
+                f,
+                "{}: no live mbarrier object at {:?}[{:#x}] at {} (never initialized, \
+                 already invalidated, or holding ordinary data)",
                 thread, space, addr, pc
             ),
             Self::UndefinedOutput { array, index } => write!(

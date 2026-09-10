@@ -674,6 +674,65 @@ pub enum LoweredInstr {
     Tcgen05Wait { is_st: bool },
 
     // =========================================================================
+    // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
+    // =========================================================================
+    /// `mbarrier.init{.shared{::cta}}.b64 [addr], count`: create a fresh
+    /// `mbarrier` object at `addr_base + addr_offset` needing `count`
+    /// arrivals to complete its first phase.
+    MbarrierInit {
+        addr_base: Operand,
+        addr_offset: i64,
+        count: Operand,
+    },
+
+    /// `mbarrier.inval{.shared{::cta}}.b64 [addr]`: destroy the `mbarrier`
+    /// object at `addr_base + addr_offset`.
+    MbarrierInval {
+        addr_base: Operand,
+        addr_offset: i64,
+    },
+
+    /// `mbarrier.arrive{.expect_tx}{.shared{::cta}}.b64 state, [addr]{,
+    /// count}`: signal one arrival (or `count`, if given) at the
+    /// `mbarrier` object, optionally also bumping its expected
+    /// async-transaction count (`.expect_tx`). `state` is the destination
+    /// for the opaque phase token; `None` when written as `_` - the corpus
+    /// only ever consumes the `.parity` wait form, never this token.
+    MbarrierArrive {
+        state: Option<RegId>,
+        addr_base: Operand,
+        addr_offset: i64,
+        count: Option<Operand>,
+        expect_tx: Option<Operand>,
+    },
+
+    /// `mbarrier.complete_tx{.sem.scope}{.space}.b64 [addr], txCount`:
+    /// signal that `txCount` bytes of a previously-`expect_tx`'d async
+    /// transaction have completed.
+    MbarrierCompleteTx {
+        addr_base: Operand,
+        addr_offset: i64,
+        tx_count: Operand,
+    },
+
+    /// `mbarrier.test_wait.parity`/`mbarrier.try_wait.parity{...}.b64
+    /// waitComplete, [addr], phaseParity`: block until the phase
+    /// identified by `phase_parity` has completed, then write
+    /// `waitComplete = true`. `test_wait` and `try_wait` collapse to this
+    /// one blocking form - the ISA's distinction (an instantaneous poll vs.
+    /// a hardware-bounded spin) doesn't matter to a scheduler that already
+    /// picks one valid interleaving, and the source's own `@!p bra retry`
+    /// loop would otherwise spin Volta's round-robin scheduler forever
+    /// without ever giving the producer thread a turn (it only yields at
+    /// explicit blocking points, not at ordinary branches).
+    MbarrierWaitParity {
+        wait_complete: RegId,
+        addr_base: Operand,
+        addr_offset: i64,
+        phase_parity: Operand,
+    },
+
+    // =========================================================================
     // Special
     // =========================================================================
     /// Query active lanes in the warp: dst = mask of active threads
@@ -777,6 +836,11 @@ define_instr_kinds!(
     Tcgen05Ld,
     Tcgen05St,
     Tcgen05Wait,
+    MbarrierInit,
+    MbarrierInval,
+    MbarrierArrive,
+    MbarrierCompleteTx,
+    MbarrierWaitParity,
     Activemask,
     Trap,
     Nop,
@@ -958,6 +1022,37 @@ impl LoweredInstr {
                 r
             }
             Self::Tcgen05Wait { .. } => vec![],
+
+            // mbarrier
+            Self::MbarrierInit {
+                addr_base, count, ..
+            } => from_ops(&[*addr_base, *count]),
+            Self::MbarrierInval { addr_base, .. } => from_op(addr_base).into_iter().collect(),
+            Self::MbarrierArrive {
+                addr_base,
+                count,
+                expect_tx,
+                ..
+            } => {
+                let mut r: Vec<RegId> = from_op(addr_base).into_iter().collect();
+                if let Some(c) = count {
+                    r.extend(from_op(c));
+                }
+                if let Some(tx) = expect_tx {
+                    r.extend(from_op(tx));
+                }
+                r
+            }
+            Self::MbarrierCompleteTx {
+                addr_base,
+                tx_count,
+                ..
+            } => from_ops(&[*addr_base, *tx_count]),
+            Self::MbarrierWaitParity {
+                addr_base,
+                phase_parity,
+                ..
+            } => from_ops(&[*addr_base, *phase_parity]),
         }
     }
 
@@ -1005,6 +1100,11 @@ impl LoweredInstr {
             // Unpack: two destinations
             Self::UnpackHalves { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
 
+            // mbarrier: optional destination (arrive's discardable phase
+            // token) or a required one (wait's boolean result)
+            Self::MbarrierArrive { state, .. } => state.iter().copied().collect(),
+            Self::MbarrierWaitParity { wait_complete, .. } => vec![*wait_complete],
+
             // No destination
             Self::Store { .. }
             | Self::StoreVec { .. }
@@ -1024,6 +1124,9 @@ impl LoweredInstr {
             | Self::Tcgen05RelinquishAllocPermit
             | Self::Tcgen05St { .. }
             | Self::Tcgen05Wait { .. }
+            | Self::MbarrierInit { .. }
+            | Self::MbarrierInval { .. }
+            | Self::MbarrierCompleteTx { .. }
             | Self::Nop => vec![],
         }
     }

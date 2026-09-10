@@ -366,6 +366,252 @@ fn test_exited_thread_releases_barrier() {
     analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap();
 }
 
+/// `mbarrier.init` with `count = 2` needs both threads' own `arrive`
+/// before `try_wait.parity` can proceed; each thread then writes its own
+/// output index. Confirms the scheduler-level blocking/waking mechanism
+/// (`Status::AtMbarrier`/`try_fire_mbarrier`) actually unblocks a thread
+/// when a *different* thread's `arrive` satisfies the phase - not just
+/// the `MbarrierTable` unit tests' pure arrive/wait bookkeeping.
+#[test]
+fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<4>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.s32 %p0, %r1, 0;
+    mov.u32 %r2, mbar;
+
+    @%p0 mbarrier.init.shared::cta.b64 [%r2], 2;
+    bar.sync 0;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    mov.f32 %f1, 0f3F800000;
+    st.global.f32 [%rd3], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "1");
+    assert_eq!(display_output(&output, "out", 1), "1");
+}
+
+/// Same shape, but only thread 0 ever arrives: `count = 2` is never
+/// satisfied, so thread 0's `try_wait.parity` blocks forever - a genuine
+/// deadlock, not a hang, since no other thread can ever make progress
+/// either (this is the whole CTA).
+#[test]
+fn test_mbarrier_wait_never_satisfied_deadlocks() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<3>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.s32 %p0, %r1, 0;
+    mov.u32 %r2, mbar;
+
+    @%p0 mbarrier.init.shared::cta.b64 [%r2], 2;
+    bar.sync 0;
+    @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
+        "expected deadlock, got: {}",
+        err
+    );
+}
+
+/// `mbarrier.arrive.expect_tx` + `mbarrier.complete_tx` through the real
+/// lowering/eval pipeline (single-threaded): the wait must not be
+/// satisfied by the arrival alone while a transaction is still
+/// outstanding, only once `complete_tx` clears it.
+#[test]
+fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p0;
+    .reg .f32 %f0;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<3>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r1, mbar;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    mbarrier.complete_tx.shared::cta.b64 [%r1], 16;
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r1], 0;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.f32 %f0, 0f3F800000;
+    st.global.f32 [%rd1], %f0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "1");
+}
+
+/// `mbarrier.arrive`/`try_wait.parity` establishes a χ happens-before edge
+/// (PTX ISA 9.7.14.16.19, ordering items 1-3): thread 0 writes shared data
+/// then arrives; thread 1 waits for that phase then reads the same byte.
+/// Without the edge this would be reported as a false-positive data race
+/// (nothing else synchronizes the two threads) - `test_no_wait_still_races`
+/// right below confirms the same kernel *does* race once the wait is
+/// removed, so this isn't just a vacuously race-free kernel.
+#[test]
+fn test_mbarrier_arrive_wait_establishes_happens_before() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<7>;
+    .reg .b64 %rd<4>;
+    .shared .align 8 .b64 mbar;
+    .shared .align 4 .b32 data;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.s32 %p0, %r1, 0;
+    mov.u32 %r2, mbar;
+    mov.u32 %r4, data;
+
+    @%p0 mbarrier.init.shared::cta.b64 [%r2], 1;
+    @%p0 mov.u32 %r5, 42;
+    @%p0 st.shared.u32 [%r4], %r5;
+    @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
+
+    @!%p0 mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+    @!%p0 ld.shared.u32 %r6, [%r4];
+    @!%p0 cvt.rn.f32.u32 %f1, %r6;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    @!%p0 st.global.f32 [%rd3], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    assert_eq!(display_output(&output, "out", 1), "42");
+}
+
+/// Same shared write/read pair as
+/// `test_mbarrier_arrive_wait_establishes_happens_before`, but thread 1
+/// reads `data` without waiting on the mbarrier at all: nothing
+/// synchronizes the two threads, so this must still be a reported race,
+/// confirming the sibling test's success is the mbarrier edge doing real
+/// work and not an artifact of the kernel shape.
+#[test]
+fn test_same_write_read_without_the_wait_still_races() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<7>;
+    .shared .align 4 .b32 data;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.s32 %p0, %r1, 0;
+    mov.u32 %r4, data;
+
+    @%p0 mov.u32 %r5, 42;
+    @%p0 st.shared.u32 [%r4], %r5;
+
+    @!%p0 ld.shared.u32 %r6, [%r4];
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
+        "expected a data race, got: {}",
+        err
+    );
+}
+
+/// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at
+/// lowering: the ISA spells out that it "does not provide any memory
+/// ordering semantics and visibility guarantees" (9.7.14.16.16/.19), so
+/// silently accepting it would make the happens-before edge established in
+/// `test_mbarrier_arrive_wait_establishes_happens_before` unsound. Only the
+/// default (release for `arrive`, acquire for the waits) is modeled.
+#[test]
+fn test_mbarrier_relaxed_semantics_rejected() {
+    for (form, expect) in [
+        (
+            "mbarrier.arrive.relaxed.cta.shared::cta.b64 _, [%r2];",
+            "mbarrier.arrive",
+        ),
+        (
+            "mbarrier.try_wait.parity.relaxed.cta.shared::cta.b64 %p1, [%r2], 0;",
+            "mbarrier.try_wait",
+        ),
+    ] {
+        let src = wrap(&format!(
+            ".visible .entry k()
+{{
+    .reg .pred %p<2>;
+    .reg .b32 %r<3>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r2, mbar;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    {form}
+    ret;
+}}
+"
+        ));
+        let module = parse(&src);
+        let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+        match &err {
+            AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
+                assert_eq!(instruction, expect, "wrong instruction name for {}", form);
+            }
+            other => panic!(
+                "expected UnsupportedInstruction for {}, got: {}",
+                form, other
+            ),
+        }
+    }
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]
@@ -3492,8 +3738,12 @@ fn f32x2_outcome(candidate_body: &str) -> EquivOutcome {
         in_out_config(2, 4),
     )
     .unwrap();
-    let candidate = analyze_kernel(&parse(&f32x2_kernel(candidate_body)), None, in_out_config(2, 4))
-        .unwrap();
+    let candidate = analyze_kernel(
+        &parse(&f32x2_kernel(candidate_body)),
+        None,
+        in_out_config(2, 4),
+    )
+    .unwrap();
     check_equiv(&reference, &candidate)
 }
 

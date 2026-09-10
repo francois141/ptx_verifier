@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use crate::eval::value::Value;
+use crate::eval::value::{MbarrierId, Value};
 use crate::symbolic::ExprId;
 
 /// Widest granule we ever store (8 bytes); bounds the overlap scans.
@@ -53,6 +53,10 @@ pub enum MemAccessError {
     /// must run first (whatever replaces the granule afterward is then
     /// ordinary data, not this error).
     MbarrierOverwrite { addr: u64 },
+    /// An `mbarrier` operation other than `init` targeted an address with
+    /// no live `mbarrier` object (never initialized, already invalidated,
+    /// or holding ordinary data) - PTX ISA 9.7.14.16: undefined behavior.
+    NoLiveMbarrier { addr: u64 },
 }
 
 /// One memory space (global, shared, or one thread's local).
@@ -152,6 +156,31 @@ impl Memory {
     /// lazily-created input symbols).
     pub fn has_cell_at(&self, addr: u64) -> bool {
         self.cells.contains_key(&addr)
+    }
+
+    /// Read the `mbarrier` handle at `addr`, erroring if there isn't a
+    /// live one there (PTX ISA 9.7.14.16: every `mbarrier` op but `init`
+    /// on an uninitialized object is undefined behavior).
+    pub fn read_mbarrier(&self, addr: u64) -> Result<MbarrierId, MemAccessError> {
+        match self.cells.get(&addr) {
+            Some(Cell {
+                width: 8,
+                value: Value::Mbarrier(id),
+                ..
+            }) => Ok(*id),
+            _ => Err(MemAccessError::NoLiveMbarrier { addr }),
+        }
+    }
+
+    /// `mbarrier.inval`: the sanctioned way to retire a live `mbarrier`
+    /// object, removing the granule outright (not replacing it with
+    /// another value) so its bytes can later be repurposed - by an
+    /// ordinary write or a fresh `mbarrier.init` - without `put`'s
+    /// overwrite guard refusing it.
+    pub fn invalidate_mbarrier(&mut self, addr: u64) -> Result<(), MemAccessError> {
+        self.read_mbarrier(addr)?;
+        self.cells.remove(&addr);
+        Ok(())
     }
 
     /// The dirty granules (program-written), as `(addr, width, value)`.
