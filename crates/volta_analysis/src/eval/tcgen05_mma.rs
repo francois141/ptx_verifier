@@ -7,32 +7,29 @@
 //! Scoped to exactly the form `sm100a_support_plan.md` documents as the
 //! "conservative first pass": dense (non-sparse) `.kind::f16`,
 //! `.cta_group::1`, `A` addressed via a shared-memory descriptor (not
-//! `[a-tmem]`), `M = 128`, swizzle mode `Swizzle128B` with `base_offset ==
-//! 0`. Anything else decodes fine (the bit layout doesn't care) but is
-//! rejected with `unsupported()` by the caller.
+//! `[a-tmem]`), `M = 128`. Anything else decodes fine (the bit layout
+//! doesn't care) but is rejected with `unsupported()` by the caller.
 //!
 //! [`swizzled_element_addr`] turns a decoded [`MatrixDescriptor`] into an
-//! actual shared-memory byte address. PTX ISA 9.7.17.10.5/9.7.17.10.6
-//! define that mapping primarily through reference diagrams (Figures
-//! 205-229) not available as text to this implementation - the bit-field
-//! layout and the swizzle byte-permutation table (5.5.7) are specified in
-//! prose, but the diagrams were fetched and visually inspected during this
-//! session (see the session notes) to confirm the formula below, since
-//! guessing it would risk silently wrong tensor-core math in a tool whose
-//! entire purpose is verifying kernel correctness. Confirmed this way,
-//! against two independent points read directly off Figure 228 (K-major
-//! 128B swizzle example, tf32): logical `(row=1, col=4)` (element index
-//! 36) physically lands at cell 0 within its row, and logical `(row=3,
-//! col=24)` (element index 120) at cell 5 - both reproduced exactly by
-//! `swizzled_element_addr`'s `atom_row XOR atom_cell` step. Only
-//! `SwizzleMode::Swizzle128B` (mode 2 - what both the real kernel's `A`
-//! and `B` descriptors use) is implemented this way; every other mode
-//! (including "no swizzle") has a different, unconfirmed atom geometry and
-//! is rejected rather than guessed at, along with a nonzero `base_offset`
-//! (a start-address-misalignment correction, always 0 in the real
-//! descriptors, so never independently confirmed).
-//! `eval::interp::exec_tcgen05_mma` validates everything before calling
-//! [`swizzled_element_addr`], and never calls it for a rejected mode.
+//! actual shared-memory byte address, for all five swizzle modes
+//! (`base_offset == 0` only - a start-address-misalignment correction
+//! never independently confirmed for any mode, so still rejected
+//! universally). PTX ISA 9.7.17.10.5/9.7.17.10.6 define that mapping
+//! primarily through reference diagrams (Figures 205-229) not reproducible
+//! as text - the bit-field layout and the swizzle byte-permutation table
+//! (5.5.7) are specified in prose, but the diagrams themselves are plain
+//! PNGs hosted at `docs.nvidia.com`, fetched with `curl` and visually
+//! inspected during this session (see the session notes) rather than
+//! guessed at - guessing here would risk silently wrong tensor-core math
+//! in a tool whose entire purpose is verifying kernel correctness.
+//! Confirmed this way, against every data point in Figures 222-229 (the
+//! K-major and MN-major worked examples for `Swizzle32B`/`Swizzle64B`/
+//! `Swizzle128B`/`None`) plus Figure 228 specifically (two points checked
+//! independently before trusting the rest): `swizzled_element_addr`'s
+//! `atom_row XOR atom_cell` step (via [`atom_shape`]'s per-mode `(R, W)`)
+//! reproduces every one of them exactly. `Swizzle128BWith32BAtomicity`
+//! rests on comparatively thinner evidence - see [`atom_shape`]'s doc
+//! comment.
 
 /// Decoded `idesc` fields for `.kind::f16` (PTX ISA 9.7.17.4.2, Table 45).
 /// Every other `.kind` has a different bit layout and is rejected before
@@ -146,38 +143,59 @@ pub fn decode_matrix_descriptor(desc: u64) -> Result<MatrixDescriptor, u8> {
 /// element (numbered cell) is 16 byte").
 const CELL_BYTES: u64 = 16;
 
-/// Rows per swizzle "atom" for `Swizzle128B` (128B, 16B atomicity): 8 rows
-/// x 8 cells = 1024 bytes, matching the "starting address of the repeating
-/// pattern: 1024-byte boundary" note in Table 43 and confirmed visually
-/// against Figure 228 (see the module doc comment).
-const ATOM_ROWS: u64 = 8;
-
-/// One atom row's byte width: `ATOM_ROWS` is also the cell count per row
-/// for `Swizzle128B` specifically (Table 58's "128B Swizzling with 16B
-/// atomicity" row lists a symmetric 8x8 atom for both K-major and MN-major
-/// leading dimensions), so this is `ATOM_ROWS * CELL_BYTES` = 128 bytes -
-/// not a coincidence of naming, just the one mode this implements having a
-/// square atom.
-const ATOM_ROW_BYTES: u64 = ATOM_ROWS * CELL_BYTES;
+/// `(R, W)` for a swizzled mode: `R` = stride-dimension depth of one atom
+/// (rows sharing one repeating pattern before `stride_dim_byte_offset`
+/// starts a new one), `W` = leading-dimension width of one atom, in
+/// cells. `R * W * CELL_BYTES` is the atom's total byte size, matching
+/// Table 43/44's "starting address of the repeating pattern" boundaries
+/// (1024/512/256 bytes for 128B/64B/32B). Confirmed against
+/// `docs.nvidia.com`'s Figures 219/222-229 (K-major and MN-major worked
+/// examples for every mode below `SwizzleMode::None`, fetched and visually
+/// inspected - see the module doc comment): each pair reproduces every
+/// data point in its diagram(s) exactly via [`swizzled_element_addr`]'s
+/// `key = atom_row * W / R` step.
+///
+/// `Swizzle128BWith32BAtomicity`'s `(4, 8)` rests on one diagram only
+/// (Figure 219, MN-major) - the ISA provides no K-major counterpart to
+/// cross-check the way every other mode has, so this one entry carries
+/// less confirmation than the rest, though the 32 data points in that one
+/// diagram are all reproduced exactly.
+fn atom_shape(mode: SwizzleMode) -> (u64, u64) {
+    match mode {
+        SwizzleMode::Swizzle32B => (8, 2),
+        SwizzleMode::Swizzle64B => (8, 4),
+        SwizzleMode::Swizzle128B => (8, 8),
+        SwizzleMode::Swizzle128BWith32BAtomicity => (4, 8),
+        SwizzleMode::None => unreachable!("None has no atom - handled separately"),
+    }
+}
 
 /// Compute the shared-memory byte address of one matrix element addressed
 /// via `desc`, given its position in *swizzle-space coordinates*:
 /// `stride_idx` = index along the stride dimension (element granularity -
 /// `M` for a K-major matrix, `K` for an MN-major/transposed one, per
 /// 9.7.17.10.6's transpose-bit rule), `leading_idx` = index along the
-/// leading dimension. See the module doc comment for how this formula was
-/// confirmed and its scope (`SwizzleMode::Swizzle128B`, `base_offset ==
-/// 0` only - the caller must reject anything else before calling this).
+/// leading dimension. See the module doc comment and [`atom_shape`] for
+/// how this formula was confirmed; scoped to `base_offset == 0` (the
+/// caller must reject a nonzero one before calling this - its correction
+/// was never independently confirmed for any mode).
 ///
-/// Atoms tile along the stride dimension using `stride_dim_byte_offset`
-/// per atom and along the leading dimension using
+/// `SwizzleMode::None` has no atom or permutation at all (confirmed by
+/// Figures 226/227, both trivial identity mappings) - a plain linear
+/// layout, `stride_dim_byte_offset` used directly as the per-row pitch
+/// and `leading_dim_byte_offset` never needed (nothing before this ever
+/// crosses a "leading atom" boundary, since there isn't one).
+///
+/// For every other mode, atoms tile along the stride dimension using
+/// `stride_dim_byte_offset` per atom and along the leading dimension using
 /// `leading_dim_byte_offset` per atom, applied mechanically: this doesn't
 /// need to know *why* a kernel's specific buffer layout produces the
 /// byte-offset values its descriptor carries (e.g. pipeline staging), only
 /// that the descriptor is authoritative and the offsets compose linearly
 /// per atom index - confirmed self-consistent with the real kernel's `A`
 /// descriptor, whose `stride_dim_byte_offset` (1024) exactly equals one
-/// full atom's size, consistent with zero-padding atom stacking along `M`.
+/// full `Swizzle128B` atom's size, consistent with zero-padding atom
+/// stacking along `M`.
 pub fn swizzled_element_addr(
     desc: &MatrixDescriptor,
     stride_idx: u64,
@@ -188,17 +206,30 @@ pub fn swizzled_element_addr(
     let cell = leading_idx / cell_elems;
     let elem_in_cell = leading_idx % cell_elems;
 
-    let atom_row = stride_idx % ATOM_ROWS;
-    let stride_atom = stride_idx / ATOM_ROWS;
-    let atom_cell = cell % ATOM_ROWS;
-    let leading_atom = cell / ATOM_ROWS;
+    if desc.swizzle_mode == SwizzleMode::None {
+        return desc.start_addr
+            + stride_idx * desc.stride_dim_byte_offset
+            + cell * CELL_BYTES
+            + elem_in_cell * elem_bytes;
+    }
 
-    let swizzled_cell = atom_row ^ atom_cell;
+    let (r, w) = atom_shape(desc.swizzle_mode);
+    let row_bytes = w * CELL_BYTES;
+
+    let atom_row = stride_idx % r;
+    let stride_atom = stride_idx / r;
+    let atom_cell = cell % w;
+    let leading_atom = cell / w;
+
+    // Exact (no remainder) for every modeled `(r, w)` pair: `w` is always
+    // a multiple of `r`, or vice versa.
+    let key = (atom_row * w) / r;
+    let swizzled_cell = atom_cell ^ key;
 
     desc.start_addr
         + stride_atom * desc.stride_dim_byte_offset
         + leading_atom * desc.leading_dim_byte_offset
-        + atom_row * ATOM_ROW_BYTES
+        + atom_row * row_bytes
         + swizzled_cell * CELL_BYTES
         + elem_in_cell * elem_bytes
 }
@@ -296,16 +327,16 @@ mod tests {
     fn test_swizzle_matches_figure_228_k_major() {
         let desc = atomless_desc();
         // byte offset of (row=1, col=4) should land in cell 0 of row 1:
-        // row 1's row-base is 1 * ATOM_ROW_BYTES (128); cell 0 adds 0.
+        // row 1's row-base is 1 * 128 (128); cell 0 adds 0.
         assert_eq!(
             swizzled_element_addr(&desc, 1, 4, 4),
-            1 * ATOM_ROW_BYTES + 0 * CELL_BYTES
+            1 * 128 + 0 * CELL_BYTES
         );
         // (row=3, col=24): logical cell 6, row 3's base is 3 * 128; lands
         // in physical cell 5.
         assert_eq!(
             swizzled_element_addr(&desc, 3, 24, 4),
-            3 * ATOM_ROW_BYTES + 5 * CELL_BYTES
+            3 * 128 + 5 * CELL_BYTES
         );
     }
 
@@ -318,7 +349,7 @@ mod tests {
         let desc = atomless_desc();
         for row in 0..8u64 {
             let addr = swizzled_element_addr(&desc, row, row * 8, 2); // row*8 elems = logical cell `row`
-            assert_eq!(addr, row * ATOM_ROW_BYTES);
+            assert_eq!(addr, row * 128);
         }
     }
 
@@ -343,5 +374,151 @@ mod tests {
         let n0 = swizzled_element_addr(&desc, 0, 0, 2);
         let n64 = swizzled_element_addr(&desc, 0, 64, 2);
         assert_eq!(n64, n0 + desc.leading_dim_byte_offset);
+    }
+
+    fn desc_with_mode(mode: SwizzleMode) -> MatrixDescriptor {
+        MatrixDescriptor {
+            start_addr: 0,
+            leading_dim_byte_offset: 0,
+            stride_dim_byte_offset: 0,
+            base_offset: 0,
+            absolute_leading_stride: false,
+            swizzle_mode: mode,
+        }
+    }
+
+    /// One 16-byte-cell element (`elem_bytes = CELL_BYTES`), so `cell ==
+    /// leading_idx` and the returned address, divided by `CELL_BYTES`,
+    /// directly gives `atom_row * row_width_in_cells + swizzled_cell` -
+    /// exactly the "value" numbering the diagrams themselves use. Keeps
+    /// the test assertions a direct transcription of the diagram's numbers
+    /// rather than needing byte-level arithmetic.
+    fn swizzled_cell_index(desc: &MatrixDescriptor, stride_idx: u64, leading_cell: u64) -> u64 {
+        swizzled_element_addr(desc, stride_idx, leading_cell, CELL_BYTES) / CELL_BYTES
+    }
+
+    /// Figure 226/227 (no swizzle): identity in both orientations - the
+    /// two simplest, least-ambiguous diagrams available. `None` mode uses
+    /// `stride_dim_byte_offset` directly as the per-row pitch (no atom
+    /// batching - see `swizzled_element_addr`'s doc comment), so it must
+    /// be set for this check to mean anything.
+    #[test]
+    fn test_no_swizzle_is_identity() {
+        let mut desc = desc_with_mode(SwizzleMode::None);
+        desc.stride_dim_byte_offset = 8 * CELL_BYTES;
+        for stride_idx in 0..8 {
+            for leading_cell in 0..8 {
+                assert_eq!(
+                    swizzled_cell_index(&desc, stride_idx, leading_cell),
+                    stride_idx * 8 + leading_cell
+                );
+            }
+        }
+    }
+
+    /// Figure 224 (32B swizzle, MN-major: leading = row, `W = 2`): every
+    /// value from the fetched diagram (2 rows x 8 cols), transcribed
+    /// directly - `value = col*2 + swizzled_row`.
+    #[test]
+    fn test_swizzle_32b_matches_figure_224_mn_major() {
+        let desc = desc_with_mode(SwizzleMode::Swizzle32B);
+        let expected: [[u64; 8]; 2] = [[0, 2, 4, 6, 9, 11, 13, 15], [1, 3, 5, 7, 8, 10, 12, 14]];
+        for (row, vals) in expected.iter().enumerate() {
+            for (k, &want) in vals.iter().enumerate() {
+                // leading = row (M/N), stride = k (K), matching the
+                // diagram's MN-major orientation.
+                let got = swizzled_cell_index(&desc, k as u64, row as u64);
+                assert_eq!(got, want, "row={row} k={k}");
+            }
+        }
+    }
+
+    /// Figure 225 (32B swizzle, K-major: leading = col, `W = 2`).
+    #[test]
+    fn test_swizzle_32b_matches_figure_225_k_major() {
+        let desc = desc_with_mode(SwizzleMode::Swizzle32B);
+        let expected: [[u64; 2]; 8] = [
+            [0, 1],
+            [2, 3],
+            [4, 5],
+            [6, 7],
+            [9, 8],
+            [11, 10],
+            [13, 12],
+            [15, 14],
+        ];
+        for (row, vals) in expected.iter().enumerate() {
+            for (k, &want) in vals.iter().enumerate() {
+                // leading = k (K), stride = row (M/N), matching the
+                // diagram's K-major orientation.
+                let got = swizzled_cell_index(&desc, row as u64, k as u64);
+                assert_eq!(got, want, "row={row} k={k}");
+            }
+        }
+    }
+
+    /// Figure 223 (64B swizzle, K-major: leading = col, `W = 4`).
+    #[test]
+    fn test_swizzle_64b_matches_figure_223_k_major() {
+        let desc = desc_with_mode(SwizzleMode::Swizzle64B);
+        let expected: [[u64; 4]; 8] = [
+            [0, 1, 2, 3],
+            [4, 5, 6, 7],
+            [9, 8, 11, 10],
+            [13, 12, 15, 14],
+            [18, 19, 16, 17],
+            [22, 23, 20, 21],
+            [27, 26, 25, 24],
+            [31, 30, 29, 28],
+        ];
+        for (row, vals) in expected.iter().enumerate() {
+            for (k, &want) in vals.iter().enumerate() {
+                let got = swizzled_cell_index(&desc, row as u64, k as u64);
+                assert_eq!(got, want, "row={row} k={k}");
+            }
+        }
+    }
+
+    /// Figure 222 (64B swizzle, MN-major: leading = row, `W = 4`).
+    #[test]
+    fn test_swizzle_64b_matches_figure_222_mn_major() {
+        let desc = desc_with_mode(SwizzleMode::Swizzle64B);
+        let expected: [[u64; 8]; 4] = [
+            [0, 4, 9, 13, 18, 22, 27, 31],
+            [1, 5, 8, 12, 19, 23, 26, 30],
+            [2, 6, 11, 15, 16, 20, 25, 29],
+            [3, 7, 10, 14, 17, 21, 24, 28],
+        ];
+        for (row, vals) in expected.iter().enumerate() {
+            for (k, &want) in vals.iter().enumerate() {
+                let got = swizzled_cell_index(&desc, k as u64, row as u64);
+                assert_eq!(got, want, "row={row} k={k}");
+            }
+        }
+    }
+
+    /// Figure 219 (128B swizzle with 32B atomicity, MN-major only - the
+    /// ISA provides no K-major counterpart for this specific mode; see
+    /// `atom_shape`'s doc comment for why this one carries less
+    /// cross-checking than the others).
+    #[test]
+    fn test_swizzle_128b_32b_atomicity_matches_figure_219_mn_major() {
+        let desc = desc_with_mode(SwizzleMode::Swizzle128BWith32BAtomicity);
+        let expected: [[u64; 4]; 8] = [
+            [0, 10, 20, 30],
+            [1, 11, 21, 31],
+            [2, 8, 22, 28],
+            [3, 9, 23, 29],
+            [4, 14, 16, 26],
+            [5, 15, 17, 27],
+            [6, 12, 18, 24],
+            [7, 13, 19, 25],
+        ];
+        for (row, vals) in expected.iter().enumerate() {
+            for (k, &want) in vals.iter().enumerate() {
+                let got = swizzled_cell_index(&desc, k as u64, row as u64);
+                assert_eq!(got, want, "row={row} k={k}");
+            }
+        }
     }
 }
