@@ -150,6 +150,9 @@ impl Interpreter<'_> {
 
         match &instr {
             LoweredInstr::BarWarpSync { .. } => {}
+            LoweredInstr::ElectSync { dst, dst_pred, .. } => {
+                self.exec_elect_sync(members, *dst, *dst_pred);
+            }
             LoweredInstr::ShflSync {
                 mode,
                 dst,
@@ -238,9 +241,13 @@ impl Interpreter<'_> {
         members: &[ThreadId],
     ) -> EvalResult<()> {
         match instr {
-            // Both handle exited lanes per-op (Undefined shfl source data,
-            // arrived-at-sync semantics), so a partial warp is fine.
-            LoweredInstr::BarWarpSync { .. } | LoweredInstr::ShflSync { .. } => Ok(()),
+            // All three handle exited lanes per-op (Undefined shfl source
+            // data / elect dst, arrived-at-sync semantics), so a partial
+            // warp is fine - the ISA doesn't state an exited-lane UB clause
+            // for `elect.sync` either, unlike the tensor-core family below.
+            LoweredInstr::BarWarpSync { .. }
+            | LoweredInstr::ShflSync { .. }
+            | LoweredInstr::ElectSync { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // Covers the exited address-supplying lane in particular:
                 // lane `i*8 + r` holds row r's address in a register, and
@@ -424,6 +431,34 @@ impl Interpreter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `elect.sync d|p, membermask`: elect the lowest-numbered *live* lane
+    /// in the mask as leader - matching the ISA's "deterministically, the
+    /// same leader is elected for the same membermask every time" and the
+    /// real hardware/compiler convention. `members` is already in ascending
+    /// lane order (`find_ready_warp_group` scans `0..WARP_SIZE`), so
+    /// `members[0]` is the leader; nonempty per `execute_warp_op`'s own
+    /// invariant. Only the leader's `dst` is ISA-defined (its lane id);
+    /// every other live lane gets `Undefined` there, matching the "value
+    /// not meaningfully defined" idiom used elsewhere (e.g. shfl's
+    /// exited-source case) rather than inventing one.
+    fn exec_elect_sync(&mut self, members: &[ThreadId], dst: Option<RegId>, dst_pred: RegId) {
+        let leader = members[0];
+        for &m in members {
+            let is_leader = m == leader;
+            let p = self.arena.bool_val(is_leader);
+            self.threads[m].regs.write(dst_pred, Value::Scalar(p));
+            if let Some(reg) = dst {
+                let lane = m.0 % WARP_SIZE;
+                let v = if is_leader {
+                    self.arena.int(lane as i64)
+                } else {
+                    self.arena.undefined()
+                };
+                self.threads[m].regs.write(reg, Value::Scalar(v));
+            }
+        }
     }
 
     /// `ldmatrix.sync.aligned.xN.m8n8{.trans}.shared.b16`: cooperative load

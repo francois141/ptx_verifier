@@ -547,6 +547,18 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
+    /// Elect one active lane as leader: `elect.sync d|p, membermask`. The
+    /// deterministic-lowest-live-lane leader gets `dst = its lane id` (when
+    /// `dst` isn't sink) and `dst_pred = true`; every other live lane in
+    /// the mask gets `dst_pred = false` and, if `dst` isn't sink, an
+    /// `Undefined` `dst` - the ISA defines `d`'s value only for the elected
+    /// thread.
+    ElectSync {
+        dst: Option<RegId>,
+        dst_pred: RegId,
+        membermask: Operand,
+    },
+
     // =========================================================================
     // Tensor Core
     // =========================================================================
@@ -825,6 +837,7 @@ define_instr_kinds!(
     CpAsyncWaitGroup,
     Shfl,
     ShflSync,
+    ElectSync,
     Ldmatrix,
     Mma,
     WmmaLoad,
@@ -963,6 +976,7 @@ impl LoweredInstr {
                 membermask,
                 ..
             } => from_ops(&[*src, *offset_or_lane, *clamp, *membermask]),
+            Self::ElectSync { membermask, .. } => from_op(membermask).into_iter().collect(),
 
             // Tensor core
             Self::Ldmatrix { addr, .. } => from_op(addr).into_iter().collect(),
@@ -1099,6 +1113,13 @@ impl LoweredInstr {
 
             // Unpack: two destinations
             Self::UnpackHalves { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
+
+            // Elect: required dst_pred + optional dst (sink-able lane id)
+            Self::ElectSync { dst, dst_pred, .. } => {
+                let mut r = vec![*dst_pred];
+                r.extend(dst.iter().copied());
+                r
+            }
 
             // mbarrier: optional destination (arrive's discardable phase
             // token) or a required one (wait's boolean result)
