@@ -2056,6 +2056,14 @@ fn lower_parsed_instruction(
             lower_tcgen05_wait(ctx, modifiers, operands, predicate, true)?;
         }
 
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Mma,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_mma(ctx, modifiers, operands, predicate)?;
+        }
+
         // =========================================================================
         // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
         // =========================================================================
@@ -4784,6 +4792,95 @@ fn lower_tcgen05_wait(
     }
 
     ctx.emit(LoweredInstr::Tcgen05Wait { is_st }, predicate)?;
+    Ok(())
+}
+
+/// Lower `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc,
+/// idesc, enable-input-d` (PTX ISA 9.7.17.10.9.1, syntax form 1's second
+/// variant - `A` as a shared-memory descriptor, not `[a-tmem]`; no
+/// `disable-output-lane`, no `scale-input-d`). This is the corpus's actual
+/// usage and the "Recommended implementation scope" in
+/// `sm100a_support_plan.md`: dense, non-`.ws`, `.cta_group::1`,
+/// `.kind::f16` only - `.sp`/`.ws`/`.ws.sp` are separate `InstrKind`
+/// values (never reach this function) and block-scaled/other `.kind`s are
+/// rejected here. `idesc`/`a-desc`/`b-desc`'s packed bit-fields describe
+/// shapes/types/addressing that only become known once their concrete
+/// runtime values are decoded at eval time (`eval::tcgen05_mma`) - nothing
+/// about their *contents* is visible here at lowering, only that they are
+/// register operands.
+fn lower_tcgen05_mma(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.mma";
+    let mut saw_cta_group = false;
+    let mut saw_kind_f16 = false;
+
+    for modifier in modifiers {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+            result?;
+            saw_cta_group = true;
+            continue;
+        }
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [base, sub] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"kind"
+        {
+            match sub.as_slice().as_bytes() {
+                b"f16" => {
+                    saw_kind_f16 = true;
+                    continue;
+                }
+                other => {
+                    return Err(unsupported(
+                        NAME,
+                        format!(
+                            "kind::{} (only .kind::f16 is modeled)",
+                            String::from_utf8_lossy(other)
+                        ),
+                    ));
+                }
+            }
+        }
+        return Err(unsupported(NAME, format!("modifier .{}", modifier)));
+    }
+    if !saw_cta_group {
+        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+    }
+    if !saw_kind_f16 {
+        return Err(unsupported(NAME, "missing .kind::f16 modifier"));
+    }
+
+    let [d_tmem, a_desc, b_desc, idesc, enable_input_d] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [d-tmem], a-desc, b-desc, idesc, enable-input-d \
+                     ([a-tmem]/disable-output-lane/scale-input-d forms are not modeled)",
+        });
+    };
+    let (d_tmem_base, d_tmem_offset) = match d_tmem {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
+    let a_desc = ctx.resolve_operand(a_desc)?;
+    let b_desc = ctx.resolve_operand(b_desc)?;
+    let idesc = ctx.resolve_operand(idesc)?;
+    let enable_input_d = ctx.resolve_operand(enable_input_d)?;
+
+    ctx.emit(
+        LoweredInstr::Tcgen05Mma {
+            d_tmem_base,
+            d_tmem_offset,
+            a_desc,
+            b_desc,
+            idesc,
+            enable_input_d,
+        },
+        predicate,
+    )?;
     Ok(())
 }
 
