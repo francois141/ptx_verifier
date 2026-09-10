@@ -612,6 +612,110 @@ fn test_mbarrier_relaxed_semantics_rejected() {
     }
 }
 
+/// `elect.sync` elects the lowest-numbered *live* lane in the mask as
+/// leader (PTX ISA 9.7.14.15: "deterministically, the same leader thread is
+/// elected for the same membermask every time" - matching the real
+/// hardware/compiler convention). One full warp, mask `-1` (every lane):
+/// the leader is lane 0, whose `dst` receives its own lane id (0) and
+/// `dst_pred` is true; every other lane's `dst_pred` is false. Encodes both
+/// facts in one f32 per thread (`1000 + lane_id` for the leader, `0` for
+/// everyone else) so a single assertion confirms `dst`'s value is exactly
+/// right, not just that *some* thread was flagged leader.
+#[test]
+fn test_elect_sync_elects_the_lowest_active_lane() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<4>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    mov.u32 %r1, %tid.x;
+    elect.sync %r2|%p0, -1;
+
+    mov.f32 %f1, 0f00000000;
+    @%p0 cvt.rn.f32.u32 %f2, %r2;
+    @%p0 mov.f32 %f3, 0f447A0000;
+    @%p0 add.f32 %f1, %f2, %f3;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd2, %rd1, %rd2;
+    st.global.f32 [%rd2], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 32,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "1000");
+    assert_eq!(display_output(&output, "out", 1), "0");
+    assert_eq!(display_output(&output, "out", 31), "0");
+}
+
+/// Same shape as `test_elect_sync_elects_the_lowest_active_lane`, but lane 0
+/// exits *before* reaching `elect.sync`. Exited lanes still count as
+/// arrived at the warp op (they just don't participate), but must not
+/// become leader - a thread that already returned cannot receive a value.
+/// The new leader is lane 1, the next lowest still-live lane.
+#[test]
+fn test_elect_sync_skips_an_already_exited_lane() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .f32 %f<4>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.s32 %p1, %r1, 0;
+    @%p1 ret;
+
+    elect.sync %r2|%p0, -1;
+
+    mov.f32 %f1, 0f00000000;
+    @%p0 cvt.rn.f32.u32 %f2, %r2;
+    @%p0 mov.f32 %f3, 0f447A0000;
+    @%p0 add.f32 %f1, %f2, %f3;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd2, %rd1, %rd2;
+    st.global.f32 [%rd2], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 32,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 1), "1001");
+    assert_eq!(display_output(&output, "out", 5), "0");
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

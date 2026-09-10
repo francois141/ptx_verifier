@@ -3589,12 +3589,17 @@ fn parse_griddepcontrol(
     }))
 }
 
-/// Parse elect.sync instruction (Block 145)
+/// Parse elect.sync instruction (Block 145): `elect.sync d|p, membermask`.
+/// Exactly two syntactic operands - the ISA's `d|p` pair is one combined
+/// token the general operand parser already returns as a single
+/// `Operand::PredicatePair`, not two separate operands (unlike
+/// `shfl.sync`'s *optional* `d|p`, `elect.sync`'s pair is mandatory, so
+/// anything else in that position is malformed).
 fn parse_elect_sync(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    if operands.len() < 2 {
+    if operands.len() != 2 {
         return Err(InstrParseError::WrongOperandCount {
             expected: 2,
             got: operands.len(),
@@ -3602,11 +3607,23 @@ fn parse_elect_sync(
     }
 
     let mut ops = operands.into_iter();
+    let first = ops.next().unwrap();
+    let membermask = ops.next().unwrap();
+    let (dst, dst_pred) = match first {
+        Operand::PredicatePair(d, p) => (Operand::Ident(d), Operand::Ident(p)),
+        _ => {
+            return Err(InstrParseError::WrongOperandCount {
+                expected: 2,
+                got: 1,
+            });
+        }
+    };
+
     mp.finish()?;
     Ok(ParsedInstruction::ElectSync(ElectSyncInstr {
-        dst: ops.next().unwrap(),
-        dst_pred: ops.next().unwrap(),
-        membermask: ops.next().unwrap_or(Operand::Underscore),
+        dst,
+        dst_pred,
+        membermask,
     }))
 }
 

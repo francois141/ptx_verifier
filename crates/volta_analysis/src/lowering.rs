@@ -15,8 +15,8 @@ use volta_common::Span;
 use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
-    CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr, FmaInstr, FromAscii,
-    Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
+    CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr, ElectSyncInstr, FmaInstr,
+    FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
     MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
     MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, MinInstr, MulInstr, MulMode,
     NegInstr, Operand as AstOperand, ParsedInstruction, ScalarType, SetpInstr,
@@ -1825,6 +1825,13 @@ fn lower_parsed_instruction(
         // =========================================================================
         ParsedInstruction::ShflSync(shfl) => {
             lower_shfl_sync(ctx, shfl, predicate)?;
+        }
+
+        // =========================================================================
+        // Warp Election - ElectSync
+        // =========================================================================
+        ParsedInstruction::ElectSync(elect) => {
+            lower_elect_sync(ctx, elect, predicate)?;
         }
 
         // =========================================================================
@@ -4101,6 +4108,31 @@ fn lower_shfl_sync(
             src,
             offset_or_lane,
             clamp,
+            membermask,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `elect.sync d|p, membermask`. `dst_pred` is always a real
+/// register - the ISA's `d|p` pair is mandatory, so the parser already
+/// rejected anything else - but `dst` may be sink.
+fn lower_elect_sync(
+    ctx: &mut LoweringContext,
+    elect: &ElectSyncInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst = match &elect.dst {
+        AstOperand::Underscore => None,
+        other => Some(ctx.resolve_dst(other)?),
+    };
+    let dst_pred = ctx.resolve_dst(&elect.dst_pred)?;
+    let membermask = ctx.resolve_operand(&elect.membermask)?;
+    ctx.emit(
+        LoweredInstr::ElectSync {
+            dst,
+            dst_pred,
             membermask,
         },
         predicate,
