@@ -2064,6 +2064,22 @@ fn lower_parsed_instruction(
             lower_tcgen05_mma(ctx, modifiers, operands, predicate)?;
         }
 
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Fence,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_fence(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05Commit,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_commit(ctx, modifiers, operands, predicate)?;
+        }
+
         // =========================================================================
         // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
         // =========================================================================
@@ -4878,6 +4894,145 @@ fn lower_tcgen05_mma(
             b_desc,
             idesc,
             enable_input_d,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `tcgen05.fence::before_thread_sync` / `tcgen05.fence::after_thread_sync`
+/// (PTX ISA 9.7.17.11): pure ordering fences around a subsequent thread
+/// sync, with no data effect of their own - a no-op for Volta's sequential,
+/// non-reordering execution model. The `::before_thread_sync`/
+/// `::after_thread_sync` qualifier is glued directly onto the `fence`
+/// mnemonic segment - the generic `::`-stripping trie fallback
+/// (`instr.rs::get_ancestor_rec`) resolves both to this one `InstrKind`
+/// rather than needing the `Tcgen05WaitLd`/`Tcgen05WaitSt` treatment, since
+/// both directions are equally no-ops here - so it surfaces as a
+/// `Qualified(["", direction])` modifier (see `parse_suffix_modifiers` in
+/// `parse.rs`) rather than a plain named one.
+fn lower_tcgen05_fence(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.fence";
+    let mut saw_direction = false;
+
+    for modifier in modifiers {
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [empty, direction] = parts.as_slice()
+            && empty.as_slice().is_empty()
+            && matches!(
+                direction.as_slice().as_bytes(),
+                b"before_thread_sync" | b"after_thread_sync"
+            )
+        {
+            saw_direction = true;
+            continue;
+        }
+        return Err(unsupported(NAME, format!("modifier {}", modifier)));
+    }
+    if !saw_direction {
+        return Err(unsupported(
+            NAME,
+            "missing ::before_thread_sync/::after_thread_sync qualifier",
+        ));
+    }
+    if !operands.is_empty() {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected no operands",
+        });
+    }
+
+    ctx.emit(LoweredInstr::Tcgen05Fence, predicate)?;
+    Ok(())
+}
+
+/// Lower `tcgen05.commit.cta_group::1.mbarrier::arrive::one{.shared::cluster}.b64
+/// [mbar] {, ctaMask}` (PTX ISA 9.7.17.11): once every async `tcgen05` op
+/// issued by this thread so far has completed, perform an ordinary
+/// `mbarrier` arrive-on(count=1) on `mbar` - the same arrive PTX ISA
+/// 9.7.14.16.16's plain `mbarrier.arrive` performs, just triggered by
+/// tcgen05-completion instead of executing eagerly. Volta's evaluation is
+/// already eager/sequential and nothing tracks `tcgen05.mma` as an
+/// in-flight async op the way `.ld`/`.st` are (`RaceTracker::tcgen05_pending`
+/// is only ever populated by `exec_tcgen05_ld`/`_st`), so lowering reduces
+/// this straight to the same shape `LoweredInstr::MbarrierArrive` uses:
+/// `count=1`, no `expect_tx`, no destination (this form never binds a phase
+/// token). `ctaMask`/`cta_group::2` (peer-CTA multicast) is rejected by the
+/// shared `parse_tcgen05_cta_group` helper, so only the single-operand
+/// `[mbar]` form ever reaches the operand check below.
+fn lower_tcgen05_commit(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "tcgen05.commit";
+    let mut saw_cta_group = false;
+    let mut saw_mbarrier_arrive_one = false;
+
+    for modifier in modifiers {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+            result?;
+            saw_cta_group = true;
+            continue;
+        }
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [mbarrier, arrive, one] = parts.as_slice()
+            && mbarrier.as_slice().as_bytes() == b"mbarrier"
+            && arrive.as_slice().as_bytes() == b"arrive"
+            && one.as_slice().as_bytes() == b"one"
+        {
+            saw_mbarrier_arrive_one = true;
+            continue;
+        }
+        // Generic-addressing rule (same as `tcgen05.alloc`'s `dst`): an
+        // explicit `.shared::cta`/`.shared::cluster` state space vs. none
+        // at all is the same instruction either way - Volta models a
+        // single CTA/cluster unit, so both resolve through the same
+        // `[mbar]` address below; consumed, not stored.
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [base, sub] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"shared"
+        {
+            match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
+                Some(_) => continue,
+                None => return Err(unsupported(NAME, format!("modifier .shared::{sub}"))),
+            }
+        }
+        match modifier.to_string().as_str() {
+            "b64" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    if !saw_cta_group {
+        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+    }
+    if !saw_mbarrier_arrive_one {
+        return Err(unsupported(NAME, "missing .mbarrier::arrive::one modifier"));
+    }
+
+    let [addr] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [mbar] (ctaMask multicast is not modeled)",
+        });
+    };
+    let (addr_base, addr_offset) = match addr {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
+
+    ctx.emit(
+        LoweredInstr::Tcgen05Commit {
+            addr_base,
+            addr_offset,
         },
         predicate,
     )?;

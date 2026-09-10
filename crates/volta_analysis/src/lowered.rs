@@ -709,6 +709,24 @@ pub enum LoweredInstr {
     },
 
     // =========================================================================
+    // TensorCore 5th Generation - Fence & Commit (PTX ISA 9.7.17.11)
+    // =========================================================================
+    /// `tcgen05.fence::before_thread_sync` / `::after_thread_sync`: pure
+    /// ordering fence, no data effect - a no-op under Volta's sequential,
+    /// non-reordering execution model.
+    Tcgen05Fence,
+
+    /// `tcgen05.commit.cta_group::1.mbarrier::arrive::one{.shared::cluster}.b64
+    /// [mbar]`: once every async `tcgen05` op issued by this thread so far
+    /// has completed, perform an mbarrier arrive-on(count=1) on the object
+    /// at `addr_base + addr_offset` - the same effect as a plain
+    /// `mbarrier.arrive` with no explicit count.
+    Tcgen05Commit {
+        addr_base: Operand,
+        addr_offset: i64,
+    },
+
+    // =========================================================================
     // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
     // =========================================================================
     /// `mbarrier.init{.shared{::cta}}.b64 [addr], count`: create a fresh
@@ -873,6 +891,8 @@ define_instr_kinds!(
     Tcgen05St,
     Tcgen05Wait,
     Tcgen05Mma,
+    Tcgen05Fence,
+    Tcgen05Commit,
     MbarrierInit,
     MbarrierInval,
     MbarrierArrive,
@@ -1071,6 +1091,10 @@ impl LoweredInstr {
                 ..
             } => from_ops(&[*d_tmem_base, *a_desc, *b_desc, *idesc, *enable_input_d]),
 
+            // Fence & commit
+            Self::Tcgen05Fence => vec![],
+            Self::Tcgen05Commit { addr_base, .. } => from_op(addr_base).into_iter().collect(),
+
             // mbarrier
             Self::MbarrierInit {
                 addr_base, count, ..
@@ -1180,6 +1204,8 @@ impl LoweredInstr {
             | Self::Tcgen05St { .. }
             | Self::Tcgen05Wait { .. }
             | Self::Tcgen05Mma { .. }
+            | Self::Tcgen05Fence
+            | Self::Tcgen05Commit { .. }
             | Self::MbarrierInit { .. }
             | Self::MbarrierInval { .. }
             | Self::MbarrierCompleteTx { .. }
