@@ -1487,6 +1487,30 @@ impl<'p> Interpreter<'p> {
                 )?;
             }
 
+            // tcgen05.fence::before_thread_sync/::after_thread_sync: pure
+            // ordering fence, no data effect - a genuine no-op under
+            // Volta's sequential, non-reordering execution model.
+            LoweredInstr::Tcgen05Fence => {}
+
+            // tcgen05.commit: once every async `tcgen05` op issued by this
+            // thread so far has completed, perform an mbarrier
+            // arrive-on(count=1) - same per-thread, non-warp-cooperative
+            // shape as `MbarrierArrive` below (issued by a single thread,
+            // not a warp rendezvous).
+            LoweredInstr::Tcgen05Commit {
+                addr_base,
+                addr_offset,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self
+                    .shared
+                    .read_mbarrier(addr)
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                self.mbarriers.arrive(id, t, 1, None);
+            }
+
             // mbarrier: per-thread ops, not warp-cooperative - any single
             // thread issues these independently (unlike the tensor-core
             // family above).

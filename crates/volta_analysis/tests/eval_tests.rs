@@ -612,6 +612,91 @@ fn test_mbarrier_relaxed_semantics_rejected() {
     }
 }
 
+/// `tcgen05.fence::before_thread_sync`/`::after_thread_sync` are pure
+/// ordering fences with no data effect - confirms both directions parse
+/// (the `::`-glued qualifier resolves through the generic trie fallback,
+/// see `sm100a_support_plan.md`) and lowering/eval simply falls through to
+/// the next instruction, unconditionally, with no observable side effect of
+/// its own.
+#[test]
+fn test_tcgen05_fence_is_a_no_op() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f32 %f0;
+    .reg .b64 %rd0;
+
+    tcgen05.fence::before_thread_sync;
+    tcgen05.fence::after_thread_sync;
+
+    ld.param.u64 %rd0, [k_param_0];
+    mov.f32 %f0, 0f3F800000;
+    st.global.f32 [%rd0], %f0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "1");
+}
+
+/// `tcgen05.commit`'s `.mbarrier::arrive::one` performs exactly an
+/// `mbarrier` arrive-on(count=1) - confirmed by having it satisfy a
+/// `count = 1` mbarrier's `try_wait.parity` on its own, with no separate
+/// `mbarrier.arrive` anywhere in the kernel. Uses the candidate's exact
+/// modifier set (`.shared::cluster`, unlike triton's bare `.b64`) to cover
+/// the optional-state-space path too.
+#[test]
+fn test_tcgen05_commit_satisfies_mbarrier_wait() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p0;
+    .reg .f32 %f0;
+    .reg .b32 %r0;
+    .reg .b64 %rd0;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r0, mbar;
+    mbarrier.init.shared::cta.b64 [%r0], 1;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r0];
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r0], 0;
+
+    ld.param.u64 %rd0, [k_param_0];
+    mov.f32 %f0, 0f3F800000;
+    st.global.f32 [%rd0], %f0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "1");
+}
+
 /// `elect.sync` elects the lowest-numbered *live* lane in the mask as
 /// leader (PTX ISA 9.7.14.15: "deterministically, the same leader thread is
 /// elected for the same membermask every time" - matching the real
