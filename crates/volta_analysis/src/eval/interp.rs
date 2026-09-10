@@ -1670,8 +1670,8 @@ impl<'p> Interpreter<'p> {
     /// `idesc`/`a_desc`/`b_desc` first, in order, each with a specific
     /// reason, against the one form modeled: dense `.kind::f16`, `M =
     /// 128`, `A`/`B` both f16, `D` f32, no negate, relative
-    /// leading-dimension stride, `SwizzleMode::Swizzle128B` with
-    /// `base_offset == 0` on both descriptors.
+    /// leading-dimension stride, `base_offset == 0` on both descriptors
+    /// (every swizzle mode is modeled - see `eval::tcgen05_mma`).
     #[allow(clippy::too_many_arguments)]
     fn exec_tcgen05_mma(
         &mut self,
@@ -1743,18 +1743,6 @@ impl<'p> Interpreter<'p> {
                     .to_string(),
             });
         }
-        if a_md.swizzle_mode != tcgen05_mma::SwizzleMode::Swizzle128B
-            || b_md.swizzle_mode != tcgen05_mma::SwizzleMode::Swizzle128B
-        {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: format!(
-                    "tcgen05.mma with swizzle mode {:?}/{:?} is not modeled (only \
-                     Swizzle128B is confirmed)",
-                    a_md.swizzle_mode, b_md.swizzle_mode
-                ),
-            });
-        }
         if a_md.base_offset != 0 || b_md.base_offset != 0 {
             return Err(EvalError::Unsupported {
                 pc,
@@ -1778,7 +1766,12 @@ impl<'p> Interpreter<'p> {
                         .map_err(|e| self.tcgen05_error(t, pc, e))?
                         .unwrap_or_else(|| self.arena.undefined())
                 } else {
-                    self.arena.int(0)
+                    // A real (not integer) zero: `D` is f32-typed, and
+                    // `fma`'s eager fold only fires when every operand is
+                    // `RealConst` - an `IntConst(0)` seed would silently
+                    // break the fold for the entire accumulation chain
+                    // (each `fma`'s output becomes the next call's `c`).
+                    self.arena.real(Real::zero())
                 };
                 for k in 0..K {
                     // K-major (leading = K) unless transposed (leading =
