@@ -3727,11 +3727,16 @@ fn parse_mbarrier_arrive(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
+    // `.expect_tx`/`.noComplete` are written immediately after the mnemonic
+    // - `mbarrier.arrive.expect_tx{.sem.scope}{.shared{::cta}}.b64` - so
+    // they must be consumed before `.sem`/`.scope`/the state space, not
+    // after (`ModifierParser` is a strict sequential cursor, not a
+    // reordering matcher).
+    let expect_tx = mp.try_consume(ascii("expect_tx"));
+    let no_complete = mp.try_consume(ascii("noComplete"));
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
-    let expect_tx = mp.try_consume(ascii("expect_tx"));
-    let no_complete = mp.try_consume(ascii("noComplete"));
     mp.try_consume_or_err(ascii("b64"))?;
 
     if operands.len() < 2 {
@@ -3761,11 +3766,14 @@ fn parse_mbarrier_arrive_drop(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
+    // Same ordering fix as `parse_mbarrier_arrive`: `.expect_tx`/
+    // `.noComplete` are written right after the mnemonic, before
+    // `.sem`/`.scope`/the state space.
+    let expect_tx = mp.try_consume(ascii("expect_tx"));
+    let no_complete = mp.try_consume(ascii("noComplete"));
     let sem = mp.try_parse::<MemSemantics>();
     let scope = mp.try_parse::<MemScope>();
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
-    let expect_tx = mp.try_consume(ascii("expect_tx"));
-    let no_complete = mp.try_consume(ascii("noComplete"));
     mp.try_consume_or_err(ascii("b64"))?;
 
     if operands.len() < 2 {

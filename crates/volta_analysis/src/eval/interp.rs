@@ -15,10 +15,11 @@ use volta_frontend::ast::ScalarType;
 use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{EvalError, EvalResult};
+use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
 use crate::eval::tensor_memory::TensorMemory;
-use crate::eval::value::{RegFile, Value};
+use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
@@ -57,6 +58,15 @@ pub(in crate::eval) enum Status {
     /// `mask` is the participating-lane mask within the thread's warp.
     AtWarpOp {
         mask: u32,
+    },
+    /// Blocked at `mbarrier.test_wait.parity`/`try_wait.parity` (at the
+    /// current pc), waiting for `id`'s phase-parity condition. Unlike
+    /// `AtBarrier`/`AtWarpOp`, this isn't a rendezvous - any other thread's
+    /// `arrive`/`complete_tx` on the same object can satisfy it, so threads
+    /// blocked here are checked independently, not as a group.
+    AtMbarrier {
+        id: MbarrierId,
+        phase_parity: bool,
     },
     Exited,
 }
@@ -157,6 +167,7 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) tensor: TensorMemory,
     regions: MemRegions,
     pub(in crate::eval) race: RaceTracker,
+    pub(in crate::eval) mbarriers: MbarrierTable,
     pub(in crate::eval) stats: Stats,
     /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`.
     /// A fixed array (not a map) because this is bumped once per executed
@@ -368,6 +379,7 @@ impl<'p> Interpreter<'p> {
             tensor: TensorMemory::new(),
             regions,
             race: RaceTracker::new(n_threads as usize),
+            mbarriers: MbarrierTable::new(n_threads as usize),
             stats: Stats::default(),
             op_counts: [0; crate::lowered::KIND_COUNT],
         })
@@ -543,8 +555,65 @@ impl<'p> Interpreter<'p> {
                 any = true;
                 continue;
             }
+            if self.try_fire_mbarrier()? {
+                any = true;
+                continue;
+            }
             return Ok(any);
         }
+    }
+
+    /// Wake every thread blocked at `mbarrier.test_wait.parity`/
+    /// `try_wait.parity` whose phase-parity condition now holds. Unlike
+    /// `try_fire_barrier`/`find_ready_warp_group`, this isn't a rendezvous
+    /// that requires every live thread to agree - each blocked thread's
+    /// condition depends only on the shared `mbarrier` object's state
+    /// (updated by some *other* thread's `arrive`/`complete_tx`, which may
+    /// still be freely `Ready` and running), so threads are woken
+    /// independently. Returns whether any thread was woken.
+    ///
+    /// Establishes the χ happens-before edge the ISA actually guarantees
+    /// here (9.7.14.16.19, ordering items 1-3): before waking, each waiter
+    /// is `sync_group`-ed with the mbarrier's `prior_participants` (the
+    /// threads whose `mbarrier.arrive` completed the phase it was waiting
+    /// on) plus itself, so their prior accesses become visible to it rather
+    /// than continuing to look like unsynchronized races. Lowering rejects
+    /// non-default (`.relaxed`) semantics on `mbarrier.arrive`/`test_wait`/
+    /// `try_wait`, so every `AtMbarrier` thread reaching here is on the
+    /// default release/acquire path this edge models.
+    fn try_fire_mbarrier(&mut self) -> EvalResult<bool> {
+        let ready: Vec<(ThreadId, MbarrierId)> = self
+            .threads
+            .iter()
+            .filter_map(|(tid, state)| match state.status {
+                Status::AtMbarrier { id, phase_parity }
+                    if self.mbarriers.parity_complete(id, phase_parity) =>
+                {
+                    Some((tid, id))
+                }
+                _ => None,
+            })
+            .collect();
+        for (tid, id) in &ready {
+            let mut group = self.mbarriers.prior_participants(*id).clone();
+            group.insert(tid.0 as usize);
+            self.race.sync_group(&group);
+
+            let pc = self.threads[*tid].pc;
+            let Some(LoweredInstr::MbarrierWaitParity { wait_complete, .. }) =
+                self.program.instruction(pc)
+            else {
+                unreachable!("a thread AtMbarrier must be blocked at its own wait instruction");
+            };
+            let wait_complete = *wait_complete;
+            let token = self.arena.bool_val(true);
+            self.threads[*tid]
+                .regs
+                .write(wait_complete, Value::Scalar(token));
+            self.threads[*tid].status = Status::Ready;
+            self.threads[*tid].pc = InstrId(pc.0 + 1);
+        }
+        Ok(!ready.is_empty())
     }
 
     /// Find a warp group whose live members have all arrived at the same pc
@@ -1383,6 +1452,124 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
+            // mbarrier: per-thread ops, not warp-cooperative - any single
+            // thread issues these independently (unlike the tensor-core
+            // family above).
+            LoweredInstr::MbarrierInit {
+                addr_base,
+                addr_offset,
+                count,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let count = self.non_negative_operand(t, pc, count, "mbarrier.init count")?;
+                let id = self.mbarriers.init(count);
+                self.shared
+                    .write(addr, 8, Value::Mbarrier(id))
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+            }
+
+            LoweredInstr::MbarrierInval {
+                addr_base,
+                addr_offset,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                self.shared
+                    .invalidate_mbarrier(addr)
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+            }
+
+            LoweredInstr::MbarrierArrive {
+                state,
+                addr_base,
+                addr_offset,
+                count,
+                expect_tx,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self
+                    .shared
+                    .read_mbarrier(addr)
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                let count = match count {
+                    Some(op) => self.non_negative_operand(t, pc, op, "mbarrier.arrive count")?,
+                    None => 1,
+                };
+                let expect_tx = match expect_tx {
+                    Some(op) => Some(self.non_negative_operand(
+                        t,
+                        pc,
+                        op,
+                        "mbarrier.arrive.expect_tx txCount",
+                    )?),
+                    None => None,
+                };
+                self.mbarriers.arrive(id, t, count, expect_tx);
+                if let Some(dst) = state {
+                    // The opaque phase token: not meaningfully modeled (only
+                    // `.parity` waits are supported, which never consume
+                    // it), so `Undefined` is the honest value - a kernel
+                    // that reads it back through any other path already
+                    // hit `unsupported()` at lowering.
+                    let token = self.arena.undefined();
+                    self.threads[t].regs.write(*dst, Value::Scalar(token));
+                }
+            }
+
+            LoweredInstr::MbarrierCompleteTx {
+                addr_base,
+                addr_offset,
+                tx_count,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self
+                    .shared
+                    .read_mbarrier(addr)
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                let tx_count =
+                    self.non_negative_operand(t, pc, tx_count, "mbarrier.complete_tx txCount")?;
+                self.mbarriers.complete_tx(id, tx_count);
+            }
+
+            LoweredInstr::MbarrierWaitParity {
+                addr_base,
+                addr_offset,
+                phase_parity,
+                ..
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self
+                    .shared
+                    .read_mbarrier(addr)
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                let phase_parity = match self.concrete_operand(
+                    t,
+                    pc,
+                    phase_parity,
+                    "mbarrier wait phaseParity",
+                )? {
+                    0 => false,
+                    1 => true,
+                    other => {
+                        return Err(EvalError::Unsupported {
+                            pc,
+                            what: format!("mbarrier wait phaseParity {other} (must be 0 or 1)"),
+                        });
+                    }
+                };
+                self.threads[t].status = Status::AtMbarrier { id, phase_parity };
+                return Ok(()); // pc advances when the wait's condition is satisfied
+            }
+
             LoweredInstr::Activemask { dst } => {
                 // The OR of `1 << lane` over the executing thread's warp
                 // lanes that exist in the CTA and have not exited (ISA
@@ -1737,6 +1924,22 @@ impl<'p> Interpreter<'p> {
         })
     }
 
+    /// Resolve an operand that must be a concrete, non-negative integer
+    /// (the mbarrier family's 32-bit unsigned `count`/`txCount` operands).
+    fn non_negative_operand(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: &Operand,
+        what: &'static str,
+    ) -> EvalResult<u64> {
+        let v = self.concrete_operand(t, pc, op, what)?;
+        u64::try_from(v).map_err(|_| EvalError::Unsupported {
+            pc,
+            what: format!("{what} is negative ({v})"),
+        })
+    }
+
     fn as_concrete_bool(
         &self,
         t: ThreadId,
@@ -1914,6 +2117,12 @@ impl<'p> Interpreter<'p> {
                 found,
             },
             MemAccessError::MbarrierOverwrite { addr } => EvalError::MbarrierOverwrite {
+                thread: t,
+                pc,
+                space,
+                addr,
+            },
+            MemAccessError::NoLiveMbarrier { addr } => EvalError::NoLiveMbarrier {
                 thread: t,
                 pc,
                 space,
