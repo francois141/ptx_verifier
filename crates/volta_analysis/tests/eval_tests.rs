@@ -805,6 +805,169 @@ fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     }
 }
 
+/// `tensormap.replace` (building an 8x8 f16 tensor-map entirely in shared
+/// memory, the corpus's own on-device idiom) + `tensormap.cp_fenceproxy` +
+/// `fence.proxy.tensormap::generic.acquire` + `cp.async.bulk.tensor` through
+/// the real lowering/eval pipeline. A 4x4 box at tensor-coordinates (6, 6)
+/// over an 8x8 tensor deliberately straddles the boundary: the near corner
+/// (box index (0,0) -> tensor index (6,6), in bounds) must read through to
+/// the input symbol, and the far corner (box index (3,3) -> tensor index
+/// (9,9), out of `global_dim`) must read as `fill_mode`'s zero fill - one
+/// kernel exercises both the addressing formula and the boundary check.
+/// `.mbarrier::complete_tx::bytes`'s implicit completion (32 = 16 elements
+/// x 2 bytes) is what unblocks the `try_wait.parity` below - if it fired
+/// with the wrong byte count the wait would deadlock instead of completing.
+#[test]
+fn test_cp_async_bulk_tensor_copies_in_bounds_and_zero_fills_out_of_bounds() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p0;
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    .shared .align 128 .b8 sd0[128];
+    .global .align 128 .b8 gbl[128];
+    .shared .align 8 .b8 full[8];
+    .shared .align 16 .b8 sa[32];
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    mbarrier.init.shared::cta.b64 [full], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [full], 32;
+
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
+    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
+    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [sd0], 0;
+
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
+    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
+
+    mov.u32 %r1, 6;
+    mov.u32 %r2, 6;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
+
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [full], 0;
+
+    ld.shared.u16 %rs1, [sa];
+    ld.shared.u16 %rs2, [sa+30];
+
+    ld.param.u64 %rd2, [k_param_1];
+    st.global.u16 [%rd2], %rs1;
+    st.global.u16 [%rd2+2], %rs2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[54]");
+    assert_eq!(display_output(&output, "out", 1), "0");
+}
+
+/// `cp.async.bulk.tensor` reading a tensor-map object still missing a
+/// field (here `.fill_mode` is never written) must error loudly naming the
+/// field - PTX never requires every field be set before use, so an
+/// incomplete tensor-map is a real kernel bug, not a Volta gap to paper
+/// over with a default.
+#[test]
+fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<2>;
+
+    .shared .align 128 .b8 sd0[128];
+    .global .align 128 .b8 gbl[128];
+    .shared .align 8 .b8 full[8];
+    .shared .align 16 .b8 sa[32];
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    mbarrier.init.shared::cta.b64 [full], 1;
+
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
+    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
+    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
+
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
+    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
+
+    mov.u32 %r1, 0;
+    mov.u32 %r2, 0;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "in".to_string(),
+        base: 0x10000,
+        elem_width: 2,
+        len: 64,
+        kind: ArrayKind::Input,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("in".to_string())];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::TensorMapFieldMissing { field, .. }) => {
+            assert_eq!(field, "fill_mode");
+        }
+        other => panic!("expected TensorMapFieldMissing, got: {}", other),
+    }
+}
+
 /// `elect.sync` elects the lowest-numbered *live* lane in the mask as
 /// leader (PTX ISA 9.7.14.15: "deterministically, the same leader thread is
 /// elected for the same membermask every time" - matching the real

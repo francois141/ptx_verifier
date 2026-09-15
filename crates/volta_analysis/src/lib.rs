@@ -20,6 +20,7 @@ pub mod spec;
 pub mod symbolic;
 pub mod symbols;
 pub mod tensor_core;
+pub mod tensor_map;
 pub mod types;
 
 pub use driver::{AnalysisError, EquivOutcome, analyze_kernel, check_output_equivalence};
