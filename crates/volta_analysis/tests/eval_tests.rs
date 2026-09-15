@@ -1118,7 +1118,7 @@ fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
     mov.u32 %r2, 138477584;
     mov.pred %p0, 0;
     // tcgen05.mma is single-thread-issued: only the warp's lane 0 issues it.
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, %p0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
     ret;
 }
 ",
@@ -1163,7 +1163,7 @@ fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
     // dense, D=f32, A/B=f16, no negate/transpose, M=128, N=8.
     mov.u32 %r2, 134348816;
     mov.pred %p0, 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, %p0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
     ret;
 }
 ",
@@ -1172,22 +1172,17 @@ fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
-/// A genuine numeric-correctness check, not just "runs without erroring":
-/// writes `A[0][k] = k+1` (`k=0..15`) and `B[k][0] = 1` as real f16 values
-/// at their exact `SwizzleMode::Swizzle128B`-swizzled addresses (computed
-/// by hand with the same formula `swizzled_element_addr` implements,
-/// independently in a throwaway Python script - not by calling the Rust
-/// function itself, so this doesn't just check the implementation against
-/// itself), reads `D[0][0]` back via `tcgen05.ld`, and checks it against
-/// the exact expected dot product `sum(1..=16) = 136`. Uses the real
-/// kernel's own transpose configuration (`A` untransposed/K-major, `B`
-/// transposed/N-major) and swizzle mode, so `B`'s addresses genuinely
-/// cross a stride-atom boundary (`k=8..15` lands in atom 1, not atom 0) -
-/// exercising the same atom-crossing arithmetic the real kernel's larger
-/// `N` needs, not just the trivial all-zero-key case `A`'s addresses (all
-/// at `atom_row = 0`, since only `m = 0` is populated) would give alone.
+/// LLVM's NVPTX backend (confirmed against `triton_generated.ptx`,
+/// `.version 8.8`) emits `tcgen05.mma` in the older 5-operand form with
+/// no `disable-output-lane` operand at all, not nvcc/triton's own
+/// 6-operand form with an explicit mask - both are genuine real-world
+/// PTX, so the mask must be optional, defaulting to "no lane disabled"
+/// when absent. Identical to `test_tcgen05_mma_numeric_correctness` below
+/// but with the mask operand dropped entirely: must still produce `136`,
+/// proving the default is actually wired through to the write, not just
+/// accepted syntactically.
 #[test]
-fn test_tcgen05_mma_numeric_correctness() {
+fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
     let src = wrap(
         ".visible .entry k(
     .param .u64 k_param_0
@@ -1337,6 +1332,335 @@ fn test_tcgen05_mma_numeric_correctness() {
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
+/// A genuine numeric-correctness check, not just "runs without erroring":
+/// writes `A[0][k] = k+1` (`k=0..15`) and `B[k][0] = 1` as real f16 values
+/// at their exact `SwizzleMode::Swizzle128B`-swizzled addresses (computed
+/// by hand with the same formula `swizzled_element_addr` implements,
+/// independently in a throwaway Python script - not by calling the Rust
+/// function itself, so this doesn't just check the implementation against
+/// itself), reads `D[0][0]` back via `tcgen05.ld`, and checks it against
+/// the exact expected dot product `sum(1..=16) = 136`. Uses the real
+/// kernel's own transpose configuration (`A` untransposed/K-major, `B`
+/// transposed/N-major) and swizzle mode, so `B`'s addresses genuinely
+/// cross a stride-atom boundary (`k=8..15` lands in atom 1, not atom 0) -
+/// exercising the same atom-crossing arithmetic the real kernel's larger
+/// `N` needs, not just the trivial all-zero-key case `A`'s addresses (all
+/// at `atom_row = 0`, since only `m = 0` is populated) would give alone.
+#[test]
+fn test_tcgen05_mma_numeric_correctness() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<7>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .b16 %rs<2>;
+    .shared .align 1024 .b8 a_buf[16384];
+    .shared .align 1024 .b8 b_buf[4096];
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r6, %tid.x;
+    setp.eq.s32 %p1, %r6, 0;
+
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+0], %rs1;
+    mov.f32 %f1, 0f40000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+2], %rs1;
+    mov.f32 %f1, 0f40400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+4], %rs1;
+    mov.f32 %f1, 0f40800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+6], %rs1;
+    mov.f32 %f1, 0f40A00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+8], %rs1;
+    mov.f32 %f1, 0f40C00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+10], %rs1;
+    mov.f32 %f1, 0f40E00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+12], %rs1;
+    mov.f32 %f1, 0f41000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+14], %rs1;
+    mov.f32 %f1, 0f41100000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    mov.f32 %f1, 0f41200000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    mov.f32 %f1, 0f41300000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    mov.f32 %f1, 0f41400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    mov.f32 %f1, 0f41500000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    mov.f32 %f1, 0f41600000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    mov.f32 %f1, 0f41700000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    mov.f32 %f1, 0f41800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+30], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+0], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+144], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+288], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+432], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+576], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+720], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+864], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1008], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1024], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1168], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1312], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1456], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1600], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1744], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1888], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+2032], %rs1;
+
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 4611756662049472512;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 4611756662049472512;
+    mov.u32 %r2, 134414352;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, {0,0,0,0}, %p0;
+
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    ld.param.u64 %rd1, [k_param_0];
+    @%p1 st.global.f32 [%rd1], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "136");
+}
+
+/// Identical to `test_tcgen05_mma_numeric_correctness` above except
+/// `disable-output-lane`'s first element is `1` (bit 0 set): PTX ISA
+/// 9.7.17.10.9.1 says the corresponding Tensor Memory lane simply is not
+/// updated by `D`. Lane 0/column 0 is exactly what the sibling test reads
+/// back and checks against `136` - with lane 0 masked, nothing is ever
+/// written there, so reading it back must surface as the same
+/// `UndefinedOutput` any other never-written Tensor Memory read would, not
+/// silently produce `136` (proving the mask actually skips the write) or a
+/// wrong value (proving it doesn't corrupt some other lane's data instead).
+#[test]
+fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<7>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .b16 %rs<2>;
+    .shared .align 1024 .b8 a_buf[16384];
+    .shared .align 1024 .b8 b_buf[4096];
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r6, %tid.x;
+    setp.eq.s32 %p1, %r6, 0;
+
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+0], %rs1;
+    mov.f32 %f1, 0f40000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+2], %rs1;
+    mov.f32 %f1, 0f40400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+4], %rs1;
+    mov.f32 %f1, 0f40800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+6], %rs1;
+    mov.f32 %f1, 0f40A00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+8], %rs1;
+    mov.f32 %f1, 0f40C00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+10], %rs1;
+    mov.f32 %f1, 0f40E00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+12], %rs1;
+    mov.f32 %f1, 0f41000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+14], %rs1;
+    mov.f32 %f1, 0f41100000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    mov.f32 %f1, 0f41200000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    mov.f32 %f1, 0f41300000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    mov.f32 %f1, 0f41400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    mov.f32 %f1, 0f41500000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    mov.f32 %f1, 0f41600000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    mov.f32 %f1, 0f41700000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    mov.f32 %f1, 0f41800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+30], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+0], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+144], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+288], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+432], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+576], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+720], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+864], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1008], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1024], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1168], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1312], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1456], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1600], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1744], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+1888], %rs1;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+2032], %rs1;
+
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 4611756662049472512;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 4611756662049472512;
+    mov.u32 %r2, 134414352;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, {1,0,0,0}, %p0;
+
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    ld.param.u64 %rd1, [k_param_0];
+    @%p1 st.global.f32 [%rd1], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected UndefinedOutput (lane 0 must never be written), got: {}",
+        err
+    );
+}
+
 /// Only `.kind::f16` is modeled; any other `.kind` is rejected at lowering
 /// with a specific reason, not the generic "not yet implemented" every
 /// unhandled `tcgen05.*` mnemonic falls back to.
@@ -1354,7 +1678,7 @@ fn test_tcgen05_mma_only_kind_f16_is_modeled() {
     mov.u64 %rd2, 0;
     mov.u32 %r2, 0;
     mov.pred %p0, 0;
-    tcgen05.mma.cta_group::1.kind::tf32 [%r1+0], %rd1, %rd2, %r2, %p0;
+    tcgen05.mma.cta_group::1.kind::tf32 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
     ret;
 }
 ",
@@ -1398,7 +1722,7 @@ fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
     // session notes for the derivation).
     mov.u32 %r2, 138412176;
     mov.pred %p0, 0;
-    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, %p0;
+    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
     ret;
 }
 ",

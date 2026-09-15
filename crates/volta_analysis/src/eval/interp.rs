@@ -28,9 +28,9 @@ use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
     UnaryOp,
 };
-use crate::tensor_map::{TensorFillMode, TensormapFieldWrite};
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
+use crate::tensor_map::{TensorFillMode, TensormapFieldWrite};
 use crate::types::{RegClass, ScalarTypeExt};
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
@@ -1477,6 +1477,7 @@ impl<'p> Interpreter<'p> {
                 a_desc,
                 b_desc,
                 idesc,
+                disable_output_lane,
                 enable_input_d,
             } => {
                 self.exec_tcgen05_mma(
@@ -1487,6 +1488,7 @@ impl<'p> Interpreter<'p> {
                     a_desc,
                     b_desc,
                     idesc,
+                    disable_output_lane,
                     enable_input_d,
                 )?;
             }
@@ -1758,6 +1760,7 @@ impl<'p> Interpreter<'p> {
     /// leading-dimension stride, `base_offset == 0` on both descriptors
     /// (every swizzle mode is modeled - see `eval::tcgen05_mma`).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn exec_tcgen05_mma(
         &mut self,
         t: ThreadId,
@@ -1767,6 +1770,7 @@ impl<'p> Interpreter<'p> {
         a_desc: &Operand,
         b_desc: &Operand,
         idesc: &Operand,
+        disable_output_lane: &[Operand],
         enable_input_d: &Operand,
     ) -> EvalResult<()> {
         let idesc_val = self.concrete_operand(t, pc, idesc, "tcgen05.mma idesc")? as u32;
@@ -1840,10 +1844,23 @@ impl<'p> Interpreter<'p> {
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
         let d_col_base = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
 
+        // `disable-output-lane`: 4 elements form a 128-bit mask, least
+        // significant bit of the first element = lane 0 (PTX ISA
+        // 9.7.17.10.9.1). Resolved once up front rather than per-lane.
+        let mut disable_mask = [0u32; 4];
+        for (slot, op) in disable_mask.iter_mut().zip(disable_output_lane) {
+            *slot = self.concrete_operand(t, pc, op, "tcgen05.mma disable-output-lane")? as u32;
+        }
+        let lane_disabled =
+            |lane: u64| -> bool { (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 != 0 };
+
         const K: u64 = 16; // fixed for .cta_group::1, dense, .kind::f16 (PTX ISA Table 42)
         const ELEM_BYTES: u64 = 2; // f16
 
         for m in 0..id.m as u64 {
+            if lane_disabled(m) {
+                continue;
+            }
             for n in 0..id.n as u64 {
                 let mut acc = if enable_input_d {
                     self.tensor
@@ -2410,7 +2427,27 @@ impl<'p> Interpreter<'p> {
         let elem_bytes = elemtype.byte_width();
         let row_bytes = box_dims[0] as u64 * elem_bytes;
 
-        if mma_swizzle != tcgen05_mma::SwizzleMode::None {
+        // `stride_dim_byte_offset` for a swizzled mode is the swizzle
+        // *atom's own footprint* (`r * w * CELL_BYTES` - PTX ISA 5.5.7's
+        // "starting address of the repeating pattern" sizes: 256/512/1024
+        // bytes for 32B/64B/128B swizzle), a fixed per-mode constant -
+        // *not* the box's own row width. `swizzled_element_addr`'s
+        // `atom_row * row_bytes` term already accounts for the pitch
+        // between individual stride-index steps *within* one atom (using
+        // a fixed `w * CELL_BYTES`, unrelated to the box shape);
+        // `stride_dim_byte_offset` only multiplies `stride_atom =
+        // stride_idx / r`, the spacing *between* atoms. Confirmed against
+        // the real corpus kernel's own independently-computed `a-desc`/
+        // `b-desc` matrix-descriptor register values (`swizzled_element_addr`
+        // must reproduce the exact same shared addresses `tcgen05.mma`
+        // reads through those descriptors, since both sides address the
+        // same physical shared memory): `A`'s real `stride_dim_byte_offset`
+        // is 512 (`Swizzle64B`'s atom, `8*4*16`), `B`'s is 1024
+        // (`Swizzle128B`'s atom, `8*8*16`) - both match `r*w*CELL_BYTES`
+        // exactly, neither matches the box's row width.
+        let stride_dim_byte_offset = if mma_swizzle == tcgen05_mma::SwizzleMode::None {
+            row_bytes
+        } else {
             const CELL_BYTES: u64 = 16;
             if !row_bytes.is_multiple_of(CELL_BYTES) {
                 return Err(EvalError::Unsupported {
@@ -2434,11 +2471,20 @@ impl<'p> Interpreter<'p> {
                     ),
                 });
             }
-            let boundary = match mma_swizzle {
+            // The atom footprint (`r*w*CELL_BYTES`) only matches PTX ISA
+            // 5.5.7's documented per-mode "repeating pattern" boundary for
+            // the three modes confirmed above (256/512/1024) -
+            // `Swizzle128BWith32BAtomicity`'s `atom_shape` (4,8) gives 512,
+            // contradicting the ISA's 1024-byte boundary for *any* 128B
+            // swizzle sub-mode (its `(r,w)` was only ever confirmed for the
+            // MMA-read address formula against one diagram - see
+            // `tcgen05_mma`'s module doc), so it is rejected here rather
+            // than trusted for this different purpose.
+            let atom_bytes = match mma_swizzle {
                 tcgen05_mma::SwizzleMode::Swizzle32B => 256,
                 tcgen05_mma::SwizzleMode::Swizzle64B => 512,
                 tcgen05_mma::SwizzleMode::Swizzle128B => 1024,
-                _ => {
+                tcgen05_mma::SwizzleMode::None | tcgen05_mma::SwizzleMode::Swizzle128BWith32BAtomicity => {
                     return Err(EvalError::Unsupported {
                         pc,
                         what: format!(
@@ -2448,22 +2494,23 @@ impl<'p> Interpreter<'p> {
                     });
                 }
             };
-            if !dst_addr.is_multiple_of(boundary) {
+            if !dst_addr.is_multiple_of(atom_bytes) {
                 return Err(EvalError::Unsupported {
                     pc,
                     what: format!(
                         "cp.async.bulk.tensor: destination {:#x} is not aligned to the {:?} \
                          swizzle pattern's {}-byte boundary (nonzero swizzle base offset not modeled)",
-                        dst_addr, mma_swizzle, boundary
+                        dst_addr, mma_swizzle, atom_bytes
                     ),
                 });
             }
-        }
+            atom_bytes
+        };
 
         let desc = tcgen05_mma::MatrixDescriptor {
             start_addr: dst_addr,
             leading_dim_byte_offset: 0,
-            stride_dim_byte_offset: row_bytes,
+            stride_dim_byte_offset,
             base_offset: 0,
             absolute_leading_stride: false,
             swizzle_mode: mma_swizzle,
@@ -2471,7 +2518,12 @@ impl<'p> Interpreter<'p> {
 
         let mut coord_vals = Vec::with_capacity(real_rank);
         for c in coords {
-            coord_vals.push(self.concrete_operand(t, pc, c, "cp.async.bulk.tensor tensorCoords")?);
+            coord_vals.push(self.concrete_operand(
+                t,
+                pc,
+                c,
+                "cp.async.bulk.tensor tensorCoords",
+            )?);
         }
 
         let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();

@@ -4935,12 +4935,21 @@ fn lower_tcgen05_mma(
         return Err(unsupported(NAME, "missing .kind::f16 modifier"));
     }
 
-    let [d_tmem, a_desc, b_desc, idesc, enable_input_d] = operands else {
+    // `{ disable-output-lane }, enable-input-d {, scale-input-d}`: despite
+    // the ISA syntax block showing `disable-output-lane` unconditionally,
+    // it is genuinely omittable in practice - LLVM's NVPTX backend emits
+    // the 5-operand form with no mask at all (confirmed against
+    // `triton_generated.ptx`, `.version 8.8`: `[%r543+0], %rd56, %rd57,
+    // %r94, %p3`), while nvcc/triton's own backend emits the 6-operand
+    // form with an explicit (possibly all-zero) mask. Disambiguated by
+    // operand *type*, not position: a `Vector` in the disable-output-lane
+    // slot is the mask, anything else is `enable-input-d` itself.
+    let [d_tmem, a_desc, b_desc, idesc, rest @ ..] = operands else {
         return Err(LowerError::InvalidOperand {
             instruction: NAME.to_string(),
             operand: format!("{:?}", operands),
-            reason: "expected [d-tmem], a-desc, b-desc, idesc, enable-input-d \
-                     ([a-tmem]/disable-output-lane/scale-input-d forms are not modeled)",
+            reason: "expected [d-tmem], a-desc, b-desc, idesc, {disable-output-lane}, \
+                     enable-input-d ([a-tmem] is not modeled)",
         });
     };
     let (d_tmem_base, d_tmem_offset) = match d_tmem {
@@ -4950,6 +4959,40 @@ fn lower_tcgen05_mma(
     let a_desc = ctx.resolve_operand(a_desc)?;
     let b_desc = ctx.resolve_operand(b_desc)?;
     let idesc = ctx.resolve_operand(idesc)?;
+
+    let (mask_elems, rest): (Option<&[AstOperand]>, &[AstOperand]) = match rest {
+        [AstOperand::Vector(v), rest @ ..] => (Some(v), rest),
+        rest => (None, rest),
+    };
+    // `.cta_group::2`'s 8-element mask is rejected earlier (only
+    // `.cta_group::1` is modeled), so exactly 4 elements - one bit per
+    // lane 0-127 - are expected when a mask is present at all; absent, it
+    // defaults to "no lane disabled" (four zero bits).
+    let disable_output_lane = match mask_elems {
+        Some(elems) if elems.len() == 4 => elems
+            .iter()
+            .map(|e| ctx.resolve_operand(e))
+            .collect::<LowerResult<Vec<_>>>()?,
+        Some(elems) => {
+            return Err(LowerError::InvalidOperand {
+                instruction: NAME.to_string(),
+                operand: format!("{:?}", elems),
+                reason: "disable-output-lane must have 4 elements for .cta_group::1",
+            });
+        }
+        None => vec![Operand::ImmI64(0); 4],
+    };
+
+    let [enable_input_d, scale_rest @ ..] = rest else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "missing enable-input-d",
+        });
+    };
+    if !scale_rest.is_empty() {
+        return Err(unsupported(NAME, "scale-input-d is not modeled"));
+    }
     let enable_input_d = ctx.resolve_operand(enable_input_d)?;
 
     ctx.emit(
@@ -4959,6 +5002,7 @@ fn lower_tcgen05_mma(
             a_desc,
             b_desc,
             idesc,
+            disable_output_lane,
             enable_input_d,
         },
         predicate,
@@ -5132,7 +5176,10 @@ fn require_immediate_u32(op: &AstOperand, instruction: &str, what: &str) -> Lowe
     match op {
         AstOperand::ImmInt(v) => u32::try_from(*v).map_err(|_| invalid("value out of range")),
         AstOperand::ImmUInt(v) => u32::try_from(*v).map_err(|_| invalid("value out of range")),
-        _ => Err(unsupported(instruction, format!("{what} must be an immediate"))),
+        _ => Err(unsupported(
+            instruction,
+            format!("{what} must be an immediate"),
+        )),
     }
 }
 
@@ -5270,8 +5317,8 @@ fn lower_tensormap_replace(
             };
             let code = require_immediate_u32(new_val, NAME, field_name.as_str())?;
             match field_name.as_str() {
-                "elemtype" => TensormapFieldWrite::Elemtype(TensorElemType::decode(code).map_err(
-                    |c| {
+                "elemtype" => {
+                    TensormapFieldWrite::Elemtype(TensorElemType::decode(code).map_err(|c| {
                         unsupported(
                             NAME,
                             format!(
@@ -5279,8 +5326,8 @@ fn lower_tensormap_replace(
                                  .b6x16_p32/.b6p2x16 are not modeled)"
                             ),
                         )
-                    },
-                )?),
+                    })?)
+                }
                 "interleave_layout" => TensormapFieldWrite::InterleaveLayout(
                     TensorInterleaveLayout::decode(code)
                         .map_err(|c| unsupported(NAME, format!("interleave_layout value {c}")))?,
@@ -5401,7 +5448,10 @@ fn lower_tensormap_cp_fenceproxy(
     };
     let size_val = require_immediate_u32(size, NAME, "size")?;
     if size_val != 128 {
-        return Err(unsupported(NAME, format!("size {size_val} (only 128 is valid)")));
+        return Err(unsupported(
+            NAME,
+            format!("size {size_val} (only 128 is valid)"),
+        ));
     }
     let (dst_base, dst_offset) = resolve_addr_operand(ctx, dst)?;
     let (src_base, src_offset) = resolve_addr_operand(ctx, src)?;

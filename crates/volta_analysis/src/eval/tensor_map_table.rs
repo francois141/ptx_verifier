@@ -116,10 +116,9 @@ pub fn to_mma_swizzle_mode(
         (TensorSwizzleMode::Swizzle128B, TensorSwizzleAtomicity::Atomicity16B) => {
             Some(Mma::Swizzle128B)
         }
-        (
-            TensorSwizzleMode::Swizzle128B,
-            TensorSwizzleAtomicity::Atomicity32BWith8BFlip,
-        ) => Some(Mma::Swizzle128BWith32BAtomicity),
+        (TensorSwizzleMode::Swizzle128B, TensorSwizzleAtomicity::Atomicity32BWith8BFlip) => {
+            Some(Mma::Swizzle128BWith32BAtomicity)
+        }
         _ => None,
     }
 }
@@ -172,7 +171,10 @@ mod tests {
     #[test]
     fn test_swizzle_mode_translation_matches_the_corpus_combinations() {
         assert_eq!(
-            to_mma_swizzle_mode(TensorSwizzleMode::None, TensorSwizzleAtomicity::Atomicity16B),
+            to_mma_swizzle_mode(
+                TensorSwizzleMode::None,
+                TensorSwizzleAtomicity::Atomicity16B
+            ),
             Some(crate::eval::tcgen05_mma::SwizzleMode::None)
         );
         assert_eq!(
