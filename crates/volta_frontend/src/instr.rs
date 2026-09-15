@@ -339,6 +339,7 @@ pub enum InstrKind {
     Tcgen05MmaWsSp,               // tcgen05.mma.ws.sp
     Tcgen05Fence,                 // tcgen05.fence
     Tcgen05Commit,                // tcgen05.commit
+    FenceProxyTensormap,          // fence.proxy.tensormap::generic
 
     // =========================================================================
     // 9.7.17 Stack Manipulation Instructions
@@ -592,6 +593,7 @@ impl InstrKind {
             Tcgen05MmaWsSp => ascii("tcgen05.mma.ws.sp"),
             Tcgen05Fence => ascii("tcgen05.fence"),
             Tcgen05Commit => ascii("tcgen05.commit"),
+            FenceProxyTensormap => ascii("fence.proxy.tensormap::generic"),
 
             // Stack Manipulation
             Stacksave => ascii("stacksave"),
@@ -866,6 +868,7 @@ pub fn get_instr_trie() -> &'static InstrTrie {
             "tcgen05.mma.ws.sp" => Tcgen05MmaWsSp,
             "tcgen05.fence" => Tcgen05Fence,
             "tcgen05.commit" => Tcgen05Commit,
+            "fence.proxy.tensormap::generic" => FenceProxyTensormap,
 
             // Stack Manipulation
             "stacksave" => Stacksave,
@@ -1001,6 +1004,23 @@ mod tests {
             trie.get_ancestor(ascii("tcgen05.wait::st.sync.aligned")),
             Some(InstrKind::Tcgen05WaitSt)
         );
+    }
+
+    #[test]
+    fn test_fence_proxy_tensormap_resolves_via_the_real_trie() {
+        let trie = get_instr_trie();
+
+        assert_eq!(
+            trie.get_ancestor(ascii("fence.proxy.tensormap::generic.acquire.gpu")),
+            Some(InstrKind::FenceProxyTensormap)
+        );
+        assert_eq!(
+            trie.get_ancestor(ascii("fence.proxy.tensormap::generic.release.gpu")),
+            Some(InstrKind::FenceProxyTensormap)
+        );
+        // Plain `fence`/`fence.proxy` forms are unaffected.
+        assert_eq!(trie.get_ancestor(ascii("fence.sc.gpu")), Some(InstrKind::Fence));
+        assert_eq!(trie.get_ancestor(ascii("fence.proxy.alias")), Some(InstrKind::Fence));
     }
 
     #[test]

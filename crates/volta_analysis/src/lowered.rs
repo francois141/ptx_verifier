@@ -15,6 +15,7 @@ use volta_frontend::ast::ScalarType;
 
 use crate::source_map::SourceMap;
 use crate::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
+use crate::tensor_map::TensormapFieldWrite;
 use crate::types::RegCounts;
 
 /// Instruction index (program counter)
@@ -727,6 +728,61 @@ pub enum LoweredInstr {
     },
 
     // =========================================================================
+    // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27,
+    // 9.7.9.26.5.2, 9.7.14.17)
+    // =========================================================================
+    /// `tensormap.replace.mode.field{.ss}.b1024.type [addr], {ord,} new_val`:
+    /// write one named field of the tensor-map object at `addr_base +
+    /// addr_offset` (`space`-qualified - Volta requires an explicit
+    /// `.global`/`.shared::cta` state space, see
+    /// `lowering::lower_tensormap_replace`).
+    TensormapReplace {
+        space: MemSpace,
+        addr_base: Operand,
+        addr_offset: i64,
+        field: TensormapFieldWrite,
+    },
+
+    /// `tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic
+    /// .release.scope.sync.aligned [dst], [src], 128`: materialize a
+    /// structured copy of the tensor-map object at `src` (always
+    /// `.shared::cta`) to `dst` (always `.global`, per the ISA's fixed
+    /// `.cp_qualifiers`), so a later `cp.async.bulk.tensor` can address it
+    /// through `dst`. The release-proxy fence has no data effect to model
+    /// (Volta's execution model does not reorder across proxies).
+    TensormapCpFenceproxy {
+        dst_base: Operand,
+        dst_offset: i64,
+        src_base: Operand,
+        src_offset: i64,
+    },
+
+    /// `fence.proxy.tensormap::generic{.release.scope | .acquire.scope
+    /// [addr], 128}`: a pure proxy-ordering fence, no data effect to model -
+    /// the same treatment as `Tcgen05Fence`.
+    FenceProxyTensormap,
+
+    /// `cp.async.bulk.tensor.dim.shared::cluster.global.tile
+    /// .mbarrier::complete_tx::bytes [dstMem], [tensorMap, {coords}],
+    /// [mbar]`: TMA tensor copy, global to shared. Scoped to exactly this
+    /// form (`.tile` load mode, the `global -> shared::cluster` direction,
+    /// mbarrier-based completion) - see
+    /// `lowering::lower_cp_async_bulk_tensor` for what is rejected.
+    /// `tensormap_space` is the tensor-map object's own state space
+    /// (`.param`/`.const`/`.global` per the ISA; Volta requires `.global`
+    /// - see the lowering function).
+    CpAsyncBulkTensorLoad {
+        dst_base: Operand,
+        dst_offset: i64,
+        tensormap_space: MemSpace,
+        tensormap_base: Operand,
+        tensormap_offset: i64,
+        coords: Vec<Operand>,
+        mbar_base: Operand,
+        mbar_offset: i64,
+    },
+
+    // =========================================================================
     // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
     // =========================================================================
     /// `mbarrier.init{.shared{::cta}}.b64 [addr], count`: create a fresh
@@ -893,6 +949,10 @@ define_instr_kinds!(
     Tcgen05Mma,
     Tcgen05Fence,
     Tcgen05Commit,
+    TensormapReplace,
+    TensormapCpFenceproxy,
+    FenceProxyTensormap,
+    CpAsyncBulkTensorLoad,
     MbarrierInit,
     MbarrierInval,
     MbarrierArrive,
@@ -1095,6 +1155,44 @@ impl LoweredInstr {
             Self::Tcgen05Fence => vec![],
             Self::Tcgen05Commit { addr_base, .. } => from_op(addr_base).into_iter().collect(),
 
+            // Tensor-map objects & TMA tensor copy
+            Self::TensormapReplace {
+                addr_base, field, ..
+            } => {
+                let mut r: Vec<RegId> = from_op(addr_base).into_iter().collect();
+                match field {
+                    TensormapFieldWrite::GlobalAddress(v)
+                    | TensormapFieldWrite::Rank(v)
+                    | TensormapFieldWrite::BoxDim { new_val: v, .. }
+                    | TensormapFieldWrite::GlobalDim { new_val: v, .. }
+                    | TensormapFieldWrite::GlobalStride { new_val: v, .. }
+                    | TensormapFieldWrite::ElementStride { new_val: v, .. } => {
+                        r.extend(from_op(v));
+                    }
+                    TensormapFieldWrite::Elemtype(_)
+                    | TensormapFieldWrite::InterleaveLayout(_)
+                    | TensormapFieldWrite::SwizzleMode(_)
+                    | TensormapFieldWrite::SwizzleAtomicity(_)
+                    | TensormapFieldWrite::FillMode(_) => {}
+                }
+                r
+            }
+            Self::TensormapCpFenceproxy {
+                dst_base, src_base, ..
+            } => from_ops(&[*dst_base, *src_base]),
+            Self::FenceProxyTensormap => vec![],
+            Self::CpAsyncBulkTensorLoad {
+                dst_base,
+                tensormap_base,
+                coords,
+                mbar_base,
+                ..
+            } => {
+                let mut r: Vec<RegId> = from_ops(&[*dst_base, *tensormap_base, *mbar_base]);
+                r.extend(from_ops(coords));
+                r
+            }
+
             // mbarrier
             Self::MbarrierInit {
                 addr_base, count, ..
@@ -1206,6 +1304,10 @@ impl LoweredInstr {
             | Self::Tcgen05Mma { .. }
             | Self::Tcgen05Fence
             | Self::Tcgen05Commit { .. }
+            | Self::TensormapReplace { .. }
+            | Self::TensormapCpFenceproxy { .. }
+            | Self::FenceProxyTensormap
+            | Self::CpAsyncBulkTensorLoad { .. }
             | Self::MbarrierInit { .. }
             | Self::MbarrierInval { .. }
             | Self::MbarrierCompleteTx { .. }

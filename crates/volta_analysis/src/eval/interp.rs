@@ -19,6 +19,7 @@ use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
 use crate::eval::tcgen05_mma;
+use crate::eval::tensor_map_table::{self, TensorMapTable};
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
@@ -27,6 +28,7 @@ use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
     UnaryOp,
 };
+use crate::tensor_map::{TensorFillMode, TensormapFieldWrite};
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::types::{RegClass, ScalarTypeExt};
@@ -169,6 +171,7 @@ pub struct Interpreter<'p> {
     regions: MemRegions,
     pub(in crate::eval) race: RaceTracker,
     pub(in crate::eval) mbarriers: MbarrierTable,
+    pub(in crate::eval) tensor_maps: TensorMapTable,
     pub(in crate::eval) stats: Stats,
     /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`.
     /// A fixed array (not a map) because this is bumped once per executed
@@ -381,6 +384,7 @@ impl<'p> Interpreter<'p> {
             regions,
             race: RaceTracker::new(n_threads as usize),
             mbarriers: MbarrierTable::new(n_threads as usize),
+            tensor_maps: TensorMapTable::new(),
             stats: Stats::default(),
             op_counts: [0; crate::lowered::KIND_COUNT],
         })
@@ -1511,6 +1515,63 @@ impl<'p> Interpreter<'p> {
                 self.mbarriers.arrive(id, t, 1, None);
             }
 
+            LoweredInstr::TensormapReplace {
+                space,
+                addr_base,
+                addr_offset,
+                field,
+            } => {
+                self.exec_tensormap_replace(t, pc, *space, addr_base, *addr_offset, field)?;
+            }
+
+            LoweredInstr::TensormapCpFenceproxy {
+                dst_base,
+                dst_offset,
+                src_base,
+                src_offset,
+            } => {
+                let dst = self.effective_addr(t, pc, dst_base, *dst_offset)?;
+                let src = self.effective_addr(t, pc, src_base, *src_offset)?;
+                if self
+                    .tensor_maps
+                    .copy_entry(MemSpace::Global, dst, MemSpace::Shared, src)
+                    .is_none()
+                {
+                    return Err(EvalError::TensorMapNotFound {
+                        thread: t,
+                        pc,
+                        space: MemSpace::Shared,
+                        addr: src,
+                    });
+                }
+            }
+
+            LoweredInstr::FenceProxyTensormap => {}
+
+            LoweredInstr::CpAsyncBulkTensorLoad {
+                dst_base,
+                dst_offset,
+                tensormap_space,
+                tensormap_base,
+                tensormap_offset,
+                coords,
+                mbar_base,
+                mbar_offset,
+            } => {
+                self.exec_cp_async_bulk_tensor_load(
+                    t,
+                    pc,
+                    dst_base,
+                    *dst_offset,
+                    *tensormap_space,
+                    tensormap_base,
+                    *tensormap_offset,
+                    coords,
+                    mbar_base,
+                    *mbar_offset,
+                )?;
+            }
+
             // mbarrier: per-thread ops, not warp-cooperative - any single
             // thread issues these independently (unlike the tensor-core
             // family above).
@@ -2132,6 +2193,344 @@ impl<'p> Interpreter<'p> {
             pc,
             what,
         })
+    }
+
+    /// `tensormap.replace`: write one named field of the tensor-map object
+    /// at `addr_base + addr_offset`. `new_val` operands are resolved to
+    /// concrete integers immediately (see `eval::tensor_map_table`'s
+    /// module doc for why); `.field3` enum values were already decoded at
+    /// lowering time, since the ISA requires them to be immediates there.
+    fn exec_tensormap_replace(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr_base: &Operand,
+        addr_offset: i64,
+        field: &TensormapFieldWrite,
+    ) -> EvalResult<()> {
+        let addr = self.effective_addr(t, pc, addr_base, addr_offset)?;
+        match field {
+            TensormapFieldWrite::GlobalAddress(v) => {
+                let val = self.concrete_operand(t, pc, v, "tensormap .global_address")?;
+                self.tensor_maps.entry_mut(space, addr).global_address = Some(val as u64);
+            }
+            TensormapFieldWrite::Rank(v) => {
+                let val = self.concrete_operand(t, pc, v, "tensormap .rank")?;
+                let val = u32::try_from(val).map_err(|_| EvalError::Unsupported {
+                    pc,
+                    what: format!("tensormap .rank value {val} out of range"),
+                })?;
+                self.tensor_maps.entry_mut(space, addr).rank = Some(val);
+            }
+            TensormapFieldWrite::BoxDim { ord, new_val } => {
+                let val = self.concrete_operand(t, pc, new_val, "tensormap .box_dim")?;
+                let val = u32::try_from(val).map_err(|_| EvalError::Unsupported {
+                    pc,
+                    what: format!("tensormap .box_dim value {val} out of range"),
+                })?;
+                self.tensor_maps
+                    .entry_mut(space, addr)
+                    .box_dim
+                    .insert(*ord, val);
+            }
+            TensormapFieldWrite::GlobalDim { ord, new_val } => {
+                let val = self.concrete_operand(t, pc, new_val, "tensormap .global_dim")?;
+                let val = u64::try_from(val).map_err(|_| EvalError::Unsupported {
+                    pc,
+                    what: format!("tensormap .global_dim value {val} out of range"),
+                })?;
+                self.tensor_maps
+                    .entry_mut(space, addr)
+                    .global_dim
+                    .insert(*ord, val);
+            }
+            TensormapFieldWrite::GlobalStride { ord, new_val } => {
+                let val = self.concrete_operand(t, pc, new_val, "tensormap .global_stride")?;
+                let val = u64::try_from(val).map_err(|_| EvalError::Unsupported {
+                    pc,
+                    what: format!("tensormap .global_stride value {val} out of range"),
+                })?;
+                self.tensor_maps
+                    .entry_mut(space, addr)
+                    .global_stride
+                    .insert(*ord, val);
+            }
+            TensormapFieldWrite::ElementStride { ord, new_val } => {
+                let val = self.concrete_operand(t, pc, new_val, "tensormap .element_stride")?;
+                let val = u32::try_from(val).map_err(|_| EvalError::Unsupported {
+                    pc,
+                    what: format!("tensormap .element_stride value {val} out of range"),
+                })?;
+                self.tensor_maps
+                    .entry_mut(space, addr)
+                    .element_stride
+                    .insert(*ord, val);
+            }
+            TensormapFieldWrite::Elemtype(v) => {
+                self.tensor_maps.entry_mut(space, addr).elemtype = Some(*v);
+            }
+            TensormapFieldWrite::InterleaveLayout(v) => {
+                self.tensor_maps.entry_mut(space, addr).interleave_layout = Some(*v);
+            }
+            TensormapFieldWrite::SwizzleMode(v) => {
+                self.tensor_maps.entry_mut(space, addr).swizzle_mode = Some(*v);
+            }
+            TensormapFieldWrite::SwizzleAtomicity(v) => {
+                self.tensor_maps.entry_mut(space, addr).swizzle_atomicity = Some(*v);
+            }
+            TensormapFieldWrite::FillMode(v) => {
+                self.tensor_maps.entry_mut(space, addr).fill_mode = Some(*v);
+            }
+        }
+        Ok(())
+    }
+
+    /// `cp.async.bulk.tensor...tile.mbarrier::complete_tx::bytes`: TMA
+    /// tensor copy, global to shared (see
+    /// `lowering::lower_cp_async_bulk_tensor` for the exact scope - `.tile`
+    /// mode, the `global -> shared::cluster` direction, mbarrier
+    /// completion only).
+    ///
+    /// Per-dimension addressing follows PTX ISA 9.7.9.26.5.2/5.5.3: box-local
+    /// index `k` in dimension `d` maps to global tensor index `coord[d] +
+    /// k * element_stride[d]`; out-of-`global_dim` indices get `fill_mode`'s
+    /// fill (scoped to zero-fill - see the `fill_mode` check below) rather
+    /// than a physical read, since that is architecturally expected at tile
+    /// edges (5.5.3.3), not a bug. The destination box is written in
+    /// row-major (`.tile` "preserve multi-dimensional layout") order,
+    /// swizzled via the *same* byte-permutation
+    /// `eval::tcgen05_mma::swizzled_element_addr` already implements for
+    /// the MMA operand read (PTX ISA 5.5.7 describes one pattern for both);
+    /// the box is required to fit within a single swizzle atom along
+    /// dimension 0 so `leading_dim_byte_offset` is never needed (see the
+    /// `atom_shape`-based check below) - a box that doesn't is rejected
+    /// loudly rather than silently misplaced.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_cp_async_bulk_tensor_load(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        dst_base: &Operand,
+        dst_offset: i64,
+        tensormap_space: MemSpace,
+        tensormap_base: &Operand,
+        tensormap_offset: i64,
+        coords: &[Operand],
+        mbar_base: &Operand,
+        mbar_offset: i64,
+    ) -> EvalResult<()> {
+        let dst_addr = self.effective_addr(t, pc, dst_base, dst_offset)?;
+        let tm_addr = self.effective_addr(t, pc, tensormap_base, tensormap_offset)?;
+        let mbar_addr = self.effective_addr(t, pc, mbar_base, mbar_offset)?;
+
+        let entry = self
+            .tensor_maps
+            .get(tensormap_space, tm_addr)
+            .cloned()
+            .ok_or(EvalError::TensorMapNotFound {
+                thread: t,
+                pc,
+                space: tensormap_space,
+                addr: tm_addr,
+            })?;
+
+        let missing = |field: &str| EvalError::TensorMapFieldMissing {
+            thread: t,
+            pc,
+            field: field.to_string(),
+        };
+
+        let rank0 = entry.rank.ok_or_else(|| missing("rank"))?;
+        let real_rank = rank0 as usize + 1;
+        if real_rank != coords.len() {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "cp.async.bulk.tensor: tensor-map rank {} does not match {} tensorCoords operand(s)",
+                    real_rank,
+                    coords.len()
+                ),
+            });
+        }
+        let elemtype = entry.elemtype.ok_or_else(|| missing("elemtype"))?;
+        let fill_mode = entry.fill_mode.ok_or_else(|| missing("fill_mode"))?;
+        if fill_mode != TensorFillMode::Zero {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "cp.async.bulk.tensor: OOB-NaN fill mode not modeled (Volta's expression \
+                       arena cannot represent a literal NaN constant)"
+                    .to_string(),
+            });
+        }
+        let swizzle_mode = entry.swizzle_mode.ok_or_else(|| missing("swizzle_mode"))?;
+        let swizzle_atomicity = entry
+            .swizzle_atomicity
+            .ok_or_else(|| missing("swizzle_atomicity"))?;
+        let mma_swizzle = tensor_map_table::to_mma_swizzle_mode(swizzle_mode, swizzle_atomicity)
+            .ok_or_else(|| EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "cp.async.bulk.tensor: swizzle mode {:?} / atomicity {:?} combination not modeled",
+                    swizzle_mode, swizzle_atomicity
+                ),
+            })?;
+        let global_address = entry
+            .global_address
+            .ok_or_else(|| missing("global_address"))?;
+
+        let mut box_dims = Vec::with_capacity(real_rank);
+        let mut global_dims = Vec::with_capacity(real_rank);
+        let mut element_strides = Vec::with_capacity(real_rank);
+        for d in 0..real_rank as u32 {
+            box_dims.push(*entry.box_dim.get(&d).ok_or_else(|| missing("box_dim"))?);
+            global_dims.push(
+                *entry
+                    .global_dim
+                    .get(&d)
+                    .ok_or_else(|| missing("global_dim"))?,
+            );
+            element_strides.push(
+                *entry
+                    .element_stride
+                    .get(&d)
+                    .ok_or_else(|| missing("element_stride"))?,
+            );
+        }
+        let mut global_strides = Vec::with_capacity(real_rank.saturating_sub(1));
+        for d in 0..(real_rank as u32).saturating_sub(1) {
+            global_strides.push(
+                *entry
+                    .global_stride
+                    .get(&d)
+                    .ok_or_else(|| missing("global_stride"))?,
+            );
+        }
+
+        let elem_bytes = elemtype.byte_width();
+        let row_bytes = box_dims[0] as u64 * elem_bytes;
+
+        if mma_swizzle != tcgen05_mma::SwizzleMode::None {
+            const CELL_BYTES: u64 = 16;
+            if !row_bytes.is_multiple_of(CELL_BYTES) {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: format!(
+                        "cp.async.bulk.tensor: box_dim[0] ({} elements, {} bytes) is not a whole \
+                         number of 16-byte swizzle cells",
+                        box_dims[0], row_bytes
+                    ),
+                });
+            }
+            let cell_count = row_bytes / CELL_BYTES;
+            let (_, w) = tcgen05_mma::atom_shape(mma_swizzle);
+            if cell_count > w {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: format!(
+                        "cp.async.bulk.tensor: box_dim[0] spans {} swizzle cells, more than one \
+                         {:?} atom ({} cells) - crossing a leading-dimension atom boundary is not modeled",
+                        cell_count, mma_swizzle, w
+                    ),
+                });
+            }
+            let boundary = match mma_swizzle {
+                tcgen05_mma::SwizzleMode::Swizzle32B => 256,
+                tcgen05_mma::SwizzleMode::Swizzle64B => 512,
+                tcgen05_mma::SwizzleMode::Swizzle128B => 1024,
+                _ => {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: format!(
+                            "cp.async.bulk.tensor: swizzle mode {:?} not modeled",
+                            mma_swizzle
+                        ),
+                    });
+                }
+            };
+            if !dst_addr.is_multiple_of(boundary) {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: format!(
+                        "cp.async.bulk.tensor: destination {:#x} is not aligned to the {:?} \
+                         swizzle pattern's {}-byte boundary (nonzero swizzle base offset not modeled)",
+                        dst_addr, mma_swizzle, boundary
+                    ),
+                });
+            }
+        }
+
+        let desc = tcgen05_mma::MatrixDescriptor {
+            start_addr: dst_addr,
+            leading_dim_byte_offset: 0,
+            stride_dim_byte_offset: row_bytes,
+            base_offset: 0,
+            absolute_leading_stride: false,
+            swizzle_mode: mma_swizzle,
+        };
+
+        let mut coord_vals = Vec::with_capacity(real_rank);
+        for c in coords {
+            coord_vals.push(self.concrete_operand(t, pc, c, "cp.async.bulk.tensor tensorCoords")?);
+        }
+
+        let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();
+        let mut idx = vec![0u32; real_rank];
+        let mut global_idx = vec![0i64; real_rank];
+        for linear in 0..total_elems {
+            let mut rem = linear;
+            for (d, dim) in idx.iter_mut().enumerate() {
+                *dim = (rem % box_dims[d] as u64) as u32;
+                rem /= box_dims[d] as u64;
+            }
+
+            let mut in_bounds = true;
+            for d in 0..real_rank {
+                let gi = coord_vals[d] + idx[d] as i64 * element_strides[d] as i64;
+                global_idx[d] = gi;
+                if gi < 0 || gi as u64 >= global_dims[d] {
+                    in_bounds = false;
+                }
+            }
+
+            let value = if in_bounds {
+                let mut byte_addr = global_address + global_idx[0] as u64 * elem_bytes;
+                for d in 1..real_rank {
+                    byte_addr += global_idx[d] as u64 * global_strides[d - 1];
+                }
+                self.mem_read(t, pc, MemSpace::Global, byte_addr, elem_bytes)?
+            } else if elemtype.is_float() {
+                Value::Scalar(
+                    self.arena
+                        .float_from_f64(0.0)
+                        .expect("0.0 is always representable"),
+                )
+            } else {
+                Value::Scalar(self.arena.int(0))
+            };
+
+            let mut stride_idx = 0u64;
+            let mut mult = 1u64;
+            for d in 1..real_rank {
+                stride_idx += idx[d] as u64 * mult;
+                mult *= box_dims[d] as u64;
+            }
+            let leading_idx = idx[0] as u64;
+            let dst_elem_addr =
+                tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
+            self.mem_write(t, pc, MemSpace::Shared, dst_elem_addr, elem_bytes, value)?;
+        }
+
+        self.check_bounds(t, pc, MemSpace::Shared, mbar_addr, 8)?;
+        self.check_alignment(t, pc, MemSpace::Shared, mbar_addr, 8)?;
+        let mbar_id = self
+            .shared
+            .read_mbarrier(mbar_addr)
+            .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+        let total_bytes = total_elems * elem_bytes;
+        self.mbarriers.complete_tx(mbar_id, total_bytes);
+
+        Ok(())
     }
 
     /// Resolve an operand that must be a concrete, non-negative integer

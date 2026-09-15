@@ -215,6 +215,25 @@ pub enum EvalError {
         lane_base: u32,
         expected_quadrant_base: u32,
     },
+    /// `tensormap.cp_fenceproxy`/`cp.async.bulk.tensor` referenced a
+    /// tensor-map object at an address with no prior `tensormap.replace`
+    /// write - there is no `tensormap.init`, so an entry only exists once
+    /// at least one field has been written to it.
+    TensorMapNotFound {
+        thread: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+    },
+    /// `cp.async.bulk.tensor` used a tensor-map object missing a field the
+    /// copy needs (PTX ISA 9.7.9.27 never requires every field be set
+    /// before use - a kernel is free to write only some, so using an
+    /// incomplete one is a real kernel bug, not a Volta gap).
+    TensorMapFieldMissing {
+        thread: ThreadId,
+        pc: InstrId,
+        field: String,
+    },
 }
 
 impl fmt::Display for EvalError {
@@ -430,6 +449,21 @@ impl fmt::Display for EvalError {
                 "{}: tcgen05.ld/.st at {} addresses tensor-memory lane quadrant {} - the issuing \
                  warp may only access its own quadrant, starting at lane {}",
                 thread, pc, lane_base, expected_quadrant_base
+            ),
+            Self::TensorMapNotFound {
+                thread,
+                pc,
+                space,
+                addr,
+            } => write!(
+                f,
+                "{}: {} references a tensor-map object at {:?}[{:#x}] that was never written by tensormap.replace",
+                thread, pc, space, addr
+            ),
+            Self::TensorMapFieldMissing { thread, pc, field } => write!(
+                f,
+                "{}: {} uses a tensor-map object missing its `.{}` field",
+                thread, pc, field
             ),
         }
     }

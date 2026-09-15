@@ -160,7 +160,7 @@ const CELL_BYTES: u64 = 16;
 /// cross-check the way every other mode has, so this one entry carries
 /// less confirmation than the rest, though the 32 data points in that one
 /// diagram are all reproduced exactly.
-fn atom_shape(mode: SwizzleMode) -> (u64, u64) {
+pub(crate) fn atom_shape(mode: SwizzleMode) -> (u64, u64) {
     match mode {
         SwizzleMode::Swizzle32B => (8, 2),
         SwizzleMode::Swizzle64B => (8, 4),
