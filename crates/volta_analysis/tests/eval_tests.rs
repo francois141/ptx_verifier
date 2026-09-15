@@ -697,6 +697,114 @@ fn test_tcgen05_commit_satisfies_mbarrier_wait() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
+/// `tcgen05.ld`/`.st` decode `taddr` as a real Tensor Memory address (PTX
+/// ISA 9.7.17.1.1: `[31:16]=lane, [15:0]=column`), not a bare column
+/// number - two warps (64 threads) each pack their *own* quadrant into the
+/// address (`warp_id_in_warpgroup * 32`, exactly matching nvcc/triton's own
+/// codegen for this idiom - see `sm100a_support_plan.md`), store their own
+/// warp id, and read it back. Each warp getting back exactly its own value
+/// (not the other warp's) proves lane separation actually works end to
+/// end, not just that the addressing happens not to crash.
+#[test]
+fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<3>;
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r9, %tid.x;
+    setp.lt.u32 %p1, %r9, 32;
+    mov.u32 %r3, taddr_slot;
+    @%p1 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    bar.sync 0;
+
+    shr.u32 %r4, %r9, 5;
+    shl.u32 %r5, %r4, 5;
+    shl.u32 %r6, %r5, 16;
+    or.b32 %r7, %r1, %r6;
+
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r7], %r4;
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r8, [%r7];
+    tcgen05.wait::ld.sync.aligned;
+    cvt.rn.f32.u32 %f1, %r8;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mul.wide.u32 %rd2, %r9, 4;
+    add.s64 %rd2, %rd1, %rd2;
+    st.global.f32 [%rd2], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((64, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 64,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "0");
+    assert_eq!(display_output(&output, "out", 31), "0");
+    assert_eq!(display_output(&output, "out", 32), "1");
+    assert_eq!(display_output(&output, "out", 63), "1");
+}
+
+/// A kernel whose `taddr` encodes a lane quadrant that isn't the issuing
+/// warp's own (PTX ISA 9.7.17.8.1's access restriction) is a real bug - the
+/// error must fire, not get silently "corrected" by deriving the lane from
+/// `ThreadId` instead of the address the kernel actually computed. One
+/// warp (thread 0's own quadrant is 0) forces its `taddr` to claim quadrant
+/// 32 instead.
+#[test]
+fn test_tcgen05_st_rejects_wrong_quadrant_address() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .b32 %r<6>;
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r5, %tid.x;
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    bar.sync 0;
+
+    // Wrong on purpose: this warp's own quadrant is 0, not 32.
+    or.b32 %r2, %r1, 2097152;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r2], %r5;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Tcgen05LaneRestrictionViolation {
+            lane_base,
+            expected_quadrant_base,
+            ..
+        }) => {
+            assert_eq!(*lane_base, 32);
+            assert_eq!(*expected_quadrant_base, 0);
+        }
+        other => panic!("expected Tcgen05LaneRestrictionViolation, got: {}", other),
+    }
+}
+
 /// `elect.sync` elects the lowest-numbered *live* lane in the mask as
 /// leader (PTX ISA 9.7.14.15: "deterministically, the same leader thread is
 /// elected for the same membermask every time" - matching the real

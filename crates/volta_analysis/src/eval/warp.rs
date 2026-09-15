@@ -983,13 +983,48 @@ impl Interpreter<'_> {
             .map_err(|e| self.tcgen05_error(members[0], pc, e))
     }
 
-    /// The physical Tensor Memory lane a thread's `tcgen05.ld`/`.st` reaches.
-    /// PTX ISA 9.7.17.8.1 ("Access restrictions"): the CTA's 128 lanes are
-    /// split into 4 chunks of 32, one per warp *within its warpgroup*
-    /// (warpgroup-relative id 0-3, not CTA-relative) - which is exactly a
-    /// thread's position within its own 128-thread warpgroup.
+    /// The physical Tensor Memory lane quadrant a thread's warp is
+    /// restricted to (PTX ISA 9.7.17.8.1, "Access restrictions"): the CTA's
+    /// 128 lanes split into 4 chunks of 32, one per warp *within its
+    /// warpgroup* (warpgroup-relative id 0-3, not CTA-relative) - which is
+    /// exactly a thread's position within its own 128-thread warpgroup.
+    /// This is the value the ISA independently guarantees; a `tcgen05.ld`/
+    /// `.st`'s `taddr` must encode this same quadrant in its own lane field
+    /// (see `tcgen05_decode_taddr`) - real hardware does not derive the
+    /// lane from `ThreadId` on its own, so neither does Volta.
     fn tcgen05_lane(t: ThreadId) -> u32 {
         t.0 % 128
+    }
+
+    /// Decode a `tcgen05.ld`/`.st` address into `(lane_base, col)` exactly
+    /// as hardware does: PTX ISA 9.7.17.1.1 packs every Tensor Memory
+    /// address as `[31:16] = lane, [15:0] = column`, and `taddr` for these
+    /// two instructions is a real address, not a bare column number - "All
+    /// the threads in the warp must specify the same value of `taddr`,
+    /// which must be the base address" (9.7.17.8.3/.8.4).
+    ///
+    /// Validates `lane_base` against the issuing warp's own quadrant
+    /// (9.7.17.8.1: a lane can only be reached by the one warp it belongs
+    /// to). This is deliberately a hard error, not a silent correction: a
+    /// kernel whose `taddr` arithmetic lands in the wrong quadrant is
+    /// genuinely broken (undefined behavior on real hardware), and
+    /// deriving the lane from `ThreadId` instead of the address - ignoring
+    /// what the kernel actually computed - would hide exactly the class of
+    /// bug Volta exists to catch.
+    fn tcgen05_decode_taddr(pc: InstrId, members: &[ThreadId], raw: i64) -> EvalResult<(u32, u32)> {
+        let packed = raw as u32;
+        let lane_base = packed >> 16;
+        let col = packed & 0xFFFF;
+        let expected = (Self::tcgen05_lane(members[0]) / WARP_SIZE) * WARP_SIZE;
+        if lane_base != expected {
+            return Err(EvalError::Tcgen05LaneRestrictionViolation {
+                thread: members[0],
+                pc,
+                lane_base,
+                expected_quadrant_base: expected,
+            });
+        }
+        Ok((lane_base, col))
     }
 
     /// Convert a detected async hazard into the corresponding `EvalError`.
@@ -1022,8 +1057,8 @@ impl Interpreter<'_> {
         taddr_offset: i64,
     ) -> EvalResult<()> {
         let base = self.uniform_concrete(pc, members, taddr_base, "tcgen05.ld taddr")?;
-        let base_col = (base + taddr_offset) as u32;
-        let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
+        let (lane_base, base_col) = Self::tcgen05_decode_taddr(pc, members, base + taddr_offset)?;
+        let quadrant = lane_base / WARP_SIZE;
         let current = AccessSite {
             thread: members[0],
             pc,
@@ -1033,7 +1068,7 @@ impl Interpreter<'_> {
             .tcgen05_begin(quadrant, base_col, dst.len() as u32, false, current)
             .map_err(Self::tcgen05_hazard_error)?;
         for &m in members {
-            let lane = Self::tcgen05_lane(m);
+            let lane = lane_base + (m.0 % WARP_SIZE);
             for (k, &reg) in dst.iter().enumerate() {
                 let col = base_col + k as u32;
                 let e = self
@@ -1063,8 +1098,8 @@ impl Interpreter<'_> {
         src: &[Operand],
     ) -> EvalResult<()> {
         let base = self.uniform_concrete(pc, members, taddr_base, "tcgen05.st taddr")?;
-        let base_col = (base + taddr_offset) as u32;
-        let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
+        let (lane_base, base_col) = Self::tcgen05_decode_taddr(pc, members, base + taddr_offset)?;
+        let quadrant = lane_base / WARP_SIZE;
         let current = AccessSite {
             thread: members[0],
             pc,
@@ -1074,7 +1109,7 @@ impl Interpreter<'_> {
             .tcgen05_begin(quadrant, base_col, src.len() as u32, true, current)
             .map_err(Self::tcgen05_hazard_error)?;
         for &m in members {
-            let lane = Self::tcgen05_lane(m);
+            let lane = lane_base + (m.0 % WARP_SIZE);
             for (k, op) in src.iter().enumerate() {
                 let col = base_col + k as u32;
                 let e = self.scalar_operand(m, pc, op)?;
@@ -1197,5 +1232,59 @@ impl Interpreter<'_> {
             }
         }
         Ok(d)
+    }
+}
+
+#[cfg(test)]
+mod tcgen05_taddr_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_the_issuing_warps_own_quadrant() {
+        // Warp 1 within its warpgroup (threads 32..63) -> quadrant base 32,
+        // packed at bits [31:16] per PTX ISA 9.7.17.1.1.
+        let members: Vec<ThreadId> = (32..64).map(ThreadId).collect();
+        let raw = (32i64 << 16) | 7; // lane_base=32, col=7
+        let (lane_base, col) =
+            Interpreter::tcgen05_decode_taddr(InstrId(0), &members, raw).unwrap();
+        assert_eq!(lane_base, 32);
+        assert_eq!(col, 7);
+    }
+
+    #[test]
+    fn rejects_an_address_missing_the_issuing_warps_quadrant() {
+        // Warp 1 (quadrant base 32) issuing with a bare column value that
+        // never packed a lane field at all (lane_base=0) - a real kernel
+        // bug (undefined behavior on real hardware), not something to
+        // paper over by deriving the lane from `ThreadId` instead.
+        let members: Vec<ThreadId> = (32..64).map(ThreadId).collect();
+        let raw = 7i64;
+        let err = Interpreter::tcgen05_decode_taddr(InstrId(0), &members, raw).unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::Tcgen05LaneRestrictionViolation {
+                lane_base: 0,
+                expected_quadrant_base: 32,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_an_address_encoding_a_different_warps_quadrant() {
+        // Warp 0 (threads 0..31, quadrant base 0) issuing with an address
+        // that packs warp 1's quadrant (32) - cross-quadrant addressing,
+        // explicitly restricted by PTX ISA 9.7.17.8.1.
+        let members: Vec<ThreadId> = (0..32).map(ThreadId).collect();
+        let raw = (32i64 << 16) | 3;
+        let err = Interpreter::tcgen05_decode_taddr(InstrId(0), &members, raw).unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::Tcgen05LaneRestrictionViolation {
+                lane_base: 32,
+                expected_quadrant_base: 0,
+                ..
+            }
+        ));
     }
 }
