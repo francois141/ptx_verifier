@@ -80,6 +80,19 @@ impl fmt::Display for ParamId {
     }
 }
 
+/// Identifies one `{}` block's label-declaration scope. PTX ISA scopes
+/// label declarations - and references to them - to the enclosing block:
+/// two labels of the same name in unrelated (e.g. sibling) blocks are
+/// independent declarations, not a redeclaration, and a label is only
+/// visible from within its own scope or one nested inside it. This is the
+/// one symbol kind Volta gives real block scoping to; every other kind
+/// (registers, params, shared/local/global vars) still shares one flat,
+/// whole-kernel namespace via `SymbolTable::reserve_name` - labels are the
+/// only kind observed in practice (nvcc's per-block inline-asm spin-wait
+/// idiom, e.g. two independent `{ waitLoop: ...; }` blocks) to need it.
+#[id_type]
+pub struct LabelScopeId(pub u32);
+
 /// Information about a declared register
 #[derive(Debug, Clone)]
 pub struct RegInfo {
@@ -347,8 +360,13 @@ pub struct SymbolTable {
     /// Parameters in declaration order
     params_ordered: IdVec<ParamId, ParamInfo>,
 
-    /// Label name → instruction PC
-    labels: HashMap<String, InstrId>,
+    /// Label name → instruction PC, one inner map per label scope (see
+    /// `LabelScopeId`).
+    labels: HashMap<LabelScopeId, HashMap<String, InstrId>>,
+    /// Each label scope's enclosing scope (`None` for the root). Indexed by
+    /// `LabelScopeId`; scope 0 (`ROOT_LABEL_SCOPE`) is always the function
+    /// body's top-level scope, seeded in `new()`.
+    label_scope_parents: IdVec<LabelScopeId, Option<LabelScopeId>>,
 
     /// Shared memory allocations. Extern variables only appear here once
     /// `finalize_shared_layout` has placed them.
@@ -374,7 +392,15 @@ pub struct SymbolTable {
 }
 
 impl SymbolTable {
+    /// The function body's top-level label scope - always the first scope
+    /// created (`new()` seeds it with no parent).
+    pub const ROOT_LABEL_SCOPE: LabelScopeId = LabelScopeId(0);
+
     pub fn new() -> Self {
+        let mut label_scope_parents = IdVec::new();
+        let root = label_scope_parents.push(None);
+        debug_assert_eq!(root, Self::ROOT_LABEL_SCOPE);
+
         Self {
             all_names: HashMap::new(),
             registers: HashMap::new(),
@@ -382,6 +408,7 @@ impl SymbolTable {
             params: HashMap::new(),
             params_ordered: IdVec::new(),
             labels: HashMap::new(),
+            label_scope_parents,
             shared_vars: HashMap::new(),
             shared_mem_size: 0,
             has_extern_shared: false,
@@ -480,10 +507,56 @@ impl SymbolTable {
         Ok(id)
     }
 
-    /// Declare a label at the given PC
-    pub fn declare_label(&mut self, name: &str, pc: InstrId) -> LowerResult<()> {
-        self.reserve_name(name, SymbolKind::Label)?;
-        self.labels.insert(name.to_string(), pc);
+    /// Create a new label scope nested inside `parent` (one per `{}` block
+    /// entered while lowering) and return its id.
+    pub fn push_label_scope(&mut self, parent: LabelScopeId) -> LabelScopeId {
+        self.label_scope_parents.push(Some(parent))
+    }
+
+    /// Declare a label at the given PC, within `scope`. Cross-kind name
+    /// collisions (vs. a register/param/shared/etc.) still use the one
+    /// flat, whole-kernel namespace (`reserve_name`) every other symbol
+    /// kind shares - only label-vs-label collisions get real block
+    /// scoping: an identical name is a redeclaration only if it's already
+    /// visible from `scope` (declared in `scope` itself or an enclosing
+    /// one); a same-named label in a sibling or already-exited block is an
+    /// independent declaration.
+    pub fn declare_label(
+        &mut self,
+        name: &str,
+        scope: LabelScopeId,
+        pc: InstrId,
+    ) -> LowerResult<()> {
+        match self.all_names.get(name) {
+            Some(SymbolKind::Label) => {}
+            Some(&existing) => {
+                return Err(LowerError::DuplicateName {
+                    name: name.to_string(),
+                    existing,
+                    attempted: SymbolKind::Label,
+                });
+            }
+            None => {
+                self.all_names.insert(name.to_string(), SymbolKind::Label);
+            }
+        }
+
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if self.labels.get(&s).is_some_and(|m| m.contains_key(name)) {
+                return Err(LowerError::DuplicateName {
+                    name: name.to_string(),
+                    existing: SymbolKind::Label,
+                    attempted: SymbolKind::Label,
+                });
+            }
+            cur = self.label_scope_parents[s];
+        }
+
+        self.labels
+            .entry(scope)
+            .or_default()
+            .insert(name.to_string(), pc);
         Ok(())
     }
 
@@ -707,9 +780,18 @@ impl SymbolTable {
         self.params.get(name)
     }
 
-    /// Look up a label
-    pub fn resolve_label(&self, name: &str) -> Option<InstrId> {
-        self.labels.get(name).copied()
+    /// Look up a label, walking outward from `scope` through its enclosing
+    /// blocks (real lexical scoping - see `declare_label`). A label
+    /// declared in a sibling or unrelated block is correctly invisible.
+    pub fn resolve_label(&self, name: &str, scope: LabelScopeId) -> Option<InstrId> {
+        let mut cur = Some(scope);
+        while let Some(s) = cur {
+            if let Some(&pc) = self.labels.get(&s).and_then(|m| m.get(name)) {
+                return Some(pc);
+            }
+            cur = self.label_scope_parents[s];
+        }
+        None
     }
 
     /// Look up shared memory variable
@@ -915,29 +997,120 @@ mod tests {
     fn test_labels() {
         use id_collections::Id;
         let mut symbols = SymbolTable::new();
+        let root = SymbolTable::ROOT_LABEL_SCOPE;
         symbols
-            .declare_label("LOOP", InstrId::from_index(10))
+            .declare_label("LOOP", root, InstrId::from_index(10))
             .unwrap();
         symbols
-            .declare_label("END", InstrId::from_index(50))
+            .declare_label("END", root, InstrId::from_index(50))
             .unwrap();
 
-        assert_eq!(symbols.resolve_label("LOOP"), Some(InstrId::from_index(10)));
-        assert_eq!(symbols.resolve_label("END"), Some(InstrId::from_index(50)));
-        assert_eq!(symbols.resolve_label("MISSING"), None);
+        assert_eq!(
+            symbols.resolve_label("LOOP", root),
+            Some(InstrId::from_index(10))
+        );
+        assert_eq!(
+            symbols.resolve_label("END", root),
+            Some(InstrId::from_index(50))
+        );
+        assert_eq!(symbols.resolve_label("MISSING", root), None);
     }
 
     #[test]
     fn test_duplicate_label_error() {
         use id_collections::Id;
         let mut symbols = SymbolTable::new();
+        let root = SymbolTable::ROOT_LABEL_SCOPE;
         symbols
-            .declare_label("LOOP", InstrId::from_index(10))
+            .declare_label("LOOP", root, InstrId::from_index(10))
             .unwrap();
 
-        // Try to declare same label again
-        let result = symbols.declare_label("LOOP", InstrId::from_index(20));
+        // Try to declare the same label again, in the same scope.
+        let result = symbols.declare_label("LOOP", root, InstrId::from_index(20));
         assert!(result.is_err());
+    }
+
+    /// The bug this scoping fix addresses: two sibling `{}` blocks (real
+    /// PTX, e.g. nvcc's per-buffer `mbarrier.try_wait.parity` spin-wait
+    /// idiom) legally reuse the same label name - not a redeclaration,
+    /// since neither is visible from the other's scope.
+    #[test]
+    fn test_sibling_scopes_may_reuse_a_label_name() {
+        use id_collections::Id;
+        let mut symbols = SymbolTable::new();
+        let root = SymbolTable::ROOT_LABEL_SCOPE;
+        let block_a = symbols.push_label_scope(root);
+        let block_b = symbols.push_label_scope(root);
+
+        symbols
+            .declare_label("waitLoop", block_a, InstrId::from_index(10))
+            .unwrap();
+        symbols
+            .declare_label("waitLoop", block_b, InstrId::from_index(20))
+            .unwrap();
+
+        assert_eq!(
+            symbols.resolve_label("waitLoop", block_a),
+            Some(InstrId::from_index(10))
+        );
+        assert_eq!(
+            symbols.resolve_label("waitLoop", block_b),
+            Some(InstrId::from_index(20))
+        );
+    }
+
+    /// Declaring the same label name twice *within the same* block is
+    /// still a genuine duplicate, not two independent declarations.
+    #[test]
+    fn test_duplicate_label_within_the_same_scope_still_errors() {
+        use id_collections::Id;
+        let mut symbols = SymbolTable::new();
+        let block = symbols.push_label_scope(SymbolTable::ROOT_LABEL_SCOPE);
+        symbols
+            .declare_label("foo", block, InstrId::from_index(0))
+            .unwrap();
+        let result = symbols.declare_label("foo", block, InstrId::from_index(1));
+        assert!(result.is_err());
+    }
+
+    /// A label declared inside a nested block is not visible from the
+    /// enclosing (parent) scope - only inward visibility (enclosing →
+    /// nested) is real lexical scoping; outward would let a name declared
+    /// in one block leak into unrelated code around it.
+    #[test]
+    fn test_label_not_visible_outside_its_own_scope() {
+        use id_collections::Id;
+        let mut symbols = SymbolTable::new();
+        let root = SymbolTable::ROOT_LABEL_SCOPE;
+        let block = symbols.push_label_scope(root);
+        symbols
+            .declare_label("inner", block, InstrId::from_index(0))
+            .unwrap();
+
+        assert_eq!(symbols.resolve_label("inner", root), None);
+        assert_eq!(
+            symbols.resolve_label("inner", block),
+            Some(InstrId::from_index(0))
+        );
+    }
+
+    /// A label declared in an enclosing scope *is* visible from a nested
+    /// block - the common case (an inline-asm block's `bra` targeting a
+    /// label outside it).
+    #[test]
+    fn test_label_visible_from_a_nested_scope() {
+        use id_collections::Id;
+        let mut symbols = SymbolTable::new();
+        let root = SymbolTable::ROOT_LABEL_SCOPE;
+        symbols
+            .declare_label("outer", root, InstrId::from_index(0))
+            .unwrap();
+        let block = symbols.push_label_scope(root);
+
+        assert_eq!(
+            symbols.resolve_label("outer", block),
+            Some(InstrId::from_index(0))
+        );
     }
 
     #[test]
@@ -1198,7 +1371,8 @@ mod tests {
         symbols.declare_param("foo", ScalarType::U64, 8).unwrap();
 
         // Label should conflict with param
-        let result = symbols.declare_label("foo", InstrId::from_index(0));
+        let result =
+            symbols.declare_label("foo", SymbolTable::ROOT_LABEL_SCOPE, InstrId::from_index(0));
         assert!(result.is_err());
     }
 
@@ -1209,7 +1383,8 @@ mod tests {
         symbols.declare_register("foo", ScalarType::U32, 1).unwrap();
 
         // Label should conflict with register
-        let result = symbols.declare_label("foo", InstrId::from_index(0));
+        let result =
+            symbols.declare_label("foo", SymbolTable::ROOT_LABEL_SCOPE, InstrId::from_index(0));
         assert!(result.is_err());
     }
 
@@ -1222,7 +1397,8 @@ mod tests {
             .unwrap();
 
         // Label should conflict with shared
-        let result = symbols.declare_label("foo", InstrId::from_index(0));
+        let result =
+            symbols.declare_label("foo", SymbolTable::ROOT_LABEL_SCOPE, InstrId::from_index(0));
         assert!(result.is_err());
     }
 
@@ -1251,7 +1427,7 @@ mod tests {
         use id_collections::Id;
         let mut symbols = SymbolTable::new();
         symbols
-            .declare_label("foo", InstrId::from_index(0))
+            .declare_label("foo", SymbolTable::ROOT_LABEL_SCOPE, InstrId::from_index(0))
             .unwrap();
 
         // Register should conflict with label

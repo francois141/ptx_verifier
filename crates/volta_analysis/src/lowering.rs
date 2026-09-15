@@ -35,7 +35,7 @@ use crate::lowered::{
     MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
-use crate::symbols::{RegId, SpecialRegKind, SymbolTable};
+use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
 use crate::tensor_core::{MmaLayout, MmaOperand, MmaShape};
 use crate::types::{ScalarTypeExt, TypeCompatibility, check_type_compatibility};
 
@@ -186,17 +186,28 @@ pub struct LoweringContext {
     instructions: Vec<LoweredInstr>,
     /// Predicates for each instruction
     predicates: Vec<Option<Predicate>>,
-    /// Pending labels (label name → will point to next instruction)
-    pending_labels: Vec<String>,
+    /// Pending labels (label name + the scope it was declared in → will
+    /// point to next instruction). The scope must be captured when the
+    /// label token is seen, not deferred to flush time in `emit()` - a
+    /// label can be the last thing in a `{}` block, so by the time the
+    /// next instruction flushes it, `label_scope` may already have popped
+    /// back to the enclosing scope.
+    pending_labels: Vec<(String, LabelScopeId)>,
     /// Pending label spans (to be associated with the next instruction)
     pending_label_spans: Vec<Span>,
-    /// Forward references to resolve (PC, label name)
-    forward_refs: Vec<(InstrId, String)>,
+    /// Forward references to resolve (PC, label name, the scope active at
+    /// the reference site - needed since resolution happens later, once
+    /// `label_scope` has moved on).
+    forward_refs: Vec<(InstrId, String, LabelScopeId)>,
     /// Current instruction span (set before lowering each instruction)
     current_span: Option<Span>,
     /// Block-scope `.param` variables (callseq idiom); flat because the
     /// blocks re-declare them before each use
     local_params: HashMap<String, LocalParamSlot>,
+    /// The label scope currently active (see `LabelScopeId`) - the
+    /// function body's top level to start, pushed/popped around each
+    /// `Statement::Block`.
+    label_scope: LabelScopeId,
 }
 
 impl LoweringContext {
@@ -211,6 +222,7 @@ impl LoweringContext {
             forward_refs: Vec::new(),
             current_span: None,
             local_params: HashMap::new(),
+            label_scope: SymbolTable::ROOT_LABEL_SCOPE,
         }
     }
 
@@ -223,8 +235,8 @@ impl LoweringContext {
     fn emit(&mut self, instr: LoweredInstr, predicate: Option<Predicate>) -> LowerResult<()> {
         // Resolve pending labels to this PC
         let pc = self.current_pc();
-        for label in self.pending_labels.drain(..) {
-            self.symbols.declare_label(&label, pc)?;
+        for (label, scope) in self.pending_labels.drain(..) {
+            self.symbols.declare_label(&label, scope, pc)?;
         }
 
         // Record instruction span
@@ -241,24 +253,28 @@ impl LoweringContext {
         Ok(())
     }
 
-    /// Record a label to be resolved to the next instruction
+    /// Record a label to be resolved to the next instruction. Captures
+    /// `label_scope` now, not at `emit()`-flush time - see the field doc
+    /// on `pending_labels`.
     fn record_label(&mut self, name: &str, span: Option<Span>) {
-        self.pending_labels.push(name.to_string());
+        self.pending_labels
+            .push((name.to_string(), self.label_scope));
         if let Some(s) = span {
             self.pending_label_spans.push(s);
         }
     }
 
-    /// Record a forward reference to a label
-    fn record_forward_ref(&mut self, label: &str) {
+    /// Record a forward reference to a label, from `scope` (the scope
+    /// active at the branch site - see the field doc on `forward_refs`).
+    fn record_forward_ref(&mut self, label: &str, scope: LabelScopeId) {
         self.forward_refs
-            .push((self.current_pc(), label.to_string()));
+            .push((self.current_pc(), label.to_string(), scope));
     }
 
     /// Resolve all forward references, patching branch targets.
     fn resolve_forward_refs(&mut self) -> LowerResult<()> {
-        for (pc, label) in &self.forward_refs {
-            let Some(target) = self.symbols.resolve_label(label) else {
+        for (pc, label, scope) in &self.forward_refs {
+            let Some(target) = self.symbols.resolve_label(label, *scope) else {
                 return Err(LowerError::UndefinedLabel {
                     name: label.clone(),
                 });
@@ -1146,9 +1162,18 @@ fn lower_statement(ctx: &mut LoweringContext, stmt: &Statement) -> LowerResult<(
             lower_instruction(ctx, instr)?;
         }
         Statement::Block(stmts) => {
+            // A `{}` block is its own label scope (PTX ISA: labels - like
+            // `.reg`s - are scoped to their enclosing block; see
+            // `LabelScopeId`). Push a fresh child scope for the duration of
+            // this block, then restore the parent on exit - ordinary
+            // lexical-scope push/pop, mirroring the recursive descent
+            // already happening here.
+            let parent_scope = ctx.label_scope;
+            ctx.label_scope = ctx.symbols.push_label_scope(parent_scope);
             for s in stmts {
                 lower_statement(ctx, s)?;
             }
+            ctx.label_scope = parent_scope;
         }
         Statement::Variable(_) => {
             // Already handled in first pass
@@ -4186,12 +4211,13 @@ fn lower_branch(
         }
     };
 
-    // Try to resolve the label
-    let target = match ctx.symbols.resolve_label(&target_name) {
+    // Try to resolve the label, from the scope this `bra` itself is in.
+    let target = match ctx.symbols.resolve_label(&target_name, ctx.label_scope) {
         Some(pc) => pc,
         None => {
-            // Forward reference - record it and emit placeholder
-            ctx.record_forward_ref(&target_name);
+            // Forward reference - record it (with this branch's scope, so
+            // it resolves against the right chain later) and emit placeholder.
+            ctx.record_forward_ref(&target_name, ctx.label_scope);
             InstrId::from_index(0) // Will be patched later
         }
     };
@@ -5760,7 +5786,7 @@ mod tests {
         ctx.emit(LoweredInstr::Nop, None).unwrap();
 
         assert_eq!(
-            ctx.symbols.resolve_label("LOOP"),
+            ctx.symbols.resolve_label("LOOP", ctx.label_scope),
             Some(InstrId::from_index(0))
         );
     }
