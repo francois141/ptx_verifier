@@ -203,6 +203,18 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
+    /// A `tcgen05.ld`/`.st`'s `taddr` encoded a Tensor Memory lane quadrant
+    /// (PTX ISA 9.7.17.1.1: address bits `[31:16]`) other than the issuing
+    /// warp's own - 9.7.17.8.1 restricts each warp of a warpgroup to its own
+    /// 32-lane chunk (warp 0 -> lanes 0-31, warp 1 -> 32-63, ...). A real
+    /// kernel bug (miscomputed address), not something Volta should paper
+    /// over by deriving the lane from `ThreadId` instead of the address.
+    Tcgen05LaneRestrictionViolation {
+        thread: ThreadId,
+        pc: InstrId,
+        lane_base: u32,
+        expected_quadrant_base: u32,
+    },
 }
 
 impl fmt::Display for EvalError {
@@ -407,6 +419,17 @@ impl fmt::Display for EvalError {
                 start_col + num_cols,
                 current,
                 prior
+            ),
+            Self::Tcgen05LaneRestrictionViolation {
+                thread,
+                pc,
+                lane_base,
+                expected_quadrant_base,
+            } => write!(
+                f,
+                "{}: tcgen05.ld/.st at {} addresses tensor-memory lane quadrant {} - the issuing \
+                 warp may only access its own quadrant, starting at lane {}",
+                thread, pc, lane_base, expected_quadrant_base
             ),
         }
     }
