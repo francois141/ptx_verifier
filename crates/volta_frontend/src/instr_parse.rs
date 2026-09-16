@@ -1902,14 +1902,17 @@ fn parse_copysign(
 ) -> Result<ParsedInstruction, InstrParseError> {
     let ty = mp.require_scalar_type()?;
 
-    let [dst, magnitude, sign] = expect_operands(operands)?;
+    // Operand order is `d, a, b` (`copysign.type d, a, b`); per the ISA
+    // text `a` supplies the sign, `b` supplies the magnitude - see
+    // `CopysignInstr`'s doc comment.
+    let [dst, sign_src, magnitude_src] = expect_operands(operands)?;
 
     mp.finish()?;
     Ok(ParsedInstruction::Copysign(CopysignInstr {
         ty,
         dst,
-        magnitude,
-        sign,
+        sign_src,
+        magnitude_src,
     }))
 }
 

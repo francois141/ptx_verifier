@@ -15,7 +15,8 @@ use volta_common::Span;
 use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
-    CmpOp as AstCmpOp, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr, ElectSyncInstr, FmaInstr,
+    CmpOp as AstCmpOp, CopysignInstr, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr,
+    ElectSyncInstr, FmaInstr,
     FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
     MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
     MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, MinInstr, MulInstr, MulMode,
@@ -1423,6 +1424,13 @@ fn lower_parsed_instruction(
         // =========================================================================
         ParsedInstruction::Abs(abs) => {
             lower_abs(ctx, abs, predicate)?;
+        }
+
+        // =========================================================================
+        // Copysign
+        // =========================================================================
+        ParsedInstruction::Copysign(copysign) => {
+            lower_copysign(ctx, copysign, predicate)?;
         }
 
         // =========================================================================
@@ -3198,6 +3206,41 @@ fn lower_abs(
             op: UnaryOp::Abs,
             dst: dst_typed.reg,
             src: src_typed.operand,
+            ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `copysign.type d, a, b` (PTX ISA Block 32, `.f32`/`.f64` only -
+/// no packed lane form exists for this instruction). Per the ISA text
+/// ("copy sign bit of `a` into value of `b`"), `a` is the sign source and
+/// `b` is the magnitude source - see `CopysignInstr`'s doc comment.
+fn lower_copysign(
+    ctx: &mut LoweringContext,
+    copysign: &CopysignInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "copysign";
+    let ty = copysign.ty;
+    if !matches!(ty, ScalarType::F32 | ScalarType::F64) {
+        return Err(unsupported(NAME, format!(".{:?} (only .f32/.f64 modeled)", ty)));
+    }
+
+    let dst_typed = ctx.resolve_dst_typed(&copysign.dst)?;
+    let sign_typed = ctx.resolve_operand_typed(&copysign.sign_src)?;
+    let magnitude_typed = ctx.resolve_operand_typed(&copysign.magnitude_src)?;
+
+    ctx.check_dst_type(&dst_typed, ty, NAME)?;
+    ctx.check_operand_type(&sign_typed, ty, NAME)?;
+    ctx.check_operand_type(&magnitude_typed, ty, NAME)?;
+
+    ctx.emit(
+        LoweredInstr::Copysign {
+            dst: dst_typed.reg,
+            sign_src: sign_typed.operand,
+            magnitude_src: magnitude_typed.operand,
             ty,
         },
         predicate,
