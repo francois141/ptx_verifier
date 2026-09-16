@@ -2606,13 +2606,18 @@ pub struct TestpInstr {
     pub src: Operand,
 }
 
-/// copysign: `copysign.type d, a, b` (Block 32)
+/// copysign: `copysign.type d, a, b` (Block 32). Per the ISA text ("Copy
+/// sign bit of `a` into value of `b`"), `a` is the *sign* source and `b`
+/// is the *magnitude* source - `d = |b|` with `a`'s sign. Field names
+/// reflect that role, not textual operand position, to avoid exactly the
+/// mixup the ISA's own wording invites (a naive reading of operand order
+/// suggests `a` is a "magnitude" argument).
 #[derive(Debug, Clone)]
 pub struct CopysignInstr {
     pub ty: ScalarType,
     pub dst: Operand,
-    pub magnitude: Operand,
-    pub sign: Operand,
+    pub sign_src: Operand,
+    pub magnitude_src: Operand,
 }
 
 /// rsqrt: `rsqrt.approx{.ftz}.type d, a` (Block 46)

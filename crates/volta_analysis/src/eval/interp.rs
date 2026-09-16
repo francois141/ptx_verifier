@@ -1037,6 +1037,24 @@ impl<'p> Interpreter<'p> {
                 }
             }
 
+            LoweredInstr::Copysign {
+                dst,
+                sign_src,
+                magnitude_src,
+                ..
+            } => {
+                let sign = self.scalar_operand(t, pc, sign_src)?;
+                let magnitude = self.scalar_operand(t, pc, magnitude_src)?;
+                let zero = self.arena.real(Real::zero());
+                let non_negative = self.arena.ge(sign, zero);
+                let abs_magnitude = self.arena.abs(magnitude);
+                let neg_abs_magnitude = self.arena.neg(abs_magnitude);
+                let r = self
+                    .arena
+                    .select(non_negative, abs_magnitude, neg_abs_magnitude);
+                self.threads[t].regs.write(*dst, Value::Scalar(r));
+            }
+
             LoweredInstr::Fma {
                 dst,
                 src_a,

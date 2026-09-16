@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use volta_analysis::driver::{EquivOutcome, analyze_kernel, check_output_equivalence};
+use volta_analysis::numeric;
 use volta_analysis::{AnalysisError, LowerError};
 
 /// Check equivalence along the reference run's output arrays.
@@ -5121,4 +5122,107 @@ fn test_concrete_scalar_granule_splits_for_half_width_access() {
     );
     let out = analyze_kernel(&parse(&src), None, in_out_config(1, 1)).expect("split scalar");
     assert_eq!(display_output(&out, "out", 0), "in[0]");
+}
+
+/// `copysign.type d, a, b` (PTX ISA Block 32): per the ISA text ("copy sign
+/// bit of `a` into value of `b`"), `d = |b|` with `a`'s sign - the first
+/// source operand controls the *sign*, the second controls the
+/// *magnitude*. This is the opposite of what a naive reading of operand
+/// order suggests, and exactly the mixup `CopysignInstr`'s field renaming
+/// (`sign_src`/`magnitude_src`, not the frontend's original
+/// `magnitude`/`sign`) was meant to prevent - this test pins the actual
+/// runtime behavior against all four sign combinations, so a future
+/// regression that silently swaps the two operands back would fail here
+/// rather than only in a real kernel's harder-to-diagnose wrong output.
+/// Also exercises the real GELU candidate's own idiom of reusing one
+/// register as both a source and the destination (`copysign.f32 %v0, %x0,
+/// %v0`).
+#[test]
+fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f32 %f<9>;
+    .reg .b64 %rd<2>;
+
+    // d = copysign(sign_src=+2.0, magnitude_src=+3.0) = +3.0
+    mov.f32 %f1, 0f40000000;
+    mov.f32 %f2, 0f40400000;
+    copysign.f32 %f3, %f1, %f2;
+
+    // d = copysign(sign_src=-2.0, magnitude_src=+3.0) = -3.0
+    mov.f32 %f4, 0fC0000000;
+    mov.f32 %f5, 0f40400000;
+    copysign.f32 %f6, %f4, %f5;
+
+    // d = copysign(sign_src=+2.0, magnitude_src=-3.0) = +3.0
+    mov.f32 %f7, 0f40000000;
+    mov.f32 %f8, 0fC0400000;
+    copysign.f32 %f8, %f7, %f8;
+    add.f32 %f3, %f3, %f8;
+
+    // d = copysign(sign_src=-2.0, magnitude_src=-3.0) = -3.0
+    // (register self-reuse for dst, matching the real GELU idiom:
+    // `copysign.f32 %v0, %x0, %v0`)
+    mov.f32 %f4, 0fC0000000;
+    mov.f32 %f7, 0fC0400000;
+    copysign.f32 %f7, %f4, %f7;
+    add.f32 %f6, %f6, %f7;
+
+    add.f32 %f3, %f3, %f6;
+
+    ld.param.u64 %rd1, [k_param_0];
+    st.global.f32 [%rd1], %f3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    // `abs`/`select` don't eagerly fold to a literal even over concrete
+    // constants (canon treats `Abs` as opaque - see `canon::canonicalize`),
+    // so check the numeric value via the f64 oracle rather than the raw
+    // display string. (+3) + (-3) + (+3) + (-3) = 0.
+    let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
+    let (_, expr) = elems.iter().find(|(i, _)| *i == 0).unwrap();
+    let value = numeric::eval_f64(&output.arena, *expr, 0).expect("numeric eval");
+    assert_eq!(value, 0.0);
+}
+
+/// `require_scalar_type` (the modifier parser's generic type-token parser,
+/// shared by every instruction) accepts any `ScalarType`, not just
+/// `.f32`/`.f64` - so `copysign.f16` genuinely reaches lowering rather than
+/// being rejected at parse time. Confirms `lower_copysign`'s own
+/// `.f32`/`.f64` restriction (the ISA's actual `.type` set) fires with a
+/// specific reason instead of a generic "not yet implemented".
+#[test]
+fn test_copysign_rejects_a_type_other_than_f32_f64() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .b16 %h<3>;
+    copysign.f16 %h0, %h1, %h2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
+            assert_eq!(instruction, "copysign");
+        }
+        other => panic!("expected UnsupportedInstruction, got: {}", other),
+    }
 }

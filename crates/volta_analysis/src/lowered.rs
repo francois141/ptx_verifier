@@ -337,6 +337,15 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
+    /// `copysign.type d, a, b` (PTX ISA Block 32): `dst = |magnitude_src|`
+    /// with `sign_src`'s sign - `.f32`/`.f64` only, no packed lane form.
+    Copysign {
+        dst: RegId,
+        sign_src: Operand,
+        magnitude_src: Operand,
+        ty: ScalarType,
+    },
+
     /// Fused multiply-add: dst = src_a * src_b + src_c
     Fma {
         dst: RegId,
@@ -916,6 +925,7 @@ define_instr_kinds!(
     Cvta,
     BinOp,
     UnaryOp,
+    Copysign,
     Fma,
     Mad,
     MulWide,
@@ -1019,6 +1029,11 @@ impl LoweredInstr {
             // Arithmetic
             Self::BinOp { src_a, src_b, .. } => from_ops(&[*src_a, *src_b]),
             Self::UnaryOp { src, .. } => from_op(src).into_iter().collect(),
+            Self::Copysign {
+                sign_src,
+                magnitude_src,
+                ..
+            } => from_ops(&[*sign_src, *magnitude_src]),
             Self::Fma {
                 src_a,
                 src_b,
@@ -1246,6 +1261,7 @@ impl LoweredInstr {
             | Self::Cvta { dst, .. }
             | Self::BinOp { dst, .. }
             | Self::UnaryOp { dst, .. }
+            | Self::Copysign { dst, .. }
             | Self::Fma { dst, .. }
             | Self::Mad { dst, .. }
             | Self::MulWide { dst, .. }
