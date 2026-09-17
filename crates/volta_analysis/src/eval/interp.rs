@@ -1332,18 +1332,32 @@ impl<'p> Interpreter<'p> {
                     // through array materialization (e.g. a `cp.async`
                     // zero-fill word, or a literal `mov.b16`): decode each
                     // byte's real `.e4m3` encoding explicitly.
-                    Value::Scalar(e) => {
-                        let raw = self.arena.as_i64(e).ok_or(EvalError::NotConcrete {
-                            thread: t,
-                            pc,
-                            what: "cvt.e4m3x2 source (an opaque scalar, not split into \
-                                   independent bytes by a prior mov.b32)",
-                        })? as u64;
+                    Value::Scalar(e) if self.arena.as_i64(e).is_some() => {
+                        let raw = self.arena.as_i64(e).unwrap() as u64;
                         let lo_byte = (raw & 0xFF) as u8;
                         let hi_byte = ((raw >> 8) & 0xFF) as u8;
                         let lo = self.decode_e4m3_byte(pc, lo_byte)?;
                         let hi = self.decode_e4m3_byte(pc, hi_byte)?;
                         Value::Pair(self.apply_clamp(clamp, lo), self.apply_clamp(clamp, hi))
+                    }
+                    // A single materialized fp8 array element loaded at
+                    // PTX's ISA-minimum 16-bit register width (`.b8`/`.u8`
+                    // have no register class of their own): `e` is already
+                    // that one element's real value (identity-over-reals,
+                    // same as the `Pair` case above), zero-extended into
+                    // the upper byte by the loader - confirmed against
+                    // `RoPEFloat8Kernel`'s real `triton_generated.ptx`
+                    // (`mov.u16 %rs,0; ld.global.b8 {%rs},[addr];
+                    // cvt.rn.f16x2.e4m3x2 ...`), which then always discards
+                    // the upper lane (`mov.b32 {%lo,_}, %r`). We have no
+                    // information left about that upper byte - not even
+                    // that it's really zero, since `canon_loaded` doesn't
+                    // track it - so it's `Undefined` rather than a fabricated
+                    // value: silently fine when discarded, a loud
+                    // `UndefinedOutput` if some kernel actually keeps it.
+                    Value::Scalar(e) => {
+                        let undef = self.arena.undefined();
+                        Value::Pair(self.apply_clamp(clamp, e), undef)
                     }
                     Value::Quad(..) => {
                         return Err(EvalError::ValueKindMismatch {
@@ -3661,9 +3675,18 @@ impl<'p> Interpreter<'p> {
     /// pairs, and `Undefined` pass through unchanged.
     ///
     /// A *symbolic* scalar loaded at a type narrower than the destination
-    /// register would need an extension node we deliberately do not model:
-    /// loud error. Equal-width symbolic loads are exact and pass through
-    /// (f16 halves loaded into 16-bit registers).
+    /// register would need a **sign**-extension node we deliberately do not
+    /// model (a genuine case split on the unknown value: loud error), but
+    /// only when `ty` is actually signed. Zero-extension needs no such
+    /// node: a bits-type or unsigned symbolic value denotes the same
+    /// number whether boxed in a narrow or a wide register, so it passes
+    /// through unchanged - this is also PTX's own rule for `.b8`/`.u8`
+    /// register loads, which the ISA has no register class narrower than
+    /// 16 bits to hold natively (confirmed against
+    /// `RoPEFloat8Kernel`'s real `triton_generated.ptx`: `ld.global.b8`
+    /// of one fp8 array byte into a `.b16` register). Equal-width
+    /// symbolic loads are exact and pass through too (f16 halves loaded
+    /// into 16-bit registers).
     fn canon_loaded(
         &mut self,
         t: ThreadId,
@@ -3697,7 +3720,11 @@ impl<'p> Interpreter<'p> {
         if let Some(pair) = self.zero_extend_to_pair(ty.bits(), ty.is_signed_int(), dst_bits, e) {
             return Ok(pair);
         }
-        if ty.bits() < dst_bits && !self.arena.is_undefined(e) && !self.arena.is_concrete(e) {
+        if ty.bits() < dst_bits
+            && ty.is_signed_int()
+            && !self.arena.is_undefined(e)
+            && !self.arena.is_concrete(e)
+        {
             return Err(EvalError::Unsupported {
                 pc,
                 what: format!(

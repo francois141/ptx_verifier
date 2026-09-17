@@ -3045,6 +3045,158 @@ fn test_symbolic_sub_register_load_rejected() {
     );
 }
 
+/// Unlike the `.s8` case above, a bits-type (or unsigned) sub-register
+/// symbolic load needs no extension node at all: zero-extension is the
+/// identity on the represented number, so it passes through unchanged.
+/// This is also PTX's own rule for `.b8`/`.u8` loads, which the ISA has no
+/// register class narrower than 16 bits to hold - confirmed against
+/// `RoPEFloat8Kernel`'s real `triton_generated.ptx`.
+#[test]
+fn test_unsigned_sub_register_load_passes_through() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.b8 %r1, [%rd1];
+    st.global.u32 [%rd2], %r1;
+    ret;
+}
+",
+    );
+    let output = analyze_kernel(&parse(&src), None, u8_scratch_config()).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "scratch[0]");
+}
+
+/// The real-world idiom behind the fix above: LLVM's NVPTX backend loads
+/// one fp8 array byte into a 16-bit register (zero-filling the upper byte
+/// first, since `.b8` has no register class of its own), then feeds that
+/// straight into `cvt.rn.f16x2.e4m3x2` and keeps only the low (real)
+/// lane - exactly `RoPEFloat8Kernel`'s pattern. The symbolic Scalar path
+/// of `CvtE4m3x2ToF16x2` must treat the loaded byte as the array
+/// element's own real value (identity-over-reals), not try to bit-decode
+/// it, and must leave the discarded high lane `Undefined` rather than
+/// fabricate a value for it.
+#[test]
+fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<2>;
+    .reg .b32 %r<2>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    ld.param.u64 %rd1, [k_param_1];
+
+    mov.u16 %h0, 0;
+    ld.global.b8 %h0, [%rd0];
+    cvt.rn.f16x2.e4m3x2 %r0, %h0;
+    mov.b32 {%h1, _}, %r0;
+    cvt.f32.f16 %f0, %h1;
+    st.global.f32 [%rd1], %f0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "x".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 1,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 1,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("x".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "x[0]");
+}
+
+/// The flip side of the test above: if a kernel actually *kept* the high
+/// lane decoded from a zero-extended byte load's `Undefined` upper byte
+/// (instead of discarding it, as every real corpus kernel does), that
+/// must surface as a loud `UndefinedOutput`, not a silently fabricated
+/// value (e.g. `0.0`, matching the byte the real ISA would have zero-filled
+/// - a plausible-looking but unjustified guess we deliberately don't make).
+#[test]
+fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<2>;
+    .reg .b32 %r<2>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    ld.param.u64 %rd1, [k_param_1];
+
+    mov.u16 %h0, 0;
+    ld.global.b8 %h0, [%rd0];
+    cvt.rn.f16x2.e4m3x2 %r0, %h0;
+    mov.b32 {_, %h1}, %r0;
+    cvt.f32.f16 %f0, %h1;
+    st.global.f32 [%rd1], %f0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "x".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 1,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 1,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("x".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(&err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected UndefinedOutput for the discarded/kept high lane, got: {}",
+        err
+    );
+}
+
 /// A packed f16x2 pair fills a 32-bit register; storing it at a
 /// sub-4-byte width would stuff the whole two-half value into a 2-byte
 /// granule (a shape the memory model never anticipates): loud error,
