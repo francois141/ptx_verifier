@@ -3562,11 +3562,24 @@ impl<'p> Interpreter<'p> {
         src_reg_bits: Option<u32>,
         v: Value,
     ) -> EvalResult<Value> {
-        if matches!(v, Value::Pair(..)) && ty.size_bytes() < 4 {
+        // A packed pair's own width is its *source register's* width, not a
+        // fixed 4 bytes: `Memory::read` also yields a 2-byte-native `Pair`
+        // when combining two adjacent 1-byte fp8 array elements (byte-
+        // granular arrays), held in an ordinary 16-bit register - distinct
+        // from the classic 4-byte f16x2 pair. A store matching that
+        // register's full width is an exact, lossless round-trip either
+        // way; only a store *narrower* than the source register would
+        // require a half-extraction we don't model, so gate on
+        // `src_reg_bits` (as the analogous scalar check below does)
+        // instead of a width hard-coded to the f16x2 case.
+        if matches!(v, Value::Pair(..))
+            && src_reg_bits.is_none_or(|reg_bits| ty.bits() < reg_bits)
+        {
             return Err(EvalError::Unsupported {
                 pc,
                 what: format!(
-                    "packed f16x2 pair stored at {}-bit width (thread {})",
+                    "packed pair stored at sub-register width \
+                     ({}-bit store, thread {})",
                     ty.bits(),
                     t
                 ),
