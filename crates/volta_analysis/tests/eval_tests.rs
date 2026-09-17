@@ -5375,6 +5375,76 @@ fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
     assert_eq!(display_output(&output, "out", 1), "x[2]");
 }
 
+/// A `ld.b16` of two adjacent 1-byte fp8 array elements produces a
+/// `Value::Pair` that is genuinely 2 bytes wide (one real-valued byte lane
+/// each), not the classic 4-byte f16x2 pair - confirmed against
+/// `MatrixVectorMultiplicationFloat8Kernel`'s real `triton_generated.ptx`,
+/// which round-trips exactly such a pair through shared memory via a
+/// matching `st.shared.b16`/`ld.shared.b16` pair before decoding it. A
+/// store or reload at that pair's own native width must not be rejected as
+/// a half-extraction: only a store *narrower* than the source register
+/// truncates.
+#[test]
+fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
+    let src = wrap(
+        ".extern .shared .align 16 .b8 buf[];
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<2>;
+    .reg .b32 %r<2>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    ld.param.u64 %rd1, [k_param_1];
+
+    ld.global.b16 %h0, [%rd0];
+    mov.u32 %r0, buf;
+    st.shared.b16 [%r0], %h0;
+    ld.shared.b16 %h1, [%r0];
+
+    cvt.rn.f16x2.e4m3x2 %r1, %h1;
+    mov.b32 {%h0, %h1}, %r1;
+    cvt.f32.f16 %f0, %h0;
+    cvt.f32.f16 %f1, %h1;
+
+    st.global.f32 [%rd1], %f0;
+    st.global.f32 [%rd1+4], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.dynamic_shared_bytes = 16;
+    config.arrays = vec![
+        ArrayDef {
+            name: "x".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 2,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("x".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "x[0]");
+    assert_eq!(display_output(&output, "out", 1), "x[1]");
+}
+
 /// A concrete 16-bit source that never went through array materialization
 /// (e.g. a literal `mov.u16`) hits `cvt.e4m3x2`'s other path: an actual
 /// bit-level decode of each byte's `.e4m3` encoding. `0xB838` packs
