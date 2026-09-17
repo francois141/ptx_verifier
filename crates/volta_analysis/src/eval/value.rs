@@ -21,18 +21,33 @@ pub struct MbarrierId(pub u32);
 /// global as `u32`, distributed by `ldmatrix`, consumed by `mma`). We track
 /// the two halves as separate real-valued expressions and never bit-encode.
 ///
+/// `Quad` is the same idea one level wider: four independent 8-bit lanes
+/// living in one 32-bit register/word - needed for byte-granular (fp8)
+/// input arrays, where a single `.b32` vector-load lane
+/// (`ld.global.v2.b32`) spans four distinct 1-byte array elements that
+/// must stay independently symbolic (never bit-encoded, same reasoning as
+/// `Pair`). Scoped to exactly this: a `Quad` only ever arises from
+/// combining memory granules at read time and only ever gets split back
+/// into two `Pair`s (`mov.b32 {h0,h1}, r` on a byte-granular source, PTX
+/// ISA's `.e4m3x2`/`.e5m2x2`-family idiom) - it never flows through
+/// ordinary arithmetic, matching how `Pair` itself never does.
+///
 /// `Mbarrier` is deliberately *not* program data: it never flows through
 /// arithmetic, conversions, or the symbolic-expression arena (unlike
-/// `Scalar`/`Pair`, it carries no `ExprId` at all) - it only ever lives in a
-/// memory granule at an `mbarrier` object's address, placed and consumed by
-/// the `mbarrier.*` op handlers. Every other context that matches on
-/// `Value` should treat it as a hard error, not a value to compute with.
+/// `Scalar`/`Pair`/`Quad`, it carries no `ExprId` at all) - it only ever
+/// lives in a memory granule at an `mbarrier` object's address, placed and
+/// consumed by the `mbarrier.*` op handlers. Every other context that
+/// matches on `Value` should treat it as a hard error, not a value to
+/// compute with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     /// A single scalar expression
     Scalar(ExprId),
     /// Two packed 16-bit halves: (lo, hi)
     Pair(ExprId, ExprId),
+    /// Four packed 8-bit lanes: (byte0, byte1, byte2, byte3), byte0 at the
+    /// lowest address/least significant bits.
+    Quad(ExprId, ExprId, ExprId, ExprId),
     /// An `mbarrier` object's state, by handle.
     Mbarrier(MbarrierId),
 }
@@ -43,6 +58,7 @@ impl Value {
         match self {
             Self::Scalar(e) => Some(e),
             Self::Pair(_, _) => None,
+            Self::Quad(..) => None,
             Self::Mbarrier(_) => None,
         }
     }
@@ -52,6 +68,16 @@ impl Value {
         match self {
             Self::Pair(lo, hi) => Some((lo, hi)),
             Self::Scalar(_) => None,
+            Self::Quad(..) => None,
+            Self::Mbarrier(_) => None,
+        }
+    }
+
+    /// The four packed lanes, if this is a quad.
+    pub fn as_quad(self) -> Option<(ExprId, ExprId, ExprId, ExprId)> {
+        match self {
+            Self::Quad(b0, b1, b2, b3) => Some((b0, b1, b2, b3)),
+            Self::Scalar(_) | Self::Pair(_, _) => None,
             Self::Mbarrier(_) => None,
         }
     }

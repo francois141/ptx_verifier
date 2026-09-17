@@ -448,6 +448,29 @@ pub enum LoweredInstr {
         clamp: Option<Clamp>,
     },
 
+    /// `cvt.rn{.relu}.f16x2.e4m3x2 dst, src` (PTX ISA 9.7.9.22): unpack two
+    /// packed `.e4m3` fp8 bytes into an `.f16x2` pair. Scoped to exactly
+    /// this one direction/type pair - the only form observed in practice
+    /// (nothing in the corpus produces an `.e4m3x2` value, and `.e5m2x2`
+    /// never appears at all); a symmetric addition would cover either if
+    /// ever needed.
+    ///
+    /// At eval time `src`'s value kind decides the path, same reasoning as
+    /// `UnpackHalves`: a `Value::Pair` (the common case - a symbolic fp8
+    /// input array element, already split from a `Value::Quad` by a
+    /// preceding `mov.b32 {h0,h1}, r`) is identity-over-the-reals, exactly
+    /// like every other float<->float `cvt` - no bit decode, since each
+    /// byte-slot already *is* the real value that array position holds. A
+    /// `Value::Scalar` (a concrete 16-bit pattern that never went through
+    /// array materialization, e.g. a `cp.async` zero-fill word or a
+    /// literal `mov.b16`) is a genuine bit pattern and is decoded via
+    /// `eval::fp8::decode_e4m3_byte`.
+    CvtE4m3x2ToF16x2 {
+        dst: RegId,
+        src: Operand,
+        relu: bool,
+    },
+
     /// Two-source packed-half convert: `cvt.rnd.f16x2.f32 dst, src_hi, src_lo`.
     /// Writes a `Value::Pair` directly (never bit-encoded, matching every
     /// other producer of packed f16 pairs) rather than composing it via
@@ -936,6 +959,7 @@ define_instr_kinds!(
     Selp,
     Set,
     Cvt,
+    CvtE4m3x2ToF16x2,
     CvtPackHalves,
     UnpackHalves,
     PackHalves,
@@ -1070,6 +1094,7 @@ impl LoweredInstr {
 
             // Type conversion
             Self::Cvt { src, .. } => from_op(src).into_iter().collect(),
+            Self::CvtE4m3x2ToF16x2 { src, .. } => from_op(src).into_iter().collect(),
             Self::CvtPackHalves { src_hi, src_lo, .. } => from_ops(&[*src_hi, *src_lo]),
             Self::UnpackHalves { src, .. } => from_op(src).into_iter().collect(),
             Self::PackHalves { lo, hi, .. } => from_ops(&[*lo, *hi]),
@@ -1272,6 +1297,7 @@ impl LoweredInstr {
             | Self::Selp { dst, .. }
             | Self::Set { dst, .. }
             | Self::Cvt { dst, .. }
+            | Self::CvtE4m3x2ToF16x2 { dst, .. }
             | Self::CvtPackHalves { dst, .. }
             | Self::PackHalves { dst, .. }
             | Self::Activemask { dst } => vec![*dst],

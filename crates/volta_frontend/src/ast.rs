@@ -301,6 +301,13 @@ pub enum ScalarType {
     B1024,
     // Predicate
     Pred,
+    /// Two packed `.e4m3` (8-bit float: 1 sign + 4 exponent + 3 mantissa,
+    /// no infinity, NaN only at `0x7f`/`0xff`) values in a 16-bit
+    /// register (PTX ISA 5.2.3). Source-only in the fragment Volta
+    /// models: `cvt.rn{.relu}.f16x2.e4m3x2 d, a` (the only form observed
+    /// in practice) unpacks it to `.f16x2`; nothing produces an
+    /// `.e4m3x2` value, so it never appears as a destination type here.
+    E4m3x2,
 }
 
 impl ScalarType {
@@ -312,7 +319,8 @@ impl ScalarType {
             | ScalarType::U16
             | ScalarType::F16
             | ScalarType::Bf16
-            | ScalarType::B16 => 16,
+            | ScalarType::B16
+            | ScalarType::E4m3x2 => 16,
             ScalarType::S32
             | ScalarType::U32
             | ScalarType::F32
@@ -362,6 +370,7 @@ impl FromAscii for ScalarType {
             b"b128" => ScalarType::B128,
             b"b1024" => ScalarType::B1024,
             b"pred" => ScalarType::Pred,
+            b"e4m3x2" => ScalarType::E4m3x2,
             _ => return None,
         })
     }
