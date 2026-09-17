@@ -16,7 +16,7 @@ use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::mbarrier::MbarrierTable;
-use crate::eval::memory::{MemAccessError, Memory};
+use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
 use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table::{self, TensorMapTable};
@@ -977,6 +977,11 @@ impl<'p> Interpreter<'p> {
                 let v = match v {
                     Value::Scalar(e) => Value::Scalar(self.canon_operand(*ty, e)),
                     pair @ Value::Pair(_, _) => pair,
+                    // A `Quad` (byte-granular vector-load lane) can flow
+                    // through an ordinary `mov` untouched, same as `Pair` -
+                    // canonicalization only makes sense for a genuine
+                    // scalar bit pattern.
+                    quad @ Value::Quad(..) => quad,
                     Value::Mbarrier(_) => {
                         return Err(EvalError::ValueKindMismatch {
                             thread: t,
@@ -1255,14 +1260,34 @@ impl<'p> Interpreter<'p> {
             } => {
                 let int_to_int = src_ty.is_integer() && dst_ty.is_integer();
                 let truncates_pair = int_to_int && src_ty.bits() == 64 && dst_ty.bits() == 32;
+                // `cvt.u16.u32`-style truncation of a byte-quad: LLVM's
+                // NVPTX backend uses this (not `mov.b32 {lo,hi}, r`) to
+                // pull the low 16 bits out of a 4-byte fp8 vector-load
+                // lane before feeding it to `cvt.e4m3x2` (confirmed
+                // against `GELUFloat8Kernel`'s real triton-generated PTX).
+                // A `Quad` has no underlying concrete bits to truncate
+                // arithmetically, so this is the only sound reading: keep
+                // the low `Pair` of byte lanes, exactly mirroring
+                // `truncates_pair` one level up.
+                let truncates_quad = int_to_int && src_ty.bits() == 32 && dst_ty.bits() == 16;
                 let result = match self.operand_value(t, pc, src)? {
                     // `cvt.u32.u64`-style truncation of a packed pair keeps
                     // its low lane, exactly.
                     Value::Pair(lo, _) if truncates_pair => Value::Scalar(lo),
+                    Value::Quad(b0, b1, _, _) if truncates_quad => Value::Pair(b0, b1),
                     value => {
                         let a = match value {
                             Value::Pair(_, _) => self.scalar_operand(t, pc, src)?,
                             Value::Scalar(e) => e,
+                            Value::Quad(..) => {
+                                return Err(EvalError::ValueKindMismatch {
+                                    thread: t,
+                                    pc,
+                                    what: "a packed byte-quad used as an ordinary cvt operand \
+                                           outside a 32->16-bit integer truncation (the \
+                                           .e4m3x2 family has its own dedicated cvt form)",
+                                });
+                            }
                             Value::Mbarrier(_) => {
                                 return Err(EvalError::ValueKindMismatch {
                                     thread: t,
@@ -1287,6 +1312,53 @@ impl<'p> Interpreter<'p> {
                             let r = self.eval_cvt(pc, *dst_ty, *src_ty, a)?;
                             Value::Scalar(self.apply_clamp(*clamp, r))
                         }
+                    }
+                };
+                self.threads[t].regs.write(*dst, result);
+            }
+
+            LoweredInstr::CvtE4m3x2ToF16x2 { dst, src, relu } => {
+                let clamp = relu.then_some(Clamp::Relu);
+                let result = match self.operand_value(t, pc, src)? {
+                    // The common case: a symbolic (or already-split) fp8
+                    // input array element - already the real value that
+                    // array position holds (identity-over-reals, same as
+                    // every other float<->float `cvt`; see this
+                    // instruction's doc comment). No bit decode needed.
+                    Value::Pair(b0, b1) => {
+                        Value::Pair(self.apply_clamp(clamp, b0), self.apply_clamp(clamp, b1))
+                    }
+                    // A genuine concrete 16-bit pattern that never went
+                    // through array materialization (e.g. a `cp.async`
+                    // zero-fill word, or a literal `mov.b16`): decode each
+                    // byte's real `.e4m3` encoding explicitly.
+                    Value::Scalar(e) => {
+                        let raw = self.arena.as_i64(e).ok_or(EvalError::NotConcrete {
+                            thread: t,
+                            pc,
+                            what: "cvt.e4m3x2 source (an opaque scalar, not split into \
+                                   independent bytes by a prior mov.b32)",
+                        })? as u64;
+                        let lo_byte = (raw & 0xFF) as u8;
+                        let hi_byte = ((raw >> 8) & 0xFF) as u8;
+                        let lo = self.decode_e4m3_byte(pc, lo_byte)?;
+                        let hi = self.decode_e4m3_byte(pc, hi_byte)?;
+                        Value::Pair(self.apply_clamp(clamp, lo), self.apply_clamp(clamp, hi))
+                    }
+                    Value::Quad(..) => {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "cvt.e4m3x2 source is a 4-byte packed value \
+                                   (expected a 2-byte .b16 register)",
+                        });
+                    }
+                    Value::Mbarrier(_) => {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "mbarrier handle used as a cvt.e4m3x2 operand",
+                        });
                     }
                 };
                 self.threads[t].regs.write(*dst, result);
@@ -1336,6 +1408,21 @@ impl<'p> Interpreter<'p> {
                         if let Some(hi) = hi {
                             let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
                             self.threads[t].regs.write(*hi, Value::Scalar(hi_v));
+                        }
+                    }
+                    // A `Quad` (byte-granular vector-load lane): each half
+                    // is itself two independent byte lanes, so it splits
+                    // into two `Pair`s rather than two `Scalar`s - the
+                    // byte-granular analog of the native-`Pair` arm above
+                    // (still never bit-encoded). This is exactly the real
+                    // `mov.b32 {h0,h1}, r` idiom that precedes
+                    // `cvt.rn.f16x2.e4m3x2` on an fp8 array.
+                    Value::Quad(b0, b1, b2, b3) => {
+                        if let Some(lo) = lo {
+                            self.threads[t].regs.write(*lo, Value::Pair(b0, b1));
+                        }
+                        if let Some(hi) = hi {
+                            self.threads[t].regs.write(*hi, Value::Pair(b2, b3));
                         }
                     }
                     Value::Mbarrier(_) => {
@@ -2018,6 +2105,9 @@ impl<'p> Interpreter<'p> {
                         "symbolic 64-bit scalar combined bitwise with a packed pair".to_string(),
                     )),
                 },
+                Value::Quad(..) => Err(unsupported(
+                    "packed byte-quad combined bitwise with a packed pair".to_string(),
+                )),
                 Value::Mbarrier(_) => Err(unsupported(
                     "mbarrier handle combined bitwise with a packed pair".to_string(),
                 )),
@@ -2138,6 +2228,11 @@ impl<'p> Interpreter<'p> {
                     what: "packed pair used as a scalar",
                 })
             }
+            Value::Quad(..) => Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "packed byte-quad used as a scalar",
+            }),
             Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
                 thread: t,
                 pc,
@@ -2206,6 +2301,11 @@ impl<'p> Interpreter<'p> {
                     })?;
                 Ok((lo, hi))
             }
+            Value::Quad(..) => Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "packed byte-quad used as a packed pair",
+            }),
             Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
                 thread: t,
                 pc,
@@ -2912,7 +3012,7 @@ impl<'p> Interpreter<'p> {
         match memory.read(addr, width) {
             Ok(v) => Ok(v),
             Err(MemAccessError::Reinterpret {
-                found: Some((start, found_width, false)),
+                found: Some((start, found_width, GranuleKind::Scalar)),
                 ..
             }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => self
                 .memory_mut(space, t)
@@ -3076,7 +3176,7 @@ impl<'p> Interpreter<'p> {
         };
         match memory.write(addr, width, value) {
             Err(MemAccessError::Reinterpret {
-                found: Some((start, found_width, false)),
+                found: Some((start, found_width, GranuleKind::Scalar)),
                 ..
             }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => self
                 .memory_mut(space, t)
@@ -3698,6 +3798,27 @@ impl<'p> Interpreter<'p> {
     /// `.sat` additionally flushes a NaN result to +0.0 (and cvt's
     /// `.relu` canonicalizes NaN); NaN is out of model over the reals,
     /// as everywhere else in the interpreter.
+    /// Decode a concrete `.e4m3` byte into an exact real-valued `ExprId`,
+    /// erroring loudly on the format's NaN encoding (`0x7f`/`0xff` -
+    /// Volta's real-valued model cannot represent NaN, same as every
+    /// other NaN-ingestion point in the interpreter).
+    fn decode_e4m3_byte(&mut self, pc: InstrId, byte: u8) -> EvalResult<ExprId> {
+        let value = crate::eval::fp8::decode_e4m3_byte(byte).ok_or_else(|| EvalError::Unsupported {
+            pc,
+            what: format!(
+                "cvt.e4m3x2: source byte {:#x} encodes NaN, which Volta's real-valued model \
+                 cannot represent",
+                byte
+            ),
+        })?;
+        self.arena
+            .float_from_f64(value)
+            .map_err(|e| EvalError::Unsupported {
+                pc,
+                what: format!("e4m3 decoded constant: {}", e),
+            })
+    }
+
     fn apply_clamp(&mut self, clamp: Option<Clamp>, r: ExprId) -> ExprId {
         match clamp {
             None => r,

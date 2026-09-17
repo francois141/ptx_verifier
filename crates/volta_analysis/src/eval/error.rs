@@ -6,6 +6,7 @@
 use std::fmt;
 
 use crate::eval::ThreadId;
+use crate::eval::memory::GranuleKind;
 use crate::lowered::{InstrId, MemSpace};
 use crate::symbols::RegId;
 
@@ -112,9 +113,8 @@ pub enum EvalError {
         space: MemSpace,
         addr: u64,
         width: u64,
-        /// The colliding granule: start, width, and whether it is a packed
-        /// pair (else a scalar), when known.
-        found: Option<(u64, u64, bool)>,
+        /// The colliding granule: start, width, and kind, when known.
+        found: Option<(u64, u64, GranuleKind)>,
     },
     /// A value that must be concrete (address, branch predicate, shuffle
     /// lane, sync mask, ...) was symbolic: the program is not a
@@ -325,12 +325,16 @@ impl fmt::Display for EvalError {
                     "{}: unsupported reinterpretation of {:?} memory at {:#x} (width {}) at {}",
                     thread, space, addr, width, pc
                 )?;
-                if let Some((start, found_width, is_pair)) = found {
+                if let Some((start, found_width, kind)) = found {
                     write!(
                         f,
                         "; the bytes belong to a {}-byte {} granule written at {:#x}",
                         found_width,
-                        if *is_pair { "packed-pair" } else { "scalar" },
+                        match kind {
+                            GranuleKind::Pair => "packed-pair",
+                            GranuleKind::Quad => "packed-quad",
+                            GranuleKind::Scalar => "scalar",
+                        },
                         start
                     )?;
                 }

@@ -2,13 +2,19 @@
 //!
 //! Memory is a map from byte address to *granule*: a value tagged with the
 //! width (in bytes) it was written at. Reads normally match a granule
-//! exactly, with two sanctioned exceptions that arise from how nvcc handles
-//! packed data (f16 pairs in 32 bits, and on sm_100+ f32 pairs in 64 bits):
+//! exactly, with sanctioned exceptions that arise from how nvcc handles
+//! packed data (f16 pairs in 32 bits, f32 pairs in 64 bits on sm_100+, and
+//! byte-granular fp8 arrays combined into wider vector-load lanes):
 //!
-//! - a double-width read (4 or 8 bytes) over two adjacent same-width
-//!   scalar granules yields a packed `Value::Pair`, and
-//! - a half-width read of either half of a 4- or 8-byte `Pair` granule
-//!   yields that half (writes split such granules on demand).
+//! - a double-width read (2, 4, or 8 bytes) over two adjacent same-width
+//!   scalar granules yields a packed `Value::Pair`,
+//! - similarly, a 4-byte read over two adjacent 2-byte `Pair` granules
+//!   yields a packed `Value::Quad` (the fp8 case: each `Pair` already
+//!   holds two independent byte-valued lanes, `Quad` holds four),
+//! - a half-width read of either half of a 2-, 4-, or 8-byte `Pair`
+//!   granule yields that half (writes split such granules on demand), and
+//! - a half-width (2-byte) read of either half of a 4-byte `Quad` granule
+//!   yields that half as a `Pair` (writes split on demand, same as above).
 //!
 //! Any other reinterpretation (e.g. reading half of an f32) is an error, as
 //! is reading bytes that were never written. Bounds are *not* checked here;
@@ -18,6 +24,15 @@ use std::collections::HashMap;
 
 use crate::eval::value::{MbarrierId, Value};
 use crate::symbolic::ExprId;
+
+/// What kind of granule a `Reinterpret` error's colliding access found -
+/// used only to describe the collision in an error message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GranuleKind {
+    Scalar,
+    Pair,
+    Quad,
+}
 
 /// Widest granule we ever store (8 bytes); bounds the overlap scans.
 const MAX_WIDTH: u64 = 8;
@@ -40,12 +55,11 @@ pub enum MemAccessError {
     /// Read of bytes never written (address of the first missing byte).
     Uninitialized { addr: u64 },
     /// Access at a width incompatible with the granule(s) present.
-    /// `found` describes the colliding granule: its start, width, and
-    /// whether it is a packed pair (`true`) or a scalar.
+    /// `found` describes the colliding granule: its start, width, and kind.
     Reinterpret {
         addr: u64,
         width: u64,
-        found: Option<(u64, u64, bool)>,
+        found: Option<(u64, u64, GranuleKind)>,
     },
     /// An ordinary (non-`Mbarrier`) write exactly covered a granule holding
     /// an `mbarrier` object, at the given granule start. Ordinary program
@@ -79,9 +93,12 @@ impl Memory {
             return Ok(cell.value);
         }
 
-        // Double-width read (4 or 8 bytes) combining two adjacent
-        // half-width scalars into a pair.
-        if matches!(width, 4 | 8) {
+        // Double-width read (2, 4, or 8 bytes) combining two adjacent
+        // half-width scalars into a pair. (A plain 2-byte read of an
+        // ordinary 2-byte-granule array - e.g. f16 - already hit the exact
+        // match above, so this only fires when no such granule exists:
+        // precisely the byte-granular-array case.)
+        if matches!(width, 2 | 4 | 8) {
             let half = width / 2;
             if let (Some(lo), Some(hi)) = (self.cells.get(&addr), self.cells.get(&(addr + half)))
                 && let (
@@ -103,8 +120,70 @@ impl Memory {
             }
         }
 
-        // Half-width read (2 or 4 bytes) of one half of a pair granule.
-        if matches!(width, 2 | 4) {
+        // 4-byte read combining four adjacent 1-byte scalars directly into
+        // a `Quad` - the case `materialize_input` actually produces
+        // (byte-granular arrays materialize one independent 1-byte
+        // `Scalar` per element, never pre-combined), and so the one that
+        // matters for `ld.global.v2.b32`'s per-lane 4-byte read over a
+        // fresh fp8 array.
+        if width == 4
+            && let (Some(c0), Some(c1), Some(c2), Some(c3)) = (
+                self.cells.get(&addr),
+                self.cells.get(&(addr + 1)),
+                self.cells.get(&(addr + 2)),
+                self.cells.get(&(addr + 3)),
+            )
+            && let (
+                Cell {
+                    width: 1,
+                    value: Value::Scalar(b0),
+                    ..
+                },
+                Cell {
+                    width: 1,
+                    value: Value::Scalar(b1),
+                    ..
+                },
+                Cell {
+                    width: 1,
+                    value: Value::Scalar(b2),
+                    ..
+                },
+                Cell {
+                    width: 1,
+                    value: Value::Scalar(b3),
+                    ..
+                },
+            ) = (c0, c1, c2, c3)
+        {
+            return Ok(Value::Quad(*b0, *b1, *b2, *b3));
+        }
+
+        // 4-byte read combining two adjacent 2-byte `Pair` granules (each
+        // already two independent byte lanes) into a `Quad` - the case
+        // that arises after a write has split a `Quad` down to two
+        // `Pair`s (`split_pair`) and a later read reassembles the full
+        // 4 bytes.
+        if width == 4
+            && let (Some(lo), Some(hi)) = (self.cells.get(&addr), self.cells.get(&(addr + 2)))
+            && let (
+                Cell {
+                    width: 2,
+                    value: Value::Pair(b0, b1),
+                    ..
+                },
+                Cell {
+                    width: 2,
+                    value: Value::Pair(b2, b3),
+                    ..
+                },
+            ) = (lo, hi)
+        {
+            return Ok(Value::Quad(*b0, *b1, *b2, *b3));
+        }
+
+        // Half-width read (1, 2, or 4 bytes) of one half of a pair granule.
+        if matches!(width, 1 | 2 | 4) {
             let pair_width = width * 2;
             if let Some(Cell {
                 width: cell_width,
@@ -124,6 +203,29 @@ impl Memory {
                 && *cell_width == pair_width
             {
                 return Ok(Value::Scalar(*hi));
+            }
+        }
+
+        // 2-byte read of one half of a 4-byte `Quad` granule, yielding that
+        // half as a `Pair` (the reverse of the combine above - `mov.b32
+        // {h0,h1}, r` splitting a byte-granular 4-byte load back down).
+        if width == 2 {
+            if let Some(Cell {
+                width: 4,
+                value: Value::Quad(b0, b1, _, _),
+                ..
+            }) = self.cells.get(&addr)
+            {
+                return Ok(Value::Pair(*b0, *b1));
+            }
+            if addr >= 2
+                && let Some(Cell {
+                    width: 4,
+                    value: Value::Quad(_, _, b2, b3),
+                    ..
+                }) = self.cells.get(&(addr - 2))
+            {
+                return Ok(Value::Pair(*b2, *b3));
             }
         }
 
@@ -250,13 +352,17 @@ impl Memory {
         }
     }
 
-    /// Split the 4- or 8-byte `Pair` granule at `start` into two half-width
-    /// scalars, preserving its dirtiness. `(addr, width)` identify the
-    /// offending access for error reporting.
+    /// Split the granule at `start` to resolve a partial overlap:
+    /// a 2-, 4-, or 8-byte `Pair` splits into two half-width scalars, and a
+    /// 4-byte `Quad` splits into two 2-byte `Pair`s (each still two
+    /// independent byte lanes - a further partial overlap into `put`'s
+    /// caller loop re-scans and, if needed, splits one of those `Pair`s
+    /// again via the first arm). `(addr, width)` identify the offending
+    /// access for error reporting.
     fn split_pair(&mut self, start: u64, addr: u64, width: u64) -> Result<(), MemAccessError> {
         match self.cells.get(&start) {
             Some(Cell {
-                width: pair_width @ (4 | 8),
+                width: pair_width @ (2 | 4 | 8),
                 value: Value::Pair(lo, hi),
                 dirty,
             }) => {
@@ -276,6 +382,31 @@ impl Memory {
                     Cell {
                         width: half,
                         value: Value::Scalar(hi),
+                        dirty,
+                    },
+                );
+                Ok(())
+            }
+            Some(Cell {
+                width: 4,
+                value: Value::Quad(b0, b1, b2, b3),
+                dirty,
+            }) => {
+                let (b0, b1, b2, b3, dirty) = (*b0, *b1, *b2, *b3, *dirty);
+                self.cells.remove(&start);
+                self.cells.insert(
+                    start,
+                    Cell {
+                        width: 2,
+                        value: Value::Pair(b0, b1),
+                        dirty,
+                    },
+                );
+                self.cells.insert(
+                    start + 2,
+                    Cell {
+                        width: 2,
+                        value: Value::Pair(b2, b3),
                         dirty,
                     },
                 );
@@ -331,11 +462,16 @@ impl Memory {
         );
     }
 
-    /// `(start, width, is_pair)` of the granule starting at `start`.
-    fn describe_cell(&self, start: u64) -> Option<(u64, u64, bool)> {
-        self.cells
-            .get(&start)
-            .map(|cell| (start, cell.width, matches!(cell.value, Value::Pair(_, _))))
+    /// `(start, width, kind)` of the granule starting at `start`.
+    fn describe_cell(&self, start: u64) -> Option<(u64, u64, GranuleKind)> {
+        self.cells.get(&start).map(|cell| {
+            let kind = match cell.value {
+                Value::Pair(_, _) => GranuleKind::Pair,
+                Value::Quad(..) => GranuleKind::Quad,
+                _ => GranuleKind::Scalar,
+            };
+            (start, cell.width, kind)
+        })
     }
 
     fn covering_cell(&self, byte: u64) -> Option<u64> {

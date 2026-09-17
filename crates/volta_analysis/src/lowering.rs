@@ -16,7 +16,7 @@ use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
     CmpOp as AstCmpOp, CopysignInstr, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr,
-    ElectSyncInstr, FmaInstr,
+    ElectSyncInstr, FmaInstr, FpRound,
     FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
     MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
     MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, MinInstr, MulInstr, MulMode,
@@ -4055,6 +4055,52 @@ fn lower_cvt(
             dst,
             src,
         } => {
+            // `.e4m3x2` source: PTX ISA 9.7.9.22's packed-fp8-unpack form
+            // (`cvt.rn{.relu}.f16x2.e4m3x2 d, a`) - the only form observed
+            // in the corpus. Its result is a `Pair`, not a scalar, so it's
+            // handled here rather than falling into the generic
+            // scalar-shaped path below (see `LoweredInstr::
+            // CvtE4m3x2ToF16x2`'s doc comment).
+            if *src_type == ScalarType::E4m3x2 {
+                if *dst_type != ScalarType::F16x2 {
+                    return Err(unsupported(
+                        "cvt",
+                        format!(
+                            ".e4m3x2 source with .{:?} destination (only .f16x2 is modeled)",
+                            dst_type
+                        ),
+                    ));
+                }
+                if *satfinite {
+                    return Err(unsupported("cvt", ".satfinite modifier"));
+                }
+                if *sat {
+                    return Err(unsupported(
+                        "cvt",
+                        ".sat modifier on an .e4m3x2 source (not a legal PTX combination)",
+                    ));
+                }
+                match rnd {
+                    Some(CvtRounding::Float(FpRound::Rn)) => {}
+                    _ => {
+                        return Err(unsupported(
+                            "cvt",
+                            "rounding modifier other than .rn on an .e4m3x2 source",
+                        ));
+                    }
+                }
+                let dst = ctx.resolve_dst(dst)?;
+                let src = ctx.resolve_operand(src)?;
+                ctx.emit(
+                    LoweredInstr::CvtE4m3x2ToF16x2 {
+                        dst,
+                        src,
+                        relu: *relu,
+                    },
+                    predicate,
+                )?;
+                return Ok(());
+            }
             if *satfinite {
                 // .satfinite clamps to the destination format's finite range
                 // - a different, format-dependent semantics from the [0,1]

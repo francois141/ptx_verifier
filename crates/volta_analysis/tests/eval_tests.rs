@@ -5226,3 +5226,277 @@ fn test_copysign_rejects_a_type_other_than_f32_f64() {
         other => panic!("expected UnsupportedInstruction, got: {}", other),
     }
 }
+
+/// The real fp8-elementwise-kernel idiom, exactly: `ld.global.v2.b32`
+/// (each lane a 4-byte read spanning 4 independent 1-byte array elements -
+/// combines into a `Value::Quad`), `mov.b32 {h,h}, r` (splits a `Quad`
+/// into two `Value::Pair`s of bytes), `cvt.rn.f16x2.e4m3x2` (decodes each
+/// byte-`Pair` into an f16-real `Pair`). For a *symbolic* input array this
+/// must be the identity over the reals (no bit decode) - checked here by
+/// confirming all 4 decoded elements keep their own distinct array
+/// identity (`x[0]`..`x[3]`, not, say, all collapsing to the same
+/// element or a bit-mangled combination), which only holds if the 4
+/// bytes genuinely stayed independently symbolic all the way through the
+/// `Quad`/`Pair` plumbing.
+#[test]
+fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b16 %h<8>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    ld.param.u64 %rd1, [k_param_1];
+
+    ld.global.v2.b32 {%r0,%r1}, [%rd0];
+
+    mov.b32 {%h0,%h1}, %r0;
+
+    cvt.rn.f16x2.e4m3x2 %r2, %h0;
+    cvt.rn.f16x2.e4m3x2 %r3, %h1;
+
+    mov.b32 {%h4,%h5}, %r2;
+    mov.b32 {%h6,%h7}, %r3;
+
+    cvt.f32.f16 %f0, %h4;
+    cvt.f32.f16 %f1, %h5;
+    cvt.f32.f16 %f2, %h6;
+    cvt.f32.f16 %f3, %h7;
+
+    st.global.f32 [%rd1], %f0;
+    st.global.f32 [%rd1+4], %f1;
+    st.global.f32 [%rd1+8], %f2;
+    st.global.f32 [%rd1+12], %f3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "x".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 8,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 4,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("x".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "x[0]");
+    assert_eq!(display_output(&output, "out", 1), "x[1]");
+    assert_eq!(display_output(&output, "out", 2), "x[2]");
+    assert_eq!(display_output(&output, "out", 3), "x[3]");
+}
+
+/// LLVM's NVPTX backend (as opposed to nvcc/Triton's own backend, which
+/// always uses `mov.b32 {lo,hi}, r`) extracts the low 16 bits of a
+/// `Quad`-valued 32-bit register via an ordinary integer-truncating
+/// `cvt.u16.u32` instead - confirmed against `GELUFloat8Kernel`'s real
+/// `triton_generated.ptx`. This must be treated exactly like
+/// `truncates_pair` one level up: keep the low `Pair` of byte lanes.
+#[test]
+fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<3>;
+    .reg .b16 %h<4>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    ld.param.u64 %rd1, [k_param_1];
+
+    ld.global.b32 %r0, [%rd0];
+
+    cvt.u16.u32 %h0, %r0;
+    mov.b32 {_, %h1}, %r0;
+
+    cvt.rn.f16x2.e4m3x2 %r1, %h0;
+    cvt.rn.f16x2.e4m3x2 %r2, %h1;
+
+    mov.b32 {%h2, _}, %r1;
+    mov.b32 {%h3, _}, %r2;
+
+    cvt.f32.f16 %f0, %h2;
+    cvt.f32.f16 %f1, %h3;
+
+    st.global.f32 [%rd1], %f0;
+    st.global.f32 [%rd1+4], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "x".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 4,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("x".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "x[0]");
+    assert_eq!(display_output(&output, "out", 1), "x[2]");
+}
+
+/// A concrete 16-bit source that never went through array materialization
+/// (e.g. a literal `mov.u16`) hits `cvt.e4m3x2`'s other path: an actual
+/// bit-level decode of each byte's `.e4m3` encoding. `0xB838` packs
+/// `0xB8` (-1.0) in the upper byte and `0x38` (+1.0) in the lower byte
+/// (PTX ISA 9.7.9.22: lower 8 bits of `a` -> lower 16 bits of `d`).
+#[test]
+fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %h<4>;
+    .reg .b32 %r0;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd0;
+
+    mov.u16 %h0, 47160; // 0xB838
+    cvt.rn.f16x2.e4m3x2 %r0, %h0;
+    mov.b32 {%h2,%h3}, %r0;
+    cvt.f32.f16 %f0, %h2;
+    cvt.f32.f16 %f1, %h3;
+
+    ld.param.u64 %rd0, [k_param_0];
+    st.global.f32 [%rd0], %f0;
+    st.global.f32 [%rd0+4], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 2,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
+    let get = |i: u64| {
+        let (_, e) = elems.iter().find(|(idx, _)| *idx == i).unwrap();
+        numeric::eval_f64(&output.arena, *e, 0).expect("numeric eval")
+    };
+    assert_eq!(get(0), 1.0);
+    assert_eq!(get(1), -1.0);
+}
+
+/// Same concrete `0xB838` pattern as above, but with `.relu`: the
+/// already-positive lower byte (+1.0) is untouched, the negative upper
+/// byte (-1.0) clamps to 0.
+#[test]
+fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %h<4>;
+    .reg .b32 %r0;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd0;
+
+    mov.u16 %h0, 47160; // 0xB838
+    cvt.rn.relu.f16x2.e4m3x2 %r0, %h0;
+    mov.b32 {%h2,%h3}, %r0;
+    cvt.f32.f16 %f0, %h2;
+    cvt.f32.f16 %f1, %h3;
+
+    ld.param.u64 %rd0, [k_param_0];
+    st.global.f32 [%rd0], %f0;
+    st.global.f32 [%rd0+4], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 2,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
+    let get = |i: u64| {
+        let (_, e) = elems.iter().find(|(idx, _)| *idx == i).unwrap();
+        numeric::eval_f64(&output.arena, *e, 0).expect("numeric eval")
+    };
+    assert_eq!(get(0), 1.0);
+    assert_eq!(get(1), 0.0);
+}
+
+/// `0x7F` is `.e4m3`'s NaN encoding (PTX ISA 5.2.3: "NaN values are
+/// limited to 0x7f and 0xff") - Volta's real-valued model cannot
+/// represent NaN, so a concrete source byte hitting it must error loudly
+/// rather than silently producing some placeholder value.
+#[test]
+fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
+    let src = wrap(
+        ".visible .entry k()
+{
+    .reg .b16 %h0;
+    .reg .b32 %r0;
+
+    mov.u16 %h0, 32512; // 0x7F00: upper byte 0x7F = NaN, lower byte 0x00 = 0.0
+    cvt.rn.f16x2.e4m3x2 %r0, %h0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(what.contains("NaN"), "unexpected message: {}", what);
+        }
+        other => panic!("expected Unsupported (NaN byte), got: {}", other),
+    }
+}

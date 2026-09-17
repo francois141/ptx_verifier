@@ -30,7 +30,8 @@ impl RegClass {
             | ScalarType::U16
             | ScalarType::F16
             | ScalarType::Bf16
-            | ScalarType::B16 => RegClass::Bits16,
+            | ScalarType::B16
+            | ScalarType::E4m3x2 => RegClass::Bits16,
             ScalarType::S32
             | ScalarType::U32
             | ScalarType::F32
@@ -425,6 +426,7 @@ pub fn format_scalar_type(ty: ScalarType) -> &'static str {
         ScalarType::B128 => ".b128",
         ScalarType::B1024 => ".b1024",
         ScalarType::Pred => ".pred",
+        ScalarType::E4m3x2 => ".e4m3x2",
     }
 }
 
