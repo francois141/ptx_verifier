@@ -16,7 +16,7 @@ use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::interp::Interpreter;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
-use crate::lowered::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
+use crate::lowered::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
 use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::tensor_core::{
@@ -174,6 +174,11 @@ impl Interpreter<'_> {
                     clamp,
                 )?;
             }
+            LoweredInstr::ReduxSync {
+                op, ty, dst, src, ..
+            } => {
+                self.exec_redux_sync(pc, mask, members, *op, *ty, *dst, src)?;
+            }
             LoweredInstr::Ldmatrix {
                 dst,
                 addr,
@@ -241,13 +246,15 @@ impl Interpreter<'_> {
         members: &[ThreadId],
     ) -> EvalResult<()> {
         match instr {
-            // All three handle exited lanes per-op (Undefined shfl source
-            // data / elect dst, arrived-at-sync semantics), so a partial
-            // warp is fine - the ISA doesn't state an exited-lane UB clause
-            // for `elect.sync` either, unlike the tensor-core family below.
+            // All four handle exited lanes per-op (Undefined shfl/redux
+            // source data, elect dst, arrived-at-sync semantics), so a
+            // partial warp is fine - the ISA doesn't state an exited-lane
+            // UB clause for `elect.sync`/`redux.sync` either, unlike the
+            // tensor-core family below.
             LoweredInstr::BarWarpSync { .. }
             | LoweredInstr::ShflSync { .. }
-            | LoweredInstr::ElectSync { .. } => Ok(()),
+            | LoweredInstr::ElectSync { .. }
+            | LoweredInstr::ReduxSync { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // Covers the exited address-supplying lane in particular:
                 // lane `i*8 + r` holds row r's address in a register, and
@@ -459,6 +466,56 @@ impl Interpreter<'_> {
                 self.threads[m].regs.write(reg, Value::Scalar(v));
             }
         }
+    }
+
+    /// `redux.sync.op.type d, a, membermask`: fold every mask lane's `a`
+    /// with `op` and broadcast the single result to every live lane's `d`.
+    /// `members` is ascending by lane (see `exec_elect_sync`), so it can be
+    /// walked in lockstep with the mask's set bits. A mask lane with no
+    /// corresponding live member has exited; like `exec_shfl_sync`'s
+    /// exited source lane, its contribution is `Undefined` rather than an
+    /// eager error - an exited lane's registers cannot be observed, and
+    /// this only fails if the fold result later reaches an output or a
+    /// concreteness point. `eval_binop` already has the exact
+    /// signed/unsigned/float semantics for `ty`, so folding pairwise
+    /// through it (order-independent: every `redux.sync` op is
+    /// associative/commutative over the arena's exact rationals) reuses
+    /// the same arithmetic ordinary `add`/`min`/`max`/... instructions get.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_redux_sync(
+        &mut self,
+        pc: InstrId,
+        mask: u32,
+        members: &[ThreadId],
+        op: BinOp,
+        ty: ScalarType,
+        dst: RegId,
+        src: &Operand,
+    ) -> EvalResult<()> {
+        let mut live = members.iter();
+        let mut next_live = live.next();
+        let mut acc: Option<ExprId> = None;
+        for lane in 0..WARP_SIZE {
+            if mask & (1u32 << lane) == 0 {
+                continue;
+            }
+            let value = match next_live {
+                Some(&m) if m.0 % WARP_SIZE == lane => {
+                    next_live = live.next();
+                    self.scalar_operand(m, pc, src)?
+                }
+                _ => self.arena.undefined(),
+            };
+            acc = Some(match acc {
+                None => value,
+                Some(prev) => self.eval_binop(members[0], pc, op, ty, prev, value)?,
+            });
+        }
+        let result = acc.expect("execute_warp_op only fires for a nonempty mask");
+        for &m in members {
+            self.threads[m].regs.write(dst, Value::Scalar(result));
+        }
+        Ok(())
     }
 
     /// `ldmatrix.sync.aligned.xN.m8n8{.trans}.shared.b16`: cooperative load
