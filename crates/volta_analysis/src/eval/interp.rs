@@ -1002,6 +1002,72 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, v);
             }
 
+            LoweredInstr::Prmt {
+                dst,
+                src_a,
+                src_b,
+                selector,
+            } => {
+                let selector = self.concrete_operand(t, pc, selector, "prmt selector")?
+                    as u16;
+                let fp8_sign_xor = |this: &mut Self, value: ExprId| {
+                    let ExprNode::BitXor(left, right) = this.arena.node(value).clone() else {
+                        return value;
+                    };
+                    let magnitude = if this.arena.as_int_const(left) == Some(128) {
+                        Some(right)
+                    } else if this.arena.as_int_const(right) == Some(128) {
+                        Some(left)
+                    } else {
+                        None
+                    };
+                    magnitude.map_or(value, |value| this.arena.neg(value))
+                };
+                // A scalar byte loaded from an FP8 array already denotes
+                // its real value. A vector-loaded word is a Quad of four
+                // such values, not a scalar bit pattern. Keep those lanes
+                // split while applying the byte selector.
+                let lanes = |this: &mut Self, value: Value| match value {
+                    Value::Scalar(value) => {
+                        Ok([Some(fp8_sign_xor(this, value)), None, None, None])
+                    }
+                    Value::Quad(b0, b1, b2, b3) => {
+                        Ok([Some(b0), Some(b1), Some(b2), Some(b3)])
+                    }
+                    Value::Pair(..) => Err(EvalError::ValueKindMismatch {
+                        thread: t,
+                        pc,
+                        what: "packed pair used as a prmt source",
+                    }),
+                    Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
+                        thread: t,
+                        pc,
+                        what: "mbarrier handle used as a prmt source",
+                    }),
+                };
+                let src_a = self.operand_value(t, pc, src_a)?;
+                let src_b = self.operand_value(t, pc, src_b)?;
+                let a = lanes(self, src_a)?;
+                let b = lanes(self, src_b)?;
+                let select_byte = |this: &mut Self, nibble: u16| {
+                    let source = if nibble & 7 < 4 { &a } else { &b };
+                    let byte = source[(nibble & 3) as usize].ok_or(EvalError::Unsupported {
+                        pc,
+                        what: format!(
+                            "prmt selector {selector:#06x}: byte {} is unavailable from a scalar \
+                             FP8 input",
+                            nibble & 7
+                        ),
+                    })?;
+                    Ok(if nibble & 8 == 0 { byte } else { this.arena.neg(byte) })
+                };
+                let b0 = select_byte(self, selector & 0xf)?;
+                let b1 = select_byte(self, (selector >> 4) & 0xf)?;
+                let b2 = select_byte(self, (selector >> 8) & 0xf)?;
+                let b3 = select_byte(self, (selector >> 12) & 0xf)?;
+                self.threads[t].regs.write(*dst, Value::Quad(b0, b1, b2, b3));
+            }
+
             LoweredInstr::Lop3 {
                 dst,
                 src_a,
@@ -1051,6 +1117,8 @@ impl<'p> Interpreter<'p> {
                     let hi = self.apply_clamp(*clamp, hi);
                     self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
                 } else if let Some(v) = self.pair_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
+                    self.threads[t].regs.write(*dst, v);
+                } else if let Some(v) = self.quad_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
                     self.threads[t].regs.write(*dst, v);
                 } else {
                     let a = self.scalar_operand(t, pc, src_a)?;
@@ -2237,6 +2305,58 @@ impl<'p> Interpreter<'p> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Apply a byte-wise FP8 sign-bit XOR to a packed byte quad. This is the
+    /// `xor.b32 value, value, 0x80808080` idiom used before RoPE's FP8
+    /// conversion; each quad lane already represents its decoded real value.
+    fn quad_bitwise_binop(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: BinOp,
+        ty: ScalarType,
+        src_a: &Operand,
+        src_b: &Operand,
+    ) -> EvalResult<Option<Value>> {
+        if ty.bits() != 32 || op != BinOp::Xor {
+            return Ok(None);
+        }
+        let a = self.operand_value(t, pc, src_a)?;
+        let b = self.operand_value(t, pc, src_b)?;
+        let (lanes, mask) = match (a, b) {
+            (Value::Quad(b0, b1, b2, b3), Value::Scalar(mask))
+            | (Value::Scalar(mask), Value::Quad(b0, b1, b2, b3)) => {
+                ((b0, b1, b2, b3), mask)
+            }
+            (Value::Quad(..), Value::Quad(..)) => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: "xor.b32 of two packed byte quads".to_string(),
+                });
+            }
+            _ => return Ok(None),
+        };
+        let mask = self.arena.as_int_const(mask).ok_or(EvalError::NotConcrete {
+            thread: t,
+            pc,
+            what: "packed byte-quad xor mask",
+        })? as u32;
+        let apply = |this: &mut Self, lane: ExprId, byte_mask: u32| match byte_mask {
+            0 => Ok(lane),
+            0x80 => Ok(this.arena.neg(lane)),
+            _ => Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "packed byte-quad xor mask {mask:#010x} changes more than an FP8 sign bit"
+                ),
+            }),
+        };
+        let b0 = apply(self, lanes.0, mask & 0xff)?;
+        let b1 = apply(self, lanes.1, (mask >> 8) & 0xff)?;
+        let b2 = apply(self, lanes.2, (mask >> 16) & 0xff)?;
+        let b3 = apply(self, lanes.3, (mask >> 24) & 0xff)?;
+        Ok(Some(Value::Quad(b0, b1, b2, b3)))
     }
 
     pub(in crate::eval) fn scalar_operand(

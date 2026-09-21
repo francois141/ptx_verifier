@@ -315,6 +315,14 @@ pub enum LoweredInstr {
         space: MemSpace,
     },
 
+    /// `prmt.b32 d, a, b, selector` byte permutation.
+    Prmt {
+        dst: RegId,
+        src_a: Operand,
+        src_b: Operand,
+        selector: Operand,
+    },
+
     /// `lop3.b32 d, a, b, c, lut` three-input logical operation.
     Lop3 {
         dst: RegId,
@@ -955,6 +963,7 @@ define_instr_kinds!(
     CpAsync,
     Mov,
     Cvta,
+    Prmt,
     Lop3,
     BinOp,
     UnaryOp,
@@ -1059,6 +1068,12 @@ impl LoweredInstr {
             }
             Self::Mov { src, .. } => from_op(src).into_iter().collect(),
             Self::Cvta { src, .. } => from_op(src).into_iter().collect(),
+            Self::Prmt {
+                src_a,
+                src_b,
+                selector,
+                ..
+            } => from_ops(&[*src_a, *src_b, *selector]),
             Self::Lop3 {
                 src_a,
                 src_b,
@@ -1301,6 +1316,7 @@ impl LoweredInstr {
             | Self::Load { dst, .. }
             | Self::Mov { dst, .. }
             | Self::Cvta { dst, .. }
+            | Self::Prmt { dst, .. }
             | Self::Lop3 { dst, .. }
             | Self::BinOp { dst, .. }
             | Self::UnaryOp { dst, .. }
