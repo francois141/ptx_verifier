@@ -1857,6 +1857,28 @@ fn lower_parsed_instruction(
             )?;
         }
 
+        ParsedInstruction::Prmt(prmt) => {
+            if prmt.mode != ast::PrmtMode::None {
+                return Err(unsupported("prmt", "mode modifiers"));
+            }
+            let dst = ctx.resolve_dst_typed(&prmt.dst)?;
+            let src_a = ctx.resolve_operand_typed(&prmt.src_a)?;
+            let src_b = ctx.resolve_operand_typed(&prmt.src_b)?;
+            let selector = ctx.resolve_operand(&prmt.selector)?;
+            ctx.check_dst_type(&dst, ScalarType::B32, "prmt")?;
+            ctx.check_operand_type(&src_a, ScalarType::B32, "prmt")?;
+            ctx.check_operand_type(&src_b, ScalarType::B32, "prmt")?;
+            ctx.emit(
+                LoweredInstr::Prmt {
+                    dst: dst.reg,
+                    src_a: src_a.operand,
+                    src_b: src_b.operand,
+                    selector,
+                },
+                predicate,
+            )?;
+        }
+
         ParsedInstruction::Lop3(lop3) => {
             if lop3.bool_op.is_some() || lop3.dst_pred.is_some() || lop3.pred_q.is_some() {
                 return Err(unsupported("lop3", "boolean or predicate-output modifiers"));
