@@ -1857,6 +1857,30 @@ fn lower_parsed_instruction(
             )?;
         }
 
+        ParsedInstruction::Lop3(lop3) => {
+            if lop3.bool_op.is_some() || lop3.dst_pred.is_some() || lop3.pred_q.is_some() {
+                return Err(unsupported("lop3", "boolean or predicate-output modifiers"));
+            }
+            let dst = ctx.resolve_dst_typed(&lop3.dst)?;
+            let src_a = ctx.resolve_operand_typed(&lop3.src_a)?;
+            let src_b = ctx.resolve_operand_typed(&lop3.src_b)?;
+            let src_c = ctx.resolve_operand_typed(&lop3.src_c)?;
+            ctx.check_dst_type(&dst, ScalarType::B32, "lop3")?;
+            ctx.check_operand_type(&src_a, ScalarType::B32, "lop3")?;
+            ctx.check_operand_type(&src_b, ScalarType::B32, "lop3")?;
+            ctx.check_operand_type(&src_c, ScalarType::B32, "lop3")?;
+            ctx.emit(
+                LoweredInstr::Lop3 {
+                    dst: dst.reg,
+                    src_a: src_a.operand,
+                    src_b: src_b.operand,
+                    src_c: src_c.operand,
+                    lut: ctx.resolve_operand(&lop3.lut)?,
+                },
+                predicate,
+            )?;
+        }
+
         // =========================================================================
         // Warp Shuffle - ShflSync
         // =========================================================================

@@ -1002,6 +1002,38 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, v);
             }
 
+            LoweredInstr::Lop3 {
+                dst,
+                src_a,
+                src_b,
+                src_c,
+                lut,
+            } => {
+                let lut = self.concrete_operand(t, pc, lut, "lop3 LUT")?;
+                if lut != 0x96 {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: format!("lop3.b32 LUT {lut:#x} (only XOR is modeled)"),
+                    });
+                }
+                let a = self.scalar_operand(t, pc, src_a)?;
+                let b = self.concrete_operand(t, pc, src_b, "lop3 XOR source")? as u32;
+                let c = self.concrete_operand(t, pc, src_c, "lop3 XOR source")? as u32;
+                let result = match b ^ c {
+                    0 => a,
+                    0x8000_0000 => self.arena.neg(a),
+                    mask => {
+                        return Err(EvalError::Unsupported {
+                            pc,
+                            what: format!(
+                                "lop3.b32 XOR changes bits other than the f32 sign bit ({mask:#010x})"
+                            ),
+                        });
+                    }
+                };
+                self.threads[t].regs.write(*dst, Value::Scalar(result));
+            }
+
             LoweredInstr::BinOp {
                 op,
                 dst,

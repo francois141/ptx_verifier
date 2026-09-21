@@ -315,6 +315,15 @@ pub enum LoweredInstr {
         space: MemSpace,
     },
 
+    /// `lop3.b32 d, a, b, c, lut` three-input logical operation.
+    Lop3 {
+        dst: RegId,
+        src_a: Operand,
+        src_b: Operand,
+        src_c: Operand,
+        lut: Operand,
+    },
+
     // =========================================================================
     // Arithmetic
     // =========================================================================
@@ -946,6 +955,7 @@ define_instr_kinds!(
     CpAsync,
     Mov,
     Cvta,
+    Lop3,
     BinOp,
     UnaryOp,
     Copysign,
@@ -1049,6 +1059,13 @@ impl LoweredInstr {
             }
             Self::Mov { src, .. } => from_op(src).into_iter().collect(),
             Self::Cvta { src, .. } => from_op(src).into_iter().collect(),
+            Self::Lop3 {
+                src_a,
+                src_b,
+                src_c,
+                lut,
+                ..
+            } => from_ops(&[*src_a, *src_b, *src_c, *lut]),
 
             // Arithmetic
             Self::BinOp { src_a, src_b, .. } => from_ops(&[*src_a, *src_b]),
@@ -1284,6 +1301,7 @@ impl LoweredInstr {
             | Self::Load { dst, .. }
             | Self::Mov { dst, .. }
             | Self::Cvta { dst, .. }
+            | Self::Lop3 { dst, .. }
             | Self::BinOp { dst, .. }
             | Self::UnaryOp { dst, .. }
             | Self::Copysign { dst, .. }
