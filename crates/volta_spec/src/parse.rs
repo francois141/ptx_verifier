@@ -452,9 +452,18 @@ impl Parser {
 
     fn parse_index_expr(&mut self) -> Result<IndexExpr, ParseError> {
         let mut lhs = self.parse_index_mul()?;
-        while self.peek().kind == TokenKind::Plus {
-            self.bump();
-            lhs = lhs + self.parse_index_mul()?;
+        loop {
+            match self.peek().kind {
+                TokenKind::Plus => {
+                    self.bump();
+                    lhs = lhs + self.parse_index_mul()?;
+                }
+                TokenKind::Minus => {
+                    self.bump();
+                    lhs = lhs - self.parse_index_mul()?;
+                }
+                _ => break,
+            }
         }
         Ok(lhs)
     }
@@ -485,7 +494,7 @@ impl Parser {
                 Ok(e)
             }
             _ => Err(self.unexpected(
-                "an integer, a variable, or '(' (index expressions only allow +, *, and parens)",
+                "an integer, a variable, or '(' (index expressions only allow +, -, *, and parens)",
             )),
         }
     }
