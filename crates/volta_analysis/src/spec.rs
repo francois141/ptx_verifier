@@ -109,6 +109,7 @@ pub enum IndexExpr {
     Int(u64),
     Var(String),
     Add(Box<IndexExpr>, Box<IndexExpr>),
+    Sub(Box<IndexExpr>, Box<IndexExpr>),
     Mul(Box<IndexExpr>, Box<IndexExpr>),
 }
 
@@ -126,6 +127,14 @@ impl std::ops::Add for IndexExpr {
     type Output = Self;
     fn add(self, other: Self) -> Self {
         IndexExpr::Add(Box::new(self), Box::new(other))
+    }
+}
+
+impl std::ops::Sub for IndexExpr {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        IndexExpr::Sub(Box::new(self), Box::new(other))
     }
 }
 
@@ -321,6 +330,7 @@ pub enum SpecError {
         index: Vec<u64>,
         shape: Vec<u64>,
     },
+    IndexUnderflow,
     Nan(NanError),
 }
 
@@ -357,6 +367,7 @@ impl fmt::Display for SpecError {
                 "array '{}': index {:?} out of bounds for shape {:?}",
                 array, index, shape
             ),
+            Self::IndexUnderflow => write!(f, "index expression underflow"),
             Self::Nan(_) => write!(f, "spec contains a NaN float literal"),
         }
     }
@@ -470,6 +481,9 @@ fn eval_index(
         IndexExpr::Int(v) => Ok(*v),
         IndexExpr::Var(name) => resolve_var(name, env, bindings),
         IndexExpr::Add(a, b) => Ok(eval_index(a, env, bindings)? + eval_index(b, env, bindings)?),
+        IndexExpr::Sub(a, b) => eval_index(a, env, bindings)?
+            .checked_sub(eval_index(b, env, bindings)?)
+            .ok_or(SpecError::IndexUnderflow),
         IndexExpr::Mul(a, b) => Ok(eval_index(a, env, bindings)? * eval_index(b, env, bindings)?),
     }
 }
@@ -542,7 +556,7 @@ fn index_free_vars(expr: &IndexExpr, out: &mut std::collections::HashSet<String>
         IndexExpr::Var(name) => {
             out.insert(name.clone());
         }
-        IndexExpr::Add(a, b) | IndexExpr::Mul(a, b) => {
+        IndexExpr::Add(a, b) | IndexExpr::Sub(a, b) | IndexExpr::Mul(a, b) => {
             index_free_vars(a, out);
             index_free_vars(b, out);
         }
