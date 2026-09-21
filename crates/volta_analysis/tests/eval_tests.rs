@@ -3424,6 +3424,146 @@ fn test_shfl_sync_idx_exchange() {
     assert_eq!(output.stats.warp_syncs, 1);
 }
 
+/// Output-only config for a full 32-lane warp, storing `len`
+/// `elem_width`-byte elements as the kernel's single parameter.
+fn warp_out_config(elem_width: u64, len: u64) -> AnalysisConfig {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width,
+        len,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    config
+}
+
+/// `redux.sync.max.u32`/`.min.s32` fold every lane's value (0..31, and
+/// its `- 16` shift) across the full warp and broadcast the single result
+/// to every lane - one `redux.sync` fires per group.
+#[test]
+fn test_redux_sync_max_min_full_warp() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    mov.u32 %r0, %tid.x;
+    redux.sync.max.u32 %r1, %r0, -1;
+    sub.s32 %r2, %r0, 16;
+    redux.sync.min.s32 %r3, %r2, -1;
+    mul.wide.u32 %rd1, %r0, 8;
+    add.u64 %rd2, %rd0, %rd1;
+    st.global.u32 [%rd2], %r1;
+    add.u64 %rd2, %rd2, 4;
+    st.global.u32 [%rd2], %r3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
+    // max(0..31) = 31, min(-16..15) = -16, broadcast identically to lane 0
+    // and lane 31. `st.global.u32` stores the raw unsigned-canonical bit
+    // pattern (memory holds bits, not a signed/unsigned distinction -
+    // see `test_cvt_reinterprets_at_source_format`), so -16 reads back as
+    // 4294967280.
+    assert_eq!(display_output(&output, "out", 0), "31");
+    assert_eq!(display_output(&output, "out", 1), "4294967280");
+    assert_eq!(display_output(&output, "out", 62), "31");
+    assert_eq!(display_output(&output, "out", 63), "4294967280");
+    assert_eq!(output.stats.warp_syncs, 2);
+}
+
+/// `redux.sync.and`/`.or`/`.add` over the same 0..31 lane values (all
+/// `.b32`/`.u32`, no signedness distinction).
+#[test]
+fn test_redux_sync_and_or_add_full_warp() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    mov.u32 %r0, %tid.x;
+    redux.sync.and.b32 %r1, %r0, -1;
+    redux.sync.or.b32 %r2, %r0, -1;
+    redux.sync.add.u32 %r3, %r0, -1;
+    mul.wide.u32 %rd1, %r0, 12;
+    add.u64 %rd2, %rd0, %rd1;
+    st.global.u32 [%rd2], %r1;
+    add.u64 %rd2, %rd2, 4;
+    st.global.u32 [%rd2], %r2;
+    add.u64 %rd2, %rd2, 4;
+    st.global.u32 [%rd2], %r3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, warp_out_config(4, 96)).unwrap();
+    // AND(0..31) = 0, OR(0..31) = 31, SUM(0..31) = 496.
+    assert_eq!(display_output(&output, "out", 0), "0");
+    assert_eq!(display_output(&output, "out", 1), "31");
+    assert_eq!(display_output(&output, "out", 2), "496");
+    assert_eq!(output.stats.warp_syncs, 3);
+}
+
+/// A `redux.sync` under a predicate guard only fires for the lanes that
+/// take it: lanes 16..31 never execute the guarded `max.s32` and keep
+/// their pre-set sentinel, while every lane (guarded or not) still gets
+/// the unconditional `min.s32`'s broadcast result.
+#[test]
+fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    mov.u32 %r0, %tid.x;
+    sub.s32 %r1, %r0, 16;
+    redux.sync.min.s32 %r2, %r1, -1;
+    setp.lt.u32 %p0, %r0, 16;
+    mov.u32 %r3, 999;
+@%p0 redux.sync.max.s32 %r3, %r1, 0x0000ffff;
+    mul.wide.u32 %rd1, %r0, 8;
+    add.u64 %rd2, %rd0, %rd1;
+    st.global.u32 [%rd2], %r2;
+    add.u64 %rd2, %rd2, 4;
+    st.global.u32 [%rd2], %r3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
+    // Lane 0 (guarded, mask 0..15): min over all 32 lanes is -16; max over
+    // just lanes 0..15 is -1. `st.global.u32` stores the raw
+    // unsigned-canonical bit pattern (see
+    // `test_cvt_reinterprets_at_source_format`), so -16/-1 read back as
+    // 4294967280/4294967295.
+    assert_eq!(display_output(&output, "out", 0), "4294967280");
+    assert_eq!(display_output(&output, "out", 1), "4294967295");
+    // Lane 16 (not guarded): still gets the full-warp min, but never
+    // executes the guarded redux, so its sentinel is untouched.
+    assert_eq!(display_output(&output, "out", 32), "4294967280");
+    assert_eq!(display_output(&output, "out", 33), "999");
+    assert_eq!(output.stats.warp_syncs, 2);
+}
+
 /// Float `.sat` clamps the result to [0, 1]; concrete operands fold all
 /// the way to the clamped constant.
 #[test]

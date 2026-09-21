@@ -20,9 +20,9 @@ use volta_frontend::ast::{
     FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
     MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
     MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, MinInstr, MulInstr, MulMode,
-    NegInstr, Operand as AstOperand, ParsedInstruction, ScalarType, SetpInstr,
-    SharedStateSpaceQualifier, ShflMode as AstShflMode, ShflSyncInstr, StInstr, StateSpace,
-    Statement, SubInstr, VarDecl, VecWidth,
+    NegInstr, Operand as AstOperand, ParsedInstruction, RedOp, ReduxSyncInstr, ScalarType,
+    SetpInstr, SharedStateSpaceQualifier, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
+    StateSpace, Statement, SubInstr, VarDecl, VecWidth,
 };
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::{is_cache_perf_hint, parse_instruction};
@@ -1915,6 +1915,13 @@ fn lower_parsed_instruction(
         // =========================================================================
         ParsedInstruction::ElectSync(elect) => {
             lower_elect_sync(ctx, elect, predicate)?;
+        }
+
+        // =========================================================================
+        // Warp Reduction - ReduxSync
+        // =========================================================================
+        ParsedInstruction::ReduxSync(redux) => {
+            lower_redux_sync(ctx, redux, predicate)?;
         }
 
         // =========================================================================
@@ -4357,6 +4364,59 @@ fn lower_elect_sync(
         LoweredInstr::ElectSync {
             dst,
             dst_pred,
+            membermask,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `redux.sync.op.type d, a, membermask` (PTX ISA Block 143). The
+/// AST's `RedOp` is shared with the non-warp `red.op` instruction, but
+/// `redux.sync` only defines `add`/`and`/`or`/`xor`/`min`/`max` - `inc`/
+/// `dec` are not valid `redux.sync` ops and have no `BinOp` equivalent,
+/// so they are rejected here rather than silently miscomputed.
+///
+/// `.NaN` (the float `.min`/`.max` forms only) is accepted unchecked, same
+/// reasoning as `reject_minmax_modifiers`: it only changes behavior when an
+/// input is NaN, and this engine's reals never are, so every representable
+/// input already gets plain min/max. `.abs` does change the computed value
+/// and is not modeled, so it is rejected.
+fn lower_redux_sync(
+    ctx: &mut LoweringContext,
+    redux: &ReduxSyncInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    if redux.abs {
+        return Err(unsupported("redux.sync", ".abs modifier"));
+    }
+    let op = match redux.op {
+        RedOp::Add => BinOp::Add,
+        RedOp::And => BinOp::And,
+        RedOp::Or => BinOp::Or,
+        RedOp::Xor => BinOp::Xor,
+        RedOp::Min => BinOp::Min,
+        RedOp::Max => BinOp::Max,
+        RedOp::Inc | RedOp::Dec => {
+            return Err(unsupported(
+                "redux.sync",
+                format!("{:?} (not a valid redux.sync reduction op)", redux.op),
+            ));
+        }
+    };
+
+    let dst_typed = ctx.resolve_dst_typed(&redux.dst)?;
+    let src_typed = ctx.resolve_operand_typed(&redux.src)?;
+    ctx.check_dst_type(&dst_typed, redux.ty, "redux.sync")?;
+    ctx.check_operand_type(&src_typed, redux.ty, "redux.sync")?;
+    let membermask = ctx.resolve_operand(&redux.membermask)?;
+
+    ctx.emit(
+        LoweredInstr::ReduxSync {
+            op,
+            ty: redux.ty,
+            dst: dst_typed.reg,
+            src: src_typed.operand,
             membermask,
         },
         predicate,

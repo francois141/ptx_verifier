@@ -609,6 +609,20 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
+    /// Warp-synchronized reduction: `redux.sync.op.type d, a, membermask`
+    /// (PTX ISA Block 143). Folds every live mask lane's `a` with `op` -
+    /// `Add`/`And`/`Or`/`Xor`/`Min`/`Max` (the AST's `RedOp::Inc`/`Dec`
+    /// have no `BinOp` equivalent and are rejected at lowering, since
+    /// they are not valid `redux.sync` ops per the ISA) - and broadcasts
+    /// the single result to `dst` on every live lane.
+    ReduxSync {
+        op: BinOp,
+        ty: ScalarType,
+        dst: RegId,
+        src: Operand,
+        membermask: Operand,
+    },
+
     // =========================================================================
     // Tensor Core
     // =========================================================================
@@ -993,6 +1007,7 @@ define_instr_kinds!(
     Shfl,
     ShflSync,
     ElectSync,
+    ReduxSync,
     Ldmatrix,
     Mma,
     WmmaLoad,
@@ -1158,6 +1173,9 @@ impl LoweredInstr {
                 ..
             } => from_ops(&[*src, *offset_or_lane, *clamp, *membermask]),
             Self::ElectSync { membermask, .. } => from_op(membermask).into_iter().collect(),
+            Self::ReduxSync {
+                src, membermask, ..
+            } => from_ops(&[*src, *membermask]),
 
             // Tensor core
             Self::Ldmatrix { addr, .. } => from_op(addr).into_iter().collect(),
@@ -1334,6 +1352,7 @@ impl LoweredInstr {
             | Self::CvtE4m3x2ToF16x2 { dst, .. }
             | Self::CvtPackHalves { dst, .. }
             | Self::PackHalves { dst, .. }
+            | Self::ReduxSync { dst, .. }
             | Self::Activemask { dst } => vec![*dst],
 
             // Vector destinations

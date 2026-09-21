@@ -1660,6 +1660,13 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
+            LoweredInstr::ReduxSync { membermask, .. } => {
+                let mask =
+                    self.concrete_operand(t, pc, membermask, "redux.sync membermask")? as u32;
+                self.block_at_warp_op(t, pc, mask)?;
+                return Ok(());
+            }
+
             // Tensor-core operations synchronize the full warp.
             LoweredInstr::Ldmatrix { .. }
             | LoweredInstr::Mma { .. }
@@ -3402,7 +3409,11 @@ impl<'p> Interpreter<'p> {
 
     /// Evaluate a binary op. Integer ops on concrete values use exact
     /// width/signedness semantics; symbolic values get real-valued nodes.
-    fn eval_binop(
+    ///
+    /// `pub(in crate::eval)`: also the fold primitive `eval::warp`'s
+    /// `exec_redux_sync` uses to combine `redux.sync` lane values, since
+    /// it already has the exact signed/float-aware semantics per `ty`.
+    pub(in crate::eval) fn eval_binop(
         &mut self,
         t: ThreadId,
         pc: InstrId,
