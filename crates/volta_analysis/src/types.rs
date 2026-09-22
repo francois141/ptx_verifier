@@ -25,7 +25,7 @@ impl RegClass {
     pub fn from_scalar_type(ty: ScalarType) -> Self {
         match ty {
             ScalarType::Pred => RegClass::Pred,
-            ScalarType::S8 | ScalarType::U8 | ScalarType::B8 => RegClass::Bits8,
+            ScalarType::S8 | ScalarType::U8 | ScalarType::B8 | ScalarType::E4m3 => RegClass::Bits8,
             ScalarType::S16
             | ScalarType::U16
             | ScalarType::F16
@@ -427,6 +427,7 @@ pub fn format_scalar_type(ty: ScalarType) -> &'static str {
         ScalarType::B1024 => ".b1024",
         ScalarType::Pred => ".pred",
         ScalarType::E4m3x2 => ".e4m3x2",
+        ScalarType::E4m3 => ".e4m3",
     }
 }
 

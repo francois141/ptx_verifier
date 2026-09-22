@@ -301,6 +301,12 @@ pub enum ScalarType {
     B1024,
     // Predicate
     Pred,
+    /// A single `.e4m3` (8-bit float, PTX ISA 5.2.3) element type, as used
+    /// by `mma`'s per-instruction type modifiers (e.g.
+    /// `mma...f32.e4m3.e4m3.f32`) - four of these pack into one `.b32`
+    /// fragment register (PTX ISA "Matrix Fragments for mma.m16n8k32").
+    /// Never a register's declared type on its own.
+    E4m3,
     /// Two packed `.e4m3` (8-bit float: 1 sign + 4 exponent + 3 mantissa,
     /// no infinity, NaN only at `0x7f`/`0xff`) values in a 16-bit
     /// register (PTX ISA 5.2.3). Source-only in the fragment Volta
@@ -314,7 +320,7 @@ impl ScalarType {
     /// Size in bits
     pub fn bits(&self) -> u32 {
         match self {
-            ScalarType::S8 | ScalarType::U8 | ScalarType::B8 => 8,
+            ScalarType::S8 | ScalarType::U8 | ScalarType::B8 | ScalarType::E4m3 => 8,
             ScalarType::S16
             | ScalarType::U16
             | ScalarType::F16
@@ -371,6 +377,7 @@ impl FromAscii for ScalarType {
             b"b1024" => ScalarType::B1024,
             b"pred" => ScalarType::Pred,
             b"e4m3x2" => ScalarType::E4m3x2,
+            b"e4m3" => ScalarType::E4m3,
             _ => return None,
         })
     }

@@ -97,6 +97,10 @@ pub struct FragmentElement {
     /// For packed types (f16 in b32): which half of the register (false=low, true=high).
     /// None for unpacked types (f32).
     pub high_half: Option<bool>,
+    /// For four-way packed types (fp8 in b32): which of the four byte lanes
+    /// (0 = lowest address/least-significant byte, .. 3 = highest), matching
+    /// `Value::Quad`'s tuple order. `None` for every other packing.
+    pub quad_lane: Option<u8>,
 }
 
 /// Compute the fragment-to-matrix-element mapping for mma.m16n8k16 with f16 types.
@@ -128,6 +132,7 @@ pub mod m16n8k16_f16 {
                 row,
                 col,
                 high_half: Some(i % 2 != 0),
+                quad_lane: None,
             });
         }
         elements
@@ -151,6 +156,7 @@ pub mod m16n8k16_f16 {
                 row,
                 col,
                 high_half: Some(i % 2 != 0),
+                quad_lane: None,
             });
         }
         elements
@@ -170,6 +176,7 @@ pub mod m16n8k16_f16 {
                 row,
                 col,
                 high_half: None, // f32, not packed
+                quad_lane: None,
             });
         }
         elements
@@ -198,6 +205,7 @@ pub mod m16n8k8_tf32 {
                     thread_in_group + 4
                 },
                 high_half: None,
+                quad_lane: None,
             })
             .collect()
     }
@@ -213,6 +221,7 @@ pub mod m16n8k8_tf32 {
                 row: thread_in_group + 4 * i,
                 col: group_id,
                 high_half: None,
+                quad_lane: None,
             })
             .collect()
     }
@@ -239,6 +248,7 @@ pub mod m16n8k4_tf32 {
                 row: group_id + 8 * i,
                 col: thread_in_group,
                 high_half: None,
+                quad_lane: None,
             })
             .collect()
     }
@@ -252,7 +262,73 @@ pub mod m16n8k4_tf32 {
             row: thread_in_group,
             col: group_id,
             high_half: None,
+            quad_lane: None,
         }]
+    }
+
+    /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
+    pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {
+        super::m16n8k16_f16::matrix_cd(lane_id)
+    }
+}
+
+/// Fragment mappings for `mma.m16n8k32` with `.e4m3` (fp8) multiplicands
+/// (PTX ISA "Matrix Fragments for mma.m16n8k32", the `.s8`/`.u8`/`.e4m3`/
+/// `.e5m2`/... row - four elements packed per 32-bit register, `quad_lane`
+/// 0..3 low to high matching `Value::Quad`'s tuple order).
+pub mod m16n8k32_e4m3 {
+    use super::FragmentElement;
+
+    /// Matrix A fragment: 4 registers, each packing 4 e4m3 = 16 elements
+    /// total. A is m16 x k32.
+    pub fn matrix_a(lane_id: u32) -> Vec<FragmentElement> {
+        let group_id = lane_id >> 2;
+        let thread_in_group = lane_id % 4;
+        let mut elements = Vec::with_capacity(16);
+        for i in 0u32..16 {
+            let row = if (0..4).contains(&i) || (8..12).contains(&i) {
+                group_id
+            } else {
+                group_id + 8
+            };
+            let col = if i < 8 {
+                thread_in_group * 4 + (i & 0x3)
+            } else {
+                thread_in_group * 4 + (i & 0x3) + 16
+            };
+            elements.push(FragmentElement {
+                reg_idx: (i / 4) as usize,
+                row,
+                col,
+                high_half: None,
+                quad_lane: Some((i % 4) as u8),
+            });
+        }
+        elements
+    }
+
+    /// Matrix B fragment: 2 registers, each packing 4 e4m3 = 8 elements
+    /// total. B is k32 x n8.
+    pub fn matrix_b(lane_id: u32) -> Vec<FragmentElement> {
+        let group_id = lane_id >> 2;
+        let thread_in_group = lane_id % 4;
+        let mut elements = Vec::with_capacity(8);
+        for i in 0u32..8 {
+            let row = if i < 4 {
+                thread_in_group * 4 + (i & 0x3)
+            } else {
+                thread_in_group * 4 + (i & 0x3) + 16
+            };
+            let col = group_id;
+            elements.push(FragmentElement {
+                reg_idx: (i / 4) as usize,
+                row,
+                col,
+                high_half: None,
+                quad_lane: Some((i % 4) as u8),
+            });
+        }
+        elements
     }
 
     /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
@@ -297,6 +373,7 @@ pub mod m16n16k16_f16 {
                     row,
                     col,
                     high_half: Some(half != 0),
+                    quad_lane: None,
                 });
             }
         }
@@ -319,6 +396,7 @@ pub mod m16n16k16_f16 {
                     row,
                     col,
                     high_half: Some(half != 0),
+                    quad_lane: None,
                 });
             }
         }
@@ -339,6 +417,7 @@ pub mod m16n16k16_f16 {
                 row,
                 col,
                 high_half: None,
+                quad_lane: None,
             });
         }
         elements

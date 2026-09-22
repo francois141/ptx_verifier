@@ -16,13 +16,13 @@ use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
     self, AbsInstr, AddInstr, Address, AddressBase, BarMode, BraInstr, CallInstr,
     CmpOp as AstCmpOp, CopysignInstr, CpAsyncInstr, CvtInstr, CvtRounding, DivInstr,
-    ElectSyncInstr, FmaInstr, FpRound,
-    FromAscii, Function, FunctionBody, Instruction, InstructionOp, LdInstr, MadInstr, MaxInstr,
-    MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
-    MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, MinInstr, MulInstr, MulMode,
-    NegInstr, Operand as AstOperand, ParsedInstruction, RedOp, ReduxSyncInstr, ScalarType,
-    SetpInstr, SharedStateSpaceQualifier, ShflMode as AstShflMode, ShflSyncInstr, StInstr,
-    StateSpace, Statement, SubInstr, VarDecl, VecWidth,
+    ElectSyncInstr, FmaInstr, FpRound, FromAscii, Function, FunctionBody, Instruction,
+    InstructionOp, LdInstr, MadInstr, MaxInstr, MbarrierArriveInstr, MbarrierCompleteTxInstr,
+    MbarrierInitInstr, MbarrierInvalInstr, MbarrierTestWaitInstr, MbarrierTryWaitInstr,
+    MemSemantics, MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand, ParsedInstruction,
+    RedOp, ReduxSyncInstr, ScalarType, SetpInstr, SharedStateSpaceQualifier,
+    ShflMode as AstShflMode, ShflSyncInstr, StInstr, StateSpace, Statement, SubInstr, VarDecl,
+    VecWidth,
 };
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::{is_cache_perf_hint, parse_instruction};
@@ -3288,7 +3288,10 @@ fn lower_copysign(
     const NAME: &str = "copysign";
     let ty = copysign.ty;
     if !matches!(ty, ScalarType::F32 | ScalarType::F64) {
-        return Err(unsupported(NAME, format!(".{:?} (only .f32/.f64 modeled)", ty)));
+        return Err(unsupported(
+            NAME,
+            format!(".{:?} (only .f32/.f64 modeled)", ty),
+        ));
     }
 
     let dst_typed = ctx.resolve_dst_typed(&copysign.dst)?;
@@ -6113,7 +6116,8 @@ fn lower_mbarrier_wait_parity(
     Ok(())
 }
 
-/// Lower `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`
+/// Lower `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` and the tf32
+/// (`m16n8k8`/`m16n8k4`) and fp8 (`m16n8k32.f32.e4m3.e4m3.f32`) forms.
 fn lower_mma(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6166,9 +6170,10 @@ fn lower_mma(
         });
     }
 
-    // The evaluator gathers f16 (packed pairs, m16n8k16) or tf32 (one value
-    // per register, m16n8k8 / m16n8k4) multiplicand fragments and f32
-    // accumulators; any other combination would use the wrong layout.
+    // The evaluator gathers f16 (packed pairs, m16n8k16), tf32 (one value
+    // per register, m16n8k8 / m16n8k4), or e4m3 (four packed byte lanes,
+    // m16n8k32) multiplicand fragments and f32 accumulators; any other
+    // combination would use the wrong layout.
     let f16_types = [
         ScalarType::F32,
         ScalarType::F16,
@@ -6181,18 +6186,25 @@ fn lower_mma(
         ScalarType::Tf32,
         ScalarType::F32,
     ];
-    if types != f16_types && types != tf32_types {
+    let fp8_types = [
+        ScalarType::F32,
+        ScalarType::E4m3,
+        ScalarType::E4m3,
+        ScalarType::F32,
+    ];
+    if types != f16_types && types != tf32_types && types != fp8_types {
         return Err(unsupported(
             "mma",
             format!(
-                "type combination {:?} (only .f32.f16.f16.f32 and .f32.tf32.tf32.f32 \
-                 are modeled)",
+                "type combination {:?} (only .f32.f16.f16.f32, .f32.tf32.tf32.f32, \
+                 and .f32.e4m3.e4m3.f32 are modeled)",
                 types
             ),
         ));
     }
     let shape_supported = match types[1] {
         ScalarType::F16 => shape == MmaShape::new(16, 8, 16),
+        ScalarType::E4m3 => shape == MmaShape::new(16, 8, 32),
         _ => shape == MmaShape::new(16, 8, 8) || shape == MmaShape::new(16, 8, 4),
     };
     if !shape_supported {
@@ -6200,7 +6212,7 @@ fn lower_mma(
             "mma",
             format!(
                 "shape {} with {:?} multiplicands (f16 needs m16n8k16; tf32 needs \
-                 m16n8k8 or m16n8k4)",
+                 m16n8k8 or m16n8k4; e4m3 needs m16n8k32)",
                 shape, types[1]
             ),
         ));
