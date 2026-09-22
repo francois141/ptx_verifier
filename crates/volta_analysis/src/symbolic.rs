@@ -426,6 +426,8 @@ pub enum ExprNode {
     Min(ExprId, ExprId),
     /// Absolute value: |a|
     Abs(ExprId),
+    /// Sign: -1 / 0 / +1 depending on a's sign.
+    Sign(ExprId),
 
     // =====================================================================
     // Bitwise operations
@@ -523,6 +525,7 @@ impl ExprNode {
             | ExprNode::Sqrt(a)
             | ExprNode::Rcp(a)
             | ExprNode::Abs(a)
+            | ExprNode::Sign(a)
             | ExprNode::BitNot(a)
             | ExprNode::Not(a)
             | ExprNode::ToFloat(a)
@@ -968,6 +971,23 @@ impl ExprArena {
         self.push(ExprNode::Abs(a))
     }
 
+    /// Sign: always +1 or -1 (zero counts as non-positive, so `sign(0) =
+    /// -1`), with constant folding on a concrete argument.
+    pub fn sign(&mut self, a: ExprId) -> ExprId {
+        match self.node(a) {
+            ExprNode::IntConst(x) => {
+                let r = if *x > 0 { 1 } else { -1 };
+                return self.int(r);
+            }
+            ExprNode::RealConst(x) => {
+                let r = Real::from_i64(if x > &Real::zero() { 1 } else { -1 });
+                return self.real(r);
+            }
+            _ => {}
+        }
+        self.push(ExprNode::Sign(a))
+    }
+
     /// Fused multiply-add with constant folding: a * b + c, exact in the
     /// rationals - `fma(a, b, c)` folds iff `mul` then `add` would, and to
     /// the same value, so the fused and written-out forms cannot diverge.
@@ -1230,7 +1250,61 @@ impl ExprArena {
             Some(false) => return else_val,
             None => {}
         }
+        if let Some(id) = self.try_fold_sign_select(cond, then_val, else_val) {
+            return id;
+        }
         self.push(ExprNode::Select(cond, then_val, else_val))
+    }
+
+    /// Recognize the `setp.{gt,neu}` + `selp` + `selp` idiom nvcc/Triton
+    /// emit for a signed step (e.g. Lion's `-lr * sign(u)`):
+    /// `(v != 0) ? ((v > 0) ? c : -c) : 0`, over the *same* `v` (checked by
+    /// `ExprId` identity - the two comparisons read the one register the
+    /// idiom recomputes just once), folds to `sign(v) * c`. This lets a
+    /// `.spec` file's `sign()` call and the kernel's compiled branch
+    /// canonicalize to the same atom instead of two structurally distinct
+    /// opaque `Select`s that the decision procedure can never match.
+    fn try_fold_sign_select(
+        &mut self,
+        cond: ExprId,
+        then_val: ExprId,
+        else_val: ExprId,
+    ) -> Option<ExprId> {
+        let &ExprNode::Ne(v, zero_v) = self.node(cond) else {
+            return None;
+        };
+        if !self.is_zero_const(zero_v) || !self.is_zero_const(else_val) {
+            return None;
+        }
+        let &ExprNode::Select(inner_cond, a, b) = self.node(then_val) else {
+            return None;
+        };
+        let &ExprNode::Gt(v2, zero2) = self.node(inner_cond) else {
+            return None;
+        };
+        if v2 != v || !self.is_zero_const(zero2) {
+            return None;
+        }
+        let (ExprNode::RealConst(ca), ExprNode::RealConst(cb)) = (self.node(a), self.node(b))
+        else {
+            return None;
+        };
+        if ca.is_zero() || ca.neg() != cb.clone() {
+            return None;
+        }
+        let c = ca.clone();
+        let sign_v = self.sign(v);
+        let c_id = self.real(c);
+        Some(self.mul(sign_v, c_id))
+    }
+
+    /// Whether `id` is the exact constant zero (int or real).
+    fn is_zero_const(&self, id: ExprId) -> bool {
+        match self.node(id) {
+            ExprNode::IntConst(0) => true,
+            ExprNode::RealConst(x) => x.is_zero(),
+            _ => false,
+        }
     }
 
     // =================================================================
@@ -1426,6 +1500,11 @@ impl ExprArena {
             }
             ExprNode::Abs(a) => {
                 write!(f, "abs(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ")")
+            }
+            ExprNode::Sign(a) => {
+                write!(f, "sign(")?;
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
@@ -1954,6 +2033,47 @@ mod tests {
         let d = arena.int(4);
         let e = arena.select(f, c, d);
         assert_eq!(e, d);
+    }
+
+    #[test]
+    fn test_select_folds_sign_idiom() {
+        let mut arena = ExprArena::new();
+
+        // (v != 0) ? ((v > 0) ? c : -c) : 0, the setp+selp+selp pattern
+        // nvcc/Triton emit for a signed step - should fold to sign(v) * c.
+        let v = arena.symbol();
+        let zero = arena.int(0);
+        let c = arena.float_from_f64(-0.0001).unwrap();
+        let neg_c = arena.float_from_f64(0.0001).unwrap();
+
+        let is_positive = arena.gt(v, zero);
+        let inner = arena.select(is_positive, c, neg_c);
+        let is_nonzero = arena.ne(v, zero);
+        let folded = arena.select(is_nonzero, inner, zero);
+
+        let &ExprNode::Mul(sign_id, c_id) = arena.node(folded) else {
+            panic!("expected sign(v) * c, got {:?}", arena.node(folded));
+        };
+        assert!(matches!(arena.node(sign_id), ExprNode::Sign(inner) if *inner == v));
+        let (ExprNode::RealConst(folded_c), ExprNode::RealConst(orig_c)) =
+            (arena.node(c_id), arena.node(c))
+        else {
+            panic!("expected the folded multiplier to stay a real constant");
+        };
+        assert_eq!(folded_c, orig_c);
+
+        // A mismatched second branch (not the negation of the first) must
+        // not fold - it isn't the sign idiom.
+        let mut arena = ExprArena::new();
+        let v = arena.symbol();
+        let zero = arena.int(0);
+        let c = arena.float_from_f64(-0.0001).unwrap();
+        let other = arena.float_from_f64(0.5).unwrap();
+        let is_positive = arena.gt(v, zero);
+        let inner = arena.select(is_positive, c, other);
+        let is_nonzero = arena.ne(v, zero);
+        let not_folded = arena.select(is_nonzero, inner, zero);
+        assert!(matches!(arena.node(not_folded), ExprNode::Select(..)));
     }
 
     #[test]
