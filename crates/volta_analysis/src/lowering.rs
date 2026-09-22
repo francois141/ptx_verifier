@@ -570,8 +570,17 @@ impl LoweringContext {
                 Ok(Operand::Reg(reg_id))
             }
             AddressBase::Symbol(name) => {
-                // Shared, local, or module-global variables used as a base
+                // The parser only classifies a bracketed base as `Register`
+                // when its name starts with `%` - the conventional prefix,
+                // not a requirement (PTX allows `.reg .b64 xp;` and later
+                // `[xp]`). So an address base without `%` still needs a
+                // register-table check before falling back to a
+                // shared/local/module-global symbol, mirroring
+                // `resolve_operand_typed`'s Ident case.
                 let name_str = name.to_string();
+                if let Some(info) = self.symbols.get_register(&name_str) {
+                    return Ok(Operand::Reg(info.id));
+                }
                 if let Some(op) = self.resolve_mem_symbol(&name_str) {
                     Ok(op)
                 } else {
@@ -6939,6 +6948,35 @@ mod tests {
         );
         assert_eq!(program.symbols.get_shared_var("buf").unwrap().offset, 0);
         assert_eq!(program.symbols.extern_shared_base(), Some(0));
+    }
+
+    /// `%` is the conventional register-name prefix nvcc/Triton emit, not a
+    /// requirement - PTX allows `.reg .b64 xp;` and later `[xp]` as an
+    /// address base. The parser can't tell such a bare name apart from a
+    /// shared/local/global symbol on its own (both are just identifiers),
+    /// so lowering must fall back to a register-table lookup before
+    /// erroring as an undefined symbol.
+    #[test]
+    fn test_address_base_register_without_percent_prefix() {
+        let program = lower_module_src(
+            ".version 8.0\n.target sm_80\n.address_size 64\n\n\
+             .visible .entry k(.param .u64 x_ptr)\n{\n\
+             .reg .b64 xp;\n\
+             .reg .f32 %f<2>;\n\
+             ld.param.u64 xp, [x_ptr];\n\
+             ld.global.f32 %f1, [xp];\n\
+             ret;\n}\n",
+        );
+        let reg = program
+            .symbols
+            .get_register("xp")
+            .expect("xp should resolve as a register, not an undefined symbol");
+        // Both `ld` instructions should reference the same register id -
+        // one written as a destination, the other read as an address base.
+        assert!(program.instructions.values().any(|instr| matches!(
+            instr,
+            LoweredInstr::Load { base: Operand::Reg(id), .. } if *id == reg.id
+        )));
     }
 
     /// Parse and lower a kernel whose body is `body`, with a standard set of
