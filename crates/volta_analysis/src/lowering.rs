@@ -2475,16 +2475,16 @@ fn lower_add(
             }
             check_not_packed(*src_type, "add (mixed)")?;
 
-            // Mixed precision add: f32 result from half (f16/bf16) inputs
+            // Mixed precision add: d = convert(a) + c, a is half (f16/bf16),
+            // c and d are f32 (PTX ISA 9.7.5.1).
             let dst_ty = ScalarType::F32;
             let dst_typed = ctx.resolve_dst_typed(dst)?;
             let src_a_typed = ctx.resolve_operand_typed(src_a)?;
             let src_b_typed = ctx.resolve_operand_typed(src_b)?;
 
-            // Destination must be f32-compatible; sources match the half type
             ctx.check_dst_type(&dst_typed, dst_ty, "add.f32 (mixed)")?;
             ctx.check_operand_type(&src_a_typed, *src_type, "add.f32 (mixed)")?;
-            ctx.check_operand_type(&src_b_typed, *src_type, "add.f32 (mixed)")?;
+            ctx.check_operand_type(&src_b_typed, dst_ty, "add.f32 (mixed)")?;
 
             ctx.emit(
                 LoweredInstr::BinOp {
@@ -2747,7 +2747,8 @@ fn lower_sub(
             }
             check_not_packed(*src_type, "sub (mixed)")?;
 
-            // Mixed precision sub: f32 result from half (f16/bf16) inputs
+            // Mixed precision sub: d = convert(a) - c, a is half (f16/bf16),
+            // c and d are f32 (PTX ISA 9.7.5.2).
             let dst_ty = ScalarType::F32;
             let dst_typed = ctx.resolve_dst_typed(dst)?;
             let src_a_typed = ctx.resolve_operand_typed(src_a)?;
@@ -2755,7 +2756,7 @@ fn lower_sub(
 
             ctx.check_dst_type(&dst_typed, dst_ty, "sub.f32 (mixed)")?;
             ctx.check_operand_type(&src_a_typed, *src_type, "sub.f32 (mixed)")?;
-            ctx.check_operand_type(&src_b_typed, *src_type, "sub.f32 (mixed)")?;
+            ctx.check_operand_type(&src_b_typed, dst_ty, "sub.f32 (mixed)")?;
 
             ctx.emit(
                 LoweredInstr::BinOp {
