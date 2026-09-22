@@ -579,10 +579,26 @@ impl Interpreter<'_> {
                         row_addr[i][lo_row + 1] + col_byte,
                         2,
                     )?;
-                    Value::Pair(
-                        lo.as_scalar().expect("2-byte read never yields a Pair"),
-                        hi.as_scalar().expect("2-byte read never yields a Pair"),
-                    )
+                    match (lo, hi) {
+                        // f16/bf16 data: each 2-byte read is one plain
+                        // scalar element.
+                        (Value::Scalar(lo), Value::Scalar(hi)) => Value::Pair(lo, hi),
+                        // Byte-granular (fp8) data: each 2-byte read is
+                        // already half of a 4-byte `Quad` granule, surfaced
+                        // as a `Pair` of byte lanes (see `Memory::read`);
+                        // the two halves recombine into the full quad.
+                        (Value::Pair(b0, b1), Value::Pair(b2, b3)) => {
+                            Value::Quad(b0, b1, b2, b3)
+                        }
+                        _ => {
+                            return Err(EvalError::ValueKindMismatch {
+                                thread: m,
+                                pc,
+                                what: "ldmatrix.trans read a value that is neither \
+                                       an f16 scalar nor an fp8 byte pair",
+                            });
+                        }
+                    }
                 } else {
                     // Wrap-free in every profile: the row address passed
                     // the 16-byte alignment check above, so it is at most
