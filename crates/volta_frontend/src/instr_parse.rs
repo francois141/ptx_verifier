@@ -3331,23 +3331,54 @@ fn parse_membar(
     Ok(ParsedInstruction::Membar(MembarInstr { level }))
 }
 
-/// Parse fence instruction (Block 135)
+/// Parse fence instruction (Block 135). `.proxy.proxykind` (if present) must
+/// come immediately after the mnemonic - the bi-directional proxy fence's
+/// bare form (`fence.proxy.async.shared::cta;`, no `.sem`/`.scope` at all)
+/// is exactly how the real corpus spells it - so `proxy` is resolved first,
+/// with `sem`/`scope` parsed unconditionally afterward (a no-op when
+/// absent, whichever branch was taken).
 fn parse_fence(
     mp: &mut ModifierParser,
     _operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let sem = if let Some(m) = mp.peek_simple() {
-        FenceSem::from_ascii(m).inspect(|_| {
-            let _ = mp.next(); // consume peeked sem
-        })
+    let proxy = if mp.try_consume(ascii("proxy")) {
+        Some(parse_fence_proxy_kind(mp)?)
     } else {
         None
     };
+    let sem = mp.try_parse::<FenceSem>();
     let scope = mp.try_parse::<MemScope>();
-    let proxy = mp.try_consume(ascii("proxy"));
 
     mp.finish()?;
     Ok(ParsedInstruction::Fence(FenceInstr { sem, scope, proxy }))
+}
+
+/// Parse `fence.proxy`'s `.proxykind` (PTX ISA: `.proxykind = { .alias,
+/// .async, .async.global, .async.shared::{cta, cluster} }`). Reuses
+/// [`ModifierParser::try_consume_shared_state_space`] for the `::cta`/
+/// `::cluster` suffix rather than a one-off `::`-qualified consumer -
+/// consistent with how `cp.async`/`ldmatrix`/`mbarrier.*` already parse the
+/// same suffix elsewhere in this file. Note this also accepts a bare
+/// `.shared` (defaulting to `Cta`), which the ISA always double-colon
+/// qualifies for this specific proxykind - harmless leniency, since both
+/// qualifiers collapse to the same `MemSpace::Shared` downstream.
+fn parse_fence_proxy_kind(mp: &mut ModifierParser) -> Result<FenceProxyKind, InstrParseError> {
+    if mp.try_consume(ascii("alias")) {
+        return Ok(FenceProxyKind::Alias);
+    }
+    if mp.try_consume(ascii("async")) {
+        let restrict = if mp.try_consume(ascii("global")) {
+            Some(AsyncProxyRestrict::Global)
+        } else {
+            mp.try_consume_shared_state_space(ascii("shared"))?
+                .map(AsyncProxyRestrict::Shared)
+        };
+        return Ok(FenceProxyKind::Async(restrict));
+    }
+    match mp.peek_simple() {
+        Some(m) => Err(InstrParseError::InvalidModifier(m.clone())),
+        None => Err(InstrParseError::MissingModifier(ascii("proxykind"))),
+    }
 }
 
 /// Parse atom instruction (Block 136)

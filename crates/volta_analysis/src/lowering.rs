@@ -2004,6 +2004,13 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Synchronization - fence / fence.proxy
+        // =========================================================================
+        ParsedInstruction::Fence(fence) => {
+            lower_fence(ctx, fence, predicate)?;
+        }
+
+        // =========================================================================
         // Function call (callseq idiom for __symexpf)
         // =========================================================================
         ParsedInstruction::Call(call) => {
@@ -5218,8 +5225,36 @@ fn lower_tcgen05_mma(
     Ok(())
 }
 
-/// Lower `tcgen05.fence::before_thread_sync` / `tcgen05.fence::after_thread_sync`
-/// (PTX ISA 9.7.17.11): pure ordering fences around a subsequent thread
+/// Lower `fence{.sem}.scope` / `fence.proxy.alias{.sem}.scope` /
+/// `fence.proxy.async{.global|.shared::cta|.shared::cluster}{.sem}.scope`
+/// (PTX ISA, Section 9.7.15.4). The plain and `.alias` forms have no data
+/// effect Volta models (same treatment as `Tcgen05Fence`/
+/// `FenceProxyTensormap` - a pure ordering fence under Volta's sequential,
+/// non-reordering execution model). `.async`'s restriction is collapsed
+/// from the frontend's `SharedStateSpaceQualifier` (`::cta`/`::cluster`) to
+/// a plain `MemSpace::Shared` - `RaceTracker`'s async-proxy tracker has no
+/// cluster-vs-cta distinction, so both mean the same thing to it.
+fn lower_fence(
+    ctx: &mut LoweringContext,
+    fence: &ast::FenceInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    match fence.proxy {
+        None | Some(ast::FenceProxyKind::Alias) => {
+            ctx.emit(LoweredInstr::Fence, predicate)?;
+        }
+        Some(ast::FenceProxyKind::Async(restrict)) => {
+            let restrict = restrict.map(|r| match r {
+                ast::AsyncProxyRestrict::Global => MemSpace::Global,
+                ast::AsyncProxyRestrict::Shared(_) => MemSpace::Shared,
+            });
+            ctx.emit(LoweredInstr::FenceProxyAsync { restrict }, predicate)?;
+        }
+    }
+    Ok(())
+}
+
+/// Lower `tcgen05.fence::before_thread_sync`/`::after_thread_sync` (PTX ISA
 /// sync, with no data effect of their own - a no-op for Volta's sequential,
 /// non-reordering execution model. The `::before_thread_sync`/
 /// `::after_thread_sync` qualifier is glued directly onto the `fence`

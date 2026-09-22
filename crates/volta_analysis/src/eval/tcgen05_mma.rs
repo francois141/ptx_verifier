@@ -110,8 +110,11 @@ pub struct MatrixDescriptor {
 }
 
 /// `matrix-descriptor-encode`'s inverse: a 14-bit field holds `(real >>
-/// 4) & 0x3FFF`, so the real value is the field shifted back up.
-fn decode_encoded_offset(field: u64) -> u64 {
+/// 4) & 0x3FFF`, so the real value is the field shifted back up. Shared
+/// with [`crate::eval::wgmma`] - `wgmma.mma_async`'s shared-memory matrix
+/// descriptor uses the exact same `matrix-descriptor-encode` definition
+/// (PTX ISA 9.7.17.5.1.2.2), just packed into a different bit layout.
+pub(crate) fn decode_encoded_offset(field: u64) -> u64 {
     field << 4
 }
 

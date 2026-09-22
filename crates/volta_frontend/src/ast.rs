@@ -2976,12 +2976,34 @@ impl FromAscii for FenceSem {
     }
 }
 
-/// fence: `fence{.sem}.scope` (Block 135)
+/// The state space a `fence.proxy.async` restricts its ordering guarantee
+/// to (PTX ISA: "the memory ordering is limited only to operations
+/// performed on objects in the state space specified"). Mirrors
+/// `SharedStateSpaceQualifier` for the `.shared::{cta,cluster}` half rather
+/// than reusing `MemScope` - this is a state-space restriction, not a
+/// thread scope, and the two are unrelated qualifier namespaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncProxyRestrict {
+    Global,
+    Shared(SharedStateSpaceQualifier),
+}
+
+/// `fence.proxy`'s `.proxykind` (PTX ISA: `.proxykind = { .alias, .async,
+/// .async.global, .async.shared::{cta, cluster} }`). `Async`'s `None` means
+/// unrestricted - the ordering applies to every state space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceProxyKind {
+    Alias,
+    Async(Option<AsyncProxyRestrict>),
+}
+
+/// fence: `fence{.sem}.scope`, or `fence.proxy.proxykind{{.sem}.scope}`
+/// (Block 135)
 #[derive(Debug, Clone)]
 pub struct FenceInstr {
     pub sem: Option<FenceSem>,
     pub scope: Option<MemScope>,
-    pub proxy: bool,
+    pub proxy: Option<FenceProxyKind>,
 }
 
 /// Reduction operation

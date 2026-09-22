@@ -19,6 +19,28 @@
 //! Separately, `async_locks` tracks the in-flight window of every
 //! uncompleted `cp.async` copy: its destination range is locked against all
 //! access, its source range against writes only.
+//!
+//! A third, later state - `async_proxy_unfenced` - tracks the PTX ISA's
+//! async-vs-generic-proxy ordering requirement (sm_90+ only): once a
+//! `cp.async`/TMA copy's destination lock is released (the copy completed),
+//! its bytes are *not yet* safe to access through any proxy until every
+//! thread has executed a matching `fence.proxy.async`. This is deliberately
+//! not the same window as `async_locks` (which ends the instant the copy
+//! completes) or the same clearing rule as χ's full-CTA `bar.sync` (which
+//! must *not* also satisfy this requirement - per the ISA, `bar.sync` alone
+//! never provides cross-proxy ordering, only `fence.proxy.async` does).
+//! Confirmed against the real corpus that this must be gated by target
+//! arch, not applied unconditionally: `fence.proxy.async` isn't a legal
+//! instruction below sm_90, and `kernels/astra2/
+//! 260905094515_MatrixVectorMultiplicationFloat16Kernel_gpt-6-astra_max/
+//! final_candidate.ptx` (`.target sm_89`) does exactly the pattern this
+//! tracker would otherwise flag - `cp.async` write, `wait_group`,
+//! `bar.sync`, `ldmatrix` read, zero `fence.proxy.async` - and is real,
+//! correct, compiler-generated code. The gating itself lives in
+//! `eval::interp`/`eval::target::TargetFeatures`, not here: this tracker is
+//! a pure mechanism like `async_locks`, with no notion of target arch -
+//! if `mark_async_proxy_unfenced` is never called, this map stays empty and
+//! the check is a permanent no-op via the same pattern `async_locks` uses.
 
 use std::collections::HashMap;
 
@@ -47,11 +69,23 @@ pub struct AsyncHazardInfo {
     pub current: AccessSite,
 }
 
-/// Either kind of memory hazard `read`/`write` can report.
+/// A detected missing-`fence.proxy.async` hazard: an access to bytes an
+/// async-proxy write (`cp.async`, TMA) landed, where the accessing thread
+/// hasn't executed a matching fence since.
+#[derive(Debug, Clone, Copy)]
+pub struct AsyncProxyFenceHazardInfo {
+    pub space: MemSpace,
+    pub addr: u64,
+    pub prior: AccessSite,
+    pub current: AccessSite,
+}
+
+/// Any kind of memory hazard `read`/`write` can report.
 #[derive(Debug, Clone, Copy)]
 pub enum MemHazard {
     Race(RaceInfo),
     AsyncCopy(AsyncHazardInfo),
+    AsyncProxyUnfenced(AsyncProxyFenceHazardInfo),
 }
 
 /// In-flight `cp.async` lock state for one byte.
@@ -73,6 +107,18 @@ struct ChiCell {
     rd: HashMap<u32, (FixedBitSet, InstrId)>,
     /// last writer: (thread, threads not yet synced with it, pc of the write)
     wr: Option<(u32, FixedBitSet, InstrId)>,
+}
+
+/// One byte's "written via the async proxy, not yet fenced" state. Unlike
+/// `ChiCell.wr`'s pending set, `pending` is *not* seeded excluding the
+/// writer's own thread: per the ISA, even the issuing thread must execute
+/// `fence.proxy.async` before its own later access to these bytes is
+/// well-defined (there is no `writer != t` exemption anywhere this is
+/// checked, unlike every other hazard in this file).
+#[derive(Debug, Clone)]
+struct AsyncProxyUnfenced {
+    site: AccessSite,
+    pending: FixedBitSet,
 }
 
 /// A detected in-flight `tcgen05.ld`/`.st` hazard: an access to Tensor
@@ -121,6 +167,7 @@ pub struct RaceTracker {
     async_locks: HashMap<(MemSpace, u64), AsyncLockCell>,
     /// Indexed by quadrant `0..4` (`(lane % 128) / 32`) - see `Tcgen05Pending`.
     tcgen05_pending: [Tcgen05Pending; 4],
+    async_proxy_unfenced: HashMap<(MemSpace, u64), AsyncProxyUnfenced>,
 }
 
 impl RaceTracker {
@@ -133,6 +180,7 @@ impl RaceTracker {
             cells: HashMap::new(),
             async_locks: HashMap::new(),
             tcgen05_pending: Default::default(),
+            async_proxy_unfenced: HashMap::new(),
         }
     }
 
@@ -221,6 +269,7 @@ impl RaceTracker {
                 }
             }
         }
+        self.check_async_proxy_fence(space, addr, width, thread, pc, false)?;
         for byte in addr..addr + width {
             let cell = self.cells.entry((space, byte)).or_default();
             if let Some((writer, pending, wpc)) = &cell.wr
@@ -315,6 +364,7 @@ impl RaceTracker {
                 }
             }
         }
+        self.check_async_proxy_fence(space, addr, width, thread, pc, true)?;
         for byte in addr..addr + width {
             let cell = self.cells.entry((space, byte)).or_default();
             // Report the lowest-numbered conflicting reader. HashMap
@@ -358,6 +408,93 @@ impl RaceTracker {
             cell.wr = Some((t, self.all.clone(), pc));
         }
         Ok(())
+    }
+
+    /// Check `[addr, addr + width)` against outstanding unfenced
+    /// async-proxy writes, per the module doc comment. Same `is_empty()`
+    /// early-exit shape as the `async_locks` check above - a no-op unless
+    /// [`Self::mark_async_proxy_unfenced`] has ever been called (which the
+    /// caller gates by target arch - see `eval::target::TargetFeatures`).
+    fn check_async_proxy_fence(
+        &self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+        is_write: bool,
+    ) -> Result<(), MemHazard> {
+        if self.async_proxy_unfenced.is_empty() {
+            return Ok(());
+        }
+        let t = thread.0 as usize;
+        for byte in addr..addr + width {
+            if let Some(cell) = self.async_proxy_unfenced.get(&(space, byte))
+                && cell.pending.contains(t)
+            {
+                return Err(MemHazard::AsyncProxyUnfenced(AsyncProxyFenceHazardInfo {
+                    space,
+                    addr: byte,
+                    prior: cell.site,
+                    current: AccessSite {
+                        thread,
+                        pc,
+                        is_write,
+                    },
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    /// Mark `[addr, addr + width)` as written via the async proxy but not
+    /// yet fenced - call only *after* the write itself has already landed
+    /// (through [`Self::write`]/[`Self::write_with`]), the same ordering
+    /// [`Self::release_dst`] already requires relative to a `cp.async`
+    /// copy's own deferred write: marking first would make that very write
+    /// trip the hazard it just recorded.
+    pub fn mark_async_proxy_unfenced(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+    ) {
+        let site = AccessSite {
+            thread,
+            pc,
+            is_write: true,
+        };
+        for byte in addr..addr + width {
+            self.async_proxy_unfenced.insert(
+                (space, byte),
+                AsyncProxyUnfenced {
+                    site,
+                    pending: self.all.clone(),
+                },
+            );
+        }
+    }
+
+    /// `fence.proxy.async{.global|.shared::cta|.shared::cluster}`: clear
+    /// `thread`'s own bit from every unfenced mark matching `restrict`
+    /// (`None` = both spaces), dropping an entry once every thread has
+    /// fenced it. Same "clear bits, drop if empty" shape as
+    /// [`Self::sync_group`], but scoped to one thread rather than a group -
+    /// per the ISA, a bi-directional proxy fence "take[s] effect within a
+    /// single thread", unlike `bar.sync`'s full-CTA effect.
+    pub fn clear_async_proxy_fence(&mut self, thread: ThreadId, restrict: Option<MemSpace>) {
+        if self.async_proxy_unfenced.is_empty() {
+            return;
+        }
+        let t = thread.0 as usize;
+        self.async_proxy_unfenced.retain(|(space, _), cell| {
+            if restrict.is_none_or(|r| r == *space) {
+                cell.pending.set(t, false);
+            }
+            !cell.pending.is_clear()
+        });
     }
 
     /// Lock `[addr, addr + width)` in `space` as a `cp.async` destination:
@@ -531,6 +668,9 @@ mod tests {
         match result {
             Err(MemHazard::Race(info)) => info,
             Err(MemHazard::AsyncCopy(h)) => panic!("expected a race, got an async hazard: {:?}", h),
+            Err(MemHazard::AsyncProxyUnfenced(h)) => {
+                panic!("expected a race, got an async-proxy-fence hazard: {:?}", h)
+            }
             Ok(()) => panic!("expected a race, got Ok"),
         }
     }
@@ -725,5 +865,69 @@ mod tests {
         chi.tcgen05_wait(0, false);
         chi.tcgen05_begin(0, 0, 32, false, site(0, 5, false))
             .unwrap();
+    }
+
+    fn expect_async_proxy_hazard(result: Result<(), MemHazard>) -> AsyncProxyFenceHazardInfo {
+        match result {
+            Err(MemHazard::AsyncProxyUnfenced(info)) => info,
+            Err(other) => panic!("expected an async-proxy-fence hazard, got: {:?}", other),
+            Ok(()) => panic!("expected an async-proxy-fence hazard, got Ok"),
+        }
+    }
+
+    /// The one deliberate difference from every other hazard in this file:
+    /// the *same* thread that performed the unfenced async-proxy write is
+    /// still blocked by it, not exempted the way `ChiCell.wr`'s `writer !=
+    /// t` check would exempt a same-thread write-then-read.
+    #[test]
+    fn test_async_proxy_fence_writer_itself_is_not_exempt() {
+        let mut chi = RaceTracker::new(4);
+        chi.mark_async_proxy_unfenced(S, 0x10, 4, ThreadId(0), pc(1));
+        let hazard = expect_async_proxy_hazard(chi.read(S, 0x10, 4, ThreadId(0), pc(2)));
+        assert_eq!(hazard.prior.thread, ThreadId(0));
+        assert!(hazard.prior.is_write);
+    }
+
+    /// `clear_async_proxy_fence` only clears the fencing thread's own bit -
+    /// per the ISA, a bi-directional proxy fence "takes effect within a
+    /// single thread". Thread 0 fencing must not unblock thread 1.
+    #[test]
+    fn test_async_proxy_fence_clear_releases_only_the_fencing_thread() {
+        let mut chi = RaceTracker::new(4);
+        chi.mark_async_proxy_unfenced(S, 0x10, 4, ThreadId(0), pc(1));
+        chi.clear_async_proxy_fence(ThreadId(0), None);
+        // Thread 0 fenced: its own access now succeeds.
+        chi.read(S, 0x10, 4, ThreadId(0), pc(2)).unwrap();
+        // Thread 1 never fenced: still blocked.
+        expect_async_proxy_hazard(chi.write(S, 0x10, 4, ThreadId(1), pc(3)));
+    }
+
+    /// A `.global`-restricted fence must not clear a `Shared`-space mark,
+    /// and vice versa - the restriction is a real per-space filter, not
+    /// just documentation.
+    #[test]
+    fn test_async_proxy_fence_restrict_to_one_space_does_not_clear_the_other() {
+        const G: MemSpace = MemSpace::Global;
+        let mut chi = RaceTracker::new(4);
+        chi.mark_async_proxy_unfenced(G, 0x10, 4, ThreadId(0), pc(1));
+        chi.mark_async_proxy_unfenced(S, 0x20, 4, ThreadId(0), pc(2));
+        chi.clear_async_proxy_fence(ThreadId(0), Some(MemSpace::Global));
+        // The Global mark is cleared...
+        chi.read(G, 0x10, 4, ThreadId(0), pc(3)).unwrap();
+        // ...but the Shared mark is untouched.
+        expect_async_proxy_hazard(chi.read(S, 0x20, 4, ThreadId(0), pc(4)));
+    }
+
+    /// An unrestricted fence (`restrict: None`, e.g. bare `fence.proxy.async;`)
+    /// clears both spaces at once.
+    #[test]
+    fn test_async_proxy_fence_unrestricted_clear_covers_both_spaces() {
+        const G: MemSpace = MemSpace::Global;
+        let mut chi = RaceTracker::new(4);
+        chi.mark_async_proxy_unfenced(G, 0x10, 4, ThreadId(0), pc(1));
+        chi.mark_async_proxy_unfenced(S, 0x20, 4, ThreadId(0), pc(2));
+        chi.clear_async_proxy_fence(ThreadId(0), None);
+        chi.read(G, 0x10, 4, ThreadId(0), pc(3)).unwrap();
+        chi.read(S, 0x20, 4, ThreadId(0), pc(4)).unwrap();
     }
 }

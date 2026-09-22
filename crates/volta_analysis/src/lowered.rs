@@ -565,6 +565,24 @@ pub enum LoweredInstr {
     /// Memory fence
     Membar { scope: MembarScope },
 
+    /// `fence{.sem}.scope` (plain thread fence) or `fence.proxy.alias{.sem}
+    /// .scope` (bi-directional alias-proxy fence): a pure ordering fence,
+    /// no data effect to model - the same treatment as `Tcgen05Fence`/
+    /// `FenceProxyTensormap`. `fence.proxy.async{...}` is a distinct
+    /// variant (`FenceProxyAsync`, below) - unlike these, it has a real
+    /// data-visibility effect Volta tracks.
+    Fence,
+
+    /// `fence.proxy.async{.global|.shared::cta|.shared::cluster}{.sem}
+    /// .scope`: clears the executing thread's own outstanding
+    /// "unfenced async-proxy write" marks for bytes matching `restrict`
+    /// (`None` = unrestricted, both `Global` and `Shared`) - see
+    /// `RaceTracker::clear_async_proxy_fence`. `.shared::cta` and
+    /// `.shared::cluster` both lower to `MemSpace::Shared`: `MemSpace` has
+    /// no cluster-vs-cta distinction, and neither does anything else this
+    /// tracks.
+    FenceProxyAsync { restrict: Option<MemSpace> },
+
     /// Seal all of this thread's uncommitted `CpAsync` copies into a new
     /// async-group at the back of its completion queue.
     CpAsyncCommitGroup,
@@ -1002,6 +1020,8 @@ define_instr_kinds!(
     BarSync,
     BarWarpSync,
     Membar,
+    Fence,
+    FenceProxyAsync,
     CpAsyncCommitGroup,
     CpAsyncWaitGroup,
     Shfl,
@@ -1155,7 +1175,7 @@ impl LoweredInstr {
             // Synchronization
             Self::BarSync { .. } => vec![],
             Self::BarWarpSync { mask } => from_op(mask).into_iter().collect(),
-            Self::Membar { .. } => vec![],
+            Self::Membar { .. } | Self::Fence | Self::FenceProxyAsync { .. } => vec![],
             Self::CpAsyncCommitGroup | Self::CpAsyncWaitGroup { .. } => vec![],
 
             // Warp shuffle
@@ -1399,6 +1419,8 @@ impl LoweredInstr {
             | Self::BarSync { .. }
             | Self::BarWarpSync { .. }
             | Self::Membar { .. }
+            | Self::Fence
+            | Self::FenceProxyAsync { .. }
             | Self::CpAsyncCommitGroup
             | Self::CpAsyncWaitGroup { .. }
             | Self::Tcgen05Alloc { .. }
