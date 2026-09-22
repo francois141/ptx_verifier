@@ -126,6 +126,10 @@ fn eval_inner(
         ExprNode::Max(a, b) => ev(*a, memo)?.max(ev(*b, memo)?),
         ExprNode::Min(a, b) => ev(*a, memo)?.min(ev(*b, memo)?),
         ExprNode::Abs(a) => ev(*a, memo)?.abs(),
+        ExprNode::Sign(a) => {
+            let v = ev(*a, memo)?;
+            if v == 0.0 { 0.0 } else { v.signum() }
+        }
 
         ExprNode::BitAnd(a, b) => ((ev(*a, memo)? as i64) & (ev(*b, memo)? as i64)) as f64,
         ExprNode::BitOr(a, b) => ((ev(*a, memo)? as i64) | (ev(*b, memo)? as i64)) as f64,

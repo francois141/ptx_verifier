@@ -85,6 +85,7 @@ pub enum UninterpOp {
     Log,
     Sqrt,
     Abs,
+    Sign,
     Rem,
     BitAnd,
     BitOr,
