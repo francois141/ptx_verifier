@@ -21,7 +21,7 @@ use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::tensor_core::{
     FragmentElement, MmaLayout, MmaOperand, MmaShape, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16,
-    m16n16k16_f16,
+    m16n8k32_e4m3, m16n16k16_f16,
 };
 use crate::types::ScalarTypeExt;
 
@@ -281,6 +281,7 @@ impl Interpreter<'_> {
                     ScalarType::Tf32 => {
                         *shape == MmaShape::new(16, 8, 8) || *shape == MmaShape::new(16, 8, 4)
                     }
+                    ScalarType::E4m3 => *shape == MmaShape::new(16, 8, 32),
                     _ => false,
                 };
                 if !supported {
@@ -595,13 +596,16 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` and the tf32
-    /// forms `m16n8k8` / `m16n8k4` with `.f32.tf32.tf32.f32`.
+    /// `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`, the tf32 forms
+    /// `m16n8k8` / `m16n8k4` with `.f32.tf32.tf32.f32`, and the fp8 form
+    /// `m16n8k32` with `.f32.e4m3.e4m3.f32`.
     ///
     /// `check_warp_op_preconditions` already established a supported
     /// shape/type pair, row.col layouts, and all 32 lanes live. tf32
     /// multiplicands sit one per 32-bit register and are reals here, so they
-    /// gather like the f32 accumulators rather than as packed halves.
+    /// gather like the f32 accumulators rather than as packed halves. e4m3
+    /// multiplicands pack four independently symbolic byte lanes per
+    /// register (`Value::Quad`), gathered by `gather_fp8_fragment`.
     fn exec_mma(
         &mut self,
         pc: InstrId,
@@ -659,6 +663,10 @@ impl Interpreter<'_> {
                         &m16n8k4_tf32::matrix_b(lane),
                         &mut b,
                     )?;
+                }
+                (ScalarType::E4m3, 32) => {
+                    self.gather_fp8_fragment(pc, m, src_a, &m16n8k32_e4m3::matrix_a(lane), &mut a)?;
+                    self.gather_fp8_fragment(pc, m, src_b, &m16n8k32_e4m3::matrix_b(lane), &mut b)?;
                 }
                 _ => {
                     self.gather_f16_fragment(pc, m, src_a, &m16n8k16_f16::matrix_a(lane), &mut a)?;
@@ -1208,6 +1216,39 @@ impl Interpreter<'_> {
                 });
             };
             let e = if elem.high_half == Some(true) { hi } else { lo };
+            grid.set(elem.row, elem.col, e);
+        }
+        Ok(())
+    }
+
+    /// Place one lane's packed-e4m3 (fp8) fragment registers into a matrix
+    /// grid. Each register holds four independently symbolic byte lanes
+    /// (`Value::Quad`) rather than a bit-encoded word - see `Value::Quad`'s
+    /// doc comment.
+    fn gather_fp8_fragment(
+        &mut self,
+        pc: InstrId,
+        m: ThreadId,
+        regs: &[RegId],
+        elems: &[FragmentElement],
+        grid: &mut Grid,
+    ) -> EvalResult<()> {
+        for elem in elems {
+            let v = self.read_reg(m, pc, regs[elem.reg_idx])?;
+            let Value::Quad(b0, b1, b2, b3) = v else {
+                return Err(EvalError::ValueKindMismatch {
+                    thread: m,
+                    pc,
+                    what: "matrix fragment register does not hold a packed fp8 quad",
+                });
+            };
+            let e = match elem.quad_lane {
+                Some(0) => b0,
+                Some(1) => b1,
+                Some(2) => b2,
+                Some(3) => b3,
+                _ => unreachable!("e4m3 fragment elements always carry a quad_lane"),
+            };
             grid.set(elem.row, elem.col, e);
         }
         Ok(())
