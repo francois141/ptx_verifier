@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use volta_frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 
 use crate::equiv::{DEFAULT_RECYCLE_TERMS, EquivError, EquivSession};
-use crate::eval::{AnalysisConfig, AnalysisOutput, EvalError, Interpreter, Stats};
+use crate::eval::{AnalysisConfig, AnalysisOutput, EvalError, Interpreter, Stats, TargetFeatures};
 use crate::logging::info;
 use crate::lower_error::LowerError;
 use crate::lowering::lower_function;
@@ -99,7 +99,8 @@ pub fn analyze_kernel(
         "analyzing kernel {:?}: block={:?} grid={:?}",
         kernel, config.block_dim, config.grid_dim
     );
-    let mut interp = Interpreter::new(&program, config)?;
+    let features = TargetFeatures::from_target(&module.target);
+    let mut interp = Interpreter::new(&program, config, features)?;
     interp.run()?;
     Ok(interp.into_output()?)
 }

@@ -13,11 +13,13 @@ pub mod interp;
 pub mod mbarrier;
 pub mod memory;
 pub mod race;
+pub mod target;
 pub mod tcgen05_mma;
 pub mod tensor_map_table;
 pub mod tensor_memory;
 pub mod value;
 pub mod warp;
+pub mod wgmma;
 
 use id_collections::id_type;
 
@@ -38,4 +40,5 @@ pub const WARP_SIZE: u32 = 32;
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 pub use error::{AccessSite, EvalError, EvalResult};
 pub use interp::{AnalysisOutput, Interpreter, Stats};
+pub use target::TargetFeatures;
 pub use value::Value;

@@ -18,6 +18,7 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
+use crate::eval::target::TargetFeatures;
 use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table::{self, TensorMapTable};
 use crate::eval::tensor_memory::TensorMemory;
@@ -178,10 +179,18 @@ pub struct Interpreter<'p> {
     /// instruction in `step`, the interpreter's innermost loop; `finish`
     /// folds it into the `BTreeMap` shape `AnalysisOutput` exposes.
     pub(in crate::eval) op_counts: [u64; crate::lowered::KIND_COUNT],
+    /// The analyzed module's target-arch-derived feature gates (see
+    /// `eval::target::TargetFeatures`) - a fact about the module, computed
+    /// once by the caller, not user launch config.
+    features: TargetFeatures,
 }
 
 impl<'p> Interpreter<'p> {
-    pub fn new(program: &'p LoweredProgram, config: AnalysisConfig) -> EvalResult<Self> {
+    pub fn new(
+        program: &'p LoweredProgram,
+        config: AnalysisConfig,
+        features: TargetFeatures,
+    ) -> EvalResult<Self> {
         let n_threads = config.num_threads();
         if n_threads == 0 {
             return Err(EvalError::Config {
@@ -387,6 +396,7 @@ impl<'p> Interpreter<'p> {
             tensor_maps: TensorMapTable::new(),
             stats: Stats::default(),
             op_counts: [0; crate::lowered::KIND_COUNT],
+            features,
         })
     }
 
@@ -1595,7 +1605,11 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::Membar { .. } | LoweredInstr::Nop => {}
+            LoweredInstr::Membar { .. } | LoweredInstr::Fence | LoweredInstr::Nop => {}
+
+            LoweredInstr::FenceProxyAsync { restrict } => {
+                self.race.clear_async_proxy_fence(t, *restrict);
+            }
 
             LoweredInstr::CpAsyncCommitGroup => {
                 let uncommitted = std::mem::take(&mut self.threads[t].uncommitted);
@@ -1635,6 +1649,24 @@ impl<'p> Interpreter<'p> {
                                 4,
                                 v,
                             )?;
+                        }
+                        // sm_90+ only: this write went through the async
+                        // proxy, and per the ISA needs an explicit
+                        // `fence.proxy.async` before any later access
+                        // (through either proxy) is well-defined -
+                        // `bar.sync` alone does not provide that ordering.
+                        // Below sm_90 there is no such proxy distinction
+                        // (and `fence.proxy.async` isn't even a legal
+                        // instruction there), so this is a no-op unless
+                        // `self.features.async_proxy_fence` is set.
+                        if self.features.async_proxy_fence {
+                            self.race.mark_async_proxy_unfenced(
+                                MemSpace::Shared,
+                                copy.dst_addr,
+                                copy.cp_size,
+                                t,
+                                copy.pc,
+                            );
                         }
                     }
                 }
@@ -2862,6 +2894,20 @@ impl<'p> Interpreter<'p> {
             let dst_elem_addr =
                 tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
             self.mem_write(t, pc, MemSpace::Shared, dst_elem_addr, elem_bytes, value)?;
+            // sm_90+ only: same async-proxy write-visibility requirement as
+            // `cp.async` (see `CpAsyncWaitGroup`'s handler) - TMA writes
+            // land immediately here rather than being deferred to a
+            // release step, so the mark happens right alongside the write
+            // itself rather than at a separate completion point.
+            if self.features.async_proxy_fence {
+                self.race.mark_async_proxy_unfenced(
+                    MemSpace::Shared,
+                    dst_elem_addr,
+                    elem_bytes,
+                    t,
+                    pc,
+                );
+            }
         }
 
         self.check_bounds(t, pc, MemSpace::Shared, mbar_addr, 8)?;
@@ -3136,6 +3182,12 @@ impl<'p> Interpreter<'p> {
                 current: race.current,
             },
             MemHazard::AsyncCopy(h) => EvalError::AsyncCopyHazard {
+                space: h.space,
+                addr: h.addr,
+                prior: h.prior,
+                current: h.current,
+            },
+            MemHazard::AsyncProxyUnfenced(h) => EvalError::AsyncProxyFenceHazard {
                 space: h.space,
                 addr: h.addr,
                 prior: h.prior,

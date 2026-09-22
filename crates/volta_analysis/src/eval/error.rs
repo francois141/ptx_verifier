@@ -53,6 +53,18 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
+    /// An access observed bytes an async-proxy write (`cp.async`, TMA)
+    /// completed, without the accessing thread having executed a matching
+    /// `fence.proxy.async` since (sm_90+ only - see
+    /// `eval::target::TargetFeatures::async_proxy_fence`). `bar.sync` alone
+    /// does not provide this ordering; per the ISA, only the explicit
+    /// proxy fence does.
+    AsyncProxyFenceHazard {
+        space: MemSpace,
+        addr: u64,
+        prior: AccessSite,
+        current: AccessSite,
+    },
     /// All live threads are blocked and no barrier or warp group can fire.
     Deadlock {
         /// (thread, pc it is blocked at) for every blocked thread
@@ -257,6 +269,19 @@ impl fmt::Display for EvalError {
             } => write!(
                 f,
                 "cp.async hazard on {:?}[{:#x}]: {} conflicts with in-flight {}",
+                space, addr, current, prior
+            ),
+            Self::AsyncProxyFenceHazard {
+                space,
+                addr,
+                prior,
+                current,
+            } => write!(
+                f,
+                "missing fence.proxy.async on {:?}[{:#x}]: {} observed the async-proxy write \
+                 {} without an intervening fence.proxy.async (sm_90+ requires this fence to \
+                 order cp.async/TMA writes against later accesses through either proxy; \
+                 bar.sync alone does not provide it)",
                 space, addr, current, prior
             ),
             Self::Deadlock { blocked } => {

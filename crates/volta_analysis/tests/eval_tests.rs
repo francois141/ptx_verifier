@@ -45,6 +45,14 @@ fn wrap(body: &str) -> String {
     format!("{}{}", HEADER, body)
 }
 
+/// Same as [`wrap`], but `sm_90a` - for tests exercising the sm_90+-gated
+/// `fence.proxy.async` hazard check (`TargetFeatures::async_proxy_fence`).
+const HEADER_SM90A: &str = ".version 8.0\n.target sm_90a\n.address_size 64\n\n";
+
+fn wrap_sm90a(body: &str) -> String {
+    format!("{}{}", HEADER_SM90A, body)
+}
+
 /// in/out f32 arrays at fixed bases.
 fn in_out_config(threads: u32, len: u64) -> AnalysisConfig {
     let mut config = AnalysisConfig::new((threads, 1, 1));
@@ -5111,6 +5119,234 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
     let module = parse(&src);
     let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
+}
+
+// =========================================================================
+// `fence.proxy.async` / async-proxy hazard (sm_90+ only)
+// =========================================================================
+
+/// `test_cp_async_wait_group_completes_copy`'s exact body (a plain
+/// single-thread `cp.async` -> `wait_group` -> `ld.shared` read), reused
+/// verbatim except for the target - under `sm_80` (that test) this passes,
+/// and must keep passing (the gate is `>= Sm90`, checked by that other
+/// test still passing unmodified). Under `sm_90a`, with the same missing
+/// fence, it must now be rejected: a real Hopper+ ordering gap the
+/// `sm_80` analysis has no way to see.
+#[test]
+fn test_cp_async_without_fence_proxy_async_is_hazard_on_sm90() {
+    let src = wrap_sm90a(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, sdata;
+    cp.async.ca.shared.global [%r1], [%rd1], 4;
+    cp.async.commit_group;
+    cp.async.wait_group 0;
+    ld.shared.u32 %r2, [%r1];
+    ld.param.u64 %rd2, [out];
+    cvta.to.global.u64 %rd2, %rd2;
+    st.global.u32 [%rd2], %r2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::AsyncProxyFenceHazard { .. })
+        ),
+        "expected an async-proxy-fence hazard, got: {}",
+        err
+    );
+}
+
+/// Same kernel, same `sm_90a` target, with the missing
+/// `fence.proxy.async.shared::cta;` now present between `wait_group` and
+/// the read - the correct, spec-conforming idiom - must pass clean.
+#[test]
+fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
+    let src = wrap_sm90a(
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.u32 %r1, sdata;
+    cp.async.ca.shared.global [%r1], [%rd1], 4;
+    cp.async.commit_group;
+    cp.async.wait_group 0;
+    fence.proxy.async.shared::cta;
+    ld.shared.u32 %r2, [%r1];
+    ld.param.u64 %rd2, [out];
+    cvta.to.global.u64 %rd2, %rd2;
+    st.global.u32 [%rd2], %r2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+}
+
+/// The real corpus regression guard this whole check exists to satisfy:
+/// `kernels/astra2/260905094515_MatrixVectorMultiplicationFloat16Kernel_
+/// gpt-6-astra_max/final_candidate.ptx` (`.target sm_89`, outside this
+/// repo) does exactly this shape - `cp.async` write, `wait_group`,
+/// `bar.sync`, a read of the same bytes by a *different* thread, zero
+/// `fence.proxy.async` anywhere - and is real, correct, compiler-generated
+/// code that must keep passing. `sm_89` is below the `>= Sm90` gate, so
+/// `TargetFeatures::async_proxy_fence` is false and this must never be
+/// flagged, no matter how the fence-check code evolves.
+#[test]
+fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
+    let src = format!(
+        "{}{}",
+        ".version 8.0\n.target sm_89\n.address_size 64\n\n",
+        ".visible .entry k(
+    .param .u64 in,
+    .param .u64 out
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 sdata[4];
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 0;
+    mov.u32 %r2, sdata;
+    ld.param.u64 %rd1, [in];
+    cvta.to.global.u64 %rd1, %rd1;
+
+    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
+    @%p1 cp.async.commit_group;
+    @%p1 cp.async.wait_group 0;
+    bar.sync 0;
+
+    @!%p1 ld.shared.u32 %r3, [%r2];
+    @!%p1 ld.param.u64 %rd2, [out];
+    @!%p1 cvta.to.global.u64 %rd2, %rd2;
+    @!%p1 st.global.u32 [%rd2], %r3;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+}
+
+/// TMA's own async-proxy write path (`exec_cp_async_bulk_tensor_load`) is
+/// wired to the same check as `cp.async` - reuses
+/// `test_cp_async_bulk_tensor_copies_in_bounds_and_zero_fills_out_of_bounds`'s
+/// body verbatim except for the target: under `sm_90a`, with no fence
+/// between `mbarrier.try_wait` and the `ld.shared` reads, this must now be
+/// rejected.
+#[test]
+fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_hazard_on_sm90() {
+    let src = wrap_sm90a(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p0;
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    .shared .align 128 .b8 sd0[128];
+    .global .align 128 .b8 gbl[128];
+    .shared .align 8 .b8 full[8];
+    .shared .align 16 .b8 sa[32];
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    mbarrier.init.shared::cta.b64 [full], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [full], 32;
+
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
+    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
+    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [sd0], 0;
+
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
+    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
+
+    mov.u32 %r1, 6;
+    mov.u32 %r2, 6;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
+
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [full], 0;
+
+    ld.shared.u16 %rs1, [sa];
+    ld.shared.u16 %rs2, [sa+30];
+
+    ld.param.u64 %rd2, [k_param_1];
+    st.global.u16 [%rd2], %rs1;
+    st.global.u16 [%rd2+2], %rs2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::AsyncProxyFenceHazard { .. })
+        ),
+        "expected an async-proxy-fence hazard, got: {}",
+        err
+    );
 }
 
 // =========================================================================
