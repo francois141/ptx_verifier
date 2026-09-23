@@ -21,16 +21,26 @@ pub struct MbarrierId(pub u32);
 /// global as `u32`, distributed by `ldmatrix`, consumed by `mma`). We track
 /// the two halves as separate real-valued expressions and never bit-encode.
 ///
-/// `Quad` is the same idea one level wider: four independent 8-bit lanes
-/// living in one 32-bit register/word - needed for byte-granular (fp8)
-/// input arrays, where a single `.b32` vector-load lane
-/// (`ld.global.v2.b32`) spans four distinct 1-byte array elements that
-/// must stay independently symbolic (never bit-encoded, same reasoning as
-/// `Pair`). Scoped to exactly this: a `Quad` only ever arises from
-/// combining memory granules at read time and only ever gets split back
-/// into two `Pair`s (`mov.b32 {h0,h1}, r` on a byte-granular source, PTX
-/// ISA's `.e4m3x2`/`.e5m2x2`-family idiom) - it never flows through
-/// ordinary arithmetic, matching how `Pair` itself never does.
+/// `Quad` is the same idea one lane-count wider: four independent lanes
+/// living in one register/word, with the lane width following the
+/// register class, just as a `Pair` is 2x16 in a `.b32` but 2x32 in a
+/// `.b64`. Two readings arise, and they never mix - each is confined to
+/// its own `RegClass` array:
+///
+/// - four 8-bit lanes in a 32-bit register, for byte-granular (fp8) input
+///   arrays, where a single `.b32` vector-load lane (`ld.global.v2.b32`)
+///   spans four distinct 1-byte array elements that must stay
+///   independently symbolic. Such a `Quad` only ever arises from combining
+///   memory granules at read time and only ever gets split back into two
+///   `Pair`s (`mov.b32 {h0,h1}, r` on a byte-granular source, PTX ISA's
+///   `.e4m3x2`/`.e5m2x2`-family idiom).
+/// - four 32-bit lanes in a 128-bit register, from `mov.b128 dst,
+///   {e0,e1,e2,e3}` and split back by `mov.b128 {e0,e1,e2,e3}, src` (the
+///   accumulator zero-fill idiom - see `LoweredInstr::PackQuad`).
+///
+/// Either way a `Quad` is never bit-encoded, same reasoning as `Pair`, and
+/// never flows through ordinary arithmetic, matching how `Pair` itself
+/// never does.
 ///
 /// `Mbarrier` is deliberately *not* program data: it never flows through
 /// arithmetic, conversions, or the symbolic-expression arena (unlike
