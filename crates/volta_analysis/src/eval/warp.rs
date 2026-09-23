@@ -191,6 +191,15 @@ impl Interpreter<'_> {
             } => {
                 self.exec_ldmatrix(pc, members, dst, addr, *addr_offset, *num, *trans)?;
             }
+            LoweredInstr::Stmatrix {
+                addr,
+                addr_offset,
+                src,
+                num,
+                trans,
+            } => {
+                self.exec_stmatrix(pc, members, addr, *addr_offset, src, *num, *trans)?;
+            }
             LoweredInstr::Mma { .. } => self.exec_mma(pc, members, &instr)?,
             LoweredInstr::WmmaLoad { .. } => self.exec_wmma_load(pc, members, &instr)?,
             LoweredInstr::WmmaStore { .. } => self.exec_wmma_store(pc, members, &instr)?,
@@ -269,6 +278,19 @@ impl Interpreter<'_> {
                     return Err(EvalError::Unsupported {
                         pc,
                         what: format!("ldmatrix x{} with {} destination registers", num, dst.len()),
+                    });
+                }
+                Ok(())
+            }
+            LoweredInstr::Stmatrix { src, num, .. } => {
+                // Same rationale as `Ldmatrix` above (its store-direction
+                // mirror): the address-supplying lanes' registers must be
+                // observable to compute each row's address.
+                self.require_live_warp(pc, members, "stmatrix")?;
+                if src.len() != *num as usize {
+                    return Err(EvalError::Unsupported {
+                        pc,
+                        what: format!("stmatrix x{} with {} source operands", num, src.len()),
                     });
                 }
                 Ok(())
@@ -651,6 +673,73 @@ impl Interpreter<'_> {
                     self.mem_read(m, pc, MemSpace::Shared, byte, 4)?
                 };
                 self.threads[m].regs.write(*reg, v);
+            }
+        }
+        Ok(())
+    }
+
+    /// `ldmatrix`'s store-direction mirror (`exec_ldmatrix` above): same
+    /// row-address computation from the address-supplying lanes, writing
+    /// each lane's source operand to shared memory instead of reading into
+    /// a destination register.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_stmatrix(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        addr: &Operand,
+        addr_offset: i64,
+        src: &[Operand],
+        num: u32,
+        trans: bool,
+    ) -> EvalResult<()> {
+        let mut row_addr = vec![[0u64; 8]; num as usize];
+        for i in 0..num as usize {
+            for r in 0..8 {
+                let m = members[i * 8 + r];
+                let a = self.effective_addr(m, pc, addr, addr_offset)?;
+                self.check_alignment(m, pc, MemSpace::Shared, a, LDMATRIX_ROW_BYTES)?;
+                row_addr[i][r] = a;
+            }
+        }
+
+        for &m in members {
+            let lane = m.0 % WARP_SIZE;
+            for (i, op) in src.iter().enumerate() {
+                let v = self.operand_value(m, pc, op)?;
+                if trans {
+                    let col_byte = (lane / 4) as u64 * 2;
+                    let lo_row = 2 * (lane % 4) as usize;
+                    let Value::Pair(lo, hi) = v else {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: m,
+                            pc,
+                            what: "stmatrix.trans source must be a packed pair (two 2-byte halves)",
+                        });
+                    };
+                    self.mem_write(
+                        m,
+                        pc,
+                        MemSpace::Shared,
+                        row_addr[i][lo_row] + col_byte,
+                        2,
+                        Value::Scalar(lo),
+                    )?;
+                    self.mem_write(
+                        m,
+                        pc,
+                        MemSpace::Shared,
+                        row_addr[i][lo_row + 1] + col_byte,
+                        2,
+                        Value::Scalar(hi),
+                    )?;
+                } else {
+                    // Wrap-free for the same reason `exec_ldmatrix`'s
+                    // non-trans read is: the row address passed the
+                    // 16-byte alignment check above.
+                    let byte = row_addr[i][(lane / 4) as usize] + (lane % 4) as u64 * 4;
+                    self.mem_write(m, pc, MemSpace::Shared, byte, 4, v)?;
+                }
             }
         }
         Ok(())
@@ -1040,7 +1129,7 @@ impl Interpreter<'_> {
     }
 
     /// Resolve an operand that must be concrete and identical on every lane.
-    fn uniform_concrete(
+    pub(in crate::eval) fn uniform_concrete(
         &mut self,
         pc: InstrId,
         members: &[ThreadId],

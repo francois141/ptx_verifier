@@ -23,7 +23,7 @@ use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table::{self, TensorMapTable};
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
-use crate::eval::{ThreadId, WARP_SIZE};
+use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
@@ -70,6 +70,15 @@ pub(in crate::eval) enum Status {
     AtWarpOp {
         mask: u32,
     },
+    /// Blocked at a warpgroup-cooperative instruction (`wgmma.mma_async`)
+    /// at the current pc. No mask field: unlike `AtWarpOp`, the ISA gives
+    /// `wgmma.mma_async` no membermask operand at all - its mandatory
+    /// `.aligned` qualifier means it always involves the full,
+    /// unconditional 128-thread warpgroup (PTX ISA 9.7.17.1). A parallel,
+    /// additive mechanism to `AtWarpOp` (see `eval::warpgroup`'s module
+    /// doc), not a widening of it - `AtWarpOp`'s 32-bit mask is
+    /// load-bearing for every other warp-collective op.
+    AtWarpgroupOp,
     /// Blocked at `mbarrier.test_wait.parity`/`try_wait.parity` (at the
     /// current pc), waiting for `id`'s phase-parity condition. Unlike
     /// `AtBarrier`/`AtWarpOp`, this isn't a rendezvous - any other thread's
@@ -573,6 +582,16 @@ impl<'p> Interpreter<'p> {
                 any = true;
                 continue;
             }
+            if let Some((pc, members)) = self.find_ready_warpgroup_op()? {
+                trace!(
+                    "warpgroup op at pc {} fired ({} lanes)",
+                    pc.0,
+                    members.len()
+                );
+                self.execute_warpgroup_op(pc, &members)?;
+                any = true;
+                continue;
+            }
             if self.try_fire_barrier() {
                 any = true;
                 continue;
@@ -694,6 +713,47 @@ impl<'p> Interpreter<'p> {
                 }
             }
             return Ok(Some((pc, mask, members)));
+        }
+        Ok(None)
+    }
+
+    /// Find a warpgroup whose live members have all arrived at the same pc.
+    /// Mirrors `find_ready_warp_group` exactly (same exited-lane-
+    /// vacuously-arrived, live-elsewhere-not-ready-yet, single-pc-matching
+    /// rules), but there is no mask - membership is always the full
+    /// contiguous 128-thread range `[group_base, group_base +
+    /// WARPGROUP_SIZE)`, since `wgmma.mma_async` has no membermask operand
+    /// at all (see `Status::AtWarpgroupOp`'s doc comment).
+    fn find_ready_warpgroup_op(&self) -> EvalResult<Option<(InstrId, Vec<ThreadId>)>> {
+        'candidates: for (leader, state) in self.threads.iter() {
+            if state.status != Status::AtWarpgroupOp {
+                continue;
+            }
+            let pc = state.pc;
+            let group_base = (leader.0 / WARPGROUP_SIZE) * WARPGROUP_SIZE;
+            if group_base + WARPGROUP_SIZE > self.n_threads {
+                return Err(EvalError::WarpMismatch {
+                    pc,
+                    reason: format!(
+                        "wgmma.mma_async warpgroup [{}, {}) exceeds the CTA's {} threads",
+                        group_base,
+                        group_base + WARPGROUP_SIZE,
+                        self.n_threads
+                    ),
+                });
+            }
+            let mut members = Vec::new();
+            for lane in 0..WARPGROUP_SIZE {
+                let tid = ThreadId(group_base + lane);
+                match self.threads[tid].status {
+                    Status::AtWarpgroupOp if self.threads[tid].pc == pc => {
+                        members.push(tid);
+                    }
+                    Status::Exited => {}
+                    _ => continue 'candidates,
+                }
+            }
+            return Ok(Some((pc, members)));
         }
         Ok(None)
     }
@@ -1755,10 +1815,32 @@ impl<'p> Interpreter<'p> {
             | LoweredInstr::Mma { .. }
             | LoweredInstr::WmmaLoad { .. }
             | LoweredInstr::WmmaStore { .. }
-            | LoweredInstr::WmmaMma { .. } => {
+            | LoweredInstr::WmmaMma { .. }
+            | LoweredInstr::Stmatrix { .. } => {
                 self.block_at_warp_op(t, pc, u32::MAX)?;
                 return Ok(());
             }
+
+            // wgmma.mma_async: warpgroup-cooperative (128 threads), not
+            // warp-cooperative - no membermask, always the full warpgroup
+            // (see `Status::AtWarpgroupOp`'s doc comment).
+            LoweredInstr::WgmmaMmaAsync { .. } => {
+                self.block_at_warpgroup_op(t, pc)?;
+                return Ok(());
+            }
+
+            // wgmma.fence/commit_group/wait_group: PTX ISA 9.7.17.7.{1,2,3}
+            // order or track *register* hazards (accumulator/A-fragment
+            // registers, and wgmma-group completion) around
+            // wgmma.mma_async - never a memory effect Volta's race tracker
+            // would care about. Volta does not model register-hazard
+            // tracking at all (a deliberate scope decision - mirrors
+            // `Tcgen05Fence`'s existing no-op treatment above), so these
+            // are genuine no-ops. This is a loud, documented gap, not a
+            // silent one: a kernel whose only correctness argument for
+            // reusing wgmma's registers rests on `wgmma.wait_group` would
+            // not have that hazard modeled by Volta today.
+            LoweredInstr::WgmmaFence | LoweredInstr::WgmmaCommitGroup | LoweredInstr::WgmmaWaitGroup => {}
 
             // Tensor Memory allocation management: PTX ISA 9.7.17.5 ("Issue
             // Granularity") requires a single warp to collectively issue
@@ -2050,6 +2132,15 @@ impl<'p> Interpreter<'p> {
             });
         }
         self.threads[t].status = Status::AtWarpOp { mask };
+        Ok(())
+    }
+
+    /// Block `t` at a warpgroup-cooperative instruction. No mask to
+    /// validate (unlike `block_at_warp_op`) - membership is implicit;
+    /// an out-of-range warpgroup is caught by `find_ready_warpgroup_op`,
+    /// once the whole group's arrival can be checked in one place.
+    fn block_at_warpgroup_op(&mut self, t: ThreadId, _pc: InstrId) -> EvalResult<()> {
+        self.threads[t].status = Status::AtWarpgroupOp;
         Ok(())
     }
 

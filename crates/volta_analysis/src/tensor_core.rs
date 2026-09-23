@@ -424,6 +424,63 @@ pub mod m16n16k16_f16 {
     }
 }
 
+/// Fragment mapping for `wgmma.mma_async.m64nNk16`'s accumulator matrix D
+/// (PTX ISA 9.7.17.5.1.1.1, Figure 152). Unlike the fixed-`N` `mma.sync`/
+/// `wmma` modules above, this is parameterized by a runtime `n`: the same
+/// per-lane law holds for every `.m64n{8,16,...,256}k16` shape (confirmed
+/// identical across the k8/k16/k32/k256 sibling figures - the accumulator
+/// distribution depends only on the m64xN output shape, not k or dtype).
+///
+/// No textual formula exists in the PTX ISA for this - only the figure, no
+/// `groupID`/`threadID_in_group`-style prose the way the older `mma.sync`
+/// sections give (grepped the whole ISA doc for `wgmma` + `groupID`: zero
+/// hits). The mapping below was transcribed by downloading and visually
+/// inspecting the actual referenced image
+/// (`https://docs.nvidia.com/cuda/parallel-thread-execution/_images/wgmma-64N16-D.png`)
+/// rather than guessed - the same bar `eval::tcgen05_mma`'s swizzle tables
+/// hold themselves to, for the same reason ("guessing here would risk
+/// silently wrong tensor-core math") - and cross-checked two independent
+/// ways: (1) the image's own `T0:{d0,d1}`/`T0:{d2,d3}` and `T32:{d0,d1}`
+/// cells, and (2) the ISA text's footnote for the shape's last column
+/// block (`X=N/2-4, Y=N/2-3, Z=N/2-2, W=N/2-1`) - both agree exactly with
+/// the formula below, and it is a clean bijection (every `(row,col)`
+/// covered by exactly one `(lane_id,reg_idx)`, verified by the
+/// completeness test).
+///
+/// `.f32` accumulator only (one register per element, `n/2` registers per
+/// thread) - the `.f16` accumulator (`n/4` packed `.f16x2` registers) is a
+/// distinct, unimplemented layout, not needed by the real target kernel.
+pub mod wgmma_m64n_k16 {
+    use super::FragmentElement;
+
+    /// `lane_id`: the thread's position within its 128-thread warpgroup
+    /// (`t.0 % 128` - PTX ISA 9.7.17.1 defines a warpgroup as four
+    /// contiguous warps starting at a warp-rank multiple of 4). `n`: the
+    /// shape's N (8..=256, step 8). Returns exactly `n/2` elements,
+    /// `reg_idx` 0..n/2-1.
+    pub fn matrix_d(lane_id: u32, n: u32) -> Vec<FragmentElement> {
+        let band = lane_id / 32; // which 16-row band (0..4) - one per warp
+        let local = lane_id % 32;
+        let s = local / 4; // row offset within an 8-row half-band (0..8)
+        let t4 = local % 4; // column-pair selector within an 8-col block (0..4)
+        (0..n / 2)
+            .map(|reg_idx| {
+                let k = reg_idx / 4; // column-block index (0..n/8)
+                let rem = reg_idx % 4;
+                let rh = rem / 2; // row-half: 0 = upper 8 rows of the band, 1 = lower 8
+                let p = rem % 2; // column parity within the thread's 2-col pair
+                FragmentElement {
+                    reg_idx: reg_idx as usize,
+                    row: 16 * band + 8 * rh + s,
+                    col: 8 * k + 2 * t4 + p,
+                    high_half: None,
+                    quad_lane: None,
+                }
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,5 +593,79 @@ mod tests {
         assert_eq!((b[2].row, b[2].col), (8, 0));
         // b3: row=9, col=0
         assert_eq!((b[3].row, b[3].col), (9, 0));
+    }
+
+    /// Lane 0, n=16: figure's `T0:{d0,d1}` (row 0, cols 0-1), `T0:{d2,d3}`
+    /// (row 8, cols 0-1), `T0:{d4,d5}` (row 0, cols 8-9), `T0:{d6,d7}` (row
+    /// 8, cols 8-9) - transcribed directly from Figure 152.
+    #[test]
+    fn test_wgmma_matrix_d_lane0_n16() {
+        let d = wgmma_m64n_k16::matrix_d(0, 16);
+        assert_eq!(d.len(), 8);
+        let cells: Vec<(usize, u32, u32)> = d.iter().map(|e| (e.reg_idx, e.row, e.col)).collect();
+        assert_eq!(
+            cells,
+            vec![
+                (0, 0, 0),
+                (1, 0, 1),
+                (2, 8, 0),
+                (3, 8, 1),
+                (4, 0, 8),
+                (5, 0, 9),
+                (6, 8, 8),
+                (7, 8, 9),
+            ]
+        );
+    }
+
+    /// Lane 32 (band 1 - the second warp of the warpgroup), n=16: same
+    /// intra-band pattern as lane 0, shifted to rows 16/24 - figure's
+    /// `T32:{d0,d1}` at row 16.
+    #[test]
+    fn test_wgmma_matrix_d_lane32_n16() {
+        let d = wgmma_m64n_k16::matrix_d(32, 16);
+        assert_eq!((d[0].row, d[0].col), (16, 0));
+        assert_eq!((d[1].row, d[1].col), (16, 1));
+        assert_eq!((d[2].row, d[2].col), (24, 0));
+        assert_eq!((d[3].row, d[3].col), (24, 1));
+    }
+
+    /// Every `(row, col)` of the m64xN output tile is covered by exactly
+    /// one `(lane_id, reg_idx)` pair, for every shape the real corpus
+    /// kernel's `.m64n{8,...,256}k16` family can use - a clean bijection,
+    /// no gaps or overlaps.
+    #[test]
+    fn test_wgmma_matrix_d_covers_grid_with_no_overlap() {
+        for n in [8u32, 16, 256] {
+            let mut seen = std::collections::HashSet::new();
+            for lane in 0..128 {
+                for e in wgmma_m64n_k16::matrix_d(lane, n) {
+                    assert!(e.row < 64, "row {} out of range for n={n}", e.row);
+                    assert!(e.col < n, "col {} out of range for n={n}", e.col);
+                    assert!(
+                        seen.insert((e.row, e.col)),
+                        "duplicate (row={}, col={}) for n={n}",
+                        e.row,
+                        e.col
+                    );
+                }
+            }
+            assert_eq!(seen.len(), (64 * n) as usize, "incomplete coverage for n={n}");
+        }
+    }
+
+    /// Independent cross-check against the ISA text's own footnote for the
+    /// shape's last column block: "`X=N/2-4, Y=N/2-3, Z=N/2-2, W=N/2-1`" -
+    /// thread 0's last four registers, at n=256, land at columns 248-249
+    /// (rows 0 and 8), matching the figure's tail-block naming exactly.
+    #[test]
+    fn test_wgmma_matrix_d_n256_last_registers_match_isa_footnote() {
+        let d = wgmma_m64n_k16::matrix_d(0, 256);
+        assert_eq!(d.len(), 128);
+        let (x, y, z, w) = (&d[124], &d[125], &d[126], &d[127]);
+        assert_eq!((x.row, x.col), (0, 248));
+        assert_eq!((y.row, y.col), (0, 249));
+        assert_eq!((z.row, z.col), (8, 248));
+        assert_eq!((w.row, w.col), (8, 249));
     }
 }

@@ -1,0 +1,178 @@
+//! Warpgroup-cooperative operations: `wgmma.mma_async` (PTX ISA 9.7.17.5.2).
+//!
+//! Additive, parallel machinery to `eval::warp`'s 32-lane warp-cooperative
+//! ops - not a generalization of it. `wgmma.mma_async` has no membermask
+//! operand: it always involves the full, mask-less 128-thread warpgroup
+//! (PTX ISA 9.7.17.1), so it gets its own `Status::AtWarpgroupOp` and
+//! `find_ready_warpgroup_op`/`block_at_warpgroup_op` (`eval::interp`) rather
+//! than widening `AtWarpOp`'s 32-bit mask, which is load-bearing for every
+//! *other* warp-collective op. `sync_warp_group`/`advance_warp_group`
+//! (`eval::interp`) are already generic over `&[ThreadId]` and are reused
+//! unchanged.
+//!
+//! Unlike `mma.sync` (`eval::warp::exec_mma`), which gathers *other lanes'*
+//! register fragments into a `Grid` to reconstruct A/B, `wgmma.mma_async`'s
+//! A/B are always read directly from shared memory via their matrix
+//! descriptors - the same descriptor-decode-then-swizzled-address pattern
+//! `eval::interp::exec_tcgen05_mma` uses for `tcgen05.mma`, reusing
+//! `eval::wgmma::decode_wgmma_matrix_descriptor` and
+//! `tcgen05_mma::swizzled_element_addr`. Each thread computes its own D
+//! slice independently with no cross-lane register dependency - unlike
+//! `mma.sync`/`ldmatrix`/`wmma.*`/every `tcgen05.*` warp op, an exited lane
+//! costs nothing but its own missing output (see `exec_wgmma_mma_async`'s
+//! doc comment for why no `require_live_warp`-style rejection is needed).
+
+use crate::eval::error::{EvalError, EvalResult};
+use crate::eval::interp::Interpreter;
+use crate::eval::tcgen05_mma;
+use crate::eval::value::Value;
+use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
+use crate::eval::{ThreadId, WARPGROUP_SIZE};
+use crate::lowered::{InstrId, LoweredInstr, MemSpace};
+use crate::symbolic::Real;
+use crate::tensor_core::wgmma_m64n_k16;
+
+impl Interpreter<'_> {
+    /// Execute a complete warpgroup blocked at `pc`. `members` holds the
+    /// *live* threads (converged at `pc`); exited lanes in
+    /// `[group_base, group_base + WARPGROUP_SIZE)` arrive implicitly (see
+    /// `find_ready_warpgroup_op`). Mirrors `execute_warp_op`'s shape
+    /// exactly (chi-sync before and after, advance only the live members),
+    /// just over a 128-wide, mask-less group instead of a 32-wide masked
+    /// one.
+    pub(in crate::eval) fn execute_warpgroup_op(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+    ) -> EvalResult<()> {
+        let instr = self
+            .program
+            .instruction(pc)
+            .expect("warpgroup op blocked at a valid pc")
+            .clone();
+
+        // Every mask-less warpgroup op's group is the full contiguous
+        // 128-thread range - `find_ready_warpgroup_op` already rejected
+        // out-of-CTA-range groups, and the leader is always a live member,
+        // so `members` is nonempty.
+        let group_base = (members[0].0 / WARPGROUP_SIZE) * WARPGROUP_SIZE;
+        let group: Vec<ThreadId> = (0..WARPGROUP_SIZE).map(|lane| ThreadId(group_base + lane)).collect();
+
+        self.stats.warp_syncs += 1; // reuses the existing "#Warp Sync" counter - see the plan's note
+        self.sync_warp_group(&group);
+
+        match &instr {
+            LoweredInstr::WgmmaMmaAsync { .. } => self.exec_wgmma_mma_async(pc, members, &instr)?,
+            other => unreachable!("{:?} passed warpgroup-op dispatch", other),
+        }
+
+        self.sync_warp_group(&group);
+        self.advance_warp_group(members);
+        Ok(())
+    }
+
+    /// `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16`: `D = A*B (+D)`,
+    /// warpgroup-wide. `a_desc`/`b_desc`/`scale_d` must be warpgroup-uniform
+    /// (PTX ISA: "the contents of a matrix descriptor must be same across
+    /// all the warps in the warpgroup"), read once via `uniform_concrete`.
+    ///
+    /// No `require_live_warp`-style full-group-liveness rejection: the PTX
+    /// ISA's Description for `wgmma.mma_async` states no "undefined if any
+    /// thread has exited" clause (unlike `mma.sync`/`ldmatrix`/`wmma.*`,
+    /// which all state it explicitly), and the per-lane computation below
+    /// has no cross-lane data dependency (unlike `mma.sync`'s `Grid`-gather
+    /// from other lanes' registers) - a partial post-exit warpgroup is both
+    /// ISA-permitted and implementation-safe here. A deliberate judgment
+    /// call - revisit if a future kernel's behavior suggests otherwise.
+    fn exec_wgmma_mma_async(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        instr: &LoweredInstr,
+    ) -> EvalResult<()> {
+        let LoweredInstr::WgmmaMmaAsync {
+            shape,
+            dst,
+            a_desc,
+            b_desc,
+            scale_d,
+            transpose_a,
+            transpose_b,
+        } = instr
+        else {
+            unreachable!()
+        };
+        let n = shape.n;
+        const K: u64 = 16;
+        const ELEM_BYTES: u64 = 2; // f16
+
+        let a_desc_val = self.uniform_concrete(pc, members, a_desc, "wgmma.mma_async a-desc")? as u64;
+        let b_desc_val = self.uniform_concrete(pc, members, b_desc, "wgmma.mma_async b-desc")? as u64;
+        let scale_d = self.uniform_concrete(pc, members, scale_d, "wgmma.mma_async scale-d")? != 0;
+
+        let a_md = decode_wgmma_matrix_descriptor(a_desc_val);
+        let b_md = decode_wgmma_matrix_descriptor(b_desc_val);
+        if a_md.base_offset != 0 || b_md.base_offset != 0 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "wgmma.mma_async with a nonzero matrix-descriptor base offset is not modeled"
+                    .to_string(),
+            });
+        }
+
+        for &t in members {
+            let lane = t.0 % WARPGROUP_SIZE;
+            for elem in wgmma_m64n_k16::matrix_d(lane, n) {
+                let reg = dst[elem.reg_idx];
+                let mut acc = if scale_d {
+                    let Value::Scalar(e) = self.read_reg(t, pc, reg)? else {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "wgmma.mma_async accumulator register holds a packed pair",
+                        });
+                    };
+                    e
+                } else {
+                    // A real (not integer) zero: same subtlety
+                    // `exec_tcgen05_mma` already documents - `fma`'s eager
+                    // fold only fires when every operand is `RealConst`, so
+                    // an `IntConst(0)` seed would silently break the fold
+                    // for the whole accumulation chain.
+                    self.arena.real(Real::zero())
+                };
+                for k in 0..K {
+                    // K-major (leading = K) unless transposed - same
+                    // convention `exec_tcgen05_mma` already uses (PTX ISA
+                    // 9.7.17.10.6 for tcgen05.mma; wgmma.mma_async's own
+                    // transpose semantics, 9.7.17.5.2, follow the same
+                    // K-major-unless-transposed rule).
+                    let (a_stride, a_leading) = if *transpose_a {
+                        (k, elem.row as u64)
+                    } else {
+                        (elem.row as u64, k)
+                    };
+                    let (b_stride, b_leading) = if *transpose_b {
+                        (k, elem.col as u64)
+                    } else {
+                        (elem.col as u64, k)
+                    };
+                    let a_addr = tcgen05_mma::swizzled_element_addr(&a_md, a_stride, a_leading, ELEM_BYTES);
+                    let b_addr = tcgen05_mma::swizzled_element_addr(&b_md, b_stride, b_leading, ELEM_BYTES);
+                    let av = self.mem_read(t, pc, MemSpace::Shared, a_addr, ELEM_BYTES)?;
+                    let bv = self.mem_read(t, pc, MemSpace::Shared, b_addr, ELEM_BYTES)?;
+                    let (Value::Scalar(a_e), Value::Scalar(b_e)) = (av, bv) else {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "wgmma.mma_async A/B element is not a scalar",
+                        });
+                    };
+                    acc = self.arena.fma(a_e, b_e, acc);
+                }
+                self.threads[t].regs.write(reg, Value::Scalar(acc));
+            }
+        }
+        Ok(())
+    }
+}
