@@ -1742,7 +1742,8 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::ReduxSync { membermask, .. } => {
+            LoweredInstr::ReduxSync { membermask, .. }
+            | LoweredInstr::ReduxSyncBroadcastMax { membermask, .. } => {
                 let mask =
                     self.concrete_operand(t, pc, membermask, "redux.sync membermask")? as u32;
                 self.block_at_warp_op(t, pc, mask)?;
