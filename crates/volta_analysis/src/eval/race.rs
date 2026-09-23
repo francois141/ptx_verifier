@@ -41,6 +41,14 @@
 //! a pure mechanism like `async_locks`, with no notion of target arch -
 //! if `mark_async_proxy_unfenced` is never called, this map stays empty and
 //! the check is a permanent no-op via the same pattern `async_locks` uses.
+//!
+//! That tracker covers *generic* accesses of async-proxy writes. The reverse
+//! direction - an async-proxy read (`tcgen05.mma` operands, via
+//! [`RaceTracker::read_via`] with [`Proxy::Async`]) of bytes a generic write
+//! landed - is `generic_unfenced`: there the ISA puts the fence on the
+//! *writer*, which must execute `fence.proxy.async` before the sync that
+//! orders its write ahead of the tensor-core read. An async-proxy read skips
+//! the `async_proxy_unfenced` check (same proxy as the write).
 
 use std::collections::HashMap;
 
@@ -86,6 +94,18 @@ pub enum MemHazard {
     Race(RaceInfo),
     AsyncCopy(AsyncHazardInfo),
     AsyncProxyUnfenced(AsyncProxyFenceHazardInfo),
+    /// An async-proxy read of bytes a generic-proxy write landed, the
+    /// writer not having executed `fence.proxy.async` since.
+    GenericProxyUnfenced(AsyncProxyFenceHazardInfo),
+}
+
+/// The PTX memory proxy an access goes through: ordinary loads/stores use
+/// the generic proxy; tensor-core operand reads (`tcgen05.mma`) use the
+/// async proxy, and ordering across the two needs `fence.proxy.async`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proxy {
+    Generic,
+    Async,
 }
 
 /// In-flight `cp.async` lock state for one byte.
@@ -168,6 +188,10 @@ pub struct RaceTracker {
     /// Indexed by quadrant `0..4` (`(lane % 128) / 32`) - see `Tcgen05Pending`.
     tcgen05_pending: [Tcgen05Pending; 4],
     async_proxy_unfenced: HashMap<(MemSpace, u64), AsyncProxyUnfenced>,
+    /// Shared bytes whose last write went through the generic proxy and
+    /// whose writer has not executed `fence.proxy.async` since - see
+    /// [`Self::mark_generic_unfenced`].
+    generic_unfenced: HashMap<u64, AccessSite>,
 }
 
 impl RaceTracker {
@@ -181,6 +205,7 @@ impl RaceTracker {
             async_locks: HashMap::new(),
             tcgen05_pending: Default::default(),
             async_proxy_unfenced: HashMap::new(),
+            generic_unfenced: HashMap::new(),
         }
     }
 
@@ -242,6 +267,23 @@ impl RaceTracker {
         thread: ThreadId,
         pc: InstrId,
     ) -> Result<(), MemHazard> {
+        self.read_via(space, addr, width, thread, pc, Proxy::Generic)
+    }
+
+    /// [`Self::read`] through a given proxy. Through the async proxy (a
+    /// `tcgen05.mma` operand read), bytes an async-proxy write landed need
+    /// no proxy fence - same proxy - but bytes a *generic* write landed
+    /// must have been fenced by their writer (see
+    /// [`Self::mark_generic_unfenced`]).
+    pub fn read_via(
+        &mut self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        thread: ThreadId,
+        pc: InstrId,
+        proxy: Proxy,
+    ) -> Result<(), MemHazard> {
         let t = thread.0;
         let current = AccessSite {
             thread,
@@ -269,7 +311,12 @@ impl RaceTracker {
                 }
             }
         }
-        self.check_async_proxy_fence(space, addr, width, thread, pc, false)?;
+        match proxy {
+            Proxy::Generic => {
+                self.check_async_proxy_fence(space, addr, width, thread, pc, false)?
+            }
+            Proxy::Async => self.check_generic_proxy_fence(space, addr, width, current)?,
+        }
         for byte in addr..addr + width {
             let cell = self.cells.entry((space, byte)).or_default();
             if let Some((writer, pending, wpc)) = &cell.wr
@@ -447,6 +494,51 @@ impl RaceTracker {
         Ok(())
     }
 
+    /// The writer-side counterpart of [`Self::check_async_proxy_fence`], for
+    /// an async-proxy read: generic-proxy writes become visible to the
+    /// async proxy only once their *writer* executes `fence.proxy.async`
+    /// (before whatever sync orders them ahead of the reader), so a byte
+    /// still in `generic_unfenced` is a hazard whoever reads it.
+    fn check_generic_proxy_fence(
+        &self,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        current: AccessSite,
+    ) -> Result<(), MemHazard> {
+        if space != MemSpace::Shared || self.generic_unfenced.is_empty() {
+            return Ok(());
+        }
+        match (addr..addr + width).find_map(|byte| Some((byte, *self.generic_unfenced.get(&byte)?)))
+        {
+            Some((byte, prior)) => {
+                Err(MemHazard::GenericProxyUnfenced(AsyncProxyFenceHazardInfo {
+                    space,
+                    addr: byte,
+                    prior,
+                    current,
+                }))
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Mark shared `[addr, addr + width)` as written through the generic
+    /// proxy by `thread` and not yet fenced. Called for every generic
+    /// shared write on sm_90+ (gated by the caller, like
+    /// [`Self::mark_async_proxy_unfenced`]); an async-proxy write to the same
+    /// bytes supersedes the mark.
+    pub fn mark_generic_unfenced(&mut self, addr: u64, width: u64, thread: ThreadId, pc: InstrId) {
+        let site = AccessSite {
+            thread,
+            pc,
+            is_write: true,
+        };
+        for byte in addr..addr + width {
+            self.generic_unfenced.insert(byte, site);
+        }
+    }
+
     /// Mark `[addr, addr + width)` as written via the async proxy but not
     /// yet fenced - call only *after* the write itself has already landed
     /// (through [`Self::write`]/[`Self::write_with`]), the same ordering
@@ -474,6 +566,9 @@ impl RaceTracker {
                     pending: self.all.clone(),
                 },
             );
+            if space == MemSpace::Shared {
+                self.generic_unfenced.remove(&byte);
+            }
         }
     }
 
@@ -484,7 +579,14 @@ impl RaceTracker {
     /// [`Self::sync_group`], but scoped to one thread rather than a group -
     /// per the ISA, a bi-directional proxy fence "take[s] effect within a
     /// single thread", unlike `bar.sync`'s full-CTA effect.
+    ///
+    /// Also releases `thread`'s own generic-proxy writes to shared memory
+    /// (see [`Self::mark_generic_unfenced`]).
     pub fn clear_async_proxy_fence(&mut self, thread: ThreadId, restrict: Option<MemSpace>) {
+        if restrict.is_none_or(|r| r == MemSpace::Shared) {
+            self.generic_unfenced
+                .retain(|_, site| site.thread != thread);
+        }
         if self.async_proxy_unfenced.is_empty() {
             return;
         }
@@ -668,8 +770,8 @@ mod tests {
         match result {
             Err(MemHazard::Race(info)) => info,
             Err(MemHazard::AsyncCopy(h)) => panic!("expected a race, got an async hazard: {:?}", h),
-            Err(MemHazard::AsyncProxyUnfenced(h)) => {
-                panic!("expected a race, got an async-proxy-fence hazard: {:?}", h)
+            Err(MemHazard::AsyncProxyUnfenced(h) | MemHazard::GenericProxyUnfenced(h)) => {
+                panic!("expected a race, got a proxy-fence hazard: {:?}", h)
             }
             Ok(()) => panic!("expected a race, got Ok"),
         }

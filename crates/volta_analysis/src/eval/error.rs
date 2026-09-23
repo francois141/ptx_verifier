@@ -66,6 +66,17 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
+    /// An async-proxy read (a `tcgen05.mma` operand) observed bytes a
+    /// generic-proxy write (`st.shared`, ...) landed, without the *writer*
+    /// having executed `fence.proxy.async` since: the ISA only makes
+    /// generic writes visible to the async proxy through the writer's own
+    /// proxy fence, ordered before the reader by a sync.
+    GenericProxyFenceHazard {
+        space: MemSpace,
+        addr: u64,
+        prior: AccessSite,
+        current: AccessSite,
+    },
     /// A `wgmma.mma_async` accessed an accumulator register without an
     /// intervening `wgmma.fence` (PTX ISA 9.7.17.7.1): either this is the
     /// warpgroup's first `wgmma.mma_async` and no `wgmma.fence` has ever
@@ -307,6 +318,19 @@ impl fmt::Display for EvalError {
                  {} without an intervening fence.proxy.async (sm_90+ requires this fence to \
                  order cp.async/TMA writes against later accesses through either proxy; \
                  bar.sync alone does not provide it)",
+                space, addr, current, prior
+            ),
+            Self::GenericProxyFenceHazard {
+                space,
+                addr,
+                prior,
+                current,
+            } => write!(
+                f,
+                "missing fence.proxy.async on {:?}[{:#x}]: async-proxy {} (tcgen05.mma operand) \
+                 observed the generic-proxy {} whose writer has not executed fence.proxy.async \
+                 since (the writer must fence before the sync that orders its write ahead of \
+                 the tensor-core read)",
                 space, addr, current, prior
             ),
             Self::WgmmaFenceHazard {
