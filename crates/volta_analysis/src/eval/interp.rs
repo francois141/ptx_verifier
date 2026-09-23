@@ -3844,30 +3844,64 @@ impl<'p> Interpreter<'p> {
     }
 
     /// `ex2(v * c)` with `c` within float32 rounding of log2(e) is the PTX
-    /// idiom for `exp(v)`, and `c ~ -log2(e)` the idiom for `exp(-v)`.
-    /// Returns that exact form, or `None` when `a` is not such a product.
+    /// idiom for `exp(v)`, and `c ~ -log2(e)` the idiom for `exp(-v)`. `v`
+    /// itself may be spread across an `Fma`/`Add` chain that shares the
+    /// same rounded log2(e) factor per term rather than multiplying it in
+    /// once at the end - e.g. softmax's max-subtraction bias,
+    /// `fma(x, log2e, m)` where `m` was already built as `max * -log2e`,
+    /// for `(x - max) * log2e` - [`Self::factor_log2e`] pulls the shared
+    /// constant back out of that chain. Returns the exact `exp(...)`
+    /// form, or `None` when `a` doesn't factor this way.
     fn fold_exp_idiom(&mut self, a: ExprId) -> Option<ExprId> {
-        let (lhs, rhs) = match self.arena.node(a) {
-            ExprNode::Mul(l, r) => (*l, *r),
-            _ => return None,
-        };
-        for (constant, other) in [(lhs, rhs), (rhs, lhs)] {
-            let value = match self.arena.node(constant) {
-                ExprNode::RealConst(real) => real.to_f64(),
-                _ => continue,
-            };
-            let log2e = std::f64::consts::LOG2_E;
-            if (value.abs() - log2e).abs() > log2e * 1e-6 {
-                continue;
+        let argument = self.factor_log2e(a)?;
+        Some(self.arena.exp(argument))
+    }
+
+    /// Pulls a `log2(e)`-ish rational constant (within float32 rounding)
+    /// out of a `Mul`/`Fma`/`Add` chain, folding each term's own sign into
+    /// the result so that `a == log2e * factor_log2e(a)` for whichever
+    /// concrete log2(e)-approximating constant `a` was actually built
+    /// with. `None` when no such factor exists at this node.
+    fn factor_log2e(&mut self, a: ExprId) -> Option<ExprId> {
+        let log2e = std::f64::consts::LOG2_E;
+        let is_log2e_like = |value: f64| (value.abs() - log2e).abs() <= log2e * 1e-6;
+        match self.arena.node(a).clone() {
+            ExprNode::Mul(l, r) => {
+                for (constant, other) in [(l, r), (r, l)] {
+                    let value = match self.arena.node(constant) {
+                        ExprNode::RealConst(real) => real.to_f64(),
+                        _ => continue,
+                    };
+                    if !is_log2e_like(value) {
+                        continue;
+                    }
+                    return Some(if value < 0.0 {
+                        self.arena.neg(other)
+                    } else {
+                        other
+                    });
+                }
+                None
             }
-            let argument = if value < 0.0 {
-                self.arena.neg(other)
-            } else {
-                other
-            };
-            return Some(self.arena.exp(argument));
+            ExprNode::Fma(x, c, rest) => {
+                let value = match self.arena.node(c) {
+                    ExprNode::RealConst(real) => real.to_f64(),
+                    _ => return None,
+                };
+                if !is_log2e_like(value) {
+                    return None;
+                }
+                let x_signed = if value < 0.0 { self.arena.neg(x) } else { x };
+                let rest_factored = self.factor_log2e(rest)?;
+                Some(self.arena.add(x_signed, rest_factored))
+            }
+            ExprNode::Add(l, r) => {
+                let l_factored = self.factor_log2e(l)?;
+                let r_factored = self.factor_log2e(r)?;
+                Some(self.arena.add(l_factored, r_factored))
+            }
+            _ => None,
         }
-        None
     }
 
     fn eval_unop(
