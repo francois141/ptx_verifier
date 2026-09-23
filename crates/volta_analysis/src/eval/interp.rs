@@ -3284,6 +3284,23 @@ impl<'p> Interpreter<'p> {
                     Ok(Value::Scalar(self.arena.undefined()))
                 }
             }
+            // A *partially* materialized input array: this access spans
+            // elements that already exist alongside ones that do not, so
+            // the granule scan stops at the first covered byte and reports
+            // a reinterpretation rather than a plain miss. Materializing
+            // just the absent elements (`materialize_input` skips the
+            // present ones) lets the ordinary combine rules compose the
+            // whole access - the two-f16-element `ld.global.b32` over an
+            // array some other thread already touched 2 bytes of. A
+            // genuine reinterpretation materializes nothing, so the guard
+            // fails and the loud error below still stands.
+            Err(MemAccessError::Reinterpret { .. })
+                if space == MemSpace::Global && self.materialize_input(addr, width) =>
+            {
+                self.global
+                    .read(addr, width)
+                    .map_err(|e| self.mem_error(t, pc, space, e))
+            }
             Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Shared => {
                 Ok(Value::Scalar(self.arena.undefined()))
             }
