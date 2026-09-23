@@ -6814,8 +6814,7 @@ fn lower_wgmma_commit_group(
 
 /// Lower `wgmma.wait_group.sync.aligned N;` (PTX ISA 9.7.17.7.3). `N` is
 /// validated (must be a compile-time non-negative integer, per the ISA)
-/// then discarded - see `LoweredInstr::WgmmaWaitGroup`'s doc comment for
-/// why.
+/// and kept - see `LoweredInstr::WgmmaWaitGroup`'s doc comment.
 fn lower_wgmma_wait_group(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6841,8 +6840,8 @@ fn lower_wgmma_wait_group(
             reason: "expected N",
         });
     };
-    let _n = ctx.resolve_const_u32(n, NAME, "N must be a compile-time non-negative integer")?;
-    ctx.emit(LoweredInstr::WgmmaWaitGroup, predicate)?;
+    let n = ctx.resolve_const_u32(n, NAME, "N must be a compile-time non-negative integer")?;
+    ctx.emit(LoweredInstr::WgmmaWaitGroup { n }, predicate)?;
     Ok(())
 }
 

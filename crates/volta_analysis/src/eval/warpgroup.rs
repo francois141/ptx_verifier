@@ -125,7 +125,7 @@ impl Interpreter<'_> {
             for elem in wgmma_m64n_k16::matrix_d(lane, n) {
                 let reg = dst[elem.reg_idx];
                 let mut acc = if scale_d {
-                    let Value::Scalar(e) = self.read_reg(t, pc, reg)? else {
+                    let Value::Scalar(e) = self.read_reg_wgmma_accum(t, pc, reg, *shape)? else {
                         return Err(EvalError::ValueKindMismatch {
                             thread: t,
                             pc,
@@ -170,7 +170,7 @@ impl Interpreter<'_> {
                     };
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
-                self.threads[t].regs.write(reg, Value::Scalar(acc));
+                self.write_reg_wgmma_accum(t, pc, reg, *shape, Value::Scalar(acc))?;
             }
         }
         Ok(())

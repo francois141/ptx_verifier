@@ -947,14 +947,12 @@ pub enum LoweredInstr {
     WgmmaCommitGroup,
 
     /// `wgmma.wait_group.sync.aligned N;` (PTX ISA 9.7.17.7.3): waits
-    /// until at most `N` wgmma-groups remain pending. Volta gives every
-    /// `wgmma.mma_async` its full data effect immediately (no
-    /// pending-group bookkeeping is modeled, same scope decision as
-    /// `WgmmaCommitGroup`), so there is nothing to actually wait for; `N`
-    /// is validated at lowering (must be a compile-time non-negative
-    /// integer, per the ISA) and then discarded - not stored, since
-    /// nothing downstream ever needs it.
-    WgmmaWaitGroup,
+    /// until at most `N` wgmma-groups remain pending. `N` is a
+    /// compile-time non-negative integer, validated at lowering
+    /// (`resolve_const_u32`) and kept - the eval-time register-hazard
+    /// tracker (`ThreadState::wgmma`) needs it to know how many
+    /// committed groups to release.
+    WgmmaWaitGroup { n: u32 },
 
     /// `stmatrix.sync.aligned.x{1,2,4}[.trans].m8n8.shared.b16 [addr],
     /// {src...}` (PTX ISA 9.7.14.5.17) - `ldmatrix`'s store-direction
@@ -1461,7 +1459,7 @@ impl LoweredInstr {
                 r.extend(dst.iter().copied());
                 r
             }
-            Self::WgmmaFence | Self::WgmmaCommitGroup | Self::WgmmaWaitGroup => vec![],
+            Self::WgmmaFence | Self::WgmmaCommitGroup | Self::WgmmaWaitGroup { .. } => vec![],
             Self::Stmatrix { addr, src, .. } => {
                 let mut r = from_op(addr).into_iter().collect::<Vec<_>>();
                 r.extend(from_ops(src));
@@ -1633,7 +1631,7 @@ impl LoweredInstr {
             | Self::Tcgen05Commit { .. }
             | Self::WgmmaFence
             | Self::WgmmaCommitGroup
-            | Self::WgmmaWaitGroup
+            | Self::WgmmaWaitGroup { .. }
             | Self::Stmatrix { .. }
             | Self::TensormapReplace { .. }
             | Self::TensormapCpFenceproxy { .. }

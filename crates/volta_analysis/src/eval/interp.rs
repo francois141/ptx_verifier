@@ -6,7 +6,7 @@
 //! barrier/warp groups fire; if none can, the program is deadlocked. By the
 //! confluence theorem, this particular schedule is as good as any other.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use id_collections::IdVec;
 
@@ -14,7 +14,7 @@ use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
-use crate::eval::error::{EvalError, EvalResult};
+use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
@@ -31,6 +31,7 @@ use crate::lowered::{
 };
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
+use crate::tensor_core::MmaShape;
 use crate::tensor_map::{TensorFillMode, TensormapFieldWrite};
 use crate::types::{RegClass, ScalarTypeExt};
 
@@ -121,6 +122,140 @@ pub(in crate::eval) struct ThreadState {
     /// Committed async-copy groups, oldest first; `wait_group`/`wait_all`
     /// pop from the front.
     groups: VecDeque<Vec<PendingCopy>>,
+    /// `wgmma.mma_async` register-hazard tracking (PTX ISA
+    /// 9.7.17.7.1/.2/.3) - a separate domain and instruction family from
+    /// `uncommitted`/`groups` above, so kept as its own field rather than
+    /// reused.
+    wgmma: WgmmaRegState,
+}
+
+/// One `wgmma.mma_async` accumulator writeback not yet released by a
+/// covering `wgmma.wait_group`. Unlike `PendingCopy`, the write already
+/// landed eagerly in the register file (Volta's evaluation is
+/// sequential - there is no deferred value to hold), so just the register
+/// is kept - the issuing pc for hazard diagnostics lives in `pending`'s
+/// own map value, not duplicated here.
+type PendingWgmmaAccum = RegId;
+
+/// Per-thread `wgmma.mma_async` register-hazard state (PTX ISA
+/// 9.7.17.7). Lives on `ThreadState`, not `RaceTracker`: unlike shared/
+/// global memory (which needs χ's per-byte, cross-thread `FixedBitSet`),
+/// registers are inherently thread-local - nothing here ever reads
+/// another thread's state.
+#[derive(Debug, Default)]
+struct WgmmaRegState {
+    /// Hazard A (`wgmma.fence`, 9.7.17.7.1): incremented by every
+    /// `wgmma.fence` this thread executes.
+    fence_epoch: u64,
+    /// Hazard A: `(fence_epoch, pc)` as of each register's most recent
+    /// write. Absent = never written by this thread = treated as epoch
+    /// 0 - this is what makes "before the first `wgmma.mma_async` in a
+    /// warpgroup" fire correctly even for a register nothing has touched
+    /// yet.
+    reg_epoch: HashMap<RegId, (u64, InstrId)>,
+    /// Hazard A: present, with the shape used, iff the register's most
+    /// recent write was a `wgmma.mma_async` accumulator writeback of
+    /// that shape. Removed by every ordinary write (`write_reg` - breaks
+    /// the chain); overwritten (not removed) by another `wgmma.mma_async`
+    /// writeback, possibly of a different shape.
+    reg_shape: HashMap<RegId, MmaShape>,
+    /// Hazard B (`wgmma.wait_group`, 9.7.17.7.3): accumulator writebacks
+    /// since the last `wgmma.commit_group`, not yet sealed into a group.
+    uncommitted: Vec<PendingWgmmaAccum>,
+    /// Hazard B: committed wgmma-groups, oldest first; `wgmma.wait_group
+    /// N` pops from the front while more than `N` remain.
+    groups: VecDeque<Vec<PendingWgmmaAccum>>,
+    /// Hazard B: reference count + most recent issuing pc, per register,
+    /// summed across `uncommitted` and every group in `groups` - lets
+    /// `read_reg`/`write_reg` (the hottest path in the evaluator) answer
+    /// "is this register pending" in O(1) without rescanning every
+    /// outstanding group on every register access. A reference count
+    /// (not a plain set) because a register can legitimately appear in
+    /// more than one outstanding group (two interleaved same-shape
+    /// chains sharing an accumulator tile before either is waited) -
+    /// releasing the older group must not clear pending status the
+    /// other occurrence still needs.
+    pending: HashMap<RegId, (u32, InstrId)>,
+}
+
+impl WgmmaRegState {
+    /// Hazard B: `Some(prior_pc)` iff `reg` is still pending a
+    /// `wgmma.wait_group` release.
+    fn pending_since(&self, reg: RegId) -> Option<InstrId> {
+        self.pending
+            .get(&reg)
+            .filter(|&&(count, _)| count > 0)
+            .map(|&(_, pc)| pc)
+    }
+
+    /// Hazard A: true iff a `wgmma.mma_async` of `shape` may access `reg`
+    /// (as its accumulator) without needing an intervening
+    /// `wgmma.fence` - either `reg`'s most recent write was itself a
+    /// same-shape `wgmma.mma_async` writeback (the ISA's one exemption),
+    /// or a `wgmma.fence` has executed since `reg`'s most recent write
+    /// (or since this thread started, for a register never written at
+    /// all).
+    fn is_fenced_for(&self, reg: RegId, shape: MmaShape) -> bool {
+        if self.reg_shape.get(&reg) == Some(&shape) {
+            return true;
+        }
+        let last_write_epoch = self.reg_epoch.get(&reg).map(|&(e, _)| e).unwrap_or(0);
+        self.fence_epoch > last_write_epoch
+    }
+
+    /// The pc of `reg`'s most recent write, if any - for a hazard-A
+    /// error's `prior_write` (`None` means never written by this thread).
+    fn last_write_pc(&self, reg: RegId) -> Option<InstrId> {
+        self.reg_epoch.get(&reg).map(|&(_, pc)| pc)
+    }
+
+    /// Record an ordinary (non-`wgmma.mma_async`) write: resets `reg`'s
+    /// fence gate to "dirty as of now" and breaks any same-shape chain.
+    fn record_write(&mut self, reg: RegId, pc: InstrId) {
+        self.reg_epoch.insert(reg, (self.fence_epoch, pc));
+        self.reg_shape.remove(&reg);
+    }
+
+    /// Record a `wgmma.mma_async` accumulator writeback: same fence
+    /// bookkeeping as `record_write`, but tags `reg` with `shape` (so a
+    /// later same-shape chained `wgmma.mma_async` is fence-exempt) and
+    /// marks it pending a `wgmma.wait_group` release.
+    fn record_wgmma_write(&mut self, reg: RegId, shape: MmaShape, pc: InstrId) {
+        self.reg_epoch.insert(reg, (self.fence_epoch, pc));
+        self.reg_shape.insert(reg, shape);
+        self.uncommitted.push(reg);
+        let entry = self.pending.entry(reg).or_insert((0, pc));
+        entry.0 += 1;
+        entry.1 = pc;
+    }
+
+    /// `wgmma.fence`: establishes an ordering point for every register.
+    fn fence(&mut self) {
+        self.fence_epoch += 1;
+    }
+
+    /// `wgmma.commit_group`: seals this thread's uncommitted accumulator
+    /// writebacks into a new wgmma-group.
+    fn commit_group(&mut self) {
+        let sealed = std::mem::take(&mut self.uncommitted);
+        self.groups.push_back(sealed);
+    }
+
+    /// `wgmma.wait_group N`: releases wgmma-groups past the `N` most
+    /// recent.
+    fn wait_group(&mut self, n: u32) {
+        while self.groups.len() > n as usize {
+            let group = self.groups.pop_front().unwrap();
+            for reg in group {
+                if let Some((count, _)) = self.pending.get_mut(&reg) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.pending.remove(&reg);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A contiguous validity region within one memory space.
@@ -389,6 +524,7 @@ impl<'p> Interpreter<'p> {
                     status: Status::Ready,
                     uncommitted: Vec::new(),
                     groups: VecDeque::new(),
+                    wgmma: WgmmaRegState::default(),
                 })
                 .collect(),
         );
@@ -868,7 +1004,7 @@ impl<'p> Interpreter<'p> {
             // `check_bounds`.
             LoweredInstr::LoadParam { dst, param_id } => {
                 let v = self.params[*param_id];
-                self.threads[t].regs.write(*dst, v);
+                self.write_reg(t, pc, *dst, v)?;
             }
 
             LoweredInstr::Load {
@@ -881,7 +1017,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
                 let v = self.mem_read(t, pc, *space, addr, ty.size_bytes() as u64)?;
                 let v = self.canon_loaded(t, pc, *ty, *dst, v)?;
-                self.threads[t].regs.write(*dst, v);
+                self.write_reg(t, pc, *dst, v)?;
             }
 
             LoweredInstr::LoadVec {
@@ -905,7 +1041,7 @@ impl<'p> Interpreter<'p> {
                 for (k, reg) in dst.iter().enumerate() {
                     let v = self.mem_read(t, pc, *space, addr + k as u64 * width, width)?;
                     let v = self.canon_loaded(t, pc, *ty, *reg, v)?;
-                    self.threads[t].regs.write(*reg, v);
+                    self.write_reg(t, pc, *reg, v)?;
                 }
             }
 
@@ -1067,7 +1203,7 @@ impl<'p> Interpreter<'p> {
                         });
                     }
                 };
-                self.threads[t].regs.write(*dst, v);
+                self.write_reg(t, pc, *dst, v)?;
             }
 
             // Only `cvta.to.global` reaches evaluation (lowering rejects
@@ -1076,7 +1212,7 @@ impl<'p> Interpreter<'p> {
             // the conversion is the identity.
             LoweredInstr::Cvta { dst, src, .. } => {
                 let v = self.operand_value(t, pc, src)?;
-                self.threads[t].regs.write(*dst, v);
+                self.write_reg(t, pc, *dst, v)?;
             }
 
             LoweredInstr::Prmt {
@@ -1142,7 +1278,7 @@ impl<'p> Interpreter<'p> {
                 let b1 = select_byte(self, (selector >> 4) & 0xf)?;
                 let b2 = select_byte(self, (selector >> 8) & 0xf)?;
                 let b3 = select_byte(self, (selector >> 12) & 0xf)?;
-                self.threads[t].regs.write(*dst, Value::Quad(b0, b1, b2, b3));
+                self.write_reg(t, pc, *dst, Value::Quad(b0, b1, b2, b3))?;
             }
 
             LoweredInstr::Lop3 {
@@ -1174,7 +1310,7 @@ impl<'p> Interpreter<'p> {
                         });
                     }
                 };
-                self.threads[t].regs.write(*dst, Value::Scalar(result));
+                self.write_reg(t, pc, *dst, Value::Scalar(result))?;
             }
 
             LoweredInstr::BinOp {
@@ -1192,17 +1328,17 @@ impl<'p> Interpreter<'p> {
                     let hi = self.eval_binop(t, pc, *op, lane_ty, a_hi, b_hi)?;
                     let lo = self.apply_clamp(*clamp, lo);
                     let hi = self.apply_clamp(*clamp, hi);
-                    self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                    self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
                 } else if let Some(v) = self.pair_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
-                    self.threads[t].regs.write(*dst, v);
+                    self.write_reg(t, pc, *dst, v)?;
                 } else if let Some(v) = self.quad_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
-                    self.threads[t].regs.write(*dst, v);
+                    self.write_reg(t, pc, *dst, v)?;
                 } else {
                     let a = self.scalar_operand(t, pc, src_a)?;
                     let b = self.scalar_operand(t, pc, src_b)?;
                     let r = self.eval_binop(t, pc, *op, *ty, a, b)?;
                     let r = self.apply_clamp(*clamp, r);
-                    self.threads[t].regs.write(*dst, Value::Scalar(r));
+                    self.write_reg(t, pc, *dst, Value::Scalar(r))?;
                 }
             }
 
@@ -1211,11 +1347,11 @@ impl<'p> Interpreter<'p> {
                     let (a_lo, a_hi) = self.pair_operand(t, pc, src, lane_ty)?;
                     let lo = self.eval_unop(pc, *op, lane_ty, a_lo)?;
                     let hi = self.eval_unop(pc, *op, lane_ty, a_hi)?;
-                    self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                    self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
                 } else {
                     let a = self.scalar_operand(t, pc, src)?;
                     let r = self.eval_unop(pc, *op, *ty, a)?;
-                    self.threads[t].regs.write(*dst, Value::Scalar(r));
+                    self.write_reg(t, pc, *dst, Value::Scalar(r))?;
                 }
             }
 
@@ -1234,7 +1370,7 @@ impl<'p> Interpreter<'p> {
                 let r = self
                     .arena
                     .select(non_negative, abs_magnitude, neg_abs_magnitude);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Fma {
@@ -1253,14 +1389,14 @@ impl<'p> Interpreter<'p> {
                     let hi = self.arena.fma(a_hi, b_hi, c_hi);
                     let lo = self.apply_clamp(*clamp, lo);
                     let hi = self.apply_clamp(*clamp, hi);
-                    self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                    self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
                 } else {
                     let a = self.scalar_operand(t, pc, src_a)?;
                     let b = self.scalar_operand(t, pc, src_b)?;
                     let c = self.scalar_operand(t, pc, src_c)?;
                     let r = self.arena.fma(a, b, c);
                     let r = self.apply_clamp(*clamp, r);
-                    self.threads[t].regs.write(*dst, Value::Scalar(r));
+                    self.write_reg(t, pc, *dst, Value::Scalar(r))?;
                 }
             }
 
@@ -1296,7 +1432,7 @@ impl<'p> Interpreter<'p> {
                     }
                     _ => self.arena.add(product, c),
                 };
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::MulWide {
@@ -1308,7 +1444,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let r = self.mul_wide(*src_ty, a, b);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::MulHi {
@@ -1326,7 +1462,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let r = self.mul_hi(*ty, a, b);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Bfi {
@@ -1348,7 +1484,7 @@ impl<'p> Interpreter<'p> {
                 };
                 let r = ((b as u64) & !mask) | (((a as u64) << start.min(63)) & mask);
                 let r = self.arena.int(r as i64);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Shf {
@@ -1397,7 +1533,7 @@ impl<'p> Interpreter<'p> {
                     d |= bit << i;
                 }
                 let r = self.arena.int(d as i64);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Setp {
@@ -1410,7 +1546,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let r = self.eval_cmp(pc, *cmp, *ty, a, b)?;
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Selp {
@@ -1430,7 +1566,7 @@ impl<'p> Interpreter<'p> {
                 let b = self.canon_operand(*ty, b);
                 let cond = self.scalar_operand(t, pc, pred)?;
                 let r = self.arena.select(cond, a, b);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Set { .. } => {
@@ -1503,7 +1639,7 @@ impl<'p> Interpreter<'p> {
                         }
                     }
                 };
-                self.threads[t].regs.write(*dst, result);
+                self.write_reg(t, pc, *dst, result)?;
             }
 
             LoweredInstr::CvtE4m3x2ToF16x2 { dst, src, relu } => {
@@ -1564,7 +1700,7 @@ impl<'p> Interpreter<'p> {
                         });
                     }
                 };
-                self.threads[t].regs.write(*dst, result);
+                self.write_reg(t, pc, *dst, result)?;
             }
 
             LoweredInstr::CvtPackHalves {
@@ -1581,7 +1717,7 @@ impl<'p> Interpreter<'p> {
                 let hi = self.eval_cvt(pc, *dst_half_ty, *src_ty, hi)?;
                 let lo = self.scalar_operand(t, pc, src_lo)?;
                 let lo = self.eval_cvt(pc, *dst_half_ty, *src_ty, lo)?;
-                self.threads[t].regs.write(*dst, Value::Pair(lo, hi));
+                self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
             }
 
             LoweredInstr::UnpackHalves { lo, hi, src, ty } => {
@@ -1592,10 +1728,10 @@ impl<'p> Interpreter<'p> {
                     // granule combining) - distribute them directly.
                     Value::Pair(lo_e, hi_e) => {
                         if let Some(lo) = lo {
-                            self.threads[t].regs.write(*lo, Value::Scalar(lo_e));
+                            self.write_reg(t, pc, *lo, Value::Scalar(lo_e))?;
                         }
                         if let Some(hi) = hi {
-                            self.threads[t].regs.write(*hi, Value::Scalar(hi_e));
+                            self.write_reg(t, pc, *hi, Value::Scalar(hi_e))?;
                         }
                     }
                     // A genuine scalar bit pattern: split it the way this
@@ -1606,11 +1742,11 @@ impl<'p> Interpreter<'p> {
                         let shift = self.arena.int(elem_width as i64);
                         if let Some(lo) = lo {
                             let lo_v = self.eval_binop(t, pc, BinOp::And, *ty, e, mask)?;
-                            self.threads[t].regs.write(*lo, Value::Scalar(lo_v));
+                            self.write_reg(t, pc, *lo, Value::Scalar(lo_v))?;
                         }
                         if let Some(hi) = hi {
                             let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
-                            self.threads[t].regs.write(*hi, Value::Scalar(hi_v));
+                            self.write_reg(t, pc, *hi, Value::Scalar(hi_v))?;
                         }
                     }
                     // A `Quad` (byte-granular vector-load lane): each half
@@ -1622,10 +1758,10 @@ impl<'p> Interpreter<'p> {
                     // `cvt.rn.f16x2.e4m3x2` on an fp8 array.
                     Value::Quad(b0, b1, b2, b3) => {
                         if let Some(lo) = lo {
-                            self.threads[t].regs.write(*lo, Value::Pair(b0, b1));
+                            self.write_reg(t, pc, *lo, Value::Pair(b0, b1))?;
                         }
                         if let Some(hi) = hi {
-                            self.threads[t].regs.write(*hi, Value::Pair(b2, b3));
+                            self.write_reg(t, pc, *hi, Value::Pair(b2, b3))?;
                         }
                     }
                     Value::Mbarrier(_) => {
@@ -1646,7 +1782,7 @@ impl<'p> Interpreter<'p> {
                 // scalar_operand (nested pairs are not modeled).
                 let lo_v = self.scalar_operand(t, pc, lo)?;
                 let hi_v = self.scalar_operand(t, pc, hi)?;
-                self.threads[t].regs.write(*dst, Value::Pair(lo_v, hi_v));
+                self.write_reg(t, pc, *dst, Value::Pair(lo_v, hi_v))?;
             }
 
             LoweredInstr::PackQuad { dst, elems } => {
@@ -1830,17 +1966,26 @@ impl<'p> Interpreter<'p> {
             }
 
             // wgmma.fence/commit_group/wait_group: PTX ISA 9.7.17.7.{1,2,3}
-            // order or track *register* hazards (accumulator/A-fragment
-            // registers, and wgmma-group completion) around
-            // wgmma.mma_async - never a memory effect Volta's race tracker
-            // would care about. Volta does not model register-hazard
-            // tracking at all (a deliberate scope decision - mirrors
-            // `Tcgen05Fence`'s existing no-op treatment above), so these
-            // are genuine no-ops. This is a loud, documented gap, not a
-            // silent one: a kernel whose only correctness argument for
-            // reusing wgmma's registers rests on `wgmma.wait_group` would
-            // not have that hazard modeled by Volta today.
-            LoweredInstr::WgmmaFence | LoweredInstr::WgmmaCommitGroup | LoweredInstr::WgmmaWaitGroup => {}
+            // track *register* hazards (accumulator registers, and
+            // wgmma-group completion) around wgmma.mma_async - never a
+            // memory effect the race tracker would care about. Dispatched
+            // per-thread, not through `AtWarpgroupOp`: all the state
+            // below is purely per-thread (no cross-thread reads), matching
+            // `CpAsyncCommitGroup`/`CpAsyncWaitGroup`/`FenceProxyAsync`'s
+            // existing per-thread dispatch - `wgmma.mma_async` alone needs
+            // the warpgroup rendezvous, for its cross-lane-relevant
+            // warpgroup-uniform operands.
+            LoweredInstr::WgmmaFence => {
+                self.threads[t].wgmma.fence();
+            }
+
+            LoweredInstr::WgmmaCommitGroup => {
+                self.threads[t].wgmma.commit_group();
+            }
+
+            LoweredInstr::WgmmaWaitGroup { n } => {
+                self.threads[t].wgmma.wait_group(*n);
+            }
 
             // Tensor Memory allocation management: PTX ISA 9.7.17.5 ("Issue
             // Granularity") requires a single warp to collectively issue
@@ -2030,7 +2175,7 @@ impl<'p> Interpreter<'p> {
                     // that reads it back through any other path already
                     // hit `unsupported()` at lowering.
                     let token = self.arena.undefined();
-                    self.threads[t].regs.write(*dst, Value::Scalar(token));
+                    self.write_reg(t, pc, *dst, Value::Scalar(token))?;
                 }
             }
 
@@ -2104,7 +2249,7 @@ impl<'p> Interpreter<'p> {
                     }
                 }
                 let r = self.arena.int(mask as i64);
-                self.threads[t].regs.write(*dst, Value::Scalar(r));
+                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
             LoweredInstr::Trap => {
@@ -2319,16 +2464,137 @@ impl<'p> Interpreter<'p> {
     /// (e.g. the accumulator-init idiom `selp.f32 %f, 0.0, %f, %p` on the
     /// first loop iteration). The undefined value is an error only if it
     /// reaches an output or a point that requires a concrete value.
-    pub(in crate::eval) fn read_reg(
-        &self,
-        t: ThreadId,
-        _pc: InstrId,
-        reg: RegId,
-    ) -> EvalResult<Value> {
+    ///
+    /// Hazard B (PTX ISA 9.7.17.7.3, `wgmma.wait_group`): reading a
+    /// register a `wgmma.mma_async` wrote and hasn't yet been released by
+    /// a covering `wgmma.wait_group` is exactly the external interference
+    /// the ISA calls undefined behavior. `wgmma.mma_async`'s own
+    /// self-continuation seed-read goes through [`Self::read_reg_wgmma_accum`]
+    /// instead, which deliberately skips this check.
+    pub(in crate::eval) fn read_reg(&self, t: ThreadId, pc: InstrId, reg: RegId) -> EvalResult<Value> {
+        self.check_wgmma_pending(t, pc, reg)?;
         Ok(self.threads[t]
             .regs
             .read(reg)
             .unwrap_or(Value::Scalar(self.undefined)))
+    }
+
+    /// Write a register. The one chokepoint every register write in the
+    /// evaluator goes through - mirrors `mem_read`/`mem_write` being the
+    /// two chokepoints for memory.
+    ///
+    /// Hazard B: same check as `read_reg`'s, on the write side (an
+    /// ordinary write to a still-pending accumulator register is equally
+    /// external interference). Also hazard A bookkeeping (PTX ISA
+    /// 9.7.17.7.1, `wgmma.fence`): any ordinary write always breaks a
+    /// same-shape `wgmma.mma_async` chain and resets this register's
+    /// fence gate to "dirty as of now" - see `WgmmaRegState`'s doc
+    /// comment. `wgmma.mma_async`'s own writeback goes through
+    /// [`Self::write_reg_wgmma_accum`] instead, which applies hazard A's
+    /// check but not hazard B's (the self-continuation exemption).
+    pub(in crate::eval) fn write_reg(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+        value: Value,
+    ) -> EvalResult<()> {
+        self.check_wgmma_pending(t, pc, reg)?;
+        self.threads[t].regs.write(reg, value);
+        self.threads[t].wgmma.record_write(reg, pc);
+        Ok(())
+    }
+
+    /// Hazard B's check (PTX ISA 9.7.17.7.3): is `reg` still pending a
+    /// `wgmma.wait_group` release? Shared by `read_reg`/`write_reg`;
+    /// `wgmma.mma_async`'s own accumulator access deliberately does not
+    /// call this (see `read_reg_wgmma_accum`/`write_reg_wgmma_accum`).
+    fn check_wgmma_pending(&self, t: ThreadId, pc: InstrId, reg: RegId) -> EvalResult<()> {
+        if let Some(prior_pc) = self.threads[t].wgmma.pending_since(reg) {
+            return Err(EvalError::WgmmaWaitGroupHazard {
+                thread: t,
+                pc,
+                reg,
+                prior_write: AccessSite {
+                    thread: t,
+                    pc: prior_pc,
+                    is_write: true,
+                },
+            });
+        }
+        Ok(())
+    }
+
+    /// Hazard A's check (PTX ISA 9.7.17.7.1): is `wgmma.mma_async`
+    /// accessing `reg` (as its accumulator, of shape `shape`) properly
+    /// fenced? See `WgmmaRegState::is_fenced_for` for the two ways this
+    /// can be satisfied (same-shape chaining, or an intervening fence).
+    fn check_wgmma_fence(
+        &self,
+        t: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+        shape: MmaShape,
+    ) -> EvalResult<()> {
+        let w = &self.threads[t].wgmma;
+        if w.is_fenced_for(reg, shape) {
+            return Ok(());
+        }
+        let prior_write = w.last_write_pc(reg).map(|p| AccessSite {
+            thread: t,
+            pc: p,
+            is_write: true,
+        });
+        Err(EvalError::WgmmaFenceHazard {
+            thread: t,
+            pc,
+            reg,
+            shape,
+            prior_write,
+        })
+    }
+
+    /// Read a `wgmma.mma_async` accumulator seed (`scale_d` true).
+    /// Applies hazard A's check but deliberately not `read_reg`'s hazard
+    /// B check: this register is legitimately still pending (this
+    /// thread's own prior `wgmma.mma_async` writeback in the same chain,
+    /// not yet released by `wgmma.wait_group`) - exactly the
+    /// self-continuation the ISA does not treat as undefined behavior.
+    pub(in crate::eval) fn read_reg_wgmma_accum(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+        shape: MmaShape,
+    ) -> EvalResult<Value> {
+        self.check_wgmma_fence(t, pc, reg, shape)?;
+        Ok(self.threads[t]
+            .regs
+            .read(reg)
+            .unwrap_or(Value::Scalar(self.undefined)))
+    }
+
+    /// Write a `wgmma.mma_async` accumulator result. Applies hazard A's
+    /// check unconditionally (not just when `scale_d` is true - this is
+    /// what makes "before the first `wgmma.mma_async`" fire correctly on
+    /// a chain's leading call, which has no seed-read at all), then
+    /// hazard A's bookkeeping (tag `reg` with `shape` so a later
+    /// same-shape chained `wgmma.mma_async` is fence-exempt) and hazard
+    /// B's "now pending a `wgmma.wait_group`" mark - not `write_reg`'s
+    /// generic hazard B check (same self-continuation exemption as the
+    /// read side above).
+    pub(in crate::eval) fn write_reg_wgmma_accum(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+        shape: MmaShape,
+        value: Value,
+    ) -> EvalResult<()> {
+        self.check_wgmma_fence(t, pc, reg, shape)?;
+        self.threads[t].regs.write(reg, value);
+        self.threads[t].wgmma.record_wgmma_write(reg, shape, pc);
+        Ok(())
     }
 
     /// Resolve an operand to a runtime value.
@@ -4571,4 +4837,122 @@ fn decode_packed_bits(bits: u64, lane_ty: ScalarType) -> Option<(f64, f64)> {
         _ => unreachable!("decode_packed_bits only called for f16x2/bf16x2/f32x2 lanes"),
     };
     Some((decode(lo_bits)?, decode(hi_bits)?))
+}
+
+#[cfg(test)]
+mod wgmma_reg_state_tests {
+    use id_collections::Id;
+
+    use super::WgmmaRegState;
+    use crate::lowered::InstrId;
+    use crate::symbols::RegId;
+    use crate::tensor_core::MmaShape;
+    use crate::types::RegClass;
+
+    fn pc(n: u32) -> InstrId {
+        InstrId::from_index(n)
+    }
+
+    fn reg(n: u32) -> RegId {
+        RegId::new(RegClass::Bits32, n)
+    }
+
+    const S: MmaShape = MmaShape::new(64, 8, 16);
+    const S2: MmaShape = MmaShape::new(64, 16, 16);
+
+    /// Hazard A: a register nothing has ever written is not fenced -
+    /// "before the first wgmma.mma_async in a warpgroup" (9.7.17.7.1).
+    #[test]
+    fn test_fence_hazard_before_first_wgmma_with_no_fence_ever() {
+        let w = WgmmaRegState::default();
+        assert!(!w.is_fenced_for(reg(0), S));
+        assert_eq!(w.last_write_pc(reg(0)), None);
+    }
+
+    /// One `wgmma.fence` is enough to satisfy a never-written register.
+    #[test]
+    fn test_fence_clears_hazard_for_never_written_register() {
+        let mut w = WgmmaRegState::default();
+        w.fence();
+        assert!(w.is_fenced_for(reg(0), S));
+    }
+
+    /// An ordinary write, then a wgmma access with no intervening fence,
+    /// is a hazard.
+    #[test]
+    fn test_fence_hazard_ordinary_write_then_wgmma_without_fence() {
+        let mut w = WgmmaRegState::default();
+        w.record_write(reg(0), pc(1));
+        assert!(!w.is_fenced_for(reg(0), S));
+        assert_eq!(w.last_write_pc(reg(0)), Some(pc(1)));
+    }
+
+    /// The ISA's one exemption: a same-shape wgmma.mma_async accumulator
+    /// chain needs zero fences between its own links.
+    #[test]
+    fn test_fence_exempt_same_shape_chain_needs_no_fence() {
+        let mut w = WgmmaRegState::default();
+        w.record_wgmma_write(reg(0), S, pc(1));
+        assert!(w.is_fenced_for(reg(0), S));
+    }
+
+    /// The exemption is shape-specific: a different-shape wgmma access to
+    /// the same register still needs a fence.
+    #[test]
+    fn test_fence_hazard_different_shape_chain_needs_fence() {
+        let mut w = WgmmaRegState::default();
+        w.record_wgmma_write(reg(0), S, pc(1));
+        assert!(!w.is_fenced_for(reg(0), S2));
+    }
+
+    /// An ordinary write breaks an otherwise-exempt same-shape chain, even
+    /// though the shape "would have" matched.
+    #[test]
+    fn test_fence_hazard_ordinary_write_breaks_same_shape_chain() {
+        let mut w = WgmmaRegState::default();
+        w.record_wgmma_write(reg(0), S, pc(1));
+        w.record_write(reg(0), pc(2));
+        assert!(!w.is_fenced_for(reg(0), S));
+    }
+
+    /// A register written after a fence, read by wgmma with no *new*
+    /// fence, is still a hazard - the fence must come after the write.
+    #[test]
+    fn test_fence_hazard_write_after_fence_needs_its_own_fence() {
+        let mut w = WgmmaRegState::default();
+        w.fence();
+        w.record_write(reg(0), pc(1));
+        assert!(!w.is_fenced_for(reg(0), S));
+        w.fence();
+        assert!(w.is_fenced_for(reg(0), S));
+    }
+
+    /// Hazard B: a register a wgmma.mma_async wrote is pending until its
+    /// wgmma-group is released.
+    #[test]
+    fn test_wait_group_pending_until_released() {
+        let mut w = WgmmaRegState::default();
+        w.record_wgmma_write(reg(0), S, pc(1));
+        assert_eq!(w.pending_since(reg(0)), Some(pc(1)));
+        w.commit_group();
+        w.wait_group(0);
+        assert_eq!(w.pending_since(reg(0)), None);
+    }
+
+    /// A register appearing in two interleaved, still-outstanding groups
+    /// stays pending until *both* are released - releasing only the
+    /// older one must not clear it.
+    #[test]
+    fn test_wait_group_pending_survives_partial_release() {
+        let mut w = WgmmaRegState::default();
+        w.record_wgmma_write(reg(0), S, pc(1));
+        w.commit_group(); // group 0, contains reg(0)
+        w.record_wgmma_write(reg(0), S, pc(2));
+        w.commit_group(); // group 1, also contains reg(0)
+        // Keep 1 group pending (group 1) - releases only group 0.
+        w.wait_group(1);
+        assert!(w.pending_since(reg(0)).is_some(), "still pending group 1");
+        w.wait_group(0);
+        assert_eq!(w.pending_since(reg(0)), None);
+    }
 }
