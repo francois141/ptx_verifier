@@ -5,7 +5,8 @@
 //! lowering - only the register operands are).
 //!
 //! Scoped to exactly the form `sm100a_support_plan.md` documents as the
-//! "conservative first pass": dense (non-sparse) `.kind::f16`,
+//! "conservative first pass": dense (non-sparse) `.kind::f16` (plus
+//! `.kind::f8f6f4` with `e4m3`/`e5m2` operands),
 //! `.cta_group::1`, `A` addressed via a shared-memory descriptor (not
 //! `[a-tmem]`), `M = 128`. Anything else decodes fine (the bit layout
 //! doesn't care) but is rejected with `unsupported()` by the caller.
@@ -32,19 +33,22 @@
 //! rests on comparatively thinner evidence - see [`atom_shape`]'s doc
 //! comment.
 
-/// Decoded `idesc` fields for `.kind::f16` (PTX ISA 9.7.17.4.2, Table 45).
-/// Every other `.kind` has a different bit layout and is rejected before
-/// this is ever called (the caller dispatches by mnemonic/modifier, not by
-/// inspecting `idesc`).
+use crate::lowered::Tcgen05MmaKind;
+
+/// Decoded `idesc` fields shared by `.kind::f16` and `.kind::f8f6f4` (PTX
+/// ISA 9.7.17.4.2, Table 45 - both kinds use the same bit layout; only the
+/// meaning of the type fields differs, so those stay raw and are
+/// interpreted by the caller per `.kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstructionDescriptor {
     pub sparse: bool,
-    /// Matrix D element type: `false` = f16, `true` = f32.
-    pub dtype_f32: bool,
-    /// Matrix A element type: `false` = f16, `true` = bf16.
-    pub atype_bf16: bool,
-    /// Matrix B element type: `false` = f16, `true` = bf16.
-    pub btype_bf16: bool,
+    /// Matrix D element type field: 0 = f16, 1 = f32.
+    pub dtype: u32,
+    /// Matrix A element type field (`.kind::f16`: 0 = f16, 1 = bf16;
+    /// `.kind::f8f6f4`: 0 = e4m3, 1 = e5m2, 3/4/5 = e2m3/e3m2/e2m1).
+    pub atype: u32,
+    /// Matrix B element type field, same encoding as `atype`.
+    pub btype: u32,
     pub negate_a: bool,
     pub negate_b: bool,
     pub transpose_a: bool,
@@ -57,21 +61,58 @@ pub struct InstructionDescriptor {
     pub m: u32,
 }
 
+/// Element format of one `tcgen05.mma` operand: `.kind` plus `idesc`'s
+/// type field for that operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperandFormat {
+    F16,
+    E4m3,
+    E5m2,
+}
+
+impl OperandFormat {
+    /// The modeled formats; bf16 and the 6/4-bit `.kind::f8f6f4` types
+    /// (which the ISA pads inside shared memory) are `None`.
+    pub fn decode(kind: Tcgen05MmaKind, type_field: u32) -> Option<Self> {
+        match (kind, type_field) {
+            (Tcgen05MmaKind::F16, 0) => Some(Self::F16),
+            (Tcgen05MmaKind::F8f6f4, 0) => Some(Self::E4m3),
+            (Tcgen05MmaKind::F8f6f4, 1) => Some(Self::E5m2),
+            _ => None,
+        }
+    }
+
+    pub fn bytes(self) -> u64 {
+        match self {
+            Self::F16 => 2,
+            Self::E4m3 | Self::E5m2 => 1,
+        }
+    }
+}
+
+/// `K` of one dense `.cta_group::1` operation (PTX ISA Table 42): 32 bytes
+/// of each operand row for both modeled kinds.
+pub fn k_dim(kind: Tcgen05MmaKind) -> u64 {
+    match kind {
+        Tcgen05MmaKind::F16 => 16,
+        Tcgen05MmaKind::F8f6f4 => 32,
+    }
+}
+
 fn bits(x: u32, lo: u32, width: u32) -> u32 {
     (x >> lo) & ((1 << width) - 1)
 }
 
-/// Decode a `.kind::f16` instruction descriptor (Table 45's `.kind::f16`
-/// column). The bit layout itself has no invalid encodings - every 32-bit
-/// value decodes to *some* `InstructionDescriptor` - so this never fails;
-/// validating the decoded fields against what's actually modeled is the
-/// caller's job.
+/// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor. The bit
+/// layout itself has no invalid encodings - every 32-bit value decodes to
+/// *some* `InstructionDescriptor` - so this never fails; validating the
+/// decoded fields against what's actually modeled is the caller's job.
 pub fn decode_instruction_descriptor(idesc: u32) -> InstructionDescriptor {
     InstructionDescriptor {
         sparse: bits(idesc, 2, 1) != 0,
-        dtype_f32: bits(idesc, 4, 2) != 0,
-        atype_bf16: bits(idesc, 7, 3) != 0,
-        btype_bf16: bits(idesc, 10, 3) != 0,
+        dtype: bits(idesc, 4, 2),
+        atype: bits(idesc, 7, 3),
+        btype: bits(idesc, 10, 3),
         negate_a: bits(idesc, 13, 1) != 0,
         negate_b: bits(idesc, 14, 1) != 0,
         transpose_a: bits(idesc, 15, 1) != 0,
@@ -304,15 +345,49 @@ mod tests {
     fn test_decode_real_kernel_idesc() {
         let d = decode_instruction_descriptor(138477584);
         assert!(!d.sparse);
-        assert!(d.dtype_f32);
-        assert!(!d.atype_bf16);
-        assert!(!d.btype_bf16);
+        assert_eq!(d.dtype, 1);
+        assert_eq!(d.atype, 0);
+        assert_eq!(d.btype, 0);
         assert!(!d.negate_a);
         assert!(!d.negate_b);
         assert!(!d.transpose_a);
         assert!(d.transpose_b);
         assert_eq!(d.n, 256);
         assert_eq!(d.m, 128);
+    }
+
+    /// `idesc` from the corpus fp8 kernel
+    /// (`tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, ...`,
+    /// `mov.u32 %idesc, 0x08040010;` -
+    /// `MatrixVectorMultiplicationKernel/NVIDIA_B200_Float8_1.0002x.ptx`):
+    /// dense, D=f32, A/B type field 0, no negate/transpose, N=16, M=128.
+    /// The same type field means e4m3 under `.kind::f8f6f4` but f16 under
+    /// `.kind::f16`, and field 1 is e5m2 under `.kind::f8f6f4`.
+    #[test]
+    fn test_decode_real_fp8_kernel_idesc() {
+        let d = decode_instruction_descriptor(0x0804_0010);
+        assert!(!d.sparse);
+        assert_eq!(d.dtype, 1);
+        assert_eq!(d.atype, 0);
+        assert_eq!(d.btype, 0);
+        assert!(!d.negate_a);
+        assert!(!d.negate_b);
+        assert!(!d.transpose_a);
+        assert!(!d.transpose_b);
+        assert_eq!(d.n, 16);
+        assert_eq!(d.m, 128);
+
+        let kind = Tcgen05MmaKind::F8f6f4;
+        assert_eq!(
+            OperandFormat::decode(kind, d.atype),
+            Some(OperandFormat::E4m3)
+        );
+        assert_eq!(OperandFormat::decode(kind, 1), Some(OperandFormat::E5m2));
+        assert_eq!(
+            OperandFormat::decode(Tcgen05MmaKind::F16, d.atype),
+            Some(OperandFormat::F16)
+        );
+        assert_eq!(k_dim(kind), 32);
     }
 
     /// `a-desc`'s static half (`%rd56 = %rd69 | 4611756662049472512`, the

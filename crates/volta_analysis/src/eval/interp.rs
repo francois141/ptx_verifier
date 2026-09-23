@@ -15,11 +15,12 @@ use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
+use crate::eval::fp8;
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, RaceTracker};
 use crate::eval::target::TargetFeatures;
-use crate::eval::tcgen05_mma;
+use crate::eval::tcgen05_mma::{self, Major, OperandFormat};
 use crate::eval::tensor_map_table::{self, TensorMapTable};
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
@@ -27,7 +28,7 @@ use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
-    UnaryOp,
+    Tcgen05MmaKind, UnaryOp,
 };
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
@@ -1661,8 +1662,10 @@ impl<'p> Interpreter<'p> {
                         let raw = self.arena.as_i64(e).unwrap() as u64;
                         let lo_byte = (raw & 0xFF) as u8;
                         let hi_byte = ((raw >> 8) & 0xFF) as u8;
-                        let lo = self.decode_e4m3_byte(pc, lo_byte)?;
-                        let hi = self.decode_e4m3_byte(pc, hi_byte)?;
+                        let lo =
+                            self.decode_fp8_byte(pc, "cvt.e4m3x2", lo_byte, fp8::decode_e4m3_byte)?;
+                        let hi =
+                            self.decode_fp8_byte(pc, "cvt.e4m3x2", hi_byte, fp8::decode_e4m3_byte)?;
                         Value::Pair(self.apply_clamp(clamp, lo), self.apply_clamp(clamp, hi))
                     }
                     // A single materialized fp8 array element loaded at
@@ -2008,6 +2011,7 @@ impl<'p> Interpreter<'p> {
             // evaluated directly rather than through
             // `block_at_warp_op`/`execute_warp_op`.
             LoweredInstr::Tcgen05Mma {
+                kind,
                 d_tmem_base,
                 d_tmem_offset,
                 a_desc,
@@ -2019,6 +2023,7 @@ impl<'p> Interpreter<'p> {
                 self.exec_tcgen05_mma(
                     t,
                     pc,
+                    *kind,
                     d_tmem_base,
                     *d_tmem_offset,
                     a_desc,
@@ -2289,27 +2294,27 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc, idesc,
-    /// enable-input-d`: `D = A*B+D` (or `A*B` if `enable-input-d` is
-    /// false), `M x N x 16`, `A`/`B` read from shared memory via their
-    /// matrix descriptors under the ISA's canonical layouts
-    /// (`eval::tcgen05_mma::operand_element_addr` - see its doc comment), `D`
-    /// written into Tensor Memory at lane `m`, column `d_tmem + n` (Layout
-    /// D for `M = 128`/`.cta_group::1`: one CTA-wide `warp-rank % 4`
-    /// grouping of 32 lanes each - confirmed against Figures 211/212,
-    /// fetched this session - matching the existing `tcgen05.ld`/`.st`
-    /// `(lane, column)` addressing this reuses). Decodes and validates
-    /// `idesc`/`a_desc`/`b_desc` first, in order, each with a specific
-    /// reason, against the one form modeled: dense `.kind::f16`, `M =
-    /// 128`, `A`/`B` both f16, `D` f32, no negate, relative
-    /// leading-dimension stride, `base_offset == 0` on both descriptors
-    /// (every swizzle mode is modeled - see `eval::tcgen05_mma`).
-    #[allow(clippy::too_many_arguments)]
+    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem], a-desc, b-desc,
+    /// idesc, enable-input-d`: `D = A*B+D` (or `A*B` if `enable-input-d` is
+    /// false), `M x N x K` (`K` fixed by `.kind` - `tcgen05_mma::k_dim`),
+    /// `A`/`B` read from shared memory through their matrix descriptors
+    /// under the ISA's canonical layouts
+    /// (`eval::tcgen05_mma::operand_element_addr`), `D` written into Tensor
+    /// Memory at lane `m`, column `d_tmem + n` (Layout D for `M = 128`/
+    /// `.cta_group::1`: one CTA-wide `warp-rank % 4` grouping of 32 lanes
+    /// each - confirmed against Figures 211/212, fetched this session -
+    /// matching the existing `tcgen05.ld`/`.st` `(lane, column)` addressing
+    /// this reuses). Decodes and validates `idesc`/`a_desc`/`b_desc` first,
+    /// in order, each with a specific reason, against the forms modeled:
+    /// dense, `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
+    /// (`.kind::f8f6f4`), no negate, relative leading-dimension stride,
+    /// `base_offset == 0` on both descriptors.
     #[allow(clippy::too_many_arguments)]
     fn exec_tcgen05_mma(
         &mut self,
         t: ThreadId,
         pc: InstrId,
+        kind: Tcgen05MmaKind,
         d_tmem_base: &Operand,
         d_tmem_offset: i64,
         a_desc: &Operand,
@@ -2318,72 +2323,75 @@ impl<'p> Interpreter<'p> {
         disable_output_lane: &[Operand],
         enable_input_d: &Operand,
     ) -> EvalResult<()> {
+        let unsupported = |what: String| EvalError::Unsupported { pc, what };
         let idesc_val = self.concrete_operand(t, pc, idesc, "tcgen05.mma idesc")? as u32;
         let id = tcgen05_mma::decode_instruction_descriptor(idesc_val);
 
         if id.sparse {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: "tcgen05.mma.sp (sparse A matrix) is not modeled".to_string(),
-            });
+            return Err(unsupported(
+                "tcgen05.mma.sp (sparse A matrix) is not modeled".to_string(),
+            ));
         }
-        if !id.dtype_f32 {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: "tcgen05.mma with a f16 (not f32) accumulator is not modeled".to_string(),
-            });
+        if id.dtype != 1 {
+            return Err(unsupported(
+                "tcgen05.mma with a non-f32 accumulator is not modeled".to_string(),
+            ));
         }
-        if id.atype_bf16 || id.btype_bf16 {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: "tcgen05.mma with bf16 operands is not modeled (only f16)".to_string(),
-            });
-        }
+        let format = |field: u32, operand: &str| {
+            OperandFormat::decode(kind, field).ok_or_else(|| {
+                unsupported(format!(
+                    "tcgen05.mma {kind:?} {operand} type field {field} is not modeled \
+                     (bf16 and the 6/4-bit types are not; only f16 for .kind::f16 and \
+                     e4m3/e5m2 for .kind::f8f6f4)"
+                ))
+            })
+        };
+        let a_format = format(id.atype, "A")?;
+        let b_format = format(id.btype, "B")?;
         if id.negate_a || id.negate_b {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: "tcgen05.mma's Negate A/B Matrix is not modeled".to_string(),
-            });
+            return Err(unsupported(
+                "tcgen05.mma's Negate A/B Matrix is not modeled".to_string(),
+            ));
         }
         if id.m != 128 {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: format!(
-                    "tcgen05.mma with M = {} is not modeled (only M = 128)",
-                    id.m
-                ),
-            });
+            return Err(unsupported(format!(
+                "tcgen05.mma with M = {} is not modeled (only M = 128)",
+                id.m
+            )));
         }
 
         let a_desc_val = self.concrete_operand(t, pc, a_desc, "tcgen05.mma a-desc")? as u64;
         let b_desc_val = self.concrete_operand(t, pc, b_desc, "tcgen05.mma b-desc")? as u64;
         let a_md = tcgen05_mma::decode_matrix_descriptor(a_desc_val).map_err(|sw| {
-            EvalError::Unsupported {
-                pc,
-                what: format!("tcgen05.mma a-desc has invalid swizzle-mode encoding {sw}"),
-            }
+            unsupported(format!(
+                "tcgen05.mma a-desc has invalid swizzle-mode encoding {sw}"
+            ))
         })?;
         let b_md = tcgen05_mma::decode_matrix_descriptor(b_desc_val).map_err(|sw| {
-            EvalError::Unsupported {
-                pc,
-                what: format!("tcgen05.mma b-desc has invalid swizzle-mode encoding {sw}"),
-            }
+            unsupported(format!(
+                "tcgen05.mma b-desc has invalid swizzle-mode encoding {sw}"
+            ))
         })?;
         if a_md.absolute_leading_stride || b_md.absolute_leading_stride {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: "tcgen05.mma's absolute leading-dimension stride mode (sm_103a only) \
-                       is not modeled"
+            return Err(unsupported(
+                "tcgen05.mma's absolute leading-dimension stride mode (sm_103a only) \
+                 is not modeled"
                     .to_string(),
-            });
+            ));
         }
         if a_md.base_offset != 0 || b_md.base_offset != 0 {
-            return Err(EvalError::Unsupported {
-                pc,
-                what: "tcgen05.mma with a nonzero matrix-descriptor base offset is not modeled"
+            return Err(unsupported(
+                "tcgen05.mma with a nonzero matrix-descriptor base offset is not modeled"
                     .to_string(),
-            });
+            ));
         }
+
+        let k_dim = tcgen05_mma::k_dim(kind) as usize;
+        let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
+        let a =
+            self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?;
+        let b =
+            self.read_mma_operand(t, pc, (&b_md, major(id.transpose_b), b_format), id.n, k_dim)?;
 
         let enable_input_d =
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
@@ -2398,27 +2406,6 @@ impl<'p> Interpreter<'p> {
         }
         let lane_disabled =
             |lane: u64| -> bool { (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 != 0 };
-
-        const K: u64 = 16; // fixed for .cta_group::1, dense, .kind::f16 (PTX ISA Table 42)
-        const ELEM_BYTES: u64 = 2; // f16
-        // K-major unless transposed - PTX ISA 9.7.17.10.6.
-        let major = |transpose: bool| {
-            if transpose {
-                tcgen05_mma::Major::Mn
-            } else {
-                tcgen05_mma::Major::K
-            }
-        };
-        let (a_major, b_major) = (major(id.transpose_a), major(id.transpose_b));
-        let operand_addr = |desc, major, mn, k| {
-            tcgen05_mma::operand_element_addr(desc, major, mn, k, ELEM_BYTES).ok_or_else(|| {
-                EvalError::Unsupported {
-                    pc,
-                    what: "tcgen05.mma MN-major operand without swizzling is not modeled"
-                        .to_string(),
-                }
-            })
-        };
 
         for m in 0..id.m as u64 {
             if lane_disabled(m) {
@@ -2438,25 +2425,9 @@ impl<'p> Interpreter<'p> {
                     // (each `fma`'s output becomes the next call's `c`).
                     self.arena.real(Real::zero())
                 };
-                for k in 0..K {
-                    let a_addr = operand_addr(&a_md, a_major, m, k)?;
-                    let b_addr = operand_addr(&b_md, b_major, n, k)?;
-                    let av = self.mem_read(t, pc, MemSpace::Shared, a_addr, ELEM_BYTES)?;
-                    let bv = self.mem_read(t, pc, MemSpace::Shared, b_addr, ELEM_BYTES)?;
-                    let Value::Scalar(a_e) = av else {
-                        return Err(EvalError::ValueKindMismatch {
-                            thread: t,
-                            pc,
-                            what: "tcgen05.mma A element is not a scalar",
-                        });
-                    };
-                    let Value::Scalar(b_e) = bv else {
-                        return Err(EvalError::ValueKindMismatch {
-                            thread: t,
-                            pc,
-                            what: "tcgen05.mma B element is not a scalar",
-                        });
-                    };
+                let a_row = &a[m as usize * k_dim..][..k_dim];
+                let b_row = &b[n as usize * k_dim..][..k_dim];
+                for (&a_e, &b_e) in a_row.iter().zip(b_row) {
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
                 self.tensor
@@ -2465,6 +2436,59 @@ impl<'p> Interpreter<'p> {
             }
         }
         Ok(())
+    }
+
+    /// Read one `tcgen05.mma` operand - `rows x k_dim` elements, `rows`
+    /// being its `M` (for `A`) or `N` (for `B`) extent - from shared memory
+    /// in row-major order. A concrete fp8 byte (never an input element:
+    /// e.g. zero padding a kernel stored itself) is decoded from its bit
+    /// encoding; a symbolic element already is its real value (see
+    /// `eval::fp8`'s module doc).
+    fn read_mma_operand(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        (desc, major, format): (&tcgen05_mma::MatrixDescriptor, Major, OperandFormat),
+        rows: u32,
+        k_dim: usize,
+    ) -> EvalResult<Vec<ExprId>> {
+        let elem_bytes = format.bytes();
+        let mut elems = Vec::with_capacity(rows as usize * k_dim);
+        for row in 0..rows as u64 {
+            for k in 0..k_dim as u64 {
+                let addr = tcgen05_mma::operand_element_addr(desc, major, row, k, elem_bytes)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        pc,
+                        what: "tcgen05.mma MN-major operand without swizzling is not modeled"
+                            .to_string(),
+                    })?;
+                let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)?
+                else {
+                    return Err(EvalError::ValueKindMismatch {
+                        thread: t,
+                        pc,
+                        what: "tcgen05.mma operand element is not a scalar",
+                    });
+                };
+                let e = match (format, self.arena.as_i64(e)) {
+                    (OperandFormat::E4m3, Some(raw)) => self.decode_fp8_byte(
+                        pc,
+                        "tcgen05.mma e4m3",
+                        raw as u8,
+                        fp8::decode_e4m3_byte,
+                    )?,
+                    (OperandFormat::E5m2, Some(raw)) => self.decode_fp8_byte(
+                        pc,
+                        "tcgen05.mma e5m2",
+                        raw as u8,
+                        fp8::decode_e5m2_byte,
+                    )?,
+                    _ => e,
+                };
+                elems.push(e);
+            }
+        }
+        Ok(elems)
     }
 
     // =====================================================================
@@ -4702,24 +4726,30 @@ impl<'p> Interpreter<'p> {
     /// `.sat` additionally flushes a NaN result to +0.0 (and cvt's
     /// `.relu` canonicalizes NaN); NaN is out of model over the reals,
     /// as everywhere else in the interpreter.
-    /// Decode a concrete `.e4m3` byte into an exact real-valued `ExprId`,
-    /// erroring loudly on the format's NaN encoding (`0x7f`/`0xff` -
-    /// Volta's real-valued model cannot represent NaN, same as every
-    /// other NaN-ingestion point in the interpreter).
-    fn decode_e4m3_byte(&mut self, pc: InstrId, byte: u8) -> EvalResult<ExprId> {
-        let value = crate::eval::fp8::decode_e4m3_byte(byte).ok_or_else(|| EvalError::Unsupported {
+    /// Decode a concrete fp8 byte (`decode` is one of `eval::fp8`'s
+    /// decoders) into an exact real-valued `ExprId`, erroring loudly on the
+    /// format's NaN encodings - Volta's real-valued model cannot represent
+    /// NaN, same as every other NaN-ingestion point in the interpreter.
+    /// `what` names the consuming instruction and format for the message.
+    fn decode_fp8_byte(
+        &mut self,
+        pc: InstrId,
+        what: &str,
+        byte: u8,
+        decode: fn(u8) -> Option<f64>,
+    ) -> EvalResult<ExprId> {
+        let value = decode(byte).ok_or_else(|| EvalError::Unsupported {
             pc,
             what: format!(
-                "cvt.e4m3x2: source byte {:#x} encodes NaN, which Volta's real-valued model \
-                 cannot represent",
-                byte
+                "{what}: source byte {byte:#x} encodes NaN, which Volta's real-valued model \
+                 cannot represent"
             ),
         })?;
         self.arena
             .float_from_f64(value)
             .map_err(|e| EvalError::Unsupported {
                 pc,
-                what: format!("e4m3 decoded constant: {}", e),
+                what: format!("{what} decoded constant: {e}"),
             })
     }
 
