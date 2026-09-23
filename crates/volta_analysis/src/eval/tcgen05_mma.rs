@@ -26,8 +26,9 @@
 //! K-major and MN-major worked examples for `Swizzle32B`/`Swizzle64B`/
 //! `Swizzle128B`/`None`) plus Figure 228 specifically (two points checked
 //! independently before trusting the rest): `swizzled_element_addr`'s
-//! `atom_row XOR atom_cell` step (via [`atom_shape`]'s per-mode `(R, W)`)
-//! reproduces every one of them exactly. `Swizzle128BWith32BAtomicity`
+//! address-bit XOR (for a pattern-aligned start, `atom_row XOR atom_cell`
+//! via [`atom_shape`]'s per-mode `(R, W)`) reproduces every one of them
+//! exactly. `Swizzle128BWith32BAtomicity`
 //! rests on comparatively thinner evidence - see [`atom_shape`]'s doc
 //! comment.
 
@@ -156,7 +157,8 @@ const CELL_BYTES: u64 = 16;
 /// examples for every mode below `SwizzleMode::None`, fetched and visually
 /// inspected - see the module doc comment): each pair reproduces every
 /// data point in its diagram(s) exactly via [`swizzled_element_addr`]'s
-/// `key = atom_row * W / R` step.
+/// address-bit XOR, which reduces to `cell ^ (atom_row * W / R)` at a
+/// pattern-aligned start.
 ///
 /// `Swizzle128BWith32BAtomicity`'s `(4, 8)` rests on one diagram only
 /// (Figure 219, MN-major) - the ISA provides no K-major counterpart to
@@ -219,22 +221,25 @@ pub fn swizzled_element_addr(
     let (r, w) = atom_shape(desc.swizzle_mode);
     let row_bytes = w * CELL_BYTES;
 
-    let atom_row = stride_idx % r;
-    let stride_atom = stride_idx / r;
-    let atom_cell = cell % w;
-    let leading_atom = cell / w;
-
-    // Exact (no remainder) for every modeled `(r, w)` pair: `w` is always
-    // a multiple of `r`, or vice versa.
-    let key = (atom_row * w) / r;
-    let swizzled_cell = atom_cell ^ key;
-
-    desc.start_addr
-        + stride_atom * desc.stride_dim_byte_offset
-        + leading_atom * desc.leading_dim_byte_offset
-        + atom_row * row_bytes
-        + swizzled_cell * CELL_BYTES
-        + elem_in_cell * elem_bytes
+    let linear = desc.start_addr
+        + (stride_idx / r) * desc.stride_dim_byte_offset
+        + (cell / w) * desc.leading_dim_byte_offset
+        + (stride_idx % r) * row_bytes
+        + (cell % w) * CELL_BYTES
+        + elem_in_cell * elem_bytes;
+    // The swizzle XORs bits `[m, m+b)` of the absolute address with bits
+    // `[m+s, m+s+b)`, so it also holds when the start address was advanced
+    // inside an atom (stepping `K` along one swizzle row).
+    // TODO: check these bit ranges in more detail against the PTX ISA:
+    // https://docs.nvidia.com/cuda/pdf/ptx_isa_9.0.pdf
+    let (b, m, s) = match desc.swizzle_mode {
+        SwizzleMode::Swizzle32B => (1, 4, 3),
+        SwizzleMode::Swizzle64B => (2, 4, 3),
+        SwizzleMode::Swizzle128B => (3, 4, 3),
+        SwizzleMode::Swizzle128BWith32BAtomicity => (2, 5, 2),
+        SwizzleMode::None => unreachable!("None returns before the swizzle"),
+    };
+    linear ^ (((linear >> (m + s)) & ((1 << b) - 1)) << m)
 }
 
 /// Which of an MMA operand's two axes is contiguous in shared memory
