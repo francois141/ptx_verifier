@@ -1570,6 +1570,37 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, Value::Pair(lo_v, hi_v));
             }
 
+            LoweredInstr::PackQuad { dst, elems } => {
+                // Always a Value::Quad - see the type's doc comment. A lane
+                // that is itself packed is rejected by scalar_operand
+                // (nested quads are not modeled), same as PackHalves.
+                let l0 = self.scalar_operand(t, pc, &elems[0])?;
+                let l1 = self.scalar_operand(t, pc, &elems[1])?;
+                let l2 = self.scalar_operand(t, pc, &elems[2])?;
+                let l3 = self.scalar_operand(t, pc, &elems[3])?;
+                self.threads[t]
+                    .regs
+                    .write(*dst, Value::Quad(l0, l1, l2, l3));
+            }
+
+            LoweredInstr::UnpackQuad { elems, src } => {
+                // Only the PackQuad round-trip is modeled: the four lanes
+                // are already independent values, distributed directly and
+                // never bit-decoded (see UnpackQuad's doc comment).
+                let Value::Quad(l0, l1, l2, l3) = self.operand_value(t, pc, src)? else {
+                    return Err(EvalError::ValueKindMismatch {
+                        thread: t,
+                        pc,
+                        what: "mov {a,b,c,d}, src expects a four-lane packed source",
+                    });
+                };
+                for (dst, lane) in elems.iter().zip([l0, l1, l2, l3]) {
+                    if let Some(dst) = dst {
+                        self.threads[t].regs.write(*dst, Value::Scalar(lane));
+                    }
+                }
+            }
+
             LoweredInstr::Bra { target } => {
                 next_pc = *target;
             }

@@ -1667,6 +1667,26 @@ fn lower_parsed_instruction(
                         predicate,
                     )?;
                 }
+                (AstOperand::Vector(dst_elems), _) if dst_elems.len() == 4 => {
+                    // Four-lane unpack: mov.b128 {e0,e1,e2,e3}, src. Same
+                    // shape as the 2-element case above, one level wider -
+                    // see `UnpackQuad`. Any lane may be the `_` sink.
+                    let resolve_elem = |elem: &AstOperand| -> LowerResult<Option<RegId>> {
+                        match elem {
+                            AstOperand::Underscore => Ok(None),
+                            other => ctx.resolve_dst(other).map(Some),
+                        }
+                    };
+                    let elems = [
+                        resolve_elem(&dst_elems[0])?,
+                        resolve_elem(&dst_elems[1])?,
+                        resolve_elem(&dst_elems[2])?,
+                        resolve_elem(&dst_elems[3])?,
+                    ];
+                    let src = ctx.resolve_operand(&mov.src)?;
+
+                    ctx.emit(LoweredInstr::UnpackQuad { elems, src }, predicate)?;
+                }
                 (AstOperand::Vector(dst_elems), _) => {
                     return Err(LowerError::UnsupportedInstruction {
                         instruction: format!(
@@ -1674,7 +1694,9 @@ fn lower_parsed_instruction(
                             mov.ty,
                             dst_elems.len()
                         ),
-                        reason: Some("only 2-element vector unpack is supported".to_string()),
+                        reason: Some(
+                            "only 2- and 4-element vector unpack is supported".to_string(),
+                        ),
                     });
                 }
                 (_, AstOperand::Vector(elements)) if elements.len() == 2 => {
@@ -1726,6 +1748,22 @@ fn lower_parsed_instruction(
                         )?;
                     }
                 }
+                (_, AstOperand::Vector(elements)) if elements.len() == 4 => {
+                    // Four-lane pack: mov.b128 dst, {e0,e1,e2,e3}. Always a
+                    // `Value::Quad`, never a bitwise composition - see
+                    // `PackQuad` for why, and why a 128-bit register's four
+                    // 32-bit lanes reuse the same value kind as a b32's four
+                    // byte lanes.
+                    let dst = ctx.resolve_dst_typed(&mov.dst)?.reg;
+                    let elems = [
+                        ctx.resolve_operand(&elements[0])?,
+                        ctx.resolve_operand(&elements[1])?,
+                        ctx.resolve_operand(&elements[2])?,
+                        ctx.resolve_operand(&elements[3])?,
+                    ];
+
+                    ctx.emit(LoweredInstr::PackQuad { dst, elems }, predicate)?;
+                }
                 (_, AstOperand::Vector(elements)) => {
                     return Err(LowerError::UnsupportedInstruction {
                         instruction: format!(
@@ -1733,7 +1771,7 @@ fn lower_parsed_instruction(
                             mov.ty,
                             elements.len()
                         ),
-                        reason: Some("only 2-element vector pack is supported".to_string()),
+                        reason: Some("only 2- and 4-element vector pack is supported".to_string()),
                     });
                 }
                 _ => {
@@ -7042,6 +7080,7 @@ mod tests {
              .reg .b32 %r<8>;\n\
              .reg .f64 %fd<4>;\n\
              .reg .b64 %rd<8>;\n\
+             .reg .b128 %q<4>;\n\
              .shared .align 4 .b8 smem[64];\n\
              {}\n\
              ret;\n}}\n",
@@ -7339,11 +7378,12 @@ mod tests {
         // source) tested via test_mov_vector_source_pack below.
         assert_lowers("mov.b32 {%rs1, %rs2}, %r1;");
         assert_lowers("mov.b64 {%r1, %r2}, %rd1;");
-        // >2-element unpack and vector-to-vector mov stay unsupported - no
+        assert_lowers("mov.b128 {%f1, %f2, %f3, %f4}, %q1;");
+        // Other arities and vector-to-vector mov stay unsupported - no
         // faithful model, and the corpus never emits either.
         assert_rejected(
             "mov.b32 {%rs1, %rs2, %rs3}, %r1;",
-            "2-element vector unpack",
+            "vector unpack with 3 elements",
         );
         assert_rejected(
             "mov.b32 {%rs1, %rs2}, {%rs3, %rs4};",
@@ -7356,7 +7396,11 @@ mod tests {
         // The pack direction (vector source): mov.b32 dst, {lo, hi}.
         assert_lowers("mov.b32 %r1, {%rs1, %rs2};");
         assert_lowers("mov.b64 %rd1, {%r1, %r2};");
-        assert_rejected("mov.b32 %r1, {%rs1, %rs2, %rs3};", "2-element vector pack");
+        assert_lowers("mov.b128 %q1, {%r1, %r2, %r3, %r4};");
+        assert_rejected(
+            "mov.b32 %r1, {%rs1, %rs2, %rs3};",
+            "vector pack with 3 elements",
+        );
     }
 
     #[test]

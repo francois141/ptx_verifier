@@ -541,6 +541,45 @@ pub enum LoweredInstr {
         hi: Operand,
     },
 
+    /// Four-element vector-source pack: `mov.b128 dst, {e0, e1, e2, e3}`.
+    /// Writes a `Value::Quad` for exactly the reason `PackHalves` writes a
+    /// `Value::Pair`: the lanes are frequently real-valued (here, the four
+    /// f32 accumulator slots a kernel zero-fills through one 128-bit
+    /// register), and bit ops on a real number silently build a nonsense
+    /// expression rather than erroring.
+    ///
+    /// This widens `Value::Quad` past its original
+    /// four-8-bit-lanes-in-a-`b32` reading exactly as `Value::Pair` already
+    /// spans both 2x16-in-`b32` and 2x32-in-`b64`: a quad is "four
+    /// independent lanes in one register", with the lane width following
+    /// the register class. The two readings cannot be confused, since they
+    /// live in different `RegClass` arrays and every 8-bit-lane consumer
+    /// (`CvtE4m3x2ToF16x2`, `UnpackHalves`'s quad arm, `gather_fp8_fragment`)
+    /// takes a `Bits32` operand.
+    PackQuad {
+        dst: RegId,
+        /// Lane 0 is the least significant / lowest-addressed, matching
+        /// `Value::Quad`'s tuple order.
+        elems: [Operand; 4],
+    },
+
+    /// Four-element vector-destination unpack: `mov.b128 {e0, e1, e2, e3},
+    /// src` - the reverse of `PackQuad`, and how a kernel reads the four
+    /// lanes of a 128-bit register back out (the zero-fill idiom: one
+    /// `mov.b128 %zero, {%r,%r,%r,%r}`, then one unpack per accumulator
+    /// quad). Any element may be the `_` sink, as in `UnpackHalves`.
+    ///
+    /// Only a `Value::Quad` source is modeled - the `PackQuad` round-trip,
+    /// which is exact whatever the lanes hold. A `Value::Scalar` 128-bit
+    /// bit pattern would need a bitwise decomposition there is no 128-bit
+    /// scalar arithmetic for here, so it fails loudly at eval time rather
+    /// than computing garbage.
+    UnpackQuad {
+        /// `None` where the PTX discards that lane with the `_` sink.
+        elems: [Option<RegId>; 4],
+        src: Operand,
+    },
+
     // =========================================================================
     // Control Flow
     // =========================================================================
@@ -1014,6 +1053,8 @@ define_instr_kinds!(
     CvtPackHalves,
     UnpackHalves,
     PackHalves,
+    PackQuad,
+    UnpackQuad,
     Bra,
     Ret,
     Exit,
@@ -1165,6 +1206,8 @@ impl LoweredInstr {
             Self::CvtPackHalves { src_hi, src_lo, .. } => from_ops(&[*src_hi, *src_lo]),
             Self::UnpackHalves { src, .. } => from_op(src).into_iter().collect(),
             Self::PackHalves { lo, hi, .. } => from_ops(&[*lo, *hi]),
+            Self::PackQuad { elems, .. } => from_ops(elems),
+            Self::UnpackQuad { src, .. } => from_op(src).into_iter().collect(),
 
             // Control flow
             Self::Bra { .. } | Self::Ret | Self::Exit | Self::Trap | Self::Nop => vec![],
@@ -1372,6 +1415,7 @@ impl LoweredInstr {
             | Self::CvtE4m3x2ToF16x2 { dst, .. }
             | Self::CvtPackHalves { dst, .. }
             | Self::PackHalves { dst, .. }
+            | Self::PackQuad { dst, .. }
             | Self::ReduxSync { dst, .. }
             | Self::Activemask { dst } => vec![*dst],
 
@@ -1394,6 +1438,9 @@ impl LoweredInstr {
 
             // Unpack: two destinations
             Self::UnpackHalves { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
+
+            // Unpack: four destinations, any of them sinkable
+            Self::UnpackQuad { elems, .. } => elems.iter().flatten().copied().collect(),
 
             // Elect: required dst_pred + optional dst (sink-able lane id)
             Self::ElectSync { dst, dst_pred, .. } => {
