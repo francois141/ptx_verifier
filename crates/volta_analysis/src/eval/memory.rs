@@ -14,7 +14,9 @@
 //! - a half-width read of either half of a 2-, 4-, or 8-byte `Pair`
 //!   granule yields that half (writes split such granules on demand), and
 //! - a half-width (2-byte) read of either half of a 4-byte `Quad` granule
-//!   yields that half as a `Pair` (writes split on demand, same as above).
+//!   yields that half as a `Pair` (writes split on demand, same as above),
+//!   and a 1-byte read of any of its four lanes yields that lane as a
+//!   `Scalar`.
 //!
 //! Any other reinterpretation (e.g. reading half of an f32) is an error, as
 //! is reading bytes that were never written. Bounds are *not* checked here;
@@ -226,6 +228,27 @@ impl Memory {
                 }) = self.cells.get(&(addr - 2))
             {
                 return Ok(Value::Pair(*b2, *b3));
+            }
+        }
+
+        // 1-byte read of a single lane of a 4-byte `Quad` granule, yielding
+        // that lane as a `Scalar`. This is the finest-grained reverse of the
+        // combine above: `ld.shared.u8` picking one fp8 element back out of
+        // a word a 16-byte `cp.async` deposited as four packed byte lanes.
+        if width == 1 {
+            for lane in 0..4 {
+                let Some(start) = addr.checked_sub(lane) else {
+                    break;
+                };
+                if let Some(Cell {
+                    width: 4,
+                    value: Value::Quad(b0, b1, b2, b3),
+                    ..
+                }) = self.cells.get(&start)
+                {
+                    let lanes = [b0, b1, b2, b3];
+                    return Ok(Value::Scalar(*lanes[lane as usize]));
+                }
             }
         }
 
@@ -678,5 +701,55 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn test_byte_read_of_each_quad_lane() {
+        // The fp8 case: a 16-byte `cp.async` leaves 4-byte `Quad` granules
+        // of four independent byte lanes, and `ld.shared.u8` then reads a
+        // single lane back out.
+        let mut arena = ExprArena::new();
+        let mut mem = Memory::new();
+        let lanes = [arena.int(1), arena.int(2), arena.int(3), arena.int(4)];
+        mem.write(0x10, 4, Value::Quad(lanes[0], lanes[1], lanes[2], lanes[3]))
+            .unwrap();
+        for (offset, lane) in lanes.iter().enumerate() {
+            assert_eq!(
+                mem.read(0x10 + offset as u64, 1).unwrap(),
+                Value::Scalar(*lane)
+            );
+        }
+    }
+
+    #[test]
+    fn test_byte_read_does_not_reach_past_a_quad() {
+        // The lane scan walks back at most 3 bytes, so the byte just after
+        // a `Quad` is uninitialized rather than a fifth lane.
+        let mut arena = ExprArena::new();
+        let mut mem = Memory::new();
+        let v = Value::Quad(arena.int(1), arena.int(2), arena.int(3), arena.int(4));
+        mem.write(0x10, 4, v).unwrap();
+        assert_eq!(
+            mem.read(0x14, 1),
+            Err(MemAccessError::Uninitialized { addr: 0x14 })
+        );
+    }
+
+    #[test]
+    fn test_byte_write_into_a_quad_splits_to_lanes() {
+        // The write side resolves the same partial overlap by splitting the
+        // `Quad` into two `Pair`s and then one of those into two scalars;
+        // the three untouched lanes survive.
+        let mut arena = ExprArena::new();
+        let mut mem = Memory::new();
+        let lanes = [arena.int(1), arena.int(2), arena.int(3), arena.int(4)];
+        mem.write(0x10, 4, Value::Quad(lanes[0], lanes[1], lanes[2], lanes[3]))
+            .unwrap();
+        let replacement = scalars(&mut arena, 9);
+        mem.write(0x12, 1, replacement).unwrap();
+        assert_eq!(mem.read(0x10, 1).unwrap(), Value::Scalar(lanes[0]));
+        assert_eq!(mem.read(0x11, 1).unwrap(), Value::Scalar(lanes[1]));
+        assert_eq!(mem.read(0x12, 1).unwrap(), replacement);
+        assert_eq!(mem.read(0x13, 1).unwrap(), Value::Scalar(lanes[3]));
     }
 }

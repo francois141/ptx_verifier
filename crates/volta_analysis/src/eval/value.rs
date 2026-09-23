@@ -31,9 +31,11 @@ pub struct MbarrierId(pub u32);
 ///   arrays, where a single `.b32` vector-load lane (`ld.global.v2.b32`)
 ///   spans four distinct 1-byte array elements that must stay
 ///   independently symbolic. Such a `Quad` only ever arises from combining
-///   memory granules at read time and only ever gets split back into two
-///   `Pair`s (`mov.b32 {h0,h1}, r` on a byte-granular source, PTX ISA's
-///   `.e4m3x2`/`.e5m2x2`-family idiom).
+///   memory granules at read time, and only ever gets split back into
+///   either two `Pair`s (`mov.b32 {h0,h1}, r` on a byte-granular source,
+///   PTX ISA's `.e4m3x2`/`.e5m2x2`-family idiom) or four 1-byte `Scalar`
+///   lanes (`ld.shared.u8` reading a single fp8 element back out of a
+///   word that a 16-byte `cp.async` deposited as one 4-byte granule).
 /// - four 32-bit lanes in a 128-bit register, from `mov.b128 dst,
 ///   {e0,e1,e2,e3}` and split back by `mov.b128 {e0,e1,e2,e3}, src` (the
 ///   accumulator zero-fill idiom - see `LoweredInstr::PackQuad`).
