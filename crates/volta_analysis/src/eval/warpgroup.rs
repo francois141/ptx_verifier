@@ -22,14 +22,17 @@
 //! costs nothing but its own missing output (see `exec_wgmma_mma_async`'s
 //! doc comment for why no `require_live_warp`-style rejection is needed).
 
+use volta_frontend::ast::ScalarType;
+
 use crate::eval::error::{EvalError, EvalResult};
+use crate::eval::fp8;
 use crate::eval::interp::Interpreter;
-use crate::eval::tcgen05_mma;
+use crate::eval::tcgen05_mma::{self, MatrixDescriptor};
 use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
 use crate::eval::{ThreadId, WARPGROUP_SIZE};
 use crate::lowered::{InstrId, LoweredInstr, MemSpace};
-use crate::symbolic::Real;
+use crate::symbolic::{ExprId, Real};
 use crate::tensor_core::wgmma_m64n_k16;
 
 impl Interpreter<'_> {
@@ -71,8 +74,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16`: `D = A*B (+D)`,
-    /// warpgroup-wide. `a_desc`/`b_desc`/`scale_d` must be warpgroup-uniform
+    /// `wgmma.mma_async.sync.aligned.m64nNk{16,32}.f32.atype.btype`: `D =
+    /// A*B (+D)`, warpgroup-wide, `K = shape.k` (16 for `.f16`, 32 for
+    /// `.e4m3`/`.e5m2`). `a_desc`/`b_desc`/`scale_d` must be warpgroup-uniform
     /// (PTX ISA: "the contents of a matrix descriptor must be same across
     /// all the warps in the warpgroup"), read once via `uniform_concrete`.
     ///
@@ -96,6 +100,8 @@ impl Interpreter<'_> {
             a_desc,
             b_desc,
             scale_d,
+            a_type,
+            b_type,
             transpose_a,
             transpose_b,
         } = instr
@@ -103,8 +109,6 @@ impl Interpreter<'_> {
             unreachable!()
         };
         let n = shape.n;
-        const K: u64 = 16;
-        const ELEM_BYTES: u64 = 2; // f16
 
         let a_desc_val = self.uniform_concrete(pc, members, a_desc, "wgmma.mma_async a-desc")? as u64;
         let b_desc_val = self.uniform_concrete(pc, members, b_desc, "wgmma.mma_async b-desc")? as u64;
@@ -141,7 +145,7 @@ impl Interpreter<'_> {
                     // for the whole accumulation chain.
                     self.arena.real(Real::zero())
                 };
-                for k in 0..K {
+                for k in 0..shape.k as u64 {
                     // K-major (leading = K) unless transposed - same
                     // convention `exec_tcgen05_mma` already uses (PTX ISA
                     // 9.7.17.10.6 for tcgen05.mma; wgmma.mma_async's own
@@ -157,22 +161,46 @@ impl Interpreter<'_> {
                     } else {
                         (elem.col as u64, k)
                     };
-                    let a_addr = tcgen05_mma::swizzled_element_addr(&a_md, a_stride, a_leading, ELEM_BYTES);
-                    let b_addr = tcgen05_mma::swizzled_element_addr(&b_md, b_stride, b_leading, ELEM_BYTES);
-                    let av = self.mem_read(t, pc, MemSpace::Shared, a_addr, ELEM_BYTES)?;
-                    let bv = self.mem_read(t, pc, MemSpace::Shared, b_addr, ELEM_BYTES)?;
-                    let (Value::Scalar(a_e), Value::Scalar(b_e)) = (av, bv) else {
-                        return Err(EvalError::ValueKindMismatch {
-                            thread: t,
-                            pc,
-                            what: "wgmma.mma_async A/B element is not a scalar",
-                        });
-                    };
+                    let a_e = self.read_wgmma_element(t, pc, &a_md, (a_stride, a_leading), *a_type)?;
+                    let b_e = self.read_wgmma_element(t, pc, &b_md, (b_stride, b_leading), *b_type)?;
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
                 self.write_reg_wgmma_accum(t, pc, reg, *shape, Value::Scalar(acc))?;
             }
         }
         Ok(())
+    }
+
+    /// Read one `ty`-typed `A`/`B` element at `(stride, leading)` through its
+    /// matrix descriptor. A concrete fp8 byte (never an input element: e.g.
+    /// zero padding a kernel stored itself) is decoded from its bit
+    /// encoding; a symbolic element already is its real value (see
+    /// `eval::fp8`'s module doc).
+    fn read_wgmma_element(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        desc: &MatrixDescriptor,
+        (stride, leading): (u64, u64),
+        ty: ScalarType,
+    ) -> EvalResult<ExprId> {
+        let elem_bytes = u64::from(ty.bits() / 8);
+        let addr = tcgen05_mma::swizzled_element_addr(desc, stride, leading, elem_bytes);
+        let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)? else {
+            return Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "wgmma.mma_async A/B element is not a scalar",
+            });
+        };
+        let (what, decode): (_, fn(u8) -> Option<f64>) = match ty {
+            ScalarType::E4m3 => ("wgmma.mma_async e4m3", fp8::decode_e4m3_byte),
+            ScalarType::E5m2 => ("wgmma.mma_async e5m2", fp8::decode_e5m2_byte),
+            _ => return Ok(e),
+        };
+        match self.arena.as_i64(e) {
+            Some(raw) => self.decode_fp8_byte(pc, what, raw as u8, decode),
+            None => Ok(e),
+        }
     }
 }

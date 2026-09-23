@@ -918,8 +918,11 @@ pub enum LoweredInstr {
     // (PTX ISA 9.7.17.5-7)
     // =========================================================================
     /// `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16 d, a-desc, b-desc,
-    /// scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b` (the
-    /// shared-memory-`A` syntax form, PTX ISA 9.7.17.5.2). `D = A*B+D` (or
+    /// scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b` and
+    /// `wgmma.mma_async.sync.aligned.m64nNk32.f32.{e4m3,e5m2}.{e4m3,e5m2} d,
+    /// a-desc, b-desc, scale-d, imm-scale-a, imm-scale-b` (the
+    /// shared-memory-`A` syntax forms, PTX ISA 9.7.17.5.2; the FP8 form has
+    /// no transpose operands and is always K-major). `D = A*B+D` (or
     /// `A*B` if `scale_d` is false), computed warpgroup-wide (128 threads):
     /// each thread produces and writes only its own `n/2`-register slice of
     /// `dst` (also the read-if-`scale_d` accumulator - the same registers
@@ -927,7 +930,8 @@ pub enum LoweredInstr {
     /// `tensor_core::wgmma_m64n_k16::matrix_d`). `A`/`B` are both
     /// shared-memory-resident 64-bit matrix descriptors, decoded at eval
     /// time (`eval::wgmma::decode_wgmma_matrix_descriptor`). Scoped to
-    /// dense `.f32.f16.f16` only; the alternate register-resident-`A`
+    /// dense `.f32` accumulators with `.f16.f16` or FP8 multiplicands (`K`
+    /// is `shape.k`: 16 or 32 respectively); the alternate register-resident-`A`
     /// syntax form (`d, a, b-desc, ...`, no `imm-trans-a`) and any negate
     /// (`imm-scale-a`/`imm-scale-b` = -1) are rejected at lowering - see
     /// `lowering::lower_wgmma_mma_async`.
@@ -937,6 +941,8 @@ pub enum LoweredInstr {
         a_desc: Operand,
         b_desc: Operand,
         scale_d: Operand,
+        a_type: ScalarType,
+        b_type: ScalarType,
         transpose_a: bool,
         transpose_b: bool,
     },
