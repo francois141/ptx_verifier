@@ -2828,6 +2828,7 @@ impl<'p> Interpreter<'p> {
         mode: ClampWrapMode,
     ) -> EvalResult<Value> {
         const WIDTH: i64 = 32;
+        const HALF_WIDTH: i64 = WIDTH / 2;
         let raw = self.concrete_operand(t, pc, shift, "shf shift amount")?;
         let n = match mode {
             ClampWrapMode::Clamp => raw.clamp(0, WIDTH),
@@ -2836,16 +2837,19 @@ impl<'p> Interpreter<'p> {
         let lo_v = self.operand_value(t, pc, lo)?;
         let hi_v = self.operand_value(t, pc, hi)?;
 
-        // Packed 16-bit lanes have no bit pattern to shift, but a
-        // half-width funnel shift over them is exactly a lane shuffle: at
-        // n == 16 both directions extract the middle 32 bits of [hi, lo],
-        // giving `Pair(lo's high lane, hi's low lane)`. This is the
-        // "advance an f16 pair by one element" idiom behind an unaligned
-        // gather.
-        if n == WIDTH / 2 && (matches!(lo_v, Value::Pair(..)) || matches!(hi_v, Value::Pair(..))) {
-            let result_lo = self.shf_lane(t, pc, lo_v, LaneHalf::High)?;
-            let result_hi = self.shf_lane(t, pc, hi_v, LaneHalf::Low)?;
-            return Ok(Value::Pair(result_lo, result_hi));
+        // Packed f16 lanes have no bit pattern: shifting by 0 or 32 selects
+        // one operand, by 16 the middle lanes `Pair(lo.high, hi.low)`.
+        if matches!(lo_v, Value::Pair(..)) || matches!(hi_v, Value::Pair(..)) {
+            match (dir, n) {
+                (ShiftDir::Right, 0) | (ShiftDir::Left, WIDTH) => return Ok(lo_v),
+                (ShiftDir::Left, 0) | (ShiftDir::Right, WIDTH) => return Ok(hi_v),
+                (_, HALF_WIDTH) => {
+                    let result_lo = self.shf_lane(t, pc, lo_v, LaneHalf::High)?;
+                    let result_hi = self.shf_lane(t, pc, hi_v, LaneHalf::Low)?;
+                    return Ok(Value::Pair(result_lo, result_hi));
+                }
+                _ => {}
+            }
         }
 
         // Ordinary bit-vector path. The ISA's `(x << (32 - n))` is a
