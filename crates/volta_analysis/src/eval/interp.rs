@@ -3979,9 +3979,11 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Split the concrete scalar granule at `start` (width `found_width`)
-    /// into two exact halves when the access `[addr, addr + width)` is one
-    /// of those halves. Returns whether a split happened, so the access can
-    /// be retried. Symbolic scalars have no bit-level halves and stay a
+    /// into exact halves - repeatedly, toward the half holding the access -
+    /// until the access `[addr, addr + width)` is a whole granule of its
+    /// own (e.g. one fp8 `tcgen05.mma` operand byte of a zero word a kernel
+    /// stored as padding). Returns whether that was reached, so the access
+    /// can be retried. Symbolic scalars have no bit-level halves and stay a
     /// reinterpretation error.
     fn split_concrete_scalar(
         &mut self,
@@ -3992,24 +3994,37 @@ impl<'p> Interpreter<'p> {
         addr: u64,
         width: u64,
     ) -> bool {
-        if found_width != 2 * width || (addr != start && addr != start + width) {
+        if width >= found_width
+            || !(found_width / width).is_power_of_two()
+            || addr < start
+            || addr + width > start + found_width
+            || !(addr - start).is_multiple_of(width)
+        {
             return false;
         }
-        let Some((_, e, _)) = self.memory_mut(space, t).scalar_cell(start) else {
-            return false;
-        };
-        let Some(c) = self.arena.as_int_const(e) else {
-            return false;
-        };
-        let half_bits = (width * 8) as u32;
-        let mask = if half_bits >= 64 {
-            -1
-        } else {
-            (1i64 << half_bits) - 1
-        };
-        let lo = self.arena.int(c & mask);
-        let hi = self.arena.int((c >> half_bits) & mask);
-        self.memory_mut(space, t).split_scalar(start, lo, hi);
+        let (mut start, mut found_width) = (start, found_width);
+        while found_width > width {
+            let Some((_, e, _)) = self.memory_mut(space, t).scalar_cell(start) else {
+                return false;
+            };
+            let Some(c) = self.arena.as_int_const(e) else {
+                return false;
+            };
+            let half = found_width / 2;
+            let half_bits = (half * 8) as u32;
+            let mask = if half_bits >= 64 {
+                -1
+            } else {
+                (1i64 << half_bits) - 1
+            };
+            let lo = self.arena.int(c & mask);
+            let hi = self.arena.int((c >> half_bits) & mask);
+            self.memory_mut(space, t).split_scalar(start, lo, hi);
+            if addr >= start + half {
+                start += half;
+            }
+            found_width = half;
+        }
         true
     }
 
