@@ -1290,23 +1290,45 @@ impl<'p> Interpreter<'p> {
                 lut,
             } => {
                 let lut = self.concrete_operand(t, pc, lut, "lop3 LUT")?;
-                if lut != 0x96 {
-                    return Err(EvalError::Unsupported {
-                        pc,
-                        what: format!("lop3.b32 LUT {lut:#x} (only XOR is modeled)"),
-                    });
-                }
                 let a = self.scalar_operand(t, pc, src_a)?;
-                let b = self.concrete_operand(t, pc, src_b, "lop3 XOR source")? as u32;
-                let c = self.concrete_operand(t, pc, src_c, "lop3 XOR source")? as u32;
-                let result = match b ^ c {
-                    0 => a,
-                    0x8000_0000 => self.arena.neg(a),
-                    mask => {
+                let b = self.concrete_operand(t, pc, src_b, "lop3 source b")? as u32;
+                let c = self.concrete_operand(t, pc, src_c, "lop3 source c")? as u32;
+                // Result bit `i` is bit `(a_i << 2) | (b_i << 1) | c_i` of
+                // the LUT.
+                let lop3_lut = |a: u32| {
+                    let mut result = 0;
+                    for i in 0..32 {
+                        let a_i = (a >> i) & 1;
+                        let b_i = (b >> i) & 1;
+                        let c_i = (c >> i) & 1;
+                        let lut_index = (a_i << 2) | (b_i << 1) | c_i;
+                        let output_bit = (lut as u32 >> lut_index) & 1;
+                        result |= output_bit << i;
+                    }
+                    result
+                };
+                let result = match (self.arena.as_i64(a), lut, b ^ c) {
+                    // Concrete integer sources (address swizzles, masks)
+                    // evaluate the full truth table bitwise.
+                    (Some(a), ..) => self.arena.int(i64::from(lop3_lut(a as u32))),
+                    // A symbolic `a` is an exact real: the only bit-level
+                    // operation with a real reading is an XOR that leaves it
+                    // unchanged or flips the f32 sign bit.
+                    (None, 0x96, 0) => a,
+                    (None, 0x96, 0x8000_0000) => self.arena.neg(a),
+                    (None, 0x96, mask) => {
                         return Err(EvalError::Unsupported {
                             pc,
                             what: format!(
                                 "lop3.b32 XOR changes bits other than the f32 sign bit ({mask:#010x})"
+                            ),
+                        });
+                    }
+                    (None, ..) => {
+                        return Err(EvalError::Unsupported {
+                            pc,
+                            what: format!(
+                                "lop3.b32 LUT {lut:#x} on a symbolic source (only XOR is modeled)"
                             ),
                         });
                     }
