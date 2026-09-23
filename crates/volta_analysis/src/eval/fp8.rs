@@ -1,23 +1,10 @@
-//! `.e4m3` byte decode (PTX ISA 5.2.3): 1 sign bit + 4 exponent bits (bias
-//! 7) + 3 mantissa bits, no infinity, NaN only at `0x7f`/`0xff`.
-//!
-//! This is only needed for a genuinely *concrete* `.e4m3x2` source byte
-//! (e.g. a `cp.async` zero-fill word, or a literal `mov.b16` pattern) that
-//! never went through array materialization - see
-//! `eval::interp::LoweredInstr::CvtE4m3x2ToF16x2`'s doc comment for why the
-//! common case (a symbolic fp8 input array element) never reaches this at
-//! all: it's already a real-valued expression by the time it's split into
-//! a `Value::Pair`, and `.e4m3x2 -> .f16x2` conversion is the identity over
-//! the reals there, exactly like every other float<->float `cvt` in this
-//! codebase.
-//!
-//! Every finite `.e4m3` value is an exact dyadic rational (a small integer
-//! times a power of two), so decoding through `f64` is exact - no
-//! precision is lost, unlike a general float-to-float rounding.
+//! Exact decoding of `.e4m3` and `.e5m2` bytes (PTX ISA 5.2.3), used only for
+//! concrete fp8 source bytes; symbolic fp8 elements never reach this (see
+//! `eval::interp::LoweredInstr::CvtE4m3x2ToF16x2`). Every finite value is a
+//! dyadic rational, so decoding through `f64` is exact.
 
-/// Decode one `.e4m3` byte to its exact real value, or `None` if the byte
-/// is the format's NaN encoding (`0x7f`/`0xff` - PTX ISA 5.2.3: "NaN
-/// values are limited to 0x7f and 0xff").
+/// Decode one `.e4m3` byte (bias 7, no infinity), or `None` for NaN
+/// (`0x7f`/`0xff`).
 pub fn decode_e4m3_byte(byte: u8) -> Option<f64> {
     let sign = (byte >> 7) & 1;
     let exponent = (byte >> 3) & 0xF;
@@ -28,20 +15,31 @@ pub fn decode_e4m3_byte(byte: u8) -> Option<f64> {
     }
 
     let magnitude = if exponent == 0 {
-        // Subnormal: mantissa * 2^-9.
         mantissa as f64 * 2f64.powi(-9)
     } else {
-        // Normal: (1 + mantissa/8) * 2^(exponent-7).
         (1.0 + mantissa as f64 / 8.0) * 2f64.powi(exponent as i32 - 7)
     };
 
     Some(if sign == 1 { -magnitude } else { magnitude })
 }
 
+/// Decode one `.e5m2` byte (bias 15, IEEE-754-shaped with `±inf`), or `None`
+/// for NaN.
+pub fn decode_e5m2_byte(byte: u8) -> Option<f64> {
+    let sign = if byte & 0x80 != 0 { -1.0 } else { 1.0 };
+    let exponent = ((byte >> 2) & 0x1F) as i32;
+    let mantissa = (byte & 0x3) as f64;
+    let magnitude = match exponent {
+        0 => mantissa * 2f64.powi(-16),
+        0x1F if mantissa == 0.0 => f64::INFINITY,
+        0x1F => return None,
+        _ => (1.0 + mantissa / 4.0) * 2f64.powi(exponent - 15),
+    };
+    Some(sign * magnitude)
+}
+
 #[cfg(test)]
-// The binary literals below are deliberately grouped 1_4_3 (sign, exponent,
-// mantissa) to document the bit layout directly, not clippy's uniform
-// grouping.
+// Binary literals are grouped by (sign, exponent, mantissa) fields.
 #[allow(clippy::unusual_byte_groupings)]
 mod tests {
     use super::*;
@@ -54,7 +52,6 @@ mod tests {
 
     #[test]
     fn test_decode_one_point_zero() {
-        // sign=0, exponent=0111 (7), mantissa=000: (1+0)*2^(7-7) = 1.0.
         assert_eq!(decode_e4m3_byte(0b0_0111_000), Some(1.0));
     }
 
@@ -65,21 +62,17 @@ mod tests {
 
     #[test]
     fn test_decode_max_finite_is_448() {
-        // Known E4M3FN max: exponent=1111 (15), mantissa=110 (6, since 111
-        // is reserved for NaN): (1+6/8)*2^(15-7) = 1.75*256 = 448.
         assert_eq!(decode_e4m3_byte(0b0_1111_110), Some(448.0));
         assert_eq!(decode_e4m3_byte(0b1_1111_110), Some(-448.0));
     }
 
     #[test]
     fn test_decode_min_subnormal() {
-        // exponent=0000, mantissa=001: 1 * 2^-9.
         assert_eq!(decode_e4m3_byte(0b0_0000_001), Some(2f64.powi(-9)));
     }
 
     #[test]
     fn test_decode_min_normal() {
-        // exponent=0001 (1), mantissa=000: (1+0)*2^(1-7) = 2^-6.
         assert_eq!(decode_e4m3_byte(0b0_0001_000), Some(2f64.powi(-6)));
     }
 
@@ -91,9 +84,73 @@ mod tests {
 
     #[test]
     fn test_decode_exponent_all_ones_but_not_nan_is_finite() {
-        // Unlike IEEE754, exponent=1111 with a non-NaN mantissa is an
-        // ordinary finite value (no infinity in this format).
         assert!(decode_e4m3_byte(0b0_1111_000).is_some());
         assert!(decode_e4m3_byte(0b0_1111_101).is_some());
+    }
+
+    #[test]
+    fn test_decode_e5m2_zero() {
+        assert_eq!(decode_e5m2_byte(0x00), Some(0.0));
+        let negative_zero = decode_e5m2_byte(0x80).unwrap();
+        assert_eq!(negative_zero, 0.0);
+        assert!(negative_zero.is_sign_negative());
+    }
+
+    #[test]
+    fn test_decode_e5m2_one_point_zero() {
+        assert_eq!(decode_e5m2_byte(0b0_01111_00), Some(1.0));
+        assert_eq!(decode_e5m2_byte(0b1_01111_00), Some(-1.0));
+    }
+
+    #[test]
+    fn test_decode_e5m2_mantissa() {
+        assert_eq!(decode_e5m2_byte(0b0_10000_11), Some(3.5));
+    }
+
+    #[test]
+    fn test_decode_e5m2_max_finite_is_57344() {
+        assert_eq!(decode_e5m2_byte(0b0_11110_11), Some(57344.0));
+        assert_eq!(decode_e5m2_byte(0b1_11110_11), Some(-57344.0));
+    }
+
+    #[test]
+    fn test_decode_e5m2_min_subnormal() {
+        assert_eq!(decode_e5m2_byte(0b0_00000_01), Some(2f64.powi(-16)));
+        assert_eq!(decode_e5m2_byte(0b0_00000_11), Some(3.0 * 2f64.powi(-16)));
+    }
+
+    #[test]
+    fn test_decode_e5m2_min_normal() {
+        assert_eq!(decode_e5m2_byte(0b0_00001_00), Some(2f64.powi(-14)));
+    }
+
+    #[test]
+    fn test_decode_e5m2_infinity() {
+        assert_eq!(decode_e5m2_byte(0b0_11111_00), Some(f64::INFINITY));
+        assert_eq!(decode_e5m2_byte(0b1_11111_00), Some(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn test_decode_e5m2_nan_bytes() {
+        for byte in [0x7d, 0x7e, 0x7f, 0xfd, 0xfe, 0xff] {
+            assert_eq!(decode_e5m2_byte(byte), None, "byte {byte:#04x}");
+        }
+    }
+
+    #[test]
+    fn test_decode_e5m2_matches_f16_upper_byte() {
+        for byte in 0..=u8::MAX {
+            let as_f16_bits = u16::from(byte) << 8;
+            let sign = if as_f16_bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+            let exponent = ((as_f16_bits >> 10) & 0x1F) as i32;
+            let mantissa = f64::from(as_f16_bits & 0x3FF);
+            let expected = match exponent {
+                0 => Some(sign * mantissa * 2f64.powi(-24)),
+                0x1F if mantissa == 0.0 => Some(sign * f64::INFINITY),
+                0x1F => None,
+                _ => Some(sign * (1.0 + mantissa / 1024.0) * 2f64.powi(exponent - 15)),
+            };
+            assert_eq!(decode_e5m2_byte(byte), expected, "byte {byte:#04x}");
+        }
     }
 }
