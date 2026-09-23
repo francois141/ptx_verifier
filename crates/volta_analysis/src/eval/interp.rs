@@ -4785,7 +4785,7 @@ impl<'p> Interpreter<'p> {
     /// format's NaN encodings - Volta's real-valued model cannot represent
     /// NaN, same as every other NaN-ingestion point in the interpreter.
     /// `what` names the consuming instruction and format for the message.
-    fn decode_fp8_byte(
+    pub(in crate::eval) fn decode_fp8_byte(
         &mut self,
         pc: InstrId,
         what: &str,
