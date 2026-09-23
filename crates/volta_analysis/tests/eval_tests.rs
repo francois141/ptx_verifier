@@ -5490,6 +5490,285 @@ fn test_wgmma_mma_async_numeric_correctness() {
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
+/// The single most important test in this file's `wgmma` register-hazard
+/// coverage: reuses `test_wgmma_mma_async_numeric_correctness`'s exact
+/// setup, but chains **two** same-shape `wgmma.mma_async` calls (`scale-d`
+/// false, then true) with only *one* `wgmma.fence` before the chain and
+/// *one* `wgmma.commit_group`/`wgmma.wait_group` after it - nothing in
+/// between the two calls. This is exactly the real H100 GEMM target
+/// kernel's own pattern (there, four calls per K-tile); the ISA's fence
+/// exemption for "accumulator register accesses across multiple
+/// wgmma.mma_async instructions of the same shape" exists precisely so
+/// this must *not* be flagged. Expects `136 + 136 = 272` (each call adds
+/// the same A.B dot product).
+#[test]
+fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
+    let src = wrap_sm90a(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<6>;
+    .reg .f32 %f<2>;
+    .reg .b16 %rs<2>;
+    .reg .f32 %d<4>;
+    .shared .align 16 .b8 a_row[32];
+    .shared .align 16 .b8 b_col[32];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+
+    mov.u64 %rd1, a_row;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+0], %rs1;
+    mov.f32 %f1, 0f40000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+2], %rs1;
+    mov.f32 %f1, 0f40400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+4], %rs1;
+    mov.f32 %f1, 0f40800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+6], %rs1;
+    mov.f32 %f1, 0f40A00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+8], %rs1;
+    mov.f32 %f1, 0f40C00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+10], %rs1;
+    mov.f32 %f1, 0f40E00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+12], %rs1;
+    mov.f32 %f1, 0f41000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+14], %rs1;
+    mov.f32 %f1, 0f41100000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    mov.f32 %f1, 0f41200000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    mov.f32 %f1, 0f41300000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    mov.f32 %f1, 0f41400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    mov.f32 %f1, 0f41500000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    mov.f32 %f1, 0f41600000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    mov.f32 %f1, 0f41700000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    mov.f32 %f1, 0f41800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+30], %rs1;
+
+    mov.u64 %rd2, b_col;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+0], %rs1;
+    @%p1 st.shared.b16 [%rd2+2], %rs1;
+    @%p1 st.shared.b16 [%rd2+4], %rs1;
+    @%p1 st.shared.b16 [%rd2+6], %rs1;
+    @%p1 st.shared.b16 [%rd2+8], %rs1;
+    @%p1 st.shared.b16 [%rd2+10], %rs1;
+    @%p1 st.shared.b16 [%rd2+12], %rs1;
+    @%p1 st.shared.b16 [%rd2+14], %rs1;
+    @%p1 st.shared.b16 [%rd2+16], %rs1;
+    @%p1 st.shared.b16 [%rd2+18], %rs1;
+    @%p1 st.shared.b16 [%rd2+20], %rs1;
+    @%p1 st.shared.b16 [%rd2+22], %rs1;
+    @%p1 st.shared.b16 [%rd2+24], %rs1;
+    @%p1 st.shared.b16 [%rd2+26], %rs1;
+    @%p1 st.shared.b16 [%rd2+28], %rs1;
+    @%p1 st.shared.b16 [%rd2+30], %rs1;
+
+    bar.sync 0;
+
+    shr.u64 %rd3, %rd1, 4;
+    shr.u64 %rd4, %rd2, 4;
+    setp.ne.u32 %p2, %r0, %r0;
+
+    wgmma.fence.sync.aligned;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    setp.eq.u32 %p2, %r0, %r0;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    wgmma.wait_group.sync.aligned 0;
+
+    ld.param.u64 %rd5, [k_param_0];
+    @%p1 st.global.f32 [%rd5], %d0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((128, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "272");
+}
+
+/// Hazard A (`WgmmaFenceHazard`): same chain as the "needs no extra
+/// fence" test above, but an ordinary register write is interposed
+/// between the two `wgmma.mma_async` calls (after the first is safely
+/// released by its own `wait_group`, so this is specifically a fence
+/// hazard, not a wait_group hazard) - the ordinary write breaks the
+/// same-shape chain, and the second call's accumulator read has no
+/// intervening `wgmma.fence` to fall back on.
+#[test]
+fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
+    let src = wrap_sm90a(
+        ".visible .entry k()
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .f32 %d<4>;
+    .shared .align 16 .b8 a_row[32];
+    .shared .align 16 .b8 b_col[32];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+    mov.u64 %rd1, a_row;
+    mov.u64 %rd2, b_col;
+    bar.sync 0;
+
+    shr.u64 %rd3, %rd1, 4;
+    shr.u64 %rd4, %rd2, 4;
+    setp.ne.u32 %p2, %r0, %r0;
+
+    wgmma.fence.sync.aligned;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    wgmma.wait_group.sync.aligned 0;
+
+    // Ordinary write to %d0, released and no longer pending - breaks the
+    // same-shape chain, and no wgmma.fence follows it.
+    mov.f32 %f1, 0f00000000;
+    mov.f32 %d0, %f1;
+
+    setp.eq.u32 %p2, %r0, %r0;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    wgmma.wait_group.sync.aligned 0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::WgmmaFenceHazard { .. })),
+        "expected a wgmma fence hazard, got: {}",
+        err
+    );
+}
+
+/// Hazard B (`WgmmaWaitGroupHazard`): a plain read of an accumulator
+/// register still pending a `wgmma.wait_group` release.
+#[test]
+fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
+    let src = wrap_sm90a(
+        ".visible .entry k()
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .f32 %d<4>;
+    .shared .align 16 .b8 a_row[32];
+    .shared .align 16 .b8 b_col[32];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+    mov.u64 %rd1, a_row;
+    mov.u64 %rd2, b_col;
+    bar.sync 0;
+
+    shr.u64 %rd3, %rd1, 4;
+    shr.u64 %rd4, %rd2, 4;
+    setp.ne.u32 %p2, %r0, %r0;
+
+    wgmma.fence.sync.aligned;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    // No wait_group yet - %d0 is still pending when read below.
+    mov.f32 %f1, %d0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })),
+        "expected a wgmma wait_group hazard, got: {}",
+        err
+    );
+}
+
+/// Sibling of the above: an ordinary *write* (not a read) to a still-
+/// pending accumulator register before its `wgmma.wait_group` is equally
+/// a hazard - this is what makes `write_reg`'s hazard-B check matter, not
+/// just `read_reg`'s.
+#[test]
+fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
+    let src = wrap_sm90a(
+        ".visible .entry k()
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .f32 %d<4>;
+    .shared .align 16 .b8 a_row[32];
+    .shared .align 16 .b8 b_col[32];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+    mov.u64 %rd1, a_row;
+    mov.u64 %rd2, b_col;
+    bar.sync 0;
+
+    shr.u64 %rd3, %rd1, 4;
+    shr.u64 %rd4, %rd2, 4;
+    setp.ne.u32 %p2, %r0, %r0;
+
+    wgmma.fence.sync.aligned;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    // No wait_group yet - %d0 is still pending when written below.
+    mov.f32 %f1, 0f00000000;
+    mov.f32 %d0, %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })),
+        "expected a wgmma wait_group hazard, got: {}",
+        err
+    );
+}
+
 /// `stmatrix.x1.m8n8.shared.b16`: 32 lanes collectively write one 8x8x2B
 /// (128-byte) tile. Each lane's own register (`%rv = 1000 + %tid.x`, a
 /// distinct value per lane) lands at `row_addr[lane/4] + (lane%4)*4` -

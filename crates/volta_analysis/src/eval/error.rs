@@ -9,6 +9,7 @@ use crate::eval::ThreadId;
 use crate::eval::memory::GranuleKind;
 use crate::lowered::{InstrId, MemSpace};
 use crate::symbols::RegId;
+use crate::tensor_core::MmaShape;
 
 /// One side of a conflicting memory access pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +65,30 @@ pub enum EvalError {
         addr: u64,
         prior: AccessSite,
         current: AccessSite,
+    },
+    /// A `wgmma.mma_async` accessed an accumulator register without an
+    /// intervening `wgmma.fence` (PTX ISA 9.7.17.7.1): either this is the
+    /// warpgroup's first `wgmma.mma_async` and no `wgmma.fence` has ever
+    /// been executed by this thread (`prior_write: None`), or some
+    /// register access other than a same-shape `wgmma.mma_async` chain
+    /// link touched this register since its last `wgmma.fence`.
+    WgmmaFenceHazard {
+        thread: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+        shape: MmaShape,
+        prior_write: Option<AccessSite>,
+    },
+    /// An access reached a `wgmma.mma_async` accumulator register before
+    /// the writing thread executed a `wgmma.wait_group` covering that
+    /// wgmma-group (PTX ISA 9.7.17.7.3): some access other than that same
+    /// chain's own next same-shape accumulator seed-read or writeback
+    /// touched the register while it was still in flight.
+    WgmmaWaitGroupHazard {
+        thread: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+        prior_write: AccessSite,
     },
     /// All live threads are blocked and no barrier or warp group can fire.
     Deadlock {
@@ -283,6 +308,46 @@ impl fmt::Display for EvalError {
                  order cp.async/TMA writes against later accesses through either proxy; \
                  bar.sync alone does not provide it)",
                 space, addr, current, prior
+            ),
+            Self::WgmmaFenceHazard {
+                thread,
+                pc,
+                reg,
+                shape,
+                prior_write: Some(prior),
+            } => write!(
+                f,
+                "missing wgmma.fence on {reg}: {thread} at {pc} accesses {reg} as a \
+                 wgmma.mma_async .{shape} accumulator, but it was last written by {prior} with \
+                 no intervening wgmma.fence (PTX ISA 9.7.17.7.1 requires a fence between a \
+                 register access and any wgmma.mma_async that accesses the same register, \
+                 except when both accesses are accumulator accesses of the same shape)"
+            ),
+            Self::WgmmaFenceHazard {
+                thread,
+                pc,
+                reg,
+                shape,
+                prior_write: None,
+            } => write!(
+                f,
+                "missing wgmma.fence on {reg}: {thread} at {pc} is this warpgroup's first \
+                 wgmma.mma_async access to {reg} (.{shape}), but no wgmma.fence has been \
+                 executed yet (PTX ISA 9.7.17.7.1 requires a wgmma.fence before the first \
+                 wgmma.mma_async operation in a warpgroup)"
+            ),
+            Self::WgmmaWaitGroupHazard {
+                thread,
+                pc,
+                reg,
+                prior_write,
+            } => write!(
+                f,
+                "missing wgmma.wait_group on {reg}: {thread} at {pc} accesses {reg}, which \
+                 {prior_write} wrote as a wgmma.mma_async accumulator not yet released by a \
+                 covering wgmma.wait_group (PTX ISA 9.7.17.7.3 makes this undefined behavior \
+                 unless the access is that same wgmma.mma_async chain's own next same-shape \
+                 accumulator seed-read or writeback)"
             ),
             Self::Deadlock { blocked } => {
                 write!(f, "deadlock: {} thread(s) blocked", blocked.len())

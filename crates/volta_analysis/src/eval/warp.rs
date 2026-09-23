@@ -151,7 +151,7 @@ impl Interpreter<'_> {
         match &instr {
             LoweredInstr::BarWarpSync { .. } => {}
             LoweredInstr::ElectSync { dst, dst_pred, .. } => {
-                self.exec_elect_sync(members, *dst, *dst_pred);
+                self.exec_elect_sync(pc, members, *dst, *dst_pred)?;
             }
             LoweredInstr::ShflSync {
                 mode,
@@ -458,10 +458,10 @@ impl Interpreter<'_> {
         }
 
         for (m, pval, value) in results {
-            self.threads[m].regs.write(dst, value);
+            self.write_reg(m, pc, dst, value)?;
             if let Some(p) = dst_pred {
                 let b = self.arena.bool_val(pval);
-                self.threads[m].regs.write(p, Value::Scalar(b));
+                self.write_reg(m, pc, p, Value::Scalar(b))?;
             }
         }
         Ok(())
@@ -477,12 +477,18 @@ impl Interpreter<'_> {
     /// every other live lane gets `Undefined` there, matching the "value
     /// not meaningfully defined" idiom used elsewhere (e.g. shfl's
     /// exited-source case) rather than inventing one.
-    fn exec_elect_sync(&mut self, members: &[ThreadId], dst: Option<RegId>, dst_pred: RegId) {
+    fn exec_elect_sync(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        dst: Option<RegId>,
+        dst_pred: RegId,
+    ) -> EvalResult<()> {
         let leader = members[0];
         for &m in members {
             let is_leader = m == leader;
             let p = self.arena.bool_val(is_leader);
-            self.threads[m].regs.write(dst_pred, Value::Scalar(p));
+            self.write_reg(m, pc, dst_pred, Value::Scalar(p))?;
             if let Some(reg) = dst {
                 let lane = m.0 % WARP_SIZE;
                 let v = if is_leader {
@@ -490,9 +496,10 @@ impl Interpreter<'_> {
                 } else {
                     self.arena.undefined()
                 };
-                self.threads[m].regs.write(reg, Value::Scalar(v));
+                self.write_reg(m, pc, reg, Value::Scalar(v))?;
             }
         }
+        Ok(())
     }
 
     /// `redux.sync.op.type d, a, membermask`: fold every mask lane's `a`
@@ -540,7 +547,7 @@ impl Interpreter<'_> {
         }
         let result = acc.expect("execute_warp_op only fires for a nonempty mask");
         for &m in members {
-            self.threads[m].regs.write(dst, Value::Scalar(result));
+            self.write_reg(m, pc, dst, Value::Scalar(result))?;
         }
         Ok(())
     }
@@ -672,7 +679,7 @@ impl Interpreter<'_> {
                     let byte = row_addr[i][(lane / 4) as usize] + (lane % 4) as u64 * 4;
                     self.mem_read(m, pc, MemSpace::Shared, byte, 4)?
                 };
-                self.threads[m].regs.write(*reg, v);
+                self.write_reg(m, pc, *reg, v)?;
             }
         }
         Ok(())
@@ -910,7 +917,7 @@ impl Interpreter<'_> {
                                 what: "incomplete wmma fragment".to_string(),
                             });
                         };
-                        self.threads[m].regs.write(*reg, Value::Pair(l, h));
+                        self.write_reg(m, pc, *reg, Value::Pair(l, h))?;
                     }
                 }
             }
@@ -1290,7 +1297,7 @@ impl Interpreter<'_> {
                     .read(lane, col)
                     .map_err(|e| self.tcgen05_error(m, pc, e))?
                     .unwrap_or_else(|| self.arena.undefined());
-                self.threads[m].regs.write(reg, Value::Scalar(e));
+                self.write_reg(m, pc, reg, Value::Scalar(e))?;
             }
         }
         Ok(())
