@@ -18,7 +18,7 @@ use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::fp8;
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
-use crate::eval::race::{MemHazard, RaceTracker};
+use crate::eval::race::{MemHazard, Proxy, RaceTracker};
 use crate::eval::target::TargetFeatures;
 use crate::eval::tcgen05_mma::{self, Major, OperandFormat};
 use crate::eval::tensor_map_table::{self, TensorMapTable};
@@ -2462,7 +2462,8 @@ impl<'p> Interpreter<'p> {
                         what: "tcgen05.mma MN-major operand without swizzling is not modeled"
                             .to_string(),
                     })?;
-                let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)?
+                let Value::Scalar(e) =
+                    self.mem_read_via(t, pc, MemSpace::Shared, addr, elem_bytes, Proxy::Async)?
                 else {
                     return Err(EvalError::ValueKindMismatch {
                         thread: t,
@@ -3758,6 +3759,12 @@ impl<'p> Interpreter<'p> {
                 prior: h.prior,
                 current: h.current,
             },
+            MemHazard::GenericProxyUnfenced(h) => EvalError::GenericProxyFenceHazard {
+                space: h.space,
+                addr: h.addr,
+                prior: h.prior,
+                current: h.current,
+            },
         }
     }
 
@@ -3777,6 +3784,20 @@ impl<'p> Interpreter<'p> {
         addr: u64,
         width: u64,
     ) -> EvalResult<Value> {
+        self.mem_read_via(t, pc, space, addr, width, Proxy::Generic)
+    }
+
+    /// [`Self::mem_read`] through a given memory proxy (see
+    /// `RaceTracker::read_via`).
+    pub(in crate::eval) fn mem_read_via(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        proxy: Proxy,
+    ) -> EvalResult<Value> {
         self.check_bounds(t, pc, space, addr, width)?;
         // Every program access flows through here (scalar ld/st directly;
         // vector and tensor-core ops per element, after their own
@@ -3788,7 +3809,7 @@ impl<'p> Interpreter<'p> {
         let memory = match space {
             MemSpace::Global | MemSpace::Shared => {
                 self.race
-                    .read(space, addr, width, t, pc)
+                    .read_via(space, addr, width, t, pc, proxy)
                     .map_err(Self::mem_hazard_error)?;
                 if space == MemSpace::Global {
                     &self.global
@@ -3975,6 +3996,13 @@ impl<'p> Interpreter<'p> {
                 if space == MemSpace::Global {
                     &mut self.global
                 } else {
+                    // sm_90+: a later async-proxy read (`tcgen05.mma`)
+                    // needs this write fenced by its writer. `cp.async`/TMA
+                    // writes land here too and re-mark themselves as
+                    // async-proxy writes right after, dropping this mark.
+                    if self.features.async_proxy_fence {
+                        self.race.mark_generic_unfenced(addr, width, t, pc);
+                    }
                     &mut self.shared
                 }
             }
