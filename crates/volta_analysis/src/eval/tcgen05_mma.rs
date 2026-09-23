@@ -237,6 +237,54 @@ pub fn swizzled_element_addr(
         + elem_in_cell * elem_bytes
 }
 
+/// Which of an MMA operand's two axes is contiguous in shared memory
+/// (PTX ISA 9.7.17.10.6: `idesc`'s transpose bit selects it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Major {
+    K,
+    Mn,
+}
+
+/// Shared-memory byte address of MMA operand element `(mn_idx, k_idx)`
+/// under the ISA's canonical layouts (PTX ISA 9.7.16.5.1/9.7.17.10.6, the
+/// CuTe-notation table in units of `T = 16 / elem_bytes` elements).
+/// Swizzled modes delegate to [`swizzled_element_addr`] with
+/// `(stride, leading)` = `(mn, k)` for K-major and `(k, mn)` for MN-major.
+///
+/// `SwizzleMode::None` K-major is the core-matrix layout
+/// `((8,m),(T,2k)):((1T,SBO),(1,LBO))`: an 8-row x 16-byte core matrix is
+/// contiguous (rows 16 bytes apart), `SBO` steps between 8-row groups and
+/// `LBO` between core matrices along `K`. This is *not* the row-major
+/// `stride_idx * SBO` reading [`swizzled_element_addr`] gives `None` (that
+/// one is the TMA box layout); the corpus `MatrixVectorMultiplication`
+/// B200 fp8 kernel depends on the difference (its `B` column 8 lives at
+/// `start + SBO`). MN-major `None` returns `None`: its LBO/SBO roles are
+/// not independently confirmed, and guessing would silently permute the
+/// product.
+pub fn operand_element_addr(
+    desc: &MatrixDescriptor,
+    major: Major,
+    mn_idx: u64,
+    k_idx: u64,
+    elem_bytes: u64,
+) -> Option<u64> {
+    match (desc.swizzle_mode, major) {
+        (SwizzleMode::None, Major::K) => {
+            let cell_elems = CELL_BYTES / elem_bytes;
+            Some(
+                desc.start_addr
+                    + (mn_idx % 8) * CELL_BYTES
+                    + (mn_idx / 8) * desc.stride_dim_byte_offset
+                    + (k_idx / cell_elems) * desc.leading_dim_byte_offset
+                    + (k_idx % cell_elems) * elem_bytes,
+            )
+        }
+        (SwizzleMode::None, Major::Mn) => None,
+        (_, Major::K) => Some(swizzled_element_addr(desc, mn_idx, k_idx, elem_bytes)),
+        (_, Major::Mn) => Some(swizzled_element_addr(desc, k_idx, mn_idx, elem_bytes)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
