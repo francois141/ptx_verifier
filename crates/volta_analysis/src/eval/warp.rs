@@ -179,6 +179,9 @@ impl Interpreter<'_> {
             } => {
                 self.exec_redux_sync(pc, mask, members, *op, *ty, *dst, src)?;
             }
+            LoweredInstr::ReduxSyncBroadcastMax { dst, src, .. } => {
+                self.exec_redux_broadcast_max(pc, mask, members, src, *dst)?;
+            }
             LoweredInstr::Ldmatrix {
                 dst,
                 addr,
@@ -254,7 +257,8 @@ impl Interpreter<'_> {
             LoweredInstr::BarWarpSync { .. }
             | LoweredInstr::ShflSync { .. }
             | LoweredInstr::ElectSync { .. }
-            | LoweredInstr::ReduxSync { .. } => Ok(()),
+            | LoweredInstr::ReduxSync { .. }
+            | LoweredInstr::ReduxSyncBroadcastMax { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // Covers the exited address-supplying lane in particular:
                 // lane `i*8 + r` holds row r's address in a register, and
@@ -515,6 +519,46 @@ impl Interpreter<'_> {
         let result = acc.expect("execute_warp_op only fires for a nonempty mask");
         for &m in members {
             self.threads[m].regs.write(dst, Value::Scalar(result));
+        }
+        Ok(())
+    }
+
+    /// `LoweredInstr::ReduxSyncBroadcastMax`: the warp-max sign-trick
+    /// idiom, collapsed to what it always actually computes - a real `max`
+    /// fold over `src` (the broadcast's underlying real-valued operand),
+    /// same lane-gathering shape as `exec_redux_sync` but using the arena's
+    /// `max` directly rather than routing through `eval_binop`, since
+    /// `src` is never an integer bit pattern here.
+    fn exec_redux_broadcast_max(
+        &mut self,
+        pc: InstrId,
+        mask: u32,
+        members: &[ThreadId],
+        src: &Operand,
+        dst: RegId,
+    ) -> EvalResult<()> {
+        let mut live = members.iter();
+        let mut next_live = live.next();
+        let mut acc: Option<ExprId> = None;
+        for lane in 0..WARP_SIZE {
+            if mask & (1u32 << lane) == 0 {
+                continue;
+            }
+            let value = match next_live {
+                Some(&m) if m.0 % WARP_SIZE == lane => {
+                    next_live = live.next();
+                    self.scalar_operand(m, pc, src)?
+                }
+                _ => self.arena.undefined(),
+            };
+            acc = Some(match acc {
+                None => value,
+                Some(prev) => self.arena.max(prev, value),
+            });
+        }
+        let result = acc.expect("execute_warp_op only fires for a nonempty mask");
+        for &m in members {
+            self.threads[m].regs.write(dst, Value::Pair(result, result));
         }
         Ok(())
     }

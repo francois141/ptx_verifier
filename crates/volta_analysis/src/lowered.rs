@@ -708,6 +708,26 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
+    /// The warp-max "sortable signed int" idiom, recognized whole at
+    /// lowering time (see `match_warp_max_sign_trick`): nvcc computes
+    /// a real-valued row/warp max by broadcasting the value into both
+    /// halves of a b32 register, reducing with a signed-int
+    /// `redux.sync.max.s32` (whose bit-pattern order only matches real
+    /// order for nonnegative values), then correcting the all-negative
+    /// case with a second, predicated `redux.sync.min.s32` on the same
+    /// broadcast source. Volta's real-valued semantics need none of that:
+    /// `src` here is the broadcast's *underlying* real-valued operand (not
+    /// the broadcast b32 register), reduced directly with real `max` -
+    /// exact for any sign, so the bit-trick's fixup step is provably a
+    /// no-op and is elided entirely (never lowered). `dst` gets the result
+    /// as a `Value::Pair(result, result)`, matching how the source was
+    /// broadcast and how callers read it back as an f16x2 operand.
+    ReduxSyncBroadcastMax {
+        dst: RegId,
+        src: Operand,
+        membermask: Operand,
+    },
+
     // =========================================================================
     // Tensor Core
     // =========================================================================
@@ -1098,6 +1118,7 @@ define_instr_kinds!(
     ShflSync,
     ElectSync,
     ReduxSync,
+    ReduxSyncBroadcastMax,
     Ldmatrix,
     Mma,
     WmmaLoad,
@@ -1267,6 +1288,9 @@ impl LoweredInstr {
             } => from_ops(&[*src, *offset_or_lane, *clamp, *membermask]),
             Self::ElectSync { membermask, .. } => from_op(membermask).into_iter().collect(),
             Self::ReduxSync {
+                src, membermask, ..
+            } => from_ops(&[*src, *membermask]),
+            Self::ReduxSyncBroadcastMax {
                 src, membermask, ..
             } => from_ops(&[*src, *membermask]),
 
@@ -1448,6 +1472,7 @@ impl LoweredInstr {
             | Self::PackQuad { dst, .. }
             | Self::Shf { dst, .. }
             | Self::ReduxSync { dst, .. }
+            | Self::ReduxSyncBroadcastMax { dst, .. }
             | Self::Activemask { dst } => vec![*dst],
 
             // Vector destinations
