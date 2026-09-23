@@ -1539,6 +1539,31 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Shift - Shf (funnel shift)
+        // =========================================================================
+        ParsedInstruction::Shf(shf) => {
+            // Operands stay untyped here: `lo`/`hi` are `.b32` bit-vectors
+            // whose runtime value kind (plain scalar or packed f16 pair)
+            // decides the semantics - see `LoweredInstr::Shf`.
+            let dst = ctx.resolve_dst_typed(&shf.dst)?.reg;
+            let lo = ctx.resolve_operand(&shf.lo)?;
+            let hi = ctx.resolve_operand(&shf.hi)?;
+            let shift = ctx.resolve_operand(&shf.shift)?;
+
+            ctx.emit(
+                LoweredInstr::Shf {
+                    dst,
+                    lo,
+                    hi,
+                    shift,
+                    dir: shf.dir,
+                    mode: shf.mode,
+                },
+                predicate,
+            )?;
+        }
+
+        // =========================================================================
         // Bit Field Insert - Bfi
         // =========================================================================
         ParsedInstruction::Bfi(bfi) => {
