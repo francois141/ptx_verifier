@@ -3689,7 +3689,7 @@ impl<'p> Interpreter<'p> {
             BinOp::Rem => self.arena.rem(a, b),
             BinOp::And => self.arena.bit_and(a, b),
             BinOp::Or => self.arena.bit_or(a, b),
-            BinOp::Xor => self.arena.bit_xor(a, b),
+            BinOp::Xor => self.eval_xor(ty, a, b),
             BinOp::Shl => self.arena.shl(a, b),
             BinOp::Shr => {
                 if ty.is_signed_int() {
@@ -3701,6 +3701,23 @@ impl<'p> Interpreter<'p> {
             BinOp::Min => self.arena.min(a, b),
             BinOp::Max => self.arena.max(a, b),
         })
+    }
+
+    /// `xor` by a type's sign-bit mask is the bitflip idiom for a float
+    /// negate (e.g. `xor.b16 %h, %h, 0x8000`); fold it to `Neg` so the
+    /// decision procedure sees negation instead of an opaque `bit_xor`.
+    fn eval_xor(&mut self, ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
+        let sign_bit: i64 = match ty.bits() {
+            16 => 0x8000,
+            32 => 0x8000_0000,
+            64 => 0x8000_0000_0000_0000u64 as i64,
+            _ => return self.arena.bit_xor(a, b),
+        };
+        match (self.arena.as_int_const(a), self.arena.as_int_const(b)) {
+            (Some(mask), _) if mask == sign_bit => return self.arena.neg(b),
+            (_, Some(mask)) if mask == sign_bit => return self.arena.neg(a),
+            _ => return self.arena.bit_xor(a, b),
+        }
     }
 
     /// Exact concrete integer semantics for `ty`.
