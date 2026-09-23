@@ -3940,10 +3940,35 @@ impl<'p> Interpreter<'p> {
     /// the value through this (mov, cvt sources, wide/hi multiplies,
     /// binops with a symbolic side; loads and stores go through
     /// [`Self::canon_loaded`]/[`Self::canon_stored`]). Symbolic operands
-    /// pass through unchanged, as do float and bool constants (a
-    /// `mov.b32 %r, %f` bit-move must not coerce the float to an int).
+    /// pass through unchanged, as do genuine float constants (always a
+    /// `Real`, never an `IntConst` - a `mov.b32 %r, %f` bit-move must not
+    /// coerce the float to an int).
     fn canon_operand(&mut self, ty: ScalarType, e: ExprId) -> ExprId {
-        if ty.is_float() || ty.is_predicate() {
+        if ty.is_predicate() {
+            return e;
+        }
+        if ty.is_float() {
+            // A concrete `IntConst` under a float-consuming type is a raw
+            // bit pattern from a plain `.bN` producer (e.g. `mov.b16 %h,
+            // 0x4400` feeding a later `mul.rn.f16`), not an already-real
+            // value: decode it at this instruction's width, the same way
+            // `decode_packed_bits` does for the packed-pair operand path.
+            if let Some(bits) = self.arena.as_int_const(e) {
+                let decoded = match ty {
+                    ScalarType::F16 => f16_bits_to_f64(bits as u16),
+                    ScalarType::Bf16 => bf16_bits_to_f64(bits as u16),
+                    ScalarType::F32 | ScalarType::Tf32 => {
+                        Some(f32::from_bits(bits as u32) as f64)
+                    }
+                    ScalarType::F64 => Some(f64::from_bits(bits as u64)),
+                    _ => None,
+                };
+                if let Some(v) = decoded {
+                    if let Ok(id) = self.arena.float_from_f64(v) {
+                        return id;
+                    }
+                }
+            }
             return e;
         }
         if let Some(c) = self.arena.as_int_const(e) {
