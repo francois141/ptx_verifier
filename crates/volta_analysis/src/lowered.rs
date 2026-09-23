@@ -205,6 +205,17 @@ pub enum MemSpace {
     Const,
 }
 
+/// `tcgen05.mma`'s `.kind` qualifier: selects the
+/// operand element types `idesc`'s type fields are interpreted against and
+/// the fixed `K` of one dense `.cta_group::1` operation (Table 42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcgen05MmaKind {
+    /// `.kind::f16`: f16/bf16 operands, `K = 16`.
+    F16,
+    /// `.kind::f8f6f4`: 8/6/4-bit float operands, `K = 32`.
+    F8f6f4,
+}
+
 /// Shuffle mode for warp shuffle operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShflMode {
@@ -857,8 +868,8 @@ pub enum LoweredInstr {
     // =========================================================================
     // TensorCore 5th Generation - Matrix Multiply and Accumulate (PTX ISA 9.7.17.10)
     // =========================================================================
-    /// `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc, idesc,
-    /// {disable-output-lane}, enable-input-d`: single-thread-issued (unlike
+    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem], a-desc, b-desc,
+    /// idesc, {disable-output-lane}, enable-input-d`: single-thread-issued (unlike
     /// `mma.sync`/`wmma`) `D = A*B+D` (or `A*B` if `enable-input-d` is
     /// false) into Tensor Memory at `d_tmem_base + d_tmem_offset`, skipping
     /// any lane (`m`, for `.cta_group::1`'s dense M=128 shape) whose bit is
@@ -869,10 +880,12 @@ pub enum LoweredInstr {
     /// instruction descriptor (9.7.17.4.2) giving M/N/element
     /// types/transpose/negate - all decoded from their concrete values at
     /// eval time (`eval::tcgen05_mma`), since only the register operands
-    /// are visible at lowering. Scoped to dense `.kind::f16` with `A` in
-    /// shared memory (not `[a-tmem]`), no `scale-input-d`; the `.sp`/`.ws`/
-    /// block-scaled forms are separate mnemonics, rejected at lowering.
+    /// are visible at lowering. Scoped to dense `.kind::f16`/`.kind::f8f6f4`
+    /// with `A` in shared memory (not `[a-tmem]`), no `scale-input-d`; the
+    /// `.sp`/`.ws`/block-scaled forms are separate mnemonics, rejected at
+    /// lowering.
     Tcgen05Mma {
+        kind: Tcgen05MmaKind,
         d_tmem_base: Operand,
         d_tmem_offset: i64,
         a_desc: Operand,

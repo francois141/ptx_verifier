@@ -1670,11 +1670,109 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     );
 }
 
-/// Only `.kind::f16` is modeled; any other `.kind` is rejected at lowering
-/// with a specific reason, not the generic "not yet implemented" every
-/// unhandled `tcgen05.*` mnemonic falls back to.
+/// A `.kind::f8f6f4` `tcgen05.mma` with `A` in e4m3 and `B` in e5m2 (the
+/// two type fields differ, so each operand is decoded with its own format),
+/// both K-major under `SwizzleMode::None` (`LBO = 128`, `SBO = 256`), `M =
+/// 128`, `N = 8`, `K = 32`. Row 0 of `A` holds `1..=16` in both of its core
+/// matrices, row 0 of `B` holds `1.0` in its first core matrix and `2.0` in
+/// its second, so `D[0][0] = 136 + 2 * 136 = 408`. The expected value only
+/// holds if `K = 32` (not f16's 16), the element width is 1 byte, the
+/// second core matrix is found `LBO` bytes away, and each operand's concrete
+/// bytes go through its own decoder: e4m3 and e5m2 read `0x40` as `2.0`,
+/// but `0x38`/`0x3c` are `1.0` in only one of the two.
 #[test]
-fn test_tcgen05_mma_only_kind_f16_is_modeled() {
+fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<7>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[256];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r6, %tid.x;
+    setp.eq.s32 %p1, %r6, 0;
+
+    // A row 0: e4m3 1..=16, at k = 0..15 (first core matrix) and again
+    // at k = 16..31 (second core matrix, LBO = 128 bytes away).
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    @%p1 st.shared.b32 [%rd1+0], 0x48444038;
+    @%p1 st.shared.b32 [%rd1+4], 0x504e4c4a;
+    @%p1 st.shared.b32 [%rd1+8], 0x54535251;
+    @%p1 st.shared.b32 [%rd1+12], 0x58575655;
+    @%p1 st.shared.b32 [%rd1+128], 0x48444038;
+    @%p1 st.shared.b32 [%rd1+132], 0x504e4c4a;
+    @%p1 st.shared.b32 [%rd1+136], 0x54535251;
+    @%p1 st.shared.b32 [%rd1+140], 0x58575655;
+    // B row 0: e5m2 1.0 (0x3c) at k = 0..15, 2.0 (0x40) at k = 16..31.
+    @%p1 st.shared.b32 [%rd2+0], 0x3c3c3c3c;
+    @%p1 st.shared.b32 [%rd2+4], 0x3c3c3c3c;
+    @%p1 st.shared.b32 [%rd2+8], 0x3c3c3c3c;
+    @%p1 st.shared.b32 [%rd2+12], 0x3c3c3c3c;
+    @%p1 st.shared.b32 [%rd2+128], 0x40404040;
+    @%p1 st.shared.b32 [%rd2+132], 0x40404040;
+    @%p1 st.shared.b32 [%rd2+136], 0x40404040;
+    @%p1 st.shared.b32 [%rd2+140], 0x40404040;
+
+    // SwizzleMode::None, LBO = 128, SBO = 256, descriptor version 1.
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 70437464178688;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 70437464178688;
+    // dense, D=f32, A=e4m3, B=e5m2, no negate/transpose, M=128, N=8.
+    mov.u32 %r2, 134349840;
+    mov.pred %p0, 0;
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f8f6f4 [%r1+0], %rd3, %rd4, %r2, {0,0,0,0}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
+
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    ld.param.u64 %rd1, [k_param_0];
+    @%p1 st.global.f32 [%rd1], %f1;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "408");
+}
+
+/// Only `.kind::f16` and `.kind::f8f6f4` are modeled; any other `.kind` is
+/// rejected at lowering with a reason naming the rejected kind and the
+/// modeled ones, not the generic "not yet implemented" every unhandled
+/// `tcgen05.*` mnemonic falls back to.
+#[test]
+fn test_tcgen05_mma_rejects_unmodeled_kind() {
     let src = wrap(
         ".visible .entry k()
 {
@@ -1700,11 +1798,13 @@ fn test_tcgen05_mma_only_kind_f16_is_modeled() {
             reason,
         }) => {
             assert_eq!(instruction, "tcgen05.mma");
-            assert!(
-                reason.as_deref().unwrap_or("").contains("kind::f16"),
-                "expected the reason to mention .kind::f16, got: {:?}",
-                reason
-            );
+            let reason = reason.as_deref().unwrap_or("");
+            for expected in ["kind::tf32", ".kind::f16", ".kind::f8f6f4"] {
+                assert!(
+                    reason.contains(expected),
+                    "expected the reason to mention {expected}, got: {reason:?}"
+                );
+            }
         }
         other => panic!("expected UnsupportedInstruction, got: {}", other),
     }

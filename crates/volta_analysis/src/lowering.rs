@@ -33,7 +33,7 @@ use id_collections::{Id, IdVec};
 use crate::lower_error::{LowerError, LowerResult};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
-    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, UnaryOp,
+    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05MmaKind, UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
 use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
@@ -5415,13 +5415,13 @@ fn lower_tcgen05_wait(
     Ok(())
 }
 
-/// Lower `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc,
-/// idesc, enable-input-d` (PTX ISA 9.7.17.10.9.1, syntax form 1's second
-/// variant - `A` as a shared-memory descriptor, not `[a-tmem]`; no
+/// Lower `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem], a-desc,
+/// b-desc, idesc, enable-input-d` (PTX ISA 9.7.17.10.9.1, syntax form 1's
+/// second variant - `A` as a shared-memory descriptor, not `[a-tmem]`; no
 /// `disable-output-lane`, no `scale-input-d`). This is the corpus's actual
 /// usage and the "Recommended implementation scope" in
 /// `sm100a_support_plan.md`: dense, non-`.ws`, `.cta_group::1`,
-/// `.kind::f16` only - `.sp`/`.ws`/`.ws.sp` are separate `InstrKind`
+/// `.kind::f16`/`.kind::f8f6f4` only - `.sp`/`.ws`/`.ws.sp` are separate `InstrKind`
 /// values (never reach this function) and block-scaled/other `.kind`s are
 /// rejected here. `idesc`/`a-desc`/`b-desc`'s packed bit-fields describe
 /// shapes/types/addressing that only become known once their concrete
@@ -5436,7 +5436,7 @@ fn lower_tcgen05_mma(
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.mma";
     let mut saw_cta_group = false;
-    let mut saw_kind_f16 = false;
+    let mut kind = None;
 
     for modifier in modifiers {
         if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
@@ -5448,30 +5448,29 @@ fn lower_tcgen05_mma(
             && let [base, sub] = parts.as_slice()
             && base.as_slice().as_bytes() == b"kind"
         {
-            match sub.as_slice().as_bytes() {
-                b"f16" => {
-                    saw_kind_f16 = true;
-                    continue;
-                }
+            kind = Some(match sub.as_slice().as_bytes() {
+                b"f16" => Tcgen05MmaKind::F16,
+                b"f8f6f4" => Tcgen05MmaKind::F8f6f4,
                 other => {
                     return Err(unsupported(
                         NAME,
                         format!(
-                            "kind::{} (only .kind::f16 is modeled)",
+                            "kind::{} (only .kind::f16 and .kind::f8f6f4 are modeled)",
                             String::from_utf8_lossy(other)
                         ),
                     ));
                 }
-            }
+            });
+            continue;
         }
         return Err(unsupported(NAME, format!("modifier .{}", modifier)));
     }
     if !saw_cta_group {
         return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
     }
-    if !saw_kind_f16 {
-        return Err(unsupported(NAME, "missing .kind::f16 modifier"));
-    }
+    let Some(kind) = kind else {
+        return Err(unsupported(NAME, "missing .kind modifier"));
+    };
 
     // `{ disable-output-lane }, enable-input-d {, scale-input-d}`: despite
     // the ISA syntax block showing `disable-output-lane` unconditionally,
@@ -5535,6 +5534,7 @@ fn lower_tcgen05_mma(
 
     ctx.emit(
         LoweredInstr::Tcgen05Mma {
+            kind,
             d_tmem_base,
             d_tmem_offset,
             a_desc,
