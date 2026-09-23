@@ -2292,8 +2292,8 @@ impl<'p> Interpreter<'p> {
     /// `tcgen05.mma.cta_group::1.kind::f16 [d-tmem], a-desc, b-desc, idesc,
     /// enable-input-d`: `D = A*B+D` (or `A*B` if `enable-input-d` is
     /// false), `M x N x 16`, `A`/`B` read from shared memory via their
-    /// matrix descriptors (`eval::tcgen05_mma::swizzled_element_addr` - see
-    /// its doc comment for how the addressing formula was confirmed), `D`
+    /// matrix descriptors under the ISA's canonical layouts
+    /// (`eval::tcgen05_mma::operand_element_addr` - see its doc comment), `D`
     /// written into Tensor Memory at lane `m`, column `d_tmem + n` (Layout
     /// D for `M = 128`/`.cta_group::1`: one CTA-wide `warp-rank % 4`
     /// grouping of 32 lanes each - confirmed against Figures 211/212,
@@ -2401,6 +2401,24 @@ impl<'p> Interpreter<'p> {
 
         const K: u64 = 16; // fixed for .cta_group::1, dense, .kind::f16 (PTX ISA Table 42)
         const ELEM_BYTES: u64 = 2; // f16
+        // K-major unless transposed - PTX ISA 9.7.17.10.6.
+        let major = |transpose: bool| {
+            if transpose {
+                tcgen05_mma::Major::Mn
+            } else {
+                tcgen05_mma::Major::K
+            }
+        };
+        let (a_major, b_major) = (major(id.transpose_a), major(id.transpose_b));
+        let operand_addr = |desc, major, mn, k| {
+            tcgen05_mma::operand_element_addr(desc, major, mn, k, ELEM_BYTES).ok_or_else(|| {
+                EvalError::Unsupported {
+                    pc,
+                    what: "tcgen05.mma MN-major operand without swizzling is not modeled"
+                        .to_string(),
+                }
+            })
+        };
 
         for m in 0..id.m as u64 {
             if lane_disabled(m) {
@@ -2421,14 +2439,8 @@ impl<'p> Interpreter<'p> {
                     self.arena.real(Real::zero())
                 };
                 for k in 0..K {
-                    // K-major (leading = K) unless transposed (leading =
-                    // the matrix's own other axis) - PTX ISA 9.7.17.10.6.
-                    let (a_stride, a_leading) = if id.transpose_a { (k, m) } else { (m, k) };
-                    let (b_stride, b_leading) = if id.transpose_b { (k, n) } else { (n, k) };
-                    let a_addr =
-                        tcgen05_mma::swizzled_element_addr(&a_md, a_stride, a_leading, ELEM_BYTES);
-                    let b_addr =
-                        tcgen05_mma::swizzled_element_addr(&b_md, b_stride, b_leading, ELEM_BYTES);
+                    let a_addr = operand_addr(&a_md, a_major, m, k)?;
+                    let b_addr = operand_addr(&b_md, b_major, n, k)?;
                     let av = self.mem_read(t, pc, MemSpace::Shared, a_addr, ELEM_BYTES)?;
                     let bv = self.mem_read(t, pc, MemSpace::Shared, b_addr, ELEM_BYTES)?;
                     let Value::Scalar(a_e) = av else {
