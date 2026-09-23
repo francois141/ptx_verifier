@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 use id_collections::IdVec;
 
-use volta_frontend::ast::ScalarType;
+use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
@@ -36,6 +36,13 @@ use crate::types::{RegClass, ScalarTypeExt};
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
 pub type OutputFootprints = Vec<(String, Vec<(u64, ExprId)>)>;
+
+/// Which 16-bit half of a `.b32` funnel-shift operand to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneHalf {
+    Low,
+    High,
+}
 
 /// Execution statistics matching the paper's table columns.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1284,6 +1291,18 @@ impl<'p> Interpreter<'p> {
                 self.threads[t].regs.write(*dst, Value::Scalar(r));
             }
 
+            LoweredInstr::Shf {
+                dst,
+                lo,
+                hi,
+                shift,
+                dir,
+                mode,
+            } => {
+                let v = self.eval_shf(t, pc, lo, hi, shift, *dir, *mode)?;
+                self.threads[t].regs.write(*dst, v);
+            }
+
             LoweredInstr::Bfe {
                 dst,
                 src_a,
@@ -2374,6 +2393,127 @@ impl<'p> Interpreter<'p> {
                 Ok(Some(Value::Pair(lo, hi)))
             }
             _ => Ok(None),
+        }
+    }
+
+    /// `shf.{l,r}.{clamp,wrap}.b32 dst, lo, hi, shift` (PTX ISA 9.7.9.7):
+    /// shift the 64-bit concatenation of `hi`:`lo` and keep one 32-bit end
+    /// of it. See `LoweredInstr::Shf` for the bit-level definition.
+    #[allow(clippy::too_many_arguments)] // internal helper; the args are the instruction's operands
+    fn eval_shf(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        lo: &Operand,
+        hi: &Operand,
+        shift: &Operand,
+        dir: ShiftDir,
+        mode: ClampWrapMode,
+    ) -> EvalResult<Value> {
+        const WIDTH: i64 = 32;
+        let raw = self.concrete_operand(t, pc, shift, "shf shift amount")?;
+        let n = match mode {
+            ClampWrapMode::Clamp => raw.clamp(0, WIDTH),
+            ClampWrapMode::Wrap => raw & 0x1f,
+        };
+        let lo_v = self.operand_value(t, pc, lo)?;
+        let hi_v = self.operand_value(t, pc, hi)?;
+
+        // Packed 16-bit lanes have no bit pattern to shift, but a
+        // half-width funnel shift over them is exactly a lane shuffle: at
+        // n == 16 both directions extract the middle 32 bits of [hi, lo],
+        // giving `Pair(lo's high lane, hi's low lane)`. This is the
+        // "advance an f16 pair by one element" idiom behind an unaligned
+        // gather.
+        if n == WIDTH / 2 && (matches!(lo_v, Value::Pair(..)) || matches!(hi_v, Value::Pair(..))) {
+            let result_lo = self.shf_lane(t, pc, lo_v, LaneHalf::High)?;
+            let result_hi = self.shf_lane(t, pc, hi_v, LaneHalf::Low)?;
+            return Ok(Value::Pair(result_lo, result_hi));
+        }
+
+        // Ordinary bit-vector path. The ISA's `(x << (32 - n))` is a
+        // 64-bit-concatenation shift, so a 32-bit displacement contributes
+        // nothing rather than being an over-wide shift.
+        let a = self.scalar_operand(t, pc, lo)?;
+        let b = self.scalar_operand(t, pc, hi)?;
+        let (hi_shift, lo_shift) = match dir {
+            ShiftDir::Left => (n, WIDTH - n),
+            ShiftDir::Right => (WIDTH - n, n),
+        };
+
+        let zero = self.arena.int(0);
+        let hi_part = if hi_shift >= WIDTH {
+            zero
+        } else {
+            let amount = self.arena.int(hi_shift);
+            self.eval_binop(t, pc, BinOp::Shl, ScalarType::U32, b, amount)?
+        };
+        
+        let lo_part = if lo_shift >= WIDTH {
+            zero
+        } else {
+            let amount = self.arena.int(lo_shift);
+            self.eval_binop(t, pc, BinOp::Shr, ScalarType::U32, a, amount)?
+        };
+
+        let d = self.eval_binop(t, pc, BinOp::Or, ScalarType::U32, hi_part, lo_part)?;
+
+        Ok(Value::Scalar(d))
+    }
+
+    /// One 16-bit lane of a `.b32` funnel-shift operand, for the lane
+    /// shuffle in [`Self::eval_shf`].
+    ///
+    /// A `Pair` names its lanes outright and a concrete scalar slices
+    /// exactly. A *symbolic* scalar has no provable lane split, and is
+    /// accepted for its low lane only: reaching here means it sits
+    /// opposite a packed f16 pair in a half-width funnel shift, which is
+    /// the zero-extended narrow-load idiom (`ld.global.u16` into a `.b32`
+    /// register, then shuffled into an f16 pair), where the register's
+    /// value *is* its low lane. A genuinely 32-bit-wide symbolic value in
+    /// that position would be a type error in the kernel itself. Its high
+    /// lane carries no such reading, so that case stays a loud error
+    /// rather than an assumed zero.
+    fn shf_lane(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        v: Value,
+        half: LaneHalf,
+    ) -> EvalResult<ExprId> {
+        const LANE_BITS: u32 = 16;
+        const LANE_MASK: i64 = 0xFFFF;
+        let e = match v {
+            Value::Pair(lo, hi) => {
+                return Ok(match half {
+                    LaneHalf::Low => lo,
+                    LaneHalf::High => hi,
+                });
+            }
+            Value::Scalar(e) => e,
+            Value::Quad(..) => {
+                return Err(EvalError::ValueKindMismatch {
+                    thread: t,
+                    pc,
+                    what: "shf operand holds a packed byte quad",
+                });
+            }
+            Value::Mbarrier(_) => {
+                return Err(EvalError::ValueKindMismatch {
+                    thread: t,
+                    pc,
+                    what: "mbarrier handle used as a shf operand",
+                });
+            }
+        };
+        match (self.arena.as_int_const(e), half) {
+            (Some(c), LaneHalf::Low) => Ok(self.arena.int(c & LANE_MASK)),
+            (Some(c), LaneHalf::High) => Ok(self.arena.int((c >> LANE_BITS) & LANE_MASK)),
+            (None, LaneHalf::Low) => Ok(e),
+            (None, LaneHalf::High) => Err(EvalError::Unsupported {
+                pc,
+                what: "shf reading the high 16-bit lane of a symbolic 32-bit operand".to_string(),
+            }),
         }
     }
 

@@ -11,7 +11,7 @@ use std::fmt;
 
 use id_collections::{IdVec, id_type};
 use volta_common::Span;
-use volta_frontend::ast::ScalarType;
+use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::source_map::SourceMap;
 use crate::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
@@ -580,6 +580,34 @@ pub enum LoweredInstr {
         src: Operand,
     },
 
+    /// Funnel shift: `shf.{l,r}.{clamp,wrap}.b32 dst, lo, hi, shift` (PTX
+    /// ISA 9.7.9.7). Shifts the 64-bit value formed by concatenating `hi`
+    /// (bits 63:32) and `lo` (bits 31:0), writing the 32 most-significant
+    /// bits for `.l` and the 32 least-significant for `.r`:
+    ///
+    /// ```text
+    /// n = (.clamp) ? min(shift, 32) : shift & 0x1f
+    /// .l: dst = (hi << n) | (lo >> (32 - n))
+    /// .r: dst = (hi << (32 - n)) | (lo >> n)
+    /// ```
+    ///
+    /// Like `UnpackHalves`, the operands' *runtime* value kinds decide the
+    /// semantics and lowering cannot know them statically: a `Value::Pair`
+    /// (two f16 lanes) has no bit pattern to shift, so `n == 16` on such an
+    /// operand is evaluated as the exact lane shuffle it is - the "advance
+    /// an f16 pair by one element" idiom behind a strided/unaligned gather.
+    /// Plain integer scalars take the ordinary bitwise path.
+    Shf {
+        dst: RegId,
+        /// Low word: bits 31:0 of the shifted 64-bit value.
+        lo: Operand,
+        /// High word: bits 63:32 of the shifted 64-bit value.
+        hi: Operand,
+        shift: Operand,
+        dir: ShiftDir,
+        mode: ClampWrapMode,
+    },
+
     // =========================================================================
     // Control Flow
     // =========================================================================
@@ -1055,6 +1083,7 @@ define_instr_kinds!(
     PackHalves,
     PackQuad,
     UnpackQuad,
+    Shf,
     Bra,
     Ret,
     Exit,
@@ -1208,6 +1237,7 @@ impl LoweredInstr {
             Self::PackHalves { lo, hi, .. } => from_ops(&[*lo, *hi]),
             Self::PackQuad { elems, .. } => from_ops(elems),
             Self::UnpackQuad { src, .. } => from_op(src).into_iter().collect(),
+            Self::Shf { lo, hi, shift, .. } => from_ops(&[*lo, *hi, *shift]),
 
             // Control flow
             Self::Bra { .. } | Self::Ret | Self::Exit | Self::Trap | Self::Nop => vec![],
@@ -1416,6 +1446,7 @@ impl LoweredInstr {
             | Self::CvtPackHalves { dst, .. }
             | Self::PackHalves { dst, .. }
             | Self::PackQuad { dst, .. }
+            | Self::Shf { dst, .. }
             | Self::ReduxSync { dst, .. }
             | Self::Activemask { dst } => vec![*dst],
 
