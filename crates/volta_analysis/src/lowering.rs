@@ -2277,6 +2277,53 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Asynchronous Warpgroup-Level Matrix Multiply-Accumulate
+        // (PTX ISA 9.7.17.5-7)
+        // =========================================================================
+        ParsedInstruction::Other {
+            kind: InstrKind::WgmmaMmaAsync,
+            modifiers,
+            operands,
+        } => {
+            lower_wgmma_mma_async(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::WgmmaFence,
+            modifiers,
+            operands,
+        } => {
+            lower_wgmma_fence(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::WgmmaCommitGroup,
+            modifiers,
+            operands,
+        } => {
+            lower_wgmma_commit_group(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::WgmmaWaitGroup,
+            modifiers,
+            operands,
+        } => {
+            lower_wgmma_wait_group(ctx, modifiers, operands, predicate)?;
+        }
+
+        // =========================================================================
+        // Tensor Core - stmatrix.sync (ldmatrix's store-direction mirror)
+        // =========================================================================
+        ParsedInstruction::Other {
+            kind: InstrKind::Stmatrix,
+            modifiers,
+            operands,
+        } => {
+            lower_stmatrix(ctx, modifiers, operands, predicate)?;
+        }
+
+        // =========================================================================
         // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27,
         // 9.7.9.26.5.2, 9.7.14.17)
         // =========================================================================
@@ -6563,6 +6610,322 @@ fn lower_mma(
             b_type,
             d_type,
             c_type,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16 d, a-desc,
+/// b-desc, scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b`
+/// (PTX ISA 9.7.17.5.2's "Half precision floating point type" syntax
+/// form). Scoped, per the real target kernel's exact usage: dense
+/// `.f32.f16.f16` only (the `.bf16`/`.tf32`/FP8/integer/single-bit
+/// variants have entirely different operand shapes, per the ISA's other
+/// syntax blocks, and are rejected before operand parsing is even
+/// attempted); `A`/`B` both shared-memory descriptors (the alternate
+/// `d, a, b-desc, ...` register-resident-`A` form is rejected, matching
+/// `tcgen05.mma`'s own `[a-tmem]`-not-modeled precedent - distinguished by
+/// whether the second operand is a `Vector`, mirroring
+/// `lower_tcgen05_mma`'s `disable-output-lane` disambiguation); no negate
+/// (`imm-scale-a`/`imm-scale-b` must both be the compile-time immediate
+/// `1`, matching `tcgen05.mma`'s own "negate not modeled" treatment).
+/// `imm-trans-a`/`imm-trans-b` genuinely vary in the real kernel and are
+/// resolved to `bool` here (always compile-time immediates per the ISA).
+fn lower_wgmma_mma_async(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "wgmma.mma_async";
+    let mut shape: Option<MmaShape> = None;
+    let mut types: Vec<ScalarType> = Vec::new();
+
+    for modifier in modifiers {
+        let s = modifier.to_string();
+        if s == "sync" || s == "aligned" {
+            // The modeled execution mode.
+        } else if let Some(sh) = MmaShape::parse(&s) {
+            shape = Some(sh);
+        } else if let Some(ty) = parse_scalar_type_modifier(modifier) {
+            types.push(ty);
+        } else {
+            return Err(unsupported(NAME, format!("modifier .{}", s)));
+        }
+    }
+
+    let shape = shape.ok_or_else(|| unsupported(NAME, "missing shape modifier (e.g. .m64n256k16)"))?;
+    if shape.m != 64 || shape.k != 16 || shape.n == 0 || shape.n > 256 || !shape.n.is_multiple_of(8) {
+        return Err(unsupported(
+            NAME,
+            format!("shape {} (only .m64nNk16, N a multiple of 8 in 8..=256, is modeled)", shape),
+        ));
+    }
+    if types != [ScalarType::F32, ScalarType::F16, ScalarType::F16] {
+        return Err(unsupported(
+            NAME,
+            format!("type combination {:?} (only .f32.f16.f16 is modeled)", types),
+        ));
+    }
+
+    if operands.len() != 8 {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected d, a-desc, b-desc, scale-d, imm-scale-a, imm-scale-b, \
+                     imm-trans-a, imm-trans-b (register-resident A is not modeled)",
+        });
+    }
+    let [d, a_op, b_desc_op, scale_d_op, imm_scale_a_op, imm_scale_b_op, imm_trans_a_op, imm_trans_b_op] =
+        operands
+    else {
+        unreachable!()
+    };
+    if matches!(a_op, AstOperand::Vector(_)) {
+        return Err(unsupported(
+            NAME,
+            "register-resident matrix A (the `d, a, b-desc, ...` syntax form) is not modeled",
+        ));
+    }
+
+    let dst = ctx.resolve_dst_vector(d)?;
+    if dst.len() != (shape.n / 2) as usize {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", d),
+            reason: "d must have exactly N/2 f32 registers",
+        });
+    }
+    let a_desc = ctx.resolve_operand(a_op)?;
+    let b_desc = ctx.resolve_operand(b_desc_op)?;
+    let scale_d = ctx.resolve_operand(scale_d_op)?;
+
+    for (name, op) in [("imm-scale-a", imm_scale_a_op), ("imm-scale-b", imm_scale_b_op)] {
+        match ctx.resolve_operand(op)? {
+            Operand::ImmI64(1) => {}
+            Operand::ImmI64(-1) => {
+                return Err(unsupported(NAME, format!("{} = -1 (negate) is not modeled", name)));
+            }
+            other => {
+                return Err(LowerError::InvalidOperand {
+                    instruction: NAME.to_string(),
+                    operand: format!("{:?}", other),
+                    reason: "must be the compile-time immediate 1 or -1",
+                });
+            }
+        }
+    }
+
+    let transpose_a = match ctx.resolve_const_u32(imm_trans_a_op, NAME, "imm-trans-a must be 0 or 1")? {
+        0 => false,
+        1 => true,
+        other => return Err(unsupported(NAME, format!("imm-trans-a = {} (must be 0 or 1)", other))),
+    };
+    let transpose_b = match ctx.resolve_const_u32(imm_trans_b_op, NAME, "imm-trans-b must be 0 or 1")? {
+        0 => false,
+        1 => true,
+        other => return Err(unsupported(NAME, format!("imm-trans-b = {} (must be 0 or 1)", other))),
+    };
+
+    ctx.emit(
+        LoweredInstr::WgmmaMmaAsync {
+            shape,
+            dst,
+            a_desc,
+            b_desc,
+            scale_d,
+            transpose_a,
+            transpose_b,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Shared grammar for `wgmma.fence`/`wgmma.commit_group` (PTX ISA
+/// 9.7.17.7.1/.2): both require exactly `.sync.aligned` and take no
+/// operands. Neither has a data effect Volta models (see
+/// `LoweredInstr::WgmmaFence`/`WgmmaCommitGroup`'s doc comments) - `instr`
+/// is emitted unchanged.
+fn lower_wgmma_sync_aligned_only(
+    ctx: &mut LoweringContext,
+    name: &str,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    instr: LoweredInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let (mut saw_sync, mut saw_aligned) = (false, false);
+    for modifier in modifiers {
+        match modifier.to_string().as_str() {
+            "sync" => saw_sync = true,
+            "aligned" => saw_aligned = true,
+            other => return Err(unsupported(name, format!("modifier .{}", other))),
+        }
+    }
+    if !saw_sync || !saw_aligned {
+        return Err(unsupported(name, "missing mandatory .sync.aligned qualifiers"));
+    }
+    if !operands.is_empty() {
+        return Err(LowerError::InvalidOperand {
+            instruction: name.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected no operands",
+        });
+    }
+    ctx.emit(instr, predicate)?;
+    Ok(())
+}
+
+/// Lower `wgmma.fence.sync.aligned;` (PTX ISA 9.7.17.7.1).
+fn lower_wgmma_fence(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    lower_wgmma_sync_aligned_only(
+        ctx,
+        "wgmma.fence",
+        modifiers,
+        operands,
+        LoweredInstr::WgmmaFence,
+        predicate,
+    )
+}
+
+/// Lower `wgmma.commit_group.sync.aligned;` (PTX ISA 9.7.17.7.2).
+fn lower_wgmma_commit_group(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    lower_wgmma_sync_aligned_only(
+        ctx,
+        "wgmma.commit_group",
+        modifiers,
+        operands,
+        LoweredInstr::WgmmaCommitGroup,
+        predicate,
+    )
+}
+
+/// Lower `wgmma.wait_group.sync.aligned N;` (PTX ISA 9.7.17.7.3). `N` is
+/// validated (must be a compile-time non-negative integer, per the ISA)
+/// then discarded - see `LoweredInstr::WgmmaWaitGroup`'s doc comment for
+/// why.
+fn lower_wgmma_wait_group(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "wgmma.wait_group";
+    let (mut saw_sync, mut saw_aligned) = (false, false);
+    for modifier in modifiers {
+        match modifier.to_string().as_str() {
+            "sync" => saw_sync = true,
+            "aligned" => saw_aligned = true,
+            other => return Err(unsupported(NAME, format!("modifier .{}", other))),
+        }
+    }
+    if !saw_sync || !saw_aligned {
+        return Err(unsupported(NAME, "missing mandatory .sync.aligned qualifiers"));
+    }
+    let [n] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected N",
+        });
+    };
+    let _n = ctx.resolve_const_u32(n, NAME, "N must be a compile-time non-negative integer")?;
+    ctx.emit(LoweredInstr::WgmmaWaitGroup, predicate)?;
+    Ok(())
+}
+
+/// Lower `stmatrix.sync.aligned.x{1,2,4}[.trans].m8n8.shared.b16 [addr],
+/// {src...}` (PTX ISA 9.7.14.5.17) - `ldmatrix`'s store-direction mirror
+/// (`lower_ldmatrix` above), same grammar and scope, operand order/
+/// direction flipped: the address comes first, the source register (or
+/// immediate) vector second.
+fn lower_stmatrix(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "stmatrix";
+    let mut trans = false;
+    let mut num: Option<u32> = None;
+
+    for modifier in modifiers {
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [base, sub] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"shared"
+        {
+            match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
+                Some(SharedStateSpaceQualifier::Cta) => continue,
+                Some(SharedStateSpaceQualifier::Cluster) => {
+                    return Err(unsupported(
+                        NAME,
+                        "shared::cluster (only the executing CTA's own shared memory is modeled)",
+                    ));
+                }
+                None => {
+                    return Err(unsupported(NAME, format!("modifier .shared::{sub}")));
+                }
+            }
+        }
+
+        let s = modifier.to_string();
+        match s.as_str() {
+            "sync" | "aligned" | "shared" | "m8n8" | "b16" => {}
+            "trans" => trans = true,
+            "x1" => num = Some(1),
+            "x2" => num = Some(2),
+            "x4" => num = Some(4),
+            other => {
+                return Err(unsupported(NAME, format!("modifier .{}", other)));
+            }
+        }
+    }
+
+    let num = num.ok_or_else(|| LowerError::UnsupportedInstruction {
+        instruction: NAME.to_string(),
+        reason: Some("missing x1/x2/x4 modifier".to_string()),
+    })?;
+
+    if operands.len() < 2 {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected address and source vector operands",
+        });
+    }
+
+    let (addr, addr_offset) = match &operands[0] {
+        AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
+        other => (ctx.resolve_operand(other)?, 0),
+    };
+    let src = ctx.resolve_operand_vector(&operands[1])?;
+    if src.len() != num as usize {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands[1]),
+            reason: "source vector length must match x1/x2/x4",
+        });
+    }
+
+    ctx.emit(
+        LoweredInstr::Stmatrix {
+            addr,
+            addr_offset,
+            src,
+            num,
+            trans,
         },
         predicate,
     )?;

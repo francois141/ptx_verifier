@@ -5350,6 +5350,205 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_hazard_on_sm90() {
 }
 
 // =========================================================================
+// `wgmma.mma_async` / `stmatrix` (sm_90+)
+// =========================================================================
+
+/// `wgmma.fence` -> `wgmma.mma_async.m64n8k16.f32.f16.f16` (`scale-d`
+/// false, seeding from `A*B` only) -> `wgmma.commit_group` ->
+/// `wgmma.wait_group 0`, smallest feasible shape (N=8, 4 registers/thread,
+/// 128 threads - one warpgroup). No swizzle (`SwizzleMode::None`) keeps
+/// the descriptor trivial (`start_addr` only - `stride_dim_byte_offset`/
+/// `leading_dim_byte_offset` both 0, so every thread's row/col multiplies
+/// to 0 and every thread reads the same 16-element A row and B column -
+/// harmless here since only thread 0's result is checked, and the
+/// row/col-addressing *formula* itself is independently verified by
+/// `tensor_core::tests::test_wgmma_matrix_d_*` already; this test's job is
+/// the instruction pipeline - descriptor decode, shared reads,
+/// accumulate, register writeback - not the fragment table). Thread 0's
+/// `matrix_d(0, 8)` fragment is `[(reg0,row0,col0), (reg1,row0,col1),
+/// (reg2,row8,col0), (reg3,row8,col1)]`; `%d0` (row 0, col 0) is checked
+/// against `sum(1..=16) = 136` - reusing the exact same A-row/B-column
+/// values and expected result as `test_tcgen05_mma_numeric_correctness`
+/// above, since the dot product is identical.
+#[test]
+fn test_wgmma_mma_async_numeric_correctness() {
+    let src = wrap_sm90a(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<6>;
+    .reg .f32 %f<2>;
+    .reg .b16 %rs<2>;
+    .reg .f32 %d<4>;
+    .shared .align 16 .b8 a_row[32];
+    .shared .align 16 .b8 b_col[32];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+
+    mov.u64 %rd1, a_row;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+0], %rs1;
+    mov.f32 %f1, 0f40000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+2], %rs1;
+    mov.f32 %f1, 0f40400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+4], %rs1;
+    mov.f32 %f1, 0f40800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+6], %rs1;
+    mov.f32 %f1, 0f40A00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+8], %rs1;
+    mov.f32 %f1, 0f40C00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+10], %rs1;
+    mov.f32 %f1, 0f40E00000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+12], %rs1;
+    mov.f32 %f1, 0f41000000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+14], %rs1;
+    mov.f32 %f1, 0f41100000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    mov.f32 %f1, 0f41200000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    mov.f32 %f1, 0f41300000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    mov.f32 %f1, 0f41400000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    mov.f32 %f1, 0f41500000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    mov.f32 %f1, 0f41600000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    mov.f32 %f1, 0f41700000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    mov.f32 %f1, 0f41800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd1+30], %rs1;
+
+    mov.u64 %rd2, b_col;
+    mov.f32 %f1, 0f3F800000;
+    cvt.rn.f16.f32 %rs1, %f1;
+    @%p1 st.shared.b16 [%rd2+0], %rs1;
+    @%p1 st.shared.b16 [%rd2+2], %rs1;
+    @%p1 st.shared.b16 [%rd2+4], %rs1;
+    @%p1 st.shared.b16 [%rd2+6], %rs1;
+    @%p1 st.shared.b16 [%rd2+8], %rs1;
+    @%p1 st.shared.b16 [%rd2+10], %rs1;
+    @%p1 st.shared.b16 [%rd2+12], %rs1;
+    @%p1 st.shared.b16 [%rd2+14], %rs1;
+    @%p1 st.shared.b16 [%rd2+16], %rs1;
+    @%p1 st.shared.b16 [%rd2+18], %rs1;
+    @%p1 st.shared.b16 [%rd2+20], %rs1;
+    @%p1 st.shared.b16 [%rd2+22], %rs1;
+    @%p1 st.shared.b16 [%rd2+24], %rs1;
+    @%p1 st.shared.b16 [%rd2+26], %rs1;
+    @%p1 st.shared.b16 [%rd2+28], %rs1;
+    @%p1 st.shared.b16 [%rd2+30], %rs1;
+
+    bar.sync 0;
+
+    shr.u64 %rd3, %rd1, 4;
+    shr.u64 %rd4, %rd2, 4;
+    setp.ne.u32 %p2, %r0, %r0;
+
+    wgmma.fence.sync.aligned;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    wgmma.wait_group.sync.aligned 0;
+
+    ld.param.u64 %rd5, [k_param_0];
+    @%p1 st.global.f32 [%rd5], %d0;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((128, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "136");
+}
+
+/// `stmatrix.x1.m8n8.shared.b16`: 32 lanes collectively write one 8x8x2B
+/// (128-byte) tile. Each lane's own register (`%rv = 1000 + %tid.x`, a
+/// distinct value per lane) lands at `row_addr[lane/4] + (lane%4)*4` -
+/// `row_addr[r]` supplied by lane `r`'s own address register (`src +
+/// r*16`, so lanes 0-7 each name one of the tile's 8 rows). A clean
+/// bijection over the 32 lanes onto the 128 bytes (verified: no lane
+/// shares a byte with another), so exactly one lane's value can land at
+/// any given byte - checked for lane 5 (`row=5/4=1, col_group=5%4=1` ->
+/// byte `src + 1*16 + 1*4 = src+20`) via a plain `ld.shared` readback.
+#[test]
+fn test_stmatrix_writes_the_expected_byte_per_lane() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<3>;
+    .shared .align 16 .b8 buf[128];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+
+    // Address-supply register: only lanes 0-7's values are ever consulted
+    // (num=1, so row_addr is built from `members[0*8+r]`, r in 0..8) -
+    // `src + tid*16` gives lane r exactly row r's address for those lanes;
+    // lanes 8-31 compute an unused value.
+    mov.u32 %r1, buf;
+    mad.lo.u32 %r2, %r0, 16, %r1;
+
+    // Per-lane source value: distinct and directly checkable.
+    add.u32 %r3, %r0, 1000;
+
+    stmatrix.sync.aligned.x1.m8n8.shared.b16 [%r2], {%r3};
+    bar.sync 0;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.shared.u32 %r4, [%r1+20];
+    @%p1 st.global.u32 [%rd1], %r4;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "1005");
+}
+
+// =========================================================================
 // Packed single precision (f32x2, sm_100+)
 // =========================================================================
 

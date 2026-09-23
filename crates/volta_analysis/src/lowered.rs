@@ -901,6 +901,75 @@ pub enum LoweredInstr {
     },
 
     // =========================================================================
+    // Asynchronous Warpgroup-Level Matrix Multiply-Accumulate
+    // (PTX ISA 9.7.17.5-7)
+    // =========================================================================
+    /// `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16 d, a-desc, b-desc,
+    /// scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b` (the
+    /// shared-memory-`A` syntax form, PTX ISA 9.7.17.5.2). `D = A*B+D` (or
+    /// `A*B` if `scale_d` is false), computed warpgroup-wide (128 threads):
+    /// each thread produces and writes only its own `n/2`-register slice of
+    /// `dst` (also the read-if-`scale_d` accumulator - the same registers
+    /// serve both roles, per
+    /// `tensor_core::wgmma_m64n_k16::matrix_d`). `A`/`B` are both
+    /// shared-memory-resident 64-bit matrix descriptors, decoded at eval
+    /// time (`eval::wgmma::decode_wgmma_matrix_descriptor`). Scoped to
+    /// dense `.f32.f16.f16` only; the alternate register-resident-`A`
+    /// syntax form (`d, a, b-desc, ...`, no `imm-trans-a`) and any negate
+    /// (`imm-scale-a`/`imm-scale-b` = -1) are rejected at lowering - see
+    /// `lowering::lower_wgmma_mma_async`.
+    WgmmaMmaAsync {
+        shape: crate::tensor_core::MmaShape,
+        dst: Vec<RegId>,
+        a_desc: Operand,
+        b_desc: Operand,
+        scale_d: Operand,
+        transpose_a: bool,
+        transpose_b: bool,
+    },
+
+    /// `wgmma.fence.sync.aligned;` (PTX ISA 9.7.17.7.1): orders a
+    /// warpgroup's *register* accesses (the accumulator and matrix-A-
+    /// fragment registers) against a following `wgmma.mma_async`. Volta
+    /// does not model register-hazard tracking at all (a deliberate,
+    /// separate scope decision - mirrors `Tcgen05Fence`'s existing no-op
+    /// treatment above), so this has no data effect to model: a genuine
+    /// no-op, not a "modeled-then-discarded" one - nothing is tracked for
+    /// it to release.
+    WgmmaFence,
+
+    /// `wgmma.commit_group.sync.aligned;` (PTX ISA 9.7.17.7.2): batches
+    /// all prior uncommitted `wgmma.mma_async` ops issued by this warp
+    /// into a new "wgmma-group", for a later `wgmma.wait_group` to wait
+    /// on. Volta's evaluation is eager/sequential and does not track
+    /// "wgmma-group" membership at all (out of scope, see `WgmmaFence`),
+    /// so this is a genuine no-op.
+    WgmmaCommitGroup,
+
+    /// `wgmma.wait_group.sync.aligned N;` (PTX ISA 9.7.17.7.3): waits
+    /// until at most `N` wgmma-groups remain pending. Volta gives every
+    /// `wgmma.mma_async` its full data effect immediately (no
+    /// pending-group bookkeeping is modeled, same scope decision as
+    /// `WgmmaCommitGroup`), so there is nothing to actually wait for; `N`
+    /// is validated at lowering (must be a compile-time non-negative
+    /// integer, per the ISA) and then discarded - not stored, since
+    /// nothing downstream ever needs it.
+    WgmmaWaitGroup,
+
+    /// `stmatrix.sync.aligned.x{1,2,4}[.trans].m8n8.shared.b16 [addr],
+    /// {src...}` (PTX ISA 9.7.14.5.17) - `ldmatrix`'s store-direction
+    /// mirror: same row-addressing convention
+    /// (`eval::warp::exec_stmatrix`), `shared::cta` only (same scope
+    /// `ldmatrix` already has).
+    Stmatrix {
+        addr: Operand,
+        addr_offset: i64,
+        src: Vec<Operand>,
+        num: u32,
+        trans: bool,
+    },
+
+    // =========================================================================
     // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27,
     // 9.7.9.26.5.2, 9.7.14.17)
     // =========================================================================
@@ -1133,6 +1202,11 @@ define_instr_kinds!(
     Tcgen05Mma,
     Tcgen05Fence,
     Tcgen05Commit,
+    WgmmaMmaAsync,
+    WgmmaFence,
+    WgmmaCommitGroup,
+    WgmmaWaitGroup,
+    Stmatrix,
     TensormapReplace,
     TensormapCpFenceproxy,
     FenceProxyTensormap,
@@ -1372,6 +1446,28 @@ impl LoweredInstr {
             Self::Tcgen05Fence => vec![],
             Self::Tcgen05Commit { addr_base, .. } => from_op(addr_base).into_iter().collect(),
 
+            // Asynchronous warpgroup-level matrix multiply-accumulate
+            Self::WgmmaMmaAsync {
+                dst,
+                a_desc,
+                b_desc,
+                scale_d,
+                ..
+            } => {
+                let mut r = from_ops(&[*a_desc, *b_desc, *scale_d]);
+                // Conservatively "maybe read": `scale_d` gates whether the
+                // accumulator is actually read, but that's a runtime value
+                // at eval time, not something known here.
+                r.extend(dst.iter().copied());
+                r
+            }
+            Self::WgmmaFence | Self::WgmmaCommitGroup | Self::WgmmaWaitGroup => vec![],
+            Self::Stmatrix { addr, src, .. } => {
+                let mut r = from_op(addr).into_iter().collect::<Vec<_>>();
+                r.extend(from_ops(src));
+                r
+            }
+
             // Tensor-map objects & TMA tensor copy
             Self::TensormapReplace {
                 addr_base, field, ..
@@ -1481,7 +1577,8 @@ impl LoweredInstr {
             | Self::Mma { dst, .. }
             | Self::WmmaLoad { dst, .. }
             | Self::WmmaMma { dst, .. }
-            | Self::Tcgen05Ld { dst, .. } => dst.clone(),
+            | Self::Tcgen05Ld { dst, .. }
+            | Self::WgmmaMmaAsync { dst, .. } => dst.clone(),
 
             // Shuffle: dst + optional dst_pred
             Self::Shfl { dst, dst_pred, .. } | Self::ShflSync { dst, dst_pred, .. } => {
@@ -1534,6 +1631,10 @@ impl LoweredInstr {
             | Self::Tcgen05Mma { .. }
             | Self::Tcgen05Fence
             | Self::Tcgen05Commit { .. }
+            | Self::WgmmaFence
+            | Self::WgmmaCommitGroup
+            | Self::WgmmaWaitGroup
+            | Self::Stmatrix { .. }
             | Self::TensormapReplace { .. }
             | Self::TensormapCpFenceproxy { .. }
             | Self::FenceProxyTensormap
