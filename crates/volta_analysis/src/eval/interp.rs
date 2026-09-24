@@ -2033,54 +2033,7 @@ impl<'p> Interpreter<'p> {
                 while self.threads[t].groups.len() > *n as usize {
                     let group = self.threads[t].groups.pop_front().unwrap();
                     for copy in group {
-                        // Release before writing: the deferred write must
-                        // not trip the copy's own still-held dst lock (and
-                        // an early same-thread peek before this point must
-                        // still be caught by it - see the design writeup).
-                        self.race.release_dst(
-                            MemSpace::Shared,
-                            copy.dst_addr,
-                            copy.cp_size,
-                            t,
-                            copy.pc,
-                        );
-                        if copy.real_bytes > 0 {
-                            self.race.release_src(
-                                MemSpace::Global,
-                                copy.src_addr,
-                                copy.real_bytes,
-                                t,
-                                copy.pc,
-                            );
-                        }
-                        for (i, v) in copy.words.into_iter().enumerate() {
-                            self.mem_write(
-                                t,
-                                copy.pc,
-                                MemSpace::Shared,
-                                copy.dst_addr + i as u64 * 4,
-                                4,
-                                v,
-                            )?;
-                        }
-                        // sm_90+ only: this write went through the async
-                        // proxy, and per the ISA needs an explicit
-                        // `fence.proxy.async` before any later access
-                        // (through either proxy) is well-defined -
-                        // `bar.sync` alone does not provide that ordering.
-                        // Below sm_90 there is no such proxy distinction
-                        // (and `fence.proxy.async` isn't even a legal
-                        // instruction there), so this is a no-op unless
-                        // `self.features.async_proxy_fence` is set.
-                        if self.features.async_proxy_fence {
-                            self.race.mark_async_proxy_unfenced(
-                                MemSpace::Shared,
-                                copy.dst_addr,
-                                copy.cp_size,
-                                t,
-                                copy.pc,
-                            );
-                        }
+                        self.complete_cp_async_copy(t, copy)?;
                     }
                 }
             }
@@ -2220,6 +2173,37 @@ impl<'p> Interpreter<'p> {
                     .read_mbarrier(addr)
                     .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
                 self.mbarriers.arrive(id, t, 1, None);
+            }
+
+            // cp.async.mbarrier.arrive: the arrive-on fires once every
+            // prior `cp.async` of this thread (committed or not) has
+            // completed. Landing them all here is one valid schedule of
+            // that; waiters still sync with `t` through the arrive, so an
+            // unsynchronized consumer read is still caught as a race.
+            // Without `.noinc` the pending count is bumped by one first,
+            // so the net arrival count is zero.
+            LoweredInstr::CpAsyncMbarrierArrive {
+                addr_base,
+                addr_offset,
+                noinc,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self
+                    .shared
+                    .read_mbarrier(addr)
+                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                let thread = &mut self.threads[t];
+                let copies: Vec<PendingCopy> = std::mem::take(&mut thread.groups)
+                    .into_iter()
+                    .flatten()
+                    .chain(std::mem::take(&mut thread.uncommitted))
+                    .collect();
+                for copy in copies {
+                    self.complete_cp_async_copy(t, copy)?;
+                }
+                self.mbarriers.arrive(id, t, u64::from(*noinc), None);
             }
 
             LoweredInstr::TensormapReplace {
@@ -3753,6 +3737,61 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<u64> {
         let base = self.concrete_operand(t, pc, base, "memory address")?;
         Ok((base as u64).wrapping_add(offset as u64))
+    }
+
+    /// Land one deferred `cp.async` copy: drop its locks, then perform
+    /// its shared-memory write. Shared by `cp.async.wait_group` and
+    /// `cp.async.mbarrier.arrive`, the two completion points.
+    fn complete_cp_async_copy(&mut self, t: ThreadId, copy: PendingCopy) -> EvalResult<()> {
+                // Release before writing: the deferred write must
+                // not trip the copy's own still-held dst lock (and
+                // an early same-thread peek before this point must
+                // still be caught by it - see the design writeup).
+                self.race.release_dst(
+                    MemSpace::Shared,
+                    copy.dst_addr,
+                    copy.cp_size,
+                    t,
+                    copy.pc,
+                );
+                if copy.real_bytes > 0 {
+                    self.race.release_src(
+                        MemSpace::Global,
+                        copy.src_addr,
+                        copy.real_bytes,
+                        t,
+                        copy.pc,
+                    );
+                }
+                for (i, v) in copy.words.into_iter().enumerate() {
+                    self.mem_write(
+                        t,
+                        copy.pc,
+                        MemSpace::Shared,
+                        copy.dst_addr + i as u64 * 4,
+                        4,
+                        v,
+                    )?;
+                }
+                // sm_90+ only: this write went through the async
+                // proxy, and per the ISA needs an explicit
+                // `fence.proxy.async` before any later access
+                // (through either proxy) is well-defined -
+                // `bar.sync` alone does not provide that ordering.
+                // Below sm_90 there is no such proxy distinction
+                // (and `fence.proxy.async` isn't even a legal
+                // instruction there), so this is a no-op unless
+                // `self.features.async_proxy_fence` is set.
+                if self.features.async_proxy_fence {
+                    self.race.mark_async_proxy_unfenced(
+                        MemSpace::Shared,
+                        copy.dst_addr,
+                        copy.cp_size,
+                        t,
+                        copy.pc,
+                    );
+                }
+        Ok(())
     }
 
     /// Ownership containment: the region owning the access's *first byte*

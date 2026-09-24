@@ -1054,6 +1054,16 @@ pub enum LoweredInstr {
         mbar_offset: i64,
     },
 
+    /// `cp.async.mbarrier.arrive{.noinc}{.shared{::cta}}.b64 [addr]`: once
+    /// all of this thread's prior `CpAsync` copies complete, arrive on the
+    /// `mbarrier` at `addr_base + addr_offset`. Without `.noinc` the
+    /// pending count is incremented first, so the net arrival count is 0.
+    CpAsyncMbarrierArrive {
+        addr_base: Operand,
+        addr_offset: i64,
+        noinc: bool,
+    },
+
     // =========================================================================
     // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
     // =========================================================================
@@ -1214,6 +1224,7 @@ define_instr_kinds!(
     FenceProxyAsync,
     CpAsyncCommitGroup,
     CpAsyncWaitGroup,
+    CpAsyncMbarrierArrive,
     Shfl,
     ShflSync,
     ElectSync,
@@ -1389,6 +1400,9 @@ impl LoweredInstr {
             Self::BarWarpSync { mask } => from_op(mask).into_iter().collect(),
             Self::Membar { .. } | Self::Fence | Self::FenceProxyAsync { .. } => vec![],
             Self::CpAsyncCommitGroup | Self::CpAsyncWaitGroup { .. } => vec![],
+            Self::CpAsyncMbarrierArrive { addr_base, .. } => {
+                from_op(addr_base).into_iter().collect()
+            }
 
             // Warp shuffle
             Self::Shfl {
@@ -1668,6 +1682,7 @@ impl LoweredInstr {
             | Self::FenceProxyAsync { .. }
             | Self::CpAsyncCommitGroup
             | Self::CpAsyncWaitGroup { .. }
+            | Self::CpAsyncMbarrierArrive { .. }
             | Self::Tcgen05Alloc { .. }
             | Self::Tcgen05Dealloc { .. }
             | Self::Tcgen05RelinquishAllocPermit
