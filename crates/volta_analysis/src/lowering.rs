@@ -5640,11 +5640,12 @@ fn lower_tcgen05_mma(
 }
 
 /// Lower `fence{.sem}.scope` / `fence.proxy.alias{.sem}.scope` /
-/// `fence.proxy.async{.global|.shared::cta|.shared::cluster}{.sem}.scope`
-/// (PTX ISA, Section 9.7.15.4). The plain and `.alias` forms have no data
-/// effect Volta models (same treatment as `Tcgen05Fence`/
-/// `FenceProxyTensormap` - a pure ordering fence under Volta's sequential,
-/// non-reordering execution model). `.async`'s restriction is collapsed
+/// `fence.proxy.async{.global|.shared::cta|.shared::cluster}{.sem}.scope` /
+/// `fence.mbarrier_init.release.cluster` (PTX ISA, Section 9.7.15.4). The
+/// plain, `.alias` and `.mbarrier_init` forms have no data effect Volta
+/// models (same treatment as `Tcgen05Fence`/`FenceProxyTensormap` - a pure
+/// ordering fence under Volta's sequential, non-reordering execution
+/// model). `.async`'s restriction is collapsed
 /// from the frontend's `SharedStateSpaceQualifier` (`::cta`/`::cluster`) to
 /// a plain `MemSpace::Shared` - `RaceTracker`'s async-proxy tracker has no
 /// cluster-vs-cta distinction, so both mean the same thing to it.

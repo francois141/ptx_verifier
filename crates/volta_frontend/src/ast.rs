@@ -3003,12 +3003,21 @@ pub enum FenceProxyKind {
     Async(Option<AsyncProxyRestrict>),
 }
 
-/// fence: `fence{.sem}.scope`, or `fence.proxy.proxykind{{.sem}.scope}`
-/// (Block 135)
+/// `fence.op_restrict.release.cluster`'s `.op_restrict` (PTX ISA:
+/// `.op_restrict = { .mbarrier_init }`): the fence orders only prior
+/// operations of this kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceOpRestrict {
+    MbarrierInit,
+}
+
+/// fence: `fence{.sem}.scope`, `fence.op_restrict.release.cluster`, or
+/// `fence.proxy.proxykind{{.sem}.scope}` (Block 135)
 #[derive(Debug, Clone)]
 pub struct FenceInstr {
     pub sem: Option<FenceSem>,
     pub scope: Option<MemScope>,
+    pub op_restrict: Option<FenceOpRestrict>,
     pub proxy: Option<FenceProxyKind>,
 }
 
