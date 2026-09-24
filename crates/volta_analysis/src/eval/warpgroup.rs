@@ -27,6 +27,7 @@ use volta_frontend::ast::ScalarType;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::fp8;
 use crate::eval::interp::Interpreter;
+use crate::eval::race::Proxy;
 use crate::eval::tcgen05_mma::{self, Major, MatrixDescriptor};
 use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
@@ -179,7 +180,9 @@ impl Interpreter<'_> {
 
     /// Read `A`/`B` element `(mn_idx, k_idx)` of type `ty` under the ISA's
     /// canonical layouts (`tcgen05_mma::operand_element_addr` - wgmma's
-    /// table in PTX ISA 9.7.17.5.1.2.1.3 is the same).
+    /// table in PTX ISA 9.7.17.5.1.2.1.3 is the same), through the async
+    /// proxy (PTX ISA 9.7.17.7.1: an async proxy fence orders prior shared
+    /// writes before `wgmma.mma_async` operand reads, as for `tcgen05.mma`).
     /// A concrete fp8 byte (never an input element: e.g. zero padding a
     /// kernel stored itself) is decoded from its bit encoding; a symbolic
     /// element already is its real value (see `eval::fp8`'s module doc).
@@ -198,7 +201,8 @@ impl Interpreter<'_> {
                 what: "wgmma.mma_async MN-major operand without swizzling is not modeled"
                     .to_string(),
             })?;
-        let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)?
+        let Value::Scalar(e) =
+            self.mem_read_via(t, pc, MemSpace::Shared, addr, elem_bytes, Proxy::Async)?
         else {
             return Err(EvalError::ValueKindMismatch {
                 thread: t,
