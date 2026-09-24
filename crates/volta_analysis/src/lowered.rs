@@ -703,6 +703,16 @@ pub enum LoweredInstr {
     /// pending.
     CpAsyncWaitGroup { n: u32 },
 
+    /// `cp.async.mbarrier.arrive{.noinc}{.shared{::cta}}.b64 [addr]`: once
+    /// all of this thread's prior `CpAsync` copies complete, arrive on the
+    /// `mbarrier` at `addr_base + addr_offset`. Without `.noinc` the
+    /// pending count is incremented first, so the net arrival count is 0.
+    CpAsyncMbarrierArrive {
+        addr_base: Operand,
+        addr_offset: i64,
+        noinc: bool,
+    },
+
     // =========================================================================
     // Warp-Level Operations
     // =========================================================================
@@ -1079,14 +1089,19 @@ pub enum LoweredInstr {
         mbar_offset: i64,
     },
 
-    /// `cp.async.mbarrier.arrive{.noinc}{.shared{::cta}}.b64 [addr]`: once
-    /// all of this thread's prior `CpAsync` copies complete, arrive on the
-    /// `mbarrier` at `addr_base + addr_offset`. Without `.noinc` the
-    /// pending count is incremented first, so the net arrival count is 0.
-    CpAsyncMbarrierArrive {
-        addr_base: Operand,
-        addr_offset: i64,
-        noinc: bool,
+    /// `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx::bytes
+    /// [dstMem], [srcMem], size, [mbar]`: non-tensor bulk copy of `size`
+    /// contiguous bytes, global to shared, completing `size` bytes of
+    /// async-transaction on `mbar`. See `lowering::lower_cp_async_bulk` for
+    /// what is rejected.
+    CpAsyncBulkLoad {
+        dst_base: Operand,
+        dst_offset: i64,
+        src_base: Operand,
+        src_offset: i64,
+        size: Operand,
+        mbar_base: Operand,
+        mbar_offset: i64,
     },
 
     // =========================================================================
@@ -1278,6 +1293,7 @@ define_instr_kinds!(
     TensormapCpFenceproxy,
     FenceProxyTensormap,
     CpAsyncBulkTensorLoad,
+    CpAsyncBulkLoad,
     MbarrierInit,
     MbarrierInval,
     MbarrierArrive,
@@ -1588,6 +1604,13 @@ impl LoweredInstr {
                 r.extend(from_ops(coords));
                 r
             }
+            Self::CpAsyncBulkLoad {
+                dst_base,
+                src_base,
+                size,
+                mbar_base,
+                ..
+            } => from_ops(&[*dst_base, *src_base, *size, *mbar_base]),
 
             // mbarrier
             Self::MbarrierInit {
@@ -1724,6 +1747,7 @@ impl LoweredInstr {
             | Self::TensormapCpFenceproxy { .. }
             | Self::FenceProxyTensormap
             | Self::CpAsyncBulkTensorLoad { .. }
+            | Self::CpAsyncBulkLoad { .. }
             | Self::MbarrierInit { .. }
             | Self::MbarrierInval { .. }
             | Self::MbarrierCompleteTx { .. }

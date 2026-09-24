@@ -1988,6 +1988,14 @@ fn lower_parsed_instruction(
             ctx.emit(LoweredInstr::CpAsyncWaitGroup { n: 0 }, predicate)?;
         }
 
+        ParsedInstruction::Other {
+            kind: InstrKind::CpAsyncMbarrierArrive,
+            modifiers,
+            operands,
+        } => {
+            lower_cp_async_mbarrier_arrive(ctx, modifiers, operands, predicate)?;
+        }
+
         // =========================================================================
         // Data Movement - Cvt (type conversion)
         // =========================================================================
@@ -2224,14 +2232,6 @@ fn lower_parsed_instruction(
         ParsedInstruction::Trap => {
             // Reaching a trap during evaluation is an analysis error
             ctx.emit(LoweredInstr::Trap, predicate)?;
-        }
-
-        ParsedInstruction::Other {
-            kind: InstrKind::CpAsyncMbarrierArrive,
-            modifiers,
-            operands,
-        } => {
-            lower_cp_async_mbarrier_arrive(ctx, modifiers, operands, predicate)?;
         }
 
         // =========================================================================
@@ -2473,6 +2473,14 @@ fn lower_parsed_instruction(
             operands,
         } => {
             lower_cp_async_bulk_tensor(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::CpAsyncBulk,
+            modifiers,
+            operands,
+        } => {
+            lower_cp_async_bulk(ctx, modifiers, operands, predicate)?;
         }
 
         // =========================================================================
@@ -6429,6 +6437,95 @@ fn lower_cp_async_bulk_tensor(
             tensormap_base,
             tensormap_offset,
             coords: lowered_coords,
+            mbar_base,
+            mbar_offset,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx
+/// ::bytes [dstMem], [srcMem], size, [mbar]` (PTX ISA 9.7.9.25.4.1). Only
+/// the global -> shared load direction with mbarrier completion is modeled;
+/// both destination spellings address the executing CTA's shared memory
+/// (Volta models a single CTA). The `shared::cta -> shared::cluster` and
+/// `shared::cta -> global` (`.bulk_group`) forms, `.multicast::cluster`,
+/// `.L2::cache_hint` and `.cp_mask` are rejected loudly.
+fn lower_cp_async_bulk(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "cp.async.bulk";
+    let mut saw_shared = false;
+    let mut saw_global = false;
+    let mut saw_completion = false;
+
+    for modifier in modifiers {
+        match modifier {
+            DottedIdent::Qualified(parts) => match parts.as_slice() {
+                [base, sub]
+                    if !saw_shared
+                        && base.as_slice().as_bytes() == b"shared"
+                        && SharedStateSpaceQualifier::from_ascii(sub.as_slice()).is_some() =>
+                {
+                    saw_shared = true;
+                }
+                [a, b, c]
+                    if a.as_slice().as_bytes() == b"mbarrier"
+                        && b.as_slice().as_bytes() == b"complete_tx"
+                        && c.as_slice().as_bytes() == b"bytes" =>
+                {
+                    saw_completion = true;
+                }
+                _ => {
+                    return Err(unsupported(
+                        NAME,
+                        format!(
+                            "modifier {modifier} (only the global -> shared load with \
+                             .mbarrier::complete_tx::bytes completion is modeled)"
+                        ),
+                    ));
+                }
+            },
+            _ if modifier.to_string() == "global" && saw_shared => saw_global = true,
+            _ => {
+                return Err(unsupported(
+                    NAME,
+                    format!("modifier .{modifier} (only .shared::{{cta,cluster}}.global modeled)"),
+                ));
+            }
+        }
+    }
+
+    if !(saw_shared && saw_global && saw_completion) {
+        return Err(unsupported(
+            NAME,
+            "only .shared::{cta,cluster}.global.mbarrier::complete_tx::bytes is modeled",
+        ));
+    }
+
+    let [dst, src, size, mbar] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [dstMem], [srcMem], size, [mbar]",
+        });
+    };
+    let (dst_base, dst_offset) = resolve_addr_operand(ctx, dst)?;
+    let (src_base, src_offset) = resolve_addr_operand(ctx, src)?;
+    let size = ctx.resolve_operand(size)?;
+    let (mbar_base, mbar_offset) = resolve_addr_operand(ctx, mbar)?;
+
+    ctx.emit(
+        LoweredInstr::CpAsyncBulkLoad {
+            dst_base,
+            dst_offset,
+            src_base,
+            src_offset,
+            size,
             mbar_base,
             mbar_offset,
         },

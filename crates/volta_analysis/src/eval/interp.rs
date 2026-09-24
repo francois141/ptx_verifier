@@ -2268,6 +2268,21 @@ impl<'p> Interpreter<'p> {
                 )?;
             }
 
+            LoweredInstr::CpAsyncBulkLoad {
+                dst_base,
+                dst_offset,
+                src_base,
+                src_offset,
+                size,
+                mbar_base,
+                mbar_offset,
+            } => {
+                let dst = self.effective_addr(t, pc, dst_base, *dst_offset)?;
+                let src = self.effective_addr(t, pc, src_base, *src_offset)?;
+                let mbar = self.effective_addr(t, pc, mbar_base, *mbar_offset)?;
+                self.exec_cp_async_bulk_load(t, pc, dst, src, size, mbar)?;
+            }
+
             // mbarrier: per-thread ops, not warp-cooperative - any single
             // thread issues these independently (unlike the tensor-core
             // family above).
@@ -3634,21 +3649,18 @@ impl<'p> Interpreter<'p> {
             let leading_idx = idx[0] as u64;
             let dst_elem_addr =
                 tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
-            self.mem_write(t, pc, MemSpace::Shared, dst_elem_addr, elem_bytes, value)?;
-            // sm_90+ only: same async-proxy write-visibility requirement as
-            // `cp.async` (see `CpAsyncWaitGroup`'s handler) - TMA writes
-            // land immediately here rather than being deferred to a
-            // release step, so the mark happens right alongside the write
-            // itself rather than at a separate completion point.
-            if self.features.async_proxy_fence {
-                self.race.mark_async_proxy_unfenced(
-                    MemSpace::Shared,
-                    dst_elem_addr,
-                    elem_bytes,
-                    t,
-                    pc,
-                );
-            }
+            // A TMA write goes through the async proxy: it lands
+            // immediately here rather than at a deferred release step, so
+            // the unfenced mark happens as part of the write itself.
+            self.mem_write_via(
+                t,
+                pc,
+                MemSpace::Shared,
+                dst_elem_addr,
+                elem_bytes,
+                value,
+                Proxy::Async,
+            )?;
         }
 
         self.check_bounds(t, pc, MemSpace::Shared, mbar_addr, 8)?;
@@ -3659,6 +3671,57 @@ impl<'p> Interpreter<'p> {
             .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
         let total_bytes = total_elems * elem_bytes;
         self.mbarriers.complete_tx(mbar_id, total_bytes);
+
+        Ok(())
+    }
+
+    /// `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx
+    /// ::bytes`: copy `size` contiguous bytes global -> shared, then
+    /// complete `size` bytes of async-transaction on the mbarrier. The copy
+    /// moves 4-byte words, the same granularity as `cp.async`; `size` is a
+    /// multiple of 16, so every word is whole.
+    fn exec_cp_async_bulk_load(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        dst_addr: u64,
+        src_addr: u64,
+        size: &Operand,
+        mbar_addr: u64,
+    ) -> EvalResult<()> {
+        const WORD_BYTES: u64 = 4;
+        let size = self.non_negative_operand(t, pc, size, "cp.async.bulk size")?;
+        if !size.is_multiple_of(16) {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!("cp.async.bulk size {size} is not a multiple of 16 bytes"),
+            });
+        }
+        self.check_bounds(t, pc, MemSpace::Global, src_addr, size)?;
+        self.check_bounds(t, pc, MemSpace::Shared, dst_addr, size)?;
+        self.check_alignment(t, pc, MemSpace::Global, src_addr, 16)?;
+        self.check_alignment(t, pc, MemSpace::Shared, dst_addr, 16)?;
+
+        for byte in (0..size).step_by(WORD_BYTES as usize) {
+            let value = self.mem_read(t, pc, MemSpace::Global, src_addr + byte, WORD_BYTES)?;
+            self.mem_write_via(
+                t,
+                pc,
+                MemSpace::Shared,
+                dst_addr + byte,
+                WORD_BYTES,
+                value,
+                Proxy::Async,
+            )?;
+        }
+
+        self.check_bounds(t, pc, MemSpace::Shared, mbar_addr, 8)?;
+        self.check_alignment(t, pc, MemSpace::Shared, mbar_addr, 8)?;
+        let mbar_id = self
+            .shared
+            .read_mbarrier(mbar_addr)
+            .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+        self.mbarriers.complete_tx(mbar_id, size);
 
         Ok(())
     }
@@ -4193,6 +4256,24 @@ impl<'p> Interpreter<'p> {
         width: u64,
         value: Value,
     ) -> EvalResult<()> {
+        self.mem_write_via(t, pc, space, addr, width, value, Proxy::Generic)
+    }
+
+    /// [`Self::mem_write`] through a given memory proxy: which of the two
+    /// unfenced-write marks the write leaves behind on sm_90+ is the only
+    /// difference (see `RaceTracker::mark_generic_unfenced` and
+    /// `mark_async_proxy_unfenced`).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::eval) fn mem_write_via(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        value: Value,
+        proxy: Proxy,
+    ) -> EvalResult<()> {
         self.check_bounds(t, pc, space, addr, width)?;
         // See `mem_read`: the write-side natural-alignment chokepoint.
         self.check_alignment(t, pc, space, addr, width)?;
@@ -4226,12 +4307,17 @@ impl<'p> Interpreter<'p> {
                 if space == MemSpace::Global {
                     &mut self.global
                 } else {
-                    // sm_90+: a later async-proxy read (`tcgen05.mma`)
-                    // needs this write fenced by its writer. `cp.async`/TMA
-                    // writes land here too and re-mark themselves as
-                    // async-proxy writes right after, dropping this mark.
+                    // sm_90+: a generic write needs fencing by its writer
+                    // before a later async-proxy read (`tcgen05.mma`) may
+                    // see it; an async-proxy write (`cp.async`/TMA) instead
+                    // needs `fence.proxy.async` before any later access.
                     if self.features.async_proxy_fence {
-                        self.race.mark_generic_unfenced(addr, width, t, pc);
+                        match proxy {
+                            Proxy::Generic => self.race.mark_generic_unfenced(addr, width, t, pc),
+                            Proxy::Async => self
+                                .race
+                                .mark_async_proxy_unfenced(space, addr, width, t, pc),
+                        }
                     }
                     &mut self.shared
                 }
