@@ -2226,6 +2226,14 @@ fn lower_parsed_instruction(
             ctx.emit(LoweredInstr::Trap, predicate)?;
         }
 
+        ParsedInstruction::Other {
+            kind: InstrKind::CpAsyncMbarrierArrive,
+            modifiers,
+            operands,
+        } => {
+            lower_cp_async_mbarrier_arrive(ctx, modifiers, operands, predicate)?;
+        }
+
         // =========================================================================
         // Other - ld.global.nc (non-coherent global load)
         // Treat as regular global load - we don't model cache coherence
@@ -5717,6 +5725,61 @@ fn lower_tcgen05_fence(
     }
 
     ctx.emit(LoweredInstr::Tcgen05Fence, predicate)?;
+    Ok(())
+}
+
+/// Lower `cp.async.mbarrier.arrive{.noinc}{.shared{::cta}}.b64 [addr]` (PTX
+/// ISA 9.7.9.24.5): make the `mbarrier` at `addr` track completion of all
+/// prior `cp.async` operations of the executing thread.
+fn lower_cp_async_mbarrier_arrive(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "cp.async.mbarrier.arrive";
+    let mut noinc = false;
+    let mut saw_b64 = false;
+
+    for modifier in modifiers {
+        if let DottedIdent::Qualified(parts) = modifier
+            && let [base, sub] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"shared"
+        {
+            match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
+                Some(SharedStateSpaceQualifier::Cta) => continue,
+                _ => return Err(unsupported(NAME, format!("modifier .shared::{sub}"))),
+            }
+        }
+        match modifier.to_string().as_str() {
+            "noinc" => noinc = true,
+            "shared" => {}
+            "b64" => saw_b64 = true,
+            other => return Err(unsupported(NAME, format!("modifier .{other}"))),
+        }
+    }
+    if !saw_b64 {
+        return Err(unsupported(NAME, "missing .b64 modifier"));
+    }
+
+    let [AstOperand::Address(addr)] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected a single [addr] operand",
+        });
+    };
+    let addr_base = ctx.resolve_address(addr)?;
+    let addr_offset = ctx.get_address_offset(addr);
+
+    ctx.emit(
+        LoweredInstr::CpAsyncMbarrierArrive {
+            addr_base,
+            addr_offset,
+            noinc,
+        },
+        predicate,
+    )?;
     Ok(())
 }
 
