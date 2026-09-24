@@ -16,7 +16,7 @@
 //! descriptors - the same descriptor-decode-then-swizzled-address pattern
 //! `eval::interp::exec_tcgen05_mma` uses for `tcgen05.mma`, reusing
 //! `eval::wgmma::decode_wgmma_matrix_descriptor` and
-//! `tcgen05_mma::swizzled_element_addr`. Each thread computes its own D
+//! `tcgen05_mma::operand_element_addr`. Each thread computes its own D
 //! slice independently with no cross-lane register dependency - unlike
 //! `mma.sync`/`ldmatrix`/`wmma.*`/every `tcgen05.*` warp op, an exited lane
 //! costs nothing but its own missing output (see `exec_wgmma_mma_async`'s
@@ -27,7 +27,7 @@ use volta_frontend::ast::ScalarType;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::fp8;
 use crate::eval::interp::Interpreter;
-use crate::eval::tcgen05_mma::{self, MatrixDescriptor};
+use crate::eval::tcgen05_mma::{self, Major, MatrixDescriptor};
 use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
 use crate::eval::{ThreadId, WARPGROUP_SIZE};
@@ -59,7 +59,9 @@ impl Interpreter<'_> {
         // out-of-CTA-range groups, and the leader is always a live member,
         // so `members` is nonempty.
         let group_base = (members[0].0 / WARPGROUP_SIZE) * WARPGROUP_SIZE;
-        let group: Vec<ThreadId> = (0..WARPGROUP_SIZE).map(|lane| ThreadId(group_base + lane)).collect();
+        let group: Vec<ThreadId> = (0..WARPGROUP_SIZE)
+            .map(|lane| ThreadId(group_base + lane))
+            .collect();
 
         self.stats.warp_syncs += 1; // reuses the existing "#Warp Sync" counter - see the plan's note
         self.sync_thread_group(&group);
@@ -110,8 +112,10 @@ impl Interpreter<'_> {
         };
         let n = shape.n;
 
-        let a_desc_val = self.uniform_concrete(pc, members, a_desc, "wgmma.mma_async a-desc")? as u64;
-        let b_desc_val = self.uniform_concrete(pc, members, b_desc, "wgmma.mma_async b-desc")? as u64;
+        let a_desc_val =
+            self.uniform_concrete(pc, members, a_desc, "wgmma.mma_async a-desc")? as u64;
+        let b_desc_val =
+            self.uniform_concrete(pc, members, b_desc, "wgmma.mma_async b-desc")? as u64;
         let scale_d = self.uniform_concrete(pc, members, scale_d, "wgmma.mma_async scale-d")? != 0;
 
         let a_md = decode_wgmma_matrix_descriptor(a_desc_val);
@@ -123,6 +127,11 @@ impl Interpreter<'_> {
                     .to_string(),
             });
         }
+
+        // K-major (leading = K) unless transposed - the same rule as
+        // `tcgen05.mma` (PTX ISA 9.7.17.5.1.2.1).
+        let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
+        let (a_major, b_major) = (major(*transpose_a), major(*transpose_b));
 
         for &t in members {
             let lane = t.0 % WARPGROUP_SIZE;
@@ -146,23 +155,20 @@ impl Interpreter<'_> {
                     self.arena.real(Real::zero())
                 };
                 for k in 0..shape.k as u64 {
-                    // K-major (leading = K) unless transposed - same
-                    // convention `exec_tcgen05_mma` already uses (PTX ISA
-                    // 9.7.17.10.6 for tcgen05.mma; wgmma.mma_async's own
-                    // transpose semantics, 9.7.17.5.2, follow the same
-                    // K-major-unless-transposed rule).
-                    let (a_stride, a_leading) = if *transpose_a {
-                        (k, elem.row as u64)
-                    } else {
-                        (elem.row as u64, k)
-                    };
-                    let (b_stride, b_leading) = if *transpose_b {
-                        (k, elem.col as u64)
-                    } else {
-                        (elem.col as u64, k)
-                    };
-                    let a_e = self.read_wgmma_element(t, pc, &a_md, (a_stride, a_leading), *a_type)?;
-                    let b_e = self.read_wgmma_element(t, pc, &b_md, (b_stride, b_leading), *b_type)?;
+                    let a_e = self.read_wgmma_element(
+                        t,
+                        pc,
+                        (&a_md, a_major, *a_type),
+                        elem.row as u64,
+                        k,
+                    )?;
+                    let b_e = self.read_wgmma_element(
+                        t,
+                        pc,
+                        (&b_md, b_major, *b_type),
+                        elem.col as u64,
+                        k,
+                    )?;
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
                 self.write_reg_wgmma_accum(t, pc, reg, *shape, Value::Scalar(acc))?;
@@ -171,22 +177,29 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Read one `ty`-typed `A`/`B` element at `(stride, leading)` through its
-    /// matrix descriptor. A concrete fp8 byte (never an input element: e.g.
-    /// zero padding a kernel stored itself) is decoded from its bit
-    /// encoding; a symbolic element already is its real value (see
-    /// `eval::fp8`'s module doc).
+    /// Read `A`/`B` element `(mn_idx, k_idx)` of type `ty` under the ISA's
+    /// canonical layouts (`tcgen05_mma::operand_element_addr` - wgmma's
+    /// table in PTX ISA 9.7.17.5.1.2.1.3 is the same).
+    /// A concrete fp8 byte (never an input element: e.g. zero padding a
+    /// kernel stored itself) is decoded from its bit encoding; a symbolic
+    /// element already is its real value (see `eval::fp8`'s module doc).
     fn read_wgmma_element(
         &mut self,
         t: ThreadId,
         pc: InstrId,
-        desc: &MatrixDescriptor,
-        (stride, leading): (u64, u64),
-        ty: ScalarType,
+        (desc, major, ty): (&MatrixDescriptor, Major, ScalarType),
+        mn_idx: u64,
+        k_idx: u64,
     ) -> EvalResult<ExprId> {
         let elem_bytes = u64::from(ty.bits() / 8);
-        let addr = tcgen05_mma::swizzled_element_addr(desc, stride, leading, elem_bytes);
-        let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)? else {
+        let addr = tcgen05_mma::operand_element_addr(desc, major, mn_idx, k_idx, elem_bytes)
+            .ok_or_else(|| EvalError::Unsupported {
+                pc,
+                what: "wgmma.mma_async MN-major operand without swizzling is not modeled"
+                    .to_string(),
+            })?;
+        let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)?
+        else {
             return Err(EvalError::ValueKindMismatch {
                 thread: t,
                 pc,
