@@ -289,14 +289,15 @@ pub mod m16n8k4_tf32 {
     }
 }
 
-/// Fragment mappings for `mma.m16n8k32` with `.e4m3` (fp8) multiplicands
-/// (PTX ISA "Matrix Fragments for mma.m16n8k32", the `.s8`/`.u8`/`.e4m3`/
-/// `.e5m2`/... row - four elements packed per 32-bit register, `quad_lane`
-/// 0..3 low to high matching `Value::Quad`'s tuple order).
-pub mod m16n8k32_e4m3 {
+/// Fragment mappings for `mma.m16n8k32` with byte-wide multiplicands -
+/// `.e4m3`/`.e5m2` (fp8) and `.s8`/`.u8` (integer) alike, which the ISA
+/// gives one shared layout (PTX ISA "Matrix Fragments for mma.m16n8k32":
+/// four elements packed per 32-bit register, `quad_lane` 0..3 low to high
+/// matching `Value::Quad`'s tuple order).
+pub mod m16n8k32_byte {
     use super::FragmentElement;
 
-    /// Matrix A fragment: 4 registers, each packing 4 e4m3 = 16 elements
+    /// Matrix A fragment: 4 registers, each packing 4 bytes = 16 elements
     /// total. A is m16 x k32.
     pub fn matrix_a(lane_id: u32) -> Vec<FragmentElement> {
         let group_id = lane_id >> 2;
@@ -324,7 +325,7 @@ pub mod m16n8k32_e4m3 {
         elements
     }
 
-    /// Matrix B fragment: 2 registers, each packing 4 e4m3 = 8 elements
+    /// Matrix B fragment: 2 registers, each packing 4 bytes = 8 elements
     /// total. B is k32 x n8.
     pub fn matrix_b(lane_id: u32) -> Vec<FragmentElement> {
         let group_id = lane_id >> 2;

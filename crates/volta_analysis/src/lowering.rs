@@ -6853,10 +6853,10 @@ fn lower_mma(
     }
 
     // The evaluator gathers f16 (packed pairs, m16n8k16), tf32 (one value
-    // per register, m16n8k8 / m16n8k4), or e4m3 (four packed byte lanes,
-    // m16n8k32) multiplicand fragments, into an f32 or packed f16
-    // accumulator; any other combination would use the wrong layout.
-    const MODELED_TYPES: [[ScalarType; 4]; 4] = [
+    // per register, m16n8k8 / m16n8k4), or e4m3/s8 (four packed byte
+    // lanes, m16n8k32) multiplicand fragments, into an f32, s32 or packed
+    // f16 accumulator; any other combination would use the wrong layout.
+    const MODELED_TYPES: [[ScalarType; 4]; 5] = [
         [
             ScalarType::F32,
             ScalarType::F16,
@@ -6883,6 +6883,12 @@ fn lower_mma(
             ScalarType::E4m3,
             ScalarType::F32,
         ],
+        [
+            ScalarType::S32,
+            ScalarType::S8,
+            ScalarType::S8,
+            ScalarType::S32,
+        ],
     ];
     if !MODELED_TYPES
         .iter()
@@ -6892,14 +6898,15 @@ fn lower_mma(
             "mma",
             format!(
                 "type combination {:?} (only .f32.f16.f16.f32, .f16.f16.f16.f16, \
-                 .f32.tf32.tf32.f32 and .f32.e4m3.e4m3.f32 are modeled)",
+                 .f32.tf32.tf32.f32, .f32.e4m3.e4m3.f32 and .s32.s8.s8.s32 are \
+                 modeled)",
                 types
             ),
         ));
     }
     let shape_supported = match types[1] {
         ScalarType::F16 => shape == MmaShape::new(16, 8, 16),
-        ScalarType::E4m3 => shape == MmaShape::new(16, 8, 32),
+        ScalarType::E4m3 | ScalarType::S8 => shape == MmaShape::new(16, 8, 32),
         _ => shape == MmaShape::new(16, 8, 8) || shape == MmaShape::new(16, 8, 4),
     };
     if !shape_supported {
@@ -6907,7 +6914,7 @@ fn lower_mma(
             "mma",
             format!(
                 "shape {} with {:?} multiplicands (f16 needs m16n8k16; tf32 needs \
-                 m16n8k8 or m16n8k4; e4m3 needs m16n8k32)",
+                 m16n8k8 or m16n8k4; e4m3 and s8 need m16n8k32)",
                 shape, types[1]
             ),
         ));
