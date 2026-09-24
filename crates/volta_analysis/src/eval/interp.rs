@@ -61,6 +61,11 @@ pub struct Stats {
     pub warp_syncs: u64,
 }
 
+/// `log2(e)` rounded to float32 - the constant PTX kernels actually
+/// multiply by before `ex2`, and the one Volta's base conversion is
+/// anchored to (see [`Interpreter::ln2_constant`]).
+const LOG2_E_F32: f64 = std::f64::consts::LOG2_E as f32 as f64;
+
 /// PTX gives each CTA 16 hardware ("named") barriers, ids 0-15
 /// (ISA 9.7.13.1).
 const NUM_BARRIERS: usize = 16;
@@ -4620,6 +4625,26 @@ impl<'p> Interpreter<'p> {
         Some(self.arena.exp(argument))
     }
 
+    /// `ln 2` as the exact reciprocal of float32's `log2(e)`, the constant
+    /// both `ex2` and `lg2` are read through.
+    ///
+    /// A scaled exponential is spelled `ex2(x * c)` with `c` float32's
+    /// `log2(e)` times an exactly-representable factor; pairing it with its
+    /// own exact reciprocal leaves that factor unrounded, so the result
+    /// canonicalizes to the `exp` form a spec states, and `ex2(lg2(x))`
+    /// cancels to exactly `exp(log(x))`. An f64 rounding of `ln 2` would
+    /// leave about `1e-8` of relative error in the exponent instead, which
+    /// no exact check absorbs - see also [`Self::fold_exp_idiom`].
+    fn ln2_constant(&mut self, pc: InstrId) -> EvalResult<ExprId> {
+        let unsupported = |what: String| EvalError::Unsupported { pc, what };
+        let log2e = Real::from_f64(LOG2_E_F32)
+            .map_err(|e| unsupported(format!("ex2/lg2 log2(e) constant: {e}")))?;
+        let ln2 = log2e
+            .try_recip()
+            .ok_or_else(|| unsupported("ex2/lg2 log2(e) constant is zero".to_string()))?;
+        Ok(self.arena.real(ln2))
+    }
+
     /// Pulls a `log2(e)`-ish rational constant (within float32 rounding)
     /// out of a `Mul`/`Fma`/`Add` chain, folding each term's own sign into
     /// the result so that `a == log2e * factor_log2e(a)` for whichever
@@ -4713,13 +4738,7 @@ impl<'p> Interpreter<'p> {
                 if let Some(folded) = self.fold_exp_idiom(a) {
                     folded
                 } else {
-                    let ln2 = self
-                        .arena
-                        .float_from_f64(std::f64::consts::LN_2)
-                        .map_err(|e| EvalError::Unsupported {
-                            pc,
-                            what: format!("ex2 ln2 constant: {}", e),
-                        })?;
+                    let ln2 = self.ln2_constant(pc)?;
                     let scaled = self.arena.mul(a, ln2);
                     self.arena.exp(scaled)
                 }
@@ -4736,7 +4755,15 @@ impl<'p> Interpreter<'p> {
                 let den = self.arena.add(e2x, one);
                 self.arena.div(num, den)
             }
-            UnaryOp::Lg2 | UnaryOp::Sin | UnaryOp::Cos => {
+            // PTX has no natural log: `lg2.approx` is how one is spelled,
+            // so it is read as an exact log(a) / ln2 rather than an opaque
+            // atom - the mirror of `Ex2` above.
+            UnaryOp::Lg2 => {
+                let log = self.arena.log(a);
+                let ln2 = self.ln2_constant(pc)?;
+                self.arena.div(log, ln2)
+            }
+            UnaryOp::Sin | UnaryOp::Cos => {
                 return Err(EvalError::Unsupported {
                     pc,
                     what: format!("transcendental {}", op.as_str()),
