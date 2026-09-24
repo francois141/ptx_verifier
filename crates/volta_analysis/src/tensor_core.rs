@@ -162,6 +162,23 @@ pub mod m16n8k16_f16 {
         elements
     }
 
+    /// Accumulator C/D fragment for an `.f16` accumulator: the same four
+    /// elements [`matrix_cd`] places, packed two to a register instead of
+    /// occupying one f32 register each (PTX ISA 9.7.14.5.8). The order is
+    /// register 0's low half, its high half, register 1's low half, its
+    /// high half - `exec_mma` repacks the result by walking it in pairs.
+    pub fn matrix_cd_f16(lane_id: u32) -> Vec<FragmentElement> {
+        matrix_cd(lane_id)
+            .into_iter()
+            .enumerate()
+            .map(|(i, elem)| FragmentElement {
+                reg_idx: i / 2,
+                high_half: Some(i % 2 != 0),
+                ..elem
+            })
+            .collect()
+    }
+
     /// Accumulator C/D fragment: 4 f32 registers = 4 elements.
     /// C/D is m16 x n8.
     pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {

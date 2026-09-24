@@ -775,12 +775,23 @@ impl Interpreter<'_> {
             src_b,
             src_c,
             a_type,
+            d_type,
             ..
         } = instr
         else {
             unreachable!()
         };
 
+        // An `.f16` accumulator holds the same four C/D elements packed
+        // two to a register; an f32 one is a single element per register.
+        let packed_accumulator = *d_type == ScalarType::F16;
+        let accumulator = |lane: u32| {
+            if packed_accumulator {
+                m16n8k16_f16::matrix_cd_f16(lane)
+            } else {
+                m16n8k16_f16::matrix_cd(lane)
+            }
+        };
         let (m_dim, n_dim, k_dim) = (shape.m, shape.n, shape.k);
         let mut a = Grid::new(m_dim as usize, k_dim as usize);
         let mut b = Grid::new(k_dim as usize, n_dim as usize);
@@ -829,18 +840,33 @@ impl Interpreter<'_> {
                     self.gather_f16_fragment(pc, m, src_b, &m16n8k16_f16::matrix_b(lane), &mut b)?;
                 }
             }
-            self.gather_f32_fragment(pc, m, src_c, &m16n8k16_f16::matrix_cd(lane), &mut c)?;
+            let elems = accumulator(lane);
+            if packed_accumulator {
+                self.gather_packed_accumulator(pc, m, src_c, &elems, &mut c)?;
+            } else {
+                self.gather_f32_fragment(pc, m, src_c, &elems, &mut c)?;
+            }
         }
 
         let d = self.matmul_acc(pc, &a, &b, &c, m_dim, n_dim, k_dim)?;
 
         for &m in members {
             let lane = m.0 % WARP_SIZE;
-            for elem in m16n8k16_f16::matrix_cd(lane) {
-                let e = d.get(elem.row, elem.col, pc)?;
-                self.threads[m]
-                    .regs
-                    .write(dst[elem.reg_idx], Value::Scalar(e));
+            let elems = accumulator(lane);
+            if packed_accumulator {
+                // `matrix_cd_f16` lists each register's low half then its
+                // high half, so consecutive pairs repack one register.
+                for [lo, hi] in elems.as_chunks::<2>().0 {
+                    let value = Value::Pair(d.get(lo.row, lo.col, pc)?, d.get(hi.row, hi.col, pc)?);
+                    self.threads[m].regs.write(dst[lo.reg_idx], value);
+                }
+            } else {
+                for elem in elems {
+                    let e = d.get(elem.row, elem.col, pc)?;
+                    self.threads[m]
+                        .regs
+                        .write(dst[elem.reg_idx], Value::Scalar(e));
+                }
             }
         }
         Ok(())
@@ -1456,6 +1482,28 @@ impl Interpreter<'_> {
                     what: "accumulator fragment register holds a packed pair",
                 });
             };
+            grid.set(elem.row, elem.col, e);
+        }
+        Ok(())
+    }
+
+    /// Place one lane's `.f16` accumulator fragment into a grid: the same
+    /// four elements [`Self::gather_f32_fragment`] reads, two to a
+    /// register. Resolved through `pair_operand` for the same reason that
+    /// one takes operands - the first tile's accumulator is a
+    /// zero-initialized `mov.b32` register the kernel never built as a
+    /// pair, which `pair_operand` decodes bit-for-bit into two halves.
+    fn gather_packed_accumulator(
+        &mut self,
+        pc: InstrId,
+        m: ThreadId,
+        ops: &[Operand],
+        elems: &[FragmentElement],
+        grid: &mut Grid,
+    ) -> EvalResult<()> {
+        for elem in elems {
+            let (lo, hi) = self.pair_operand(m, pc, &ops[elem.reg_idx], ScalarType::F16)?;
+            let e = if elem.high_half == Some(true) { hi } else { lo };
             grid.set(elem.row, elem.col, e);
         }
         Ok(())

@@ -6854,32 +6854,45 @@ fn lower_mma(
 
     // The evaluator gathers f16 (packed pairs, m16n8k16), tf32 (one value
     // per register, m16n8k8 / m16n8k4), or e4m3 (four packed byte lanes,
-    // m16n8k32) multiplicand fragments and f32 accumulators; any other
-    // combination would use the wrong layout.
-    let f16_types = [
-        ScalarType::F32,
-        ScalarType::F16,
-        ScalarType::F16,
-        ScalarType::F32,
+    // m16n8k32) multiplicand fragments, into an f32 or packed f16
+    // accumulator; any other combination would use the wrong layout.
+    const MODELED_TYPES: [[ScalarType; 4]; 4] = [
+        [
+            ScalarType::F32,
+            ScalarType::F16,
+            ScalarType::F16,
+            ScalarType::F32,
+        ],
+        // The `.f16` accumulator halves the D/C register count: two packed
+        // pairs rather than four f32s, the same four matrix elements.
+        [
+            ScalarType::F16,
+            ScalarType::F16,
+            ScalarType::F16,
+            ScalarType::F16,
+        ],
+        [
+            ScalarType::F32,
+            ScalarType::Tf32,
+            ScalarType::Tf32,
+            ScalarType::F32,
+        ],
+        [
+            ScalarType::F32,
+            ScalarType::E4m3,
+            ScalarType::E4m3,
+            ScalarType::F32,
+        ],
     ];
-    let tf32_types = [
-        ScalarType::F32,
-        ScalarType::Tf32,
-        ScalarType::Tf32,
-        ScalarType::F32,
-    ];
-    let fp8_types = [
-        ScalarType::F32,
-        ScalarType::E4m3,
-        ScalarType::E4m3,
-        ScalarType::F32,
-    ];
-    if types != f16_types && types != tf32_types && types != fp8_types {
+    if !MODELED_TYPES
+        .iter()
+        .any(|modeled| modeled == types.as_slice())
+    {
         return Err(unsupported(
             "mma",
             format!(
-                "type combination {:?} (only .f32.f16.f16.f32, .f32.tf32.tf32.f32, \
-                 and .f32.e4m3.e4m3.f32 are modeled)",
+                "type combination {:?} (only .f32.f16.f16.f32, .f16.f16.f16.f16, \
+                 .f32.tf32.tf32.f32 and .f32.e4m3.e4m3.f32 are modeled)",
                 types
             ),
         ));
