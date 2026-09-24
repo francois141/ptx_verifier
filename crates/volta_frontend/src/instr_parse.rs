@@ -3346,11 +3346,24 @@ fn parse_fence(
     } else {
         None
     };
+    let op_restrict = (proxy.is_none() && mp.try_consume(ascii("mbarrier_init")))
+        .then_some(FenceOpRestrict::MbarrierInit);
     let sem = mp.try_parse::<FenceSem>();
     let scope = mp.try_parse::<MemScope>();
+    if op_restrict.is_some() && (sem, scope) != (Some(FenceSem::Release), Some(MemScope::Cluster)) {
+        return Err(InstrParseError::ModifierRequiresModifier {
+            modifier: "mbarrier_init",
+            required: "release.cluster",
+        });
+    }
 
     mp.finish()?;
-    Ok(ParsedInstruction::Fence(FenceInstr { sem, scope, proxy }))
+    Ok(ParsedInstruction::Fence(FenceInstr {
+        sem,
+        scope,
+        op_restrict,
+        proxy,
+    }))
 }
 
 /// Parse `fence.proxy`'s `.proxykind` (PTX ISA: `.proxykind = { .alias,
