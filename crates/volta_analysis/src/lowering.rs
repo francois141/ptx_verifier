@@ -1498,6 +1498,29 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
+        // Transcendental - Lg2 (log2(x), evaluated as log(x) / ln2)
+        // =========================================================================
+        ParsedInstruction::Lg2(lg2) => {
+            // approx/ftz are precision controls: no effect over the reals.
+            // `lg2` is f32-only in the ISA, so there is no type to read
+            // off the instruction.
+            let ast::Lg2Instr {
+                ftz: _ftz,
+                dst,
+                src,
+            } = lg2;
+            lower_float_unary(
+                ctx,
+                UnaryOp::Lg2,
+                "lg2",
+                ScalarType::F32,
+                dst,
+                src,
+                predicate,
+            )?;
+        }
+
+        // =========================================================================
         // Transcendental - Ex2 (2^x, evaluated as exp(x * ln2))
         // =========================================================================
         ParsedInstruction::Ex2(ex2) => {
