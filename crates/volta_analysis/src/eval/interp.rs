@@ -9,6 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
+use fixedbitset::FixedBitSet;
 use id_collections::IdVec;
 
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
@@ -797,7 +798,9 @@ impl<'p> Interpreter<'p> {
     /// here (9.7.14.16.19, ordering items 1-3): before waking, each waiter
     /// is `sync_group`-ed with the mbarrier's `prior_participants` (the
     /// threads whose `mbarrier.arrive` completed the phase it was waiting
-    /// on) plus itself, so their prior accesses become visible to it rather
+    /// on) plus itself - all of one barrier's waiters in a single χ pass,
+    /// `RaceTracker::sync_mbarrier_waiters` - so their prior accesses become
+    /// visible to it rather
     /// than continuing to look like unsynchronized races. Lowering rejects
     /// non-default (`.relaxed`) semantics on `mbarrier.arrive`/`test_wait`/
     /// `try_wait`, so every `AtMbarrier` thread reaching here is on the
@@ -815,11 +818,18 @@ impl<'p> Interpreter<'p> {
                 _ => None,
             })
             .collect();
+        let mut waiters_by_barrier: HashMap<MbarrierId, FixedBitSet> = HashMap::new();
         for (tid, id) in &ready {
-            let mut group = self.mbarriers.prior_participants(*id).clone();
-            group.insert(tid.0 as usize);
-            self.race.sync_group(&group);
-
+            waiters_by_barrier
+                .entry(*id)
+                .or_insert_with(|| FixedBitSet::with_capacity(self.n_threads as usize))
+                .insert(tid.0 as usize);
+        }
+        for (id, waiters) in &waiters_by_barrier {
+            let participants = self.mbarriers.prior_participants(*id);
+            self.race.sync_mbarrier_waiters(participants, waiters);
+        }
+        for (tid, _) in &ready {
             let pc = self.threads[*tid].pc;
             let Some(LoweredInstr::MbarrierWaitParity { wait_complete, .. }) =
                 self.program.instruction(pc)
