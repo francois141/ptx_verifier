@@ -21,7 +21,7 @@ use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::tensor_core::{
     FragmentElement, MmaLayout, MmaOperand, MmaShape, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16,
-    m16n8k32_e4m3, m16n16k16_f16,
+    m16n8k32_byte, m16n16k16_f16,
 };
 use crate::types::ScalarTypeExt;
 
@@ -307,7 +307,7 @@ impl Interpreter<'_> {
                     ScalarType::Tf32 => {
                         *shape == MmaShape::new(16, 8, 8) || *shape == MmaShape::new(16, 8, 4)
                     }
-                    ScalarType::E4m3 => *shape == MmaShape::new(16, 8, 32),
+                    ScalarType::E4m3 | ScalarType::S8 => *shape == MmaShape::new(16, 8, 32),
                     _ => false,
                 };
                 if !supported {
@@ -831,9 +831,11 @@ impl Interpreter<'_> {
                         &mut b,
                     )?;
                 }
-                (ScalarType::E4m3, 32) => {
-                    self.gather_fp8_fragment(pc, m, src_a, &m16n8k32_e4m3::matrix_a(lane), &mut a)?;
-                    self.gather_fp8_fragment(pc, m, src_b, &m16n8k32_e4m3::matrix_b(lane), &mut b)?;
+                (ScalarType::E4m3 | ScalarType::S8, 32) => {
+                    let elems = m16n8k32_byte::matrix_a(lane);
+                    self.gather_byte_fragment(pc, m, src_a, &elems, &mut a)?;
+                    let elems = m16n8k32_byte::matrix_b(lane);
+                    self.gather_byte_fragment(pc, m, src_b, &elems, &mut b)?;
                 }
                 _ => {
                     self.gather_f16_fragment(pc, m, src_a, &m16n8k16_f16::matrix_a(lane), &mut a)?;
@@ -1403,11 +1405,13 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Place one lane's packed-e4m3 (fp8) fragment registers into a matrix
-    /// grid. Each register holds four independently symbolic byte lanes
-    /// (`Value::Quad`) rather than a bit-encoded word - see `Value::Quad`'s
-    /// doc comment.
-    fn gather_fp8_fragment(
+    /// Place one lane's byte-packed fragment registers - fp8 or 8-bit
+    /// integer, which share the `m16n8k32` layout - into a matrix grid.
+    /// Each register holds four independently symbolic byte lanes
+    /// (`Value::Quad`) rather than a bit-encoded word, so the lane's
+    /// expression is already the element's value whichever type it is
+    /// (see `Value::Quad`'s doc comment).
+    fn gather_byte_fragment(
         &mut self,
         pc: InstrId,
         m: ThreadId,
@@ -1421,7 +1425,7 @@ impl Interpreter<'_> {
                 return Err(EvalError::ValueKindMismatch {
                     thread: m,
                     pc,
-                    what: "matrix fragment register does not hold a packed fp8 quad",
+                    what: "matrix fragment register does not hold packed byte lanes",
                 });
             };
             let e = match elem.quad_lane {
@@ -1429,7 +1433,7 @@ impl Interpreter<'_> {
                 Some(1) => b1,
                 Some(2) => b2,
                 Some(3) => b3,
-                _ => unreachable!("e4m3 fragment elements always carry a quad_lane"),
+                _ => unreachable!("byte-packed fragment elements always carry a quad_lane"),
             };
             grid.set(elem.row, elem.col, e);
         }
