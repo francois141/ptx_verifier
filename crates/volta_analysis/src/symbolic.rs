@@ -505,6 +505,13 @@ pub enum ExprNode {
 }
 
 impl ExprNode {
+    /// Whether this node is a real constant - the one case an infinity
+    /// absorption rule must not treat as a finite real (see
+    /// [`ExprArena::add`]).
+    pub fn is_real_const(&self) -> bool {
+        matches!(self, ExprNode::RealConst(_))
+    }
+
     /// Call `f` on every child `ExprId` of this node. An exhaustive match
     /// (no wildcard) so a new variant fails to compile here instead of
     /// silently having its children skipped.
@@ -760,6 +767,10 @@ impl ExprArena {
     /// Addition with constant folding (exact on rationals; the defined
     /// extended-real forms fold, `inf + -inf` builds the node so canon
     /// fails loudly if it reaches a VC).
+    ///
+    /// An infinite constant absorbs a *non-constant* operand too, which
+    /// denotes a real number - this is what keeps a `-INFINITY` seed out
+    /// of live expressions. `try_add` already decides `inf + -inf`.
     pub fn add(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.node(a), self.node(b)) {
             (ExprNode::IntConst(x), ExprNode::IntConst(y)) => {
@@ -775,12 +786,20 @@ impl ExprArena {
             (_, ExprNode::IntConst(0)) => return a,
             (ExprNode::RealConst(x), _) if x.is_zero() => return b,
             (_, ExprNode::RealConst(y)) if y.is_zero() => return a,
+            (ExprNode::RealConst(x), other) if x.is_infinite() && !other.is_real_const() => {
+                return a;
+            }
+            (other, ExprNode::RealConst(y)) if y.is_infinite() && !other.is_real_const() => {
+                return b;
+            }
             _ => {}
         }
         self.push(ExprNode::Add(a, b))
     }
 
-    /// Subtraction with constant folding (exact; see [`ExprArena::add`]).
+    /// Subtraction with constant folding (exact; see [`ExprArena::add`],
+    /// including its infinity-absorption rule - here `-inf - x = -inf` and
+    /// `x - inf = -inf` for a non-constant, hence real, `x`).
     pub fn sub(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.node(a), self.node(b)) {
             (ExprNode::IntConst(x), ExprNode::IntConst(y)) => {
@@ -794,6 +813,13 @@ impl ExprArena {
             }
             (_, ExprNode::IntConst(0)) => return a,
             (_, ExprNode::RealConst(y)) if y.is_zero() => return a,
+            (ExprNode::RealConst(x), other) if x.is_infinite() && !other.is_real_const() => {
+                return a;
+            }
+            (other, ExprNode::RealConst(y)) if y.is_infinite() && !other.is_real_const() => {
+                let r = y.neg();
+                return self.real(r);
+            }
             _ => {}
         }
         self.push(ExprNode::Sub(a, b))
@@ -892,8 +918,19 @@ impl ExprArena {
         self.push(ExprNode::Neg(a))
     }
 
-    /// Exponential: e^a
+    /// Exponential: e^a. The two infinite limits fold (`e^{-inf} = 0`,
+    /// `e^{inf} = inf`) - a running maximum seeded at `-INFINITY` reaches
+    /// here through the kernel's own `ex2`, and the zero it must produce
+    /// is what keeps that seed out of live expressions.
     pub fn exp(&mut self, a: ExprId) -> ExprId {
+        if let ExprNode::RealConst(x) = self.node(a) {
+            if x.is_neg_inf() {
+                return self.real(Real::zero());
+            }
+            if x.is_pos_inf() {
+                return self.real(Real::pos_inf());
+            }
+        }
         self.push(ExprNode::Exp(a))
     }
 
