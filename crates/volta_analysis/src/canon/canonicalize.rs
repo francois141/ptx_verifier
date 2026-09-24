@@ -13,7 +13,7 @@
 
 use crate::symbolic::{ExprArena, ExprId, ExprNode};
 
-use super::arena::{Atom, PolyId, Rat, Term, UninterpOp};
+use super::arena::{Atom, Factor, PolyId, Rat, Term, TermId, UninterpOp};
 use super::coeff::Coeff;
 use super::ops::{PV, RatV};
 use super::{CanonError, Session, Side};
@@ -158,7 +158,7 @@ impl Session {
                 let ra = self.canon_value(side, arena, *a)?;
                 if self.pv_is_one(&ra.denom) {
                     let arg = self.pv_intern(ra.numer);
-                    Ok(self.exp_poly(arg))
+                    self.exp_poly(arg)
                 } else {
                     let arg = self.ratv_intern(ra);
                     let p = self.arena.atom_poly(Atom::Uninterp {
@@ -226,8 +226,46 @@ impl Session {
         }
     }
 
+    /// `e^{p}` as a rational, with every logarithm in the exponent
+    /// undone first: `e^{q + c*log(u)}` is `u^c * e^{q}` for an integer
+    /// `c`. That identity is what a log-space running sum needs to stay
+    /// inside the sums-of-exponentials fragment - FlashAttention's
+    /// `l = n + log2(2^{l - n} + s)` folds back into the plain sum it
+    /// accumulates, so the final quotient's common factor cancels;
+    /// without it the log stays an opaque atom and so does every
+    /// exponential taken of it afterwards.
+    fn exp_poly(&mut self, p: PolyId) -> Result<RatV, CanonError> {
+        let terms = self.arena.polys.get(p).clone();
+        let mut rest = Vec::with_capacity(terms.len());
+        let mut logs = Vec::new();
+        for (term, coeff) in terms {
+            match (self.log_argument(term), coeff.as_integer()) {
+                (Some(argument), Some(power)) => logs.push((argument, power)),
+                _ => rest.push((term, coeff)),
+            }
+        }
+        if logs.is_empty() {
+            return Ok(self.fused_exp(p));
+        }
+        let mut result = RatV::from_rat(self.arena.rat_poly(self.arena.one));
+        for (argument, power) in logs {
+            self.tick(power.unsigned_abs() as u64)?;
+            for _ in 0..power.unsigned_abs() {
+                let factor = RatV::from_rat(argument);
+                result = if power > 0 {
+                    self.rat_mul_v(result, factor)?
+                } else {
+                    self.rat_div_v(result, factor)?
+                };
+            }
+        }
+        let rest = self.arena.intern_poly(rest);
+        let rest = self.fused_exp(rest);
+        self.rat_mul_v(result, rest)
+    }
+
     /// A single fused exponential `e^{p}` as a rational.
-    fn exp_poly(&mut self, p: PolyId) -> RatV {
+    fn fused_exp(&mut self, p: PolyId) -> RatV {
         if p == self.arena.zero {
             return RatV::from_rat(self.arena.rat_poly(self.arena.one)); // e^0 = 1
         }
@@ -238,6 +276,31 @@ impl Session {
         RatV {
             numer: PV::Owned(vec![(term, Coeff::ONE)]),
             denom: PV::Id(self.arena.one),
+        }
+    }
+
+    /// The argument of `term`, when it is exactly one bare `log` atom -
+    /// the shape [`Self::exp_poly`] cancels against.
+    fn log_argument(&self, term: TermId) -> Option<Rat> {
+        let term = self.arena.terms.get(term);
+        if term.exp.is_some() {
+            return None;
+        }
+        let [(factor, 1)] = term.factors.as_slice() else {
+            return None;
+        };
+        let Factor::Atom(atom) = self.arena.factors.get(*factor) else {
+            return None;
+        };
+        match self.arena.atoms.get(*atom) {
+            Atom::Uninterp {
+                op: UninterpOp::Log,
+                args,
+            } => match args.as_slice() {
+                [argument] => Some(*argument),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

@@ -93,6 +93,11 @@ impl Coeff {
         self.num == 1 && self.den == 1
     }
 
+    /// The exact integer value, for a rational whose denominator is one.
+    pub fn as_integer(&self) -> Option<i128> {
+        (self.den == 1).then_some(self.num)
+    }
+
     pub fn add(&self, other: &Coeff) -> Result<Coeff, CoeffError> {
         // a/b + c/d = (ad + cb) / bd, with a gcd pre-reduction on b, d.
         let g = gcd(self.den, other.den);
