@@ -10,6 +10,7 @@
 //! 5. Converts complex instruction variants to a uniform representation
 
 use std::collections::HashMap;
+use std::fmt;
 
 use volta_common::Span;
 use volta_frontend::ascii::AsciiSliceExt;
@@ -213,6 +214,43 @@ pub struct LoweringContext {
     /// function body's top level to start, pushed/popped around each
     /// `Statement::Block`.
     label_scope: LabelScopeId,
+    /// The arrival count each named barrier has been used with, so one
+    /// barrier cannot fire on two different counts (see `lower_bar`).
+    barrier_arrivals: HashMap<BarrierKey, ArrivalCount>,
+}
+
+/// How a `bar.*` names the barrier it arrives at. A register id's value is
+/// unknown at lowering time, so every register-id barrier in the function
+/// shares one key and is held to one arrival count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BarrierKey {
+    Id(u64),
+    Register,
+}
+
+impl fmt::Display for BarrierKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Id(id) => write!(f, "barrier {}", id),
+            Self::Register => write!(f, "a register-named barrier"),
+        }
+    }
+}
+
+/// How many threads one `bar.*` waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArrivalCount {
+    FullCta,
+    Threads(u64),
+}
+
+impl fmt::Display for ArrivalCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FullCta => write!(f, "the whole CTA"),
+            Self::Threads(n) => write!(f, "{} threads", n),
+        }
+    }
 }
 
 impl LoweringContext {
@@ -228,6 +266,69 @@ impl LoweringContext {
             current_span: None,
             local_params: HashMap::new(),
             label_scope: SymbolTable::ROOT_LABEL_SCOPE,
+            barrier_arrivals: HashMap::new(),
+        }
+    }
+
+    /// Require every arrival at one barrier to name the same count, so
+    /// the evaluator can read a barrier's arrival count off any one of
+    /// them. A register id could name any barrier, so all register-id
+    /// arrivals are held to a single count between them; a register
+    /// thread count cannot be compared here at all.
+    ///
+    /// This is stricter than the ISA, which only requires the threads
+    /// meeting at one barrier *phase* to agree - a kernel that reuses an
+    /// id with different counts in disjoint phases is legal and rejected
+    /// here, hence the note in the message.
+    fn check_barrier_arrivals(
+        &mut self,
+        mnemonic: &str,
+        barrier_id: &Operand,
+        thread_count: Option<&Operand>,
+    ) -> LowerResult<()> {
+        fn immediate(op: &Operand) -> Option<u64> {
+            match op {
+                Operand::ImmI64(v) => u64::try_from(*v).ok(),
+                Operand::ImmU64(v) => Some(*v),
+                _ => None,
+            }
+        }
+
+        let key = match immediate(barrier_id) {
+            Some(id) => BarrierKey::Id(id),
+            None => BarrierKey::Register,
+        };
+        let count = match thread_count {
+            None => ArrivalCount::FullCta,
+            Some(op) => match immediate(op) {
+                Some(count) => ArrivalCount::Threads(count),
+                None => {
+                    return Err(unsupported(
+                        mnemonic,
+                        "a register thread count cannot be checked against the \
+                         other arrivals at this barrier (Volta pins one arrival \
+                         count per barrier id; this may be stricter than your \
+                         kernel needs)",
+                    ));
+                }
+            },
+        };
+
+        match self.barrier_arrivals.insert(key, count) {
+            Some(previous) if previous != count => Err(unsupported(
+                mnemonic,
+                format!(
+                    "{} fires on {} here but on {} elsewhere in this kernel; Volta \
+                     pins one arrival count per barrier id so the evaluator can \
+                     take a barrier's count from any arrival at it. This is \
+                     stricter than the ISA, which only requires the threads \
+                     meeting at one barrier phase to agree - if this kernel \
+                     reuses the id with different counts in disjoint phases, it \
+                     is legal and this check is too restrictive",
+                    key, count, previous
+                ),
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -2050,14 +2151,13 @@ fn lower_parsed_instruction(
             lower_bar(ctx, bar.mode, &bar.operands, predicate)?;
         }
 
-        // `barrier{.cta}.sync{.aligned} a` without a thread count is the
-        // same full-CTA barrier as `bar.sync a`: the ISA states
-        // "bar{.cta}.sync is equivalent to barrier{.cta}.sync.aligned",
-        // and dropping `.aligned` only drops the compile-time promise that
-        // all threads reach the same textual barrier - the runtime
-        // semantics the evaluator models are identical. The bar path's
-        // restrictions (immediate id 0-15, no thread-count operand, no
-        // .arrive/.red) apply unchanged.
+        // `barrier{.cta}.sync{.aligned} a{, b}` is the same barrier as
+        // `bar{.cta}.sync a{, b}`: the ISA states "bar{.cta}.sync is
+        // equivalent to barrier{.cta}.sync.aligned", and dropping
+        // `.aligned` only drops the compile-time promise that all threads
+        // reach the same textual barrier - which the evaluator never
+        // relied on, since a counted barrier is matched by id and arrival
+        // count, not by program point.
         ParsedInstruction::Barrier(ast::BarrierInstr {
             // .cta is the default scope, and .aligned only adds the
             // compile-time all-threads-reach-this-barrier promise (see
@@ -4804,70 +4904,61 @@ fn lower_branch(
     Ok(())
 }
 
-/// Lower `bar.sync a` / `barrier.sync{.aligned} a` (both callers pass their
-/// mode and operand list; the two spellings share these semantics).
+/// Lower a named-barrier arrival: `bar.sync a{, b}` / `bar.arrive a, b`
+/// (and their `barrier.*` spellings, which the callers map onto the same
+/// modes). The id may be a register - warp-specialized kernels rotate
+/// barrier ids through one - so it is range-checked at evaluation time;
+/// the arrival count may not, since `check_barrier_arrivals` pins one
+/// count per barrier here.
 fn lower_bar(
     ctx: &mut LoweringContext,
     mode: BarMode,
     operands: &[AstOperand],
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
-    match mode {
-        BarMode::Sync => {}
-        // bar.arrive does not block the arriving thread; emitting a blocking
-        // sync in its place would invent synchronization that isn't there.
-        BarMode::Arrive => return Err(unsupported("bar.arrive", "non-blocking barrier arrival")),
+    let mnemonic = match mode {
+        BarMode::Sync => "bar.sync",
+        BarMode::Arrive => "bar.arrive",
         // bar.red also produces a reduction value in its destination.
         BarMode::Red => return Err(unsupported("bar.red", "reduction barrier")),
-    }
+    };
 
-    // The barrier id must be a concrete immediate: barriers are identified
-    // per-id at evaluation time, so a register id cannot be resolved here.
-    let barrier_id = match operands {
-        [] => {
-            return Err(unsupported(
-                "bar.sync",
-                "missing barrier id operand (an immediate 0-15 is required)",
-            ));
+    let (barrier_id, thread_count) = match operands {
+        [id] => (ctx.resolve_operand(id)?, None),
+        [id, count] => (ctx.resolve_operand(id)?, Some(ctx.resolve_operand(count)?)),
+        _ => {
+            return Err(LowerError::InvalidOperand {
+                instruction: mnemonic.to_string(),
+                operand: format!("{:?}", operands),
+                reason: "expected a barrier id and an optional thread count",
+            });
         }
-        [id, ..] => match id {
-            AstOperand::ImmInt(v) if (0..=15).contains(v) => *v as u32,
-            AstOperand::ImmUInt(v) if *v <= 15 => *v as u32,
-            AstOperand::ImmInt(_) | AstOperand::ImmUInt(_) => {
-                return Err(LowerError::InvalidOperand {
-                    instruction: "bar.sync".to_string(),
-                    operand: format!("{:?}", id),
-                    reason: "barrier id must be in 0-15",
-                });
-            }
-            other => {
+    };
+    ctx.check_barrier_arrivals(mnemonic, &barrier_id, thread_count.as_ref())?;
+
+    let instr = match mode {
+        BarMode::Sync => LoweredInstr::BarSync {
+            barrier_id,
+            thread_count,
+        },
+        // The thread count is mandatory for an arrival (PTX ISA 9.7.13.1):
+        // a non-blocking arrive that does not say how many threads release
+        // the barrier has no full-CTA reading the way `bar.sync a` does.
+        BarMode::Arrive => match thread_count {
+            Some(thread_count) => LoweredInstr::BarArrive {
+                barrier_id,
+                thread_count,
+            },
+            None => {
                 return Err(unsupported(
-                    "bar.sync",
-                    format!("register barrier id ({:?})", other),
+                    "bar.arrive",
+                    "missing thread-count operand (bar.arrive a, b)",
                 ));
             }
         },
+        BarMode::Red => unreachable!("rejected above"),
     };
-
-    match operands.len() {
-        1 => ctx.emit(LoweredInstr::BarSync { barrier_id }, predicate)?,
-        // The partial-CTA counted form synchronizes only `b` threads; the
-        // evaluator's barrier rule is full-CTA, so lowering it as a plain
-        // sync would be wrong. Rejected here rather than at evaluation.
-        2 => {
-            return Err(unsupported(
-                "bar.sync",
-                "thread-count operand (bar.sync a, b)",
-            ));
-        }
-        _ => {
-            return Err(LowerError::InvalidOperand {
-                instruction: "bar.sync".to_string(),
-                operand: format!("{:?}", operands),
-                reason: "bar.sync takes one barrier-id operand",
-            });
-        }
-    }
+    ctx.emit(instr, predicate)?;
     Ok(())
 }
 
@@ -8034,23 +8125,32 @@ mod tests {
 
     #[test]
     fn test_bar_rejections() {
-        assert_rejected("bar.arrive 0, 64;", "bar.arrive");
         assert_rejected("bar.red 0;", "bar.red");
         // The full bar.red form fails earlier, at instruction parsing (the
         // .popc reduction op modifier is not parsed) - also loud.
         assert_rejected("bar.red.popc.u32 %r1, 0, %p1;", "parsing failed");
-        assert_rejected("bar.sync %r1;", "register barrier id");
-        assert_rejected("bar.sync;", "missing barrier id");
-        assert_rejected("bar.sync 0, 64;", "thread-count");
-        match lower_body("bar.sync 16;") {
+        // An arrival that names no thread count has no meaning.
+        assert_rejected("bar.arrive 0;", "missing thread-count");
+        match lower_body("bar.sync;") {
             Err(LowerError::InvalidOperand { .. }) => {}
-            other => panic!(
-                "expected InvalidOperand for out-of-range id, got {:?}",
-                other
-            ),
+            other => panic!("expected InvalidOperand for a missing id, got {:?}", other),
         }
         assert_lowers("bar.sync 0;");
         assert_lowers("bar.sync 1;");
+        // Counted barriers and a register id: the id's range is checked
+        // at evaluation time, where a register's value is known (so an
+        // out-of-range immediate id lowers here too).
+        assert_lowers("bar.sync 0, 64;");
+        assert_lowers("bar.arrive 0, 64;");
+        assert_lowers("bar.sync %r1;");
+        assert_lowers("bar.sync 16;");
+        // One arrival count per barrier id, checked here so the evaluator
+        // can take a barrier's count from any arrival at it.
+        assert_lowers("bar.sync 0, 64;\n    bar.arrive 0, 64;\n    bar.sync 1, 128;");
+        assert_rejected("bar.sync 0, 64;\n    bar.sync 0, 128;", "too restrictive");
+        assert_rejected("bar.sync 0;\n    bar.sync 0, 64;", "too restrictive");
+        assert_rejected("bar.sync %r1, 64;\n    bar.sync %r2, 128;", "too restrictive");
+        assert_rejected("bar.sync 0, %r1;", "register thread count");
     }
 
     #[test]

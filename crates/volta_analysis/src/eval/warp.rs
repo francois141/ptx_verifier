@@ -146,7 +146,7 @@ impl Interpreter<'_> {
         // post-op reads (wmma.store followed by per-lane ld.shared) - a
         // converged warp is synchronized on both sides of the op.
         self.stats.warp_syncs += 1;
-        self.sync_warp_group(&group);
+        self.sync_thread_group(&group);
 
         match &instr {
             LoweredInstr::BarWarpSync { .. } => {}
@@ -237,8 +237,8 @@ impl Interpreter<'_> {
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
-        self.sync_warp_group(&group);
-        self.advance_warp_group(members);
+        self.sync_thread_group(&group);
+        self.advance_thread_group(members);
         Ok(())
     }
 

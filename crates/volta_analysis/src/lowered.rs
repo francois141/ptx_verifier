@@ -634,8 +634,21 @@ pub enum LoweredInstr {
     // =========================================================================
     // Synchronization
     // =========================================================================
-    /// CTA barrier: bar.sync barrier_id
-    BarSync { barrier_id: u32 },
+    /// Named barrier, blocking arrival: `bar.sync a{, b}` - arrive at
+    /// barrier `a` and wait until `thread_count` threads have arrived
+    /// (the whole CTA when the count operand is absent).
+    BarSync {
+        barrier_id: Operand,
+        thread_count: Option<Operand>,
+    },
+
+    /// Named barrier, non-blocking arrival: `bar.arrive a, b` - arrive at
+    /// barrier `a` and keep running. The ISA makes the count mandatory
+    /// here, so it is not optional as it is for `BarSync`.
+    BarArrive {
+        barrier_id: Operand,
+        thread_count: Operand,
+    },
 
     /// Warp barrier: bar.warp.sync mask
     BarWarpSync { mask: Operand },
@@ -1194,6 +1207,7 @@ define_instr_kinds!(
     Ret,
     Exit,
     BarSync,
+    BarArrive,
     BarWarpSync,
     Membar,
     Fence,
@@ -1358,7 +1372,20 @@ impl LoweredInstr {
             Self::Activemask { .. } => vec![],
 
             // Synchronization
-            Self::BarSync { .. } => vec![],
+            Self::BarSync {
+                barrier_id,
+                thread_count,
+            } => from_op(barrier_id)
+                .into_iter()
+                .chain(thread_count.as_ref().and_then(from_op))
+                .collect(),
+            Self::BarArrive {
+                barrier_id,
+                thread_count,
+            } => from_op(barrier_id)
+                .into_iter()
+                .chain(from_op(thread_count))
+                .collect(),
             Self::BarWarpSync { mask } => from_op(mask).into_iter().collect(),
             Self::Membar { .. } | Self::Fence | Self::FenceProxyAsync { .. } => vec![],
             Self::CpAsyncCommitGroup | Self::CpAsyncWaitGroup { .. } => vec![],
@@ -1634,6 +1661,7 @@ impl LoweredInstr {
             | Self::Exit
             | Self::Trap
             | Self::BarSync { .. }
+            | Self::BarArrive { .. }
             | Self::BarWarpSync { .. }
             | Self::Membar { .. }
             | Self::Fence
