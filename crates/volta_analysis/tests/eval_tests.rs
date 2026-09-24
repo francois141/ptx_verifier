@@ -5483,8 +5483,8 @@ fn test_wgmma_mma_async_numeric_correctness() {
     .reg .f32 %f<2>;
     .reg .b16 %rs<2>;
     .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[32];
-    .shared .align 16 .b8 b_col[32];
+    .shared .align 16 .b8 a_row[256];
+    .shared .align 16 .b8 b_col[256];
 
     mov.u32 %r0, %tid.x;
     setp.eq.u32 %p1, %r0, 0;
@@ -5516,28 +5516,28 @@ fn test_wgmma_mma_async_numeric_correctness() {
     @%p1 st.shared.b16 [%rd1+14], %rs1;
     mov.f32 %f1, 0f41100000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    @%p1 st.shared.b16 [%rd1+128], %rs1;
     mov.f32 %f1, 0f41200000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    @%p1 st.shared.b16 [%rd1+130], %rs1;
     mov.f32 %f1, 0f41300000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    @%p1 st.shared.b16 [%rd1+132], %rs1;
     mov.f32 %f1, 0f41400000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    @%p1 st.shared.b16 [%rd1+134], %rs1;
     mov.f32 %f1, 0f41500000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    @%p1 st.shared.b16 [%rd1+136], %rs1;
     mov.f32 %f1, 0f41600000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    @%p1 st.shared.b16 [%rd1+138], %rs1;
     mov.f32 %f1, 0f41700000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    @%p1 st.shared.b16 [%rd1+140], %rs1;
     mov.f32 %f1, 0f41800000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+30], %rs1;
+    @%p1 st.shared.b16 [%rd1+142], %rs1;
 
     mov.u64 %rd2, b_col;
     mov.f32 %f1, 0f3F800000;
@@ -5550,19 +5550,22 @@ fn test_wgmma_mma_async_numeric_correctness() {
     @%p1 st.shared.b16 [%rd2+10], %rs1;
     @%p1 st.shared.b16 [%rd2+12], %rs1;
     @%p1 st.shared.b16 [%rd2+14], %rs1;
-    @%p1 st.shared.b16 [%rd2+16], %rs1;
-    @%p1 st.shared.b16 [%rd2+18], %rs1;
-    @%p1 st.shared.b16 [%rd2+20], %rs1;
-    @%p1 st.shared.b16 [%rd2+22], %rs1;
-    @%p1 st.shared.b16 [%rd2+24], %rs1;
-    @%p1 st.shared.b16 [%rd2+26], %rs1;
-    @%p1 st.shared.b16 [%rd2+28], %rs1;
-    @%p1 st.shared.b16 [%rd2+30], %rs1;
+    @%p1 st.shared.b16 [%rd2+128], %rs1;
+    @%p1 st.shared.b16 [%rd2+130], %rs1;
+    @%p1 st.shared.b16 [%rd2+132], %rs1;
+    @%p1 st.shared.b16 [%rd2+134], %rs1;
+    @%p1 st.shared.b16 [%rd2+136], %rs1;
+    @%p1 st.shared.b16 [%rd2+138], %rs1;
+    @%p1 st.shared.b16 [%rd2+140], %rs1;
+    @%p1 st.shared.b16 [%rd2+142], %rs1;
 
+    fence.proxy.async.shared::cta;
     bar.sync 0;
 
     shr.u64 %rd3, %rd1, 4;
     shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd3, %rd3, 0x80000;
+    or.b64 %rd4, %rd4, 0x80000;
     setp.ne.u32 %p2, %r0, %r0;
 
     wgmma.fence.sync.aligned;
@@ -5614,8 +5617,8 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
     .reg .f32 %f<2>;
     .reg .b16 %rs<2>;
     .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[32];
-    .shared .align 16 .b8 b_col[32];
+    .shared .align 16 .b8 a_row[256];
+    .shared .align 16 .b8 b_col[256];
 
     mov.u32 %r0, %tid.x;
     setp.eq.u32 %p1, %r0, 0;
@@ -5647,28 +5650,28 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
     @%p1 st.shared.b16 [%rd1+14], %rs1;
     mov.f32 %f1, 0f41100000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    @%p1 st.shared.b16 [%rd1+128], %rs1;
     mov.f32 %f1, 0f41200000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    @%p1 st.shared.b16 [%rd1+130], %rs1;
     mov.f32 %f1, 0f41300000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    @%p1 st.shared.b16 [%rd1+132], %rs1;
     mov.f32 %f1, 0f41400000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    @%p1 st.shared.b16 [%rd1+134], %rs1;
     mov.f32 %f1, 0f41500000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    @%p1 st.shared.b16 [%rd1+136], %rs1;
     mov.f32 %f1, 0f41600000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    @%p1 st.shared.b16 [%rd1+138], %rs1;
     mov.f32 %f1, 0f41700000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    @%p1 st.shared.b16 [%rd1+140], %rs1;
     mov.f32 %f1, 0f41800000;
     cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+30], %rs1;
+    @%p1 st.shared.b16 [%rd1+142], %rs1;
 
     mov.u64 %rd2, b_col;
     mov.f32 %f1, 0f3F800000;
@@ -5681,19 +5684,22 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
     @%p1 st.shared.b16 [%rd2+10], %rs1;
     @%p1 st.shared.b16 [%rd2+12], %rs1;
     @%p1 st.shared.b16 [%rd2+14], %rs1;
-    @%p1 st.shared.b16 [%rd2+16], %rs1;
-    @%p1 st.shared.b16 [%rd2+18], %rs1;
-    @%p1 st.shared.b16 [%rd2+20], %rs1;
-    @%p1 st.shared.b16 [%rd2+22], %rs1;
-    @%p1 st.shared.b16 [%rd2+24], %rs1;
-    @%p1 st.shared.b16 [%rd2+26], %rs1;
-    @%p1 st.shared.b16 [%rd2+28], %rs1;
-    @%p1 st.shared.b16 [%rd2+30], %rs1;
+    @%p1 st.shared.b16 [%rd2+128], %rs1;
+    @%p1 st.shared.b16 [%rd2+130], %rs1;
+    @%p1 st.shared.b16 [%rd2+132], %rs1;
+    @%p1 st.shared.b16 [%rd2+134], %rs1;
+    @%p1 st.shared.b16 [%rd2+136], %rs1;
+    @%p1 st.shared.b16 [%rd2+138], %rs1;
+    @%p1 st.shared.b16 [%rd2+140], %rs1;
+    @%p1 st.shared.b16 [%rd2+142], %rs1;
 
+    fence.proxy.async.shared::cta;
     bar.sync 0;
 
     shr.u64 %rd3, %rd1, 4;
     shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd3, %rd3, 0x80000;
+    or.b64 %rd4, %rd4, 0x80000;
     setp.ne.u32 %p2, %r0, %r0;
 
     wgmma.fence.sync.aligned;
@@ -5740,8 +5746,8 @@ fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
     .reg .b64 %rd<5>;
     .reg .f32 %f<2>;
     .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[32];
-    .shared .align 16 .b8 b_col[32];
+    .shared .align 16 .b8 a_row[256];
+    .shared .align 16 .b8 b_col[256];
 
     mov.u32 %r0, %tid.x;
     setp.eq.u32 %p1, %r0, 0;
@@ -5792,8 +5798,8 @@ fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
     .reg .b64 %rd<5>;
     .reg .f32 %f<2>;
     .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[32];
-    .shared .align 16 .b8 b_col[32];
+    .shared .align 16 .b8 a_row[256];
+    .shared .align 16 .b8 b_col[256];
 
     mov.u32 %r0, %tid.x;
     setp.eq.u32 %p1, %r0, 0;
@@ -5817,7 +5823,10 @@ fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
     let module = parse(&src);
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
-        matches!(err, AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })),
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })
+        ),
         "expected a wgmma wait_group hazard, got: {}",
         err
     );
@@ -5837,8 +5846,8 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
     .reg .b64 %rd<5>;
     .reg .f32 %f<2>;
     .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[32];
-    .shared .align 16 .b8 b_col[32];
+    .shared .align 16 .b8 a_row[256];
+    .shared .align 16 .b8 b_col[256];
 
     mov.u32 %r0, %tid.x;
     setp.eq.u32 %p1, %r0, 0;
@@ -5863,7 +5872,10 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
     let module = parse(&src);
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
-        matches!(err, AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })),
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })
+        ),
         "expected a wgmma wait_group hazard, got: {}",
         err
     );
