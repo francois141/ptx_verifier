@@ -216,6 +216,27 @@ pub enum Tcgen05MmaKind {
     F8f6f4,
 }
 
+/// `tcgen05.mma.ws`'s `.collector::bN::op` qualifier (PTX ISA
+/// 9.7.17.10.10.3): how the `B` matrix interacts with collector buffer
+/// `buffer` (0-3). Absent on the instruction = `b0::discard`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tcgen05Collector {
+    pub buffer: u8,
+    pub op: Tcgen05CollectorOp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcgen05CollectorOp {
+    /// Fill the buffer with the `B` read from memory.
+    Fill,
+    /// `B` may be read from the buffer; it stays valid.
+    Use,
+    /// `B` may be read from the buffer, which is then discarded.
+    LastUse,
+    /// Discard the buffer's contents.
+    Discard,
+}
+
 /// Shuffle mode for warp shuffle operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShflMode {
@@ -895,10 +916,14 @@ pub enum LoweredInstr {
     /// eval time (`eval::tcgen05_mma`), since only the register operands
     /// are visible at lowering. Scoped to dense `.kind::f16`/`.kind::f8f6f4`
     /// with `A` in shared memory (not `[a-tmem]`), no `scale-input-d`; the
-    /// `.sp`/`.ws`/block-scaled forms are separate mnemonics, rejected at
-    /// lowering.
+    /// `.sp`/block-scaled forms are separate mnemonics, rejected at
+    /// lowering. `collector` is `Some` exactly for `tcgen05.mma.ws`
+    /// (weight-stationary, 9.7.17.10.10.3), which has no
+    /// `disable-output-lane` operand (all lanes enabled) and, at M = 128,
+    /// the same Layout D as the non-`.ws` form.
     Tcgen05Mma {
         kind: Tcgen05MmaKind,
+        collector: Option<Tcgen05Collector>,
         d_tmem_base: Operand,
         d_tmem_offset: i64,
         a_desc: Operand,

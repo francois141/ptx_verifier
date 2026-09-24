@@ -29,7 +29,7 @@ use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
-    Tcgen05MmaKind, UnaryOp,
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaKind, UnaryOp,
 };
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
@@ -164,6 +164,9 @@ pub(in crate::eval) struct ThreadState {
     /// `uncommitted`/`groups` above, so kept as its own field rather than
     /// reused.
     wgmma: WgmmaRegState,
+    /// `tcgen05.mma.ws` collector buffers `b0`-`b3`: the `B` elements the
+    /// last `::fill` loaded, until a `::lastuse`/`::discard` drops them.
+    tcgen05_collectors: [Option<Vec<ExprId>>; 4],
 }
 
 /// One `wgmma.mma_async` accumulator writeback not yet released by a
@@ -564,6 +567,7 @@ impl<'p> Interpreter<'p> {
                     uncommitted: Vec::new(),
                     groups: VecDeque::new(),
                     wgmma: WgmmaRegState::default(),
+                    tcgen05_collectors: Default::default(),
                 })
                 .collect(),
         );
@@ -2129,6 +2133,7 @@ impl<'p> Interpreter<'p> {
             // `block_at_warp_op`/`execute_warp_op`.
             LoweredInstr::Tcgen05Mma {
                 kind,
+                collector,
                 d_tmem_base,
                 d_tmem_offset,
                 a_desc,
@@ -2140,7 +2145,7 @@ impl<'p> Interpreter<'p> {
                 self.exec_tcgen05_mma(
                     t,
                     pc,
-                    *kind,
+                    (*kind, *collector),
                     d_tmem_base,
                     *d_tmem_offset,
                     a_desc,
@@ -2462,7 +2467,7 @@ impl<'p> Interpreter<'p> {
         &mut self,
         t: ThreadId,
         pc: InstrId,
-        kind: Tcgen05MmaKind,
+        (kind, collector): (Tcgen05MmaKind, Option<Tcgen05Collector>),
         d_tmem_base: &Operand,
         d_tmem_offset: i64,
         a_desc: &Operand,
@@ -2540,6 +2545,24 @@ impl<'p> Interpreter<'p> {
             self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?;
         let b =
             self.read_mma_operand(t, pc, (&b_md, major(id.transpose_b), b_format), id.n, k_dim)?;
+
+        if let Some(Tcgen05Collector { buffer, op }) = collector {
+            let slot = &mut self.threads[t].tcgen05_collectors[buffer as usize];
+            if matches!(op, Tcgen05CollectorOp::Use | Tcgen05CollectorOp::LastUse)
+                && slot.as_deref() != Some(b.as_slice())
+            {
+                return Err(unsupported(format!(
+                    "tcgen05.mma.ws .collector::b{buffer}::{op:?} without a live fill of \
+                     the same B matrix (reading a stale or mismatched collector buffer is \
+                     not modeled)"
+                )));
+            }
+            match op {
+                Tcgen05CollectorOp::Fill => *slot = Some(b.clone()),
+                Tcgen05CollectorOp::Use => {}
+                Tcgen05CollectorOp::LastUse | Tcgen05CollectorOp::Discard => *slot = None,
+            }
+        }
 
         let enable_input_d =
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
