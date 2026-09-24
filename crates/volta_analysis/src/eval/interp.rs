@@ -694,6 +694,20 @@ impl<'p> Interpreter<'p> {
                             elems.push((index + k, e));
                         }
                     }
+                    // A concrete all-zero granule spanning several narrow
+                    // elements: kernels zero-fill an output this way
+                    // (`st.global.v4.b32 [ptr], {0, 0, 0, 0}`), and zero is
+                    // the one bit pattern every element interpretation -
+                    // f16, bf16 and the integer widths alike - agrees on,
+                    // so splitting it needs no element type the array
+                    // configuration doesn't carry.
+                    (Value::Scalar(e), false)
+                        if width.is_multiple_of(array.elem_width)
+                            && self.arena.as_int_const(e) == Some(0) =>
+                    {
+                        let count = width / array.elem_width;
+                        elems.extend((0..count).map(|k| (index + k, e)));
+                    }
                     _ => {
                         return Err(EvalError::Config {
                             message: format!(
