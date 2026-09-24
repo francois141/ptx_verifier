@@ -2628,10 +2628,21 @@ impl<'p> Interpreter<'p> {
             }
             for n in 0..id.n as u64 {
                 let mut acc = if enable_input_d {
-                    self.tensor
+                    match self
+                        .tensor
                         .read(m as u32, d_col_base + n as u32)
                         .map_err(|e| self.tcgen05_error(t, pc, e))?
-                        .unwrap_or_else(|| self.arena.undefined())
+                    {
+                        Some(Value::Scalar(e)) => e,
+                        Some(_) => {
+                            return Err(EvalError::ValueKindMismatch {
+                                thread: t,
+                                pc,
+                                what: "tcgen05.mma accumulator cell is not an f32 scalar",
+                            });
+                        }
+                        None => self.arena.undefined(),
+                    }
                 } else {
                     // A real (not integer) zero: `D` is f32-typed, and
                     // `fma`'s eager fold only fires when every operand is
@@ -2646,7 +2657,7 @@ impl<'p> Interpreter<'p> {
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
                 self.tensor
-                    .write(m as u32, d_col_base + n as u32, acc)
+                    .write(m as u32, d_col_base + n as u32, Value::Scalar(acc))
                     .map_err(|e| self.tcgen05_error(t, pc, e))?;
             }
         }
