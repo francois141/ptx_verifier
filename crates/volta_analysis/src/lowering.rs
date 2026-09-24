@@ -34,7 +34,7 @@ use id_collections::{Id, IdVec};
 use crate::lower_error::{LowerError, LowerResult};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
-    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05MmaKind, UnaryOp,
+    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaKind, UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
 use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
@@ -2365,7 +2365,15 @@ fn lower_parsed_instruction(
             modifiers,
             operands,
         } => {
-            lower_tcgen05_mma(ctx, modifiers, operands, predicate)?;
+            lower_tcgen05_mma(ctx, modifiers, operands, predicate, false)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::Tcgen05MmaWs,
+            modifiers,
+            operands,
+        } => {
+            lower_tcgen05_mma(ctx, modifiers, operands, predicate, true)?;
         }
 
         ParsedInstruction::Other {
@@ -5520,9 +5528,12 @@ fn lower_tcgen05_wait(
 /// `disable-output-lane`, no `scale-input-d`). This is the corpus's actual
 /// usage and the "Recommended implementation scope" in
 /// `sm100a_support_plan.md`: dense, non-`.ws`, `.cta_group::1`,
-/// `.kind::f16`/`.kind::f8f6f4` only - `.sp`/`.ws`/`.ws.sp` are separate `InstrKind`
+/// `.kind::f16`/`.kind::f8f6f4` only - `.sp`/`.ws.sp` are separate `InstrKind`
 /// values (never reach this function) and block-scaled/other `.kind`s are
-/// rejected here. `idesc`/`a-desc`/`b-desc`'s packed bit-fields describe
+/// rejected here. `weight_stationary` selects `tcgen05.mma.ws` (PTX ISA
+/// 9.7.17.10.10.3): same operands minus `disable-output-lane`, plus the
+/// optional `.collector::bN::op` qualifier (default `b0::discard`); its
+/// optional trailing `zero-column-mask-desc` is rejected. `idesc`/`a-desc`/`b-desc`'s packed bit-fields describe
 /// shapes/types/addressing that only become known once their concrete
 /// runtime values are decoded at eval time (`eval::tcgen05_mma`) - nothing
 /// about their *contents* is visible here at lowering, only that they are
@@ -5532,13 +5543,22 @@ fn lower_tcgen05_mma(
     modifiers: &[DottedIdent],
     operands: &[AstOperand],
     predicate: Option<Predicate>,
+    weight_stationary: bool,
 ) -> LowerResult<()> {
-    const NAME: &str = "tcgen05.mma";
+    let name = if weight_stationary {
+        "tcgen05.mma.ws"
+    } else {
+        "tcgen05.mma"
+    };
     let mut saw_cta_group = false;
     let mut kind = None;
+    let mut collector = weight_stationary.then_some(Tcgen05Collector {
+        buffer: 0,
+        op: Tcgen05CollectorOp::Discard,
+    });
 
     for modifier in modifiers {
-        if let Some(result) = parse_tcgen05_cta_group(modifier, NAME) {
+        if let Some(result) = parse_tcgen05_cta_group(modifier, name) {
             result?;
             saw_cta_group = true;
             continue;
@@ -5552,7 +5572,7 @@ fn lower_tcgen05_mma(
                 b"f8f6f4" => Tcgen05MmaKind::F8f6f4,
                 other => {
                     return Err(unsupported(
-                        NAME,
+                        name,
                         format!(
                             "kind::{} (only .kind::f16 and .kind::f8f6f4 are modeled)",
                             String::from_utf8_lossy(other)
@@ -5562,13 +5582,34 @@ fn lower_tcgen05_mma(
             });
             continue;
         }
-        return Err(unsupported(NAME, format!("modifier .{}", modifier)));
+        if let Some(collector) = collector.as_mut()
+            && let DottedIdent::Qualified(parts) = modifier
+            && let [base, buffer, op] = parts.as_slice()
+            && base.as_slice().as_bytes() == b"collector"
+        {
+            collector.buffer = match buffer.as_slice().as_bytes() {
+                b"b0" => 0,
+                b"b1" => 1,
+                b"b2" => 2,
+                b"b3" => 3,
+                _ => return Err(unsupported(name, format!("modifier .{modifier}"))),
+            };
+            collector.op = match op.as_slice().as_bytes() {
+                b"fill" => Tcgen05CollectorOp::Fill,
+                b"use" => Tcgen05CollectorOp::Use,
+                b"lastuse" => Tcgen05CollectorOp::LastUse,
+                b"discard" => Tcgen05CollectorOp::Discard,
+                _ => return Err(unsupported(name, format!("modifier .{modifier}"))),
+            };
+            continue;
+        }
+        return Err(unsupported(name, format!("modifier .{}", modifier)));
     }
     if !saw_cta_group {
-        return Err(unsupported(NAME, "missing .cta_group::1 modifier"));
+        return Err(unsupported(name, "missing .cta_group::1 modifier"));
     }
     let Some(kind) = kind else {
-        return Err(unsupported(NAME, "missing .kind modifier"));
+        return Err(unsupported(name, "missing .kind modifier"));
     };
 
     // `{ disable-output-lane }, enable-input-d {, scale-input-d}`: despite
@@ -5582,7 +5623,7 @@ fn lower_tcgen05_mma(
     // slot is the mask, anything else is `enable-input-d` itself.
     let [d_tmem, a_desc, b_desc, idesc, rest @ ..] = operands else {
         return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
+            instruction: name.to_string(),
             operand: format!("{:?}", operands),
             reason: "expected [d-tmem], a-desc, b-desc, idesc, {disable-output-lane}, \
                      enable-input-d ([a-tmem] is not modeled)",
@@ -5597,7 +5638,7 @@ fn lower_tcgen05_mma(
     let idesc = ctx.resolve_operand(idesc)?;
 
     let (mask_elems, rest): (Option<&[AstOperand]>, &[AstOperand]) = match rest {
-        [AstOperand::Vector(v), rest @ ..] => (Some(v), rest),
+        [AstOperand::Vector(v), rest @ ..] if !weight_stationary => (Some(v), rest),
         rest => (None, rest),
     };
     // `.cta_group::2`'s 8-element mask is rejected earlier (only
@@ -5611,7 +5652,7 @@ fn lower_tcgen05_mma(
             .collect::<LowerResult<Vec<_>>>()?,
         Some(elems) => {
             return Err(LowerError::InvalidOperand {
-                instruction: NAME.to_string(),
+                instruction: name.to_string(),
                 operand: format!("{:?}", elems),
                 reason: "disable-output-lane must have 4 elements for .cta_group::1",
             });
@@ -5621,19 +5662,25 @@ fn lower_tcgen05_mma(
 
     let [enable_input_d, scale_rest @ ..] = rest else {
         return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
+            instruction: name.to_string(),
             operand: format!("{:?}", operands),
             reason: "missing enable-input-d",
         });
     };
     if !scale_rest.is_empty() {
-        return Err(unsupported(NAME, "scale-input-d is not modeled"));
+        let operand = if weight_stationary {
+            "zero-column-mask-desc"
+        } else {
+            "scale-input-d"
+        };
+        return Err(unsupported(name, format!("{operand} is not modeled")));
     }
     let enable_input_d = ctx.resolve_operand(enable_input_d)?;
 
     ctx.emit(
         LoweredInstr::Tcgen05Mma {
             kind,
+            collector,
             d_tmem_base,
             d_tmem_offset,
             a_desc,
@@ -5653,7 +5700,9 @@ fn lower_tcgen05_mma(
 /// plain, `.alias` and `.mbarrier_init` forms have no data effect Volta
 /// models (same treatment as `Tcgen05Fence`/`FenceProxyTensormap` - a pure
 /// ordering fence under Volta's sequential, non-reordering execution
-/// model). `.async`'s restriction is collapsed
+/// model; mbarrier objects are never async-proxy reads, so an
+/// `mbarrier.init` leaves no generic-proxy mark to clear). `.async`'s
+/// restriction is collapsed
 /// from the frontend's `SharedStateSpaceQualifier` (`::cta`/`::cluster`) to
 /// a plain `MemSpace::Shared` - `RaceTracker`'s async-proxy tracker has no
 /// cluster-vs-cta distinction, so both mean the same thing to it.
