@@ -202,6 +202,11 @@ pub enum EvalError {
     /// Threads participating in one warp-cooperative operation disagree
     /// (different masks, missing/exited lanes, non-uniform operands, ...).
     WarpMismatch { pc: InstrId, reason: String },
+    /// A named-barrier arrival the ISA leaves undefined: an out-of-range
+    /// id or count, arrivals at one barrier disagreeing on the count that
+    /// fires it, or more arrivals than the count (which threads the
+    /// barrier releases would then depend on the schedule).
+    BarrierMismatch { pc: InstrId, reason: String },
     /// The instruction (or one of its modes) is not supported by the evaluator.
     Unsupported { pc: InstrId, what: String },
     /// The per-analysis instruction budget was exhausted (runaway loop guard).
@@ -492,6 +497,9 @@ impl fmt::Display for EvalError {
             Self::TrapReached { thread, pc } => write!(f, "{}: trap reached at {}", thread, pc),
             Self::WarpMismatch { pc, reason } => {
                 write!(f, "warp-op mismatch at {}: {}", pc, reason)
+            }
+            Self::BarrierMismatch { pc, reason } => {
+                write!(f, "barrier mismatch at {}: {}", pc, reason)
             }
             Self::Unsupported { pc, what } => write!(f, "unsupported at {}: {}", pc, what),
             Self::InstructionLimit { limit } => {

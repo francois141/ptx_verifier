@@ -7,6 +7,7 @@
 //! confluence theorem, this particular schedule is as good as any other.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 
 use id_collections::IdVec;
 
@@ -59,13 +60,48 @@ pub struct Stats {
     pub warp_syncs: u64,
 }
 
+/// PTX gives each CTA 16 hardware ("named") barriers, ids 0-15
+/// (ISA 9.7.13.1).
+const NUM_BARRIERS: usize = 16;
+
+/// How many arrivals release a named barrier: `bar.sync a` waits for the
+/// whole CTA, while the counted forms (`bar.sync a, b`, `bar.arrive a, b`)
+/// wait for exactly `b` threads - the warp-specialization idiom, where the
+/// participants are a subset of the CTA and arrive at different pcs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::eval) enum BarrierArrivals {
+    FullCta,
+    Count(u32),
+}
+
+impl fmt::Display for BarrierArrivals {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FullCta => write!(f, "the whole CTA"),
+            Self::Count(n) => write!(f, "{} threads", n),
+        }
+    }
+}
+
+/// One named barrier's pending non-blocking arrivals: the threads that have
+/// executed `bar.arrive` on it since it last fired, and the arrival count
+/// those arrivals specified. Blocking `bar.sync` arrivals are not recorded
+/// here - those threads wait in `Status::AtBarrier` instead.
+#[derive(Debug, Default)]
+struct PendingArrivals {
+    threads: Vec<ThreadId>,
+    arrivals: Option<BarrierArrivals>,
+}
+
 /// Scheduling status of one thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::eval) enum Status {
     Ready,
-    /// Blocked at `bar.sync id` (at the current pc)
+    /// Blocked at `bar.sync id{, count}` (at the current pc), waiting for
+    /// `arrivals` threads to arrive at barrier `id`.
     AtBarrier {
         id: u32,
+        arrivals: BarrierArrivals,
     },
     /// Blocked at a warp-cooperative instruction at the current pc.
     /// `mask` is the participating-lane mask within the thread's warp.
@@ -324,6 +360,8 @@ pub struct Interpreter<'p> {
     regions: MemRegions,
     pub(in crate::eval) race: RaceTracker,
     pub(in crate::eval) mbarriers: MbarrierTable,
+    /// Pending `bar.arrive` arrivals, indexed by barrier id.
+    barriers: [PendingArrivals; NUM_BARRIERS],
     pub(in crate::eval) tensor_maps: TensorMapTable,
     pub(in crate::eval) stats: Stats,
     /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`.
@@ -546,6 +584,7 @@ impl<'p> Interpreter<'p> {
             regions,
             race: RaceTracker::new(n_threads as usize),
             mbarriers: MbarrierTable::new(n_threads as usize),
+            barriers: std::array::from_fn(|_| PendingArrivals::default()),
             tensor_maps: TensorMapTable::new(),
             stats: Stats::default(),
             op_counts: [0; crate::lowered::KIND_COUNT],
@@ -729,7 +768,7 @@ impl<'p> Interpreter<'p> {
                 any = true;
                 continue;
             }
-            if self.try_fire_barrier() {
+            if self.try_fire_barrier()? {
                 any = true;
                 continue;
             }
@@ -895,41 +934,126 @@ impl<'p> Interpreter<'p> {
         Ok(None)
     }
 
-    /// Fire the CTA barrier if every live thread waits on the same id.
-    fn try_fire_barrier(&mut self) -> bool {
-        let mut id: Option<u32> = None;
-        for state in self.threads.values() {
+    /// Fire whichever named barrier can fire: a counted barrier as soon as
+    /// its arrival count is met (`bar.arrive` arrivals included), or the
+    /// full-CTA barrier once every live thread waits on the same id.
+    /// Returns whether one fired.
+    fn try_fire_barrier(&mut self) -> EvalResult<bool> {
+        // Blocked arrivals, per barrier id. Threads at a counted barrier
+        // need not share a pc (warp-specialized producers and consumers
+        // arrive at their own `bar.sync`), so they are grouped by id only.
+        let mut waiters: [Vec<ThreadId>; NUM_BARRIERS] = std::array::from_fn(|_| Vec::new());
+        // What each barrier fires on, seeded with what its `bar.arrive`
+        // arrivals named. Lowering pins one arrival count per barrier id
+        // (`check_barrier_arrivals`), so any one arrival gives the count.
+        let mut arrivals: [Option<BarrierArrivals>; NUM_BARRIERS] =
+            std::array::from_fn(|id| self.barriers[id].arrivals);
+        let mut live_waiters = 0usize;
+        let mut every_live_thread_waits = true;
+        for (t, state) in self.threads.iter() {
             match state.status {
                 Status::Exited => {}
-                Status::AtBarrier { id: this_id } => match id {
-                    None => id = Some(this_id),
-                    Some(prev) if prev == this_id => {}
-                    Some(_) => return false, // waiting on different barriers
-                },
-                _ => return false, // someone is ready or at a warp op
+                Status::AtBarrier { id, arrivals: at } => {
+                    arrivals[id as usize] = Some(at);
+                    waiters[id as usize].push(t);
+                    live_waiters += 1;
+                }
+                _ => every_live_thread_waits = false,
             }
         }
-        if id.is_none() {
-            return false; // everyone exited (or nobody is at a barrier)
-        }
-        // Deliberately the paper's Sync'/syncMem semantics with I = the full
-        // CTA: exited threads count as arrived (the loop above) and are
-        // *included* in the chi-clear - `sync_all` empties every pending
-        // set, theirs too. This is stronger than the ISA's barrier{.cta}
-        // ordering, which only orders accesses "relative to all threads
-        // participating in the barrier" (an exited thread participates in
-        // nothing), so a spec-level race pairing a thread's pre-exit access
-        // with another thread's post-barrier access is intentionally not
-        // reported.
-        self.race.sync_all();
-        trace!("fired bar.sync {}", id.unwrap_or(0));
-        for state in self.threads.values_mut() {
-            if let Status::AtBarrier { .. } = state.status {
-                state.status = Status::Ready;
-                state.pc = InstrId(state.pc.0 + 1);
+
+        for (id, waiting) in waiters.iter().enumerate() {
+            let arrivals = match arrivals[id] {
+                Some(arrivals) => arrivals,
+                None => continue,
+            };
+            let count = match arrivals {
+                // The full-CTA barrier fires on the paper's Sync rule: it
+                // needs every live thread, and exited threads count as
+                // arrived (see `sync_all` below).
+                BarrierArrivals::FullCta => {
+                    // Every live thread must be waiting, and on this id -
+                    // threads split across ids are waiting on different
+                    // barriers, so none of them can fire.
+                    if !every_live_thread_waits || waiting.len() != live_waiters {
+                        continue;
+                    }
+                    self.race.sync_all();
+                    trace!("fired bar.sync {} (full CTA)", id);
+                    let waiting = waiting.clone();
+                    self.advance_thread_group(&waiting);
+                    return Ok(true);
+                }
+                BarrierArrivals::Count(count) => count,
+            };
+
+            let arrived = &self.barriers[id].threads;
+            let total = arrived.len() + waiting.len();
+            if total < count as usize {
+                continue;
             }
+            if total > count as usize {
+                return Err(EvalError::BarrierMismatch {
+                    pc: self.threads[waiting.first().copied().unwrap_or(arrived[0])].pc,
+                    reason: format!(
+                        "{} threads arrived at barrier {}, which fires on {} - which \
+                         threads it releases would depend on the schedule",
+                        total, id, count
+                    ),
+                });
+            }
+            // The participants are the blocked threads plus everyone who
+            // arrived without blocking. Syncing χ over exactly that set is
+            // the ISA's ordering for a counted barrier ("relative to all
+            // threads participating in the barrier"), with one deliberate
+            // relaxation: a `bar.arrive` thread keeps running, so accesses
+            // it makes between its arrival and this fire are ordered too.
+            let participants: Vec<ThreadId> =
+                arrived.iter().copied().chain(waiting.iter().copied()).collect();
+            self.barriers[id] = PendingArrivals::default();
+            self.sync_thread_group(&participants);
+            trace!("fired bar.sync {} ({} threads)", id, count);
+            let waiting = waiting.clone();
+            self.advance_thread_group(&waiting);
+            return Ok(true);
         }
-        true
+        Ok(false)
+    }
+
+    /// Resolve a named-barrier instruction's operands: the barrier id and
+    /// how many arrivals fire it. Both may be registers, so both are
+    /// range-checked here rather than at lowering time.
+    fn barrier_operands(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        barrier_id: &Operand,
+        thread_count: Option<&Operand>,
+    ) -> EvalResult<(u32, BarrierArrivals)> {
+        let id = self.concrete_operand(t, pc, barrier_id, "barrier id")?;
+        if !(0..NUM_BARRIERS as i64).contains(&id) {
+            return Err(EvalError::BarrierMismatch {
+                pc,
+                reason: format!("barrier id {} is outside the CTA's 16 barriers (0-15)", id),
+            });
+        }
+        let Some(thread_count) = thread_count else {
+            return Ok((id as u32, BarrierArrivals::FullCta));
+        };
+        let count = self.concrete_operand(t, pc, thread_count, "barrier thread count")?;
+        // PTX ISA 9.7.13.1: the count is a multiple of the warp size, and
+        // no barrier can wait for more threads than the CTA has.
+        if count <= 0 || count % i64::from(WARP_SIZE) != 0 || count > i64::from(self.n_threads) {
+            return Err(EvalError::BarrierMismatch {
+                pc,
+                reason: format!(
+                    "barrier {} arrival count {} must be a positive multiple of {} \
+                     no larger than the CTA's {} threads",
+                    id, count, WARP_SIZE, self.n_threads
+                ),
+            });
+        }
+        Ok((id as u32, BarrierArrivals::Count(count as u32)))
     }
 
     fn deadlock_error(&self) -> EvalError {
@@ -943,10 +1067,11 @@ impl<'p> Interpreter<'p> {
         EvalError::Deadlock { blocked }
     }
 
-    /// Apply the χ synchronization of a fired warp group. Called *before*
-    /// the group's cooperative memory accesses so they cannot race with the
-    /// group's own pre-sync accesses.
-    pub(in crate::eval) fn sync_warp_group(&mut self, members: &[ThreadId]) {
+    /// Apply the χ synchronization of a fired group of threads - a warp
+    /// group, a warpgroup, or a counted barrier's participants. Called
+    /// *before* a warp group's cooperative memory accesses so they cannot
+    /// race with the group's own pre-sync accesses.
+    pub(in crate::eval) fn sync_thread_group(&mut self, members: &[ThreadId]) {
         let mut group = fixedbitset::FixedBitSet::with_capacity(self.n_threads as usize);
         for &m in members {
             group.insert(m.0 as usize);
@@ -954,8 +1079,9 @@ impl<'p> Interpreter<'p> {
         self.race.sync_group(&group);
     }
 
-    /// Unblock the members of a fired warp group and advance their pcs.
-    pub(in crate::eval) fn advance_warp_group(&mut self, members: &[ThreadId]) {
+    /// Unblock the members of a fired group of threads and advance their
+    /// pcs past the instruction they were blocked at.
+    pub(in crate::eval) fn advance_thread_group(&mut self, members: &[ThreadId]) {
         for &m in members {
             let state = &mut self.threads[m];
             state.status = Status::Ready;
@@ -1864,10 +1990,26 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::BarSync { barrier_id } => {
+            LoweredInstr::BarSync {
+                barrier_id,
+                thread_count,
+            } => {
+                let (id, arrivals) =
+                    self.barrier_operands(t, pc, barrier_id, thread_count.as_ref())?;
                 self.stats.block_syncs += 1;
-                self.threads[t].status = Status::AtBarrier { id: *barrier_id };
+                self.threads[t].status = Status::AtBarrier { id, arrivals };
                 return Ok(()); // pc advances when the barrier fires
+            }
+
+            LoweredInstr::BarArrive {
+                barrier_id,
+                thread_count,
+            } => {
+                let (id, arrivals) =
+                    self.barrier_operands(t, pc, barrier_id, Some(thread_count))?;
+                let pending = &mut self.barriers[id as usize];
+                pending.arrivals = Some(arrivals);
+                pending.threads.push(t);
             }
 
             LoweredInstr::BarWarpSync { mask } => {

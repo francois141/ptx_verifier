@@ -6,7 +6,7 @@
 //! (PTX ISA 9.7.17.1), so it gets its own `Status::AtWarpgroupOp` and
 //! `find_ready_warpgroup_op`/`block_at_warpgroup_op` (`eval::interp`) rather
 //! than widening `AtWarpOp`'s 32-bit mask, which is load-bearing for every
-//! *other* warp-collective op. `sync_warp_group`/`advance_warp_group`
+//! *other* warp-collective op. `sync_thread_group`/`advance_thread_group`
 //! (`eval::interp`) are already generic over `&[ThreadId]` and are reused
 //! unchanged.
 //!
@@ -62,15 +62,15 @@ impl Interpreter<'_> {
         let group: Vec<ThreadId> = (0..WARPGROUP_SIZE).map(|lane| ThreadId(group_base + lane)).collect();
 
         self.stats.warp_syncs += 1; // reuses the existing "#Warp Sync" counter - see the plan's note
-        self.sync_warp_group(&group);
+        self.sync_thread_group(&group);
 
         match &instr {
             LoweredInstr::WgmmaMmaAsync { .. } => self.exec_wgmma_mma_async(pc, members, &instr)?,
             other => unreachable!("{:?} passed warpgroup-op dispatch", other),
         }
 
-        self.sync_warp_group(&group);
-        self.advance_warp_group(members);
+        self.sync_thread_group(&group);
+        self.advance_thread_group(members);
         Ok(())
     }
 
