@@ -3,9 +3,9 @@
 //!
 //! Represented as a dedicated allocator rather than reusing the general
 //! byte-addressed `Memory` type used for global/shared/local: Tensor Memory
-//! cells are always 32-bit (none of `Memory`'s packed-pair reinterpretation
-//! logic applies - that exists for nvcc's f16x2/f32x2-in-regular-memory
-//! idiom, not this dedicated hardware layout), the space is never itself a
+//! cells are always 32-bit (none of `Memory`'s address arithmetic or
+//! granule splitting applies - this is a dedicated hardware layout, not a
+//! byte-addressed space), the space is never itself a
 //! kernel output (must be deallocated before the kernel exits, so no
 //! dirty/output-footprint tracking is needed), and its valid bounds are
 //! dynamic - tracked by `.alloc`/`.dealloc`, not declared upfront via launch
@@ -18,7 +18,7 @@
 //! synchronizing can't arise the way it can for `.shared`/`.global` - it
 //! would already be undefined behavior per the ISA's own partitioning.
 
-use crate::symbolic::ExprId;
+use crate::eval::value::Value;
 
 /// Lanes per CTA's Tensor Memory (PTX ISA 9.7.17.1).
 pub const LANES: u32 = 128;
@@ -62,8 +62,11 @@ pub struct TensorMemory {
     high_water: u32,
     permit_relinquished: bool,
     /// `LANES * COLUMNS` cells once touched by any `.ld`/`.st`; empty until
-    /// then (see the module doc's "lazily-allocated" note).
-    cells: Vec<Option<ExprId>>,
+    /// then (see the module doc's "lazily-allocated" note). A cell holds a
+    /// whole [`Value`], not a bare expression: `tcgen05.st` publishes
+    /// packed `f16x2` data here as readily as f32 accumulator columns, and
+    /// collapsing such a pair to one expression would lose a half.
+    cells: Vec<Option<Value>>,
 }
 
 impl TensorMemory {
@@ -125,7 +128,7 @@ impl TensorMemory {
     /// written cell (the caller substitutes `Undefined`, matching the
     /// `.shared`-space convention - Tensor Memory has no host-supplied
     /// inputs either), `Err` if `col` isn't currently allocated at all.
-    pub fn read(&self, lane: u32, col: u32) -> Result<Option<ExprId>, TensorMemError> {
+    pub fn read(&self, lane: u32, col: u32) -> Result<Option<Value>, TensorMemError> {
         if !self.is_allocated(col) {
             return Err(TensorMemError::NotAllocated { lane, col });
         }
@@ -133,7 +136,7 @@ impl TensorMemory {
     }
 
     /// Write cell `(lane, col)`. Errors if `col` isn't currently allocated.
-    pub fn write(&mut self, lane: u32, col: u32, value: ExprId) -> Result<(), TensorMemError> {
+    pub fn write(&mut self, lane: u32, col: u32, value: Value) -> Result<(), TensorMemError> {
         if !self.is_allocated(col) {
             return Err(TensorMemError::NotAllocated { lane, col });
         }
@@ -232,16 +235,16 @@ mod tests {
         assert_eq!(tm.alloc(32), Err(TensorMemError::AllocAfterRelinquish));
     }
 
-    fn fake_expr(n: u32) -> ExprId {
+    fn fake_value(n: u32) -> Value {
         use id_collections::Id;
-        Id::from_index(n)
+        Value::Scalar(Id::from_index(n))
     }
 
     #[test]
     fn read_write_roundtrip_within_an_allocation() {
         let mut tm = TensorMemory::new();
         assert_eq!(tm.alloc(32), Ok(0));
-        let e = fake_expr(7);
+        let e = fake_value(7);
         assert_eq!(tm.write(5, 3, e), Ok(()));
         assert_eq!(tm.read(5, 3), Ok(Some(e)));
         // A different lane/column at the same allocation is untouched.
@@ -258,7 +261,7 @@ mod tests {
             Err(TensorMemError::NotAllocated { lane: 0, col: 32 })
         );
         assert_eq!(
-            tm.write(0, 32, fake_expr(1)),
+            tm.write(0, 32, fake_value(1)),
             Err(TensorMemError::NotAllocated { lane: 0, col: 32 })
         );
     }
@@ -267,7 +270,7 @@ mod tests {
     fn dealloc_makes_reads_and_writes_fail_again() {
         let mut tm = TensorMemory::new();
         assert_eq!(tm.alloc(32), Ok(0));
-        assert_eq!(tm.write(0, 0, fake_expr(1)), Ok(()));
+        assert_eq!(tm.write(0, 0, fake_value(1)), Ok(()));
         assert_eq!(tm.dealloc(0, 32), Ok(()));
         assert_eq!(
             tm.read(0, 0),

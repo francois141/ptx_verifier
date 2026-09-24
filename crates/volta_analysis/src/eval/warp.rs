@@ -1320,12 +1320,15 @@ impl Interpreter<'_> {
             let lane = lane_base + (m.0 % WARP_SIZE);
             for (k, &reg) in dst.iter().enumerate() {
                 let col = base_col + k as u32;
-                let e = self
+                let v = self
                     .tensor
                     .read(lane, col)
-                    .map_err(|e| self.tcgen05_error(m, pc, e))?
-                    .unwrap_or_else(|| self.arena.undefined());
-                self.write_reg(m, pc, reg, Value::Scalar(e))?;
+                    .map_err(|e| self.tcgen05_error(m, pc, e))?;
+                let v = match v {
+                    Some(v) => v,
+                    None => Value::Scalar(self.arena.undefined()),
+                };
+                self.write_reg(m, pc, reg, v)?;
             }
         }
         Ok(())
@@ -1338,6 +1341,11 @@ impl Interpreter<'_> {
     /// e.g. the driving kernel's zero-fill idiom repeats one register
     /// holding a per-thread-identical constant across every slot). Hazard
     /// footprint checked once for the whole op, same reasoning as `.ld`.
+    ///
+    /// A source register's whole [`Value`] lands in the cell, packed
+    /// halves included: publishing `f16x2` data for a later tensor-core
+    /// read is what this instruction is for, and collapsing the pair to
+    /// one expression would lose a half.
     fn exec_tcgen05_st(
         &mut self,
         pc: InstrId,
@@ -1361,9 +1369,16 @@ impl Interpreter<'_> {
             let lane = lane_base + (m.0 % WARP_SIZE);
             for (k, op) in src.iter().enumerate() {
                 let col = base_col + k as u32;
-                let e = self.scalar_operand(m, pc, op)?;
+                let v = self.operand_value(m, pc, op)?;
+                if let Value::Mbarrier(_) = v {
+                    return Err(EvalError::ValueKindMismatch {
+                        thread: m,
+                        pc,
+                        what: "mbarrier handle stored to Tensor Memory",
+                    });
+                }
                 self.tensor
-                    .write(lane, col, e)
+                    .write(lane, col, v)
                     .map_err(|e| self.tcgen05_error(m, pc, e))?;
             }
         }
