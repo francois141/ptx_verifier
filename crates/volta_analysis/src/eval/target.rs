@@ -7,8 +7,9 @@ use volta_frontend::ast::{Arch, Target};
 
 /// Analysis behavior gated by the module's declared target architecture.
 /// The first (and so far only) feature: whether a missing
-/// `fence.proxy.async` between an async-proxy write (`cp.async`, TMA) and a
-/// later access to the same bytes is a reportable hazard.
+/// `fence.proxy.async` between a generic-proxy write to shared memory and
+/// a later async-proxy read of the same bytes (a `tcgen05.mma` operand) is
+/// a reportable hazard.
 #[derive(Debug, Clone, Copy)]
 pub struct TargetFeatures {
     /// Only sm_90+ has an "async proxy" at all - `fence.proxy.async` isn't

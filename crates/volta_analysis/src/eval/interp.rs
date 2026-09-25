@@ -3720,18 +3720,10 @@ impl<'p> Interpreter<'p> {
             let leading_idx = idx[0] as u64;
             let dst_elem_addr =
                 tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
-            // A TMA write goes through the async proxy: it lands
-            // immediately here rather than at a deferred release step, so
-            // the unfenced mark happens as part of the write itself.
-            self.mem_write_via(
-                t,
-                pc,
-                MemSpace::Shared,
-                dst_elem_addr,
-                elem_bytes,
-                value,
-                Proxy::Async,
-            )?;
+            self.mem_write(t, pc, MemSpace::Shared, dst_elem_addr, elem_bytes, value)?;
+            // A TMA write goes through the async proxy, not the generic one
+            // `mem_write` just marked these bytes as written through.
+            self.race.clear_generic_unfenced(dst_elem_addr, elem_bytes);
         }
 
         self.check_bounds(t, pc, MemSpace::Shared, mbar_addr, 8)?;
@@ -3775,16 +3767,9 @@ impl<'p> Interpreter<'p> {
 
         for byte in (0..size).step_by(WORD_BYTES as usize) {
             let value = self.mem_read(t, pc, MemSpace::Global, src_addr + byte, WORD_BYTES)?;
-            self.mem_write_via(
-                t,
-                pc,
-                MemSpace::Shared,
-                dst_addr + byte,
-                WORD_BYTES,
-                value,
-                Proxy::Async,
-            )?;
+            self.mem_write(t, pc, MemSpace::Shared, dst_addr + byte, WORD_BYTES, value)?;
         }
+        self.race.clear_generic_unfenced(dst_addr, size);
 
         self.check_bounds(t, pc, MemSpace::Shared, mbar_addr, 8)?;
         self.check_alignment(t, pc, MemSpace::Shared, mbar_addr, 8)?;
@@ -3920,24 +3905,11 @@ impl<'p> Interpreter<'p> {
                 v,
             )?;
         }
-        // sm_90+ only: this write went through the async
-        // proxy, and per the ISA needs an explicit
-        // `fence.proxy.async` before any later access
-        // (through either proxy) is well-defined -
-        // `bar.sync` alone does not provide that ordering.
-        // Below sm_90 there is no such proxy distinction
-        // (and `fence.proxy.async` isn't even a legal
-        // instruction there), so this is a no-op unless
-        // `self.features.async_proxy_fence` is set.
-        if self.features.async_proxy_fence {
-            self.race.mark_async_proxy_unfenced(
-                MemSpace::Shared,
-                copy.dst_addr,
-                copy.cp_size,
-                t,
-                copy.pc,
-            );
-        }
+        // The copy's own completion mechanism orders these bytes for a
+        // later async-proxy read, so the generic mark `mem_write` just
+        // left behind comes straight back off.
+        self.race
+            .clear_generic_unfenced(copy.dst_addr, copy.cp_size);
         Ok(())
     }
 
@@ -4102,12 +4074,6 @@ impl<'p> Interpreter<'p> {
                 current: race.current,
             },
             MemHazard::AsyncCopy(h) => EvalError::AsyncCopyHazard {
-                space: h.space,
-                addr: h.addr,
-                prior: h.prior,
-                current: h.current,
-            },
-            MemHazard::AsyncProxyUnfenced(h) => EvalError::AsyncProxyFenceHazard {
                 space: h.space,
                 addr: h.addr,
                 prior: h.prior,
@@ -4317,24 +4283,6 @@ impl<'p> Interpreter<'p> {
         width: u64,
         value: Value,
     ) -> EvalResult<()> {
-        self.mem_write_via(t, pc, space, addr, width, value, Proxy::Generic)
-    }
-
-    /// [`Self::mem_write`] through a given memory proxy: which of the two
-    /// unfenced-write marks the write leaves behind on sm_90+ is the only
-    /// difference (see `RaceTracker::mark_generic_unfenced` and
-    /// `mark_async_proxy_unfenced`).
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::eval) fn mem_write_via(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-        space: MemSpace,
-        addr: u64,
-        width: u64,
-        value: Value,
-        proxy: Proxy,
-    ) -> EvalResult<()> {
         self.check_bounds(t, pc, space, addr, width)?;
         // See `mem_read`: the write-side natural-alignment chokepoint.
         self.check_alignment(t, pc, space, addr, width)?;
@@ -4368,17 +4316,14 @@ impl<'p> Interpreter<'p> {
                 if space == MemSpace::Global {
                     &mut self.global
                 } else {
-                    // sm_90+: a generic write needs fencing by its writer
-                    // before a later async-proxy read (`tcgen05.mma`) may
-                    // see it; an async-proxy write (`cp.async`/TMA) instead
-                    // needs `fence.proxy.async` before any later access.
+                    // sm_90+: a later async-proxy read (`tcgen05.mma`)
+                    // needs a `fence.proxy.async` ordering it after this
+                    // write. Asynchronous copies land here too and drop
+                    // this mark right after
+                    // (`RaceTracker::clear_generic_unfenced`): their own
+                    // completion mechanism carries that ordering.
                     if self.features.async_proxy_fence {
-                        match proxy {
-                            Proxy::Generic => self.race.mark_generic_unfenced(addr, width, t, pc),
-                            Proxy::Async => self
-                                .race
-                                .mark_async_proxy_unfenced(space, addr, width, t, pc),
-                        }
+                        self.race.mark_generic_unfenced(addr, width, t, pc);
                     }
                     &mut self.shared
                 }
