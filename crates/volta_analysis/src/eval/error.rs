@@ -244,6 +244,16 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
+    /// Two unsynchronized conflicting accesses to one Tensor Memory cell -
+    /// e.g. a warp's `tcgen05.ld` of a `tcgen05.mma` result without having
+    /// synchronized with the MMA's issuing thread (normally through the
+    /// mbarrier its `tcgen05.commit` arrives on).
+    TensorMemoryRace {
+        lane: u32,
+        col: u32,
+        prior: AccessSite,
+        current: AccessSite,
+    },
     /// A `tcgen05.ld`/`.st`'s `taddr` encoded a Tensor Memory lane quadrant
     /// (PTX ISA 9.7.17.1.1: address bits `[31:16]`) other than the issuing
     /// warp's own - 9.7.17.8.1 restricts each warp of a warpgroup to its own
@@ -539,6 +549,16 @@ impl fmt::Display for EvalError {
                 start_col + num_cols,
                 current,
                 prior
+            ),
+            Self::TensorMemoryRace {
+                lane,
+                col,
+                prior,
+                current,
+            } => write!(
+                f,
+                "data race on tensor-memory (lane={}, col={}): {} conflicts with {}",
+                lane, col, current, prior
             ),
             Self::Tcgen05LaneRestrictionViolation {
                 thread,
