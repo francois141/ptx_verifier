@@ -11,12 +11,11 @@
 //! dynamic - tracked by `.alloc`/`.dealloc`, not declared upfront via launch
 //! config the way `MemRegions` works for the other spaces.
 //!
-//! Cross-warp races don't apply here either (see the design discussion this
-//! module implements): every `tcgen05` access is issued collectively by a
-//! warp or warpgroup, and the ISA restricts each warp to its own quadrant of
-//! Tensor Memory, so two warps legitimately touching the same cell without
-//! synchronizing can't arise the way it can for `.shared`/`.global` - it
-//! would already be undefined behavior per the ISA's own partitioning.
+//! Races are tracked outside this store, per cell, by `RaceTracker`'s χ
+//! state (`tmem_read`/`tmem_write`): the ISA restricts each warp's
+//! `tcgen05.ld`/`.st` to its own lane quadrant, but a `tcgen05.mma` issued by
+//! one thread writes all 128 lanes, so its result is read by other warps
+//! and needs the same happens-before edge as `.shared`/`.global` data.
 
 use crate::eval::value::Value;
 

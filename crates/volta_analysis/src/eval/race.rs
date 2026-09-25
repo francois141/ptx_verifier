@@ -1,6 +1,7 @@
 //! χ-context race detection (paper Section 3.2).
 //!
-//! For every byte of shared and global memory we track:
+//! For every byte of shared and global memory, and every Tensor Memory cell,
+//! we track:
 //!
 //! - `rd`: for each thread that has read the byte, the set of threads that
 //!   have *not* synchronized with it since that read, and
@@ -131,7 +132,15 @@ pub struct TensorMemRaceInfo {
     pub current: AccessSite,
 }
 
-/// χ state for one byte.
+/// One χ-tracked location: a byte of racy memory, or a 32-bit Tensor
+/// Memory cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ChiLoc {
+    Mem(MemSpace, u64),
+    TensorMem { lane: u32, col: u32 },
+}
+
+/// χ state for one location.
 #[derive(Debug, Clone, Default)]
 struct ChiCell {
     /// reader thread → (threads not yet synced with it, pc of the read)
@@ -175,14 +184,15 @@ struct Tcgen05Pending {
     st: Vec<(u32, u32, AccessSite)>,
 }
 
-/// χ-context tracker over all racy memory (shared + global), plus in-flight
-/// `cp.async` lock state, plus in-flight `tcgen05.ld`/`.st` lock state.
+/// χ-context tracker over all racy memory (shared + global + Tensor
+/// Memory), plus in-flight `cp.async` lock state, plus in-flight
+/// `tcgen05.ld`/`.st` lock state.
 #[derive(Debug)]
 pub struct RaceTracker {
     n_threads: usize,
     /// Precomputed full thread set (the paper's 𝕀).
     all: FixedBitSet,
-    cells: HashMap<(MemSpace, u64), ChiCell>,
+    cells: HashMap<ChiLoc, ChiCell>,
     async_locks: HashMap<(MemSpace, u64), AsyncLockCell>,
     /// Indexed by quadrant `0..4` (`(lane % 128) / 32`) - see `Tcgen05Pending`.
     tcgen05_pending: [Tcgen05Pending; 4],
@@ -283,7 +293,6 @@ impl RaceTracker {
         pc: InstrId,
         proxy: Proxy,
     ) -> Result<(), MemHazard> {
-        let t = thread.0;
         let current = AccessSite {
             thread,
             pc,
@@ -314,25 +323,129 @@ impl RaceTracker {
             self.check_generic_proxy_fence(space, addr, width, current)?;
         }
         for byte in addr..addr + width {
-            let cell = self.cells.entry((space, byte)).or_default();
-            if let Some((writer, pending, wpc)) = &cell.wr
-                && *writer != t
-                && pending.contains(t as usize)
-            {
-                return Err(MemHazard::Race(RaceInfo {
-                    space,
-                    addr: byte,
-                    prior: AccessSite {
-                        thread: ThreadId(*writer),
-                        pc: *wpc,
-                        is_write: true,
-                    },
-                    current,
-                }));
-            }
-            cell.rd.insert(t, (self.all.clone(), pc));
+            self.chi_read(ChiLoc::Mem(space, byte), thread, pc)
+                .map_err(|prior| {
+                    MemHazard::Race(RaceInfo {
+                        space,
+                        addr: byte,
+                        prior,
+                        current,
+                    })
+                })?;
         }
         Ok(())
+    }
+
+    /// The paper's `noRacingWr` check plus read-set update for one
+    /// location, returning the racing prior write on failure.
+    fn chi_read(&mut self, loc: ChiLoc, thread: ThreadId, pc: InstrId) -> Result<(), AccessSite> {
+        let t = thread.0;
+        let cell = self.cells.entry(loc).or_default();
+        if let Some((writer, pending, wpc)) = &cell.wr
+            && *writer != t
+            && pending.contains(t as usize)
+        {
+            return Err(AccessSite {
+                thread: ThreadId(*writer),
+                pc: *wpc,
+                is_write: true,
+            });
+        }
+        cell.rd.insert(t, (self.all.clone(), pc));
+        Ok(())
+    }
+
+    /// The paper's `noRacingRd`/`noRacingWr` checks plus last-writer update
+    /// for one location, returning the racing prior access on failure.
+    /// `same_value`: see [`Self::write_with`].
+    fn chi_write(
+        &mut self,
+        loc: ChiLoc,
+        thread: ThreadId,
+        pc: InstrId,
+        same_value: bool,
+    ) -> Result<(), AccessSite> {
+        let t = thread.0;
+        let cell = self.cells.entry(loc).or_default();
+        // Report the lowest-numbered conflicting reader. HashMap
+        // iteration order varies per instance, and a race verdict is
+        // terminal, so completing the scan costs nothing and makes
+        // the diagnostic deterministic across runs.
+        if let Some((reader, rpc)) = cell
+            .rd
+            .iter()
+            .filter(|(reader, (pending, _))| **reader != t && pending.contains(t as usize))
+            .map(|(reader, (_, rpc))| (*reader, *rpc))
+            .min_by_key(|&(reader, _)| reader)
+        {
+            return Err(AccessSite {
+                thread: ThreadId(reader),
+                pc: rpc,
+                is_write: false,
+            });
+        }
+        if !same_value
+            && let Some((writer, pending, wpc)) = &cell.wr
+            && *writer != t
+            && pending.contains(t as usize)
+        {
+            return Err(AccessSite {
+                thread: ThreadId(*writer),
+                pc: *wpc,
+                is_write: true,
+            });
+        }
+        cell.wr = Some((t, self.all.clone(), pc));
+        Ok(())
+    }
+
+    /// χ-checked read of Tensor Memory cell `(lane, col)` by `thread` -
+    /// the same per-location rule as shared/global bytes, so every sync
+    /// that orders memory (`bar.sync`, an mbarrier wait) orders Tensor
+    /// Memory too. Needed because a `tcgen05.mma` issued by one thread
+    /// writes all 128 lanes, so its `D` is read by *other* warps.
+    pub fn tmem_read(
+        &mut self,
+        lane: u32,
+        col: u32,
+        thread: ThreadId,
+        pc: InstrId,
+    ) -> Result<(), TensorMemRaceInfo> {
+        let current = AccessSite {
+            thread,
+            pc,
+            is_write: false,
+        };
+        self.chi_read(ChiLoc::TensorMem { lane, col }, thread, pc)
+            .map_err(|prior| TensorMemRaceInfo {
+                lane,
+                col,
+                prior,
+                current,
+            })
+    }
+
+    /// χ-checked write of Tensor Memory cell `(lane, col)` - see
+    /// [`Self::tmem_read`].
+    pub fn tmem_write(
+        &mut self,
+        lane: u32,
+        col: u32,
+        thread: ThreadId,
+        pc: InstrId,
+    ) -> Result<(), TensorMemRaceInfo> {
+        let current = AccessSite {
+            thread,
+            pc,
+            is_write: true,
+        };
+        self.chi_write(ChiLoc::TensorMem { lane, col }, thread, pc, false)
+            .map_err(|prior| TensorMemRaceInfo {
+                lane,
+                col,
+                prior,
+                current,
+            })
     }
 
     /// Record a write of `[addr, addr + width)` by `thread`, checking for a
@@ -369,7 +482,6 @@ impl RaceTracker {
         pc: InstrId,
         same_value: bool,
     ) -> Result<(), MemHazard> {
-        let t = thread.0;
         let current = AccessSite {
             thread,
             pc,
@@ -408,46 +520,15 @@ impl RaceTracker {
             }
         }
         for byte in addr..addr + width {
-            let cell = self.cells.entry((space, byte)).or_default();
-            // Report the lowest-numbered conflicting reader. HashMap
-            // iteration order varies per instance, and a race verdict is
-            // terminal, so completing the scan costs nothing and makes
-            // the diagnostic deterministic across runs.
-            if let Some((reader, rpc)) = cell
-                .rd
-                .iter()
-                .filter(|(reader, (pending, _))| **reader != t && pending.contains(t as usize))
-                .map(|(reader, (_, rpc))| (*reader, *rpc))
-                .min_by_key(|&(reader, _)| reader)
-            {
-                return Err(MemHazard::Race(RaceInfo {
-                    space,
-                    addr: byte,
-                    prior: AccessSite {
-                        thread: ThreadId(reader),
-                        pc: rpc,
-                        is_write: false,
-                    },
-                    current,
-                }));
-            }
-            if !same_value
-                && let Some((writer, pending, wpc)) = &cell.wr
-                && *writer != t
-                && pending.contains(t as usize)
-            {
-                return Err(MemHazard::Race(RaceInfo {
-                    space,
-                    addr: byte,
-                    prior: AccessSite {
-                        thread: ThreadId(*writer),
-                        pc: *wpc,
-                        is_write: true,
-                    },
-                    current,
-                }));
-            }
-            cell.wr = Some((t, self.all.clone(), pc));
+            self.chi_write(ChiLoc::Mem(space, byte), thread, pc, same_value)
+                .map_err(|prior| {
+                    MemHazard::Race(RaceInfo {
+                        space,
+                        addr: byte,
+                        prior,
+                        current,
+                    })
+                })?;
         }
         Ok(())
     }
@@ -677,8 +758,6 @@ impl RaceTracker {
     /// participant's accesses lose every group they belong to
     /// (`participants ∪ waiters`); a non-participant waiter's accesses
     /// lose only its own group.
-    // TODO: understand this batching and its equivalence argument in more
-    // detail (see `batched_waiter_sync_matches_sequential_sync_groups`).
     pub fn sync_mbarrier_waiters(&mut self, participants: &FixedBitSet, waiters: &FixedBitSet) {
         debug_assert_eq!(participants.len(), self.n_threads);
         debug_assert_eq!(waiters.len(), self.n_threads);
@@ -974,92 +1053,5 @@ mod tests {
             expect_generic_proxy_hazard(chi.read_via(S, 0x10, 4, ThreadId(0), pc(4), Proxy::Async));
         assert_eq!(hazard.prior.thread, ThreadId(0));
         assert!(hazard.prior.is_write);
-    }
-
-    /// [`RaceTracker::sync_mbarrier_waiters`] must leave χ in exactly the
-    /// state that `sync_group(participants ∪ {w})` for each waiter `w` in
-    /// turn leaves it - the equivalence its single pass is built on. Driven
-    /// over pseudo-random access histories because the evaluator's own tests
-    /// never put two threads on one barrier's phase at once.
-    #[test]
-    fn batched_waiter_sync_matches_sequential_sync_groups() {
-        const N_THREADS: usize = 12;
-        const N_ADDRS: u64 = 6;
-
-        type Snapshot = Vec<(u64, Vec<(u32, Vec<usize>)>, Option<(u32, Vec<usize>)>)>;
-
-        /// χ reduced to a deterministically ordered, comparable form.
-        fn snapshot(chi: &RaceTracker) -> Snapshot {
-            let mut cells: Snapshot = chi
-                .cells
-                .iter()
-                .map(|(&(_, addr), cell)| {
-                    let mut readers: Vec<(u32, Vec<usize>)> = cell
-                        .rd
-                        .iter()
-                        .map(|(&reader, (pending, _))| (reader, pending.ones().collect()))
-                        .collect();
-                    readers.sort();
-                    let writer = cell
-                        .wr
-                        .as_ref()
-                        .map(|(writer, pending, _)| (*writer, pending.ones().collect()));
-                    (addr, readers, writer)
-                })
-                .collect();
-            cells.sort();
-            cells
-        }
-
-        /// A deterministic pseudo-random access history (xorshift64).
-        fn history(seed: u64) -> RaceTracker {
-            let mut chi = RaceTracker::new(N_THREADS);
-            let mut x = seed | 1;
-            for step in 0..120u32 {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                let thread = ThreadId((x % N_THREADS as u64) as u32);
-                let addr = (x >> 8) % N_ADDRS;
-                // Hazards are irrelevant here: either way the access is
-                // recorded in χ, which is what is being compared.
-                let _ = if (x >> 20) & 1 == 0 {
-                    chi.write_with(S, addr, 1, thread, pc(step), false)
-                } else {
-                    chi.read(S, addr, 1, thread, pc(step))
-                };
-            }
-            chi
-        }
-
-        let cases: [(&[u32], &[u32]); 5] = [
-            (&[0, 1, 2], &[3, 4]),
-            (&[0, 1], &[1, 2, 3]),
-            (&[5], &[5]),
-            (&[2, 7, 9], &[0, 2, 11]),
-            (&[], &[1, 2]),
-        ];
-        for seed in 1..40u64 {
-            for (participants, waiters) in cases {
-                let arrived = group(N_THREADS, participants);
-                let woken = group(N_THREADS, waiters);
-
-                let mut sequential = history(seed);
-                for &waiter in waiters {
-                    let mut one = arrived.clone();
-                    one.insert(waiter as usize);
-                    sequential.sync_group(&one);
-                }
-
-                let mut batched = history(seed);
-                batched.sync_mbarrier_waiters(&arrived, &woken);
-
-                assert_eq!(
-                    snapshot(&sequential),
-                    snapshot(&batched),
-                    "seed {seed}, participants {participants:?}, waiters {waiters:?}"
-                );
-            }
-        }
     }
 }

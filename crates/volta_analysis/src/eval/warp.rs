@@ -1309,6 +1309,9 @@ impl Interpreter<'_> {
     /// contiguous column range within one lane quadrant (every member
     /// shares the same quadrant - see `sm100a_support_plan.md`'s hazard
     /// design), so a single range check covers the whole footprint.
+    /// Beyond that, each cell is χ-checked per lane thread: a
+    /// `tcgen05.mma` is issued by one thread for all 128 lanes, so another
+    /// warp reading its result needs a happens-before edge to the issuer.
     fn exec_tcgen05_ld(
         &mut self,
         pc: InstrId,
@@ -1334,11 +1337,14 @@ impl Interpreter<'_> {
             for (k, &reg) in dst.iter().enumerate() {
                 let (lane, col) = shape.cell(m.0 % WARP_SIZE, k as u32);
                 let (lane, col) = (lane_base + lane, base_col + col);
-                let v = self
+                self.race
+                    .tmem_read(lane, col, m, pc)
+                    .map_err(Self::tmem_race_error)?;
+                let v = match self
                     .tensor
                     .read(lane, col)
-                    .map_err(|e| self.tcgen05_error(m, pc, e))?;
-                let v = match v {
+                    .map_err(|e| self.tcgen05_error(m, pc, e))?
+                {
                     Some(v) => v,
                     None => Value::Scalar(self.arena.undefined()),
                 };
@@ -1392,6 +1398,9 @@ impl Interpreter<'_> {
                         what: "mbarrier handle stored to Tensor Memory",
                     });
                 }
+                self.race
+                    .tmem_write(lane, col, m, pc)
+                    .map_err(Self::tmem_race_error)?;
                 self.tensor
                     .write(lane, col, v)
                     .map_err(|e| self.tcgen05_error(m, pc, e))?;
