@@ -216,6 +216,76 @@ pub enum Tcgen05MmaKind {
     F8f6f4,
 }
 
+/// `tcgen05.ld`/`.st`'s shape qualifier (PTX ISA 9.7.17.8, Tables 52/53):
+/// the rectangle of Tensor Memory one `.x1` unit of the access covers, and
+/// hence how a thread's registers map onto `(lane, column)` cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcgen05LdStShape {
+    /// `.32x32b`: the warp's full 32-lane quadrant, one column per `.x1`.
+    S32x32b,
+    /// `.16x256b`: half a quadrant (16 lanes) by 8 columns per `.x1`, so
+    /// four registers per thread per unit.
+    S16x256b,
+}
+
+impl Tcgen05LdStShape {
+    /// Registers each thread supplies/receives per `.x1` unit.
+    pub fn regs_per_unit(self) -> u32 {
+        match self {
+            Self::S32x32b => 1,
+            Self::S16x256b => 4,
+        }
+    }
+
+    /// Tensor Memory columns one `.x1` unit spans.
+    pub fn cols_per_unit(self) -> u32 {
+        match self {
+            Self::S32x32b => 1,
+            Self::S16x256b => 8,
+        }
+    }
+
+    /// Tensor Memory lanes the access spans, starting at the `taddr` lane.
+    pub fn num_lanes(self) -> u32 {
+        match self {
+            Self::S32x32b => 32,
+            Self::S16x256b => 16,
+        }
+    }
+
+    /// Tensor Memory columns an access of `regs` registers per thread
+    /// spans: one `.x1` unit per `regs_per_unit` registers, each unit
+    /// `cols_per_unit` columns wide.
+    pub fn num_cols(self, regs: usize) -> u32 {
+        (regs as u32 / self.regs_per_unit()) * self.cols_per_unit()
+    }
+
+    /// The cell register index `reg` of the thread at `lane_in_warp`
+    /// addresses, as `(lane offset from taddr's lane, column offset from
+    /// taddr's column)`.
+    ///
+    /// `.32x32b` is the identity case: lane = the thread's own position in
+    /// the warp, one column per register.
+    ///
+    /// `.16x256b` splits each unit's 128 cells (16 lanes x 8 columns) over
+    /// the warp's 32 threads x 4 registers. Four consecutive threads share
+    /// a lane and cover the unit's 8 columns two at a time, while the
+    /// register's high bit selects the lane half:
+    /// `lane = lane_in_warp / 4 + 8 * (reg / 2)` within the unit and
+    /// `column = 2 * (lane_in_warp % 4) + reg % 2`.
+    pub fn cell(self, lane_in_warp: u32, reg: u32) -> (u32, u32) {
+        match self {
+            Self::S32x32b => (lane_in_warp, reg),
+            Self::S16x256b => {
+                let (unit, within) = (reg / 4, reg % 4);
+                let lane = lane_in_warp / 4 + 8 * (within / 2);
+                let col = unit * 8 + 2 * (lane_in_warp % 4) + within % 2;
+                (lane, col)
+            }
+        }
+    }
+}
+
 /// `tcgen05.mma`'s `A` operand. The ISA spells a shared-memory matrix
 /// descriptor and a Tensor Memory address differently - only the latter
 /// is bracketed - and they address completely different memories, so the
@@ -892,19 +962,22 @@ pub enum LoweredInstr {
     // =========================================================================
     // TensorCore 5th Generation - Tensor Memory Register Load/Store (PTX ISA 9.7.17.8)
     // =========================================================================
-    /// `tcgen05.ld.sync.aligned.32x32b.num.b32 r, [taddr]`: collective async
-    /// load of `dst.len()` columns starting at `taddr_base + taddr_offset`
-    /// into one register per column, per lane.
+    /// `tcgen05.ld.sync.aligned.shape.num.b32 r, [taddr]`: collective async
+    /// load into `dst.len()` registers per thread, from the Tensor Memory
+    /// rectangle based at `taddr_base + taddr_offset` that `shape` and the
+    /// register count together describe (`Tcgen05LdStShape::cell`).
     Tcgen05Ld {
+        shape: Tcgen05LdStShape,
         dst: Vec<RegId>,
         taddr_base: Operand,
         taddr_offset: i64,
     },
 
-    /// `tcgen05.st.sync.aligned.32x32b.num.b32 [taddr], r`: collective async
-    /// store of `src.len()` columns starting at `taddr_base + taddr_offset`
-    /// from one register per column, per lane.
+    /// `tcgen05.st.sync.aligned.shape.num.b32 [taddr], r`: collective async
+    /// store of `src.len()` registers per thread, to the same rectangle
+    /// `Tcgen05Ld` reads.
     Tcgen05St {
+        shape: Tcgen05LdStShape,
         taddr_base: Operand,
         taddr_offset: i64,
         src: Vec<Operand>,

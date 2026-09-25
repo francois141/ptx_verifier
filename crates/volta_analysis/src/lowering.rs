@@ -34,7 +34,8 @@ use id_collections::{Id, IdVec};
 use crate::lower_error::{LowerError, LowerResult};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
-    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, UnaryOp,
+    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector,
+    Tcgen05CollectorOp, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind, UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
 use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
@@ -5404,11 +5405,43 @@ fn parse_tcgen05_num(modifier: &str) -> Option<u32> {
     })
 }
 
-/// Lower `tcgen05.ld.sync.aligned.32x32b.num.b32 r, [taddr]`. Only the
-/// `.32x32b` shape is modeled for now; `.16x64b`/`.16x128b`/`.16x256b`/
-/// `.16x32bx2` (fewer than 32 lanes participate - a different access
-/// pattern) and `.red`/`.pack::16b` are rejected loudly rather than
-/// half-modeled.
+/// Parse the `.32x32b`/`.16x256b` shape modifier common to `tcgen05.ld`/
+/// `.st` (PTX ISA 9.7.17.8, Tables 52/53). Returns `None` for a modifier
+/// that isn't a shape, so callers can fall through. `.16x64b`/`.16x128b`/
+/// `.16x32bx2` are deliberately absent: their register-to-cell mappings
+/// are not established here, and half-modeling them would silently
+/// permute a kernel's data (see [`Tcgen05LdStShape::cell`]).
+fn parse_tcgen05_shape(modifier: &str) -> Option<Tcgen05LdStShape> {
+    Some(match modifier {
+        "32x32b" => Tcgen05LdStShape::S32x32b,
+        "16x256b" => Tcgen05LdStShape::S16x256b,
+        _ => return None,
+    })
+}
+
+/// The register count `.shape` + `.num` implies per thread, checked
+/// against the vector the kernel actually wrote: one `.xN` repeats the
+/// shape's unit `N` times, and each unit is `regs_per_unit` registers.
+fn tcgen05_vector_len(
+    name: &str,
+    shape: Tcgen05LdStShape,
+    num: u32,
+    actual: usize,
+) -> LowerResult<()> {
+    let expected = (num * shape.regs_per_unit()) as usize;
+    if actual != expected {
+        return Err(LowerError::InvalidOperand {
+            instruction: name.to_string(),
+            operand: format!("{actual} registers"),
+            reason: "vector length does not match .shape and .num",
+        });
+    }
+    Ok(())
+}
+
+/// Lower `tcgen05.ld.sync.aligned.shape.num.b32 r, [taddr]`. Shapes are
+/// limited to those `parse_tcgen05_shape` models; `.red`/`.pack::16b` are
+/// rejected loudly rather than half-modeled.
 fn lower_tcgen05_ld(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -5417,6 +5450,7 @@ fn lower_tcgen05_ld(
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.ld";
     let mut num: Option<u32> = None;
+    let mut shape: Option<Tcgen05LdStShape> = None;
 
     for modifier in modifiers {
         let s = modifier.to_string();
@@ -5424,12 +5458,17 @@ fn lower_tcgen05_ld(
             num = Some(n);
             continue;
         }
+        if let Some(sh) = parse_tcgen05_shape(&s) {
+            shape = Some(sh);
+            continue;
+        }
         match s.as_str() {
-            "sync" | "aligned" | "b32" | "32x32b" => {}
+            "sync" | "aligned" | "b32" => {}
             other => return Err(unsupported(NAME, format!("modifier .{}", other))),
         }
     }
     let num = num.ok_or_else(|| unsupported(NAME, "missing .x1/.x2/.../.x128 modifier"))?;
+    let shape = shape.ok_or_else(|| unsupported(NAME, "missing or unmodeled .shape"))?;
 
     let [dst, taddr] = operands else {
         return Err(LowerError::InvalidOperand {
@@ -5439,13 +5478,7 @@ fn lower_tcgen05_ld(
         });
     };
     let dst = ctx.resolve_dst_vector(dst)?;
-    if dst.len() != num as usize {
-        return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
-            operand: format!("{:?}", dst),
-            reason: "destination vector length does not match .num",
-        });
-    }
+    tcgen05_vector_len(NAME, shape, num, dst.len())?;
     let (taddr_base, taddr_offset) = match taddr {
         AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
         other => (ctx.resolve_operand(other)?, 0),
@@ -5453,6 +5486,7 @@ fn lower_tcgen05_ld(
 
     ctx.emit(
         LoweredInstr::Tcgen05Ld {
+            shape,
             dst,
             taddr_base,
             taddr_offset,
@@ -5462,7 +5496,7 @@ fn lower_tcgen05_ld(
     Ok(())
 }
 
-/// Lower `tcgen05.st.sync.aligned.32x32b.num.b32 [taddr], r`. Same shape
+/// Lower `tcgen05.st.sync.aligned.shape.num.b32 [taddr], r`. Same shape
 /// restriction as `lower_tcgen05_ld`.
 fn lower_tcgen05_st(
     ctx: &mut LoweringContext,
@@ -5472,6 +5506,7 @@ fn lower_tcgen05_st(
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.st";
     let mut num: Option<u32> = None;
+    let mut shape: Option<Tcgen05LdStShape> = None;
 
     for modifier in modifiers {
         let s = modifier.to_string();
@@ -5479,12 +5514,17 @@ fn lower_tcgen05_st(
             num = Some(n);
             continue;
         }
+        if let Some(sh) = parse_tcgen05_shape(&s) {
+            shape = Some(sh);
+            continue;
+        }
         match s.as_str() {
-            "sync" | "aligned" | "b32" | "32x32b" => {}
+            "sync" | "aligned" | "b32" => {}
             other => return Err(unsupported(NAME, format!("modifier .{}", other))),
         }
     }
     let num = num.ok_or_else(|| unsupported(NAME, "missing .x1/.x2/.../.x128 modifier"))?;
+    let shape = shape.ok_or_else(|| unsupported(NAME, "missing or unmodeled .shape"))?;
 
     let [taddr, src] = operands else {
         return Err(LowerError::InvalidOperand {
@@ -5498,16 +5538,11 @@ fn lower_tcgen05_st(
         other => (ctx.resolve_operand(other)?, 0),
     };
     let src = ctx.resolve_operand_vector(src)?;
-    if src.len() != num as usize {
-        return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
-            operand: format!("{:?}", src),
-            reason: "source vector length does not match .num",
-        });
-    }
+    tcgen05_vector_len(NAME, shape, num, src.len())?;
 
     ctx.emit(
         LoweredInstr::Tcgen05St {
+            shape,
             taddr_base,
             taddr_offset,
             src,
