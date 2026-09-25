@@ -331,6 +331,24 @@ pub fn operand_element_addr(
     }
 }
 
+/// Lanes of Tensor Memory one `.cta_group::1` operation's `D` always
+/// spans, whatever its `M` (PTX ISA 9.7.17.1).
+const D_LANES: u32 = 128;
+
+/// Where element `(m, n)` of an `M x N` `D` matrix lands in Tensor Memory,
+/// as `(lane, column offset from the `D` base)`.
+///
+/// `D` always occupies all [`D_LANES`] lanes, so an `M < 128` operation
+/// stacks `128 / M` row-groups of `M` lanes, each holding a contiguous
+/// `N / (128 / M)`-column slice of the `N` axis: `M = 128` is the identity
+/// case (lane `m`, column `n`), while `M = 32` folds a 32 x 256 result
+/// into 128 lanes x 64 columns. Callers admit only those two `M`, the
+/// ones this placement has been checked against.
+pub fn d_cell(m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
+    let cols_per_group = n_dim / (D_LANES / m_dim);
+    (m + m_dim * (n / cols_per_group), n % cols_per_group)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
