@@ -5268,14 +5268,12 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
 // =========================================================================
 
 /// `test_cp_async_wait_group_completes_copy`'s exact body (a plain
-/// single-thread `cp.async` -> `wait_group` -> `ld.shared` read), reused
-/// verbatim except for the target - under `sm_80` (that test) this passes,
-/// and must keep passing (the gate is `>= Sm90`, checked by that other
-/// test still passing unmodified). Under `sm_90a`, with the same missing
-/// fence, it must now be rejected: a real Hopper+ ordering gap the
-/// `sm_80` analysis has no way to see.
+/// single-thread `cp.async` -> `wait_group` -> `ld.shared` read) under
+/// `sm_90a`, with no fence: `cp.async` is a generic-proxy operation (PTX
+/// ISA 9.7.10.28.3), so a generic read of its destination needs no
+/// `fence.proxy.async` even on Hopper+.
 #[test]
-fn test_cp_async_without_fence_proxy_async_is_hazard_on_sm90() {
+fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
     let src = wrap_sm90a(
         ".visible .entry k(
     .param .u64 in,
@@ -5301,15 +5299,8 @@ fn test_cp_async_without_fence_proxy_async_is_hazard_on_sm90() {
 ",
     );
     let module = parse(&src);
-    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            AnalysisError::Eval(EvalError::AsyncProxyFenceHazard { .. })
-        ),
-        "expected an async-proxy-fence hazard, got: {}",
-        err
-    );
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
 /// Same kernel, same `sm_90a` target, with the missing
@@ -5395,14 +5386,16 @@ fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
-/// TMA's own async-proxy write path (`exec_cp_async_bulk_tensor_load`) is
-/// wired to the same check as `cp.async` - reuses
+/// TMA's own async-proxy write path (`exec_cp_async_bulk_tensor_load`)
+/// needs no `fence.proxy.async` either: PTX ISA 9.7.9.25.2 makes the copy's
+/// completion carry an implicit generic-async proxy fence, so an
+/// `mbarrier.try_wait` is the whole ordering requirement - which is what
+/// real TMA code (this repo's corpus, CUTLASS, Triton) relies on. Reuses
 /// `test_cp_async_bulk_tensor_copies_in_bounds_and_zero_fills_out_of_bounds`'s
-/// body verbatim except for the target: under `sm_90a`, with no fence
-/// between `mbarrier.try_wait` and the `ld.shared` reads, this must now be
-/// rejected.
+/// body verbatim except for the target, so the copied values are checked
+/// under `sm_90a` too, not just the absence of a hazard.
 #[test]
-fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_hazard_on_sm90() {
+fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
     let src = wrap_sm90a(
         ".visible .entry k(
     .param .u64 k_param_0,
@@ -5480,15 +5473,9 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_hazard_on_sm90() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let err = analyze_kernel(&module, None, config).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            AnalysisError::Eval(EvalError::AsyncProxyFenceHazard { .. })
-        ),
-        "expected an async-proxy-fence hazard, got: {}",
-        err
-    );
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "in[54]");
+    assert_eq!(display_output(&output, "out", 1), "0");
 }
 
 // =========================================================================
