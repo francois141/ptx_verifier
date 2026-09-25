@@ -38,11 +38,11 @@
 //! (`FenceInsertion.cpp`). Like a bulk copy, the async copy's completion
 //! mechanism is what carries the ordering.
 //!
-//! What such an access does need is for the copy to have *completed*, which
-//! is `async_locks`' job. Note that only non-bulk `cp.async` takes those
-//! locks today: a `cp.async.bulk{.tensor}` destination is not tracked in
-//! flight at all yet, so a read that skips its `mbarrier` wait goes
-//! unreported until it is.
+//! What such an access does need is for the copy to have *completed*:
+//! `async_locks` keeps a bulk copy's destination locked from issue until a
+//! waiter observes the tracking mbarrier's phase (`eval::interp`'s
+//! `InflightBulkCopy`), so a read that skips the wait is still caught - as
+//! an in-flight-copy hazard.
 //!
 //! The reverse direction *is* a real fence requirement, tracked here as
 //! `generic_unfenced`: an async-proxy read (`tcgen05.mma` operands, via

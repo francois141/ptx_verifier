@@ -5478,6 +5478,95 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
     assert_eq!(display_output(&output, "out", 1), "0");
 }
 
+/// What a TMA destination read *does* require: the copy having completed.
+/// Same kernel as above with the `mbarrier.try_wait.parity` deleted, so the
+/// `ld.shared` reads race the copy that is still in flight - caught by the
+/// destination lock `begin_inflight_bulk_copy` holds until a waiter
+/// observes the tracking mbarrier's phase.
+#[test]
+fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
+    let src = wrap_sm90a(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    .shared .align 128 .b8 sd0[128];
+    .global .align 128 .b8 gbl[128];
+    .shared .align 8 .b8 full[8];
+    .shared .align 16 .b8 sa[32];
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    mbarrier.init.shared::cta.b64 [full], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [full], 32;
+
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
+    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
+    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
+    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [sd0], 0;
+
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
+    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
+
+    mov.u32 %r1, 6;
+    mov.u32 %r2, 6;
+    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
+
+    ld.shared.u16 %rs1, [sa];
+    ld.shared.u16 %rs2, [sa+30];
+
+    ld.param.u64 %rd2, [k_param_1];
+    st.global.u16 [%rd2], %rs1;
+    st.global.u16 [%rd2+2], %rs2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
+        "expected an in-flight async-copy hazard, got: {}",
+        err
+    );
+}
+
 // =========================================================================
 // `wgmma.mma_async` / `stmatrix` (sm_90+)
 // =========================================================================
