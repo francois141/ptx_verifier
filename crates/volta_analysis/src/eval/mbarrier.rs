@@ -35,6 +35,8 @@ struct MbarrierState {
     pending_tx: i64,
     /// Current phase's parity; flips every time a phase completes.
     parity: bool,
+    /// Phases completed so far - also the index of the forming phase.
+    completed_phases: u64,
     /// Threads that have called `mbarrier.arrive[.expect_tx]` during the
     /// forming phase. `complete_tx` does not contribute: per ISA
     /// 9.7.14.16.15, it "does not involve any asynchronous memory
@@ -80,6 +82,7 @@ impl MbarrierState {
             arrived: 0,
             pending_tx: 0,
             parity: false,
+            completed_phases: 0,
             participants: FixedBitSet::with_capacity(n_threads),
             prior_participants: FixedBitSet::with_capacity(n_threads),
         }
@@ -92,6 +95,7 @@ impl MbarrierState {
     fn maybe_complete_phase(&mut self) {
         if self.phase_complete() {
             self.parity = !self.parity;
+            self.completed_phases += 1;
             self.arrived = 0;
             self.prior_participants.clone_from(&self.participants);
             self.participants.clear();
@@ -166,6 +170,14 @@ impl MbarrierTable {
     /// [`MbarrierState::prior_participants`].
     pub fn prior_participants(&self, id: MbarrierId) -> &FixedBitSet {
         &self.states[id].prior_participants
+    }
+
+    /// How many phases of `id` have completed: the index of the phase an
+    /// arrival right now contributes to, and one past the index of the
+    /// phase a waiter woken right now observes (the last completed one -
+    /// the same single-snapshot model as [`Self::prior_participants`]).
+    pub fn completed_phases(&self, id: MbarrierId) -> u64 {
+        self.states[id].completed_phases
     }
 }
 
