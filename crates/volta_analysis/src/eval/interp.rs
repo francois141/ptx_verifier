@@ -30,7 +30,7 @@ use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
-    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaKind, UnaryOp,
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, UnaryOp,
 };
 use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
@@ -2165,7 +2165,7 @@ impl<'p> Interpreter<'p> {
                 collector,
                 d_tmem_base,
                 d_tmem_offset,
-                a_desc,
+                a,
                 b_desc,
                 idesc,
                 disable_output_lane,
@@ -2177,7 +2177,7 @@ impl<'p> Interpreter<'p> {
                     (*kind, *collector),
                     d_tmem_base,
                     *d_tmem_offset,
-                    a_desc,
+                    a,
                     b_desc,
                     idesc,
                     disable_output_lane,
@@ -2514,7 +2514,7 @@ impl<'p> Interpreter<'p> {
         (kind, collector): (Tcgen05MmaKind, Option<Tcgen05Collector>),
         d_tmem_base: &Operand,
         d_tmem_offset: i64,
-        a_desc: &Operand,
+        a: &Tcgen05MmaA,
         b_desc: &Operand,
         idesc: &Operand,
         disable_output_lane: &[Operand],
@@ -2557,6 +2557,11 @@ impl<'p> Interpreter<'p> {
             )));
         }
 
+        let Tcgen05MmaA::Desc(a_desc) = a else {
+            return Err(unsupported(
+                "tcgen05.mma reading A from Tensor Memory ([a-tmem]) is not modeled".to_string(),
+            ));
+        };
         let a_desc_val = self.concrete_operand(t, pc, a_desc, "tcgen05.mma a-desc")? as u64;
         let b_desc_val = self.concrete_operand(t, pc, b_desc, "tcgen05.mma b-desc")? as u64;
         let a_md = tcgen05_mma::decode_matrix_descriptor(a_desc_val).map_err(|sw| {

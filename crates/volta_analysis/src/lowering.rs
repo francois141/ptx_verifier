@@ -34,7 +34,7 @@ use id_collections::{Id, IdVec};
 use crate::lower_error::{LowerError, LowerResult};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
-    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaKind, UnaryOp,
+    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
 use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
@@ -5652,19 +5652,29 @@ fn lower_tcgen05_mma(
     // form with an explicit (possibly all-zero) mask. Disambiguated by
     // operand *type*, not position: a `Vector` in the disable-output-lane
     // slot is the mask, anything else is `enable-input-d` itself.
-    let [d_tmem, a_desc, b_desc, idesc, rest @ ..] = operands else {
+    let [d_tmem, a_operand, b_desc, idesc, rest @ ..] = operands else {
         return Err(LowerError::InvalidOperand {
             instruction: name.to_string(),
             operand: format!("{:?}", operands),
-            reason: "expected [d-tmem], a-desc, b-desc, idesc, {disable-output-lane}, \
-                     enable-input-d ([a-tmem] is not modeled)",
+            reason: "expected [d-tmem], a-desc|[a-tmem], b-desc, idesc, \
+                     {disable-output-lane}, enable-input-d",
         });
     };
     let (d_tmem_base, d_tmem_offset) = match d_tmem {
         AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
         other => (ctx.resolve_operand(other)?, 0),
     };
-    let a_desc = ctx.resolve_operand(a_desc)?;
+    // Only `[a-tmem]` is bracketed, so the syntax alone tells the two
+    // forms apart. Resolving both through `resolve_operand` would drop
+    // the brackets and read a Tensor Memory address as a shared-memory
+    // descriptor - a wrong answer rather than a rejection.
+    let a = match a_operand {
+        AstOperand::Address(a) => Tcgen05MmaA::Tmem {
+            base: ctx.resolve_address(a)?,
+            offset: ctx.get_address_offset(a),
+        },
+        other => Tcgen05MmaA::Desc(ctx.resolve_operand(other)?),
+    };
     let b_desc = ctx.resolve_operand(b_desc)?;
     let idesc = ctx.resolve_operand(idesc)?;
 
@@ -5714,7 +5724,7 @@ fn lower_tcgen05_mma(
             collector,
             d_tmem_base,
             d_tmem_offset,
-            a_desc,
+            a,
             b_desc,
             idesc,
             disable_output_lane,
