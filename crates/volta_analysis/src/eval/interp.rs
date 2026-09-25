@@ -2497,13 +2497,14 @@ impl<'p> Interpreter<'p> {
     /// `A`/`B` read from shared memory through their matrix descriptors
     /// under the ISA's canonical layouts
     /// (`eval::tcgen05_mma::operand_element_addr`), `D` written into Tensor
-    /// Memory at lane `m`, column `d_tmem + n` (Layout D for `M = 128`/
-    /// `.cta_group::1`: one CTA-wide `warp-rank % 4` grouping of 32 lanes
-    /// each - confirmed against Figures 211/212, fetched this session -
-    /// matching the existing `tcgen05.ld`/`.st` `(lane, column)` addressing
-    /// this reuses). Decodes and validates `idesc`/`a_desc`/`b_desc` first,
+    /// Memory by `tcgen05_mma::d_cell` (Layout D for `.cta_group::1`: one
+    /// CTA-wide `warp-rank % 4` grouping of 32 lanes each - confirmed
+    /// against Figures 211/212 - matching the existing `tcgen05.ld`/`.st`
+    /// `(lane, column)` addressing this reuses; `M = 128` puts element
+    /// `(m, n)` at lane `m`, column `d_tmem + n`, while a smaller `M`
+    /// folds `N` across the 128 lanes). Decodes and validates `idesc`/`a_desc`/`b_desc` first,
     /// in order, each with a specific reason, against the forms modeled:
-    /// dense, `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
+    /// dense, `M = 32` or `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
     /// (`.kind::f8f6f4`), no negate, relative leading-dimension stride,
     /// `base_offset == 0` on both descriptors.
     #[allow(clippy::too_many_arguments)]
@@ -2550,10 +2551,24 @@ impl<'p> Interpreter<'p> {
                 "tcgen05.mma's Negate A/B Matrix is not modeled".to_string(),
             ));
         }
-        if id.m != 128 {
+        // `M = 64` would fall out of `tcgen05_mma::d_cell`'s formula too,
+        // but nothing has pinned its Layout D down, and a silently wrong
+        // placement is worse here than a loud refusal.
+        if !matches!(id.m, 32 | 128) {
             return Err(unsupported(format!(
-                "tcgen05.mma with M = {} is not modeled (only M = 128)",
+                "tcgen05.mma with M = {} is not modeled (only M = 32 and 128)",
                 id.m
+            )));
+        }
+        // An M < 128 result is folded across Tensor Memory's 128 lanes in
+        // `128 / M` row-groups, so `N` must split evenly between them for
+        // `tcgen05_mma::d_cell` to place it.
+        let d_groups = 128 / id.m;
+        if !id.n.is_multiple_of(d_groups) {
+            return Err(unsupported(format!(
+                "tcgen05.mma with M = {} and N = {} is not modeled (N must be a \
+                 multiple of {d_groups} to fold across the 128 Tensor Memory lanes)",
+                id.m, id.n
             )));
         }
 
@@ -2625,17 +2640,19 @@ impl<'p> Interpreter<'p> {
             *slot = self.concrete_operand(t, pc, op, "tcgen05.mma disable-output-lane")? as u32;
         }
         let lane_disabled =
-            |lane: u64| -> bool { (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 != 0 };
+            |lane: u32| -> bool { (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 != 0 };
 
-        for m in 0..id.m as u64 {
-            if lane_disabled(m) {
-                continue;
-            }
-            for n in 0..id.n as u64 {
+        for m in 0..id.m {
+            for n in 0..id.n {
+                let (lane, col) = tcgen05_mma::d_cell(m, n, (id.m, id.n));
+                let col = d_col_base + col;
+                if lane_disabled(lane) {
+                    continue;
+                }
                 let mut acc = if enable_input_d {
                     match self
                         .tensor
-                        .read(m as u32, d_col_base + n as u32)
+                        .read(lane, col)
                         .map_err(|e| self.tcgen05_error(t, pc, e))?
                     {
                         Some(Value::Scalar(e)) => e,
@@ -2662,7 +2679,7 @@ impl<'p> Interpreter<'p> {
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
                 self.tensor
-                    .write(m as u32, d_col_base + n as u32, Value::Scalar(acc))
+                    .write(lane, col, Value::Scalar(acc))
                     .map_err(|e| self.tcgen05_error(t, pc, e))?;
             }
         }
