@@ -2607,31 +2607,8 @@ impl<'p> Interpreter<'p> {
                 "tcgen05.mma reading A from Tensor Memory ([a-tmem]) is not modeled".to_string(),
             ));
         };
-        let a_desc_val = self.concrete_operand(t, pc, a_desc, "tcgen05.mma a-desc")? as u64;
-        let b_desc_val = self.concrete_operand(t, pc, b_desc, "tcgen05.mma b-desc")? as u64;
-        let a_md = tcgen05_mma::decode_matrix_descriptor(a_desc_val).map_err(|sw| {
-            unsupported(format!(
-                "tcgen05.mma a-desc has invalid swizzle-mode encoding {sw}"
-            ))
-        })?;
-        let b_md = tcgen05_mma::decode_matrix_descriptor(b_desc_val).map_err(|sw| {
-            unsupported(format!(
-                "tcgen05.mma b-desc has invalid swizzle-mode encoding {sw}"
-            ))
-        })?;
-        if a_md.absolute_leading_stride || b_md.absolute_leading_stride {
-            return Err(unsupported(
-                "tcgen05.mma's absolute leading-dimension stride mode (sm_103a only) \
-                 is not modeled"
-                    .to_string(),
-            ));
-        }
-        if a_md.base_offset != 0 || b_md.base_offset != 0 {
-            return Err(unsupported(
-                "tcgen05.mma with a nonzero matrix-descriptor base offset is not modeled"
-                    .to_string(),
-            ));
-        }
+        let a_md = self.mma_matrix_descriptor(t, pc, a_desc, "tcgen05.mma a-desc")?;
+        let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
 
         let k_dim = tcgen05_mma::k_dim(kind) as usize;
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
@@ -2768,6 +2745,35 @@ impl<'p> Interpreter<'p> {
             }
         }
         Ok(elems)
+    }
+
+    /// Resolve and decode one `tcgen05.mma` shared-memory matrix
+    /// descriptor operand, rejecting the two addressing modes not modeled:
+    /// `sm_103a`'s absolute leading-dimension stride, and a nonzero base
+    /// offset (a start-address misalignment `swizzled_element_addr` never
+    /// had a confirmed correction for).
+    fn mma_matrix_descriptor(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        desc: &Operand,
+        what: &'static str,
+    ) -> EvalResult<tcgen05_mma::MatrixDescriptor> {
+        let unsupported = |reason: String| EvalError::Unsupported { pc, what: reason };
+        let raw = self.concrete_operand(t, pc, desc, what)? as u64;
+        let md = tcgen05_mma::decode_matrix_descriptor(raw)
+            .map_err(|sw| unsupported(format!("{what} has invalid swizzle-mode encoding {sw}")))?;
+        if md.absolute_leading_stride {
+            return Err(unsupported(format!(
+                "{what}'s absolute leading-dimension stride mode (sm_103a only) is not modeled"
+            )));
+        }
+        if md.base_offset != 0 {
+            return Err(unsupported(format!(
+                "{what} has a nonzero matrix-descriptor base offset, which is not modeled"
+            )));
+        }
+        Ok(md)
     }
 
     // =====================================================================
