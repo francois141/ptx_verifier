@@ -1478,50 +1478,25 @@ impl<'p> Interpreter<'p> {
                 src_c,
                 lut,
             } => {
-                let lut = self.concrete_operand(t, pc, lut, "lop3 LUT")?;
-                let a = self.scalar_operand(t, pc, src_a)?;
-                let b = self.concrete_operand(t, pc, src_b, "lop3 source b")? as u32;
-                let c = self.concrete_operand(t, pc, src_c, "lop3 source c")? as u32;
-                // Result bit `i` is bit `(a_i << 2) | (b_i << 1) | c_i` of
-                // the LUT.
-                let lop3_lut = |a: u32| {
-                    let mut result = 0;
-                    for i in 0..32 {
-                        let a_i = (a >> i) & 1;
-                        let b_i = (b >> i) & 1;
-                        let c_i = (c >> i) & 1;
-                        let lut_index = (a_i << 2) | (b_i << 1) | c_i;
-                        let output_bit = (lut as u32 >> lut_index) & 1;
-                        result |= output_bit << i;
+                let lut = self.concrete_operand(t, pc, lut, "lop3 LUT")? as u32;
+                let sources = [
+                    self.scalar_operand(t, pc, src_a)?,
+                    self.scalar_operand(t, pc, src_b)?,
+                    self.scalar_operand(t, pc, src_c)?,
+                ];
+                let mut words = [0u32; 3];
+                let mut symbolic = [0usize; 3];
+                let mut symbolic_len = 0;
+                for (position, &source) in sources.iter().enumerate() {
+                    match self.arena.as_i64(source) {
+                        Some(word) => words[position] = word as u32,
+                        None => {
+                            symbolic[symbolic_len] = position;
+                            symbolic_len += 1;
+                        }
                     }
-                    result
-                };
-                let result = match (self.arena.as_i64(a), lut, b ^ c) {
-                    // Concrete integer sources (address swizzles, masks)
-                    // evaluate the full truth table bitwise.
-                    (Some(a), ..) => self.arena.int(i64::from(lop3_lut(a as u32))),
-                    // A symbolic `a` is an exact real: the only bit-level
-                    // operation with a real reading is an XOR that leaves it
-                    // unchanged or flips the f32 sign bit.
-                    (None, 0x96, 0) => a,
-                    (None, 0x96, 0x8000_0000) => self.arena.neg(a),
-                    (None, 0x96, mask) => {
-                        return Err(EvalError::Unsupported {
-                            pc,
-                            what: format!(
-                                "lop3.b32 XOR changes bits other than the f32 sign bit ({mask:#010x})"
-                            ),
-                        });
-                    }
-                    (None, ..) => {
-                        return Err(EvalError::Unsupported {
-                            pc,
-                            what: format!(
-                                "lop3.b32 LUT {lut:#x} on a symbolic source (only XOR is modeled)"
-                            ),
-                        });
-                    }
-                };
+                }
+                let result = self.lop3_expand(lut, sources, words, &symbolic[..symbolic_len]);
                 self.write_reg(t, pc, *dst, Value::Scalar(result))?;
             }
 
@@ -4584,6 +4559,56 @@ impl<'p> Interpreter<'p> {
         }
     }
 
+    /// `lop3.b32`'s truth table over operands that are not all concrete.
+    ///
+    /// `symbolic` lists the positions in `sources` with no constant bit
+    /// pattern; `words` holds the others. Each symbolic operand `x` is
+    /// Shannon-expanded as `low ^ (x & (low ^ high))`, where `low`/`high`
+    /// are the table with `x` forced to all-zeros/all-ones: bit by bit
+    /// that reproduces the table exactly, and it collapses to `low`
+    /// wherever the table does not depend on `x`. With one symbolic
+    /// operand and two constants the whole thing folds to a single masked
+    /// xor - the shape the f16 sign-decode idiom
+    /// (`lop3 d, a, 0x80008000, 0xbc00bc00, 0x6a`) wants.
+    fn lop3_expand(
+        &mut self,
+        lut: u32,
+        sources: [ExprId; 3],
+        words: [u32; 3],
+        symbolic: &[usize],
+    ) -> ExprId {
+        const ALL_ONES: i64 = u32::MAX as i64;
+        let Some((&position, rest)) = symbolic.split_first() else {
+            return self.arena.int(i64::from(lop3_truth_table(lut, words)));
+        };
+        let mut low_words = words;
+        low_words[position] = 0;
+        let mut high_words = words;
+        high_words[position] = u32::MAX;
+        let low = self.lop3_expand(lut, sources, low_words, rest);
+        let high = self.lop3_expand(lut, sources, high_words, rest);
+        let difference = self.b32_xor(low, high);
+        let selected = match self.arena.as_int_const(difference) {
+            Some(0) => return low,
+            Some(ALL_ONES) => sources[position],
+            _ => self.arena.bit_and(sources[position], difference),
+        };
+        self.b32_xor(low, selected)
+    }
+
+    /// `a ^ b` over 32-bit bit patterns. The arena's own folding is
+    /// width-agnostic, so the identity `x ^ 0 = x` has to be applied here;
+    /// a symbolic side goes through [`Self::eval_xor`] so a flip of the
+    /// f32 sign bit still reads back as a negation.
+    fn b32_xor(&mut self, a: ExprId, b: ExprId) -> ExprId {
+        match (self.arena.as_int_const(a), self.arena.as_int_const(b)) {
+            (Some(x), Some(y)) => self.arena.int(x ^ y),
+            (Some(0), _) => b,
+            (_, Some(0)) => a,
+            _ => self.eval_xor(ScalarType::B32, a, b),
+        }
+    }
+
     /// Exact concrete integer semantics for `ty`.
     fn concrete_int_binop(
         &self,
@@ -5294,6 +5319,15 @@ fn operand_reg_bits(op: &Operand) -> Option<u32> {
         Operand::Reg(r) => Some(reg_bits(*r)),
         _ => None,
     }
+}
+
+/// `lop3.b32` over three concrete 32-bit sources: result bit `i` is bit
+/// `(a_i << 2) | (b_i << 1) | c_i` of the 8-entry truth table.
+fn lop3_truth_table(lut: u32, [a, b, c]: [u32; 3]) -> u32 {
+    (0..32).fold(0, |result, i| {
+        let index = (((a >> i) & 1) << 2) | (((b >> i) & 1) << 1) | ((c >> i) & 1);
+        result | (((lut >> index) & 1) << i)
+    })
 }
 
 /// Zero-extend the low `bits` of `v` into a u64.
