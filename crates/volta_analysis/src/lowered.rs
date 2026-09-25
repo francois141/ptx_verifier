@@ -216,6 +216,17 @@ pub enum Tcgen05MmaKind {
     F8f6f4,
 }
 
+/// `tcgen05.mma`'s `A` operand. The ISA spells a shared-memory matrix
+/// descriptor and a Tensor Memory address differently - only the latter
+/// is bracketed - and they address completely different memories, so the
+/// two are kept apart from lowering onwards rather than collapsed to the
+/// register they happen to share.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Tcgen05MmaA {
+    Desc(Operand),
+    Tmem { base: Operand, offset: i64 },
+}
+
 /// `tcgen05.mma.ws`'s `.collector::bN::op` qualifier (PTX ISA
 /// 9.7.17.10.10.3): how the `B` matrix interacts with collector buffer
 /// `buffer` (0-3). Absent on the instruction = `b0::discard`.
@@ -936,7 +947,7 @@ pub enum LoweredInstr {
         collector: Option<Tcgen05Collector>,
         d_tmem_base: Operand,
         d_tmem_offset: i64,
-        a_desc: Operand,
+        a: Tcgen05MmaA,
         b_desc: Operand,
         idesc: Operand,
         disable_output_lane: Vec<Operand>,
@@ -1529,14 +1540,18 @@ impl LoweredInstr {
             // Matrix multiply and accumulate
             Self::Tcgen05Mma {
                 d_tmem_base,
-                a_desc,
+                a,
                 b_desc,
                 idesc,
                 disable_output_lane,
                 enable_input_d,
                 ..
             } => {
-                let mut r = from_ops(&[*d_tmem_base, *a_desc, *b_desc, *idesc, *enable_input_d]);
+                let a = match a {
+                    Tcgen05MmaA::Desc(desc) => *desc,
+                    Tcgen05MmaA::Tmem { base, .. } => *base,
+                };
+                let mut r = from_ops(&[*d_tmem_base, a, *b_desc, *idesc, *enable_input_d]);
                 r.extend(from_ops(disable_output_lane));
                 r
             }
