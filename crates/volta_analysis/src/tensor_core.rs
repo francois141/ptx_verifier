@@ -668,7 +668,11 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(seen.len(), (64 * n) as usize, "incomplete coverage for n={n}");
+            assert_eq!(
+                seen.len(),
+                (64 * n) as usize,
+                "incomplete coverage for n={n}"
+            );
         }
     }
 

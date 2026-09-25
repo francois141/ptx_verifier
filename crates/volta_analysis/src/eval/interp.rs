@@ -1041,8 +1041,11 @@ impl<'p> Interpreter<'p> {
             // threads participating in the barrier"), with one deliberate
             // relaxation: a `bar.arrive` thread keeps running, so accesses
             // it makes between its arrival and this fire are ordered too.
-            let participants: Vec<ThreadId> =
-                arrived.iter().copied().chain(waiting.iter().copied()).collect();
+            let participants: Vec<ThreadId> = arrived
+                .iter()
+                .copied()
+                .chain(waiting.iter().copied())
+                .collect();
             self.barriers[id] = PendingArrivals::default();
             self.sync_thread_group(&participants);
             trace!("fired bar.sync {} ({} threads)", id, count);
@@ -1381,8 +1384,7 @@ impl<'p> Interpreter<'p> {
                 src_b,
                 selector,
             } => {
-                let selector = self.concrete_operand(t, pc, selector, "prmt selector")?
-                    as u16;
+                let selector = self.concrete_operand(t, pc, selector, "prmt selector")? as u16;
                 let fp8_sign_xor = |this: &mut Self, value: ExprId| {
                     let ExprNode::BitXor(left, right) = this.arena.node(value).clone() else {
                         return value;
@@ -1401,12 +1403,8 @@ impl<'p> Interpreter<'p> {
                 // such values, not a scalar bit pattern. Keep those lanes
                 // split while applying the byte selector.
                 let lanes = |this: &mut Self, value: Value| match value {
-                    Value::Scalar(value) => {
-                        Ok([Some(fp8_sign_xor(this, value)), None, None, None])
-                    }
-                    Value::Quad(b0, b1, b2, b3) => {
-                        Ok([Some(b0), Some(b1), Some(b2), Some(b3)])
-                    }
+                    Value::Scalar(value) => Ok([Some(fp8_sign_xor(this, value)), None, None, None]),
+                    Value::Quad(b0, b1, b2, b3) => Ok([Some(b0), Some(b1), Some(b2), Some(b3)]),
                     Value::Pair(..) => Err(EvalError::ValueKindMismatch {
                         thread: t,
                         pc,
@@ -1432,7 +1430,11 @@ impl<'p> Interpreter<'p> {
                             nibble & 7
                         ),
                     })?;
-                    Ok(if nibble & 8 == 0 { byte } else { this.arena.neg(byte) })
+                    Ok(if nibble & 8 == 0 {
+                        byte
+                    } else {
+                        this.arena.neg(byte)
+                    })
                 };
                 let b0 = select_byte(self, selector & 0xf)?;
                 let b1 = select_byte(self, (selector >> 4) & 0xf)?;
@@ -2756,7 +2758,12 @@ impl<'p> Interpreter<'p> {
     /// the ISA calls undefined behavior. `wgmma.mma_async`'s own
     /// self-continuation seed-read goes through [`Self::read_reg_wgmma_accum`]
     /// instead, which deliberately skips this check.
-    pub(in crate::eval) fn read_reg(&self, t: ThreadId, pc: InstrId, reg: RegId) -> EvalResult<Value> {
+    pub(in crate::eval) fn read_reg(
+        &self,
+        t: ThreadId,
+        pc: InstrId,
+        reg: RegId,
+    ) -> EvalResult<Value> {
         self.check_wgmma_pending(t, pc, reg)?;
         Ok(self.threads[t]
             .regs
@@ -3095,7 +3102,7 @@ impl<'p> Interpreter<'p> {
             let amount = self.arena.int(hi_shift);
             self.eval_binop(t, pc, BinOp::Shl, ScalarType::U32, b, amount)?
         };
-        
+
         let lo_part = if lo_shift >= WIDTH {
             zero
         } else {
@@ -3183,9 +3190,7 @@ impl<'p> Interpreter<'p> {
         let b = self.operand_value(t, pc, src_b)?;
         let (lanes, mask) = match (a, b) {
             (Value::Quad(b0, b1, b2, b3), Value::Scalar(mask))
-            | (Value::Scalar(mask), Value::Quad(b0, b1, b2, b3)) => {
-                ((b0, b1, b2, b3), mask)
-            }
+            | (Value::Scalar(mask), Value::Quad(b0, b1, b2, b3)) => ((b0, b1, b2, b3), mask),
             (Value::Quad(..), Value::Quad(..)) => {
                 return Err(EvalError::Unsupported {
                     pc,
@@ -3194,11 +3199,14 @@ impl<'p> Interpreter<'p> {
             }
             _ => return Ok(None),
         };
-        let mask = self.arena.as_int_const(mask).ok_or(EvalError::NotConcrete {
-            thread: t,
-            pc,
-            what: "packed byte-quad xor mask",
-        })? as u32;
+        let mask = self
+            .arena
+            .as_int_const(mask)
+            .ok_or(EvalError::NotConcrete {
+                thread: t,
+                pc,
+                what: "packed byte-quad xor mask",
+            })? as u32;
         let apply = |this: &mut Self, lane: ExprId, byte_mask: u32| match byte_mask {
             0 => Ok(lane),
             0x80 => Ok(this.arena.neg(lane)),
@@ -3625,7 +3633,8 @@ impl<'p> Interpreter<'p> {
                 tcgen05_mma::SwizzleMode::Swizzle32B => 256,
                 tcgen05_mma::SwizzleMode::Swizzle64B => 512,
                 tcgen05_mma::SwizzleMode::Swizzle128B => 1024,
-                tcgen05_mma::SwizzleMode::None | tcgen05_mma::SwizzleMode::Swizzle128BWith32BAtomicity => {
+                tcgen05_mma::SwizzleMode::None
+                | tcgen05_mma::SwizzleMode::Swizzle128BWith32BAtomicity => {
                     return Err(EvalError::Unsupported {
                         pc,
                         what: format!(
@@ -3891,54 +3900,44 @@ impl<'p> Interpreter<'p> {
     /// its shared-memory write. Shared by `cp.async.wait_group` and
     /// `cp.async.mbarrier.arrive`, the two completion points.
     fn complete_cp_async_copy(&mut self, t: ThreadId, copy: PendingCopy) -> EvalResult<()> {
-                // Release before writing: the deferred write must
-                // not trip the copy's own still-held dst lock (and
-                // an early same-thread peek before this point must
-                // still be caught by it - see the design writeup).
-                self.race.release_dst(
-                    MemSpace::Shared,
-                    copy.dst_addr,
-                    copy.cp_size,
-                    t,
-                    copy.pc,
-                );
-                if copy.real_bytes > 0 {
-                    self.race.release_src(
-                        MemSpace::Global,
-                        copy.src_addr,
-                        copy.real_bytes,
-                        t,
-                        copy.pc,
-                    );
-                }
-                for (i, v) in copy.words.into_iter().enumerate() {
-                    self.mem_write(
-                        t,
-                        copy.pc,
-                        MemSpace::Shared,
-                        copy.dst_addr + i as u64 * 4,
-                        4,
-                        v,
-                    )?;
-                }
-                // sm_90+ only: this write went through the async
-                // proxy, and per the ISA needs an explicit
-                // `fence.proxy.async` before any later access
-                // (through either proxy) is well-defined -
-                // `bar.sync` alone does not provide that ordering.
-                // Below sm_90 there is no such proxy distinction
-                // (and `fence.proxy.async` isn't even a legal
-                // instruction there), so this is a no-op unless
-                // `self.features.async_proxy_fence` is set.
-                if self.features.async_proxy_fence {
-                    self.race.mark_async_proxy_unfenced(
-                        MemSpace::Shared,
-                        copy.dst_addr,
-                        copy.cp_size,
-                        t,
-                        copy.pc,
-                    );
-                }
+        // Release before writing: the deferred write must
+        // not trip the copy's own still-held dst lock (and
+        // an early same-thread peek before this point must
+        // still be caught by it - see the design writeup).
+        self.race
+            .release_dst(MemSpace::Shared, copy.dst_addr, copy.cp_size, t, copy.pc);
+        if copy.real_bytes > 0 {
+            self.race
+                .release_src(MemSpace::Global, copy.src_addr, copy.real_bytes, t, copy.pc);
+        }
+        for (i, v) in copy.words.into_iter().enumerate() {
+            self.mem_write(
+                t,
+                copy.pc,
+                MemSpace::Shared,
+                copy.dst_addr + i as u64 * 4,
+                4,
+                v,
+            )?;
+        }
+        // sm_90+ only: this write went through the async
+        // proxy, and per the ISA needs an explicit
+        // `fence.proxy.async` before any later access
+        // (through either proxy) is well-defined -
+        // `bar.sync` alone does not provide that ordering.
+        // Below sm_90 there is no such proxy distinction
+        // (and `fence.proxy.async` isn't even a legal
+        // instruction there), so this is a no-op unless
+        // `self.features.async_proxy_fence` is set.
+        if self.features.async_proxy_fence {
+            self.race.mark_async_proxy_unfenced(
+                MemSpace::Shared,
+                copy.dst_addr,
+                copy.cp_size,
+                t,
+                copy.pc,
+            );
+        }
         Ok(())
     }
 
@@ -4845,9 +4844,7 @@ impl<'p> Interpreter<'p> {
                 let decoded = match ty {
                     ScalarType::F16 => f16_bits_to_f64(bits as u16),
                     ScalarType::Bf16 => bf16_bits_to_f64(bits as u16),
-                    ScalarType::F32 | ScalarType::Tf32 => {
-                        Some(f32::from_bits(bits as u32) as f64)
-                    }
+                    ScalarType::F32 | ScalarType::Tf32 => Some(f32::from_bits(bits as u32) as f64),
                     ScalarType::F64 => Some(f64::from_bits(bits as u64)),
                     _ => None,
                 };
@@ -4902,8 +4899,7 @@ impl<'p> Interpreter<'p> {
         // require a half-extraction we don't model, so gate on
         // `src_reg_bits` (as the analogous scalar check below does)
         // instead of a width hard-coded to the f16x2 case.
-        if matches!(v, Value::Pair(..))
-            && src_reg_bits.is_none_or(|reg_bits| ty.bits() < reg_bits)
+        if matches!(v, Value::Pair(..)) && src_reg_bits.is_none_or(|reg_bits| ty.bits() < reg_bits)
         {
             return Err(EvalError::Unsupported {
                 pc,
