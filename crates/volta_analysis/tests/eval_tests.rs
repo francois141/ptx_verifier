@@ -1205,6 +1205,9 @@ fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
     .shared .align 1024 .b8 a_buf[16384];
     .shared .align 1024 .b8 b_buf[4096];
     .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
 
     mov.u32 %r3, taddr_slot;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
@@ -1318,7 +1321,18 @@ fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
     or.b64 %rd4, %rd4, 4611756662049472512;
     mov.u32 %r2, 134414352;
     mov.pred %p0, 0;
+    // Proper async completion: publish the operand stores to the async
+    // proxy, commit the MMA to an mbarrier, wait on it, then fence.
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
     @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
 
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
     ld.param.u64 %rd1, [k_param_0];
@@ -1370,6 +1384,9 @@ fn test_tcgen05_mma_numeric_correctness() {
     .shared .align 1024 .b8 a_buf[16384];
     .shared .align 1024 .b8 b_buf[4096];
     .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
 
     mov.u32 %r3, taddr_slot;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
@@ -1483,7 +1500,18 @@ fn test_tcgen05_mma_numeric_correctness() {
     or.b64 %rd4, %rd4, 4611756662049472512;
     mov.u32 %r2, 134414352;
     mov.pred %p0, 0;
+    // Proper async completion: publish the operand stores to the async
+    // proxy, commit the MMA to an mbarrier, wait on it, then fence.
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
     @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, {0,0,0,0}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
 
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
     ld.param.u64 %rd1, [k_param_0];
@@ -1530,6 +1558,9 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     .shared .align 1024 .b8 a_buf[16384];
     .shared .align 1024 .b8 b_buf[4096];
     .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
 
     mov.u32 %r3, taddr_slot;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
@@ -1643,7 +1674,18 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     or.b64 %rd4, %rd4, 4611756662049472512;
     mov.u32 %r2, 134414352;
     mov.pred %p0, 0;
+    // Proper async completion: publish the operand stores to the async
+    // proxy, commit the MMA to an mbarrier, wait on it, then fence.
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
     @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, {1,0,0,0}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
 
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
     ld.param.u64 %rd1, [k_param_0];
