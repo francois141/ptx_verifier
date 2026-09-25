@@ -7048,7 +7048,9 @@ fn lower_wgmma_mma_async(
 
     let is_fp8 = |ty: ScalarType| matches!(ty, ScalarType::E4m3 | ScalarType::E5m2);
     let (a_type, b_type, k) = match types[..] {
-        [ScalarType::F32, ScalarType::F16, ScalarType::F16] => (ScalarType::F16, ScalarType::F16, 16),
+        [ScalarType::F32, ScalarType::F16, ScalarType::F16] => {
+            (ScalarType::F16, ScalarType::F16, 16)
+        }
         [ScalarType::F32, a, b] if is_fp8(a) && is_fp8(b) => (a, b, 32),
         _ => {
             return Err(unsupported(
@@ -7062,8 +7064,10 @@ fn lower_wgmma_mma_async(
         }
     };
 
-    let shape = shape.ok_or_else(|| unsupported(NAME, "missing shape modifier (e.g. .m64n256k16)"))?;
-    if shape.m != 64 || shape.k != k || shape.n == 0 || shape.n > 256 || !shape.n.is_multiple_of(8) {
+    let shape =
+        shape.ok_or_else(|| unsupported(NAME, "missing shape modifier (e.g. .m64n256k16)"))?;
+    if shape.m != 64 || shape.k != k || shape.n == 0 || shape.n > 256 || !shape.n.is_multiple_of(8)
+    {
         return Err(unsupported(
             NAME,
             format!(
@@ -7085,7 +7089,15 @@ fn lower_wgmma_mma_async(
                      modeled)",
         });
     }
-    let [d, a_op, b_desc_op, scale_d_op, imm_scale_a_op, imm_scale_b_op, trans_ops @ ..] = operands
+    let [
+        d,
+        a_op,
+        b_desc_op,
+        scale_d_op,
+        imm_scale_a_op,
+        imm_scale_b_op,
+        trans_ops @ ..,
+    ] = operands
     else {
         unreachable!()
     };
@@ -7108,11 +7120,17 @@ fn lower_wgmma_mma_async(
     let b_desc = ctx.resolve_operand(b_desc_op)?;
     let scale_d = ctx.resolve_operand(scale_d_op)?;
 
-    for (name, op) in [("imm-scale-a", imm_scale_a_op), ("imm-scale-b", imm_scale_b_op)] {
+    for (name, op) in [
+        ("imm-scale-a", imm_scale_a_op),
+        ("imm-scale-b", imm_scale_b_op),
+    ] {
         match ctx.resolve_operand(op)? {
             Operand::ImmI64(1) => {}
             Operand::ImmI64(-1) => {
-                return Err(unsupported(NAME, format!("{} = -1 (negate) is not modeled", name)));
+                return Err(unsupported(
+                    NAME,
+                    format!("{} = -1 (negate) is not modeled", name),
+                ));
             }
             other => {
                 return Err(LowerError::InvalidOperand {
@@ -7125,12 +7143,22 @@ fn lower_wgmma_mma_async(
     }
 
     let mut transposes = [false; 2];
-    for ((transpose, op), name) in transposes.iter_mut().zip(trans_ops).zip(["imm-trans-a", "imm-trans-b"]) {
-        *transpose = match ctx.resolve_const_u32(op, NAME, "imm-trans-a/imm-trans-b must be 0 or 1")? {
-            0 => false,
-            1 => true,
-            other => return Err(unsupported(NAME, format!("{} = {} (must be 0 or 1)", name, other))),
-        };
+    for ((transpose, op), name) in transposes
+        .iter_mut()
+        .zip(trans_ops)
+        .zip(["imm-trans-a", "imm-trans-b"])
+    {
+        *transpose =
+            match ctx.resolve_const_u32(op, NAME, "imm-trans-a/imm-trans-b must be 0 or 1")? {
+                0 => false,
+                1 => true,
+                other => {
+                    return Err(unsupported(
+                        NAME,
+                        format!("{} = {} (must be 0 or 1)", name, other),
+                    ));
+                }
+            };
     }
     let [transpose_a, transpose_b] = transposes;
 
@@ -7173,7 +7201,10 @@ fn lower_wgmma_sync_aligned_only(
         }
     }
     if !saw_sync || !saw_aligned {
-        return Err(unsupported(name, "missing mandatory .sync.aligned qualifiers"));
+        return Err(unsupported(
+            name,
+            "missing mandatory .sync.aligned qualifiers",
+        ));
     }
     if !operands.is_empty() {
         return Err(LowerError::InvalidOperand {
@@ -7239,7 +7270,10 @@ fn lower_wgmma_wait_group(
         }
     }
     if !saw_sync || !saw_aligned {
-        return Err(unsupported(NAME, "missing mandatory .sync.aligned qualifiers"));
+        return Err(unsupported(
+            NAME,
+            "missing mandatory .sync.aligned qualifiers",
+        ));
     }
     let [n] = operands else {
         return Err(LowerError::InvalidOperand {
@@ -8447,7 +8481,10 @@ mod tests {
         assert_lowers("bar.sync 0, 64;\n    bar.arrive 0, 64;\n    bar.sync 1, 128;");
         assert_rejected("bar.sync 0, 64;\n    bar.sync 0, 128;", "too restrictive");
         assert_rejected("bar.sync 0;\n    bar.sync 0, 64;", "too restrictive");
-        assert_rejected("bar.sync %r1, 64;\n    bar.sync %r2, 128;", "too restrictive");
+        assert_rejected(
+            "bar.sync %r1, 64;\n    bar.sync %r2, 128;",
+            "too restrictive",
+        );
         assert_rejected("bar.sync 0, %r1;", "register thread count");
     }
 

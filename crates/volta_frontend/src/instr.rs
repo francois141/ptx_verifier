@@ -1019,8 +1019,14 @@ mod tests {
             Some(InstrKind::FenceProxyTensormap)
         );
         // Plain `fence`/`fence.proxy` forms are unaffected.
-        assert_eq!(trie.get_ancestor(ascii("fence.sc.gpu")), Some(InstrKind::Fence));
-        assert_eq!(trie.get_ancestor(ascii("fence.proxy.alias")), Some(InstrKind::Fence));
+        assert_eq!(
+            trie.get_ancestor(ascii("fence.sc.gpu")),
+            Some(InstrKind::Fence)
+        );
+        assert_eq!(
+            trie.get_ancestor(ascii("fence.proxy.alias")),
+            Some(InstrKind::Fence)
+        );
     }
 
     #[test]

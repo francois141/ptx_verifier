@@ -25,7 +25,9 @@ impl RegClass {
     pub fn from_scalar_type(ty: ScalarType) -> Self {
         match ty {
             ScalarType::Pred => RegClass::Pred,
-            ScalarType::S8 | ScalarType::U8 | ScalarType::B8
+            ScalarType::S8
+            | ScalarType::U8
+            | ScalarType::B8
             | ScalarType::E4m3
             | ScalarType::E5m2 => RegClass::Bits8,
             ScalarType::S16

@@ -662,9 +662,7 @@ impl Interpreter<'_> {
                         // already half of a 4-byte `Quad` granule, surfaced
                         // as a `Pair` of byte lanes (see `Memory::read`);
                         // the two halves recombine into the full quad.
-                        (Value::Pair(b0, b1), Value::Pair(b2, b3)) => {
-                            Value::Quad(b0, b1, b2, b3)
-                        }
+                        (Value::Pair(b0, b1), Value::Pair(b2, b3)) => Value::Quad(b0, b1, b2, b3),
                         _ => {
                             return Err(EvalError::ValueKindMismatch {
                                 thread: m,

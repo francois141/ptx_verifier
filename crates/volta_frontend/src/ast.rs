@@ -325,7 +325,11 @@ impl ScalarType {
     /// Size in bits
     pub fn bits(&self) -> u32 {
         match self {
-            ScalarType::S8 | ScalarType::U8 | ScalarType::B8 | ScalarType::E4m3 | ScalarType::E5m2 => 8,
+            ScalarType::S8
+            | ScalarType::U8
+            | ScalarType::B8
+            | ScalarType::E4m3
+            | ScalarType::E5m2 => 8,
             ScalarType::S16
             | ScalarType::U16
             | ScalarType::F16
