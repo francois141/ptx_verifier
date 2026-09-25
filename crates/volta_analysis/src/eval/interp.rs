@@ -20,7 +20,7 @@ use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::fp8;
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
-use crate::eval::race::{MemHazard, Proxy, RaceTracker};
+use crate::eval::race::{MemHazard, Proxy, RaceTracker, TensorMemRaceInfo};
 use crate::eval::target::TargetFeatures;
 use crate::eval::tcgen05_mma::{self, Major, OperandFormat};
 use crate::eval::tensor_map_table::{self, TensorMapTable};
@@ -4175,6 +4175,15 @@ impl<'p> Interpreter<'p> {
                 prior: h.prior,
                 current: h.current,
             },
+        }
+    }
+
+    pub(in crate::eval) fn tmem_race_error(race: TensorMemRaceInfo) -> EvalError {
+        EvalError::TensorMemoryRace {
+            lane: race.lane,
+            col: race.col,
+            prior: race.prior,
+            current: race.current,
         }
     }
 

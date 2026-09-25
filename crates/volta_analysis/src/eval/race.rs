@@ -122,6 +122,15 @@ struct AsyncLockCell {
     src_holders: Vec<(ThreadId, InstrId)>,
 }
 
+/// A detected unsynchronized pair of Tensor Memory accesses to one cell.
+#[derive(Debug, Clone, Copy)]
+pub struct TensorMemRaceInfo {
+    pub lane: u32,
+    pub col: u32,
+    pub prior: AccessSite,
+    pub current: AccessSite,
+}
+
 /// χ state for one byte.
 #[derive(Debug, Clone, Default)]
 struct ChiCell {
