@@ -1362,9 +1362,9 @@ impl Interpreter<'_> {
     /// footprint checked once for the whole op, same reasoning as `.ld`.
     ///
     /// A source register's whole [`Value`] lands in the cell, packed
-    /// halves included: publishing `f16x2` data for a later tensor-core
-    /// read is what this instruction is for, and collapsing the pair to
-    /// one expression would lose a half.
+    /// halves included: publishing `f16x2` `A` operands for a later
+    /// `tcgen05.mma [a-tmem]` is exactly what this instruction is for, and
+    /// collapsing the pair to one expression would lose a half.
     fn exec_tcgen05_st(
         &mut self,
         pc: InstrId,

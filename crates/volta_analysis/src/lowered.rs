@@ -1009,7 +1009,7 @@ pub enum LoweredInstr {
     /// types/transpose/negate - all decoded from their concrete values at
     /// eval time (`eval::tcgen05_mma`), since only the register operands
     /// are visible at lowering. Scoped to dense `.kind::f16`/`.kind::f8f6f4`
-    /// with `A` in shared memory (not `[a-tmem]`), no `scale-input-d`; the
+    /// with `A` in shared memory or Tensor Memory, no `scale-input-d`; the
     /// `.sp`/block-scaled forms are separate mnemonics, rejected at
     /// lowering. `collector` is `Some` exactly for `tcgen05.mma.ws`
     /// (weight-stationary, 9.7.17.10.10.3), which has no

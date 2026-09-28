@@ -5588,10 +5588,11 @@ fn lower_tcgen05_wait(
     Ok(())
 }
 
-/// Lower `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem], a-desc,
-/// b-desc, idesc, enable-input-d` (PTX ISA 9.7.17.10.9.1, syntax form 1's
-/// second variant - `A` as a shared-memory descriptor, not `[a-tmem]`; no
-/// `disable-output-lane`, no `scale-input-d`). This is the corpus's actual
+/// Lower `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem],
+/// a-desc|[a-tmem], b-desc, idesc, enable-input-d` (PTX ISA 9.7.17.10.9.1,
+/// syntax form 1; no `disable-output-lane`, no `scale-input-d`). `A` is a
+/// shared-memory descriptor or, in the bracketed form, a Tensor Memory
+/// address - told apart by the operand's own syntax. This is the corpus's actual
 /// usage and the "Recommended implementation scope" in
 /// `sm100a_support_plan.md`: dense, non-`.ws`, `.cta_group::1`,
 /// `.kind::f16`/`.kind::f8f6f4` only - `.sp`/`.ws.sp` are separate `InstrKind`

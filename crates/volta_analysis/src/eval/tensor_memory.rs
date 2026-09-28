@@ -63,8 +63,9 @@ pub struct TensorMemory {
     /// `LANES * COLUMNS` cells once touched by any `.ld`/`.st`; empty until
     /// then (see the module doc's "lazily-allocated" note). A cell holds a
     /// whole [`Value`], not a bare expression: `tcgen05.st` publishes
-    /// packed `f16x2` data here as readily as f32 accumulator columns, and
-    /// collapsing such a pair to one expression would lose a half.
+    /// packed `f16x2` `A` operands here (`Value::Pair`) as readily as f32
+    /// accumulator columns, and both halves must stay independently
+    /// symbolic for `tcgen05.mma`'s `[a-tmem]` form to read them back.
     cells: Vec<Option<Value>>,
 }
 
