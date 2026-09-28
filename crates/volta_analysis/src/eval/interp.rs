@@ -2496,12 +2496,15 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem], a-desc, b-desc,
-    /// idesc, enable-input-d`: `D = A*B+D` (or `A*B` if `enable-input-d` is
-    /// false), `M x N x K` (`K` fixed by `.kind` - `tcgen05_mma::k_dim`),
+    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem],
+    /// a-desc|[a-tmem], b-desc, idesc, enable-input-d`: `D = A*B+D` (or
+    /// `A*B` if `enable-input-d` is false), `M x N x K` (`K` fixed by
+    /// `.kind` - `tcgen05_mma::k_dim`),
     /// `A`/`B` read from shared memory through their matrix descriptors
     /// under the ISA's canonical layouts
-    /// (`eval::tcgen05_mma::operand_element_addr`), `D` written into Tensor
+    /// (`eval::tcgen05_mma::operand_element_addr`) - or, for `A` in the
+    /// bracketed form, straight out of Tensor Memory
+    /// ([`Self::read_mma_a_tmem`]). `D` written into Tensor
     /// Memory by `tcgen05_mma::d_cell` (Layout D for `.cta_group::1`: one
     /// CTA-wide `warp-rank % 4` grouping of 32 lanes each - confirmed
     /// against Figures 211/212 - matching the existing `tcgen05.ld`/`.st`
@@ -2577,18 +2580,31 @@ impl<'p> Interpreter<'p> {
             )));
         }
 
-        let Tcgen05MmaA::Desc(a_desc) = a else {
-            return Err(unsupported(
-                "tcgen05.mma reading A from Tensor Memory ([a-tmem]) is not modeled".to_string(),
-            ));
-        };
-        let a_md = self.mma_matrix_descriptor(t, pc, a_desc, "tcgen05.mma a-desc")?;
-        let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
-
         let k_dim = tcgen05_mma::k_dim(kind) as usize;
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
-        let a =
-            self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?;
+        let a = match a {
+            Tcgen05MmaA::Desc(desc) => {
+                let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
+                self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?
+            }
+            Tcgen05MmaA::Tmem { base, offset } => {
+                if a_format != OperandFormat::F16 {
+                    return Err(unsupported(format!(
+                        "tcgen05.mma [a-tmem] with {a_format:?} elements is not modeled \
+                         (only .kind::f16's packed f16 pairs)"
+                    )));
+                }
+                if id.transpose_a {
+                    return Err(unsupported(
+                        "tcgen05.mma [a-tmem] with Transpose A is not modeled (Tensor \
+                         Memory holds A K-major already)"
+                            .to_string(),
+                    ));
+                }
+                self.read_mma_a_tmem(t, pc, (base, *offset), (id.m, k_dim))?
+            }
+        };
+        let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
         let b =
             self.read_mma_operand(t, pc, (&b_md, major(id.transpose_b), b_format), id.n, k_dim)?;
 
@@ -2749,6 +2765,54 @@ impl<'p> Interpreter<'p> {
             )));
         }
         Ok(md)
+    }
+
+    /// Read `tcgen05.mma`'s `A` operand out of Tensor Memory (the
+    /// `[a-tmem]` form): `rows x k_dim` f16 elements, row `m` in lane
+    /// `lane_base + m` of the address's own lane field and element `k` in
+    /// the low (`k` even) or high (`k` odd) half of column `col_base +
+    /// k / 2` - the packing a `tcgen05.st` of `cvt.rn.f16x2.f32` results
+    /// leaves behind, and the layout `A`'s `K` contiguous 16-bit elements
+    /// have across 32-bit columns. Returns the elements row-major.
+    fn read_mma_a_tmem(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        (base, offset): (&Operand, i64),
+        (rows, k_dim): (u32, usize),
+    ) -> EvalResult<Vec<ExprId>> {
+        let packed = self.effective_addr(t, pc, base, offset)? as u32;
+        let lane_base = packed >> 16;
+        let col_base = packed & 0xFFFF;
+        // Two f16 elements ride in each 32-bit column.
+        let num_cols = (k_dim / 2) as u32;
+        let mut elems = Vec::with_capacity(rows as usize * k_dim);
+        for row in 0..rows {
+            let lane = lane_base + row;
+            for c in 0..num_cols {
+                let cell = self
+                    .tensor
+                    .read(lane, col_base + c)
+                    .map_err(|e| self.tcgen05_error(t, pc, e))?;
+                let (lo, hi) = match cell {
+                    Some(Value::Pair(lo, hi)) => (lo, hi),
+                    Some(_) => {
+                        return Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "tcgen05.mma [a-tmem] cell does not hold a packed f16 pair",
+                        });
+                    }
+                    None => {
+                        let undefined = self.arena.undefined();
+                        (undefined, undefined)
+                    }
+                };
+                elems.push(lo);
+                elems.push(hi);
+            }
+        }
+        Ok(elems)
     }
 
     // =====================================================================
