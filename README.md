@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/volta-logo.png" alt="Volta logo" width="400">
+</p>
+
 # NOTICE
 
 This is an experimental fork of Volta, for the original repo see [here](https://github.com/willtunnels/volta).
