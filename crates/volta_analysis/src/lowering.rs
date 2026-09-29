@@ -5700,10 +5700,6 @@ fn lower_tcgen05_mma(
         AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
         other => (ctx.resolve_operand(other)?, 0),
     };
-    // Only `[a-tmem]` is bracketed, so the syntax alone tells the two
-    // forms apart. Resolving both through `resolve_operand` would drop
-    // the brackets and read a Tensor Memory address as a shared-memory
-    // descriptor - a wrong answer rather than a rejection.
     let a = match a_operand {
         AstOperand::Address(a) => Tcgen05MmaA::Tmem {
             base: ctx.resolve_address(a)?,

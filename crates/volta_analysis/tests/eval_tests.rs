@@ -5303,9 +5303,9 @@ fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
-/// Same kernel, same `sm_90a` target, with the missing
-/// `fence.proxy.async.shared::cta;` now present between `wait_group` and
-/// the read - the correct, spec-conforming idiom - must pass clean.
+/// Same kernel, same `sm_90a` target, with a (redundant)
+/// `fence.proxy.async.shared::cta;` between `wait_group` and the read -
+/// must pass clean too.
 #[test]
 fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
     let src = wrap_sm90a(
@@ -5575,10 +5575,11 @@ fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
 /// false, seeding from `A*B` only) -> `wgmma.commit_group` ->
 /// `wgmma.wait_group 0`, smallest feasible shape (N=8, 4 registers/thread,
 /// 128 threads - one warpgroup). No swizzle (`SwizzleMode::None`) keeps
-/// the descriptor trivial (`start_addr` only - `stride_dim_byte_offset`/
-/// `leading_dim_byte_offset` both 0, so every thread's row/col multiplies
-/// to 0 and every thread reads the same 16-element A row and B column -
-/// harmless here since only thread 0's result is checked, and the
+/// the descriptor simple: the K-major core-matrix layout with
+/// `stride_dim_byte_offset` 0 and `leading_dim_byte_offset` 128, so row 0
+/// holds `K` 0..8 at bytes 0..16 and `K` 8..16 at bytes 128..144 (other
+/// rows alias rows 0..8 of the first 8-row group - harmless here since only
+/// thread 0's result is checked, and the
 /// row/col-addressing *formula* itself is independently verified by
 /// `tensor_core::tests::test_wgmma_matrix_d_*` already; this test's job is
 /// the instruction pipeline - descriptor decode, shared reads,
