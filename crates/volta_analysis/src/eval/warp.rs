@@ -783,7 +783,8 @@ impl Interpreter<'_> {
         };
 
         // An `.f16` accumulator holds the same four C/D elements packed
-        // two to a register; an f32 one is a single element per register.
+        // two to a register; every other modeled accumulator (f32, s32)
+        // is one unpacked element per register.
         let packed_accumulator = *d_type == ScalarType::F16;
         let accumulator = |lane: u32| {
             if packed_accumulator {
@@ -1297,12 +1298,10 @@ impl Interpreter<'_> {
         }
     }
 
-    /// `tcgen05.ld`: collective async load into `dst.len()` registers per
-    /// thread, from the Tensor Memory rectangle based at the warp-uniform
-    /// `taddr` that `shape` and the register count describe. Which cell a
-    /// given thread's register names is `shape`'s business
-    /// ([`Tcgen05LdStShape::cell`]); `.32x32b` is the identity case, one
-    /// column per register on the thread's own physical lane.
+    /// `tcgen05.ld`: collective async load of `dst.len()` Tensor Memory
+    /// columns (base column from the warp-uniform `taddr`) into `dst.len()`
+    /// registers per lane - one column per register, each thread reading
+    /// its own physical lane (see `tcgen05_lane`).
     ///
     /// Checked once for the whole op against `RaceTracker::tcgen05_begin`,
     /// not per cell: PTX ISA 9.7.17.8's `taddr`+`.num` always describes one
@@ -1356,8 +1355,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `tcgen05.st`: collective async store of `src.len()` registers per
-    /// thread, to the same rectangle `exec_tcgen05_ld` reads - its mirror. Each thread evaluates `src` against its own
+    /// `tcgen05.st`: collective async store of `src.len()` Tensor Memory
+    /// columns from `src.len()` registers per lane - the mirror of
+    /// `exec_tcgen05_ld`. Each thread evaluates `src` against its own
     /// registers (the operand list is shared syntax, not shared values -
     /// e.g. the driving kernel's zero-fill idiom repeats one register
     /// holding a per-thread-identical constant across every slot). Hazard
