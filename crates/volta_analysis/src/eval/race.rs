@@ -195,9 +195,9 @@ struct Tcgen05Pending {
     st: Vec<(u32, u32, AccessSite)>,
 }
 
-/// χ-context tracker over all racy memory (shared + global + Tensor
-/// Memory), plus in-flight `cp.async` lock state, plus in-flight
-/// `tcgen05.ld`/`.st` lock state, plus the proxy-fence tracker.
+/// χ-context tracker over all racy memory (shared + global + Tensor Memory),
+/// plus in-flight `cp.async` (and `tcgen05.mma` operand) lock state, plus
+/// in-flight `tcgen05.ld`/`.st` lock state, plus the proxy-fence tracker.
 #[derive(Debug)]
 pub struct RaceTracker {
     n_threads: usize,
@@ -261,6 +261,30 @@ impl RaceTracker {
         let list = if is_st { &mut q.st } else { &mut q.ld };
         list.push((start_col, num_cols, current));
         Ok(())
+    }
+
+    /// The first pending `.ld`/`.st` in `quadrant` overlapping `[start_col,
+    /// start_col + num_cols)` that a `tcgen05.mma` touching those columns
+    /// conflicts with. A write (`D`) conflicts with either kind - an
+    /// un-waited `.ld` is overwritten under it, an un-waited `.st` races
+    /// its write - while a read (`[a-tmem]` `A`) only conflicts with a
+    /// pending `.st`, the same asymmetry [`Self::tcgen05_begin`] applies.
+    /// Unlike that method this records nothing: the MMA's own in-flight
+    /// window is tracked by the interpreter (`tcgen05_mma::InflightMma`),
+    /// not per quadrant.
+    pub fn tcgen05_pending_conflict(
+        &self,
+        quadrant: u32,
+        start_col: u32,
+        num_cols: u32,
+        is_write: bool,
+    ) -> Option<AccessSite> {
+        let end = start_col + num_cols;
+        let q = &self.tcgen05_pending[quadrant as usize];
+        q.st.iter()
+            .chain(q.ld.iter().filter(|_| is_write))
+            .find(|&&(s, n, _)| s < end && start_col < s + n)
+            .map(|&(_, _, site)| site)
     }
 
     /// Release every pending `.ld` (`is_st = false`) or `.st`
@@ -665,18 +689,21 @@ impl RaceTracker {
             is_write: true,
         };
         for byte in addr..addr + width {
-            if let Some((holder, hpc)) = self
-                .async_locks
-                .get(&(space, byte))
-                .and_then(|cell| cell.dst_holder)
-            {
+            let Some(cell) = self.async_locks.get(&(space, byte)) else {
+                continue;
+            };
+            let prior = cell
+                .dst_holder
+                .map(|holder| (holder, true))
+                .or_else(|| cell.src_holders.first().map(|&holder| (holder, false)));
+            if let Some(((holder, hpc), is_write)) = prior {
                 return Err(MemHazard::AsyncCopy(AsyncHazardInfo {
                     space,
                     addr: byte,
                     prior: AccessSite {
                         thread: holder,
                         pc: hpc,
-                        is_write: true,
+                        is_write,
                     },
                     current,
                 }));
