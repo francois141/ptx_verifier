@@ -1309,9 +1309,10 @@ impl Interpreter<'_> {
     /// contiguous column range within one lane quadrant (every member
     /// shares the same quadrant - see `sm100a_support_plan.md`'s hazard
     /// design), so a single range check covers the whole footprint.
-    /// Beyond that, each cell is χ-checked per lane thread: a
-    /// `tcgen05.mma` is issued by one thread for all 128 lanes, so another
-    /// warp reading its result needs a happens-before edge to the issuer.
+    /// Beyond that in-flight check, each cell is χ-checked per lane thread,
+    /// and the range must not belong to a `tcgen05.mma` still in flight: an
+    /// MMA is issued by one thread for all 128 lanes, so reading its result
+    /// needs the completion edge (the mbarrier its commit arrives on).
     fn exec_tcgen05_ld(
         &mut self,
         pc: InstrId,
@@ -1333,6 +1334,7 @@ impl Interpreter<'_> {
         self.race
             .tcgen05_begin(quadrant, base_col, num_cols, false, current)
             .map_err(Self::tcgen05_hazard_error)?;
+        self.check_inflight_mma_tmem(quadrant, base_col, num_cols, current, None)?;
         for &m in members {
             for (k, &reg) in dst.iter().enumerate() {
                 let (lane, col) = shape.cell(m.0 % WARP_SIZE, k as u32);
@@ -1386,6 +1388,7 @@ impl Interpreter<'_> {
         self.race
             .tcgen05_begin(quadrant, base_col, num_cols, true, current)
             .map_err(Self::tcgen05_hazard_error)?;
+        self.check_inflight_mma_tmem(quadrant, base_col, num_cols, current, None)?;
         for &m in members {
             for (k, op) in src.iter().enumerate() {
                 let (lane, col) = shape.cell(m.0 % WARP_SIZE, k as u32);

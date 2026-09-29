@@ -22,7 +22,7 @@ use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, Proxy, RaceTracker, TensorMemRaceInfo};
 use crate::eval::target::TargetFeatures;
-use crate::eval::tcgen05_mma::{self, Major, OperandFormat};
+use crate::eval::tcgen05_mma::{self, InflightMma, Major, OperandFormat, TmemRange};
 use crate::eval::tensor_map_table::{self, TensorMapTable};
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
@@ -389,6 +389,9 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) shared: Memory,
     locals: IdVec<ThreadId, Memory>,
     pub(in crate::eval) tensor: TensorMemory,
+    /// Issued `tcgen05.mma`s no waiter has yet observed complete - see
+    /// `tcgen05_mma::InflightMma`.
+    pub(in crate::eval) tcgen05_inflight: Vec<InflightMma>,
     /// Issued `cp.async.bulk{.tensor}` copies no waiter has yet observed
     /// complete - see `InflightBulkCopy`.
     bulk_inflight: Vec<InflightBulkCopy>,
@@ -617,6 +620,7 @@ impl<'p> Interpreter<'p> {
             shared: Memory::new(),
             locals,
             tensor: TensorMemory::new(),
+            tcgen05_inflight: Vec::new(),
             bulk_inflight: Vec::new(),
             regions,
             race: RaceTracker::new(n_threads as usize),
@@ -874,6 +878,7 @@ impl<'p> Interpreter<'p> {
         for (id, waiters) in &waiters_by_barrier {
             let participants = self.mbarriers.prior_participants(*id);
             self.race.sync_mbarrier_waiters(participants, waiters);
+            self.release_observed_mmas(*id);
             self.release_observed_bulk_copies(*id);
         }
         for (tid, _) in &ready {
@@ -2199,7 +2204,9 @@ impl<'p> Interpreter<'p> {
             // thread so far has completed, perform an mbarrier
             // arrive-on(count=1) - same per-thread, non-warp-cooperative
             // shape as `MbarrierArrive` below (issued by a single thread,
-            // not a warp rendezvous).
+            // not a warp rendezvous). The arrive is the completion signal,
+            // so this is where this thread's in-flight MMAs become
+            // trackable by the phase it contributes to.
             LoweredInstr::Tcgen05Commit {
                 addr_base,
                 addr_offset,
@@ -2211,6 +2218,7 @@ impl<'p> Interpreter<'p> {
                     .shared
                     .read_mbarrier(addr)
                     .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                self.commit_tcgen05_mmas(t, id)?;
                 self.mbarriers.arrive(id, t, 1, None);
             }
 
@@ -2515,6 +2523,20 @@ impl<'p> Interpreter<'p> {
     /// dense, `M = 32` or `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
     /// (`.kind::f8f6f4`), no negate, relative leading-dimension stride,
     /// `base_offset == 0` on both descriptors.
+    ///
+    /// The data is computed here, at issue, but the ISA makes the operation
+    /// asynchronous, so it stays in flight (`tcgen05_mma::InflightMma`)
+    /// until a waiter observes an mbarrier phase a later `tcgen05.commit`
+    /// by `t` arrived on:
+    /// - operand reads are χ-checked now (their producers must be ordered
+    ///   before the issue), and the bytes stay write-locked in flight;
+    /// - `D` must not overlap an un-waited `tcgen05.ld`/`.st` or another
+    ///   issuer's in-flight MMA, and stays locked against `tcgen05.ld`/
+    ///   `.st` in flight - later MMAs from `t` are exempt, since the ISA
+    ///   executes one thread's MMAs in issue order;
+    /// - the accesses enter χ at the commit
+    ///   ([`Self::commit_tcgen05_mmas`]), so a sync that merely follows the
+    ///   issue orders nothing for other threads.
     #[allow(clippy::too_many_arguments)]
     fn exec_tcgen05_mma(
         &mut self,
@@ -2579,13 +2601,23 @@ impl<'p> Interpreter<'p> {
                 id.m, id.n
             )));
         }
+        let d_num_cols = id.n / d_groups;
 
         let k_dim = tcgen05_mma::k_dim(kind) as usize;
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
-        let a = match a {
+        let mut operand_bytes = Vec::new();
+        let (a, a_tmem) = match a {
             Tcgen05MmaA::Desc(desc) => {
                 let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
-                self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?
+                let a = self.read_mma_operand(
+                    t,
+                    pc,
+                    (&a_md, major(id.transpose_a), a_format),
+                    id.m,
+                    k_dim,
+                    &mut operand_bytes,
+                )?;
+                (a, None)
             }
             Tcgen05MmaA::Tmem { base, offset } => {
                 if a_format != OperandFormat::F16 {
@@ -2605,9 +2637,16 @@ impl<'p> Interpreter<'p> {
             }
         };
         let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
-        let b =
-            self.read_mma_operand(t, pc, (&b_md, major(id.transpose_b), b_format), id.n, k_dim)?;
-
+        let b = self.read_mma_operand(
+            t,
+            pc,
+            (&b_md, major(id.transpose_b), b_format),
+            id.n,
+            k_dim,
+            &mut operand_bytes,
+        )?;
+        operand_bytes.sort_unstable();
+        operand_bytes.dedup();
         if let Some(Tcgen05Collector { buffer, op }) = collector {
             let slot = &mut self.threads[t].tcgen05_collectors[buffer as usize];
             if matches!(op, Tcgen05CollectorOp::Use | Tcgen05CollectorOp::LastUse)
@@ -2637,17 +2676,45 @@ impl<'p> Interpreter<'p> {
         for (slot, op) in disable_mask.iter_mut().zip(disable_output_lane) {
             *slot = self.concrete_operand(t, pc, op, "tcgen05.mma disable-output-lane")? as u32;
         }
-        let lane_disabled =
-            |lane: u32| -> bool { (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 != 0 };
+        let lane_enabled = |lane: u32| (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 == 0;
+        // `D` spans all 128 lanes whatever `M` is - an `M < 128` result
+        // simply folds `N` across them (`tcgen05_mma::d_cell`).
+        let d_lanes: Vec<u32> = (0..128).filter(|&lane| lane_enabled(lane)).collect();
+
+        let current = AccessSite {
+            thread: t,
+            pc,
+            is_write: true,
+        };
+        let mut quadrants: Vec<u32> = d_lanes.iter().map(|lane| lane / WARP_SIZE).collect();
+        quadrants.dedup();
+        for quadrant in quadrants {
+            if let Some(prior) = self
+                .race
+                .tcgen05_pending_conflict(quadrant, d_col_base, d_num_cols, true)
+            {
+                return Err(EvalError::Tcgen05AsyncHazard {
+                    quadrant,
+                    start_col: d_col_base,
+                    num_cols: d_num_cols,
+                    prior,
+                    current,
+                });
+            }
+            self.check_inflight_mma_tmem(quadrant, d_col_base, d_num_cols, current, Some(t))?;
+        }
 
         for m in 0..id.m {
             for n in 0..id.n {
                 let (lane, col) = tcgen05_mma::d_cell(m, n, (id.m, id.n));
                 let col = d_col_base + col;
-                if lane_disabled(lane) {
+                if !lane_enabled(lane) {
                     continue;
                 }
                 let mut acc = if enable_input_d {
+                    self.race
+                        .tmem_read(lane, col, t, pc)
+                        .map_err(Self::tmem_race_error)?;
                     match self
                         .tensor
                         .read(lane, col)
@@ -2681,15 +2748,29 @@ impl<'p> Interpreter<'p> {
                     .map_err(|e| self.tcgen05_error(t, pc, e))?;
             }
         }
+
+        for &byte in &operand_bytes {
+            self.race.lock_src(MemSpace::Shared, byte, 1, t, pc);
+        }
+        self.tcgen05_inflight.push(InflightMma {
+            issuer: t,
+            pc,
+            operand_bytes,
+            a_tmem,
+            d_lanes,
+            d_start_col: d_col_base,
+            d_num_cols,
+            trackers: Vec::new(),
+        });
         Ok(())
     }
 
     /// Read one `tcgen05.mma` operand - `rows x k_dim` elements, `rows`
     /// being its `M` (for `A`) or `N` (for `B`) extent - from shared memory
-    /// in row-major order. A concrete fp8 byte (never an input element:
-    /// e.g. zero padding a kernel stored itself) is decoded from its bit
-    /// encoding; a symbolic element already is its real value (see
-    /// `eval::fp8`'s module doc).
+    /// in row-major order, appending every byte it touches to `bytes`. A
+    /// concrete fp8 byte (never an input element: e.g. zero padding a
+    /// kernel stored itself) is decoded from its bit encoding; a symbolic
+    /// element already is its real value (see `eval::fp8`'s module doc).
     fn read_mma_operand(
         &mut self,
         t: ThreadId,
@@ -2697,6 +2778,7 @@ impl<'p> Interpreter<'p> {
         (desc, major, format): (&tcgen05_mma::MatrixDescriptor, Major, OperandFormat),
         rows: u32,
         k_dim: usize,
+        bytes: &mut Vec<u64>,
     ) -> EvalResult<Vec<ExprId>> {
         let elem_bytes = format.bytes();
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
@@ -2733,6 +2815,7 @@ impl<'p> Interpreter<'p> {
                     _ => e,
                 };
                 elems.push(e);
+                bytes.extend(addr..addr + elem_bytes);
             }
         }
         Ok(elems)
@@ -2773,26 +2856,66 @@ impl<'p> Interpreter<'p> {
     /// the low (`k` even) or high (`k` odd) half of column `col_base +
     /// k / 2` - the packing a `tcgen05.st` of `cvt.rn.f16x2.f32` results
     /// leaves behind, and the layout `A`'s `K` contiguous 16-bit elements
-    /// have across 32-bit columns. Returns the elements row-major.
+    /// have across 32-bit columns. Returns the elements row-major
+    /// alongside the cell range, which the caller keeps as part of the
+    /// operation's in-flight footprint.
+    ///
+    /// Each cell is χ-checked here at issue, the same point `D`'s
+    /// accumulator read is checked; the shared-memory operand path instead
+    /// locks its bytes now and enters χ at the commit, because only there
+    /// does it know which mbarrier phase completes it.
     fn read_mma_a_tmem(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         (base, offset): (&Operand, i64),
         (rows, k_dim): (u32, usize),
-    ) -> EvalResult<Vec<ExprId>> {
+    ) -> EvalResult<(Vec<ExprId>, Option<TmemRange>)> {
         let packed = self.effective_addr(t, pc, base, offset)? as u32;
-        let lane_base = packed >> 16;
-        let col_base = packed & 0xFFFF;
-        // Two f16 elements ride in each 32-bit column.
-        let num_cols = (k_dim / 2) as u32;
+        let range = TmemRange {
+            lane_base: packed >> 16,
+            num_lanes: rows,
+            start_col: packed & 0xFFFF,
+            // Two f16 elements ride in each 32-bit column.
+            num_cols: (k_dim / 2) as u32,
+        };
+        let current = AccessSite {
+            thread: t,
+            pc,
+            is_write: false,
+        };
+        for quadrant in range.quadrants() {
+            if let Some(prior) =
+                self.race
+                    .tcgen05_pending_conflict(quadrant, range.start_col, range.num_cols, false)
+            {
+                return Err(EvalError::Tcgen05AsyncHazard {
+                    quadrant,
+                    start_col: range.start_col,
+                    num_cols: range.num_cols,
+                    prior,
+                    current,
+                });
+            }
+            self.check_inflight_mma_tmem(
+                quadrant,
+                range.start_col,
+                range.num_cols,
+                current,
+                Some(t),
+            )?;
+        }
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
         for row in 0..rows {
-            let lane = lane_base + row;
-            for c in 0..num_cols {
+            let lane = range.lane_base + row;
+            for c in 0..range.num_cols {
+                let col = range.start_col + c;
+                self.race
+                    .tmem_read(lane, col, t, pc)
+                    .map_err(Self::tmem_race_error)?;
                 let cell = self
                     .tensor
-                    .read(lane, col_base + c)
+                    .read(lane, col)
                     .map_err(|e| self.tcgen05_error(t, pc, e))?;
                 let (lo, hi) = match cell {
                     Some(Value::Pair(lo, hi)) => (lo, hi),
@@ -2812,7 +2935,88 @@ impl<'p> Interpreter<'p> {
                 elems.push(hi);
             }
         }
-        Ok(elems)
+        Ok((elems, Some(range)))
+    }
+
+    /// Reject an access to columns `[start_col, start_col + num_cols)` of
+    /// Tensor Memory `quadrant` while an in-flight `tcgen05.mma` - other
+    /// than one issued by `exempt` - still owns them: its `D` range either
+    /// way, and its `[a-tmem]` `A` range for a write, which would change
+    /// the operand under an operation that has not completed.
+    pub(in crate::eval) fn check_inflight_mma_tmem(
+        &self,
+        quadrant: u32,
+        start_col: u32,
+        num_cols: u32,
+        current: AccessSite,
+        exempt: Option<ThreadId>,
+    ) -> EvalResult<()> {
+        match self.tcgen05_inflight.iter().find(|op| {
+            Some(op.issuer) != exempt
+                && (op.d_overlaps(quadrant, start_col, num_cols)
+                    || (current.is_write && op.a_overlaps(quadrant, start_col, num_cols)))
+        }) {
+            Some(op) => Err(EvalError::Tcgen05AsyncHazard {
+                quadrant,
+                start_col,
+                num_cols,
+                prior: AccessSite {
+                    thread: op.issuer,
+                    pc: op.pc,
+                    is_write: true,
+                },
+                current,
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// `tcgen05.commit`'s tracking half: every MMA `t` has in flight
+    /// becomes completable by `mbar`'s forming phase. The first commit
+    /// covering an MMA is also its earliest possible completion signal, so
+    /// that is where its accesses enter χ, attributed to `t`: a waiter
+    /// observing the phase syncs with `t` (`try_fire_mbarrier`), making
+    /// them visible exactly along the ISA's completion edge.
+    fn commit_tcgen05_mmas(&mut self, t: ThreadId, mbar: MbarrierId) -> EvalResult<()> {
+        let phase = self.mbarriers.completed_phases(mbar);
+        for op in self.tcgen05_inflight.iter_mut().filter(|op| op.issuer == t) {
+            if op.trackers.is_empty() {
+                for &byte in &op.operand_bytes {
+                    self.race
+                        .read_via(MemSpace::Shared, byte, 1, t, op.pc, Proxy::Async)
+                        .map_err(Self::mem_hazard_error)?;
+                }
+                for &lane in &op.d_lanes {
+                    for col in op.d_start_col..op.d_start_col + op.d_num_cols {
+                        self.race
+                            .tmem_write(lane, col, t, op.pc)
+                            .map_err(Self::tmem_race_error)?;
+                    }
+                }
+            }
+            op.trackers.push((mbar, phase));
+        }
+        Ok(())
+    }
+
+    /// A waiter just observed `mbar`'s last completed phase: every MMA
+    /// tracked by that phase (or an earlier one of `mbar`) has completed,
+    /// so its operand locks and in-flight `D` footprint are dropped.
+    fn release_observed_mmas(&mut self, mbar: MbarrierId) {
+        let observed = self.mbarriers.completed_phases(mbar);
+        let race = &mut self.race;
+        self.tcgen05_inflight.retain(|op| {
+            let done = op
+                .trackers
+                .iter()
+                .any(|&(m, phase)| m == mbar && phase < observed);
+            if done {
+                for &byte in &op.operand_bytes {
+                    race.release_src(MemSpace::Shared, byte, 1, op.issuer, op.pc);
+                }
+            }
+            !done
+        });
     }
 
     // =====================================================================

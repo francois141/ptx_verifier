@@ -45,9 +45,10 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
-    /// An access conflicted with a still-in-flight `cp.async` copy: its
-    /// destination was touched before completion, or its source was
-    /// modified before completion.
+    /// An access conflicted with a still-in-flight async operation (a
+    /// `cp.async` copy, or a `tcgen05.mma` reading its shared-memory
+    /// operands): its destination was touched before completion, or its
+    /// source was modified before completion.
     AsyncCopyHazard {
         space: MemSpace,
         addr: u64,
@@ -307,7 +308,7 @@ impl fmt::Display for EvalError {
                 current,
             } => write!(
                 f,
-                "cp.async hazard on {:?}[{:#x}]: {} conflicts with in-flight {}",
+                "async-operation hazard on {:?}[{:#x}]: {} conflicts with in-flight {}",
                 space, addr, current, prior
             ),
             Self::GenericProxyFenceHazard {
