@@ -33,7 +33,9 @@
 //! rests on comparatively thinner evidence - see [`atom_shape`]'s doc
 //! comment.
 
-use crate::lowered::Tcgen05MmaKind;
+use crate::eval::ThreadId;
+use crate::eval::value::MbarrierId;
+use crate::lowered::{InstrId, Tcgen05MmaKind};
 
 /// Decoded `idesc` fields shared by `.kind::f16` and `.kind::f8f6f4` (PTX
 /// ISA 9.7.17.4.2, Table 45 - both kinds use the same bit layout; only the
@@ -331,6 +333,10 @@ pub fn operand_element_addr(
     }
 }
 
+/// Lanes per Tensor Memory access quadrant, one per warp of a warpgroup
+/// (PTX ISA 9.7.17.8.1).
+const LANES_PER_QUADRANT: u32 = 32;
+
 /// Lanes of Tensor Memory one `.cta_group::1` operation's `D` always
 /// spans, whatever its `M` (PTX ISA 9.7.17.1).
 const D_LANES: u32 = 128;
@@ -347,6 +353,84 @@ const D_LANES: u32 = 128;
 pub fn d_cell(m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
     let cols_per_group = n_dim / (D_LANES / m_dim);
     (m + m_dim * (n / cols_per_group), n % cols_per_group)
+}
+
+/// One issued `tcgen05.mma` whose completion no thread has yet observed.
+///
+/// The ISA makes the operation asynchronous (PTX ISA 9.7.17.6): it reads
+/// `A`/`B` from shared memory and writes `D` in Tensor Memory at some
+/// point after issue, and the only completion signal is an mbarrier
+/// phase a later `tcgen05.commit` by the issuing thread arrives on.
+/// Volta computes the data eagerly at issue, so this record is what keeps
+/// the in-flight window visible to the race checks: the operand bytes stay
+/// write-locked and the `D` footprint stays access-locked (to everything
+/// but later MMAs from the same issuer, which the ISA pipelines in order)
+/// until a waiter observes one of `trackers`' phases.
+#[derive(Debug, Clone)]
+pub(crate) struct InflightMma {
+    pub issuer: ThreadId,
+    pub pc: InstrId,
+    /// Deduplicated shared-memory bytes read as `A`/`B`.
+    pub operand_bytes: Vec<u64>,
+    /// Tensor Memory cells read as `A`, for the `[a-tmem]` form only -
+    /// `None` when `A` came from shared memory through a descriptor, whose
+    /// footprint `operand_bytes` carries instead.
+    pub a_tmem: Option<TmemRange>,
+    /// Tensor Memory lanes `D` writes (lanes not masked off by
+    /// `disable-output-lane`), ascending.
+    pub d_lanes: Vec<u32>,
+    pub d_start_col: u32,
+    pub d_num_cols: u32,
+    /// `(mbarrier, phase index)` for every `tcgen05.commit` by `issuer`
+    /// since issue - any one of them completing and being observed
+    /// completes this operation.
+    pub trackers: Vec<(MbarrierId, u64)>,
+}
+
+impl InflightMma {
+    /// Whether `D` overlaps columns `[start_col, start_col + num_cols)` of
+    /// the 32-lane `quadrant`.
+    pub fn d_overlaps(&self, quadrant: u32, start_col: u32, num_cols: u32) -> bool {
+        start_col < self.d_start_col + self.d_num_cols
+            && self.d_start_col < start_col + num_cols
+            && self
+                .d_lanes
+                .iter()
+                .any(|&lane| lane / LANES_PER_QUADRANT == quadrant)
+    }
+
+    /// Whether an `[a-tmem]` `A` operand overlaps the same range. Always
+    /// false for the shared-memory-descriptor form.
+    pub fn a_overlaps(&self, quadrant: u32, start_col: u32, num_cols: u32) -> bool {
+        self.a_tmem
+            .is_some_and(|a| a.overlaps(quadrant, start_col, num_cols))
+    }
+}
+
+/// A rectangle of Tensor Memory cells: lanes `[lane_base, lane_base +
+/// num_lanes)` of columns `[start_col, start_col + num_cols)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TmemRange {
+    pub lane_base: u32,
+    pub num_lanes: u32,
+    pub start_col: u32,
+    pub num_cols: u32,
+}
+
+impl TmemRange {
+    /// The 32-lane quadrants this range's lanes fall in.
+    pub fn quadrants(&self) -> impl Iterator<Item = u32> {
+        self.lane_base / LANES_PER_QUADRANT
+            ..(self.lane_base + self.num_lanes).div_ceil(LANES_PER_QUADRANT)
+    }
+
+    /// Whether this range overlaps columns `[start_col, start_col +
+    /// num_cols)` of the 32-lane `quadrant`.
+    pub fn overlaps(&self, quadrant: u32, start_col: u32, num_cols: u32) -> bool {
+        start_col < self.start_col + self.num_cols
+            && self.start_col < start_col + num_cols
+            && self.quadrants().any(|q| q == quadrant)
+    }
 }
 
 #[cfg(test)]
