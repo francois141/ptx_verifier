@@ -2784,6 +2784,56 @@ fn test_float_abs_decodes_raw_bits() {
     assert_eq!(display_output(&output, "out", 2), "abs(in[0])");
 }
 
+/// `neg` re-reads a concrete operand as the instruction's type: to
+/// `neg.s32`, 0xFFFFFFFB produced by `mov.u32` is -5, and the result wraps
+/// back to the width (`neg.s32` of i32::MIN is i32::MIN); to `neg.f32`, a
+/// raw bit pattern moved in by `mov.b32` is decoded first (0xC0A00000 is
+/// -5.0, 0xFF800000 is -inf). A symbolic operand stays a `neg` node.
+#[test]
+fn test_neg_reads_operand_as_instruction_type() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<5>;
+    .reg .f32 %f<7>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, 0xFFFFFFFB;
+    neg.s32 %r2, %r1;
+    mov.u32 %r3, 0x80000000;
+    neg.s32 %r4, %r3;
+    mov.b32 %f1, 0xC0A00000;
+    neg.f32 %f2, %f1;
+    mov.b32 %f3, 0xFF800000;
+    neg.f32 %f4, %f3;
+    ld.global.f32 %f5, [%rd1];
+    neg.f32 %f6, %f5;
+    st.global.u32 [%rd2], %r2;
+    st.global.u32 [%rd2+4], %r4;
+    st.global.f32 [%rd2+8], %f2;
+    st.global.f32 [%rd2+12], %f4;
+    st.global.f32 [%rd2+16], %f6;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 5)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "5");
+    assert_eq!(
+        display_output(&output, "out", 1),
+        0x8000_0000u32.to_string()
+    );
+    assert_eq!(display_output(&output, "out", 2), "5");
+    assert_eq!(display_output(&output, "out", 3), "inf");
+    assert_eq!(display_output(&output, "out", 4), "(-in[0])");
+}
+
 /// Symbolic integer division is rejected rather than modeled as exact
 /// rational division, which would prove `(x / 2) * 2` equal to `x`.
 /// Concrete integer division (index math) still evaluates exactly.
