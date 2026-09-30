@@ -13,10 +13,21 @@
 
 use crate::symbolic::{ExprArena, ExprId, ExprNode};
 
-use super::arena::{Atom, Factor, PolyId, Rat, Term, TermId, UninterpOp};
+use super::arena::{Atom, Factor, FactorId, PolyId, Rat, Term, TermId, UninterpOp};
 use super::coeff::Coeff;
 use super::ops::{PV, RatV};
 use super::{CanonError, Session, Side};
+
+/// What [`Session::rat_sign`] could prove about a value's sign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sign {
+    /// Strictly greater than zero everywhere.
+    Positive,
+    /// Greater than or equal to zero everywhere.
+    NonNegative,
+    /// Nothing provable.
+    Unknown,
+}
 
 impl Session {
     /// Canonicalize `e` (from the `side` kernel's arena) into an interned
@@ -234,14 +245,25 @@ impl Session {
     /// accumulates, so the final quotient's common factor cancels;
     /// without it the log stays an opaque atom and so does every
     /// exponential taken of it afterwards.
+    ///
+    /// The identity only holds for `u > 0`: at `u = -1` the hardware's
+    /// `ex2(lg2(u))` is NaN, not `-1` (and at `u = 0` a negative power
+    /// is `+inf`, not a division by zero). So a log cancels only when
+    /// [`Self::rat_sign`] proves its argument strictly positive; any
+    /// other log stays an opaque atom in the exponent - sound, merely
+    /// incomplete.
     fn exp_poly(&mut self, p: PolyId) -> Result<RatV, CanonError> {
         let terms = self.arena.polys.get(p).clone();
         let mut rest = Vec::with_capacity(terms.len());
         let mut logs = Vec::new();
         for (term, coeff) in terms {
-            match (self.log_argument(term), coeff.as_integer()) {
-                (Some(argument), Some(power)) => logs.push((argument, power)),
-                _ => rest.push((term, coeff)),
+            let cancellable = self
+                .log_argument(term)
+                .filter(|&argument| self.rat_sign(argument) == Sign::Positive)
+                .zip(coeff.as_integer());
+            match cancellable {
+                Some((argument, power)) => logs.push((argument, power)),
+                None => rest.push((term, coeff)),
             }
         }
         if logs.is_empty() {
@@ -301,6 +323,80 @@ impl Session {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// A conservative sign for a canonical rational: `Positive` only when
+    /// both numerator and denominator provably are.
+    fn rat_sign(&self, r: Rat) -> Sign {
+        match (self.poly_sign(r.numer), self.poly_sign(r.denom)) {
+            (Sign::Positive, Sign::Positive) => Sign::Positive,
+            _ => Sign::Unknown,
+        }
+    }
+
+    /// A sum is `Positive` when every coefficient is positive, every
+    /// term is at least nonnegative, and some term is strictly positive;
+    /// `NonNegative` when the last condition fails. The zero poly (no
+    /// terms) is not positive.
+    fn poly_sign(&self, p: PolyId) -> Sign {
+        let terms = self.arena.polys.get(p);
+        if terms.is_empty() {
+            return Sign::Unknown;
+        }
+        let mut sign = Sign::NonNegative;
+        for (term, coeff) in terms {
+            if !coeff.is_positive() {
+                return Sign::Unknown;
+            }
+            match self.term_sign(*term) {
+                Sign::Positive => sign = Sign::Positive,
+                Sign::NonNegative => {}
+                Sign::Unknown => return Sign::Unknown,
+            }
+        }
+        sign
+    }
+
+    /// A monomial's sign: the fused exponential is always positive, an
+    /// even power is nonnegative, and an odd power takes its factor's
+    /// sign.
+    fn term_sign(&self, t: TermId) -> Sign {
+        let term = self.arena.terms.get(t);
+        let mut sign = Sign::Positive;
+        for &(factor, power) in &term.factors {
+            let factor_sign = match self.factor_sign(factor) {
+                Sign::Positive => Sign::Positive,
+                _ if power % 2 == 0 => Sign::NonNegative,
+                other => other,
+            };
+            match factor_sign {
+                Sign::Positive => {}
+                Sign::NonNegative => sign = Sign::NonNegative,
+                Sign::Unknown => return Sign::Unknown,
+            }
+        }
+        sign
+    }
+
+    /// Only atoms whose sign follows from the operator alone: an opaque
+    /// exponential is positive, `abs` is nonnegative. Symbols and every
+    /// other atom are unknown (no recursion into atom arguments, so this
+    /// stays linear in the term's size).
+    fn factor_sign(&self, f: FactorId) -> Sign {
+        match self.arena.factors.get(f) {
+            Factor::Symbol(_) => Sign::Unknown,
+            Factor::Atom(atom) => match self.arena.atoms.get(*atom) {
+                Atom::Uninterp {
+                    op: UninterpOp::Exp,
+                    ..
+                } => Sign::Positive,
+                Atom::Uninterp {
+                    op: UninterpOp::Abs,
+                    ..
+                } => Sign::NonNegative,
+                _ => Sign::Unknown,
+            },
         }
     }
 
