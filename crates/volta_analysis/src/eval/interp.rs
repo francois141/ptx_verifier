@@ -3339,7 +3339,9 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<Value> {
         const WIDTH: i64 = 32;
         const HALF_WIDTH: i64 = WIDTH / 2;
-        let raw = self.concrete_operand(t, pc, shift, "shf shift amount")?;
+        // Shift the 64-bit value formed by concatenating operands a and b left or right by the amount specified by the unsigned 32-bit value in c
+        // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?utm_source=chatgpt.com#logic-and-shift-instructions-shf
+        let raw = i64::from(self.concrete_operand(t, pc, shift, "shf shift amount")? as u32);
         let n = match mode {
             ClampWrapMode::Clamp => raw.clamp(0, WIDTH),
             ClampWrapMode::Wrap => raw & 0x1f,

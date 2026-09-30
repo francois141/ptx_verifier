@@ -2611,6 +2611,53 @@ fn test_mul_hi_u32_negative_operand() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
+/// `shf`'s shift amount is `.u32`: `-1` in an `.s32` register is
+/// 0xFFFFFFFF, which `.clamp` saturates to 32 (left: the result is `lo`,
+/// right: `hi`) - not 0, which would pick the opposite operand. `.wrap`
+/// takes the low 5 bits, i.e. 31.
+#[test]
+fn test_shf_clamp_negative_shift_amount_saturates() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<8>;
+    .reg .s32 %s<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.u32 %r1, 0x11111111;
+    mov.u32 %r2, 0x22222222;
+    mov.s32 %s1, -1;
+    shf.l.clamp.b32 %r3, %r1, %r2, %s1;
+    shf.r.clamp.b32 %r4, %r1, %r2, %s1;
+    shf.l.wrap.b32 %r5, %r1, %r2, %s1;
+    shf.r.wrap.b32 %r6, %r1, %r2, %s1;
+    st.global.u32 [%rd1], %r3;
+    st.global.u32 [%rd1+4], %r4;
+    st.global.u32 [%rd1+8], %r5;
+    st.global.u32 [%rd1+12], %r6;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 4)).expect("analysis");
+    // shf.l.clamp, n = min(0xFFFFFFFF, 32) = 32: the whole of hi is shifted
+    // out and lo fills the result, so d = lo = 0x11111111.
+    assert_eq!(display_output(&output, "out", 0), 0x1111_1111u32.to_string());
+    // shf.r.clamp, n = 32: the whole of lo is shifted out and hi fills the
+    // result, so d = hi = 0x22222222.
+    assert_eq!(display_output(&output, "out", 1), 0x2222_2222u32.to_string());
+    // shf.l.wrap, n = 0xFFFFFFFF & 0x1f = 31:
+    // d = (hi << 31) | (lo >> 1) = 0 | 0x08888888.
+    assert_eq!(display_output(&output, "out", 2), 0x0888_8888u32.to_string());
+    // shf.r.wrap, n = 31: d = (hi << 1) | (lo >> 31) = 0x44444444 | 0.
+    assert_eq!(display_output(&output, "out", 3), 0x4444_4444u32.to_string());
+}
+
 #[test]
 fn test_bfe_extract_and_sign_fill() {
     let src = wrap(
