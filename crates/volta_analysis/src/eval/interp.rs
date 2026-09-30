@@ -4812,21 +4812,28 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// `xor` by a type's sign-bit mask is the bitflip idiom for a float
-    /// negate (e.g. `xor.b16 %h, %h, 0x8000`); fold it to `Neg` so the
-    /// decision procedure sees negation instead of an opaque `bit_xor`.
+    /// A symbolic `xor`, always an opaque `bit_xor`: a sign-bit flip negates floats but not
+    /// integers, and untyped `.b*` data can't tell them apart, so it warns to use `neg` instead.
     fn eval_xor(&mut self, ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
-        let sign_bit: i64 = match ty.bits() {
-            16 => 0x8000,
-            32 => 0x8000_0000,
-            64 => 0x8000_0000_0000_0000u64 as i64,
-            _ => return self.arena.bit_xor(a, b),
+        let sign_bit: Option<i64> = match ty.bits() {
+            16 => Some(0x8000),
+            32 => Some(0x8000_0000),
+            64 => Some(0x8000_0000_0000_0000u64 as i64),
+            _ => None,
         };
-        match (self.arena.as_int_const(a), self.arena.as_int_const(b)) {
-            (Some(mask), _) if mask == sign_bit => return self.arena.neg(b),
-            (_, Some(mask)) if mask == sign_bit => return self.arena.neg(a),
-            _ => return self.arena.bit_xor(a, b),
+        let mask = self.arena.as_int_const(a).or(self.arena.as_int_const(b));
+        if let Some(bits) = sign_bit
+            && mask == Some(bits)
+        {
+            warn!(
+                "xor.b{} with the sign-bit mask {:#x} is kept as an opaque bitwise op, \
+                 not a negation; to negate a float, use a neg.f{} instruction instead",
+                ty.bits(),
+                bits as u64,
+                ty.bits()
+            );
         }
+        self.arena.bit_xor(a, b)
     }
 
     /// `lop3.b32`'s truth table over operands that are not all concrete.
@@ -4868,8 +4875,8 @@ impl<'p> Interpreter<'p> {
 
     /// `a ^ b` over 32-bit bit patterns. The arena's own folding is
     /// width-agnostic, so the identity `x ^ 0 = x` has to be applied here;
-    /// a symbolic side goes through [`Self::eval_xor`] so a flip of the
-    /// f32 sign bit still reads back as a negation.
+    /// a symbolic side goes through [`Self::eval_xor`], which warns about a
+    /// flip of the f32 sign bit (not a negation - see there).
     fn b32_xor(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.arena.as_int_const(a), self.arena.as_int_const(b)) {
             (Some(x), Some(y)) => self.arena.int(x ^ y),

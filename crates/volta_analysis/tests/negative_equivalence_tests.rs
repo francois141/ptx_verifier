@@ -26,6 +26,8 @@
 //!  9. max(a, b) vs min(a, b)
 //! 10. exp fragment, both directions: e^a * e^b == e^(a+b) (positive
 //!     control for the fusion) and e^a * e^b != e^(a*b)
+//! 11. sign-bit xor on integer data is not a negate
+//!     (xor.b32 x, 0x80000000 != neg.s32 x)
 //!
 //! The meta test at the bottom re-checks every negative pair in one batch,
 //! so a soundness regression still fails loudly even if an individual
@@ -713,6 +715,37 @@ fn mutation_10_exp_fusion_control_and_exp_of_product_not_equivalent() {
         &exp_of_combined("add.f32"),
     );
     assert_not_equivalent(&pair_exp_of_product(), &[("out", 0)]);
+}
+
+// =========================================================================
+// Mutation 11: sign-bit xor is not a negate on integer data
+// =========================================================================
+
+/// out[0] = in[0] ^ 0x80000000 on integer data vs out[0] = -in[0]
+/// (neg.s32). The flip is x + 2^31 mod 2^32, not -x: they agree only at
+/// 0 and 2^31, so e.g. x = 1 gives 0x80000001 vs 0xFFFFFFFF.
+#[test]
+fn mutation_11_integer_sign_bit_xor_is_not_a_negate() {
+    let body = |op: &str| {
+        format!(
+            "    ld.global.u32 %r1, [%rd1];
+    {op};
+    st.global.u32 [%rd2], %r2;
+"
+        )
+    };
+    let pair = NegativePair {
+        name: "integer_sign_bit_xor",
+        reference: Kernel {
+            src: two_param_kernel(&body("xor.b32 %r2, %r1, 0x80000000")),
+            config: f32_config(1, 1, 1),
+        },
+        mutant: Kernel {
+            src: two_param_kernel(&body("neg.s32 %r2, %r1")),
+            config: f32_config(1, 1, 1),
+        },
+    };
+    assert_not_equivalent(&pair, &[("out", 0)]);
 }
 
 // =========================================================================
