@@ -1663,19 +1663,23 @@ impl<'p> Interpreter<'p> {
                 src_b,
                 start,
                 len,
-                ..
+                ty,
             } => {
-                let a = self.concrete_operand(t, pc, src_a, "bfi operand")?;
-                let b = self.concrete_operand(t, pc, src_b, "bfi operand")?;
-                let start = self.concrete_operand(t, pc, start, "bfi start")? as u64 & 0xff;
+                let a = self.concrete_operand(t, pc, src_a, "bfi operand")? as u64;
+                let b = self.concrete_operand(t, pc, src_b, "bfi operand")? as u64;
+                let pos = self.concrete_operand(t, pc, start, "bfi start")? as u64 & 0xff;
                 let len = self.concrete_operand(t, pc, len, "bfi len")? as u64 & 0xff;
-                let mask = if len >= 64 {
-                    u64::MAX
-                } else {
-                    ((1u64 << len) - 1) << start.min(63)
-                };
-                let r = ((b as u64) & !mask) | (((a as u64) << start.min(63)) & mask);
-                let r = self.arena.int(r as i64);
+                let msb: u64 = if ty.bits() <= 32 { 31 } else { 63 };
+                let mut f = b;
+                let mut i: u64 = 0;
+                while i < len && pos + i <= msb {
+                    // Clear bit pos+i of f.
+                    f &= !(1u64 << (pos + i));
+                    // Set bit pos+i of f to bit i of a.
+                    f |= ((a >> i) & 1) << (pos + i);
+                    i += 1;
+                }
+                let r = self.arena.int(f as i64);
                 self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 

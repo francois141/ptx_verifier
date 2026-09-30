@@ -2839,6 +2839,47 @@ fn test_bfe_extract_and_sign_fill() {
 }
 
 #[test]
+fn test_bfi_clips_field_to_register_width() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    // Plain insert: a=0b11 into bits [4:6) of b=0 gives 0b110000 = 48.
+    bfi.b32 %r1, 3, 0, 4, 2;
+    st.global.u32 [%rd1], %r1;
+
+    // len=64 overruns the b32 msb: only bits [4:32) are replaced, so b's
+    // low nibble (5) survives - not 0, which a full-width mask produces.
+    bfi.b32 %r2, 0, 5, 4, 64;
+    st.global.u32 [%rd1+4], %r2;
+
+    // start=64 is beyond the msb: nothing is inserted, the result is b.
+    bfi.b32 %r3, -1, 5, 64, 4;
+    st.global.u32 [%rd1+8], %r3;
+
+    // start=40 (also beyond the b32 msb) with len=0: again b.
+    bfi.b32 %r4, -1, 7, 40, 0;
+    st.global.u32 [%rd1+12], %r4;
+
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, out_only_config(4, 4)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "48");
+    assert_eq!(display_output(&output, "out", 1), "5");
+    assert_eq!(display_output(&output, "out", 2), "5");
+    assert_eq!(display_output(&output, "out", 3), "7");
+}
+
+#[test]
 fn test_mov_vector_destination_unpack_values() {
     let src = wrap(
         ".visible .entry k(
