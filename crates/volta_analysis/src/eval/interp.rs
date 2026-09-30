@@ -4790,6 +4790,19 @@ impl<'p> Interpreter<'p> {
         let a = self.canon_operand(ty, a);
         let b = self.canon_operand(ty, b);
 
+        // Symbolic integer div is unsupported: PTX truncates and wraps, but `Div` is exact rational
+        // division, so `(x / 2) * 2` would be proved equal to `x` (concrete operands folded above).
+        if op == BinOp::Div && !ty.is_float() {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "div.{} on a symbolic operand: integer division truncates and wraps, \
+                     which the rational Div node cannot model",
+                    format!("{ty:?}").to_lowercase()
+                ),
+            });
+        }
+
         Ok(match op {
             BinOp::Add => self.arena.add(a, b),
             BinOp::Sub => self.arena.sub(a, b),

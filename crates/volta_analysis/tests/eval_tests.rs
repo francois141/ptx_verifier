@@ -2712,6 +2712,50 @@ fn test_b16_shift_amount_is_read_as_u32() {
     assert_eq!(display_output(&output, "out", 2), 0xFFFFu32.to_string());
 }
 
+/// Symbolic integer division is rejected rather than modeled as exact
+/// rational division, which would prove `(x / 2) * 2` equal to `x`.
+/// Concrete integer division (index math) still evaluates exactly.
+#[test]
+fn test_symbolic_integer_div_is_unsupported() {
+    let kernel = |divide: &str| {
+        wrap(&format!(
+            ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.u32 %r1, [%rd1];
+    {divide};
+    st.global.u32 [%rd2], %r2;
+    ret;
+}}
+"
+        ))
+    };
+
+    let module = parse(&kernel("div.u32 %r2, %r1, 2"));
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(
+                what.contains("div.u32"),
+                "expected the integer-division error, got: {}",
+                what
+            );
+        }
+        other => panic!("expected EvalError::Unsupported, got: {}", other),
+    }
+
+    let module = parse(&kernel("mov.u32 %r3, 7;\n    div.u32 %r2, %r3, 2"));
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "3");
+}
+
 #[test]
 fn test_bfe_extract_and_sign_fill() {
     let src = wrap(
