@@ -1003,8 +1003,19 @@ impl ExprArena {
         self.push(ExprNode::Min(a, b))
     }
 
-    /// Absolute value.
+    /// Absolute value with constant folding (exact; `abs(+-inf) = inf`).
     pub fn abs(&mut self, a: ExprId) -> ExprId {
+        match self.node(a) {
+            ExprNode::IntConst(x) => {
+                let r = x.wrapping_abs();
+                return self.int(r);
+            }
+            ExprNode::RealConst(x) => {
+                let r = x.abs();
+                return self.real(r);
+            }
+            _ => {}
+        }
         self.push(ExprNode::Abs(a))
     }
 
@@ -2264,6 +2275,26 @@ mod tests {
         assert!(real_const(&ar, e).is_zero());
     }
 
+    /// `abs` folds integer and real constants exactly (an integer wraps
+    /// at i64::MIN; the interpreter re-reads it at the instruction's
+    /// width) and builds a node over a symbolic argument.
+    #[test]
+    fn abs_folds_constants() {
+        let mut ar = ExprArena::new();
+        let i = ar.int(-7);
+        let e = ar.abs(i);
+        assert_eq!(ar.as_i64(e), Some(7));
+        let i = ar.int(i64::MIN);
+        let e = ar.abs(i);
+        assert_eq!(ar.as_i64(e), Some(i64::MIN));
+        let r = real_of(&mut ar, -2.5);
+        let e = ar.abs(r);
+        assert_eq!(real_const(&ar, e).to_f64(), 2.5);
+        let x = ar.symbol();
+        let e = ar.abs(x);
+        assert!(matches!(ar.node(e), ExprNode::Abs(a) if *a == x));
+    }
+
     /// The extended-real fold table: the unambiguous forms fold, the
     /// undefined forms (inf - inf, 0 * inf, inf / inf, x / 0) build nodes.
     #[test]
@@ -2282,6 +2313,8 @@ mod tests {
         assert!(real_const(&ar, e).is_neg_inf());
         let e = ar.neg(pinf);
         assert!(real_const(&ar, e).is_neg_inf());
+        let e = ar.abs(ninf);
+        assert!(real_const(&ar, e).is_pos_inf());
 
         // inf * nonzero follows the sign rules.
         let e = ar.mul(pinf, neg3);

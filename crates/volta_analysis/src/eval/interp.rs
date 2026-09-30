@@ -5118,7 +5118,13 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<ExprId> {
         Ok(match op {
             UnaryOp::Neg => self.arena.neg(a),
-            UnaryOp::Abs => self.arena.abs(a),
+            // Re-read the operand as `ty` (signed width, float bits decoded)
+            // and wrap the result back to it: `abs.s32` of i32::MIN is i32::MIN.
+            UnaryOp::Abs => {
+                let a = self.canon_operand(ty, a);
+                let r = self.arena.abs(a);
+                self.canon_operand(ty, r)
+            }
             UnaryOp::Not => {
                 if ty.is_predicate() {
                     if let Some(c) = self.arena.as_bool(a) {
