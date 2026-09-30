@@ -906,7 +906,7 @@ impl ExprArena {
     pub fn neg(&mut self, a: ExprId) -> ExprId {
         match self.node(a) {
             ExprNode::IntConst(x) => {
-                let r = -x;
+                let r = x.wrapping_neg();
                 return self.int(r);
             }
             ExprNode::RealConst(x) => {
