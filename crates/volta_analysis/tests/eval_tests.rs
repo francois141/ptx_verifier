@@ -2712,6 +2712,78 @@ fn test_b16_shift_amount_is_read_as_u32() {
     assert_eq!(display_output(&output, "out", 2), 0xFFFFu32.to_string());
 }
 
+/// Integer `abs` folds, re-reading a concrete operand at the
+/// instruction's signed width: 0xFFFFFFFB produced by `mov.u32` is -5 to
+/// `abs.s32`, and the result wraps back to the width (`abs.s32` of
+/// i32::MIN is i32::MIN).
+#[test]
+fn test_int_abs_read_at_signed_width() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.u32 %r1, 0xFFFFFFFB;
+    abs.s32 %r2, %r1;
+    mov.u32 %r4, 0x80000000;
+    abs.s32 %r5, %r4;
+    st.global.u32 [%rd1], %r2;
+    st.global.u32 [%rd1+4], %r5;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 2)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "5");
+    assert_eq!(
+        display_output(&output, "out", 1),
+        0x8000_0000u32.to_string()
+    );
+}
+
+/// `abs.f32` of a raw bit pattern decodes it first: 0xC0A00000 moved in
+/// by `mov.b32` is -5.0, so the result is 5.0 (not the already-positive
+/// integer 0xC0A00000 passed through, which reads back as -5.0), and
+/// 0xFF800000 (-inf) gives inf. A symbolic operand stays an `abs` node.
+#[test]
+fn test_float_abs_decodes_raw_bits() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<7>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.b32 %f1, 0xC0A00000;
+    abs.f32 %f2, %f1;
+    mov.b32 %f3, 0xFF800000;
+    abs.f32 %f4, %f3;
+    ld.global.f32 %f5, [%rd1];
+    abs.f32 %f6, %f5;
+    st.global.f32 [%rd2], %f2;
+    st.global.f32 [%rd2+4], %f4;
+    st.global.f32 [%rd2+8], %f6;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 3)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "5");
+    assert_eq!(display_output(&output, "out", 1), "inf");
+    assert_eq!(display_output(&output, "out", 2), "abs(in[0])");
+}
+
 /// `shl.b64`/`shr.b64` take their shift amount in a `.u32` register, as
 /// the ISA types it - not rejected as a width mismatch against `.b64`.
 #[test]
