@@ -2647,15 +2647,69 @@ fn test_shf_clamp_negative_shift_amount_saturates() {
     let output = analyze_kernel(&module, None, in_out_config(1, 4)).expect("analysis");
     // shf.l.clamp, n = min(0xFFFFFFFF, 32) = 32: the whole of hi is shifted
     // out and lo fills the result, so d = lo = 0x11111111.
-    assert_eq!(display_output(&output, "out", 0), 0x1111_1111u32.to_string());
+    assert_eq!(
+        display_output(&output, "out", 0),
+        0x1111_1111u32.to_string()
+    );
     // shf.r.clamp, n = 32: the whole of lo is shifted out and hi fills the
     // result, so d = hi = 0x22222222.
-    assert_eq!(display_output(&output, "out", 1), 0x2222_2222u32.to_string());
+    assert_eq!(
+        display_output(&output, "out", 1),
+        0x2222_2222u32.to_string()
+    );
     // shf.l.wrap, n = 0xFFFFFFFF & 0x1f = 31:
     // d = (hi << 31) | (lo >> 1) = 0 | 0x08888888.
-    assert_eq!(display_output(&output, "out", 2), 0x0888_8888u32.to_string());
+    assert_eq!(
+        display_output(&output, "out", 2),
+        0x0888_8888u32.to_string()
+    );
     // shf.r.wrap, n = 31: d = (hi << 1) | (lo >> 31) = 0x44444444 | 0.
-    assert_eq!(display_output(&output, "out", 3), 0x4444_4444u32.to_string());
+    assert_eq!(
+        display_output(&output, "out", 3),
+        0x4444_4444u32.to_string()
+    );
+}
+
+/// A shift's amount is `.u32` for every operand type, so a `.b16` shift
+/// by 0x10000 is over-wide (>= 16), not a shift by 0x10000 & 0xFFFF = 0.
+#[test]
+fn test_b16_shift_amount_is_read_as_u32() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<5>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.u32 %r1, 0x10000;
+    mov.b16 %h1, 1;
+    mov.b16 %h2, 0x8000;
+    shl.b16 %h3, %h1, %r1;
+    shr.u16 %h4, %h2, %r1;
+    cvt.u32.u16 %r2, %h3;
+    cvt.u32.u16 %r3, %h4;
+    shr.s16 %h4, %h2, %r1;
+    cvt.u32.u16 %r4, %h4;
+    st.global.u32 [%rd1], %r2;
+    st.global.u32 [%rd1+4], %r3;
+    st.global.u32 [%rd1+8], %r4;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 3)).expect("analysis");
+    // shl.b16 1 by >= 16: every bit is shifted out, so d = 0 (not 1).
+    assert_eq!(display_output(&output, "out", 0), "0");
+    // shr.u16 0x8000 by >= 16: logical shift, so d = 0 (not 0x8000).
+    assert_eq!(display_output(&output, "out", 1), "0");
+    // shr.s16 0x8000 by >= 16: arithmetic shift fills with the sign bit,
+    // so d = 0xFFFF (not 0x8000).
+    assert_eq!(display_output(&output, "out", 2), 0xFFFFu32.to_string());
 }
 
 #[test]

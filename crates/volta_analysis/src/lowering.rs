@@ -1669,13 +1669,12 @@ fn lower_parsed_instruction(
             };
             let dst_typed = ctx.resolve_dst_typed(&shift.dst)?;
             let src_a_typed = ctx.resolve_operand_typed(&shift.src_a)?;
-            // For shift, src_b is the shift amount - typically u32, but we check against instruction type
             let src_b_typed = ctx.resolve_operand_typed(&shift.src_b)?;
 
             ctx.check_dst_type(&dst_typed, shift.ty, instr_name)?;
             ctx.check_operand_type(&src_a_typed, shift.ty, instr_name)?;
-            // Shift amount is typically smaller, but we allow same type or compatible
-            ctx.check_operand_type(&src_b_typed, shift.ty, instr_name)?;
+            // PTX Documentation: Shift a left by the amount specified by unsigned 32-bit value in b. <-- U32 is the type for b
+            ctx.check_operand_type(&src_b_typed, ScalarType::U32, instr_name)?;
 
             ctx.emit(
                 LoweredInstr::BinOp {
