@@ -4932,20 +4932,22 @@ impl<'p> Interpreter<'p> {
             // PTX shifts clamp: shifting by >= width produces 0 (or the sign
             // fill for arithmetic right shift).
             BinOp::Shl => {
-                if ub >= bits as u64 {
+                let amount = mask_to(b, 32);
+                if amount >= bits as u64 {
                     0
                 } else {
-                    ua << ub
+                    ua << amount
                 }
             }
             BinOp::Shr => {
+                let amount = mask_to(b, 32);
                 if signed {
-                    let sh = ub.min(bits as u64 - 1);
+                    let sh = amount.min(bits as u64 - 1);
                     (sa >> sh) as u64
-                } else if ub >= bits as u64 {
+                } else if amount >= bits as u64 {
                     0
                 } else {
-                    ua >> ub
+                    ua >> amount
                 }
             }
             BinOp::Min => {
