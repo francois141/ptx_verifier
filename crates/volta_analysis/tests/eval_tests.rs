@@ -2911,6 +2911,60 @@ fn test_b64_shift_by_u32_register() {
     assert_eq!(display_output(&output, "out", 1), "3");
 }
 
+/// A constant operand of add/sub/mul only matters mod 2^N, so the
+/// instruction's signedness must not change it: `add.s32 x, -1` and
+/// `add.u32 x, -1` are the same op, and `-1` stays `-1` under `.u32`.
+#[test]
+fn test_ring_op_constant_signedness_is_irrelevant() {
+    let kernel = |op: &str| {
+        let module = parse(&wrap(&format!(
+            ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{{
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.u32 %r1, [%rd1];
+    {op};
+    st.global.u32 [%rd2], %r2;
+    ret;
+}}
+"
+        )));
+        analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis")
+    };
+    for (signed, unsigned) in [
+        ("add.s32 %r2, %r1, -1", "add.u32 %r2, %r1, -1"),
+        ("sub.s32 %r2, %r1, -7", "sub.u32 %r2, %r1, -7"),
+        ("mul.lo.s32 %r2, %r1, -3", "mul.lo.u32 %r2, %r1, -3"),
+    ] {
+        assert!(
+            matches!(
+                check_equiv(&kernel(signed), &kernel(unsigned)),
+                EquivOutcome::Equivalent
+            ),
+            "`{signed}` not proved equal to `{unsigned}`"
+        );
+    }
+
+    // A negative constant reads as a subtraction, whatever the signedness.
+    for op in [
+        "add.u32 %r2, %r1, -1",
+        "add.s32 %r2, %r1, -1",
+        "sub.u32 %r2, %r1, 1",
+    ] {
+        let rendered = display_output(&kernel(op), "out", 0);
+        assert!(
+            rendered.contains("- 1") && !rendered.contains("4294967295"),
+            "`{op}` rendered as {rendered}"
+        );
+    }
+}
+
 #[test]
 fn test_bfe_extract_and_sign_fill() {
     let src = wrap(

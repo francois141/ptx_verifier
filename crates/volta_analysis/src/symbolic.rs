@@ -784,6 +784,16 @@ impl ExprArena {
             }
             (ExprNode::IntConst(0), _) => return b,
             (_, ExprNode::IntConst(0)) => return a,
+            // A negative integer constant reads as a subtraction: `x - 1`,
+            // not `x + -1` (the same polynomial to the canonicalizer).
+            (_, &ExprNode::IntConst(y)) if y < 0 && y != i64::MIN => {
+                let magnitude = self.int(-y);
+                return self.sub(a, magnitude);
+            }
+            (&ExprNode::IntConst(x), _) if x < 0 && x != i64::MIN => {
+                let magnitude = self.int(-x);
+                return self.sub(b, magnitude);
+            }
             (ExprNode::RealConst(x), _) if x.is_zero() => return b,
             (_, ExprNode::RealConst(y)) if y.is_zero() => return a,
             (ExprNode::RealConst(x), other) if x.is_infinite() && !other.is_real_const() => {
@@ -812,6 +822,11 @@ impl ExprArena {
                 }
             }
             (_, ExprNode::IntConst(0)) => return a,
+            // `x - -7` reads as `x + 7` (see `add`).
+            (_, &ExprNode::IntConst(y)) if y < 0 && y != i64::MIN => {
+                let magnitude = self.int(-y);
+                return self.add(a, magnitude);
+            }
             (_, ExprNode::RealConst(y)) if y.is_zero() => return a,
             (ExprNode::RealConst(x), other) if x.is_infinite() && !other.is_real_const() => {
                 return a;

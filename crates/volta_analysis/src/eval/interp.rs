@@ -4786,13 +4786,13 @@ impl<'p> Interpreter<'p> {
             return Ok(self.arena.int(r));
         }
 
-        // One operand concrete, the other symbolic: reinterpret the
-        // concrete side at the instruction type before building the node,
-        // so `add.u32 %r, %sym, -1` and a chain that produced 4294967295
-        // build identical expressions (the register/immediate rendering
-        // is the producer's, not this instruction's).
-        let a = self.canon_operand(ty, a);
-        let b = self.canon_operand(ty, b);
+        // Reinterpret a concrete side at `ty`, except for integer add/sub/mul,
+        // which only see it mod 2^N: `add.u32 %r, %sym, -1` keeps its `-1`.
+        let (a, b) = if ty.is_integer() && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+            (a, b)
+        } else {
+            (self.canon_operand(ty, a), self.canon_operand(ty, b))
+        };
 
         // Symbolic integer div is unsupported: PTX truncates and wraps, but `Div` is exact rational
         // division, so `(x / 2) * 2` would be proved equal to `x` (concrete operands folded above).
