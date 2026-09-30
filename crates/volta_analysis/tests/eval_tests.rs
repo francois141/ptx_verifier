@@ -2712,6 +2712,39 @@ fn test_b16_shift_amount_is_read_as_u32() {
     assert_eq!(display_output(&output, "out", 2), 0xFFFFu32.to_string());
 }
 
+/// `shl.b64`/`shr.b64` take their shift amount in a `.u32` register, as
+/// the ISA types it - not rejected as a width mismatch against `.b64`.
+#[test]
+fn test_b64_shift_by_u32_register() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<6>;
+
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u64 %rd3, 3;
+    mov.u32 %r2, 40;
+    shl.b64 %rd4, %rd3, %r2;
+    shr.u64 %rd5, %rd4, %r2;
+    st.global.u64 [%rd2], %rd4;
+    st.global.u64 [%rd2+8], %rd5;
+    ret;
+}
+",
+    );
+    let mut config = in_out_config(1, 2);
+    for array in &mut config.arrays {
+        array.elem_width = 8;
+    }
+    let output = analyze_kernel(&parse(&src), None, config).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), (3u64 << 40).to_string());
+    assert_eq!(display_output(&output, "out", 1), "3");
+}
+
 #[test]
 fn test_bfe_extract_and_sign_fill() {
     let src = wrap(
