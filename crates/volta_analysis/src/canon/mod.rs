@@ -220,6 +220,97 @@ mod tests {
     }
 
     #[test]
+    fn test_exp_log_needs_positive_argument() {
+        // e^{log x} is not x: at x = -1 hardware gives NaN.
+        let mut ar = ExprArena::new();
+        let x = ar.param_symbol("x");
+        let log_x = ar.log(x);
+        let exp_log_x = ar.exp(log_x);
+        assert!(!check(&ar, exp_log_x, x));
+
+        // Nor is an even power alone enough: x^2 may be zero, and
+        // e^{-log(x^2)} = +inf there, not 1/0.
+        let xx = ar.mul(x, x);
+        let log_xx = ar.log(xx);
+        let neg_log_xx = ar.neg(log_xx);
+        let exp_neg_log_xx = ar.exp(neg_log_xx);
+        let one = ar.float_from_f64(1.0).unwrap();
+        let recip_xx = ar.div(one, xx);
+        assert!(!check(&ar, exp_neg_log_xx, recip_xx));
+
+        // x^2 + 1 is provably positive, so its log cancels.
+        let xx1 = ar.add(xx, one);
+        let log_xx1 = ar.log(xx1);
+        let exp_log_xx1 = ar.exp(log_xx1);
+        assert!(check(&ar, exp_log_xx1, xx1));
+    }
+
+    #[test]
+    fn test_exp_log_cancels_sum_of_exps() {
+        // The log-space normalizer: e^{a + log(e^b + e^c)} = e^{a+b} + e^{a+c}.
+        let mut ar = ExprArena::new();
+        let (a, b, c) = (
+            ar.param_symbol("a"),
+            ar.param_symbol("b"),
+            ar.param_symbol("c"),
+        );
+
+        // Compute left side
+        let (eb, ec) = (ar.exp(b), ar.exp(c));
+        let sum = ar.add(eb, ec);
+        let log_sum = ar.log(sum);
+        let arg = ar.add(a, log_sum);
+        let lhs = ar.exp(arg);
+
+        // Compute right side
+        let ab = ar.add(a, b);
+        let ac = ar.add(a, c);
+        let (eab, eac) = (ar.exp(ab), ar.exp(ac));
+        let rhs = ar.add(eab, eac);
+
+        assert!(check(&ar, lhs, rhs));
+    }
+
+    #[test]
+    fn test_log_space_flash_attention_normalizer() {
+        // Two blocks of FlashAttention's log-space running normalizer,
+        // l = m + log(e^{l_prev - m} + sum_j e^{x_j - m}), must still
+        // cancel back to the plain softmax: e^{x0 - l} = e^{x0} / sum e^{x}.
+        let mut ar = ExprArena::new();
+        let x: Vec<ExprId> = (0..4).map(|i| ar.param_symbol(format!("x{i}"))).collect();
+
+        let m1 = ar.max(x[0], x[1]);
+        let d0 = ar.sub(x[0], m1);
+        let d1 = ar.sub(x[1], m1);
+        let (e0, e1) = (ar.exp(d0), ar.exp(d1));
+        let s1 = ar.add(e0, e1);
+        let log_s1 = ar.log(s1);
+        let l1 = ar.add(m1, log_s1);
+
+        let m23 = ar.max(x[2], x[3]);
+        let m2 = ar.max(m1, m23);
+        let dl = ar.sub(l1, m2);
+        let d2 = ar.sub(x[2], m2);
+        let d3 = ar.sub(x[3], m2);
+        let (el, e2, e3) = (ar.exp(dl), ar.exp(d2), ar.exp(d3));
+        let s2 = ar.add(el, e2);
+        let s2 = ar.add(s2, e3);
+        let log_s2 = ar.log(s2);
+        let l2 = ar.add(m2, log_s2);
+
+        let p0 = ar.sub(x[0], l2);
+        let lhs = ar.exp(p0);
+
+        let ex: Vec<ExprId> = x.iter().map(|&xi| ar.exp(xi)).collect();
+        let mut total = ex[0];
+        for &e in &ex[1..] {
+            total = ar.add(total, e);
+        }
+        let rhs = ar.div(ex[0], total);
+        assert!(check(&ar, lhs, rhs));
+    }
+
+    #[test]
     fn test_exact_float_coefficients() {
         // 0.125 * (a + a) == 0.25 * a, exactly.
         let mut ar = ExprArena::new();

@@ -149,6 +149,11 @@ impl Coeff {
         self.num == 0
     }
 
+    /// Strictly greater than zero (`den > 0`, so the numerator's sign).
+    pub fn is_positive(&self) -> bool {
+        self.num > 0
+    }
+
     pub fn is_one(&self) -> bool {
         self.num == 1 && self.den == 1 && self.exp2 == 0
     }
