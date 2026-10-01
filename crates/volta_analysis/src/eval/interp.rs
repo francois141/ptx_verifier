@@ -22,7 +22,7 @@ use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, Proxy, RaceTracker, TensorMemRaceInfo};
 use crate::eval::target::TargetFeatures;
-use crate::eval::tcgen05_mma::{self, InflightMma, Major, OperandFormat, TmemRange};
+use crate::eval::tcgen05_mma::{self, InflightMma, KSelect, Major, OperandFormat, TmemRange};
 use crate::eval::tensor_map_table::{self, TensorMapTable};
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
@@ -2520,7 +2520,7 @@ impl<'p> Interpreter<'p> {
     /// `(m, n)` at lane `m`, column `d_tmem + n`, while a smaller `M`
     /// folds `N` across the 128 lanes). Decodes and validates `idesc`/`a_desc`/`b_desc` first,
     /// in order, each with a specific reason, against the forms modeled:
-    /// dense, `M = 32` or `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
+    /// dense, base `K`, `M = 32` or `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
     /// (`.kind::f8f6f4`), no negate, relative leading-dimension stride,
     /// `base_offset == 0` on both descriptors.
     ///
@@ -2559,6 +2559,15 @@ impl<'p> Interpreter<'p> {
             return Err(unsupported(
                 "tcgen05.mma.sp (sparse A matrix) is not modeled".to_string(),
             ));
+        }
+        // `tcgen05_mma::k_dim` is the `KSelect::Base` K; a set K Dimension
+        // bit must not silently run at it.
+        if id.k_select != KSelect::Base {
+            return Err(unsupported(format!(
+                "tcgen05.mma {kind:?} with idesc's K Dimension bit (29) set is not \
+                 modeled (only K = {}; .kind::f16/.kind::f8f6f4 define no other)",
+                tcgen05_mma::k_dim(kind)
+            )));
         }
         if id.dtype != 1 {
             return Err(unsupported(
