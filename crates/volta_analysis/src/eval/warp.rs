@@ -13,6 +13,7 @@
 use volta_frontend::ast::ScalarType;
 
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
+use crate::eval::float_bits;
 use crate::eval::interp::Interpreter;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
@@ -775,6 +776,7 @@ impl Interpreter<'_> {
             src_b,
             src_c,
             a_type,
+            b_type,
             d_type,
             ..
         } = instr
@@ -834,9 +836,9 @@ impl Interpreter<'_> {
                 }
                 (ScalarType::E4m3 | ScalarType::S8, 32) => {
                     let elems = m16n8k32_byte::matrix_a(lane);
-                    self.gather_byte_fragment(pc, m, src_a, &elems, &mut a)?;
+                    self.gather_byte_fragment(pc, m, (src_a, *a_type), &elems, &mut a)?;
                     let elems = m16n8k32_byte::matrix_b(lane);
-                    self.gather_byte_fragment(pc, m, src_b, &elems, &mut b)?;
+                    self.gather_byte_fragment(pc, m, (src_b, *b_type), &elems, &mut b)?;
                 }
                 _ => {
                     self.gather_f16_fragment(pc, m, src_a, &m16n8k16_f16::matrix_a(lane), &mut a)?;
@@ -1451,14 +1453,15 @@ impl Interpreter<'_> {
     /// Place one lane's byte-packed fragment registers - fp8 or 8-bit
     /// integer, which share the `m16n8k32` layout - into a matrix grid.
     /// Each register holds four independently symbolic byte lanes
-    /// (`Value::Quad`) rather than a bit-encoded word, so the lane's
+    /// (`Value::Quad`) rather than a bit-encoded word, so a symbolic lane's
     /// expression is already the element's value whichever type it is
-    /// (see `Value::Quad`'s doc comment).
+    /// (see `Value::Quad`'s doc comment); a concrete `e4m3` lane is still
+    /// its raw byte, decoded here.
     fn gather_byte_fragment(
         &mut self,
         pc: InstrId,
         m: ThreadId,
-        regs: &[RegId],
+        (regs, ty): (&[RegId], ScalarType),
         elems: &[FragmentElement],
         grid: &mut Grid,
     ) -> EvalResult<()> {
@@ -1478,6 +1481,7 @@ impl Interpreter<'_> {
                 Some(3) => b3,
                 _ => unreachable!("byte-packed fragment elements always carry a quad_lane"),
             };
+            let e = float_bits::decode_float_bits(&mut self.arena, pc, ty, e)?;
             grid.set(elem.row, elem.col, e);
         }
         Ok(())
@@ -1502,6 +1506,7 @@ impl Interpreter<'_> {
                     what: "tf32 fragment register holds a packed pair",
                 });
             };
+            let e = float_bits::decode_float_bits(&mut self.arena, pc, ScalarType::Tf32, e)?;
             grid.set(elem.row, elem.col, e);
         }
         Ok(())
@@ -1529,6 +1534,7 @@ impl Interpreter<'_> {
                     what: "accumulator fragment register holds a packed pair",
                 });
             };
+            let e = float_bits::decode_float_bits(&mut self.arena, pc, ScalarType::F32, e)?;
             grid.set(elem.row, elem.col, e);
         }
         Ok(())

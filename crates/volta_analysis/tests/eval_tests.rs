@@ -1433,6 +1433,95 @@ MMA_WAIT:
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
+/// `tcgen05.mma` decodes concrete operands from their bit encoding: `A`'s
+/// row 0 and `B`'s column 0 are stored as raw f16 bits (`mov.b16 %rs,
+/// 0x3C00`, i.e. 1.0 - not 15360) at the same swizzled addresses
+/// [`test_tcgen05_mma_numeric_correctness`] uses, and `D` is seeded by a
+/// `tcgen05.st` of the raw f32 bits `0x3F800000` (1.0) with
+/// `enable-input-d` set, so `D[0][0] = 16 * 1 * 1 + 1 = 17`.
+#[test]
+fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
+    let a_offsets = (0..16).map(|k| 2 * k);
+    let b_offsets = [
+        0, 144, 288, 432, 576, 720, 864, 1008, 1024, 1168, 1312, 1456, 1600, 1744, 1888, 2032,
+    ];
+    let mut stores = String::new();
+    for off in a_offsets {
+        stores += &format!("    @%p1 st.shared.b16 [%rd1+{off}], %rs1;\n");
+    }
+    for off in b_offsets {
+        stores += &format!("    @%p1 st.shared.b16 [%rd2+{off}], %rs1;\n");
+    }
+    let src = wrap(&format!(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{{
+    .reg .pred %p<3>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .b16 %rs<2>;
+    .shared .align 1024 .b8 a_buf[16384];
+    .shared .align 1024 .b8 b_buf[4096];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r6, %tid.x;
+    setp.eq.s32 %p1, %r6, 0;
+
+    mov.b32 %r7, 0x3F800000;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r7;
+    tcgen05.wait::st.sync.aligned;
+
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    mov.b16 %rs1, 0x3C00;
+{stores}
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 4611756662049472512;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 4611756662049472512;
+    mov.u32 %r2, 134414352;
+    mov.pred %p0, 1;
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
+
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    ld.param.u64 %rd1, [k_param_0];
+    @%p1 st.global.f32 [%rd1], %f1;
+    ret;
+}}
+"
+    ));
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).unwrap();
+    assert_eq!(display_output(&output, "out", 0), "17");
+}
+
 /// A genuine numeric-correctness check, not just "runs without erroring":
 /// writes `A[0][k] = k+1` (`k=0..15`) and `B[k][0] = 1` as real f16 values
 /// at their exact `SwizzleMode::Swizzle128B`-swizzled addresses (computed
@@ -2481,6 +2570,62 @@ fn test_mma_with_immediate_accumulator() {
     assert_eq!(display_output(&output, "out", 3), "0");
 }
 
+/// An `mma.sync` f32 accumulator register holding a raw bit pattern (from
+/// `mov.b32`, not a `0f` float literal) is decoded as f32 bits: thread 0's
+/// `D[0][0]` is 1.0, not 1065353216. A/B are packed zeros, as in
+/// [`test_mma_with_immediate_accumulator`].
+#[test]
+fn test_mma_accumulator_register_decodes_raw_bits() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<11>;
+    .reg .f32 %f<5>;
+    .reg .b64 %rd<4>;
+
+    mov.u16 %rs1, 0;
+    mov.u16 %rs2, 0;
+    mov.b32 %r1, {%rs1, %rs2};
+    mov.b32 %r2, {%rs1, %rs2};
+    mov.b32 %r3, {%rs1, %rs2};
+    mov.b32 %r4, {%rs1, %rs2};
+    mov.b32 %r5, {%rs1, %rs2};
+    mov.b32 %r6, {%rs1, %rs2};
+    mov.b32 %r9, 0x3F800000;
+    mov.b32 %r10, 0;
+
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 \
+        {%f1, %f2, %f3, %f4}, {%r1, %r2, %r3, %r4}, {%r5, %r6}, \
+        {%r9, %r10, %r10, %r10};
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r7, %tid.x;
+    mul.lo.u32 %r8, %r7, 16;
+    cvt.u64.u32 %rd2, %r8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v4.f32 [%rd3], {%f1, %f2, %f3, %f4};
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 128,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let output = analyze_kernel(&module, None, config).expect("mma with bit-pattern accumulator");
+    assert_eq!(display_output(&output, "out", 0), "1");
+    assert_eq!(display_output(&output, "out", 1), "0");
+}
+
 /// One full-warp wmma.load.a body with base `sdata + extra` and the given
 /// stride (in f16 elements).
 fn wmma_load_body(extra: u32, stride: u32) -> String {
@@ -2897,6 +3042,116 @@ fn test_float_abs_decodes_raw_bits() {
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(display_output(&output, "out", 1), "inf");
     assert_eq!(display_output(&output, "out", 2), "abs(in[0])");
+}
+
+/// Every float consumer decodes a raw bit pattern moved in by `mov.b32`/
+/// `mov.b16` instead of reading it as an integer: 0x3F800000 is 1.0, not
+/// 1065353216 - `fma`, `rcp`/`sqrt`, `copysign`'s two operands, and a
+/// float-to-float `cvt`'s source (0x3C00 is f16 1.0).
+#[test]
+fn test_float_ops_decode_raw_bit_patterns() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<2>;
+    .reg .f32 %f<12>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.b32 %f1, 0x3F800000;
+    fma.rn.f32 %f2, %f1, %f1, %f1;
+    mov.b32 %f3, 0x40800000;
+    rcp.rn.f32 %f4, %f3;
+    sqrt.rn.f32 %f5, %f3;
+    mov.b16 %h1, 0x3C00;
+    cvt.f32.f16 %f6, %h1;
+    mov.b32 %f7, 0xBF800000;
+    copysign.f32 %f8, %f7, %f3;
+    ld.global.f32 %f9, [%rd1];
+    copysign.f32 %f10, %f7, %f9;
+    st.global.f32 [%rd2], %f2;
+    st.global.f32 [%rd2+4], %f4;
+    st.global.f32 [%rd2+8], %f5;
+    st.global.f32 [%rd2+12], %f6;
+    st.global.f32 [%rd2+16], %f8;
+    st.global.f32 [%rd2+20], %f10;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 6)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "2");
+    assert_eq!(display_output(&output, "out", 1), "0.25");
+    assert_eq!(display_output(&output, "out", 2), "sqrt(4)");
+    assert_eq!(display_output(&output, "out", 3), "1");
+    assert_eq!(display_output(&output, "out", 4), "-4");
+    assert_eq!(display_output(&output, "out", 5), "(-abs(in[0]))");
+}
+
+/// Mixed precision `fma.rn.f32.f16` decodes its multiplicands as f16 bits
+/// and only its accumulator as f32 bits: `0x3C00 * 0x4000 + 0x3F800000`
+/// is `1 * 2 + 1 = 3`.
+#[test]
+fn test_mixed_precision_fma_decodes_multiplicands_at_their_own_type() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<3>;
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd2, [k_param_1];
+    mov.b16 %h1, 0x3C00;
+    mov.b16 %h2, 0x4000;
+    mov.b32 %f1, 0x3F800000;
+    fma.rn.f32.f16 %f2, %h1, %h2, %f1;
+    st.global.f32 [%rd2], %f2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
+    assert_eq!(display_output(&output, "out", 0), "3");
+}
+
+/// A raw bit pattern that decodes to NaN is rejected loudly rather than
+/// left in place as an integer: Volta's real-valued model has no NaN.
+#[test]
+fn test_float_op_rejects_nan_bit_pattern() {
+    let src = wrap(
+        ".visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd2, [k_param_1];
+    mov.b32 %f1, 0x7FC00000;
+    add.f32 %f2, %f1, %f1;
+    st.global.f32 [%rd2], %f2;
+    ret;
+}
+",
+    );
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(what.contains("NaN"), "{what}");
+        }
+        other => panic!("expected Unsupported NaN, got: {}", other),
+    }
 }
 
 /// `neg` re-reads a concrete operand as the instruction's type: to

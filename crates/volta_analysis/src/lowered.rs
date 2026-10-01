@@ -481,7 +481,12 @@ pub enum LoweredInstr {
         src_a: Operand,
         src_b: Operand,
         src_c: Operand,
+        /// Type of `src_c` and `dst`.
         ty: ScalarType,
+        /// Type of the multiplicands `src_a`/`src_b`: `ty`, except for
+        /// mixed precision `fma.rn.f32.{f16,bf16}` (f16/bf16 multiplicands,
+        /// f32 accumulator).
+        mul_ty: ScalarType,
         /// Float value clamp (`.sat`/`.relu`) applied to the result.
         clamp: Option<Clamp>,
     },
@@ -593,7 +598,7 @@ pub enum LoweredInstr {
     /// `Value::Scalar` (a concrete 16-bit pattern that never went through
     /// array materialization, e.g. a `cp.async` zero-fill word or a
     /// literal `mov.b16`) is a genuine bit pattern and is decoded via
-    /// `eval::fp8::decode_e4m3_byte`.
+    /// `eval::float_bits::decode_e4m3_byte`.
     CvtE4m3x2ToF16x2 {
         dst: RegId,
         src: Operand,

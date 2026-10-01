@@ -8,7 +8,7 @@
 
 pub mod config;
 pub mod error;
-pub mod fp8;
+pub mod float_bits;
 pub mod interp;
 pub mod mbarrier;
 pub mod memory;

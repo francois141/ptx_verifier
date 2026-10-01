@@ -25,7 +25,7 @@
 use volta_frontend::ast::ScalarType;
 
 use crate::eval::error::{EvalError, EvalResult};
-use crate::eval::fp8;
+use crate::eval::float_bits;
 use crate::eval::interp::Interpreter;
 use crate::eval::race::Proxy;
 use crate::eval::tcgen05_mma::{self, Major, MatrixDescriptor};
@@ -146,7 +146,7 @@ impl Interpreter<'_> {
                             what: "wgmma.mma_async accumulator register holds a packed pair",
                         });
                     };
-                    e
+                    float_bits::decode_float_bits(&mut self.arena, pc, ScalarType::F32, e)?
                 } else {
                     // A real (not integer) zero: same subtlety
                     // `exec_tcgen05_mma` already documents - `fma`'s eager
@@ -183,9 +183,10 @@ impl Interpreter<'_> {
     /// table in PTX ISA 9.7.17.5.1.2.1.3 is the same), through the async
     /// proxy (PTX ISA 9.7.17.7.1: an async proxy fence orders prior shared
     /// writes before `wgmma.mma_async` operand reads, as for `tcgen05.mma`).
-    /// A concrete fp8 byte (never an input element: e.g. zero padding a
-    /// kernel stored itself) is decoded from its bit encoding; a symbolic
-    /// element already is its real value (see `eval::fp8`'s module doc).
+    /// A concrete element (never an input element: e.g. zero padding or a
+    /// constant tile a kernel stored itself) is decoded from its
+    /// f16/bf16/fp8 bit encoding; a symbolic element already is its real
+    /// value (see `eval::float_bits`'s module doc).
     fn read_wgmma_element(
         &mut self,
         t: ThreadId,
@@ -210,14 +211,6 @@ impl Interpreter<'_> {
                 what: "wgmma.mma_async A/B element is not a scalar",
             });
         };
-        let (what, decode): (_, fn(u8) -> Option<f64>) = match ty {
-            ScalarType::E4m3 => ("wgmma.mma_async e4m3", fp8::decode_e4m3_byte),
-            ScalarType::E5m2 => ("wgmma.mma_async e5m2", fp8::decode_e5m2_byte),
-            _ => return Ok(e),
-        };
-        match self.arena.as_i64(e) {
-            Some(raw) => self.decode_fp8_byte(pc, what, raw as u8, decode),
-            None => Ok(e),
-        }
+        float_bits::decode_float_bits(&mut self.arena, pc, ty, e)
     }
 }

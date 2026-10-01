@@ -17,7 +17,7 @@ use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 use crate::equiv::EquivSession;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
-use crate::eval::fp8;
+use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
 use crate::eval::race::{MemHazard, Proxy, RaceTracker, TensorMemRaceInfo};
@@ -1401,7 +1401,7 @@ impl<'p> Interpreter<'p> {
                 // `not.b32 %r, 0` (consumers see the type-canonical value,
                 // not the source operand's producer-typed rendering).
                 let v = match v {
-                    Value::Scalar(e) => Value::Scalar(self.canon_operand(*ty, e)),
+                    Value::Scalar(e) => Value::Scalar(self.canon_operand(pc, *ty, e)?),
                     pair @ Value::Pair(_, _) => pair,
                     // A `Quad` (byte-granular vector-load lane) can flow
                     // through an ordinary `mov` untouched, same as `Pair` -
@@ -1568,10 +1568,10 @@ impl<'p> Interpreter<'p> {
                 dst,
                 sign_src,
                 magnitude_src,
-                ..
+                ty,
             } => {
-                let sign = self.scalar_operand(t, pc, sign_src)?;
-                let magnitude = self.scalar_operand(t, pc, magnitude_src)?;
+                let sign = self.float_operand(t, pc, sign_src, *ty)?;
+                let magnitude = self.float_operand(t, pc, magnitude_src, *ty)?;
                 let zero = self.arena.real(Real::zero());
                 let non_negative = self.arena.ge(sign, zero);
                 let abs_magnitude = self.arena.abs(magnitude);
@@ -1588,6 +1588,7 @@ impl<'p> Interpreter<'p> {
                 src_b,
                 src_c,
                 ty,
+                mul_ty,
                 clamp,
             } => {
                 if let Some(lane_ty) = ty.packed_lane() {
@@ -1600,9 +1601,9 @@ impl<'p> Interpreter<'p> {
                     let hi = self.apply_clamp(*clamp, hi);
                     self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
                 } else {
-                    let a = self.scalar_operand(t, pc, src_a)?;
-                    let b = self.scalar_operand(t, pc, src_b)?;
-                    let c = self.scalar_operand(t, pc, src_c)?;
+                    let a = self.float_operand(t, pc, src_a, *mul_ty)?;
+                    let b = self.float_operand(t, pc, src_b, *mul_ty)?;
+                    let c = self.float_operand(t, pc, src_c, *ty)?;
                     let r = self.arena.fma(a, b, c);
                     let r = self.apply_clamp(*clamp, r);
                     self.write_reg(t, pc, *dst, Value::Scalar(r))?;
@@ -1775,8 +1776,8 @@ impl<'p> Interpreter<'p> {
                 // before building the select: `selp.b32 %r, -1, 0, %p`
                 // must export the same canonical 4294967295 a computed
                 // operand would (see [`Self::canon_operand`]).
-                let a = self.canon_operand(*ty, a);
-                let b = self.canon_operand(*ty, b);
+                let a = self.canon_operand(pc, *ty, a)?;
+                let b = self.canon_operand(pc, *ty, b)?;
                 let cond = self.scalar_operand(t, pc, pred)?;
                 let r = self.arena.select(cond, a, b);
                 self.write_reg(t, pc, *dst, Value::Scalar(r))?;
@@ -1874,10 +1875,18 @@ impl<'p> Interpreter<'p> {
                         let raw = self.arena.as_i64(e).unwrap() as u64;
                         let lo_byte = (raw & 0xFF) as u8;
                         let hi_byte = ((raw >> 8) & 0xFF) as u8;
-                        let lo =
-                            self.decode_fp8_byte(pc, "cvt.e4m3x2", lo_byte, fp8::decode_e4m3_byte)?;
-                        let hi =
-                            self.decode_fp8_byte(pc, "cvt.e4m3x2", hi_byte, fp8::decode_e4m3_byte)?;
+                        let lo = self.decode_fp8_byte(
+                            pc,
+                            "cvt.e4m3x2",
+                            lo_byte,
+                            float_bits::decode_e4m3_byte,
+                        )?;
+                        let hi = self.decode_fp8_byte(
+                            pc,
+                            "cvt.e4m3x2",
+                            hi_byte,
+                            float_bits::decode_e4m3_byte,
+                        )?;
                         Value::Pair(self.apply_clamp(clamp, lo), self.apply_clamp(clamp, hi))
                     }
                     // A single materialized fp8 array element loaded at
@@ -2755,7 +2764,10 @@ impl<'p> Interpreter<'p> {
                         .read(lane, col)
                         .map_err(|e| self.tcgen05_error(t, pc, e))?
                     {
-                        Some(Value::Scalar(e)) => e,
+                        // A `tcgen05.st` of a `.b32` register leaves raw bits.
+                        Some(Value::Scalar(e)) => {
+                            float_bits::decode_float_bits(&mut self.arena, pc, ScalarType::F32, e)?
+                        }
                         Some(_) => {
                             return Err(EvalError::ValueKindMismatch {
                                 thread: t,
@@ -2803,9 +2815,10 @@ impl<'p> Interpreter<'p> {
     /// Read one `tcgen05.mma` operand - `rows x k_dim` elements, `rows`
     /// being its `M` (for `A`) or `N` (for `B`) extent - from shared memory
     /// in row-major order, appending every byte it touches to `bytes`. A
-    /// concrete fp8 byte (never an input element: e.g. zero padding a
-    /// kernel stored itself) is decoded from its bit encoding; a symbolic
-    /// element already is its real value (see `eval::fp8`'s module doc).
+    /// concrete element (never an input element: e.g. zero padding or a
+    /// constant tile a kernel stored itself) is decoded from its f16/fp8
+    /// bit encoding; a symbolic element already is its real value (see
+    /// `eval::float_bits`'s module doc).
     fn read_mma_operand(
         &mut self,
         t: ThreadId,
@@ -2834,21 +2847,12 @@ impl<'p> Interpreter<'p> {
                         what: "tcgen05.mma operand element is not a scalar",
                     });
                 };
-                let e = match (format, self.arena.as_i64(e)) {
-                    (OperandFormat::E4m3, Some(raw)) => self.decode_fp8_byte(
-                        pc,
-                        "tcgen05.mma e4m3",
-                        raw as u8,
-                        fp8::decode_e4m3_byte,
-                    )?,
-                    (OperandFormat::E5m2, Some(raw)) => self.decode_fp8_byte(
-                        pc,
-                        "tcgen05.mma e5m2",
-                        raw as u8,
-                        fp8::decode_e5m2_byte,
-                    )?,
-                    _ => e,
+                let ty = match format {
+                    OperandFormat::F16 => ScalarType::F16,
+                    OperandFormat::E4m3 => ScalarType::E4m3,
+                    OperandFormat::E5m2 => ScalarType::E5m2,
                 };
+                let e = float_bits::decode_float_bits(&mut self.arena, pc, ty, e)?;
                 elems.push(e);
                 bytes.extend(addr..addr + elem_bytes);
             }
@@ -3547,6 +3551,28 @@ impl<'p> Interpreter<'p> {
         let b2 = apply(self, lanes.2, (mask >> 16) & 0xff)?;
         let b3 = apply(self, lanes.3, (mask >> 24) & 0xff)?;
         Ok(Some(Value::Quad(b0, b1, b2, b3)))
+    }
+
+    /// [`Self::scalar_operand`] read at float type `ty`: a concrete integer
+    /// is a raw bit pattern and is decoded
+    /// ([`float_bits::decode_float_bits`]). For instructions that build
+    /// their float node inline rather than through an `eval_*` helper that
+    /// decodes for them (`copysign`, scalar `fma`).
+    fn float_operand(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: &Operand,
+        ty: ScalarType,
+    ) -> EvalResult<ExprId> {
+        // A non-float `ty` (or a packed pair, whose lanes `pair_operand`
+        // decodes) would pass a raw bit pattern through undecoded.
+        assert!(
+            ty.is_float() && !ty.is_packed_pair(),
+            "float_operand at non-scalar-float type {ty:?}"
+        );
+        let e = self.scalar_operand(t, pc, op)?;
+        float_bits::decode_float_bits(&mut self.arena, pc, ty, e)
     }
 
     pub(in crate::eval) fn scalar_operand(
@@ -4833,7 +4859,10 @@ impl<'p> Interpreter<'p> {
         let (a, b) = if ty.is_integer() && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
             (a, b)
         } else {
-            (self.canon_operand(ty, a), self.canon_operand(ty, b))
+            (
+                self.canon_operand(pc, ty, a)?,
+                self.canon_operand(pc, ty, b)?,
+            )
         };
 
         // Symbolic integer div is unsupported: PTX truncates and wraps, but `Div` is exact rational
@@ -5158,19 +5187,23 @@ impl<'p> Interpreter<'p> {
         ty: ScalarType,
         a: ExprId,
     ) -> EvalResult<ExprId> {
+        // Re-read the operand as `ty` (signed width, float bits decoded) -
+        // except for `not`, a pure bit operation.
+        let a = if matches!(op, UnaryOp::Not) {
+            a
+        } else {
+            self.canon_operand(pc, ty, a)?
+        };
         Ok(match op {
-            // Same re-read as `Abs` below: `neg.s32` of i32::MIN is i32::MIN.
+            // Wrap the result back to `ty`: `neg.s32`/`abs.s32` of i32::MIN
+            // is i32::MIN.
             UnaryOp::Neg => {
-                let a = self.canon_operand(ty, a);
                 let r = self.arena.neg(a);
-                self.canon_operand(ty, r)
+                self.canon_operand(pc, ty, r)?
             }
-            // Re-read the operand as `ty` (signed width, float bits decoded)
-            // and wrap the result back to it: `abs.s32` of i32::MIN is i32::MIN.
             UnaryOp::Abs => {
-                let a = self.canon_operand(ty, a);
                 let r = self.arena.abs(a);
-                self.canon_operand(ty, r)
+                self.canon_operand(pc, ty, r)?
             }
             UnaryOp::Not => {
                 if ty.is_predicate() {
@@ -5249,35 +5282,22 @@ impl<'p> Interpreter<'p> {
     /// where the immediate is really the u16 magic constant 47663. Every
     /// consumer that gives a concrete integer a type of its own re-reads
     /// the value through this (mov, cvt sources, wide/hi multiplies,
-    /// binops with a symbolic side; loads and stores go through
-    /// [`Self::canon_loaded`]/[`Self::canon_stored`]). Symbolic operands
-    /// pass through unchanged, as do genuine float constants (always a
-    /// `Real`, never an `IntConst` - a `mov.b32 %r, %f` bit-move must not
-    /// coerce the float to an int).
-    fn canon_operand(&mut self, ty: ScalarType, e: ExprId) -> ExprId {
-        if ty.is_predicate() {
-            return e;
-        }
+    /// binops with a symbolic side, float arithmetic; loads and stores go
+    /// through [`Self::canon_loaded`]/[`Self::canon_stored`]). Symbolic
+    /// operands pass through unchanged, as do genuine float constants
+    /// (always a `Real`, never an `IntConst` - a `mov.b32 %r, %f` bit-move
+    /// must not coerce the float to an int). A float `ty` decodes a
+    /// concrete integer as its bit pattern ([`float_bits::decode_float_bits`]).
+    fn canon_operand(&mut self, pc: InstrId, ty: ScalarType, e: ExprId) -> EvalResult<ExprId> {
         if ty.is_float() {
-            // A concrete `IntConst` under a float-consuming type is a raw
-            // bit pattern from a plain `.bN` producer (e.g. `mov.b16 %h,
-            // 0x4400` feeding a later `mul.rn.f16`), not an already-real
-            // value: decode it at this instruction's width, the same way
-            // `decode_packed_bits` does for the packed-pair operand path.
-            if let Some(bits) = self.arena.as_int_const(e) {
-                let decoded = match ty {
-                    ScalarType::F16 => f16_bits_to_f64(bits as u16),
-                    ScalarType::Bf16 => bf16_bits_to_f64(bits as u16),
-                    ScalarType::F32 | ScalarType::Tf32 => Some(f32::from_bits(bits as u32) as f64),
-                    ScalarType::F64 => Some(f64::from_bits(bits as u64)),
-                    _ => None,
-                };
-                if let Some(v) = decoded {
-                    if let Ok(id) = self.arena.float_from_f64(v) {
-                        return id;
-                    }
-                }
-            }
+            return float_bits::decode_float_bits(&mut self.arena, pc, ty, e);
+        }
+        Ok(self.canon_int_operand(ty, e))
+    }
+
+    /// [`Self::canon_operand`] for an integer, bits or predicate `ty`.
+    fn canon_int_operand(&mut self, ty: ScalarType, e: ExprId) -> ExprId {
+        if ty.is_predicate() {
             return e;
         }
         if let Some(c) = self.arena.as_int_const(e) {
@@ -5478,8 +5498,8 @@ impl<'p> Interpreter<'p> {
     /// Widening product: operands are reinterpreted at the source type, and
     /// the product is exact in the 2x-wide destination type.
     fn mul_wide(&mut self, src_ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
-        let a = self.canon_operand(src_ty, a);
-        let b = self.canon_operand(src_ty, b);
+        let a = self.canon_int_operand(src_ty, a);
+        let b = self.canon_int_operand(src_ty, b);
         self.arena.mul(a, b)
     }
 
@@ -5487,8 +5507,8 @@ impl<'p> Interpreter<'p> {
     /// Composed from existing nodes so it works symbolically and folds when
     /// concrete: `(a * b) >> bits`.
     fn mul_hi(&mut self, ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
-        let a = self.canon_operand(ty, a);
-        let b = self.canon_operand(ty, b);
+        let a = self.canon_int_operand(ty, a);
+        let b = self.canon_int_operand(ty, b);
         let bits = self.arena.int(ty.bits().min(64) as i64);
         let product = self.arena.mul(a, b);
         if ty.is_signed_int() {
@@ -5500,7 +5520,7 @@ impl<'p> Interpreter<'p> {
 
     fn eval_cmp(
         &mut self,
-        _pc: InstrId,
+        pc: InstrId,
         cmp: CmpOp,
         ty: ScalarType,
         a: ExprId,
@@ -5552,8 +5572,8 @@ impl<'p> Interpreter<'p> {
         // chain-computed 4294967295 build identical nodes. Over the
         // reals there are no NaNs, so unordered comparisons coincide
         // with their ordered counterparts.
-        let a = self.canon_operand(ty, a);
-        let b = self.canon_operand(ty, b);
+        let a = self.canon_operand(pc, ty, a)?;
+        let b = self.canon_operand(pc, ty, b)?;
         Ok(match cmp {
             CmpOp::Eq | CmpOp::Equ => self.arena.eq(a, b),
             CmpOp::Ne | CmpOp::Neu => self.arena.ne(a, b),
@@ -5574,7 +5594,7 @@ impl<'p> Interpreter<'p> {
     /// `.sat` additionally flushes a NaN result to +0.0 (and cvt's
     /// `.relu` canonicalizes NaN); NaN is out of model over the reals,
     /// as everywhere else in the interpreter.
-    /// Decode a concrete fp8 byte (`decode` is one of `eval::fp8`'s
+    /// Decode a concrete fp8 byte (`decode` is one of `eval::float_bits`'s
     /// decoders) into an exact real-valued `ExprId`, erroring loudly on the
     /// format's NaN encodings - Volta's real-valued model cannot represent
     /// NaN, same as every other NaN-ingestion point in the interpreter.
@@ -5625,9 +5645,11 @@ impl<'p> Interpreter<'p> {
         a: ExprId,
     ) -> EvalResult<ExprId> {
         // Float-to-float conversions (f16 <-> f32 <-> f64) are the identity
-        // over the reals; rounding is deliberately not modeled (paper).
+        // over the reals; rounding is deliberately not modeled (paper). The
+        // source is still read at its own format: `cvt.f32.f16` of a
+        // `mov.b16 %h, 0x3C00` is 1.0.
         if dst_ty.is_float() && src_ty.is_float() {
-            return Ok(a);
+            return float_bits::decode_float_bits(&mut self.arena, pc, src_ty, a);
         }
         if src_ty.is_float() {
             return Err(EvalError::Unsupported {
@@ -5641,7 +5663,7 @@ impl<'p> Interpreter<'p> {
         // leaving 4294967288) reads as -8 under `cvt.s64.s32`. Symbolic
         // integers pass through (they are data, not addresses, so width
         // games cannot occur in a structured-CTA).
-        let a = self.canon_operand(src_ty, a);
+        let a = self.canon_int_operand(src_ty, a);
         if dst_ty.is_float() {
             return Ok(self.arena.to_float(a));
         }
@@ -5701,56 +5723,6 @@ fn canon_int(v: i64, bits: u32, signed: bool) -> i64 {
     } else {
         masked as i64
     }
-}
-
-/// Decode a raw 16-bit IEEE 754 binary16 (`f16`) bit pattern to its real
-/// value. `None` for NaN (the same "reject at ingestion" policy as every
-/// other f64 entry point - see `Real::from_f64`); +/-infinity is `Some`
-/// (finite `f64`, handled fine by `ExprArena::float_from_f64`).
-fn f16_bits_to_f64(bits: u16) -> Option<f64> {
-    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
-    let exp = ((bits >> 10) & 0x1F) as i32;
-    let mantissa = (bits & 0x3FF) as f64;
-    Some(match exp {
-        0 if mantissa == 0.0 => sign * 0.0,
-        // Subnormal: 2^-14 * (mantissa / 1024) = mantissa * 2^-24.
-        0 => sign * mantissa * 2f64.powi(-24),
-        0x1F if mantissa == 0.0 => sign * f64::INFINITY,
-        0x1F => return None,
-        _ => sign * (1.0 + mantissa / 1024.0) * 2f64.powi(exp - 15),
-    })
-}
-
-/// Decode a raw 16-bit `bf16` bit pattern to its real value. `bf16` is
-/// exactly an `f32`'s high 16 bits (same 8-bit exponent/bias as `f32`,
-/// truncated mantissa), so this is a plain bit-shift into `f32`, not a
-/// hand-rolled decode. `None` for NaN, matching `f16_bits_to_f64`.
-fn bf16_bits_to_f64(bits: u16) -> Option<f64> {
-    let v = f32::from_bits((bits as u32) << 16) as f64;
-    if v.is_nan() { None } else { Some(v) }
-}
-
-/// Split a raw 32-bit packed-pair bit pattern into its two lanes' real
-/// values, per `lane_ty` (`F16` or `Bf16` - the element type of an
-/// `F16x2`/`Bf16x2` operand). `(lo, hi)`, matching `Value::Pair`'s order.
-fn decode_packed_bits(bits: u64, lane_ty: ScalarType) -> Option<(f64, f64)> {
-    if lane_ty == ScalarType::F32 {
-        // A 64-bit `f32x2` pattern: two IEEE singles, low lane first.
-        let lo = f32::from_bits(bits as u32);
-        let hi = f32::from_bits((bits >> 32) as u32);
-        if lo.is_nan() || hi.is_nan() {
-            return None;
-        }
-        return Some((lo as f64, hi as f64));
-    }
-    let lo_bits = (bits & 0xFFFF) as u16;
-    let hi_bits = ((bits >> 16) & 0xFFFF) as u16;
-    let decode = match lane_ty {
-        ScalarType::F16 => f16_bits_to_f64,
-        ScalarType::Bf16 => bf16_bits_to_f64,
-        _ => unreachable!("decode_packed_bits only called for f16x2/bf16x2/f32x2 lanes"),
-    };
-    Some((decode(lo_bits)?, decode(hi_bits)?))
 }
 
 #[cfg(test)]
