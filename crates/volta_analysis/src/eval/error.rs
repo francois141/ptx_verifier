@@ -245,6 +245,17 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
+    /// `thread` arrived at a synchronization point (`bar.sync`/`bar.arrive`,
+    /// an mbarrier arrive, `tcgen05.commit`) at `pc` while its warp still
+    /// had `pending` - a `tcgen05.ld`/`.st` not yet `tcgen05.wait`-ed. The
+    /// wait is what completes the op for its issuer, so it must precede the
+    /// arrival for the sync to order the op for the other participants -
+    /// see `RaceTracker::tcgen05_unwaited`.
+    Tcgen05UnwaitedAtSync {
+        thread: ThreadId,
+        pc: InstrId,
+        pending: AccessSite,
+    },
     /// Two unsynchronized conflicting accesses to one Tensor Memory cell -
     /// e.g. a warp's `tcgen05.ld` of a `tcgen05.mma` result without having
     /// synchronized with the MMA's issuing thread (normally through the
@@ -551,6 +562,19 @@ impl fmt::Display for EvalError {
                 current,
                 prior
             ),
+            Self::Tcgen05UnwaitedAtSync {
+                thread,
+                pc,
+                pending,
+            } => {
+                let kind = if pending.is_write { "st" } else { "ld" };
+                write!(
+                    f,
+                    "{}: synchronization at {} with tcgen05.{} ({}) still in flight - \
+                     tcgen05.wait::{} must precede the arrival",
+                    thread, pc, kind, pending, kind
+                )
+            }
             Self::TensorMemoryRace {
                 lane,
                 col,

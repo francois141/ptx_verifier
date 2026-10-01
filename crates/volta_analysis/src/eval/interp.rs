@@ -1148,6 +1148,23 @@ impl<'p> Interpreter<'p> {
         self.race.sync_group(&group);
     }
 
+    /// Reject `t` arriving at a synchronization point at `pc` while its
+    /// warp still has a `tcgen05.ld`/`.st` it has not `tcgen05.wait`-ed -
+    /// see `RaceTracker::tcgen05_unwaited`. Checked at every arrival that
+    /// orders `t`'s prior accesses for other threads: `bar.sync`,
+    /// `bar.arrive`, and the mbarrier arrives (`mbarrier.arrive`,
+    /// `cp.async.mbarrier.arrive`, `tcgen05.commit`).
+    fn check_tcgen05_waited(&self, t: ThreadId, pc: InstrId) -> EvalResult<()> {
+        match self.race.tcgen05_unwaited(t.warp()) {
+            Some(pending) => Err(EvalError::Tcgen05UnwaitedAtSync {
+                thread: t,
+                pc,
+                pending,
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Unblock the members of a fired group of threads and advance their
     /// pcs past the instruction they were blocked at.
     pub(in crate::eval) fn advance_thread_group(&mut self, members: &[ThreadId]) {
@@ -2041,6 +2058,7 @@ impl<'p> Interpreter<'p> {
                 barrier_id,
                 thread_count,
             } => {
+                self.check_tcgen05_waited(t, pc)?;
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, thread_count.as_ref())?;
                 self.stats.block_syncs += 1;
@@ -2052,6 +2070,7 @@ impl<'p> Interpreter<'p> {
                 barrier_id,
                 thread_count,
             } => {
+                self.check_tcgen05_waited(t, pc)?;
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, Some(thread_count))?;
                 let pending = &mut self.barriers[id as usize];
@@ -2215,6 +2234,7 @@ impl<'p> Interpreter<'p> {
                 addr_base,
                 addr_offset,
             } => {
+                self.check_tcgen05_waited(t, pc)?;
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
@@ -2238,6 +2258,7 @@ impl<'p> Interpreter<'p> {
                 addr_offset,
                 noinc,
             } => {
+                self.check_tcgen05_waited(t, pc)?;
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
@@ -2366,6 +2387,7 @@ impl<'p> Interpreter<'p> {
                 count,
                 expect_tx,
             } => {
+                self.check_tcgen05_waited(t, pc)?;
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;

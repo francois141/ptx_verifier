@@ -186,6 +186,11 @@ pub struct Tcgen05HazardInfo {
 /// warps can share a quadrant (warps `w` and `w + 4`), and one's wait
 /// releases nothing of the other's.
 ///
+/// A pending op must be waited before its issuer arrives at any
+/// synchronization point (see [`RaceTracker::tcgen05_unwaited`]): the wait
+/// is what completes the op for its issuer, so a sync before it orders
+/// nothing about the op for the other participants.
+///
 /// Conflict rule mirrors `AsyncLockCell`: a pending `.st` is a destination
 /// lock (blocks *any* subsequent overlapping access, read or write); a
 /// pending `.ld` is a source lock (blocks only a subsequent overlapping
@@ -297,6 +302,17 @@ impl RaceTracker {
         let q = &mut self.tcgen05_pending[quadrant as usize];
         let list = if is_st { &mut q.st } else { &mut q.ld };
         list.retain(|&(_, _, site)| site.thread.warp() != warp);
+    }
+
+    /// The first `.ld`/`.st` `warp` issued that it has not yet
+    /// `tcgen05.wait`-ed, if any - checked when one of its threads arrives
+    /// at a synchronization point (see [`Tcgen05Pending`]).
+    pub fn tcgen05_unwaited(&self, warp: WarpIndex) -> Option<AccessSite> {
+        self.tcgen05_pending
+            .iter()
+            .flat_map(|q| q.ld.iter().chain(q.st.iter()))
+            .map(|&(_, _, site)| site)
+            .find(|site| site.thread.warp() == warp)
     }
 
     /// Record a read of `[addr, addr + width)` by `thread`, checking for a
@@ -1093,6 +1109,11 @@ mod tests {
             .unwrap();
         // Warp 4's wait::ld must not release warp 0's pending .ld.
         chi.tcgen05_wait(0, WarpIndex(4), false);
+        assert_eq!(
+            chi.tcgen05_unwaited(WarpIndex(0)).map(|s| s.pc),
+            Some(pc(1))
+        );
+        assert!(chi.tcgen05_unwaited(WarpIndex(4)).is_none());
         let err = chi
             .tcgen05_begin(0, 0, 32, true, site(128, 2, true))
             .unwrap_err();
@@ -1100,6 +1121,7 @@ mod tests {
 
         // Warp 0's own wait::ld does.
         chi.tcgen05_wait(0, WarpIndex(0), false);
+        assert!(chi.tcgen05_unwaited(WarpIndex(0)).is_none());
         chi.tcgen05_begin(0, 0, 32, true, site(128, 3, true))
             .unwrap();
     }

@@ -814,6 +814,84 @@ fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     }
 }
 
+/// One warp allocates Tensor Memory, then runs `body` against `%r1` (its
+/// quadrant-0 base address) with `%r2` a stored value and `%r4` an
+/// initialized `count = 32` mbarrier - for the `tcgen05.wait` ordering
+/// tests below.
+fn tcgen05_wait_ordering_kernel(body: &str) -> Module {
+    parse(&wrap(&format!(
+        ".visible .entry k()
+{{
+    .reg .b32 %r<6>;
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %r4, mbar;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    mbarrier.init.shared::cta.b64 [%r4], 32;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    bar.sync 0;
+
+{body}
+    ret;
+}}
+"
+    )))
+}
+
+/// A `tcgen05.wait::ld` placed *after* a barrier arrival is too late: the
+/// wait is what completes the `.ld` for its issuer, so the barrier orders
+/// nothing about it for the other participants. The arrival is rejected.
+#[test]
+fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
+    let module = tcgen05_wait_ordering_kernel(
+        "    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
+    bar.sync 0;
+    tcgen05.wait::ld.sync.aligned;",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
+            assert!(!pending.is_write);
+        }
+        other => panic!("expected Tcgen05UnwaitedAtSync, got: {}", other),
+    }
+}
+
+/// Same for `tcgen05.wait::st` after an mbarrier arrive.
+#[test]
+fn test_tcgen05_wait_st_after_mbarrier_arrive_is_rejected() {
+    let module = tcgen05_wait_ordering_kernel(
+        "    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
+    mbarrier.arrive.shared::cta.b64 _, [%r4];
+    tcgen05.wait::st.sync.aligned;",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
+            assert!(pending.is_write);
+        }
+        other => panic!("expected Tcgen05UnwaitedAtSync, got: {}", other),
+    }
+}
+
+/// The control: the same `.ld`/`.st` waited *before* the arrivals pass.
+#[test]
+fn test_tcgen05_wait_before_sync_is_accepted() {
+    let module = tcgen05_wait_ordering_kernel(
+        "    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
+    tcgen05.wait::st.sync.aligned;
+    mbarrier.arrive.shared::cta.b64 _, [%r4];
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
+    tcgen05.wait::ld.sync.aligned;
+    bar.sync 0;",
+    );
+    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+}
+
 /// `tensormap.replace` (building an 8x8 f16 tensor-map entirely in shared
 /// memory, the corpus's own on-device idiom) + `tensormap.cp_fenceproxy` +
 /// `fence.proxy.tensormap::generic.acquire` + `cp.async.bulk.tensor` through
