@@ -2856,7 +2856,7 @@ impl<'p> Interpreter<'p> {
 
     /// Read `tcgen05.mma`'s `A` operand out of Tensor Memory (the
     /// `[a-tmem]` form): `rows x k_dim` f16 elements, row `m` in lane
-    /// `lane_base + m` of the address's own lane field and element `k` in
+    /// `m` (the address's lane field must be 0) and element `k` in
     /// the low (`k` even) or high (`k` odd) half of column `col_base +
     /// k / 2` - the packing a `tcgen05.st` of `cvt.rn.f16x2.f32` results
     /// leaves behind, and the layout `A`'s `K` contiguous 16-bit elements
@@ -2876,8 +2876,19 @@ impl<'p> Interpreter<'p> {
         (rows, k_dim): (u32, usize),
     ) -> EvalResult<(Vec<ExprId>, Option<TmemRange>)> {
         let packed = self.effective_addr(t, pc, base, offset)? as u32;
+        // `A` shares `D`'s layout, row `m` in lane `m` from lane 0; any other
+        // lane would silently shift `A`'s rows.
+        if packed >> 16 != 0 {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "tcgen05.mma [a-tmem] at lane {} is not modeled (A must start at lane 0)",
+                    packed >> 16
+                ),
+            });
+        }
         let range = TmemRange {
-            lane_base: packed >> 16,
+            lane_base: 0,
             num_lanes: rows,
             start_col: packed & 0xFFFF,
             // Two f16 elements ride in each 32-bit column.
