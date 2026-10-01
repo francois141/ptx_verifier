@@ -1892,6 +1892,43 @@ fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
     }
 }
 
+/// An `idesc` with the K Dimension bit (29) set is rejected rather than
+/// run at the kind's base `K`: the corpus f16 descriptor (dense, D=f32,
+/// A/B=f16, M=128, N=256 - otherwise fully modeled) plus `1 << 29`.
+#[test]
+fn test_tcgen05_mma_rejects_k_dimension_bit() {
+    let idesc = 138477584u32 | (1 << 29);
+    let src = wrap(&format!(
+        ".visible .entry k()
+{{
+    .reg .pred %p0;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    mov.u32 %r1, 0;
+    mov.u64 %rd1, 0;
+    mov.u64 %rd2, 0;
+    mov.u32 %r2, {idesc};
+    mov.pred %p0, 0;
+    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {{0,0,0,0}}, %p0;
+    ret;
+}}
+"
+    ));
+    let module = parse(&src);
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(
+                what.contains("K Dimension bit (29)") && what.contains("K = 16"),
+                "expected the K-dimension error, got: {}",
+                what
+            );
+        }
+        other => panic!("expected EvalError::Unsupported, got: {}", other),
+    }
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

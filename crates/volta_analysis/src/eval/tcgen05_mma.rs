@@ -61,6 +61,19 @@ pub struct InstructionDescriptor {
     /// Dimension of matrix A's rows (`M`), already shifted back up (the
     /// field stores `M >> 4`).
     pub m: u32,
+    /// The K Dimension bit (bit 29, PTX ISA 9.4 Table 51).
+    pub k_select: KSelect,
+}
+
+/// `idesc`'s 1-bit K Dimension field (bit 29; reserved before PTX ISA
+/// 9.x, valid from `sm_107f`). `Base` is each kind's dense `K` of
+/// [`k_dim`]; `Wide` doubles it, but Table 51 defines it only for
+/// `.kind::i8` (dense `K = 64`) - `.kind::tf32`/`.kind::f16`/
+/// `.kind::f8f6f4` list `Base` as their only value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KSelect {
+    Base,
+    Wide,
 }
 
 /// Element format of one `tcgen05.mma` operand: `.kind` plus `idesc`'s
@@ -93,7 +106,8 @@ impl OperandFormat {
 }
 
 /// `K` of one dense `.cta_group::1` operation (PTX ISA Table 42): 32 bytes
-/// of each operand row for both modeled kinds.
+/// of each operand row for both modeled kinds - the `KSelect::Base` value,
+/// the only one either kind defines.
 pub fn k_dim(kind: Tcgen05MmaKind) -> u64 {
     match kind {
         Tcgen05MmaKind::F16 => 16,
@@ -121,6 +135,11 @@ pub fn decode_instruction_descriptor(idesc: u32) -> InstructionDescriptor {
         transpose_b: bits(idesc, 16, 1) != 0,
         n: bits(idesc, 17, 6) << 3,
         m: bits(idesc, 24, 5) << 4,
+        k_select: if bits(idesc, 29, 1) == 0 {
+            KSelect::Base
+        } else {
+            KSelect::Wide
+        },
     }
 }
 
@@ -456,6 +475,17 @@ mod tests {
         assert!(d.transpose_b);
         assert_eq!(d.n, 256);
         assert_eq!(d.m, 128);
+        assert_eq!(d.k_select, KSelect::Base);
+    }
+
+    /// Bit 29 is the K Dimension field, adjacent to `M`'s top bit (28):
+    /// setting it must not perturb `M` and must not be dropped.
+    #[test]
+    fn test_decode_k_dimension_bit() {
+        let d = decode_instruction_descriptor(138477584 | (1 << 29));
+        assert_eq!(d.k_select, KSelect::Wide);
+        assert_eq!(d.m, 128);
+        assert_eq!(d.n, 256);
     }
 
     /// `idesc` from the corpus fp8 kernel
