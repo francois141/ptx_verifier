@@ -1412,15 +1412,16 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `tcgen05.wait::ld`/`::st`: release this warp's quadrant's pending
-    /// async-hazard footprint of the matching kind
-    /// (`RaceTracker::tcgen05_wait`). No data effect: Volta's sequential
-    /// execution already gives `.ld`/`.st` their full effect immediately,
-    /// so there is nothing to actually wait for - this call exists purely
-    /// to clear the hazard tracking those two instructions record.
+    /// `tcgen05.wait::ld`/`::st`: release the pending async-hazard
+    /// footprints of the matching kind this warp issued
+    /// (`RaceTracker::tcgen05_wait`) - not another warp's sharing the
+    /// quadrant. No data effect: Volta's sequential execution already gives
+    /// `.ld`/`.st` their full effect immediately, so there is nothing to
+    /// actually wait for - this call exists purely to clear the hazard
+    /// tracking those two instructions record.
     fn exec_tcgen05_wait(&mut self, members: &[ThreadId], is_st: bool) {
         let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
-        self.race.tcgen05_wait(quadrant, is_st);
+        self.race.tcgen05_wait(quadrant, members[0].warp(), is_st);
     }
 
     /// Place one lane's packed-f16 fragment registers into a matrix grid.

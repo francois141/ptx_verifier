@@ -59,8 +59,8 @@ use std::collections::HashMap;
 
 use fixedbitset::FixedBitSet;
 
-use crate::eval::ThreadId;
 use crate::eval::error::AccessSite;
+use crate::eval::{ThreadId, WarpIndex};
 use crate::lowered::{InstrId, MemSpace};
 
 /// A detected race: the recorded prior access and the current one.
@@ -180,8 +180,11 @@ pub struct Tcgen05HazardInfo {
 /// `eval/warp.rs`'s `tcgen05_lane`), so plain ranges suffice; no per-cell
 /// tracking is needed, unlike the general `(MemSpace, u64)` address space
 /// `cells`/`async_locks` above cover. `.wait::ld`/`::st` aren't scoped to an
-/// address either - they unconditionally release *every* pending op of
-/// their kind - so release is a clear, not a partial removal.
+/// address either - they release *every* pending op of their kind the
+/// waiting warp issued ("all prior `tcgen05.ld`/`.st` operations issued by
+/// the executing thread") - so release is by issuer, never by range. Two
+/// warps can share a quadrant (warps `w` and `w + 4`), and one's wait
+/// releases nothing of the other's.
 ///
 /// Conflict rule mirrors `AsyncLockCell`: a pending `.st` is a destination
 /// lock (blocks *any* subsequent overlapping access, read or write); a
@@ -288,10 +291,12 @@ impl RaceTracker {
     }
 
     /// Release every pending `.ld` (`is_st = false`) or `.st`
-    /// (`is_st = true`) footprint in `quadrant` - `tcgen05.wait::ld`/`::st`.
-    pub fn tcgen05_wait(&mut self, quadrant: u32, is_st: bool) {
+    /// (`is_st = true`) footprint `warp` issued in `quadrant` -
+    /// `tcgen05.wait::ld`/`::st`.
+    pub fn tcgen05_wait(&mut self, quadrant: u32, warp: WarpIndex, is_st: bool) {
         let q = &mut self.tcgen05_pending[quadrant as usize];
-        if is_st { q.st.clear() } else { q.ld.clear() }
+        let list = if is_st { &mut q.st } else { &mut q.ld };
+        list.retain(|&(_, _, site)| site.thread.warp() != warp);
     }
 
     /// Record a read of `[addr, addr + width)` by `thread`, checking for a
@@ -1064,7 +1069,7 @@ mod tests {
             .unwrap();
         // Waiting on .st in quadrant 0 must not release the pending .ld -
         // a subsequent .st at the .ld's range still conflicts with it.
-        chi.tcgen05_wait(0, true);
+        chi.tcgen05_wait(0, WarpIndex(0), true);
         let err = chi
             .tcgen05_begin(0, 0, 32, true, site(0, 3, true))
             .unwrap_err();
@@ -1075,8 +1080,27 @@ mod tests {
         chi.tcgen05_begin(1, 0, 32, true, site(1, 4, true)).unwrap();
 
         // Waiting on .ld in quadrant 0 releases it; the same range is now free.
-        chi.tcgen05_wait(0, false);
+        chi.tcgen05_wait(0, WarpIndex(0), false);
         chi.tcgen05_begin(0, 0, 32, false, site(0, 5, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_tcgen05_wait_releases_only_its_own_warps_ops() {
+        // Warps 0 and 4 share quadrant 0.
+        let mut chi = RaceTracker::new(160);
+        chi.tcgen05_begin(0, 0, 32, false, site(0, 1, false))
+            .unwrap();
+        // Warp 4's wait::ld must not release warp 0's pending .ld.
+        chi.tcgen05_wait(0, WarpIndex(4), false);
+        let err = chi
+            .tcgen05_begin(0, 0, 32, true, site(128, 2, true))
+            .unwrap_err();
+        assert_eq!(err.prior.thread, ThreadId(0));
+
+        // Warp 0's own wait::ld does.
+        chi.tcgen05_wait(0, WarpIndex(0), false);
+        chi.tcgen05_begin(0, 0, 32, true, site(128, 3, true))
             .unwrap();
     }
 
