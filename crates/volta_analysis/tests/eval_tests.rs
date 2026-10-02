@@ -762,6 +762,35 @@ fn test_tcgen05_rejects_missing_sync_aligned() {
     }
 }
 
+/// `.exclusive` allocation and deallocation (PTX ISA 9.4+) are recognized
+/// but not implemented: rejected as unsupported naming `.exclusive`, rather
+/// than judged by the non-exclusive rules (96 columns is a valid exclusive
+/// size but not a power of 2).
+#[test]
+fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
+    for body in [
+        "    tcgen05.alloc.exclusive.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 96;",
+        "    tcgen05.dealloc.exclusive.cta_group::1.sync.aligned.b32 %r3, 96;",
+    ] {
+        let err = analyze_kernel(
+            &tcgen05_kernel(HEADER_SM100A, body),
+            None,
+            AnalysisConfig::new((32, 1, 1)),
+        )
+        .unwrap_err();
+        match &err {
+            AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. }) => {
+                let reason = reason.as_deref().unwrap_or("");
+                assert!(
+                    reason.contains(".exclusive") && reason.contains("not implemented"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected UnsupportedInstruction, got: {other}"),
+        }
+    }
+}
+
 /// `tcgen05.ld`/`.st` decode `taddr` as a real Tensor Memory address (PTX
 /// ISA 9.7.17.1.1: `[31:16]=lane, [15:0]=column`), not a bare column
 /// number - two warps (64 threads) each pack their *own* quadrant into the

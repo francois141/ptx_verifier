@@ -5298,6 +5298,14 @@ fn parse_tcgen05_cta_group(
     })
 }
 
+/// Why `.exclusive` `tcgen05.alloc`/`.dealloc` is rejected: an exclusive
+/// allocation (PTX ISA 9.4+) has its own rules - `nCols` any multiple of
+/// 32, it must be the only live allocation, and it must be freed by a
+/// matching `.dealloc.exclusive` - which `TensorMemory` does not model;
+/// its non-exclusive rules (power-of-2 `nCols`) would misjudge it.
+const EXCLUSIVE_ALLOCATION: &str =
+    ".exclusive (an exclusive Tensor Memory allocation) is not implemented yet";
+
 /// Lower `tcgen05.alloc.cta_group::1.sync.aligned{.shared::cta}.b32 [dst], nCols`.
 fn lower_tcgen05_alloc(
     ctx: &mut LoweringContext,
@@ -5330,6 +5338,7 @@ fn lower_tcgen05_alloc(
         }
         match modifier.to_string().as_str() {
             "sync" | "aligned" | "shared" | "b32" => {}
+            "exclusive" => return Err(unsupported(NAME, EXCLUSIVE_ALLOCATION)),
             other => return Err(unsupported(NAME, format!("modifier .{}", other))),
         }
     }
@@ -5384,6 +5393,7 @@ fn lower_tcgen05_dealloc(
         }
         match modifier.to_string().as_str() {
             "sync" | "aligned" | "b32" => {}
+            "exclusive" => return Err(unsupported(NAME, EXCLUSIVE_ALLOCATION)),
             other => return Err(unsupported(NAME, format!("modifier .{}", other))),
         }
     }
