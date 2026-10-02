@@ -2283,6 +2283,52 @@ fn test_membar_levels() {
     }
 }
 
+fn expect_invalid_instruction(module: &Module, needle: &str) {
+    match analyze_kernel(module, None, AnalysisConfig::new((32, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::InvalidInstruction { reason, .. })) => {
+            assert!(reason.contains(needle), "expected {needle:?} in: {reason}");
+        }
+        Err(other) => panic!("expected InvalidInstruction ({needle}), got: {other}"),
+        Ok(_) => panic!("expected InvalidInstruction ({needle}), got Ok"),
+    }
+}
+
+/// `mbarrier.init`/`inval`/`test_wait`/`try_wait` only take `.shared{::cta}`
+/// (PTX ISA 9.7.15.16), so their `.shared::cluster` spelling is invalid PTX
+/// even on sm_90. `mbarrier.arrive.shared::cluster` is valid sm_90 PTX that
+/// a single-CTA analysis does not model.
+#[test]
+fn test_mbarrier_shared_cluster_validity() {
+    let kernel = |body: &str| {
+        parse(&wrap_sm90a(&format!(
+            ".visible .entry k()
+{{
+    .reg .pred %p<2>;
+    .reg .b32 %r<4>;
+{body}
+    ret;
+}}
+"
+        )))
+    };
+    for body in [
+        "    mbarrier.init.shared::cluster.b64 [%r1], 1;",
+        "    mbarrier.inval.shared::cluster.b64 [%r1];",
+        "    mbarrier.test_wait.parity.shared::cluster.b64 %p0, [%r1], %r2;",
+        "    mbarrier.try_wait.parity.shared::cluster.b64 %p0, [%r1], %r2;",
+    ] {
+        expect_invalid_instruction(&kernel(body), "has no .shared::cluster form");
+    }
+    let arrive = kernel("    mbarrier.arrive.shared::cluster.b64 _, [%r1];");
+    match analyze_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(reason.contains("single-CTA analysis only"), "{reason}");
+        }
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

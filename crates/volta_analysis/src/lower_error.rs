@@ -71,6 +71,10 @@ pub enum LowerError {
         reason: Option<String>,
     },
 
+    /// The instruction is invalid PTX as written - unlike
+    /// [`Self::UnsupportedInstruction`], no PTX assembler would accept it.
+    InvalidInstruction { instruction: String, reason: String },
+
     /// Invalid operand for instruction
     InvalidOperand {
         instruction: String,
@@ -194,6 +198,15 @@ impl fmt::Display for LowerError {
                 }
                 Ok(())
             }
+
+            Self::InvalidInstruction {
+                instruction,
+                reason,
+            } => write!(
+                f,
+                "Invalid instruction: {}\nReason: {}",
+                instruction, reason
+            ),
 
             Self::InvalidOperand {
                 instruction,

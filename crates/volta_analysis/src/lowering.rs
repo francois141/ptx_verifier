@@ -861,15 +861,27 @@ impl LoweringContext {
     /// form, but Volta only models `.shared`/`.shared::cta` - the shape
     /// every real kernel in the corpus uses, and the only one meaningful
     /// for a single-CTA analysis (`::cluster` addresses another CTA's
-    /// shared memory).
+    /// shared memory). `.shared::cluster` is unsupported where the
+    /// instruction has that form and invalid where it does not.
     fn convert_mbarrier_space(
         &self,
         space: Option<StateSpace>,
         space_qualifier: Option<ast::StateSpaceQualifier>,
+        cluster_form: MbarrierClusterForm,
         instruction: &str,
     ) -> LowerResult<()> {
         match space_qualifier {
             None | Some(ast::StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cta)) => {}
+            Some(ast::StateSpaceQualifier::Shared(SharedStateSpaceQualifier::Cluster))
+                if cluster_form == MbarrierClusterForm::Absent =>
+            {
+                return Err(LowerError::InvalidInstruction {
+                    instruction: instruction.to_string(),
+                    reason: format!(
+                        "{instruction} has no .shared::cluster form (only .shared{{::cta}})"
+                    ),
+                });
+            }
             Some(other) => {
                 return Err(unsupported(
                     instruction,
@@ -6627,6 +6639,15 @@ fn lower_mbarrier_addr(ctx: &LoweringContext, addr: &AstOperand) -> LowerResult<
 /// providing "no memory ordering semantics and visibility guarantees at
 /// all" (9.7.14.16.16/.19), would make that edge unsound if silently
 /// accepted.
+/// Whether an `mbarrier` instruction has a `.shared::cluster` form (PTX ISA
+/// 9.7.15.16): `arrive`/`complete_tx` do, while `init`/`inval`/`test_wait`/
+/// `try_wait` only take `.shared{::cta}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MbarrierClusterForm {
+    Exists,
+    Absent,
+}
+
 fn check_mbarrier_sem(
     instruction: &str,
     sem: Option<MemSemantics>,
@@ -6652,7 +6673,12 @@ fn lower_mbarrier_init(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "mbarrier.init";
-    ctx.convert_mbarrier_space(init.space, init.space_qualifier, NAME)?;
+    ctx.convert_mbarrier_space(
+        init.space,
+        init.space_qualifier,
+        MbarrierClusterForm::Absent,
+        NAME,
+    )?;
     let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &init.addr)?;
     let count = ctx.resolve_operand(&init.count)?;
     ctx.emit(
@@ -6673,7 +6699,12 @@ fn lower_mbarrier_inval(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "mbarrier.inval";
-    ctx.convert_mbarrier_space(inval.space, inval.space_qualifier, NAME)?;
+    ctx.convert_mbarrier_space(
+        inval.space,
+        inval.space_qualifier,
+        MbarrierClusterForm::Absent,
+        NAME,
+    )?;
     let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &inval.addr)?;
     ctx.emit(
         LoweredInstr::MbarrierInval {
@@ -6698,7 +6729,12 @@ fn lower_mbarrier_arrive(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "mbarrier.arrive";
-    ctx.convert_mbarrier_space(arrive.space, arrive.space_qualifier, NAME)?;
+    ctx.convert_mbarrier_space(
+        arrive.space,
+        arrive.space_qualifier,
+        MbarrierClusterForm::Exists,
+        NAME,
+    )?;
     check_mbarrier_sem(NAME, arrive.sem, MemSemantics::Release)?;
     if arrive.no_complete {
         return Err(unsupported(NAME, ".noComplete"));
@@ -6746,7 +6782,12 @@ fn lower_mbarrier_complete_tx(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "mbarrier.complete_tx";
-    ctx.convert_mbarrier_space(complete_tx.space, complete_tx.space_qualifier, NAME)?;
+    ctx.convert_mbarrier_space(
+        complete_tx.space,
+        complete_tx.space_qualifier,
+        MbarrierClusterForm::Exists,
+        NAME,
+    )?;
     let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &complete_tx.addr)?;
     let tx_count = ctx.resolve_operand(&complete_tx.tx_count)?;
     ctx.emit(
@@ -6826,6 +6867,7 @@ fn lower_mbarrier_wait_parity(
     phase_parity: &AstOperand,
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
+    ctx.convert_mbarrier_space(space, space_qualifier, MbarrierClusterForm::Absent, name)?;
     if !parity {
         return Err(unsupported(
             name,
@@ -6833,7 +6875,6 @@ fn lower_mbarrier_wait_parity(
         ));
     }
     check_mbarrier_sem(name, sem, MemSemantics::Acquire)?;
-    ctx.convert_mbarrier_space(space, space_qualifier, name)?;
     let wait_complete = ctx.resolve_dst(wait_complete)?;
     let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, addr)?;
     let phase_parity = ctx.resolve_operand(phase_parity)?;
