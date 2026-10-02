@@ -45,6 +45,11 @@ pub enum TensorMemError {
     DeallocMismatch { taddr: u32, num_cols: u32 },
     /// A `tcgen05.ld`/`.st` touched a column outside every live allocation.
     NotAllocated { lane: u32, col: u32 },
+    /// An access's column range `[start_col, start_col + num_cols)` is not
+    /// inside one live allocation - it starts outside every allocation, or
+    /// runs past the end of its own into whatever follows (possibly an
+    /// adjacent allocation).
+    RangeOutsideAllocation { start_col: u32, num_cols: u32 },
 }
 
 /// The Tensor Memory allocator + cell store for one CTA (this analysis
@@ -133,6 +138,26 @@ impl TensorMemory {
         self.allocated
             .iter()
             .any(|&(base, cols)| col >= base && col < base + cols)
+    }
+
+    /// Check that `[start_col, start_col + num_cols)` lies inside a single
+    /// live allocation. Per-cell [`Self::read`]/[`Self::write`] only check
+    /// that each column is allocated *somewhere*, which an access running
+    /// off the end of its allocation into an adjacent one would pass.
+    pub fn check_range(&self, start_col: u32, num_cols: u32) -> Result<(), TensorMemError> {
+        let end = u64::from(start_col) + u64::from(num_cols);
+        if self
+            .allocated
+            .iter()
+            .any(|&(base, cols)| base <= start_col && end <= u64::from(base) + u64::from(cols))
+        {
+            Ok(())
+        } else {
+            Err(TensorMemError::RangeOutsideAllocation {
+                start_col,
+                num_cols,
+            })
+        }
     }
 
     fn index(lane: u32, col: u32) -> usize {
@@ -308,6 +333,39 @@ mod tests {
         assert_eq!(
             tm.write(0, 32, fake_value(1)),
             Err(TensorMemError::NotAllocated { lane: 0, col: 32 })
+        );
+    }
+
+    #[test]
+    fn check_range_requires_a_single_allocation() {
+        let mut tm = TensorMemory::new();
+        assert_eq!(tm.alloc(32), Ok(0));
+        assert_eq!(tm.alloc(32), Ok(32));
+        assert_eq!(tm.check_range(0, 32), Ok(()));
+        assert_eq!(tm.check_range(40, 8), Ok(()));
+        // Every column is allocated, but the range straddles two
+        // allocations.
+        assert_eq!(
+            tm.check_range(16, 32),
+            Err(TensorMemError::RangeOutsideAllocation {
+                start_col: 16,
+                num_cols: 32
+            })
+        );
+        // Past the last allocation.
+        assert_eq!(
+            tm.check_range(48, 32),
+            Err(TensorMemError::RangeOutsideAllocation {
+                start_col: 48,
+                num_cols: 32
+            })
+        );
+        assert_eq!(
+            tm.check_range(64, 1),
+            Err(TensorMemError::RangeOutsideAllocation {
+                start_col: 64,
+                num_cols: 1
+            })
         );
     }
 

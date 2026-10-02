@@ -243,6 +243,15 @@ pub enum EvalError {
         lane: u32,
         col: u32,
     },
+    /// A Tensor Memory access's column range is not inside one live
+    /// allocation: it starts outside every allocation, or runs past the
+    /// end of its own (possibly into an adjacent one).
+    Tcgen05AccessOutsideAllocation {
+        thread: ThreadId,
+        pc: InstrId,
+        start_col: u32,
+        num_cols: u32,
+    },
     /// A `tcgen05.ld`/`.st` touched a Tensor Memory column range that
     /// overlaps a still-unacknowledged (not `tcgen05.wait`-ed) prior async
     /// `.ld`/`.st` - see `RaceTracker::tcgen05_begin`.
@@ -565,6 +574,19 @@ impl fmt::Display for EvalError {
                 f,
                 "{}: tcgen05.ld/.st at {} touched tensor-memory (lane={}, col={}) outside any live allocation",
                 thread, pc, lane, col
+            ),
+            Self::Tcgen05AccessOutsideAllocation {
+                thread,
+                pc,
+                start_col,
+                num_cols,
+            } => write!(
+                f,
+                "{}: tensor-memory access at {} to cols [{}, {}) is not inside one live allocation",
+                thread,
+                pc,
+                start_col,
+                start_col + num_cols
             ),
             Self::Tcgen05AsyncHazard {
                 quadrant,

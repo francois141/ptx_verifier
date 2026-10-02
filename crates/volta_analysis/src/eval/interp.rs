@@ -2712,6 +2712,9 @@ impl<'p> Interpreter<'p> {
         let enable_input_d =
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
         let d_col_base = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
+        self.tensor
+            .check_range(d_col_base, d_num_cols)
+            .map_err(|e| self.tcgen05_error(t, pc, e))?;
 
         // `disable-output-lane`: 4 elements form a 128-bit mask, least
         // significant bit of the first element = lane 0 (PTX ISA
@@ -2929,6 +2932,9 @@ impl<'p> Interpreter<'p> {
             // Two f16 elements ride in each 32-bit column.
             num_cols: (k_dim / 2) as u32,
         };
+        self.tensor
+            .check_range(range.start_col, range.num_cols)
+            .map_err(|e| self.tcgen05_error(t, pc, e))?;
         let current = AccessSite {
             thread: t,
             pc,
@@ -4470,6 +4476,15 @@ impl<'p> Interpreter<'p> {
             TensorMemError::AllocAfterRelinquish => {
                 EvalError::Tcgen05AllocAfterRelinquish { thread: t, pc }
             }
+            TensorMemError::RangeOutsideAllocation {
+                start_col,
+                num_cols,
+            } => EvalError::Tcgen05AccessOutsideAllocation {
+                thread: t,
+                pc,
+                start_col,
+                num_cols,
+            },
             TensorMemError::DeallocMismatch { taddr, num_cols } => {
                 EvalError::Tcgen05DeallocMismatch {
                     thread: t,

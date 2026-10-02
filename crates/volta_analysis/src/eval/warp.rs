@@ -1327,6 +1327,9 @@ impl Interpreter<'_> {
             Self::tcgen05_decode_taddr(pc, members, base + taddr_offset, shape.num_lanes())?;
         let quadrant = lane_base / WARP_SIZE;
         let num_cols = shape.num_cols(dst.len());
+        self.tensor
+            .check_range(base_col, num_cols)
+            .map_err(|e| self.tcgen05_error(members[0], pc, e))?;
         let current = AccessSite {
             thread: members[0],
             pc,
@@ -1382,6 +1385,9 @@ impl Interpreter<'_> {
             Self::tcgen05_decode_taddr(pc, members, base + taddr_offset, shape.num_lanes())?;
         let quadrant = lane_base / WARP_SIZE;
         let num_cols = shape.num_cols(src.len());
+        self.tensor
+            .check_range(base_col, num_cols)
+            .map_err(|e| self.tcgen05_error(members[0], pc, e))?;
         let current = AccessSite {
             thread: members[0],
             pc,
