@@ -53,6 +53,14 @@ fn wrap_sm90a(body: &str) -> String {
     format!("{}{}", HEADER_SM90A, body)
 }
 
+/// Same as [`wrap`], but `sm_100a` - the `tcgen05` family is only valid
+/// on Blackwell-class targets (lowering rejects it on `sm_80`).
+const HEADER_SM100A: &str = ".version 8.6\n.target sm_100a\n.address_size 64\n\n";
+
+fn wrap_sm100a(body: &str) -> String {
+    format!("{}{}", HEADER_SM100A, body)
+}
+
 /// in/out f32 arrays at fixed bases.
 fn in_out_config(threads: u32, len: u64) -> AnalysisConfig {
     let mut config = AnalysisConfig::new((threads, 1, 1));
@@ -2094,6 +2102,95 @@ fn test_tcgen05_mma_rejects_k_dimension_bit() {
         }
         other => panic!("expected EvalError::Unsupported, got: {}", other),
     }
+}
+
+/// The corpus f16 `idesc`: dense, D=f32, A/B=f16, B transposed, M=128,
+/// N=256 - fully valid and modeled.
+const F16_IDESC: u32 = 138477584;
+/// A well-formed `Swizzle128B` shared-memory descriptor (start 0, stride
+/// 1024, the fixed `0b001` at bits 46-48) - the corpus kernel's `a-desc`.
+const SWIZZLE128B_DESC: u64 = 0x4000_4040_0000_0000;
+
+/// Replace `idesc`'s M field (bits 24-28, `M >> 4`) and N field (bits
+/// 17-22, `N >> 3`).
+fn with_shape(idesc: u32, m: u32, n: u32) -> u32 {
+    (idesc & !(0x1F << 24) & !(0x3F << 17)) | ((m >> 4) << 24) | ((n >> 3) << 17)
+}
+
+/// Run one `tcgen05.mma{.ws}.cta_group::1.kind::{kind}` (issued by thread
+/// 0, D in a fresh 512-column allocation) with the given `idesc` and
+/// descriptors.
+fn run_tcgen05_mma(
+    kind: &str,
+    ws: bool,
+    idesc: u32,
+    a_desc: u64,
+    b_desc: u64,
+) -> Result<AnalysisOutput, AnalysisError> {
+    let mma = if ws {
+        format!("tcgen05.mma.ws.cta_group::1.kind::{kind} [%r1+0], %rd1, %rd2, %r2, %p0")
+    } else {
+        format!("tcgen05.mma.cta_group::1.kind::{kind} [%r1+0], %rd1, %rd2, %r2, %p0")
+    };
+    let src = wrap_sm100a(&format!(
+        ".visible .entry k()
+{{
+    .reg .pred %p<2>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+    // At shared address 0, where the descriptors' operands start.
+    .shared .align 1024 .b8 operands[32768];
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 512;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    mov.u32 %r4, %tid.x;
+    setp.eq.u32 %p1, %r4, 0;
+    mov.u64 %rd1, {a_desc};
+    mov.u64 %rd2, {b_desc};
+    mov.u32 %r2, {idesc};
+    mov.pred %p0, 0;
+    @%p1 {mma};
+    ret;
+}}
+"
+    ));
+    analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1)))
+}
+
+/// Assert `result` is an `InvalidEncoding` whose message contains `needle`.
+fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle: &str) {
+    match result {
+        Err(AnalysisError::Eval(EvalError::InvalidEncoding { what, .. })) => {
+            assert!(what.contains(needle), "expected {needle:?} in: {what}");
+        }
+        Err(other) => panic!("expected InvalidEncoding ({needle}), got: {other}"),
+        Ok(_) => panic!("expected InvalidEncoding ({needle}), got Ok"),
+    }
+}
+
+/// Shapes outside PTX ISA Table 48's `.cta_group::1` dense set are invalid
+/// encodings, not just unmodeled ones: `M = 32` exists only under `.ws`,
+/// N tops out at 256, and `.ws` allows only N = 64/128/256.
+#[test]
+fn test_tcgen05_mma_rejects_invalid_shapes() {
+    let d = SWIZZLE128B_DESC;
+    for (ws, m, n) in [
+        (false, 32, 64),
+        (false, 128, 264),
+        (true, 128, 16),
+        (true, 128, 0),
+    ] {
+        expect_invalid_encoding(
+            run_tcgen05_mma("f16", ws, with_shape(F16_IDESC, m, n), d, d),
+            "is not a valid .cta_group::1 dense shape",
+        );
+    }
+    // The same M = 32 is a valid (and modeled) `.ws` shape.
+    run_tcgen05_mma("f16", true, with_shape(F16_IDESC, 32, 64), d, d)
+        .expect("M = 32, N = 64 under .ws");
 }
 
 /// An uninitialized shared read is tolerated during execution (the paper's

@@ -2612,6 +2612,30 @@ impl<'p> Interpreter<'p> {
                 tcgen05_mma::k_dim(kind)
             )));
         }
+        let invalid = |what: String| EvalError::InvalidEncoding { pc, what };
+        let ws = collector.is_some();
+        // PTX ISA Table 48, `.cta_group::1` dense shapes: M = 64/128 with N
+        // a multiple of 8 up to 256, or under `.ws` M = 32/64/128 with N =
+        // 64/128/256 (N's field already encodes it in steps of 8).
+        let valid_shape = if ws {
+            matches!(id.m, 32 | 64 | 128) && matches!(id.n, 64 | 128 | 256)
+        } else {
+            matches!(id.m, 64 | 128) && (8..=256).contains(&id.n)
+        };
+        if !valid_shape {
+            return Err(invalid(format!(
+                "tcgen05.mma{} M = {}, N = {} is not a valid .cta_group::1 dense shape \
+                 ({})",
+                if ws { ".ws" } else { "" },
+                id.m,
+                id.n,
+                if ws {
+                    "M in {32, 64, 128}, N in {64, 128, 256}"
+                } else {
+                    "M in {64, 128}, N in 8..=256 in steps of 8"
+                }
+            )));
+        }
         if id.dtype != 1 {
             return Err(unsupported(
                 "tcgen05.mma with a non-f32 accumulator is not modeled".to_string(),
