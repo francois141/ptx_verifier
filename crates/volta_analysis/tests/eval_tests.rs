@@ -2232,6 +2232,19 @@ fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
     }
 }
 
+/// PTX ISA Table 65: for 8- and 16-bit operands a transposed matrix may
+/// use every swizzling mode except 128B with 32B atomicity.
+#[test]
+fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
+    let d = SWIZZLE128B_DESC;
+    // `F16_IDESC` transposes B; give B 128B-with-32B-atomicity (mode 1).
+    let atomic32 = (d & !(0x7 << 61)) | 1 << 61;
+    expect_invalid_encoding(
+        run_tcgen05_mma("f16", false, F16_IDESC, d, atomic32),
+        "transposed B with 128B swizzling with 32B atomicity",
+    );
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

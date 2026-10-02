@@ -2710,10 +2710,15 @@ impl<'p> Interpreter<'p> {
 
         let k_dim = tcgen05_mma::k_dim(kind) as usize;
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
+        // Decode and validate B's descriptor up front, so a malformed one is
+        // reported before any operand read.
+        let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
+        check_mma_operand_layout(pc, &b_md, id.transpose_b, "B")?;
         let mut operand_bytes = Vec::new();
         let (a, a_tmem) = match a {
             Tcgen05MmaA::Desc(desc) => {
                 let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
+                check_mma_operand_layout(pc, &a_md, id.transpose_a, "A")?;
                 let a = self.read_mma_operand(
                     t,
                     pc,
@@ -2741,7 +2746,6 @@ impl<'p> Interpreter<'p> {
                 self.read_mma_a_tmem(t, pc, (base, *offset), (id.m, k_dim))?
             }
         };
-        let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
         let b = self.read_mma_operand(
             t,
             pc,
@@ -5770,6 +5774,28 @@ impl<'p> Interpreter<'p> {
         }
         Ok(a)
     }
+}
+
+/// PTX ISA Table 65 (with the note under Table 62): for the 8- and 16-bit
+/// kinds Volta models (`.kind::f16`, `.kind::f8f6f4`), a transposed
+/// (MN-major) operand supports every swizzling mode except 128B with 32B
+/// atomicity - that mode is for `.kind::tf32`'s transposes only.
+fn check_mma_operand_layout(
+    pc: InstrId,
+    md: &tcgen05_mma::MatrixDescriptor,
+    transposed: bool,
+    operand: &str,
+) -> EvalResult<()> {
+    if transposed && md.swizzle_mode == tcgen05_mma::SwizzleMode::Swizzle128BWith32BAtomicity {
+        return Err(EvalError::InvalidEncoding {
+            pc,
+            what: format!(
+                "tcgen05.mma transposed {operand} with 128B swizzling with 32B atomicity \
+                 (only valid for .kind::tf32)"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Bit width of a register's storage class.
