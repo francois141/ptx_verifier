@@ -2200,8 +2200,9 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
     );
 }
 
-/// `idesc` fields the ISA limits by `.kind`: saturate (bit 3) is
-/// integer-only.
+/// `idesc` fields the ISA limits by `.kind`/`.ws`: saturate (bit 3) is
+/// integer-only, and the B-reuse maximum shift (bits 30-31) only exists
+/// for `.ws`.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
     let d = SWIZZLE128B_DESC;
@@ -2209,6 +2210,13 @@ fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
         run_tcgen05_mma("f16", false, F16_IDESC | 1 << 3, d, d),
         "saturate",
     );
+    expect_invalid_encoding(
+        run_tcgen05_mma("f16", false, F16_IDESC | 1 << 30, d, d),
+        "maximum shift",
+    );
+    // Under `.ws` the same shift is a legal (performance-only) hint.
+    run_tcgen05_mma("f16", true, with_shape(F16_IDESC, 128, 64) | 1 << 30, d, d)
+        .expect("max shift under .ws");
 }
 
 /// An uninitialized shared read is tolerated during execution (the paper's

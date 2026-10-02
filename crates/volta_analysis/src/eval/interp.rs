@@ -2614,10 +2614,17 @@ impl<'p> Interpreter<'p> {
         }
         let invalid = |what: String| EvalError::InvalidEncoding { pc, what };
         let ws = collector.is_some();
-        // PTX ISA Table 51: saturate is `0 (NA)` for both modeled kinds.
+        // PTX ISA Table 51: saturate is `0 (NA)` for both modeled kinds, and
+        // the B-reuse max shift only exists for `.ws`.
         if id.saturate {
             return Err(invalid(format!(
                 "tcgen05.mma {kind:?} idesc {idesc_val:#x} sets the integer-only saturate bit (3)"
+            )));
+        }
+        if !ws && id.max_shift != 0 {
+            return Err(invalid(format!(
+                "tcgen05.mma idesc {idesc_val:#x} sets the .ws-only B-reuse maximum shift \
+                 (bits 30-31) without .ws"
             )));
         }
         // PTX ISA Table 48, `.cta_group::1` dense shapes: M = 64/128 with N

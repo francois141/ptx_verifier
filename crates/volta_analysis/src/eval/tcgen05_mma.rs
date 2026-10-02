@@ -66,6 +66,9 @@ pub struct InstructionDescriptor {
     /// Saturate for integer types (bit 3): `.kind::i8` only, `0 (NA)` for
     /// every float kind.
     pub saturate: bool,
+    /// Maximum shift while attempting `B` matrix reuse (bits 30-31):
+    /// meaningful for `tcgen05.mma.ws` only.
+    pub max_shift: u32,
 }
 
 /// An `idesc` bit the ISA reserves as "must be 0" was set (bits 6 and 23,
@@ -129,8 +132,8 @@ fn bits(x: u32, lo: u32, width: u32) -> u32 {
 
 /// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor, failing
 /// only on a set reserved bit (6 or 23). Fields whose validity depends on
-/// `.kind` (saturate, shapes, types) are decoded as-is; validating them
-/// against the instruction is the caller's job.
+/// `.kind`/`.ws` (saturate, max shift, shapes, types) are decoded as-is;
+/// validating them against the instruction is the caller's job.
 pub fn decode_instruction_descriptor(
     idesc: u32,
 ) -> Result<InstructionDescriptor, ReservedIdescBit> {
@@ -154,6 +157,7 @@ pub fn decode_instruction_descriptor(
             KSelect::Wide
         },
         saturate: bits(idesc, 3, 1) != 0,
+        max_shift: bits(idesc, 30, 2),
     })
 }
 
@@ -714,6 +718,13 @@ mod tests {
         let saturate = |idesc| decode_instruction_descriptor(idesc).unwrap().saturate;
         assert!(saturate(0x0804_0010 | 1 << 3));
         assert!(!saturate(0x0804_0010));
+    }
+
+    #[test]
+    fn test_idesc_max_shift_decode() {
+        let max_shift = |idesc| decode_instruction_descriptor(idesc).unwrap().max_shift;
+        assert_eq!(max_shift(0x0804_0010 | 2 << 30), 2);
+        assert_eq!(max_shift(0x0804_0010), 0);
     }
 
     fn atomless_desc() -> MatrixDescriptor {
