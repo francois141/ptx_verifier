@@ -30,9 +30,13 @@ pub const COLUMNS: u32 = 512;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TensorMemError {
     /// `nCols` violated the ISA's "power of 2 in `[32, 512]`" rule
-    /// (9.7.17.7: "The number of columns must be a power of 2... within the
-    /// range [32, 512]").
+    /// (9.7.18.7.1: "the operand nCols must be a power of 2, in the range
+    /// [32, 512]" - the unit of allocation is 32 columns).
     InvalidColumnCount { num_cols: u32 },
+    /// An `.alloc` asked for more columns than the previous one (9.7.18.7.1:
+    /// "The number of columns allocated should not increase between any
+    /// two allocations in the execution order within the CTA").
+    IncreasingColumnCount { previous: u32, requested: u32 },
     /// Not enough unallocated columns remain.
     OutOfSpace { requested: u32, available: u32 },
     /// `.alloc` after this CTA already relinquished its allocation permit.
@@ -59,6 +63,8 @@ pub struct TensorMemory {
     allocated: Vec<(u32, u32)>,
     /// Never-decreasing bump pointer: the next unallocated column.
     high_water: u32,
+    /// `nCols` of the most recent `.alloc`, which bounds every later one.
+    last_alloc_cols: Option<u32>,
     permit_relinquished: bool,
     /// `LANES * COLUMNS` cells once touched by any `.ld`/`.st`; empty until
     /// then (see the module doc's "lazily-allocated" note). A cell holds a
@@ -82,8 +88,16 @@ impl TensorMemory {
         if self.permit_relinquished {
             return Err(TensorMemError::AllocAfterRelinquish);
         }
-        if num_cols == 0 || num_cols > COLUMNS || !num_cols.is_power_of_two() {
+        if !(32..=COLUMNS).contains(&num_cols) || !num_cols.is_power_of_two() {
             return Err(TensorMemError::InvalidColumnCount { num_cols });
+        }
+        if let Some(previous) = self.last_alloc_cols
+            && num_cols > previous
+        {
+            return Err(TensorMemError::IncreasingColumnCount {
+                previous,
+                requested: num_cols,
+            });
         }
         let base = self.high_water;
         let new_high = base.checked_add(num_cols).filter(|&h| h <= COLUMNS).ok_or(
@@ -93,6 +107,7 @@ impl TensorMemory {
             },
         )?;
         self.high_water = new_high;
+        self.last_alloc_cols = Some(num_cols);
         self.allocated.push((base, num_cols));
         Ok(base)
     }
@@ -161,9 +176,32 @@ mod tests {
     #[test]
     fn alloc_returns_increasing_bases_and_tracks_high_water() {
         let mut tm = TensorMemory::new();
-        assert_eq!(tm.alloc(32), Ok(0));
-        assert_eq!(tm.alloc(64), Ok(32));
+        assert_eq!(tm.alloc(64), Ok(0));
+        assert_eq!(tm.alloc(32), Ok(64));
         assert_eq!(tm.alloc(32), Ok(96));
+    }
+
+    #[test]
+    fn alloc_rejects_an_increasing_column_count() {
+        let mut tm = TensorMemory::new();
+        assert_eq!(tm.alloc(32), Ok(0));
+        assert_eq!(
+            tm.alloc(64),
+            Err(TensorMemError::IncreasingColumnCount {
+                previous: 32,
+                requested: 64
+            })
+        );
+        // The bound is the previous *allocation*, not a live one: freeing
+        // it does not lift it.
+        assert_eq!(tm.dealloc(0, 32), Ok(()));
+        assert_eq!(
+            tm.alloc(64),
+            Err(TensorMemError::IncreasingColumnCount {
+                previous: 32,
+                requested: 64
+            })
+        );
     }
 
     #[test]
@@ -181,6 +219,13 @@ mod tests {
             tm.alloc(0),
             Err(TensorMemError::InvalidColumnCount { num_cols: 0 })
         );
+        // Powers of two below the 32-column allocation unit.
+        for num_cols in [1, 2, 4, 8, 16] {
+            assert_eq!(
+                tm.alloc(num_cols),
+                Err(TensorMemError::InvalidColumnCount { num_cols })
+            );
+        }
     }
 
     #[test]

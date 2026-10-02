@@ -4458,6 +4458,15 @@ impl<'p> Interpreter<'p> {
                 requested,
                 available,
             },
+            TensorMemError::IncreasingColumnCount {
+                previous,
+                requested,
+            } => EvalError::Tcgen05IncreasingColumnCount {
+                thread: t,
+                pc,
+                previous,
+                requested,
+            },
             TensorMemError::AllocAfterRelinquish => {
                 EvalError::Tcgen05AllocAfterRelinquish { thread: t, pc }
             }

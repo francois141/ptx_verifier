@@ -208,6 +208,14 @@ pub enum EvalError {
         pc: InstrId,
         num_cols: u32,
     },
+    /// `tcgen05.alloc` requested more columns than the CTA's previous
+    /// allocation (the ISA forbids the count increasing between any two).
+    Tcgen05IncreasingColumnCount {
+        thread: ThreadId,
+        pc: InstrId,
+        previous: u32,
+        requested: u32,
+    },
     /// `tcgen05.alloc` requested more Tensor Memory columns than remain
     /// unallocated.
     Tcgen05OutOfSpace {
@@ -511,6 +519,17 @@ impl fmt::Display for EvalError {
                 f,
                 "{}: tcgen05.alloc nCols={} at {} must be a power of 2 in [32, 512]",
                 thread, num_cols, pc
+            ),
+            Self::Tcgen05IncreasingColumnCount {
+                thread,
+                pc,
+                previous,
+                requested,
+            } => write!(
+                f,
+                "{}: tcgen05.alloc nCols={} at {} exceeds the previous allocation's {} \
+                 (the column count must not increase between allocations)",
+                thread, requested, pc, previous
             ),
             Self::Tcgen05OutOfSpace {
                 thread,
