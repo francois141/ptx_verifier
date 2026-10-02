@@ -2614,8 +2614,9 @@ impl<'p> Interpreter<'p> {
         }
         let invalid = |what: String| EvalError::InvalidEncoding { pc, what };
         let ws = collector.is_some();
-        // PTX ISA Table 51: saturate is `0 (NA)` for both modeled kinds, and
-        // the B-reuse max shift only exists for `.ws`.
+        // PTX ISA Table 51: saturate is `0 (NA)` for both modeled kinds, the
+        // B-reuse max shift only exists for `.ws`, and D is f16 (0) or f32
+        // (1).
         if id.saturate {
             return Err(invalid(format!(
                 "tcgen05.mma {kind:?} idesc {idesc_val:#x} sets the integer-only saturate bit (3)"
@@ -2625,6 +2626,13 @@ impl<'p> Interpreter<'p> {
             return Err(invalid(format!(
                 "tcgen05.mma idesc {idesc_val:#x} sets the .ws-only B-reuse maximum shift \
                  (bits 30-31) without .ws"
+            )));
+        }
+        if id.dtype > 1 {
+            return Err(invalid(format!(
+                "tcgen05.mma {kind:?} idesc {idesc_val:#x} has D type field {} \
+                 (only f16 = 0 and f32 = 1 are defined)",
+                id.dtype
             )));
         }
         // PTX ISA Table 48, `.cta_group::1` dense shapes: M = 64/128 with N
