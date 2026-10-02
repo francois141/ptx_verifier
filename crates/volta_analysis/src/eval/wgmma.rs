@@ -104,6 +104,7 @@ pub fn decode_wgmma_matrix_descriptor(desc: u64) -> MatrixDescriptor {
         stride_dim_byte_offset: tcgen05_mma::decode_encoded_offset((desc >> 32) & 0x3FFF),
         base_offset: ((desc >> 49) & 0x7) as u8,
         absolute_leading_stride: false,
+        lut_b_offset: false,
         swizzle_mode: decode_swizzle_mode(desc),
     }
 }

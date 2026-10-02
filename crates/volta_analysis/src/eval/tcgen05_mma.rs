@@ -65,6 +65,11 @@ pub struct InstructionDescriptor {
     pub k_select: KSelect,
 }
 
+/// An `idesc` bit the ISA reserves as "must be 0" was set (bits 6 and 23,
+/// Table 51).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedIdescBit(pub u32);
+
 /// `idesc`'s 1-bit K Dimension field (bit 29; reserved before PTX ISA
 /// 9.x, valid from `sm_107f`). `Base` is each kind's dense `K` of
 /// [`k_dim`]; `Wide` doubles it, but Table 51 defines it only for
@@ -119,12 +124,16 @@ fn bits(x: u32, lo: u32, width: u32) -> u32 {
     (x >> lo) & ((1 << width) - 1)
 }
 
-/// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor. The bit
-/// layout itself has no invalid encodings - every 32-bit value decodes to
-/// *some* `InstructionDescriptor` - so this never fails; validating the
-/// decoded fields against what's actually modeled is the caller's job.
-pub fn decode_instruction_descriptor(idesc: u32) -> InstructionDescriptor {
-    InstructionDescriptor {
+/// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor, failing
+/// only on a set reserved bit (6 or 23); validating the decoded fields
+/// against what's actually modeled is the caller's job.
+pub fn decode_instruction_descriptor(
+    idesc: u32,
+) -> Result<InstructionDescriptor, ReservedIdescBit> {
+    if let Some(bit) = [6, 23].into_iter().find(|&b| bits(idesc, b, 1) != 0) {
+        return Err(ReservedIdescBit(bit));
+    }
+    Ok(InstructionDescriptor {
         sparse: bits(idesc, 2, 1) != 0,
         dtype: bits(idesc, 4, 2),
         atype: bits(idesc, 7, 3),
@@ -140,7 +149,7 @@ pub fn decode_instruction_descriptor(idesc: u32) -> InstructionDescriptor {
         } else {
             KSelect::Wide
         },
-    }
+    })
 }
 
 /// Swizzling mode of a shared-memory matrix descriptor (PTX ISA 9.7.17.4.1,
@@ -169,7 +178,41 @@ pub struct MatrixDescriptor {
     /// offset (the only mode modeled - the absolute-address mode is
     /// `sm_103a`-only), `true` = absolute byte address.
     pub absolute_leading_stride: bool,
+    /// `lut::b` K-segment start offset (bit 53): only meaningful under
+    /// `.decompress::lut::b`, which is not modeled.
+    pub lut_b_offset: bool,
     pub swizzle_mode: SwizzleMode,
+}
+
+/// Why a 64-bit shared-memory matrix descriptor is malformed (PTX ISA
+/// 9.7.18.4.1, Table 49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptorError {
+    /// The swizzle-mode field (bits 61-63) holds one of its documented-
+    /// invalid encodings: 3, 5 or 7.
+    InvalidSwizzle(u8),
+    /// A "Reserved - Must be 0" bit (15 or 31) is set.
+    ReservedBit(u32),
+    /// A fixed-constant field differs from its required value: bits 46-48
+    /// must be `0b001`, bits 54-60 must be 0.
+    FixedField { lo: u32, expected: u64, found: u64 },
+}
+
+impl std::fmt::Display for DescriptorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSwizzle(sw) => write!(f, "invalid swizzle-mode encoding {sw}"),
+            Self::ReservedBit(bit) => write!(f, "reserved bit {bit} is set (must be 0)"),
+            Self::FixedField {
+                lo,
+                expected,
+                found,
+            } => write!(
+                f,
+                "fixed-constant field at bit {lo} is {found:#b} (must be {expected:#b})"
+            ),
+        }
+    }
 }
 
 /// `matrix-descriptor-encode`'s inverse: a 14-bit field holds `(real >>
@@ -181,25 +224,44 @@ pub(crate) fn decode_encoded_offset(field: u64) -> u64 {
     field << 4
 }
 
-/// Decode a 64-bit shared-memory matrix descriptor. Fails (returning the
-/// raw field) only on the swizzle-mode field's documented-invalid
-/// encodings - Table 43 lists 3, 5, and 7 as invalid - rather than
-/// silently mapping them to something.
-pub fn decode_matrix_descriptor(desc: u64) -> Result<MatrixDescriptor, u8> {
-    let swizzle_mode = match ((desc >> 61) & 0x7) as u8 {
+/// Decode a 64-bit shared-memory matrix descriptor (PTX ISA 9.7.18.4.1,
+/// Table 49), rejecting every malformed encoding rather than silently
+/// mapping it to something: an invalid swizzle mode (3, 5, 7), a set
+/// reserved bit (15, 31), or a fixed-constant field off its value (bits
+/// 46-48 = `0b001`, bits 54-60 = 0). The start address and leading-dim
+/// fields are decoded at their full 15-bit width, so a value no
+/// `matrix-descriptor-encode` produces lands out of shared memory's
+/// bounds instead of wrapping.
+pub fn decode_matrix_descriptor(desc: u64) -> Result<MatrixDescriptor, DescriptorError> {
+    let field = |lo: u32, width: u32| (desc >> lo) & ((1 << width) - 1);
+    let swizzle_mode = match field(61, 3) as u8 {
         0 => SwizzleMode::None,
         1 => SwizzleMode::Swizzle128BWith32BAtomicity,
         2 => SwizzleMode::Swizzle128B,
         4 => SwizzleMode::Swizzle64B,
         6 => SwizzleMode::Swizzle32B,
-        other => return Err(other),
+        other => return Err(DescriptorError::InvalidSwizzle(other)),
     };
+    if let Some(bit) = [15, 31].into_iter().find(|&b| field(b, 1) != 0) {
+        return Err(DescriptorError::ReservedBit(bit));
+    }
+    for (lo, width, expected) in [(46, 3, 0b001), (54, 7, 0)] {
+        let found = field(lo, width);
+        if found != expected {
+            return Err(DescriptorError::FixedField {
+                lo,
+                expected,
+                found,
+            });
+        }
+    }
     Ok(MatrixDescriptor {
-        start_addr: decode_encoded_offset(desc & 0x3FFF),
-        leading_dim_byte_offset: decode_encoded_offset((desc >> 16) & 0x3FFF),
-        stride_dim_byte_offset: decode_encoded_offset((desc >> 32) & 0x3FFF),
-        base_offset: ((desc >> 49) & 0x7) as u8,
-        absolute_leading_stride: (desc >> 52) & 0x1 != 0,
+        start_addr: decode_encoded_offset(field(0, 15)),
+        leading_dim_byte_offset: decode_encoded_offset(field(16, 15)),
+        stride_dim_byte_offset: decode_encoded_offset(field(32, 14)),
+        base_offset: field(49, 3) as u8,
+        absolute_leading_stride: field(52, 1) != 0,
+        lut_b_offset: field(53, 1) != 0,
         swizzle_mode,
     })
 }
@@ -464,7 +526,7 @@ mod tests {
     /// transpose B=1, N=256, M=128.
     #[test]
     fn test_decode_real_kernel_idesc() {
-        let d = decode_instruction_descriptor(138477584);
+        let d = decode_instruction_descriptor(138477584).unwrap();
         assert!(!d.sparse);
         assert_eq!(d.dtype, 1);
         assert_eq!(d.atype, 0);
@@ -482,7 +544,7 @@ mod tests {
     /// setting it must not perturb `M` and must not be dropped.
     #[test]
     fn test_decode_k_dimension_bit() {
-        let d = decode_instruction_descriptor(138477584 | (1 << 29));
+        let d = decode_instruction_descriptor(138477584 | (1 << 29)).unwrap();
         assert_eq!(d.k_select, KSelect::Wide);
         assert_eq!(d.m, 128);
         assert_eq!(d.n, 256);
@@ -497,7 +559,7 @@ mod tests {
     /// `.kind::f16`, and field 1 is e5m2 under `.kind::f8f6f4`.
     #[test]
     fn test_decode_real_fp8_kernel_idesc() {
-        let d = decode_instruction_descriptor(0x0804_0010);
+        let d = decode_instruction_descriptor(0x0804_0010).unwrap();
         assert!(!d.sparse);
         assert_eq!(d.dtype, 1);
         assert_eq!(d.atype, 0);
@@ -553,18 +615,93 @@ mod tests {
         assert_eq!(d.swizzle_mode, SwizzleMode::Swizzle128B);
     }
 
+    /// Bits 46-48 of every well-formed descriptor: the fixed `0b001`.
+    const FIXED_CONSTANT: u64 = 1 << 46;
+
     #[test]
     fn test_invalid_swizzle_mode_rejected() {
         for invalid in [3u64, 5, 7] {
-            let desc = invalid << 61;
-            assert_eq!(decode_matrix_descriptor(desc), Err(invalid as u8));
+            let desc = FIXED_CONSTANT | invalid << 61;
+            assert_eq!(
+                decode_matrix_descriptor(desc),
+                Err(DescriptorError::InvalidSwizzle(invalid as u8))
+            );
         }
     }
 
     #[test]
     fn test_no_swizzle_mode_decodes() {
-        let d = decode_matrix_descriptor(0).unwrap();
+        let d = decode_matrix_descriptor(FIXED_CONSTANT).unwrap();
         assert_eq!(d.swizzle_mode, SwizzleMode::None);
+    }
+
+    #[test]
+    fn test_descriptor_reserved_bits_rejected() {
+        for bit in [15, 31] {
+            assert_eq!(
+                decode_matrix_descriptor(FIXED_CONSTANT | 1 << bit),
+                Err(DescriptorError::ReservedBit(bit))
+            );
+        }
+    }
+
+    #[test]
+    fn test_descriptor_fixed_constant_fields_checked() {
+        // Bits 46-48 missing their fixed 0b001, or holding anything else.
+        for found in [0b000, 0b010, 0b011, 0b111] {
+            assert_eq!(
+                decode_matrix_descriptor(found << 46),
+                Err(DescriptorError::FixedField {
+                    lo: 46,
+                    expected: 0b001,
+                    found
+                })
+            );
+        }
+        // Bits 54-60 must be 0.
+        assert_eq!(
+            decode_matrix_descriptor(FIXED_CONSTANT | 1 << 57),
+            Err(DescriptorError::FixedField {
+                lo: 54,
+                expected: 0,
+                found: 1 << 3
+            })
+        );
+    }
+
+    /// The start address and leading-dim fields are decoded at their full
+    /// 15-bit width: bit 14 is never produced by `matrix-descriptor-encode`
+    /// (an 18-bit address shifted right by 4), so masking it off would
+    /// wrap an out-of-range address back into shared memory.
+    #[test]
+    fn test_descriptor_address_fields_are_not_truncated() {
+        let d = decode_matrix_descriptor(FIXED_CONSTANT | 1 << 14 | 1 << 30).unwrap();
+        assert_eq!(d.start_addr, 1 << 18);
+        assert_eq!(d.leading_dim_byte_offset, 1 << 18);
+    }
+
+    #[test]
+    fn test_descriptor_lut_b_offset_bit_decodes() {
+        assert!(
+            !decode_matrix_descriptor(FIXED_CONSTANT)
+                .unwrap()
+                .lut_b_offset
+        );
+        assert!(
+            decode_matrix_descriptor(FIXED_CONSTANT | 1 << 53)
+                .unwrap()
+                .lut_b_offset
+        );
+    }
+
+    #[test]
+    fn test_idesc_reserved_bits_rejected() {
+        for bit in [6, 23] {
+            assert_eq!(
+                decode_instruction_descriptor(0x0804_0010 | 1 << bit),
+                Err(ReservedIdescBit(bit))
+            );
+        }
     }
 
     fn atomless_desc() -> MatrixDescriptor {
@@ -576,6 +713,7 @@ mod tests {
             stride_dim_byte_offset: 0,
             base_offset: 0,
             absolute_leading_stride: false,
+            lut_b_offset: false,
             swizzle_mode: SwizzleMode::Swizzle128B,
         }
     }
@@ -646,6 +784,7 @@ mod tests {
             stride_dim_byte_offset: 0,
             base_offset: 0,
             absolute_leading_stride: false,
+            lut_b_offset: false,
             swizzle_mode: mode,
         }
     }

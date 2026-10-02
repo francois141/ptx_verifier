@@ -2588,7 +2588,15 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<()> {
         let unsupported = |what: String| EvalError::Unsupported { pc, what };
         let idesc_val = self.concrete_operand(t, pc, idesc, "tcgen05.mma idesc")? as u32;
-        let id = tcgen05_mma::decode_instruction_descriptor(idesc_val);
+        let id = tcgen05_mma::decode_instruction_descriptor(idesc_val).map_err(|bit| {
+            EvalError::InvalidEncoding {
+                pc,
+                what: format!(
+                    "tcgen05.mma idesc {idesc_val:#x} has reserved bit {} set (must be 0)",
+                    bit.0
+                ),
+            }
+        })?;
 
         if id.sparse {
             return Err(unsupported(
@@ -2877,8 +2885,17 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<tcgen05_mma::MatrixDescriptor> {
         let unsupported = |reason: String| EvalError::Unsupported { pc, what: reason };
         let raw = self.concrete_operand(t, pc, desc, what)? as u64;
-        let md = tcgen05_mma::decode_matrix_descriptor(raw)
-            .map_err(|sw| unsupported(format!("{what} has invalid swizzle-mode encoding {sw}")))?;
+        let md =
+            tcgen05_mma::decode_matrix_descriptor(raw).map_err(|e| EvalError::InvalidEncoding {
+                pc,
+                what: format!("{what} {raw:#x}: {e}"),
+            })?;
+        if md.lut_b_offset {
+            return Err(unsupported(format!(
+                "{what}'s lut::b K-segment offset bit (53) is set, but \
+                 .decompress::lut::b is not modeled"
+            )));
+        }
         if md.absolute_leading_stride {
             return Err(unsupported(format!(
                 "{what}'s absolute leading-dimension stride mode (sm_103a only) is not modeled"
@@ -4020,6 +4037,7 @@ impl<'p> Interpreter<'p> {
             stride_dim_byte_offset,
             base_offset: 0,
             absolute_leading_stride: false,
+            lut_b_offset: false,
             swizzle_mode: mma_swizzle,
         };
 

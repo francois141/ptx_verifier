@@ -198,6 +198,11 @@ pub enum EvalError {
     BarrierMismatch { pc: InstrId, reason: String },
     /// The instruction (or one of its modes) is not supported by the evaluator.
     Unsupported { pc: InstrId, what: String },
+    /// A runtime operand encodes something the PTX ISA defines as invalid
+    /// (a reserved descriptor bit set, a shape outside the instruction's
+    /// valid set, ...) - unlike [`Self::Unsupported`], no hardware would
+    /// accept it either.
+    InvalidEncoding { pc: InstrId, what: String },
     /// The per-analysis instruction budget was exhausted (runaway loop guard).
     InstructionLimit { limit: u64 },
     /// Configuration problem detected before/while setting up execution.
@@ -516,6 +521,7 @@ impl fmt::Display for EvalError {
                 write!(f, "barrier mismatch at {}: {}", pc, reason)
             }
             Self::Unsupported { pc, what } => write!(f, "unsupported at {}: {}", pc, what),
+            Self::InvalidEncoding { pc, what } => write!(f, "invalid encoding at {}: {}", pc, what),
             Self::InstructionLimit { limit } => {
                 write!(f, "instruction limit exceeded ({} instructions)", limit)
             }
