@@ -2200,13 +2200,19 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
     );
 }
 
-/// `idesc` fields the ISA limits by `.kind`/`.ws`: saturate (bit 3) is
-/// integer-only, the B-reuse maximum shift (bits 30-31) only exists for
-/// `.ws`, and the D type field (bits 4-5) has no value above f32 = 1 (S32
-/// = 2 is `.kind::i8`'s).
+/// `idesc` fields the ISA reserves or limits by `.kind`/`.ws`: bits 6 and
+/// 23 must be 0, saturate (bit 3) is integer-only, the B-reuse maximum
+/// shift (bits 30-31) only exists for `.ws`, and the D type field (bits
+/// 4-5) has no value above f32 = 1 (S32 = 2 is `.kind::i8`'s).
 #[test]
 fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
     let d = SWIZZLE128B_DESC;
+    for bit in [6, 23] {
+        expect_invalid_encoding(
+            run_tcgen05_mma("f16", false, F16_IDESC | 1 << bit, d, d),
+            &format!("reserved bit {bit}"),
+        );
+    }
     expect_invalid_encoding(
         run_tcgen05_mma("f16", false, F16_IDESC | 1 << 3, d, d),
         "saturate",
