@@ -2329,6 +2329,76 @@ fn test_mbarrier_shared_cluster_validity() {
     }
 }
 
+/// `redux.sync` has three forms (PTX ISA 9.7.15.13): `.add/.min/.max` on
+/// `.u32/.s32`, `.and/.or/.xor` on `.b32`, and `.min/.max{.abs}{.NaN}` on
+/// `.f32`. Any other combination is invalid PTX; `.abs`/`.NaN` are valid but
+/// not modeled.
+#[test]
+fn test_redux_sync_forms() {
+    let kernel = |form: &str| {
+        let r = if form.ends_with("f32") { "%f" } else { "%r" };
+        parse(&format!(
+            ".version 8.8\n.target sm_100a\n.address_size 64\n\n.visible .entry k()
+{{
+    .reg .b32 %r<4>;
+    .reg .f32 %f<4>;
+    redux.sync.{form} {r}1, {r}2, -1;
+    ret;
+}}
+"
+        ))
+    };
+    let analyze = |form| analyze_kernel(&kernel(form), None, AnalysisConfig::new((32, 1, 1)));
+    for form in ["add.u32", "max.s32", "xor.b32", "min.f32", "max.f32"] {
+        analyze(form).unwrap_or_else(|e| panic!("{form}: {e}"));
+    }
+    for form in ["add.f32", "and.u32", "min.b32", "xor.s32"] {
+        expect_invalid_instruction(&kernel(form), "not a redux.sync form");
+    }
+    for form in ["add.NaN.u32", "or.abs.b32"] {
+        expect_invalid_instruction(&kernel(form), "only apply to redux.sync.f32");
+    }
+    for form in ["min.abs.f32", "max.NaN.f32"] {
+        match analyze(form) {
+            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { .. })) => {}
+            other => panic!("{form}: expected unsupported, got {other:?}"),
+        }
+    }
+}
+
+/// nvcc's warp-max sign trick fuses into one `ReduxSyncBroadcastMax`, but
+/// never over a `.NaN` reduction: that is invalid on `.s32`, so the normal
+/// lowering must see (and reject) it.
+#[test]
+fn test_redux_sync_sign_trick_never_fuses_nan() {
+    let kernel = |nan: &str| {
+        parse(&wrap(&format!(
+            ".visible .entry k()
+{{
+    .reg .pred %p<2>;
+    .reg .b32 %r<4>;
+    .reg .f16 %h<2>;
+    mov.b32 %r1, {{%h1, %h1}};
+    redux.sync.max{nan}.s32 %r2, %r1, -1;
+    setp.lt.s32 %p1, %r2, 0;
+    @%p1 redux.sync.min.s32 %r2, %r1, -1;
+    ret;
+}}
+"
+        )))
+    };
+    let result = analyze_kernel(&kernel(""), None, AnalysisConfig::new((32, 1, 1)));
+    assert!(
+        !matches!(
+            result,
+            Err(AnalysisError::Lower(LowerError::InvalidInstruction { .. }))
+        ),
+        "{:?}",
+        result.err()
+    );
+    expect_invalid_instruction(&kernel(".NaN"), "only apply to redux.sync.f32");
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

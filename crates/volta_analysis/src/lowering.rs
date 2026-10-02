@@ -4822,6 +4822,7 @@ fn match_warp_max_sign_trick(
         return None;
     };
     if max.abs
+        || max.nan
         || max.op != RedOp::Max
         || max.ty != ScalarType::S32
         || ctx.resolve_operand(&max.src).ok()? != pair
@@ -4866,6 +4867,7 @@ fn match_warp_max_sign_trick(
     if guard.negated
         || guard.reg != sign_check
         || min.abs
+        || min.nan
         || min.op != RedOp::Min
         || min.ty != ScalarType::S32
         || ctx.resolve_operand(&min.src).ok()? != pair
@@ -4899,23 +4901,40 @@ fn lower_redux_sync(
     redux: &ReduxSyncInstr,
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
-    if redux.abs {
-        return Err(unsupported("redux.sync", ".abs modifier"));
-    }
-    let op = match redux.op {
-        RedOp::Add => BinOp::Add,
-        RedOp::And => BinOp::And,
-        RedOp::Or => BinOp::Or,
-        RedOp::Xor => BinOp::Xor,
-        RedOp::Min => BinOp::Min,
-        RedOp::Max => BinOp::Max,
-        RedOp::Inc | RedOp::Dec => {
-            return Err(unsupported(
-                "redux.sync",
-                format!("{:?} (not a valid redux.sync reduction op)", redux.op),
-            ));
+    const NAME: &str = "redux.sync";
+    let invalid = |reason: String| LowerError::InvalidInstruction {
+        instruction: NAME.to_string(),
+        reason,
+    };
+    // The three forms (PTX ISA 9.7.15.13): `.add`/`.min`/`.max` on
+    // `.u32`/`.s32`, `.and`/`.or`/`.xor` on `.b32`, and `.min`/`.max` on
+    // `.f32`, the only type `.abs`/`.NaN` apply to.
+    let op = match (redux.op, redux.ty) {
+        (RedOp::Add, ScalarType::U32 | ScalarType::S32) => BinOp::Add,
+        (RedOp::Min, ScalarType::U32 | ScalarType::S32 | ScalarType::F32) => BinOp::Min,
+        (RedOp::Max, ScalarType::U32 | ScalarType::S32 | ScalarType::F32) => BinOp::Max,
+        (RedOp::And, ScalarType::B32) => BinOp::And,
+        (RedOp::Or, ScalarType::B32) => BinOp::Or,
+        (RedOp::Xor, ScalarType::B32) => BinOp::Xor,
+        (op, ty) => {
+            return Err(invalid(format!(
+                "{op:?} on {ty:?} is not a redux.sync form (.add/.min/.max on .u32/.s32, \
+                 .and/.or/.xor on .b32, .min/.max on .f32)"
+            )));
         }
     };
+    if (redux.abs || redux.nan) && redux.ty != ScalarType::F32 {
+        return Err(invalid(format!(
+            ".abs/.NaN only apply to redux.sync.f32, not {:?}",
+            redux.ty
+        )));
+    }
+    if redux.abs {
+        return Err(unsupported(NAME, ".abs modifier"));
+    }
+    if redux.nan {
+        return Err(unsupported(NAME, ".NaN (NaN propagation is not modeled)"));
+    }
 
     let dst_typed = ctx.resolve_dst_typed(&redux.dst)?;
     let src_typed = ctx.resolve_operand_typed(&redux.src)?;
