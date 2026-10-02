@@ -2173,7 +2173,8 @@ fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle
 
 /// Shapes outside PTX ISA Table 48's `.cta_group::1` dense set are invalid
 /// encodings, not just unmodeled ones: `M = 32` exists only under `.ws`,
-/// N tops out at 256, and `.ws` allows only N = 64/128/256.
+/// N tops out at 256, and `.ws` allows only N = 64/128/256. Table 63 adds
+/// that an 8-bit transposed B needs N in steps of 16.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_shapes() {
     let d = SWIZZLE128B_DESC;
@@ -2191,6 +2192,12 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
     // The same M = 32 is a valid (and modeled) `.ws` shape.
     run_tcgen05_mma("f16", true, with_shape(F16_IDESC, 32, 64), d, d)
         .expect("M = 32, N = 64 under .ws");
+    // The fp8 corpus idesc (M = 128, N = 16), with B transposed and N = 8.
+    let fp8_idesc = with_shape(0x0804_0010 | 1 << 16, 128, 8);
+    expect_invalid_encoding(
+        run_tcgen05_mma("f8f6f4", false, fp8_idesc, d, d),
+        "steps of 16",
+    );
 }
 
 /// An uninitialized shared read is tolerated during execution (the paper's

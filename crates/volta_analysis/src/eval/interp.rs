@@ -2636,6 +2636,14 @@ impl<'p> Interpreter<'p> {
                 }
             )));
         }
+        // Table 63: an 8-bit transposed B needs N in steps of 16.
+        if kind == Tcgen05MmaKind::F8f6f4 && id.transpose_b && !id.n.is_multiple_of(16) {
+            return Err(invalid(format!(
+                "tcgen05.mma .kind::f8f6f4 with a transposed B needs N in steps of 16, \
+                 got N = {}",
+                id.n
+            )));
+        }
         if id.dtype != 1 {
             return Err(unsupported(
                 "tcgen05.mma with a non-f32 accumulator is not modeled".to_string(),
