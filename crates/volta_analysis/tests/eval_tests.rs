@@ -714,6 +714,54 @@ fn test_tcgen05_commit_satisfies_mbarrier_wait() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
+/// Lower `body` (one warp's kernel body using `%r<6>` and a `taddr_slot`)
+/// under `header`.
+fn tcgen05_kernel(header: &str, body: &str) -> Module {
+    parse(&format!(
+        "{header}.visible .entry k()
+{{
+    .reg .b32 %r<6>;
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+{body}
+    ret;
+}}
+"
+    ))
+}
+
+/// The warp-collective `tcgen05.*` instructions require `.sync.aligned`
+/// (PTX ISA: "The mandatory .sync qualifier" / "The mandatory .aligned
+/// qualifier"); dropping either is invalid PTX.
+#[test]
+fn test_tcgen05_rejects_missing_sync_aligned() {
+    for (body, missing) in [
+        (
+            "    tcgen05.alloc.cta_group::1.aligned.shared::cta.b32 [%r3], 32;",
+            ".sync",
+        ),
+        (
+            "    tcgen05.alloc.cta_group::1.sync.shared::cta.b32 [%r3], 32;",
+            ".aligned",
+        ),
+        ("    tcgen05.ld.32x32b.x1.b32 %r1, [%r3];", ".sync"),
+        ("    tcgen05.st.sync.32x32b.x1.b32 [%r3], %r1;", ".aligned"),
+        ("    tcgen05.wait::ld.aligned;", ".sync"),
+        (
+            "    tcgen05.dealloc.cta_group::1.sync.b32 %r3, 32;",
+            ".aligned",
+        ),
+        (
+            "    tcgen05.relinquish_alloc_permit.cta_group::1.sync;",
+            ".aligned",
+        ),
+    ] {
+        let module = tcgen05_kernel(HEADER_SM100A, body);
+        expect_invalid_instruction(&module, &format!("mandatory {missing} qualifier"));
+    }
+}
+
 /// `tcgen05.ld`/`.st` decode `taddr` as a real Tensor Memory address (PTX
 /// ISA 9.7.17.1.1: `[31:16]=lane, [15:0]=column`), not a bare column
 /// number - two warps (64 threads) each pack their *own* quadrant into the

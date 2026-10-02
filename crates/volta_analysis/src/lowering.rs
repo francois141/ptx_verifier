@@ -5254,6 +5254,21 @@ fn lower_ldmatrix(
     Ok(())
 }
 
+/// Reject a warp-collective `tcgen05.*` instruction missing its mandatory
+/// `.sync.aligned` qualifiers (PTX ISA 9.7.18.7-9: "The mandatory .sync
+/// qualifier ..." / "The mandatory .aligned qualifier ...").
+fn require_sync_aligned(modifiers: &[DottedIdent], instruction: &'static str) -> LowerResult<()> {
+    for required in ["sync", "aligned"] {
+        if !modifiers.iter().any(|m| m.to_string() == required) {
+            return Err(LowerError::InvalidInstruction {
+                instruction: instruction.to_string(),
+                reason: format!("missing the mandatory .{required} qualifier"),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Parse and validate the `.cta_group::{1,2}` qualifier every `tcgen05.*`
 /// instruction requires (PTX ISA 9.7.17.5). `::2` (peer-CTA collective
 /// execution) isn't modeled - Volta has no notion of CTA pairs - so it's
@@ -5291,6 +5306,7 @@ fn lower_tcgen05_alloc(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.alloc";
+    require_sync_aligned(modifiers, NAME)?;
     let mut saw_cta_group = false;
 
     for modifier in modifiers {
@@ -5357,6 +5373,7 @@ fn lower_tcgen05_dealloc(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.dealloc";
+    require_sync_aligned(modifiers, NAME)?;
     let mut saw_cta_group = false;
 
     for modifier in modifiers {
@@ -5400,6 +5417,7 @@ fn lower_tcgen05_relinquish_alloc_permit(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.relinquish_alloc_permit";
+    require_sync_aligned(modifiers, NAME)?;
     let mut saw_cta_group = false;
 
     for modifier in modifiers {
@@ -5489,6 +5507,7 @@ fn lower_tcgen05_ld(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.ld";
+    require_sync_aligned(modifiers, NAME)?;
     let mut num: Option<u32> = None;
     let mut shape: Option<Tcgen05LdStShape> = None;
 
@@ -5545,6 +5564,7 @@ fn lower_tcgen05_st(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.st";
+    require_sync_aligned(modifiers, NAME)?;
     let mut num: Option<u32> = None;
     let mut shape: Option<Tcgen05LdStShape> = None;
 
@@ -5608,6 +5628,7 @@ fn lower_tcgen05_wait(
     is_st: bool,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.wait";
+    require_sync_aligned(modifiers, NAME)?;
 
     for modifier in modifiers {
         match modifier.to_string().as_str() {

@@ -71,8 +71,9 @@ pub enum LowerError {
         reason: Option<String>,
     },
 
-    /// The instruction is invalid PTX as written - unlike
-    /// [`Self::UnsupportedInstruction`], no PTX assembler would accept it.
+    /// The instruction is invalid PTX as written (e.g. a mandatory qualifier
+    /// is missing) - unlike [`Self::UnsupportedInstruction`], no PTX
+    /// assembler would accept it.
     InvalidInstruction { instruction: String, reason: String },
 
     /// Invalid operand for instruction
