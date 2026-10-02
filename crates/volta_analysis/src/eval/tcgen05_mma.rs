@@ -750,18 +750,13 @@ mod tests {
     #[test]
     fn test_swizzle_matches_figure_228_k_major() {
         let desc = atomless_desc();
-        // byte offset of (row=1, col=4) should land in cell 0 of row 1:
-        // row 1's row-base is 1 * 128 (128); cell 0 adds 0.
-        assert_eq!(
-            swizzled_element_addr(&desc, 1, 4, 4),
-            1 * 128 + 0 * CELL_BYTES
-        );
-        // (row=3, col=24): logical cell 6, row 3's base is 3 * 128; lands
-        // in physical cell 5.
-        assert_eq!(
-            swizzled_element_addr(&desc, 3, 24, 4),
-            3 * 128 + 5 * CELL_BYTES
-        );
+        // Physical cell `cell` of row `row`: each 128B-swizzle row is 128
+        // bytes wide.
+        let at = |row: u64, cell: u64| row * 128 + cell * CELL_BYTES;
+        // (row=1, col=4) lands in cell 0 of row 1.
+        assert_eq!(swizzled_element_addr(&desc, 1, 4, 4), at(1, 0));
+        // (row=3, col=24): logical cell 6, lands in physical cell 5.
+        assert_eq!(swizzled_element_addr(&desc, 3, 24, 4), at(3, 5));
     }
 
     /// The diagonal (`stride_idx == leading_idx` in cell units) always

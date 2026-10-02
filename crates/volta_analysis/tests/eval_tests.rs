@@ -762,6 +762,46 @@ fn test_tcgen05_rejects_missing_sync_aligned() {
     }
 }
 
+/// `nCols` below the 32-column allocation unit is invalid even when it is
+/// a power of 2, and the column count must not increase between two
+/// allocations (PTX ISA 9.7.18.7.1).
+#[test]
+fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
+    let alloc = |n: u32| {
+        format!("    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], {n};\n")
+    };
+    let err = analyze_kernel(
+        &tcgen05_kernel(HEADER_SM100A, &alloc(16)),
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05InvalidColumnCount { num_cols: 16, .. })
+        ),
+        "{err}"
+    );
+    let err = analyze_kernel(
+        &tcgen05_kernel(HEADER_SM100A, &(alloc(32) + &alloc(64))),
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05IncreasingColumnCount {
+                previous: 32,
+                requested: 64,
+                ..
+            })
+        ),
+        "{err}"
+    );
+}
+
 /// `.exclusive` allocation and deallocation (PTX ISA 9.4+) are recognized
 /// but not implemented: rejected as unsupported naming `.exclusive`, rather
 /// than judged by the non-exclusive rules (96 columns is a valid exclusive
@@ -789,6 +829,36 @@ fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
             other => panic!("expected UnsupportedInstruction, got: {other}"),
         }
     }
+}
+
+/// A `tcgen05.st` whose column range starts in one allocation and runs
+/// past its end is rejected, even though the next columns belong to an
+/// adjacent live allocation (so every cell it touches is allocated).
+#[test]
+fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
+    let module = tcgen05_kernel(
+        HEADER_SM100A,
+        "    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3+0], 32;
+    mov.u32 %r1, 0;
+    // Columns 31 and 32: the last of the first allocation, the first of
+    // the second.
+    mov.u32 %r2, 31;
+    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r2], {%r1, %r1};
+    tcgen05.wait::st.sync.aligned;",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05AccessOutsideAllocation {
+                start_col: 31,
+                num_cols: 2,
+                ..
+            })
+        ),
+        "{err}"
+    );
 }
 
 /// `tcgen05.ld`/`.st` decode `taddr` as a real Tensor Memory address (PTX
@@ -2309,6 +2379,21 @@ fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
     }
 }
 
+/// Malformed shared-memory descriptors (PTX ISA Table 49) are rejected: a
+/// reserved bit, or the fixed `0b001` at bits 46-48 missing.
+#[test]
+fn test_tcgen05_mma_rejects_malformed_descriptors() {
+    let d = SWIZZLE128B_DESC;
+    expect_invalid_encoding(
+        run_tcgen05_mma("f16", false, F16_IDESC, d | 1 << 15, d),
+        "a-desc",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma("f16", false, F16_IDESC, d, d & !(1 << 46)),
+        "fixed-constant field at bit 46",
+    );
+}
+
 /// PTX ISA Table 65: for 8- and 16-bit operands a transposed matrix may
 /// use every swizzling mode except 128B with 32B atomicity.
 #[test]
@@ -2794,7 +2879,7 @@ fn test_misaligned_ldmatrix_row_address() {
 /// rows at the same column instead of two adjacent columns of one row.
 ///
 /// Thread 0 alone copies `in[0..64]` (row-major, 8x8) into shared memory
-/// - no store/store race, one writer - then a barrier hands the fully
+/// (one writer, so no store/store race), then a barrier hands the fully
 /// written matrix to all 32 lanes, which `ldmatrix.trans.x1` and unpack
 /// into `out[2*lane]`/`out[2*lane+1]`. Checking the output expressions
 /// against `in[expected_index]` verifies the exact per-lane mapping above,

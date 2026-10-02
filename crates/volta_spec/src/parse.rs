@@ -655,8 +655,22 @@ mod tests {
     }
 
     #[test]
-    fn index_expressions_reject_subtraction() {
-        let err = parse_spec("dim N; array A[N];\nC[i] = A[i - 1];").unwrap_err();
+    fn index_expressions_allow_subtraction() {
+        let body = output_body("dim N; array A[N];\nC[i] = A[i - 1];");
+        let SpecExpr::Index { array, indices } = body else {
+            panic!("expected an Index, got {:?}", body);
+        };
+        assert_eq!(array, "A");
+        let [IndexExpr::Sub(lhs, rhs)] = indices.as_slice() else {
+            panic!("expected one subtraction index, got {:?}", indices);
+        };
+        assert!(matches!(&**lhs, IndexExpr::Var(v) if v == "i"));
+        assert!(matches!(**rhs, IndexExpr::Int(1)));
+    }
+
+    #[test]
+    fn index_expressions_reject_division() {
+        let err = parse_spec("dim N; array A[N];\nC[i] = A[i / 2];").unwrap_err();
         assert!(matches!(err.error, ParseErrorKind::UnexpectedToken { .. }));
     }
 
