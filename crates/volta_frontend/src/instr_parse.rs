@@ -3325,10 +3325,18 @@ fn parse_membar(
     mp: &mut ModifierParser,
     _operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let level = mp.try_parse::<MemScope>().unwrap_or(MemScope::Cta);
+    let membar = if mp.try_consume(ascii("proxy")) {
+        MembarInstr::Proxy(parse_fence_proxy_kind(mp)?)
+    } else {
+        // `.level` is mandatory: the syntax is `membar.level;`.
+        let level = mp
+            .try_parse::<MembarLevel>()
+            .ok_or(InstrParseError::MissingModifier(ascii("level")))?;
+        MembarInstr::Level(level)
+    };
 
     mp.finish()?;
-    Ok(ParsedInstruction::Membar(MembarInstr { level }))
+    Ok(ParsedInstruction::Membar(membar))
 }
 
 /// Parse fence instruction (Block 135). `.proxy.proxykind` (if present) must

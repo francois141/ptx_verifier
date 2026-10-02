@@ -2245,6 +2245,44 @@ fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
     );
 }
 
+/// `membar.level` is `.cta`, `.gl` or `.sys` and mandatory (PTX ISA
+/// 9.7.15.4): `.gl` lowers, while `fence`'s `.cluster`/`.gpu` scopes and a
+/// missing level fail to parse (which lowering reports as unsupported).
+/// `membar.proxy` parses but is not implemented yet.
+#[test]
+fn test_membar_levels() {
+    let kernel = |level: &str| {
+        parse(&wrap(&format!(
+            ".visible .entry k()\n{{\n    membar{level};\n    ret;\n}}\n"
+        )))
+    };
+    let analyze = |level| analyze_kernel(&kernel(level), None, AnalysisConfig::new((1, 1, 1)));
+    for level in [".cta", ".gl", ".sys"] {
+        analyze(level).unwrap_or_else(|e| panic!("membar{level}: {e}"));
+    }
+    for level in [".cluster", ".gpu", ""] {
+        match analyze(level) {
+            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+                let reason = reason.unwrap_or_default();
+                assert!(reason.contains("parsing failed"), "membar{level}: {reason}");
+            }
+            other => panic!("membar{level}: expected a parse failure, got {other:?}"),
+        }
+    }
+    for proxy in ["alias", "async"] {
+        let src = wrap_sm90a(&format!(
+            ".visible .entry k()\n{{\n    membar.proxy.{proxy};\n    ret;\n}}\n"
+        ));
+        match analyze_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1))) {
+            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+                let reason = reason.unwrap_or_default();
+                assert!(reason.contains("not implemented yet"), "{proxy}: {reason}");
+            }
+            other => panic!("membar.proxy.{proxy}: expected unsupported, got {other:?}"),
+        }
+    }
+}
+
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]

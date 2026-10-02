@@ -2214,14 +2214,22 @@ fn lower_parsed_instruction(
         // =========================================================================
         // Synchronization - Membar
         // =========================================================================
-        ParsedInstruction::Membar(membar) => {
-            let scope = match membar.level {
-                ast::MemScope::Cta => MembarScope::Cta,
-                ast::MemScope::Cluster => MembarScope::Cta, // Treat cluster as CTA
-                ast::MemScope::Gpu => MembarScope::Gpu,
-                ast::MemScope::Sys => MembarScope::Sys,
+        ParsedInstruction::Membar(ast::MembarInstr::Level(level)) => {
+            let scope = match level {
+                ast::MembarLevel::Cta => MembarScope::Cta,
+                ast::MembarLevel::Gl => MembarScope::Gpu,
+                ast::MembarLevel::Sys => MembarScope::Sys,
             };
             ctx.emit(LoweredInstr::Membar { scope }, predicate)?;
+        }
+        ParsedInstruction::Membar(ast::MembarInstr::Proxy(_)) => {
+            // TODO: implement `membar.proxy`. On sm_70+ it is a synonym for
+            // `fence.proxy` (PTX ISA 9.7.15.4), so it can lower like
+            // `lower_fence`'s proxy arm; on sm_60 that is an approximation.
+            return Err(unsupported(
+                "membar.proxy",
+                "membar.proxy is not implemented yet",
+            ));
         }
 
         // =========================================================================

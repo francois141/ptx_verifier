@@ -2314,10 +2314,35 @@ pub enum BarMode {
     Red,
 }
 
-/// Membar: `membar.level`
+/// Membar: `membar.level` or `membar.proxy.proxykind` (PTX ISA 9.7.15.4)
 #[derive(Debug, Clone)]
-pub struct MembarInstr {
-    pub level: MemScope,
+pub enum MembarInstr {
+    /// `membar.level`: a thread memory barrier.
+    Level(MembarLevel),
+    /// `membar.proxy.proxykind`: a proxy fence, a synonym for `fence.proxy`
+    /// on sm_70+.
+    Proxy(FenceProxyKind),
+}
+
+/// `membar`'s `.level` (PTX ISA 9.7.15.4: `.level = { .cta, .gl, .sys }`),
+/// distinct from `fence`'s [`MemScope`]: there is no `.cluster`, and the
+/// device level is spelled `.gl`, not `.gpu`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembarLevel {
+    Cta,
+    Gl,
+    Sys,
+}
+
+impl FromAscii for MembarLevel {
+    fn from_ascii(s: &[AsciiChar]) -> Option<Self> {
+        Some(match s.as_bytes() {
+            b"cta" => MembarLevel::Cta,
+            b"gl" => MembarLevel::Gl,
+            b"sys" => MembarLevel::Sys,
+            _ => return None,
+        })
+    }
 }
 
 /// Atomic operation
