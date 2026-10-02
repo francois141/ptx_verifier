@@ -2614,6 +2614,12 @@ impl<'p> Interpreter<'p> {
         }
         let invalid = |what: String| EvalError::InvalidEncoding { pc, what };
         let ws = collector.is_some();
+        // PTX ISA Table 51: saturate is `0 (NA)` for both modeled kinds.
+        if id.saturate {
+            return Err(invalid(format!(
+                "tcgen05.mma {kind:?} idesc {idesc_val:#x} sets the integer-only saturate bit (3)"
+            )));
+        }
         // PTX ISA Table 48, `.cta_group::1` dense shapes: M = 64/128 with N
         // a multiple of 8 up to 256, or under `.ws` M = 32/64/128 with N =
         // 64/128/256 (N's field already encodes it in steps of 8).

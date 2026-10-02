@@ -63,6 +63,9 @@ pub struct InstructionDescriptor {
     pub m: u32,
     /// The K Dimension bit (bit 29, PTX ISA 9.4 Table 51).
     pub k_select: KSelect,
+    /// Saturate for integer types (bit 3): `.kind::i8` only, `0 (NA)` for
+    /// every float kind.
+    pub saturate: bool,
 }
 
 /// An `idesc` bit the ISA reserves as "must be 0" was set (bits 6 and 23,
@@ -125,8 +128,9 @@ fn bits(x: u32, lo: u32, width: u32) -> u32 {
 }
 
 /// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor, failing
-/// only on a set reserved bit (6 or 23); validating the decoded fields
-/// against what's actually modeled is the caller's job.
+/// only on a set reserved bit (6 or 23). Fields whose validity depends on
+/// `.kind` (saturate, shapes, types) are decoded as-is; validating them
+/// against the instruction is the caller's job.
 pub fn decode_instruction_descriptor(
     idesc: u32,
 ) -> Result<InstructionDescriptor, ReservedIdescBit> {
@@ -149,6 +153,7 @@ pub fn decode_instruction_descriptor(
         } else {
             KSelect::Wide
         },
+        saturate: bits(idesc, 3, 1) != 0,
     })
 }
 
@@ -702,6 +707,13 @@ mod tests {
                 Err(ReservedIdescBit(bit))
             );
         }
+    }
+
+    #[test]
+    fn test_idesc_saturate_decode() {
+        let saturate = |idesc| decode_instruction_descriptor(idesc).unwrap().saturate;
+        assert!(saturate(0x0804_0010 | 1 << 3));
+        assert!(!saturate(0x0804_0010));
     }
 
     fn atomless_desc() -> MatrixDescriptor {
