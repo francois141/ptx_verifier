@@ -6,6 +6,7 @@
 //! the reals; addresses, branch predicates, and other control-relevant values
 //! must be concrete (the structured-CTA assumption).
 
+pub mod arithm;
 pub mod config;
 pub mod error;
 pub mod float_bits;

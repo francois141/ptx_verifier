@@ -878,13 +878,10 @@ fn consume_decimal_float(start: usize, src: &[AsciiChar]) -> Option<(usize, Toke
             }
         } else {
             // Must have exponent (`has_exp` is true), but it may be invalid (e.g., "1e" or "1e+")
-            if let Some(new_pos) = consume_exponent(pos, src) {
-                // +1 to skip the 'e' or 'E'
-                exponent = Some((pos + 1 - start, new_pos - start));
-                pos = new_pos;
-            } else {
-                return None;
-            }
+            let new_pos = consume_exponent(pos, src)?;
+            // +1 to skip the 'e' or 'E'
+            exponent = Some((pos + 1 - start, new_pos - start));
+            pos = new_pos;
         }
     }
 
