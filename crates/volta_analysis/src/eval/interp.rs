@@ -876,9 +876,9 @@ impl<'p> Interpreter<'p> {
                 .insert(tid.0 as usize);
         }
         for (id, waiters) in &waiters_by_barrier {
+            self.release_observed_mmas(*id)?;
             let participants = self.mbarriers.prior_participants(*id);
             self.race.sync_mbarrier_waiters(participants, waiters);
-            self.release_observed_mmas(*id);
             self.release_observed_bulk_copies(*id);
         }
         for (tid, _) in &ready {
@@ -2251,7 +2251,7 @@ impl<'p> Interpreter<'p> {
                     .shared
                     .read_mbarrier(addr)
                     .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
-                self.commit_tcgen05_mmas(t, id)?;
+                self.commit_tcgen05_mmas(t, id);
                 self.mbarriers.arrive(id, t, 1, None);
             }
 
@@ -2569,9 +2569,11 @@ impl<'p> Interpreter<'p> {
     ///   issuer's in-flight MMA, and stays locked against `tcgen05.ld`/
     ///   `.st` in flight - later MMAs from `t` are exempt, since the ISA
     ///   executes one thread's MMAs in issue order;
-    /// - the accesses enter χ at the commit
-    ///   ([`Self::commit_tcgen05_mmas`]), so a sync that merely follows the
-    ///   issue orders nothing for other threads.
+    /// - the accesses are χ-checked and recorded here
+    ///   ([`Self::record_mma_accesses`]) and recorded afresh when a waiter
+    ///   observes the completion ([`Self::release_observed_mmas`]), so a
+    ///   sync that merely follows the issue or the commit orders nothing
+    ///   for other threads.
     #[allow(clippy::too_many_arguments)]
     fn exec_tcgen05_mma(
         &mut self,
@@ -2867,7 +2869,7 @@ impl<'p> Interpreter<'p> {
         for &byte in &operand_bytes {
             self.race.lock_src(MemSpace::Shared, byte, 1, t, pc);
         }
-        self.tcgen05_inflight.push(InflightMma {
+        let op = InflightMma {
             issuer: t,
             pc,
             operand_bytes,
@@ -2876,7 +2878,9 @@ impl<'p> Interpreter<'p> {
             d_start_col: d_col_base,
             d_num_cols,
             trackers: Vec::new(),
-        });
+        };
+        Self::record_mma_accesses(&mut self.race, &op)?;
+        self.tcgen05_inflight.push(op);
         Ok(())
     }
 
@@ -2977,9 +2981,9 @@ impl<'p> Interpreter<'p> {
     /// operation's in-flight footprint.
     ///
     /// Each cell is χ-checked here at issue, the same point `D`'s
-    /// accumulator read is checked; the shared-memory operand path instead
-    /// locks its bytes now and enters χ at the commit, because only there
-    /// does it know which mbarrier phase completes it.
+    /// accumulator read is checked; the shared-memory operand path also
+    /// locks its bytes now and enters χ again at the observed completion
+    /// ([`Self::release_observed_mmas`]).
     fn read_mma_a_tmem(
         &mut self,
         t: ThreadId,
@@ -3102,51 +3106,64 @@ impl<'p> Interpreter<'p> {
     }
 
     /// `tcgen05.commit`'s tracking half: every MMA `t` has in flight
-    /// becomes completable by `mbar`'s forming phase. The first commit
-    /// covering an MMA is also its earliest possible completion signal, so
-    /// that is where its accesses enter χ, attributed to `t`: a waiter
-    /// observing the phase syncs with `t` (`try_fire_mbarrier`), making
-    /// them visible exactly along the ISA's completion edge.
-    fn commit_tcgen05_mmas(&mut self, t: ThreadId, mbar: MbarrierId) -> EvalResult<()> {
+    /// becomes completable by `mbar`'s forming phase.
+    fn commit_tcgen05_mmas(&mut self, t: ThreadId, mbar: MbarrierId) {
         let phase = self.mbarriers.completed_phases(mbar);
         for op in self.tcgen05_inflight.iter_mut().filter(|op| op.issuer == t) {
-            if op.trackers.is_empty() {
-                for &byte in &op.operand_bytes {
-                    self.race
-                        .read_via(MemSpace::Shared, byte, 1, t, op.pc, Proxy::Async)
-                        .map_err(Self::mem_hazard_error)?;
-                }
-                for &lane in &op.d_lanes {
-                    for col in op.d_start_col..op.d_start_col + op.d_num_cols {
-                        self.race
-                            .tmem_write(lane, col, t, op.pc)
-                            .map_err(Self::tmem_race_error)?;
-                    }
-                }
-            }
             op.trackers.push((mbar, phase));
+        }
+    }
+
+    /// χ-check and record `op`'s accesses - its shared-memory operand
+    /// reads (through the async proxy) and its `D` writes - attributed to
+    /// its issuer. Done at issue, where the check matters: the MMA may
+    /// execute any time after it, so it conflicts with every access not
+    /// ordered before the issue. Done again at the observed completion
+    /// ([`Self::release_observed_mmas`]), where the recording matters. In
+    /// between, the in-flight record rejects every other access to these
+    /// locations, so a sync that clears the issue's entries loses nothing.
+    fn record_mma_accesses(race: &mut RaceTracker, op: &InflightMma) -> EvalResult<()> {
+        for &byte in &op.operand_bytes {
+            race.read_via(MemSpace::Shared, byte, 1, op.issuer, op.pc, Proxy::Async)
+                .map_err(Self::mem_hazard_error)?;
+        }
+        for &lane in &op.d_lanes {
+            for col in op.d_start_col..op.d_start_col + op.d_num_cols {
+                race.tmem_write(lane, col, op.issuer, op.pc)
+                    .map_err(Self::tmem_race_error)?;
+            }
         }
         Ok(())
     }
 
-    /// A waiter just observed `mbar`'s last completed phase: every MMA
-    /// tracked by that phase (or an earlier one of `mbar`) has completed,
-    /// so its operand locks and in-flight `D` footprint are dropped.
-    fn release_observed_mmas(&mut self, mbar: MbarrierId) {
+    /// A waiter is about to observe `mbar`'s last completed phase: every
+    /// MMA tracked by that phase (or an earlier one of `mbar`) has
+    /// completed, so its operand locks and in-flight `D` footprint are
+    /// dropped. Its accesses are recorded in χ afresh first: the operation
+    /// only completed now, so a sync between its issue and here (which
+    /// cleared the issue's entries) orders nothing about it, and the
+    /// caller's following waiter sync is what orders it - for the waiters
+    /// alone. Their entries can't conflict here: every other access to
+    /// those locations since the issue was rejected against the in-flight
+    /// record.
+    fn release_observed_mmas(&mut self, mbar: MbarrierId) -> EvalResult<()> {
         let observed = self.mbarriers.completed_phases(mbar);
-        let race = &mut self.race;
-        self.tcgen05_inflight.retain(|op| {
-            let done = op
-                .trackers
-                .iter()
-                .any(|&(m, phase)| m == mbar && phase < observed);
-            if done {
-                for &byte in &op.operand_bytes {
-                    race.release_src(MemSpace::Shared, byte, 1, op.issuer, op.pc);
-                }
+        let (done, in_flight) = std::mem::take(&mut self.tcgen05_inflight)
+            .into_iter()
+            .partition(|op| {
+                op.trackers
+                    .iter()
+                    .any(|&(m, phase)| m == mbar && phase < observed)
+            });
+        self.tcgen05_inflight = in_flight;
+        for op in &done {
+            Self::record_mma_accesses(&mut self.race, op)?;
+            for &byte in &op.operand_bytes {
+                self.race
+                    .release_src(MemSpace::Shared, byte, 1, op.issuer, op.pc);
             }
-            !done
-        });
+        }
+        Ok(())
     }
 
     // =====================================================================

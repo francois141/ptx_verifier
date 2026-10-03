@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use volta_analysis::driver::{EquivOutcome, analyze_kernel, check_output_equivalence};
+use volta_analysis::lowered::MemSpace;
 use volta_analysis::numeric;
 use volta_analysis::{AnalysisError, LowerError};
 
@@ -16,7 +17,7 @@ fn check_equiv(a: &AnalysisOutput, b: &AnalysisOutput) -> EquivOutcome {
     check_output_equivalence(a, b, &arrays).unwrap()
 }
 use volta_analysis::eval::{
-    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, EvalError, ParamValue,
+    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, EvalError, ParamValue, ThreadId,
 };
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
@@ -2033,6 +2034,289 @@ MMA_WAIT:
         err
     );
 }
+
+/// A two-warp CTA: warp 0 allocates Tensor Memory, thread 0 issues an
+/// `M = 128`, `N = 8` `tcgen05.mma` (whose `D` spans all 128 lanes, so
+/// warp 1's quadrant too) and commits it to `mma_bar`, then both warps run
+/// `body`. `%r1` is the allocation's base address, `%r4` the mbarrier,
+/// `%r6` a `count = 32` mbarrier `gate`, `%p2` "in warp 0".
+fn tcgen05_mma_two_warp_kernel(body: &str) -> Module {
+    parse(&wrap(&format!(
+        ".visible .entry k()
+{{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<3>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[1024];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .shared .align 8 .b64 gate;
+
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %r4, mma_bar;
+    mov.u32 %r6, gate;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    setp.lt.u32 %p2, %r5, 32;
+    @!%p2 bra ALLOCATED;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+ALLOCATED:
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    @%p1 mbarrier.init.shared.b64 [%r6], 32;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u64 %rd1, a_buf;
+    shr.u64 %rd1, %rd1, 4;
+    or.b64 %rd1, %rd1, 70377334112256;
+    mov.u64 %rd2, b_buf;
+    shr.u64 %rd2, %rd2, 4;
+    or.b64 %rd2, %rd2, 70377334112256;
+    mov.u32 %r2, 134348816;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {{0,0,0,0}}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
+
+{body}
+    ret;
+}}
+"
+    )))
+}
+
+/// A `bar.sync` between the commit and the MMA's completion orders nothing
+/// about the MMA: warp 1 never waits on `mma_bar`, and only warp 0's later
+/// wait observes the completion. Warp 1 is held back until then by `gate`,
+/// whose phase thread 1's `complete_tx` finishes - no arrive, so no
+/// ordering edge from warp 0. The barrier must not have erased the MMA's
+/// χ entries: warp 1's read of `D` still races its write.
+#[test]
+fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    bar.sync 0;
+    @!%p2 bra READ;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    setp.eq.s32 %p3, %r5, 1;
+    @%p3 mbarrier.complete_tx.shared::cta.b64 [%r6], 32;
+    bra DONE;
+READ:
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r6], 1;
+GATE:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r6], 0;
+    @!%pw bra GATE;
+    add.u32 %r7, %r1, 2097152;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r7];
+    tcgen05.wait::ld.sync.aligned;
+DONE:",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::TensorMemoryRace {
+            lane,
+            prior,
+            current,
+            ..
+        }) => {
+            assert_eq!(*lane, 32);
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(prior.is_write);
+            assert_eq!(current.thread.warp(), ThreadId(32).warp());
+        }
+        other => panic!("expected TensorMemoryRace, got: {}", other),
+    }
+}
+
+/// The commit only attaches the completing mbarrier phase: the MMA stays
+/// in flight - `D` locked since the issue - until a waiter observes that
+/// phase. Warp 0 reads its quadrant of `D` right after the commit, without
+/// waiting on `mma_bar`, and hits the in-flight record.
+#[test]
+fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    @!%p2 bra DONE;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r1];
+    tcgen05.wait::ld.sync.aligned;
+DONE:",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Tcgen05AsyncHazard {
+            quadrant,
+            prior,
+            current,
+            ..
+        }) => {
+            assert_eq!(*quadrant, 0);
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(prior.is_write);
+            assert!(!current.is_write);
+        }
+        other => panic!("expected Tcgen05AsyncHazard, got: {}", other),
+    }
+}
+
+/// The MMA's shared-memory operands stay write-locked from the issue
+/// until a waiter observes its completion - a `bar.sync` in between lifts
+/// nothing. Nobody waits on `mma_bar` here, and warp 1 overwrites the
+/// first bytes of `A` after the barrier.
+#[test]
+fn test_tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    bar.sync 0;
+    @%p2 bra DONE;
+    mov.u64 %rd1, a_buf;
+    st.shared.u32 [%rd1], %r5;
+DONE:",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::AsyncCopyHazard {
+            space,
+            prior,
+            current,
+            ..
+        }) => {
+            assert_eq!(*space, MemSpace::Shared);
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(!prior.is_write);
+            assert_eq!(current.thread, ThreadId(32));
+            assert!(current.is_write);
+        }
+        other => panic!("expected AsyncCopyHazard, got: {}", other),
+    }
+}
+
+/// The control: a `bar.sync` *after* warp 0 observed the completion does
+/// order the MMA before warp 1's read.
+#[test]
+fn test_tcgen05_mma_bar_sync_after_completion_orders_the_read() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    @!%p2 bra SYNC;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+SYNC:
+    bar.sync 0;
+    @%p2 bra DONE;
+    add.u32 %r6, %r1, 2097152;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
+    tcgen05.wait::ld.sync.aligned;
+DONE:",
+    );
+    analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
+}
+
+/// The control: warp 1 waiting on `mma_bar` itself is ordered after the
+/// completion, whatever `bar.sync` ran before it.
+#[test]
+fn test_tcgen05_mma_every_reader_waiting_is_accepted() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    bar.sync 0;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    @%p2 bra DONE;
+    add.u32 %r6, %r1, 2097152;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
+    tcgen05.wait::ld.sync.aligned;
+DONE:",
+    );
+    analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
+}
+
+/// The MMA may write `D` any time after issue, so a `bar.sync` between
+/// the issue and the commit orders nothing about it either: warp 1 reads
+/// `D`'s cells first, then releases thread 0 through `gate` with a bare
+/// `complete_tx` (no ordering edge), and thread 0 issues the MMA over
+/// them. The read must still race the MMA's write, though the barrier
+/// runs before the commit.
+#[test]
+fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
+    let module = parse(&wrap(
+        ".visible .entry k()
+{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<9>;
+    .reg .b64 %rd<3>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[1024];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .shared .align 8 .b64 gate;
+
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %r4, mma_bar;
+    mov.u32 %r6, gate;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    setp.lt.u32 %p2, %r5, 32;
+    @!%p2 bra ALLOCATED;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+ALLOCATED:
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    @%p1 mbarrier.init.shared.b64 [%r6], 1;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    @!%p2 bra READ;
+    @!%p1 bra SYNC;
+
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r6], 4;
+GATE:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r6], 0;
+    @!%pw bra GATE;
+    mov.u64 %rd1, a_buf;
+    shr.u64 %rd1, %rd1, 4;
+    or.b64 %rd1, %rd1, 70377334112256;
+    mov.u64 %rd2, b_buf;
+    shr.u64 %rd2, %rd2, 4;
+    or.b64 %rd2, %rd2, 70377334112256;
+    mov.u32 %r2, 134348816;
+    mov.pred %p0, 0;
+    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
+    bra SYNC;
+
+READ:
+    add.u32 %r7, %r1, 2097152;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r8, [%r7];
+    tcgen05.wait::ld.sync.aligned;
+    setp.eq.s32 %p3, %r5, 32;
+    @%p3 mbarrier.complete_tx.shared::cta.b64 [%r6], 4;
+
+SYNC:
+    bar.sync 0;
+    @!%p1 bra DONE;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+DONE:
+    ret;
+}
+",
+    ));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::TensorMemoryRace {
+            lane,
+            prior,
+            current,
+            ..
+        }) => {
+            assert_eq!(*lane, 32);
+            assert_eq!(prior.thread, ThreadId(32));
+            assert!(!prior.is_write);
+            assert_eq!(current.thread, ThreadId(0));
+            assert!(current.is_write);
+        }
+        other => panic!("expected TensorMemoryRace, got: {}", other),
+    }
+}
+
 
 /// A `.kind::f8f6f4` `tcgen05.mma` with `A` in e4m3 and `B` in e5m2 (the
 /// two type fields differ, so each operand is decoded with its own format),

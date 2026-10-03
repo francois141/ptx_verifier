@@ -909,6 +909,24 @@ mod tests {
         }
     }
 
+    /// Unwrap a `read`/`write`/`lock_dst` error as an `AsyncHazardInfo`,
+    /// panicking on any other outcome.
+    fn expect_async_hazard(result: Result<(), MemHazard>) -> AsyncHazardInfo {
+        match result {
+            Err(MemHazard::AsyncCopy(h)) => h,
+            Err(MemHazard::Race(info)) => {
+                panic!("expected an async hazard, got a race: {:?}", info)
+            }
+            Err(MemHazard::GenericProxyUnfenced(h)) => {
+                panic!(
+                    "expected an async hazard, got a proxy-fence hazard: {:?}",
+                    h
+                )
+            }
+            Ok(()) => panic!("expected an async hazard, got Ok"),
+        }
+    }
+
     #[test]
     fn test_write_read_race() {
         let mut chi = RaceTracker::new(4);
@@ -1180,5 +1198,85 @@ mod tests {
         chi.clear_async_proxy_fence(ThreadId(0), Some(MemSpace::Shared));
         chi.read_via(S, 0x10, 4, ThreadId(0), pc(3), Proxy::Async)
             .unwrap();
+    }
+
+    /// A source lock (an in-flight copy or `tcgen05.mma` operand read)
+    /// blocks every write to an overlapping byte - its holder's too - but
+    /// no read, and nothing outside its range.
+    #[test]
+    fn test_src_lock_blocks_every_write_but_no_read() {
+        let mut chi = RaceTracker::new(4);
+        chi.lock_src(S, 0x10, 4, ThreadId(0), pc(1));
+        let hazard = expect_async_hazard(chi.write(S, 0x12, 1, ThreadId(1), pc(2)));
+        assert_eq!(hazard.addr, 0x12);
+        assert_eq!(hazard.prior.thread, ThreadId(0));
+        assert!(!hazard.prior.is_write);
+        assert_eq!(hazard.current.thread, ThreadId(1));
+        expect_async_hazard(chi.write(S, 0x10, 4, ThreadId(0), pc(3)));
+        chi.read(S, 0x10, 4, ThreadId(1), pc(4)).unwrap();
+        chi.read(S, 0x10, 4, ThreadId(0), pc(5)).unwrap();
+        chi.write(S, 0x14, 4, ThreadId(1), pc(6)).unwrap();
+        chi.write(S, 0x0c, 4, ThreadId(1), pc(7)).unwrap();
+    }
+
+    /// A destination lock (an in-flight copy's landing bytes) blocks every
+    /// access to an overlapping byte, read or write, its holder's too.
+    #[test]
+    fn test_dst_lock_blocks_every_access() {
+        let mut chi = RaceTracker::new(4);
+        chi.lock_dst(S, 0x10, 4, ThreadId(0), pc(1)).unwrap();
+        let hazard = expect_async_hazard(chi.read(S, 0x13, 1, ThreadId(1), pc(2)));
+        assert_eq!(hazard.addr, 0x13);
+        assert_eq!(hazard.prior.thread, ThreadId(0));
+        assert!(hazard.prior.is_write);
+        assert!(!hazard.current.is_write);
+        expect_async_hazard(chi.write(S, 0x10, 4, ThreadId(1), pc(3)));
+        expect_async_hazard(chi.read(S, 0x10, 4, ThreadId(0), pc(4)));
+        chi.read(S, 0x14, 4, ThreadId(1), pc(5)).unwrap();
+    }
+
+    /// A destination lock can't be taken over bytes another in-flight
+    /// operation still holds, as source or destination.
+    #[test]
+    fn test_dst_lock_over_a_locked_range_is_a_hazard() {
+        let mut chi = RaceTracker::new(4);
+        chi.lock_src(S, 0x10, 4, ThreadId(0), pc(1));
+        chi.lock_dst(S, 0x20, 4, ThreadId(0), pc(2)).unwrap();
+        let hazard = expect_async_hazard(chi.lock_dst(S, 0x12, 4, ThreadId(1), pc(3)));
+        assert!(!hazard.prior.is_write);
+        let hazard = expect_async_hazard(chi.lock_dst(S, 0x1e, 4, ThreadId(1), pc(4)));
+        assert_eq!(hazard.addr, 0x20);
+        assert!(hazard.prior.is_write);
+    }
+
+    /// No synchronization lifts an async lock: a `bar.sync` (`sync_all`), a
+    /// warp sync (`sync_group`) or an mbarrier waiter sync only clear χ.
+    /// The operation stays in flight until its own completion is observed.
+    #[test]
+    fn test_no_sync_lifts_an_async_lock() {
+        let mut chi = RaceTracker::new(4);
+        chi.lock_src(S, 0x10, 4, ThreadId(0), pc(1));
+        chi.lock_dst(S, 0x20, 4, ThreadId(0), pc(2)).unwrap();
+        chi.sync_all();
+        chi.sync_group(&group(4, &[0, 1, 2, 3]));
+        chi.sync_mbarrier_waiters(&group(4, &[0]), &group(4, &[1, 2, 3]));
+        expect_async_hazard(chi.write(S, 0x10, 4, ThreadId(1), pc(3)));
+        expect_async_hazard(chi.read(S, 0x20, 4, ThreadId(1), pc(4)));
+    }
+
+    /// Releasing a lock - what observing the operation's completion does -
+    /// lifts it for every thread; a release by another `(thread, pc)`
+    /// leaves the source lock alone.
+    #[test]
+    fn test_release_lifts_the_async_locks() {
+        let mut chi = RaceTracker::new(4);
+        chi.lock_src(S, 0x10, 4, ThreadId(0), pc(1));
+        chi.lock_dst(S, 0x20, 4, ThreadId(0), pc(2)).unwrap();
+        chi.release_src(S, 0x10, 4, ThreadId(0), pc(9));
+        expect_async_hazard(chi.write(S, 0x10, 4, ThreadId(1), pc(3)));
+        chi.release_src(S, 0x10, 4, ThreadId(0), pc(1));
+        chi.release_dst(S, 0x20, 4, ThreadId(0), pc(2));
+        chi.write(S, 0x10, 4, ThreadId(1), pc(4)).unwrap();
+        chi.read(S, 0x20, 4, ThreadId(1), pc(5)).unwrap();
     }
 }
