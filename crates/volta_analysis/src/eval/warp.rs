@@ -15,6 +15,7 @@ use volta_frontend::ast::ScalarType;
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::float_bits;
 use crate::eval::interp::Interpreter;
+use crate::eval::tensor_memory::LANES;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::lowered::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
@@ -1222,6 +1223,12 @@ impl Interpreter<'_> {
     /// `tcgen05.dealloc`: deallocate the Tensor Memory range starting at
     /// `taddr`. `taddr`/`num_cols` must agree across the warp for the same
     /// reason as `.alloc`'s `dst`/`num_cols`.
+    ///
+    /// No operation may still be outstanding on the range, in any
+    /// quadrant: an un-waited `tcgen05.ld`/`.st` (any warp's, this one's
+    /// included) or a `tcgen05.mma` whose completion no thread has
+    /// observed would read or write columns that are no longer allocated,
+    /// and may already be reallocated.
     fn exec_tcgen05_dealloc(
         &mut self,
         pc: InstrId,
@@ -1230,6 +1237,26 @@ impl Interpreter<'_> {
         num_cols: u32,
     ) -> EvalResult<()> {
         let taddr = self.uniform_concrete(pc, members, taddr, "tcgen05.dealloc taddr")? as u32;
+        let current = AccessSite {
+            thread: members[0],
+            pc,
+            is_write: true,
+        };
+        for quadrant in 0..LANES / WARP_SIZE {
+            if let Some(prior) = self
+                .race
+                .tcgen05_pending_conflict(quadrant, taddr, num_cols, true)
+            {
+                return Err(EvalError::Tcgen05AsyncHazard {
+                    quadrant,
+                    start_col: taddr,
+                    num_cols,
+                    prior,
+                    current,
+                });
+            }
+            self.check_inflight_mma_tmem(quadrant, taddr, num_cols, current, None)?;
+        }
         self.tensor
             .dealloc(taddr, num_cols)
             .map_err(|e| self.tcgen05_error(members[0], pc, e))

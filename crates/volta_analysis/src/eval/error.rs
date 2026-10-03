@@ -257,9 +257,11 @@ pub enum EvalError {
         start_col: u32,
         num_cols: u32,
     },
-    /// A `tcgen05.ld`/`.st` touched a Tensor Memory column range that
-    /// overlaps a still-unacknowledged (not `tcgen05.wait`-ed) prior async
-    /// `.ld`/`.st` - see `RaceTracker::tcgen05_begin`.
+    /// A Tensor Memory access (a `tcgen05.ld`/`.st`/`.mma`) or a
+    /// `tcgen05.dealloc` touched a column range that overlaps a still-
+    /// outstanding async operation: an un-`tcgen05.wait`-ed `.ld`/`.st`
+    /// (see `RaceTracker::tcgen05_begin`) or a `tcgen05.mma` whose
+    /// completion no thread has observed.
     Tcgen05AsyncHazard {
         quadrant: u32,
         start_col: u32,

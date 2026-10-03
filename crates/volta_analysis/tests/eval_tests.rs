@@ -1048,6 +1048,44 @@ fn test_tcgen05_wait_before_sync_is_accepted() {
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
+/// `tcgen05.dealloc` with an un-waited `tcgen05.ld`/`.st` still
+/// outstanding on the range is rejected: the async op would touch columns
+/// that are no longer allocated.
+#[test]
+fn test_tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected() {
+    for (op, is_write) in [
+        ("tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];", false),
+        ("tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;", true),
+    ] {
+        let module = tcgen05_wait_ordering_kernel(&format!(
+            "    {op}
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;"
+        ));
+        let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+        match &err {
+            AnalysisError::Eval(EvalError::Tcgen05AsyncHazard { prior, current, .. }) => {
+                assert_eq!(prior.is_write, is_write, "{op}");
+                assert!(current.is_write);
+            }
+            other => panic!("{op}: expected Tcgen05AsyncHazard, got: {}", other),
+        }
+    }
+}
+
+/// The control: the same `.ld`/`.st` waited before the `tcgen05.dealloc`
+/// pass.
+#[test]
+fn test_tcgen05_dealloc_after_waiting_is_accepted() {
+    let module = tcgen05_wait_ordering_kernel(
+        "    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
+    tcgen05.wait::ld.sync.aligned;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;",
+    );
+    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+}
+
 /// `tensormap.replace` (building an 8x8 f16 tensor-map entirely in shared
 /// memory, the corpus's own on-device idiom) + `tensormap.cp_fenceproxy` +
 /// `fence.proxy.tensormap::generic.acquire` + `cp.async.bulk.tensor` through
@@ -2315,6 +2353,41 @@ DONE:
         }
         other => panic!("expected TensorMemoryRace, got: {}", other),
     }
+}
+
+/// `tcgen05.dealloc` of `D`'s columns while the MMA writing them is still
+/// in flight - committed, but no thread has observed `mma_bar` - is
+/// rejected.
+#[test]
+fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    @!%p2 bra DONE;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+DONE:",
+    );
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Tcgen05AsyncHazard { prior, current, .. }) => {
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(prior.is_write);
+            assert!(current.is_write);
+        }
+        other => panic!("expected Tcgen05AsyncHazard, got: {}", other),
+    }
+}
+
+/// The control: deallocating after waiting on `mma_bar` is accepted.
+#[test]
+fn test_tcgen05_dealloc_after_the_mma_completed_is_accepted() {
+    let module = tcgen05_mma_two_warp_kernel(
+        "    @!%p2 bra DONE;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+DONE:",
+    );
+    analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
 }
 
 /// A `.kind::f8f6f4` `tcgen05.mma` with `A` in e4m3 and `B` in e5m2 (the
