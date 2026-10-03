@@ -2557,10 +2557,23 @@ fn run_tcgen05_mma(
     a_desc: u64,
     b_desc: u64,
 ) -> Result<AnalysisOutput, AnalysisError> {
+    run_tcgen05_mma_at(0, kind, ws, idesc, a_desc, b_desc)
+}
+
+/// [`run_tcgen05_mma`] with `D` at `d_offset` from the allocation's base
+/// address.
+fn run_tcgen05_mma_at(
+    d_offset: u32,
+    kind: &str,
+    ws: bool,
+    idesc: u32,
+    a_desc: u64,
+    b_desc: u64,
+) -> Result<AnalysisOutput, AnalysisError> {
     let mma = if ws {
-        format!("tcgen05.mma.ws.cta_group::1.kind::{kind} [%r1+0], %rd1, %rd2, %r2, %p0")
+        format!("tcgen05.mma.ws.cta_group::1.kind::{kind} [%r1+{d_offset}], %rd1, %rd2, %r2, %p0")
     } else {
-        format!("tcgen05.mma.cta_group::1.kind::{kind} [%r1+0], %rd1, %rd2, %r2, %p0")
+        format!("tcgen05.mma.cta_group::1.kind::{kind} [%r1+{d_offset}], %rd1, %rd2, %r2, %p0")
     };
     let src = wrap_sm100a(&format!(
         ".visible .entry k()
@@ -2675,6 +2688,25 @@ fn test_tcgen05_mma_rejects_malformed_descriptors() {
         run_tcgen05_mma("f16", false, F16_IDESC, d, d & !(1 << 46)),
         "fixed-constant field at bit 46",
     );
+}
+
+/// `D` must start at Tensor Memory lane 0: a `[d-tmem]` address with a
+/// nonzero lane field (bits 31-16) is rejected as unmodeled, naming the
+/// lane, rather than read as a column far outside the allocation.
+#[test]
+fn test_tcgen05_mma_rejects_a_d_address_off_lane_0() {
+    let d = SWIZZLE128B_DESC;
+    run_tcgen05_mma_at(8, "f16", false, F16_IDESC, d, d).expect("D at lane 0, column 8");
+    for lane in [32, 128] {
+        match run_tcgen05_mma_at(lane << 16, "f16", false, F16_IDESC, d, d) {
+            Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
+                let needle = format!("[d-tmem] at lane {lane}");
+                assert!(what.contains(&needle), "expected {needle:?} in: {what}");
+            }
+            Err(other) => panic!("lane {lane}: expected Unsupported, got: {other}"),
+            Ok(_) => panic!("lane {lane}: expected Unsupported, got Ok"),
+        }
+    }
 }
 
 /// PTX ISA Table 65: for 8- and 16-bit operands a transposed matrix may

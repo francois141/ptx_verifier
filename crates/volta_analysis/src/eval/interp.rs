@@ -2778,7 +2778,17 @@ impl<'p> Interpreter<'p> {
 
         let enable_input_d =
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
-        let d_col_base = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
+        let d_tmem = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
+        // `D` spans all 128 lanes from lane 0 (`tcgen05_mma::d_cell`); any
+        // other lane would shift its rows, and read as part of the column it
+        // would be misreported as an access outside the allocation.
+        if d_tmem >> 16 != 0 {
+            return Err(unsupported(format!(
+                "tcgen05.mma [d-tmem] at lane {} is not modeled (D must start at lane 0)",
+                d_tmem >> 16
+            )));
+        }
+        let d_col_base = d_tmem & 0xFFFF;
         self.tensor
             .check_range(d_col_base, d_num_cols)
             .map_err(|e| self.tcgen05_error(t, pc, e))?;
