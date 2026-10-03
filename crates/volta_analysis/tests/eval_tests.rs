@@ -2317,7 +2317,6 @@ DONE:
     }
 }
 
-
 /// A `.kind::f8f6f4` `tcgen05.mma` with `A` in e4m3 and `B` in e5m2 (the
 /// two type fields differ, so each operand is decoded with its own format),
 /// both K-major under `SwizzleMode::None` (`LBO = 128`, `SBO = 256`), `M =
@@ -7079,6 +7078,156 @@ fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
         "expected an in-flight async-copy hazard, got: {}",
         err
     );
+}
+
+/// A two-warp CTA: thread 0 arms the `count = 1` mbarrier `full` for 16
+/// bytes and issues a `cp.async.bulk` of `in[0..4]` into `buf` completing
+/// on it, then both warps run `body`. `%r4` is `full`, `%r6` a `count =
+/// 32` mbarrier `gate`, `%p2` "in warp 0".
+fn bulk_copy_two_warp_kernel(body: &str) -> Module {
+    parse(&wrap_sm90a(&format!(
+        ".visible .entry k(
+    .param .u64 k_param_0
+)
+{{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<2>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 gate;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r4, full;
+    mov.u32 %r6, gate;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    setp.lt.u32 %p2, %r5, 32;
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    @%p1 mbarrier.init.shared.b64 [%r6], 32;
+    bar.sync 0;
+    @!%p1 bra ISSUED;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r4];
+ISSUED:
+{body}
+    ret;
+}}
+"
+    )))
+}
+
+/// `in` as four `u32`s, passed as the kernel's only parameter.
+fn bulk_copy_config() -> AnalysisConfig {
+    let mut config = AnalysisConfig::new((64, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "in".to_string(),
+        base: 0x10000,
+        elem_width: 4,
+        len: 4,
+        kind: ArrayKind::Input,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("in".to_string())];
+    config
+}
+
+/// A `bar.sync` after the issue orders nothing about the copy's write,
+/// which only warp 0's wait on `full` observes. Warp 1, released by
+/// `gate`'s bare `complete_tx`, reads `buf` unordered with the write -
+/// though the destination lock is gone, since warp 0 observed the
+/// completion.
+#[test]
+fn test_cp_async_bulk_bar_sync_before_completion_orders_nothing() {
+    let module = bulk_copy_two_warp_kernel(
+        "    bar.sync 0;
+    @!%p2 bra READ;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    setp.eq.s32 %p3, %r5, 1;
+    @%p3 mbarrier.complete_tx.shared::cta.b64 [%r6], 32;
+    bra DONE;
+READ:
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r6], 1;
+GATE:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r6], 0;
+    @!%pw bra GATE;
+    ld.shared.u32 %r7, [buf];
+DONE:",
+    );
+    let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::DataRace {
+            space,
+            prior,
+            current,
+            ..
+        }) => {
+            assert_eq!(*space, MemSpace::Shared);
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(prior.is_write);
+            assert_eq!(current.thread.warp(), ThreadId(32).warp());
+            assert!(!current.is_write);
+        }
+        other => panic!("expected DataRace, got: {}", other),
+    }
+}
+
+/// The copy's destination stays locked against every access from the
+/// issue until a waiter observes `full` - a `bar.sync` in between lifts
+/// nothing. Nobody waits here, and warp 1 reads `buf` after the barrier.
+#[test]
+fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
+    let module = bulk_copy_two_warp_kernel(
+        "    bar.sync 0;
+    @%p2 bra DONE;
+    ld.shared.u32 %r7, [buf];
+DONE:",
+    );
+    let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::AsyncCopyHazard { prior, current, .. }) => {
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(prior.is_write);
+            assert_eq!(current.thread, ThreadId(32));
+        }
+        other => panic!("expected AsyncCopyHazard, got: {}", other),
+    }
+}
+
+/// The control: a `bar.sync` *after* warp 0 observed the completion does
+/// order the copy before warp 1's read.
+#[test]
+fn test_cp_async_bulk_bar_sync_after_completion_orders_the_read() {
+    let module = bulk_copy_two_warp_kernel(
+        "    @!%p2 bra SYNC;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+SYNC:
+    bar.sync 0;
+    @%p2 bra DONE;
+    ld.shared.u32 %r7, [buf];
+DONE:",
+    );
+    analyze_kernel(&module, None, bulk_copy_config()).unwrap();
+}
+
+/// The control: every reader waiting on `full` itself is ordered after the
+/// copy, whatever `bar.sync` ran before it.
+#[test]
+fn test_cp_async_bulk_every_reader_waiting_is_accepted() {
+    let module = bulk_copy_two_warp_kernel(
+        "    bar.sync 0;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    @%p2 bra DONE;
+    ld.shared.u32 %r7, [buf];
+DONE:",
+    );
+    analyze_kernel(&module, None, bulk_copy_config()).unwrap();
 }
 
 // =========================================================================

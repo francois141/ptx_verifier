@@ -877,9 +877,9 @@ impl<'p> Interpreter<'p> {
         }
         for (id, waiters) in &waiters_by_barrier {
             self.release_observed_mmas(*id)?;
+            self.release_observed_bulk_copies(*id)?;
             let participants = self.mbarriers.prior_participants(*id);
             self.race.sync_mbarrier_waiters(participants, waiters);
-            self.release_observed_bulk_copies(*id);
         }
         for (tid, _) in &ready {
             let pc = self.threads[*tid].pc;
@@ -4274,23 +4274,34 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// A waiter just observed `mbar`'s last completed phase: every bulk copy
-    /// tracked by that phase (or an earlier one of `mbar`) has completed, so
-    /// its destination locks are dropped - the ISA's implicit generic-async
-    /// proxy fence at completion (9.7.9.25.2) is what makes those bytes
-    /// readable, with no `fence.proxy.async` required.
-    fn release_observed_bulk_copies(&mut self, mbar: MbarrierId) {
+    /// A waiter is about to observe `mbar`'s last completed phase: every
+    /// bulk copy tracked by that phase (or an earlier one of `mbar`) has
+    /// completed, so its destination locks are dropped - the ISA's implicit
+    /// generic-async proxy fence at completion (9.7.9.25.2) is what makes
+    /// those bytes readable, with no `fence.proxy.async` required. The
+    /// copy's write is recorded in χ afresh, as for
+    /// [`Self::release_observed_mmas`]: the copy only completed now, so a
+    /// sync between its issue and here (which cleared the issue's entries)
+    /// orders nothing about it, and the caller's following waiter sync is
+    /// what orders it - for the waiters alone. The write can't conflict
+    /// here: every other access to the destination since the issue was
+    /// rejected against the lock.
+    fn release_observed_bulk_copies(&mut self, mbar: MbarrierId) -> EvalResult<()> {
         let observed = self.mbarriers.completed_phases(mbar);
-        let race = &mut self.race;
-        self.bulk_inflight.retain(|copy| {
-            let done = copy.mbar == mbar && copy.phase < observed;
-            if done {
-                for &(addr, width) in &copy.dst {
-                    race.release_dst(MemSpace::Shared, addr, width, copy.issuer, copy.pc);
-                }
+        let (done, in_flight): (Vec<_>, Vec<_>) = std::mem::take(&mut self.bulk_inflight)
+            .into_iter()
+            .partition(|copy| copy.mbar == mbar && copy.phase < observed);
+        self.bulk_inflight = in_flight;
+        for copy in &done {
+            for &(addr, width) in &copy.dst {
+                self.race
+                    .release_dst(MemSpace::Shared, addr, width, copy.issuer, copy.pc);
+                self.race
+                    .write(MemSpace::Shared, addr, width, copy.issuer, copy.pc)
+                    .map_err(Self::mem_hazard_error)?;
             }
-            !done
-        });
+        }
+        Ok(())
     }
 
     /// Resolve an operand that must be a concrete, non-negative integer
