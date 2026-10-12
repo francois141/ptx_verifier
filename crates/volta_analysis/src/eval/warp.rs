@@ -1215,7 +1215,7 @@ impl Interpreter<'_> {
         let taddr = self
             .tensor
             .alloc(num_cols)
-            .map_err(|e| self.tcgen05_error(leader, pc, e))?;
+            .map_err(|e| EvalError::from_tensor_mem(leader, pc, e))?;
         let value = Value::Scalar(self.arena.int(taddr as i64));
         self.mem_write(leader, pc, MemSpace::Shared, dst_addr, 4, value)
     }
@@ -1259,7 +1259,7 @@ impl Interpreter<'_> {
         }
         self.tensor
             .dealloc(taddr, num_cols)
-            .map_err(|e| self.tcgen05_error(members[0], pc, e))
+            .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))
     }
 
     /// The physical Tensor Memory lane quadrant a thread's warp is
@@ -1356,7 +1356,7 @@ impl Interpreter<'_> {
         let num_cols = shape.num_cols(dst.len());
         self.tensor
             .check_range(base_col, num_cols)
-            .map_err(|e| self.tcgen05_error(members[0], pc, e))?;
+            .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))?;
         let current = AccessSite {
             thread: members[0],
             pc,
@@ -1372,11 +1372,11 @@ impl Interpreter<'_> {
                 let (lane, col) = (lane_base + lane, base_col + col);
                 self.race
                     .tmem_read(lane, col, m, pc)
-                    .map_err(Self::tmem_race_error)?;
+                    .map_err(EvalError::from)?;
                 let v = match self
                     .tensor
                     .read(lane, col)
-                    .map_err(|e| self.tcgen05_error(m, pc, e))?
+                    .map_err(|e| EvalError::from_tensor_mem(m, pc, e))?
                 {
                     Some(v) => v,
                     None => Value::Scalar(self.arena.undefined()),
@@ -1414,7 +1414,7 @@ impl Interpreter<'_> {
         let num_cols = shape.num_cols(src.len());
         self.tensor
             .check_range(base_col, num_cols)
-            .map_err(|e| self.tcgen05_error(members[0], pc, e))?;
+            .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))?;
         let current = AccessSite {
             thread: members[0],
             pc,
@@ -1438,10 +1438,10 @@ impl Interpreter<'_> {
                 }
                 self.race
                     .tmem_write(lane, col, m, pc)
-                    .map_err(Self::tmem_race_error)?;
+                    .map_err(EvalError::from)?;
                 self.tensor
                     .write(lane, col, v)
-                    .map_err(|e| self.tcgen05_error(m, pc, e))?;
+                    .map_err(|e| EvalError::from_tensor_mem(m, pc, e))?;
             }
         }
         Ok(())

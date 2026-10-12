@@ -6,7 +6,9 @@
 use std::fmt;
 
 use crate::eval::ThreadId;
-use crate::eval::memory::GranuleKind;
+use crate::eval::memory::{GranuleKind, MemAccessError};
+use crate::eval::race::{MemHazard, TensorMemRaceInfo};
+use crate::eval::tensor_memory::TensorMemError;
 use crate::lowered::{InstrId, MemSpace};
 use crate::symbols::RegId;
 use crate::tensor_core::MmaShape;
@@ -667,3 +669,139 @@ impl fmt::Display for EvalError {
 impl std::error::Error for EvalError {}
 
 pub type EvalResult<T> = Result<T, EvalError>;
+
+impl EvalError {
+    /// The error for a failed memory access by `t` at `pc`.
+    pub(in crate::eval) fn from_mem_access(
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        e: MemAccessError,
+    ) -> EvalError {
+        match e {
+            MemAccessError::Uninitialized { addr } => EvalError::UninitializedMemory {
+                thread: t,
+                pc,
+                space,
+                addr,
+            },
+            MemAccessError::Reinterpret { addr, width, found } => EvalError::Reinterpretation {
+                thread: t,
+                pc,
+                space,
+                addr,
+                width,
+                found,
+            },
+            MemAccessError::MbarrierOverwrite { addr } => EvalError::MbarrierOverwrite {
+                thread: t,
+                pc,
+                space,
+                addr,
+            },
+            MemAccessError::NoLiveMbarrier { addr } => EvalError::NoLiveMbarrier {
+                thread: t,
+                pc,
+                space,
+                addr,
+            },
+        }
+    }
+
+    /// The error for a failed Tensor Memory operation by `t` at `pc`.
+    pub(in crate::eval) fn from_tensor_mem(
+        t: ThreadId,
+        pc: InstrId,
+        e: TensorMemError,
+    ) -> EvalError {
+        match e {
+            TensorMemError::InvalidColumnCount { num_cols } => {
+                EvalError::Tcgen05InvalidColumnCount {
+                    thread: t,
+                    pc,
+                    num_cols,
+                }
+            }
+            TensorMemError::OutOfSpace {
+                requested,
+                available,
+            } => EvalError::Tcgen05OutOfSpace {
+                thread: t,
+                pc,
+                requested,
+                available,
+            },
+            TensorMemError::IncreasingColumnCount {
+                previous,
+                requested,
+            } => EvalError::Tcgen05IncreasingColumnCount {
+                thread: t,
+                pc,
+                previous,
+                requested,
+            },
+            TensorMemError::AllocAfterRelinquish => {
+                EvalError::Tcgen05AllocAfterRelinquish { thread: t, pc }
+            }
+            TensorMemError::RangeOutsideAllocation {
+                start_col,
+                num_cols,
+            } => EvalError::Tcgen05AccessOutsideAllocation {
+                thread: t,
+                pc,
+                start_col,
+                num_cols,
+            },
+            TensorMemError::DeallocMismatch { taddr, num_cols } => {
+                EvalError::Tcgen05DeallocMismatch {
+                    thread: t,
+                    pc,
+                    taddr,
+                    num_cols,
+                }
+            }
+            TensorMemError::NotAllocated { lane, col } => EvalError::Tcgen05NotAllocated {
+                thread: t,
+                pc,
+                lane,
+                col,
+            },
+        }
+    }
+}
+
+impl From<MemHazard> for EvalError {
+    fn from(hazard: MemHazard) -> Self {
+        match hazard {
+            MemHazard::Race(race) => EvalError::DataRace {
+                space: race.space,
+                addr: race.addr,
+                prior: race.prior,
+                current: race.current,
+            },
+            MemHazard::AsyncCopy(h) => EvalError::AsyncCopyHazard {
+                space: h.space,
+                addr: h.addr,
+                prior: h.prior,
+                current: h.current,
+            },
+            MemHazard::GenericProxyUnfenced(h) => EvalError::GenericProxyFenceHazard {
+                space: h.space,
+                addr: h.addr,
+                prior: h.prior,
+                current: h.current,
+            },
+        }
+    }
+}
+
+impl From<TensorMemRaceInfo> for EvalError {
+    fn from(race: TensorMemRaceInfo) -> Self {
+        EvalError::TensorMemoryRace {
+            lane: race.lane,
+            col: race.col,
+            prior: race.prior,
+            current: race.current,
+        }
+    }
+}

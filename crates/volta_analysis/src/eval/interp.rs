@@ -21,7 +21,7 @@ use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
-use crate::eval::race::{MemHazard, Proxy, RaceTracker, TensorMemRaceInfo};
+use crate::eval::race::{MemHazard, Proxy, RaceTracker};
 use crate::eval::target::TargetFeatures;
 use crate::eval::tcgen05_mma::{self, InflightMma, KSelect, Major, OperandFormat, TmemRange};
 use crate::eval::tensor_map_table::TensorMapTable;
@@ -1339,7 +1339,7 @@ impl<'p> Interpreter<'p> {
                 // guarantees it cannot change before completion.
                 self.race
                     .lock_dst(MemSpace::Shared, dst_addr, cp_size, t, pc)
-                    .map_err(Self::mem_hazard_error)?;
+                    .map_err(EvalError::from)?;
                 if real_bytes > 0 {
                     self.race
                         .lock_src(MemSpace::Global, src_addr, real_bytes, t, pc);
@@ -1443,7 +1443,7 @@ impl<'p> Interpreter<'p> {
                 let src_b = self.operand_value(t, pc, src_b)?;
                 let a = lanes(self, src_a)?;
                 let b = lanes(self, src_b)?;
-                let select_byte = |this: &mut Self, nibble: u16| {
+                let select_byte = |this: &mut Self, nibble: u16| -> EvalResult<ExprId> {
                     let source = if nibble & 7 < 4 { &a } else { &b };
                     let byte = source[(nibble & 3) as usize].ok_or(EvalError::Unsupported {
                         pc,
@@ -2223,7 +2223,7 @@ impl<'p> Interpreter<'p> {
                 let id = self
                     .shared
                     .read_mbarrier(addr)
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 self.commit_tcgen05_mmas(t, id);
                 self.mbarriers.arrive(id, t, 1, None);
             }
@@ -2247,7 +2247,7 @@ impl<'p> Interpreter<'p> {
                 let id = self
                     .shared
                     .read_mbarrier(addr)
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 let thread = &mut self.threads[t];
                 let copies: Vec<PendingCopy> = std::mem::take(&mut thread.groups)
                     .into_iter()
@@ -2347,7 +2347,7 @@ impl<'p> Interpreter<'p> {
                 let id = self.mbarriers.init(count);
                 self.shared
                     .write(addr, 8, Value::Mbarrier(id))
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
             }
 
             LoweredInstr::MbarrierInval {
@@ -2359,7 +2359,7 @@ impl<'p> Interpreter<'p> {
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
                 self.shared
                     .invalidate_mbarrier(addr)
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
             }
 
             LoweredInstr::MbarrierArrive {
@@ -2376,7 +2376,7 @@ impl<'p> Interpreter<'p> {
                 let id = self
                     .shared
                     .read_mbarrier(addr)
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 let count = match count {
                     Some(op) => self.non_negative_operand(t, pc, op, "mbarrier.arrive count")?,
                     None => 1,
@@ -2413,7 +2413,7 @@ impl<'p> Interpreter<'p> {
                 let id = self
                     .shared
                     .read_mbarrier(addr)
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 let tx_count =
                     self.non_negative_operand(t, pc, tx_count, "mbarrier.complete_tx txCount")?;
                 self.mbarriers.complete_tx(id, tx_count);
@@ -2431,7 +2431,7 @@ impl<'p> Interpreter<'p> {
                 let id = self
                     .shared
                     .read_mbarrier(addr)
-                    .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))?;
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 let phase_parity = match self.concrete_operand(
                     t,
                     pc,
@@ -2764,7 +2764,7 @@ impl<'p> Interpreter<'p> {
         let d_col_base = d_tmem & 0xFFFF;
         self.tensor
             .check_range(d_col_base, d_num_cols)
-            .map_err(|e| self.tcgen05_error(t, pc, e))?;
+            .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
 
         // `disable-output-lane`: 4 elements form a 128-bit mask, least
         // significant bit of the first element = lane 0 (PTX ISA
@@ -2811,11 +2811,11 @@ impl<'p> Interpreter<'p> {
                 let mut acc = if enable_input_d {
                     self.race
                         .tmem_read(lane, col, t, pc)
-                        .map_err(Self::tmem_race_error)?;
+                        .map_err(EvalError::from)?;
                     match self
                         .tensor
                         .read(lane, col)
-                        .map_err(|e| self.tcgen05_error(t, pc, e))?
+                        .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?
                     {
                         // A `tcgen05.st` of a `.b32` register leaves raw bits.
                         Some(Value::Scalar(e)) => {
@@ -2845,7 +2845,7 @@ impl<'p> Interpreter<'p> {
                 }
                 self.tensor
                     .write(lane, col, Value::Scalar(acc))
-                    .map_err(|e| self.tcgen05_error(t, pc, e))?;
+                    .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
             }
         }
 
@@ -2995,7 +2995,7 @@ impl<'p> Interpreter<'p> {
         };
         self.tensor
             .check_range(range.start_col, range.num_cols)
-            .map_err(|e| self.tcgen05_error(t, pc, e))?;
+            .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
         let current = AccessSite {
             thread: t,
             pc,
@@ -3029,11 +3029,11 @@ impl<'p> Interpreter<'p> {
                 let col = range.start_col + c;
                 self.race
                     .tmem_read(lane, col, t, pc)
-                    .map_err(Self::tmem_race_error)?;
+                    .map_err(EvalError::from)?;
                 let cell = self
                     .tensor
                     .read(lane, col)
-                    .map_err(|e| self.tcgen05_error(t, pc, e))?;
+                    .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
                 let (lo, hi) = match cell {
                     Some(Value::Pair(lo, hi)) => (lo, hi),
                     Some(_) => {
@@ -3108,12 +3108,12 @@ impl<'p> Interpreter<'p> {
     fn record_mma_accesses(race: &mut RaceTracker, op: &InflightMma) -> EvalResult<()> {
         for &byte in &op.operand_bytes {
             race.read_via(MemSpace::Shared, byte, 1, op.issuer, op.pc, Proxy::Async)
-                .map_err(Self::mem_hazard_error)?;
+                .map_err(EvalError::from)?;
         }
         for &lane in &op.d_lanes {
             for col in op.d_start_col..op.d_start_col + op.d_num_cols {
                 race.tmem_write(lane, col, op.issuer, op.pc)
-                    .map_err(Self::tmem_race_error)?;
+                    .map_err(EvalError::from)?;
             }
         }
         Ok(())
@@ -4091,137 +4091,6 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    pub(in crate::eval) fn mem_error(
-        &self,
-        t: ThreadId,
-        pc: InstrId,
-        space: MemSpace,
-        e: MemAccessError,
-    ) -> EvalError {
-        match e {
-            MemAccessError::Uninitialized { addr } => EvalError::UninitializedMemory {
-                thread: t,
-                pc,
-                space,
-                addr,
-            },
-            MemAccessError::Reinterpret { addr, width, found } => EvalError::Reinterpretation {
-                thread: t,
-                pc,
-                space,
-                addr,
-                width,
-                found,
-            },
-            MemAccessError::MbarrierOverwrite { addr } => EvalError::MbarrierOverwrite {
-                thread: t,
-                pc,
-                space,
-                addr,
-            },
-            MemAccessError::NoLiveMbarrier { addr } => EvalError::NoLiveMbarrier {
-                thread: t,
-                pc,
-                space,
-                addr,
-            },
-        }
-    }
-
-    pub(in crate::eval) fn tcgen05_error(
-        &self,
-        t: ThreadId,
-        pc: InstrId,
-        e: crate::eval::tensor_memory::TensorMemError,
-    ) -> EvalError {
-        use crate::eval::tensor_memory::TensorMemError;
-        match e {
-            TensorMemError::InvalidColumnCount { num_cols } => {
-                EvalError::Tcgen05InvalidColumnCount {
-                    thread: t,
-                    pc,
-                    num_cols,
-                }
-            }
-            TensorMemError::OutOfSpace {
-                requested,
-                available,
-            } => EvalError::Tcgen05OutOfSpace {
-                thread: t,
-                pc,
-                requested,
-                available,
-            },
-            TensorMemError::IncreasingColumnCount {
-                previous,
-                requested,
-            } => EvalError::Tcgen05IncreasingColumnCount {
-                thread: t,
-                pc,
-                previous,
-                requested,
-            },
-            TensorMemError::AllocAfterRelinquish => {
-                EvalError::Tcgen05AllocAfterRelinquish { thread: t, pc }
-            }
-            TensorMemError::RangeOutsideAllocation {
-                start_col,
-                num_cols,
-            } => EvalError::Tcgen05AccessOutsideAllocation {
-                thread: t,
-                pc,
-                start_col,
-                num_cols,
-            },
-            TensorMemError::DeallocMismatch { taddr, num_cols } => {
-                EvalError::Tcgen05DeallocMismatch {
-                    thread: t,
-                    pc,
-                    taddr,
-                    num_cols,
-                }
-            }
-            TensorMemError::NotAllocated { lane, col } => EvalError::Tcgen05NotAllocated {
-                thread: t,
-                pc,
-                lane,
-                col,
-            },
-        }
-    }
-
-    pub(in crate::eval) fn mem_hazard_error(hazard: MemHazard) -> EvalError {
-        match hazard {
-            MemHazard::Race(race) => EvalError::DataRace {
-                space: race.space,
-                addr: race.addr,
-                prior: race.prior,
-                current: race.current,
-            },
-            MemHazard::AsyncCopy(h) => EvalError::AsyncCopyHazard {
-                space: h.space,
-                addr: h.addr,
-                prior: h.prior,
-                current: h.current,
-            },
-            MemHazard::GenericProxyUnfenced(h) => EvalError::GenericProxyFenceHazard {
-                space: h.space,
-                addr: h.addr,
-                prior: h.prior,
-                current: h.current,
-            },
-        }
-    }
-
-    pub(in crate::eval) fn tmem_race_error(race: TensorMemRaceInfo) -> EvalError {
-        EvalError::TensorMemoryRace {
-            lane: race.lane,
-            col: race.col,
-            prior: race.prior,
-            current: race.current,
-        }
-    }
-
     /// Bounds-check, race-check, and read memory.
     ///
     /// Reading in-bounds shared/global bytes that were never written yields
@@ -4264,7 +4133,7 @@ impl<'p> Interpreter<'p> {
             MemSpace::Global | MemSpace::Shared => {
                 self.race
                     .read_via(space, addr, width, t, pc, proxy)
-                    .map_err(Self::mem_hazard_error)?;
+                    .map_err(EvalError::from)?;
                 if space == MemSpace::Global {
                     &self.global
                 } else {
@@ -4282,13 +4151,13 @@ impl<'p> Interpreter<'p> {
             }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => self
                 .memory_mut(space, t)
                 .read(addr, width)
-                .map_err(|e| self.mem_error(t, pc, space, e)),
+                .map_err(|e| EvalError::from_mem_access(t, pc, space, e)),
             Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Global => {
                 // Reading an input array materializes its symbols on demand.
                 if self.materialize_input(addr, width) {
                     self.global
                         .read(addr, width)
-                        .map_err(|e| self.mem_error(t, pc, space, e))
+                        .map_err(|e| EvalError::from_mem_access(t, pc, space, e))
                 } else {
                     Ok(Value::Scalar(self.arena.undefined()))
                 }
@@ -4308,12 +4177,12 @@ impl<'p> Interpreter<'p> {
             {
                 self.global
                     .read(addr, width)
-                    .map_err(|e| self.mem_error(t, pc, space, e))
+                    .map_err(|e| EvalError::from_mem_access(t, pc, space, e))
             }
             Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Shared => {
                 Ok(Value::Scalar(self.arena.undefined()))
             }
-            Err(e) => Err(self.mem_error(t, pc, space, e)),
+            Err(e) => Err(EvalError::from_mem_access(t, pc, space, e)),
         }
     }
 
@@ -4443,9 +4312,9 @@ impl<'p> Interpreter<'p> {
                 if benign {
                     self.race
                         .write_with(space, addr, width, t, pc, true)
-                        .map_err(Self::mem_hazard_error)?;
+                        .map_err(EvalError::from)?;
                 } else {
-                    result.map_err(Self::mem_hazard_error)?;
+                    result.map_err(EvalError::from)?;
                 }
                 if space == MemSpace::Global {
                     &mut self.global
@@ -4472,8 +4341,8 @@ impl<'p> Interpreter<'p> {
             }) if self.split_concrete_scalar(space, t, start, found_width, addr, width) => self
                 .memory_mut(space, t)
                 .write(addr, width, value)
-                .map_err(|e| self.mem_error(t, pc, space, e)),
-            result => result.map_err(|e| self.mem_error(t, pc, space, e)),
+                .map_err(|e| EvalError::from_mem_access(t, pc, space, e)),
+            result => result.map_err(|e| EvalError::from_mem_access(t, pc, space, e)),
         }
     }
 

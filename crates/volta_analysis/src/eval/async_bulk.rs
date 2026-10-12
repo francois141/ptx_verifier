@@ -362,7 +362,7 @@ impl<'p> Interpreter<'p> {
         self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
         self.shared
             .read_mbarrier(addr)
-            .map_err(|e| self.mem_error(t, pc, MemSpace::Shared, e))
+            .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))
     }
 
     /// Perform a complete-tx of `bytes` on the mbarrier object at shared
@@ -398,7 +398,7 @@ impl<'p> Interpreter<'p> {
         for &(addr, width) in &dst {
             self.race
                 .lock_dst(MemSpace::Shared, addr, width, t, pc)
-                .map_err(Self::mem_hazard_error)?;
+                .map_err(EvalError::from)?;
         }
         self.bulk_inflight.push(InflightBulkCopy {
             issuer: t,
@@ -437,7 +437,7 @@ impl<'p> Interpreter<'p> {
                     .release_dst(MemSpace::Shared, addr, width, copy.issuer, copy.pc);
                 self.race
                     .write(MemSpace::Shared, addr, width, copy.issuer, copy.pc)
-                    .map_err(Self::mem_hazard_error)?;
+                    .map_err(EvalError::from)?;
             }
         }
         Ok(())
