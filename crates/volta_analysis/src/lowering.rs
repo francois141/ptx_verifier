@@ -6438,12 +6438,14 @@ fn lower_fence_proxy_tensormap(
     Ok(())
 }
 
-/// Lower `cp.async.bulk.tensor.dim.shared::cluster.global.tile
+/// Lower `cp.async.bulk.tensor.dim.shared::{cta,cluster}.global.tile
 /// .mbarrier::complete_tx::bytes [dstMem], [tensorMap, {coords}], [mbar]`
-/// (PTX ISA 9.7.9.26.5.2). Scoped to exactly this form - the corpus's only
-/// usage: `.2d`/`.3d`, the `global -> shared::cluster` direction, `.tile`
-/// load mode, mbarrier-based completion. Everything else (`.1d`/`.4d`/
-/// `.5d`, the `.shared::cta` destination, the store direction, `.bulk_group`
+/// (PTX ISA 9.7.9.26.5.2). Scoped to `.2d`/`.3d`, global-to-shared loads
+/// into either the executing CTA's local window or its cluster-visible
+/// window, `.tile` load mode, and mbarrier-based completion. In Volta's
+/// single-CTA model both accepted destinations resolve to the same local
+/// shared-memory instance; remote and multicast cluster forms stay rejected.
+/// Everything else (`.1d`/`.4d`/`.5d`, the store direction, `.bulk_group`
 /// completion, `.multicast::cluster`, `.cta_group::N`, `.L2::cache_hint`,
 /// `.tile::gather4`/`.tile::scatter4`, `.im2col`/`.im2col::w`/
 /// `.im2col::w::128`) is rejected loudly rather than half-modeled.
@@ -6455,7 +6457,7 @@ fn lower_cp_async_bulk_tensor(
 ) -> LowerResult<()> {
     const NAME: &str = "cp.async.bulk.tensor";
     let mut dim: Option<usize> = None;
-    let mut saw_shared_cluster = false;
+    let mut saw_shared_destination = false;
     let mut saw_global = false;
     let mut saw_completion = false;
 
@@ -6465,14 +6467,12 @@ fn lower_cp_async_bulk_tensor(
                 [base, sub] if base.as_slice().as_bytes() == b"shared" => {
                     match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
                         Some(SharedStateSpaceQualifier::Cluster) => {
-                            saw_shared_cluster = true;
+                            saw_shared_destination = true;
                             continue;
                         }
                         Some(SharedStateSpaceQualifier::Cta) => {
-                            return Err(unsupported(
-                                NAME,
-                                ".shared::cta destination (only .shared::cluster modeled)",
-                            ));
+                            saw_shared_destination = true;
+                            continue;
                         }
                         None => return Err(unsupported(NAME, format!("modifier .shared::{sub}"))),
                     }
@@ -6510,10 +6510,10 @@ fn lower_cp_async_bulk_tensor(
     }
 
     let dim = dim.ok_or_else(|| unsupported(NAME, "missing .dim (only .2d/.3d modeled)"))?;
-    if !saw_shared_cluster {
+    if !saw_shared_destination {
         return Err(unsupported(
             NAME,
-            "missing .shared::cluster destination (store direction .global.shared::cta not modeled)",
+            "missing .shared::{cta,cluster} destination (store direction .global.shared::cta not modeled)",
         ));
     }
     if !saw_global {

@@ -1099,8 +1099,8 @@ fn test_tcgen05_dealloc_after_waiting_is_accepted() {
 /// x 2 bytes) is what unblocks the `try_wait.parity` below - if it fired
 /// with the wrong byte count the wait would deadlock instead of completing.
 #[test]
-fn test_cp_async_bulk_tensor_copies_in_bounds_and_zero_fills_out_of_bounds() {
-    let src = wrap(
+fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
+    let template = wrap(
         ".visible .entry k(
     .param .u64 k_param_0,
     .param .u64 k_param_1
@@ -1155,31 +1155,34 @@ fn test_cp_async_bulk_tensor_copies_in_bounds_and_zero_fills_out_of_bounds() {
 }
 ",
     );
-    let module = parse(&src);
-    let mut config = AnalysisConfig::new((1, 1, 1));
-    config.arrays = vec![
-        ArrayDef {
-            name: "in".to_string(),
-            base: 0x10000,
-            elem_width: 2,
-            len: 64,
-            kind: ArrayKind::Input,
-        },
-        ArrayDef {
-            name: "out".to_string(),
-            base: 0x20000,
-            elem_width: 2,
-            len: 2,
-            kind: ArrayKind::Output,
-        },
-    ];
-    config.params = vec![
-        ParamValue::ArrayPtr("in".to_string()),
-        ParamValue::ArrayPtr("out".to_string()),
-    ];
-    let output = analyze_kernel(&module, None, config).unwrap();
-    assert_eq!(display_output(&output, "out", 0), "in[54]");
-    assert_eq!(display_output(&output, "out", 1), "0");
+    for scope in ["cluster", "cta"] {
+        let src = template.replace("shared::cluster.global", &format!("shared::{scope}.global"));
+        let module = parse(&src);
+        let mut config = AnalysisConfig::new((1, 1, 1));
+        config.arrays = vec![
+            ArrayDef {
+                name: "in".to_string(),
+                base: 0x10000,
+                elem_width: 2,
+                len: 64,
+                kind: ArrayKind::Input,
+            },
+            ArrayDef {
+                name: "out".to_string(),
+                base: 0x20000,
+                elem_width: 2,
+                len: 2,
+                kind: ArrayKind::Output,
+            },
+        ];
+        config.params = vec![
+            ParamValue::ArrayPtr("in".to_string()),
+            ParamValue::ArrayPtr("out".to_string()),
+        ];
+        let output = analyze_kernel(&module, None, config).unwrap();
+        assert_eq!(display_output(&output, "out", 0), "in[54]", "{scope}");
+        assert_eq!(display_output(&output, "out", 1), "0", "{scope}");
+    }
 }
 
 /// `cp.async.bulk.tensor` reading a tensor-map object still missing a

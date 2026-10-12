@@ -1157,11 +1157,11 @@ pub enum LoweredInstr {
     /// the same treatment as `Tcgen05Fence`.
     FenceProxyTensormap,
 
-    /// `cp.async.bulk.tensor.dim.shared::cluster.global.tile
+    /// `cp.async.bulk.tensor.dim.shared::{cta,cluster}.global.tile
     /// .mbarrier::complete_tx::bytes [dstMem], [tensorMap, {coords}],
-    /// [mbar]`: TMA tensor copy, global to shared. Scoped to exactly this
-    /// form (`.tile` load mode, the `global -> shared::cluster` direction,
-    /// mbarrier-based completion) - see
+    /// [mbar]`: TMA tensor copy, global to shared. In the single-CTA model,
+    /// both destination qualifiers name the executing CTA's shared memory;
+    /// remote and multicast cluster forms remain unsupported. See
     /// `lowering::lower_cp_async_bulk_tensor` for what is rejected.
     /// `tensormap_space` is the tensor-map object's own state space
     /// (`.param`/`.const`/`.global` per the ISA; Volta requires `.global`
