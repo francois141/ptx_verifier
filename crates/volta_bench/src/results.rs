@@ -1,27 +1,6 @@
-//! Persistent run artifacts: the `--out-dir` layout, benchmark-name
-//! sanitization for VC-dump filenames, solve-timing summary statistics,
-//! and the per-run results JSON document.
-//!
-//! Layout under `--out-dir` (default `bench-out/`):
-//!
-//! - `vcs/<sanitized-benchmark-name>.vcdump` - each equivalence
-//!   benchmark's verification conditions (both kernels' arenas + output
-//!   footprints), written once per run through
-//!   `volta_analysis::driver::vc_dump` - the same format as `volta
-//!   compare --dump-vcs`, so `volta compare --from-dump` replays them.
-//!   Overwritten on rerun (VCs are deterministic). Race-check benchmarks
-//!   have no VC and are skipped with a console note.
-//! - `vcs/manifest.json` - `generate`'s record of what each dump
-//!   contains; `solve`'s staleness guard (see `crate::manifest`).
-//! - `results/<unix-seconds>-<pid>-<command>.json` - the machine-readable
-//!   results for every run command, timestamped like
-//!   `volta_common::run_log` files so runs never clobber each other. The
-//!   `--json <path>` flag writes the same document to an explicit path in
-//!   addition. One-shot runs use the full record shape
-//!   ([`benchmark_record`]); `generate` runs drop the solve fields
-//!   ([`generate_record`]); `solve` runs drop the generation fields and
-//!   add `dump_load_secs` ([`solve_record`]), with skipped race checks as
-//!   [`skip_record`]s.
+//! Persistent run artifacts under `--out-dir` (default `bench-out/`): `vcs/`
+//! holds the VC dumps and `manifest.json`; `results/` one JSON document per run
+//! command, named like `run_log` files.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,17 +31,16 @@ pub fn sanitize_name(name: &str) -> String {
     }
 }
 
-/// Where a benchmark's VC dump lives under the vcs directory.
+/// Where a benchmark's VC dump lives: `<slug>.vcdump` in the shared
+/// `driver::vc_dump` format (so `volta compare --from-dump` replays it),
+/// overwritten on rerun.
 pub fn vc_dump_path(vcs_dir: &Path, benchmark_name: &str) -> PathBuf {
     vcs_dir.join(format!("{}.vcdump", sanitize_name(benchmark_name)))
 }
 
-/// Reject a benchmark set whose names collide under [`sanitize_name`]:
-/// sanitization is many-to-one ("(Red-1, Red-2)" and "Red 1 Red 2" both
-/// slug to "red-1-red-2"), and VC dumps are keyed by slug and overwrite
-/// silently, so a colliding set would clobber one benchmark's dump with
-/// another's. The error names both offenders. Run this wherever a run's
-/// benchmark set is known, before anything is written.
+/// Reject a benchmark set whose names collide under [`sanitize_name`]
+/// (many-to-one), since slug-keyed VC dumps would silently clobber each other.
+/// Run before anything is written.
 pub fn check_slug_collisions<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<()> {
     let mut by_slug: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for name in names {
@@ -142,12 +120,9 @@ pub struct RunMeta {
     pub solve_backend: Option<&'static str>,
 }
 
-/// Insert one timed phase's stats: `<prefix>_iters_secs` (the full
-/// per-iteration array) plus `<prefix>_median_secs` / `<prefix>_min_secs`
-/// / `<prefix>_mean_secs` / `<prefix>_cv` (nulls when the phase didn't
-/// run; the CV is also null for a single iteration). The median is the
-/// headline number - iteration 1 includes process/allocator warmup, and
-/// the median absorbs it.
+/// Insert one phase's stats: `<prefix>_iters_secs` plus
+/// `_median_secs`/`_min_secs`/`_mean_secs`/`_cv` (null if not run; CV null for
+/// one iteration). The median is the headline: it absorbs warmup.
 fn insert_phase_stats(obj: &mut serde_json::Map<String, Value>, prefix: &str, iters: &[f64]) {
     obj.insert(format!("{prefix}_iters_secs"), json!(iters));
     obj.insert(format!("{prefix}_median_secs"), json!(median(iters)));
@@ -206,10 +181,9 @@ fn z3_mode_json(run: &Z3ModeRun) -> Value {
     Value::Object(obj)
 }
 
-/// A benchmark's `z3` section: `null` when the phase didn't apply (no
-/// `--z3`, or a benchmark with no solve phase), `{"error": ...}` when it
-/// failed, and the full results object when it ran (`error` null there,
-/// so consumers can always check the one field).
+/// A benchmark's `z3` section: `null` when the phase didn't apply, `{"error":
+/// ...}` when it failed, else the full results with `error` null, so consumers
+/// can always check that one field.
 fn z3_section(z3: Option<&Z3PhaseOutcome>) -> Value {
     match z3 {
         None => Value::Null,
@@ -298,10 +272,9 @@ pub fn benchmark_record(r: &BenchmarkResult) -> Value {
     Value::Object(obj)
 }
 
-/// A `generate` run's record: the one-shot shape minus every solve field
-/// (nothing was solved). `elements_total` is the generated footprint
-/// size; race-check benchmarks carry their real verdicts here - this is
-/// the record the race table comes from.
+/// A `generate` run's record: the one-shot shape minus every solve field.
+/// `elements_total` is the generated footprint; race-check verdicts (the race
+/// table) come from here.
 pub fn generate_record(r: &BenchmarkResult) -> Value {
     let mut obj = identity_fields(r);
     obj.insert("elements_total".into(), json!(r.stats.elements_total));
@@ -310,10 +283,9 @@ pub fn generate_record(r: &BenchmarkResult) -> Value {
     Value::Object(obj)
 }
 
-/// A `solve` run's record: the one-shot shape minus every generation
-/// field (VCs came from a dump; there are no gen timings or execution
-/// counters to report), plus `dump_load_secs` (the load is excluded from
-/// the solve spans). `dump_path` is the dump the VCs were read from.
+/// A `solve` run's record: the one-shot shape minus every generation field,
+/// plus `dump_load_secs` (excluded from solve spans); `dump_path` is the dump
+/// the VCs were read from.
 pub fn solve_record(r: &BenchmarkResult) -> Value {
     let mut obj = identity_fields(r);
     obj.insert("elements_total".into(), json!(r.stats.elements_total));
@@ -360,10 +332,8 @@ pub fn results_doc(meta: &RunMeta, benchmarks: Vec<Value>) -> Value {
     }
     doc.insert("z3".into(), json!(meta.z3_timeout_secs.is_some()));
     if let Some(timeout) = meta.z3_timeout_secs {
-        // Record the linked libz3's version: solver behavior (notably how
-        // the exp-axiom quantifier loop exits - budget kill vs its own
-        // resource-bound "unknown") is version-dependent, so a results
-        // file must say which solver produced it.
+        // Record the linked libz3's version: solver behavior (notably how the
+        // exp-axiom quantifier loop exits) is version-dependent.
         doc.insert("z3_version".into(), json!(volta_z3::z3_version()));
         doc.insert("z3_timeout_secs".into(), json!(timeout));
         // The carve-out convention (see `z3_phase`): re-solving a
@@ -481,10 +451,9 @@ mod tests {
         assert!(message.contains("'red-1-red-2'"), "{message}");
     }
 
-    /// Guardrail over the real corpus: every name in `all_benchmarks()`
-    /// must slug uniquely, so a future benchmark whose name collides with
-    /// an existing one fails here (in CI) instead of silently overwriting
-    /// that benchmark's VC dump.
+    /// Guardrail over the real corpus: every name in `all_benchmarks()` must
+    /// slug uniquely, so a colliding new benchmark fails here instead of
+    /// overwriting a VC dump.
     #[test]
     fn full_corpus_has_no_slug_collisions() {
         let suite = crate::all_benchmarks();
@@ -523,10 +492,9 @@ mod tests {
         assert_eq!(record["dump_path"], json!(dump));
     }
 
-    /// The three record shapes partition the fields: `generate` records
-    /// carry the gen fields and no solve fields, `solve` records carry
-    /// the solve fields plus `dump_load_secs` and no gen fields, and the
-    /// one-shot record carries both (and no `dump_load_secs`).
+    /// The three record shapes partition the fields: `generate` has gen fields
+    /// only, `solve` solve fields plus `dump_load_secs`, and one-shot both (no
+    /// `dump_load_secs`).
     #[test]
     fn generate_and_solve_records_split_the_one_shot_shape() {
         let mut result = result_with(crate::runner::ActualOutcome::VcsGenerated, true);
@@ -619,11 +587,9 @@ mod tests {
         );
     }
 
-    /// The one record shape: phase stats carry the full iteration arrays
-    /// plus median/min/mean/cv, per-element decision times serialize as
-    /// `{array, index, solve_secs}`, and the `z3` section is null without
-    /// `--z3`, `{"error": ...}` on a failed phase, and the full
-    /// plain+axiom results when it ran.
+    /// The one record shape: phase stats carry iteration arrays plus
+    /// median/min/mean/cv, decision times are `{array, index, solve_secs}`, and
+    /// `z3` is null / `{"error": ...}` / full results.
     #[test]
     fn benchmark_record_carries_phase_stats_and_z3_section() {
         use crate::z3_phase::{Z3ModeRun, Z3Phase, Z3PhaseOutcome};

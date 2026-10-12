@@ -1,8 +1,6 @@
-//! End-to-end evaluator tests.
-//!
-//! Small synthetic kernels (1-2 threads) validate each mechanism cheaply;
-//! the Harris reduction kernels from the paper benchmarks (64-128 threads,
-//! ~100 instructions each) validate real equivalence checking.
+//! End-to-end evaluator tests: small synthetic kernels (1-2 threads) check
+//! each mechanism cheaply; the paper's Harris reduction kernels check real
+//! equivalence.
 
 use std::path::PathBuf;
 
@@ -188,12 +186,9 @@ fn test_shared_exchange_without_barrier_races() {
     );
 }
 
-/// A store through the `.extern .shared` window must not be visible through
-/// a static `.shared` variable: the CUDA ABI places the dynamic segment
-/// after all static allocations, so `buf` and `lut` are disjoint. The `lut`
-/// read is therefore undefined and surfaces as `UndefinedOutput` when it
-/// reaches the output array (with the two aliased at shared offset 0 it
-/// would instead read back the 42 stored through `buf`).
+/// A store through the `.extern .shared` window must not be visible through a
+/// static `.shared` variable (the dynamic segment follows all static ones),
+/// so the `lut` read surfaces as `UndefinedOutput`.
 #[test]
 fn test_extern_shared_store_invisible_through_static_shared() {
     let src = wrap(
@@ -230,10 +225,8 @@ fn test_extern_shared_store_invisible_through_static_shared() {
     );
 }
 
-/// Unsynchronized accesses to the extern window from one thread and to a
-/// static `.shared` variable from another are not a race: the regions are
-/// disjoint. With the extern window wrongly aliased at offset 0 this
-/// reported a false write-write race.
+/// Unsynchronized accesses to the extern window and to a static `.shared`
+/// variable from different threads are not a race: the regions are disjoint.
 #[test]
 fn test_extern_vs_static_shared_no_false_race() {
     let src = wrap(
@@ -273,10 +266,9 @@ fn test_extern_vs_static_shared_no_false_race() {
     assert_eq!(display_output(&output, "out", 0), "7");
 }
 
-/// Extern-only kernels are unchanged by extern-window placement: the window
-/// still starts at shared offset 0, a store/load roundtrip works, the
-/// missing-size launch error still fires, and dynamic_shared_bytes still
-/// bounds the window.
+/// Extern-only kernels are unaffected by extern-window placement: the window
+/// starts at offset 0, roundtrips work, a missing size errors, and
+/// dynamic_shared_bytes bounds it.
 #[test]
 fn test_extern_only_shared_placement_and_bounds() {
     let body = ".extern .shared .align 16 .b8 buf[];
@@ -384,12 +376,9 @@ fn test_exited_thread_releases_barrier() {
     analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap();
 }
 
-/// `mbarrier.init` with `count = 2` needs both threads' own `arrive`
-/// before `try_wait.parity` can proceed; each thread then writes its own
-/// output index. Confirms the scheduler-level blocking/waking mechanism
-/// (`Status::AtMbarrier`/`try_fire_mbarrier`) actually unblocks a thread
-/// when a *different* thread's `arrive` satisfies the phase - not just
-/// the `MbarrierTable` unit tests' pure arrive/wait bookkeeping.
+/// `mbarrier.init` with `count = 2` needs both threads' `arrive` before
+/// `try_wait.parity` proceeds: the scheduler wakes a thread when a
+/// *different* thread's arrive completes the phase.
 #[test]
 fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
     let src = wrap(
@@ -428,10 +417,9 @@ fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
     assert_eq!(display_output(&output, "out", 1), "1");
 }
 
-/// Same shape, but only thread 0 ever arrives: `count = 2` is never
-/// satisfied, so thread 0's `try_wait.parity` blocks forever - a genuine
-/// deadlock, not a hang, since no other thread can ever make progress
-/// either (this is the whole CTA).
+/// Same shape, but only thread 0 arrives: `count = 2` is never satisfied, so
+/// its `try_wait.parity` blocks forever - a genuine deadlock of the whole
+/// CTA.
 #[test]
 fn test_mbarrier_wait_never_satisfied_deadlocks() {
     let src = wrap(
@@ -462,10 +450,9 @@ fn test_mbarrier_wait_never_satisfied_deadlocks() {
     );
 }
 
-/// `mbarrier.arrive.expect_tx` + `mbarrier.complete_tx` through the real
-/// lowering/eval pipeline (single-threaded): the wait must not be
-/// satisfied by the arrival alone while a transaction is still
-/// outstanding, only once `complete_tx` clears it.
+/// `mbarrier.arrive.expect_tx` + `mbarrier.complete_tx` end to end: the wait
+/// is not satisfied by the arrival alone, only once `complete_tx` clears the
+/// outstanding transaction.
 #[test]
 fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
     let src = wrap(
@@ -498,13 +485,9 @@ fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
-/// `mbarrier.arrive`/`try_wait.parity` establishes a χ happens-before edge
-/// (PTX ISA 9.7.14.16.19, ordering items 1-3): thread 0 writes shared data
-/// then arrives; thread 1 waits for that phase then reads the same byte.
-/// Without the edge this would be reported as a false-positive data race
-/// (nothing else synchronizes the two threads) - `test_no_wait_still_races`
-/// right below confirms the same kernel *does* race once the wait is
-/// removed, so this isn't just a vacuously race-free kernel.
+/// `mbarrier.arrive`/`try_wait.parity` is a χ happens-before edge (PTX ISA
+/// 9.7.14.16.19): thread 0 writes then arrives, thread 1 waits then reads,
+/// with no race reported.
 #[test]
 fn test_mbarrier_arrive_wait_establishes_happens_before() {
     let src = wrap(
@@ -547,12 +530,9 @@ fn test_mbarrier_arrive_wait_establishes_happens_before() {
     assert_eq!(display_output(&output, "out", 1), "42");
 }
 
-/// Same shared write/read pair as
-/// `test_mbarrier_arrive_wait_establishes_happens_before`, but thread 1
-/// reads `data` without waiting on the mbarrier at all: nothing
-/// synchronizes the two threads, so this must still be a reported race,
-/// confirming the sibling test's success is the mbarrier edge doing real
-/// work and not an artifact of the kernel shape.
+/// Same write/read pair, but thread 1 reads without waiting: must race, so
+/// the sibling test's success comes from the mbarrier edge, not the kernel
+/// shape.
 #[test]
 fn test_same_write_read_without_the_wait_still_races() {
     let src = wrap(
@@ -583,12 +563,9 @@ fn test_same_write_read_without_the_wait_still_races() {
     );
 }
 
-/// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at
-/// lowering: the ISA spells out that it "does not provide any memory
-/// ordering semantics and visibility guarantees" (9.7.14.16.16/.19), so
-/// silently accepting it would make the happens-before edge established in
-/// `test_mbarrier_arrive_wait_establishes_happens_before` unsound. Only the
-/// default (release for `arrive`, acquire for the waits) is modeled.
+/// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at lowering:
+/// it has no ordering semantics (9.7.14.16.16/.19), so accepting it would
+/// make the happens-before edge unsound.
 #[test]
 fn test_mbarrier_relaxed_semantics_rejected() {
     for (form, expect) in [
@@ -630,12 +607,9 @@ fn test_mbarrier_relaxed_semantics_rejected() {
     }
 }
 
-/// `tcgen05.fence::before_thread_sync`/`::after_thread_sync` are pure
-/// ordering fences with no data effect - confirms both directions parse
-/// (the `::`-glued qualifier resolves through the generic trie fallback,
-/// see `sm100a_support_plan.md`) and lowering/eval simply falls through to
-/// the next instruction, unconditionally, with no observable side effect of
-/// its own.
+/// `tcgen05.fence::before_thread_sync`/`::after_thread_sync` parse (via the
+/// `::`-glued trie fallback) and are pure ordering fences: eval just falls
+/// through.
 #[test]
 fn test_tcgen05_fence_is_a_no_op() {
     let src = wrap(
@@ -670,12 +644,9 @@ fn test_tcgen05_fence_is_a_no_op() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
-/// `tcgen05.commit`'s `.mbarrier::arrive::one` performs exactly an
-/// `mbarrier` arrive-on(count=1) - confirmed by having it satisfy a
-/// `count = 1` mbarrier's `try_wait.parity` on its own, with no separate
-/// `mbarrier.arrive` anywhere in the kernel. Uses the candidate's exact
-/// modifier set (`.shared::cluster`, unlike triton's bare `.b64`) to cover
-/// the optional-state-space path too.
+/// `tcgen05.commit`'s `.mbarrier::arrive::one` alone satisfies a `count = 1`
+/// mbarrier's `try_wait.parity`; `.shared::cluster` covers the optional
+/// state-space path.
 #[test]
 fn test_tcgen05_commit_satisfies_mbarrier_wait() {
     let src = wrap(
@@ -803,10 +774,9 @@ fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
     );
 }
 
-/// `.exclusive` allocation and deallocation (PTX ISA 9.4+) are recognized
-/// but not implemented: rejected as unsupported naming `.exclusive`, rather
-/// than judged by the non-exclusive rules (96 columns is a valid exclusive
-/// size but not a power of 2).
+/// `.exclusive` allocation and deallocation (PTX ISA 9.4+) are rejected as
+/// unsupported naming `.exclusive`, not judged by the non-exclusive rules (96
+/// columns is not a power of 2).
 #[test]
 fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
     for body in [
@@ -862,14 +832,9 @@ fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
     );
 }
 
-/// `tcgen05.ld`/`.st` decode `taddr` as a real Tensor Memory address (PTX
-/// ISA 9.7.17.1.1: `[31:16]=lane, [15:0]=column`), not a bare column
-/// number - two warps (64 threads) each pack their *own* quadrant into the
-/// address (`warp_id_in_warpgroup * 32`, exactly matching nvcc/triton's own
-/// codegen for this idiom - see `sm100a_support_plan.md`), store their own
-/// warp id, and read it back. Each warp getting back exactly its own value
-/// (not the other warp's) proves lane separation actually works end to
-/// end, not just that the addressing happens not to crash.
+/// `tcgen05.ld`/`.st` decode `taddr` as a Tensor Memory address (PTX ISA
+/// 9.7.17.1.1: `[31:16]=lane, [15:0]=column`): two warps each pack their own
+/// quadrant and read back exactly their own value.
 #[test]
 fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
     let src = wrap(
@@ -927,12 +892,9 @@ fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
     assert_eq!(display_output(&output, "out", 63), "1");
 }
 
-/// A kernel whose `taddr` encodes a lane quadrant that isn't the issuing
-/// warp's own (PTX ISA 9.7.17.8.1's access restriction) is a real bug - the
-/// error must fire, not get silently "corrected" by deriving the lane from
-/// `ThreadId` instead of the address the kernel actually computed. One
-/// warp (thread 0's own quadrant is 0) forces its `taddr` to claim quadrant
-/// 32 instead.
+/// A `taddr` naming a lane quadrant other than the issuing warp's (PTX ISA
+/// 9.7.17.8.1) must error, not be silently "corrected" by deriving the lane
+/// from `ThreadId`.
 #[test]
 fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     let src = wrap(
@@ -970,10 +932,9 @@ fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     }
 }
 
-/// One warp allocates Tensor Memory, then runs `body` against `%r1` (its
-/// quadrant-0 base address) with `%r2` a stored value and `%r4` an
-/// initialized `count = 32` mbarrier - for the `tcgen05.wait` ordering
-/// tests below.
+/// One warp allocates Tensor Memory, then runs `body` with `%r1` its
+/// quadrant-0 base, `%r2` a stored value, and `%r4` a `count = 32` mbarrier
+/// (for the `tcgen05.wait` tests).
 fn tcgen05_wait_ordering_kernel(body: &str) -> Module {
     parse(&wrap(&format!(
         ".visible .entry k()
@@ -1086,18 +1047,9 @@ fn test_tcgen05_dealloc_after_waiting_is_accepted() {
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
-/// `tensormap.replace` (building an 8x8 f16 tensor-map entirely in shared
-/// memory, the corpus's own on-device idiom) + `tensormap.cp_fenceproxy` +
-/// `fence.proxy.tensormap::generic.acquire` + `cp.async.bulk.tensor` through
-/// the real lowering/eval pipeline. A 4x4 box at tensor-coordinates (6, 6)
-/// over an 8x8 tensor deliberately straddles the boundary: the near corner
-/// (box index (0,0) -> tensor index (6,6), in bounds) must read through to
-/// the input symbol, and the far corner (box index (3,3) -> tensor index
-/// (9,9), out of `global_dim`) must read as `fill_mode`'s zero fill - one
-/// kernel exercises both the addressing formula and the boundary check.
-/// `.mbarrier::complete_tx::bytes`'s implicit completion (32 = 16 elements
-/// x 2 bytes) is what unblocks the `try_wait.parity` below - if it fired
-/// with the wrong byte count the wait would deadlock instead of completing.
+/// `tensormap.replace` (8x8 f16 map built in shared) +
+/// `cp.async.bulk.tensor`: a 4x4 box at (6, 6) reads input in bounds and
+/// `fill_mode` zeros past `global_dim`; `complete_tx` unblocks the wait.
 #[test]
 fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
     let template = wrap(
@@ -1185,11 +1137,9 @@ fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
     }
 }
 
-/// `cp.async.bulk.tensor` reading a tensor-map object still missing a
-/// field (here `.fill_mode` is never written) must error loudly naming the
-/// field - PTX never requires every field be set before use, so an
-/// incomplete tensor-map is a real kernel bug, not a Volta gap to paper
-/// over with a default.
+/// `cp.async.bulk.tensor` on a tensor-map missing a field (`.fill_mode`) must
+/// error naming it: an incomplete map is a kernel bug, not a gap to fill with
+/// a default.
 #[test]
 fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
     let src = wrap(
@@ -1252,15 +1202,9 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
     }
 }
 
-/// `elect.sync` elects the lowest-numbered *live* lane in the mask as
-/// leader (PTX ISA 9.7.14.15: "deterministically, the same leader thread is
-/// elected for the same membermask every time" - matching the real
-/// hardware/compiler convention). One full warp, mask `-1` (every lane):
-/// the leader is lane 0, whose `dst` receives its own lane id (0) and
-/// `dst_pred` is true; every other lane's `dst_pred` is false. Encodes both
-/// facts in one f32 per thread (`1000 + lane_id` for the leader, `0` for
-/// everyone else) so a single assertion confirms `dst`'s value is exactly
-/// right, not just that *some* thread was flagged leader.
+/// `elect.sync` elects the lowest *live* lane in the mask (PTX ISA
+/// 9.7.14.15): with a full warp, lane 0 gets `dst = 0` and `dst_pred` true;
+/// each thread encodes both as one f32.
 #[test]
 fn test_elect_sync_elects_the_lowest_active_lane() {
     let src = wrap(
@@ -1305,11 +1249,8 @@ fn test_elect_sync_elects_the_lowest_active_lane() {
     assert_eq!(display_output(&output, "out", 31), "0");
 }
 
-/// Same shape as `test_elect_sync_elects_the_lowest_active_lane`, but lane 0
-/// exits *before* reaching `elect.sync`. Exited lanes still count as
-/// arrived at the warp op (they just don't participate), but must not
-/// become leader - a thread that already returned cannot receive a value.
-/// The new leader is lane 1, the next lowest still-live lane.
+/// Same shape, but lane 0 exits before `elect.sync`: exited lanes count as
+/// arrived but cannot be leader, so lane 1 is elected.
 #[test]
 fn test_elect_sync_skips_an_already_exited_lane() {
     let src = wrap(
@@ -1356,22 +1297,9 @@ fn test_elect_sync_skips_an_already_exited_lane() {
     assert_eq!(display_output(&output, "out", 5), "0");
 }
 
-/// `tcgen05.mma` runs to completion given the real `triton_generated.ptx`
-/// kernel's *exact* `idesc`/descriptor values (dense `.kind::f16`,
-/// `M=128`, `N=256`, `F32` accumulator, `F16` operands, transpose B,
-/// 128B-swizzled descriptors), addressed against freshly-declared shared
-/// buffers via the same `cvta.shared` + `matrix-descriptor-encode`
-/// (`>>4`) + `or.b64` sequence the real kernel's compiler output uses
-/// (confirmed by re-reading `triton_generated.ptx`'s own `or.b64
-/// %rd56/%rd57` lines). Neither buffer's bytes are ever written -
-/// uninitialized shared reads are tolerated during execution (the same
-/// rule `test_uninitialized_shared_read_flows_to_output` below exercises)
-/// and nothing here reads `D` back out to an output, so this only needs
-/// the *addresses* `swizzled_element_addr` computes to land in bounds for
-/// every one of the 128*256*16 `(m, n, k)` triples - a real, if coarse,
-/// end-to-end check that the whole decode -> validate -> address -> read
-/// -> accumulate -> Tensor Memory write pipeline is wired correctly for
-/// this exact real-kernel shape, not just that it decodes.
+/// `tcgen05.mma` with `triton_generated.ptx`'s exact `idesc`/descriptors
+/// (`.kind::f16`, M=128, N=256, 128B swizzle) over uninitialized shared
+/// buffers: every `(m, n, k)` address must land in bounds.
 #[test]
 fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
     let src = wrap(
@@ -1411,12 +1339,9 @@ fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
-/// A synthetic `.kind::f16` `tcgen05.mma` (`M=128` forced, `N=8`, both
-/// descriptors `SwizzleMode::None` - untransposed/K-major for both `A` and
-/// `B`, tightly packed at 32 bytes/row = `K * 2` bytes exactly) runs to
-/// completion - the non-128B-swizzle modes added this session actually
-/// reach `exec_tcgen05_mma`'s address computation end-to-end, not just the
-/// `eval::tcgen05_mma` unit tests that check the formula in isolation.
+/// A synthetic `.kind::f16` `tcgen05.mma` (M=128, N=8) with
+/// `SwizzleMode::None` K-major descriptors packed at 32 bytes/row reaches
+/// `exec_tcgen05_mma`'s addressing end to end.
 #[test]
 fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
     let src = wrap(
@@ -1456,15 +1381,9 @@ fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
-/// LLVM's NVPTX backend (confirmed against `triton_generated.ptx`,
-/// `.version 8.8`) emits `tcgen05.mma` in the older 5-operand form with
-/// no `disable-output-lane` operand at all, not nvcc/triton's own
-/// 6-operand form with an explicit mask - both are genuine real-world
-/// PTX, so the mask must be optional, defaulting to "no lane disabled"
-/// when absent. Identical to `test_tcgen05_mma_numeric_correctness` below
-/// but with the mask operand dropped entirely: must still produce `136`,
-/// proving the default is actually wired through to the write, not just
-/// accepted syntactically.
+/// LLVM's NVPTX backend emits 5-operand `tcgen05.mma` with no
+/// `disable-output-lane`, so the mask is optional (no lane disabled): like
+/// `test_tcgen05_mma_numeric_correctness`, must produce `136`.
 #[test]
 fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
     let src = wrap(
@@ -1630,12 +1549,9 @@ MMA_WAIT:
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
-/// `tcgen05.mma` decodes concrete operands from their bit encoding: `A`'s
-/// row 0 and `B`'s column 0 are stored as raw f16 bits (`mov.b16 %rs,
-/// 0x3C00`, i.e. 1.0 - not 15360) at the same swizzled addresses
-/// [`test_tcgen05_mma_numeric_correctness`] uses, and `D` is seeded by a
-/// `tcgen05.st` of the raw f32 bits `0x3F800000` (1.0) with
-/// `enable-input-d` set, so `D[0][0] = 16 * 1 * 1 + 1 = 17`.
+/// `tcgen05.mma` decodes concrete operands from their bits: `A`/`B` hold raw
+/// f16 `0x3C00` (1.0, not 15360) and `D` is seeded with raw f32 1.0 via
+/// `tcgen05.st`, so `D[0][0] = 16 + 1 = 17`.
 #[test]
 fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
     let a_offsets = (0..16).map(|k| 2 * k);
@@ -1719,20 +1635,9 @@ MMA_WAIT:
     assert_eq!(display_output(&output, "out", 0), "17");
 }
 
-/// A genuine numeric-correctness check, not just "runs without erroring":
-/// writes `A[0][k] = k+1` (`k=0..15`) and `B[k][0] = 1` as real f16 values
-/// at their exact `SwizzleMode::Swizzle128B`-swizzled addresses (computed
-/// by hand with the same formula `swizzled_element_addr` implements,
-/// independently in a throwaway Python script - not by calling the Rust
-/// function itself, so this doesn't just check the implementation against
-/// itself), reads `D[0][0]` back via `tcgen05.ld`, and checks it against
-/// the exact expected dot product `sum(1..=16) = 136`. Uses the real
-/// kernel's own transpose configuration (`A` untransposed/K-major, `B`
-/// transposed/N-major) and swizzle mode, so `B`'s addresses genuinely
-/// cross a stride-atom boundary (`k=8..15` lands in atom 1, not atom 0) -
-/// exercising the same atom-crossing arithmetic the real kernel's larger
-/// `N` needs, not just the trivial all-zero-key case `A`'s addresses (all
-/// at `atom_row = 0`, since only `m = 0` is populated) would give alone.
+/// Numeric check: `A[0][k] = k+1` and `B[k][0] = 1` as f16 at hand-computed
+/// 128B-swizzled addresses (B transposed, crossing a stride atom at `k=8`);
+/// `D[0][0]` must read back as `136`.
 #[test]
 fn test_tcgen05_mma_numeric_correctness() {
     let src = wrap(
@@ -1898,15 +1803,9 @@ MMA_WAIT:
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
-/// Identical to `test_tcgen05_mma_numeric_correctness` above except
-/// `disable-output-lane`'s first element is `1` (bit 0 set): PTX ISA
-/// 9.7.17.10.9.1 says the corresponding Tensor Memory lane simply is not
-/// updated by `D`. Lane 0/column 0 is exactly what the sibling test reads
-/// back and checks against `136` - with lane 0 masked, nothing is ever
-/// written there, so reading it back must surface as the same
-/// `UndefinedOutput` any other never-written Tensor Memory read would, not
-/// silently produce `136` (proving the mask actually skips the write) or a
-/// wrong value (proving it doesn't corrupt some other lane's data instead).
+/// Like `test_tcgen05_mma_numeric_correctness`, but `disable-output-lane`
+/// masks lane 0 (PTX ISA 9.7.17.10.9.1): `D[0][0]` is never written, so it
+/// reads back as `UndefinedOutput`, not `136`.
 #[test]
 fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     let src = wrap(
@@ -2076,11 +1975,9 @@ MMA_WAIT:
     );
 }
 
-/// A two-warp CTA: warp 0 allocates Tensor Memory, thread 0 issues an
-/// `M = 128`, `N = 8` `tcgen05.mma` (whose `D` spans all 128 lanes, so
-/// warp 1's quadrant too) and commits it to `mma_bar`, then both warps run
-/// `body`. `%r1` is the allocation's base address, `%r4` the mbarrier,
-/// `%r6` a `count = 32` mbarrier `gate`, `%p2` "in warp 0".
+/// Two-warp CTA: thread 0 issues an M=128, N=8 `tcgen05.mma` (D spans both
+/// warps' lanes) committed to `mma_bar`. `%r1` = TMEM base, `%r4` = mbarrier,
+/// `%r6` = `count = 32` `gate`, `%p2` = "in warp 0".
 fn tcgen05_mma_two_warp_kernel(body: &str) -> Module {
     parse(&wrap(&format!(
         ".visible .entry k()
@@ -2127,12 +2024,9 @@ ALLOCATED:
     )))
 }
 
-/// A `bar.sync` between the commit and the MMA's completion orders nothing
-/// about the MMA: warp 1 never waits on `mma_bar`, and only warp 0's later
-/// wait observes the completion. Warp 1 is held back until then by `gate`,
-/// whose phase thread 1's `complete_tx` finishes - no arrive, so no
-/// ordering edge from warp 0. The barrier must not have erased the MMA's
-/// χ entries: warp 1's read of `D` still races its write.
+/// A `bar.sync` between commit and completion orders nothing about the MMA:
+/// warp 1, released by `gate` via a bare `complete_tx` (no edge), still races
+/// the MMA's write of `D`.
 #[test]
 fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
     let module = tcgen05_mma_two_warp_kernel(
@@ -2171,10 +2065,9 @@ DONE:",
     }
 }
 
-/// The commit only attaches the completing mbarrier phase: the MMA stays
-/// in flight - `D` locked since the issue - until a waiter observes that
-/// phase. Warp 0 reads its quadrant of `D` right after the commit, without
-/// waiting on `mma_bar`, and hits the in-flight record.
+/// The commit only attaches the completing mbarrier phase: `D` stays locked
+/// until a waiter observes it, so warp 0 reading `D` right after the commit
+/// hits the in-flight record.
 #[test]
 fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {
     let module = tcgen05_mma_two_warp_kernel(
@@ -2200,10 +2093,9 @@ DONE:",
     }
 }
 
-/// The MMA's shared-memory operands stay write-locked from the issue
-/// until a waiter observes its completion - a `bar.sync` in between lifts
-/// nothing. Nobody waits on `mma_bar` here, and warp 1 overwrites the
-/// first bytes of `A` after the barrier.
+/// The MMA's shared operands stay write-locked from issue until a waiter
+/// observes completion, even across a `bar.sync`: warp 1 overwriting `A` must
+/// race.
 #[test]
 fn test_tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard() {
     let module = tcgen05_mma_two_warp_kernel(
@@ -2269,12 +2161,9 @@ DONE:",
     analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
 }
 
-/// The MMA may write `D` any time after issue, so a `bar.sync` between
-/// the issue and the commit orders nothing about it either: warp 1 reads
-/// `D`'s cells first, then releases thread 0 through `gate` with a bare
-/// `complete_tx` (no ordering edge), and thread 0 issues the MMA over
-/// them. The read must still race the MMA's write, though the barrier
-/// runs before the commit.
+/// The MMA may write `D` any time after issue, so a `bar.sync` before the
+/// commit orders nothing: warp 1's earlier read of `D`, ordered by a bare
+/// `complete_tx` only, races the write.
 #[test]
 fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
     let module = parse(&wrap(
@@ -2393,16 +2282,9 @@ DONE:",
     analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
 }
 
-/// A `.kind::f8f6f4` `tcgen05.mma` with `A` in e4m3 and `B` in e5m2 (the
-/// two type fields differ, so each operand is decoded with its own format),
-/// both K-major under `SwizzleMode::None` (`LBO = 128`, `SBO = 256`), `M =
-/// 128`, `N = 8`, `K = 32`. Row 0 of `A` holds `1..=16` in both of its core
-/// matrices, row 0 of `B` holds `1.0` in its first core matrix and `2.0` in
-/// its second, so `D[0][0] = 136 + 2 * 136 = 408`. The expected value only
-/// holds if `K = 32` (not f16's 16), the element width is 1 byte, the
-/// second core matrix is found `LBO` bytes away, and each operand's concrete
-/// bytes go through its own decoder: e4m3 and e5m2 read `0x40` as `2.0`,
-/// but `0x38`/`0x3c` are `1.0` in only one of the two.
+/// `.kind::f8f6f4` with e4m3 `A`, e5m2 `B`, K = 32, `SwizzleMode::None` (`LBO
+/// = 128`): `D[0][0] = 136 + 2 * 136 = 408` holds only with 1-byte elements,
+/// `LBO` stepping and per-operand decoders.
 #[test]
 fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
     let src = wrap(
@@ -2490,10 +2372,9 @@ MMA_WAIT:
     assert_eq!(display_output(&output, "out", 0), "408");
 }
 
-/// Only `.kind::f16` and `.kind::f8f6f4` are modeled; any other `.kind` is
-/// rejected at lowering with a reason naming the rejected kind and the
-/// modeled ones, not the generic "not yet implemented" every unhandled
-/// `tcgen05.*` mnemonic falls back to.
+/// Only `.kind::f16` and `.kind::f8f6f4` are modeled; other kinds are
+/// rejected at lowering naming the rejected and modeled kinds, not the
+/// generic "not yet implemented".
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_kind() {
     let src = wrap(
@@ -2533,11 +2414,9 @@ fn test_tcgen05_mma_rejects_unmodeled_kind() {
     }
 }
 
-/// An `idesc` requesting a bf16 operand type is rejected at eval, with a
-/// message specific to *that* gap - proving validation happens in the
-/// documented order (decode-then-validate-then-fail-at-the-real-gap) and
-/// doesn't just always report the descriptor-addressing error regardless
-/// of what's actually wrong.
+/// A bf16 `idesc` operand type is rejected at eval with a message specific to
+/// that gap, proving validation reports the actual problem, not the
+/// descriptor-addressing error.
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
     let src = wrap(
@@ -2690,10 +2569,9 @@ fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle
     }
 }
 
-/// Shapes outside PTX ISA Table 48's `.cta_group::1` dense set are invalid
-/// encodings, not just unmodeled ones: `M = 32` exists only under `.ws`,
-/// N tops out at 256, and `.ws` allows only N = 64/128/256. Table 63 adds
-/// that an 8-bit transposed B needs N in steps of 16.
+/// Shapes outside PTX ISA Table 48's `.cta_group::1` dense set are invalid:
+/// `M = 32` is `.ws`-only, N <= 256, `.ws` takes N = 64/128/256, and Table
+/// 63's 8-bit transposed B needs N % 16 == 0.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_shapes() {
     let d = SWIZZLE128B_DESC;
@@ -2719,10 +2597,9 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
     );
 }
 
-/// `idesc` fields the ISA reserves or limits by `.kind`/`.ws`: bits 6 and
-/// 23 must be 0, saturate (bit 3) is integer-only, the B-reuse maximum
-/// shift (bits 30-31) only exists for `.ws`, and the D type field (bits
-/// 4-5) has no value above f32 = 1 (S32 = 2 is `.kind::i8`'s).
+/// Reserved/limited `idesc` fields: bits 6 and 23 must be 0, saturate (bit 3)
+/// is integer-only, B-reuse shift (bits 30-31) is `.ws`-only, and D type
+/// (bits 4-5) must be at most f32 = 1.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
     let d = SWIZZLE128B_DESC;
@@ -2798,10 +2675,9 @@ fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
     );
 }
 
-/// `membar.level` is `.cta`, `.gl` or `.sys` and mandatory (PTX ISA
-/// 9.7.15.4): `.gl` lowers, while `fence`'s `.cluster`/`.gpu` scopes and a
-/// missing level fail to parse (which lowering reports as unsupported).
-/// `membar.proxy` parses but is not implemented yet.
+/// `membar.level` is mandatory `.cta`/`.gl`/`.sys` (PTX ISA 9.7.15.4): `.gl`
+/// lowers, `.cluster`/`.gpu` or no level fail to parse; `membar.proxy` parses
+/// but is unimplemented.
 #[test]
 fn test_membar_levels() {
     let kernel = |level: &str| {
@@ -2846,10 +2722,9 @@ fn expect_invalid_instruction(module: &Module, needle: &str) {
     }
 }
 
-/// `mbarrier.init`/`inval`/`test_wait`/`try_wait` only take `.shared{::cta}`
-/// (PTX ISA 9.7.15.16), so their `.shared::cluster` spelling is invalid PTX
-/// even on sm_90. `mbarrier.arrive.shared::cluster` is valid sm_90 PTX that
-/// a single-CTA analysis does not model.
+/// `mbarrier.init`/`inval`/`test_wait`/`try_wait` take only `.shared{::cta}`
+/// (PTX ISA 9.7.15.16), so `.shared::cluster` is invalid; on `arrive` it is
+/// valid but unmodeled.
 #[test]
 fn test_mbarrier_shared_cluster_validity() {
     let kernel = |body: &str| {
@@ -2882,10 +2757,9 @@ fn test_mbarrier_shared_cluster_validity() {
     }
 }
 
-/// `redux.sync` has three forms (PTX ISA 9.7.15.13): `.add/.min/.max` on
-/// `.u32/.s32`, `.and/.or/.xor` on `.b32`, and `.min/.max{.abs}{.NaN}` on
-/// `.f32`. Any other combination is invalid PTX; `.abs`/`.NaN` are valid but
-/// not modeled.
+/// `redux.sync` forms (PTX ISA 9.7.15.13): `.add/.min/.max` on `.u32/.s32`,
+/// `.and/.or/.xor` on `.b32`, `.min/.max{.abs}{.NaN}` on `.f32`; others are
+/// invalid, `.abs`/`.NaN` unmodeled.
 #[test]
 fn test_redux_sync_forms() {
     let kernel = |form: &str| {
@@ -3008,9 +2882,7 @@ fn test_out_of_bounds_shared_access() {
 }
 
 // =========================================================================
-// Natural alignment (PTX ISA 6.4.1: "The address must be naturally aligned
-// to a multiple of the access size"; misaligned accesses are undefined
-// behavior on hardware, so the evaluator rejects them)
+// Natural alignment (PTX ISA 6.4.1): misaligned accesses are UB, so rejected
 // =========================================================================
 
 /// A 4-byte load at an address 2 mod 4 is misaligned.
@@ -3181,9 +3053,8 @@ fn test_aligned_vector_load() {
     assert_eq!(display_output(&output, "out", 0), "in[3]");
 }
 
-/// A vector store's source list may mix immediates with registers (e.g.
-/// `{%f1, 0f00000000, %f2, 0f3F800000}`, the "zero/one-init one lane"
-/// idiom nvcc emits) - not just plain registers like a vector load's
+/// A vector store's source list may mix immediates with registers (nvcc's
+/// `{%f1, 0f00000000, %f2, 0f3F800000}` init idiom), unlike a vector load's
 /// destination.
 #[test]
 fn test_vector_store_with_immediate_source() {
@@ -3262,19 +3133,9 @@ fn test_misaligned_ldmatrix_row_address() {
     );
 }
 
-/// `ldmatrix.trans` loads the on-the-fly transpose: lane `l` (of a single
-/// `.x1` matrix) receives (row `2*(l%4)`, col `l/4`) as its low half and
-/// (row `2*(l%4)+1`, col `l/4`) as its high half - the mirror of the
-/// non-transposed mapping (row `l/4`, cols `(l%4)*2`/`(l%4)*2+1`), since
-/// the two elements a lane receives now come from two different supplied
-/// rows at the same column instead of two adjacent columns of one row.
-///
-/// Thread 0 alone copies `in[0..64]` (row-major, 8x8) into shared memory
-/// (one writer, so no store/store race), then a barrier hands the fully
-/// written matrix to all 32 lanes, which `ldmatrix.trans.x1` and unpack
-/// into `out[2*lane]`/`out[2*lane+1]`. Checking the output expressions
-/// against `in[expected_index]` verifies the exact per-lane mapping above,
-/// not just that the op runs.
+/// `ldmatrix.trans.x1`: lane `l` gets (row `2*(l%4)`, col `l/4`) low and (row
+/// `2*(l%4)+1`, col `l/4`) high, the transpose of the plain mapping; outputs
+/// are checked against `in[expected_index]`.
 #[test]
 fn test_ldmatrix_trans_mapping() {
     let mut init = String::new();
@@ -3365,15 +3226,9 @@ $L1:
     }
 }
 
-/// `mma.sync`'s accumulator operand may be an immediate literal, not just a
-/// register - nvcc's "first tile has no accumulator yet" idiom passes
-/// `{0f00000000, ...}` directly. A/B are packed all-zero fragments (built
-/// via `mov.b32 {lo,hi}` so `gather_f16_fragment` sees a genuine
-/// `Value::Pair`, not a bit pattern), so `D = A*B + C` folds exactly to
-/// `C` - thread 0's fragment (`m16n8k16_f16::matrix_cd(0)`, all `reg_idx`
-/// == `i` since its group/thread-in-group are both 0) then pins the
-/// literal accumulator `{1.0, 0, 0, 0}` straight through to its four
-/// destination registers.
+/// `mma.sync`'s accumulator may be an immediate (nvcc's `{0f00000000, ...}`
+/// first-tile idiom): with all-zero packed A/B, `D = C`, so thread 0's
+/// registers get the literal `{1.0, 0, 0, 0}`.
 #[test]
 fn test_mma_with_immediate_accumulator() {
     let src = wrap(
@@ -3426,10 +3281,8 @@ fn test_mma_with_immediate_accumulator() {
     assert_eq!(display_output(&output, "out", 3), "0");
 }
 
-/// An `mma.sync` f32 accumulator register holding a raw bit pattern (from
-/// `mov.b32`, not a `0f` float literal) is decoded as f32 bits: thread 0's
-/// `D[0][0]` is 1.0, not 1065353216. A/B are packed zeros, as in
-/// [`test_mma_with_immediate_accumulator`].
+/// An `mma.sync` f32 accumulator holding a raw bit pattern (`mov.b32`) is
+/// decoded as f32 bits: thread 0's `D[0][0]` is 1.0, not 1065353216.
 #[test]
 fn test_mma_accumulator_register_decodes_raw_bits() {
     let src = wrap(
@@ -3552,10 +3405,9 @@ fn test_wmma_stride_above_default_is_legal() {
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("stride-32 wmma.load");
 }
 
-/// nvcc's bank-conflict skew (`__shared__ half tile[..][16 + 8]`, the
-/// corpus's Conv2D-opt) yields a 24-element f16 stride: 48 bytes, not a
-/// multiple of the 32-byte fragment size but 16-byte aligned, which is
-/// the contract nvcc actually compiles against. It must stay legal.
+/// nvcc's bank-conflict skew (`half tile[..][16 + 8]`, Conv2D-opt) gives a
+/// 48-byte stride: not a multiple of the 32-byte fragment but 16-byte
+/// aligned, which must stay legal.
 #[test]
 fn test_wmma_skewed_stride_is_legal() {
     let module = parse(&wrap(&wmma_load_body(0, 24)));
@@ -3664,10 +3516,9 @@ fn test_config_rejects_misaligned_array_base() {
     );
 }
 
-/// nvcc's u16 magic-number division (Conv2D-opt's index cache): the
-/// immediate -17873 is the u16 constant 47663 = ceil(2^19/11); operands of
-/// `mul.wide.u16` must be reinterpreted as unsigned, not consumed at their
-/// producer's signedness.
+/// nvcc's u16 magic-number division (Conv2D-opt): the immediate -17873 is u16
+/// 47663 = ceil(2^19/11), so `mul.wide.u16` operands are reinterpreted as
+/// unsigned.
 #[test]
 fn test_mul_wide_u16_magic_division() {
     let src = wrap(
@@ -3727,10 +3578,9 @@ fn test_mul_hi_u32_negative_operand() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
-/// `shf`'s shift amount is `.u32`: `-1` in an `.s32` register is
-/// 0xFFFFFFFF, which `.clamp` saturates to 32 (left: the result is `lo`,
-/// right: `hi`) - not 0, which would pick the opposite operand. `.wrap`
-/// takes the low 5 bits, i.e. 31.
+/// `shf`'s shift amount is `.u32`: `-1` is 0xFFFFFFFF, which `.clamp`
+/// saturates to 32 (left gives `lo`, right `hi`) - not 0; `.wrap` takes the
+/// low 5 bits, i.e. 31.
 #[test]
 fn test_shf_clamp_negative_shift_amount_saturates() {
     let src = wrap(
@@ -3828,10 +3678,9 @@ fn test_b16_shift_amount_is_read_as_u32() {
     assert_eq!(display_output(&output, "out", 2), 0xFFFFu32.to_string());
 }
 
-/// Integer `abs` folds, re-reading a concrete operand at the
-/// instruction's signed width: 0xFFFFFFFB produced by `mov.u32` is -5 to
-/// `abs.s32`, and the result wraps back to the width (`abs.s32` of
-/// i32::MIN is i32::MIN).
+/// Integer `abs` re-reads a concrete operand at its signed width: 0xFFFFFFFB
+/// is -5 to `abs.s32`, and the result wraps (`abs.s32` of i32::MIN is
+/// i32::MIN).
 #[test]
 fn test_int_abs_read_at_signed_width() {
     let src = wrap(
@@ -3863,9 +3712,7 @@ fn test_int_abs_read_at_signed_width() {
     );
 }
 
-/// `abs.f32` of a raw bit pattern decodes it first: 0xC0A00000 moved in
-/// by `mov.b32` is -5.0, so the result is 5.0 (not the already-positive
-/// integer 0xC0A00000 passed through, which reads back as -5.0), and
+/// `abs.f32` decodes a raw bit pattern first: 0xC0A00000 (-5.0) gives 5.0 and
 /// 0xFF800000 (-inf) gives inf. A symbolic operand stays an `abs` node.
 #[test]
 fn test_float_abs_decodes_raw_bits() {
@@ -3900,10 +3747,9 @@ fn test_float_abs_decodes_raw_bits() {
     assert_eq!(display_output(&output, "out", 2), "abs(in[0])");
 }
 
-/// Every float consumer decodes a raw bit pattern moved in by `mov.b32`/
-/// `mov.b16` instead of reading it as an integer: 0x3F800000 is 1.0, not
-/// 1065353216 - `fma`, `rcp`/`sqrt`, `copysign`'s two operands, and a
-/// float-to-float `cvt`'s source (0x3C00 is f16 1.0).
+/// Every float consumer decodes a raw `mov.b32`/`mov.b16` bit pattern
+/// (0x3F800000 is 1.0): `fma`, `rcp`/`sqrt`, both `copysign` operands, and
+/// float-to-float `cvt` (f16 0x3C00).
 #[test]
 fn test_float_ops_decode_raw_bit_patterns() {
     let src = wrap(
@@ -4010,11 +3856,9 @@ fn test_float_op_rejects_nan_bit_pattern() {
     }
 }
 
-/// `neg` re-reads a concrete operand as the instruction's type: to
-/// `neg.s32`, 0xFFFFFFFB produced by `mov.u32` is -5, and the result wraps
-/// back to the width (`neg.s32` of i32::MIN is i32::MIN); to `neg.f32`, a
-/// raw bit pattern moved in by `mov.b32` is decoded first (0xC0A00000 is
-/// -5.0, 0xFF800000 is -inf). A symbolic operand stays a `neg` node.
+/// `neg` re-reads a concrete operand as its type: 0xFFFFFFFB is -5 to
+/// `neg.s32` (i32::MIN wraps to itself); `neg.f32` decodes raw bits
+/// (0xC0A00000 is -5.0). Symbolic stays a `neg` node.
 #[test]
 fn test_neg_reads_operand_as_instruction_type() {
     let src = wrap(
@@ -4208,10 +4052,8 @@ fn test_bfe_extract_and_sign_fill() {
     bfe.u32 %r2, %r1, 0, 4;
     st.global.u32 [%rd1], %r2;
 
-    // Same source, start, and len - but signed: the extracted field's own
-    // top bit (bit 3 of 0b1010) is 1, so the rest of the register gets
-    // sign-filled with 1s: 0xFFFFFFFA, i.e. 2^32 - 6 (this nibble is -6
-    // in 4-bit two's complement).
+    // Signed: the field's top bit (bit 3 of 0b1010) is 1, so it sign-fills to
+    // 0xFFFFFFFA (-6 in 4-bit two's complement).
     mov.u32 %r3, 10;
     bfe.s32 %r4, %r3, 0, 4;
     st.global.u32 [%rd1+4], %r4;
@@ -4312,13 +4154,9 @@ fn test_mov_vector_destination_unpack_values() {
 
 #[test]
 fn test_cvt_pack_halves_values() {
-    // cvt.rn.f16x2.f32 d, a, b: per the PTX ISA, the first source operand
-    // (a) converts into the *high* half of d and the second (b) into the
-    // *low* half - opposite mov.b32's brace order. Values are exact reals
-    // here (float conversion is modeled as identity, no rounding), and the
-    // packed destination is a Value::Pair rather than bit-encoded, so this
-    // also exercises storing a Pair to memory and reading its two 2-byte
-    // granules back independently.
+    // cvt.rn.f16x2.f32 d, a, b: `a` goes to the *high* half and `b` to the
+    // *low* (opposite mov.b32's brace order); also exercises storing a Pair and
+    // reading its 2-byte granules back.
     let src = wrap(
         ".visible .entry k(
     .param .u64 k_param_0
@@ -4347,14 +4185,9 @@ fn test_cvt_pack_halves_values() {
 
 #[test]
 fn test_mov_unpack_native_pair_source() {
-    // `ld.global.b32` over a 2-byte-elem_width array produces a native
-    // `Value::Pair` (per `eval/memory.rs`'s granule combining). The
-    // subsequent `mov.b32 {lo,hi}, %r1` unpack must distribute that pair's
-    // two real-valued halves directly rather than reinterpreting them as an
-    // opaque 32-bit integer to bit-mask/shift - the idiom nvcc/Triton emit
-    // for every f16 elementwise kernel in the paper corpus (staging a
-    // 4-byte `ld`/`st` through shared memory, then unpacking to operate on
-    // each f16 lane).
+    // `ld.global.b32` over a 2-byte array yields a `Value::Pair`; `mov.b32
+    // {lo,hi}` must split its real halves directly, not bit-mask an opaque
+    // integer (nvcc/Triton's f16 idiom).
     let src = wrap(
         ".visible .entry k(
     .param .u64 k_param_0,
@@ -4404,11 +4237,9 @@ fn test_mov_unpack_native_pair_source() {
 
 #[test]
 fn test_mov_pack_b32_always_builds_pair() {
-    // The mirror image of test_mov_unpack_native_pair_source: mov.b32 dst,
-    // {lo, hi} always writes a Value::Pair(lo, hi) rather than bit-packing
-    // - the corpus idiom (two 2-byte loads or two cvt.*.f16.* results,
-    // packed and streamed straight to memory) round-trips exactly through
-    // this, whether the halves are real f16 values or plain integers.
+    // The mirror image: `mov.b32 dst, {lo, hi}` always writes `Value::Pair(lo,
+    // hi)`, not bit-packing, so packed f16 or integer halves round-trip exactly
+    // through memory.
     let src = wrap(
         ".visible .entry k(
     .param .u64 k_param_0,
@@ -4456,11 +4287,9 @@ fn test_mov_pack_b32_always_builds_pair() {
     assert_eq!(display_output(&output, "out", 1), "in[1]");
 }
 
-/// `mov.b64 dst, {lo, hi}` with two concrete 32-bit integer halves - the
-/// idiom for building a wide value/address - still yields the exact 64-bit
-/// integer: the pack is a `Value::Pair` (shared with `f32x2` lanes), and
-/// concrete integer halves are recombined wherever the value is consumed
-/// as one scalar, here when the stored u64 output element is extracted.
+/// `mov.b64 dst, {lo, hi}` with concrete 32-bit integer halves yields the
+/// exact 64-bit integer: the `Value::Pair` is recombined when consumed as a
+/// scalar (here, the u64 output).
 #[test]
 fn test_mov_pack_b64_integer_halves_recombine() {
     let src = wrap(
@@ -4528,10 +4357,9 @@ fn u8_scratch_config() -> AnalysisConfig {
     config
 }
 
-/// Value-boundary canonicalization: `mov.u32 %r, -1` and `not.b32 %r, 0`
-/// leave the same hardware value in the register, so both kernels must
-/// export the same canonical constant (this was a false DIFF: the mov
-/// side exported -1, the not side 4294967295).
+/// Value-boundary canonicalization: `mov.u32 %r, -1` and `not.b32 %r, 0` hold
+/// the same hardware value, so both kernels must export the same canonical
+/// constant.
 #[test]
 fn test_mov_neg1_equivalent_to_not_zero() {
     let mov_kernel = wrap(
@@ -4571,14 +4399,9 @@ fn test_mov_neg1_equivalent_to_not_zero() {
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
-/// Value-boundary canonicalization at setp and selp: comparing a
-/// symbolic value against the immediate -1 at s32 and against a
-/// not.b32-computed 4294967295 must build identical comparison nodes
-/// (the computed operand is reinterpreted at the instruction type), and
-/// likewise the selp arms `-1` and the computed 4294967295 at b32.
-/// Previously both instructions used raw operands, so this pair was a
-/// false DIFF: one side's expressions carried -1 where the other's
-/// carried 4294967295.
+/// Value-boundary canonicalization at setp/selp: `-1` and a computed
+/// 4294967295 are reinterpreted at the instruction type, so both build
+/// identical comparison and select nodes.
 #[test]
 fn test_setp_selp_canonicalize_operands() {
     let literal = wrap(
@@ -4664,10 +4487,9 @@ fn test_store_u8_truncates_to_low_bits() {
     assert_eq!(display_output(&output, "out", 0), "44");
 }
 
-/// `ld.s8` sign-extends the memory byte per the load type: the byte 0xFF
-/// reads back as -1, and storing that at 32-bit width exports the
-/// canonical unsigned pattern 4294967295 - the same constant a kernel
-/// that stores -1 directly exports.
+/// `ld.s8` sign-extends: byte 0xFF reads as -1, and storing it at 32 bits
+/// exports the canonical 4294967295, the same constant as storing -1
+/// directly.
 #[test]
 fn test_load_s8_sign_extends() {
     let via_byte = wrap(
@@ -4712,11 +4534,9 @@ fn test_load_s8_sign_extends() {
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
-/// cvt reads its source at the *source* format (ISA Table 15: extension
-/// follows the source format): `and.b32` leaves the unsigned-canonical
-/// 4294967288 in the register, and `cvt.s64.s32` must reinterpret it as
-/// the s32 -8 before widening; mirrored, `cvt.u64.u32` of a `sub.s32`
-/// result -8 must widen the u32 reading 4294967288.
+/// cvt reads its source at the *source* format (ISA Table 15): `cvt.s64.s32`
+/// of an `and.b32` result 4294967288 widens -8, and `cvt.u64.u32` of
+/// `sub.s32`'s -8 widens 4294967288.
 #[test]
 fn test_cvt_reinterprets_at_source_format() {
     let src = wrap(
@@ -4816,12 +4636,9 @@ fn test_symbolic_sub_register_load_rejected() {
     );
 }
 
-/// Unlike the `.s8` case above, a bits-type (or unsigned) sub-register
-/// symbolic load needs no extension node at all: zero-extension is the
-/// identity on the represented number, so it passes through unchanged.
-/// This is also PTX's own rule for `.b8`/`.u8` loads, which the ISA has no
-/// register class narrower than 16 bits to hold - confirmed against
-/// `RoPEFloat8Kernel`'s real `triton_generated.ptx`.
+/// A bits-type or unsigned sub-register symbolic load needs no extension
+/// node: zero-extension is the identity on the number (PTX's rule for
+/// `.b8`/`.u8` loads too).
 #[test]
 fn test_unsigned_sub_register_load_passes_through() {
     let src = wrap(
@@ -4845,15 +4662,9 @@ fn test_unsigned_sub_register_load_passes_through() {
     assert_eq!(display_output(&output, "out", 0), "scratch[0]");
 }
 
-/// The real-world idiom behind the fix above: LLVM's NVPTX backend loads
-/// one fp8 array byte into a 16-bit register (zero-filling the upper byte
-/// first, since `.b8` has no register class of its own), then feeds that
-/// straight into `cvt.rn.f16x2.e4m3x2` and keeps only the low (real)
-/// lane - exactly `RoPEFloat8Kernel`'s pattern. The symbolic Scalar path
-/// of `CvtE4m3x2ToF16x2` must treat the loaded byte as the array
-/// element's own real value (identity-over-reals), not try to bit-decode
-/// it, and must leave the discarded high lane `Undefined` rather than
-/// fabricate a value for it.
+/// LLVM's NVPTX fp8 idiom (`RoPEFloat8Kernel`): a byte loaded into a 16-bit
+/// register feeds `cvt.rn.f16x2.e4m3x2`; the low lane is the element's real
+/// value and the discarded high lane stays `Undefined`.
 #[test]
 fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
     let src = wrap(
@@ -4906,12 +4717,9 @@ fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
     assert_eq!(display_output(&output, "out", 0), "x[0]");
 }
 
-/// The flip side of the test above: if a kernel actually *kept* the high
-/// lane decoded from a zero-extended byte load's `Undefined` upper byte
-/// (instead of discarding it, as every real corpus kernel does), that
-/// must surface as a loud `UndefinedOutput`, not a silently fabricated
-/// value (e.g. `0.0`, matching the byte the real ISA would have zero-filled
-/// - a plausible-looking but unjustified guess we deliberately don't make).
+/// The flip side: a kernel that *keeps* that high lane (from the load's
+/// `Undefined` upper byte) must get a loud `UndefinedOutput`, not a
+/// fabricated `0.0`.
 #[test]
 fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
     let src = wrap(
@@ -4968,11 +4776,9 @@ fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
     );
 }
 
-/// A packed f16x2 pair fills a 32-bit register; storing it at a
-/// sub-4-byte width would stuff the whole two-half value into a 2-byte
-/// granule (a shape the memory model never anticipates): loud error,
-/// not silent nonsense. The pair is built through the sanctioned path
-/// (two adjacent 2-byte stores read back at 4 bytes).
+/// Storing a packed f16x2 pair (a 32-bit value) at a sub-4-byte width would
+/// stuff both halves into one 2-byte granule: a loud error, not silent
+/// nonsense.
 #[test]
 fn test_pair_sub_width_store_rejected() {
     let src = wrap(
@@ -5082,10 +4888,9 @@ fn test_symexpf_callseq() {
     assert_eq!(display_output(&output, "out", 0), "exp(in[0])");
 }
 
-/// `tanh.approx.f32` is evaluated as `(e^2x - 1) / (e^2x + 1)`, staying in
-/// the interpreted exp fragment (same approach as `Ex2`) rather than
-/// becoming an opaque atom - so it must both display in that expanded form
-/// over a symbolic input and fold exactly to zero at the origin.
+/// `tanh.approx.f32` is `(e^2x - 1) / (e^2x + 1)`, staying in the exp
+/// fragment (like `Ex2`) instead of an opaque atom: it displays in that form
+/// and folds to zero at 0.
 #[test]
 fn test_tanh_approx_expands_to_exp_fragment() {
     let src = wrap(
@@ -5114,10 +4919,9 @@ fn test_tanh_approx_expands_to_exp_fragment() {
     );
 }
 
-/// `tanh(0) = (e^0 - 1) / (e^0 + 1) = 0` - checked through canon's
-/// equivalence check (not raw display), since `exp(0)` is not eagerly
-/// folded to `1` at expression-construction time; canon's rational algebra
-/// is what actually proves the fraction collapses to zero.
+/// `tanh(0) = 0` is checked through canon's equivalence, not display:
+/// `exp(0)` is not folded to `1` at construction, so canon's algebra proves
+/// the collapse.
 #[test]
 fn test_tanh_approx_zero_equivalent_to_zero() {
     let tanh_src = wrap(
@@ -5239,10 +5043,8 @@ fn test_redux_sync_max_min_full_warp() {
     );
     let module = parse(&src);
     let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
-    // max(0..31) = 31, min(-16..15) = -16, broadcast identically to lane 0
-    // and lane 31. `st.global.u32` stores the raw unsigned-canonical bit
-    // pattern (memory holds bits, not a signed/unsigned distinction -
-    // see `test_cvt_reinterprets_at_source_format`), so -16 reads back as
+    // max(0..31) = 31, min(-16..15) = -16, broadcast to lanes 0 and 31;
+    // `st.global.u32` stores raw unsigned bits, so -16 reads back as
     // 4294967280.
     assert_eq!(display_output(&output, "out", 0), "31");
     assert_eq!(display_output(&output, "out", 1), "4294967280");
@@ -5288,10 +5090,9 @@ fn test_redux_sync_and_or_add_full_warp() {
     assert_eq!(output.stats.warp_syncs, 3);
 }
 
-/// A `redux.sync` under a predicate guard only fires for the lanes that
-/// take it: lanes 16..31 never execute the guarded `max.s32` and keep
-/// their pre-set sentinel, while every lane (guarded or not) still gets
-/// the unconditional `min.s32`'s broadcast result.
+/// A predicated `redux.sync` fires only for lanes that take it: lanes 16..31
+/// skip the guarded `max.s32` and keep their sentinel; all lanes get the
+/// `min.s32` result.
 #[test]
 fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
     let src = wrap(
@@ -5321,11 +5122,8 @@ fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
     );
     let module = parse(&src);
     let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
-    // Lane 0 (guarded, mask 0..15): min over all 32 lanes is -16; max over
-    // just lanes 0..15 is -1. `st.global.u32` stores the raw
-    // unsigned-canonical bit pattern (see
-    // `test_cvt_reinterprets_at_source_format`), so -16/-1 read back as
-    // 4294967280/4294967295.
+    // Lane 0 (guarded, mask 0..15): min over 32 lanes is -16, max over 0..15 is
+    // -1; stored as raw unsigned bits, they read back as 4294967280/4294967295.
     assert_eq!(display_output(&output, "out", 0), "4294967280");
     assert_eq!(display_output(&output, "out", 1), "4294967295");
     // Lane 16 (not guarded): still gets the full-warp min, but never
@@ -5569,11 +5367,9 @@ fn test_red1_red3_equivalent() {
 #[test]
 fn test_red1_red4_equivalent() {
     let a = red1();
-    // Red-4 adds `in[i] + in[i + 64]` on load and reduces the low half of
-    // sdata. Threads 64..128 read `in[128..192)`, but those values only land
-    // in the unused half of sdata, so the sum still covers exactly
-    // `in[0..128)`. The input array must span 192 elements to keep the loads
-    // in bounds.
+    // Red-4 adds `in[i] + in[i + 64]` on load; threads 64..128's `in[128..192)`
+    // loads land in sdata's unused half, so the sum covers `in[0..128)` and the
+    // input spans 192.
     let b = run_reduction("01_reduction/Red-4.ptx", "_Z7reduce0PiS_", 128, 192, 0);
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
@@ -5596,9 +5392,7 @@ fn test_red1_wrong_input_not_equivalent() {
 }
 
 // =========================================================================
-// Exact real-constant folding: the fold algebra and canon's algebra are
-// one algebra, so the same real-model value folds to the same constant
-// regardless of which instructions computed it.
+// Exact real-constant folding: fold algebra = canon's algebra, so equal values fold equally
 // =========================================================================
 
 /// One-input/one-output f32 config over `in`/`out` (single thread).
@@ -5606,11 +5400,8 @@ fn one_elem_config() -> AnalysisConfig {
     in_out_config(1, 1)
 }
 
-/// `div.rn.f32 d, 1.0, 3.0` and `rcp.approx.f32 d, 3.0` now fold to the
-/// same exact rational 1/3, so kernels using either spelling are
-/// equivalent. Under the old f64 folds, the division folded to
-/// rational-of-fl(1/3) while rcp stayed symbolic and canonicalized to
-/// exactly 1/3 - the same value under two different constants.
+/// `div.rn.f32 d, 1.0, 3.0` and `rcp.approx.f32 d, 3.0` fold to the same
+/// exact rational 1/3, so kernels using either spelling are equivalent.
 #[test]
 fn test_div_by_three_equivalent_to_rcp_of_three() {
     let div_src = wrap(
@@ -5777,10 +5568,9 @@ fn test_concrete_fma_equivalent_to_mul_add() {
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
-/// The model-faithful direction: a kernel that adds 0.1 + 0.2 at runtime
-/// computes the exact rational sum, which is NOT the pre-rounded literal
-/// 0d3FD3333333333334 (the f64 the hardware would produce). The old f64
-/// fold rounded the runtime sum and wrongly equated the two.
+/// Model-faithful: 0.1 + 0.2 computed at runtime is the exact rational sum,
+/// NOT the pre-rounded f64 literal 0d3FD3333333333334 the hardware would
+/// produce.
 #[test]
 fn test_runtime_sum_differs_from_prerounded_literal() {
     let sum_src = wrap(
@@ -5933,20 +5723,12 @@ fn test_zero_over_zero_is_a_loud_equivalence_error() {
 }
 
 // =========================================================================
-// The paper's Sync semantics at warp level: exited lanes arrive at every
-// warp op and are included in the chi-clear (Sync'/syncMem over the full
-// mask set I, return-threads included).
+// The paper's Sync at warp level: exited lanes arrive and join the chi-clear (Sync'/syncMem)
 // =========================================================================
 
-/// Tail-exit warp reduction: threads 16..31 exit immediately, and the 16
-/// survivors run a full-mask `shfl.sync.down` tree reduction. The groups
-/// fire because exited lanes count as arrived (paper's Sync rule; the ISA
-/// says the same for shfl.sync: "wait until all non-exited threads
-/// corresponding to membermask"); previously data ops required every mask
-/// lane live and this idiom was a false Deadlock. The guarded adds discard
-/// the Undefined values sourced from exited lanes 16..23, exactly as real
-/// kernels discard the out-of-range contributions, so the result equals a
-/// sequential sum of in[0..16].
+/// Tail-exit warp reduction: lanes 16..31 exit and the survivors run a
+/// full-mask `shfl.sync.down` tree; exited lanes count as arrived (paper's
+/// Sync rule, and the ISA's), so it sums in[0..16].
 #[test]
 fn test_tail_exit_warp_shfl_reduction() {
     let mut body = String::from(
@@ -6034,10 +5816,9 @@ fn test_tail_exit_warp_shfl_reduction() {
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
-/// A shfl value sourced from an exited (in-mask) lane is Undefined, per the
-/// ISA: "results are undefined if a thread sources a register from an
-/// inactive thread". Storing it directly to an output array surfaces as
-/// UndefinedOutput; the group itself fires (no Deadlock).
+/// A shfl value sourced from an exited in-mask lane is Undefined (ISA:
+/// "results are undefined if a thread sources a register from an inactive
+/// thread"); the group still fires.
 #[test]
 fn test_shfl_from_exited_lane_is_undefined() {
     let src = wrap(
@@ -6082,11 +5863,9 @@ fn test_shfl_from_exited_lane_is_undefined() {
     );
 }
 
-/// The verified false race: a lane reads shared memory and exits; the
-/// survivor bar.warp.syncs on the full mask and writes the same byte. The
-/// paper's syncMem clears pending sets over the whole I including the
-/// returned lane, so this is NOT a race (it previously was reported as
-/// one, because only live members joined the chi sync set).
+/// Not a race: a lane reads shared and exits, then the survivor
+/// bar.warp.syncs the full mask and writes the byte; syncMem clears over all
+/// of I, the returned lane included.
 #[test]
 fn test_bar_warp_sync_clears_chi_for_exited_reader() {
     let src = wrap(
@@ -6183,10 +5962,9 @@ fn test_barrier_sync_is_bar_sync() {
 // activemask: exact for the converged case (existing, non-exited lanes)
 // =========================================================================
 
-/// activemask kernel: every thread records its mask, with a CTA barrier
-/// after the query so no thread has exited when any thread queries (each
-/// thread blocks rather than exits, making the all-alive answer
-/// deterministic under round-robin).
+/// activemask kernel: each thread records its mask; a CTA barrier after the
+/// query means no thread has exited yet, making the all-alive answer
+/// deterministic.
 fn activemask_body(barrier: &str) -> String {
     format!(
         ".visible .entry k(
@@ -6245,12 +6023,9 @@ fn test_activemask_16_thread_block() {
     }
 }
 
-/// Tail-exit: threads 16..31 exit before the barrier; survivors query
-/// after it. Only thread 0's value is asserted: under round-robin each
-/// survivor also observes the *earlier survivors'* exits (thread 1 sees
-/// thread 0 gone, and so on), just as hardware activemask depends on
-/// execution timing - the model deliberately promises nothing about
-/// exit ordering beyond the executing thread's own observation point.
+/// Tail-exit: threads 16..31 exit before the barrier. Only thread 0 is
+/// asserted: later survivors also see earlier survivors' exits, and the model
+/// promises nothing about exit order.
 #[test]
 fn test_activemask_after_tail_exit() {
     let mut body = activemask_body("bar.sync 0;");
@@ -6264,8 +6039,7 @@ fn test_activemask_after_tail_exit() {
 }
 
 // =========================================================================
-// Bounds hardening: ownership containment, whole-vector footprints, and
-// overflow-proof address arithmetic (all release-active)
+// Bounds hardening: ownership, whole-vector footprints, overflow-proof addresses (release-active)
 // =========================================================================
 
 /// The paper's own §6.2 pattern: `__shared__ int A[48]` read at
@@ -6300,11 +6074,9 @@ fn test_shared_array_overflow_read_is_out_of_bounds() {
     );
 }
 
-/// Cross-array overflow into an adjacent shared array: a v4 (16-byte)
-/// load whose first byte lies in A but whose tail runs into the adjacent
-/// B. The whole-footprint ownership check makes this a loud OutOfBounds;
-/// the per-element checks alone each passed inside a different array and
-/// silently read the neighbor.
+/// A v4 load starting in shared array A whose tail runs into adjacent B: the
+/// whole-footprint ownership check makes it a loud OutOfBounds, not a silent
+/// neighbor read.
 #[test]
 fn test_vector_straddling_adjacent_shared_arrays() {
     let src = wrap(
@@ -6336,11 +6108,9 @@ fn test_vector_straddling_adjacent_shared_arrays() {
     );
 }
 
-/// `x[tid - 1]` at tid = 0 with the array based at address 0: the index
-/// wraps to 0xFFFF_FFFF_FFFF_FFFC. The additive bounds check wrapped with
-/// it in release builds and silently accepted the access (yielding a
-/// silent Undefined); the subtraction-form check rejects it in every
-/// build profile. The test suite runs in release, where this must hold.
+/// `x[tid - 1]` at tid = 0 with the array at address 0 wraps to
+/// 0xFFFF_FFFF_FFFF_FFFC; the subtraction-form bounds check rejects it in
+/// every build profile, including release.
 #[test]
 fn test_negative_index_wrap_is_out_of_bounds() {
     let src = wrap(
@@ -6383,10 +6153,9 @@ fn test_negative_index_wrap_is_out_of_bounds() {
     );
 }
 
-/// Aligned in-bounds accesses at region edges still pass: the last scalar
-/// element of a shared array (exact fit against the region end, with an
-/// adjacent array following) and an exact-fit v4 footprint ending at the
-/// region end.
+/// Aligned in-bounds accesses at region edges still pass: a shared array's
+/// last scalar element (adjacent array following) and an exact-fit v4 ending
+/// at the region end.
 #[test]
 fn test_region_edge_exact_fit_accesses_pass() {
     let src = wrap(
@@ -6430,11 +6199,9 @@ fn test_region_edge_exact_fit_accesses_pass() {
     assert_eq!(display_output(&output, "out", 1), "1");
 }
 
-/// A valid array in the upper half of the address space: based at
-/// 0x7FFF_FFFF_FFFF_FFF0, the +16 access lands at 2^63 - crossing the
-/// i64 sign boundary with no u64 wrap. Effective addresses are u64
-/// arithmetic mod 2^64 (as on hardware), so this is simply in bounds;
-/// the previous i64 checked sum falsely rejected it as an overflow.
+/// An array at 0x7FFF_FFFF_FFFF_FFF0: the +16 access crosses the i64 sign
+/// boundary without u64 wrap. Addresses are u64 mod 2^64 (as on hardware), so
+/// this is in bounds.
 #[test]
 fn test_upper_half_address_space_access_in_bounds() {
     let src = wrap(
@@ -6529,10 +6296,9 @@ fn test_array_overlapping_module_global_window_rejected() {
 // Hostile declaration sizes: checked packing arithmetic
 // =========================================================================
 
-/// A shared declaration whose byte size overflows u64 (here via a
-/// two-dimensional element count: 2^31 * 2^31 u32 elements = 2^64 bytes)
-/// is rejected loudly at lowering; release-wrapping would silently give
-/// the variable a tiny size and mismodel every access to it.
+/// A shared declaration whose byte size overflows u64 (2^31 * 2^31 u32
+/// elements) is rejected at lowering; release-wrapping would silently give it
+/// a tiny size.
 #[test]
 fn test_hostile_shared_declaration_size_rejected() {
     let src = wrap(
@@ -6588,11 +6354,9 @@ fn test_cvta_to_global_accepted() {
     analyze_kernel(&module, None, in_out_config(1, 1)).expect("cvta.to.global is the corpus form");
 }
 
-/// Every other cvta form is rejected by name, with the reason split by
-/// why: `cvta.global` (to-generic over global) is identity-compatible and
-/// rejected only because the corpus never uses it, while the shared/local
-/// forms would mint or bless addresses in the wrong space (generic
-/// addressing has no per-space windows in the model).
+/// Other cvta forms are rejected by name: `cvta.global` is compatible but
+/// unused by the corpus, while shared/local forms would mint addresses in the
+/// wrong space.
 #[test]
 fn test_cvta_other_forms_rejected() {
     for (form, expect, reason_fragment) in [
@@ -6636,10 +6400,9 @@ fn test_cvta_other_forms_rejected() {
 // cp.async: in-flight hazard locking and post-completion visibility
 // =========================================================================
 
-/// A thread reading its own `cp.async` destination before `wait_group` is a
-/// hazard, even same-thread - the destination lock blocks the issuing
-/// thread too, unlike ordinary χ-tracking (which would let a same-thread
-/// access through).
+/// Reading one's own `cp.async` destination before `wait_group` is a hazard
+/// even same-thread: the destination lock also blocks the issuer, unlike
+/// χ-tracking.
 #[test]
 fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
     let src = wrap(
@@ -6707,11 +6470,9 @@ fn test_cp_async_wait_group_completes_copy() {
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
-/// A different thread touching the destination while thread 0's copy is
-/// still in flight - blocked at a barrier before its own `wait_group` -
-/// must be a hazard, cross-thread. Requires the barrier to expose the
-/// interleaving: without it, the round-robin scheduler would run thread 0
-/// to completion (including its wait) before thread 1 ever executes.
+/// Another thread touching the destination while thread 0's copy is in flight
+/// is a hazard; the barrier exposes the interleaving (otherwise thread 0
+/// would finish first).
 #[test]
 fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
     let src = wrap(
@@ -6800,13 +6561,9 @@ $DONE:
     );
 }
 
-/// `wait_group` only orders the issuing thread's own subsequent
-/// instructions against its own prior copies - it establishes nothing
-/// about visibility to other threads. A different thread reading the
-/// destination after thread 0's `wait_group`, with no synchronization
-/// since, must still be a data race (not an async-copy hazard: the lock is
-/// already released by this point, and ordinary χ-tracking on the deferred
-/// write is what catches it).
+/// `wait_group` orders only the issuer's own later instructions: another
+/// thread reading the destination after it, unsynchronized, is still a data
+/// race (via χ, not the lock).
 #[test]
 fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
     let src = wrap(
@@ -6888,11 +6645,9 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
 // `fence.proxy.async` / async-proxy hazard (sm_90+ only)
 // =========================================================================
 
-/// `test_cp_async_wait_group_completes_copy`'s exact body (a plain
-/// single-thread `cp.async` -> `wait_group` -> `ld.shared` read) under
-/// `sm_90a`, with no fence: `cp.async` is a generic-proxy operation (PTX
-/// ISA 9.7.10.28.3), so a generic read of its destination needs no
-/// `fence.proxy.async` even on Hopper+.
+/// `cp.async` -> `wait_group` -> `ld.shared` under `sm_90a` with no fence:
+/// `cp.async` is a generic-proxy op (PTX ISA 9.7.10.28.3), so no
+/// `fence.proxy.async` is needed.
 #[test]
 fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
     let src = wrap_sm90a(
@@ -6959,15 +6714,9 @@ fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
-/// The real corpus regression guard this whole check exists to satisfy:
-/// `kernels/astra2/260905094515_MatrixVectorMultiplicationFloat16Kernel_
-/// gpt-6-astra_max/final_candidate.ptx` (`.target sm_89`, outside this
-/// repo) does exactly this shape - `cp.async` write, `wait_group`,
-/// `bar.sync`, a read of the same bytes by a *different* thread, zero
-/// `fence.proxy.async` anywhere - and is real, correct, compiler-generated
-/// code that must keep passing. `sm_89` is below the `>= Sm90` gate, so
-/// `TargetFeatures::async_proxy_fence` is false and this must never be
-/// flagged, no matter how the fence-check code evolves.
+/// Regression guard for a real astra2 sm_89 MatrixVectorMultiplicationFloat16
+/// kernel: `cp.async`, `wait_group`, `bar.sync`, cross-thread read, no fence;
+/// below sm_90 it must never be flagged.
 #[test]
 fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
     let src = format!(
@@ -7007,14 +6756,9 @@ fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
-/// TMA's own async-proxy write path (`exec_cp_async_bulk_tensor_load`)
-/// needs no `fence.proxy.async` either: PTX ISA 9.7.9.25.2 makes the copy's
-/// completion carry an implicit generic-async proxy fence, so an
-/// `mbarrier.try_wait` is the whole ordering requirement - which is what
-/// real TMA code (this repo's corpus, CUTLASS, Triton) relies on. Reuses
-/// `test_cp_async_bulk_tensor_copies_in_bounds_and_zero_fills_out_of_bounds`'s
-/// body verbatim except for the target, so the copied values are checked
-/// under `sm_90a` too, not just the absence of a hazard.
+/// TMA's async-proxy write needs no `fence.proxy.async` either: the
+/// completion carries an implicit proxy fence (PTX ISA 9.7.9.25.2). Same body
+/// as the bulk-tensor test, under `sm_90a`.
 #[test]
 fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
     let src = wrap_sm90a(
@@ -7099,11 +6843,9 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
     assert_eq!(display_output(&output, "out", 1), "0");
 }
 
-/// What a TMA destination read *does* require: the copy having completed.
-/// Same kernel as above with the `mbarrier.try_wait.parity` deleted, so the
-/// `ld.shared` reads race the copy that is still in flight - caught by the
-/// destination lock `begin_inflight_bulk_copy` holds until a waiter
-/// observes the tracking mbarrier's phase.
+/// A TMA destination read does require the copy's completion: without the
+/// `mbarrier.try_wait.parity`, the reads race the in-flight copy's
+/// destination lock.
 #[test]
 fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
     let src = wrap_sm90a(
@@ -7188,10 +6930,9 @@ fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
     );
 }
 
-/// A two-warp CTA: thread 0 arms the `count = 1` mbarrier `full` for 16
-/// bytes and issues a `cp.async.bulk` of `in[0..4]` into `buf` completing
-/// on it, then both warps run `body`. `%r4` is `full`, `%r6` a `count =
-/// 32` mbarrier `gate`, `%p2` "in warp 0".
+/// Two-warp CTA: thread 0 arms the `count = 1` mbarrier `full` (`%r4`) for 16
+/// bytes and bulk-copies `in[0..4]` into `buf`. `%r6` = `count = 32` `gate`,
+/// `%p2` = "in warp 0".
 fn bulk_copy_two_warp_kernel(body: &str) -> Module {
     parse(&wrap_sm90a(&format!(
         ".visible .entry k(
@@ -7240,11 +6981,9 @@ fn bulk_copy_config() -> AnalysisConfig {
     config
 }
 
-/// A `bar.sync` after the issue orders nothing about the copy's write,
-/// which only warp 0's wait on `full` observes. Warp 1, released by
-/// `gate`'s bare `complete_tx`, reads `buf` unordered with the write -
-/// though the destination lock is gone, since warp 0 observed the
-/// completion.
+/// A `bar.sync` after the issue orders nothing about the copy's write: warp
+/// 1, released by `gate`'s bare `complete_tx`, reads `buf` unordered with it
+/// (a χ race, not the lock).
 #[test]
 fn test_cp_async_bulk_bar_sync_before_completion_orders_nothing() {
     let module = bulk_copy_two_warp_kernel(
@@ -7342,24 +7081,9 @@ DONE:",
 // `wgmma.mma_async` / `stmatrix` (sm_90+)
 // =========================================================================
 
-/// `wgmma.fence` -> `wgmma.mma_async.m64n8k16.f32.f16.f16` (`scale-d`
-/// false, seeding from `A*B` only) -> `wgmma.commit_group` ->
-/// `wgmma.wait_group 0`, smallest feasible shape (N=8, 4 registers/thread,
-/// 128 threads - one warpgroup). No swizzle (`SwizzleMode::None`) keeps
-/// the descriptor simple: the K-major core-matrix layout with
-/// `stride_dim_byte_offset` 0 and `leading_dim_byte_offset` 128, so row 0
-/// holds `K` 0..8 at bytes 0..16 and `K` 8..16 at bytes 128..144 (other
-/// rows alias rows 0..8 of the first 8-row group - harmless here since only
-/// thread 0's result is checked, and the
-/// row/col-addressing *formula* itself is independently verified by
-/// `tensor_core::tests::test_wgmma_matrix_d_*` already; this test's job is
-/// the instruction pipeline - descriptor decode, shared reads,
-/// accumulate, register writeback - not the fragment table). Thread 0's
-/// `matrix_d(0, 8)` fragment is `[(reg0,row0,col0), (reg1,row0,col1),
-/// (reg2,row8,col0), (reg3,row8,col1)]`; `%d0` (row 0, col 0) is checked
-/// against `sum(1..=16) = 136` - reusing the exact same A-row/B-column
-/// values and expected result as `test_tcgen05_mma_numeric_correctness`
-/// above, since the dot product is identical.
+/// `wgmma.fence` -> `mma_async.m64n8k16.f32.f16.f16` -> `commit_group` ->
+/// `wait_group 0`, unswizzled K-major (LBO 128): thread 0's `%d0` must be
+/// `sum(1..=16) = 136`.
 #[test]
 fn test_wgmma_mma_async_numeric_correctness() {
     let src = wrap_sm90a(
@@ -7483,17 +7207,9 @@ fn test_wgmma_mma_async_numeric_correctness() {
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
-/// The single most important test in this file's `wgmma` register-hazard
-/// coverage: reuses `test_wgmma_mma_async_numeric_correctness`'s exact
-/// setup, but chains **two** same-shape `wgmma.mma_async` calls (`scale-d`
-/// false, then true) with only *one* `wgmma.fence` before the chain and
-/// *one* `wgmma.commit_group`/`wgmma.wait_group` after it - nothing in
-/// between the two calls. This is exactly the real H100 GEMM target
-/// kernel's own pattern (there, four calls per K-tile); the ISA's fence
-/// exemption for "accumulator register accesses across multiple
-/// wgmma.mma_async instructions of the same shape" exists precisely so
-/// this must *not* be flagged. Expects `136 + 136 = 272` (each call adds
-/// the same A.B dot product).
+/// Two chained same-shape `wgmma.mma_async` calls with one fence before and
+/// one commit/wait after (the H100 GEMM pattern) must not be flagged (ISA
+/// fence exemption): `272`.
 #[test]
 fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
     let src = wrap_sm90a(
@@ -7619,13 +7335,9 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
     assert_eq!(display_output(&output, "out", 0), "272");
 }
 
-/// Hazard A (`WgmmaFenceHazard`): same chain as the "needs no extra
-/// fence" test above, but an ordinary register write is interposed
-/// between the two `wgmma.mma_async` calls (after the first is safely
-/// released by its own `wait_group`, so this is specifically a fence
-/// hazard, not a wait_group hazard) - the ordinary write breaks the
-/// same-shape chain, and the second call's accumulator read has no
-/// intervening `wgmma.fence` to fall back on.
+/// Hazard A (`WgmmaFenceHazard`): an ordinary register write between the two
+/// calls breaks the same-shape chain, and the second call's accumulator read
+/// has no `wgmma.fence`.
 #[test]
 fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
     let src = wrap_sm90a(
@@ -7722,10 +7434,9 @@ fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
     );
 }
 
-/// Sibling of the above: an ordinary *write* (not a read) to a still-
-/// pending accumulator register before its `wgmma.wait_group` is equally
-/// a hazard - this is what makes `write_reg`'s hazard-B check matter, not
-/// just `read_reg`'s.
+/// Likewise, an ordinary *write* to a pending accumulator register before
+/// `wgmma.wait_group` is a hazard (`write_reg`'s hazard-B check, not just
+/// `read_reg`'s).
 #[test]
 fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
     let src = wrap_sm90a(
@@ -7771,15 +7482,9 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
     );
 }
 
-/// `stmatrix.x1.m8n8.shared.b16`: 32 lanes collectively write one 8x8x2B
-/// (128-byte) tile. Each lane's own register (`%rv = 1000 + %tid.x`, a
-/// distinct value per lane) lands at `row_addr[lane/4] + (lane%4)*4` -
-/// `row_addr[r]` supplied by lane `r`'s own address register (`src +
-/// r*16`, so lanes 0-7 each name one of the tile's 8 rows). A clean
-/// bijection over the 32 lanes onto the 128 bytes (verified: no lane
-/// shares a byte with another), so exactly one lane's value can land at
-/// any given byte - checked for lane 5 (`row=5/4=1, col_group=5%4=1` ->
-/// byte `src + 1*16 + 1*4 = src+20`) via a plain `ld.shared` readback.
+/// `stmatrix.x1.m8n8.shared.b16`: lane `l`'s value lands at `row_addr[l/4] +
+/// (l%4)*4`, a bijection onto the 128 bytes; lane 5's value is read back at
+/// `src+20`.
 #[test]
 fn test_stmatrix_writes_the_expected_byte_per_lane() {
     let src = wrap(
@@ -7795,10 +7500,8 @@ fn test_stmatrix_writes_the_expected_byte_per_lane() {
     mov.u32 %r0, %tid.x;
     setp.eq.u32 %p1, %r0, 0;
 
-    // Address-supply register: only lanes 0-7's values are ever consulted
-    // (num=1, so row_addr is built from `members[0*8+r]`, r in 0..8) -
-    // `src + tid*16` gives lane r exactly row r's address for those lanes;
-    // lanes 8-31 compute an unused value.
+    // Only lanes 0-7's addresses are consulted (num=1): `src + tid*16` gives
+    // lane r row r's address.
     mov.u32 %r1, buf;
     mad.lo.u32 %r2, %r0, 16, %r1;
 
@@ -7833,10 +7536,9 @@ fn test_stmatrix_writes_the_expected_byte_per_lane() {
 // Packed single precision (f32x2, sm_100+)
 // =========================================================================
 
-/// Two threads, two f32 elements each: `out[i] = in[i] * in[i] + in[i]`,
-/// with `BODY` computing the two elements of one thread from
-/// `{%f1, %f2}` (loaded) into `{%f3, %f4}` (stored) - or, for the 64-bit
-/// memory variants, from `[%rd4]` into `[%rd5]` directly.
+/// Two threads, two f32 elements each: `out[i] = in[i] * in[i] + in[i]`;
+/// `BODY` maps `{%f1, %f2}` to `{%f3, %f4}`, or `[%rd4]` to `[%rd5]` for
+/// 64-bit memory variants.
 fn f32x2_kernel(body: &str) -> String {
     wrap(&format!(
         ".visible .entry k(
@@ -7925,10 +7627,8 @@ fn test_f32x2_fma_via_64bit_memory_access() {
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
-/// A concrete 64-bit bit pattern used as an f32x2 operand decodes into its
-/// two single-precision lanes (here 1.0f in both lanes: x * 1 + x = 2x,
-/// then `sub.f32x2` takes x back out, leaving x, so x*x + x needs the
-/// extra `fma`; the point is that the constant lanes are read correctly).
+/// A concrete 64-bit pattern used as an f32x2 operand decodes into its two
+/// lanes (1.0f each); the point is that the constant lanes read correctly.
 #[test]
 fn test_f32x2_constant_bit_pattern_operand() {
     let outcome = f32x2_outcome(
@@ -8040,10 +7740,9 @@ fn test_f32x2_operand_assembled_with_cvt_zero_extension() {
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
-/// Every lane of a warp storing the one reduced value to the same shared
-/// address (the layout-conversion idiom compilers emit after a warp
-/// reduction) is not a race: the bytes hold the same expression whichever
-/// lane runs last. A store of a different value still is.
+/// Every lane storing the same reduced value to one shared address (the
+/// post-reduction layout idiom) is not a race; a store of a different value
+/// still is.
 #[test]
 fn test_same_value_warp_uniform_store_is_not_a_race() {
     let body = |value: &str| {
@@ -8132,19 +7831,9 @@ fn test_concrete_scalar_granule_splits_for_half_width_access() {
     assert_eq!(display_output(&out, "out", 0), "in[0]");
 }
 
-/// `copysign.type d, a, b` (PTX ISA Block 32): per the ISA text ("copy sign
-/// bit of `a` into value of `b`"), `d = |b|` with `a`'s sign - the first
-/// source operand controls the *sign*, the second controls the
-/// *magnitude*. This is the opposite of what a naive reading of operand
-/// order suggests, and exactly the mixup `CopysignInstr`'s field renaming
-/// (`sign_src`/`magnitude_src`, not the frontend's original
-/// `magnitude`/`sign`) was meant to prevent - this test pins the actual
-/// runtime behavior against all four sign combinations, so a future
-/// regression that silently swaps the two operands back would fail here
-/// rather than only in a real kernel's harder-to-diagnose wrong output.
-/// Also exercises the real GELU candidate's own idiom of reusing one
-/// register as both a source and the destination (`copysign.f32 %v0, %x0,
-/// %v0`).
+/// `copysign.type d, a, b` (PTX ISA): `d = |b|` with `a`'s sign - opposite of
+/// a naive operand reading. Pins all four sign combinations and the
+/// `copysign.f32 %v0, %x0, %v0` reuse idiom.
 #[test]
 fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
     let src = wrap(
@@ -8198,22 +7887,17 @@ fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
     let output = analyze_kernel(&module, None, config).unwrap();
-    // `abs`/`select` don't eagerly fold to a literal even over concrete
-    // constants (canon treats `Abs` as opaque - see `canon::canonicalize`),
-    // so check the numeric value via the f64 oracle rather than the raw
-    // display string. (+3) + (-3) + (+3) + (-3) = 0.
+    // `abs`/`select` don't fold over constants (canon treats `Abs` as opaque),
+    // so check via the f64 oracle: (+3) + (-3) + (+3) + (-3) = 0.
     let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
     let (_, expr) = elems.iter().find(|(i, _)| *i == 0).unwrap();
     let value = numeric::eval_f64(&output.arena, *expr, 0).expect("numeric eval");
     assert_eq!(value, 0.0);
 }
 
-/// `require_scalar_type` (the modifier parser's generic type-token parser,
-/// shared by every instruction) accepts any `ScalarType`, not just
-/// `.f32`/`.f64` - so `copysign.f16` genuinely reaches lowering rather than
-/// being rejected at parse time. Confirms `lower_copysign`'s own
-/// `.f32`/`.f64` restriction (the ISA's actual `.type` set) fires with a
-/// specific reason instead of a generic "not yet implemented".
+/// `copysign.f16` parses (the type parser accepts any `ScalarType`), so
+/// `lower_copysign`'s `.f32`/`.f64` restriction must reject it with a
+/// specific reason.
 #[test]
 fn test_copysign_rejects_a_type_other_than_f32_f64() {
     let src = wrap(
@@ -8235,17 +7919,9 @@ fn test_copysign_rejects_a_type_other_than_f32_f64() {
     }
 }
 
-/// The real fp8-elementwise-kernel idiom, exactly: `ld.global.v2.b32`
-/// (each lane a 4-byte read spanning 4 independent 1-byte array elements -
-/// combines into a `Value::Quad`), `mov.b32 {h,h}, r` (splits a `Quad`
-/// into two `Value::Pair`s of bytes), `cvt.rn.f16x2.e4m3x2` (decodes each
-/// byte-`Pair` into an f16-real `Pair`). For a *symbolic* input array this
-/// must be the identity over the reals (no bit decode) - checked here by
-/// confirming all 4 decoded elements keep their own distinct array
-/// identity (`x[0]`..`x[3]`, not, say, all collapsing to the same
-/// element or a bit-mangled combination), which only holds if the 4
-/// bytes genuinely stayed independently symbolic all the way through the
-/// `Quad`/`Pair` plumbing.
+/// The fp8-elementwise idiom: `ld.global.v2.b32` (a `Value::Quad`) ->
+/// `mov.b32 {h,h}` -> `cvt.rn.f16x2.e4m3x2` is the identity over symbolic
+/// reals: `x[0]`..`x[3]` stay distinct.
 #[test]
 fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
     let src = wrap(
@@ -8314,12 +7990,9 @@ fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
     assert_eq!(display_output(&output, "out", 3), "x[3]");
 }
 
-/// LLVM's NVPTX backend (as opposed to nvcc/Triton's own backend, which
-/// always uses `mov.b32 {lo,hi}, r`) extracts the low 16 bits of a
-/// `Quad`-valued 32-bit register via an ordinary integer-truncating
-/// `cvt.u16.u32` instead - confirmed against `GELUFloat8Kernel`'s real
-/// `triton_generated.ptx`. This must be treated exactly like
-/// `truncates_pair` one level up: keep the low `Pair` of byte lanes.
+/// LLVM's NVPTX backend extracts a `Quad` register's low 16 bits via
+/// `cvt.u16.u32` (`GELUFloat8Kernel`); like `truncates_pair`, this must keep
+/// the low `Pair` of byte lanes.
 #[test]
 fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
     let src = wrap(
@@ -8383,15 +8056,9 @@ fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
     assert_eq!(display_output(&output, "out", 1), "x[2]");
 }
 
-/// A `ld.b16` of two adjacent 1-byte fp8 array elements produces a
-/// `Value::Pair` that is genuinely 2 bytes wide (one real-valued byte lane
-/// each), not the classic 4-byte f16x2 pair - confirmed against
-/// `MatrixVectorMultiplicationFloat8Kernel`'s real `triton_generated.ptx`,
-/// which round-trips exactly such a pair through shared memory via a
-/// matching `st.shared.b16`/`ld.shared.b16` pair before decoding it. A
-/// store or reload at that pair's own native width must not be rejected as
-/// a half-extraction: only a store *narrower* than the source register
-/// truncates.
+/// `ld.b16` of two fp8 elements yields a 2-byte `Value::Pair`; storing or
+/// reloading it at that native width is not a half-extraction - only a
+/// narrower store truncates.
 #[test]
 fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
     let src = wrap(
@@ -8453,11 +8120,9 @@ fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
     assert_eq!(display_output(&output, "out", 1), "x[1]");
 }
 
-/// A concrete 16-bit source that never went through array materialization
-/// (e.g. a literal `mov.u16`) hits `cvt.e4m3x2`'s other path: an actual
-/// bit-level decode of each byte's `.e4m3` encoding. `0xB838` packs
-/// `0xB8` (-1.0) in the upper byte and `0x38` (+1.0) in the lower byte
-/// (PTX ISA 9.7.9.22: lower 8 bits of `a` -> lower 16 bits of `d`).
+/// A concrete 16-bit source (e.g. `mov.u16`) gets a real `.e4m3` bit decode:
+/// `0xB838` packs -1.0 high and +1.0 low (PTX ISA 9.7.9.22: low byte of `a`
+/// -> low half of `d`).
 #[test]
 fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
     let src = wrap(
@@ -8551,10 +8216,8 @@ fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
     assert_eq!(get(1), 0.0);
 }
 
-/// `0x7F` is `.e4m3`'s NaN encoding (PTX ISA 5.2.3: "NaN values are
-/// limited to 0x7f and 0xff") - Volta's real-valued model cannot
-/// represent NaN, so a concrete source byte hitting it must error loudly
-/// rather than silently producing some placeholder value.
+/// `0x7F` is `.e4m3`'s NaN (PTX ISA 5.2.3); Volta's real-valued model cannot
+/// represent NaN, so a concrete byte hitting it must error loudly.
 #[test]
 fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
     let src = wrap(

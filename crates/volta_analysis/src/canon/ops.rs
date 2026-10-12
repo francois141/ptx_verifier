@@ -1,16 +1,6 @@
-//! Canonical polynomial and rational algebra.
-//!
-//! Operations work on *transient* owned polynomials (`PV::Owned`) and only
-//! touch the intern tables for term identity (terms and exp arguments must
-//! be interned - they are the units of structural equality). Interning of
-//! whole polynomials happens exclusively at sharing boundaries (see
-//! `Session`), which is what keeps accumulator chains linear in memory.
-//!
-//! All invariants from `arena` hold throughout: sorted zero-free polys, at
-//! most one fused exponential per term, denominators normalized to leading
-//! coefficient 1 with foldable monomial denominators folded away. Every
-//! term-level operation ticks the session budget so oversized VCs fail fast
-//! instead of hanging.
+//! Canonical polynomial and rational algebra on *transient* owned polys (`PV::Owned`):
+//! only terms and exp arguments are interned, whole polys only at `Session` sharing
+//! boundaries (keeps chains linear in memory). `arena` invariants hold; ops tick the budget.
 
 use std::collections::HashMap;
 
@@ -119,10 +109,9 @@ impl Session {
         if b.is_empty() {
             return Ok(a);
         }
-        // Append fast path: canonicalization unwinds accumulator chains
-        // bottom-up, so each step's fresh product term has a *smaller* id
-        // than everything already accumulated. With descending order that
-        // is an O(1) append, keeping a K-step chain O(K) overall.
+        // Append fast path: chain unwinding yields fresh terms with *smaller* ids
+        // than everything accumulated, so under descending order this is an O(1)
+        // append and a K-step chain stays O(K) overall.
         if a.last().unwrap().0 > b.first().unwrap().0 {
             self.tick(b.len() as u64)?;
             a.append(&mut b);
@@ -388,12 +377,9 @@ impl Session {
     // Rationals
     // =====================================================================
 
-    /// Establish the `Rat` invariants for `numer / denom`:
-    /// - zero numerator collapses to `0/1`;
-    /// - a monomial denominator with no symbol/atom factors (a scaled
-    ///   exponential) folds into the numerator exactly;
-    /// - otherwise the pair is scaled so the denominator's leading
-    ///   coefficient is 1 (scalar multiples intern identically).
+    /// Establish the `Rat` invariants for `numer / denom`: a zero numerator becomes `0/1`;
+    /// a symbol/atom-free monomial denominator folds into the numerator; otherwise scale
+    /// so the denominator's leading coefficient is 1 (scalar multiples intern identically).
     pub(crate) fn rat_normalize_v(&mut self, numer: PV, denom: PV) -> Result<RatV, CanonError> {
         if self.pv_is_zero(&denom) {
             return Err(CanonError::DivisionByZero);

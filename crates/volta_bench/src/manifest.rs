@@ -1,36 +1,6 @@
-//! The vcs-directory manifest (`<out-dir>/vcs/manifest.json`): `generate`'s
-//! record of what each dump contains, and `solve`'s staleness guard.
-//!
-//! Dumps are keyed by benchmark-name slug and overwritten in place, so a
-//! vcs directory assembled by different volta versions (or different
-//! benchmark definitions) can silently mix stale and fresh dumps. The
-//! manifest pins each slug to the benchmark name plus a `vc_fingerprint`:
-//! a stable 64-bit FNV-1a hash of the exact `.vcdump` bytes `generate`
-//! wrote. `solve` hashes every dump file's bytes *before* decoding them
-//! and hard-errors on disagreement.
-//!
-//! What the guard catches: **any** difference between the dump being
-//! solved and the one the last successful `generate` recorded - the hash
-//! covers the full serialized content, so it flags footprint drift,
-//! same-shape expression drift (e.g. a one-constant change in the PTX
-//! that leaves every id in place), and truncation/corruption that still
-//! decodes. What it deliberately does not check: currency with the
-//! current source tree - a dump set consistently regenerated together
-//! stays valid however old it is, because solving from dumps is
-//! decoupled from generation by design. A *missing* manifest (or a
-//! missing entry) is only a warning: hand-copied dump directories stay
-//! usable.
-//!
-//! `generate` updates the manifest incrementally (read-modify-write per
-//! written dump), so `generate single`/`generate category` refresh their
-//! own entries without discarding the rest. The read happens just before
-//! the write (not before the possibly hours-long generation), and the
-//! write is atomic (temp file + rename), so a concurrent writer can
-//! never observe or produce a torn file and the lost-update window is
-//! microseconds. That narrow window still exists: the manifest assumes a
-//! **single writer per out-dir** - two `generate` runs racing into the
-//! same `--out-dir` can drop one run's entry (and would interleave dump
-//! writes anyway), so don't do that.
+//! The vcs-directory manifest (`<out-dir>/vcs/manifest.json`): pins each dump slug to its
+//! benchmark name and an FNV-1a hash of the exact bytes `generate` wrote, which `solve` checks
+//! before decoding. Not a source-currency check; assumes a single writer per out-dir.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -46,12 +16,8 @@ use crate::results::sanitize_name;
 /// Manifest filename inside the vcs directory.
 pub const MANIFEST_FILE: &str = "manifest.json";
 
-/// Manifest schema version; bump on breaking changes so an old manifest
-/// fails loudly instead of misguiding the staleness check.
-///
-/// - 2: `vc_fingerprint` (FNV-1a of the dump bytes) replaced per-array
-///   element counts as the staleness check; the counts stay as
-///   human-readable metadata.
+/// Manifest schema version; bump on breaking changes so an old manifest fails
+/// loudly instead of misguiding the staleness check (2: `vc_fingerprint`).
 pub const MANIFEST_FORMAT: u32 = 2;
 
 /// The whole manifest: dump slug -> what `generate` wrote there.
@@ -76,10 +42,8 @@ impl Default for VcsManifest {
     }
 }
 
-/// One dump's identity: which benchmark it belongs to, when it was
-/// generated, the fingerprint of its bytes, and (as informational
-/// metadata for humans reading the file) both snapshots' per-array
-/// footprint element counts.
+/// One dump's identity: its benchmark, generation time, byte fingerprint, and
+/// (informational only) both snapshots' per-array footprint element counts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestEntry {
     /// The benchmark's display name (slugs are many-to-one, so the full
@@ -110,10 +74,8 @@ pub fn manifest_path(vcs_dir: &Path) -> PathBuf {
 const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// Streaming 64-bit FNV-1a. Chosen over `std`'s hashers because the
-/// digest must be stable across processes, builds, and Rust releases
-/// (`RandomState` is per-process keyed and `DefaultHasher`'s algorithm
-/// is explicitly unstable); FNV-1a is fixed forever and byte-order-free.
+/// Streaming 64-bit FNV-1a, chosen over `std`'s hashers because the digest
+/// must be stable across processes, builds, and Rust releases.
 #[derive(Debug, Clone)]
 pub struct Fnv1a(u64);
 
@@ -148,10 +110,9 @@ pub fn fingerprint_bytes(bytes: &[u8]) -> u64 {
     hash.finish()
 }
 
-/// A `Write` tee that FNV-1a-hashes exactly the bytes its inner writer
-/// accepts (the `generate` side: the dump serializes straight to disk
-/// through this, so the hash covers the exact file content with no
-/// second in-memory copy of a possibly GiB-scale dump).
+/// A `Write` tee that FNV-1a-hashes exactly the bytes its inner writer accepts,
+/// so `generate` fingerprints the exact file content without a second
+/// in-memory copy of a possibly GiB-scale dump.
 pub struct HashingWriter<W> {
     inner: W,
     hash: Fnv1a,
@@ -196,10 +157,9 @@ struct ManifestHeader {
     format: u32,
 }
 
-/// Read the manifest. `Ok(None)` when the file does not exist (a
-/// hand-assembled vcs directory - the caller warns and skips the guard);
-/// a present-but-unreadable manifest is a hard error, because a guard
-/// that silently degrades is worse than none.
+/// Read the manifest: `Ok(None)` when the file does not exist (the caller warns
+/// and skips the guard); a present-but-unreadable manifest is a hard error,
+/// because a guard that silently degrades is worse than none.
 pub fn read_manifest(vcs_dir: &Path) -> Result<Option<VcsManifest>> {
     let path = manifest_path(vcs_dir);
     let text = match std::fs::read_to_string(&path) {
@@ -233,12 +193,9 @@ pub fn read_or_new(vcs_dir: &Path) -> Result<VcsManifest> {
     Ok(read_manifest(vcs_dir)?.unwrap_or_default())
 }
 
-/// Write the manifest to `<vcs_dir>/manifest.json` (the directory must
-/// already exist - `generate` creates it when it writes the dump).
-/// Atomic: the JSON lands in a temp file in the same directory and is
-/// renamed over the manifest, so no reader (or crash) can ever observe a
-/// torn file. See the module docs for the remaining single-writer
-/// assumption.
+/// Write the manifest to `<vcs_dir>/manifest.json` (the directory must exist).
+/// Atomic via temp file + rename, so no reader or crash sees a torn file;
+/// concurrent writers can still lose an update (single writer assumed).
 pub fn write_manifest(vcs_dir: &Path, manifest: &VcsManifest) -> Result<()> {
     let path = manifest_path(vcs_dir);
     let text = serde_json::to_string_pretty(manifest).context("serializing the vcs manifest")?;
@@ -261,10 +218,8 @@ pub fn element_counts(outputs: &[(String, Vec<(u64, ExprId)>)]) -> BTreeMap<Stri
         .collect()
 }
 
-/// Record one just-written dump in the manifest (in memory; the caller
-/// writes the file): the slugged key, the benchmark name, a now
-/// timestamp, the fingerprint of the written bytes, and both footprints'
-/// per-array element counts (informational).
+/// Record one just-written dump in the manifest (in memory; the caller writes
+/// the file) under its slug, with a now timestamp and the given fingerprint.
 pub fn record_dump(
     manifest: &mut VcsManifest,
     benchmark: &str,
@@ -288,10 +243,8 @@ pub fn record_dump(
     );
 }
 
-/// Drop a benchmark's entry (in memory; the caller writes the file).
-/// Returns whether an entry was present - `generate` uses this after a
-/// failed regeneration, alongside deleting the dump file, so a later
-/// `solve` fails on the missing dump instead of solving stale VCs.
+/// Drop a benchmark's entry (in memory), returning whether one existed. Used
+/// after a failed regeneration so a later `solve` fails instead of solving stale VCs.
 pub fn remove_entry(manifest: &mut VcsManifest, benchmark: &str) -> bool {
     manifest.entries.remove(&sanitize_name(benchmark)).is_some()
 }
@@ -308,12 +261,9 @@ pub enum ManifestCheck {
     NoEntry,
 }
 
-/// The staleness guard: hash a dump file's raw bytes and compare them
-/// (and the benchmark's name) against the manifest, *before* anything
-/// decodes them. Any disagreement means the vcs directory does not hold
-/// what `generate` last recorded for this benchmark - stale, mixed, or
-/// clobbered - and is a hard error telling the user to regenerate. See
-/// the module docs for exactly what this does and does not catch.
+/// The staleness guard: compare a dump's raw-byte hash and benchmark name
+/// against the manifest before decoding. Any disagreement (stale, mixed, or
+/// clobbered directory) is a hard error telling the user to regenerate.
 pub fn check_dump(
     manifest: &VcsManifest,
     benchmark: &str,
@@ -436,10 +386,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A corrupt or wrong-format manifest is a hard error naming the
-    /// file, never `Ok` - a guard that silently degrades is worse than
-    /// none. The format check fires even when the old format's entry
-    /// shape no longer deserializes (that is the point of the bump).
+    /// A corrupt or wrong-format manifest is a hard error naming the file, and
+    /// the format check fires even when old entries no longer deserialize.
     #[test]
     fn corrupt_and_wrong_format_manifests_are_rejected() {
         let dir = std::env::temp_dir().join(format!("volta_manifest_bad_{}", std::process::id()));

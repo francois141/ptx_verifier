@@ -1,16 +1,6 @@
-//! Cold vs warm vs batched Z3 over the first N paired elements of a
-//! .vcdump's first output array.
-//!
-//! - cold: the harness's setup - every element is its own query in its own
-//!   worker (fresh context), timed inside the worker.
-//! - warm: ONE worker/context; a single script with the shared preamble,
-//!   then per element `(push 1) (assert ...) (check-sat) (pop 1)`. The
-//!   translation Builder is also shared, so the let-DAG memo carries over.
-//! - batched: ONE query asserting the disjunction of all negated
-//!   equalities; `unsat` proves every element equivalent at once.
-//!
-//! Usage:
-//!   cargo run --release -p volta_z3 --example warm_batch -- <dump> <N>
+//! Cold (one worker per element) vs warm (one context, push/pop per element) vs batched (one
+//! disjunction of negated equalities) Z3 over the first N elements of a .vcdump's first array.
+//! Usage: `cargo run --release -p volta_z3 --example warm_batch -- <dump> <N>`
 
 use std::path::Path;
 use std::time::Duration;

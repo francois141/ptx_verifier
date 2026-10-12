@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the paper's evaluation tables from volta-bench results files.
-
-Usage:
-    python3 scripts/generate_tables.py <results-dir> [-o tables.md]
-        [--format md|latex] [--kernels-dir crates/volta_bench/kernels]
-
-Output is Markdown by default; --format latex emits booktabs tables
-(requires \\usepackage{booktabs}) with the same content.
-
-<results-dir> holds the results JSONs written by the four-command
-reproduction workflow (any file layout; runs are identified by header):
-
-    generate all                                   -> generation times, sync
-                                                      counters, race verdicts
-    solve all (backend decision, sample 0)         -> full-footprint VC times
-    solve all --sample 1 (backend decision)        -> Table 8 Volta column
-    solve all --sample 1 --backend z3              -> Table 8 Z3 columns
-
-If several files match one kind, the newest (by header timestamp) wins.
-Missing runs degrade gracefully: the affected columns show "-" and the
-Z3 table is omitted without a z3 run. PTX LOC is computed from the
-kernel corpus when --kernels-dir exists, else shown as "-".
-
-Values are medians over each run's iterations; a value whose phase had a
-coefficient of variation above 0.10 is marked with "*". Warp syncs are
-reported as Volta counts them: per fired group (multiply by 32 for the
-per-thread convention used by the paper's Table 3).
+"""Generate the paper's evaluation tables (Markdown or --format latex) from the volta-bench
+results JSONs of the generate/solve reproduction runs in <results-dir>; newest run per kind
+wins, missing runs show "-", values are medians ("*" = CV > 0.10), warp syncs per fired group.
 """
 
 import argparse
@@ -33,10 +9,8 @@ import json
 import sys
 from pathlib import Path
 
-# --------------------------------------------------------------------------
-# Table specifications: (paper row label, benchmark name in the results,
+# Table specifications: (paper row label, volta_bench registry benchmark name,
 # PTX file(s) for the LOC column, threads-column entry or None).
-# The benchmark names are the registry names from volta_bench.
 
 RED = [(f"Red-{i}", f"(Red-1, Red-{i})", [f"01_reduction/Red-{i}.ptx"], None) for i in (1, 2, 3, 4)]
 MATMUL = [

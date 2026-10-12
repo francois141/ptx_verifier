@@ -1,37 +1,6 @@
-//! End-to-end NEGATIVE equivalence tests: the no-false-EQUIV suite.
-//!
-//! Every test runs a pair of PTX kernels through the FULL pipeline
-//! (parse -> instr_parse -> lower -> interpret -> paired_elements -> canon
-//! decision procedure) and asserts the outcome is `NotEquivalent`. The two
-//! kernels of each pair are *almost* equivalent - they differ in exactly one
-//! semantic detail - so any `Equivalent` verdict here is a soundness bug
-//! (a false EQUIV), not a modeling choice.
-//!
-//! The positive suites (eval_tests.rs, canon's unit tests) establish that
-//! the tool proves true equivalences; this suite establishes the other half
-//! of soundness confidence: it does not prove false ones. Inputs are
-//! symbolic arrays wherever a value is needed, so each verdict quantifies
-//! over all inputs rather than checking one concrete point.
-//!
-//! Mutation taxonomy (one test each, plus controls where a nearby positive
-//! direction sharpens the negative one):
-//!  1. constant perturbation (0.5 vs the f32 nearest 0.5000001)
-//!  2. dropped term (sum of 4 inputs vs sum of 3)
-//!  3. swapped non-commutative operands (a-b vs b-a; a/b vs b/a)
-//!  4. off-by-one index with an identical output footprint
-//!  5. missing clamp (fma.rn.relu.f16 vs plain fma.rn.f16)
-//!  6. boundary sentinel off by one (-1 vs 4294967294 at u32)
-//!  7. fma vs mul+add with a different addend
-//!  8. reassociated reduction with one perturbed leaf
-//!  9. max(a, b) vs min(a, b)
-//! 10. exp fragment, both directions: e^a * e^b == e^(a+b) (positive
-//!     control for the fusion) and e^a * e^b != e^(a*b)
-//! 11. sign-bit xor on integer data is not a negate
-//!     (xor.b32 x, 0x80000000 != neg.s32 x)
-//!
-//! The meta test at the bottom re-checks every negative pair in one batch,
-//! so a soundness regression still fails loudly even if an individual
-//! test's assertion is edited.
+//! End-to-end NEGATIVE equivalence tests: each pair of PTX kernels differs in
+//! one semantic detail and must come back `NotEquivalent` through the full
+//! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
 use volta_analysis::driver::{EquivOutcome, analyze_kernel, check_output_equivalence};
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
@@ -394,11 +363,9 @@ fn mutation_03_swapped_noncommutative_operands_not_equivalent() {
 // Mutation 4: off-by-one index (same output footprint)
 // =========================================================================
 
-/// out[tid] = in[tid] vs out[tid] = in[tid + 1] with 4 threads. Both
-/// kernels write exactly out[0..4), so the footprints pair up cleanly and
-/// the per-element checks (in[i] vs in[i+1]) all fail: the outcome is
-/// NotEquivalent on every element, not a shape error. (The input array is
-/// sized so in[tid + 1] stays in bounds.)
+/// out[tid] = in[tid] vs out[tid] = in[tid + 1] with 4 threads: identical
+/// footprints out[0..4), so every per-element check fails (NotEquivalent, not
+/// a shape error). The input is sized so in[tid + 1] stays in bounds.
 fn pair_off_by_one_index() -> NegativePair {
     let body = |offset: &str| {
         format!(
@@ -473,10 +440,9 @@ fn mutation_05_missing_relu_clamp_not_equivalent() {
 // Mutation 6: boundary sentinel off by one
 // =========================================================================
 
-/// mov.u32 -1 (the canonical 4294967295 sentinel) vs a kernel storing
-/// 4294967294 - one below the canonicalized all-ones pattern. The positive
-/// twin (eval_tests: mov -1 == not.b32 0) proves the canonicalization
-/// direction; this proves the boundary is exact, not a collapse.
+/// mov.u32 -1 (the 4294967295 sentinel) vs a kernel storing 4294967294: the
+/// positive twin (mov -1 == not.b32 0) proves the canonicalization direction;
+/// this proves the boundary is exact, not a collapse.
 fn pair_sentinel_off_by_one() -> NegativePair {
     let body = |value: &str| {
         format!(
@@ -514,10 +480,8 @@ fn mutation_06_sentinel_off_by_one_not_equivalent() {
 // Mutation 7: fma vs mul+add with a different addend
 // =========================================================================
 
-/// fma(in[0], in[1], in[2]) vs mul+add computing in[0]*in[1] + in[3]:
-/// the same shape the true fma == mul+add identity has (eval_tests proves
-/// that positive direction), but with the addend swapped for a different
-/// input element.
+/// fma(in[0], in[1], in[2]) vs mul+add computing in[0]*in[1] + in[3]: the
+/// shape of the true fma == mul+add identity, but with a different addend.
 fn pair_fma_different_addend() -> NegativePair {
     const LOADS: &str = "    ld.global.f32 %f1, [%rd1];
     ld.global.f32 %f2, [%rd1+4];
@@ -703,10 +667,8 @@ fn pair_exp_of_product() -> NegativePair {
     }
 }
 
-/// Both directions of the e^a * e^b fusion, end to end: equal to e^(a+b)
-/// (an under-approximation drift - losing the fusion - fails the control)
-/// and not equal to e^(a*b) (an over-approximation drift - fusing too
-/// eagerly - fails the negative half).
+/// Both directions of the e^a * e^b fusion: equal to e^(a+b) (catches losing
+/// the fusion) and not equal to e^(a*b) (catches fusing too eagerly).
 #[test]
 fn mutation_10_exp_fusion_control_and_exp_of_product_not_equivalent() {
     assert_equivalent_control(
@@ -767,10 +729,9 @@ fn negative_pairs() -> Vec<NegativePair> {
     ]
 }
 
-/// Every negative pair, re-checked in one loop: none may come back
-/// Equivalent, no matter how the individual tests above evolve. A failure
-/// here is a false EQUIV - a soundness bug in the pipeline or the decision
-/// procedure - for the named mutation.
+/// Every negative pair, re-checked in one loop so a soundness regression
+/// fails even if the individual tests change: an Equivalent verdict here is a
+/// false EQUIV for the named mutation.
 #[test]
 fn meta_no_negative_pair_is_proved_equivalent() {
     let pairs = negative_pairs();

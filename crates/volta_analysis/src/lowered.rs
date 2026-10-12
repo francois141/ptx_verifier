@@ -1,11 +1,6 @@
-//! Lowered PTX instructions
-//!
-//! This module defines the lowered instruction set that results from the
-//! lowering pass. These instructions have:
-//! - Resolved register references (indices instead of strings)
-//! - Resolved branch targets (PCs instead of label names)
-//! - Stripped unnecessary modifiers
-//! - Unified instruction formats
+//! Lowered PTX instructions: the output of the lowering pass, with resolved
+//! register indices and branch PCs, unneeded modifiers stripped, and unified
+//! instruction formats.
 
 use std::fmt;
 
@@ -260,19 +255,9 @@ impl Tcgen05LdStShape {
         (regs as u32 / self.regs_per_unit()) * self.cols_per_unit()
     }
 
-    /// The cell register index `reg` of the thread at `lane_in_warp`
-    /// addresses, as `(lane offset from taddr's lane, column offset from
-    /// taddr's column)`.
-    ///
-    /// `.32x32b` is the identity case: lane = the thread's own position in
-    /// the warp, one column per register.
-    ///
-    /// `.16x256b` splits each unit's 128 cells (16 lanes x 8 columns) over
-    /// the warp's 32 threads x 4 registers. Four consecutive threads share
-    /// a lane and cover the unit's 8 columns two at a time, while the
-    /// register's high bit selects the lane half:
-    /// `lane = lane_in_warp / 4 + 8 * (reg / 2)` within the unit and
-    /// `column = 2 * (lane_in_warp % 4) + reg % 2`.
+    /// `(lane, column)` offsets from taddr of register `reg` of thread `t =
+    /// lane_in_warp`: identity for `.32x32b`; for `.16x256b`, lane `t / 4 + 8
+    /// * (reg / 2)` and column `2 * (t % 4) + reg % 2`.
     pub fn cell(self, lane_in_warp: u32, reg: u32) -> (u32, u32) {
         match self {
             Self::S32x32b => (lane_in_warp, reg),
@@ -286,10 +271,8 @@ impl Tcgen05LdStShape {
     }
 }
 
-/// `tcgen05.mma`'s `A` operand: either a shared-memory matrix descriptor
-/// (`a-desc`) or a Tensor Memory address (`[a-tmem]`), told apart by the
-/// operand's syntax - the bracketed form is the only way `A` can name
-/// Tensor Memory.
+/// `tcgen05.mma`'s `A` operand: a shared-memory matrix descriptor (`a-desc`)
+/// or a Tensor Memory address (`[a-tmem]`), told apart by the brackets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tcgen05MmaA {
     Desc(Operand),
@@ -334,17 +317,9 @@ pub enum MulMode {
     Wide,
 }
 
-/// Float value clamp applied to an instruction's result (PTX `.sat`/`.relu`).
-///
-/// Over the floats-as-reals model these are exact value transformations:
-/// `.sat` is `min(max(x, 0), 1)` and `.relu` is `max(x, 0)`. (The spec's
-/// `.sat` additionally flushes a NaN result to +0.0, and cvt's `.relu`
-/// canonicalizes NaN; NaN is out of model over the reals, as everywhere
-/// else in the interpreter.)
-///
-/// Lowering only sets a clamp on scalar floating-point forms; the
-/// integer `.sat`/`.relu` modifiers (wrap-avoiding integer saturation)
-/// are different operations and stay rejected.
+/// Float result clamp (PTX `.sat`/`.relu`), exact over the reals: `min(max(x,
+/// 0), 1)` and `max(x, 0)` (NaN handling is out of model). Integer
+/// `.sat`/`.relu` stay rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clamp {
     /// `.sat`: clamp the result to [0.0, 1.0].
@@ -389,11 +364,9 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
-    /// Vector store. Unlike `LoadVec`'s destination (always plain
-    /// registers), each source element may be any operand - a store reads
-    /// its source rather than writing it, so an immediate (e.g. `{%f1,
-    /// %f2, 0f00000000, %f4}`, a common "zero-init one lane" idiom) is
-    /// just as valid as a register.
+    /// Vector store. Unlike `LoadVec`'s destinations, each source may be any
+    /// operand, e.g. an immediate in the "zero-init one lane" idiom `{%f1,
+    /// %f2, 0f00000000, %f4}`.
     StoreVec {
         space: MemSpace,
         base: Operand,
@@ -582,34 +555,18 @@ pub enum LoweredInstr {
         clamp: Option<Clamp>,
     },
 
-    /// `cvt.rn{.relu}.f16x2.e4m3x2 dst, src` (PTX ISA 9.7.9.22): unpack two
-    /// packed `.e4m3` fp8 bytes into an `.f16x2` pair. Scoped to exactly
-    /// this one direction/type pair - the only form observed in practice
-    /// (nothing in the corpus produces an `.e4m3x2` value, and `.e5m2x2`
-    /// never appears at all); a symmetric addition would cover either if
-    /// ever needed.
-    ///
-    /// At eval time `src`'s value kind decides the path, same reasoning as
-    /// `UnpackHalves`: a `Value::Pair` (the common case - a symbolic fp8
-    /// input array element, already split from a `Value::Quad` by a
-    /// preceding `mov.b32 {h0,h1}, r`) is identity-over-the-reals, exactly
-    /// like every other float<->float `cvt` - no bit decode, since each
-    /// byte-slot already *is* the real value that array position holds. A
-    /// `Value::Scalar` (a concrete 16-bit pattern that never went through
-    /// array materialization, e.g. a `cp.async` zero-fill word or a
-    /// literal `mov.b16`) is a genuine bit pattern and is decoded via
-    /// `eval::float_bits::decode_e4m3_byte`.
+    /// `cvt.rn{.relu}.f16x2.e4m3x2` (PTX ISA 9.7.9.22), the only fp8
+    /// direction in the corpus. A `Value::Pair` source is already real
+    /// (identity); a `Value::Scalar` is a bit pattern, decoded as e4m3.
     CvtE4m3x2ToF16x2 {
         dst: RegId,
         src: Operand,
         relu: bool,
     },
 
-    /// Two-source packed-half convert: `cvt.rnd.f16x2.f32 dst, src_hi, src_lo`.
-    /// Writes a `Value::Pair` directly (never bit-encoded, matching every
-    /// other producer of packed f16 pairs) rather than composing it via
-    /// `Cvt` + `mov.b32`'s bitwise pack, since the two source values are
-    /// exact reals here, not integer bit patterns.
+    /// Two-source packed-half convert `cvt.rnd.f16x2.f32 dst, src_hi,
+    /// src_lo`: writes a `Value::Pair` directly, never bit-encoded, since the
+    /// sources are exact reals.
     CvtPackHalves {
         dst: RegId,
         src_hi: Operand,
@@ -620,15 +577,9 @@ pub enum LoweredInstr {
         src_ty: ScalarType,
     },
 
-    /// Vector-destination unpack: `mov.bN {lo, hi}, src`. `src`'s *runtime*
-    /// value kind decides the semantics, which lowering cannot know
-    /// statically: a `Value::Pair` (e.g. a native packed-f16 granule read
-    /// straight out of memory, or an `f32x2` result in a 64-bit register)
-    /// distributes its two real-valued halves
-    /// directly, matching every other packed-pair producer/consumer
-    /// (`CvtPackHalves`, `eval/memory.rs`'s granule combining) - never
-    /// bit-encoded; a `Value::Scalar` falls back to the bitwise `And`/`Shr`
-    /// decomposition this used to always emit.
+    /// Vector-destination unpack `mov.bN {lo, hi}, src`, decided by `src`'s
+    /// runtime kind: a `Value::Pair` distributes its real halves directly; a
+    /// `Value::Scalar` uses bitwise `And`/`Shr`.
     UnpackHalves {
         /// `None` when the PTX discards that half with the `_` sink.
         lo: Option<RegId>,
@@ -638,41 +589,18 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
-    /// Vector-source pack: `mov.b32 dst, {lo, hi}` and `mov.b64 dst, {lo,
-    /// hi}`. Always writes a `Value::Pair(lo, hi)` rather than bit-shifting -
-    /// the two source halves are frequently real-valued (an f16 element from
-    /// `cvt.*.f16.*` or a plain 2-byte load; two f32 values feeding packed
-    /// `f32x2` arithmetic), and bit ops on a real number silently build a
-    /// nonsense expression rather than erroring. This is exact whether the
-    /// halves are real or genuinely integer: a later `UnpackHalves` or a
-    /// store to a half-width-elem_width array round-trips either way, and
-    /// `scalar_operand` recombines a pair of concrete integer halves (the
-    /// `mov.b64` address/constant idiom) into the wide bit pattern on
-    /// demand. Only a packed value with symbolic halves later used as a true
-    /// scalar in its own right (added, compared, stored as one wide integer)
-    /// fails loudly instead of silently computing garbage - preferred, per
-    /// this codebase's convention elsewhere (see `canon_stored`'s docs).
+    /// `mov.b32`/`mov.b64 dst, {lo, hi}`: always a `Value::Pair`, since bit
+    /// ops on real halves build nonsense. Concrete integer halves recombine
+    /// on demand; symbolic ones used as a scalar fail.
     PackHalves {
         dst: RegId,
         lo: Operand,
         hi: Operand,
     },
 
-    /// Four-element vector-source pack: `mov.b128 dst, {e0, e1, e2, e3}`.
-    /// Writes a `Value::Quad` for exactly the reason `PackHalves` writes a
-    /// `Value::Pair`: the lanes are frequently real-valued (here, the four
-    /// f32 accumulator slots a kernel zero-fills through one 128-bit
-    /// register), and bit ops on a real number silently build a nonsense
-    /// expression rather than erroring.
-    ///
-    /// This widens `Value::Quad` past its original
-    /// four-8-bit-lanes-in-a-`b32` reading exactly as `Value::Pair` already
-    /// spans both 2x16-in-`b32` and 2x32-in-`b64`: a quad is "four
-    /// independent lanes in one register", with the lane width following
-    /// the register class. The two readings cannot be confused, since they
-    /// live in different `RegClass` arrays and every 8-bit-lane consumer
-    /// (`CvtE4m3x2ToF16x2`, `UnpackHalves`'s quad arm, `gather_fp8_fragment`)
-    /// takes a `Bits32` operand.
+    /// `mov.b128 dst, {e0, e1, e2, e3}`: a `Value::Quad`, as `PackHalves`
+    /// writes a pair. A quad is four lanes whose width follows the register
+    /// class (8-bit lanes only ever in `Bits32`).
     PackQuad {
         dst: RegId,
         /// Lane 0 is the least significant / lowest-addressed, matching
@@ -680,40 +608,18 @@ pub enum LoweredInstr {
         elems: [Operand; 4],
     },
 
-    /// Four-element vector-destination unpack: `mov.b128 {e0, e1, e2, e3},
-    /// src` - the reverse of `PackQuad`, and how a kernel reads the four
-    /// lanes of a 128-bit register back out (the zero-fill idiom: one
-    /// `mov.b128 %zero, {%r,%r,%r,%r}`, then one unpack per accumulator
-    /// quad). Any element may be the `_` sink, as in `UnpackHalves`.
-    ///
-    /// Only a `Value::Quad` source is modeled - the `PackQuad` round-trip,
-    /// which is exact whatever the lanes hold. A `Value::Scalar` 128-bit
-    /// bit pattern would need a bitwise decomposition there is no 128-bit
-    /// scalar arithmetic for here, so it fails loudly at eval time rather
-    /// than computing garbage.
+    /// `mov.b128 {e0, e1, e2, e3}, src`, the reverse of `PackQuad` (any
+    /// element may be `_`). Only a `Value::Quad` source is modeled; a 128-bit
+    /// scalar fails loudly at eval time.
     UnpackQuad {
         /// `None` where the PTX discards that lane with the `_` sink.
         elems: [Option<RegId>; 4],
         src: Operand,
     },
 
-    /// Funnel shift: `shf.{l,r}.{clamp,wrap}.b32 dst, lo, hi, shift` (PTX
-    /// ISA 9.7.9.7). Shifts the 64-bit value formed by concatenating `hi`
-    /// (bits 63:32) and `lo` (bits 31:0), writing the 32 most-significant
-    /// bits for `.l` and the 32 least-significant for `.r`:
-    ///
-    /// ```text
-    /// n = (.clamp) ? min(shift, 32) : shift & 0x1f
-    /// .l: dst = (hi << n) | (lo >> (32 - n))
-    /// .r: dst = (hi << (32 - n)) | (lo >> n)
-    /// ```
-    ///
-    /// Like `UnpackHalves`, the operands' *runtime* value kinds decide the
-    /// semantics and lowering cannot know them statically: a `Value::Pair`
-    /// (two f16 lanes) has no bit pattern to shift, so `n == 16` on such an
-    /// operand is evaluated as the exact lane shuffle it is - the "advance
-    /// an f16 pair by one element" idiom behind a strided/unaligned gather.
-    /// Plain integer scalars take the ordinary bitwise path.
+    /// Funnel shift `shf.{l,r}.{clamp,wrap}.b32` of `hi:lo`, keeping the high
+    /// (`.l`) or low (`.r`) 32 bits (PTX ISA 9.7.9.7). A `Value::Pair` with
+    /// `n == 16` is evaluated as the exact f16 lane shuffle.
     Shf {
         dst: RegId,
         /// Low word: bits 31:0 of the shifted 64-bit value.
@@ -762,22 +668,14 @@ pub enum LoweredInstr {
     /// Memory fence
     Membar { scope: MembarScope },
 
-    /// `fence{.sem}.scope` (plain thread fence) or `fence.proxy.alias{.sem}
-    /// .scope` (bi-directional alias-proxy fence): a pure ordering fence,
-    /// no data effect to model - the same treatment as `Tcgen05Fence`/
-    /// `FenceProxyTensormap`. `fence.proxy.async{...}` is a distinct
-    /// variant (`FenceProxyAsync`, below) - unlike these, it has a real
-    /// data-visibility effect Volta tracks.
+    /// `fence{.sem}.scope` or `fence.proxy.alias{.sem}.scope`: a pure
+    /// ordering fence with no data effect to model. `fence.proxy.async` is
+    /// the separate `FenceProxyAsync`, which has one.
     Fence,
 
-    /// `fence.proxy.async{.global|.shared::cta|.shared::cluster}{.sem}
-    /// .scope`: clears the executing thread's own outstanding
-    /// "unfenced async-proxy write" marks for bytes matching `restrict`
-    /// (`None` = unrestricted, both `Global` and `Shared`) - see
-    /// `RaceTracker::clear_async_proxy_fence`. `.shared::cta` and
-    /// `.shared::cluster` both lower to `MemSpace::Shared`: `MemSpace` has
-    /// no cluster-vs-cta distinction, and neither does anything else this
-    /// tracks.
+    /// `fence.proxy.async{.space}`: clears this thread's unfenced async-proxy
+    /// write marks within `restrict` (`None` = all; both `.shared::` spaces
+    /// map to `Shared`), via `RaceTracker::clear_async_proxy_fence`.
     FenceProxyAsync { restrict: Option<MemSpace> },
 
     /// Seal all of this thread's uncommitted `CpAsync` copies into a new
@@ -788,10 +686,9 @@ pub enum LoweredInstr {
     /// pending.
     CpAsyncWaitGroup { n: u32 },
 
-    /// `cp.async.mbarrier.arrive{.noinc}{.shared{::cta}}.b64 [addr]`: once
-    /// all of this thread's prior `CpAsync` copies complete, arrive on the
-    /// `mbarrier` at `addr_base + addr_offset`. Without `.noinc` the
-    /// pending count is incremented first, so the net arrival count is 0.
+    /// `cp.async.mbarrier.arrive{.noinc}`: once this thread's prior `CpAsync`
+    /// copies complete, arrive on the mbarrier at `addr_base + addr_offset`;
+    /// without `.noinc` the pending count is pre-incremented.
     CpAsyncMbarrierArrive {
         addr_base: Operand,
         addr_offset: i64,
@@ -822,24 +719,18 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
-    /// Elect one active lane as leader: `elect.sync d|p, membermask`. The
-    /// deterministic-lowest-live-lane leader gets `dst = its lane id` (when
-    /// `dst` isn't sink) and `dst_pred = true`; every other live lane in
-    /// the mask gets `dst_pred = false` and, if `dst` isn't sink, an
-    /// `Undefined` `dst` - the ISA defines `d`'s value only for the elected
-    /// thread.
+    /// `elect.sync d|p, membermask`: the lowest live lane gets `dst = lane
+    /// id` and `dst_pred = true`; other live mask lanes get `false` and an
+    /// `Undefined` `dst` (the ISA defines `d` only for the leader).
     ElectSync {
         dst: Option<RegId>,
         dst_pred: RegId,
         membermask: Operand,
     },
 
-    /// Warp-synchronized reduction: `redux.sync.op.type d, a, membermask`
-    /// (PTX ISA Block 143). Folds every live mask lane's `a` with `op` -
-    /// `Add`/`And`/`Or`/`Xor`/`Min`/`Max` (the AST's `RedOp::Inc`/`Dec`
-    /// have no `BinOp` equivalent and are rejected at lowering, since
-    /// they are not valid `redux.sync` ops per the ISA) - and broadcasts
-    /// the single result to `dst` on every live lane.
+    /// `redux.sync.op.type d, a, membermask` (PTX ISA Block 143): fold every
+    /// live mask lane's `a` with `op` and broadcast the result; `Inc`/`Dec`
+    /// are not valid redux ops and are rejected at lowering.
     ReduxSync {
         op: BinOp,
         ty: ScalarType,
@@ -848,20 +739,9 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
-    /// The warp-max "sortable signed int" idiom, recognized whole at
-    /// lowering time (see `match_warp_max_sign_trick`): nvcc computes
-    /// a real-valued row/warp max by broadcasting the value into both
-    /// halves of a b32 register, reducing with a signed-int
-    /// `redux.sync.max.s32` (whose bit-pattern order only matches real
-    /// order for nonnegative values), then correcting the all-negative
-    /// case with a second, predicated `redux.sync.min.s32` on the same
-    /// broadcast source. Volta's real-valued semantics need none of that:
-    /// `src` here is the broadcast's *underlying* real-valued operand (not
-    /// the broadcast b32 register), reduced directly with real `max` -
-    /// exact for any sign, so the bit-trick's fixup step is provably a
-    /// no-op and is elided entirely (never lowered). `dst` gets the result
-    /// as a `Value::Pair(result, result)`, matching how the source was
-    /// broadcast and how callers read it back as an f16x2 operand.
+    /// nvcc's warp-max sign-trick idiom (`match_warp_max_sign_trick`),
+    /// lowered as a real `max` of the underlying value, exact for any sign,
+    /// so the fixup is elided; `dst` gets `Value::Pair(result, result)`.
     ReduxSyncBroadcastMax {
         dst: RegId,
         src: Operand,
@@ -882,11 +762,9 @@ pub enum LoweredInstr {
         trans: bool,
     },
 
-    /// Matrix multiply-accumulate via mma.sync API. `src_c` (the
-    /// accumulator) may be any operand, not just a register: nvcc's
-    /// "first tile has no accumulator yet" idiom passes immediate-zero
-    /// literals directly (`{0f00000000, ...}`) rather than zeroing
-    /// registers first.
+    /// `mma.sync` matrix multiply-accumulate. `src_c` may be any operand:
+    /// nvcc's first-tile idiom passes immediate-zero literals (`{0f00000000,
+    /// ...}`) as the accumulator.
     Mma {
         shape: crate::tensor_core::MmaShape,
         dst: Vec<RegId>,
@@ -966,10 +844,9 @@ pub enum LoweredInstr {
     // =========================================================================
     // TensorCore 5th Generation - Tensor Memory Register Load/Store (PTX ISA 9.7.17.8)
     // =========================================================================
-    /// `tcgen05.ld.sync.aligned.shape.num.b32 r, [taddr]`: collective async
-    /// load into `dst.len()` registers per thread, from the Tensor Memory
-    /// rectangle based at `taddr_base + taddr_offset` that `shape` and the
-    /// register count together describe (`Tcgen05LdStShape::cell`).
+    /// `tcgen05.ld.sync.aligned.shape.num.b32`: collective load into
+    /// `dst.len()` registers per thread from the Tensor Memory rectangle at
+    /// `taddr_base + taddr_offset` (`Tcgen05LdStShape::cell`).
     Tcgen05Ld {
         shape: Tcgen05LdStShape,
         dst: Vec<RegId>,
@@ -987,38 +864,17 @@ pub enum LoweredInstr {
         src: Vec<Operand>,
     },
 
-    /// `tcgen05.wait::ld.sync.aligned` / `tcgen05.wait::st.sync.aligned`:
-    /// release every pending `.ld` (`is_st = false`) or `.st`
-    /// (`is_st = true`) async-hazard footprint this warp's quadrant holds
-    /// (`RaceTracker::tcgen05_wait`). Volta's sequential execution model
-    /// already gives every `tcgen05.ld`/`.st` its full data effect
-    /// immediately, so there is no data effect left to wait for here - this
-    /// exists purely to release the async-hazard tracking those two
-    /// instructions record.
+    /// `tcgen05.wait::{ld,st}`: release this warp quadrant's pending
+    /// `.ld`/`.st` async-hazard footprints (`RaceTracker::tcgen05_wait`); the
+    /// data effect already happened, as execution is sequential.
     Tcgen05Wait { is_st: bool },
 
     // =========================================================================
     // TensorCore 5th Generation - Matrix Multiply and Accumulate (PTX ISA 9.7.17.10)
     // =========================================================================
-    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem], a-desc, b-desc,
-    /// idesc, {disable-output-lane}, enable-input-d`: single-thread-issued (unlike
-    /// `mma.sync`/`wmma`) `D = A*B+D` (or `A*B` if `enable-input-d` is
-    /// false) into Tensor Memory at `d_tmem_base + d_tmem_offset`, skipping
-    /// any lane (`m`, for `.cta_group::1`'s dense M=128 shape) whose bit is
-    /// set in `disable_output_lane` (a 4-element vector forming a 128-bit
-    /// mask, PTX ISA 9.7.17.10.9.1: "least significant bit of the first
-    /// element... corresponding to lane 0"). `a_desc`/`b_desc` are 64-bit
-    /// shared-memory matrix descriptors (9.7.17.4.1); `idesc` is the 32-bit
-    /// instruction descriptor (9.7.17.4.2) giving M/N/element
-    /// types/transpose/negate - all decoded from their concrete values at
-    /// eval time (`eval::tcgen05_mma`), since only the register operands
-    /// are visible at lowering. Scoped to dense `.kind::f16`/`.kind::f8f6f4`
-    /// with `A` in shared memory or Tensor Memory, no `scale-input-d`; the
-    /// `.sp`/block-scaled forms are separate mnemonics, rejected at
-    /// lowering. `collector` is `Some` exactly for `tcgen05.mma.ws`
-    /// (weight-stationary, 9.7.17.10.10.3), which has no
-    /// `disable-output-lane` operand (all lanes enabled) and, at M = 128,
-    /// the same Layout D as the non-`.ws` form.
+    /// Single-thread `tcgen05.mma` (dense `.kind::{f16,f8f6f4}`): `D = A*B
+    /// (+D)` into Tensor Memory, skipping `disable_output_lane` lanes
+    /// (9.7.17.10.9.1); `collector` is `Some` iff `.ws`.
     Tcgen05Mma {
         kind: Tcgen05MmaKind,
         collector: Option<Tcgen05Collector>,
@@ -1039,38 +895,20 @@ pub enum LoweredInstr {
     /// non-reordering execution model.
     Tcgen05Fence,
 
-    /// `tcgen05.commit.cta_group::1.mbarrier::arrive::one{.shared::cluster}.b64
-    /// [mbar]`: once every async `tcgen05` op issued by this thread so far
-    /// has completed, perform an mbarrier arrive-on(count=1) on the object
-    /// at `addr_base + addr_offset` - the same effect as a plain
-    /// `mbarrier.arrive` with no explicit count.
+    /// `tcgen05.commit...mbarrier::arrive::one`: once all of this thread's
+    /// async `tcgen05` ops complete, arrive (count 1) on the mbarrier at
+    /// `addr_base + addr_offset`.
     Tcgen05Commit {
         addr_base: Operand,
         addr_offset: i64,
     },
 
     // =========================================================================
-    // Asynchronous Warpgroup-Level Matrix Multiply-Accumulate
-    // (PTX ISA 9.7.17.5-7)
+    // Asynchronous Warpgroup-Level Matrix Multiply-Accumulate (PTX ISA 9.7.17.5-7)
     // =========================================================================
-    /// `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16 d, a-desc, b-desc,
-    /// scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b` and
-    /// `wgmma.mma_async.sync.aligned.m64nNk32.f32.{e4m3,e5m2}.{e4m3,e5m2} d,
-    /// a-desc, b-desc, scale-d, imm-scale-a, imm-scale-b` (the
-    /// shared-memory-`A` syntax forms, PTX ISA 9.7.17.5.2; the FP8 form has
-    /// no transpose operands and is always K-major). `D = A*B+D` (or
-    /// `A*B` if `scale_d` is false), computed warpgroup-wide (128 threads):
-    /// each thread produces and writes only its own `n/2`-register slice of
-    /// `dst` (also the read-if-`scale_d` accumulator - the same registers
-    /// serve both roles, per
-    /// `tensor_core::wgmma_m64n_k16::matrix_d`). `A`/`B` are both
-    /// shared-memory-resident 64-bit matrix descriptors, decoded at eval
-    /// time (`eval::wgmma::decode_wgmma_matrix_descriptor`). Scoped to
-    /// dense `.f32` accumulators with `.f16.f16` or FP8 multiplicands (`K`
-    /// is `shape.k`: 16 or 32 respectively); the alternate register-resident-`A`
-    /// syntax form (`d, a, b-desc, ...`, no `imm-trans-a`) and any negate
-    /// (`imm-scale-a`/`imm-scale-b` = -1) are rejected at lowering - see
-    /// `lowering::lower_wgmma_mma_async`.
+    /// Shared-memory-`A` `wgmma.mma_async` (PTX ISA 9.7.17.5.2), `.f16.f16`
+    /// or FP8 into `.f32`: warpgroup-wide `D = A*B (+D)`, each thread owning
+    /// `n/2` `dst` registers. Register-`A` and negate are rejected.
     WgmmaMmaAsync {
         shape: crate::tensor_core::MmaShape,
         dst: Vec<RegId>,
@@ -1083,37 +921,24 @@ pub enum LoweredInstr {
         transpose_b: bool,
     },
 
-    /// `wgmma.fence.sync.aligned;` (PTX ISA 9.7.17.7.1): orders a
-    /// warpgroup's *register* accesses (the accumulator and matrix-A-
-    /// fragment registers) against a following `wgmma.mma_async`. Volta
-    /// does not model register-hazard tracking at all (a deliberate,
-    /// separate scope decision - mirrors `Tcgen05Fence`'s existing no-op
-    /// treatment above), so this has no data effect to model: a genuine
-    /// no-op, not a "modeled-then-discarded" one - nothing is tracked for
-    /// it to release.
+    /// `wgmma.fence` (PTX ISA 9.7.17.7.1): orders a warpgroup's register
+    /// accesses before `wgmma.mma_async`. Volta does not track register
+    /// hazards here (like `Tcgen05Fence`), so this is a genuine no-op.
     WgmmaFence,
 
-    /// `wgmma.commit_group.sync.aligned;` (PTX ISA 9.7.17.7.2): batches
-    /// all prior uncommitted `wgmma.mma_async` ops issued by this warp
-    /// into a new "wgmma-group", for a later `wgmma.wait_group` to wait
-    /// on. Volta's evaluation is eager/sequential and does not track
-    /// "wgmma-group" membership at all (out of scope, see `WgmmaFence`),
-    /// so this is a genuine no-op.
+    /// `wgmma.commit_group` (PTX ISA 9.7.17.7.2): batches this warp's
+    /// uncommitted `wgmma.mma_async` ops into a wgmma-group; a no-op, since
+    /// evaluation is eager and group membership is not tracked.
     WgmmaCommitGroup,
 
-    /// `wgmma.wait_group.sync.aligned N;` (PTX ISA 9.7.17.7.3): waits
-    /// until at most `N` wgmma-groups remain pending. `N` is a
-    /// compile-time non-negative integer, validated at lowering
-    /// (`resolve_const_u32`) and kept - the eval-time register-hazard
-    /// tracker (`ThreadState::wgmma`) needs it to know how many
-    /// committed groups to release.
+    /// `wgmma.wait_group N` (PTX ISA 9.7.17.7.3): wait until at most `N`
+    /// groups are pending. `N` is a lowering-validated constant, kept for
+    /// `ThreadState::wgmma` to know how many groups to release.
     WgmmaWaitGroup { n: u32 },
 
-    /// `stmatrix.sync.aligned.x{1,2,4}[.trans].m8n8.shared.b16 [addr],
-    /// {src...}` (PTX ISA 9.7.14.5.17) - `ldmatrix`'s store-direction
-    /// mirror: same row-addressing convention
-    /// (`eval::warp::exec_stmatrix`), `shared::cta` only (same scope
-    /// `ldmatrix` already has).
+    /// `stmatrix...m8n8.shared.b16` (PTX ISA 9.7.14.5.17): `ldmatrix`'s
+    /// store-direction mirror, with the same row addressing
+    /// (`eval::warp::exec_stmatrix`) and `shared::cta`-only scope.
     Stmatrix {
         addr: Operand,
         addr_offset: i64,
@@ -1123,14 +948,11 @@ pub enum LoweredInstr {
     },
 
     // =========================================================================
-    // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27,
-    // 9.7.9.26.5.2, 9.7.14.17)
+    // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27, 9.7.9.26.5.2, 9.7.14.17)
     // =========================================================================
-    /// `tensormap.replace.mode.field{.ss}.b1024.type [addr], {ord,} new_val`:
-    /// write one named field of the tensor-map object at `addr_base +
-    /// addr_offset` (`space`-qualified - Volta requires an explicit
-    /// `.global`/`.shared::cta` state space, see
-    /// `lowering::lower_tensormap_replace`).
+    /// `tensormap.replace.mode.field{.ss}.b1024.type`: write one named field
+    /// of the tensor-map at `addr_base + addr_offset`, in an explicit
+    /// `.global`/`.shared::cta` `space` (`lower_tensormap_replace`).
     TensormapReplace {
         space: MemSpace,
         addr_base: Operand,
@@ -1138,13 +960,9 @@ pub enum LoweredInstr {
         field: TensormapFieldWrite,
     },
 
-    /// `tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic
-    /// .release.scope.sync.aligned [dst], [src], 128`: materialize a
-    /// structured copy of the tensor-map object at `src` (always
-    /// `.shared::cta`) to `dst` (always `.global`, per the ISA's fixed
-    /// `.cp_qualifiers`), so a later `cp.async.bulk.tensor` can address it
-    /// through `dst`. The release-proxy fence has no data effect to model
-    /// (Volta's execution model does not reorder across proxies).
+    /// `tensormap.cp_fenceproxy`: copy the tensor-map at `src`
+    /// (`.shared::cta`) to `dst` (`.global`) for later `cp.async.bulk.tensor`
+    /// use; the release-proxy fence has no data effect to model.
     TensormapCpFenceproxy {
         dst_base: Operand,
         dst_offset: i64,
@@ -1157,15 +975,9 @@ pub enum LoweredInstr {
     /// the same treatment as `Tcgen05Fence`.
     FenceProxyTensormap,
 
-    /// `cp.async.bulk.tensor.dim.shared::{cta,cluster}.global.tile
-    /// .mbarrier::complete_tx::bytes [dstMem], [tensorMap, {coords}],
-    /// [mbar]`: TMA tensor copy, global to shared. In the single-CTA model,
-    /// both destination qualifiers name the executing CTA's shared memory;
-    /// remote and multicast cluster forms remain unsupported. See
-    /// `lowering::lower_cp_async_bulk_tensor` for what is rejected.
-    /// `tensormap_space` is the tensor-map object's own state space
-    /// (`.param`/`.const`/`.global` per the ISA; Volta requires `.global`
-    /// - see the lowering function).
+    /// `cp.async.bulk.tensor...tile.mbarrier::complete_tx::bytes`: TMA copy,
+    /// global to the executing CTA's shared memory (no remote/multicast).
+    /// `tensormap_space` must be `.global`.
     CpAsyncBulkTensorLoad {
         dst_base: Operand,
         dst_offset: i64,
@@ -1177,11 +989,9 @@ pub enum LoweredInstr {
         mbar_offset: i64,
     },
 
-    /// `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx::bytes
-    /// [dstMem], [srcMem], size, [mbar]`: non-tensor bulk copy of `size`
-    /// contiguous bytes, global to shared, completing `size` bytes of
-    /// async-transaction on `mbar`. See `lowering::lower_cp_async_bulk` for
-    /// what is rejected.
+    /// `cp.async.bulk...mbarrier::complete_tx::bytes`: non-tensor copy of
+    /// `size` contiguous bytes, global to shared, completing `size` tx-bytes
+    /// on `mbar` (`lowering::lower_cp_async_bulk`).
     CpAsyncBulkLoad {
         dst_base: Operand,
         dst_offset: i64,
@@ -1211,12 +1021,9 @@ pub enum LoweredInstr {
         addr_offset: i64,
     },
 
-    /// `mbarrier.arrive{.expect_tx}{.shared{::cta}}.b64 state, [addr]{,
-    /// count}`: signal one arrival (or `count`, if given) at the
-    /// `mbarrier` object, optionally also bumping its expected
-    /// async-transaction count (`.expect_tx`). `state` is the destination
-    /// for the opaque phase token; `None` when written as `_` - the corpus
-    /// only ever consumes the `.parity` wait form, never this token.
+    /// `mbarrier.arrive{.expect_tx}`: one arrival (or `count`), optionally
+    /// bumping the expected tx count. `state` gets the opaque phase token;
+    /// `None` for `_` (the corpus only uses `.parity` waits).
     MbarrierArrive {
         state: Option<RegId>,
         addr_base: Operand,
@@ -1234,16 +1041,9 @@ pub enum LoweredInstr {
         tx_count: Operand,
     },
 
-    /// `mbarrier.test_wait.parity`/`mbarrier.try_wait.parity{...}.b64
-    /// waitComplete, [addr], phaseParity`: block until the phase
-    /// identified by `phase_parity` has completed, then write
-    /// `waitComplete = true`. `test_wait` and `try_wait` collapse to this
-    /// one blocking form - the ISA's distinction (an instantaneous poll vs.
-    /// a hardware-bounded spin) doesn't matter to a scheduler that already
-    /// picks one valid interleaving, and the source's own `@!p bra retry`
-    /// loop would otherwise spin Volta's round-robin scheduler forever
-    /// without ever giving the producer thread a turn (it only yields at
-    /// explicit blocking points, not at ordinary branches).
+    /// `mbarrier.{test,try}_wait.parity`: block until `phase_parity`'s phase
+    /// completes, then set `waitComplete`. Both collapse to blocking, else
+    /// the `@!p bra retry` loop would spin round-robin forever.
     MbarrierWaitParity {
         wait_complete: RegId,
         addr_base: Operand,
@@ -1264,12 +1064,9 @@ pub enum LoweredInstr {
     Nop,
 }
 
-/// Generates the instruction-kind profiling table from one variant list:
-/// `KIND_COUNT`, `KIND_NAMES` (indexed by `kind_index`), `kind_index`, and
-/// `kind_name` all come from the same source, so they cannot drift. The
-/// `kind_list_is_exhaustive` helper is a compile-time check: adding a
-/// `LoweredInstr` variant without adding it to the list fails to compile
-/// there, and a misspelled list entry fails as an unknown pattern.
+/// Generates `KIND_COUNT`, `KIND_NAMES`, `kind_index` and `kind_name` from
+/// one variant list; `kind_list_is_exhaustive` makes a missing or misspelled
+/// `LoweredInstr` variant a compile error.
 macro_rules! define_instr_kinds {
     ($($variant:ident),+ $(,)?) => {
         /// Number of distinct `LoweredInstr` kinds.
@@ -1393,10 +1190,9 @@ define_instr_kinds!(
 );
 
 impl LoweredInstr {
-    /// Collect all general-purpose registers read by this instruction.
-    ///
-    /// Does not include predicate guards (check `LoweredProgram::predicate`
-    /// separately) or special registers.
+    /// Collect all general-purpose registers read by this instruction,
+    /// excluding predicate guards (see `LoweredProgram::predicate`) and
+    /// special registers.
     pub fn source_regs(&self) -> Vec<RegId> {
         fn from_op(op: &Operand) -> Option<RegId> {
             op.as_reg()

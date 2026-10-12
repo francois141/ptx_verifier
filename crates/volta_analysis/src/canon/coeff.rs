@@ -1,14 +1,6 @@
-//! Exact rational coefficients.
-//!
-//! Expression constants arrive as exact [`Real`] rationals (the evaluator
-//! folds in the same exact algebra), so coefficient arithmetic is exact:
-//! cancellation in the decision procedure never depends on floating-point
-//! rounding. A coefficient is kept as `num * 2^exp2 / den` with the
-//! numerator and the denominator both odd, so an IEEE constant costs only
-//! its mantissa in i128 and its binary exponent - however extreme - costs
-//! nothing. That split is what a subnormal float needs: `1e-40f32` is
-//! `35681 / 2^148`, whose reduced denominator alone is 21 bits past i128.
-//! Overflow is a reported error, not a panic.
+//! Exact rational coefficients `num * 2^exp2 / den` (odd `num`/`den`), so
+//! cancellation never depends on rounding and float exponents cost no i128
+//! bits (`1e-40f32` = `35681 / 2^148`). Overflow is an error.
 
 use std::fmt;
 
@@ -79,10 +71,9 @@ impl Coeff {
         exp2: 0,
     };
 
-    /// `num * 2^exp2 / den` in canonical form. Every field is free-form:
-    /// the powers of two in `num` and `den` migrate into the exponent, so
-    /// equal values always have equal fields (the derived `Eq`/`Hash` the
-    /// intern tables key on).
+    /// `num * 2^exp2 / den` in canonical form: powers of two in `num`/`den`
+    /// migrate into the exponent, so equal values have equal fields (the
+    /// derived `Eq`/`Hash` the intern tables key on).
     fn reduced(num: i128, den: i128, exp2: i32) -> Result<Coeff, CoeffError> {
         debug_assert!(den != 0);
         if num == 0 {
@@ -115,10 +106,9 @@ impl Coeff {
         Coeff::reduced(v as i128, 1, 0).expect("integer coefficient fits i128")
     }
 
-    /// Exact conversion from a [`Real`] constant: only the odd parts of
-    /// the rational's numerator/denominator need fit i128 (it is already
-    /// reduced with a positive denominator - rug's canonical form); an
-    /// infinity is the same loud non-finite error a non-finite f64 was.
+    /// Exact conversion from a [`Real`]: only the odd parts of its reduced
+    /// numerator/denominator need fit i128; an infinity is a loud non-finite
+    /// error.
     pub fn from_real(v: &Real) -> Result<Coeff, CoeffError> {
         match v.repr() {
             RealRepr::Rational(q) => {
@@ -199,10 +189,8 @@ impl Coeff {
         if self.is_zero() || other.is_zero() {
             return Ok(Coeff::ZERO);
         }
-        // Cross-reducing makes the product reduced by construction, and
-        // odd parts stay odd under multiplication, so the result is
-        // already canonical: only the exponents have to be combined. That
-        // keeps the hottest coefficient path free of a second gcd.
+        // Cross-reducing keeps the product reduced and odd parts stay odd, so
+        // only the exponents need combining: no second gcd on this hot path.
         let g1 = gcd(self.num, other.den);
         let g2 = gcd(other.num, self.den);
         let num = (self.num / g1)

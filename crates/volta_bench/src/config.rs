@@ -1,8 +1,6 @@
-//! Benchmark configuration types.
-//!
-//! A benchmark is one kernel (race check) or a reference/optimized pair
-//! (equivalence check), each with a full `AnalysisConfig` describing launch
-//! dimensions, parameters, and arrays.
+//! Benchmark configuration types: one kernel (race check) or a
+//! reference/optimized pair (equivalence check), each with a full
+//! `AnalysisConfig`.
 
 use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind};
 

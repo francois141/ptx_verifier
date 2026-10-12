@@ -1,21 +1,6 @@
-//! Tensor Memory (5th-generation TensorCore, PTX ISA 9.7.17.1): a small,
-//! fixed-size, per-CTA scratch space private to `tcgen05.*` instructions.
-//!
-//! Represented as a dedicated allocator rather than reusing the general
-//! byte-addressed `Memory` type used for global/shared/local: Tensor Memory
-//! cells are always 32-bit (none of `Memory`'s address arithmetic or
-//! granule splitting applies - this is a dedicated hardware layout, not a
-//! byte-addressed space), the space is never itself a
-//! kernel output (must be deallocated before the kernel exits, so no
-//! dirty/output-footprint tracking is needed), and its valid bounds are
-//! dynamic - tracked by `.alloc`/`.dealloc`, not declared upfront via launch
-//! config the way `MemRegions` works for the other spaces.
-//!
-//! Races are tracked outside this store, per cell, by `RaceTracker`'s χ
-//! state (`tmem_read`/`tmem_write`): the ISA restricts each warp's
-//! `tcgen05.ld`/`.st` to its own lane quadrant, but a `tcgen05.mma` issued by
-//! one thread writes all 128 lanes, so its result is read by other warps
-//! and needs the same happens-before edge as `.shared`/`.global` data.
+//! Tensor Memory (PTX ISA 9.7.17.1): per-CTA 32-bit-cell scratch private to `tcgen05.*`, kept
+//! apart from byte-addressed `Memory` (never an output; bounds set dynamically by `.alloc`).
+//! Races are tracked per cell by `RaceTracker` (`tcgen05.mma` writes all 128 lanes).
 
 use crate::eval::value::Value;
 
@@ -45,23 +30,14 @@ pub enum TensorMemError {
     DeallocMismatch { taddr: u32, num_cols: u32 },
     /// A `tcgen05.ld`/`.st` touched a column outside every live allocation.
     NotAllocated { lane: u32, col: u32 },
-    /// An access's column range `[start_col, start_col + num_cols)` is not
-    /// inside one live allocation - it starts outside every allocation, or
-    /// runs past the end of its own into whatever follows (possibly an
-    /// adjacent allocation).
+    /// An access's column range `[start_col, start_col + num_cols)` is not inside one live
+    /// allocation: it starts outside every allocation, or runs past the end of its own.
     RangeOutsideAllocation { start_col: u32, num_cols: u32 },
 }
 
-/// The Tensor Memory allocator + cell store for one CTA (this analysis
-/// models a single CTA's execution, so one instance suffices - like
-/// `Interpreter::shared`, not one per thread).
-///
-/// A bump allocator: `.dealloc` removes a range from `allocated` but never
-/// lets a later `.alloc` reuse its columns. This is sound - it never permits
-/// an out-of-bounds or overlapping access - just conservative about total
-/// capacity across many alloc/dealloc cycles in one kernel; the kernels
-/// driving this implementation allocate once near the start and deallocate
-/// once near the end, so gap reuse isn't needed yet.
+/// The Tensor Memory allocator + cell store for the one modeled CTA. A bump allocator:
+/// `.dealloc` frees a range but its columns are never reused - sound (no OOB or overlap
+/// can slip through), only conservative about capacity across alloc/dealloc cycles.
 #[derive(Debug, Clone, Default)]
 pub struct TensorMemory {
     /// Currently-live allocations, as `(base_col, num_cols)`.
@@ -71,12 +47,9 @@ pub struct TensorMemory {
     /// `nCols` of the most recent `.alloc`, which bounds every later one.
     last_alloc_cols: Option<u32>,
     permit_relinquished: bool,
-    /// `LANES * COLUMNS` cells once touched by any `.ld`/`.st`; empty until
-    /// then (see the module doc's "lazily-allocated" note). A cell holds a
-    /// whole [`Value`], not a bare expression: `tcgen05.st` publishes
-    /// packed `f16x2` `A` operands here (`Value::Pair`) as readily as f32
-    /// accumulator columns, and both halves must stay independently
-    /// symbolic for `tcgen05.mma`'s `[a-tmem]` form to read them back.
+    /// `LANES * COLUMNS` cells, empty until first touched. Cells hold whole [`Value`]s so
+    /// packed `f16x2` `A` operands (`Value::Pair`) stored by `tcgen05.st` keep both halves
+    /// symbolic for `tcgen05.mma`'s `[a-tmem]` form.
     cells: Vec<Option<Value>>,
 }
 
@@ -85,10 +58,8 @@ impl TensorMemory {
         Self::default()
     }
 
-    /// Allocate `num_cols` columns, returning the base Tensor Memory address
-    /// (lane 0, since an allocation spans all `LANES` lanes of its columns -
-    /// individual `tcgen05.ld`/`.st`/`.mma` accesses add their own lane
-    /// offset on top of this base).
+    /// Allocate `num_cols` columns, returning the base address at lane 0 (an allocation
+    /// spans all `LANES` lanes; accesses add their own lane offset).
     pub fn alloc(&mut self, num_cols: u32) -> Result<u32, TensorMemError> {
         if self.permit_relinquished {
             return Err(TensorMemError::AllocAfterRelinquish);
@@ -140,10 +111,8 @@ impl TensorMemory {
             .any(|&(base, cols)| col >= base && col < base + cols)
     }
 
-    /// Check that `[start_col, start_col + num_cols)` lies inside a single
-    /// live allocation. Per-cell [`Self::read`]/[`Self::write`] only check
-    /// that each column is allocated *somewhere*, which an access running
-    /// off the end of its allocation into an adjacent one would pass.
+    /// Check that `[start_col, start_col + num_cols)` lies inside a single live allocation;
+    /// per-cell [`Self::read`]/[`Self::write`] would pass a run into an adjacent allocation.
     pub fn check_range(&self, start_col: u32, num_cols: u32) -> Result<(), TensorMemError> {
         let end = u64::from(start_col) + u64::from(num_cols);
         if self
@@ -164,10 +133,8 @@ impl TensorMemory {
         (lane * COLUMNS + col) as usize
     }
 
-    /// Read cell `(lane, col)`: `Ok(None)` for an allocated-but-never-
-    /// written cell (the caller substitutes `Undefined`, matching the
-    /// `.shared`-space convention - Tensor Memory has no host-supplied
-    /// inputs either), `Err` if `col` isn't currently allocated at all.
+    /// Read cell `(lane, col)`: `Ok(None)` for an allocated, never-written cell (caller
+    /// substitutes `Undefined`, as for `.shared`), `Err` if `col` isn't allocated.
     pub fn read(&self, lane: u32, col: u32) -> Result<Option<Value>, TensorMemError> {
         if !self.is_allocated(col) {
             return Err(TensorMemError::NotAllocated { lane, col });

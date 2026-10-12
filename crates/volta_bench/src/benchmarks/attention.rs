@@ -1,7 +1,6 @@
-//! Attention kernels (Table 3): the single-thread reference `Attention` vs
-//! FlashAttention-style optimizations (FA1) and tensor-core variants
-//! (FA1-TC, FA2-TC). Dimensions match the paper: Q:(16,64), K:(512,64),
-//! V:(512,64), one CTA per head.
+//! Attention kernels (Table 3): the single-thread reference vs FlashAttention
+//! FA1 and tensor-core variants (FA1-TC, FA2-TC). Dims match the paper:
+//! Q:(16,64), K:(512,64), V:(512,64), one CTA per head.
 
 use volta_analysis::eval::{AnalysisConfig, ParamValue};
 
@@ -26,17 +25,9 @@ const AUX1_BASE: u64 = 0x6_0000_0000;
 /// for the decision procedure.
 const SCALE: f64 = 0.125;
 
-/// `sdpa(Q, K, V, O, scale, [l, m])`. The FA1 kernels take two extra
-/// auxiliary output buffers (running softmax statistics), `ell`/`mrow`
-/// in FA1.cu, both `[LQ]`. Shared with the causal variants (Table 4),
-/// which have identical signatures and dims.
-///
-/// All shared memory in these kernels is static `__shared__` (no
-/// `.extern .shared` in any PTX), so no dynamic_shared is set. The grid
-/// stays (1,1,1): no PTX reads `%nctaid`, and every kernel confines its
-/// work to CTA 0 (the single-thread reference guards `blockIdx.x != 0`;
-/// the FA kernels have a single row-block, LQ/Br = 16/16 = 1, at
-/// `blockIdx.x` = 0).
+/// `sdpa(Q, K, V, O, scale, [l, m])`, FA1 adding `[LQ]` softmax-stat outputs;
+/// shared with the causal variants (Table 4). Shared memory is all static and
+/// grid is (1,1,1): no PTX reads `%nctaid` and all work stays in CTA 0.
 pub(super) fn config(threads: u32, aux_outputs: bool) -> AnalysisConfig {
     let mut config = AnalysisConfig::new((threads, 1, 1));
     config.arrays = vec![

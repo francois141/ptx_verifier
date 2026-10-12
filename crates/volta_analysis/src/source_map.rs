@@ -1,8 +1,5 @@
-//! Source map for tracking span information in lowered programs
-//!
-//! This module provides a `SourceMap` that associates lowered program elements
-//! (instructions, registers, parameters, labels) with their source spans.
-//! This information is used for error reporting and debugging.
+//! Source map associating lowered program elements (instructions, registers,
+//! parameters, labels) with their source spans, for error reporting.
 
 use std::collections::HashMap;
 
@@ -12,11 +9,9 @@ use volta_common::Span;
 use crate::lowered::InstrId;
 use crate::symbols::{ParamId, RegId};
 
-/// Maps lowered program elements back to their source locations.
-///
-/// The `SourceMap` is built during lowering and provides span information
-/// for error messages. It's kept separate from `LoweredProgram` to keep
-/// the executable representation clean.
+/// Maps lowered program elements back to their source locations. Built during
+/// lowering and kept separate from `LoweredProgram` so the executable
+/// representation stays clean.
 #[derive(Debug, Clone, Default)]
 pub struct SourceMap {
     /// Span of each instruction (indexed by InstrId)

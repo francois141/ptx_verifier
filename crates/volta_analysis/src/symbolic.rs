@@ -1,11 +1,6 @@
-//! Symbolic expressions for abstract interpretation
-//!
-//! This module defines symbolic expressions that represent values during
-//! abstract interpretation. These expressions are over the mathematical reals,
-//! as the paper treats floating-point values as reals for equivalence checking.
-//!
-//! Expressions are arena-allocated: each expression node lives in an `ExprArena`,
-//! and is referred to by a lightweight, copyable `ExprId` handle.
+//! Symbolic expressions for abstract interpretation, over the mathematical reals (the paper
+//! treats floating-point values as reals for equivalence checking). Nodes live in an
+//! `ExprArena` and are referred to by lightweight, copyable `ExprId` handles.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,10 +31,8 @@ impl fmt::Display for SymbolId {
 // Exact real constants
 // =========================================================================
 
-/// A NaN bit pattern tried to enter the analysis model. The model is the
-/// mathematical reals (extended with ±infinity for running-max/min seeds);
-/// NaN denotes no real number, so every f64 ingestion point rejects it
-/// loudly instead of silently minting an unsound constant.
+/// A NaN bit pattern tried to enter the analysis model. The model is the reals (plus ±infinity
+/// for running-max/min seeds); NaN denotes no real, so every f64 ingestion point rejects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NanError;
 
@@ -51,41 +44,17 @@ impl fmt::Display for NanError {
 
 impl std::error::Error for NanError {}
 
-/// An exact extended-real constant: an arbitrary-precision rational, or one
-/// of the two infinities (used only as running-max/min seeds by real
-/// kernels). There is no NaN: [`Real::from_f64`] rejects it at every
-/// ingestion point.
-///
-/// Every finite f64 is a dyadic rational (`m * 2^e`) and converts exactly,
-/// so constant folding over `Real` is exact and coincides with the decision
-/// procedure's rational algebra by construction - the same real-model
-/// expression folds to the same constant regardless of fold order.
-///
-/// Layout: one pointer to a boxed [`RealRepr`]. `ExprNode` embeds a `Real`
-/// and arenas are GiB-scale, so `Real` must be pointer-sized to keep
-/// `ExprNode` at its 16-byte pre-rational size. A three-variant *enum*
-/// with a boxed rational payload does not achieve that: the box supplies
-/// exactly one niche (null), which cannot encode two unit variants, so
-/// that shape is tag + pointer = 16 bytes - and it pushed `ExprNode` to
-/// 24 (measured). Boxing the whole representation makes `Real` a genuine
-/// `NonNull` pointer (the infinities then allocate, which is fine - they
-/// are rare seeds); `real_and_expr_node_stay_small` statically asserts
-/// both sizes.
+/// An exact extended-real constant: an arbitrary-precision rational or ±infinity (no NaN). Finite
+/// f64s convert exactly, so folding coincides with the decision procedure's rational algebra.
+/// The repr is boxed so `Real` is one `NonNull` pointer and `ExprNode` stays 16 bytes.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct Real(Box<RealRepr>);
 
-/// The pointed-to representation of a [`Real`] (see its layout note).
-/// Match via [`Real::repr`]; construct via [`Real::from_rational`] and
-/// friends.
-///
-/// The variant order (`NegInf < Rational < PosInf`) gives the derived `Ord`
-/// the extended-real total order; `rug::Rational`'s own `Ord` is numeric.
-/// On the wire, `Real`'s newtype-struct and `Box` layers are transparent,
-/// so a serialized `Real` is exactly a serialized `RealRepr` - the same
-/// encoding the previous enum-with-boxed-payload shape had (the VC dump
-/// format is unchanged).
+/// The pointed-to representation of a [`Real`]; match via [`Real::repr`]. The variant order
+/// gives the derived `Ord` the extended-real order, and on the wire a serialized `Real` is
+/// exactly a serialized `RealRepr` (the newtype and `Box` layers are transparent).
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -212,10 +181,8 @@ impl Real {
         }
     }
 
-    /// Extended-real maximum (total: the infinities absorb/yield exactly).
-    /// Returns the winning operand by reference - callers that only
-    /// inspect the winner (or reuse an existing node for it) never pay
-    /// for a clone of the rational.
+    /// Extended-real maximum (total: the infinities absorb/yield exactly). Returns the winning
+    /// operand by reference, so callers that only inspect it never clone the rational.
     pub fn max<'a>(&'a self, other: &'a Real) -> &'a Real {
         if self >= other { self } else { other }
     }
@@ -225,13 +192,9 @@ impl Real {
         if self <= other { self } else { other }
     }
 
-    // ---------------------------------------------------------------------
-    // Partial operations: exact and total on the rationals, defined on the
-    // unambiguous extended-real forms, `None` on the undefined forms
-    // (inf - inf, 0 * inf, inf / inf, anything / 0). A `None` means the
-    // caller must build the symbolic node unfolded, so the decision
-    // procedure fails loudly if the undefined form ever reaches a VC.
-    // ---------------------------------------------------------------------
+    // Partial operations: exact on the rationals and the unambiguous extended-real forms, `None`
+    // on undefined ones (inf - inf, 0 * inf, inf / inf, x / 0), so the caller builds the node
+    // unfolded and the decision procedure fails loudly if it reaches a VC.
 
     pub fn try_add(&self, other: &Real) -> Option<Real> {
         use RealRepr::*;
@@ -307,11 +270,8 @@ impl Real {
 }
 
 impl fmt::Display for Real {
-    /// Prints the denoted number. Values that round-trip through f64
-    /// exactly (every constant ingested from source does) print exactly as
-    /// the old f64 constants did ("42", "0.1", "-2.5"); everything else -
-    /// reachable only through exact folds, e.g. 1/3 from `div` - prints as
-    /// the exact "p/q".
+    /// Prints the denoted number: values that round-trip through f64 (every source constant) print
+    /// as f64s do ("42", "0.1", "-2.5"); others, reachable only via exact folds, print as "p/q".
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.repr() {
             RealRepr::NegInf => write!(f, "-inf"),
@@ -328,12 +288,9 @@ impl fmt::Display for Real {
     }
 }
 
-/// The identity of a symbolic atom, shared by every backend that must
-/// agree on which symbols are equal (canon, the numeric oracle,
-/// `volta_z3`). Only launch-config names carry identity - PTX-source
-/// names are scoped and must not (bind those to fresh machine
-/// [`Symbol`](ExprNode::Symbol)s instead) - and the three namespaces are
-/// disjoint by construction rather than by string formatting.
+/// The identity of a symbolic atom, shared by every backend (canon, numeric oracle, `volta_z3`).
+/// Only launch-config names carry identity (scoped PTX names get fresh machine
+/// [`Symbol`](ExprNode::Symbol)s), and the three namespaces are disjoint by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolRef<'a> {
     /// A launch-config symbolic parameter (`sym:NAME`), by config name.
@@ -349,11 +306,8 @@ pub enum SymbolRef<'a> {
 // Arena IDs
 // =========================================================================
 
-/// A lightweight handle to an expression node in an `ExprArena`.
-///
-/// The serde impls (via `id_collections`) encode the bare index; an id is
-/// only meaningful when paired with the `ExprArena` that produced it -
-/// see `ExprArena`'s serialization below.
+/// A lightweight handle to an expression node in an `ExprArena`. Serde encodes the bare index,
+/// meaningful only with the `ExprArena` that produced it.
 #[id_type(serde = true)]
 pub struct ExprId(pub u32);
 
@@ -365,10 +319,8 @@ pub struct StringId(pub u32);
 // Expression node
 // =========================================================================
 
-/// A single expression node. Children are referenced by `ExprId`.
-///
-/// Following the paper, we model tensor values as real numbers.
-/// The decision procedure will later check equality of these expressions.
+/// A single expression node. Children are referenced by `ExprId`. Following the paper, tensor
+/// values are modeled as real numbers.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExprNode {
     // =====================================================================
@@ -490,11 +442,8 @@ pub enum ExprNode {
     // =====================================================================
     /// Fused multiply-add: a * b + c
     Fma(ExprId, ExprId, ExprId),
-    /// Symbolic read from a launch-config input array at a symbolic index.
-    ///
-    /// Represents `array[index]`. When `index` is substituted to a
-    /// concrete integer `i`, this resolves to `InputElement { array, i }`,
-    /// the same identity lazy input materialization produces.
+    /// Symbolic read `array[index]` from a launch-config input array at a symbolic index; once
+    /// `index` becomes a concrete `i`, it resolves to the lazily materialized `InputElement`.
     SymbolicRead { array: StringId, index: ExprId },
     /// Discarded per-thread value. Set during re-aggregation when static
     /// liveness analysis proves the register will be overwritten before being
@@ -600,15 +549,9 @@ impl ExprNode {
 // Arena
 // =========================================================================
 
-/// Arena-based storage for expression nodes.
-///
-/// All expression nodes live here. Callers manipulate expressions via
-/// lightweight, copyable `ExprId` handles.
-///
-/// The serde impls are the `volta compare --dump-vcs`/`--from-dump`
-/// persistence format: `IdVec` (via `id_collections`'s `serde` feature)
-/// encodes exactly like a `Vec`, serialized in place - no transient clone
-/// of GiB-scale arenas at dump time.
+/// Arena-based storage for expression nodes, referenced by copyable `ExprId` handles. The serde
+/// impls are the `--dump-vcs`/`--from-dump` format: `IdVec` encodes exactly like a `Vec`,
+/// serialized in place (no transient clone of GiB-scale arenas).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ExprArena {
     nodes: IdVec<ExprId, ExprNode>,
@@ -652,14 +595,9 @@ impl ExprArena {
         &self.strings[id]
     }
 
-    /// Check that every node's children were pushed strictly before it
-    /// (which also bounds them inside the arena) and every `StringId` is
-    /// in range. Construction guarantees children-before-parents, so a
-    /// freshly built arena always passes; this exists for arenas rebuilt
-    /// from external data (`--from-dump`), where a corrupt or
-    /// version-skewed file could otherwise smuggle in a forward or
-    /// self-reference and send a later consumer into unbounded recursion,
-    /// or an out-of-bounds id into a panic deep inside a check.
+    /// Check that every node's children precede it (which also bounds them) and every `StringId`
+    /// is in range. Built arenas always pass; this guards dumps, where a forward or self-reference
+    /// could cause unbounded recursion or an out-of-bounds panic deep inside a check.
     pub fn validate(&self) -> Result<(), String> {
         let n_strings = self.strings.len();
         for (id, node) in self.nodes.as_slice().iter().enumerate() {
@@ -716,10 +654,8 @@ impl ExprArena {
         self.push(ExprNode::RealConst(v))
     }
 
-    /// Create a real constant node from an f64, converting exactly.
-    /// Fallible: NaN has no place in the reals model (see [`NanError`]) -
-    /// every f64 ingestion point must go through this and propagate the
-    /// error loudly.
+    /// Create a real constant node from an f64, converting exactly. Fallible: NaN has no place in
+    /// the reals model (see [`NanError`]), so every f64 ingestion point propagates the error.
     pub fn float_from_f64(&mut self, v: f64) -> Result<ExprId, NanError> {
         Ok(self.real(Real::from_f64(v)?))
     }
@@ -764,13 +700,9 @@ impl ExprArena {
     // Arithmetic builders (with eager constant folding)
     // =================================================================
 
-    /// Addition with constant folding (exact on rationals; the defined
-    /// extended-real forms fold, `inf + -inf` builds the node so canon
-    /// fails loudly if it reaches a VC).
-    ///
-    /// An infinite constant absorbs a *non-constant* operand too, which
-    /// denotes a real number - this is what keeps a `-INFINITY` seed out
-    /// of live expressions. `try_add` already decides `inf + -inf`.
+    /// Addition with constant folding (exact on rationals; `inf + -inf` builds the node so canon
+    /// fails loudly). An infinite constant also absorbs a *non-constant* (real) operand, keeping
+    /// a `-INFINITY` seed out of live expressions.
     pub fn add(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.node(a), self.node(b)) {
             (ExprNode::IntConst(x), ExprNode::IntConst(y)) => {
@@ -840,12 +772,9 @@ impl ExprArena {
         self.push(ExprNode::Sub(a, b))
     }
 
-    /// Multiplication with constant folding.
-    ///
-    /// `0.0 * x = 0` and `1.0 * x = x` hold over the reals (we do not model
-    /// IEEE `0 * inf`); the zero annihilation is what keeps `-INFINITY`
-    /// running-max seeds out of live expressions (`d * e^{m_0 - m_1}` with
-    /// `d = 0.0` on the first FlashAttention iteration).
+    /// Multiplication with constant folding: `0.0 * x = 0` and `1.0 * x = x` over the reals (no
+    /// IEEE `0 * inf`). Annihilation keeps `-INFINITY` running-max seeds out of live terms
+    /// (`d * e^{m_0 - m_1}` with `d = 0.0` on FlashAttention's first iteration).
     pub fn mul(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.node(a), self.node(b)) {
             (ExprNode::IntConst(x), ExprNode::IntConst(y)) => {
@@ -860,10 +789,8 @@ impl ExprArena {
                     return self.real(r);
                 }
             }
-            // An integer zero annihilates like a real zero - except
-            // against a concrete infinity, where 0 * inf is undefined
-            // and must build the node unfolded (matching the
-            // RealConst-zero behavior through `try_mul` above).
+            // An integer zero annihilates like a real zero, except against a concrete
+            // infinity: 0 * inf is undefined and builds the node unfolded (as `try_mul`).
             (ExprNode::IntConst(0), other) | (other, ExprNode::IntConst(0)) if !matches!(other, ExprNode::RealConst(r) if r.is_infinite()) =>
             {
                 return self.int(0);
@@ -879,15 +806,9 @@ impl ExprArena {
         self.push(ExprNode::Mul(a, b))
     }
 
-    /// Division with constant folding: exact for a nonzero concrete
-    /// divisor (`1.0 / 3.0` folds to the exact rational 1/3, consistent
-    /// with `rcp` and with canon's field model). Any `x / 0` builds the
-    /// node unfolded - canon then errors loudly on the formally-zero
-    /// denominator, replacing the old silent NaN mint. There is
-    /// deliberately no `0 / x` shortcut for a non-concrete divisor: it
-    /// would hide a *formally* zero divisor from that loud canon error
-    /// (a `RealConst` zero numerator already stayed unfolded; the integer
-    /// zero is treated the same).
+    /// Division with constant folding: exact for a nonzero concrete divisor (`1.0 / 3.0` is exactly
+    /// 1/3, as `rcp` and canon). `x / 0` and `0 / symbolic` stay unfolded, so a formally-zero
+    /// denominator always reaches canon's loud division error.
     pub fn div(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.node(a), self.node(b)) {
             (ExprNode::IntConst(x), ExprNode::IntConst(y)) if *y != 0 => {
@@ -933,10 +854,8 @@ impl ExprArena {
         self.push(ExprNode::Neg(a))
     }
 
-    /// Exponential: e^a. The two infinite limits fold (`e^{-inf} = 0`,
-    /// `e^{inf} = inf`) - a running maximum seeded at `-INFINITY` reaches
-    /// here through the kernel's own `ex2`, and the zero it must produce
-    /// is what keeps that seed out of live expressions.
+    /// Exponential: e^a. The infinite limits fold (`e^{-inf} = 0`, `e^{inf} = inf`): a running max
+    /// seeded at `-INFINITY` reaches here via `ex2`, and the zero keeps the seed out of live terms.
     pub fn exp(&mut self, a: ExprId) -> ExprId {
         if let ExprNode::RealConst(x) = self.node(a) {
             if x.is_neg_inf() {
@@ -959,10 +878,8 @@ impl ExprArena {
         self.push(ExprNode::Sqrt(a))
     }
 
-    /// Reciprocal: 1/a. A nonzero concrete rational folds to its exact
-    /// reciprocal (consistent with `div` and with canon's field model:
-    /// `rcp.approx.f32` of 3.0 and `div.rn.f32` of 1.0/3.0 now fold to
-    /// the same constant); `rcp(0)` and the infinities stay symbolic.
+    /// Reciprocal: 1/a. A nonzero concrete rational folds to its exact reciprocal (consistent with
+    /// `div` and canon's field model); `rcp(0)` and the infinities stay symbolic.
     pub fn rcp(&mut self, a: ExprId) -> ExprId {
         if let ExprNode::RealConst(x) = self.node(a)
             && let Some(r) = x.try_recip()
@@ -1051,10 +968,8 @@ impl ExprArena {
         self.push(ExprNode::Sign(a))
     }
 
-    /// Fused multiply-add with constant folding: a * b + c, exact in the
-    /// rationals - `fma(a, b, c)` folds iff `mul` then `add` would, and to
-    /// the same value, so the fused and written-out forms cannot diverge.
-    /// (`fma(0, b, c) = c` over the reals; see `mul` for why.)
+    /// Fused multiply-add with constant folding: a * b + c, exact in the rationals. Folds iff
+    /// `mul` then `add` would, to the same value, so fused and written-out forms cannot diverge.
     pub fn fma(&mut self, a: ExprId, b: ExprId, c: ExprId) -> ExprId {
         if let (ExprNode::RealConst(x), ExprNode::RealConst(y), ExprNode::RealConst(z)) =
             (self.node(a), self.node(b), self.node(c))
@@ -1072,27 +987,17 @@ impl ExprArena {
             || matches!(self.node(b), ExprNode::RealConst(y) if y.is_zero());
         let inf_a = matches!(self.node(a), ExprNode::RealConst(x) if x.is_infinite());
         let inf_b = matches!(self.node(b), ExprNode::RealConst(y) if y.is_infinite());
-        // The zero identity must not swallow an undefined 0 * inf product:
-        // the all-RealConst case is handled by `try_fma` above, but a
-        // mixed form (integer zero, or a non-real addend) reaches here and
-        // must build the node unfolded when the other multiplicand is a
-        // concrete infinity (see `mul`).
+        // The zero identity must not swallow an undefined 0 * inf: mixed forms (integer
+        // zero, or a non-real addend) skip `try_fma` and must stay unfolded (see `mul`).
         if (zero_a && !inf_b) || (zero_b && !inf_a) {
             return c;
         }
         self.push(ExprNode::Fma(a, b, c))
     }
 
-    /// Create a symbolic read from launch-config input array `array_name`:
-    /// `array_name[index]`.
-    ///
-    /// When `index` is concrete, immediately resolves to the typed
-    /// `InputElement` identity - the same one lazy input materialization
-    /// produces. Otherwise stores a `SymbolicRead` node that resolves upon
-    /// TID substitution. (A negative concrete index wraps into `u64`;
-    /// every resolver uses the same wrapping, and no materialized element
-    /// can collide with it since element indices are bounded by the
-    /// array's length.)
+    /// Symbolic read `array_name[index]` from a launch-config input array: a concrete index
+    /// resolves at once to its `InputElement`, else a `SymbolicRead` resolves on TID substitution.
+    /// Negative concrete indices wrap into `u64` uniformly (they can't collide with real elements).
     pub fn symbolic_read(&mut self, array_name: &str, index: ExprId) -> ExprId {
         let sid = self.strings.push(array_name.to_string());
         // Eagerly resolve if index is concrete
@@ -1319,14 +1224,9 @@ impl ExprArena {
         self.push(ExprNode::Select(cond, then_val, else_val))
     }
 
-    /// Recognize the `setp.{gt,neu}` + `selp` + `selp` idiom nvcc/Triton
-    /// emit for a signed step (e.g. Lion's `-lr * sign(u)`):
-    /// `(v != 0) ? ((v > 0) ? c : -c) : 0`, over the *same* `v` (checked by
-    /// `ExprId` identity - the two comparisons read the one register the
-    /// idiom recomputes just once), folds to `sign(v) * c`. This lets a
-    /// `.spec` file's `sign()` call and the kernel's compiled branch
-    /// canonicalize to the same atom instead of two structurally distinct
-    /// opaque `Select`s that the decision procedure can never match.
+    /// Fold the `setp.{gt,neu}` + `selp` + `selp` signed-step idiom `(v != 0) ? ((v > 0) ? c : -c)
+    /// : 0` (same `v` by `ExprId`) to `sign(v) * c`, so a `.spec` file's `sign()` and the compiled
+    /// branch canonicalize to one atom rather than unmatchable opaque `Select`s.
     fn try_fold_sign_select(
         &mut self,
         cond: ExprId,
@@ -1388,10 +1288,8 @@ impl ExprArena {
     // Query methods
     // =================================================================
 
-    /// Try to evaluate as a concrete i64. Real constants coerce through
-    /// the nearest f64 with `as` semantics (truncating, saturating) - the
-    /// pre-rational behavior; a real used as an integer is degenerate and
-    /// never exact anyway.
+    /// Try to evaluate as a concrete i64. Real constants coerce through the nearest f64 with `as`
+    /// semantics (truncating, saturating); a real used as an integer is never exact anyway.
     pub fn as_i64(&self, id: ExprId) -> Option<i64> {
         match self.node(id) {
             ExprNode::IntConst(v) => Some(*v),
@@ -1401,11 +1299,9 @@ impl ExprArena {
         }
     }
 
-    /// Try to read an integer constant. Unlike [`Self::as_i64`] this does
-    /// not coerce float or bool constants: value-boundary canonicalization
-    /// (`mov`/`ld`/`st`/`cvt` reinterpreting concrete integers at the
-    /// instruction type) must leave bit-moved floats (`mov.b32 %r, %f`)
-    /// untouched.
+    /// Try to read an integer constant. Unlike [`Self::as_i64`] this does not coerce float or
+    /// bool constants, so value-boundary canonicalization leaves bit-moved floats
+    /// (`mov.b32 %r, %f`) untouched.
     pub fn as_int_const(&self, id: ExprId) -> Option<i64> {
         match self.node(id) {
             ExprNode::IntConst(v) => Some(*v),
@@ -1712,14 +1608,9 @@ impl ExprArena {
         }
     }
 
-    /// Convenience method: format an expression to a `String`.
-    ///
-    /// `fmt_expr` re-walks a shared subexpression from every reference (no
-    /// `let`-style memoization, unlike `volta_z3`'s translator), so a DAG
-    /// with heavy internal sharing can print exponentially more text than
-    /// its arena size would suggest - tensor-core accumulator chains have
-    /// hit multi-GB output this way. Past `MAX_DISPLAY_BYTES`, bail out with
-    /// a short placeholder instead of continuing to expand.
+    /// Format an expression to a `String`. `fmt_expr` re-walks shared subexpressions (no memo), so
+    /// heavily shared DAGs can print exponentially large text (multi-GB for tensor-core chains);
+    /// past `MAX_DISPLAY_BYTES` this returns a short placeholder instead.
     pub fn display_expr(&self, id: ExprId) -> String {
         use std::fmt::Write;
 
@@ -1736,11 +1627,8 @@ impl ExprArena {
             }
         }
 
-        // A byte-budgeted `fmt::Write` sink: every `write_str` call inside
-        // `fmt_expr`'s recursion routes through here, so exceeding the
-        // budget mid-traversal short-circuits the whole walk via `?`,
-        // rather than first materializing the full (potentially huge)
-        // string.
+        // A byte-budgeted `fmt::Write` sink: exceeding the budget mid-traversal
+        // short-circuits `fmt_expr`'s whole walk via `?`, never materializing the full string.
         struct LimitedWriter {
             buf: String,
             remaining: usize,
@@ -1797,10 +1685,8 @@ impl Clone for ExprArena {
     }
 }
 
-/// Check structural equality of two expressions across different arenas.
-///
-/// Walks both expression trees in lockstep, comparing node variants and
-/// leaf values. This is the cross-arena equivalent of the old `Expr: PartialEq`.
+/// Check structural equality of two expressions across different arenas, walking both trees
+/// in lockstep and comparing node variants and leaf values.
 pub fn structurally_equal(a_arena: &ExprArena, a: ExprId, b_arena: &ExprArena, b: ExprId) -> bool {
     stacker::maybe_grow(64 * 1024, 8 * 1024 * 1024, || {
         structurally_equal_inner(a_arena, a, b_arena, b)
@@ -2174,11 +2060,8 @@ mod tests {
         }
     }
 
-    /// Division and reciprocal fold to the same exact rational: the fold
-    /// algebra and canon's field algebra coincide by construction. Under
-    /// the old f64 folds, `1.0 / 3.0` folded to rational-of-fl(1/3) while
-    /// `rcp(3.0)` stayed symbolic and canonicalized to exactly 1/3 - the
-    /// same value under two constants, flipping verdicts.
+    /// Division and reciprocal fold to the same exact rational: the fold algebra and canon's
+    /// field algebra coincide by construction (else one value under two constants flips verdicts).
     #[test]
     fn div_and_rcp_fold_to_the_same_exact_rational() {
         let mut ar = ExprArena::new();
@@ -2262,10 +2145,8 @@ mod tests {
         assert!(matches!(ar.node(e), ExprNode::Rcp(_)));
     }
 
-    /// A zero *numerator* over a non-concrete divisor also stays
-    /// unfolded, for either zero: folding `0 / x` to 0 would hide a
-    /// formally-zero `x` from canon's loud division error. (Canon's
-    /// field model still decides `0 / x = 0` for provably nonzero `x`.)
+    /// A zero *numerator* over a non-concrete divisor also stays unfolded, for either zero: folding
+    /// `0 / x` to 0 would hide a formally-zero `x` from canon's loud division error.
     #[test]
     fn zero_numerator_over_symbolic_divisor_stays_symbolic() {
         let mut ar = ExprArena::new();
@@ -2364,12 +2245,9 @@ mod tests {
         assert_eq!(ar.as_bool(e), Some(false));
     }
 
-    /// The *integer* zero follows the same discipline as the real zero:
-    /// `0 * x` annihilates for every operand except a concrete infinity,
-    /// where 0 * inf is undefined and must stay unfolded - in both
-    /// operand orders, and through fma's zero shortcut (including the
-    /// mixed form whose addend is not a real constant, which skips the
-    /// all-RealConst `try_fma` path).
+    /// The *integer* zero annihilates `0 * x` like the real zero except against a concrete infinity
+    /// (0 * inf stays unfolded), in both operand orders and through fma's zero shortcut, including
+    /// the mixed form with a non-real-constant addend that skips `try_fma`.
     #[test]
     fn integer_zero_times_infinity_stays_unfolded() {
         let mut ar = ExprArena::new();
@@ -2407,12 +2285,8 @@ mod tests {
         assert_eq!(e, c);
     }
 
-    /// The layout claims the arena's economics rest on, statically:
-    /// `Real` is pointer-sized (a boxed repr with a genuine `NonNull`
-    /// niche; the enum-around-Box shape it replaces measured 16 because
-    /// a null niche cannot encode two unit variants), and `ExprNode`
-    /// keeps its 16-byte pre-rational size instead of the 24 bytes the
-    /// fat `Real` forced on GiB-scale arenas.
+    /// The layout the arena's economics rest on, statically: `Real` is pointer-sized (a boxed repr
+    /// with a `NonNull` niche) and `ExprNode` stays 16 bytes on GiB-scale arenas.
     #[test]
     fn real_and_expr_node_stay_small() {
         assert_eq!(std::mem::size_of::<Real>(), 8);
@@ -2528,10 +2402,8 @@ mod tests {
         assert_eq!(ar.validate(), Ok(()));
     }
 
-    /// ...and rejects forward/self references and out-of-range string
-    /// ids, which only a corrupt or crafted dump can contain. A self
-    /// reference like `Add(0, 0)` at node 0 previously passed the
-    /// bounds-only check and sent consumers into unbounded recursion.
+    /// ...and rejects forward/self references (e.g. `Add(0, 0)` at node 0, which would recurse
+    /// without bound) and out-of-range string ids, which only a corrupt or crafted dump contains.
     #[test]
     fn validate_rejects_malformed_arenas() {
         use id_collections::Id;
@@ -2555,11 +2427,8 @@ mod tests {
         assert!(oob_string.validate().is_err());
     }
 
-    /// `display_expr` re-walks shared subexpressions from every reference,
-    /// so a DAG that repeatedly self-adds doubles its printed size at every
-    /// level while the arena itself grows by only one node per level - 30
-    /// levels is ~2^30 leaf repetitions, far past the 50MB cap. This must
-    /// terminate quickly with the placeholder rather than hang or OOM.
+    /// `display_expr` re-walks shared subexpressions, so 30 levels of self-adds print ~2^30 leaves
+    /// from a ~30-node arena, far past the 50MB cap; it must end quickly with the placeholder.
     #[test]
     fn display_expr_caps_exponentially_shared_expressions() {
         let mut arena = ExprArena::new();

@@ -1,26 +1,6 @@
-//! Warpgroup-cooperative operations: `wgmma.mma_async` (PTX ISA 9.7.17.5.2).
-//!
-//! Additive, parallel machinery to `eval::warp`'s 32-lane warp-cooperative
-//! ops - not a generalization of it. `wgmma.mma_async` has no membermask
-//! operand: it always involves the full, mask-less 128-thread warpgroup
-//! (PTX ISA 9.7.17.1), so it gets its own `Status::AtWarpgroupOp` and
-//! `find_ready_warpgroup_op`/`block_at_warpgroup_op` (`eval::interp`) rather
-//! than widening `AtWarpOp`'s 32-bit mask, which is load-bearing for every
-//! *other* warp-collective op. `sync_thread_group`/`advance_thread_group`
-//! (`eval::interp`) are already generic over `&[ThreadId]` and are reused
-//! unchanged.
-//!
-//! Unlike `mma.sync` (`eval::warp::exec_mma`), which gathers *other lanes'*
-//! register fragments into a `Grid` to reconstruct A/B, `wgmma.mma_async`'s
-//! A/B are always read directly from shared memory via their matrix
-//! descriptors - the same descriptor-decode-then-swizzled-address pattern
-//! `eval::interp::exec_tcgen05_mma` uses for `tcgen05.mma`, reusing
-//! `eval::wgmma::decode_wgmma_matrix_descriptor` and
-//! `tcgen05_mma::operand_element_addr`. Each thread computes its own D
-//! slice independently with no cross-lane register dependency - unlike
-//! `mma.sync`/`ldmatrix`/`wmma.*`/every `tcgen05.*` warp op, an exited lane
-//! costs nothing but its own missing output (see `exec_wgmma_mma_async`'s
-//! doc comment for why no `require_live_warp`-style rejection is needed).
+//! Warpgroup-cooperative `wgmma.mma_async` (PTX ISA 9.7.17.5.2): always the
+//! full mask-less 128-thread warpgroup, hence its own `Status::AtWarpgroupOp`;
+//! A/B come from shared memory via descriptors.
 
 use volta_frontend::ast::ScalarType;
 
@@ -37,13 +17,9 @@ use crate::symbolic::{ExprId, Real};
 use crate::tensor_core::wgmma_m64n_k16;
 
 impl Interpreter<'_> {
-    /// Execute a complete warpgroup blocked at `pc`. `members` holds the
-    /// *live* threads (converged at `pc`); exited lanes in
-    /// `[group_base, group_base + WARPGROUP_SIZE)` arrive implicitly (see
-    /// `find_ready_warpgroup_op`). Mirrors `execute_warp_op`'s shape
-    /// exactly (chi-sync before and after, advance only the live members),
-    /// just over a 128-wide, mask-less group instead of a 32-wide masked
-    /// one.
+    /// Execute a complete warpgroup blocked at `pc`; `members` are the *live*
+    /// threads, exited lanes arrive implicitly. Like `execute_warp_op`, but
+    /// over a 128-wide mask-less group.
     pub(in crate::eval) fn execute_warpgroup_op(
         &mut self,
         pc: InstrId,
@@ -55,10 +31,9 @@ impl Interpreter<'_> {
             .expect("warpgroup op blocked at a valid pc")
             .clone();
 
-        // Every mask-less warpgroup op's group is the full contiguous
-        // 128-thread range - `find_ready_warpgroup_op` already rejected
-        // out-of-CTA-range groups, and the leader is always a live member,
-        // so `members` is nonempty.
+        // The full contiguous 128-thread range (`find_ready_warpgroup_op`
+        // rejected out-of-CTA groups); the leader is always live, so `members`
+        // is nonempty.
         let group_base = (members[0].0 / WARPGROUP_SIZE) * WARPGROUP_SIZE;
         let group: Vec<ThreadId> = (0..WARPGROUP_SIZE)
             .map(|lane| ThreadId(group_base + lane))
@@ -77,20 +52,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `wgmma.mma_async.sync.aligned.m64nNk{16,32}.f32.atype.btype`: `D =
-    /// A*B (+D)`, warpgroup-wide, `K = shape.k` (16 for `.f16`, 32 for
-    /// `.e4m3`/`.e5m2`). `a_desc`/`b_desc`/`scale_d` must be warpgroup-uniform
-    /// (PTX ISA: "the contents of a matrix descriptor must be same across
-    /// all the warps in the warpgroup"), read once via `uniform_concrete`.
-    ///
-    /// No `require_live_warp`-style full-group-liveness rejection: the PTX
-    /// ISA's Description for `wgmma.mma_async` states no "undefined if any
-    /// thread has exited" clause (unlike `mma.sync`/`ldmatrix`/`wmma.*`,
-    /// which all state it explicitly), and the per-lane computation below
-    /// has no cross-lane data dependency (unlike `mma.sync`'s `Grid`-gather
-    /// from other lanes' registers) - a partial post-exit warpgroup is both
-    /// ISA-permitted and implementation-safe here. A deliberate judgment
-    /// call - revisit if a future kernel's behavior suggests otherwise.
+    /// `D = A*B (+D)`, `K = shape.k`; descriptors and `scale_d` are
+    /// warpgroup-uniform. Exited lanes are allowed: the ISA has no "undefined
+    /// if any thread has exited" clause here.
     fn exec_wgmma_mma_async(
         &mut self,
         pc: InstrId,
@@ -148,11 +112,9 @@ impl Interpreter<'_> {
                     };
                     float_bits::decode_float_bits(&mut self.arena, pc, ScalarType::F32, e)?
                 } else {
-                    // A real (not integer) zero: same subtlety
-                    // `exec_tcgen05_mma` already documents - `fma`'s eager
-                    // fold only fires when every operand is `RealConst`, so
-                    // an `IntConst(0)` seed would silently break the fold
-                    // for the whole accumulation chain.
+                    // A real (not integer) zero: `fma` folds only
+                    // all-`RealConst` operands, so an `IntConst(0)` seed would
+                    // break folding for the whole accumulation chain.
                     self.arena.real(Real::zero())
                 };
                 for k in 0..shape.k as u64 {
@@ -178,15 +140,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Read `A`/`B` element `(mn_idx, k_idx)` of type `ty` under the ISA's
-    /// canonical layouts (`tcgen05_mma::operand_element_addr` - wgmma's
-    /// table in PTX ISA 9.7.17.5.1.2.1.3 is the same), through the async
-    /// proxy (PTX ISA 9.7.17.7.1: an async proxy fence orders prior shared
-    /// writes before `wgmma.mma_async` operand reads, as for `tcgen05.mma`).
-    /// A concrete element (never an input element: e.g. zero padding or a
-    /// constant tile a kernel stored itself) is decoded from its
-    /// f16/bf16/fp8 bit encoding; a symbolic element already is its real
-    /// value (see `eval::float_bits`'s module doc).
+    /// Read `A`/`B` element `(mn_idx, k_idx)` (PTX ISA 9.7.17.5.1.2.1.3
+    /// layouts) via the async proxy. Concrete elements decode from f16/bf16/fp8
+    /// bits; symbolic ones are already real values.
     fn read_wgmma_element(
         &mut self,
         t: ThreadId,

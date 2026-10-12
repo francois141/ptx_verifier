@@ -165,15 +165,9 @@ pub struct EquivCheckOptions {
     /// Recycle the VC intern tables past this many interned terms
     /// (0 = never); see `EquivSession::with_recycle_terms`.
     pub recycle_terms: usize,
-    /// Run the solve phase this many times (default 1). Every iteration
-    /// re-solves the same sampled elements with a *fresh* `EquivSession`,
-    /// so each iteration is a cold start (comparable timings) and memory
-    /// stays bounded (each session drops before the next). The verdict
-    /// comes from iteration 1; later iterations must agree with it, and a
-    /// disagreement is [`EquivCheckError::IterationDisagreement`] - a
-    /// determinism check for free. `verify_numeric` runs on iteration 1
-    /// only. Per-iteration timings land in
-    /// [`EquivCheckReport::check_iters`].
+    /// Solve iterations (default 1), each re-solving the same elements from a *fresh* session
+    /// (cold-start timings, bounded memory). The verdict is iteration 1's; later ones must agree,
+    /// else [`EquivCheckError::IterationDisagreement`]. `verify_numeric` runs on iteration 1 only.
     pub iterations: NonZeroUsize,
 }
 
@@ -205,30 +199,20 @@ pub struct EquivCheckReport {
     pub elements_checked: u64,
     /// Comparable elements in the reference footprints.
     pub elements_total: u64,
-    /// Per-iteration time spent in the decision procedure itself: each
-    /// entry is one solve iteration's summed `EquivSession::check` calls,
-    /// and nothing else. VC pairing and the optional numeric-oracle
-    /// verification are excluded, so these are the numbers to put beside
-    /// another backend's solver time (the paper's tables) - they do not
-    /// move when `verify_numeric` is toggled. One entry per
+    /// Per-iteration summed `EquivSession::check` time and nothing else (pairing and the oracle
+    /// excluded), the figure to put beside another backend's solver time. One entry per
     /// `EquivCheckOptions::iterations`, in order; never empty.
     pub check_iters: Vec<Duration>,
-    /// Iteration 1's per-element check durations, one entry per checked
-    /// element in `sampled_elements` order (so `check_iters[0]` is their
-    /// sum). Recorded outside the timed spans - the entries are the same
-    /// measurements `check_iters[0]` accumulates, not extra timing work -
-    /// so carrying them does not move the iteration totals.
+    /// Iteration 1's per-element check durations in `sampled_elements` order: the same
+    /// measurements `check_iters[0]` sums, recorded outside the timed spans.
     pub element_checks: Vec<ElementCheckTime>,
     /// Time spent pairing the two footprints (`paired_elements`). Callers
     /// that account "VC generation" as symbolic execution plus pairing
     /// (the bench harness) add this to their execution time.
     pub pair_time: Duration,
-    /// Total time in the f64-oracle confirmations (`verify_verdict`,
-    /// iteration 1 only - the only iteration the oracle runs on). `Some`
-    /// exactly when `EquivCheckOptions::verify_numeric` was set, so
-    /// `None` means the oracle was off, not that it was free. Kept out
-    /// of `check_iters` so the solve timings do not move when the oracle
-    /// is toggled.
+    /// Total f64-oracle time (`verify_verdict`, iteration 1 only). `Some` exactly when
+    /// `EquivCheckOptions::verify_numeric` was set (`None` = oracle off, not free); kept out of
+    /// `check_iters` so solve timings don't move when the oracle is toggled.
     pub verify_time: Option<Duration>,
 }
 
@@ -247,15 +231,9 @@ pub type PairedFootprint = (String, Vec<(u64, ExprId, ExprId)>);
 /// Per-array paired footprints, in `paired_elements` order.
 pub type PairedFootprints = Vec<PairedFootprint>;
 
-/// Pair up the two runs' written elements for each array the caller
-/// names: both runs must have written every named array with an
-/// identical index set, element for element (arrays the caller does not
-/// name are not compared - e.g. auxiliary exports like FlashAttention's
-/// softmax `l`/`m` statistics that only the optimized kernel computes).
-/// The list must be nonempty: checking nothing is an error, not a
-/// vacuous pass. Shared by `check_output_equivalence_with` (the decision
-/// procedure) and any other backend (e.g. `volta_z3`) that needs the
-/// exact same element correspondence to be a fair comparison.
+/// Pair up the two runs' written elements for each named array (identical index sets required;
+/// unnamed arrays, e.g. FlashAttention's optimized-only `l`/`m`, are not compared). An empty list
+/// is an error, not a vacuous pass. Shared by every backend so they check the same elements.
 pub fn paired_elements(
     reference: &AnalysisOutput,
     optimized: &AnalysisOutput,
@@ -306,14 +284,9 @@ pub fn paired_elements(
     Ok(result)
 }
 
-/// Flatten paired footprints into the per-element check list under a
-/// sample limit: each array's element prefix, capped at `sample` elements
-/// per array (0 = all), arrays in `paired` order. This is the one
-/// definition of *which* elements a run checks - the decision procedure
-/// (`check_output_equivalence_with`), the Z3 backend
-/// (`volta_z3::check_output_equivalence`), and the bench harness's Z3
-/// re-solve loop all iterate exactly this list, so their per-element
-/// results correspond positionally.
+/// Flatten paired footprints into the check list: each array's element prefix, capped at
+/// `sample` per array (0 = all), in `paired` order. The one definition of *which* elements are
+/// checked - decision procedure, Z3 backend and bench re-solve loop correspond positionally.
 pub fn sampled_elements(
     paired: &[PairedFootprint],
     sample: u64,
@@ -364,12 +337,9 @@ fn check_iteration_agreement(
     })
 }
 
-/// Check two analysis outputs element by element under `options`. Within
-/// one solve iteration a single `EquivSession` is shared across all
-/// elements, so structure shared between elements (and between the two
-/// kernels) canonicalizes once; each further iteration (see
-/// `EquivCheckOptions::iterations`) re-solves the same sampled elements
-/// from a fresh session.
+/// Check two analysis outputs element by element under `options`. Each solve iteration shares
+/// one `EquivSession` across all elements, so shared structure canonicalizes once; each further
+/// iteration re-solves the same elements from a fresh session.
 pub fn check_output_equivalence_with(
     reference: &AnalysisOutput,
     optimized: &AnalysisOutput,
@@ -455,11 +425,9 @@ pub fn check_output_equivalence_with(
     })
 }
 
-/// A snapshot of one kernel's verification conditions: the expression arena
-/// plus the output footprint (index -> root `ExprId`). This is exactly what
-/// `check_output_equivalence_with` needs and nothing else - `Stats`/op-counts
-/// describe the symbolic-execution run that produced it, not the VCs
-/// themselves, so they aren't part of the snapshot.
+/// A snapshot of one kernel's verification conditions: the expression arena plus the output
+/// footprint (index -> root `ExprId`), exactly what `check_output_equivalence_with` needs
+/// (`Stats`/op-counts describe the run, not the VCs).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct VcSnapshot {
     pub arena: ExprArena,
@@ -486,10 +454,9 @@ impl VcSnapshot {
         }
     }
 
-    /// Check that every id in the snapshot points inside its arena. Run
-    /// this on snapshots rebuilt from external data (a dump file): a
-    /// corrupt or version-skewed file that still decodes would otherwise
-    /// panic with an index-out-of-bounds deep inside the equivalence check.
+    /// Check that every id in the snapshot points inside its arena. Run on snapshots rebuilt
+    /// from external data, so a corrupt or version-skewed dump errors instead of panicking deep
+    /// inside the equivalence check.
     pub fn validate(&self) -> Result<(), String> {
         self.arena.validate()?;
         let n_nodes = self.arena.node_count();
@@ -510,11 +477,9 @@ impl VcSnapshot {
     }
 }
 
-/// The reference and optimized kernels' verification conditions, as
-/// persisted to `.vcdump` files by `volta compare --dump-vcs` and by the
-/// bench harness (one per equivalence benchmark), and reloaded by
-/// `volta compare --from-dump`. The on-disk format lives in [`vc_dump`] -
-/// the one implementation both binaries share.
+/// The reference and optimized kernels' verification conditions, as persisted to `.vcdump`
+/// files by `volta compare --dump-vcs` and the bench harness and reloaded by `--from-dump`;
+/// the on-disk format lives in [`vc_dump`].
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct VcDump {
     pub reference: VcSnapshot,
@@ -534,17 +499,9 @@ impl VcDump {
 }
 
 pub mod vc_dump {
-    //! The `.vcdump` on-disk format: how a [`VcDump`] is persisted and
-    //! reloaded. The single implementation behind `volta compare
-    //! --dump-vcs`/`--from-dump` and the bench harness's per-benchmark VC
-    //! files, so a dump written by either tool loads in both.
-    //!
-    //! Layout: a 12-byte header (magic + format version) followed by the
-    //! bincode (fixint little-endian) payload. Reloading checks the header
-    //! before decoding, so a truncated/foreign file fails with a clear
-    //! message instead of a bincode parse deep in the stream, and
-    //! validates every id in the decoded dump so a corrupt file errors
-    //! instead of panicking later.
+    //! The `.vcdump` on-disk format shared by `volta` and volta-bench: a 12-byte header (magic +
+    //! version), checked before decoding, then a bincode (fixint little-endian) payload whose ids
+    //! are validated on load, so a truncated, foreign or corrupt file errors instead of panicking.
 
     use std::io::{self, Write};
     use std::path::Path;
@@ -554,18 +511,11 @@ pub mod vc_dump {
     use super::VcDump;
 
     const DUMP_MAGIC: &[u8; 8] = b"VOLTAVCD";
-    /// Dump format version, semver-style: bump `DUMP_MINOR` for
-    /// backwards-compatible additions (older files stay loadable), bump
-    /// `DUMP_MAJOR` and reset minor for breaking changes (e.g. any change
-    /// to `ExprNode`'s bincode layout). A reader accepts files with its
-    /// own major and a minor no newer than its own.
-    // 2.0: removed the never-produced SignExtend/ZeroExtend/Truncate ExprNode
-    // variants, which shifts the bincode variant tags of every later variant.
-    // The equally never-produced ToInt variant was then removed within the same
-    // unreleased format revision; its tag shift rides the same 2.0 (no build
-    // that wrote the intermediate layout ever shipped). FloatConst(f64) then
-    // became RealConst(Real) - exact rationals on the wire - within the same
-    // unreleased revision, riding the same 2.0 for the same reason.
+    /// Dump format version, semver-style: bump `DUMP_MINOR` for backwards-compatible additions,
+    /// `DUMP_MAJOR` (resetting minor) for breaking changes such as `ExprNode`'s bincode layout.
+    /// A reader accepts its own major with a minor no newer than its own.
+    // 2.0: removed the SignExtend/ZeroExtend/Truncate/ToInt ExprNode variants (shifting later
+    // bincode tags) and replaced FloatConst(f64) with RealConst(Real), exact rationals on the wire.
     const DUMP_MAJOR: u16 = 2;
     const DUMP_MINOR: u16 = 0;
 
@@ -577,12 +527,9 @@ pub mod vc_dump {
         writer.flush()
     }
 
-    /// Serialize `dump` (header + payload) into any writer - the exact
-    /// byte stream [`write_vc_dump`] puts on disk. Split out so a caller
-    /// that needs the bytes as they are produced (volta-bench's manifest
-    /// fingerprint hashes them through a tee writer) can observe them
-    /// without buffering a second, possibly GiB-scale, copy in memory.
-    /// Does not flush.
+    /// Serialize `dump` (header + payload) into any writer - the exact bytes [`write_vc_dump`]
+    /// writes - so volta-bench can hash them through a tee writer without a second GiB-scale
+    /// copy in memory. Does not flush.
     pub fn write_vc_dump_to(writer: &mut impl Write, dump: &VcDump) -> io::Result<()> {
         writer.write_all(DUMP_MAGIC)?;
         writer.write_all(&DUMP_MAJOR.to_le_bytes())?;
@@ -599,11 +546,8 @@ pub mod vc_dump {
         read_vc_dump_bytes(&std::fs::read(path)?)
     }
 
-    /// Decode a dump from its full file contents (see [`read_vc_dump`]).
-    /// Split out so a caller that already holds the raw bytes -
-    /// volta-bench's `solve` fingerprints them against its manifest
-    /// before decoding anything - can decode the same buffer instead of
-    /// reading the file twice.
+    /// Decode a dump from its full file contents (see [`read_vc_dump`]), so volta-bench's
+    /// `solve` can fingerprint the raw bytes before decoding without reading the file twice.
     pub fn read_vc_dump_bytes(bytes: &[u8]) -> io::Result<VcDump> {
         if bytes.len() < 12 {
             return Err(io::Error::new(
@@ -654,16 +598,9 @@ pub mod vc_dump {
         use super::*;
         use crate::symbolic::{ExprArena, ExprId};
 
-        /// A dump written by `write_vc_dump` reloads to an identical
-        /// structure via `read_vc_dump` - the fixint round-trip and the
-        /// magic header together. The arena deliberately contains the
-        /// `Real` constants most at risk on the wire: a fold-produced
-        /// non-dyadic rational (1/3 - no f64 denotes it), both infinities,
-        /// the smallest positive subnormal, and a -0.0 ingestion (which
-        /// normalizes to the rational zero). The round-trip must be
-        /// byte-exact - re-serializing the loaded dump reproduces the
-        /// original file bit for bit, so any verdict computed from the
-        /// reloaded VCs equals the original's.
+        /// A dump reloads to an identical structure and re-serializes bit for bit, including the
+        /// `Real`s most at risk on the wire: a non-dyadic rational (1/3), both infinities, the
+        /// smallest positive subnormal, and -0.0 (normalized to rational zero).
         #[test]
         fn dump_round_trips() {
             let mut arena = ExprArena::new();
@@ -920,11 +857,9 @@ mod tests {
             report.check_iters[0]
         );
 
-        // Sampling caps the per-array element count once, not per iteration,
-        // and a NotEquivalent verdict survives the later iterations'
-        // agreement check (same mismatch every time is agreement). The
-        // mismatched side writes "out" but computes it from a different
-        // input array.
+        // Sampling caps the per-array element count once, not per iteration, and a
+        // NotEquivalent verdict (one side reads a different input array) survives the
+        // later iterations' agreement check.
         let mut arena = ExprArena::new();
         let sid = arena.intern_string("other");
         let elems: Vec<(u64, ExprId)> = (0..3).map(|i| (i, arena.input_element(sid, i))).collect();
@@ -993,10 +928,8 @@ mod tests {
         );
     }
 
-    /// The determinism guard: agreeing iterations pass, a flipped verdict
-    /// is a hard error naming the element and iteration. (The full check
-    /// loop can't produce a disagreement - canon is deterministic - so the
-    /// guard is exercised directly.)
+    /// The determinism guard: agreeing iterations pass, a flipped verdict is a hard error naming
+    /// the element and iteration. Exercised directly, since deterministic canon can't disagree.
     #[test]
     fn iteration_agreement_guard() {
         assert!(check_iteration_agreement(true, true, "out", 7, 2).is_ok());

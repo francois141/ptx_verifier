@@ -11,12 +11,9 @@ use crate::config::{
 const IN_BASE: u64 = 0x10000;
 const OUT_BASE: u64 = 0x20000;
 
-/// `reduceN(const int* g_idata, int* g_odata)` over `n` int elements
-/// (element width 4, same layout as f32). Every kernel writes only
-/// `g_odata[0]` (Red-6 writes `g_odata[blockIdx.x]`, which is [0] for
-/// CTA 0), hence `out` has length 1. These are single-block reducers with
-/// no launchers in the .cu files; none of the PTX reads `%nctaid`, so the
-/// default (1,1,1) grid is exact.
+/// `reduceN(const int* g_idata, int* g_odata)` over `n` ints (width 4).
+/// Single-block reducers that write only `g_odata[0]`, so `out` has length 1;
+/// no PTX reads `%nctaid`, so the (1,1,1) grid is exact.
 fn config(threads: u32, n: u64, dynamic_shared: u64) -> AnalysisConfig {
     let mut config = AnalysisConfig::new((threads, 1, 1));
     config.arrays = vec![f32_input("in", IN_BASE, n), f32_output("out", OUT_BASE, 1)];
@@ -46,28 +43,16 @@ fn red1() -> KernelRun {
 pub fn benchmarks() -> Vec<BenchmarkDef> {
     // Block 128 = BLOCK_SIZE; n = 128 (reads g_idata[0..128)); static shared.
     let red2 = kernel("Red-2.ptx", "_Z7reduce2PiS_", 128, 128, 0);
-    // Red-3.cu writes `extern __shared__ int sdata[BLOCK_SIZE]`, but nvcc
-    // demotes the *sized* extern declaration to a static `.shared sdata[512]`
-    // ("sdata has been demoted" in the PTX), so there is no dynamic window
-    // and dynamic_shared is 0 (the interpreter ignores it without an
-    // `.extern .shared` declaration).
+    // Red-3.cu's sized `extern __shared__ sdata[BLOCK_SIZE]` is demoted by nvcc
+    // to a static `.shared sdata[512]`, so there is no dynamic window (dyn 0).
     let red3 = kernel("Red-3.ptx", "_Z7reduce3PiS_", 128, 128, 0);
-    // Red-4 adds `in[i] + in[i+64]` on load (i + BLOCK_SIZE/2 in Red-4.cu);
-    // threads 64..128 read `in[128..192)` into the unused half of sdata, so
-    // the input must span 192 elements while the sum still covers exactly
-    // in[0..128) (the reduction loop starts at s = blockDim.x/4 = 32, so
-    // only sdata[0..64) feeds the result). Static shared, dyn 0.
+    // Red-4 loads `in[i] + in[i+64]`, so threads 64..128 read `in[128..192)`
+    // and n = 192, though only sdata[0..64) feeds the sum (loop starts at
+    // s = 32). Static shared.
     let red4 = kernel("Red-4.ptx", "_Z7reduce0PiS_", 128, 192, 0);
-    // Red-5/6/7 are compiled with BLOCKSIZE=128, matching Red-1..4 (Red-6/7
-    // bake it as the `Lj128E` template arg in the mangled names). All three
-    // use real `.extern .shared`. Their warp-synchronous tails stay inside
-    // the 128 initialized ints, but Red-7's shifted tree step
-    // (`if (tid < 128) sdata[tid] += sdata[tid + 128]`) reads up to
-    // sdata[255], so the dynamic window must cover 256 ints = 1024 bytes;
-    // 2048 bytes covers all three with headroom. The uninitialized values
-    // feed pure data (never an address or branch), which a race check
-    // tolerates. Red-5 loads `in[i] + in[i + BLOCKSIZE/2]`, reading
-    // in[0..192) like Red-4, hence n = 192; Red-6/7 read in[0..128).
+    // Red-5/6/7 (BLOCKSIZE=128, real `.extern .shared`): Red-7's
+    // `sdata[tid + 128]` reads reach sdata[255] (uninitialized, pure data), so
+    // 2048 dyn bytes covers all three. Red-5 reads in[0..192).
     let red5 = kernel("Red-5_racy.ptx", "_Z7reduce0PiS_", 128, 192, 2048);
     let red6 = kernel("Red-6_racy.ptx", "_Z7reduce6ILj128EEvPiS0_", 128, 128, 2048);
     let red7 = kernel(

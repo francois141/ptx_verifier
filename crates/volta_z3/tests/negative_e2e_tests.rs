@@ -1,15 +1,6 @@
-//! End-to-end NEGATIVE equivalence check through the Z3 backend: one
-//! almost-equivalent PTX kernel pair (a dropped reduction term) runs the
-//! full pipeline (parse -> lower -> interpret -> paired_elements) and the
-//! resulting verification condition must come back NotEquivalent from BOTH
-//! backends - the canon decision procedure and Z3. This is the negative
-//! twin of the backends' shared positive coverage: an `Equivalent` from
-//! either side here is a soundness bug. The polynomial fragment is used
-//! deliberately (no exp), so Z3's `sat` is a genuine countermodel.
-//!
-//! The full mutation taxonomy lives in
-//! `volta_analysis/tests/negative_equivalence_tests.rs`; this file only
-//! establishes that the two backends agree in the negative direction.
+//! End-to-end NEGATIVE check: a kernel pair with a dropped reduction term
+//! must be NotEquivalent under BOTH canon and Z3 (`Equivalent` is a soundness
+//! bug). No exp, so Z3's `sat` is a real countermodel.
 
 use std::time::Duration;
 

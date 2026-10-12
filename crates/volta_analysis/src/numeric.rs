@@ -1,16 +1,6 @@
-//! f64 numeric evaluation of expression DAGs: the testing oracle for the
-//! decision procedure.
-//!
-//! Symbols get deterministic pseudo-random values in [-1, 1) derived from
-//! (name, seed). For the polynomial-exponential fragment, agreement at
-//! random points implies equality almost surely (the Schwartz-Zippel
-//! argument underlying the paper's completeness proof), so:
-//!
-//! - a claimed equivalence is *refuted* by any seed where the sides differ
-//!   beyond tolerance (deterministic soundness check), and
-//! - a claimed inequivalence is *confirmed* by such a seed; agreement on
-//!   all seeds leaves it unconfirmed (the checker is incomplete over
-//!   uninterpreted atoms, so this can legitimately happen).
+//! f64 evaluation of expression DAGs at seeded pseudo-random symbol values in [-1, 1): the
+//! decision procedure's oracle (Schwartz-Zippel: agreement implies equality almost surely).
+//! A differing seed refutes EQUIV / confirms DIFF; all-agree leaves DIFF unconfirmed.
 
 use std::collections::HashMap;
 
@@ -33,10 +23,9 @@ impl std::fmt::Display for NumericError {
 
 impl std::error::Error for NumericError {}
 
-/// Deterministic pseudo-random value in [-1, 1) for a symbol under a seed:
-/// FNV-1a over the [`SymbolRef`] identity mixed with the seed, with a
-/// domain-separation tag per namespace and a fixed-width index prefix for
-/// elements (so `("x", 12)` cannot alias `("x1", 2)`).
+/// Deterministic value in [-1, 1) for a symbol under a seed: FNV-1a over the [`SymbolRef`]
+/// identity and seed, domain-separated per namespace, with a fixed-width element index
+/// prefix (so `("x", 12)` cannot alias `("x1", 2)`).
 fn symbol_value(sym: SymbolRef<'_>, seed: u64) -> f64 {
     let mut h: u64 = 0xcbf29ce484222325 ^ seed.wrapping_mul(0x9e3779b97f4a7c15);
     let mut feed = |b: u8| {
@@ -160,10 +149,8 @@ fn eval_inner(
         ExprNode::ToFloat(a) => ev(*a, memo)?,
 
         ExprNode::SymbolicRead { array, index } => {
-            // Resolves to the same identity as the materialized
-            // `InputElement` (negative indices wrap into u64, matching
-            // `symbolic_read`'s eager resolution; no in-bounds element
-            // can collide).
+            // Same identity as the materialized `InputElement`: negative indices wrap
+            // into u64 like `symbolic_read`'s eager resolution (no in-bounds collision).
             let i = ev(*index, memo)?;
             symbol_value(
                 SymbolRef::Element {
@@ -197,13 +184,9 @@ pub fn agree_at(
     Ok(((va - vb) / scale).abs() <= rel_tol)
 }
 
-/// Check a claimed verdict against the numeric oracle at several seeds.
-///
-/// - `claimed_equal = true`: returns Ok(()) iff the sides agree at *every*
-///   seed (disagreement refutes the equivalence claim).
-/// - `claimed_equal = false`: returns Ok(()) iff the sides differ at *some*
-///   seed; agreement everywhere is reported as unconfirmed (the checker is
-///   incomplete over uninterpreted atoms, so this may be a false DIFF).
+/// Check a claimed verdict against the oracle at several seeds: EQUIV is Ok iff the sides
+/// agree at *every* seed; DIFF is Ok iff they differ at *some* seed, else unconfirmed (canon
+/// is incomplete over uninterpreted atoms, so it may be a false DIFF).
 pub fn verify_verdict(
     arena_a: &ExprArena,
     a: ExprId,
@@ -257,10 +240,8 @@ mod tests {
         assert!((-1.0..1.0).contains(&v1));
     }
 
-    /// Regression: the oracle used to hash machine `Symbol(N)` by the same
-    /// string as a symbol *named* `"s{N}"`, assigning both the same value -
-    /// which made it blind to canon's identical conflation. The namespaces
-    /// are domain-separated now.
+    /// Regression: machine `Symbol(N)` and a symbol *named* `"s{N}"` must get distinct
+    /// values, else the oracle is blind to canon conflating them.
     #[test]
     fn named_and_machine_symbols_get_independent_values() {
         use crate::symbolic::ExprNode;

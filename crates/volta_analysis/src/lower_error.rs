@@ -1,6 +1,4 @@
-//! Lowering error types
-//!
-//! This module defines errors that can occur during the lowering pass,
+//! Lowering error types: errors that can occur during the lowering pass,
 //! including type errors, undefined symbols, and unsupported instructions.
 
 use std::fmt;
@@ -100,11 +98,9 @@ pub enum LowerError {
     // =========================================================================
     // Other Errors
     // =========================================================================
-    /// A variable's declared size or assigned placement overflows the u64
-    /// address space (e.g. `.shared .u32 A[0x4000000000000001]`, whose
-    /// byte size would otherwise release-wrap to 4). Real kernels are
-    /// nowhere near the limit, so this is a hostile or corrupt
-    /// declaration, rejected loudly instead of silently wrapped.
+    /// A variable's declared size or placement overflows the u64 address space
+    /// (e.g. `.shared .u32 A[0x4000000000000001]` would wrap to 4 bytes);
+    /// a hostile or corrupt declaration, rejected loudly instead of wrapped.
     VariableSizeOverflow { what: String },
 
     /// No function body (declaration only)

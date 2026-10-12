@@ -39,10 +39,8 @@ pub struct StatsPy {
     pub warp_syncs: u64,
 }
 
-/// The result of symbolically executing one kernel: per-output-array
-/// written elements (pretty-printed, since the underlying `ExprId`s are
-/// only meaningful against an arena this binding does not expose in v0)
-/// plus execution statistics.
+/// The result of symbolically executing one kernel: per-output-array written
+/// elements (pretty-printed; the arena is not exposed) plus statistics.
 #[pyclass(name = "AnalyzeResult")]
 pub struct AnalyzeResultPy {
     #[pyo3(get)]
@@ -54,13 +52,9 @@ pub struct AnalyzeResultPy {
     pub op_counts: BTreeMap<String, u64>,
 }
 
-/// Symbolically execute `kernel` (or the module's unique entry, if a
-/// module has just one) under `config`, and return its output
-/// expressions and execution statistics.
-///
-/// Raises `DataRaceError` / `DeadlockError` for those specific findings,
-/// and `VoltaError` for any other analysis failure (kernel not found,
-/// out-of-bounds access, ...).
+/// Symbolically execute `kernel` (or the module's unique entry) under
+/// `config`. Raises `DataRaceError` / `DeadlockError` for those findings and
+/// `VoltaError` for any other analysis failure.
 #[pyfunction]
 #[pyo3(signature = (source, config, kernel=None))]
 pub fn analyze(source: &str, config: &ConfigPy, kernel: Option<&str>) -> PyResult<AnalyzeResultPy> {

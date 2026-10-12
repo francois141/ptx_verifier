@@ -1,17 +1,6 @@
-//! Interned canonical forms.
-//!
-//! Four interned layers give every canonical object a stable id, so
-//! structural equality anywhere in the engine is an integer compare:
-//!
-//! ```text
-//! Poly   = sorted Vec<(TermId, Coeff)>      Σ c·term (sums, exp args)
-//! Term   = monomial factors + optional e^{poly}
-//! Factor = input symbol | opaque atom
-//! Atom   = max/min | uninterpreted op over rationals
-//! ```
-//!
-//! `Rat` (a numerator/denominator pair of polys) is plain `Copy` data; it
-//! needs no interner of its own.
+//! Interned canonical forms - Poly (Σ c·term), Term (monomial · e^{poly}?),
+//! Factor (symbol | atom), Atom (max/min | uninterpreted op) - so structural
+//! equality is an integer compare. `Rat` (poly pair) is plain `Copy` data.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -68,10 +57,9 @@ impl Term {
     }
 }
 
-/// A canonical polynomial: sorted by *descending* `TermId`, no zero
-/// coefficients. Descending because chain canonicalization interns fresh
-/// terms with decreasing ids as it unwinds - descending order turns each
-/// accumulator step into an O(1) append (see `ops::poly_add_vec`).
+/// A canonical polynomial: sorted by *descending* `TermId`, no zero coeffs.
+/// Chain canonicalization interns decreasing ids as it unwinds, so descending
+/// order makes each accumulator step an O(1) append (`ops::poly_add_vec`).
 pub type Poly = Vec<(TermId, Coeff)>;
 
 /// The operator of an uninterpreted atom. These stay opaque in the

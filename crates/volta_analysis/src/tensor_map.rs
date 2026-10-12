@@ -1,25 +1,12 @@
-//! Tensor-map field types (PTX ISA 9.7.9.27 `tensormap.replace`, Table 33,
-//! and 5.5.7 "Swizzling Modes").
-//!
-//! The tensor-map is a 128-byte *opaque* object (PTX ISA 5.5.8) - the ISA
-//! never defines its binary layout (only the driver API that creates it,
-//! `cuTensorMapEncode*`, knows that). Volta therefore never models literal
-//! tensor-map bytes; instead it models the object as a side table of named
-//! fields (`eval::tensor_map_table::TensorMapEntry`), and these types
-//! describe exactly the values `tensormap.replace` can write into one.
-//!
-//! `.field3`'s `new_val` (the enum-valued fields: `.elemtype`,
-//! `.interleave_layout`, `.swizzle_mode`, `.swizzle_atomicity`,
-//! `.fill_mode`) must be an immediate per the ISA text, so it is decoded
-//! once - and validated - at lowering time (see
-//! `lowering::lower_tensormap_replace`), not deferred to evaluation.
+//! Tensor-map field types (PTX ISA 9.7.9.27 `tensormap.replace`, Table 33).
+//! The 128-byte object is opaque (5.5.8), so it is modeled as named fields;
+//! enum `.field3` values must be immediates, so they are validated at lowering.
 
 use crate::lowered::Operand;
 
-/// `.field3`'s `.elemtype` encoding (Table 33). Only the element types with
-/// a 1:1 `ScalarType` are modeled; the four sub-byte pack types (`new_val`
-/// 13-15: `.b4x16`, `.b4x16_p64`, `.b6x16_p32`/`.b6p2x16`) are rejected at
-/// lowering - no corpus kernel uses them (`sm100a_support_plan.md`'s scope).
+/// `.field3`'s `.elemtype` encoding (Table 33). Only types with a 1:1
+/// `ScalarType` are modeled; the sub-byte pack types (`new_val` 13-15) are
+/// rejected at lowering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TensorElemType {
     U8,
@@ -92,11 +79,9 @@ impl TensorInterleaveLayout {
     }
 }
 
-/// `.field3`'s `.swizzle_mode` encoding (Table 33). Distinct from
-/// `eval::tcgen05_mma::SwizzleMode`, which is the *matrix-descriptor*'s own
-/// (differently-encoded, mode+atomicity-fused) field - see
-/// `eval::tensor_map_table::to_mma_swizzle_mode` for the translation
-/// between the two.
+/// `.field3`'s `.swizzle_mode` encoding (Table 33, PTX ISA 5.5.7). Distinct
+/// from the matrix descriptor's `eval::tcgen05_mma::SwizzleMode`; see
+/// `eval::tensor_map_table::to_mma_swizzle_mode` for the translation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TensorSwizzleMode {
     None,

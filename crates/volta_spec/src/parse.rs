@@ -1,48 +1,6 @@
-//! Recursive-descent parser for the spec language.
-//!
-//! Grammar (ASCII, agreed with the user):
-//!
-//! ```text
-//! spec        := item*
-//! item        := dim_decl | array_decl | output_decl
-//! dim_decl    := "dim" IDENT ";"
-//! array_decl  := "array" IDENT "[" IDENT ("," IDENT)* "]" ";"
-//! output_decl := IDENT "[" IDENT ("," IDENT)* "]" "=" expr ";"
-//!
-//! expr        := add
-//! add         := mul (("+" | "-") mul)*
-//! mul         := unary (("*" | "/") unary)*
-//! unary       := "-" unary | postfix
-//! postfix     := IDENT "[" index_expr ("," index_expr)* "]"   ; tensor index
-//!              | IDENT "(" args ")"                            ; call or reduction
-//!              | IDENT                                         ; bound variable
-//!              | NUMBER
-//!              | "(" expr ")"
-//! args        := reduction | expr ("," expr)*
-//! reduction   := IDENT "in" expr ".." expr "," expr            ; sum(k in 0..K, body)
-//!                                                               ; max(k in 0..K, body)
-//!
-//! index_expr  := index_mul (("+") index_mul)*
-//! index_mul   := index_primary (("*") index_primary)*
-//! index_primary := IDENT | NUMBER | "(" index_expr ")"
-//! ```
-//!
-//! `index_expr` is deliberately the small affine sublanguage
-//! `volta_analysis::spec::IndexExpr` already supports (no `-`/`/`/calls
-//! inside subscripts) - enforced by parsing subscripts with a separate,
-//! more restrictive production instead of the general `expr`, so a
-//! disallowed construct is a clear parse error at the exact span, not a
-//! deferred lowering error.
-//!
-//! Builtin calls, dispatched by name in `parse_call`: `exp`, `log`,
-//! `sqrt`, `abs` (direct `SpecExpr` unary ops), `min` (binary op only),
-//! `pow(x, N)` (desugars to repeated multiplication - `N` must be a
-//! non-negative integer literal), `tanh(x)` (desugars to
-//! `(exp(2x)-1)/(exp(2x)+1)`; no native `Tanh` node exists), and `sum`/
-//! `max` (both the binary op and the reduction form above - `max(a, b)`
-//! vs. `max(k in 0..K, body)` are disambiguated by a 2-token lookahead
-//! for the `IDENT "in"` reduction head, since both start with an
-//! expression that may itself begin with a bare identifier).
+//! Recursive-descent parser for the spec language: `dim N;`, `array A[N, M];` and
+//! `C[i, j] = expr;` items over `+ - * /`, unary `-`, builtin calls and `sum`/`max(k in 0..K, e)`
+//! reductions; subscripts use a separate affine (`+`/`*`) production so misuse errors at its span.
 
 use std::fmt;
 
@@ -397,10 +355,8 @@ impl Parser {
         }
     }
 
-    /// True if the tokens right after a call's `(` are `IDENT "in"` - the
-    /// unambiguous head of a reduction's argument list, as opposed to a
-    /// bare expression that happens to start with an identifier (e.g. the
-    /// `A` in `max(A[i], 0)`).
+    /// True if the tokens right after a call's `(` are `IDENT "in"`: a reduction head, not a
+    /// bare expression starting with an identifier (e.g. the `A` in `max(A[i], 0)`).
     fn at_reduction_head(&self) -> bool {
         matches!(self.peek().kind, TokenKind::Ident(_))
             && matches!(
@@ -626,10 +582,8 @@ mod tests {
 
     #[test]
     fn tanh_desugars_to_a_fraction_over_exp() {
-        // (exp(2x) - 1) / (exp(2x) + 1): top node is Div, both sides
-        // built from Exp - a shallow structural check, the actual
-        // identity is exercised numerically by the matmul/pow
-        // equivalence tests.
+        // (exp(2x) - 1) / (exp(2x) + 1): a shallow structural check (Div over Exp); the
+        // identity itself is exercised numerically by the equivalence tests.
         let body = output_body("dim N; array A[N];\nC[i] = tanh(A[i]);");
         let SpecExpr::Div(num, den) = body else {
             panic!("expected tanh to desugar to a Div, got {:?}", body);

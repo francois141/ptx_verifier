@@ -1,19 +1,6 @@
-//! Decoding of concrete float bit patterns: a concrete `IntConst` consumed
-//! at a float (or fp8) type is a raw bit pattern from a plain `.bN`
-//! producer (`mov.b32 %r, 0x3F800000` feeding an `add.f32`, a
-//! `st.shared.b16` of `0x3C00` feeding a `tcgen05.mma` operand), not an
-//! already-real value, so every float consumer reads it through here.
-//!
-//! NaN encodings are rejected (`None` from the raw decoders, a loud error
-//! from [`decode_float_bits`]) - the same "reject at ingestion" policy as
-//! every other f64 entry point (see `Real::from_f64`). +/-infinity decodes
-//! fine (`ExprArena::float_from_f64` handles it).
-//!
-//! The fp8 decoders ([`decode_e4m3_byte`], [`decode_e5m2_byte`], PTX ISA
-//! 5.2.3) see only concrete fp8 bytes: a symbolic fp8 element already is
-//! its real value and never reaches them (see
-//! `LoweredInstr::CvtE4m3x2ToF16x2`). Every finite value of every format
-//! here is a dyadic rational, so decoding through `f64` is exact.
+//! Decoding of concrete float bit patterns: a concrete `IntConst` consumed at
+//! float/fp8 type is a raw `.bN` bit pattern, not a real. NaN encodings are
+//! rejected; every finite value here is dyadic, so f64 decoding is exact.
 
 use volta_frontend::ast::ScalarType;
 
@@ -21,13 +8,9 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::lowered::InstrId;
 use crate::symbolic::{ExprArena, ExprId};
 
-/// Read `e`, consumed at float (or fp8) type `ty`: a concrete `IntConst`
-/// is decoded at `ty`'s width (`0x3F800000` is 1.0, not 1065353216), the
-/// way [`decode_packed_bits`] does for packed pairs. A NaN encoding is a
-/// loud error - Volta's real-valued model cannot represent it, and leaving
-/// the integer in place would misread it. Symbolic values, genuine float
-/// constants, and packed-pair types pass through (a pair's lanes are
-/// decoded by `Interpreter::pair_operand`).
+/// Read `e` at float/fp8 type `ty`: a concrete `IntConst` decodes at `ty`'s
+/// width (`0x3F800000` is 1.0). NaN is a loud error (not representable);
+/// symbolic values, float constants and pairs pass through.
 pub fn decode_float_bits(
     arena: &mut ExprArena,
     pc: InstrId,
@@ -78,10 +61,9 @@ pub fn f16_bits_to_f64(bits: u16) -> Option<f64> {
     })
 }
 
-/// Decode a raw 16-bit `bf16` bit pattern to its real value. `bf16` is
-/// exactly an `f32`'s high 16 bits (same 8-bit exponent/bias as `f32`,
-/// truncated mantissa), so this is a plain bit-shift into `f32`, not a
-/// hand-rolled decode. `None` for NaN, matching [`f16_bits_to_f64`].
+/// Decode a raw `bf16` pattern: it is exactly an `f32`'s high 16 bits, so
+/// this is a bit-shift into `f32`. `None` for NaN, matching
+/// [`f16_bits_to_f64`].
 pub fn bf16_bits_to_f64(bits: u16) -> Option<f64> {
     let v = f32::from_bits((bits as u32) << 16) as f64;
     if v.is_nan() { None } else { Some(v) }
@@ -122,10 +104,9 @@ pub fn decode_e5m2_byte(byte: u8) -> Option<f64> {
     Some(sign * magnitude)
 }
 
-/// Split a raw packed-pair bit pattern into its two lanes' real values,
-/// per `lane_ty` (`F16` or `Bf16` for a 32-bit `F16x2`/`Bf16x2` operand,
-/// `F32` for a 64-bit `F32x2` one). `(lo, hi)`, matching `Value::Pair`'s
-/// order; `None` if either lane is NaN.
+/// Split a packed-pair pattern into `(lo, hi)` lane values (`Value::Pair`
+/// order) per `lane_ty`: `F16`/`Bf16` for 32-bit pairs, `F32` for 64-bit
+/// ones. `None` if either lane is NaN.
 pub fn decode_packed_bits(bits: u64, lane_ty: ScalarType) -> Option<(f64, f64)> {
     if lane_ty == ScalarType::F32 {
         // A 64-bit `f32x2` pattern: two IEEE singles, low lane first.

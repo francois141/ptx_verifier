@@ -1,10 +1,5 @@
-//! Volta CLI - PTX analysis tool
-//!
-//! Commands:
-//! - `volta parse <file>` - Parse a PTX file and report any errors
-//! - `volta analyze <file>` - Symbolically execute one kernel
-//! - `volta compare <file1> <file2>` - Check two kernels for equivalence
-//! - `volta verify <file>` - Check one kernel against a math spec
+//! Volta CLI - PTX analysis tool: `parse <file>` (syntax check), `analyze <file>` (symbolically
+//! execute one kernel), `compare <file1> <file2>` (equivalence), `verify <file>` (against a spec).
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -64,11 +59,8 @@ impl From<LogLevel> for log::LevelFilter {
 enum BackendArg {
     /// `volta_analysis::canon` - Volta's own decision procedure (default)
     Decision,
-    /// Z3, via SMT-LIB2 evaluated worker subprocess through libz3. Covers a
-    /// narrower fragment (see `volta_z3::translate`'s docs) and reports
-    /// per-element unsat/sat/unknown rather than a single verdict. Requires
-    /// building with `--features z3`; without it, selecting this backend
-    /// fails at run time with a message to that effect.
+    /// Z3, via SMT-LIB2 evaluated by libz3 in a worker subprocess: a narrower fragment, per-element
+    /// unsat/sat/unknown verdicts. Requires `--features z3`, else selecting it fails at run time.
     Z3,
 }
 
@@ -111,20 +103,15 @@ enum Commands {
     /// kernels unless a `--block2`/`--grid2` override is given.
     Compare(CompareArgs),
 
-    /// Check one kernel against a math specification (also checked for
-    /// data races/deadlocks). SPEC is a path to a `.spec` file, or
-    /// inline spec source (tried as a file path first; if no such file
-    /// exists, parsed as spec text directly) - see `volta_spec`'s docs
-    /// for the grammar. Every array the spec defines an output equation
-    /// for must be a declared output array of the kernel.
+    /// Check one kernel against a math spec (and for races/deadlocks). SPEC is a `.spec` path, or
+    /// inline spec source if no such file exists; every array with a spec output equation must be a
+    /// declared output array of the kernel.
     Verify(VerifyArgs),
 }
 
-/// Launch configuration shared by `analyze` and `compare`: the flags that
-/// feed `build_config`. Flattened into both subcommands so their
-/// block/grid/array/param/global handling cannot drift apart. (For
-/// `compare` these describe the reference kernel; `--block2`/`--grid2` on
-/// `CompareArgs` override the dims for the optimized kernel only.)
+/// Launch configuration shared by `analyze` and `compare` (flattened into both, so they cannot
+/// drift apart). For `compare` it describes the reference kernel; `--block2`/`--grid2` override
+/// the optimized kernel's dims.
 #[derive(Args)]
 struct LaunchArgs {
     /// Block dimensions, e.g. "128" or "32,4,1"
@@ -202,10 +189,8 @@ struct CompareArgs {
     #[arg(long)]
     grid2: Option<String>,
 
-    /// Output array to check, by name (repeatable, at least one
-    /// required; order = check order). Each name must be an output
-    /// array declared in the launch config (with --from-dump: recorded
-    /// in the dump).
+    /// Output array to check, by name (repeatable, at least one required; order = check order).
+    /// Must be a declared output array of the launch config (with --from-dump: of the dump).
     #[arg(long = "check-array", value_name = "NAME", required = true)]
     check_arrays: Vec<String>,
 
@@ -239,18 +224,14 @@ struct CompareArgs {
     #[arg(long, default_value_t = 30)]
     z3_timeout: u64,
 
-    /// With --backend z3: encode the exponential as an uninterpreted
-    /// function with the addition-law axiom (forall x y. e^x e^y =
-    /// e^(x+y)) instead of the default bounded-base power encoding - the
-    /// paper's "Z3 with axiom" baseline, which drives Z3 into a timeout
-    /// on softmax-shaped VCs rather than a fast `unknown`.
+    /// With --backend z3: encode exp as an uninterpreted function with the addition-law axiom
+    /// instead of the bounded-base power - the paper's "Z3 with axiom" baseline, which times out
+    /// on softmax-shaped VCs rather than returning a fast `unknown`.
     #[arg(long)]
     exp_axiom: bool,
 
-    /// After symbolic execution, dump both kernels' verification
-    /// conditions (the expression arena + output footprint) to this
-    /// file. Reload them later with --from-dump to rerun the
-    /// equivalence check without parsing/symbolic execution.
+    /// After symbolic execution, dump both kernels' verification conditions (arena + output
+    /// footprint) to this file; --from-dump reruns the check without parsing/symbolic execution.
     #[arg(long)]
     dump_vcs: Option<PathBuf>,
 
@@ -536,10 +517,8 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 }
 
-/// How a whole Z3 comparison run maps to a process exit status. `compare`
-/// is a verification command, so only a run that *proved* every element
-/// equivalent may exit 0; an undecided-only run is distinguished from a
-/// real difference purely so we can explain the nonzero exit.
+/// How a whole Z3 comparison run maps to an exit status: only a run that *proved* every element
+/// equivalent exits 0; undecided vs. different only shapes the nonzero-exit explanation.
 #[cfg(feature = "z3")]
 #[derive(Debug, PartialEq, Eq)]
 enum Z3Verdict {
@@ -567,11 +546,8 @@ fn z3_verdict(counts: &volta_z3::Z3Counts) -> Z3Verdict {
     }
 }
 
-/// Reject duplicate `--check-array` names - checking an array twice only
-/// double-counts its elements. Clap enforces that at least one name was
-/// given (the list is always explicit, matching `paired_elements`'
-/// interface - there is no derived default); membership is checked
-/// against the declared launch config before symbolic execution, and by
+/// Reject duplicate `--check-array` names (they would double-count elements). Clap enforces at
+/// least one; membership is checked against the launch config before symbolic execution and by
 /// `paired_elements` (the authority) after.
 fn validate_check_arrays(arrays: &[String]) -> Result<(), String> {
     for (i, name) in arrays.iter().enumerate() {
@@ -648,11 +624,8 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                 }
             };
 
-            // Fail fast on a name no declared output array matches: a
-            // run's recorded outputs are exactly the config's out/inout
-            // arrays (and the config is shared by both kernels), so this
-            // catches a typo before symbolic execution, which can run
-            // minutes. `paired_elements` stays the authority afterwards.
+            // Fail fast on a name no declared out/inout array matches: catches a typo before
+            // minutes of symbolic execution. `paired_elements` stays the authority afterwards.
             for name in &args.check_arrays {
                 if !config1
                     .arrays
@@ -747,11 +720,8 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                     } else {
                         format!("{}/{}", report.elements_checked, report.elements_total)
                     };
-                    // Wall clock for the whole phase; the parenthetical is
-                    // the decision procedure alone (summed canon checks -
-                    // pairing and the optional numeric oracle excluded),
-                    // the figure comparable to the z3 backend's solver
-                    // time.
+                    // Wall clock for the whole phase; the parenthetical is the decision procedure
+                    // alone (summed canon checks), the figure comparable to z3's solver time.
                     println!(
                         "VC check: {:.3}s (decision procedure {:.3}s)  elements: {}",
                         vc_secs,
@@ -855,12 +825,9 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                         counts.compact(),
                         vc_secs
                     ));
-                    // `compare` is a verification command: exit 0 must mean
-                    // "every element proved equivalent". A definitive
-                    // NotEquivalent aside, a run that only failed to *decide*
-                    // some elements (unknown/unsupported/solver error) still
-                    // exits nonzero, so no undecided result is mistaken for a
-                    // proof.
+                    // Exit 0 must mean "every element proved equivalent": a run that only
+                    // failed to *decide* some elements (unknown/unsupported/solver error) still
+                    // exits nonzero.
                     match z3_verdict(&counts) {
                         Z3Verdict::AllEquivalent => ExitCode::SUCCESS,
                         Z3Verdict::HasDifference => ExitCode::FAILURE,
@@ -884,12 +851,9 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 }
 
-/// Resolve the `verify` command's `spec` argument: try it as a file path
-/// first (through `files` so a parse error can render a source snippet);
-/// if no such file exists, treat the argument itself as inline spec
-/// text. Any other I/O error (permission denied, is a directory, ...) is
-/// reported directly rather than silently falling through to the inline
-/// interpretation - only a missing file does that.
+/// Resolve `verify`'s `spec` argument: a file path first (via `files`, for parse-error
+/// snippets), else inline spec text - but only when the file is missing; other I/O errors
+/// (permission denied, is a directory, ...) are reported directly.
 fn load_spec_source(files: &mut FileCache, arg: &str) -> Result<(String, Option<PathBuf>), String> {
     match files.read(arg) {
         Ok(contents) => Ok((contents.to_string(), Some(PathBuf::from(arg)))),
@@ -1026,12 +990,9 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         kernel_output.stats.warp_syncs
     );
 
-    // A real kernel's written footprint can be far larger than is
-    // practical to unroll a Sum-heavy spec over (e.g. one row of a
-    // 4096-cubed matmul is already a 4096-term sum per element), so
-    // --sample also caps *generation*, not just the decision-check phase:
-    // truncate the kernel's own elements to the same ascending-order
-    // prefix `unfold` will build, so the two sides still pair up.
+    // --sample also caps *generation* (a big kernel's footprint is impractical to unroll a
+    // Sum-heavy spec over): truncate the kernel's elements to the same ascending prefix
+    // `unfold` builds, so the two sides still pair up.
     if args.sample > 0 {
         for name in &check_arrays {
             if let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == name) {

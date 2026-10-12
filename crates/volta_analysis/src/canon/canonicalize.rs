@@ -1,15 +1,6 @@
-//! Lowering evaluator expressions into canonical rationals.
-//!
-//! One bottom-up pass over the `ExprArena` DAG, memoized per `ExprId` (the
-//! paper's "traverses each node exactly once"). Both kernels of a VC pair
-//! canonicalize into the same session, distinguished by `Side`, so shared
-//! structure interns identically across sides and elements.
-//!
-//! Memory discipline: results are interned (and memoized) only for nodes
-//! with more than one parent in the expression DAG, plus roots and exp/atom
-//! arguments. Single-use chain intermediates flow through as transient
-//! owned vectors and are freed by scope - without this, a K-step
-//! accumulator chain would permanently retain O(K^2) interned prefixes.
+//! Lowering evaluator expressions into canonical rationals: one memoized
+//! bottom-up pass shared by both kernels. Only multi-parent nodes, roots, and
+//! exp/atom arguments are interned, else chains would retain O(K^2) prefixes.
 
 use crate::symbolic::{ExprArena, ExprId, ExprNode};
 
@@ -237,21 +228,9 @@ impl Session {
         }
     }
 
-    /// `e^{p}` as a rational, with every logarithm in the exponent
-    /// undone first: `e^{q + c*log(u)}` is `u^c * e^{q}` for an integer
-    /// `c`. That identity is what a log-space running sum needs to stay
-    /// inside the sums-of-exponentials fragment - FlashAttention's
-    /// `l = n + log2(2^{l - n} + s)` folds back into the plain sum it
-    /// accumulates, so the final quotient's common factor cancels;
-    /// without it the log stays an opaque atom and so does every
-    /// exponential taken of it afterwards.
-    ///
-    /// The identity only holds for `u > 0`: at `u = -1` the hardware's
-    /// `ex2(lg2(u))` is NaN, not `-1` (and at `u = 0` a negative power
-    /// is `+inf`, not a division by zero). So a log cancels only when
-    /// [`Self::rat_sign`] proves its argument strictly positive; any
-    /// other log stays an opaque atom in the exponent - sound, merely
-    /// incomplete.
+    /// `e^{p}` as a rational, undoing logs first: `e^{q + c*log(u)}` is
+    /// `u^c * e^{q}` for integer `c`, keeping log-space running sums in the
+    /// fragment. Applies only when [`Self::rat_sign`] proves `u > 0`.
     fn exp_poly(&mut self, p: PolyId) -> Result<RatV, CanonError> {
         let terms = self.arena.polys.get(p).clone();
         let mut rest = Vec::with_capacity(terms.len());
@@ -335,10 +314,9 @@ impl Session {
         }
     }
 
-    /// A sum is `Positive` when every coefficient is positive, every
-    /// term is at least nonnegative, and some term is strictly positive;
-    /// `NonNegative` when the last condition fails. The zero poly (no
-    /// terms) is not positive.
+    /// `Positive` when every coefficient is positive, every term is
+    /// nonnegative, and some term is strictly positive; `NonNegative` when only
+    /// the last fails. The zero poly is not positive.
     fn poly_sign(&self, p: PolyId) -> Sign {
         let terms = self.arena.polys.get(p);
         if terms.is_empty() {
@@ -379,10 +357,9 @@ impl Session {
         sign
     }
 
-    /// Only atoms whose sign follows from the operator alone: an opaque
-    /// exponential is positive, `abs` is nonnegative. Symbols and every
-    /// other atom are unknown (no recursion into atom arguments, so this
-    /// stays linear in the term's size).
+    /// Signs implied by the operator alone: opaque exponentials are positive,
+    /// `abs` is nonnegative, everything else is unknown (no recursion into
+    /// arguments, so this stays linear in the term's size).
     fn factor_sign(&self, f: FactorId) -> Sign {
         match self.arena.factors.get(f) {
             Factor::Symbol(_) => Sign::Unknown,

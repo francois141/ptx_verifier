@@ -1,7 +1,5 @@
-//! Errors produced during symbolic evaluation.
-//!
-//! Program counters (`InstrId`) are carried so the driver can map errors back
-//! to source spans via the `SourceMap`.
+//! Errors produced during symbolic evaluation. Program counters (`InstrId`) are carried so
+//! the driver can map errors back to source spans via the `SourceMap`.
 
 use std::fmt;
 
@@ -33,10 +31,8 @@ impl fmt::Display for AccessSite {
     }
 }
 
-/// Errors detected by the symbolic evaluator.
-///
-/// `DataRace` and `Deadlock` are the analysis *results* the paper proves sound
-/// and complete; the remaining variants are structured-CTA violations or
+/// Errors detected by the symbolic evaluator. `DataRace` and `Deadlock` are the analysis
+/// *results* the paper proves sound and complete; the rest are structured-CTA violations or
 /// implementation limits, which the paper models as raised exceptions.
 #[derive(Debug)]
 pub enum EvalError {
@@ -47,33 +43,27 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
-    /// An access conflicted with a still-in-flight async operation (a
-    /// `cp.async` copy, or a `tcgen05.mma` reading its shared-memory
-    /// operands): its destination was touched before completion, or its
-    /// source was modified before completion.
+    /// An access conflicted with a still-in-flight async operation (`cp.async`, or a
+    /// `tcgen05.mma` reading shared operands): its destination was touched or its source
+    /// modified before completion.
     AsyncCopyHazard {
         space: MemSpace,
         addr: u64,
         prior: AccessSite,
         current: AccessSite,
     },
-    /// An async-proxy read (a `tcgen05.mma` operand) observed bytes a
-    /// generic-proxy write (`st.shared`, ...) landed, without the *writer*
-    /// having executed `fence.proxy.async` since: the ISA only makes
-    /// generic writes visible to the async proxy through the writer's own
-    /// proxy fence, ordered before the reader by a sync.
+    /// An async-proxy read (a `tcgen05.mma` operand) observed a generic-proxy write whose
+    /// *writer* has not executed `fence.proxy.async` since: the ISA only makes generic writes
+    /// visible to the async proxy via the writer's own fence, ordered before the reader by a sync.
     GenericProxyFenceHazard {
         space: MemSpace,
         addr: u64,
         prior: AccessSite,
         current: AccessSite,
     },
-    /// A `wgmma.mma_async` accessed an accumulator register without an
-    /// intervening `wgmma.fence` (PTX ISA 9.7.17.7.1): either this is the
-    /// warpgroup's first `wgmma.mma_async` and no `wgmma.fence` has ever
-    /// been executed by this thread (`prior_write: None`), or some
-    /// register access other than a same-shape `wgmma.mma_async` chain
-    /// link touched this register since its last `wgmma.fence`.
+    /// A `wgmma.mma_async` accessed an accumulator register without an intervening
+    /// `wgmma.fence` (PTX ISA 9.7.17.7.1): no fence ever ran (`prior_write: None`), or an access
+    /// other than a same-shape `wgmma.mma_async` chain link touched it since the last fence.
     WgmmaFenceHazard {
         thread: ThreadId,
         pc: InstrId,
@@ -81,11 +71,9 @@ pub enum EvalError {
         shape: MmaShape,
         prior_write: Option<AccessSite>,
     },
-    /// An access reached a `wgmma.mma_async` accumulator register before
-    /// the writing thread executed a `wgmma.wait_group` covering that
-    /// wgmma-group (PTX ISA 9.7.17.7.3): some access other than that same
-    /// chain's own next same-shape accumulator seed-read or writeback
-    /// touched the register while it was still in flight.
+    /// An access other than the same chain's next same-shape seed-read or writeback reached
+    /// an in-flight `wgmma.mma_async` accumulator register before the writer's covering
+    /// `wgmma.wait_group` (PTX ISA 9.7.17.7.3).
     WgmmaWaitGroupHazard {
         thread: ThreadId,
         pc: InstrId,
@@ -118,12 +106,9 @@ pub enum EvalError {
         addr: u64,
         width: u64,
     },
-    /// A memory access whose address is not a multiple of its required
-    /// alignment. PTX ISA 6.4.1: "The address must be naturally aligned to
-    /// a multiple of the access size. If an address is not properly
-    /// aligned, the resulting behavior is undefined" - the undefined
-    /// behavior is rejected rather than silently given well-defined
-    /// symbolic semantics.
+    /// A memory access whose address is not a multiple of its required alignment. PTX ISA
+    /// 6.4.1 makes misaligned access undefined behavior, so it is rejected rather than given
+    /// well-defined symbolic semantics.
     Misaligned {
         thread: ThreadId,
         pc: InstrId,
@@ -193,17 +178,15 @@ pub enum EvalError {
     /// Threads participating in one warp-cooperative operation disagree
     /// (different masks, missing/exited lanes, non-uniform operands, ...).
     WarpMismatch { pc: InstrId, reason: String },
-    /// A named-barrier arrival the ISA leaves undefined: an out-of-range
-    /// id or count, arrivals at one barrier disagreeing on the count that
-    /// fires it, or more arrivals than the count (which threads the
-    /// barrier releases would then depend on the schedule).
+    /// A named-barrier arrival the ISA leaves undefined: an out-of-range id or count,
+    /// arrivals disagreeing on the count, or more arrivals than the count (the released
+    /// threads would then depend on the schedule).
     BarrierMismatch { pc: InstrId, reason: String },
     /// The instruction (or one of its modes) is not supported by the evaluator.
     Unsupported { pc: InstrId, what: String },
-    /// A runtime operand encodes something the PTX ISA defines as invalid
-    /// (a reserved descriptor bit set, a shape outside the instruction's
-    /// valid set, ...) - unlike [`Self::Unsupported`], no hardware would
-    /// accept it either.
+    /// A runtime operand encodes something the PTX ISA defines as invalid (a reserved
+    /// descriptor bit, an invalid shape, ...) - unlike [`Self::Unsupported`], no hardware
+    /// would accept it either.
     InvalidEncoding { pc: InstrId, what: String },
     /// The per-analysis instruction budget was exhausted (runaway loop guard).
     InstructionLimit { limit: u64 },
@@ -259,11 +242,9 @@ pub enum EvalError {
         start_col: u32,
         num_cols: u32,
     },
-    /// A Tensor Memory access (a `tcgen05.ld`/`.st`/`.mma`) or a
-    /// `tcgen05.dealloc` touched a column range that overlaps a still-
-    /// outstanding async operation: an un-`tcgen05.wait`-ed `.ld`/`.st`
-    /// (see `RaceTracker::tcgen05_begin`) or a `tcgen05.mma` whose
-    /// completion no thread has observed.
+    /// A Tensor Memory access or `tcgen05.dealloc` overlapped an outstanding async op: an
+    /// un-`tcgen05.wait`-ed `.ld`/`.st` (see `RaceTracker::tcgen05_begin`) or a
+    /// `tcgen05.mma` whose completion no thread has observed.
     Tcgen05AsyncHazard {
         quadrant: u32,
         start_col: u32,
@@ -271,53 +252,44 @@ pub enum EvalError {
         prior: AccessSite,
         current: AccessSite,
     },
-    /// `thread` arrived at a synchronization point (`bar.sync`/`bar.arrive`,
-    /// an mbarrier arrive, `tcgen05.commit`) at `pc` while its warp still
-    /// had `pending` - a `tcgen05.ld`/`.st` not yet `tcgen05.wait`-ed. The
-    /// wait is what completes the op for its issuer, so it must precede the
-    /// arrival for the sync to order the op for the other participants -
-    /// see `RaceTracker::tcgen05_unwaited`.
+    /// `thread` arrived at a sync point (`bar.*`, mbarrier arrive, `tcgen05.commit`) at `pc`
+    /// with a `pending` un-`tcgen05.wait`-ed `.ld`/`.st`: the wait must precede the arrival
+    /// for the sync to order the op for other participants (`RaceTracker::tcgen05_unwaited`).
     Tcgen05UnwaitedAtSync {
         thread: ThreadId,
         pc: InstrId,
         pending: AccessSite,
     },
-    /// Two unsynchronized conflicting accesses to one Tensor Memory cell -
-    /// e.g. a warp's `tcgen05.ld` of a `tcgen05.mma` result without having
-    /// synchronized with the MMA's issuing thread (normally through the
-    /// mbarrier its `tcgen05.commit` arrives on).
+    /// Two unsynchronized conflicting accesses to one Tensor Memory cell - e.g. a
+    /// `tcgen05.ld` of a `tcgen05.mma` result without syncing with the MMA's issuer
+    /// (normally via the mbarrier its `tcgen05.commit` arrives on).
     TensorMemoryRace {
         lane: u32,
         col: u32,
         prior: AccessSite,
         current: AccessSite,
     },
-    /// A `tcgen05.ld`/`.st`'s `taddr` encoded a Tensor Memory lane quadrant
-    /// (PTX ISA 9.7.17.1.1: address bits `[31:16]`) other than the issuing
-    /// warp's own - 9.7.17.8.1 restricts each warp of a warpgroup to its own
-    /// 32-lane chunk (warp 0 -> lanes 0-31, warp 1 -> 32-63, ...). A real
-    /// kernel bug (miscomputed address), not something Volta should paper
-    /// over by deriving the lane from `ThreadId` instead of the address.
+    /// A `tcgen05.ld`/`.st`'s `taddr` lane bits `[31:16]` (PTX ISA 9.7.17.1.1) name a 32-lane
+    /// quadrant other than the issuing warp's own (9.7.17.8.1). A real kernel bug, so the lane
+    /// is not silently re-derived from `ThreadId`.
     Tcgen05LaneRestrictionViolation {
         thread: ThreadId,
         pc: InstrId,
         lane_base: u32,
         expected_quadrant_base: u32,
     },
-    /// `tensormap.cp_fenceproxy`/`cp.async.bulk.tensor` referenced a
-    /// tensor-map object at an address with no prior `tensormap.replace`
-    /// write - there is no `tensormap.init`, so an entry only exists once
-    /// at least one field has been written to it.
+    /// `tensormap.cp_fenceproxy`/`cp.async.bulk.tensor` referenced a tensor map with no
+    /// prior `tensormap.replace` write (there is no `tensormap.init`, so an entry exists
+    /// only once some field is written).
     TensorMapNotFound {
         thread: ThreadId,
         pc: InstrId,
         space: MemSpace,
         addr: u64,
     },
-    /// `cp.async.bulk.tensor` used a tensor-map object missing a field the
-    /// copy needs (PTX ISA 9.7.9.27 never requires every field be set
-    /// before use - a kernel is free to write only some, so using an
-    /// incomplete one is a real kernel bug, not a Volta gap).
+    /// `cp.async.bulk.tensor` used a tensor map missing a field the copy needs; PTX ISA
+    /// 9.7.9.27 lets kernels set only some fields, so using an incomplete one is a real
+    /// kernel bug, not a Volta gap.
     TensorMapFieldMissing {
         thread: ThreadId,
         pc: InstrId,

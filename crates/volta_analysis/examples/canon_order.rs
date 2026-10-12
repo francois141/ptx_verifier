@@ -1,13 +1,5 @@
-//! Probe cross-element reuse in the canon `Session`: check a dump's
-//! elements in controlled orders and print per-check times.
-//!
-//! Scenarios:
-//!  A: one session, elements in footprint order (the harness's setting)
-//!  B: one session, a mid-row element first (is the FIRST check expensive
-//!     regardless of which element it is?)
-//!  C: a fresh session per element (how much does any one element cost
-//!     with no session to share?)
-//!
+//! Probe canon `Session` reuse, timing each check. A: one session, footprint
+//! order; B: one session, mid-row element first; C: fresh session per element.
 //! Usage: cargo run --release -p volta_analysis --example canon_order -- <dump>
 
 use std::time::Instant;

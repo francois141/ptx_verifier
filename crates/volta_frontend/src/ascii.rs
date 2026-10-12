@@ -1,8 +1,6 @@
-// Rust has an unstable module in its standard library for handling ASCII characters. We vendor a
-// modified copy to avoid building on nightly. The original license is below.
-//
-// Kept deliberately close to upstream: clippy findings in this file are
-// allowed rather than fixed.
+// A modified copy of std's unstable ASCII-character module, vendored to avoid building on
+// nightly (original license below). Kept close to upstream: clippy findings are allowed, not
+// fixed.
 #![allow(
     clippy::missing_safety_doc,
     clippy::needless_lifetimes,
@@ -323,11 +321,8 @@ impl AsciiChar {
         }
     }
 
-    /// Creates an ASCII character from the byte `b`,
-    /// without checking whether it's valid.
-    ///
+    /// Creates an ASCII character from the byte `b`, without checking whether it's valid.
     /// # Safety
-    ///
     /// `b` must be in `0..=127`, or else this is UB.
     #[inline]
     pub const unsafe fn from_u8_unchecked(b: u8) -> Self {
@@ -336,9 +331,7 @@ impl AsciiChar {
     }
 
     /// When passed the *number* `0`, `1`, …, `9`, returns the *character*
-    /// `'0'`, `'1'`, …, `'9'` respectively.
-    ///
-    /// If `d >= 10`, returns `None`.
+    /// `'0'`, `'1'`, …, `'9'` respectively. If `d >= 10`, returns `None`.
     #[inline]
     pub const fn digit(d: u8) -> Option<Self> {
         if d < 10 {
@@ -349,21 +342,9 @@ impl AsciiChar {
         }
     }
 
-    /// When passed the *number* `0`, `1`, …, `9`, returns the *character*
-    /// `'0'`, `'1'`, …, `'9'` respectively, without checking that it's in-range.
-    ///
+    /// Returns the *character* `'0'`..`'9'` for the *number* `d`, without a range check.
     /// # Safety
-    ///
-    /// This is immediate UB if called with `d > 64`.
-    ///
-    /// If `d >= 10` and `d <= 64`, this is allowed to return any value or panic.
-    /// Notably, it should not be expected to return hex digits, or any other
-    /// reasonable extension of the decimal digits.
-    ///
-    /// (This loose safety condition is intended to simplify soundness proofs
-    /// when writing code using this method, since the implementation doesn't
-    /// need something really specific, not to make those other arguments do
-    /// something useful. It might be tightened before stabilization.)
+    /// UB if `d > 64`; for `10 <= d <= 64` it may return any value (not hex digits) or panic.
     #[inline]
     #[track_caller]
     pub const unsafe fn digit_unchecked(d: u8) -> Self {
@@ -399,13 +380,8 @@ impl AsciiChar {
         ascii_as_str(std::slice::from_ref(self))
     }
 
-    /// Makes a copy of the value in its upper case equivalent.
-    ///
-    /// Letters 'a' to 'z' are mapped to 'A' to 'Z'.
-    ///
-    /// To uppercase the value in-place, use [`make_uppercase`].
-    ///
-    /// [`make_uppercase`]: Self::make_uppercase
+    /// Makes a copy of the value in its upper case equivalent ('a'..='z' map to 'A'..='Z').
+    /// To uppercase the value in-place, use [`Self::make_uppercase`].
     #[must_use = "to uppercase the value in-place, use `make_uppercase()`"]
     #[inline]
     pub const fn to_uppercase(self) -> Self {
@@ -414,13 +390,8 @@ impl AsciiChar {
         unsafe { Self::from_u8_unchecked(uppercase_byte) }
     }
 
-    /// Makes a copy of the value in its lower case equivalent.
-    ///
-    /// Letters 'A' to 'Z' are mapped to 'a' to 'z'.
-    ///
-    /// To lowercase the value in-place, use [`make_lowercase`].
-    ///
-    /// [`make_lowercase`]: Self::make_lowercase
+    /// Makes a copy of the value in its lower case equivalent ('A'..='Z' map to 'a'..='z').
+    /// To lowercase the value in-place, use [`Self::make_lowercase`].
     #[must_use = "to lowercase the value in-place, use `make_lowercase()`"]
     #[inline]
     pub const fn to_lowercase(self) -> Self {
@@ -439,36 +410,22 @@ impl AsciiChar {
         self.to_u8().to_ascii_lowercase() == other.to_u8().to_ascii_lowercase()
     }
 
-    /// Converts this value to its upper case equivalent in-place.
-    ///
-    /// Letters 'a' to 'z' are mapped to 'A' to 'Z'.
-    ///
-    /// To return a new uppercased value without modifying the existing one, use
-    /// [`to_uppercase`].
-    ///
-    /// [`to_uppercase`]: Self::to_uppercase
+    /// Converts this value to its upper case equivalent in-place ('a'..='z' map to 'A'..='Z').
+    /// To return a new uppercased value instead, use [`Self::to_uppercase`].
     #[inline]
     pub const fn make_uppercase(&mut self) {
         *self = self.to_uppercase();
     }
 
-    /// Converts this value to its lower case equivalent in-place.
-    ///
-    /// Letters 'A' to 'Z' are mapped to 'a' to 'z'.
-    ///
-    /// To return a new lowercased value without modifying the existing one, use
-    /// [`to_lowercase`].
-    ///
-    /// [`to_lowercase`]: Self::to_lowercase
+    /// Converts this value to its lower case equivalent in-place ('A'..='Z' map to 'a'..='z').
+    /// To return a new lowercased value instead, use [`Self::to_lowercase`].
     #[inline]
     pub const fn make_lowercase(&mut self) {
         *self = self.to_lowercase();
     }
 
-    /// Checks if the value is an alphabetic character:
-    ///
-    /// - 0x41 'A' ..= 0x5A 'Z', or
-    /// - 0x61 'a' ..= 0x7A 'z'.
+    /// Checks if the value is an alphabetic character: 0x41 'A' ..= 0x5A 'Z', or
+    /// 0x61 'a' ..= 0x7A 'z'.
     #[must_use]
     #[inline]
     pub const fn is_alphabetic(self) -> bool {
@@ -491,11 +448,8 @@ impl AsciiChar {
         self.to_u8().is_ascii_lowercase()
     }
 
-    /// Checks if the value is an alphanumeric character:
-    ///
-    /// - 0x41 'A' ..= 0x5A 'Z', or
-    /// - 0x61 'a' ..= 0x7A 'z', or
-    /// - 0x30 '0' ..= 0x39 '9'.
+    /// Checks if the value is an alphanumeric character: 0x41 'A' ..= 0x5A 'Z',
+    /// 0x61 'a' ..= 0x7A 'z', or 0x30 '0' ..= 0x39 '9'.
     #[must_use]
     #[inline]
     pub const fn is_alphanumeric(self) -> bool {
@@ -526,11 +480,8 @@ impl AsciiChar {
         matches!(self.to_u8(), b'0'..=b'7')
     }
 
-    /// Checks if the value is a hexadecimal digit:
-    ///
-    /// - 0x30 '0' ..= 0x39 '9', or
-    /// - 0x41 'A' ..= 0x46 'F', or
-    /// - 0x61 'a' ..= 0x66 'f'.
+    /// Checks if the value is a hexadecimal digit: 0x30 '0' ..= 0x39 '9',
+    /// 0x41 'A' ..= 0x46 'F', or 0x61 'a' ..= 0x66 'f'.
     #[must_use]
     #[inline]
     pub const fn is_hexdigit(self) -> bool {
@@ -538,11 +489,8 @@ impl AsciiChar {
     }
 
     /// Checks if the value is a punctuation character:
-    ///
-    /// - 0x21 ..= 0x2F `! " # $ % & ' ( ) * + , - . /`, or
-    /// - 0x3A ..= 0x40 `: ; < = > ? @`, or
-    /// - 0x5B ..= 0x60 `` [ \ ] ^ _ ` ``, or
-    /// - 0x7B ..= 0x7E `{ | } ~`
+    /// 0x21 ..= 0x2F `! " # $ % & ' ( ) * + , - . /`, 0x3A ..= 0x40 `: ; < = > ? @`,
+    /// 0x5B ..= 0x60 `` [ \ ] ^ _ ` ``, or 0x7B ..= 0x7E `{ | } ~`.
     #[must_use]
     #[inline]
     pub const fn is_punctuation(self) -> bool {
@@ -557,45 +505,24 @@ impl AsciiChar {
         self.to_u8().is_ascii_graphic()
     }
 
-    /// Checks if the value is a whitespace character:
-    /// 0x20 SPACE, 0x09 HORIZONTAL TAB, 0x0A LINE FEED,
-    /// 0x0C FORM FEED, or 0x0D CARRIAGE RETURN.
-    ///
-    /// Rust uses the WhatWG Infra Standard's [definition of ASCII
-    /// whitespace][infra-aw]. There are several other definitions in
-    /// wide use. For instance, [the POSIX locale][pct] includes
-    /// 0x0B VERTICAL TAB as well as all the above characters,
-    /// but—from the very same specification—[the default rule for
-    /// "field splitting" in the Bourne shell][bfs] considers *only*
-    /// SPACE, HORIZONTAL TAB, and LINE FEED as whitespace.
-    ///
-    /// If you are writing a program that will process an existing
-    /// file format, check what that format's definition of whitespace is
-    /// before using this function.
-    ///
-    /// [infra-aw]: https://infra.spec.whatwg.org/#ascii-whitespace
-    /// [pct]: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap07.html#tag_07_03_01
-    /// [bfs]: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_06_05
+    /// Checks if the value is a whitespace character per the WhatWG Infra Standard: 0x20 SPACE,
+    /// 0x09 HORIZONTAL TAB, 0x0A LINE FEED, 0x0C FORM FEED, or 0x0D CARRIAGE RETURN (not 0x0B
+    /// VERTICAL TAB). Other formats (POSIX, shells) define whitespace differently.
     #[must_use]
     #[inline]
     pub const fn is_whitespace(self) -> bool {
         self.to_u8().is_ascii_whitespace()
     }
 
-    /// Checks if the value is a control character:
-    /// 0x00 NUL ..= 0x1F UNIT SEPARATOR, or 0x7F DELETE.
-    /// Note that most whitespace characters are control
-    /// characters, but SPACE is not.
+    /// Checks if the value is a control character: 0x00 NUL ..= 0x1F UNIT SEPARATOR, or
+    /// 0x7F DELETE. Note that most whitespace characters are control characters, but SPACE is not.
     #[must_use]
     #[inline]
     pub const fn is_control(self) -> bool {
         self.to_u8().is_ascii_control()
     }
 
-    /// Returns an iterator that produces an escaped version of a
-    /// character.
-    ///
-    /// The behavior is identical to
+    /// Returns an iterator that produces an escaped version of a character, identical to
     /// [`ascii::escape_default`](crate::ascii::escape_default).
     #[must_use = "this returns the escaped character as an iterator, \
                   without modifying the original"]
@@ -726,14 +653,9 @@ impl AsciiSliceExt for [AsciiChar] {
     }
 }
 
-/// Converts this array of bytes into an array of ASCII characters,
-/// without checking whether they're valid.
-///
+/// Unchecked bytes-to-ASCII conversion; `const`, unlike [AsAscii::as_ascii_slice_unchecked].
 /// # Safety
-///
 /// Every byte in the array must be in `0..=127`, or else this is UB.
-///
-/// Callable in a `const` context, unlike the trait method [AsAscii::as_ascii_slice_unchecked].
 pub const unsafe fn bytes_as_ascii_unchecked(bytes: &[u8]) -> &[AsciiChar] {
     let byte_ptr: *const [u8] = bytes;
     let ascii_ptr = byte_ptr as *const [AsciiChar];
@@ -741,10 +663,8 @@ pub const unsafe fn bytes_as_ascii_unchecked(bytes: &[u8]) -> &[AsciiChar] {
     unsafe { &*ascii_ptr }
 }
 
-/// If this slice `is_ascii`, returns it as a slice of
-/// [ASCII characters](`AsciiChar`), otherwise returns `None`.
-///
-/// Callable in a `const` context, unlike the trait method [AsAscii::as_ascii_slice].
+/// If this slice `is_ascii`, returns it as a slice of [ASCII characters](`AsciiChar`),
+/// otherwise `None`. Callable in a `const` context, unlike [AsAscii::as_ascii_slice].
 pub const fn bytes_as_ascii(bytes: &[u8]) -> Option<&[AsciiChar]> {
     if bytes.is_ascii() {
         // SAFETY: Just checked that it's ASCII
@@ -777,8 +697,6 @@ impl AsAscii for [u8] {
 }
 
 /// A convenience function for constructing ASCII constants.
-///
-/// # Panics
 ///
 /// Panics if the string contains non-ASCII characters.
 pub const fn ascii<'a>(s: &'a str) -> &'a [AsciiChar] {

@@ -1,20 +1,6 @@
-//! Z3 backend: translate a verification-condition pair to SMT-LIB2,
-//! evaluate it through the linked libz3 (in a killable worker
-//! subprocess - see `ffi`, including the host-binary [`init_worker`]
-//! contract), and interpret unsat/sat/unknown/timeout. This is a
-//! timing/capability comparison point against `volta_analysis::canon`'s
-//! own decision procedure - not a replacement for it. See the `translate`
-//! module for exactly which fragment of `ExprNode` this backend covers,
-//! why, and how DAG sharing is preserved (per-node memoized SMT-LIB2
-//! `let` bindings), plus the two exponential encodings ([`ExpMode`])
-//! that reproduce the paper's section 6.5 baselines.
-//!
-//! The query still goes through SMT-LIB2 *text* even though the solver is
-//! linked: the textual form is what keeps the translation auditable (any
-//! query can be dumped and replayed against a standalone z3), and the
-//! whole soundness argument lives in the translation, not the transport.
-//! `libz3` is a build/link-time requirement (Debian/Ubuntu: `libz3-dev`);
-//! no z3 binary or temp files are involved at runtime.
+//! Z3 backend, a comparison point against `canon`: VC pairs go to auditable
+//! SMT-LIB2 text (see `translate`), solved by linked libz3 in a killable
+//! worker (see `ffi` and [`init_worker`]).
 
 mod ffi;
 mod translate;
@@ -33,24 +19,17 @@ use volta_analysis::symbolic::{ExprArena, ExprId};
 pub enum Z3Verdict {
     /// `unsat` on `(not (= a b))`: the expressions are proved equal.
     Equivalent,
-    /// `sat`: Z3 found a model where the two sides differ. The
-    /// translation is a direct semantic image (max/min are real `ite`
-    /// case splits, not opaque atoms), so this is a genuine countermodel
-    /// for exp-free queries; when the query contains the exponential it
-    /// is not definitive (the bounded-free `e`, or `uexp` under
-    /// [`ExpMode::AdditionAxiom`], underconstrain the real exp).
+    /// `sat`: the sides differ in some model. A genuine countermodel for
+    /// exp-free queries; with exp it is not definitive, since the bounded
+    /// `e`/`uexp` underconstrain the real exp.
     NotEquivalent,
-    /// `unknown` - Z3 gave up on the query without exhausting its time
-    /// budget (no decision procedure applies). The expected result for
-    /// exponential-heavy (softmax/attention) VCs under the default
-    /// [`ExpMode::PowerBounded`] encoding, since Z3's decidable theories
-    /// do not cover symbolic real exponents.
+    /// `unknown`: Z3 gave up within budget. Expected for exp-heavy
+    /// (softmax/attention) VCs under [`ExpMode::PowerBounded`], since no
+    /// decidable theory covers symbolic real exponents.
     Unknown,
-    /// The time budget expired while the solver was still working (the
-    /// worker was killed, or z3 reported an in-band cancellation). The
-    /// expected result for the attention VCs under
-    /// [`ExpMode::AdditionAxiom`] - the paper's "with axiom" baseline,
-    /// where every attention benchmark exceeds a 10-minute budget.
+    /// The budget expired (worker killed or z3's in-band cancel). Expected
+    /// for attention VCs under [`ExpMode::AdditionAxiom`], the paper's "with
+    /// axiom" baseline.
     Timeout,
 }
 
@@ -64,29 +43,18 @@ pub enum Z3Error {
     Worker(String),
 }
 
-/// One element's check: the verdict and the solver time.
-///
-/// `solve` is measured *inside the worker*, spanning exactly libz3's
-/// evaluation of the query text, so the worker's fixed scaffolding -
-/// process spawn/exec/dynamic-link/pipes plus z3's context and frontend
-/// setup, ~10.5ms together (measured; see `ffi::eval_in_process`) - is
-/// excluded. That scaffolding is what the outer wall clock used to
-/// report, drowning polynomial-fragment queries whose actual solve is
-/// milliseconds. Translation/query construction isn't included either -
-/// that front-end cost is the same kind of work for both backends and
-/// isn't the thing being compared. Timeout verdicts report the time
-/// budget itself rather than a measurement - the paper's convention for
-/// timeout rows.
+/// One element's verdict and solve time. `solve` is measured inside the
+/// worker around libz3's evaluation only (excluding ~10ms spawn/context
+/// scaffolding and translation); timeouts report the budget.
 #[derive(Debug, Clone)]
 pub struct Z3CheckResult {
     pub verdict: Z3Verdict,
     pub solve: Duration,
 }
 
-/// An `unknown` whose `(get-info :reason-unknown)` blames the time or
-/// resource budget rather than genuine incompleteness. z3 4.8 spells
-/// budget exhaustion "canceled" (or "timeout"/"resource" depending on
-/// path); genuine give-ups read like "incomplete (theory arithmetic)".
+/// An `unknown` whose `:reason-unknown` blames the budget (z3 4.8 says
+/// "canceled", "timeout" or "resource") rather than genuine incompleteness
+/// ("incomplete (theory arithmetic)").
 fn unknown_reason_is_budget(output: &str) -> bool {
     output.lines().any(|l| {
         let l = l.trim();
@@ -95,13 +63,9 @@ fn unknown_reason_is_budget(output: &str) -> bool {
     })
 }
 
-/// Check whether `a` (in `arena_a`) and `b` (in `arena_b`) are equal over
-/// the reals, using Z3 instead of `volta_analysis::canon` as the decision
-/// procedure. `timeout` bounds the solver call (`None` = no limit) - a
-/// hard bound: the query runs in a worker subprocess that is killed on
-/// expiry, reported as [`Z3Verdict::Timeout`] with the budget as its
-/// solve time (see [`Z3CheckResult`]). `mode` selects the exponential
-/// encoding (see [`ExpMode`]).
+/// Check `a` (in `arena_a`) == `b` (in `arena_b`) over the reals with Z3 in
+/// `mode`. `timeout` is a hard bound (worker killed), reported as
+/// [`Z3Verdict::Timeout`] with the budget as solve time.
 pub fn check_equivalent(
     arena_a: &ExprArena,
     a: ExprId,
@@ -144,11 +108,9 @@ pub fn check_equivalent(
             (verdict, Some(solve))
         }
     };
-    // Timeout rows report the BUDGET, not a measurement - the paper's
-    // convention for its timeout entries - so both delivery mechanisms
-    // read identically: the hard kill (no in-band time exists) and z3's
-    // own soft cancellation (an in-band time exists, but is merely
-    // "nearly the budget").
+    // Timeout rows report the BUDGET (the paper's convention), so the hard
+    // kill (no in-band time) and z3's soft cancel (nearly the budget) read
+    // identically.
     let solve = match (verdict, timeout) {
         (Z3Verdict::Timeout, Some(budget)) => budget,
         // Timeout without a configured budget only arises from the
@@ -283,17 +245,9 @@ impl Z3EquivReport {
     }
 }
 
-/// Check every paired output element (exactly like
-/// `volta_analysis::driver::check_output_equivalence_with`, against the
-/// reference's footprint) with Z3 instead of the decision procedure. The
-/// element list is `driver::sampled_elements` over
-/// `driver::paired_elements` - the same list, in the same order, as the
-/// decision procedure checks. Unlike the decision procedure, this never
-/// aborts partway through a run over a single element's failure - each
-/// element's outcome (including "unsupported" or a solver error) is
-/// recorded independently, since the whole point is comparing coverage as
-/// well as speed. (`Err` is only the up-front pairing failing; the solver
-/// itself is linked in and cannot be missing at runtime.)
+/// Check `driver::sampled_elements` over `driver::paired_elements` (the
+/// decision procedure's exact list) with Z3, recording each element's outcome
+/// without aborting; `Err` is only a pairing failure.
 pub fn check_output_equivalence(
     reference: &volta_analysis::eval::AnalysisOutput,
     optimized: &volta_analysis::eval::AnalysisOutput,
@@ -443,10 +397,9 @@ mod tests {
         );
     }
 
-    /// The paper's Table 8 behavior in miniature: a softmax-style
-    /// rescaling identity under the addition-law axiom sends z3 into an
-    /// E-matching loop that ignores its own soft timeout - the forked
-    /// worker's hard deadline must fire and report Timeout.
+    /// Table 8 in miniature: a softmax rescaling identity under the addition
+    /// axiom sends z3 into an E-matching loop that ignores its soft timeout,
+    /// so the hard deadline must fire.
     #[test]
     fn axiom_mode_softmax_rescaling_hard_times_out() {
         let n = 8;
@@ -491,11 +444,9 @@ mod tests {
         assert_eq!(res.solve, Duration::from_secs(2));
     }
 
-    /// The reported solve time is the *in-worker* measurement: positive
-    /// (the solver genuinely ran) and no larger than the parent's wall
-    /// time around the whole call, which additionally pays the worker's
-    /// spawn/exec/pipe lifecycle - the overhead this measurement exists
-    /// to exclude.
+    /// The reported solve time is in-worker: positive, and no larger than the
+    /// parent's wall time, which also pays the worker spawn/exec/pipe
+    /// overhead this measurement excludes.
     #[test]
     fn solve_time_is_in_worker_and_bounded_by_wall_time() {
         let mut ar = ExprArena::new();
@@ -527,12 +478,9 @@ mod tests {
         );
     }
 
-    /// Diagnostic, not an assertion of environment-dependent numbers: run
-    /// with `--ignored --nocapture` to print how much of the outer
-    /// `eval_smtlib2` wall time is worker scaffolding versus in-libz3
-    /// solving for a trivial query. (Measured on the dev box: ~12.1ms
-    /// wall vs ~1.5ms solve, i.e. ~10.5ms excluded scaffolding - the
-    /// reason solve time is taken inside the worker.)
+    /// Diagnostic: run with `--ignored --nocapture` to print how much of
+    /// `eval_smtlib2`'s wall time is worker scaffolding versus in-libz3
+    /// solving for a trivial query.
     #[test]
     #[ignore = "diagnostic: prints the spawn-vs-solve overhead split"]
     fn spawn_overhead_split() {
@@ -651,10 +599,9 @@ mod tests {
         assert_eq!(check(&ar, machine, &ar, named), Z3Verdict::NotEquivalent);
     }
 
-    /// Regression: a user symbol literally named `t0` used to be captured
-    /// by the generated `|t0|` let binding, proving `a*b` "equivalent" to
-    /// an unrelated parameter - a false EQUIVALENT. User symbols now live
-    /// in reserved namespaces (`p!`/`e!`).
+    /// A user symbol named `t0` must not be captured by the generated `|t0|`
+    /// let binding (a false EQUIVALENT); user symbols live in reserved
+    /// `p!`/`e!` namespaces.
     #[test]
     fn user_symbol_named_t0_is_not_captured() {
         let mut ar_a = ExprArena::new();
@@ -668,11 +615,8 @@ mod tests {
         assert_eq!(check(&ar_a, lhs, &ar_b, rhs), Z3Verdict::NotEquivalent);
     }
 
-    /// Regression: a user symbol named `e` used to collide with the
-    /// exp-base constant, making z3 error out on the duplicate
-    /// declaration. The `Exp` node is what makes this test real: only a
-    /// query that uses `Exp` declares the base, so only there can the
-    /// collision occur.
+    /// A user symbol named `e` must not collide with the exp-base constant;
+    /// the `Exp` node matters, since only exp-using queries declare the base.
     #[test]
     fn user_symbol_named_e_is_distinct_from_exp_base() {
         let mut ar = ExprArena::new();
@@ -684,11 +628,9 @@ mod tests {
         // Capture would be a duplicate declaration of `e` (a z3 error,
         // not Equivalent).
         assert_eq!(check(&ar, lhs, &ar, rhs), Z3Verdict::Equivalent);
-        // Freeness must be probed in an exp-free query: a sat check needs
-        // a model, and this z3 cannot build one for any query containing
-        // `^` with a free exponent (the same limitation behind the
-        // paper's plain-mode `unknown`s), so a NotEquivalent assert with
-        // the base declared would only ever see Unknown.
+        // Probe freeness in an exp-free query: z3 cannot build a model for
+        // any query with `^` and a free exponent, so with the base declared a
+        // sat check only sees Unknown.
         let mut ar_b = ExprArena::new();
         let approx = ar_b.float_from_f64(2.718281828459045).unwrap();
         assert_eq!(check(&ar, e_sym, &ar_b, approx), Z3Verdict::NotEquivalent);
@@ -710,17 +652,13 @@ mod tests {
         );
     }
 
-    /// Regression: float constants used to be rendered as their shortest
-    /// decimal, which SMT reads as an exact decimal rational - so z3 saw
-    /// `0.1f64` as 1/10 while canon and the numeric oracle use the exact
-    /// binary value, and the backends could reach opposite verdicts.
+    /// Float constants must translate as their exact binary value, not their
+    /// shortest decimal (`0.1f64` != 1/10), or z3 and canon/the oracle could
+    /// reach opposite verdicts.
     #[test]
     fn float_literals_use_exact_binary_semantics() {
-        // The divisions stay symbolic (`x / c`): concrete int/int division
-        // would constant-fold with integer semantics before translation.
-        //
-        // 0.5f64 is a dyadic rational, exactly 1/2 in both readings:
-        // x * 0.5 == x / 2 over the reals.
+        // Divisions stay symbolic (`x / c`) to avoid integer constant
+        // folding. 0.5f64 is exactly 1/2, so x * 0.5 == x / 2 over the reals.
         let mut ar_a = ExprArena::new();
         let x = ar_a.param_symbol("x");
         let half = ar_a.float_from_f64(0.5).unwrap();
@@ -731,10 +669,8 @@ mod tests {
         let rhs = ar_b.div(x, two);
         assert_eq!(check(&ar_a, lhs, &ar_b, rhs), Z3Verdict::Equivalent);
 
-        // 0.1f64 is NOT 1/10 (its exact binary value is
-        // 3602879701896397/2^55): canon reports x*0.1 != x/10, and now so
-        // does the Z3 backend. The old shortest-decimal rendering read
-        // 0.1f64 as exactly 1/10 and proved these "equivalent".
+        // 0.1f64 is NOT 1/10 (exactly 3602879701896397/2^55), so x*0.1 !=
+        // x/10, in canon and in the Z3 backend alike.
         let mut ar_c = ExprArena::new();
         let x = ar_c.param_symbol("x");
         let tenth = ar_c.float_from_f64(0.1).unwrap();
@@ -771,10 +707,9 @@ mod tests {
         assert!(translate_root(&mut bld, &ar, acc).is_ok());
     }
 
-    /// Regression: `flatten` used to re-expand a node reachable twice
-    /// within one chain (e.g. `Add(x, x)` doubling chains from
-    /// `add f,f,f`), taking 2^n time on an n-node arena. 64 levels would
-    /// be ~10^19 leaf visits without the visited cutoff.
+    /// `flatten` must not re-expand a node reachable twice in one chain (e.g.
+    /// `Add(x, x)` doubling): 64 levels would be ~10^19 leaf visits without
+    /// the visited cutoff.
     #[test]
     fn self_sharing_doubling_chain_translates_linearly() {
         let mut ar = ExprArena::new();
@@ -808,10 +743,9 @@ mod tests {
         assert_eq!(res.verdict, Z3Verdict::Equivalent);
     }
 
-    /// Regression (adversarial find): `exp(1)` used to prove equal to the
-    /// rational 2718281828459045/10^15 because the exp base was DEFINED as
-    /// that rational - a false EQUIVALENT the decision procedure rejects.
-    /// The base is now a free constant strictly bounded around Euler's e.
+    /// `exp(1)` must not prove equal to the rational 2718281828459045/10^15
+    /// (a false EQUIVALENT): the exp base is a free constant strictly bounded
+    /// around Euler's e.
     #[test]
     fn exp_of_one_is_not_a_rational() {
         let mut ar_a = ExprArena::new();
@@ -822,10 +756,9 @@ mod tests {
         assert_eq!(check(&ar_a, lhs, &ar_b, rhs), Z3Verdict::NotEquivalent);
     }
 
-    /// Regression (adversarial find): a `+` chain feeding a max atom used
-    /// to key differently depending on whether a subterm was DAG-shared
-    /// (memoized) on one side - identical trees, different atoms, false
-    /// NOT-EQUIVALENT. Multiset splicing makes the key sharing-independent.
+    /// A `+` chain feeding a max atom must key the same whether or not a
+    /// subterm is DAG-shared (else a false NOT-EQUIVALENT); multiset splicing
+    /// ensures it.
     #[test]
     fn maxmin_key_is_sharing_independent() {
         // Side A: `xy = x + y` is one shared node, used by the subtrahend
@@ -922,12 +855,9 @@ mod tests {
             Z3Verdict::Equivalent
         );
 
-        // x / x vs 1 is NOT valid over SMT reals: division is total but
-        // underspecified at zero, so x = 0 is a genuine countermodel.
-        // (canon's rational-field semantics formally cancels x/x to 1 - a
-        // documented modeling divergence of the two backends; corpus VCs
-        // only divide inside exp-laden softmax terms, where z3 answers
-        // unknown regardless.)
+        // x / x vs 1 is NOT valid over SMT reals (division is underspecified
+        // at zero, so x = 0 is a countermodel), a documented divergence from
+        // canon's field semantics.
         let q = ar.div(x, x);
         let mut on = ExprArena::new();
         let one = on.float_from_f64(1.0).unwrap();

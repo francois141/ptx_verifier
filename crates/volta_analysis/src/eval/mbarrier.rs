@@ -1,18 +1,6 @@
-//! `mbarrier` object state: phased arrive/wait barriers used for
-//! producer/consumer pipelining across threads (PTX ISA 9.7.13.15).
-//!
-//! Each object tracks an arrival count and a pending async-transaction
-//! count for its current *phase*; when both are satisfied the phase
-//! completes and a parity bit flips. Scoped to what the corpus actually
-//! uses (`sm100a_support_plan.md`): `init`/`inval`/`arrive[.expect_tx]`/
-//! `complete_tx`/`test_wait`/`try_wait[.parity]`. The non-`.parity`,
-//! opaque-state-token wait form and `arrive_drop`/`pending_count` are not
-//! modeled.
-//!
-//! State lives here, not in `Memory`: a `Value::Mbarrier(MbarrierId)`
-//! granule (see `eval::value`) is just a stable handle into this table,
-//! the same size as `Value::Scalar`'s `ExprId`, so granules never grow to
-//! fit it.
+//! `mbarrier` state (PTX ISA 9.7.13.15): per-phase arrival and pending-tx
+//! counts; a parity bit flips on completion. Only the corpus forms are modeled;
+//! `Value::Mbarrier(MbarrierId)` granules are handles into this table.
 
 use fixedbitset::FixedBitSet;
 use id_collections::IdVec;
@@ -27,51 +15,21 @@ struct MbarrierState {
     expected_arrivals: u64,
     /// Arrivals seen so far this phase.
     arrived: u64,
-    /// Net outstanding async-transaction bytes for this phase:
-    /// `expect_tx`/`arrive.expect_tx` add, `complete_tx` subtracts. A
-    /// correctly-paired program always brings this back to exactly 0 when
-    /// the phase completes; it never needs to go negative in practice, but
-    /// nothing here relies on that not happening.
+    /// Net outstanding async-transaction bytes this phase (`expect_tx` adds,
+    /// `complete_tx` subtracts); 0 at completion in correct programs, but
+    /// nothing relies on it staying non-negative.
     pending_tx: i64,
     /// Current phase's parity; flips every time a phase completes.
     parity: bool,
     /// Phases completed so far - also the index of the forming phase.
     completed_phases: u64,
-    /// Threads that have called `mbarrier.arrive[.expect_tx]` during the
-    /// forming phase. `complete_tx` does not contribute: per ISA
-    /// 9.7.14.16.15, it "does not involve any asynchronous memory
-    /// operations and only simulates the completion of an asynchronous
-    /// memory operation" - it has no access of its own to make visible.
-    /// Consumed at phase completion to seed `prior_participants` - see its
-    /// doc comment for why this set itself is the wrong thing to sync a
-    /// waiter against.
+    /// Threads that arrived during the forming phase; `complete_tx` makes no
+    /// access of its own so it doesn't count (ISA 9.7.14.16.15). Seeds
+    /// `prior_participants` at phase completion; waiters sync against that.
     participants: FixedBitSet,
-    /// `participants` as of the last completed phase: the set a waiter
-    /// observing that (now-preceding) phase's completion should establish a
-    /// happens-before edge with (PTX ISA 9.7.14.16.19, ordering guarantee
-    /// items 1-3 - accesses by "the participating threads of the CTA"
-    /// prior to a release-semantics `arrive` become visible to a thread
-    /// whose acquire-semantics wait observes completion).
-    ///
-    /// Kept as a frozen snapshot rather than reading `participants`
-    /// directly, because by the time a waiter is actually processed (which
-    /// can lag arbitrarily under round-robin scheduling) `participants` may
-    /// already be accumulating the *next* phase. This single snapshot is
-    /// sufficient for the common case - every waiter for a phase processed
-    /// before the next phase completes, which is what Volta's scheduler
-    /// does since it reevaluates every blocked thread after each step - but
-    /// not for the pathological case of a waiter straggling behind an
-    /// entire subsequent phase's completion; the ISA's own phase-advance
-    /// rule (9.7.14.16.5.1) only guarantees *one* observer per phase before
-    /// the next phase's arrivals, not that every waiter is drained in time.
-    /// That residual gap is strictly a missed sync (a possible
-    /// false-positive race report, the same conservative direction as
-    /// before this fix), never an unsound one: `prior_participants` is
-    /// always some phase's real arriver set, never a thread the waiter
-    /// didn't actually need to sync with... except it could wrongly pull in
-    /// a later phase's unrelated arrivers, which *would* be unsound; this is
-    /// flagged as a known limitation rather than solved, since it requires
-    /// per-phase history this table doesn't keep.
+    /// Snapshot of `participants` at the last phase completion: the arrivers a
+    /// waiter syncs with (ISA 9.7.14.16.19). Known limitation: a waiter lagging
+    /// a whole later phase would see that phase's arrivers instead (unsound).
     prior_participants: FixedBitSet,
 }
 
@@ -172,10 +130,8 @@ impl MbarrierTable {
         &self.states[id].prior_participants
     }
 
-    /// How many phases of `id` have completed: the index of the phase an
-    /// arrival right now contributes to, and one past the index of the
-    /// phase a waiter woken right now observes (the last completed one -
-    /// the same single-snapshot model as [`Self::prior_participants`]).
+    /// How many phases of `id` have completed: the phase an arrival now joins,
+    /// and one past the phase a waiter woken now observes.
     pub fn completed_phases(&self, id: MbarrierId) -> u64 {
         self.states[id].completed_phases
     }

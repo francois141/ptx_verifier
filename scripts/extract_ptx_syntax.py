@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Extract PTX instruction syntax and example blocks from the PTX ISA PDF.
 
-Uses gray background rectangles (#f2f2f2, represented as non_stroking_color=0.95)
-to identify code blocks, filtering for those that appear between specific headers.
+Code blocks are gray rectangles (#f2f2f2, non_stroking_color=0.95) between given headers.
 """
 
 import argparse
@@ -37,9 +36,8 @@ def clean_block(text: str) -> str:
 
 def find_header_positions(page, header_texts: list[str]) -> list[tuple[str, float]]:
     """Find vertical positions (top) of header texts on the page.
-    
-    Returns list of (header_text, position) tuples sorted by position.
-    """
+
+    Returns list of (header_text, position) tuples sorted by position."""
     words = page.extract_words()
     results = []
     for word in words:
@@ -63,20 +61,9 @@ def extract_blocks_between_headers(
     show_progress: bool = True,
     block_type: str = "block"
 ) -> list[dict]:
-    """Extract gray background blocks that appear between specified headers.
-    
-    Args:
-        pdf_path: Path to the PDF file
-        start_page: First page to process (1-indexed, inclusive)
-        end_page: Last page to process (1-indexed, exclusive)
-        start_headers: Headers that begin a capture section
-        end_headers: Headers that end a capture section
-        show_progress: Whether to show progress bar
-        block_type: Name for the block type (for progress display)
-    
-    Returns:
-        List of dicts with 'page' and 'content' keys
-    """
+    """Extract gray background blocks between `start_headers` and `end_headers`.
+
+    Pages are 1-indexed, `end_page` exclusive; returns dicts with 'page' and 'content' keys."""
     results = []
     total_pages = end_page - start_page
     all_headers = start_headers + end_headers

@@ -301,23 +301,17 @@ pub enum ScalarType {
     B1024,
     // Predicate
     Pred,
-    /// A single `.e4m3` (8-bit float, PTX ISA 5.2.3) element type, as used
-    /// by `mma`'s per-instruction type modifiers (e.g.
-    /// `mma...f32.e4m3.e4m3.f32`) - four of these pack into one `.b32`
-    /// fragment register (PTX ISA "Matrix Fragments for mma.m16n8k32").
-    /// Never a register's declared type on its own.
+    /// A single `.e4m3` element type (8-bit float, PTX ISA 5.2.3) from `mma`
+    /// type modifiers (`mma...f32.e4m3.e4m3.f32`); four pack into one `.b32`
+    /// fragment register. Never a register's declared type on its own.
     E4m3,
-    /// A single `.e5m2` (8-bit float: 1 sign + 5 exponent + 2 mantissa,
-    /// PTX ISA 5.2.3) element type, as used by `wgmma.mma_async`'s
-    /// per-instruction type modifiers (e.g. `...k32.f32.e5m2.e4m3`). Never a
+    /// A single `.e5m2` element type (1 sign + 5 exp + 2 mantissa, ISA 5.2.3)
+    /// from `wgmma.mma_async` type modifiers (`...k32.f32.e5m2.e4m3`). Never a
     /// register's declared type on its own.
     E5m2,
-    /// Two packed `.e4m3` (8-bit float: 1 sign + 4 exponent + 3 mantissa,
-    /// no infinity, NaN only at `0x7f`/`0xff`) values in a 16-bit
-    /// register (PTX ISA 5.2.3). Source-only in the fragment Volta
-    /// models: `cvt.rn{.relu}.f16x2.e4m3x2 d, a` (the only form observed
-    /// in practice) unpacks it to `.f16x2`; nothing produces an
-    /// `.e4m3x2` value, so it never appears as a destination type here.
+    /// Two packed `.e4m3` values (1+4+3 bits, no inf, NaN only at `0x7f`/
+    /// `0xff`) in a 16-bit register (ISA 5.2.3). Source-only: unpacked by
+    /// `cvt.rn{.relu}.f16x2.e4m3x2`; nothing produces an `.e4m3x2` value.
     E4m3x2,
 }
 
@@ -1028,10 +1022,9 @@ pub enum Operand {
     Expr(Box<Expr>),
     /// Memory address: `[addr]`
     Address(Address),
-    /// Tensor descriptor + coordinate-vector address: `[desc, {c0, c1, ...}]`
-    /// (the `cp.async.bulk.tensor`/TMA operand shape, PTX ISA 9.7.9.26).
-    /// Distinct from `Address`: `tensorCoords` are runtime register operands,
-    /// not a compile-time constant offset.
+    /// Tensor descriptor + coordinate-vector address `[desc, {c0, c1, ...}]`
+    /// (`cp.async.bulk.tensor`/TMA, ISA 9.7.9.26). Unlike `Address`, the
+    /// coordinates are runtime register operands, not a constant offset.
     TensorCoordAddress {
         descriptor: Address,
         coords: Vec<Operand>,
@@ -1129,25 +1122,9 @@ pub enum AddressBase {
 
 // --- Arithmetic Instructions ---
 
-/// Add instruction with type-specific forms
-///
-/// Integer (Block 1):
-/// - `add.type d, a, b` where type = u16, u32, u64, s16, s64, u16x2, s16x2
-/// - `add{.sat}.s32 d, a, b` - sat only for s32
-///
-/// Float (Block 33):
-/// - `add{.rnd}{.ftz}{.sat}.f32 d, a, b`
-/// - `add{.rnd}{.ftz}.f32x2 d, a, b` (no sat)
-/// - `add{.rnd}.f64 d, a, b` (no ftz, no sat)
-///
-/// Half (Block 53):
-/// - `add{.rnd}{.ftz}{.sat}.f16 d, a, b`
-/// - `add{.rnd}{.ftz}{.sat}.f16x2 d, a, b`
-/// - `add{.rnd}.bf16 d, a, b` (no ftz, no sat)
-/// - `add{.rnd}.bf16x2 d, a, b`
-///
-/// Mixed precision (Block 63):
-/// - `add{.rnd}{.sat}.f32.atype d, a, c` where atype = f16/bf16 (no ftz)
+/// `add` forms: integer (`.sat` only on s32; Block 1), float (Block 33: no sat on
+/// f32x2, f64 rnd only), half (Block 53: bf16/bf16x2 no ftz/sat), and mixed
+/// precision `add{.rnd}{.sat}.f32.atype d, a, c`, atype = f16/bf16 (Block 63).
 #[derive(Debug, Clone)]
 pub enum AddInstr {
     /// Integer add: `add.type d, a, b` (no modifiers)
@@ -1218,25 +1195,9 @@ pub enum AddInstr {
     },
 }
 
-/// Sub instruction with type-specific forms
-///
-/// Integer (Block 2):
-/// - `sub.type d, a, b` where type = u16, u32, u64, s16, s64
-/// - `sub{.sat}.s32 d, a, b` - sat only for s32
-///
-/// Float (Block 34):
-/// - `sub{.rnd}{.ftz}{.sat}.f32 d, a, b`
-/// - `sub{.rnd}{.ftz}.f32x2 d, a, b` (no sat)
-/// - `sub{.rnd}.f64 d, a, b` (no ftz, no sat)
-///
-/// Half (Block 54):
-/// - `sub{.rnd}{.ftz}{.sat}.f16 d, a, b`
-/// - `sub{.rnd}{.ftz}{.sat}.f16x2 d, a, b`
-/// - `sub{.rnd}.bf16 d, a, b` (no ftz, no sat)
-/// - `sub{.rnd}.bf16x2 d, a, b`
-///
-/// Mixed precision (Block 64):
-/// - `sub{.rnd}{.sat}.f32.atype d, a, c` where atype = f16/bf16 (no ftz)
+/// `sub` forms: integer (`.sat` only on s32; Block 2), float (Block 34: no sat on
+/// f32x2, f64 rnd only), half (Block 54: bf16/bf16x2 no ftz/sat), and mixed
+/// precision `sub{.rnd}{.sat}.f32.atype d, a, c`, atype = f16/bf16 (Block 64).
 #[derive(Debug, Clone)]
 pub enum SubInstr {
     /// Integer sub: `sub.type d, a, b` (no modifiers)
@@ -1425,20 +1386,9 @@ pub struct RemInstr {
     pub src_b: Operand,
 }
 
-/// Absolute value instruction with type-specific forms
-///
-/// Integer (Block 10):
-/// - `abs.type d, a` where type = s16, s32, s64 (no ftz)
-///
-/// Float (Block 39):
-/// - `abs{.ftz}.f32 d, a`
-/// - `abs.f64 d, a` (no ftz)
-///
-/// Half (Block 58):
-/// - `abs{.ftz}.f16 d, a`
-/// - `abs{.ftz}.f16x2 d, a`
-/// - `abs.bf16 d, a` (no ftz)
-/// - `abs.bf16x2 d, a` (no ftz)
+/// `abs` forms: integer s16/s32/s64 (Block 10), float `abs{.ftz}.f32`/`abs.f64`
+/// (Block 39), half `abs{.ftz}.{f16,f16x2}`/`abs.{bf16,bf16x2}` (Block 58);
+/// `.ftz` only on f32/f16/f16x2.
 #[derive(Debug, Clone)]
 pub enum AbsInstr {
     /// Integer abs: `abs.type d, a` (no ftz)
@@ -1470,20 +1420,9 @@ pub enum AbsInstr {
     },
 }
 
-/// Negate instruction with type-specific forms
-///
-/// Integer (Block 11):
-/// - `neg.type d, a` where type = s16, s32, s64 (no ftz)
-///
-/// Float (Block 40):
-/// - `neg{.ftz}.f32 d, a`
-/// - `neg.f64 d, a` (no ftz)
-///
-/// Half (Block 57):
-/// - `neg{.ftz}.f16 d, a`
-/// - `neg{.ftz}.f16x2 d, a`
-/// - `neg.bf16 d, a` (no ftz)
-/// - `neg.bf16x2 d, a` (no ftz)
+/// `neg` forms: integer s16/s32/s64 (Block 11), float `neg{.ftz}.f32`/`neg.f64`
+/// (Block 40), half `neg{.ftz}.{f16,f16x2}`/`neg.{bf16,bf16x2}` (Block 57);
+/// `.ftz` only on f32/f16/f16x2.
 #[derive(Debug, Clone)]
 pub enum NegInstr {
     /// Integer neg: `neg.type d, a` (no ftz)
@@ -1515,18 +1454,9 @@ pub enum NegInstr {
     },
 }
 
-/// Min instruction with type-specific forms
-///
-/// Integer (Block 12):
-/// - `min.atype d, a, b` where atype = u16, u32, u64, u16x2, s16, s64
-/// - `min{.relu}.btype d, a, b` where btype = s16x2, s32
-///
-/// Float (Blocks 41, 59):
-/// - `min{.ftz}{.NaN}{.xorsign.abs}.f32 d, a, b`
-/// - `min{.ftz}{.NaN}{.abs}.f32 d, a, b, c`
-/// - `min.f64 d, a, b`
-/// - `min{.ftz}{.NaN}{.xorsign.abs}.f16 d, a, b` (ftz for f16/f16x2 only)
-/// - `min{.NaN}{.xorsign.abs}.bf16 d, a, b`
+/// `min` forms: integer (Block 12; `.relu` only on s16x2/s32), float/half
+/// (Blocks 41, 59): `min{.ftz}{.NaN}{.xorsign.abs}` 2-source and 3-source
+/// `{.abs}` f32 forms, plain f64, and f16/bf16 (ftz for f16/f16x2 only).
 #[derive(Debug, Clone)]
 pub enum MinInstr {
     /// Integer min: `min.type d, a, b` (no modifiers)
@@ -1595,18 +1525,9 @@ pub enum MinInstr {
     },
 }
 
-/// Max instruction with type-specific forms
-///
-/// Integer (Block 13):
-/// - `max.atype d, a, b` where atype = u16, u32, u64, u16x2, s16, s64
-/// - `max{.relu}.btype d, a, b` where btype = s16x2, s32
-///
-/// Float (Blocks 42, 60):
-/// - `max{.ftz}{.NaN}{.xorsign.abs}.f32 d, a, b`
-/// - `max{.ftz}{.NaN}{.abs}.f32 d, a, b, c`
-/// - `max.f64 d, a, b`
-/// - `max{.ftz}{.NaN}{.xorsign.abs}.f16 d, a, b` (ftz for f16/f16x2 only)
-/// - `max{.NaN}{.xorsign.abs}.bf16 d, a, b`
+/// `max` forms: integer (Block 13; `.relu` only on s16x2/s32), float/half
+/// (Blocks 42, 60): `max{.ftz}{.NaN}{.xorsign.abs}` 2-source and 3-source
+/// `{.abs}` f32 forms, plain f64, and f16/bf16 (ftz for f16/f16x2 only).
 #[derive(Debug, Clone)]
 pub enum MaxInstr {
     /// Integer max: `max.type d, a, b` (no modifiers)
@@ -1723,21 +1644,9 @@ impl FromAscii for IntRound {
     }
 }
 
-/// FMA instruction with type-specific forms
-///
-/// Float (Block 36):
-/// - `fma.rnd{.ftz}{.sat}.f32 d, a, b, c`
-/// - `fma.rnd{.ftz}.f32x2 d, a, b, c` (no sat)
-/// - `fma.rnd.f64 d, a, b, c` (no ftz, no sat)
-///
-/// Half (Block 56):
-/// - `fma.rnd{.ftz}{.sat}.f16 d, a, b, c` (sat mode)
-/// - `fma.rnd{.ftz}.relu.f16 d, a, b, c` (relu mode - mutually exclusive with sat)
-/// - `fma.rnd{.relu}.bf16 d, a, b, c` (no ftz, relu optional)
-/// - `fma.rnd.oob{.relu}.type d, a, b, c` (oob mode)
-///
-/// Mixed precision (Block 65):
-/// - `fma.rnd{.sat}.f32.abtype d, a, b, c` where abtype = f16, bf16 (no ftz)
+/// `fma` forms: float `fma.rnd{.ftz}{.sat}.f32` (no sat on f32x2, f64 rnd only;
+/// Block 36), half (Block 56: sat or relu, mutually exclusive; bf16 no ftz;
+/// `.oob`), and mixed precision `fma.rnd{.sat}.f32.{f16,bf16}` (Block 65).
 #[derive(Debug, Clone)]
 pub enum FmaInstr {
     /// Float32: `fma.rnd{.ftz}{.sat}.f32 d, a, b, c`
@@ -1937,13 +1846,8 @@ impl FromAscii for BoolOp {
     }
 }
 
-/// Set instruction with mutually exclusive forms
-///
-/// Simple form (Block 66):
-/// - `set.CmpOp{.ftz}.dtype.stype d, a, b`
-///
-/// With boolean operation (Block 66):
-/// - `set.CmpOp.BoolOp{.ftz}.dtype.stype d, a, b, {!}c`
+/// `set` forms (Block 66): simple `set.CmpOp{.ftz}.dtype.stype d, a, b`, or
+/// with a boolean op `set.CmpOp.BoolOp{.ftz}.dtype.stype d, a, b, {!}c`.
 #[derive(Debug, Clone)]
 pub enum SetInstr {
     /// Simple set: `set.CmpOp{.ftz}.dtype.stype d, a, b`
@@ -1970,13 +1874,8 @@ pub enum SetInstr {
     },
 }
 
-/// Setp instruction with mutually exclusive forms
-///
-/// Simple form (Block 67):
-/// - `setp.CmpOp{.ftz}.type p[|q], a, b`
-///
-/// With boolean operation (Block 67):
-/// - `setp.CmpOp.BoolOp{.ftz}.type p[|q], a, b, {!}c`
+/// `setp` forms (Block 67): simple `setp.CmpOp{.ftz}.type p[|q], a, b`, or with
+/// a boolean op `setp.CmpOp.BoolOp{.ftz}.type p[|q], a, b, {!}c`.
 #[derive(Debug, Clone)]
 pub enum SetpInstr {
     /// Simple setp: `setp.CmpOp{.ftz}.type p[|q], a, b`
@@ -2013,13 +1912,8 @@ pub struct SelpInstr {
     pub src_c: Operand,
 }
 
-/// Slct instruction with type-specific forms
-///
-/// Integer form (Block 69):
-/// - `slct.dtype.s32 d, a, b, c` (no ftz)
-///
-/// Float form (Block 69):
-/// - `slct{.ftz}.dtype.f32 d, a, b, c`
+/// `slct` forms (Block 69): integer `slct.dtype.s32 d, a, b, c` (no ftz) or
+/// float `slct{.ftz}.dtype.f32 d, a, b, c`.
 #[derive(Debug, Clone)]
 pub enum SlctInstr {
     /// Integer slct: `slct.dtype.s32 d, a, b, c` (no ftz)
@@ -2226,10 +2120,8 @@ pub enum CvtRounding {
     Rna,
 }
 
-/// Cvt instruction with mutually exclusive forms:
-/// - Block 99: Standard conversions with various rounding modes
-/// - Block 100: Pack conversions `cvt.pack.sat.type d, a, b`
-/// - Two-source packed-half conversions `cvt.rnd.f16x2.f32 d, a, b`
+/// `cvt` forms: standard conversions (Block 99), pack conversions
+/// `cvt.pack.sat.type d, a, b` (Block 100), and two-source packed halves.
 #[derive(Debug, Clone)]
 pub enum CvtInstr {
     /// Standard conversion: `cvt{.rnd}{.ftz}{.sat}{.relu}{.satfinite}.dtype.atype d, a`
@@ -2253,13 +2145,9 @@ pub enum CvtInstr {
         src_a: Operand,
         src_b: Operand,
     },
-    /// Two-source packed-half conversion: `cvt.rnd.f16x2.f32 d, a, b` /
-    /// `cvt.rnd.bf16x2.f32 d, a, b` - no `.pack` keyword; the packed `x2`
-    /// destination type alone signals the two-source form. Per the PTX
-    /// ISA, `a` converts into the *high* half of `d` and `b` into the
-    /// *low* half - the opposite convention from `mov.b32 d, {lo, hi}`'s
-    /// brace order, hence naming the fields `src_hi`/`src_lo` directly
-    /// rather than `src_a`/`src_b`.
+    /// Two-source packed-half conversion `cvt.rnd.{f16x2,bf16x2}.f32 d, a, b`
+    /// (no `.pack`). `a` goes to the *high* half and `b` to the low, opposite
+    /// to `mov.b32 d, {lo, hi}`'s brace order - hence `src_hi`/`src_lo`.
     PackHalves {
         rnd: Option<CvtRounding>,
         dst_type: ScalarType,
@@ -2657,12 +2545,9 @@ pub struct TestpInstr {
     pub src: Operand,
 }
 
-/// copysign: `copysign.type d, a, b` (Block 32). Per the ISA text ("Copy
-/// sign bit of `a` into value of `b`"), `a` is the *sign* source and `b`
-/// is the *magnitude* source - `d = |b|` with `a`'s sign. Field names
-/// reflect that role, not textual operand position, to avoid exactly the
-/// mixup the ISA's own wording invites (a naive reading of operand order
-/// suggests `a` is a "magnitude" argument).
+/// copysign: `copysign.type d, a, b` (Block 32): `d = |b|` with `a`'s sign.
+/// Fields are named by role (`a` = sign, `b` = magnitude), not operand
+/// position, since the ISA's wording invites the opposite reading.
 #[derive(Debug, Clone)]
 pub struct CopysignInstr {
     pub ty: ScalarType,
@@ -2705,14 +2590,8 @@ pub struct Lg2Instr {
     pub src: Operand,
 }
 
-/// ex2 instruction with type-specific ftz rules
-///
-/// Float32 (Block 51):
-/// - `ex2.approx{.ftz}.f32 d, a` - ftz optional
-///
-/// Half (Block 62):
-/// - `ex2.approx.atype d, a` where atype = f16, f16x2 (NO ftz)
-/// - `ex2.approx.ftz.btype d, a` where btype = bf16, bf16x2 (ftz REQUIRED)
+/// `ex2` forms: `ex2.approx{.ftz}.f32` (Block 51); `ex2.approx.{f16,f16x2}` with
+/// no ftz, and `ex2.approx.ftz.{bf16,bf16x2}` with ftz required (Block 62).
 #[derive(Debug, Clone)]
 pub enum Ex2Instr {
     /// Float32: `ex2.approx{.ftz}.f32 d, a` - ftz optional
@@ -3011,12 +2890,9 @@ impl FromAscii for FenceSem {
     }
 }
 
-/// The state space a `fence.proxy.async` restricts its ordering guarantee
-/// to (PTX ISA: "the memory ordering is limited only to operations
-/// performed on objects in the state space specified"). Mirrors
-/// `SharedStateSpaceQualifier` for the `.shared::{cta,cluster}` half rather
-/// than reusing `MemScope` - this is a state-space restriction, not a
-/// thread scope, and the two are unrelated qualifier namespaces.
+/// The state space a `fence.proxy.async` limits its ordering to. Mirrors
+/// `SharedStateSpaceQualifier` rather than reusing `MemScope`: a state-space
+/// restriction, not a thread scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsyncProxyRestrict {
     Global,

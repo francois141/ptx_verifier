@@ -1,10 +1,6 @@
-//! The interpreter: round-robin symbolic execution with χ-context race
-//! detection (paper Sections 3 and 5).
-//!
-//! Each thread runs until it blocks (barrier or warp-cooperative op) or
-//! exits; then the next ready thread runs. When no thread is ready, complete
-//! barrier/warp groups fire; if none can, the program is deadlocked. By the
-//! confluence theorem, this particular schedule is as good as any other.
+//! The interpreter: round-robin symbolic execution with χ race detection (paper
+//! §3, §5). Threads run until they block or exit; then complete groups fire,
+//! else deadlock. By confluence, this schedule is as good as any.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -66,10 +62,9 @@ pub struct Stats {
 /// (ISA 9.7.13.1).
 const NUM_BARRIERS: usize = 16;
 
-/// How many arrivals release a named barrier: `bar.sync a` waits for the
-/// whole CTA, while the counted forms (`bar.sync a, b`, `bar.arrive a, b`)
-/// wait for exactly `b` threads - the warp-specialization idiom, where the
-/// participants are a subset of the CTA and arrive at different pcs.
+/// How many arrivals release a named barrier: `bar.sync a` waits for the whole
+/// CTA; the counted forms (`bar.sync a, b`, `bar.arrive a, b`) wait for exactly
+/// `b` threads (warp specialization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::eval) enum BarrierArrivals {
     FullCta,
@@ -85,10 +80,9 @@ impl fmt::Display for BarrierArrivals {
     }
 }
 
-/// One named barrier's pending non-blocking arrivals: the threads that have
-/// executed `bar.arrive` on it since it last fired, and the arrival count
-/// those arrivals specified. Blocking `bar.sync` arrivals are not recorded
-/// here - those threads wait in `Status::AtBarrier` instead.
+/// One named barrier's pending `bar.arrive` arrivals since it last fired, with
+/// their arrival count. Blocking `bar.sync` arrivals wait in
+/// `Status::AtBarrier` instead.
 #[derive(Debug, Default)]
 struct PendingArrivals {
     threads: Vec<ThreadId>,
@@ -110,20 +104,13 @@ pub(in crate::eval) enum Status {
     AtWarpOp {
         mask: u32,
     },
-    /// Blocked at a warpgroup-cooperative instruction (`wgmma.mma_async`)
-    /// at the current pc. No mask field: unlike `AtWarpOp`, the ISA gives
-    /// `wgmma.mma_async` no membermask operand at all - its mandatory
-    /// `.aligned` qualifier means it always involves the full,
-    /// unconditional 128-thread warpgroup (PTX ISA 9.7.17.1). A parallel,
-    /// additive mechanism to `AtWarpOp` (see `eval::warpgroup`'s module
-    /// doc), not a widening of it - `AtWarpOp`'s 32-bit mask is
-    /// load-bearing for every other warp-collective op.
+    /// Blocked at `wgmma.mma_async` at the current pc. No mask: `.aligned`
+    /// means the full 128-thread warpgroup always takes part (PTX ISA
+    /// 9.7.17.1); a parallel mechanism to `AtWarpOp`.
     AtWarpgroupOp,
-    /// Blocked at `mbarrier.test_wait.parity`/`try_wait.parity` (at the
-    /// current pc), waiting for `id`'s phase-parity condition. Unlike
-    /// `AtBarrier`/`AtWarpOp`, this isn't a rendezvous - any other thread's
-    /// `arrive`/`complete_tx` on the same object can satisfy it, so threads
-    /// blocked here are checked independently, not as a group.
+    /// Blocked at `mbarrier.test_wait.parity`/`try_wait.parity` for `id`'s
+    /// phase parity. Not a rendezvous: any thread's `arrive`/`complete_tx` can
+    /// satisfy it, so waiters are checked independently.
     AtMbarrier {
         id: MbarrierId,
         phase_parity: bool,
@@ -161,45 +148,34 @@ pub(in crate::eval) struct ThreadState {
     /// Committed async-copy groups, oldest first; `wait_group`/`wait_all`
     /// pop from the front.
     groups: VecDeque<Vec<PendingCopy>>,
-    /// `wgmma.mma_async` register-hazard tracking (PTX ISA
-    /// 9.7.17.7.1/.2/.3) - a separate domain and instruction family from
-    /// `uncommitted`/`groups` above, so kept as its own field rather than
-    /// reused.
+    /// `wgmma.mma_async` register-hazard tracking (PTX ISA 9.7.17.7.1/.2/.3), a
+    /// separate domain from `uncommitted`/`groups` above.
     wgmma: WgmmaRegState,
     /// `tcgen05.mma.ws` collector buffers `b0`-`b3`: the `B` elements the
     /// last `::fill` loaded, until a `::lastuse`/`::discard` drops them.
     tcgen05_collectors: [Option<Vec<ExprId>>; 4],
 }
 
-/// One `wgmma.mma_async` accumulator writeback not yet released by a
-/// covering `wgmma.wait_group`. Unlike `PendingCopy`, the write already
-/// landed eagerly in the register file (Volta's evaluation is
-/// sequential - there is no deferred value to hold), so just the register
-/// is kept - the issuing pc for hazard diagnostics lives in `pending`'s
-/// own map value, not duplicated here.
+/// A `wgmma.mma_async` accumulator writeback not yet released by
+/// `wgmma.wait_group`. The write already landed eagerly (evaluation is
+/// sequential), so only the register is kept.
 type PendingWgmmaAccum = RegId;
 
-/// Per-thread `wgmma.mma_async` register-hazard state (PTX ISA
-/// 9.7.17.7). Lives on `ThreadState`, not `RaceTracker`: unlike shared/
-/// global memory (which needs χ's per-byte, cross-thread `FixedBitSet`),
-/// registers are inherently thread-local - nothing here ever reads
-/// another thread's state.
+/// Per-thread `wgmma.mma_async` register-hazard state (PTX ISA 9.7.17.7). Lives
+/// on `ThreadState`, not `RaceTracker`: registers are thread-local, so no
+/// cross-thread state is read.
 #[derive(Debug, Default)]
 struct WgmmaRegState {
     /// Hazard A (`wgmma.fence`, 9.7.17.7.1): incremented by every
     /// `wgmma.fence` this thread executes.
     fence_epoch: u64,
-    /// Hazard A: `(fence_epoch, pc)` as of each register's most recent
-    /// write. Absent = never written by this thread = treated as epoch
-    /// 0 - this is what makes "before the first `wgmma.mma_async` in a
-    /// warpgroup" fire correctly even for a register nothing has touched
-    /// yet.
+    /// Hazard A: `(fence_epoch, pc)` as of each register's most recent write.
+    /// Absent = never written = epoch 0, so the before-first-`wgmma` rule fires
+    /// even for untouched registers.
     reg_epoch: HashMap<RegId, (u64, InstrId)>,
-    /// Hazard A: present, with the shape used, iff the register's most
-    /// recent write was a `wgmma.mma_async` accumulator writeback of
-    /// that shape. Removed by every ordinary write (`write_reg` - breaks
-    /// the chain); overwritten (not removed) by another `wgmma.mma_async`
-    /// writeback, possibly of a different shape.
+    /// Hazard A: the shape, iff the register's last write was a
+    /// `wgmma.mma_async` writeback of that shape. Removed by any ordinary
+    /// write; overwritten by another wgmma writeback.
     reg_shape: HashMap<RegId, MmaShape>,
     /// Hazard B (`wgmma.wait_group`, 9.7.17.7.3): accumulator writebacks
     /// since the last `wgmma.commit_group`, not yet sealed into a group.
@@ -207,16 +183,9 @@ struct WgmmaRegState {
     /// Hazard B: committed wgmma-groups, oldest first; `wgmma.wait_group
     /// N` pops from the front while more than `N` remain.
     groups: VecDeque<Vec<PendingWgmmaAccum>>,
-    /// Hazard B: reference count + most recent issuing pc, per register,
-    /// summed across `uncommitted` and every group in `groups` - lets
-    /// `read_reg`/`write_reg` (the hottest path in the evaluator) answer
-    /// "is this register pending" in O(1) without rescanning every
-    /// outstanding group on every register access. A reference count
-    /// (not a plain set) because a register can legitimately appear in
-    /// more than one outstanding group (two interleaved same-shape
-    /// chains sharing an accumulator tile before either is waited) -
-    /// releasing the older group must not clear pending status the
-    /// other occurrence still needs.
+    /// Hazard B: refcount + latest issuing pc per register across `uncommitted`
+    /// and `groups`, for O(1) pending checks on the hot path. Counted, since
+    /// one register can sit in several outstanding groups.
     pending: HashMap<RegId, (u32, InstrId)>,
 }
 
@@ -230,13 +199,9 @@ impl WgmmaRegState {
             .map(|&(_, pc)| pc)
     }
 
-    /// Hazard A: true iff a `wgmma.mma_async` of `shape` may access `reg`
-    /// (as its accumulator) without needing an intervening
-    /// `wgmma.fence` - either `reg`'s most recent write was itself a
-    /// same-shape `wgmma.mma_async` writeback (the ISA's one exemption),
-    /// or a `wgmma.fence` has executed since `reg`'s most recent write
-    /// (or since this thread started, for a register never written at
-    /// all).
+    /// Hazard A: whether a `wgmma.mma_async` of `shape` may use `reg` as
+    /// accumulator without a `wgmma.fence`: its last write was a same-shape
+    /// writeback, or a fence followed that write.
     fn is_fenced_for(&self, reg: RegId, shape: MmaShape) -> bool {
         if self.reg_shape.get(&reg) == Some(&shape) {
             return true;
@@ -258,10 +223,9 @@ impl WgmmaRegState {
         self.reg_shape.remove(&reg);
     }
 
-    /// Record a `wgmma.mma_async` accumulator writeback: same fence
-    /// bookkeeping as `record_write`, but tags `reg` with `shape` (so a
-    /// later same-shape chained `wgmma.mma_async` is fence-exempt) and
-    /// marks it pending a `wgmma.wait_group` release.
+    /// Record a `wgmma.mma_async` accumulator writeback: `record_write`'s fence
+    /// bookkeeping, plus tagging `reg` with `shape` (same-shape chains are
+    /// fence-exempt) and marking it pending.
     fn record_wgmma_write(&mut self, reg: RegId, shape: MmaShape, pc: InstrId) {
         self.reg_epoch.insert(reg, (self.fence_epoch, pc));
         self.reg_shape.insert(reg, shape);
@@ -308,12 +272,9 @@ struct Region {
 }
 
 impl Region {
-    /// Whole-access containment, in subtraction form: no sum here can
-    /// overflow in any build profile. The additive form
-    /// `addr + width <= base + size` wraps for addresses near `u64::MAX`
-    /// (e.g. a negative index reaching `effective_addr`) and in release
-    /// mode silently *accepts* the wrapped access; verification-relevant
-    /// checks must not rely on debug overflow panics.
+    /// Whole-access containment in subtraction form, which cannot overflow:
+    /// `addr + width <= base + size` wraps near `u64::MAX` and in release mode
+    /// would silently accept the access.
     fn contains(&self, addr: u64, width: u64) -> bool {
         width <= self.size && addr >= self.base && addr - self.base <= self.size - width
     }
@@ -375,10 +336,9 @@ pub struct Interpreter<'p> {
     barriers: [PendingArrivals; NUM_BARRIERS],
     pub(in crate::eval) tensor_maps: TensorMapTable,
     pub(in crate::eval) stats: Stats,
-    /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`.
-    /// A fixed array (not a map) because this is bumped once per executed
-    /// instruction in `step`, the interpreter's innermost loop; `finish`
-    /// folds it into the `BTreeMap` shape `AnalysisOutput` exposes.
+    /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`. A
+    /// fixed array since `step` bumps it per instruction; `finish` folds it
+    /// into `AnalysisOutput`'s `BTreeMap`.
     pub(in crate::eval) op_counts: [u64; crate::lowered::KIND_COUNT],
     /// The analyzed module's target-arch-derived feature gates (see
     /// `eval::target::TargetFeatures`) - a fact about the module, computed
@@ -440,17 +400,9 @@ impl<'p> Interpreter<'p> {
             let _ = params.push(v);
         }
 
-        // Build validity regions. Every region must satisfy
-        // `base + size <= u64::MAX` (checked here, release-active): with
-        // that invariant and the subtraction-form `Region::contains`, any
-        // access that passes `check_bounds` has `addr + width` within u64
-        // range, so the byte-range loops downstream (race recording, input
-        // materialization, memory granules, vector element addressing)
-        // can never wrap. The argument needs nothing from the address
-        // itself - `effective_addr` produces arbitrary, possibly wrapped
-        // u64s - only that ownership is checked before any of those loops
-        // run, which `mem_read`/`mem_write` and the whole-footprint checks
-        // at the vector/tensor-core sites guarantee.
+        // Every region must satisfy `base + size <= u64::MAX` (checked in
+        // release): with the subtraction-form `Region::contains`, any access
+        // passing `check_bounds` cannot wrap in downstream byte loops.
         fn push_region(list: &mut Vec<Region>, base: u64, size: u64, what: &str) -> EvalResult<()> {
             if size > u64::MAX - base {
                 return Err(EvalError::Config {
@@ -464,20 +416,9 @@ impl<'p> Interpreter<'p> {
             Ok(())
         }
         let mut regions = MemRegions::default();
-        // Config arrays and module-scope globals share the one global
-        // region list built below. `config.validate()` keeps the arrays
-        // pairwise disjoint and the symbol-table packer keeps the module
-        // globals pairwise disjoint, so the only possible cross-family
-        // overlap is an array intersecting the reserved module-global
-        // window - reject it here to uphold the region-disjointness
-        // premise of `check_bounds` (an overlapping array would silently
-        // shadow the module global it covers). The window end cannot
-        // overflow: `declare_global_var` checks `MODULE_GLOBAL_BASE +
-        // offset + size` for every variable it places. Shared and local
-        // variables cannot collide with config arrays by construction:
-        // they are packed in their own address spaces, and `check_bounds`
-        // consults only the accessed `MemSpace`'s region list, so no
-        // check is needed for them.
+        // Arrays and module globals share one region list and are each pairwise
+        // disjoint, so reject an array overlapping the module-global window to
+        // keep `check_bounds` sound.
         let module_global_size = program.symbols.module_global_size();
         if module_global_size > 0 {
             let window_base = MODULE_GLOBAL_BASE;
@@ -556,10 +497,9 @@ impl<'p> Interpreter<'p> {
                     message: format!("no module-scope .global variable named '{}'", name),
                 })?;
             let v = Value::Scalar(arena.int(*value));
-            // Analysis-setup placement, not a PTX memory instruction, so
-            // the natural-alignment rule does not apply; the address is
-            // naturally aligned anyway (`declare_global_var` packs with
-            // `align_up` from the naturally-aligned `MODULE_GLOBAL_BASE`).
+            // Analysis-setup placement, not a memory instruction, so no
+            // alignment rule applies; `declare_global_var` packs naturally
+            // aligned anyway.
             global
                 .init(var.addr, var.size_bytes, v)
                 .expect("module-global initialization cannot fail");
@@ -627,10 +567,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Extract the kernel's output footprint: for each output array, every
-    /// element the program actually wrote (a single CTA typically writes
-    /// only its tile of a large output tensor). Elements are keyed by index
-    /// so two kernels' footprints can be compared exactly.
+    /// Extract the output footprint: for each output array, every element the
+    /// program actually wrote, keyed by index so two kernels' footprints
+    /// compare exactly.
     pub fn extract_outputs(&mut self) -> EvalResult<OutputFootprints> {
         let mut outputs = Vec::new();
         for array in &self.config.arrays {
@@ -655,10 +594,9 @@ impl<'p> Interpreter<'p> {
                     });
                 }
                 let index = offset / array.elem_width;
-                // A `mov.bN dst, {lo, hi}` pack of two concrete integer
-                // halves stored as one wide element (an integer assembled
-                // from two parts) is that integer, recombined here the same
-                // way `scalar_operand` does for register reads.
+                // A `mov.bN dst, {lo, hi}` pack of two concrete integer halves
+                // stored as one wide element is that integer, recombined as
+                // `scalar_operand` does for registers.
                 let value = match value {
                     Value::Pair(lo, hi) if width == array.elem_width => {
                         match (self.arena.as_int_const(lo), self.arena.as_int_const(hi)) {
@@ -698,13 +636,9 @@ impl<'p> Interpreter<'p> {
                             elems.push((index + k, e));
                         }
                     }
-                    // A concrete all-zero granule spanning several narrow
-                    // elements: kernels zero-fill an output this way
-                    // (`st.global.v4.b32 [ptr], {0, 0, 0, 0}`), and zero is
-                    // the one bit pattern every element interpretation -
-                    // f16, bf16 and the integer widths alike - agrees on,
-                    // so splitting it needs no element type the array
-                    // configuration doesn't carry.
+                    // A concrete all-zero granule over several narrow elements
+                    // (`st.global.v4.b32 [ptr], {0, 0, 0, 0}`): zero reads the
+                    // same in every element type, so it splits untyped.
                     (Value::Scalar(e), false)
                         if width.is_multiple_of(array.elem_width)
                             && self.arena.as_int_const(e) == Some(0) =>
@@ -808,26 +742,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Wake every thread blocked at `mbarrier.test_wait.parity`/
-    /// `try_wait.parity` whose phase-parity condition now holds. Unlike
-    /// `try_fire_barrier`/`find_ready_warp_group`, this isn't a rendezvous
-    /// that requires every live thread to agree - each blocked thread's
-    /// condition depends only on the shared `mbarrier` object's state
-    /// (updated by some *other* thread's `arrive`/`complete_tx`, which may
-    /// still be freely `Ready` and running), so threads are woken
-    /// independently. Returns whether any thread was woken.
-    ///
-    /// Establishes the χ happens-before edge the ISA actually guarantees
-    /// here (9.7.14.16.19, ordering items 1-3): before waking, each waiter
-    /// is `sync_group`-ed with the mbarrier's `prior_participants` (the
-    /// threads whose `mbarrier.arrive` completed the phase it was waiting
-    /// on) plus itself - all of one barrier's waiters in a single χ pass,
-    /// `RaceTracker::sync_mbarrier_waiters` - so their prior accesses become
-    /// visible to it rather
-    /// than continuing to look like unsynchronized races. Lowering rejects
-    /// non-default (`.relaxed`) semantics on `mbarrier.arrive`/`test_wait`/
-    /// `try_wait`, so every `AtMbarrier` thread reaching here is on the
-    /// default release/acquire path this edge models.
+    /// Wake every `AtMbarrier` thread whose phase parity now holds, first
+    /// χ-syncing each with the arrivers that completed its phase (PTX ISA
+    /// 9.7.14.16.19, ordering items 1-3). Returns whether any woke.
     fn try_fire_mbarrier(&mut self) -> EvalResult<bool> {
         let ready: Vec<(ThreadId, MbarrierId)> = self
             .threads
@@ -901,29 +818,13 @@ impl<'p> Interpreter<'p> {
                     Status::AtWarpOp { mask: m } if m == mask && member.pc == pc => {
                         members.push(ThreadId(tid));
                     }
-                    // An exited lane counts as arrived at *every* warp op,
-                    // not just pure syncs: the paper's Sync rule fires when
-                    // each i in I is at the sync *or at return*, and the ISA
-                    // says the same for shfl.sync ("wait until all
-                    // non-exited threads corresponding to membermask have
-                    // executed shfl.sync"). Exited lanes execute nothing
-                    // (they are excluded from `members`) but rejoin the
-                    // group for the chi-clear in `execute_warp_op`; data
-                    // sourced from them is handled per-op.
+                    // An exited lane counts as arrived at every warp op (the
+                    // paper's Sync rule; the ISA's "all non-exited threads" for
+                    // shfl.sync): it executes nothing but rejoins the χ-clear.
                     Status::Exited => {}
-                    // A live lane elsewhere (different pc or mask): the
-                    // group is not ready. Requiring one shared pc is a
-                    // deliberate conservative deviation from both
-                    // authorities: the paper's syncs are unnamed ("whichever
-                    // sync instances happen to align in the dynamics are
-                    // matched", section 4.1) and the sm_70+ ISA matches
-                    // bar.warp.sync/shfl.sync instances by mask and
-                    // qualifiers, not by program point - under either,
-                    // differently-located syncs could pair. Volta matches
-                    // only at a single pc, for implementation simplicity; a
-                    // group whose live lanes never converge at one pc stays
-                    // stuck and surfaces as a loud Deadlock rather than
-                    // being cross-matched.
+                    // A live lane elsewhere: not ready. Matching only at one pc
+                    // is a deliberate conservative deviation from paper and
+                    // ISA; unconverged groups surface as Deadlock.
                     _ => continue 'candidates,
                 }
             }
@@ -932,13 +833,9 @@ impl<'p> Interpreter<'p> {
         Ok(None)
     }
 
-    /// Find a warpgroup whose live members have all arrived at the same pc.
-    /// Mirrors `find_ready_warp_group` exactly (same exited-lane-
-    /// vacuously-arrived, live-elsewhere-not-ready-yet, single-pc-matching
-    /// rules), but there is no mask - membership is always the full
-    /// contiguous 128-thread range `[group_base, group_base +
-    /// WARPGROUP_SIZE)`, since `wgmma.mma_async` has no membermask operand
-    /// at all (see `Status::AtWarpgroupOp`'s doc comment).
+    /// Find a warpgroup whose live members all arrived at one pc, with
+    /// `find_ready_warp_group`'s rules but no mask: membership is always the
+    /// 128-thread range at `group_base`.
     fn find_ready_warpgroup_op(&self) -> EvalResult<Option<(InstrId, Vec<ThreadId>)>> {
         'candidates: for (leader, state) in self.threads.iter() {
             if state.status != Status::AtWarpgroupOp {
@@ -973,10 +870,9 @@ impl<'p> Interpreter<'p> {
         Ok(None)
     }
 
-    /// Fire whichever named barrier can fire: a counted barrier as soon as
-    /// its arrival count is met (`bar.arrive` arrivals included), or the
-    /// full-CTA barrier once every live thread waits on the same id.
-    /// Returns whether one fired.
+    /// Fire whichever named barrier can: a counted barrier once its arrival
+    /// count is met (`bar.arrive` included), the full-CTA barrier once every
+    /// live thread waits on its id. Returns whether one fired.
     fn try_fire_barrier(&mut self) -> EvalResult<bool> {
         // Blocked arrivals, per barrier id. Threads at a counted barrier
         // need not share a pc (warp-specialized producers and consumers
@@ -1041,12 +937,9 @@ impl<'p> Interpreter<'p> {
                     ),
                 });
             }
-            // The participants are the blocked threads plus everyone who
-            // arrived without blocking. Syncing χ over exactly that set is
-            // the ISA's ordering for a counted barrier ("relative to all
-            // threads participating in the barrier"), with one deliberate
-            // relaxation: a `bar.arrive` thread keeps running, so accesses
-            // it makes between its arrival and this fire are ordered too.
+            // Participants: the blocked threads plus the `bar.arrive` arrivers.
+            // χ-syncing them is the ISA's ordering, relaxed to also order
+            // arrivers' post-arrival accesses.
             let participants: Vec<ThreadId> = arrived
                 .iter()
                 .copied()
@@ -1109,10 +1002,9 @@ impl<'p> Interpreter<'p> {
         EvalError::Deadlock { blocked }
     }
 
-    /// Apply the χ synchronization of a fired group of threads - a warp
-    /// group, a warpgroup, or a counted barrier's participants. Called
-    /// *before* a warp group's cooperative memory accesses so they cannot
-    /// race with the group's own pre-sync accesses.
+    /// Apply the χ sync of a fired group (warp group, warpgroup, or counted
+    /// barrier). Called before a warp group's cooperative accesses so they
+    /// cannot race with its own pre-sync accesses.
     pub(in crate::eval) fn sync_thread_group(&mut self, members: &[ThreadId]) {
         let mut group = fixedbitset::FixedBitSet::with_capacity(self.n_threads as usize);
         for &m in members {
@@ -1121,12 +1013,9 @@ impl<'p> Interpreter<'p> {
         self.race.sync_group(&group);
     }
 
-    /// Reject `t` arriving at a synchronization point at `pc` while its
-    /// warp still has a `tcgen05.ld`/`.st` it has not `tcgen05.wait`-ed -
-    /// see `RaceTracker::tcgen05_unwaited`. Checked at every arrival that
-    /// orders `t`'s prior accesses for other threads: `bar.sync`,
-    /// `bar.arrive`, and the mbarrier arrives (`mbarrier.arrive`,
-    /// `cp.async.mbarrier.arrive`, `tcgen05.commit`).
+    /// Reject `t` reaching a sync at `pc` with a `tcgen05.ld`/`.st` not yet
+    /// `tcgen05.wait`-ed. Checked at every arrival that publishes `t`'s
+    /// accesses: `bar.sync`/`bar.arrive` and the mbarrier arrives.
     fn check_tcgen05_waited(&self, t: ThreadId, pc: InstrId) -> EvalResult<()> {
         match self.race.tcgen05_unwaited(t.warp()) {
             Some(pending) => Err(EvalError::Tcgen05UnwaitedAtSync {
@@ -1182,12 +1071,9 @@ impl<'p> Interpreter<'p> {
 
         let mut next_pc = InstrId(pc.0 + 1);
         match &instr {
-            // Parameter reads are interpreter-internal value bindings (an
-            // `IdVec` lookup), not byte-addressed memory accesses, so the
-            // natural-alignment rule for memory instructions has nothing to
-            // apply to. Byte-addressed `.param`/`.const` accesses that do
-            // reach `Load`/`Store` are rejected as unsupported in
-            // `check_bounds`.
+            // Parameter reads are value-binding lookups, not memory accesses,
+            // so no alignment rule applies; byte-addressed `.param`/`.const`
+            // accesses are rejected in `check_bounds`.
             LoweredInstr::LoadParam { dst, param_id } => {
                 let v = self.params[*param_id];
                 self.write_reg(t, pc, *dst, v)?;
@@ -1215,13 +1101,9 @@ impl<'p> Interpreter<'p> {
             } => {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
                 let width = ty.size_bytes() as u64;
-                // The access size of a vector load is the *total* number of
-                // bytes accessed (`ld.v4.b32` is one 16-byte access, PTX
-                // ISA 6.4.1), so the whole vector's bounds and alignment
-                // are checked once here. The whole-footprint bounds check
-                // is load-bearing: the per-element checks in `mem_read`
-                // below would each pass inside a *different* region and let
-                // a v4 straddle two adjacent arrays silently.
+                // A vector load is one access of the total size (PTX ISA
+                // 6.4.1), so bounds and alignment are checked once for the
+                // whole footprint - else a v4 could straddle two arrays.
                 self.check_bounds(t, pc, *space, addr, dst.len() as u64 * width)?;
                 self.check_alignment(t, pc, *space, addr, dst.len() as u64 * width)?;
                 for (k, reg) in dst.iter().enumerate() {
@@ -1253,10 +1135,9 @@ impl<'p> Interpreter<'p> {
             } => {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
                 let width = ty.size_bytes() as u64;
-                // As for `LoadVec`: a vector store is one access of the
-                // total size, so its whole footprint must fit in the one
-                // region owning its first byte, and its alignment is the
-                // total size's.
+                // As for `LoadVec`: a vector store is one access of the total
+                // size, so its whole footprint must fit in one region and align
+                // to the total size.
                 self.check_bounds(t, pc, *space, addr, src.len() as u64 * width)?;
                 self.check_alignment(t, pc, *space, addr, src.len() as u64 * width)?;
                 for (k, op) in src.iter().enumerate() {
@@ -1279,9 +1160,8 @@ impl<'p> Interpreter<'p> {
                 let cp_size = *cp_size as u64;
 
                 // How many of `cp_size` bytes are real (the rest is
-                // zero-filled); the ISA disambiguates `src-size` vs
-                // `ignore-src` by operand kind (already resolved at
-                // lowering), not by value.
+                // zero-filled); `src-size` vs `ignore-src` was already resolved
+                // at lowering by operand kind.
                 let real_bytes = match src_size {
                     CpAsyncSrcSize::Full => cp_size,
                     CpAsyncSrcSize::Sized(op) => {
@@ -1303,11 +1183,9 @@ impl<'p> Interpreter<'p> {
                         if ignore { 0 } else { cp_size }
                     }
                 };
-                // The copy is decomposed into 4-byte words below (matching
-                // how the corpus actually consumes cp.async destinations,
-                // `ld.shared.v4.b32`), so a real/zero boundary that splits a
-                // word can't be represented without byte-level masking
-                // Volta doesn't model; reject it loudly instead of guessing.
+                // The copy is decomposed into 4-byte words, so a real/zero
+                // boundary inside a word would need byte masking Volta doesn't
+                // model; reject it loudly.
                 if !real_bytes.is_multiple_of(4) {
                     return Err(EvalError::Unsupported {
                         pc,
@@ -1318,14 +1196,9 @@ impl<'p> Interpreter<'p> {
                     });
                 }
 
-                // The destination's whole slot is reserved regardless of
-                // how much of it is real; the ISA ties alignment to
-                // `cp_size` for both operands. The source's *bounds* use
-                // `real_bytes`, not `cp_size`, so a boundary-clamped
-                // partial copy (the whole reason `src-size` exists) isn't
-                // rejected as out-of-bounds for the untouched tail. Bounds
-                // before alignment throughout, matching `mem_read`/
-                // `mem_write`'s convention.
+                // The destination reserves its whole slot and both align to
+                // `cp_size`, but source bounds use `real_bytes` so a clamped
+                // partial copy passes. Bounds before alignment.
                 self.check_bounds(t, pc, MemSpace::Shared, dst_addr, cp_size)?;
                 self.check_alignment(t, pc, MemSpace::Shared, dst_addr, cp_size)?;
                 if real_bytes > 0 {
@@ -1333,10 +1206,9 @@ impl<'p> Interpreter<'p> {
                 }
                 self.check_alignment(t, pc, MemSpace::Global, src_addr, cp_size)?;
 
-                // Lock the destination (exclusive) and the real-byte prefix
-                // of the source (write-exclusive) for the whole in-flight
-                // window, then read the source now - exact, since the lock
-                // guarantees it cannot change before completion.
+                // Lock the destination (exclusive) and the source's real prefix
+                // (write-exclusive) for the in-flight window, then read the
+                // source now - exact, since the lock forbids changes.
                 self.race
                     .lock_dst(MemSpace::Shared, dst_addr, cp_size, t, pc)
                     .map_err(EvalError::from)?;
@@ -1369,17 +1241,14 @@ impl<'p> Interpreter<'p> {
 
             LoweredInstr::Mov { dst, src, ty } => {
                 let v = self.operand_value(t, pc, src)?;
-                // Rebind the value at the mov's own type: `mov.u32 %r, -1`
-                // must leave the same canonical constant in `%r` as
-                // `not.b32 %r, 0` (consumers see the type-canonical value,
-                // not the source operand's producer-typed rendering).
+                // Rebind the value at the mov's own type: `mov.u32 %r, -1` must
+                // leave the same canonical constant as `not.b32 %r, 0`.
                 let v = match v {
                     Value::Scalar(e) => Value::Scalar(self.canon_operand(pc, *ty, e)?),
                     pair @ Value::Pair(_, _) => pair,
-                    // A `Quad` (byte-granular vector-load lane) can flow
-                    // through an ordinary `mov` untouched, same as `Pair` -
-                    // canonicalization only makes sense for a genuine
-                    // scalar bit pattern.
+                    // A `Quad` (byte-granular vector-load lane) flows through
+                    // `mov` untouched, like `Pair`; canonicalization applies
+                    // only to scalar bit patterns.
                     quad @ Value::Quad(..) => quad,
                     Value::Mbarrier(_) => {
                         return Err(EvalError::ValueKindMismatch {
@@ -1392,10 +1261,9 @@ impl<'p> Interpreter<'p> {
                 self.write_reg(t, pc, *dst, v)?;
             }
 
-            // Only `cvta.to.global` reaches evaluation (lowering rejects
-            // every other cvta form): global addresses are absolute u64s
-            // and the generic window over global is identity-mapped, so
-            // the conversion is the identity.
+            // Only `cvta.to.global` reaches evaluation; global addresses are
+            // absolute and the generic window over global is identity-mapped,
+            // so this is the identity.
             LoweredInstr::Cvta { dst, src, .. } => {
                 let v = self.operand_value(t, pc, src)?;
                 self.write_reg(t, pc, *dst, v)?;
@@ -1421,9 +1289,8 @@ impl<'p> Interpreter<'p> {
                     };
                     magnitude.map_or(value, |value| this.arena.neg(value))
                 };
-                // A scalar byte loaded from an FP8 array already denotes
-                // its real value. A vector-loaded word is a Quad of four
-                // such values, not a scalar bit pattern. Keep those lanes
+                // An FP8 scalar byte already denotes its real value, and a
+                // vector-loaded word is a Quad of such values; keep the lanes
                 // split while applying the byte selector.
                 let lanes = |this: &mut Self, value: Value| match value {
                     Value::Scalar(value) => Ok([Some(fp8_sign_xor(this, value)), None, None, None]),
@@ -1745,10 +1612,9 @@ impl<'p> Interpreter<'p> {
             } => {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
-                // Reinterpret concrete arms at the instruction type
-                // before building the select: `selp.b32 %r, -1, 0, %p`
-                // must export the same canonical 4294967295 a computed
-                // operand would (see [`Self::canon_operand`]).
+                // Reinterpret concrete arms at the instruction type first:
+                // `selp.b32 %r, -1, 0, %p` must export the canonical 4294967295
+                // (see [`Self::canon_operand`]).
                 let a = self.canon_operand(pc, *ty, a)?;
                 let b = self.canon_operand(pc, *ty, b)?;
                 let cond = self.scalar_operand(t, pc, pred)?;
@@ -1772,15 +1638,9 @@ impl<'p> Interpreter<'p> {
             } => {
                 let int_to_int = src_ty.is_integer() && dst_ty.is_integer();
                 let truncates_pair = int_to_int && src_ty.bits() == 64 && dst_ty.bits() == 32;
-                // `cvt.u16.u32`-style truncation of a byte-quad: LLVM's
-                // NVPTX backend uses this (not `mov.b32 {lo,hi}, r`) to
-                // pull the low 16 bits out of a 4-byte fp8 vector-load
-                // lane before feeding it to `cvt.e4m3x2` (confirmed
-                // against `GELUFloat8Kernel`'s real triton-generated PTX).
-                // A `Quad` has no underlying concrete bits to truncate
-                // arithmetically, so this is the only sound reading: keep
-                // the low `Pair` of byte lanes, exactly mirroring
-                // `truncates_pair` one level up.
+                // `cvt.u16.u32` of a byte-quad (LLVM's low-16-bits extraction
+                // before `cvt.e4m3x2`): a `Quad` has no bits to truncate, so
+                // keep its low `Pair`, as `truncates_pair` does.
                 let truncates_quad = int_to_int && src_ty.bits() == 32 && dst_ty.bits() == 16;
                 let result = match self.operand_value(t, pc, src)? {
                     // `cvt.u32.u64`-style truncation of a packed pair keeps
@@ -1833,17 +1693,14 @@ impl<'p> Interpreter<'p> {
                 let clamp = relu.then_some(Clamp::Relu);
                 let result = match self.operand_value(t, pc, src)? {
                     // The common case: a symbolic (or already-split) fp8
-                    // input array element - already the real value that
-                    // array position holds (identity-over-reals, same as
-                    // every other float<->float `cvt`; see this
-                    // instruction's doc comment). No bit decode needed.
+                    // element is already its real value (identity over reals,
+                    // like every float<->float `cvt`); no bit decode needed.
                     Value::Pair(b0, b1) => {
                         Value::Pair(self.apply_clamp(clamp, b0), self.apply_clamp(clamp, b1))
                     }
-                    // A genuine concrete 16-bit pattern that never went
-                    // through array materialization (e.g. a `cp.async`
-                    // zero-fill word, or a literal `mov.b16`): decode each
-                    // byte's real `.e4m3` encoding explicitly.
+                    // A genuine concrete 16-bit pattern that never went through
+                    // array materialization (`cp.async` zero-fill, `mov.b16`
+                    // literal): decode each byte's `.e4m3` encoding.
                     Value::Scalar(e) if self.arena.as_i64(e).is_some() => {
                         let raw = self.arena.as_i64(e).unwrap() as u64;
                         let lo_byte = (raw & 0xFF) as u8;
@@ -1862,21 +1719,9 @@ impl<'p> Interpreter<'p> {
                         )?;
                         Value::Pair(self.apply_clamp(clamp, lo), self.apply_clamp(clamp, hi))
                     }
-                    // A single materialized fp8 array element loaded at
-                    // PTX's ISA-minimum 16-bit register width (`.b8`/`.u8`
-                    // have no register class of their own): `e` is already
-                    // that one element's real value (identity-over-reals,
-                    // same as the `Pair` case above), zero-extended into
-                    // the upper byte by the loader - confirmed against
-                    // `RoPEFloat8Kernel`'s real `triton_generated.ptx`
-                    // (`mov.u16 %rs,0; ld.global.b8 {%rs},[addr];
-                    // cvt.rn.f16x2.e4m3x2 ...`), which then always discards
-                    // the upper lane (`mov.b32 {%lo,_}, %r`). We have no
-                    // information left about that upper byte - not even
-                    // that it's really zero, since `canon_loaded` doesn't
-                    // track it - so it's `Undefined` rather than a fabricated
-                    // value: silently fine when discarded, a loud
-                    // `UndefinedOutput` if some kernel actually keeps it.
+                    // One fp8 element loaded at 16-bit register width
+                    // (`ld.global.b8 {%rs}`): `e` is its real value; the upper
+                    // byte is untracked, hence `Undefined`.
                     Value::Scalar(e) => {
                         let undef = self.arena.undefined();
                         Value::Pair(self.apply_clamp(clamp, e), undef)
@@ -1919,10 +1764,9 @@ impl<'p> Interpreter<'p> {
 
             LoweredInstr::UnpackHalves { lo, hi, src, ty } => {
                 match self.operand_value(t, pc, src)? {
-                    // A native packed-f16 granule: the two halves are
-                    // already the real-valued elements, never bit-encoded
-                    // (matching `CvtPackHalves` and `eval/memory.rs`'s
-                    // granule combining) - distribute them directly.
+                    // A native packed-f16 granule: the halves are already
+                    // real-valued, never bit-encoded (as in `CvtPackHalves`,
+                    // `eval/memory.rs`); distribute them directly.
                     Value::Pair(lo_e, hi_e) => {
                         if let Some(lo) = lo {
                             self.write_reg(t, pc, *lo, Value::Scalar(lo_e))?;
@@ -1946,13 +1790,9 @@ impl<'p> Interpreter<'p> {
                             self.write_reg(t, pc, *hi, Value::Scalar(hi_v))?;
                         }
                     }
-                    // A `Quad` (byte-granular vector-load lane): each half
-                    // is itself two independent byte lanes, so it splits
-                    // into two `Pair`s rather than two `Scalar`s - the
-                    // byte-granular analog of the native-`Pair` arm above
-                    // (still never bit-encoded). This is exactly the real
-                    // `mov.b32 {h0,h1}, r` idiom that precedes
-                    // `cvt.rn.f16x2.e4m3x2` on an fp8 array.
+                    // A `Quad`: each half is two byte lanes, so it splits into
+                    // two `Pair`s, never bit-encoded - the `mov.b32 {h0,h1}, r`
+                    // idiom before `cvt.rn.f16x2.e4m3x2` on fp8 arrays.
                     Value::Quad(b0, b1, b2, b3) => {
                         if let Some(lo) = lo {
                             self.write_reg(t, pc, *lo, Value::Pair(b0, b1))?;
@@ -1972,11 +1812,9 @@ impl<'p> Interpreter<'p> {
             }
 
             LoweredInstr::PackHalves { dst, lo, hi } => {
-                // Always a Value::Pair - see the type's doc comment. lo/hi
-                // are half-width operands: 16-bit-class for a b32 pack
-                // (always Value::Scalar) and 32-bit-class for a b64 pack,
-                // where a half that is itself an f16x2 pair is rejected by
-                // scalar_operand (nested pairs are not modeled).
+                // Always a Value::Pair. lo/hi are half-width operands:
+                // 16-bit-class for a b32 pack, 32-bit-class for b64, where
+                // scalar_operand rejects a half that is itself a pair.
                 let lo_v = self.scalar_operand(t, pc, lo)?;
                 let hi_v = self.scalar_operand(t, pc, hi)?;
                 self.write_reg(t, pc, *dst, Value::Pair(lo_v, hi_v))?;
@@ -2133,16 +1971,9 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            // wgmma.fence/commit_group/wait_group: PTX ISA 9.7.17.7.{1,2,3}
-            // track *register* hazards (accumulator registers, and
-            // wgmma-group completion) around wgmma.mma_async - never a
-            // memory effect the race tracker would care about. Dispatched
-            // per-thread, not through `AtWarpgroupOp`: all the state
-            // below is purely per-thread (no cross-thread reads), matching
-            // `CpAsyncCommitGroup`/`CpAsyncWaitGroup`/`FenceProxyAsync`'s
-            // existing per-thread dispatch - `wgmma.mma_async` alone needs
-            // the warpgroup rendezvous, for its cross-lane-relevant
-            // warpgroup-uniform operands.
+            // wgmma.fence/commit_group/wait_group (PTX ISA 9.7.17.7.{1,2,3})
+            // track register hazards only, never memory, and their state is
+            // per-thread, so they dispatch per-thread like cp.async groups.
             LoweredInstr::WgmmaFence => {
                 self.threads[t].wgmma.fence();
             }
@@ -2168,13 +1999,9 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            // tcgen05.mma: PTX ISA 9.7.17.5 gives `.cta_group::1` the issue
-            // granularity "an issue from a single thread in the current
-            // CTA would initiate the base operation" - unlike the
-            // warp-cooperative ops just above (and unlike `mma.sync`/
-            // `wmma.mma.sync`), this genuinely is single-thread, so it's
-            // evaluated directly rather than through
-            // `block_at_warp_op`/`execute_warp_op`.
+            // tcgen05.mma: `.cta_group::1` is issued by a single thread (PTX
+            // ISA 9.7.17.5), unlike `mma.sync`/`wmma`, so it is evaluated
+            // directly, not through `execute_warp_op`.
             LoweredInstr::Tcgen05Mma {
                 kind,
                 collector,
@@ -2205,13 +2032,9 @@ impl<'p> Interpreter<'p> {
             // Volta's sequential, non-reordering execution model.
             LoweredInstr::Tcgen05Fence => {}
 
-            // tcgen05.commit: once every async `tcgen05` op issued by this
-            // thread so far has completed, perform an mbarrier
-            // arrive-on(count=1) - same per-thread, non-warp-cooperative
-            // shape as `MbarrierArrive` below (issued by a single thread,
-            // not a warp rendezvous). The arrive is the completion signal,
-            // so this is where this thread's in-flight MMAs become
-            // trackable by the phase it contributes to.
+            // tcgen05.commit: once this thread's async `tcgen05` ops complete,
+            // arrive-on(count=1) the mbarrier (single-thread, like
+            // `MbarrierArrive`); that phase then tracks its MMAs.
             LoweredInstr::Tcgen05Commit {
                 addr_base,
                 addr_offset,
@@ -2228,13 +2051,9 @@ impl<'p> Interpreter<'p> {
                 self.mbarriers.arrive(id, t, 1, None);
             }
 
-            // cp.async.mbarrier.arrive: the arrive-on fires once every
-            // prior `cp.async` of this thread (committed or not) has
-            // completed. Landing them all here is one valid schedule of
-            // that; waiters still sync with `t` through the arrive, so an
-            // unsynchronized consumer read is still caught as a race.
-            // Without `.noinc` the pending count is bumped by one first,
-            // so the net arrival count is zero.
+            // cp.async.mbarrier.arrive: arrive once all this thread's prior
+            // `cp.async`s complete; landing them here is one valid schedule.
+            // Without `.noinc` the pending count is bumped first (net zero).
             LoweredInstr::CpAsyncMbarrierArrive {
                 addr_base,
                 addr_offset,
@@ -2392,11 +2211,9 @@ impl<'p> Interpreter<'p> {
                 };
                 self.mbarriers.arrive(id, t, count, expect_tx);
                 if let Some(dst) = state {
-                    // The opaque phase token: not meaningfully modeled (only
-                    // `.parity` waits are supported, which never consume
-                    // it), so `Undefined` is the honest value - a kernel
-                    // that reads it back through any other path already
-                    // hit `unsupported()` at lowering.
+                    // The opaque phase token: only `.parity` waits are
+                    // supported, which never consume it, so `Undefined` is the
+                    // honest value.
                     let token = self.arena.undefined();
                     self.write_reg(t, pc, *dst, Value::Scalar(token))?;
                 }
@@ -2452,16 +2269,9 @@ impl<'p> Interpreter<'p> {
             }
 
             LoweredInstr::Activemask { dst } => {
-                // The OR of `1 << lane` over the executing thread's warp
-                // lanes that exist in the CTA and have not exited (ISA
-                // 9.7.13.11: an "exited or inactive or predicated-off
-                // thread will contribute 0"). Predication and divergence
-                // are deliberately unmodeled - the per-thread interpreter
-                // runs every thread's full straight-line program - so this
-                // is exact for the converged case. Which lanes have exited
-                // when a given thread executes activemask depends on the
-                // round-robin schedule, just as it depends on timing on
-                // real hardware; no cross-thread agreement is implied.
+                // OR of `1 << lane` over existing, non-exited warp lanes (ISA
+                // 9.7.13.11). Exact when converged (divergence is unmodeled);
+                // exits depend on the schedule, as on hardware.
                 let warp_base = (t.0 / WARP_SIZE) * WARP_SIZE;
                 let mut mask: u32 = 0;
                 for lane in 0..WARP_SIZE {
@@ -2503,50 +2313,17 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// Block `t` at a warpgroup-cooperative instruction. No mask to
-    /// validate (unlike `block_at_warp_op`) - membership is implicit;
-    /// an out-of-range warpgroup is caught by `find_ready_warpgroup_op`,
-    /// once the whole group's arrival can be checked in one place.
+    /// Block `t` at a warpgroup-cooperative instruction. Membership is
+    /// implicit; `find_ready_warpgroup_op` checks the warpgroup's range once
+    /// the whole group arrives.
     fn block_at_warpgroup_op(&mut self, t: ThreadId, _pc: InstrId) -> EvalResult<()> {
         self.threads[t].status = Status::AtWarpgroupOp;
         Ok(())
     }
 
-    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem],
-    /// a-desc|[a-tmem], b-desc, idesc, enable-input-d`: `D = A*B+D` (or
-    /// `A*B` if `enable-input-d` is false), `M x N x K` (`K` fixed by
-    /// `.kind` - `tcgen05_mma::k_dim`),
-    /// `A`/`B` read from shared memory through their matrix descriptors
-    /// under the ISA's canonical layouts
-    /// (`eval::tcgen05_mma::operand_element_addr`) - or, for `A` in the
-    /// bracketed form, straight out of Tensor Memory
-    /// ([`Self::read_mma_a_tmem`]). `D` written into Tensor
-    /// Memory by `tcgen05_mma::d_cell` (Layout D for `.cta_group::1`: one
-    /// CTA-wide `warp-rank % 4` grouping of 32 lanes each - confirmed
-    /// against Figures 211/212 - matching the existing `tcgen05.ld`/`.st`
-    /// `(lane, column)` addressing this reuses; `M = 128` puts element
-    /// `(m, n)` at lane `m`, column `d_tmem + n`, while a smaller `M`
-    /// folds `N` across the 128 lanes). Decodes and validates `idesc`/`a_desc`/`b_desc` first,
-    /// in order, each with a specific reason, against the forms modeled:
-    /// dense, base `K`, `M = 32` or `M = 128`, `D` f32, `A`/`B` f16 (`.kind::f16`) or e4m3/e5m2
-    /// (`.kind::f8f6f4`), no negate, relative leading-dimension stride,
-    /// `base_offset == 0` on both descriptors.
-    ///
-    /// The data is computed here, at issue, but the ISA makes the operation
-    /// asynchronous, so it stays in flight (`tcgen05_mma::InflightMma`)
-    /// until a waiter observes an mbarrier phase a later `tcgen05.commit`
-    /// by `t` arrived on:
-    /// - operand reads are χ-checked now (their producers must be ordered
-    ///   before the issue), and the bytes stay write-locked in flight;
-    /// - `D` must not overlap an un-waited `tcgen05.ld`/`.st` or another
-    ///   issuer's in-flight MMA, and stays locked against `tcgen05.ld`/
-    ///   `.st` in flight - later MMAs from `t` are exempt, since the ISA
-    ///   executes one thread's MMAs in issue order;
-    /// - the accesses are χ-checked and recorded here
-    ///   ([`Self::record_mma_accesses`]) and recorded afresh when a waiter
-    ///   observes the completion ([`Self::release_observed_mmas`]), so a
-    ///   sync that merely follows the issue or the commit orders nothing
-    ///   for other threads.
+    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4}`: `D = A*B (+D)`, A/B via
+    /// smem descriptors (or A from TMEM), D into TMEM. Computed at issue, in
+    /// flight until a waiter observes a later commit.
     #[allow(clippy::too_many_arguments)]
     fn exec_tcgen05_mma(
         &mut self,
@@ -2831,11 +2608,9 @@ impl<'p> Interpreter<'p> {
                         None => self.arena.undefined(),
                     }
                 } else {
-                    // A real (not integer) zero: `D` is f32-typed, and
-                    // `fma`'s eager fold only fires when every operand is
-                    // `RealConst` - an `IntConst(0)` seed would silently
-                    // break the fold for the entire accumulation chain
-                    // (each `fma`'s output becomes the next call's `c`).
+                    // A real (not integer) zero: `fma`'s eager fold needs every
+                    // operand `RealConst`, so an `IntConst(0)` seed would break
+                    // folding along the whole accumulation chain.
                     self.arena.real(Real::zero())
                 };
                 let a_row = &a[m as usize * k_dim..][..k_dim];
@@ -2867,13 +2642,9 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// Read one `tcgen05.mma` operand - `rows x k_dim` elements, `rows`
-    /// being its `M` (for `A`) or `N` (for `B`) extent - from shared memory
-    /// in row-major order, appending every byte it touches to `bytes`. A
-    /// concrete element (never an input element: e.g. zero padding or a
-    /// constant tile a kernel stored itself) is decoded from its f16/fp8
-    /// bit encoding; a symbolic element already is its real value (see
-    /// `eval::float_bits`'s module doc).
+    /// Read one `tcgen05.mma` operand (`rows x k_dim`, row-major) from shared
+    /// memory, appending touched bytes to `bytes`. Concrete elements are
+    /// decoded from f16/fp8 bits; symbolic ones are real values.
     fn read_mma_operand(
         &mut self,
         t: ThreadId,
@@ -2915,11 +2686,9 @@ impl<'p> Interpreter<'p> {
         Ok(elems)
     }
 
-    /// Resolve and decode one `tcgen05.mma` shared-memory matrix
-    /// descriptor operand, rejecting the two addressing modes not modeled:
-    /// `sm_103a`'s absolute leading-dimension stride, and a nonzero base
-    /// offset (a start-address misalignment `swizzled_element_addr` never
-    /// had a confirmed correction for).
+    /// Resolve and decode one `tcgen05.mma` smem matrix descriptor, rejecting
+    /// the unmodeled modes: `sm_103a`'s absolute leading-dimension stride and a
+    /// nonzero base offset.
     fn mma_matrix_descriptor(
         &mut self,
         t: ThreadId,
@@ -2953,20 +2722,9 @@ impl<'p> Interpreter<'p> {
         Ok(md)
     }
 
-    /// Read `tcgen05.mma`'s `A` operand out of Tensor Memory (the
-    /// `[a-tmem]` form): `rows x k_dim` f16 elements, row `m` in lane
-    /// `m` (the address's lane field must be 0) and element `k` in
-    /// the low (`k` even) or high (`k` odd) half of column `col_base +
-    /// k / 2` - the packing a `tcgen05.st` of `cvt.rn.f16x2.f32` results
-    /// leaves behind, and the layout `A`'s `K` contiguous 16-bit elements
-    /// have across 32-bit columns. Returns the elements row-major
-    /// alongside the cell range, which the caller keeps as part of the
-    /// operation's in-flight footprint.
-    ///
-    /// Each cell is χ-checked here at issue, the same point `D`'s
-    /// accumulator read is checked; the shared-memory operand path also
-    /// locks its bytes now and enters χ again at the observed completion
-    /// ([`Self::release_observed_mmas`]).
+    /// Read `tcgen05.mma`'s `[a-tmem]` `A`: `rows x k_dim` f16s, row `m` in
+    /// lane `m`, element `k` in half `k % 2` of column `col_base + k / 2`.
+    /// Cells are χ-checked at issue; returns elements and cell range.
     fn read_mma_a_tmem(
         &mut self,
         t: ThreadId,
@@ -3055,11 +2813,9 @@ impl<'p> Interpreter<'p> {
         Ok((elems, Some(range)))
     }
 
-    /// Reject an access to columns `[start_col, start_col + num_cols)` of
-    /// Tensor Memory `quadrant` while an in-flight `tcgen05.mma` - other
-    /// than one issued by `exempt` - still owns them: its `D` range either
-    /// way, and its `[a-tmem]` `A` range for a write, which would change
-    /// the operand under an operation that has not completed.
+    /// Reject an access to TMEM columns `[start_col, start_col + num_cols)` of
+    /// `quadrant` still owned by an in-flight `tcgen05.mma` not issued by
+    /// `exempt`: its `D` range, or for writes its `A` range.
     pub(in crate::eval) fn check_inflight_mma_tmem(
         &self,
         quadrant: u32,
@@ -3097,14 +2853,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// χ-check and record `op`'s accesses - its shared-memory operand
-    /// reads (through the async proxy) and its `D` writes - attributed to
-    /// its issuer. Done at issue, where the check matters: the MMA may
-    /// execute any time after it, so it conflicts with every access not
-    /// ordered before the issue. Done again at the observed completion
-    /// ([`Self::release_observed_mmas`]), where the recording matters. In
-    /// between, the in-flight record rejects every other access to these
-    /// locations, so a sync that clears the issue's entries loses nothing.
+    /// χ-check and record `op`'s smem operand reads (async proxy) and `D`
+    /// writes, attributed to its issuer: at issue for the check, again at
+    /// observed completion for the record.
     fn record_mma_accesses(race: &mut RaceTracker, op: &InflightMma) -> EvalResult<()> {
         for &byte in &op.operand_bytes {
             race.read_via(MemSpace::Shared, byte, 1, op.issuer, op.pc, Proxy::Async)
@@ -3119,16 +2870,9 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// A waiter is about to observe `mbar`'s last completed phase: every
-    /// MMA tracked by that phase (or an earlier one of `mbar`) has
-    /// completed, so its operand locks and in-flight `D` footprint are
-    /// dropped. Its accesses are recorded in χ afresh first: the operation
-    /// only completed now, so a sync between its issue and here (which
-    /// cleared the issue's entries) orders nothing about it, and the
-    /// caller's following waiter sync is what orders it - for the waiters
-    /// alone. Their entries can't conflict here: every other access to
-    /// those locations since the issue was rejected against the in-flight
-    /// record.
+    /// A waiter is about to observe `mbar`'s last phase: drop the locks of
+    /// every MMA it tracks, re-recording their accesses in χ first, since they
+    /// only completed now and order only for the waiters.
     fn release_observed_mmas(&mut self, mbar: MbarrierId) -> EvalResult<()> {
         let observed = self.mbarriers.completed_phases(mbar);
         let (done, in_flight) = std::mem::take(&mut self.tcgen05_inflight)
@@ -3153,18 +2897,9 @@ impl<'p> Interpreter<'p> {
     // Operand and register access
     // =====================================================================
 
-    /// Read a register. A never-written register reads as `Undefined`
-    /// rather than erroring: nvcc emits reads of dead uninitialized values
-    /// (e.g. the accumulator-init idiom `selp.f32 %f, 0.0, %f, %p` on the
-    /// first loop iteration). The undefined value is an error only if it
-    /// reaches an output or a point that requires a concrete value.
-    ///
-    /// Hazard B (PTX ISA 9.7.17.7.3, `wgmma.wait_group`): reading a
-    /// register a `wgmma.mma_async` wrote and hasn't yet been released by
-    /// a covering `wgmma.wait_group` is exactly the external interference
-    /// the ISA calls undefined behavior. `wgmma.mma_async`'s own
-    /// self-continuation seed-read goes through [`Self::read_reg_wgmma_accum`]
-    /// instead, which deliberately skips this check.
+    /// Read a register; a never-written one reads `Undefined` (nvcc's `selp`
+    /// accumulator-init idiom). Hazard B (PTX ISA 9.7.17.7.3): a still-pending
+    /// wgmma register is UB to read.
     pub(in crate::eval) fn read_reg(
         &self,
         t: ThreadId,
@@ -3178,19 +2913,9 @@ impl<'p> Interpreter<'p> {
             .unwrap_or(Value::Scalar(self.undefined)))
     }
 
-    /// Write a register. The one chokepoint every register write in the
-    /// evaluator goes through - mirrors `mem_read`/`mem_write` being the
-    /// two chokepoints for memory.
-    ///
-    /// Hazard B: same check as `read_reg`'s, on the write side (an
-    /// ordinary write to a still-pending accumulator register is equally
-    /// external interference). Also hazard A bookkeeping (PTX ISA
-    /// 9.7.17.7.1, `wgmma.fence`): any ordinary write always breaks a
-    /// same-shape `wgmma.mma_async` chain and resets this register's
-    /// fence gate to "dirty as of now" - see `WgmmaRegState`'s doc
-    /// comment. `wgmma.mma_async`'s own writeback goes through
-    /// [`Self::write_reg_wgmma_accum`] instead, which applies hazard A's
-    /// check but not hazard B's (the self-continuation exemption).
+    /// Write a register - the one chokepoint for register writes. Applies
+    /// hazard B's pending check and hazard A's bookkeeping (any ordinary write
+    /// breaks a wgmma chain and dirties the fence gate).
     pub(in crate::eval) fn write_reg(
         &mut self,
         t: ThreadId,
@@ -3205,9 +2930,8 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Hazard B's check (PTX ISA 9.7.17.7.3): is `reg` still pending a
-    /// `wgmma.wait_group` release? Shared by `read_reg`/`write_reg`;
-    /// `wgmma.mma_async`'s own accumulator access deliberately does not
-    /// call this (see `read_reg_wgmma_accum`/`write_reg_wgmma_accum`).
+    /// `wgmma.wait_group` release? Used by `read_reg`/`write_reg`, never by
+    /// wgmma's own accumulator access.
     fn check_wgmma_pending(&self, t: ThreadId, pc: InstrId, reg: RegId) -> EvalResult<()> {
         if let Some(prior_pc) = self.threads[t].wgmma.pending_since(reg) {
             return Err(EvalError::WgmmaWaitGroupHazard {
@@ -3224,10 +2948,8 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// Hazard A's check (PTX ISA 9.7.17.7.1): is `wgmma.mma_async`
-    /// accessing `reg` (as its accumulator, of shape `shape`) properly
-    /// fenced? See `WgmmaRegState::is_fenced_for` for the two ways this
-    /// can be satisfied (same-shape chaining, or an intervening fence).
+    /// Hazard A's check (PTX ISA 9.7.17.7.1): is `wgmma.mma_async`'s access to
+    /// accumulator `reg` of `shape` fenced? See `WgmmaRegState::is_fenced_for`.
     fn check_wgmma_fence(
         &self,
         t: ThreadId,
@@ -3253,12 +2975,9 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// Read a `wgmma.mma_async` accumulator seed (`scale_d` true).
-    /// Applies hazard A's check but deliberately not `read_reg`'s hazard
-    /// B check: this register is legitimately still pending (this
-    /// thread's own prior `wgmma.mma_async` writeback in the same chain,
-    /// not yet released by `wgmma.wait_group`) - exactly the
-    /// self-continuation the ISA does not treat as undefined behavior.
+    /// Read a `wgmma.mma_async` accumulator seed (`scale_d` true): hazard A's
+    /// check but not hazard B's, since the thread's own same-chain pending
+    /// writeback is allowed.
     pub(in crate::eval) fn read_reg_wgmma_accum(
         &mut self,
         t: ThreadId,
@@ -3273,15 +2992,9 @@ impl<'p> Interpreter<'p> {
             .unwrap_or(Value::Scalar(self.undefined)))
     }
 
-    /// Write a `wgmma.mma_async` accumulator result. Applies hazard A's
-    /// check unconditionally (not just when `scale_d` is true - this is
-    /// what makes "before the first `wgmma.mma_async`" fire correctly on
-    /// a chain's leading call, which has no seed-read at all), then
-    /// hazard A's bookkeeping (tag `reg` with `shape` so a later
-    /// same-shape chained `wgmma.mma_async` is fence-exempt) and hazard
-    /// B's "now pending a `wgmma.wait_group`" mark - not `write_reg`'s
-    /// generic hazard B check (same self-continuation exemption as the
-    /// read side above).
+    /// Write a `wgmma.mma_async` accumulator result: hazard A's check always
+    /// (so a chain's leading call is checked), then A's shape tag and B's
+    /// pending mark, without B's check.
     pub(in crate::eval) fn write_reg_wgmma_accum(
         &mut self,
         t: ThreadId,
@@ -3323,15 +3036,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Resolve an operand that must be a scalar.
-    /// 64-bit bitwise ops with a packed-pair operand, evaluated lane-wise
-    /// as exact bit semantics on two 32-bit halves: `shl`/`shr` by 32 move
-    /// a lane, `or` merges lanes against a zero lane, `and` keeps or clears
-    /// whole lanes. This is the idiom nvcc/Triton use to assemble `f32x2`
-    /// operands from zero-extended 32-bit loads (`shl.b64 %rd_hi, 32`;
-    /// `or.b64 %rd, %rd_hi, %rd_lo`). Returns `None` when no operand is a
-    /// pair (the ordinary scalar path applies); errors on a pair pattern
-    /// with no exact lane reading.
+    /// 64-bit bitwise ops with a packed-pair operand, evaluated lane-wise with
+    /// exact bit semantics (the nvcc/Triton `f32x2` assembly idiom). `None` if
+    /// no operand is a pair; errors on inexact patterns.
     fn pair_bitwise_binop(
         &mut self,
         t: ThreadId,
@@ -3524,19 +3231,9 @@ impl<'p> Interpreter<'p> {
         Ok(Value::Scalar(d))
     }
 
-    /// One 16-bit lane of a `.b32` funnel-shift operand, for the lane
-    /// shuffle in [`Self::eval_shf`].
-    ///
-    /// A `Pair` names its lanes outright and a concrete scalar slices
-    /// exactly. A *symbolic* scalar has no provable lane split, and is
-    /// accepted for its low lane only: reaching here means it sits
-    /// opposite a packed f16 pair in a half-width funnel shift, which is
-    /// the zero-extended narrow-load idiom (`ld.global.u16` into a `.b32`
-    /// register, then shuffled into an f16 pair), where the register's
-    /// value *is* its low lane. A genuinely 32-bit-wide symbolic value in
-    /// that position would be a type error in the kernel itself. Its high
-    /// lane carries no such reading, so that case stays a loud error
-    /// rather than an assumed zero.
+    /// One 16-bit lane of a `.b32` funnel-shift operand for [`Self::eval_shf`].
+    /// A symbolic scalar is accepted for its low lane only (the zero-extended
+    /// narrow-load idiom); its high lane is a loud error.
     fn shf_lane(
         &mut self,
         t: ThreadId,
@@ -3633,11 +3330,9 @@ impl<'p> Interpreter<'p> {
         Ok(Some(Value::Quad(b0, b1, b2, b3)))
     }
 
-    /// [`Self::scalar_operand`] read at float type `ty`: a concrete integer
-    /// is a raw bit pattern and is decoded
-    /// ([`float_bits::decode_float_bits`]). For instructions that build
-    /// their float node inline rather than through an `eval_*` helper that
-    /// decodes for them (`copysign`, scalar `fma`).
+    /// [`Self::scalar_operand`] at float type `ty`: a concrete integer is
+    /// decoded as raw bits ([`float_bits::decode_float_bits`]). For inline
+    /// float nodes (`copysign`, scalar `fma`).
     fn float_operand(
         &mut self,
         t: ThreadId,
@@ -3655,6 +3350,7 @@ impl<'p> Interpreter<'p> {
         float_bits::decode_float_bits(&mut self.arena, pc, ty, e)
     }
 
+    /// Resolve an operand that must be a scalar.
     pub(in crate::eval) fn scalar_operand(
         &mut self,
         t: ThreadId,
@@ -3664,10 +3360,8 @@ impl<'p> Interpreter<'p> {
         match self.operand_value(t, pc, op)? {
             Value::Scalar(e) => Ok(e),
             Value::Pair(lo, hi) => {
-                // A `mov.bN dst, {lo, hi}` pack of two concrete integer
-                // halves read back as one wide scalar (a 64-bit address or
-                // constant assembled from 32-bit parts): recombine the bit
-                // pattern exactly. Only integer constants qualify - a pair
+                // A `mov.bN dst, {lo, hi}` pack of two concrete integer halves
+                // read as one wide scalar: recombine the bits exactly. A pair
                 // of real lanes has no scalar reading.
                 let half_bits = match op {
                     Operand::Reg(reg) => match reg.class {
@@ -3703,30 +3397,17 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Recombine two concrete integer halves of a packed pair into one wide
-    /// scalar, the way a `mov.bN dst, {lo, hi}` pack or a wide granule bit-
-    /// encodes an assembled value: `lo` occupies the low `half_bits` bits,
-    /// `hi` the next `half_bits` above it. Shared by `scalar_operand`
-    /// (register reads) and `extract_outputs` (output-array granules).
-    /// Takes the arena directly (not `&mut self`) so callers holding an
-    /// unrelated borrow of another field - `extract_outputs` iterates
-    /// `&self.config.arrays` - can still call it.
+    /// Recombine two concrete integer halves into one wide scalar, `lo` in the
+    /// low `half_bits` bits. Takes the arena directly so `extract_outputs` can
+    /// call it while borrowing the config.
     fn recombine_pair_halves(arena: &mut ExprArena, lo: i64, hi: i64, half_bits: u32) -> ExprId {
         let mask = (1i64 << half_bits) - 1;
         arena.int(((hi & mask) << half_bits) | (lo & mask))
     }
 
-    /// Resolve an operand that must be a packed pair (the two lanes of a
-    /// `.f16x2`/`.bf16x2` arithmetic operand, `lane_ty` = `F16`/`Bf16`).
-    /// A concrete `Value::Scalar` is a raw 32-bit bit pattern moved into
-    /// the register some other way than a native packed producer - most
-    /// commonly `mov.b32 %r, 0` building a packed-zero clamp constant, or
-    /// a packed polynomial-coefficient literal - so it's decoded bit-for-
-    /// bit into the two lanes real hardware would read from it, the same
-    /// interpretation `UnpackHalves`'s scalar fallback gives an integer
-    /// unpack. A symbolic scalar can't be decoded this way (no bit-level
-    /// reasoning over an exact-real value) and is a clean error, as is a
-    /// concrete value containing a NaN half.
+    /// Resolve a packed-pair operand (`.f16x2`/`.bf16x2`). A concrete scalar is
+    /// decoded bit-for-bit into its two lanes (e.g. `mov.b32 %r, 0`); a
+    /// symbolic scalar or a NaN half is an error.
     pub(in crate::eval) fn pair_operand(
         &mut self,
         t: ThreadId,
@@ -3792,11 +3473,9 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// `tensormap.replace`: write one named field of the tensor-map object
-    /// at `addr_base + addr_offset`. `new_val` operands are resolved to
-    /// concrete integers immediately (see `eval::tensor_map_table`'s
-    /// module doc for why); `.field3` enum values were already decoded at
-    /// lowering time, since the ISA requires them to be immediates there.
+    /// `tensormap.replace`: write one field of the tensor map at `addr_base +
+    /// addr_offset`. `new_val` must be concrete (see `eval::tensor_map_table`);
+    /// `.field3` enums were decoded at lowering.
     fn exec_tensormap_replace(
         &mut self,
         t: ThreadId,
@@ -3959,18 +3638,9 @@ impl<'p> Interpreter<'p> {
     // Memory access
     // =====================================================================
 
-    /// Compute the concrete effective address `base + offset`.
-    ///
-    /// Hardware semantics: the register holds a 64-bit address and the
-    /// immediate is a two's-complement byte offset, so the `[reg + imm]`
-    /// sum is u64 arithmetic mod 2^64. A wrapped sum is not itself an
-    /// error - it is simply an address, and unless a declared region owns
-    /// it the ownership bounds check (`check_bounds`, subtraction-form,
-    /// wrap-proof) rejects it loudly as `OutOfBounds` in every build
-    /// profile (see `test_negative_index_wrap_is_out_of_bounds`). A
-    /// checked i64 sum here would guard the wrong boundary: it rejects
-    /// valid accesses that merely cross 2^63 (an array based just below
-    /// the sign bit) while letting genuine u64 wraps through untouched.
+    /// Concrete effective address `base + offset`, u64 mod 2^64 as on hardware.
+    /// A wrapped sum is just an address that `check_bounds` rejects; a checked
+    /// i64 sum would guard the wrong boundary.
     pub(in crate::eval) fn effective_addr(
         &mut self,
         t: ThreadId,
@@ -3986,10 +3656,9 @@ impl<'p> Interpreter<'p> {
     /// its shared-memory write. Shared by `cp.async.wait_group` and
     /// `cp.async.mbarrier.arrive`, the two completion points.
     fn complete_cp_async_copy(&mut self, t: ThreadId, copy: PendingCopy) -> EvalResult<()> {
-        // Release before writing: the deferred write must
-        // not trip the copy's own still-held dst lock (and
-        // an early same-thread peek before this point must
-        // still be caught by it - see the design writeup).
+        // Release before writing: the deferred write must not trip the copy's
+        // own dst lock (an earlier same-thread peek must still be caught by
+        // it).
         self.race
             .release_dst(MemSpace::Shared, copy.dst_addr, copy.cp_size, t, copy.pc);
         if copy.real_bytes > 0 {
@@ -4014,18 +3683,9 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// Ownership containment: the region owning the access's *first byte*
-    /// must contain the whole access; an access whose first byte no region
-    /// owns is out of bounds. Anchoring at the first byte's owner makes an
-    /// access that starts inside one array and runs past its end a loud
-    /// `OutOfBounds` even when the trailing bytes land inside an adjacent
-    /// array (the paper's §6.2 point: hardware happens to tolerate
-    /// out-of-bounds shared reads, the model must not). Regions never
-    /// overlap - config validation keeps arrays pairwise disjoint, the
-    /// symbol-table packer keeps each space's variables disjoint, and
-    /// `Interpreter::new` rejects arrays overlapping the module-global
-    /// window - so the owner is unique; `find` keeps the answer
-    /// deterministic regardless.
+    /// Ownership containment: the region owning the first byte must contain the
+    /// whole access, so overrunning into an adjacent array is `OutOfBounds`
+    /// (paper §6.2). Regions never overlap, so the owner is unique.
     pub(in crate::eval) fn check_bounds(
         &self,
         t: ThreadId,
@@ -4057,19 +3717,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Natural-alignment check. PTX ISA 6.4.1: "The address must be
-    /// naturally aligned to a multiple of the access size. If an address is
-    /// not properly aligned, the resulting behavior is undefined". A
-    /// misaligned kernel has no defined hardware semantics to model, so the
-    /// access is rejected loudly instead. Addresses are always concrete
-    /// here, so the check is a single modulo.
-    ///
-    /// `required` is the access size for scalar loads/stores (`mem_read`/
-    /// `mem_write` check every access at its granule width), the *total*
-    /// size for vector accesses (checked once at the `LoadVec`/`StoreVec`
-    /// sites; the per-element checks below them are implied), and the
-    /// row/fragment alignment for the tensor-core cooperative ops (checked
-    /// at the `ldmatrix`/`wmma` sites in `eval::warp`).
+    /// Natural alignment (PTX ISA 6.4.1: misaligned access is undefined),
+    /// rejected loudly. `required` is the access size for scalars, the total
+    /// size for vectors, the fragment alignment for tensor-core ops.
     pub(in crate::eval) fn check_alignment(
         &self,
         t: ThreadId,
@@ -4091,14 +3741,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Bounds-check, race-check, and read memory.
-    ///
-    /// Reading in-bounds shared/global bytes that were never written yields
-    /// `Undefined` rather than an error: the read is still recorded in χ, so
-    /// a later conflicting write is reported as a race (this is exactly the
-    /// paper's motivating example, where thread 0 reads `buf[1]` before
-    /// thread 1 has written it). The undefined value is an error only if it
-    /// reaches an output or a point that requires a concrete value.
+    /// Bounds-check, race-check, and read memory. Never-written in-bounds bytes
+    /// read `Undefined` but are still recorded in χ, so a later conflicting
+    /// write is a race (the paper's motivating example).
     pub(in crate::eval) fn mem_read(
         &mut self,
         t: ThreadId,
@@ -4122,12 +3767,9 @@ impl<'p> Interpreter<'p> {
         proxy: Proxy,
     ) -> EvalResult<Value> {
         self.check_bounds(t, pc, space, addr, width)?;
-        // Every program access flows through here (scalar ld/st directly;
-        // vector and tensor-core ops per element, after their own
-        // larger-granule checks), so this is the one natural-alignment
-        // chokepoint. Param space never reaches it: `check_bounds` rejects
-        // Param/Const accesses, and `LoadParam` reads interpreter-internal
-        // parameter bindings, not byte-addressed memory.
+        // Every program access flows through here, so this is the one
+        // natural-alignment chokepoint. Param space never reaches it
+        // (`check_bounds` rejects it; `LoadParam` is not memory).
         self.check_alignment(t, pc, space, addr, width)?;
         let memory = match space {
             MemSpace::Global | MemSpace::Shared => {
@@ -4162,16 +3804,9 @@ impl<'p> Interpreter<'p> {
                     Ok(Value::Scalar(self.arena.undefined()))
                 }
             }
-            // A *partially* materialized input array: this access spans
-            // elements that already exist alongside ones that do not, so
-            // the granule scan stops at the first covered byte and reports
-            // a reinterpretation rather than a plain miss. Materializing
-            // just the absent elements (`materialize_input` skips the
-            // present ones) lets the ordinary combine rules compose the
-            // whole access - the two-f16-element `ld.global.b32` over an
-            // array some other thread already touched 2 bytes of. A
-            // genuine reinterpretation materializes nothing, so the guard
-            // fails and the loud error below still stands.
+            // A partially materialized input array: materialize just the absent
+            // elements and retry, so the combine rules compose the access. A
+            // genuine reinterpretation materializes nothing and stays an error.
             Err(MemAccessError::Reinterpret { .. })
                 if space == MemSpace::Global && self.materialize_input(addr, width) =>
             {
@@ -4190,10 +3825,9 @@ impl<'p> Interpreter<'p> {
     /// overlapping `[addr, addr + width)` that is not yet present in
     /// global memory. Returns whether any element was materialized.
     fn materialize_input(&mut self, addr: u64, width: u64) -> bool {
-        // Collect missing elements first (the array list borrows the config).
-        // (addr, width, index, interned array name or None for identity
-        // indices); the array's name is interned once and shared by all of
-        // its elements.
+        // Collect missing elements first, since the array list borrows the
+        // config: (addr, width, index, array name interned once, or None for
+        // identity indices).
         let mut missing: Vec<(u64, u64, u64, Option<StringId>)> = Vec::new();
         for array in &self.config.arrays {
             if !array.kind.is_input() {
@@ -4211,11 +3845,9 @@ impl<'p> Interpreter<'p> {
             if !overlaps {
                 continue;
             }
-            // Both sums below are exact: the access was bounds-checked
-            // (`addr + width` fits inside its owning region) and the
-            // array's end fits in u64 (`AnalysisConfig::validate`), so
-            // with width >= 1 neither `addr + width - 1` nor
-            // `base + size - 1` can wrap.
+            // Both sums below are exact: `addr + width` fits in its region and
+            // the array's end fits in u64 (`AnalysisConfig::validate`), so with
+            // width >= 1 neither `- 1` can wrap.
             let end = array.base + size;
             let first = (addr.max(array.base) - array.base) / array.elem_width;
             let last = ((addr + width - 1).min(end - 1) - array.base) / array.elem_width;
@@ -4234,10 +3866,9 @@ impl<'p> Interpreter<'p> {
             }
         }
 
-        // Analysis-setup placement (not a PTX access, so no alignment check
-        // applies): each granule lands at `base + i*elem_width`, naturally
-        // aligned because `AnalysisConfig::validate` requires every array
-        // base to be a multiple of its element width.
+        // Analysis-setup placement, not a PTX access, so no alignment check;
+        // granules are naturally aligned because `validate` requires bases to
+        // be multiples of the element width.
         let mut any = false;
         for (elem_addr, elem_width, index, array_sid) in missing {
             let value = match array_sid {
@@ -4256,12 +3887,9 @@ impl<'p> Interpreter<'p> {
         any
     }
 
-    /// Whether two values denote the same reals, lane by lane: the same
-    /// node, structural equality, or the canonical equivalence check used
-    /// for output comparison (so a warp's lanes holding one reduced sum in
-    /// different association orders count as equal). Only consulted when a
-    /// write-write conflict has already been found, so its cost is paid
-    /// rarely.
+    /// Whether two values denote the same reals lane by lane: same node,
+    /// structural equality, or the canonical equivalence check. Only consulted
+    /// after a write-write conflict, so rarely paid.
     fn same_real_value(&self, a: Value, b: Value) -> bool {
         let lanes = match (a, b) {
             (Value::Scalar(x), Value::Scalar(y)) => vec![(x, y)],
@@ -4292,11 +3920,9 @@ impl<'p> Interpreter<'p> {
         let memory = match space {
             MemSpace::Global | MemSpace::Shared => {
                 let result = self.race.write_with(space, addr, width, t, pc, false);
-                // A store of exactly the value already there (the same
-                // expression) is benign against the previous writer - see
-                // `RaceTracker::write_with`. Only fetch the current value
-                // once a write-write conflict is actually found: the
-                // common non-racing store pays no extra memory read.
+                // A store of the value already there is benign against the
+                // previous writer (`RaceTracker::write_with`). Fetched only
+                // once a write-write conflict is found.
                 let benign = if let Err(MemHazard::Race(info)) = &result
                     && info.prior.is_write
                 {
@@ -4319,12 +3945,9 @@ impl<'p> Interpreter<'p> {
                 if space == MemSpace::Global {
                     &mut self.global
                 } else {
-                    // sm_90+: a later async-proxy read (`tcgen05.mma`)
-                    // needs a `fence.proxy.async` ordering it after this
-                    // write. Asynchronous copies land here too and drop
-                    // this mark right after
-                    // (`RaceTracker::clear_generic_unfenced`): their own
-                    // completion mechanism carries that ordering.
+                    // sm_90+: a later async-proxy read (`tcgen05.mma`) needs a
+                    // `fence.proxy.async` after this write. Async copies clear
+                    // this mark (`RaceTracker::clear_generic_unfenced`).
                     if self.features.async_proxy_fence {
                         self.race.mark_generic_unfenced(addr, width, t, pc);
                     }
@@ -4355,13 +3978,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Split the concrete scalar granule at `start` (width `found_width`)
-    /// into exact halves - repeatedly, toward the half holding the access -
-    /// until the access `[addr, addr + width)` is a whole granule of its
-    /// own (e.g. one fp8 `tcgen05.mma` operand byte of a zero word a kernel
-    /// stored as padding). Returns whether that was reached, so the access
-    /// can be retried. Symbolic scalars have no bit-level halves and stay a
-    /// reinterpretation error.
+    /// Split the concrete scalar granule at `start` into exact halves, toward
+    /// the access, until `[addr, addr + width)` is a granule of its own;
+    /// returns whether it was. Symbolic scalars cannot split.
     fn split_concrete_scalar(
         &mut self,
         space: MemSpace,
@@ -4406,10 +4025,9 @@ impl<'p> Interpreter<'p> {
     }
 }
 
-/// PTX ISA Table 65 (with the note under Table 62): for the 8- and 16-bit
-/// kinds Volta models (`.kind::f16`, `.kind::f8f6f4`), a transposed
-/// (MN-major) operand supports every swizzling mode except 128B with 32B
-/// atomicity - that mode is for `.kind::tf32`'s transposes only.
+/// PTX ISA Table 65 (and note under Table 62): for
+/// `.kind::f16`/`.kind::f8f6f4`, a transposed (MN-major) operand supports every
+/// swizzle mode except 128B with 32B atomicity.
 fn check_mma_operand_layout(
     pc: InstrId,
     md: &tcgen05_mma::MatrixDescriptor,

@@ -1,7 +1,6 @@
-//! LLM-optimized 2D convolution (Section 6.2): AlexNet conv1 expressed as
-//! an implicit GEMM with M = C_OUT = 96, N = 100*55*55 = 302500,
-//! K = 3*11*11 = 363. Both kernels use 256 threads and compute the same
-//! 128x128 output tile per CTA (rows are masked to M = 96).
+//! LLM-optimized 2D convolution (Section 6.2): AlexNet conv1 as an implicit
+//! GEMM (M = 96, N = 100*55*55, K = 3*11*11). Both kernels use 256 threads
+//! and compute the same 128x128 tile per CTA.
 
 use volta_analysis::eval::{AnalysisConfig, ParamValue};
 
@@ -24,14 +23,9 @@ const W_BASE: u64 = 0x2_0000_0000;
 const BIAS_BASE: u64 = 0x2_8000_0000;
 const OUT_BASE: u64 = 0x3_0000_0000;
 
-/// `conv2d(input, weight, bias, output)`. 256 threads =
-/// `THREADS_PER_BLOCK` (8 warps x 32) in both .cu files; the grid is
-/// their launcher's `dim3(CEIL_DIV(N_GEMM,128), CEIL_DIV(M_GEMM,128))` =
-/// (2364, 1) for the 128x128 CTA tile (neither PTX reads `%nctaid`, so it
-/// is documentation only). Array extents are the .cu tensor shapes:
-/// input (N,Cin,Hin,Win), weight (Cout,Cin,Kh,Kw), bias (Cout), output
-/// (N,Cout,Hout,Wout) = C_OUT * n_gemm elements. Both kernels use only
-/// static shared memory, so no dynamic_shared is set.
+/// `conv2d(input, weight, bias, output)` with the .cu files' 256 threads and
+/// grid (the grid is inert: no PTX reads `%nctaid`). Extents are the .cu
+/// tensor shapes; no dynamic shared memory.
 fn config() -> AnalysisConfig {
     let n_gemm = N_BATCH * H_OUT * W_OUT;
     let mut config = AnalysisConfig::new((256, 1, 1));

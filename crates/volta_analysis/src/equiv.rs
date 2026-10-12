@@ -1,10 +1,6 @@
-//! Equivalence checking of symbolic expressions.
-//!
-//! A thin wrapper over the `canon` decision procedure (see
-//! `docs/canonicalizer-plan.md`). Use `EquivSession` when checking many
-//! elements of the same kernel pair: the session's intern tables and memos
-//! make shared structure (score polynomials, softmax denominators, the
-//! other 63 columns of the row) free after the first element.
+//! Equivalence checking of symbolic expressions: a thin wrapper over `canon`.
+//! Use one `EquivSession` for many elements of a kernel pair, so shared
+//! structure (score polys, softmax denominators) is free after the first.
 
 use crate::canon::{CanonError, Session};
 use crate::logging::info;
@@ -36,16 +32,9 @@ impl std::error::Error for EquivError {}
 
 pub type EquivResult<T> = Result<T, EquivError>;
 
-/// A reusable equivalence-checking session for one kernel pair, fixed at
-/// construction: session memos key on `(Side, ExprId)`, and an `ExprId`
-/// is only meaningful within its own arena, so `check` takes element ids
-/// only and cannot be handed a different pair.
-///
-/// Sessions self-limit their memory: when the intern tables grow past a
-/// bound (chain-heavy VCs intern millions of intermediate terms per
-/// element), the tables are dropped and rebuilt lazily from the still-live
-/// `ExprArena`s. This trades some re-canonicalization of shared structure
-/// for a hard cap on resident memory.
+/// A reusable checking session fixed to one kernel pair (memos key on
+/// `(Side, ExprId)`). Past a term bound its intern tables are dropped and
+/// rebuilt lazily, trading re-canonicalization for a hard memory cap.
 pub struct EquivSession<'a> {
     session: Session,
     recycle_terms: usize,
@@ -63,10 +52,8 @@ impl<'a> EquivSession<'a> {
         Self::with_recycle_terms(arena1, arena2, DEFAULT_RECYCLE_TERMS)
     }
 
-    /// A session that recycles its intern tables once they exceed
-    /// `recycle_terms` interned terms (`0` = never recycle). Lower values
-    /// bound resident memory; each recycle re-canonicalizes structure that
-    /// later elements would otherwise share.
+    /// A session that recycles its intern tables past `recycle_terms`
+    /// interned terms (`0` = never): lower bounds memory, costs re-canon.
     pub fn with_recycle_terms(
         arena1: &'a ExprArena,
         arena2: &'a ExprArena,
@@ -240,10 +227,8 @@ mod tests {
         assert!(check_equivalent(&arena, a, &arena, u).is_err());
     }
 
-    /// Regression: a named symbol whose string spells a machine symbol's
-    /// rendered name (`"s{N}"`) used to intern to the same canon variable
-    /// as machine `Symbol(N)` - proving two independent values
-    /// "equivalent". The typed `SymbolRef` namespaces keep them apart.
+    /// Regression: a named symbol spelling a machine symbol's name (`"s{N}"`)
+    /// must not intern to the same canon variable as machine `Symbol(N)`.
     #[test]
     fn named_symbol_does_not_alias_machine_symbol() {
         use crate::symbolic::ExprNode;

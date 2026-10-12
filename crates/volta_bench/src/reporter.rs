@@ -42,9 +42,8 @@ impl TableMode {
 }
 
 /// Print one category's results as a table (paper-style columns per
-/// [`TableMode`], plus Z3 columns when the run had a Z3 phase). "Gen (s)"
-/// and "Solve (s)" (and "Z3 (s)") are *medians* across the run's
-/// `iterations` (noted on the header line).
+/// [`TableMode`], plus Z3 columns after a Z3 phase); timings are medians
+/// across `iterations`.
 pub fn print_results_table(
     out: &mut impl Write,
     results: &[BenchmarkResult],
@@ -194,12 +193,9 @@ pub fn print_summary(out: &mut impl Write, results: &[BenchmarkResult]) -> Resul
     Ok(())
 }
 
-/// The `single` command's detailed report for one benchmark (also used
-/// by `generate single`/`solve single` with the matching [`TableMode`]).
-/// In `Combined` mode the generation lines (VC gen, Instrs, Syncs) print
-/// unconditionally - zeros included - exactly as the one-shot report
-/// always has, failed runs included; the phase-limited modes print no
-/// line for a phase that didn't run.
+/// Detailed report for one benchmark (`single`, `generate single`, `solve
+/// single`). `Combined` mode prints the generation lines unconditionally,
+/// zeros included; other modes skip phases that didn't run.
 pub fn print_single_result(
     out: &mut impl Write,
     result: &BenchmarkResult,
@@ -331,10 +327,8 @@ mod tests {
         }
     }
 
-    /// The one-shot (`Combined`) single report prints its generation
-    /// lines unconditionally - zeros included - even for a failed run
-    /// with empty stats, exactly as it did before the phase-decoupled
-    /// modes existed; the phase-limited modes keep gating them on the
+    /// The `Combined` single report prints its generation lines even for a
+    /// failed run with empty stats; the phase-limited modes gate them on the
     /// phase having run.
     #[test]
     fn combined_single_report_prints_generation_lines_unconditionally() {

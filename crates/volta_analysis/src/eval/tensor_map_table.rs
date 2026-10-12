@@ -1,12 +1,6 @@
-//! `tensormap` object state: a side table of named fields, keyed by the
-//! concrete `(space, address)` the tensor-map object is created/accessed
-//! at (PTX ISA 5.5.8, 9.7.9.27 `tensormap.replace`).
-//!
-//! The ISA declares the tensor-map a 128-byte *opaque* object with an
-//! undefined binary layout - only `tensormap.replace`'s named-field
-//! interface is specified. Volta therefore never models literal
-//! tensor-map bytes (unlike ordinary memory); each entry here holds the
-//! fields `.replace` has written so far, `None`/absent until then.
+//! `tensormap` object state: named fields keyed by the object's concrete `(space, address)`
+//! (PTX ISA 5.5.8, 9.7.9.27). The ISA makes the 128-byte object opaque, so Volta models only
+//! the fields `tensormap.replace` has written, never literal bytes.
 
 use std::collections::HashMap;
 
@@ -16,22 +10,9 @@ use crate::tensor_map::{
     TensorSwizzleMode,
 };
 
-/// One tensor-map object's fields, as populated by `tensormap.replace`.
-/// Per-dimension fields are sparse (keyed by `ord`) rather than
-/// fixed-size: `.rank` may be written before or after the per-dimension
-/// fields in source order, so nothing here can assume a dimension count
-/// up front - completeness (every `ord` in the field's valid range
-/// present) is checked only once the entry is actually used, by whichever
-/// instruction consumes it (`eval::interp`'s `cp.async.bulk.tensor`
-/// handling).
-///
-/// `new_val` operands are resolved to concrete integers at `.replace` time
-/// (not kept symbolic): every field here ultimately shapes an address
-/// (PTX ISA 9.7.9.26.5.2's addressing formula), and Volta already requires
-/// concreteness for anything address-shaping (`Interpreter::effective_addr`
-/// and friends) - deferring it here would just move the same `NotConcrete`
-/// error to a confusing place, two instructions away from the register
-/// write that was actually symbolic.
+/// One tensor-map object's fields, as written by `tensormap.replace` (concrete, since they
+/// shape addresses). Per-dimension fields are sparse by `ord` since `.rank` may come later;
+/// completeness is checked only when a consumer (`cp.async.bulk.tensor`) uses the entry.
 #[derive(Debug, Clone, Default)]
 pub struct TensorMapEntry {
     pub global_address: Option<u64>,
@@ -60,11 +41,8 @@ impl TensorMapTable {
         Self::default()
     }
 
-    /// Get-or-create the entry at `(space, addr)` for a `tensormap.replace`
-    /// write. There is no `tensormap.init`-like instruction - a tensor-map
-    /// object comes into existence at its first field write (this
-    /// candidate kernel's own idiom: build one entirely in shared memory
-    /// via a sequence of `.replace` calls).
+    /// Get-or-create the entry at `(space, addr)` for a `tensormap.replace` write; there is
+    /// no init instruction, so an object comes into existence at its first field write.
     pub fn entry_mut(&mut self, space: MemSpace, addr: u64) -> &mut TensorMapEntry {
         self.entries.entry((space, addr)).or_default()
     }
@@ -73,11 +51,8 @@ impl TensorMapTable {
         self.entries.get(&(space, addr))
     }
 
-    /// `tensormap.cp_fenceproxy`: materialize a structured copy of the
-    /// entry at `(src_space, src_addr)` at `(dst_space, dst_addr)` - a copy
-    /// of the *named fields*, matching the ISA's "opaque object" framing
-    /// (there are no literal bytes to copy). `None` if there is no source
-    /// entry yet.
+    /// `tensormap.cp_fenceproxy`: copy the source entry's *named fields* (the object is
+    /// opaque, so there are no bytes) to `(dst_space, dst_addr)`; `None` if no source entry.
     pub fn copy_entry(
         &mut self,
         dst_space: MemSpace,
@@ -91,15 +66,9 @@ impl TensorMapTable {
     }
 }
 
-/// Translate a tensor-map's (`.swizzle_mode`, `.swizzle_atomicity`) field
-/// pair into the matrix-descriptor swizzle encoding
-/// (`eval::tcgen05_mma::SwizzleMode`) that
-/// `eval::tcgen05_mma::swizzled_element_addr` understands - PTX ISA 5.5.7
-/// describes the same byte-permutation pattern for both the tensor-copy
-/// destination and the MMA operand read, just reached from two
-/// differently-encoded fields. Combinations with no matrix-descriptor
-/// equivalent (96B swizzle; 128B with plain-32B or 64B atomicity) return
-/// `None` - not yet modeled, no corpus kernel uses them.
+/// Map a tensor-map's (`.swizzle_mode`, `.swizzle_atomicity`) pair to the matrix-descriptor
+/// `eval::tcgen05_mma::SwizzleMode` (same permutation, PTX ISA 5.5.7). `None` for combinations
+/// with no descriptor equivalent (96B; 128B with 32B/64B atomicity) - unmodeled, unused.
 pub fn to_mma_swizzle_mode(
     mode: TensorSwizzleMode,
     atomicity: TensorSwizzleAtomicity,

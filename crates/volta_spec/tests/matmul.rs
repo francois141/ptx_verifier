@@ -1,8 +1,6 @@
-//! End-to-end: parse a textual matmul spec, instantiate it at a concrete
-//! size, unfold it, and check the result against a hand-built reference
-//! through the same equivalence pipeline used to compare two kernels -
-//! mirroring `volta_analysis::spec`'s own killer test, but starting from
-//! spec *source text* instead of a hand-built `SpecExpr` tree.
+//! End-to-end: parse a textual matmul spec, instantiate and unfold it, and
+//! check it against a hand-built reference through the kernel equivalence
+//! pipeline (like `volta_analysis::spec`'s test, but from spec source text).
 
 use std::collections::HashMap;
 

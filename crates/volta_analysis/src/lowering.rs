@@ -1,13 +1,6 @@
-//! Lowering pass: AST → LoweredProgram
-//!
-//! This module implements the lowering pass that transforms the parsed AST into
-//! a form suitable for abstract interpretation. The lowering:
-//!
-//! 1. Collects register declarations and builds a symbol table
-//! 2. Resolves register references to indices
-//! 3. Resolves labels to instruction PCs
-//! 4. Performs type checking on operands
-//! 5. Converts complex instruction variants to a uniform representation
+//! Lowering pass: AST → LoweredProgram. Builds the symbol table, resolves
+//! register references and labels to indices/PCs, type-checks operands, and
+//! converts instruction variants to a uniform representation.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -60,10 +53,9 @@ fn unsupported(instruction: impl Into<String>, reason: impl Into<String>) -> Low
     }
 }
 
-/// Reject packed-SIMD (multi-lane) types in scalar arithmetic lowering.
-/// `BinOp`/`UnaryOp`/`Fma` evaluate one lane, so lowering a packed type
-/// through them would compute a single 32/64-bit lane (or integer-add float
-/// bit patterns) silently.
+/// Reject packed-SIMD (multi-lane) types in scalar arithmetic lowering:
+/// `BinOp`/`UnaryOp`/`Fma` evaluate one lane, so a packed type would silently
+/// compute a single lane (or integer-add float bit patterns).
 fn check_not_packed(ty: ScalarType, instruction: &str) -> LowerResult<()> {
     match ty {
         ScalarType::U16x2
@@ -78,15 +70,9 @@ fn check_not_packed(ty: ScalarType, instruction: &str) -> LowerResult<()> {
     }
 }
 
-/// Like `check_not_packed`, but lets `F16x2`/`Bf16x2`/`F32x2` through: the
-/// `BinOp`/`UnaryOp`/`Fma` eval arms compute each lane of a `Value::Pair`
-/// independently for these types (see `eval::interp`), so they're no
-/// longer a silent single-lane result - only the still-unmodeled packed
-/// integer (`U16x2`/`S16x2`) forms stay rejected. Callers that route
-/// through `LoweredInstr::BinOp`/`UnaryOp`/`Fma` for a real packed PTX
-/// arithmetic form (plain add/sub/mul/min/max/neg/abs/fma, not the
-/// mixed-precision or integer-only variants, which never carry a packed
-/// `ty` in practice) use this instead of `check_not_packed`.
+/// Like `check_not_packed`, but lets `F16x2`/`Bf16x2`/`F32x2` through, since
+/// the eval arms compute each `Value::Pair` lane independently; packed integer
+/// (`U16x2`/`S16x2`) stays rejected. For real packed PTX arithmetic forms.
 fn check_packed_arithmetic(ty: ScalarType, instruction: &str) -> LowerResult<()> {
     match ty {
         ScalarType::U16x2 | ScalarType::S16x2 => Err(unsupported(
@@ -161,18 +147,9 @@ pub struct ResolvedDst {
     pub name: String,
 }
 
-/// State of a block-scope `.param` variable used by the nvcc callseq idiom:
-///
-/// ```text
-/// .param .b32 param0;
-/// st.param.f32 [param0+0], %f1;      // -> Stored(%f1)
-/// .param .b32 retval0;
-/// call.uni (retval0), __symexpf, (param0);   // -> retval0 = PendingExp(%f1)
-/// ld.param.f32 %f2, [retval0+0];     // -> emit %f2 = exp(%f1)
-/// ```
-///
-/// No instructions are emitted for the `.param` traffic itself; the call
-/// collapses to a single `UnaryOp::Exp` emitted at the consuming `ld.param`.
+/// State of a block-scope `.param` in the nvcc callseq idiom (`st.param` the
+/// argument, `call __symexpf`, `ld.param` the result). The `.param` traffic
+/// emits nothing; the call becomes one `UnaryOp::Exp` at the consuming load.
 #[derive(Debug, Clone, Copy)]
 enum LocalParamSlot {
     /// Declared but not yet written
@@ -193,12 +170,9 @@ pub struct LoweringContext {
     instructions: Vec<LoweredInstr>,
     /// Predicates for each instruction
     predicates: Vec<Option<Predicate>>,
-    /// Pending labels (label name + the scope it was declared in → will
-    /// point to next instruction). The scope must be captured when the
-    /// label token is seen, not deferred to flush time in `emit()` - a
-    /// label can be the last thing in a `{}` block, so by the time the
-    /// next instruction flushes it, `label_scope` may already have popped
-    /// back to the enclosing scope.
+    /// Pending labels (name + declaring scope), pointing to the next
+    /// instruction. The scope is captured when the label is seen, since a
+    /// label ending a `{}` block is flushed after `label_scope` has popped.
     pending_labels: Vec<(String, LabelScopeId)>,
     /// Pending label spans (to be associated with the next instruction)
     pending_label_spans: Vec<Span>,
@@ -271,16 +245,9 @@ impl LoweringContext {
         }
     }
 
-    /// Require every arrival at one barrier to name the same count, so
-    /// the evaluator can read a barrier's arrival count off any one of
-    /// them. A register id could name any barrier, so all register-id
-    /// arrivals are held to a single count between them; a register
-    /// thread count cannot be compared here at all.
-    ///
-    /// This is stricter than the ISA, which only requires the threads
-    /// meeting at one barrier *phase* to agree - a kernel that reuses an
-    /// id with different counts in disjoint phases is legal and rejected
-    /// here, hence the note in the message.
+    /// Require every arrival at one barrier to name the same count (register
+    /// ids share a single count; register counts can't be compared). Stricter
+    /// than the ISA, which only requires agreement within one barrier phase.
     fn check_barrier_arrivals(
         &mut self,
         mnemonic: &str,
@@ -407,11 +374,9 @@ impl LoweringContext {
         })
     }
 
-    /// Resolve a memory-variable symbol (shared, local, or module-global) to
-    /// its address operand. Shared and local variables live in their own
-    /// per-space address spaces, so their "address" is the space-relative
-    /// offset assigned by the symbol table; module globals get absolute
-    /// addresses in a reserved region.
+    /// Resolve a shared, local, or module-global symbol to its address: the
+    /// space-relative offset from the symbol table for shared/local, an
+    /// absolute address in a reserved region for module globals.
     fn resolve_mem_symbol(&self, name: &str) -> Option<Operand> {
         if let Some(info) = self.symbols.get_shared_var(name) {
             return Some(Operand::ImmU64(info.offset));
@@ -456,11 +421,9 @@ impl LoweringContext {
             AstOperand::ImmInt(val) => Ok(Operand::ImmI64(*val)),
             AstOperand::ImmUInt(val) => Ok(Operand::ImmU64(*val)),
             AstOperand::ImmFloat(val) => {
-                // A NaN bit pattern (e.g. 0f7FC00000) denotes no real
-                // number: reject it here, the analysis model's ingestion
-                // point for float literals. The infinities pass through
-                // (running-max/min seeds like 0fFF800000 are how real
-                // kernels start their reductions).
+                // A NaN bit pattern (e.g. 0f7FC00000) is no real number, so
+                // reject it at this float-literal ingestion point. Infinities
+                // pass (reductions seed running max/min with 0fFF800000).
                 if val.is_nan() {
                     return Err(LowerError::NanLiteral);
                 }
@@ -579,10 +542,9 @@ impl LoweringContext {
                         name_str,
                     ));
                 }
-                // Check if it's a shared/local/global memory symbol. The
-                // resulting address is a constant, so treat it like an
-                // immediate (polymorphic - `mov.u32` takes shared addresses,
-                // `mov.u64` takes local depot addresses).
+                // A shared/local/global memory symbol: its address is a
+                // constant, so treat it as an (untyped) immediate - `mov.u32`
+                // takes shared addresses, `mov.u64` local depot addresses.
                 if let Some(op) = self.resolve_mem_symbol(&name_str) {
                     return Ok(ResolvedOperand::immediate(op));
                 }
@@ -672,13 +634,9 @@ impl LoweringContext {
                 Ok(Operand::Reg(reg_id))
             }
             AddressBase::Symbol(name) => {
-                // The parser only classifies a bracketed base as `Register`
-                // when its name starts with `%` - the conventional prefix,
-                // not a requirement (PTX allows `.reg .b64 xp;` and later
-                // `[xp]`). So an address base without `%` still needs a
-                // register-table check before falling back to a
-                // shared/local/module-global symbol, mirroring
-                // `resolve_operand_typed`'s Ident case.
+                // The parser only treats a `%`-prefixed base as `Register`, but
+                // PTX allows unprefixed register names (`[xp]`), so check the
+                // register table before falling back to a memory symbol.
                 let name_str = name.to_string();
                 if let Some(info) = self.symbols.get_register(&name_str) {
                     return Ok(Operand::Reg(info.id));
@@ -777,11 +735,9 @@ impl LoweringContext {
         }
     }
 
-    /// Resolve a vector-store source operand list, e.g. `{%f1, %f2,
-    /// 0f00000000, %f4}`. Unlike `resolve_dst_vector` (destination
-    /// registers only, since a load writes into them), each element here
-    /// may be any operand `resolve_operand` accepts - registers and
-    /// immediates alike - since a store reads its source.
+    /// Resolve a vector-store source list, e.g. `{%f1, %f2, 0f00000000, %f4}`.
+    /// Unlike `resolve_dst_vector`, elements may be any operand
+    /// `resolve_operand` accepts (immediates too), since a store reads them.
     fn resolve_operand_vector(&self, op: &AstOperand) -> LowerResult<Vec<Operand>> {
         match op {
             AstOperand::Vector(elems) => elems.iter().map(|e| self.resolve_operand(e)).collect(),
@@ -835,9 +791,8 @@ impl LoweringContext {
     }
 
     /// Convert AST memory space to lowered memory space. Generic (spaceless)
-    /// accesses and unmodeled spaces are rejected: memory spaces have
-    /// separate address spaces here, so silently defaulting to global would
-    /// read/write the wrong memory.
+    /// and unmodeled spaces are rejected: spaces are separate here, so
+    /// defaulting to global would access the wrong memory.
     fn convert_space(&self, space: Option<StateSpace>, instruction: &str) -> LowerResult<MemSpace> {
         match space {
             Some(StateSpace::Global) => Ok(MemSpace::Global),
@@ -856,13 +811,9 @@ impl LoweringContext {
         }
     }
 
-    /// Validate an `mbarrier.*` operation's state space. PTX's grammar
-    /// allows `{.shared{::cta}}` or falls back to a generic/other-space
-    /// form, but Volta only models `.shared`/`.shared::cta` - the shape
-    /// every real kernel in the corpus uses, and the only one meaningful
-    /// for a single-CTA analysis (`::cluster` addresses another CTA's
-    /// shared memory). `.shared::cluster` is unsupported where the
-    /// instruction has that form and invalid where it does not.
+    /// Validate an `mbarrier.*` state space. Only `.shared`/`.shared::cta` is
+    /// modeled (all the corpus uses; `::cluster` names another CTA's memory):
+    /// `.shared::cluster` is unsupported where the form exists, else invalid.
     fn convert_mbarrier_space(
         &self,
         space: Option<StateSpace>,
@@ -945,11 +896,9 @@ impl LoweringContext {
     // Type Checking Helpers
     // =========================================================================
 
-    /// Check that an operand's type is compatible with the instruction's expected type.
-    /// Per PTX 9.4:
-    /// - Bit-types (.bX) are compatible with any type of same size
-    /// - Signed/unsigned integers of same size are compatible
-    /// - Float types must match exactly (no float<->int mixing)
+    /// Check operand/instruction type compatibility per PTX 9.4: `.bX` matches
+    /// any same-size type, signed/unsigned of one size mix, floats must match
+    /// exactly.
     fn check_operand_type(
         &self,
         resolved: &ResolvedOperand,
@@ -1154,11 +1103,9 @@ pub fn lower_function(func: &Function, module_vars: &[VarDecl]) -> LowerResult<L
     // Second: collect function-level declarations
     collect_declarations(&mut ctx, &func.params, body)?;
 
-    // Place the extern-shared window now that every static `.shared`
-    // declaration is known: the CUDA ABI bases the dynamic segment after
-    // all static allocations. This must precede `lower_body`, which is the
-    // first point that resolves shared symbols to addresses
-    // (`resolve_mem_symbol`).
+    // Place the extern-shared window now that all static `.shared` is known
+    // (the CUDA ABI puts the dynamic segment after it). Must precede
+    // `lower_body`, which first resolves shared symbols to addresses.
     ctx.symbols.finalize_shared_layout()?;
 
     // Third: lower instructions
@@ -1222,10 +1169,8 @@ fn collect_var_decl(ctx: &mut LoweringContext, var: &VarDecl) -> LowerResult<()>
     let ty = var.ty.scalar;
     let count = var.param_count.unwrap_or(1);
 
-    // Checked product (release-active): each dimension fits u32, but three
-    // or more hostile dimensions can wrap the u64 product, and a wrapped
-    // element count would silently pass the packer's own checked
-    // byte-size arithmetic.
+    // Checked product: each dimension fits u32, but three can wrap the u64
+    // product, and a wrapped count would slip past the packer's own checks.
     let num_elements: u64 = var
         .array_dims
         .iter()
@@ -1275,12 +1220,9 @@ fn lower_body(ctx: &mut LoweringContext, body: &FunctionBody) -> LowerResult<()>
     lower_statements(ctx, &body.statements)
 }
 
-/// Lower a straight run of statements, one at a time except where a
-/// multi-instruction idiom is recognized over a window of them (see
-/// [`match_warp_max_sign_trick`]). A window only ever spans consecutive
-/// `Statement::Instruction`s, so an interposed label - a possible branch
-/// target into the middle of the idiom - breaks the match rather than
-/// silently collapsing across it.
+/// Lower a run of statements one at a time, except where a multi-instruction
+/// idiom matches a window (see [`match_warp_max_sign_trick`]). Windows span
+/// only consecutive instructions, so an interposed label breaks the match.
 fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResult<()> {
     let mut i = 0;
     while i < stmts.len() {
@@ -1319,12 +1261,9 @@ fn lower_statement(ctx: &mut LoweringContext, stmt: &Statement) -> LowerResult<(
             lower_instruction(ctx, instr)?;
         }
         Statement::Block(stmts) => {
-            // A `{}` block is its own label scope (PTX ISA: labels - like
-            // `.reg`s - are scoped to their enclosing block; see
-            // `LabelScopeId`). Push a fresh child scope for the duration of
-            // this block, then restore the parent on exit - ordinary
-            // lexical-scope push/pop, mirroring the recursive descent
-            // already happening here.
+            // A `{}` block is its own label scope (PTX ISA: labels, like
+            // `.reg`s, are block-scoped; see `LabelScopeId`): push a child
+            // scope for the block and restore the parent on exit.
             let parent_scope = ctx.label_scope;
             ctx.label_scope = ctx.symbols.push_label_scope(parent_scope);
             lower_statements(ctx, stmts)?;
@@ -1562,15 +1501,9 @@ fn lower_parsed_instruction(
         // Transcendental - Tanh (evaluated as (e^2x - 1) / (e^2x + 1))
         // =========================================================================
         ParsedInstruction::Tanh(tanh) => {
-            // .f32/.f16/.bf16 (scalar) and .f16x2/.bf16x2 (packed - PTX
-            // ISA Block 61) are all the ISA offers, and all modeled: Tanh
-            // reduces to (e^2x-1)/(e^2x+1), an exact rational-in-exp
-            // expression with nothing type-specific to it (see
-            // UnaryOp::Tanh in eval/interp.rs); the packed forms are
-            // dispatched per-lane the same way check_packed_arithmetic's
-            // callers are. Anything else is invalid PTX - the parser
-            // doesn't itself restrict tanh's type, so this is fail-closed
-            // insurance, not a real-world case.
+            // .f32/.f16/.bf16 and packed .f16x2/.bf16x2 (PTX ISA Block 61)
+            // are all modeled: Tanh reduces to (e^2x-1)/(e^2x+1), packed forms
+            // run per lane. Anything else is invalid PTX (fail-closed check).
             if !matches!(
                 tanh.ty,
                 ScalarType::F32
@@ -1828,13 +1761,9 @@ fn lower_parsed_instruction(
                     });
                 }
                 (AstOperand::Vector(dst_elems), _) if dst_elems.len() == 2 => {
-                    // Scalar-to-vector unpack: mov.bN {lo, hi}, src. The
-                    // source's runtime value kind (plain scalar bits, or a
-                    // native packed-f16 `Value::Pair`) isn't known here, so
-                    // both cases are handled at eval time - see
-                    // `UnpackHalves`.
-                    // Either half may be the `_` sink, e.g. Triton's
-                    // `mov.b64 {_, %r1}, %rd2` to take the high word.
+                    // Scalar-to-vector unpack: mov.bN {lo, hi}, src; the
+                    // source's value kind is resolved at eval (`UnpackHalves`).
+                    // Either half may be `_` (e.g. `mov.b64 {_, %r1}, %rd2`).
                     let resolve_half = |elem: &AstOperand| -> LowerResult<Option<RegId>> {
                         match elem {
                             AstOperand::Underscore => Ok(None),
@@ -1898,12 +1827,9 @@ fn lower_parsed_instruction(
                     let hi = ctx.resolve_operand(&elements[1])?;
 
                     if matches!(mov.ty.bits(), 32 | 64) {
-                        // Always writes a Value::Pair - see PackHalves's
-                        // doc comment for why this is exact for both real
-                        // and integer halves. b32 packs hold f16x2/bf16x2
-                        // lanes, b64 packs f32x2 lanes (or two 32-bit
-                        // integer halves, recombined on demand when read
-                        // as one scalar).
+                        // Always a Value::Pair, exact for real and integer
+                        // halves (see PackHalves): b32 packs f16x2/bf16x2,
+                        // b64 packs f32x2 or two 32-bit integer halves.
                         ctx.emit(LoweredInstr::PackHalves { dst, lo, hi }, predicate)?;
                     } else {
                         // Any other width: plain bitwise pack.
@@ -1938,10 +1864,8 @@ fn lower_parsed_instruction(
                 }
                 (_, AstOperand::Vector(elements)) if elements.len() == 4 => {
                     // Four-lane pack: mov.b128 dst, {e0,e1,e2,e3}. Always a
-                    // `Value::Quad`, never a bitwise composition - see
-                    // `PackQuad` for why, and why a 128-bit register's four
-                    // 32-bit lanes reuse the same value kind as a b32's four
-                    // byte lanes.
+                    // `Value::Quad`, never a bitwise composition (see
+                    // `PackQuad`).
                     let dst = ctx.resolve_dst_typed(&mov.dst)?.reg;
                     let elems = [
                         ctx.resolve_operand(&elements[0])?,
@@ -2049,26 +1973,9 @@ fn lower_parsed_instruction(
                 dst,
                 src,
             } = cvta;
-            // Only `cvta.to.global` is accepted, as the identity: global
-            // addresses are absolute u64s here and the generic window over
-            // global is identity-mapped, so generic->global is exact (the
-            // corpus's one cvta form: param pointers into global arrays).
-            // Every other form is rejected loudly, for two distinct
-            // reasons:
-            // - `cvta.global` (the to-generic direction over global) is
-            //   identity-compatible for the same reason, but the corpus
-            //   never emits it, so it is rejected purely to keep the
-            //   modeled instruction surface minimal.
-            // - The remaining forms have no faithful model: generic
-            //   addressing has no per-space windows here, so a generic
-            //   address minted from a shared/local/const address
-            //   (`cvta.<space>`) would be an absolute address in the
-            //   *wrong* space, and `cvta.to.<other-space>` would bless an
-            //   arbitrary value as a shared/local address. Spaceless
-            //   ld/st is already rejected (`convert_space`), so no
-            //   accepted instruction can consume a generic address
-            //   derived from shared/local - rejecting the producers
-            //   closes the loop.
+            // Only `cvta.to.global` is accepted, as the identity (global is
+            // identity-mapped in the generic window). Other forms would mint
+            // wrong-space or arbitrary addresses (or are unused), so reject.
             if *to_generic || *space != StateSpace::Global {
                 let form = format!(
                     "cvta{}.{}",
@@ -2194,13 +2101,9 @@ fn lower_parsed_instruction(
             lower_bar(ctx, bar.mode, &bar.operands, predicate)?;
         }
 
-        // `barrier{.cta}.sync{.aligned} a{, b}` is the same barrier as
-        // `bar{.cta}.sync a{, b}`: the ISA states "bar{.cta}.sync is
-        // equivalent to barrier{.cta}.sync.aligned", and dropping
-        // `.aligned` only drops the compile-time promise that all threads
-        // reach the same textual barrier - which the evaluator never
-        // relied on, since a counted barrier is matched by id and arrival
-        // count, not by program point.
+        // `barrier{.cta}.sync{.aligned}` is `bar{.cta}.sync` per the ISA;
+        // dropping `.aligned` only drops the same-textual-barrier promise,
+        // which the evaluator never relied on (it matches by id and count).
         ParsedInstruction::Barrier(ast::BarrierInstr {
             // .cta is the default scope, and .aligned only adds the
             // compile-time all-threads-reach-this-barrier promise (see
@@ -2278,8 +2181,7 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
-        // Other - ld.global.nc (non-coherent global load)
-        // Treat as regular global load - we don't model cache coherence
+        // Other - ld.global.nc: a regular global load (coherence not modeled)
         // =========================================================================
         ParsedInstruction::Other {
             kind: InstrKind::LdGlobalNc,
@@ -2436,8 +2338,7 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
-        // Asynchronous Warpgroup-Level Matrix Multiply-Accumulate
-        // (PTX ISA 9.7.17.5-7)
+        // Asynchronous Warpgroup-Level MMA (PTX ISA 9.7.17.5-7)
         // =========================================================================
         ParsedInstruction::Other {
             kind: InstrKind::WgmmaMmaAsync,
@@ -2483,8 +2384,7 @@ fn lower_parsed_instruction(
         }
 
         // =========================================================================
-        // Tensor-map objects & TMA tensor copy (PTX ISA 5.5.8, 9.7.9.27,
-        // 9.7.9.26.5.2, 9.7.14.17)
+        // Tensor maps & TMA copy (PTX ISA 5.5.8, 9.7.9.27, 9.7.9.26.5.2, 9.7.14.17)
         // =========================================================================
         ParsedInstruction::Other {
             kind: InstrKind::TensormapReplace,
@@ -3589,10 +3489,9 @@ fn lower_abs(
     Ok(())
 }
 
-/// Lower `copysign.type d, a, b` (PTX ISA Block 32, `.f32`/`.f64` only -
-/// no packed lane form exists for this instruction). Per the ISA text
-/// ("copy sign bit of `a` into value of `b`"), `a` is the sign source and
-/// `b` is the magnitude source - see `CopysignInstr`'s doc comment.
+/// Lower `copysign.type d, a, b` (PTX ISA Block 32, `.f32`/`.f64` only, no
+/// packed form). Per the ISA, `a` is the sign source and `b` the magnitude
+/// source - see `CopysignInstr`.
 fn lower_copysign(
     ctx: &mut LoweringContext,
     copysign: &CopysignInstr,
@@ -3655,11 +3554,9 @@ fn lower_float_unary(
     Ok(())
 }
 
-/// Reject the float min/max modifiers we do not model. `.NaN` only changes
-/// what happens when an input is NaN (the result is NaN instead of the other
-/// operand); over the reals no input is NaN, so on every input Volta can
-/// represent the instruction is plain min/max and it is accepted.
-/// `.xorsign.abs`/`.abs` change the computed value outright.
+/// Reject unmodeled float min/max modifiers. `.NaN` is accepted: it only
+/// matters for NaN inputs, which Volta's reals never are. `.xorsign.abs`/`.abs`
+/// change the computed value outright.
 fn reject_minmax_modifiers(
     instruction: &str,
     _nan: bool,
@@ -3911,15 +3808,9 @@ fn lower_setp(
     Ok(())
 }
 
-/// Check the ordering/system qualifiers shared by `ld` and `st`. `.weak` is
-/// the default and is what the interpreter models. `.volatile` is more than
-/// an optimization barrier: ISA §8.4.2 makes it equivalent to a relaxed
-/// system-scope - i.e. morally strong - operation, so there are volatile
-/// handshakes that are race-free under the spec. Volta deliberately treats
-/// every access as weak (the paper's race model), which can only ADD
-/// reported races on such programs, never hide one - the conservative
-/// direction for a race checker. Everything else is an unmodeled
-/// synchronization/system semantic.
+/// Check `ld`/`st` ordering/system qualifiers. `.weak` (default) is modeled;
+/// `.volatile` (morally strong, ISA §8.4.2) is treated as weak too, which can
+/// only add reported races, never hide one. Anything else is rejected.
 fn check_mem_access_qualifiers(
     instruction: &str,
     semantics: MemSemantics,
@@ -3996,11 +3887,9 @@ fn lower_load(
         // Cache-behavior hints only; the loaded value is unaffected.
         cache_op: _cache_op,
         vec,
-        // Non-coherent load: the memory consistency model does not apply
-        // to ld.global.nc, so hardware may return stale data if the
-        // kernel violates the read-only contract (nvcc emits .nc only for
-        // const __restrict__ data). Volta returns the fresh value; a
-        // kernel that breaks the contract is a garbage-in case.
+        // ld.global.nc: hardware may return stale data if the kernel breaks
+        // the read-only contract; Volta returns the fresh value (a kernel
+        // that breaks the contract is garbage-in).
         nc: _nc,
         mmio,
         unified,
@@ -4152,10 +4041,9 @@ fn lower_store(
     Ok(())
 }
 
-/// Lower `cp.async`: `dst` is always `.shared`, `src` always `.global` (both
-/// mandatory modifiers checked by the frontend parser), so unlike `Load`/
-/// `Store` no `MemSpace` field is threaded through `LoweredInstr::CpAsync`
-/// at all - the eval side hardcodes the two spaces.
+/// Lower `cp.async`: `dst` is always `.shared` and `src` always `.global`
+/// (checked by the parser), so `LoweredInstr::CpAsync` carries no `MemSpace`
+/// and eval hardcodes the two spaces.
 fn lower_cp_async(
     ctx: &mut LoweringContext,
     cp: &CpAsyncInstr,
@@ -4202,11 +4090,9 @@ fn lower_cp_async(
         });
     }
 
-    // The optional 4th operand is either `src-size` (an integer register or
-    // immediate: partial real bytes, rest zero-filled) or `ignore-src` (a
-    // predicate: all zero-filled) - the ISA disambiguates them by operand
-    // type, not position, so lowering does the same via the resolved
-    // operand's register class.
+    // The optional 4th operand is `src-size` (integer: partial real bytes, rest
+    // zero-filled) or `ignore-src` (predicate: all zero-filled); like the ISA,
+    // tell them apart by the resolved operand's register class, not position.
     let src_size = match extra {
         None => CpAsyncSrcSize::Full,
         Some(op) => {
@@ -4434,12 +4320,9 @@ fn lower_cvt(
             dst,
             src,
         } => {
-            // `.e4m3x2` source: PTX ISA 9.7.9.22's packed-fp8-unpack form
-            // (`cvt.rn{.relu}.f16x2.e4m3x2 d, a`) - the only form observed
-            // in the corpus. Its result is a `Pair`, not a scalar, so it's
-            // handled here rather than falling into the generic
-            // scalar-shaped path below (see `LoweredInstr::
-            // CvtE4m3x2ToF16x2`'s doc comment).
+            // `.e4m3x2` source (PTX ISA 9.7.9.22, `cvt.rn.f16x2.e4m3x2`):
+            // its result is a `Pair`, so it bypasses the scalar path below
+            // (see `LoweredInstr::CvtE4m3x2ToF16x2`).
             if *src_type == ScalarType::E4m3x2 {
                 if *dst_type != ScalarType::F16x2 {
                     return Err(unsupported(
@@ -4486,11 +4369,9 @@ fn lower_cvt(
                 // value clamp; not modeled.
                 return Err(unsupported("cvt", ".satfinite modifier"));
             }
-            // `.sat`/`.relu` on float->float conversions are exact value
-            // clamps over the reals, threaded through as `Clamp`.
-            // Integer-destination `.sat` (clamp to MININT..MAXINT) is a
-            // different operation and stays rejected, as does anything
-            // outside the ISA's legal destination types.
+            // Float->float `.sat`/`.relu` are exact clamps over the reals
+            // (`Clamp`). Integer-destination `.sat` is a different operation
+            // and stays rejected, as do illegal destination types.
             let clamp = match (*sat, *relu) {
                 (false, false) => None,
                 (true, true) => {
@@ -4717,34 +4598,15 @@ struct WarpMaxSignTrick {
     span: Option<Span>,
 }
 
-/// Match the warp-max "sortable signed int" idiom at the head of `stmts`:
-///
-/// ```text
-/// mov.b32 %pair, {%x, %x};                   // broadcast a real value
-/// redux.sync.max.s32 %dst, %pair, MASK;      // signed-int order == real order, but only if nonnegative
-/// setp.lt.s32 %p, %dst, 0;                   // ... so detect the all-negative case
-/// @%p redux.sync.min.s32 %dst, %pair, MASK;  // ... and redo it as a bitwise min
-/// ```
-///
-/// nvcc emits this to get a real max out of integer reduction hardware.
-/// Volta never bit-encodes a real value, so reducing `%x` directly with a
-/// real `max` is exact for either sign and the last two instructions have
-/// nothing left to correct - see [`LoweredInstr::ReduxSyncBroadcastMax`].
-/// Recognizing the window as a whole is what lets them be dropped: the
-/// fixup's guard is a genuinely data-dependent predicate, which this
-/// analysis' structured-control-flow model could not resolve on its own.
-///
-/// Every operand is re-resolved and cross-checked here, so a window that
-/// merely resembles the idiom (a different mask, destination, or reduction
-/// source) falls through to ordinary per-instruction lowering.
+/// Match nvcc's warp-max "sortable signed int" idiom (broadcast, s32 max redux,
+/// negative fixup) as one real max ([`LoweredInstr::ReduxSyncBroadcastMax`]),
+/// exact since reals are never bit-encoded; near-misses lower normally.
 fn match_warp_max_sign_trick(
     ctx: &LoweringContext,
     stmts: &[Statement],
 ) -> Option<WarpMaxSignTrick> {
-    /// The mnemonic of a statement, without parsing its modifiers or
-    /// operands. `None` for anything that is not an instruction the
-    /// frontend left in raw form - the parser only pre-parses `call`, so
-    /// this sees every mnemonic matched below.
+    /// A statement's mnemonic, without parsing modifiers or operands. `None`
+    /// for anything but a raw instruction (the parser only pre-parses `call`).
     fn statement_kind(stmt: &Statement) -> Option<InstrKind> {
         match stmt {
             Statement::Instruction(Instruction {
@@ -4762,10 +4624,9 @@ fn match_warp_max_sign_trick(
         }
     }
 
-    /// A statement's instruction in strongly-typed form, plus its guard
-    /// predicate - the same conversion `lower_instruction` performs, done
-    /// speculatively here. `None` if the statement is not an instruction,
-    /// or does not parse.
+    /// A statement's typed instruction plus guard predicate, converted
+    /// speculatively as `lower_instruction` would. `None` if not an
+    /// instruction or it does not parse.
     fn parsed_instruction(
         stmt: &Statement,
     ) -> Option<(ParsedInstruction, Option<&ast::Predicate>)> {
@@ -4885,17 +4746,9 @@ fn match_warp_max_sign_trick(
     })
 }
 
-/// Lower `redux.sync.op.type d, a, membermask` (PTX ISA Block 143). The
-/// AST's `RedOp` is shared with the non-warp `red.op` instruction, but
-/// `redux.sync` only defines `add`/`and`/`or`/`xor`/`min`/`max` - `inc`/
-/// `dec` are not valid `redux.sync` ops and have no `BinOp` equivalent,
-/// so they are rejected here rather than silently miscomputed.
-///
-/// `.NaN` (the float `.min`/`.max` forms only) is accepted unchecked, same
-/// reasoning as `reject_minmax_modifiers`: it only changes behavior when an
-/// input is NaN, and this engine's reals never are, so every representable
-/// input already gets plain min/max. `.abs` does change the computed value
-/// and is not modeled, so it is rejected.
+/// Lower `redux.sync.op.type d, a, membermask` (PTX ISA Block 143). `inc`/`dec`
+/// (from the shared `RedOp`) are invalid here and rejected; `.NaN` is accepted
+/// as in `reject_minmax_modifiers`, `.abs` is unmodeled and rejected.
 fn lower_redux_sync(
     ctx: &mut LoweringContext,
     redux: &ReduxSyncInstr,
@@ -4992,12 +4845,9 @@ fn lower_branch(
     Ok(())
 }
 
-/// Lower a named-barrier arrival: `bar.sync a{, b}` / `bar.arrive a, b`
-/// (and their `barrier.*` spellings, which the callers map onto the same
-/// modes). The id may be a register - warp-specialized kernels rotate
-/// barrier ids through one - so it is range-checked at evaluation time;
-/// the arrival count may not, since `check_barrier_arrivals` pins one
-/// count per barrier here.
+/// Lower a named-barrier arrival (`bar.sync a{, b}` / `bar.arrive a, b` and
+/// the `barrier.*` spellings). The id may be a register (range-checked at
+/// eval); the count may not, since `check_barrier_arrivals` pins one count.
 fn lower_bar(
     ctx: &mut LoweringContext,
     mode: BarMode,
@@ -5065,11 +4915,9 @@ fn lower_ld_global_nc(
 
     for modifier in modifiers {
         if let DottedIdent::Qualified(parts) = modifier {
-            // Cache performance hints (eviction priority, prefetch size)
-            // are accepted and ignored - the same whitelist as plain
-            // ld/st. Anything else qualified (notably L2::cache_hint,
-            // which requires a cache-policy operand we do not parse) is
-            // rejected by name.
+            // Cache performance hints are accepted and ignored, like plain
+            // ld/st; anything else qualified (notably L2::cache_hint, which
+            // needs an unparsed cache-policy operand) is rejected by name.
             if is_cache_perf_hint(parts) {
                 continue;
             }
@@ -5232,10 +5080,8 @@ fn lower_ldmatrix(
     }
 
     let dst = ctx.resolve_dst_vector(&operands[0])?;
-    // `resolve_operand` on an `Address` only resolves the base register and
-    // silently drops a `[reg+imm]` constant offset (that immediate isn't
-    // folded anywhere else for this instruction), so the offset must be
-    // pulled out separately here, matching `lower_cp_async`'s pattern.
+    // `resolve_operand` drops a `[reg+imm]` offset, so pull it out
+    // separately, as `lower_cp_async` does.
     let (addr, addr_offset) = match &operands[1] {
         AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
         other => (ctx.resolve_operand(other)?, 0),
@@ -5269,12 +5115,9 @@ fn require_sync_aligned(modifiers: &[DottedIdent], instruction: &'static str) ->
     Ok(())
 }
 
-/// Parse and validate the `.cta_group::{1,2}` qualifier every `tcgen05.*`
-/// instruction requires (PTX ISA 9.7.17.5). `::2` (peer-CTA collective
-/// execution) isn't modeled - Volta has no notion of CTA pairs - so it's
-/// rejected loudly rather than silently treated as `::1`. Returns `None`
-/// for a modifier that isn't `.cta_group::N` at all, so callers can fall
-/// through to their own modifier handling.
+/// Parse the `.cta_group::{1,2}` qualifier every `tcgen05.*` requires (PTX ISA
+/// 9.7.17.5). `::2` (CTA pairs) is unmodeled and rejected loudly. Returns
+/// `None` for a modifier that isn't `.cta_group::N`, so callers fall through.
 fn parse_tcgen05_cta_group(
     modifier: &DottedIdent,
     instruction: &'static str,
@@ -5298,11 +5141,9 @@ fn parse_tcgen05_cta_group(
     })
 }
 
-/// Why `.exclusive` `tcgen05.alloc`/`.dealloc` is rejected: an exclusive
-/// allocation (PTX ISA 9.4+) has its own rules - `nCols` any multiple of
-/// 32, it must be the only live allocation, and it must be freed by a
-/// matching `.dealloc.exclusive` - which `TensorMemory` does not model;
-/// its non-exclusive rules (power-of-2 `nCols`) would misjudge it.
+/// Why `.exclusive` `tcgen05.alloc`/`.dealloc` is rejected: exclusive
+/// allocations (PTX ISA 9.4+) have their own rules that `TensorMemory` does
+/// not model, and the non-exclusive power-of-2 rules would misjudge them.
 const EXCLUSIVE_ALLOCATION: &str =
     ".exclusive (an exclusive Tensor Memory allocation) is not implemented yet";
 
@@ -5323,10 +5164,8 @@ fn lower_tcgen05_alloc(
             saw_cta_group = true;
             continue;
         }
-        // `dst`'s state space is always shared memory whether or not this
-        // qualifier is written (PTX ISA 9.7.17.7: "If no state space is
-        // specified then Generic Addressing is used" and dst must land in
-        // `.shared::cta` regardless), so it's consumed but not stored.
+        // `dst` is always shared memory whether or not this qualifier is
+        // written (PTX ISA 9.7.17.7), so it is consumed but not stored.
         if let DottedIdent::Qualified(parts) = modifier
             && let [base, sub] = parts.as_slice()
             && base.as_slice().as_bytes() == b"shared"
@@ -5473,12 +5312,9 @@ fn parse_tcgen05_num(modifier: &str) -> Option<u32> {
     })
 }
 
-/// Parse the `.32x32b`/`.16x256b` shape modifier common to `tcgen05.ld`/
-/// `.st` (PTX ISA 9.7.17.8, Tables 52/53). Returns `None` for a modifier
-/// that isn't a shape, so callers can fall through. `.16x64b`/`.16x128b`/
-/// `.16x32bx2` are deliberately absent: their register-to-cell mappings
-/// are not established here, and half-modeling them would silently
-/// permute a kernel's data (see [`Tcgen05LdStShape::cell`]).
+/// Parse the `.32x32b`/`.16x256b` shape shared by `tcgen05.ld`/`.st` (PTX ISA
+/// 9.7.17.8, Tables 52/53), or `None`. Other shapes are absent: their mappings
+/// are unestablished (see [`Tcgen05LdStShape::cell`]).
 fn parse_tcgen05_shape(modifier: &str) -> Option<Tcgen05LdStShape> {
     Some(match modifier {
         "32x32b" => Tcgen05LdStShape::S32x32b,
@@ -5623,13 +5459,8 @@ fn lower_tcgen05_st(
 }
 
 /// Lower `tcgen05.wait::ld.sync.aligned` / `tcgen05.wait::st.sync.aligned`.
-///
-/// `tcgen05.wait::ld` and `tcgen05.wait::st` are the PTX ISA's own,
-/// distinct instruction names (the `::ld`/`::st` qualifier is glued
-/// directly onto the `wait` mnemonic segment, no `.` before it) and are
-/// resolved to separate `InstrKind::Tcgen05WaitLd`/`Tcgen05WaitSt` values by
-/// the trie at parse time, so `is_st` arrives here as a plain parameter -
-/// no qualifier text to inspect.
+/// The trie resolves these to distinct `InstrKind`s, so `is_st` arrives as a
+/// plain parameter.
 fn lower_tcgen05_wait(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -5659,23 +5490,9 @@ fn lower_tcgen05_wait(
     Ok(())
 }
 
-/// Lower `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4} [d-tmem],
-/// a-desc|[a-tmem], b-desc, idesc, enable-input-d` (PTX ISA 9.7.17.10.9.1,
-/// syntax form 1; no `disable-output-lane`, no `scale-input-d`). `A` is a
-/// shared-memory descriptor or, in the bracketed form, a Tensor Memory
-/// address - told apart by the operand's own syntax. This is the corpus's actual
-/// usage and the "Recommended implementation scope" in
-/// `sm100a_support_plan.md`: dense, non-`.ws`, `.cta_group::1`,
-/// `.kind::f16`/`.kind::f8f6f4` only - `.sp`/`.ws.sp` are separate `InstrKind`
-/// values (never reach this function) and block-scaled/other `.kind`s are
-/// rejected here. `weight_stationary` selects `tcgen05.mma.ws` (PTX ISA
-/// 9.7.17.10.10.3): same operands minus `disable-output-lane`, plus the
-/// optional `.collector::bN::op` qualifier (default `b0::discard`); its
-/// optional trailing `zero-column-mask-desc` is rejected. `idesc`/`a-desc`/`b-desc`'s packed bit-fields describe
-/// shapes/types/addressing that only become known once their concrete
-/// runtime values are decoded at eval time (`eval::tcgen05_mma`) - nothing
-/// about their *contents* is visible here at lowering, only that they are
-/// register operands.
+/// Lower dense `.cta_group::1` `tcgen05.mma.kind::{f16,f8f6f4}` (PTX ISA
+/// 9.7.17.10.9.1) or, if `weight_stationary`, `.ws` (9.7.17.10.10.3). `A` is a
+/// descriptor or `[a-tmem]`; descriptors are decoded at eval (`tcgen05_mma`).
 fn lower_tcgen05_mma(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -5750,15 +5567,9 @@ fn lower_tcgen05_mma(
         return Err(unsupported(name, "missing .kind modifier"));
     };
 
-    // `{ disable-output-lane }, enable-input-d {, scale-input-d}`: despite
-    // the ISA syntax block showing `disable-output-lane` unconditionally,
-    // it is genuinely omittable in practice - LLVM's NVPTX backend emits
-    // the 5-operand form with no mask at all (confirmed against
-    // `triton_generated.ptx`, `.version 8.8`: `[%r543+0], %rd56, %rd57,
-    // %r94, %p3`), while nvcc/triton's own backend emits the 6-operand
-    // form with an explicit (possibly all-zero) mask. Disambiguated by
-    // operand *type*, not position: a `Vector` in the disable-output-lane
-    // slot is the mask, anything else is `enable-input-d` itself.
+    // `disable-output-lane` is optional in practice (LLVM's NVPTX emits the
+    // 5-operand form), so tell it apart by operand type: a `Vector` in its
+    // slot is the mask, anything else is `enable-input-d`.
     let [d_tmem, a_operand, b_desc, idesc, rest @ ..] = operands else {
         return Err(LowerError::InvalidOperand {
             instruction: name.to_string(),
@@ -5785,10 +5596,8 @@ fn lower_tcgen05_mma(
         [AstOperand::Vector(v), rest @ ..] if !weight_stationary => (Some(v), rest),
         rest => (None, rest),
     };
-    // `.cta_group::2`'s 8-element mask is rejected earlier (only
-    // `.cta_group::1` is modeled), so exactly 4 elements - one bit per
-    // lane 0-127 - are expected when a mask is present at all; absent, it
-    // defaults to "no lane disabled" (four zero bits).
+    // `.cta_group::1` masks have exactly 4 elements (one bit per lane 0-127);
+    // an absent mask means no lane is disabled.
     let disable_output_lane = match mask_elems {
         Some(elems) if elems.len() == 4 => elems
             .iter()
@@ -5838,18 +5647,9 @@ fn lower_tcgen05_mma(
     Ok(())
 }
 
-/// Lower `fence{.sem}.scope` / `fence.proxy.alias{.sem}.scope` /
-/// `fence.proxy.async{.global|.shared::cta|.shared::cluster}{.sem}.scope` /
-/// `fence.mbarrier_init.release.cluster` (PTX ISA, Section 9.7.15.4). The
-/// plain, `.alias` and `.mbarrier_init` forms have no data effect Volta
-/// models (same treatment as `Tcgen05Fence`/`FenceProxyTensormap` - a pure
-/// ordering fence under Volta's sequential, non-reordering execution
-/// model; mbarrier objects are never async-proxy reads, so an
-/// `mbarrier.init` leaves no generic-proxy mark to clear). `.async`'s
-/// restriction is collapsed
-/// from the frontend's `SharedStateSpaceQualifier` (`::cta`/`::cluster`) to
-/// a plain `MemSpace::Shared` - `RaceTracker`'s async-proxy tracker has no
-/// cluster-vs-cta distinction, so both mean the same thing to it.
+/// Lower `fence{.sem}.scope`, `fence.proxy.{alias,async}` and
+/// `fence.mbarrier_init` (PTX ISA 9.7.15.4). Only `.async` has a modeled
+/// effect; its `::cta`/`::cluster` restriction collapses to `MemSpace::Shared`.
 fn lower_fence(
     ctx: &mut LoweringContext,
     fence: &ast::FenceInstr,
@@ -5870,16 +5670,9 @@ fn lower_fence(
     Ok(())
 }
 
-/// Lower `tcgen05.fence::before_thread_sync`/`::after_thread_sync` (PTX ISA
-/// sync, with no data effect of their own - a no-op for Volta's sequential,
-/// non-reordering execution model. The `::before_thread_sync`/
-/// `::after_thread_sync` qualifier is glued directly onto the `fence`
-/// mnemonic segment - the generic `::`-stripping trie fallback
-/// (`instr.rs::get_ancestor_rec`) resolves both to this one `InstrKind`
-/// rather than needing the `Tcgen05WaitLd`/`Tcgen05WaitSt` treatment, since
-/// both directions are equally no-ops here - so it surfaces as a
-/// `Qualified(["", direction])` modifier (see `parse_suffix_modifiers` in
-/// `parse.rs`) rather than a plain named one.
+/// Lower `tcgen05.fence::{before,after}_thread_sync`, a no-op under Volta's
+/// sequential execution. The trie's `::`-stripping fallback maps both to one
+/// `InstrKind`, so the direction arrives as a `Qualified(["", dir])` modifier.
 fn lower_tcgen05_fence(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -5976,20 +5769,9 @@ fn lower_cp_async_mbarrier_arrive(
     Ok(())
 }
 
-/// Lower `tcgen05.commit.cta_group::1.mbarrier::arrive::one{.shared::cluster}.b64
-/// [mbar] {, ctaMask}` (PTX ISA 9.7.17.11): once every async `tcgen05` op
-/// issued by this thread so far has completed, perform an ordinary
-/// `mbarrier` arrive-on(count=1) on `mbar` - the same arrive PTX ISA
-/// 9.7.14.16.16's plain `mbarrier.arrive` performs, just triggered by
-/// tcgen05-completion instead of executing eagerly. Volta's evaluation is
-/// already eager/sequential and nothing tracks `tcgen05.mma` as an
-/// in-flight async op the way `.ld`/`.st` are (`RaceTracker::tcgen05_pending`
-/// is only ever populated by `exec_tcgen05_ld`/`_st`), so lowering reduces
-/// this straight to the same shape `LoweredInstr::MbarrierArrive` uses:
-/// `count=1`, no `expect_tx`, no destination (this form never binds a phase
-/// token). `ctaMask`/`cta_group::2` (peer-CTA multicast) is rejected by the
-/// shared `parse_tcgen05_cta_group` helper, so only the single-operand
-/// `[mbar]` form ever reaches the operand check below.
+/// Lower `tcgen05.commit...mbarrier::arrive::one.b64 [mbar]` (PTX ISA
+/// 9.7.17.11) to a plain `MbarrierArrive` with count 1: evaluation is eager, so
+/// no `tcgen05.mma` is in flight. `ctaMask`/`cta_group::2` are rejected.
 fn lower_tcgen05_commit(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6015,11 +5797,9 @@ fn lower_tcgen05_commit(
             saw_mbarrier_arrive_one = true;
             continue;
         }
-        // Generic-addressing rule (same as `tcgen05.alloc`'s `dst`): an
-        // explicit `.shared::cta`/`.shared::cluster` state space vs. none
-        // at all is the same instruction either way - Volta models a
-        // single CTA/cluster unit, so both resolve through the same
-        // `[mbar]` address below; consumed, not stored.
+        // As for `tcgen05.alloc`'s `dst`: an explicit `.shared::cta`/
+        // `.shared::cluster` space or none resolves the same `[mbar]` address
+        // (Volta models one CTA), so it is consumed, not stored.
         if let DottedIdent::Qualified(parts) = modifier
             && let [base, sub] = parts.as_slice()
             && base.as_slice().as_bytes() == b"shared"
@@ -6068,9 +5848,8 @@ fn lower_tcgen05_commit(
 // =========================================================================
 
 /// Resolve an operand that must be a memory address (`[addr]`, or a bare
-/// register/immediate treated as a zero-offset address) to its lowered
-/// `(base, offset)` pair. Shared by the tensormap/TMA lowering functions
-/// below.
+/// register/immediate as a zero-offset address) to `(base, offset)`. Shared
+/// by the tensormap/TMA lowerings below.
 fn resolve_addr_operand(ctx: &LoweringContext, op: &AstOperand) -> LowerResult<(Operand, i64)> {
     match op {
         AstOperand::Address(a) => Ok((ctx.resolve_address(a)?, ctx.get_address_offset(a))),
@@ -6097,13 +5876,9 @@ fn require_immediate_u32(op: &AstOperand, instruction: &str, what: &str) -> Lowe
     }
 }
 
-/// Lower `tensormap.replace.tile.field{.ss}.b1024.type [addr], {ord,}
-/// new_val` (PTX ISA 9.7.9.27). Volta requires an explicit `.global`/
-/// `.shared::cta` state space (generic addressing is not modeled - every
-/// corpus use specifies one). `.field3`'s `new_val` is decoded against
-/// Table 33 here, since the ISA requires it to be a literal - a
-/// statically-known, out-of-range code is exactly the kind of real kernel
-/// bug Volta should reject loudly rather than silently pass through.
+/// Lower `tensormap.replace.tile.field{.ss}.b1024.type [addr], {ord,} new_val`
+/// (PTX ISA 9.7.9.27); requires an explicit `.global`/`.shared::cta` space.
+/// `.field3`'s literal `new_val` is checked against Table 33 here, loudly.
 fn lower_tensormap_replace(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6277,11 +6052,8 @@ fn lower_tensormap_replace(
 }
 
 /// Lower `tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic
-/// .release.scope.sync.aligned [dst], [src], 128` (PTX ISA 9.7.14.17).
-/// `.cp_qualifiers`/`.to_proxy::from_proxy`/`.release` are all fixed by the
-/// ISA to a single value (no other spelling exists), so they are validated
-/// but not stored; `.scope` has no data effect to model (see the
-/// `LoweredInstr::TensormapCpFenceproxy` doc comment).
+/// .release.scope.sync.aligned [dst], [src], 128` (PTX ISA 9.7.14.17). The
+/// fixed qualifiers are validated, not stored; `.scope` has no data effect.
 fn lower_tensormap_cp_fenceproxy(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6383,10 +6155,8 @@ fn lower_tensormap_cp_fenceproxy(
 }
 
 /// Lower `fence.proxy.tensormap::generic{.release.scope | .acquire.scope
-/// [addr], 128}` (PTX ISA 9.7.14.4). A pure proxy-ordering fence - no data
-/// effect to model, the same treatment as `tcgen05.fence`; the operands
-/// (acquire form only) are still validated, since an out-of-range `size`
-/// or a missing address is a real syntax error worth catching.
+/// [addr], 128}` (PTX ISA 9.7.14.4): a pure ordering fence with no data effect,
+/// though the acquire form's operands are still validated.
 fn lower_fence_proxy_tensormap(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6438,17 +6208,9 @@ fn lower_fence_proxy_tensormap(
     Ok(())
 }
 
-/// Lower `cp.async.bulk.tensor.dim.shared::{cta,cluster}.global.tile
-/// .mbarrier::complete_tx::bytes [dstMem], [tensorMap, {coords}], [mbar]`
-/// (PTX ISA 9.7.9.26.5.2). Scoped to `.2d`/`.3d`, global-to-shared loads
-/// into either the executing CTA's local window or its cluster-visible
-/// window, `.tile` load mode, and mbarrier-based completion. In Volta's
-/// single-CTA model both accepted destinations resolve to the same local
-/// shared-memory instance; remote and multicast cluster forms stay rejected.
-/// Everything else (`.1d`/`.4d`/`.5d`, the store direction, `.bulk_group`
-/// completion, `.multicast::cluster`, `.cta_group::N`, `.L2::cache_hint`,
-/// `.tile::gather4`/`.tile::scatter4`, `.im2col`/`.im2col::w`/
-/// `.im2col::w::128`) is rejected loudly rather than half-modeled.
+/// Lower `.2d`/`.3d` `.tile` global-to-shared `cp.async.bulk.tensor` with
+/// mbarrier completion (PTX ISA 9.7.9.26.5.2); both destinations hit the one
+/// modeled CTA's shared memory. Every other form is rejected loudly.
 fn lower_cp_async_bulk_tensor(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6562,13 +6324,9 @@ fn lower_cp_async_bulk_tensor(
         LoweredInstr::CpAsyncBulkTensorLoad {
             dst_base,
             dst_offset,
-            // Generic addressing (the ISA's own default for `tensorMap`) is
-            // not modeled: Volta requires knowing an address's space
-            // statically, and every corpus use reaches this instruction
-            // through `tensormap.cp_fenceproxy`, which always materializes
-            // the object in `.global` memory (its `.cp_qualifiers` are
-            // fixed to `.global.shared::cta`) - `.param`/`.const`-resident
-            // tensor-maps are not modeled.
+            // Generic addressing of `tensorMap` is not modeled: every corpus
+            // use goes through `tensormap.cp_fenceproxy`, which always puts
+            // the object in `.global` (`.param`/`.const` maps are unmodeled).
             tensormap_space: MemSpace::Global,
             tensormap_base,
             tensormap_offset,
@@ -6581,13 +6339,9 @@ fn lower_cp_async_bulk_tensor(
     Ok(())
 }
 
-/// Lower `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx
-/// ::bytes [dstMem], [srcMem], size, [mbar]` (PTX ISA 9.7.9.25.4.1). Only
-/// the global -> shared load direction with mbarrier completion is modeled;
-/// both destination spellings address the executing CTA's shared memory
-/// (Volta models a single CTA). The `shared::cta -> shared::cluster` and
-/// `shared::cta -> global` (`.bulk_group`) forms, `.multicast::cluster`,
-/// `.L2::cache_hint` and `.cp_mask` are rejected loudly.
+/// Lower global -> shared `cp.async.bulk...mbarrier::complete_tx::bytes`
+/// (PTX ISA 9.7.9.25.4.1); both destination spellings hit the one modeled
+/// CTA's shared memory. Other directions and qualifiers are rejected loudly.
 fn lower_cp_async_bulk(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -6681,14 +6435,6 @@ fn lower_mbarrier_addr(ctx: &LoweringContext, addr: &AstOperand) -> LowerResult<
     }
 }
 
-/// Reject any `.sem` other than `expected` (`.release` for `arrive`,
-/// `.acquire` for `test_wait`/`try_wait`) - the default the ISA assumes when
-/// `.sem` is omitted (`None`), and the only case the χ happens-before edge
-/// `eval::interp::try_fire_mbarrier` establishes on phase completion is
-/// sound for. In particular `.relaxed`, which the ISA spells out as
-/// providing "no memory ordering semantics and visibility guarantees at
-/// all" (9.7.14.16.16/.19), would make that edge unsound if silently
-/// accepted.
 /// Whether an `mbarrier` instruction has a `.shared::cluster` form (PTX ISA
 /// 9.7.15.16): `arrive`/`complete_tx` do, while `init`/`inval`/`test_wait`/
 /// `try_wait` only take `.shared{::cta}`.
@@ -6698,6 +6444,9 @@ enum MbarrierClusterForm {
     Absent,
 }
 
+/// Reject any `.sem` other than `expected` (the ISA default: `.release` for
+/// `arrive`, `.acquire` for the waits), the only case for which
+/// `try_fire_mbarrier`'s χ happens-before edge is sound (`.relaxed` is not).
 fn check_mbarrier_sem(
     instruction: &str,
     sem: Option<MemSemantics>,
@@ -6767,12 +6516,8 @@ fn lower_mbarrier_inval(
 }
 
 /// Lower `mbarrier.arrive{.expect_tx}{.shared{::cta}}.b64 state, [addr]{,
-/// count}`. Per PTX ISA 9.7.14.16.16: "When both qualifiers `.arrive` and
-/// `.expect_tx` are specified, then the count argument of the arrive-on
-/// operation is assumed to be 1" - so with `.expect_tx`, the trailing
-/// operand is `txCount`, not an arrival count. `.noComplete` and
-/// `arrive_drop`'s future-phase-shrink semantics are not modeled - out of
-/// the corpus's scope (`sm100a_support_plan.md`).
+/// count}`. With `.expect_tx` the arrive count is 1 and the operand is
+/// `txCount` (PTX ISA 9.7.14.16.16). `.noComplete`/`arrive_drop` are unmodeled.
 fn lower_mbarrier_arrive(
     ctx: &mut LoweringContext,
     arrive: &MbarrierArriveInstr,
@@ -6852,9 +6597,8 @@ fn lower_mbarrier_complete_tx(
 }
 
 /// Lower `mbarrier.test_wait.parity{...}.b64 waitComplete, [addr],
-/// phaseParity`. The non-`.parity`, opaque-state-token form is not
-/// modeled - not used anywhere in the corpus, and would need tracking each
-/// `arrive`'s returned token identity rather than a plain parity bit.
+/// phaseParity`. The opaque-state-token form is unmodeled (it would need
+/// per-`arrive` token identities, not a parity bit).
 fn lower_mbarrier_test_wait(
     ctx: &mut LoweringContext,
     wait: &MbarrierTestWaitInstr,
@@ -6875,10 +6619,8 @@ fn lower_mbarrier_test_wait(
 }
 
 /// Lower `mbarrier.try_wait.parity{...}.b64 waitComplete, [addr],
-/// phaseParity{, suspendHint}`. `suspendHint` is a pure hardware timing
-/// hint (PTX ISA: "may be used for the time limit instead of the
-/// system-dependent limit") with no effect on `try_wait`'s result, so it's
-/// resolved for operand-list validation and otherwise dropped.
+/// phaseParity{, suspendHint}`. `suspendHint` is a pure timing hint: it is
+/// validated and dropped.
 fn lower_mbarrier_try_wait(
     ctx: &mut LoweringContext,
     wait: &MbarrierTryWaitInstr,
@@ -6994,10 +6736,9 @@ fn lower_mma(
         });
     }
 
-    // The evaluator gathers f16 (packed pairs, m16n8k16), tf32 (one value
-    // per register, m16n8k8 / m16n8k4), or e4m3/s8 (four packed byte
-    // lanes, m16n8k32) multiplicand fragments, into an f32, s32 or packed
-    // f16 accumulator; any other combination would use the wrong layout.
+    // Modeled fragments: f16 pairs (m16n8k16), tf32 (m16n8k8/k4), or packed
+    // e4m3/s8 bytes (m16n8k32) into f32, s32 or packed f16; any other
+    // combination would use the wrong layout.
     const MODELED_TYPES: [[ScalarType; 4]; 5] = [
         [
             ScalarType::F32,
@@ -7102,24 +6843,9 @@ fn lower_mma(
     Ok(())
 }
 
-/// Lower `wgmma.mma_async.sync.aligned.m64nNk16.f32.f16.f16 d, a-desc,
-/// b-desc, scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b`
-/// and `wgmma.mma_async.sync.aligned.m64nNk32.f32.atype.btype d, a-desc,
-/// b-desc, scale-d, imm-scale-a, imm-scale-b` (`atype`/`btype` each
-/// `.e4m3` or `.e5m2`; PTX ISA 9.7.17.5.2's "Half precision" and "FP8"
-/// syntax forms - the FP8 form has no transpose operands, K-major only).
-/// Scoped, per the real target kernels' exact usage: dense `.f32`
-/// accumulators only (the `.bf16`/`.tf32`/integer/single-bit variants and
-/// FP8's packed `.f16` accumulator are rejected before operand parsing is
-/// even attempted); `A`/`B` both shared-memory descriptors (the alternate
-/// `d, a, b-desc, ...` register-resident-`A` form is rejected, matching
-/// `tcgen05.mma`'s own `[a-tmem]`-not-modeled precedent - distinguished by
-/// whether the second operand is a `Vector`, mirroring
-/// `lower_tcgen05_mma`'s `disable-output-lane` disambiguation); no negate
-/// (`imm-scale-a`/`imm-scale-b` must both be the compile-time immediate
-/// `1`, matching `tcgen05.mma`'s own "negate not modeled" treatment).
-/// `imm-trans-a`/`imm-trans-b` genuinely vary in the real kernel and are
-/// resolved to `bool` here (always compile-time immediates per the ISA).
+/// Lower dense `.f32`-accumulator `wgmma.mma_async` m64nNk16 f16 and m64nNk32
+/// fp8 (PTX ISA 9.7.17.5.2) with both operands as descriptors and no negate
+/// (scales must be immediate `1`); `imm-trans-*` resolve to `bool`.
 fn lower_wgmma_mma_async(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -7277,10 +7003,8 @@ fn lower_wgmma_mma_async(
 }
 
 /// Shared grammar for `wgmma.fence`/`wgmma.commit_group` (PTX ISA
-/// 9.7.17.7.1/.2): both require exactly `.sync.aligned` and take no
-/// operands. Neither has a data effect Volta models (see
-/// `LoweredInstr::WgmmaFence`/`WgmmaCommitGroup`'s doc comments) - `instr`
-/// is emitted unchanged.
+/// 9.7.17.7.1/.2): exactly `.sync.aligned`, no operands, and no modeled data
+/// effect, so `instr` is emitted unchanged.
 fn lower_wgmma_sync_aligned_only(
     ctx: &mut LoweringContext,
     name: &str,
@@ -7385,10 +7109,8 @@ fn lower_wgmma_wait_group(
 }
 
 /// Lower `stmatrix.sync.aligned.x{1,2,4}[.trans].m8n8.shared.b16 [addr],
-/// {src...}` (PTX ISA 9.7.14.5.17) - `ldmatrix`'s store-direction mirror
-/// (`lower_ldmatrix` above), same grammar and scope, operand order/
-/// direction flipped: the address comes first, the source register (or
-/// immediate) vector second.
+/// {src...}` (PTX ISA 9.7.14.5.17): `ldmatrix`'s store mirror, same grammar
+/// and scope, with the address first and the source vector second.
 fn lower_stmatrix(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -8102,14 +7824,11 @@ mod tests {
     }
 
     // =========================================================================
-    // Exhaustive-lowering policy tests: unmodeled modifiers/forms error
-    // loudly (naming the modifier), and the modeled forms still lower.
+    // Exhaustive-lowering policy: unmodeled forms error naming the modifier.
     // =========================================================================
 
     // =========================================================================
-    // Shared memory layout through lower_function: module-level externs are
-    // collected before function-body statics, but the extern window must be
-    // placed after all statics (CUDA ABI).
+    // Shared memory layout: the extern window goes after all statics (CUDA ABI).
     // =========================================================================
 
     /// Parse `src` as a full module and lower its entry, passing module-level
@@ -8175,12 +7894,9 @@ mod tests {
         assert_eq!(program.symbols.extern_shared_base(), Some(0));
     }
 
-    /// `%` is the conventional register-name prefix nvcc/Triton emit, not a
-    /// requirement - PTX allows `.reg .b64 xp;` and later `[xp]` as an
-    /// address base. The parser can't tell such a bare name apart from a
-    /// shared/local/global symbol on its own (both are just identifiers),
-    /// so lowering must fall back to a register-table lookup before
-    /// erroring as an undefined symbol.
+    /// `%` is a conventional register prefix, not a requirement (`.reg .b64
+    /// xp;` then `[xp]`), so lowering must check the register table before
+    /// treating a bare name as an undefined symbol.
     #[test]
     fn test_address_base_register_without_percent_prefix() {
         let program = lower_module_src(
@@ -8472,10 +8188,8 @@ mod tests {
 
     #[test]
     fn test_packed_f16x2_bf16x2_arithmetic_lowers() {
-        // f16x2/bf16x2 arithmetic computes each lane of a Value::Pair
-        // independently at eval time (eval/interp.rs's BinOp/UnaryOp/Fma
-        // arms) - no longer a silent single-lane result, so these lower
-        // instead of hitting check_packed_arithmetic's rejection.
+        // f16x2/bf16x2 arithmetic computes each Value::Pair lane at eval, so
+        // these lower instead of hitting check_packed_arithmetic's rejection.
         assert_lowers("add.rn.f16x2 %r1, %r2, %r3;");
         assert_lowers("sub.rn.bf16x2 %r1, %r2, %r3;");
         assert_lowers("mul.rn.f16x2 %r1, %r2, %r3;");

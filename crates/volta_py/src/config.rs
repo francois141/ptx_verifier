@@ -1,7 +1,6 @@
-//! Python-facing mirror of `volta_analysis::eval::config`. These wrap the
-//! Rust types 1:1 rather than round-tripping through the CLI's flat
-//! string mini-DSL (`"in:0x10000:4:128:in"`) - that format exists only
-//! because clap needs flat string args; Python has real constructors.
+//! Python-facing mirror of `volta_analysis::eval::config`, wrapping the Rust
+//! types 1:1 instead of the CLI's flat string mini-DSL
+//! (`"in:0x10000:4:128:in"`).
 
 use pyo3::prelude::*;
 

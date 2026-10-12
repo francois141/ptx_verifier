@@ -1,46 +1,13 @@
-//! `tcgen05.mma` decode: the instruction descriptor (PTX ISA 9.7.17.4.2)
-//! and the shared-memory matrix descriptor (9.7.17.4.1), both packed
-//! bit-fields in ordinary registers, resolved to concrete integers and
-//! decoded here at eval time (nothing about their *contents* is visible at
-//! lowering - only the register operands are).
-//!
-//! Scoped to exactly the form `sm100a_support_plan.md` documents as the
-//! "conservative first pass": dense (non-sparse) `.kind::f16` (plus
-//! `.kind::f8f6f4` with `e4m3`/`e5m2` operands),
-//! `.cta_group::1`, `A` addressed via a shared-memory descriptor (not
-//! `[a-tmem]`), `M = 128`. Anything else decodes fine (the bit layout
-//! doesn't care) but is rejected with `unsupported()` by the caller.
-//!
-//! [`swizzled_element_addr`] turns a decoded [`MatrixDescriptor`] into an
-//! actual shared-memory byte address, for all five swizzle modes
-//! (`base_offset == 0` only - a start-address-misalignment correction
-//! never independently confirmed for any mode, so still rejected
-//! universally). PTX ISA 9.7.17.10.5/9.7.17.10.6 define that mapping
-//! primarily through reference diagrams (Figures 205-229) not reproducible
-//! as text - the bit-field layout and the swizzle byte-permutation table
-//! (5.5.7) are specified in prose, but the diagrams themselves are plain
-//! PNGs hosted at `docs.nvidia.com`, fetched with `curl` and visually
-//! inspected during this session (see the session notes) rather than
-//! guessed at - guessing here would risk silently wrong tensor-core math
-//! in a tool whose entire purpose is verifying kernel correctness.
-//! Confirmed this way, against every data point in Figures 222-229 (the
-//! K-major and MN-major worked examples for `Swizzle32B`/`Swizzle64B`/
-//! `Swizzle128B`/`None`) plus Figure 228 specifically (two points checked
-//! independently before trusting the rest): `swizzled_element_addr`'s
-//! address-bit XOR (for a pattern-aligned start, `atom_row XOR atom_cell`
-//! via [`atom_shape`]'s per-mode `(R, W)`) reproduces every one of them
-//! exactly. `Swizzle128BWith32BAtomicity`
-//! rests on comparatively thinner evidence - see [`atom_shape`]'s doc
-//! comment.
+//! `tcgen05.mma` decode at eval time: instruction descriptor (ISA 9.7.17.4.2),
+//! shared-memory matrix descriptor (9.7.17.4.1), and swizzled addressing,
+//! checked against the ISA's Figures 219/222-229 (`base_offset == 0` only).
 
 use crate::eval::ThreadId;
 use crate::eval::value::MbarrierId;
 use crate::lowered::{InstrId, Tcgen05MmaKind};
 
-/// Decoded `idesc` fields shared by `.kind::f16` and `.kind::f8f6f4` (PTX
-/// ISA 9.7.17.4.2, Table 45 - both kinds use the same bit layout; only the
-/// meaning of the type fields differs, so those stay raw and are
-/// interpreted by the caller per `.kind`).
+/// Decoded `idesc` fields shared by `.kind::f16` and `.kind::f8f6f4` (ISA
+/// 9.7.17.4.2, Table 45: same layout; type fields stay raw for the caller).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstructionDescriptor {
     pub sparse: bool,
@@ -76,11 +43,9 @@ pub struct InstructionDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservedIdescBit(pub u32);
 
-/// `idesc`'s 1-bit K Dimension field (bit 29; reserved before PTX ISA
-/// 9.x, valid from `sm_107f`). `Base` is each kind's dense `K` of
-/// [`k_dim`]; `Wide` doubles it, but Table 51 defines it only for
-/// `.kind::i8` (dense `K = 64`) - `.kind::tf32`/`.kind::f16`/
-/// `.kind::f8f6f4` list `Base` as their only value.
+/// `idesc`'s 1-bit K Dimension field (bit 29, from `sm_107f`). `Base` is the
+/// kind's dense `K` ([`k_dim`]); `Wide` doubles it but Table 51 defines it
+/// only for `.kind::i8`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KSelect {
     Base,
@@ -130,10 +95,8 @@ fn bits(x: u32, lo: u32, width: u32) -> u32 {
     (x >> lo) & ((1 << width) - 1)
 }
 
-/// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor, failing
-/// only on a set reserved bit (6 or 23). Fields whose validity depends on
-/// `.kind`/`.ws` (saturate, max shift, shapes, types) are decoded as-is;
-/// validating them against the instruction is the caller's job.
+/// Decode a `.kind::f16`/`.kind::f8f6f4` instruction descriptor, failing only
+/// on a set reserved bit (6 or 23); `.kind`-dependent validity is the caller's.
 pub fn decode_instruction_descriptor(
     idesc: u32,
 ) -> Result<InstructionDescriptor, ReservedIdescBit> {
@@ -172,11 +135,9 @@ pub enum SwizzleMode {
     Swizzle32B,
 }
 
-/// Decoded shared-memory matrix descriptor (PTX ISA 9.7.17.4.1, Table 43).
-/// `leading_dim_byte_offset`/`stride_dim_byte_offset`/`base_offset` are
-/// recovered to their real byte values (the field's own `<< 4` undone),
-/// but - see the module doc comment - nothing here turns them into an
-/// actual address.
+/// Decoded shared-memory matrix descriptor (PTX ISA 9.7.17.4.1, Table 43),
+/// with `leading_dim_byte_offset`/`stride_dim_byte_offset`/`base_offset`
+/// recovered to real byte values (the field's `<< 4` undone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatrixDescriptor {
     pub start_addr: u64,
@@ -224,23 +185,16 @@ impl std::fmt::Display for DescriptorError {
     }
 }
 
-/// `matrix-descriptor-encode`'s inverse: a 14-bit field holds `(real >>
-/// 4) & 0x3FFF`, so the real value is the field shifted back up. Shared
-/// with [`crate::eval::wgmma`] - `wgmma.mma_async`'s shared-memory matrix
-/// descriptor uses the exact same `matrix-descriptor-encode` definition
-/// (PTX ISA 9.7.17.5.1.2.2), just packed into a different bit layout.
+/// `matrix-descriptor-encode`'s inverse: the 14-bit field holds `(real >> 4)
+/// & 0x3FFF`. Shared with [`crate::eval::wgmma`], whose descriptor uses the
+/// same encoding in a different bit layout (PTX ISA 9.7.17.5.1.2.2).
 pub(crate) fn decode_encoded_offset(field: u64) -> u64 {
     field << 4
 }
 
-/// Decode a 64-bit shared-memory matrix descriptor (PTX ISA 9.7.18.4.1,
-/// Table 49), rejecting every malformed encoding rather than silently
-/// mapping it to something: an invalid swizzle mode (3, 5, 7), a set
-/// reserved bit (15, 31), or a fixed-constant field off its value (bits
-/// 46-48 = `0b001`, bits 54-60 = 0). The start address and leading-dim
-/// fields are decoded at their full 15-bit width, so a value no
-/// `matrix-descriptor-encode` produces lands out of shared memory's
-/// bounds instead of wrapping.
+/// Decode a 64-bit shared-memory matrix descriptor (ISA 9.7.18.4.1, Table 49),
+/// rejecting bad swizzle modes, set reserved bits, and off-value fixed fields.
+/// Address fields keep all 15 bits so bogus values go out of bounds, not wrap.
 pub fn decode_matrix_descriptor(desc: u64) -> Result<MatrixDescriptor, DescriptorError> {
     let field = |lo: u32, width: u32| (desc >> lo) & ((1 << width) - 1);
     let swizzle_mode = match field(61, 3) as u8 {
@@ -280,24 +234,9 @@ pub fn decode_matrix_descriptor(desc: u64) -> Result<MatrixDescriptor, Descripto
 /// element (numbered cell) is 16 byte").
 const CELL_BYTES: u64 = 16;
 
-/// `(R, W)` for a swizzled mode: `R` = stride-dimension depth of one atom
-/// (rows sharing one repeating pattern before `stride_dim_byte_offset`
-/// starts a new one), `W` = leading-dimension width of one atom, in
-/// cells. `R * W * CELL_BYTES` is the atom's total byte size, matching
-/// Table 43/44's "starting address of the repeating pattern" boundaries
-/// (1024/512/256 bytes for 128B/64B/32B). Confirmed against
-/// `docs.nvidia.com`'s Figures 219/222-229 (K-major and MN-major worked
-/// examples for every mode below `SwizzleMode::None`, fetched and visually
-/// inspected - see the module doc comment): each pair reproduces every
-/// data point in its diagram(s) exactly via [`swizzled_element_addr`]'s
-/// address-bit XOR, which reduces to `cell ^ (atom_row * W / R)` at a
-/// pattern-aligned start.
-///
-/// `Swizzle128BWith32BAtomicity`'s `(4, 8)` rests on one diagram only
-/// (Figure 219, MN-major) - the ISA provides no K-major counterpart to
-/// cross-check the way every other mode has, so this one entry carries
-/// less confirmation than the rest, though the 32 data points in that one
-/// diagram are all reproduced exactly.
+/// `(R, W)` of a swizzled mode's atom: stride-dim rows by leading-dim cells;
+/// `R * W * CELL_BYTES` is the pattern size of Table 43/44. Confirmed against
+/// Figures 219/222-229; 128B-with-32B-atomicity rests on Figure 219 alone.
 pub(crate) fn atom_shape(mode: SwizzleMode) -> (u64, u64) {
     match mode {
         SwizzleMode::Swizzle32B => (8, 2),
@@ -308,32 +247,9 @@ pub(crate) fn atom_shape(mode: SwizzleMode) -> (u64, u64) {
     }
 }
 
-/// Compute the shared-memory byte address of one matrix element addressed
-/// via `desc`, given its position in *swizzle-space coordinates*:
-/// `stride_idx` = index along the stride dimension (element granularity -
-/// `M` for a K-major matrix, `K` for an MN-major/transposed one, per
-/// 9.7.17.10.6's transpose-bit rule), `leading_idx` = index along the
-/// leading dimension. See the module doc comment and [`atom_shape`] for
-/// how this formula was confirmed; scoped to `base_offset == 0` (the
-/// caller must reject a nonzero one before calling this - its correction
-/// was never independently confirmed for any mode).
-///
-/// `SwizzleMode::None` has no atom or permutation at all (confirmed by
-/// Figures 226/227, both trivial identity mappings) - a plain linear
-/// layout, `stride_dim_byte_offset` used directly as the per-row pitch
-/// and `leading_dim_byte_offset` never needed (nothing before this ever
-/// crosses a "leading atom" boundary, since there isn't one).
-///
-/// For every other mode, atoms tile along the stride dimension using
-/// `stride_dim_byte_offset` per atom and along the leading dimension using
-/// `leading_dim_byte_offset` per atom, applied mechanically: this doesn't
-/// need to know *why* a kernel's specific buffer layout produces the
-/// byte-offset values its descriptor carries (e.g. pipeline staging), only
-/// that the descriptor is authoritative and the offsets compose linearly
-/// per atom index - confirmed self-consistent with the real kernel's `A`
-/// descriptor, whose `stride_dim_byte_offset` (1024) exactly equals one
-/// full `Swizzle128B` atom's size, consistent with zero-padding atom
-/// stacking along `M`.
+/// Shared-memory byte address of the element at swizzle-space `(stride_idx,
+/// leading_idx)` via `desc`. `None` mode is linear with SBO as row pitch;
+/// others tile atoms by SBO/LBO. Caller must reject nonzero `base_offset`.
 pub fn swizzled_element_addr(
     desc: &MatrixDescriptor,
     stride_idx: u64,
@@ -360,11 +276,9 @@ pub fn swizzled_element_addr(
         + (stride_idx % r) * row_bytes
         + (cell % w) * CELL_BYTES
         + elem_in_cell * elem_bytes;
-    // The swizzle XORs bits `[m, m+b)` of the absolute address with bits
-    // `[m+s, m+s+b)`, so it also holds when the start address was advanced
-    // inside an atom (stepping `K` along one swizzle row).
-    // TODO: check these bit ranges in more detail against the PTX ISA:
-    // https://docs.nvidia.com/cuda/pdf/ptx_isa_9.0.pdf
+    // The swizzle XORs address bits `[m, m+b)` with `[m+s, m+s+b)`, so it
+    // also holds inside an atom. TODO: check these bit ranges in more detail
+    // against https://docs.nvidia.com/cuda/pdf/ptx_isa_9.0.pdf
     let (b, m, s) = match desc.swizzle_mode {
         SwizzleMode::Swizzle32B => (1, 4, 3),
         SwizzleMode::Swizzle64B => (2, 4, 3),
@@ -383,22 +297,9 @@ pub enum Major {
     Mn,
 }
 
-/// Shared-memory byte address of MMA operand element `(mn_idx, k_idx)`
-/// under the ISA's canonical layouts (PTX ISA 9.7.16.5.1/9.7.17.10.6, the
-/// CuTe-notation table in units of `T = 16 / elem_bytes` elements).
-/// Swizzled modes delegate to [`swizzled_element_addr`] with
-/// `(stride, leading)` = `(mn, k)` for K-major and `(k, mn)` for MN-major.
-///
-/// `SwizzleMode::None` K-major is the core-matrix layout
-/// `((8,m),(T,2k)):((1T,SBO),(1,LBO))`: an 8-row x 16-byte core matrix is
-/// contiguous (rows 16 bytes apart), `SBO` steps between 8-row groups and
-/// `LBO` between core matrices along `K`. This is *not* the row-major
-/// `stride_idx * SBO` reading [`swizzled_element_addr`] gives `None` (that
-/// one is the TMA box layout); the corpus `MatrixVectorMultiplication`
-/// B200 fp8 kernel depends on the difference (its `B` column 8 lives at
-/// `start + SBO`). MN-major `None` returns `None`: its LBO/SBO roles are
-/// not independently confirmed, and guessing would silently permute the
-/// product.
+/// Address of MMA operand element `(mn_idx, k_idx)` in the ISA's canonical
+/// layouts (9.7.16.5.1/9.7.17.10.6). K-major `None` is the 8x16B core-matrix
+/// layout (not TMA row-major); MN-major `None` is unconfirmed, so `None`.
 pub fn operand_element_addr(
     desc: &MatrixDescriptor,
     major: Major,
@@ -431,31 +332,17 @@ const LANES_PER_QUADRANT: u32 = 32;
 /// spans, whatever its `M` (PTX ISA 9.7.17.1).
 const D_LANES: u32 = 128;
 
-/// Where element `(m, n)` of an `M x N` `D` matrix lands in Tensor Memory,
-/// as `(lane, column offset from the `D` base)`.
-///
-/// `D` always occupies all [`D_LANES`] lanes, so an `M < 128` operation
-/// stacks `128 / M` row-groups of `M` lanes, each holding a contiguous
-/// `N / (128 / M)`-column slice of the `N` axis: `M = 128` is the identity
-/// case (lane `m`, column `n`), while `M = 32` folds a 32 x 256 result
-/// into 128 lanes x 64 columns. Callers admit only those two `M`, the
-/// ones this placement has been checked against.
+/// Where element `(m, n)` of an `M x N` `D` lands in Tensor Memory, as `(lane,
+/// column offset)`. `M < 128` stacks `128 / M` row-groups of `M` lanes, each a
+/// column slice; callers admit only the checked `M` = 128 and 32.
 pub fn d_cell(m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
     let cols_per_group = n_dim / (D_LANES / m_dim);
     (m + m_dim * (n / cols_per_group), n % cols_per_group)
 }
 
-/// One issued `tcgen05.mma` whose completion no thread has yet observed.
-///
-/// The ISA makes the operation asynchronous (PTX ISA 9.7.17.6): it reads
-/// `A`/`B` from shared memory and writes `D` in Tensor Memory at some
-/// point after issue, and the only completion signal is an mbarrier
-/// phase a later `tcgen05.commit` by the issuing thread arrives on.
-/// Volta computes the data eagerly at issue, so this record is what keeps
-/// the in-flight window visible to the race checks: the operand bytes stay
-/// write-locked and the `D` footprint stays access-locked (to everything
-/// but later MMAs from the same issuer, which the ISA pipelines in order)
-/// until a waiter observes one of `trackers`' phases.
+/// An issued `tcgen05.mma` whose completion (an mbarrier phase via a later
+/// `tcgen05.commit`, ISA 9.7.17.6) no thread has observed. Data is computed at
+/// issue; this keeps operands write-locked and `D` access-locked until then.
 #[derive(Debug, Clone)]
 pub(crate) struct InflightMma {
     pub issuer: ThreadId,
@@ -527,11 +414,8 @@ impl TmemRange {
 mod tests {
     use super::*;
 
-    /// `idesc` from the real corpus kernel
-    /// (`tcgen05.mma.cta_group::1.kind::f16 [...], %rd56, %rd57, %r94, %p3;`,
-    /// `mov.b32 %r94, 138477584;` -
-    /// `triton_generated.ptx`): decoded by hand (see the session's working
-    /// notes) as dense, D=f32, A/B=f16, no negate, transpose A=0,
+    /// `idesc` from the corpus kernel `triton_generated.ptx` (`mov.b32 %r94,
+    /// 138477584`): dense, D=f32, A/B=f16, no negate, transpose A=0,
     /// transpose B=1, N=256, M=128.
     #[test]
     fn test_decode_real_kernel_idesc() {
@@ -559,13 +443,9 @@ mod tests {
         assert_eq!(d.n, 256);
     }
 
-    /// `idesc` from the corpus fp8 kernel
-    /// (`tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, ...`,
-    /// `mov.u32 %idesc, 0x08040010;` -
-    /// `MatrixVectorMultiplicationKernel/NVIDIA_B200_Float8_1.0002x.ptx`):
-    /// dense, D=f32, A/B type field 0, no negate/transpose, N=16, M=128.
-    /// The same type field means e4m3 under `.kind::f8f6f4` but f16 under
-    /// `.kind::f16`, and field 1 is e5m2 under `.kind::f8f6f4`.
+    /// `idesc` 0x08040010 from the B200 fp8 MatrixVectorMultiplication kernel:
+    /// dense, D=f32, A/B type 0, no negate/transpose, N=16, M=128. Type 0 is
+    /// e4m3 under `.kind::f8f6f4` (f16 under `.kind::f16`); 1 is e5m2.
     #[test]
     fn test_decode_real_fp8_kernel_idesc() {
         let d = decode_instruction_descriptor(0x0804_0010).unwrap();
@@ -593,10 +473,8 @@ mod tests {
         assert_eq!(k_dim(kind), 32);
     }
 
-    /// `a-desc`'s static half (`%rd56 = %rd69 | 4611756662049472512`, the
-    /// dynamic base address ORed in separately): swizzle mode 2 (128B, no
-    /// atomicity), stride-dim byte offset 1024, leading-dim byte offset 0,
-    /// base offset 0, relative stride mode.
+    /// `a-desc`'s static half (`%rd69 | 4611756662049472512`): swizzle mode 2
+    /// (128B), stride-dim offset 1024, leading-dim offset 0, base offset 0.
     #[test]
     fn test_decode_real_kernel_a_desc() {
         let d = decode_matrix_descriptor(4611756662049472512).unwrap();
@@ -608,11 +486,9 @@ mod tests {
         assert_eq!(d.swizzle_mode, SwizzleMode::Swizzle128B);
     }
 
-    /// `b-desc`'s static half (`%rd57 = %rd70 | 4611756662083026944`):
-    /// same swizzle mode and stride-dim offset as `a-desc`, but a nonzero
-    /// leading-dim byte offset (8192) - B's leading dimension (N = 256,
-    /// since B is transposed/N-major here) spans multiple swizzle atoms,
-    /// unlike A's (K = 16).
+    /// `b-desc`'s static half (`%rd70 | 4611756662083026944`): like `a-desc`,
+    /// but leading-dim offset 8192 - B's leading dim (N = 256, N-major) spans
+    /// several swizzle atoms, unlike A's (K = 16).
     #[test]
     fn test_decode_real_kernel_b_desc() {
         let d = decode_matrix_descriptor(4611756662083026944).unwrap();
@@ -678,10 +554,9 @@ mod tests {
         );
     }
 
-    /// The start address and leading-dim fields are decoded at their full
-    /// 15-bit width: bit 14 is never produced by `matrix-descriptor-encode`
-    /// (an 18-bit address shifted right by 4), so masking it off would
-    /// wrap an out-of-range address back into shared memory.
+    /// Address fields decode at their full 15-bit width: bit 14 is never
+    /// produced by `matrix-descriptor-encode`, so masking it off would wrap an
+    /// out-of-range address back into shared memory.
     #[test]
     fn test_descriptor_address_fields_are_not_truncated() {
         let d = decode_matrix_descriptor(FIXED_CONSTANT | 1 << 14 | 1 << 30).unwrap();
@@ -741,12 +616,9 @@ mod tests {
         }
     }
 
-    /// Reproduces Figure 228 (K-major 128B swizzle, tf32/4-byte elements)
-    /// exactly, fetched and visually inspected this session: logical
-    /// `(row=1, col=4)` is element index 36 in the figure's linear
-    /// numbering (`row*32 + col`) and is shown at physical cell 0 of row
-    /// 1; logical `(row=3, col=24)` is element 120, shown at physical cell
-    /// 5 of row 3.
+    /// Reproduces Figure 228 (K-major 128B swizzle, 4-byte elements): logical
+    /// `(1, 4)` (element 36) sits at physical cell 0 of row 1, and `(3, 24)`
+    /// (element 120) at cell 5 of row 3.
     #[test]
     fn test_swizzle_matches_figure_228_k_major() {
         let desc = atomless_desc();
@@ -759,10 +631,8 @@ mod tests {
         assert_eq!(swizzled_element_addr(&desc, 3, 24, 4), at(3, 5));
     }
 
-    /// The diagonal (`stride_idx == leading_idx` in cell units) always
-    /// swizzles to cell 0 - a direct property of `a XOR a == 0`, and a
-    /// cheap way to check every row's self-consistency at once rather than
-    /// only the two hand-picked figure points above.
+    /// The diagonal (`stride_idx == leading_idx` in cells) always swizzles to
+    /// cell 0 (`a XOR a == 0`), checking every row at once.
     #[test]
     fn test_swizzle_diagonal_lands_in_cell_zero() {
         let desc = atomless_desc();
@@ -772,10 +642,9 @@ mod tests {
         }
     }
 
-    /// Real kernel's `A` descriptor (K=16, f16): crossing into the second
-    /// stride atom (row 8, i.e. M-index 8) adds exactly one
-    /// `stride_dim_byte_offset` (1024) on top of the intra-atom part,
-    /// which is identical to row 0's (both map to atom_row 0).
+    /// Real kernel's `A` descriptor (K=16, f16): row 8 enters the second stride
+    /// atom, adding exactly one `stride_dim_byte_offset` (1024) to row 0's
+    /// intra-atom address.
     #[test]
     fn test_swizzle_crosses_a_stride_atom() {
         let desc = decode_matrix_descriptor(4611756662049472512).unwrap();
@@ -807,21 +676,15 @@ mod tests {
         }
     }
 
-    /// One 16-byte-cell element (`elem_bytes = CELL_BYTES`), so `cell ==
-    /// leading_idx` and the returned address, divided by `CELL_BYTES`,
-    /// directly gives `atom_row * row_width_in_cells + swizzled_cell` -
-    /// exactly the "value" numbering the diagrams themselves use. Keeps
-    /// the test assertions a direct transcription of the diagram's numbers
-    /// rather than needing byte-level arithmetic.
+    /// For a 16-byte element (`elem_bytes = CELL_BYTES`), the address in cells:
+    /// `atom_row * row_width + swizzled_cell`, the diagrams' own numbering, so
+    /// assertions transcribe the figures directly.
     fn swizzled_cell_index(desc: &MatrixDescriptor, stride_idx: u64, leading_cell: u64) -> u64 {
         swizzled_element_addr(desc, stride_idx, leading_cell, CELL_BYTES) / CELL_BYTES
     }
 
-    /// Figure 226/227 (no swizzle): identity in both orientations - the
-    /// two simplest, least-ambiguous diagrams available. `None` mode uses
-    /// `stride_dim_byte_offset` directly as the per-row pitch (no atom
-    /// batching - see `swizzled_element_addr`'s doc comment), so it must
-    /// be set for this check to mean anything.
+    /// Figure 226/227 (no swizzle): identity in both orientations. `None` uses
+    /// `stride_dim_byte_offset` as the row pitch, so it must be set here.
     #[test]
     fn test_no_swizzle_is_identity() {
         let mut desc = desc_with_mode(SwizzleMode::None);
@@ -917,10 +780,8 @@ mod tests {
         }
     }
 
-    /// Figure 219 (128B swizzle with 32B atomicity, MN-major only - the
-    /// ISA provides no K-major counterpart for this specific mode; see
-    /// `atom_shape`'s doc comment for why this one carries less
-    /// cross-checking than the others).
+    /// Figure 219 (128B swizzle with 32B atomicity, MN-major only: the ISA has
+    /// no K-major counterpart, so this mode is less cross-checked).
     #[test]
     fn test_swizzle_128b_32b_atomicity_matches_figure_219_mn_major() {
         let desc = desc_with_mode(SwizzleMode::Swizzle128BWith32BAtomicity);

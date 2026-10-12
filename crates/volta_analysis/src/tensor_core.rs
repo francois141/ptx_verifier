@@ -1,8 +1,6 @@
-//! Tensor core types and lane-to-element fragment mappings.
-//!
-//! The PTX ISA defines how matrix elements are distributed across warp lanes
-//! for each MMA shape. This module encodes those mappings so the evaluator
-//! can compute per-thread results for tensor core instructions.
+//! Tensor core types and lane-to-element fragment mappings: how the PTX ISA
+//! distributes matrix elements across warp lanes for each MMA shape, so the
+//! evaluator can compute per-thread results for tensor core instructions.
 
 use std::fmt;
 
@@ -103,10 +101,8 @@ pub struct FragmentElement {
     pub quad_lane: Option<u8>,
 }
 
-/// Compute the fragment-to-matrix-element mapping for mma.m16n8k16 with f16 types.
-///
-/// PTX ISA Section 9.7.14.5.8.
-/// Returns the list of (reg_idx, row, col, high_half) for each element in the fragment.
+/// Fragment-to-matrix-element mapping for mma.m16n8k16 with f16 types
+/// (PTX ISA 9.7.14.5.8): `(reg_idx, row, col, high_half)` per element.
 pub mod m16n8k16_f16 {
     use super::FragmentElement;
 
@@ -162,11 +158,9 @@ pub mod m16n8k16_f16 {
         elements
     }
 
-    /// Accumulator C/D fragment for an `.f16` accumulator: the same four
-    /// elements [`matrix_cd`] places, packed two to a register instead of
-    /// occupying one f32 register each (PTX ISA 9.7.14.5.8). The order is
-    /// register 0's low half, its high half, register 1's low half, its
-    /// high half - `exec_mma` repacks the result by walking it in pairs.
+    /// Accumulator C/D fragment for an `.f16` accumulator: [`matrix_cd`]'s
+    /// four elements packed two per register (PTX ISA 9.7.14.5.8), in order
+    /// reg 0 low, reg 0 high, reg 1 low, reg 1 high; `exec_mma` walks pairs.
     pub fn matrix_cd_f16(lane_id: u32) -> Vec<FragmentElement> {
         matrix_cd(lane_id)
             .into_iter()
@@ -289,11 +283,9 @@ pub mod m16n8k4_tf32 {
     }
 }
 
-/// Fragment mappings for `mma.m16n8k32` with byte-wide multiplicands -
-/// `.e4m3`/`.e5m2` (fp8) and `.s8`/`.u8` (integer) alike, which the ISA
-/// gives one shared layout (PTX ISA "Matrix Fragments for mma.m16n8k32":
-/// four elements packed per 32-bit register, `quad_lane` 0..3 low to high
-/// matching `Value::Quad`'s tuple order).
+/// Fragment mappings for `mma.m16n8k32` with byte-wide multiplicands (fp8 and
+/// `.s8`/`.u8` share one layout, PTX ISA "Matrix Fragments for mma.m16n8k32"):
+/// four per 32-bit register, `quad_lane` 0..3 low to high as in `Value::Quad`.
 pub mod m16n8k32_byte {
     use super::FragmentElement;
 
@@ -355,25 +347,14 @@ pub mod m16n8k32_byte {
     }
 }
 
-/// Compute fragment mappings for wmma m16n16k16 with f16 inputs and f32 accumulators.
-///
-/// The WMMA API uses a different fragment layout than the MMA API.
-/// PTX ISA Section 9.7.14.4.
-///
-/// For wmma.m16n16k16 with f16:
-///   A: 8 registers (each f16x2), 16 elements
-///   B: 8 registers (each f16x2), 16 elements
-///   C/D (f32): 8 registers, 8 elements
-///
-/// The mapping follows the same groupID/threadID_in_group pattern.
+/// Fragment mappings for wmma m16n16k16 with f16 inputs and f32 accumulators
+/// (PTX ISA 9.7.14.4; a different layout than the MMA API). A and B: 8 f16x2
+/// registers each; C/D (f32): 8 registers. Uses groupID/threadID_in_group.
 pub mod m16n16k16_f16 {
     use super::FragmentElement;
 
-    /// Matrix A fragment for wmma.load.a.sync with row layout.
-    /// A is m16 x k16, thread gets 8 regs = 16 f16 elements.
-    ///
-    /// The wmma API with m16n16k16 distributes A's 16x16 elements
-    /// across 32 threads. Each thread gets 16 elements (8 regs x 2 f16).
+    /// Matrix A fragment for wmma.load.a.sync with row layout: A is m16 x k16
+    /// and each thread gets 8 regs = 16 f16 elements.
     /// groupID = laneid >> 2, threadID_in_group = laneid % 4
     pub fn matrix_a_row(lane_id: u32) -> Vec<FragmentElement> {
         let group_id = lane_id >> 2;
@@ -442,40 +423,15 @@ pub mod m16n16k16_f16 {
     }
 }
 
-/// Fragment mapping for `wgmma.mma_async.m64nNk16`'s accumulator matrix D
-/// (PTX ISA 9.7.17.5.1.1.1, Figure 152). Unlike the fixed-`N` `mma.sync`/
-/// `wmma` modules above, this is parameterized by a runtime `n`: the same
-/// per-lane law holds for every `.m64n{8,16,...,256}k16` shape (confirmed
-/// identical across the k8/k16/k32/k256 sibling figures - the accumulator
-/// distribution depends only on the m64xN output shape, not k or dtype).
-///
-/// No textual formula exists in the PTX ISA for this - only the figure, no
-/// `groupID`/`threadID_in_group`-style prose the way the older `mma.sync`
-/// sections give (grepped the whole ISA doc for `wgmma` + `groupID`: zero
-/// hits). The mapping below was transcribed by downloading and visually
-/// inspecting the actual referenced image
-/// (`https://docs.nvidia.com/cuda/parallel-thread-execution/_images/wgmma-64N16-D.png`)
-/// rather than guessed - the same bar `eval::tcgen05_mma`'s swizzle tables
-/// hold themselves to, for the same reason ("guessing here would risk
-/// silently wrong tensor-core math") - and cross-checked two independent
-/// ways: (1) the image's own `T0:{d0,d1}`/`T0:{d2,d3}` and `T32:{d0,d1}`
-/// cells, and (2) the ISA text's footnote for the shape's last column
-/// block (`X=N/2-4, Y=N/2-3, Z=N/2-2, W=N/2-1`) - both agree exactly with
-/// the formula below, and it is a clean bijection (every `(row,col)`
-/// covered by exactly one `(lane_id,reg_idx)`, verified by the
-/// completeness test).
-///
-/// `.f32` accumulator only (one register per element, `n/2` registers per
-/// thread) - the `.f16` accumulator (`n/4` packed `.f16x2` registers) is a
-/// distinct, unimplemented layout, not needed by the real target kernel.
+/// `wgmma.mma_async.m64nNk16` accumulator D mapping for any runtime `n` (PTX ISA
+/// 9.7.17.5.1.1.1, Fig. 152): transcribed from the figure (the ISA gives no formula),
+/// checked against its last-block footnote. `.f32` accumulator only (no `.f16`).
 pub mod wgmma_m64n_k16 {
     use super::FragmentElement;
 
-    /// `lane_id`: the thread's position within its 128-thread warpgroup
-    /// (`t.0 % 128` - PTX ISA 9.7.17.1 defines a warpgroup as four
-    /// contiguous warps starting at a warp-rank multiple of 4). `n`: the
-    /// shape's N (8..=256, step 8). Returns exactly `n/2` elements,
-    /// `reg_idx` 0..n/2-1.
+    /// `lane_id`: position within the 128-thread warpgroup (`t.0 % 128`, PTX
+    /// ISA 9.7.17.1). `n`: the shape's N (8..=256, step 8). Returns exactly
+    /// `n/2` elements, `reg_idx` 0..n/2-1.
     pub fn matrix_d(lane_id: u32, n: u32) -> Vec<FragmentElement> {
         let band = lane_id / 32; // which 16-row band (0..4) - one per warp
         let local = lane_id % 32;
@@ -648,10 +604,9 @@ mod tests {
         assert_eq!((d[3].row, d[3].col), (24, 1));
     }
 
-    /// Every `(row, col)` of the m64xN output tile is covered by exactly
-    /// one `(lane_id, reg_idx)` pair, for every shape the real corpus
-    /// kernel's `.m64n{8,...,256}k16` family can use - a clean bijection,
-    /// no gaps or overlaps.
+    /// Every `(row, col)` of the m64xN tile is covered by exactly one
+    /// `(lane_id, reg_idx)` pair for every `.m64n{8,...,256}k16` shape: a
+    /// clean bijection, no gaps or overlaps.
     #[test]
     fn test_wgmma_matrix_d_covers_grid_with_no_overlap() {
         for n in [8u32, 16, 256] {
@@ -676,10 +631,9 @@ mod tests {
         }
     }
 
-    /// Independent cross-check against the ISA text's own footnote for the
-    /// shape's last column block: "`X=N/2-4, Y=N/2-3, Z=N/2-2, W=N/2-1`" -
-    /// thread 0's last four registers, at n=256, land at columns 248-249
-    /// (rows 0 and 8), matching the figure's tail-block naming exactly.
+    /// Cross-check against the ISA footnote "`X=N/2-4, Y=N/2-3, Z=N/2-2,
+    /// W=N/2-1`": at n=256, thread 0's last four registers land at columns
+    /// 248-249 (rows 0 and 8), matching the figure's tail block.
     #[test]
     fn test_wgmma_matrix_d_n256_last_registers_match_isa_footnote() {
         let d = wgmma_m64n_k16::matrix_d(0, 256);

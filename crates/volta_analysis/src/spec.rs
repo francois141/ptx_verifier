@@ -1,22 +1,6 @@
-//! Mathematical specifications: describe an output array's contents as a
-//! formula over other arrays (e.g. matmul's `C[i,j] = sum_k A[i,k] *
-//! B[k,j]`), then unfold the formula into an [`AnalysisOutput`] using the
-//! same [`ExprArena`] constructors the interpreter itself uses. The result
-//! plugs directly into the existing equivalence pipeline
-//! (`driver::paired_elements`, `driver::check_output_equivalence_with`) as
-//! a stand-in for a second kernel's output, so a PTX kernel can be checked
-//! against a spec exactly the way two kernels are checked against each
-//! other.
-//!
-//! Every bound is concrete: a `Sum`'s range and an output array's shape
-//! must resolve to fixed integers under a [`SpecEnv`], because `SpecExpr`
-//! builds a fixed `ExprId` DAG by unrolling - the fragment has no
-//! reduction/quantifier node. This mirrors the interpreter's own
-//! concrete-addressing requirement (`IndexInput`, structured-CTA
-//! concreteness): a spec's array indices are restricted to the small
-//! affine [`IndexExpr`] sublanguage for the same reason a kernel's
-//! addresses must be concrete before a read resolves to one
-//! `InputElement`.
+//! Mathematical specs: an output array as a formula over other arrays, unfolded into an
+//! [`AnalysisOutput`] via the interpreter's [`ExprArena`] constructors, so a kernel checks
+//! against a spec like against a second kernel. All bounds/indices are concrete (unrolled).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -24,11 +8,9 @@ use std::fmt;
 use crate::eval::{AnalysisOutput, Stats};
 use crate::symbolic::{ExprArena, ExprId, NanError, StringId};
 
-/// A row-major shape for flattening a multi-dimensional index into the
-/// flat element index that `InputElement` and `AnalysisOutput::outputs`
-/// use - the same convention a kernel's own address arithmetic produces
-/// (`ArrayDef`'s `elem_width`-scaled offsets), so a spec's reads/writes
-/// line up with what the interpreter would have produced.
+/// A row-major shape flattening a multi-dimensional index into the flat element index of
+/// `InputElement` and `AnalysisOutput::outputs` - the convention a kernel's own address
+/// arithmetic produces, so a spec's reads/writes line up with the interpreter's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape(Vec<u64>);
 
@@ -90,20 +72,17 @@ impl From<u64> for Bound {
     }
 }
 
-/// The operator combining a reduction's terms. A typed enum rather than a
-/// bool so the empty-range identity (`sum` = 0, `max` = -infinity) and any
-/// future addition stay exhaustively matched instead of silently falling
-/// through a `sum: bool` flag.
+/// The operator combining a reduction's terms; an enum (not a bool) so the empty-range
+/// identity (`sum` = 0, `max` = -infinity) and future additions stay exhaustively matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReduceOp {
     Sum,
     Max,
 }
 
-/// An index expression: the small affine sublanguage allowed in array
-/// index position. Deliberately not full `SpecExpr` - an index must
-/// resolve to one concrete `u64` per element, the same requirement a
-/// kernel's own address computation is under.
+/// An index expression: the small affine sublanguage allowed in array index position.
+/// Deliberately not full `SpecExpr` - an index must resolve to one concrete `u64` per
+/// element, as a kernel's own addresses must.
 #[derive(Debug, Clone)]
 pub enum IndexExpr {
     Int(u64),
@@ -145,11 +124,9 @@ impl std::ops::Mul for IndexExpr {
     }
 }
 
-/// A symbolic math expression: constants, array reads, arithmetic, and
-/// `Reduce` (unrolled over a concrete range at unfold time). Evaluating one
-/// under a `SpecEnv` and a set of bound variables produces an `ExprId` in
-/// the target arena - the same kind of node the interpreter would have
-/// produced by actually executing a kernel.
+/// A symbolic math expression: constants, array reads, arithmetic, and `Reduce` (unrolled
+/// over a concrete range at unfold time). Evaluating one under a `SpecEnv` and bound
+/// variables yields an `ExprId` of the same kind the interpreter produces.
 #[derive(Debug, Clone)]
 pub enum SpecExpr {
     Int(i64),
@@ -174,10 +151,8 @@ pub enum SpecExpr {
     Sqrt(Box<SpecExpr>),
     Abs(Box<SpecExpr>),
     Sign(Box<SpecExpr>),
-    /// `op_{var=0}^{bound-1} body`, unrolled into `bound` terms combined by
-    /// `op` (`Sum`'s identity for an empty range is `0`; `Max`'s is
-    /// `-infinity`, matching `ExprArena::max`'s running-max chain
-    /// convention).
+    /// `op_{var=0}^{bound-1} body`, unrolled into `bound` terms combined by `op` (empty-range
+    /// identity: `0` for `Sum`, `-infinity` for `Max`, as in `ExprArena::max` chains).
     Reduce {
         op: ReduceOp,
         var: String,
@@ -386,23 +361,9 @@ impl From<NanError> for SpecError {
     }
 }
 
-/// Unfold every `OutputSpec` into one `AnalysisOutput`, sharing a single
-/// arena (so array symbols read by more than one output, or more than
-/// once within a `Sum`, share identity - the same `InputElement` node
-/// class the interpreter itself would produce for repeated reads).
-///
-/// `sample` caps each output array's emitted elements to its first
-/// `sample` indices in ascending flat order (0 = all), the same
-/// each-array-prefix convention `driver::sampled_elements` uses on the
-/// decision-check side. Unlike that function, this cap also bounds
-/// *construction* cost: a real kernel's output footprint can be far
-/// larger than is practical to unroll a `Sum`-heavy spec over (e.g. one
-/// row of a 4096x4096x4096 matmul is already a 4096-term sum per
-/// element), and `Shape::indices()` is a lazy range map, so `.take(n)`
-/// never visits the skipped indices. A caller checking a sampled
-/// footprint against this spec must sample the kernel's own output the
-/// same way (same prefix length, same ascending order) so the two sides'
-/// index sets still match under `driver::paired_elements`.
+/// Unfold every `OutputSpec` into one `AnalysisOutput` over one shared arena (repeated reads
+/// share `InputElement` identity). `sample` keeps each array's first `sample` indices (0 =
+/// all), bounding construction too; sample the kernel's output identically so indices pair.
 pub fn unfold(
     specs: &[OutputSpec],
     env: &SpecEnv,
@@ -460,11 +421,9 @@ fn resolve_bound(bound: &Bound, env: &SpecEnv) -> Result<u64, SpecError> {
     }
 }
 
-/// Resolve a bare name in expression/index position: a bound variable
-/// (an output index or a `Sum`'s loop variable) takes precedence, falling
-/// back to a `dim`'s concrete value so e.g. `sum(...) / N` can reference a
-/// declared `dim` directly instead of requiring its value hardcoded as a
-/// literal at every call site.
+/// Resolve a bare name in expression/index position: a bound variable (output index or
+/// loop variable) takes precedence, falling back to a `dim`'s concrete value so e.g.
+/// `sum(...) / N` can reference a declared `dim` directly.
 fn resolve_var(
     name: &str,
     env: &SpecEnv,
@@ -503,17 +462,9 @@ fn array_string_id(
         .or_insert_with(|| arena.intern_string(array.to_string()))
 }
 
-/// Cache for `Reduce` results, keyed on a reduction site (the `SpecExpr`
-/// node's address - stable for one `unfold` call, since `specs` is
-/// borrowed and never reallocated) plus the *relevant* subset of the
-/// enclosing bindings: the free variables the reduction's body actually
-/// reads, excluding its own loop variable. Two evaluations of the same
-/// site with the same relevant bindings always produce the same result
-/// (`env` and the rest of the arena's history don't affect it), so this
-/// turns the O(elements x range) unrolling a naively-recomputed reduction
-/// would cost into O(distinct relevant-binding tuples x range) - e.g. a
-/// softmax row's denominator/max, invariant in the output column index,
-/// gets built once per row instead of once per element.
+/// `Reduce` cache keyed on the site (`SpecExpr` address, stable while `specs` is borrowed)
+/// plus the bindings of the body's free variables other than its loop variable, so e.g. a
+/// softmax row's max is built once per row, not once per element.
 type ReduceMemo = HashMap<(usize, Vec<(String, u64)>), ExprId>;
 
 /// The variable names `expr` reads (for `Reduce`'s memo key): a nested
@@ -783,13 +734,9 @@ mod tests {
         assert_eq!(indices, vec![0, 1, 2, 3]);
     }
 
-    /// The whole point of the module: a spec's unfolded `AnalysisOutput`
-    /// must be a valid right-hand side for the same equivalence pipeline
-    /// used to compare two kernels. Build the matmul sum a second, more
-    /// direct way (manual `Fma` chain over the same `InputElement`s) and
-    /// check the two sides through `check_output_equivalence_with`
-    /// unchanged - if this passes, `unfold`'s output is exactly the kind
-    /// of `ExprId` tree the rest of the pipeline expects.
+    /// A spec's unfolded `AnalysisOutput` must work as one side of the kernel equivalence
+    /// pipeline: a manual `Fma` chain over the same `InputElement`s must check equivalent
+    /// to the matmul spec through `check_output_equivalence_with`.
     #[test]
     fn unfolded_matmul_is_equivalent_to_a_hand_built_reference() {
         let spec_output = unfold(&matmul_spec(), &matmul_env(), 0).unwrap();
@@ -866,11 +813,9 @@ mod tests {
         ));
     }
 
-    /// A `dim`'s concrete value must be usable directly as a plain
-    /// numeric value in an expression body (e.g. a mean's divisor), not
-    /// just as a `Sum` bound or an array's shape dimension - regression
-    /// test for the gap where `SpecExpr::Var`/`IndexExpr::Var` only
-    /// checked `bindings` and never fell back to `SpecEnv::dims`.
+    /// A `dim`'s concrete value must be usable as a plain value in an expression body (e.g.
+    /// a mean's divisor), not just as a bound or shape: `SpecExpr::Var`/`IndexExpr::Var` must
+    /// fall back to `SpecEnv::dims`.
     #[test]
     fn dim_value_is_usable_directly_in_an_expression() {
         // mean[i] = sum(j in 0..N, A[i,j]) / N
@@ -997,14 +942,9 @@ mod tests {
         assert!(matches!(report.outcome, EquivOutcome::Equivalent));
     }
 
-    /// The whole point of adding `Reduce`'s memo cache: a reduction whose
-    /// body doesn't depend on the output's other bound variable (here the
-    /// row max in `out[i,k] = A[i,k] - max(j in 0..N, A[i,j])`, invariant
-    /// in `k`) must be built exactly once per distinct value of the
-    /// variables it *does* depend on, not once per output element -
-    /// checked directly by asserting every element in a row shares the
-    /// exact same `ExprId` for its row-max subterm, and that the two rows
-    /// don't share one.
+    /// `Reduce`'s memo: the row max in `out[i,k] = A[i,k] - max(j in 0..N, A[i,j])` is
+    /// invariant in `k`, so every element of a row must share one row-max `ExprId`, and
+    /// the two rows must not share one.
     #[test]
     fn max_reduction_is_memoized_across_output_elements_that_share_its_bindings() {
         use crate::symbolic::ExprNode;

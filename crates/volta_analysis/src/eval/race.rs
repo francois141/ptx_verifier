@@ -1,59 +1,6 @@
-//! χ-context race detection (paper Section 3.2).
-//!
-//! For every byte of shared and global memory, and every Tensor Memory cell,
-//! we track:
-//!
-//! - `rd`: for each thread that has read the byte, the set of threads that
-//!   have *not* synchronized with it since that read, and
-//! - `wr`: the last writer and the set of threads that have not synchronized
-//!   with it since the write.
-//!
-//! A read races if the reader hasn't synchronized with the last writer
-//! (`noRacingWr`); a write races if the writer hasn't synchronized with every
-//! reader (`noRacingRd`) or the last writer. `sync(I)` removes `I` from the
-//! pending sets of members of `I`. A full-CTA barrier empties every set, so
-//! it is implemented as a wholesale clear.
-//!
-//! Access sites (thread, pc) are retained so races can be reported with both
-//! source locations.
-//!
-//! Separately, `async_locks` tracks the in-flight window of every
-//! uncompleted `cp.async` copy: its destination range is locked against all
-//! access, its source range against writes only.
-//!
-//! An async-proxy (TMA/bulk copy) write needs *no* `fence.proxy.async`
-//! before a later generic access of the same bytes: per PTX ISA 9.7.9.25.2,
-//! "the completion of a `cp{.reduce}.async.bulk` operation is followed by an
-//! implicit generic-async proxy fence", so observing the copy's completion
-//! is itself what makes the bytes visible to the generic proxy - which is
-//! why real TMA code (this repo's corpus, CUTLASS, Triton) reads a TMA
-//! destination straight after an `mbarrier` wait and never fences. What such
-//! an access does need is for the copy to have *completed*: `async_locks`
-//! keeps a bulk copy's destination locked from issue until a waiter observes
-//! the tracking mbarrier's phase (`eval::async_bulk`'s `InflightBulkCopy`), so a
-//! read that skips the wait is still caught - as an in-flight-copy hazard.
-//! Non-bulk `cp.async` is a generic-proxy operation (PTX ISA 9.7.10.28.3)
-//! and so is a generic read of its destination, so no proxy question
-//! arises there either. Its destination is nonetheless exempt from the
-//! generic-unfenced mark below: a bare reading of 8.6 makes a later
-//! async-proxy read of a `cp.async` destination cross-proxy, but no
-//! producer of such code fences it - NVIDIA's own
-//! `sm100_mma_cpasync_warpspecialized` mainloop feeds `tcgen05.mma`
-//! straight from `cp.async` with an `mbarrier` wait and no fence at all,
-//! and Triton fences only register-to-shared copies
-//! (`FenceInsertion.cpp`). Like a bulk copy, the async copy's completion
-//! mechanism is what carries the ordering.
-//!
-//! The reverse direction *is* a real fence requirement, tracked here as
-//! `generic_unfenced`: an async-proxy read (`tcgen05.mma` operands, via
-//! [`RaceTracker::read_via`] with [`Proxy::Async`]) of bytes a generic write
-//! landed needs a `fence.proxy.async` somewhere along the causality path
-//! from the write to the read, i.e. either the *writer* fences after its
-//! write (covering every reader), or the reader fences after synchronizing
-//! with the writer (covering its own later async-proxy reads). A generic
-//! read is unaffected, and so is an async-proxy read of bytes any
-//! asynchronous copy landed (see
-//! [`RaceTracker::clear_generic_unfenced`]).
+//! χ-context race detection (paper Section 3.2) per shared/global byte and Tensor Memory cell,
+//! plus `cp.async` in-flight locks and missing-`fence.proxy.async` hazards (generic write, then
+//! async-proxy read); async copies need no proxy fence, their completion orders them (9.7.9.25.2).
 
 use std::collections::HashMap;
 
@@ -150,10 +97,8 @@ struct ChiCell {
     wr: Option<(u32, FixedBitSet, InstrId)>,
 }
 
-/// One shared byte's "written via the generic proxy, writer not yet
-/// fenced" state. `fenced_readers` are the other threads that executed
-/// `fence.proxy.async` after synchronizing with the write: their own later
-/// async-proxy reads are ordered after it.
+/// One shared byte's "generic-proxy write, writer not yet fenced" state. `fenced_readers` fenced
+/// after synchronizing with the write, so their later async-proxy reads are ordered after it.
 #[derive(Debug, Clone)]
 struct GenericUnfenced {
     site: AccessSite,
@@ -172,29 +117,9 @@ pub struct Tcgen05HazardInfo {
     pub current: AccessSite,
 }
 
-/// One warp-quadrant's pending async Tensor Memory `.ld`/`.st` footprints.
-///
-/// PTX ISA 9.7.17.8: a single `.ld`/`.st` always describes one contiguous
-/// column range (`taddr` is warp-uniform, `.num` columns are consecutive)
-/// within one lane quadrant (a warp only ever reaches its own quadrant - see
-/// `eval/warp.rs`'s `tcgen05_lane`), so plain ranges suffice; no per-cell
-/// tracking is needed, unlike the general `(MemSpace, u64)` address space
-/// `cells`/`async_locks` above cover. `.wait::ld`/`::st` aren't scoped to an
-/// address either - they release *every* pending op of their kind the
-/// waiting warp issued ("all prior `tcgen05.ld`/`.st` operations issued by
-/// the executing thread") - so release is by issuer, never by range. Two
-/// warps can share a quadrant (warps `w` and `w + 4`), and one's wait
-/// releases nothing of the other's.
-///
-/// A pending op must be waited before its issuer arrives at any
-/// synchronization point (see [`RaceTracker::tcgen05_unwaited`]): the wait
-/// is what completes the op for its issuer, so a sync before it orders
-/// nothing about the op for the other participants.
-///
-/// Conflict rule mirrors `AsyncLockCell`: a pending `.st` is a destination
-/// lock (blocks *any* subsequent overlapping access, read or write); a
-/// pending `.ld` is a source lock (blocks only a subsequent overlapping
-/// write - concurrent reads of the same range are harmless).
+/// One warp-quadrant's pending async TMEM `.ld`/`.st` column ranges (contiguous per op, PTX ISA
+/// 9.7.17.8), released by issuer (`.wait` covers all its ops) and required before any sync.
+/// A pending `.st` locks against any overlapping access, a pending `.ld` only against writes.
 #[derive(Debug, Clone, Default)]
 struct Tcgen05Pending {
     /// `(start_col, num_cols, issuing access)` per un-waited `.ld`.
@@ -271,15 +196,9 @@ impl RaceTracker {
         Ok(())
     }
 
-    /// The first pending `.ld`/`.st` in `quadrant` overlapping `[start_col,
-    /// start_col + num_cols)` that a `tcgen05.mma` touching those columns
-    /// conflicts with. A write (`D`) conflicts with either kind - an
-    /// un-waited `.ld` is overwritten under it, an un-waited `.st` races
-    /// its write - while a read (`[a-tmem]` `A`) only conflicts with a
-    /// pending `.st`, the same asymmetry [`Self::tcgen05_begin`] applies.
-    /// Unlike that method this records nothing: the MMA's own in-flight
-    /// window is tracked by the interpreter (`tcgen05_mma::InflightMma`),
-    /// not per quadrant.
+    /// The first pending `.ld`/`.st` in `quadrant` overlapping the columns a `tcgen05.mma` touches:
+    /// a write (`D`) conflicts with either kind, a read (`[a-tmem]` `A`) only with a pending `.st`.
+    /// Records nothing; the MMA's own window is tracked by `tcgen05_mma::InflightMma`.
     pub fn tcgen05_pending_conflict(
         &self,
         quadrant: u32,
@@ -315,13 +234,9 @@ impl RaceTracker {
             .find(|site| site.thread.warp() == warp)
     }
 
-    /// Record a read of `[addr, addr + width)` by `thread`, checking for a
-    /// race with the last writer of each byte.
-    ///
-    /// The byte range cannot wrap: callers (`mem_read`) bounds-check the
-    /// access first, and every region satisfies `base + size <= u64::MAX`
-    /// (checked at region construction in `Interpreter::new`), so
-    /// `addr + width` is always representable.
+    /// Record a read of `[addr, addr + width)` by `thread`, checking for a race with the last
+    /// writer of each byte. The range cannot wrap: accesses are bounds-checked against regions
+    /// whose `base + size <= u64::MAX` is checked in `Interpreter::new`.
     pub fn read(
         &mut self,
         space: MemSpace,
@@ -333,13 +248,9 @@ impl RaceTracker {
         self.read_via(space, addr, width, thread, pc, Proxy::Generic)
     }
 
-    /// [`Self::read`] through a given proxy. Through the async proxy (a
-    /// `tcgen05.mma` operand read), bytes an async-proxy write landed need
-    /// no proxy fence - same proxy - but bytes a *generic* write landed
-    /// must have been fenced by their writer (see
-    /// [`Self::mark_generic_unfenced`]). A generic read needs no cross-proxy
-    /// check at all: an async-proxy write becomes visible to the generic
-    /// proxy at the copy's completion (PTX ISA 9.7.9.25.2).
+    /// [`Self::read`] through a given proxy. An async-proxy read of bytes a *generic* write
+    /// landed needs a fence (see [`Self::mark_generic_unfenced`]); a generic read needs no check,
+    /// since async writes become generically visible at copy completion (PTX ISA 9.7.9.25.2).
     pub fn read_via(
         &mut self,
         space: MemSpace,
@@ -423,10 +334,8 @@ impl RaceTracker {
     ) -> Result<(), AccessSite> {
         let t = thread.0;
         let cell = self.cells.entry(loc).or_default();
-        // Report the lowest-numbered conflicting reader. HashMap
-        // iteration order varies per instance, and a race verdict is
-        // terminal, so completing the scan costs nothing and makes
-        // the diagnostic deterministic across runs.
+        // Report the lowest-numbered conflicting reader: HashMap order varies per
+        // instance, and finishing the scan of a terminal verdict makes it deterministic.
         if let Some((reader, rpc)) = cell
             .rd
             .iter()
@@ -455,10 +364,8 @@ impl RaceTracker {
         Ok(())
     }
 
-    /// χ-checked read of Tensor Memory cell `(lane, col)` by `thread` -
-    /// the same per-location rule as shared/global bytes, so every sync
-    /// that orders memory (`bar.sync`, an mbarrier wait) orders Tensor
-    /// Memory too. Needed because a `tcgen05.mma` issued by one thread
+    /// χ-checked read of Tensor Memory cell `(lane, col)` by `thread`, with the shared/global rule,
+    /// so every memory-ordering sync orders TMEM too. Needed because one thread's `tcgen05.mma`
     /// writes all 128 lanes, so its `D` is read by *other* warps.
     pub fn tmem_read(
         &mut self,
@@ -504,13 +411,9 @@ impl RaceTracker {
             })
     }
 
-    /// Record a write of `[addr, addr + width)` by `thread`, checking for a
-    /// race with every recorded reader and the last writer of each byte.
-    /// Following the paper's WrMem', the read sets are left unchanged.
-    ///
-    /// As for [`Self::read`], the byte range cannot wrap: accesses are
-    /// bounds-checked against overflow-checked regions before reaching
-    /// here.
+    /// Record a write of `[addr, addr + width)` by `thread`, checking for a race with every reader
+    /// and the last writer of each byte; read sets are left unchanged (the paper's WrMem'). The
+    /// range cannot wrap, as for [`Self::read`].
     pub fn write(
         &mut self,
         space: MemSpace,
@@ -522,13 +425,9 @@ impl RaceTracker {
         self.write_with(space, addr, width, thread, pc, false)
     }
 
-    /// [`Self::write`] with `same_value` set when the bytes already hold
-    /// exactly the value being written (the same expression). Such a write
-    /// cannot change the outcome whichever order the writers run in, so a
-    /// write-write conflict with the previous writer is not a race: this is
-    /// the warp-uniform store compilers emit deliberately (every lane of a
-    /// warp storing the one reduced value to the same address). Conflicts
-    /// with readers and with in-flight `cp.async` copies are still reported.
+    /// [`Self::write`] with `same_value` set when the bytes already hold the same expression:
+    /// then a write-write conflict is not a race (the warp-uniform store of one reduced value),
+    /// though conflicts with readers and in-flight `cp.async` copies are still reported.
     pub fn write_with(
         &mut self,
         space: MemSpace,
@@ -589,11 +488,9 @@ impl RaceTracker {
         Ok(())
     }
 
-    /// For an async-proxy read: generic-proxy writes become visible to the
-    /// async proxy only once their *writer* executes `fence.proxy.async`
-    /// (before whatever sync orders them ahead of the reader), so a byte
-    /// still in `generic_unfenced` is a hazard for any reader that has not
-    /// itself fenced after synchronizing with the write.
+    /// For an async-proxy read: a generic write becomes async-visible only once its *writer*
+    /// runs `fence.proxy.async` before the ordering sync, so a byte in `generic_unfenced` is a
+    /// hazard unless the reader itself fenced after synchronizing with the write.
     fn check_generic_proxy_fence(
         &self,
         space: MemSpace,
@@ -621,11 +518,9 @@ impl RaceTracker {
         }
     }
 
-    /// Mark shared `[addr, addr + width)` as written through the generic
-    /// proxy by `thread` and not yet fenced. Called for every generic
-    /// shared write on sm_90+ (gated by the caller); an async-proxy write to
-    /// the same bytes supersedes the mark (see
-    /// [`Self::clear_generic_unfenced`]).
+    /// Mark shared `[addr, addr + width)` as written through the generic proxy by `thread` and not
+    /// yet fenced. Called for every generic shared write on sm_90+ (gated by the caller); an
+    /// async-proxy write supersedes it (see [`Self::clear_generic_unfenced`]).
     pub fn mark_generic_unfenced(&mut self, addr: u64, width: u64, thread: ThreadId, pc: InstrId) {
         let site = AccessSite {
             thread,
@@ -643,12 +538,9 @@ impl RaceTracker {
         }
     }
 
-    /// Drop the generic-proxy mark [`Self::mark_generic_unfenced`] left on
-    /// shared `[addr, addr + width)` when an asynchronous copy's write
-    /// landed through [`Self::write`]: a later async-proxy read of these
-    /// bytes needs no `fence.proxy.async`, because the copy's own
-    /// completion mechanism is what orders it. Call *after* the write
-    /// itself. See the module docs for which copies qualify.
+    /// Drop the generic-proxy mark on shared `[addr, addr + width)` once an async copy (bulk, or
+    /// plain `cp.async`, which real code never fences) landed there via [`Self::write`]: its
+    /// completion orders later async-proxy reads. Call *after* the write itself.
     pub fn clear_generic_unfenced(&mut self, addr: u64, width: u64) {
         if self.generic_unfenced.is_empty() {
             return;
@@ -658,16 +550,9 @@ impl RaceTracker {
         }
     }
 
-    /// `fence.proxy.async{.global|.shared::cta|.shared::cluster}`: releases
-    /// `thread`'s own generic-proxy writes to shared memory, and fences, for
-    /// `thread`'s own later async-proxy reads, every other thread's generic
-    /// write already synchronized with `thread` in χ (see
-    /// [`Self::mark_generic_unfenced`]). A `.global`-restricted fence orders
-    /// nothing in shared memory, so it clears nothing here.
-    ///
-    /// Scoped to one thread rather than a group - per the ISA, a
-    /// bi-directional proxy fence "take[s] effect within a single thread",
-    /// unlike `bar.sync`'s full-CTA effect.
+    /// `fence.proxy.async{.global|.shared::cta|.shared::cluster}`: releases `thread`'s own
+    /// generic shared writes, and others' already χ-synced with it, for `thread`'s later async
+    /// reads only (it "take[s] effect within a single thread"). `.global` clears nothing.
     pub fn clear_async_proxy_fence(&mut self, thread: ThreadId, restrict: Option<MemSpace>) {
         if restrict.is_none_or(|r| r == MemSpace::Shared) {
             let t = thread.0 as usize;
@@ -690,12 +575,9 @@ impl RaceTracker {
         }
     }
 
-    /// Lock `[addr, addr + width)` in `space` as a `cp.async` destination:
-    /// blocks all access (read or write, by any thread, including the
-    /// issuing one) until [`Self::release_dst`] is called for the same
-    /// range. Conflicts with an existing source lock too: the copy may
-    /// land at any point of its window, so a byte an in-flight operation
-    /// is still reading (a `tcgen05.mma` operand) must not be targeted.
+    /// Lock `[addr, addr + width)` in `space` as a `cp.async` destination: blocks all access by any
+    /// thread until [`Self::release_dst`]. Conflicts with an existing source lock too, since the
+    /// copy may land any time in its window (e.g. under a `tcgen05.mma` operand read).
     pub fn lock_dst(
         &mut self,
         space: MemSpace,
@@ -840,12 +722,9 @@ impl RaceTracker {
         });
     }
 
-    /// Exactly `sync_group(participants ∪ {w})` for every `w` in
-    /// `waiters` in turn (an mbarrier phase's waiters each synchronize
-    /// with its arrivers, not with one another), in one pass over χ: a
-    /// participant's accesses lose every group they belong to
-    /// (`participants ∪ waiters`); a non-participant waiter's accesses
-    /// lose only its own group.
+    /// Exactly `sync_group(participants ∪ {w})` for each waiter `w` (waiters sync with arrivers,
+    /// not each other), in one pass: a participant's accesses lose every group (`participants ∪
+    /// waiters`); a non-participant waiter's accesses lose only its own group.
     pub fn sync_mbarrier_waiters(&mut self, participants: &FixedBitSet, waiters: &FixedBitSet) {
         debug_assert_eq!(participants.len(), self.n_threads);
         debug_assert_eq!(waiters.len(), self.n_threads);
@@ -1013,10 +892,8 @@ mod tests {
 
     #[test]
     fn test_race_report_names_the_lowest_conflicting_reader() {
-        // Several threads read the same byte; the reported victim must be
-        // the lowest-numbered conflicting reader regardless of HashMap
-        // iteration order (which varies per map instance). Two trackers
-        // with different insertion orders must agree.
+        // The reported victim must be the lowest-numbered conflicting reader regardless
+        // of HashMap iteration order: two trackers with different insertion orders agree.
         for order in [[5u32, 2, 9], [9, 5, 2]] {
             let mut chi = RaceTracker::new(16);
             for t in order {
@@ -1165,10 +1042,8 @@ mod tests {
         chi.read(S, 0x10, 4, ThreadId(1), pc(3)).unwrap();
     }
 
-    /// An async-proxy write supersedes the generic-proxy mark its landing
-    /// left behind, so a later async-proxy read of those bytes is
-    /// same-proxy and needs no fence either - while a generic write to the
-    /// same bytes still does.
+    /// An async-proxy write supersedes the generic-proxy mark, so a later async-proxy read of those
+    /// bytes needs no fence - while a generic write to the same bytes still does.
     #[test]
     fn test_async_proxy_write_supersedes_the_generic_unfenced_mark() {
         let mut chi = RaceTracker::new(4);

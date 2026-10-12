@@ -1,26 +1,6 @@
-//! Byte-addressed granule memory.
-//!
-//! Memory is a map from byte address to *granule*: a value tagged with the
-//! width (in bytes) it was written at. Reads normally match a granule
-//! exactly, with sanctioned exceptions that arise from how nvcc handles
-//! packed data (f16 pairs in 32 bits, f32 pairs in 64 bits on sm_100+, and
-//! byte-granular fp8 arrays combined into wider vector-load lanes):
-//!
-//! - a double-width read (2, 4, or 8 bytes) over two adjacent same-width
-//!   scalar granules yields a packed `Value::Pair`,
-//! - similarly, a 4-byte read over two adjacent 2-byte `Pair` granules
-//!   yields a packed `Value::Quad` (the fp8 case: each `Pair` already
-//!   holds two independent byte-valued lanes, `Quad` holds four),
-//! - a half-width read of either half of a 2-, 4-, or 8-byte `Pair`
-//!   granule yields that half (writes split such granules on demand), and
-//! - a half-width (2-byte) read of either half of a 4-byte `Quad` granule
-//!   yields that half as a `Pair` (writes split on demand, same as above),
-//!   and a 1-byte read of any of its four lanes yields that lane as a
-//!   `Scalar`.
-//!
-//! Any other reinterpretation (e.g. reading half of an f32) is an error, as
-//! is reading bytes that were never written. Bounds are *not* checked here;
-//! the interpreter validates accesses against declared regions first.
+//! Byte-addressed granule memory: byte address -> value tagged with its write width. Reads
+//! must match a granule except nvcc's packed-data cases (combine adjacent halves into a
+//! `Pair`/`Quad`, or read one half/lane back out); bounds are checked by the interpreter.
 
 use std::collections::HashMap;
 
@@ -39,11 +19,9 @@ pub enum GranuleKind {
 /// Widest granule we ever store (8 bytes); bounds the overlap scans.
 const MAX_WIDTH: u64 = 8;
 
-/// A single granule: `width` bytes holding `value`.
-///
-/// `dirty` distinguishes values the program stored from values placed by
-/// analysis setup (initial inputs, lazily materialized input symbols); the
-/// dirty cells of an output array are the kernel's output footprint.
+/// A single granule: `width` bytes holding `value`. `dirty` marks program
+/// stores (vs. analysis-setup values); an output array's dirty cells are the
+/// kernel's output footprint.
 #[derive(Debug, Clone, Copy)]
 struct Cell {
     width: u64,
@@ -63,11 +41,9 @@ pub enum MemAccessError {
         width: u64,
         found: Option<(u64, u64, GranuleKind)>,
     },
-    /// An ordinary (non-`Mbarrier`) write exactly covered a granule holding
-    /// an `mbarrier` object, at the given granule start. Ordinary program
-    /// data must never silently clobber a live barrier - `mbarrier.inval`
-    /// must run first (whatever replaces the granule afterward is then
-    /// ordinary data, not this error).
+    /// An ordinary (non-`Mbarrier`) write exactly covered the live `mbarrier`
+    /// granule at this start: program data must never silently clobber a live
+    /// barrier, so `mbarrier.inval` must run first.
     MbarrierOverwrite { addr: u64 },
     /// An `mbarrier` operation other than `init` targeted an address with
     /// no live `mbarrier` object (never initialized, already invalidated,
@@ -96,10 +72,8 @@ impl Memory {
         }
 
         // Double-width read (2, 4, or 8 bytes) combining two adjacent
-        // half-width scalars into a pair. (A plain 2-byte read of an
-        // ordinary 2-byte-granule array - e.g. f16 - already hit the exact
-        // match above, so this only fires when no such granule exists:
-        // precisely the byte-granular-array case.)
+        // half-width scalars into a pair (exact matches already returned, so
+        // a 2-byte read only gets here for byte-granular arrays).
         if matches!(width, 2 | 4 | 8) {
             let half = width / 2;
             if let (Some(lo), Some(hi)) = (self.cells.get(&addr), self.cells.get(&(addr + half)))
@@ -122,12 +96,9 @@ impl Memory {
             }
         }
 
-        // 4-byte read combining four adjacent 1-byte scalars directly into
-        // a `Quad` - the case `materialize_input` actually produces
-        // (byte-granular arrays materialize one independent 1-byte
-        // `Scalar` per element, never pre-combined), and so the one that
-        // matters for `ld.global.v2.b32`'s per-lane 4-byte read over a
-        // fresh fp8 array.
+        // 4-byte read combining four adjacent 1-byte scalars into a `Quad`:
+        // fresh byte-granular (fp8) inputs materialize one 1-byte `Scalar` per
+        // element, so e.g. `ld.global.v2.b32` lanes take this path.
         if width == 4
             && let (Some(c0), Some(c1), Some(c2), Some(c3)) = (
                 self.cells.get(&addr),
@@ -161,11 +132,8 @@ impl Memory {
             return Ok(Value::Quad(*b0, *b1, *b2, *b3));
         }
 
-        // 4-byte read combining two adjacent 2-byte `Pair` granules (each
-        // already two independent byte lanes) into a `Quad` - the case
-        // that arises after a write has split a `Quad` down to two
-        // `Pair`s (`split_pair`) and a later read reassembles the full
-        // 4 bytes.
+        // 4-byte read combining two adjacent 2-byte `Pair` granules (two byte
+        // lanes each) into a `Quad`: reassembles a `Quad` a write split.
         if width == 4
             && let (Some(lo), Some(hi)) = (self.cells.get(&addr), self.cells.get(&(addr + 2)))
             && let (
@@ -231,10 +199,8 @@ impl Memory {
             }
         }
 
-        // 1-byte read of a single lane of a 4-byte `Quad` granule, yielding
-        // that lane as a `Scalar`. This is the finest-grained reverse of the
-        // combine above: `ld.shared.u8` picking one fp8 element back out of
-        // a word a 16-byte `cp.async` deposited as four packed byte lanes.
+        // 1-byte read of one lane of a 4-byte `Quad` granule, as a `Scalar`:
+        // e.g. `ld.shared.u8` picking one fp8 element out of a `cp.async` word.
         if width == 1 {
             for lane in 0..4 {
                 let Some(start) = addr.checked_sub(lane) else {
@@ -297,11 +263,9 @@ impl Memory {
         }
     }
 
-    /// `mbarrier.inval`: the sanctioned way to retire a live `mbarrier`
-    /// object, removing the granule outright (not replacing it with
-    /// another value) so its bytes can later be repurposed - by an
-    /// ordinary write or a fresh `mbarrier.init` - without `put`'s
-    /// overwrite guard refusing it.
+    /// `mbarrier.inval`: retire a live `mbarrier` by removing its granule
+    /// outright, so its bytes can be repurposed without `put`'s overwrite
+    /// guard refusing it.
     pub fn invalidate_mbarrier(&mut self, addr: u64) -> Result<(), MemAccessError> {
         self.read_mbarrier(addr)?;
         self.cells.remove(&addr);
@@ -375,13 +339,9 @@ impl Memory {
         }
     }
 
-    /// Split the granule at `start` to resolve a partial overlap:
-    /// a 2-, 4-, or 8-byte `Pair` splits into two half-width scalars, and a
-    /// 4-byte `Quad` splits into two 2-byte `Pair`s (each still two
-    /// independent byte lanes - a further partial overlap into `put`'s
-    /// caller loop re-scans and, if needed, splits one of those `Pair`s
-    /// again via the first arm). `(addr, width)` identify the offending
-    /// access for error reporting.
+    /// Split the granule at `start` to resolve a partial overlap: a `Pair` into
+    /// two half-width scalars, a `Quad` into two `Pair`s (which `put` may split
+    /// again). `(addr, width)` identify the offending access for errors.
     fn split_pair(&mut self, start: u64, addr: u64, width: u64) -> Result<(), MemAccessError> {
         match self.cells.get(&start) {
             Some(Cell {
@@ -456,12 +416,9 @@ impl Memory {
         }
     }
 
-    /// Replace the granule at `start` by two half-width scalars holding
-    /// `lo` and `hi`, preserving its dirtiness. Used by the interpreter to
-    /// split a *concrete* scalar (whose halves it can compute exactly) that
-    /// a half-width access would otherwise reinterpret, e.g. the zero word
-    /// a `cp.async` zero-fill left where an epilogue then stores 16-bit
-    /// results.
+    /// Replace the granule at `start` by half-width scalars `lo` and `hi`,
+    /// preserving dirtiness: lets the interpreter split a *concrete* scalar a
+    /// half-width access would otherwise reinterpret (e.g. `cp.async` zero-fill).
     pub fn split_scalar(&mut self, start: u64, lo: ExprId, hi: ExprId) {
         let Some(cell) = self.cells.remove(&start) else {
             return;

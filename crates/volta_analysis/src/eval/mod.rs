@@ -1,10 +1,6 @@
-//! Symbolic evaluator for lowered PTX programs.
-//!
-//! Implements the interpreter from the paper: per-thread round-robin symbolic
-//! execution with χ-context race detection and barrier/warp-group
-//! synchronization. All floating-point values are symbolic expressions over
-//! the reals; addresses, branch predicates, and other control-relevant values
-//! must be concrete (the structured-CTA assumption).
+//! Symbolic evaluator for lowered PTX: the paper's round-robin interpreter
+//! with χ-context race detection. Floats are symbolic reals; addresses and
+//! branch predicates must be concrete (structured-CTA assumption).
 
 pub mod arithm;
 pub mod async_bulk;

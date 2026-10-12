@@ -1,9 +1,6 @@
-//! Turn a [`ParsedSpec`] (named dims, still symbolic) into the concrete
-//! `(SpecEnv, Vec<OutputSpec>)` pair `volta_analysis::spec::unfold` needs,
-//! given a caller-supplied value for every declared `dim`. Kept separate
-//! from parsing so the same parsed spec is reusable across dim values
-//! (e.g. checking the same `matmul.spec` file at several sizes) without
-//! re-parsing.
+//! Turn a [`ParsedSpec`] (named, symbolic dims) into the concrete
+//! `(SpecEnv, Vec<OutputSpec>)` pair `volta_analysis::spec::unfold` needs, given a value
+//! for every declared `dim`. Separate from parsing so one parsed spec serves many sizes.
 
 use std::collections::HashMap;
 use std::fmt;

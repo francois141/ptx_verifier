@@ -1,30 +1,6 @@
-//! The `solve` subcommand: replay the solve phase(s) of the pipeline
-//! from previously generated VC dumps (`volta-bench generate`), with no
-//! parsing, lowering, or symbolic execution involved.
-//!
-//! Per equivalence benchmark: read `<vcs_dir>/<slug>.vcdump`'s raw
-//! bytes, check their fingerprint against the vcs manifest
-//! (`crate::manifest` - the staleness guard, applied *before* anything
-//! decodes), decode the same buffer through the shared
-//! `volta_analysis::driver::vc_dump` reader (header + id validation as
-//! usual), rehydrate both snapshots, and run the *same* solve-phase
-//! functions the one-shot pipeline runs:
-//! `BenchmarkRunner::check_equivalence` (the decision procedure, under
-//! `--backend decision|both`) and `crate::z3_phase::run_z3_phase` (under
-//! `--backend z3|both`). Verdicts and pass/fail are judged by the same
-//! `assemble_result` tail as the one-shot path - including the
-//! Z3-refutation rule for `--backend z3` (`ActualOutcome::Z3Only`).
-//!
-//! Race-check benchmarks have no VCs and are skipped with a note: their
-//! verdicts are produced by generation (`volta-bench generate` runs them
-//! fully). A missing, corrupt, or manifest-contradicting dump is a
-//! per-benchmark failure naming the `generate` command to run; whenever
-//! the dump file exists, the failure record keeps pointing at it
-//! (`dump_path`), matching the one-shot pipeline's post-dump failures.
-//!
-//! Dump load time - read, fingerprint check, decode - is recorded
-//! (`dump_load_secs`) but excluded from the solve spans: loading is
-//! transport, not solving.
+//! The `solve` subcommand: replay the solve phase(s) from `generate`'s VC dumps (each
+//! fingerprint-checked against the manifest before decoding) through the same solve and
+//! `assemble_result` code as the one-shot pipeline; race benchmarks are skipped.
 
 use std::time::Instant;
 
@@ -90,11 +66,9 @@ pub enum SolveItem {
 }
 
 impl BenchmarkRunner {
-    /// `solve` over a benchmark list: read the vcs manifest once (absent
-    /// manifest: warn and skip the staleness guard, so hand-copied dump
-    /// directories stay usable; unreadable manifest: hard error), then
-    /// [`run_solve`](Self::run_solve) each benchmark with the same
-    /// verbose chatter as `run_all`.
+    /// `solve` over a benchmark list: read the vcs manifest once (absent: warn
+    /// and skip the guard; unreadable: hard error), then
+    /// [`run_solve`](Self::run_solve) each benchmark.
     pub fn solve_suite(
         &self,
         defs: &[BenchmarkDef],
@@ -134,10 +108,9 @@ impl BenchmarkRunner {
             .collect())
     }
 
-    /// Solve one benchmark from its dump (see the module docs). Any
-    /// failure - missing/corrupt dump, manifest disagreement, solve
-    /// error - becomes a per-benchmark `Error` result rather than
-    /// aborting the run.
+    /// Solve one benchmark from its dump. Any failure (missing/corrupt dump,
+    /// manifest disagreement, solve error) becomes a per-benchmark `Error`
+    /// result rather than aborting the run.
     pub fn run_solve(
         &self,
         def: &BenchmarkDef,
@@ -189,14 +162,9 @@ impl BenchmarkRunner {
             dump_path: Some(path.clone()),
         };
 
-        // Load (timed into `dump_load_secs`, never into the solve
-        // spans): read the raw bytes, fingerprint them against the
-        // manifest *before* decoding anything - the staleness guard; the
-        // dump must be byte-for-byte what `generate` last recorded
-        // (`crate::manifest` documents what that does and does not
-        // catch) - then decode the same buffer. `read_vc_dump_bytes`
-        // checks the header and validates every id, so
-        // stale-format/corrupt files fail with its message.
+        // Load (timed into `dump_load_secs`, not the solve spans): fingerprint
+        // the raw bytes against the manifest before decoding, then decode via
+        // `read_vc_dump_bytes`, which validates the header and every id.
         let load_start = Instant::now();
         let bytes = std::fs::read(&path)
             .with_context(|| format!("reading VC dump {}", path.display()))
@@ -367,10 +335,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A well-formed dump solves to the expected verdict with the load
-    /// time recorded, and a disagreeing manifest turns the same dump into
-    /// a hard per-benchmark failure (the stale/mixed-directory guard) -
-    /// whose record still points at the on-disk dump file.
+    /// A well-formed dump solves with its load time recorded; a disagreeing
+    /// manifest makes it a per-benchmark failure that still keeps `dump_path`.
     #[test]
     fn solve_from_dump_checks_manifest_and_solves() {
         let dir = temp_vcs_dir("dump");

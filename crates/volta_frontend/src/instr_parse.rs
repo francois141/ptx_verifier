@@ -1,17 +1,14 @@
-//! Instruction parsing module
-//!
-//! This module provides parsing functions to convert unparsed instructions
-//! (with raw modifier strings) into strongly-typed instruction structures.
+//! Instruction parsing: converts unparsed instructions (raw modifier strings)
+//! into strongly-typed instruction structures.
 
 use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
 use crate::ast::*;
 use crate::instr::InstrKind;
 use crate::lex::DottedIdent;
 
-/// Destructure the operand list into exactly `N` operands, or return the
-/// arity error. `N` is inferred from the destructuring pattern:
-/// `let [dst, a, b] = expect_operands(operands)?;` -- the check and the
-/// extraction cannot drift apart.
+/// Destructure the operand list into exactly `N` operands or return the arity
+/// error; `N` is inferred from the pattern (`let [dst, a, b] =
+/// expect_operands(operands)?;`), so the check and extraction cannot drift.
 fn expect_operands<const N: usize>(
     operands: Vec<Operand>,
 ) -> Result<[Operand; N], InstrParseError> {
@@ -185,15 +182,9 @@ impl ModifierParser {
         Err(InstrParseError::MissingModifier(value))
     }
 
-    /// Try to consume a `.shared{::cta|::cluster}` state-space modifier
-    /// (`cp.async`'s and `ldmatrix`'s `.shared` operand). Unqualified and
-    /// `::cta` both consume to `Cta`; `::cluster` consumes to `Cluster` -
-    /// whether it's *supported* is a lowering-time decision. Optional:
-    /// returns `Ok(None)` (without consuming) if the current modifier isn't
-    /// `.shared` in either form - for instructions where an explicit shared
-    /// state space is itself optional (e.g. `mbarrier.*`, which otherwise
-    /// falls back to generic addressing). Still errors if `.shared` IS
-    /// present with an unrecognized `::` suffix.
+    /// Try to consume `.shared{::cta|::cluster}` (bare/`::cta` → `Cta`); support
+    /// for `Cluster` is a lowering decision. Returns `Ok(None)` without consuming
+    /// if absent, but errors on `.shared` with an unrecognized `::` suffix.
     pub fn try_consume_shared_state_space(
         &mut self,
         space: &'static [AsciiChar],
@@ -250,11 +241,9 @@ impl ModifierParser {
             .ok_or(InstrParseError::MissingType)
     }
 
-    /// Consume any run of cache performance-hint qualifiers (eviction
-    /// priorities, prefetch sizes) at the current position, ignoring them.
-    /// Anything else `::`-qualified - notably `L2::cache_hint`, which
-    /// requires a cache-policy operand we do not parse - is left in place
-    /// for `reject_qualified` to error on.
+    /// Skip any run of cache performance-hint qualifiers (eviction priorities,
+    /// prefetch sizes). Other `::` qualifiers - notably `L2::cache_hint`, which
+    /// needs an unparsed operand - are left for `reject_qualified`.
     pub fn skip_cache_perf_hints(&mut self) {
         while matches!(self.peek(), Some(DottedIdent::Qualified(parts)) if is_cache_perf_hint(parts))
         {
@@ -262,10 +251,9 @@ impl ModifierParser {
         }
     }
 
-    /// Reject any `::`-qualified modifier at the current position (like
-    /// `shared::cta` or `L2::cache_hint`). These were once skipped silently,
-    /// which could drop an explicit state space and misdirect the access;
-    /// unmodeled semantics must error loudly instead.
+    /// Reject any `::`-qualified modifier here (`shared::cta`, `L2::cache_hint`):
+    /// silently skipping one could drop an explicit state space and misdirect
+    /// the access, so unmodeled semantics error loudly.
     pub fn reject_qualified(&self) -> Result<(), InstrParseError> {
         if let Some(DottedIdent::Qualified(parts)) = self.peek() {
             return Err(InstrParseError::QualifiedModifier(crate::ascii::join(
@@ -306,16 +294,9 @@ impl ModifierParser {
     }
 }
 
-/// Whether a `::`-qualified modifier (split at `::`) is a cache-control
-/// qualifier that is a pure performance hint taking no extra operand, and
-/// can therefore be accepted and ignored on `ld`, `st`, and
-/// `ld.global.nc`: the eviction priorities (PTX ISA 9.7.9.2: "Cache
-/// eviction priority on load or store instructions is treated as a
-/// performance hint") and the prefetch sizes ("The .level::prefetch_size
-/// qualifier is treated as a performance hint only"). The sets are the
-/// spec's exact enumerations - note L2 eviction is narrower than L1's.
-/// `L2::cache_hint` is deliberately excluded: it requires an additional
-/// cache-policy operand that we do not parse.
+/// Whether a split `::` modifier is a pure performance hint with no operand,
+/// ignorable on `ld`/`st`/`ld.global.nc`: the spec's exact eviction-priority and
+/// prefetch-size sets (ISA 9.7.9.2). Excludes `L2::cache_hint` (needs an operand).
 pub fn is_cache_perf_hint(parts: &[AsciiString]) -> bool {
     let [level, hint] = parts else {
         return false;
@@ -517,11 +498,9 @@ pub fn parse_instruction(
 // Integer Arithmetic Instruction Parsers
 // =============================================================================
 
-/// Parse add instruction (Blocks 1, 33, 53, 63)
-/// Block 1: add.type / add{.sat}.s32 (sat ONLY for s32)
-/// Block 33: add{.rnd}{.ftz}{.sat}.f32 / add{.rnd}{.ftz}.f32x2 / add{.rnd}.f64
-/// Block 53: add{.rnd}{.ftz}{.sat}.f16/f16x2 / add{.rnd}.bf16/bf16x2
-/// Block 63: add{.rnd}{.sat}.f32.atype (NO ftz for mixed precision)
+/// Parse add (Blocks 1, 33, 53, 63): `.sat` integer only on s32; f32x2 no sat,
+/// f64 `.rnd` only; bf16/bf16x2 `.rnd` only; mixed `add{.rnd}{.sat}.f32.atype`
+/// has no ftz.
 fn parse_add(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -645,11 +624,9 @@ fn parse_add(
     Ok(ParsedInstruction::Add(instr))
 }
 
-/// Parse sub instruction (Blocks 2, 34, 54, 64)
-/// Block 2: sub.type / sub{.sat}.s32 (sat ONLY for s32)
-/// Block 34: sub{.rnd}{.ftz}{.sat}.f32 / sub{.rnd}{.ftz}.f32x2 / sub{.rnd}.f64
-/// Block 54: sub{.rnd}{.ftz}{.sat}.f16/f16x2 / sub{.rnd}.bf16/bf16x2
-/// Block 64: sub{.rnd}{.sat}.f32.atype (NO ftz for mixed precision)
+/// Parse sub (Blocks 2, 34, 54, 64): `.sat` integer only on s32; f32x2 no sat,
+/// f64 `.rnd` only; bf16/bf16x2 `.rnd` only; mixed `sub{.rnd}{.sat}.f32.atype`
+/// has no ftz.
 fn parse_sub(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -767,10 +744,9 @@ fn parse_sub(
     Ok(ParsedInstruction::Sub(instr))
 }
 
-/// Parse mul instruction (Block 3 for integer, Block 35 for float, Block 55 for half)
-/// Block 3: mul.mode.type (integer - mode required, NO ftz/sat)
-/// Block 35: mul{.rnd}{.ftz}{.sat}.f32 / mul{.rnd}{.ftz}.f32x2 / mul{.rnd}.f64
-/// Block 55: mul{.rnd}{.ftz}{.sat}.f16/f16x2 / mul{.rnd}.bf16/bf16x2
+/// Parse mul (Blocks 3, 35, 55): integer `mul.mode.type` (mode required, no
+/// ftz/sat); f32 `{.rnd}{.ftz}{.sat}`, f32x2 no sat, f64 `.rnd` only; f16/f16x2
+/// `{.rnd}{.ftz}{.sat}`, bf16/bf16x2 `.rnd` only.
 fn parse_mul(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -1125,10 +1101,8 @@ fn parse_rem(
     }))
 }
 
-/// Parse abs instruction (Blocks 10, 39, 58)
-/// Block 10: abs.type (integer) - NO ftz
-/// Block 39: abs{.ftz}.f32 / abs.f64 (NO ftz for f64)
-/// Block 58: abs{.ftz}.f16/f16x2 / abs.bf16/bf16x2 (NO ftz for bf16)
+/// Parse abs (Blocks 10, 39, 58): integer `abs.type` and f64/bf16/bf16x2 take
+/// no ftz; f32/f16/f16x2 take optional `.ftz`.
 fn parse_abs(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -1172,10 +1146,8 @@ fn parse_abs(
     Ok(ParsedInstruction::Abs(instr))
 }
 
-/// Parse neg instruction (Blocks 11, 40, 57)
-/// Block 11: neg.type (integer) - NO ftz
-/// Block 40: neg{.ftz}.f32 / neg.f64 (NO ftz for f64)
-/// Block 57: neg{.ftz}.f16/f16x2 / neg.bf16/bf16x2 (NO ftz for bf16)
+/// Parse neg (Blocks 11, 40, 57): integer `neg.type` and f64/bf16/bf16x2 take
+/// no ftz; f32/f16/f16x2 take optional `.ftz`.
 fn parse_neg(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -1219,10 +1191,8 @@ fn parse_neg(
     Ok(ParsedInstruction::Neg(instr))
 }
 
-/// Parse min instruction (Blocks 12, 41, 59)
-/// Block 12: min.atype (NO relu) / min{.relu}.btype (btype = s16x2, s32)
-/// Block 41: min{.ftz}{.NaN}{.xorsign.abs}.f32 / min.f64 (NO modifiers)
-/// Block 59: min{.ftz}{.NaN}{.xorsign.abs}.f16/f16x2 / min{.NaN}{.xorsign.abs}.bf16 (NO ftz)
+/// Parse min (Blocks 12, 41, 59): `.relu` only on s16x2/s32; f32/f16/f16x2 take
+/// `{.ftz}{.NaN}{.xorsign.abs}`, bf16 the same without ftz, f64 no modifiers.
 fn parse_min(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -1381,10 +1351,8 @@ fn parse_min(
     Ok(ParsedInstruction::Min(instr))
 }
 
-/// Parse max instruction (Blocks 13, 42, 60)
-/// Block 13: max.atype (NO relu) / max{.relu}.btype (btype = s16x2, s32)
-/// Block 42: max{.ftz}{.NaN}{.xorsign.abs}.f32 / max.f64 (NO modifiers)
-/// Block 60: max{.ftz}{.NaN}{.xorsign.abs}.f16/f16x2 / max{.NaN}{.xorsign.abs}.bf16 (NO ftz)
+/// Parse max (Blocks 13, 42, 60): `.relu` only on s16x2/s32; f32/f16/f16x2 take
+/// `{.ftz}{.NaN}{.xorsign.abs}`, bf16 the same without ftz, f64 no modifiers.
 fn parse_max(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -1916,10 +1884,9 @@ fn parse_copysign(
     }))
 }
 
-/// Parse fma instruction (Blocks 36, 56, 65)
-/// Block 36: fma.rnd{.ftz}{.sat}.f32 / fma.rnd{.ftz}.f32x2 / fma.rnd.f64
-/// Block 56: fma.rnd{.ftz}{.sat}.f16/f16x2 / fma.rnd{.ftz}.relu.f16/f16x2 / fma.rnd{.relu}.bf16/bf16x2
-/// Block 65: fma.rnd{.sat}.f32.abtype for mixed precision (abtype = f16/bf16, NO ftz)
+/// Parse fma (Blocks 36, 56, 65): f32 `fma.rnd{.ftz}{.sat}`, f32x2 no sat, f64
+/// rnd only; f16 sat or `.relu`, bf16 `{.relu}` no ftz; mixed
+/// `fma.rnd{.sat}.f32.abtype` (abtype = f16/bf16, no ftz).
 fn parse_fma(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -2218,10 +2185,8 @@ fn parse_lg2(
     Ok(ParsedInstruction::Lg2(Lg2Instr { ftz, dst, src }))
 }
 
-/// Parse ex2 instruction (Blocks 51, 62)
-/// Block 51: ex2.approx{.ftz}.f32 - ftz optional
-/// Block 62: ex2.approx.atype (atype = f16, f16x2) - NO ftz allowed
-/// Block 62: ex2.approx.ftz.btype (btype = bf16, bf16x2) - ftz REQUIRED
+/// Parse ex2 (Blocks 51, 62): `ex2.approx{.ftz}.f32`; f16/f16x2 forbid ftz;
+/// bf16/bf16x2 require `.ftz`.
 fn parse_ex2(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -2778,11 +2743,9 @@ fn parse_ld(
     let scope = mp.try_parse::<MemScope>();
     let space = mp.try_parse::<StateSpace>();
     let cache_op = mp.try_parse::<CacheOp>();
-    // Eviction-priority and prefetch-size qualifiers are pure performance
-    // hints with no extra operand; accept and ignore them. Any other
-    // qualified modifier (a ::-qualified state space we did not parse
-    // above, L2::cache_hint - which requires a cache-policy operand we do
-    // not parse, ...) is unsupported; error loudly.
+    // Ignore eviction-priority/prefetch-size hints (no extra operand); any
+    // other qualified modifier (an unparsed `::` state space, L2::cache_hint)
+    // is unsupported and errors loudly.
     mp.skip_cache_perf_hints();
     mp.reject_qualified()?;
     let nc = mp.try_consume(ascii("nc"));
@@ -2840,11 +2803,9 @@ fn parse_st(
     let scope = mp.try_parse::<MemScope>();
     let space = mp.try_parse::<StateSpace>();
     let cache_op = mp.try_parse::<CacheOp>();
-    // Eviction-priority and prefetch-size qualifiers are pure performance
-    // hints with no extra operand; accept and ignore them. Any other
-    // qualified modifier (a ::-qualified state space we did not parse
-    // above, L2::cache_hint - which requires a cache-policy operand we do
-    // not parse, ...) is unsupported; error loudly.
+    // Ignore eviction-priority/prefetch-size hints (no extra operand); any
+    // other qualified modifier (an unparsed `::` state space, L2::cache_hint)
+    // is unsupported and errors loudly.
     mp.skip_cache_perf_hints();
     mp.reject_qualified()?;
     let vec = mp.try_parse::<VecWidth>();
@@ -3010,11 +2971,9 @@ fn parse_cvt(
             None
         };
 
-        // A second source operand only makes sense for the two-source
-        // "convert and pack" form into a packed x2 destination - no
-        // `.pack` keyword, the destination type alone signals it (e.g.
-        // `cvt.rn.f16x2.f32 d, a, b`). Any other leftover operand is a
-        // genuine error, caught below.
+        // A second source is only valid for the two-source pack form into a
+        // packed x2 destination (`cvt.rn.f16x2.f32 d, a, b`, no `.pack`); any
+        // other leftover operand is an error, caught below.
         match ops.next() {
             None => CvtInstr::Standard {
                 rnd,
@@ -3339,12 +3298,9 @@ fn parse_membar(
     Ok(ParsedInstruction::Membar(membar))
 }
 
-/// Parse fence instruction (Block 135). `.proxy.proxykind` (if present) must
-/// come immediately after the mnemonic - the bi-directional proxy fence's
-/// bare form (`fence.proxy.async.shared::cta;`, no `.sem`/`.scope` at all)
-/// is exactly how the real corpus spells it - so `proxy` is resolved first,
-/// with `sem`/`scope` parsed unconditionally afterward (a no-op when
-/// absent, whichever branch was taken).
+/// Parse fence (Block 135). `.proxy.proxykind` must directly follow the
+/// mnemonic (the corpus writes bare `fence.proxy.async.shared::cta;`), so it is
+/// resolved first; `sem`/`scope` are parsed afterward (no-ops when absent).
 fn parse_fence(
     mp: &mut ModifierParser,
     _operands: Vec<Operand>,
@@ -3374,15 +3330,9 @@ fn parse_fence(
     }))
 }
 
-/// Parse `fence.proxy`'s `.proxykind` (PTX ISA: `.proxykind = { .alias,
-/// .async, .async.global, .async.shared::{cta, cluster} }`). Reuses
-/// [`ModifierParser::try_consume_shared_state_space`] for the `::cta`/
-/// `::cluster` suffix rather than a one-off `::`-qualified consumer -
-/// consistent with how `cp.async`/`ldmatrix`/`mbarrier.*` already parse the
-/// same suffix elsewhere in this file. Note this also accepts a bare
-/// `.shared` (defaulting to `Cta`), which the ISA always double-colon
-/// qualifies for this specific proxykind - harmless leniency, since both
-/// qualifiers collapse to the same `MemSpace::Shared` downstream.
+/// Parse `fence.proxy`'s `.proxykind` (`.alias`, `.async`, `.async.global`,
+/// `.async.shared::{cta,cluster}`) via `try_consume_shared_state_space`; a bare
+/// `.shared` is leniently accepted as `Cta` (same `MemSpace::Shared` anyway).
 fn parse_fence_proxy_kind(mp: &mut ModifierParser) -> Result<FenceProxyKind, InstrParseError> {
     if mp.try_consume(ascii("alias")) {
         return Ok(FenceProxyKind::Alias);
@@ -3644,12 +3594,9 @@ fn parse_griddepcontrol(
     }))
 }
 
-/// Parse elect.sync instruction (Block 145): `elect.sync d|p, membermask`.
-/// Exactly two syntactic operands - the ISA's `d|p` pair is one combined
-/// token the general operand parser already returns as a single
-/// `Operand::PredicatePair`, not two separate operands (unlike
-/// `shfl.sync`'s *optional* `d|p`, `elect.sync`'s pair is mandatory, so
-/// anything else in that position is malformed).
+/// Parse elect.sync (Block 145): `elect.sync d|p, membermask`. Exactly two
+/// operands: the mandatory `d|p` pair is one `Operand::PredicatePair` token,
+/// so anything else there is malformed.
 fn parse_elect_sync(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
@@ -3686,12 +3633,9 @@ fn parse_elect_sync(
 // Mbarrier Parsers
 // =============================================================================
 
-/// Parse mbarrier's optional `{.space{::cta|::cluster}}` prefix. `.shared`
-/// (bare or `::cta`/`::cluster`-qualified) is the common case and is the
-/// only state space with a meaningful qualifier here, so it's tried first;
-/// any other simple state space (or none - generic addressing) falls back
-/// to the plain `StateSpace` parse, matching every mbarrier instruction's
-/// existing `{.space}` grammar.
+/// Parse mbarrier's optional `{.space{::cta|::cluster}}` prefix: `.shared`
+/// (the only space with a qualifier) is tried first, then any other plain
+/// `StateSpace`, or none (generic addressing).
 fn parse_mbarrier_space(
     mp: &mut ModifierParser,
 ) -> Result<(Option<StateSpace>, Option<StateSpaceQualifier>), InstrParseError> {
@@ -3799,11 +3743,9 @@ fn parse_mbarrier_arrive(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    // `.expect_tx`/`.noComplete` are written immediately after the mnemonic
-    // - `mbarrier.arrive.expect_tx{.sem.scope}{.shared{::cta}}.b64` - so
-    // they must be consumed before `.sem`/`.scope`/the state space, not
-    // after (`ModifierParser` is a strict sequential cursor, not a
-    // reordering matcher).
+    // `.expect_tx`/`.noComplete` directly follow the mnemonic, so consume them
+    // before `.sem`/`.scope`/the space: `ModifierParser` is a strict
+    // sequential cursor, not a reordering matcher.
     let expect_tx = mp.try_consume(ascii("expect_tx"));
     let no_complete = mp.try_consume(ascii("noComplete"));
     let sem = mp.try_parse::<MemSemantics>();

@@ -1,11 +1,6 @@
-//! The decision procedure: canonicalization of evaluator expressions into
-//! interned `Σ c·monomial·e^{poly}` rational forms, and equality over them
-//! (see `docs/canonicalizer-plan.md`).
-//!
-//! A `Session` owns the intern tables and memo for one equivalence-checking
-//! run (typically one benchmark: both kernels, all output elements), so
-//! shared structure is canonicalized once and equal canonical objects have
-//! equal ids everywhere.
+//! The decision procedure: canonicalize into interned `Σ c·monomial·e^{poly}`
+//! rationals and decide equality (`docs/canonicalizer-plan.md`). One `Session`
+//! per run, so equal canonical objects have equal ids everywhere.
 
 mod arena;
 mod canonicalize;
@@ -71,14 +66,9 @@ impl std::error::Error for CanonError {}
 /// enough to fail within tens of seconds instead of hanging.
 pub const DEFAULT_BUDGET: u64 = 4_000_000_000;
 
-/// One canonicalization session: intern tables + memos + budget.
-///
-/// Memory discipline: only *shared* results are interned - values of
-/// multi-parent expression nodes (per the ref-count prepass), exp/atom
-/// arguments, and the roots handed to `canonicalize`. Everything along
-/// single-use chains (fma accumulators, running rescales) stays a transient
-/// owned vector freed by scope, so a K-step accumulator costs O(K) live
-/// memory instead of retaining O(K^2) interned prefixes.
+/// One canonicalization session: intern tables + memos + budget. Only shared
+/// results are interned; single-use chains stay transient owned vectors, so a
+/// K-step accumulator costs O(K) memory, not O(K^2).
 pub struct Session {
     pub(crate) arena: CanonArena,
     pub(crate) expr_memo: HashMap<(Side, ExprId), Rat>,
@@ -110,10 +100,9 @@ impl Session {
         self.ops
     }
 
-    /// Number of interned terms - the dominant memory consumer. Callers
-    /// checking many VC elements should recycle the session when this grows
-    /// large (intermediate chain terms are interned per element and only
-    /// partially shared across elements).
+    /// Number of interned terms - the dominant memory consumer. Recycle the
+    /// session when this grows large: chain terms are interned per element,
+    /// only partly shared.
     pub fn interned_terms(&self) -> usize {
         self.arena.terms.len()
     }

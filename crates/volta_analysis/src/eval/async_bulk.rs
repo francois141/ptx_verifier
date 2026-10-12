@@ -1,7 +1,6 @@
-//! `cp.async.bulk{.tensor}` evaluation: the TMA tensor copy and the plain
-//! bulk copy (both global to shared, mbarrier-completed), and the
-//! in-flight tracking that keeps a copy's destination locked until a
-//! waiter observes its mbarrier phase complete.
+//! `cp.async.bulk{.tensor}` evaluation (TMA tensor and plain bulk copies,
+//! global to shared, mbarrier-completed) and the in-flight locks held until a
+//! waiter observes the copy's mbarrier phase.
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
@@ -12,13 +11,9 @@ use crate::eval::value::{MbarrierId, Value};
 use crate::lowered::{InstrId, MemSpace, Operand};
 use crate::tensor_map::TensorFillMode;
 
-/// One `cp.async.bulk{.tensor}` copy whose completion no waiter has yet
-/// observed. The data lands eagerly (Volta's evaluation is sequential -
-/// there is no deferred value to hold, unlike `PendingCopy`), but the
-/// destination stays locked against every access until then: the tracking
-/// mbarrier's phase completing and being observed is these copies' only
-/// completion signal, and the point at which the ISA's implicit
-/// generic-async proxy fence (9.7.9.25.2) makes the bytes readable.
+/// A bulk copy whose completion no waiter has observed yet. Its data lands
+/// eagerly, but its destination stays locked until then: an observed mbarrier
+/// phase is its only completion signal (9.7.9.25.2).
 #[derive(Debug)]
 pub(in crate::eval) struct InflightBulkCopy {
     issuer: ThreadId,
@@ -36,26 +31,9 @@ pub(in crate::eval) struct InflightBulkCopy {
 }
 
 impl<'p> Interpreter<'p> {
-    /// `cp.async.bulk.tensor...tile.mbarrier::complete_tx::bytes`: TMA
-    /// tensor copy, global to shared (see
-    /// `lowering::lower_cp_async_bulk_tensor` for the exact scope - `.tile`
-    /// mode, the `global -> shared::cluster` direction, mbarrier
-    /// completion only).
-    ///
-    /// Per-dimension addressing follows PTX ISA 9.7.9.26.5.2/5.5.3: box-local
-    /// index `k` in dimension `d` maps to global tensor index `coord[d] +
-    /// k * element_stride[d]`; out-of-`global_dim` indices get `fill_mode`'s
-    /// fill (scoped to zero-fill - see the `fill_mode` check below) rather
-    /// than a physical read, since that is architecturally expected at tile
-    /// edges (5.5.3.3), not a bug. The destination box is written in
-    /// row-major (`.tile` "preserve multi-dimensional layout") order,
-    /// swizzled via the *same* byte-permutation
-    /// `eval::tcgen05_mma::swizzled_element_addr` already implements for
-    /// the MMA operand read (PTX ISA 5.5.7 describes one pattern for both);
-    /// the box is required to fit within a single swizzle atom along
-    /// dimension 0 so `leading_dim_byte_offset` is never needed (see the
-    /// `atom_shape`-based check below) - a box that doesn't is rejected
-    /// loudly rather than silently misplaced.
+    /// `.tile` TMA tensor copy, global to shared (ISA 9.7.9.26.5.2, 5.5.3):
+    /// out-of-bounds indices zero-fill and the box is swizzled per 5.5.7; a
+    /// box wider than one atom is rejected.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::eval) fn exec_cp_async_bulk_tensor_load(
         &mut self,
@@ -160,24 +138,9 @@ impl<'p> Interpreter<'p> {
         let elem_bytes = elemtype.byte_width();
         let row_bytes = box_dims[0] as u64 * elem_bytes;
 
-        // `stride_dim_byte_offset` for a swizzled mode is the swizzle
-        // *atom's own footprint* (`r * w * CELL_BYTES` - PTX ISA 5.5.7's
-        // "starting address of the repeating pattern" sizes: 256/512/1024
-        // bytes for 32B/64B/128B swizzle), a fixed per-mode constant -
-        // *not* the box's own row width. `swizzled_element_addr`'s
-        // `atom_row * row_bytes` term already accounts for the pitch
-        // between individual stride-index steps *within* one atom (using
-        // a fixed `w * CELL_BYTES`, unrelated to the box shape);
-        // `stride_dim_byte_offset` only multiplies `stride_atom =
-        // stride_idx / r`, the spacing *between* atoms. Confirmed against
-        // the real corpus kernel's own independently-computed `a-desc`/
-        // `b-desc` matrix-descriptor register values (`swizzled_element_addr`
-        // must reproduce the exact same shared addresses `tcgen05.mma`
-        // reads through those descriptors, since both sides address the
-        // same physical shared memory): `A`'s real `stride_dim_byte_offset`
-        // is 512 (`Swizzle64B`'s atom, `8*4*16`), `B`'s is 1024
-        // (`Swizzle128B`'s atom, `8*8*16`) - both match `r*w*CELL_BYTES`
-        // exactly, neither matches the box's row width.
+        // For a swizzled mode, `stride_dim_byte_offset` is the atom footprint
+        // `r * w * CELL_BYTES` (ISA 5.5.7: 256/512/1024 bytes), not the box
+        // row width; it matches the corpus kernel's real MMA descriptors.
         let stride_dim_byte_offset = if mma_swizzle == tcgen05_mma::SwizzleMode::None {
             row_bytes
         } else {
@@ -204,15 +167,9 @@ impl<'p> Interpreter<'p> {
                     ),
                 });
             }
-            // The atom footprint (`r*w*CELL_BYTES`) only matches PTX ISA
-            // 5.5.7's documented per-mode "repeating pattern" boundary for
-            // the three modes confirmed above (256/512/1024) -
-            // `Swizzle128BWith32BAtomicity`'s `atom_shape` (4,8) gives 512,
-            // contradicting the ISA's 1024-byte boundary for *any* 128B
-            // swizzle sub-mode (its `(r,w)` was only ever confirmed for the
-            // MMA-read address formula against one diagram - see
-            // `tcgen05_mma`'s module doc), so it is rejected here rather
-            // than trusted for this different purpose.
+            // `Swizzle128BWith32BAtomicity`'s `atom_shape` gives 512 bytes,
+            // contradicting ISA 5.5.7's 1024-byte boundary for every 128B
+            // mode, so it is rejected rather than trusted.
             let atom_bytes = match mma_swizzle {
                 tcgen05_mma::SwizzleMode::Swizzle32B => 256,
                 tcgen05_mma::SwizzleMode::Swizzle64B => 512,
@@ -317,13 +274,9 @@ impl<'p> Interpreter<'p> {
         self.mbarrier_complete_tx(t, pc, mbar_addr, total_elems * elem_bytes)
     }
 
-    /// `cp.async.bulk.shared::{cta,cluster}.global.mbarrier::complete_tx
-    /// ::bytes`: copy `size` contiguous bytes global -> shared, then
-    /// complete `size` bytes of async-transaction on the mbarrier. Like
-    /// `exec_cp_async_bulk_tensor_load`, the write lands immediately and the
-    /// destination stays locked in flight (`begin_inflight_bulk_copy`). The
-    /// copy moves 4-byte words, the same granularity as `cp.async` (`size`
-    /// is a multiple of 16).
+    /// `cp.async.bulk` global -> shared of `size` bytes, completing `size`
+    /// tx-bytes on the mbarrier; the write lands immediately in 4-byte words
+    /// and the destination stays locked in flight.
     pub(in crate::eval) fn exec_cp_async_bulk_load(
         &mut self,
         t: ThreadId,
@@ -379,13 +332,9 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// Put a just-landed `cp.async.bulk{.tensor}` copy in flight: lock its
-    /// destination ranges until `release_observed_bulk_copies` sees the
-    /// tracking mbarrier at `mbar_addr` move past the phase forming now.
-    /// Called *after* the copy's own write (as `complete_cp_async_copy`
-    /// releases before its deferred write, for the same reason: the write
-    /// must not trip its own lock), so an access that reaches these bytes
-    /// without waiting on the mbarrier is reported against the copy.
+    /// Lock a just-landed copy's destination until the mbarrier at
+    /// `mbar_addr` moves past the current phase. Called after the write so it
+    /// doesn't trip its own lock; unwaited accesses are reported.
     fn begin_inflight_bulk_copy(
         &mut self,
         t: ThreadId,
@@ -410,18 +359,9 @@ impl<'p> Interpreter<'p> {
         Ok(())
     }
 
-    /// A waiter is about to observe `mbar`'s last completed phase: every
-    /// bulk copy tracked by that phase (or an earlier one of `mbar`) has
-    /// completed, so its destination locks are dropped - the ISA's implicit
-    /// generic-async proxy fence at completion (9.7.9.25.2) is what makes
-    /// those bytes readable, with no `fence.proxy.async` required. The
-    /// copy's write is recorded in χ afresh, as for
-    /// [`Self::release_observed_mmas`]: the copy only completed now, so a
-    /// sync between its issue and here (which cleared the issue's entries)
-    /// orders nothing about it, and the caller's following waiter sync is
-    /// what orders it - for the waiters alone. The write can't conflict
-    /// here: every other access to the destination since the issue was
-    /// rejected against the lock.
+    /// A waiter observes `mbar`'s completed phase: drop its copies' locks
+    /// (the implicit proxy fence, 9.7.9.25.2) and record their writes in χ
+    /// afresh, since the copy only completed now.
     pub(in crate::eval) fn release_observed_bulk_copies(
         &mut self,
         mbar: MbarrierId,

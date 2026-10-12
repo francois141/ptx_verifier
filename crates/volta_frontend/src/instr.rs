@@ -61,15 +61,9 @@ impl InstrTrie {
             return Some(result);
         }
 
-        // A qualifier can be glued directly onto a mnemonic segment with no `.`
-        // separator - that's simply how the PTX ISA names some instructions
-        // (`tcgen05.wait::st`, `tcgen05.wait::ld`). Segments only split on `.`,
-        // so `seg` here is the whole "wait::st" and never exactly matches a
-        // registered child "wait". Retry against the substring before the
-        // first `::`; the qualifier itself isn't lost by doing this -
-        // `Ident::as_instr` (lex.rs) recovers it later by slicing the original
-        // text at `kind.mnemonic().len()`, which lands exactly on this
-        // boundary regardless of how the trie found the match.
+        // PTX glues some qualifiers onto a segment with no `.` (`tcgen05.wait::st`), so retry
+        // with the part before the first `::`; `Ident::as_instr` (lex.rs) later recovers the
+        // qualifier by slicing at `kind.mnemonic().len()`, which lands on this boundary.
         if let Some(colon) = seg
             .windows(2)
             .position(|w| w[0] == AsciiChar::Colon && w[1] == AsciiChar::Colon)
@@ -91,12 +85,8 @@ impl InstrTrie {
     }
 }
 
-/// PTX 9.1 instruction mnemonics.
-///
-/// This list is derived from the PTX ISA 9.1 documentation:
-/// https://docs.nvidia.com/cuda/parallel-thread-execution/index.html
-///
-/// Instructions are organized by category as in the documentation (Section 9.7).
+/// PTX 9.1 instruction mnemonics, organized by category as in the PTX ISA 9.1 documentation
+/// (Section 9.7): https://docs.nvidia.com/cuda/parallel-thread-execution/index.html
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstrKind {
     // =========================================================================
@@ -157,12 +147,10 @@ pub enum InstrKind {
 
     // =========================================================================
     // 9.7.4 Half Precision Floating-Point Instructions
-    // =========================================================================
     // add, sub, mul, fma, neg, abs, min, max, tanh, ex2 - shared
 
     // =========================================================================
     // 9.7.5 Mixed Precision Floating-Point Instructions
-    // =========================================================================
     // add, sub, fma - shared
 
     // =========================================================================
@@ -175,7 +163,6 @@ pub enum InstrKind {
 
     // =========================================================================
     // 9.7.7 Half Precision Comparison Instructions
-    // =========================================================================
     // set, setp - shared
 
     // =========================================================================
@@ -350,7 +337,6 @@ pub enum InstrKind {
 
     // =========================================================================
     // 9.7.18 Video Instructions
-    // =========================================================================
     // Scalar video instructions
     Vadd,
     Vsub,
@@ -651,11 +637,9 @@ impl fmt::Display for InstrKind {
 
 static INSTR_TRIE: OnceLock<InstrTrie> = OnceLock::new();
 
-/// Returns a segment trie containing all PTX instruction mnemonics.
-///
-/// The trie maps instruction strings to their corresponding `InstrKind` variant. This supports
-/// longest-match lexing for compound instructions like `cp.async.bulk`, while correctly rejecting
-/// partial segment matches (e.g., "mov32" won't match "mov").
+/// Returns a segment trie mapping every PTX instruction mnemonic to its `InstrKind`. It supports
+/// longest-match lexing of compound mnemonics like `cp.async.bulk` while rejecting partial
+/// segment matches (e.g., "mov32" won't match "mov").
 pub fn get_instr_trie() -> &'static InstrTrie {
     INSTR_TRIE.get_or_init(|| {
         use InstrKind::*;
@@ -965,14 +949,9 @@ mod tests {
 
     #[test]
     fn test_qualifier_glued_onto_mnemonic_segment() {
-        // Synthetic example, decoupled from any real instruction: PTX names
-        // like `tcgen05.wait::ld`/`::st` glue a `::`-qualifier directly onto
-        // a mnemonic segment with no `.` separator. Those two are registered
-        // as their own exact trie entries (see `Tcgen05WaitLd`/`Tcgen05WaitSt`
-        // above), so this fallback is no longer exercised by them in
-        // practice - it stays as general-purpose infrastructure for any
-        // future instruction with the same shape that isn't registered
-        // explicitly.
+        // Synthetic `::`-qualifier glued onto a segment (the `tcgen05.wait::ld` shape): the real
+        // ones are exact trie entries, so this exercises the fallback for unregistered
+        // mnemonics of that shape.
         let mut trie = InstrTrie::new();
         trie.insert(ascii("foo.bar"), InstrKind::Mov);
         trie.insert(ascii("foo.baz"), InstrKind::Add);

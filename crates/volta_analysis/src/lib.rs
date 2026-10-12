@@ -1,9 +1,6 @@
-//! PTX analysis
-//!
-//! This crate provides:
-//! - Symbolic expression representation (`symbolic`)
-//! - Lowering from AST to linear IR (`lowering`, `lowered`)
-//! - Symbolic equivalence checking (`equiv`)
+//! PTX analysis: symbolic expressions (`symbolic`), lowering from AST to a
+//! linear IR (`lowering`, `lowered`), and symbolic equivalence checking
+//! (`equiv`).
 
 mod logging;
 

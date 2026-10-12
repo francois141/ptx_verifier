@@ -1,10 +1,6 @@
-//! Conversion from Volta's Rust error types to Python exceptions.
-//!
-//! Parse errors carry a `Span` into the in-memory source the caller passed
-//! in (there is no on-disk file to key a `FileCache` snippet off), so this
-//! renders its own minimal plain-text "line N, col M" + source line +
-//! caret snippet instead of reusing `volta_common::report`'s ANSI-styled,
-//! `FileCache`-backed formatter.
+//! Conversion from Volta's Rust error types to Python exceptions. Parse errors span in-memory
+//! source (no file for a `FileCache`), so this renders its own plain-text "line N, col M" +
+//! source line + caret snippet instead of `volta_common::report`'s ANSI formatter.
 
 use pyo3::PyErr;
 use pyo3::create_exception;
@@ -83,11 +79,8 @@ pub fn parse_error_to_py(source: &str, err: &ParseError) -> PyErr {
     VoltaError::new_err(text)
 }
 
-/// Spec-language parse errors (`volta_spec::parse::ParseError`) only
-/// implement `Display`, unlike the PTX parser's `title()`/`message()`
-/// pair, so this uses a fixed title and the error's `Display` text as the
-/// message - same rendering the CLI uses for `Report { title: "spec
-/// parse error", message: Some(&e.error.to_string()), .. }`.
+/// Spec-language parse errors only implement `Display` (no `title()`/`message()`),
+/// so this uses a fixed title and the `Display` text as the message, as the CLI does.
 pub fn spec_parse_error_to_py(source: &str, err: &volta_spec::parse::ParseError) -> PyErr {
     let message = err.error.to_string();
     let text = format_located(source, "spec parse error", Some(&message), err.span);
@@ -102,10 +95,8 @@ pub fn analysis_error_to_py(err: AnalysisError) -> PyErr {
     }
 }
 
-/// Catch-all for error types that only implement `Display` (spec
-/// instantiation, unfolding, and equivalence-check errors) - none of
-/// these are analysis *findings* like `DataRace`/`Deadlock`, just
-/// ordinary failures.
+/// Catch-all for `Display`-only errors (spec instantiation, unfolding, equivalence
+/// checks): ordinary failures, not analysis *findings* like `DataRace`/`Deadlock`.
 pub fn other_error_to_py(err: impl std::fmt::Display) -> PyErr {
     VoltaError::new_err(err.to_string())
 }

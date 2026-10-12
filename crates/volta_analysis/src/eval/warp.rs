@@ -1,14 +1,6 @@
-//! Warp-cooperative operations: `bar.warp.sync`, `shfl.sync`, `ldmatrix`,
-//! `mma.sync`, and the `wmma` family.
-//!
-//! Each of these is modeled as the paper's `sync I` for the participating
-//! lane group, followed by the operation's cooperative data movement /
-//! compute. The group fires only once every participating lane has arrived
-//! at the same pc with the same mask (see `Interpreter::find_ready_warp_group`).
-//!
-//! Memory reads/writes performed by these ops are attributed to the exact
-//! lane that owns each fragment element (per the PTX fragment tables in
-//! `tensor_core`), so race checking stays byte- and thread-precise.
+//! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`): the
+//! paper's `sync I` over the lane group once all lanes reach the same pc and mask, then the
+//! op, with each memory access attributed to its owning lane (`tensor_core` tables).
 
 use volta_frontend::ast::ScalarType;
 
@@ -61,45 +53,23 @@ fn elem_offset(layout: MmaLayout, row: u32, col: u32, stride: u64) -> u64 {
     }
 }
 
-/// `ldmatrix` row alignment. PTX ISA 9.7.14.5.15: "a group of four
-/// consecutive threads loads 16 bytes. The matrix addresses must be
-/// naturally aligned accordingly" - every 8x8 b16 matrix row is one
-/// 16-byte access, so each lane-supplied row address must be a multiple
-/// of 16.
+/// `ldmatrix` row alignment: each 8x8 b16 row is one 16-byte access, so every
+/// lane-supplied row address must be 16-aligned (PTX ISA 9.7.14.5.15).
 const LDMATRIX_ROW_BYTES: u64 = 16;
 
-/// `wmma` base-address alignment for m16n16k16, the one supported shape:
-/// the fragment size in bytes. PTX ISA 9.7.14.4.2 (Matrix Storage for
-/// WMMA, "Address Alignment"): "The starting address of each instance of
-/// the leading dimension (row or column) must be aligned with the size of
-/// the corresponding fragment in bytes"; the section's example requires
-/// "p is a multiple of 32". Every supported m16n16k16 fragment is 32
-/// bytes (a/b are eight .f16x2 registers, c/d eight .f32 registers), and
-/// the CUDA API documents the same base contract ("mptr must be a 256-bit
-/// aligned pointer").
+/// `wmma` base-address alignment for m16n16k16 (the one supported shape): the
+/// 32-byte fragment size, per PTX ISA 9.7.14.4.2 "Address Alignment" and the
+/// CUDA API's "mptr must be a 256-bit aligned pointer".
 const WMMA_BASE_ALIGN_BYTES: u64 = 32;
 
-/// `wmma` stride granularity: the stride in *bytes* must be a multiple of
-/// 16. The ISA example goes further ("2*s is a multiple of 32", making
-/// every leading-dimension instance fragment-aligned), but nvcc's own
-/// emission does not honor that reading: bank-conflict-skewed tiles
-/// (`__shared__ half tile[..][16 + 8]`, as in the corpus's Conv2D-opt)
-/// compile to f16 strides of 24 elements = 48 bytes. What nvcc enforces
-/// is the CUDA API's stride contract - ldm "must be a multiple of 8 for
-/// __half element type or multiple of 4 for float element type", i.e. 16
-/// bytes either way - which keeps every leading-dimension instance
-/// aligned for the hardware's 16-byte row fetches. Requiring 32 here
-/// would reject valid, hardware-correct nvcc output (verified on the
-/// corpus: conv's f16 wmma ops all run at a 48-byte pitch from 32-aligned
-/// bases).
+/// `wmma` stride granularity in bytes: the CUDA API's ldm contract (16 bytes),
+/// not the ISA example's stricter 32, which would reject valid nvcc output
+/// such as Conv2D-opt's bank-skewed 48-byte f16 pitch.
 const WMMA_STRIDE_ALIGN_BYTES: u64 = 16;
 
-/// Minimum legal `wmma.load`/`wmma.store` stride, in matrix elements. PTX
-/// ISA 9.7.14.4.3: the stride defaults to the matrix's leading dimension
-/// and "specifying a value lower than the default value results in
-/// undefined behavior"; larger values (a submatrix of a larger matrix) are
-/// fine. For m16n16k16 the leading dimension is 16 elements for every
-/// operand (a/b/c/d) and both layouts (the spec's default-stride table).
+/// Minimum legal `wmma.load`/`wmma.store` stride in elements: below the leading
+/// dimension (16 for every m16n16k16 operand and layout) is UB, per PTX ISA
+/// 9.7.14.4.3; larger strides are fine.
 const WMMA_MIN_STRIDE_ELEMS: i64 = 16;
 
 impl Interpreter<'_> {
@@ -118,35 +88,22 @@ impl Interpreter<'_> {
             .expect("warp group blocked at a valid pc")
             .clone();
 
-        // The sync set is the paper's full I: every mask lane, exited lanes
-        // included - `syncMem(I, X)` clears pending sets over the whole I,
-        // and a lane that already returned is still in I. Syncing the live
-        // members alone would leave an exited lane's pre-exit access
-        // pending against the survivors and report a race the paper's
-        // semantics does not have. Only live members execute and advance.
-        // Every mask lane exists: `find_ready_warp_group` already rejected
-        // masks naming lanes beyond the CTA, and the leader is always a
-        // live member, so `members` is nonempty.
+        // The sync set is the paper's full I, exited mask lanes included
+        // (`syncMem(I, X)`), else their pre-exit accesses would race spuriously;
+        // only live members (nonempty, all within the CTA) execute and advance.
         let warp_base = (members[0].0 / WARP_SIZE) * WARP_SIZE;
         let group: Vec<ThreadId> = (0..WARP_SIZE)
             .filter(|lane| mask & (1u32 << lane) != 0)
             .map(|lane| ThreadId(warp_base + lane))
             .collect();
 
-        // Preconditions run before the chi-clear and stats bump below, so
-        // a rejected op provably mutates nothing (structural: every
-        // `EvalError` aborts the whole analysis today, so this is not
-        // observable, but rejection-implies-no-mutation should not rest
-        // on that).
+        // Preconditions run before the chi-clear and stats bump below, so a
+        // rejected op provably mutates nothing.
         self.check_warp_op_preconditions(pc, &instr, members)?;
 
-        // Every warp-cooperative op is a synchronization point for its group
-        // (the paper's `sync I`). The group's accesses are bracketed by
-        // syncs: the sync *before* keeps the op's reads from racing with the
-        // lanes' own pre-op writes (ldmatrix after st.shared), and the sync
-        // *after* (below) keeps the op's writes from racing with the lanes'
-        // post-op reads (wmma.store followed by per-lane ld.shared) - a
-        // converged warp is synchronized on both sides of the op.
+        // Each op is the paper's `sync I`, bracketing its accesses: the sync
+        // before orders pre-op writes (st.shared then ldmatrix), the one after
+        // (below) post-op reads (wmma.store then ld.shared).
         self.stats.warp_syncs += 1;
         self.sync_thread_group(&group);
 
@@ -246,15 +203,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Every precondition that rejects a warp op outright - the
-    /// unknown-op arm, unsupported instruction forms, and the tensor-core
-    /// ops' fully-live-warp requirement - checked from the instruction and
-    /// the live-member list alone. `execute_warp_op` runs this *before*
-    /// mutating any interpreter state (the group's chi-clear, the stats
-    /// bump), so a rejection provably changes nothing. Errors that arise
-    /// mid-execution (out-of-bounds, races, non-concrete operands, ...)
-    /// necessarily come after the chi-clear; soundness there rests on
-    /// every `EvalError` aborting the whole analysis.
+    /// Every precondition that rejects a warp op outright (unknown op, unsupported
+    /// form, tensor-core full-warp rule), run before any state mutation;
+    /// mid-execution errors rely on every `EvalError` aborting the analysis.
     fn check_warp_op_preconditions(
         &self,
         pc: InstrId,
@@ -262,21 +213,16 @@ impl Interpreter<'_> {
         members: &[ThreadId],
     ) -> EvalResult<()> {
         match instr {
-            // All four handle exited lanes per-op (Undefined shfl/redux
-            // source data, elect dst, arrived-at-sync semantics), so a
-            // partial warp is fine - the ISA doesn't state an exited-lane
-            // UB clause for `elect.sync`/`redux.sync` either, unlike the
-            // tensor-core family below.
+            // All four handle exited lanes per-op (Undefined data, arrived-at-sync),
+            // and the ISA states no exited-lane UB for them, so a partial warp is fine.
             LoweredInstr::BarWarpSync { .. }
             | LoweredInstr::ShflSync { .. }
             | LoweredInstr::ElectSync { .. }
             | LoweredInstr::ReduxSync { .. }
             | LoweredInstr::ReduxSyncBroadcastMax { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
-                // Covers the exited address-supplying lane in particular:
-                // lane `i*8 + r` holds row r's address in a register, and
-                // an exited lane's registers are not observable, so the
-                // row's footprint cannot be modeled.
+                // In particular an exited address-supplying lane (`i*8 + r`) leaves
+                // row r's footprint unknowable.
                 self.require_live_warp(pc, members, "ldmatrix")?;
                 if dst.len() != *num as usize {
                     return Err(EvalError::Unsupported {
@@ -344,10 +290,8 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Tcgen05Ld { .. } => self.require_live_warp(pc, members, "tcgen05.ld"),
             LoweredInstr::Tcgen05St { .. } => self.require_live_warp(pc, members, "tcgen05.st"),
-            // Unlike `.alloc`/`.dealloc`/`.ld`/`.st`, the ISA text for
-            // `tcgen05.wait::ld`/`::st` does not state an exited-lane UB
-            // clause, so (like `BarWarpSync`/`ShflSync`) a partial warp is
-            // accepted.
+            // The ISA states no exited-lane UB for `tcgen05.wait::ld`/`::st`
+            // (unlike `.alloc`/`.ld`/...), so a partial warp is accepted.
             LoweredInstr::Tcgen05Wait { .. } => Ok(()),
             other => Err(EvalError::Unsupported {
                 pc,
@@ -356,16 +300,9 @@ impl Interpreter<'_> {
         }
     }
 
-    /// Reject a tensor-core cooperative op whose warp has exited lanes.
-    /// The ISA defines each of `ldmatrix`, `mma`, `wmma.load`,
-    /// `wmma.store`, and `wmma.mma` as undefined "if any thread in the
-    /// warp has exited" (their respective Descriptions, PTX ISA 9.1), so -
-    /// as for misalignment - the undefined behavior is rejected loudly
-    /// rather than silently modeled: an exited lane's addresses and
-    /// fragment registers are unknowable, leaving no byte-precise access
-    /// attribution. These ops block with the full-warp mask, and
-    /// `find_ready_warp_group` already rejects masks naming lanes beyond
-    /// the CTA, so fewer than 32 live members means exited lanes.
+    /// Reject a tensor-core op (`ldmatrix`, `mma`, `wmma.*`) whose warp has exited
+    /// lanes, UB "if any thread in the warp has exited" (PTX ISA 9.1): such lanes'
+    /// addresses and fragments are unknowable. Fewer than 32 live members means exits.
     fn require_live_warp(&self, pc: InstrId, members: &[ThreadId], what: &str) -> EvalResult<()> {
         if members.len() != WARP_SIZE as usize {
             return Err(EvalError::WarpMismatch {
@@ -446,16 +383,9 @@ impl Interpreter<'_> {
             }
             let value = match lane_src[j as usize] {
                 Some(v) => v,
-                // Source lane in the mask but exited: "results are
-                // undefined if a thread sources a register from an
-                // inactive thread" (shfl.sync Description) - the lazily
-                // erroring `Undefined` is that exact model, failing only
-                // if the value reaches an output or a concreteness point.
-                // The ISA pseudocode sets `p = pval` from the pure lane
-                // arithmetic without consulting the source's activity, so
-                // the predicate keeps its computed value here (in
-                // particular it is *true* for an in-range exited source,
-                // unlike the out-of-segment case).
+                // Exited source lane: data is undefined per the shfl.sync ISA text
+                // (lazy `Undefined`), but the predicate keeps its lane-arithmetic
+                // value, so it is *true* for an in-range exited source.
                 None => Value::Scalar(self.arena.undefined()),
             };
             results.push((m, pval, value));
@@ -471,16 +401,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `elect.sync d|p, membermask`: elect the lowest-numbered *live* lane
-    /// in the mask as leader - matching the ISA's "deterministically, the
-    /// same leader is elected for the same membermask every time" and the
-    /// real hardware/compiler convention. `members` is already in ascending
-    /// lane order (`find_ready_warp_group` scans `0..WARP_SIZE`), so
-    /// `members[0]` is the leader; nonempty per `execute_warp_op`'s own
-    /// invariant. Only the leader's `dst` is ISA-defined (its lane id);
-    /// every other live lane gets `Undefined` there, matching the "value
-    /// not meaningfully defined" idiom used elsewhere (e.g. shfl's
-    /// exited-source case) rather than inventing one.
+    /// `elect.sync d|p, membermask`: the lowest-numbered live lane (`members[0]`,
+    /// ascending) leads, deterministic per the ISA. Only the leader's `dst` is
+    /// defined (its lane id); other live lanes get `Undefined`.
     fn exec_elect_sync(
         &mut self,
         pc: InstrId,
@@ -506,19 +429,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `redux.sync.op.type d, a, membermask`: fold every mask lane's `a`
-    /// with `op` and broadcast the single result to every live lane's `d`.
-    /// `members` is ascending by lane (see `exec_elect_sync`), so it can be
-    /// walked in lockstep with the mask's set bits. A mask lane with no
-    /// corresponding live member has exited; like `exec_shfl_sync`'s
-    /// exited source lane, its contribution is `Undefined` rather than an
-    /// eager error - an exited lane's registers cannot be observed, and
-    /// this only fails if the fold result later reaches an output or a
-    /// concreteness point. `eval_binop` already has the exact
-    /// signed/unsigned/float semantics for `ty`, so folding pairwise
-    /// through it (order-independent: every `redux.sync` op is
-    /// associative/commutative over the arena's exact rationals) reuses
-    /// the same arithmetic ordinary `add`/`min`/`max`/... instructions get.
+    /// `redux.sync.op.type d, a, membermask`: fold every mask lane's `a` through
+    /// `eval_binop` (every op is associative/commutative) and broadcast to all
+    /// live lanes; an exited mask lane contributes a lazy `Undefined`.
     #[allow(clippy::too_many_arguments)]
     fn exec_redux_sync(
         &mut self,
@@ -556,12 +469,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `LoweredInstr::ReduxSyncBroadcastMax`: the warp-max sign-trick
-    /// idiom, collapsed to what it always actually computes - a real `max`
-    /// fold over `src` (the broadcast's underlying real-valued operand),
-    /// same lane-gathering shape as `exec_redux_sync` but using the arena's
-    /// `max` directly rather than routing through `eval_binop`, since
-    /// `src` is never an integer bit pattern here.
+    /// `LoweredInstr::ReduxSyncBroadcastMax`: the warp-max sign-trick idiom as
+    /// the real `max` fold over `src` it computes, gathered like
+    /// `exec_redux_sync` but via the arena's `max` (`src` is never integer bits).
     fn exec_redux_broadcast_max(
         &mut self,
         pc: InstrId,
@@ -596,22 +506,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `ldmatrix.sync.aligned.xN.m8n8{.trans}.shared.b16`: cooperative load
-    /// of N 8x8 b16 matrices. Lane `i*8 + r` supplies the address of
-    /// (physical, in-memory) row `r` of matrix `i`.
-    ///
-    /// Without `.trans`, lane `l` receives elements (row `l/4`, cols
-    /// `(l%4)*2`, `(l%4)*2+1`) of each matrix as a packed pair - two
-    /// contiguous elements from one supplied row, read as a single 4-byte
-    /// access. With `.trans`, the destination is the on-the-fly transpose:
-    /// lane `l` receives elements (row `(l%4)*2`, col `l/4`) and (row
-    /// `(l%4)*2+1`, col `l/4`) - one element each from two different
-    /// supplied rows, at the same column offset, so each half needs its own
-    /// 2-byte access (the two source elements are 16 bytes apart in memory,
-    /// not contiguous).
-    ///
-    /// `check_warp_op_preconditions` already established: all 32 lanes
-    /// live, `dst.len() == num`.
+    /// `ldmatrix...xN.m8n8{.trans}.shared.b16`: lane `i*8 + r` supplies row `r` of
+    /// matrix `i`; lane `l` gets (row `l/4`, cols `(l%4)*2`, `+1`) as one 4-byte read,
+    /// or under `.trans` the transpose as two 2-byte reads. Preconditions already checked.
     #[allow(clippy::too_many_arguments)]
     fn exec_ldmatrix(
         &mut self,
@@ -623,11 +520,8 @@ impl Interpreter<'_> {
         num: u32,
         trans: bool,
     ) -> EvalResult<()> {
-        // Row addresses come from the first num*8 lanes. Each row is loaded
-        // by a group of four lanes as one 16-byte access, so every row
-        // address must be 16-byte aligned (see `LDMATRIX_ROW_BYTES`) -
-        // regardless of `.trans`, since the address-supplying lanes and the
-        // physical rows they name are the same either way.
+        // Row addresses come from the first num*8 lanes, each 16-byte aligned
+        // (`LDMATRIX_ROW_BYTES`) regardless of `.trans`.
         let mut row_addr = vec![[0u64; 8]; num as usize];
         for i in 0..num as usize {
             for r in 0..8 {
@@ -660,10 +554,8 @@ impl Interpreter<'_> {
                         // f16/bf16 data: each 2-byte read is one plain
                         // scalar element.
                         (Value::Scalar(lo), Value::Scalar(hi)) => Value::Pair(lo, hi),
-                        // Byte-granular (fp8) data: each 2-byte read is
-                        // already half of a 4-byte `Quad` granule, surfaced
-                        // as a `Pair` of byte lanes (see `Memory::read`);
-                        // the two halves recombine into the full quad.
+                        // Byte-granular (fp8) data: each 2-byte read is a `Pair`
+                        // half of a `Quad` granule; the halves recombine.
                         (Value::Pair(b0, b1), Value::Pair(b2, b3)) => Value::Quad(b0, b1, b2, b3),
                         _ => {
                             return Err(EvalError::ValueKindMismatch {
@@ -687,10 +579,8 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `ldmatrix`'s store-direction mirror (`exec_ldmatrix` above): same
-    /// row-address computation from the address-supplying lanes, writing
-    /// each lane's source operand to shared memory instead of reading into
-    /// a destination register.
+    /// `ldmatrix`'s store-direction mirror: same row-address computation, but
+    /// writes each lane's source operand to shared memory.
     #[allow(clippy::too_many_arguments)]
     fn exec_stmatrix(
         &mut self,
@@ -754,16 +644,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`, the tf32 forms
-    /// `m16n8k8` / `m16n8k4` with `.f32.tf32.tf32.f32`, and the fp8 form
-    /// `m16n8k32` with `.f32.e4m3.e4m3.f32`.
-    ///
-    /// `check_warp_op_preconditions` already established a supported
-    /// shape/type pair, row.col layouts, and all 32 lanes live. tf32
-    /// multiplicands sit one per 32-bit register and are reals here, so they
-    /// gather like the f32 accumulators rather than as packed halves. e4m3
-    /// multiplicands pack four independently symbolic byte lanes per
-    /// register (`Value::Quad`), gathered by `gather_fp8_fragment`.
+    /// `mma.sync.aligned` m16n8k16 f16, m16n8k8/k4 tf32 (one real per register,
+    /// gathered like f32 accumulators), and m16n8k32 e4m3 (`Value::Quad` byte
+    /// lanes); shape, layout, and full-warp liveness are already checked.
     fn exec_mma(
         &mut self,
         pc: InstrId,
@@ -878,10 +761,8 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `wmma.load.{a,b,c}.sync.aligned.{row,col}.m16n16k16{.shared}.{f16,f32}`.
-    ///
-    /// `check_warp_op_preconditions` already established the m16n16k16
-    /// shape and all 32 lanes live (`check_wmma_shape`).
+    /// `wmma.load.{a,b,c}.sync.aligned.{row,col}.m16n16k16{.shared}.{f16,f32}`;
+    /// shape and full-warp liveness are already checked.
     fn exec_wmma_load(
         &mut self,
         pc: InstrId,
@@ -983,10 +864,8 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `wmma.store.d.sync.aligned.{row,col}.m16n16k16{.shared}.f32`.
-    ///
-    /// `check_warp_op_preconditions` already established the m16n16k16
-    /// shape and all 32 lanes live (`check_wmma_shape`).
+    /// `wmma.store.d.sync.aligned.{row,col}.m16n16k16{.shared}.f32`; shape and
+    /// full-warp liveness are already checked.
     fn exec_wmma_store(
         &mut self,
         pc: InstrId,
@@ -1025,12 +904,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `wmma.mma.sync.aligned.{row,col}.{row,col}.m16n16k16.f32.f32`.
-    ///
-    /// The layouts describe how A/B were loaded; the fragments themselves
-    /// are opaque, so the compute only needs the fragment position maps.
-    /// `check_warp_op_preconditions` already established the m16n16k16
-    /// shape and all 32 lanes live (`check_wmma_shape`).
+    /// `wmma.mma.sync.aligned.{row,col}.{row,col}.m16n16k16.f32.f32`. Layouts only
+    /// describe how A/B were loaded, so the compute needs just the fragment
+    /// position maps; shape and full-warp liveness are already checked.
     fn exec_wmma_mma(
         &mut self,
         pc: InstrId,
@@ -1048,10 +924,8 @@ impl Interpreter<'_> {
             unreachable!()
         };
 
-        // `WmmaMma`'s accumulator is always a genuine register (unlike
-        // `Mma`'s, `wmma.mma`'s C operand has no immediate-literal form
-        // in the corpus); `gather_f32_fragment` takes operands to serve
-        // both, so lift these into that shape here.
+        // `wmma.mma`'s C is always a register, but `gather_f32_fragment` takes
+        // operands (to serve `Mma`'s immediates too), so lift them.
         let src_c_ops: Vec<Operand> = src_c.iter().copied().map(Operand::Reg).collect();
 
         let mut a = Grid::new(16, 16);
@@ -1109,14 +983,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Validate a `wmma.load`/`wmma.store` base address and stride against
-    /// the m16n16k16 matrix-storage rules, returning the stride for offset
-    /// arithmetic. The base must be fragment-aligned (see
-    /// `WMMA_BASE_ALIGN_BYTES`); leading-dimension instance `r` starts at
-    /// `base + r * elem_bytes * stride`, so the stride in bytes must keep
-    /// every instance 16-byte aligned (see `WMMA_STRIDE_ALIGN_BYTES`); and
-    /// a stride below the leading dimension is undefined behavior outright
-    /// (see `WMMA_MIN_STRIDE_ELEMS`).
+    /// Validate a `wmma.load`/`.store` base and stride against the m16n16k16
+    /// storage rules (`WMMA_BASE_ALIGN_BYTES`, `WMMA_STRIDE_ALIGN_BYTES`,
+    /// `WMMA_MIN_STRIDE_ELEMS`), returning the stride.
     fn check_wmma_addressing(
         &self,
         pc: InstrId,
@@ -1135,12 +1004,9 @@ impl Interpreter<'_> {
         }
         let stride = stride as u64;
         self.check_alignment(lead, pc, space, base, WMMA_BASE_ALIGN_BYTES)?;
-        // The whole 16x16 fragment footprint must stay within the u64
-        // address space (release-active, computed in u128 so the check
-        // itself cannot overflow): the per-element sums below -
-        // `base + (row*stride + col) * elem_bytes` with row/col <= 15 -
-        // are then provably wrap-free, so no wrapped intermediate can
-        // reach the bounds checker as an unrelated small address.
+        // The 16x16 footprint must fit in u64 (checked in u128, release-active),
+        // making the per-element address sums below provably wrap-free so no
+        // wrapped value reaches the bounds checker as a small address.
         let elem_bytes = elem_type.size_bytes() as u128;
         let max_off = 15u128 * stride as u128 + 15;
         if base as u128 + max_off * elem_bytes > u64::MAX as u128 {
@@ -1195,12 +1061,9 @@ impl Interpreter<'_> {
         })
     }
 
-    /// `tcgen05.alloc`: allocate `num_cols` Tensor Memory columns and write
-    /// the resulting address into shared memory at `dst`. One allocation
-    /// per firing (not one per lane) - `dst`/`num_cols` are warp-uniform by
-    /// construction (PTX ISA 9.7.17.7 requires the same `nCols` on every
-    /// lane), and the write is attributed to the group's leader lane since
-    /// it has no genuine per-lane owner, unlike a fragment element.
+    /// `tcgen05.alloc`: allocate `num_cols` Tensor Memory columns, writing the
+    /// address to shared `dst` once per firing (warp-uniform operands, PTX ISA
+    /// 9.7.17.7), attributed to the leader lane.
     fn exec_tcgen05_alloc(
         &mut self,
         pc: InstrId,
@@ -1220,15 +1083,9 @@ impl Interpreter<'_> {
         self.mem_write(leader, pc, MemSpace::Shared, dst_addr, 4, value)
     }
 
-    /// `tcgen05.dealloc`: deallocate the Tensor Memory range starting at
-    /// `taddr`. `taddr`/`num_cols` must agree across the warp for the same
-    /// reason as `.alloc`'s `dst`/`num_cols`.
-    ///
-    /// No operation may still be outstanding on the range, in any
-    /// quadrant: an un-waited `tcgen05.ld`/`.st` (any warp's, this one's
-    /// included) or a `tcgen05.mma` whose completion no thread has
-    /// observed would read or write columns that are no longer allocated,
-    /// and may already be reallocated.
+    /// `tcgen05.dealloc`: free the warp-uniform range at `taddr`. No operation may
+    /// be outstanding on it in any quadrant (un-waited `tcgen05.ld`/`.st` or
+    /// unobserved `tcgen05.mma`), else it would touch freed columns.
     fn exec_tcgen05_dealloc(
         &mut self,
         pc: InstrId,
@@ -1262,39 +1119,16 @@ impl Interpreter<'_> {
             .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))
     }
 
-    /// The physical Tensor Memory lane quadrant a thread's warp is
-    /// restricted to (PTX ISA 9.7.17.8.1, "Access restrictions"): the CTA's
-    /// 128 lanes split into 4 chunks of 32, one per warp *within its
-    /// warpgroup* (warpgroup-relative id 0-3, not CTA-relative) - which is
-    /// exactly a thread's position within its own 128-thread warpgroup.
-    /// This is the value the ISA independently guarantees; a `tcgen05.ld`/
-    /// `.st`'s `taddr` must encode this same quadrant in its own lane field
-    /// (see `tcgen05_decode_taddr`) - real hardware does not derive the
-    /// lane from `ThreadId` on its own, so neither does Volta.
+    /// The Tensor Memory lane quadrant (32 of 128 lanes) a thread's warp may access:
+    /// its warpgroup-relative warp id (PTX ISA 9.7.17.8.1). Used only to validate the
+    /// quadrant `taddr` encodes, never to derive the lane.
     fn tcgen05_lane(t: ThreadId) -> u32 {
         t.0 % 128
     }
 
-    /// Decode a `tcgen05.ld`/`.st` address into `(lane_base, col)` exactly
-    /// as hardware does: PTX ISA 9.7.17.1.1 packs every Tensor Memory
-    /// address as `[31:16] = lane, [15:0] = column`, and `taddr` for these
-    /// two instructions is a real address, not a bare column number - "All
-    /// the threads in the warp must specify the same value of `taddr`,
-    /// which must be the base address" (9.7.17.8.3/.8.4).
-    ///
-    /// Validates the `num_lanes`-lane span `lane_base` starts against the
-    /// issuing warp's own quadrant (9.7.17.8.1: a lane can only be reached
-    /// by the one warp it belongs to). A `.32x32b` access must therefore
-    /// start exactly at the quadrant base, while a 16-lane shape may also
-    /// start at its upper half - which is how a kernel reaches all 32 of
-    /// its lanes with two `.16x256b` accesses.
-    ///
-    /// This is deliberately a hard error, not a silent correction: a
-    /// kernel whose `taddr` arithmetic lands in the wrong quadrant is
-    /// genuinely broken (undefined behavior on real hardware), and
-    /// deriving the lane from `ThreadId` instead of the address - ignoring
-    /// what the kernel actually computed - would hide exactly the class of
-    /// bug Volta exists to catch.
+    /// Decode a `tcgen05.ld`/`.st` `taddr` as `[31:16] = lane, [15:0] = column`
+    /// (PTX ISA 9.7.17.1.1), requiring the `num_lanes` span to lie in the warp's own
+    /// quadrant (9.7.17.8.1); a wrong quadrant is UB, so a hard error, never corrected.
     fn tcgen05_decode_taddr(
         pc: InstrId,
         members: &[ThreadId],
@@ -1327,20 +1161,9 @@ impl Interpreter<'_> {
         }
     }
 
-    /// `tcgen05.ld`: collective async load of `dst.len()` Tensor Memory
-    /// columns (base column from the warp-uniform `taddr`) into `dst.len()`
-    /// registers per lane - one column per register, each thread reading
-    /// its own physical lane (see `tcgen05_lane`).
-    ///
-    /// Checked once for the whole op against `RaceTracker::tcgen05_begin`,
-    /// not per cell: PTX ISA 9.7.17.8's `taddr`+`.num` always describes one
-    /// contiguous column range within one lane quadrant (every member
-    /// shares the same quadrant - see `sm100a_support_plan.md`'s hazard
-    /// design), so a single range check covers the whole footprint.
-    /// Beyond that in-flight check, each cell is χ-checked per lane thread,
-    /// and the range must not belong to a `tcgen05.mma` still in flight: an
-    /// MMA is issued by one thread for all 128 lanes, so reading its result
-    /// needs the completion edge (the mbarrier its commit arrives on).
+    /// `tcgen05.ld`: load `dst.len()` Tensor Memory columns from `taddr`, one per
+    /// register, each thread its own lane. One range hazard check covers the op;
+    /// cells are χ-checked per lane and must not belong to an in-flight `tcgen05.mma`.
     fn exec_tcgen05_ld(
         &mut self,
         pc: InstrId,
@@ -1387,18 +1210,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `tcgen05.st`: collective async store of `src.len()` Tensor Memory
-    /// columns from `src.len()` registers per lane - the mirror of
-    /// `exec_tcgen05_ld`. Each thread evaluates `src` against its own
-    /// registers (the operand list is shared syntax, not shared values -
-    /// e.g. the driving kernel's zero-fill idiom repeats one register
-    /// holding a per-thread-identical constant across every slot). Hazard
-    /// footprint checked once for the whole op, same reasoning as `.ld`.
-    ///
-    /// A source register's whole [`Value`] lands in the cell, packed
-    /// halves included: publishing `f16x2` `A` operands for a later
-    /// `tcgen05.mma [a-tmem]` is exactly what this instruction is for, and
-    /// collapsing the pair to one expression would lose a half.
+    /// `tcgen05.st`: the mirror of `exec_tcgen05_ld`, each thread evaluating `src`
+    /// against its own registers. The whole [`Value`] lands in the cell, packed
+    /// halves included (`f16x2` operands for a later `tcgen05.mma [a-tmem]`).
     fn exec_tcgen05_st(
         &mut self,
         pc: InstrId,
@@ -1447,13 +1261,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `tcgen05.wait::ld`/`::st`: release the pending async-hazard
-    /// footprints of the matching kind this warp issued
-    /// (`RaceTracker::tcgen05_wait`) - not another warp's sharing the
-    /// quadrant. No data effect: Volta's sequential execution already gives
-    /// `.ld`/`.st` their full effect immediately, so there is nothing to
-    /// actually wait for - this call exists purely to clear the hazard
-    /// tracking those two instructions record.
+    /// `tcgen05.wait::ld`/`::st`: release this warp's pending hazard footprints of
+    /// that kind (`RaceTracker::tcgen05_wait`). No data effect: Volta already gives
+    /// `.ld`/`.st` their full effect immediately.
     fn exec_tcgen05_wait(&mut self, members: &[ThreadId], is_st: bool) {
         let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
         self.race.tcgen05_wait(quadrant, members[0].warp(), is_st);
@@ -1483,13 +1293,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Place one lane's byte-packed fragment registers - fp8 or 8-bit
-    /// integer, which share the `m16n8k32` layout - into a matrix grid.
-    /// Each register holds four independently symbolic byte lanes
-    /// (`Value::Quad`) rather than a bit-encoded word, so a symbolic lane's
-    /// expression is already the element's value whichever type it is
-    /// (see `Value::Quad`'s doc comment); a concrete `e4m3` lane is still
-    /// its raw byte, decoded here.
+    /// Place one lane's byte-packed (fp8 or 8-bit integer, `m16n8k32` layout)
+    /// fragment registers into a grid: symbolic `Value::Quad` lanes are already
+    /// element values, while a concrete `e4m3` lane is a raw byte, decoded here.
     fn gather_byte_fragment(
         &mut self,
         pc: InstrId,
@@ -1545,11 +1351,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Place one lane's f32 accumulator fragment into a grid. Unlike the
-    /// f16 multiplicand fragments (always registers, loaded via
-    /// `ldmatrix`), an `mma.sync` accumulator may be an immediate literal
-    /// (nvcc's "first tile has no accumulator yet" idiom), so this takes
-    /// operands rather than bare registers.
+    /// Place one lane's f32 accumulator fragment into a grid. Takes operands,
+    /// not registers: an `mma.sync` accumulator may be an immediate (nvcc's
+    /// "first tile has no accumulator yet" idiom).
     fn gather_f32_fragment(
         &mut self,
         pc: InstrId,
@@ -1573,12 +1377,9 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// Place one lane's `.f16` accumulator fragment into a grid: the same
-    /// four elements [`Self::gather_f32_fragment`] reads, two to a
-    /// register. Resolved through `pair_operand` for the same reason that
-    /// one takes operands - the first tile's accumulator is a
-    /// zero-initialized `mov.b32` register the kernel never built as a
-    /// pair, which `pair_operand` decodes bit-for-bit into two halves.
+    /// Place one lane's `.f16` accumulator fragment into a grid: the elements
+    /// [`Self::gather_f32_fragment`] reads, two per register, via `pair_operand`
+    /// (which also decodes a first tile's zeroed `mov.b32` into two halves).
     fn gather_packed_accumulator(
         &mut self,
         pc: InstrId,
@@ -1641,10 +1442,8 @@ mod tcgen05_taddr_tests {
 
     #[test]
     fn rejects_an_address_missing_the_issuing_warps_quadrant() {
-        // Warp 1 (quadrant base 32) issuing with a bare column value that
-        // never packed a lane field at all (lane_base=0) - a real kernel
-        // bug (undefined behavior on real hardware), not something to
-        // paper over by deriving the lane from `ThreadId` instead.
+        // Warp 1 (quadrant base 32) issuing a bare column with no lane field
+        // (lane_base=0): a real kernel bug, not to be papered over.
         let members: Vec<ThreadId> = (32..64).map(ThreadId).collect();
         let raw = 7i64;
         let err = Interpreter::tcgen05_decode_taddr(InstrId(0), &members, raw, 32).unwrap_err();

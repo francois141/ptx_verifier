@@ -1,9 +1,6 @@
 """Tests for `volta.parse`/`volta.analyze`.
 
-Run via `uv run pytest crates/volta_py` (or `maturin develop && pytest`
-from `crates/volta_py/`) - the module must be built and installed into
-the active environment first, since pytest alone does not build the
-Rust extension.
+Run via `uv run pytest crates/volta_py`; pytest alone does not build the Rust extension.
 """
 
 import pytest

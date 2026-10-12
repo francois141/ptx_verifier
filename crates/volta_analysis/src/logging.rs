@@ -1,7 +1,5 @@
-//! Logging support for volta_analysis.
-//!
-//! When the `logging` feature is enabled, this module re-exports the log crate macros.
-//! When disabled, it provides no-op stub macros for zero overhead.
+//! Logging support for volta_analysis: with the `logging` feature, re-exports
+//! the log crate macros; without it, provides zero-overhead no-op stubs.
 
 // When logging is enabled, re-export log crate macros
 #[cfg(feature = "logging")]

@@ -1,7 +1,6 @@
-//! Claude-Code-generated GEMMs (Table 5): GEMM-1/2/3 vs a 32x32-tile
-//! coalesced reference. All use 512 threads and M = N = K = 4096 with
-//! alpha/beta baked to 1/0 via the `ALPHA`/`BETA` macros (C still reads
-//! its old value; see `config`).
+//! Claude-Code-generated GEMMs (Table 5): GEMM-1/2/3 vs a 32x32-tile coalesced
+//! reference. All use 512 threads and M = N = K = 4096 with alpha/beta baked to 1/0
+//! via the `ALPHA`/`BETA` macros (C still reads its old value; see `config`).
 
 use volta_analysis::eval::{AnalysisConfig, ParamValue};
 
@@ -12,16 +11,9 @@ const A_BASE: u64 = 0x1_0000_0000;
 const B_BASE: u64 = 0x2_0000_0000;
 const C_BASE: u64 = 0x3_0000_0000;
 
-/// `sgemm(A, B, C)` with 512 threads; the grid is 1-D over 32x32 tiles.
-///
-/// 512 threads = BLK_X * BLK_Y = 32 * 16 in MatMul-1-ref_32x32.cu and
-/// GEMM-1/2.cu; GEMM-3.cu states "We still launch 16 warps (512 threads)"
-/// around its 2x2-warp WMMA tile (paper Table 5 lists 512 for all three).
-/// N = 4096 is the `M`/`N`/`K` macro in every .cu. The 1-D grid matches
-/// the kernels' `blockIdx.x` mod/div (N/32) tile decomposition; no PTX
-/// reads `%nctaid`, so it is documentation only (CTA 0 computes tile
-/// (0,0)).
-/// All shared memory is static; no dynamic_shared.
+/// `sgemm(A, B, C)` with 512 threads (as in every .cu and paper Table 5) and a 1-D grid
+/// over 32x32 tiles matching the kernels' `blockIdx.x` mod/div decomposition; no PTX
+/// reads `%nctaid`, so the grid is documentation only. All shared memory is static.
 fn config() -> AnalysisConfig {
     let mut config = AnalysisConfig::new((512, 1, 1));
     config.grid_dim = ((N / 32) as u32 * (N / 32) as u32, 1, 1);

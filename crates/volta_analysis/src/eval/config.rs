@@ -21,10 +21,9 @@ pub enum ArrayKind {
     Input,
     Output,
     InputOutput,
-    /// An input of concrete integers where element i holds the value i
-    /// (identity mapping). For index arrays that feed addressing, e.g.
-    /// OpenMM's `posq[particles[i]]`: symbolic elements would make the
-    /// derived addresses symbolic and violate structured-CTA.
+    /// An input of concrete integers where element i holds i, for index arrays
+    /// feeding addresses (OpenMM's `posq[particles[i]]`): symbolic elements
+    /// would make the addresses symbolic and violate structured-CTA.
     IndexInput,
 }
 
@@ -38,13 +37,9 @@ impl ArrayKind {
     }
 }
 
-/// A global-memory array visible to the kernel.
-///
-/// Input arrays are pre-populated with named symbols `name[0]`, `name[1]`,
-/// ... at granule width `elem_width`. The array's byte range must not
-/// overlap the reserved module-global window the program occupies (see
-/// `symbols::MODULE_GLOBAL_BASE`); `Interpreter::new`, which knows the
-/// program's window, rejects configs that do.
+/// A global-memory array visible to the kernel. Inputs read as `name[i]`
+/// symbols at `elem_width`. Must not overlap the module-global window
+/// (`symbols::MODULE_GLOBAL_BASE`); `Interpreter::new` rejects that.
 #[derive(Debug, Clone)]
 pub struct ArrayDef {
     pub name: String,
@@ -113,14 +108,9 @@ impl AnalysisConfig {
             .collect()
     }
 
-    /// Reject configs whose identities are ambiguous: array names and
-    /// `sym:` parameter names define which values correlate (see
-    /// `symbolic::SymbolRef`), so duplicate names or overlapping ranges
-    /// would silently conflate distinct values.
-    ///
-    /// This checks the config against itself only; overlap with the
-    /// program's reserved module-global window needs the program and is
-    /// checked in `Interpreter::new`.
+    /// Reject configs whose identities are ambiguous: duplicate array/`sym:`
+    /// names or overlapping ranges would silently conflate distinct values.
+    /// Overlap with the module-global window is checked in `Interpreter::new`.
     pub fn validate(&self) -> Result<(), String> {
         // Per-array checks first, so the pairwise pass below may safely
         // form `base + size_bytes()` for every array.
@@ -131,11 +121,9 @@ impl AnalysisConfig {
                     a.name
                 ));
             }
-            // The array's byte range must fit in the u64 address space
-            // (checked arithmetic, release-active): every later
-            // computation over `[base, base + size_bytes())` - regions,
-            // output extraction, input materialization - relies on the
-            // end being representable.
+            // The byte range must fit in u64 (checked, release-active): every
+            // later use of `[base, base + size_bytes())` relies on the end
+            // being representable.
             let end = a
                 .elem_width
                 .checked_mul(a.len)
@@ -147,10 +135,8 @@ impl AnalysisConfig {
                     a.name, a.base, a.len, a.elem_width
                 ));
             }
-            // PTX requires every access to be naturally aligned (ISA
-            // 6.4.1); a base that is not a multiple of the element width
-            // would make *every* element access misaligned, so reject it
-            // once here instead of per access.
+            // PTX requires naturally aligned accesses (ISA 6.4.1); a base that
+            // is not a multiple of the element width misaligns every element.
             if a.base % a.elem_width != 0 {
                 return Err(format!(
                     "array '{}' base address {:#x} is not a multiple of its element \
@@ -241,10 +227,9 @@ mod tests {
         assert_eq!(config.validate(), Ok(()));
     }
 
-    /// Identity ambiguities are rejected, not silently conflated: two
-    /// arrays sharing a name would make unrelated storage produce the
-    /// same `InputElement` symbols, and overlapping ranges would give one
-    /// address two identities.
+    /// Identity ambiguities are rejected: shared names would give unrelated
+    /// storage the same `InputElement` symbols, and overlapping ranges would
+    /// give one address two identities.
     #[test]
     fn validate_rejects_ambiguous_identities() {
         let mut dup = AnalysisConfig::new((1, 1, 1));

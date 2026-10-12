@@ -1,10 +1,6 @@
-//! PTX Parser
-//!
-//! A Pratt parser for PTX constant expressions, following the style of
-//! https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
-//!
-//! Extended to parse full PTX modules including directives, declarations,
-//! functions, and instructions.
+//! PTX parser: a Pratt parser for constant expressions (after
+//! https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html),
+//! extended to full modules.
 
 use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
 use crate::ast::*;
@@ -246,10 +242,8 @@ fn prefix_binding_power(op: &Token) -> Option<((), u8)> {
     }
 }
 
-/// Returns the binding power for infix (binary) operators.
-/// Returns (left_bp, right_bp).
-/// - Left-associative operators: (bp, bp+1)
-/// - Right-associative operators: (bp+1, bp)
+/// Returns `(left_bp, right_bp)` for infix operators: `(bp, bp+1)` for
+/// left-associative, `(bp+1, bp)` for right-associative ones.
 fn infix_binding_power(op: &Token) -> Option<(u8, u8)> {
     let lhs = |bp: u8| Some((bp, bp + 1));
     let rhs = |bp: u8| Some((bp + 1, bp));
@@ -307,12 +301,9 @@ fn token_to_binary_op(tok: &Token) -> BinaryOp {
 // Parser
 // =============================================================================
 
-/// Convert suffix qualifiers from Ident::as_instr() into DottedIdent modifiers.
-/// E.g., for "st.async.weak" with mnemonic "st.async", the suffix is ".weak",
-/// which splits to ["", "weak"]. This function filters empty parts and wraps
-/// each in DottedIdent::Simple; a part containing `::` (e.g. `L2::128B` from
-/// `ld.global.L2::128B.f32`) becomes DottedIdent::Qualified with the same
-/// component split the lexer gives stand-alone dotted qualifiers.
+/// Convert mnemonic suffix parts (from `Ident::as_instr()`) into modifiers,
+/// skipping empty parts; a part containing `::` (e.g. `L2::128B`) becomes
+/// `DottedIdent::Qualified`.
 fn parse_suffix_modifiers<'a>(suffix: impl Iterator<Item = &'a [AsciiChar]>) -> Vec<DottedIdent> {
     suffix
         .filter(|s| !s.is_empty())
@@ -852,13 +843,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse optional `.align N`. PTX requires the value to be a power of
-    /// two, and the byte-layout code (`align_up` in `volta_analysis`)
-    /// relies on it with only a debug assert - inert in release - so a
-    /// zero or non-power-of-two value is rejected loudly here, at the one
-    /// place every `.align` first lands, with the literal's span.
-    /// (Values above `u32::MAX` are rejected by the same error rather
-    /// than silently truncated by the cast.)
+    /// Parse optional `.align N`, rejecting zero, non-power-of-two and
+    /// over-`u32` values loudly here: `align_up` in `volta_analysis` relies
+    /// on it with only a debug assert.
     fn parse_align(&mut self) -> Result<Option<u32>, ParseError> {
         if self.try_directive(ascii("align"))? {
             let span = self.peek()?.map(|(s, _)| s);
@@ -899,10 +886,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse the optional kernel-parameter pointer attribute.
-    ///
-    /// According to the PTX ISA (5.1.6.3), attributes are expected to be of the shape:
-    /// `.ptr [.space] [.align N]`
+    /// Parse the optional kernel-parameter pointer attribute, shaped `.ptr
+    /// [.space] [.align N]` (PTX ISA 5.1.6.3).
     fn parse_ptr_attribute(&mut self) -> Result<Option<Ptr>, ParseError> {
         if !self.try_directive(ascii("ptr"))? {
             return Ok(None);
@@ -1272,10 +1257,9 @@ impl<'a> Parser<'a> {
                 if let Some((_, Token::DottedIdent(ident))) = self.peek()?
                     && dotted_ident_state_space(ident).is_some()
                 {
-                    // Variable declarations - handled by parse_statements_into
-                    // If we get here, we're being called from a context that expects a single statement
-                    // (like nested blocks). Use parse_var_decls and return the first one.
-                    // Note: This path should rarely be hit since we updated nested blocks below.
+                    // Variable declarations are normally handled by parse_statements_into; this
+                    // rare single-statement path (nested blocks) uses parse_var_decls and returns
+                    // the first one.
                     let decls = self.parse_var_decls(Linkage::None)?;
                     if decls.len() == 1 {
                         return Ok(Statement::Variable(decls.into_iter().next().unwrap()));
@@ -1750,11 +1734,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse the `.loc` debugging directive.
-    ///
-    /// Unlike every other directive `parse_directive` handles, `.loc` has
-    /// no semicolon terminator at all. This forces the parser to parse the
-    /// loc directives completely in order to find their boundaries.
+    /// Parse the `.loc` debugging directive, which (unlike every other
+    /// directive) has no semicolon terminator, so it must be parsed
+    /// completely to find its end.
     fn parse_loc_directive(&mut self) -> Result<Directive, ParseError> {
         let (start, name) = match self.next()? {
             Some((span, Token::DottedIdent(DottedIdent::Simple(s)))) => (span.0, s),
@@ -2555,11 +2537,9 @@ mod tests {
         assert_eq!(var.align, Some(16));
     }
 
-    /// Zero and non-power-of-two `.align` values are rejected at parse
-    /// time with a located error. The byte-layout code (`align_up`)
-    /// guards the power-of-two requirement only with a `debug_assert`,
-    /// inert in release builds, so the parser is the loud guard - for
-    /// variable declarations and parameters alike.
+    /// Zero and non-power-of-two `.align` values are rejected with a located
+    /// error, for variables and parameters alike: `align_up` only
+    /// `debug_assert`s it.
     #[test]
     fn test_align_rejects_zero_and_non_power_of_two() {
         let cases: &[(&[u8], u64)] = &[
@@ -3584,10 +3564,7 @@ DONE:
     }
 
     // =========================================================================
-    // Strongly-Typed Instruction Tests
-    //
-    // These tests verify that instructions are parsed into the correct
-    // strongly-typed enum variants with the expected field values.
+    // Strongly-typed instruction tests: each parses to the expected variant.
     // =========================================================================
 
     use crate::instr_parse::parse_instruction;
@@ -4372,11 +4349,9 @@ DONE:
 
     // --- CpAsync Strongly-Typed Tests ---
 
-    /// Covers the 3- and 4-operand forms of `cp.async` plus all three
-    /// group-completion instructions. The 4th operand (`src-size` or
-    /// `ignore-src`) is captured but left undisambiguated at this layer -
-    /// that happens during lowering, from the resolved operand's register
-    /// class.
+    /// The 3- and 4-operand `cp.async` forms plus all three group-completion
+    /// instructions; the 4th operand stays ambiguous here (lowering resolves
+    /// it by register class).
     #[test]
     fn test_cp_async_forms() {
         let src = wrap_in_module(
@@ -4452,11 +4427,9 @@ DONE:
 
     // --- CvtInstr::PackHalves Strongly-Typed Tests ---
 
-    /// `cvt.rn.f16x2.f32 d, a, b` - no `.pack` keyword; the packed `x2`
-    /// destination type alone signals the two-source form. Per the PTX
-    /// ISA, the first source operand (`a`) converts into the *high* half
-    /// and the second (`b`) into the *low* half - the opposite convention
-    /// from `mov.b32 d, {lo, hi}`'s brace order.
+    /// `cvt.rn.f16x2.f32 d, a, b`: the `x2` destination alone signals the
+    /// two-source form; per the ISA, `a` goes to the *high* half, the
+    /// opposite of `mov.b32 d, {lo, hi}`.
     #[test]
     fn test_cvt_pack_halves_f16x2() {
         let src = wrap_in_module(
@@ -4637,13 +4610,9 @@ DONE:
         }
     }
 
-    /// `mbarrier.*`'s `{.shared{::cta|::cluster}}` state space: same grammar
-    /// as `cp.async`'s (see `test_cp_async_shared_qualifier_parsing`), but
-    /// optional - `mbarrier.init.b64` with no state space at all is also
-    /// valid (generic addressing). `parse_mbarrier_space` is shared by all
-    /// seven `mbarrier.*` parsers, so `mbarrier.init` alone stands in for
-    /// the family; `mbarrier.arrive` is spot-checked too since it has extra
-    /// modifiers following the state space in its grammar.
+    /// `mbarrier.*`'s optional `{.shared{::cta|::cluster}}` space (none =
+    /// generic). `parse_mbarrier_space` is shared, so `mbarrier.init` stands
+    /// in, plus `mbarrier.arrive` for its extra modifiers.
     #[test]
     fn test_mbarrier_shared_qualifier_parsing() {
         fn init_space(src_instr: &str) -> (Option<StateSpace>, Option<StateSpaceQualifier>) {

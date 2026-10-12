@@ -6,61 +6,28 @@ use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::types::{RegClass, RegCounts};
 
-/// Handle to one `mbarrier` object's state, held by a `Value::Mbarrier` in
-/// whatever memory granule the object's address resolves to. The state
-/// itself lives in an interpreter-level table, not here - this is a small,
-/// `Copy` reference to it, the same size as `Value::Scalar`'s `ExprId`, so
-/// adding this variant doesn't grow `Value` (or any memory granule) at all.
+/// Handle to one `mbarrier` object's state, which lives in an interpreter
+/// table; `Copy` and `ExprId`-sized, so `Value::Mbarrier` doesn't grow `Value`.
 #[id_type]
 pub struct MbarrierId(pub u32);
 
-/// A value held in a register or a memory granule.
-///
-/// `Pair` models a packed pair of 16-bit halves living in one 32-bit
-/// register/word — the representation nvcc uses for f16 data (loaded from
-/// global as `u32`, distributed by `ldmatrix`, consumed by `mma`). We track
-/// the two halves as separate real-valued expressions and never bit-encode.
-///
-/// `Quad` is the same idea one lane-count wider: four independent lanes
-/// living in one register/word, with the lane width following the
-/// register class, just as a `Pair` is 2x16 in a `.b32` but 2x32 in a
-/// `.b64`. Two readings arise, and they never mix - each is confined to
-/// its own `RegClass` array:
-///
-/// - four 8-bit lanes in a 32-bit register, for byte-granular (fp8) input
-///   arrays, where a single `.b32` vector-load lane (`ld.global.v2.b32`)
-///   spans four distinct 1-byte array elements that must stay
-///   independently symbolic. Such a `Quad` only ever arises from combining
-///   memory granules at read time, and only ever gets split back into
-///   either two `Pair`s (`mov.b32 {h0,h1}, r` on a byte-granular source,
-///   PTX ISA's `.e4m3x2`/`.e5m2x2`-family idiom) or four 1-byte `Scalar`
-///   lanes (`ld.shared.u8` reading a single fp8 element back out of a
-///   word that a 16-byte `cp.async` deposited as one 4-byte granule).
-/// - four 32-bit lanes in a 128-bit register, from `mov.b128 dst,
-///   {e0,e1,e2,e3}` and split back by `mov.b128 {e0,e1,e2,e3}, src` (the
-///   accumulator zero-fill idiom - see `LoweredInstr::PackQuad`).
-///
-/// Either way a `Quad` is never bit-encoded, same reasoning as `Pair`, and
-/// never flows through ordinary arithmetic, matching how `Pair` itself
-/// never does.
-///
-/// `Mbarrier` is deliberately *not* program data: it never flows through
-/// arithmetic, conversions, or the symbolic-expression arena (unlike
-/// `Scalar`/`Pair`/`Quad`, it carries no `ExprId` at all) - it only ever
-/// lives in a memory granule at an `mbarrier` object's address, placed and
-/// consumed by the `mbarrier.*` op handlers. Every other context that
-/// matches on `Value` should treat it as a hard error, not a value to
-/// compute with.
+/// A value held in a register or a memory granule. Packed variants hold each
+/// lane as its own real-valued expression and are never bit-encoded, nor fed to
+/// ordinary arithmetic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     /// A single scalar expression
     Scalar(ExprId),
-    /// Two packed 16-bit halves: (lo, hi)
+    /// Two packed halves (lo, hi) in one register/word: 2x16 in a `.b32`
+    /// (nvcc's f16 form, through `ldmatrix`/`mma`), 2x32 in a `.b64`.
     Pair(ExprId, ExprId),
-    /// Four packed 8-bit lanes: (byte0, byte1, byte2, byte3), byte0 at the
-    /// lowest address/least significant bits.
+    /// Four packed lanes, byte0 lowest: 4x8 in a `.b32` (fp8; built only by
+    /// combining granules on read, split by `mov.b32 {h0,h1}` or `ld.u8`) or
+    /// 4x32 in a `.b128` (`LoweredInstr::PackQuad`).
     Quad(ExprId, ExprId, ExprId, ExprId),
-    /// An `mbarrier` object's state, by handle.
+    /// An `mbarrier` object's state, by handle. Not program data: it has no
+    /// `ExprId` and lives only at an mbarrier's address; any other context must
+    /// treat it as a hard error.
     Mbarrier(MbarrierId),
 }
 
@@ -95,10 +62,9 @@ impl Value {
     }
 }
 
-/// A per-thread register file, indexed by (class, index).
-///
-/// Registers start uninitialized; reading one before writing it is an
-/// analysis error (surfaced by the interpreter, which knows the pc).
+/// A per-thread register file, indexed by (class, index). Registers start
+/// uninitialized; reading one first is an analysis error surfaced by the
+/// interpreter.
 #[derive(Debug, Clone)]
 pub struct RegFile {
     classes: [Vec<Option<Value>>; RegClass::COUNT],

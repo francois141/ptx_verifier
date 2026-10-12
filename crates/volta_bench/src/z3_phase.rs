@@ -1,39 +1,6 @@
-//! The optional Z3 phase of the benchmark pipeline (`--z3`): after the
-//! decision procedure has solved a benchmark's verification conditions,
-//! solve the exact same sampled elements with Z3 for a side-by-side
-//! capability/timing comparison. The interesting axis is what each
-//! backend can decide (Z3 also reports "unknown", "timeout", and
-//! "unsupported"), not just how fast it gets there.
-//!
-//! The two backends' solve times are comparable because both measure the
-//! deciding work only: the decision phase is the summed canon equivalence
-//! checks (`EquivSession::check` - VC pairing and the optional
-//! `--verify-numeric` oracle excluded); the Z3 phase is the in-worker
-//! libz3 solve time (query translation and the worker's fixed
-//! scaffolding excluded - process spawn/exec plus z3 context/frontend
-//! setup is ~10.5ms, several times a whole polynomial-fragment solve).
-//! Timeout elements count their full budget (the paper's convention for
-//! timeout rows).
-//!
-//! Like the other timed phases, the Z3 phase honors `--iterations`: each
-//! iteration re-solves the same sampled elements (fresh z3 worker per
-//! query anyway), with one carve-out: an element whose iteration-1
-//! outcome is timeout, unsupported, or error is *not* re-solved in later
-//! iterations - re-solving a timeout would multiply its full budget into
-//! every iteration, and unsupported/error elements never reach the
-//! solver - its iteration-1 solve time is charged to every iteration's
-//! total instead. Z3 verdict counts and the per-element results always
-//! come from iteration 1.
-//!
-//! Reproduces the paper's section 6.5 / Table 8 methodology: benchmarks
-//! whose VCs contain no exponentials are decided by Z3 in milliseconds; the
-//! attention benchmarks (exponentials via softmax) come back `unknown`
-//! under the default exp encoding, and running them again with the
-//! addition-law axiom `forall x y. e^x e^y = e^(x+y)` instead drives Z3
-//! past the time budget (`timeout`). Exp-containing benchmarks therefore
-//! get a second, `+exp-axiom` result set; the paper used a 10-minute
-//! budget per query (`--z3-timeout 600`) and one element per output tensor
-//! (`--sample 1`).
+//! The optional Z3 phase (`--z3`): re-solve the decision procedure's sampled
+//! elements with Z3 (Table 8 / section 6.5), plus a `+exp-axiom` rerun for VCs
+//! with `Exp`. Solve times count in-worker libz3 time only (deciding work).
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -57,12 +24,9 @@ pub struct Z3Options {
 /// and iteration 1's per-element results.
 #[derive(Debug, Clone)]
 pub struct Z3ModeRun {
-    /// Z3 solver time per iteration, each entry summed across all checked
-    /// elements: in-worker libz3 solve time, excluding worker spawn/exec
-    /// and translation; timeout elements count their budget (see
-    /// `volta_z3::Z3CheckResult`) and, like unsupported/error elements,
-    /// are solved in iteration 1 only (the carve-out; see the module
-    /// docs), their iteration-1 time charged to every entry here.
+    /// Z3 solve time per iteration, summed over elements (in-worker only;
+    /// timeouts count their budget). Carved-out elements are solved in
+    /// iteration 1 only and that time is charged to every entry.
     pub iters_secs: Vec<f64>,
     /// Per-outcome element counts (iteration 1's verdicts).
     pub counts: Z3Counts,
@@ -91,20 +55,16 @@ pub struct Z3Phase {
     pub axiom: Option<Z3ModeRun>,
 }
 
-/// Whether the Z3 phase ran to completion. A `Failed` phase does not
-/// invalidate the benchmark's decision verdict (that already happened),
-/// but it fails the benchmark's pass/fail: the user asked for a Z3
-/// comparison and did not get one.
+/// Whether the Z3 phase ran to completion. `Failed` leaves the decision
+/// verdict intact but fails the benchmark: the requested comparison is missing.
 #[derive(Debug, Clone)]
 pub enum Z3PhaseOutcome {
     Ran(Z3Phase),
     Failed(String),
 }
 
-/// Does any expression reachable from the written outputs contain an
-/// `Exp` node? Decides whether the `+exp-axiom` rerun is meaningful.
-/// Iterative DFS (attention accumulator chains are deep) over output
-/// roots only - dead arena nodes don't count.
+/// Does any expression reachable from the outputs contain `Exp` (deciding
+/// the `+exp-axiom` rerun)? Iterative DFS from output roots only.
 fn vc_uses_exp(output: &AnalysisOutput) -> bool {
     let mut visited = vec![false; output.arena.node_count()];
     let mut stack: Vec<_> = output
@@ -126,12 +86,9 @@ fn vc_uses_exp(output: &AnalysisOutput) -> bool {
     false
 }
 
-/// The carve-out predicate: outcomes that are solved in iteration 1 only.
-/// Re-solving a timeout multiplies its full budget into every iteration;
-/// unsupported/error elements never reached the solver at all. An
-/// exhaustive match (mirroring `Z3EquivReport::counts`) so a future
-/// `ElementOutcome` variant is a compile error here, not a silent
-/// re-solve decision.
+/// The carve-out: outcomes solved in iteration 1 only (re-solving a timeout
+/// multiplies its budget; unsupported/error never reach the solver). Exhaustive
+/// so a new `ElementOutcome` variant is a compile error, not a silent choice.
 fn carved_out(outcome: &ElementOutcome) -> bool {
     match outcome {
         ElementOutcome::Timeout | ElementOutcome::Unsupported(_) | ElementOutcome::Error(_) => true,
@@ -141,11 +98,9 @@ fn carved_out(outcome: &ElementOutcome) -> bool {
     }
 }
 
-/// One element's Z3 solve time for a re-solve iteration. Verdicts of
-/// later iterations are not compared (z3's unknown/timeout boundary is
-/// budget-dependent, unlike the deterministic decision procedure);
-/// elements that fail to reach the solver contribute zero, matching
-/// iteration 1's accounting for unsupported/error elements.
+/// One element's Z3 solve time for a re-solve iteration. Later verdicts aren't
+/// compared (z3's unknown/timeout boundary is budget-dependent); elements that
+/// never reach the solver contribute zero, as in iteration 1.
 fn z3_resolve_time(
     reference: &AnalysisOutput,
     r: ExprId,
@@ -160,10 +115,8 @@ fn z3_resolve_time(
     }
 }
 
-/// Run Z3 over the same sampled elements
-/// `volta_z3::check_output_equivalence` would check, `iterations` times,
-/// applying the carve-out on re-solves. `sampled` is the caller's
-/// `driver::sampled_elements` list (borrowed array names).
+/// Run Z3 `iterations` times over `sampled` (the caller's
+/// `driver::sampled_elements` list), applying the carve-out on re-solves.
 fn z3_iterations(
     reference: &AnalysisOutput,
     optimized: &AnalysisOutput,
@@ -179,11 +132,9 @@ fn z3_iterations(
         volta_z3::check_output_equivalence(reference, optimized, arrays, sample, timeout, mode)
             .map_err(|e| format!("z3: {}", e))?;
     let counts = report.counts();
-    // The re-solve loop below pairs `report.elements` with `sampled`
-    // positionally. Both lists derive from `driver::sampled_elements`
-    // over the same footprints, so they must agree element for element -
-    // verified for real (not just in debug builds): a silent mispairing
-    // would re-solve the wrong expressions.
+    // The re-solve loop pairs `report.elements` with `sampled` positionally;
+    // both derive from `driver::sampled_elements`, so check (in release too)
+    // that they agree - a silent mispairing would re-solve the wrong exprs.
     if report.elements.len() != sampled.len()
         || report
             .elements
@@ -227,12 +178,9 @@ fn z3_iterations(
     })
 }
 
-/// Run one benchmark's Z3 phase over the last generation's outputs: the
-/// default exp encoding, plus the `+exp-axiom` rerun when the VCs
-/// contain exponentials. `sampled` must be `driver::sampled_elements`
-/// over the same footprints (the runner derives it from the generation
-/// phase's pairing). Never panics: any failure becomes
-/// [`Z3PhaseOutcome::Failed`], so a batch run keeps going.
+/// Run one benchmark's Z3 phase (default exp encoding, plus `+exp-axiom` when
+/// the VCs use exp) over `driver::sampled_elements`. Never panics: failures
+/// become [`Z3PhaseOutcome::Failed`] so a batch run keeps going.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_z3_phase(
     reference: &AnalysisOutput,

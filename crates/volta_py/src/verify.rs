@@ -1,8 +1,6 @@
-//! Check a PTX kernel against a math spec (`volta verify` in the CLI):
-//! parse the spec, instantiate it under caller-supplied `dim` values,
-//! unfold it into an `AnalysisOutput` standing in for a second kernel,
-//! and run it through the same equivalence pipeline `analyze`'s sibling
-//! `compare` command will eventually use.
+//! Check a PTX kernel against a math spec (`volta verify`): instantiate the
+//! spec under caller-supplied `dim` values, unfold it into an `AnalysisOutput`
+//! standing in for a second kernel, then run the usual equivalence pipeline.
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -36,15 +34,9 @@ pub struct VerifyResultPy {
     pub stats: StatsPy,
 }
 
-/// Check `kernel` (in `source`, under `config`) against `spec` (spec
-/// language source text - see `volta_spec` for the grammar), given a
-/// concrete value for every `dim` the spec declares.
-///
-/// Every array the spec defines an output equation for must be a
-/// declared output array of `config` - checked before symbolic
-/// execution. Raises `DataRaceError`/`DeadlockError` for those specific
-/// findings, `VoltaError` for any other failure (spec parse/instantiate
-/// error, missing dim value, shape mismatch, ...).
+/// Check `kernel` against `spec` (grammar in `volta_spec`) given every `dim`.
+/// Spec output arrays must be declared outputs of `config`. Raises
+/// `DataRaceError`/`DeadlockError` for those findings, else `VoltaError`.
 #[pyfunction]
 #[pyo3(signature = (source, spec, config, kernel=None, dims=None, sample=0, verify_numeric=false))]
 #[allow(clippy::too_many_arguments)]
@@ -94,11 +86,8 @@ pub fn verify(
     let mut kernel_output =
         analyze_kernel(&module, kernel, config.0.clone()).map_err(analysis_error_to_py)?;
 
-    // A real kernel's written footprint can be far larger than is
-    // practical to unroll a Sum-heavy spec over, so `sample` also caps
-    // generation: truncate the kernel's own elements to the same
-    // ascending-order prefix `unfold` builds, so the two sides still
-    // pair up (mirrors `volta_cli`'s `cmd_verify`).
+    // `sample` also caps generation: truncate the kernel's elements to the
+    // ascending prefix `unfold` builds, so both sides pair (as in `cmd_verify`).
     if sample > 0 {
         for name in &check_arrays {
             if let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == name) {

@@ -1,11 +1,6 @@
-//! Volta Benchmark Suite
-//!
-//! Reproduces the evaluation of "Equivalence Checking of ML GPU Kernels":
-//! Harris reductions (Table 1), Boehm matmuls (Table 2), attention variants
-//! (Table 3), causal attention (Table 4), the LLM-generated convolution
-//! (Section 6.2), Claude-Code GEMMs (Table 5), TileLang pairs (Table 6),
-//! and the FaialAA data-race benchmarks (Table 7), all over the PTX
-//! collected in `kernels/`.
+//! Volta Benchmark Suite: reproduces the evaluation of "Equivalence Checking of ML GPU
+//! Kernels" (Tables 1-7, Section 6.2: reductions, matmuls, attention, conv, GEMMs,
+//! TileLang, FaialAA races) over the PTX collected in `kernels/`.
 
 pub mod benchmarks;
 pub mod config;

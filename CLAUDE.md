@@ -10,6 +10,12 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
 
 - Take advantage of the type system to ensure correctness. E.g., rather than using a `u32`, to avoid mixing up different kinds of indices, consider using a new type that wraps a `u32`. Likewise, consider where it is better to use a custom, two variant enum in place of a `bool`.
 - Shared state makes reasoning about code complex. Err on the side of slightly less efficient but pure implementations.
+- Comments:
+  - Maximum 3 lines of comments per code block.
+  - Prefer zero comments when the code is self-explanatory.
+  - Never narrate what the code does.
+  - Only document non-obvious invariants, assumptions, or design decisions.
+  - Do not split long comments into multiple blocks to bypass this limit.
 
 ## Crate Structure
 

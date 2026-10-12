@@ -1,55 +1,6 @@
-//! Minimal hand-written FFI over libz3's stable C API, plus worker-
-//! subprocess isolation for each query.
-//!
-//! Deliberately NOT `z3-sys`/`z3` crates: those regenerate bindings with
-//! bindgen at build time (libclang dependency) for hundreds of entry
-//! points, of which this backend needs eight, all of which have been ABI-
-//! stable for a decade. Linking is plain `-lz3`; building requires
-//! `libz3-dev` (only the shared library is needed).
-//!
-//! # Why a subprocess
-//!
-//! z3's soft timeout and even an explicit `Z3_interrupt` from another
-//! thread are advisory - measured on 4.8.12, the E-matching loop that the
-//! exp-axiom mode provokes never polls cancellation (a 3-second soft
-//! timeout still hadn't fired 90 seconds in). The only reliable bound is
-//! a hard kill, and in-process there is nothing safe to kill. Each query
-//! therefore evaluates in a worker process the parent can SIGKILL on
-//! deadline expiry - which also gives per-element crash containment (a
-//! z3 internal abort takes down one worker, not the run).
-//!
-//! The worker is this same executable re-invoked (spawn + exec via
-//! `std::process::Command`, which is thread-safe - an earlier design
-//! used `fork()` without `exec`, whose safety silently depended on the
-//! process being single-threaded, an unacceptable hidden precondition
-//! for a safe function). Re-invoking self means the linked libz3 is
-//! already present and no separate worker binary needs to exist on disk.
-//! The one visible contract: **a binary that (transitively) evaluates
-//! queries through this crate must call [`init_worker`] as the first
-//! statement of `main`**, so the re-invoked process becomes a solver
-//! worker instead of running the host program. The contract is loudly
-//! checked: the worker announces itself with a handshake line, and a
-//! spawn that comes back without it fails with an error naming
-//! `init_worker` - never silent misbehavior. (This crate's own test
-//! binary wires the hook via a `ctor` constructor.)
-//!
-//! Protocol: the parent sets `VOLTA_Z3_WORKER=1` (and the soft-timeout
-//! millisecond budget in `VOLTA_Z3_TIMEOUT_MS`) in the child's
-//! environment and writes the SMT-LIB2 script to its stdin; the worker
-//! reads stdin to EOF, evaluates it in-process with a fresh Z3 context,
-//! and writes to stdout: the handshake line, a `t:<nanoseconds>` line
-//! carrying the in-worker solve time, and the solver's textual output.
-//! Parent and worker are always the same binary, so the protocol can
-//! change freely - there is no cross-version compatibility to keep.
-//!
-//! The `t:` line exists because a worker's fixed lifecycle dwarfs a
-//! small query's actual solving (measured on z3 4.8.12, trivial query,
-//! ~12ms outer wall): process spawn/exec/dynamic-link/pipes/reap
-//! ~1.6ms, context create/destroy ~5ms, z3's lazy per-context SMT-LIB
-//! frontend setup ~3-4.6ms. Timing the outer call reports that
-//! scaffolding, not solving; the only place solver work can be measured
-//! honestly is inside the worker, around the evaluation itself (see
-//! [`eval_in_process`] for the exact span).
+//! Hand-written FFI over libz3's C API (no bindgen), each query run in a
+//! re-invoked worker process the parent SIGKILLs on deadline, since z3's soft
+//! timeout is advisory. Binaries must call [`init_worker`] first in `main`.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::io::{Read, Write};
@@ -91,11 +42,9 @@ const TIMEOUT_ENV: &str = "VOLTA_Z3_TIMEOUT_MS";
 /// its normal `main` instead - i.e. the host forgot `init_worker`.
 const HANDSHAKE: &str = "volta-z3-worker-1";
 
-/// If this process was spawned as a solver worker, run the query and
-/// exit; otherwise return immediately. Must be the FIRST statement of
-/// `main` in every binary that (transitively) evaluates queries through
-/// this crate - see the module docs for the contract and how violations
-/// are surfaced.
+/// If this process was spawned as a solver worker, run the query and exit;
+/// otherwise return. Must be the FIRST statement of `main` in every binary
+/// that evaluates queries through this crate (a missing hook fails loudly).
 pub fn init_worker() {
     if std::env::var_os(WORKER_ENV).is_none() {
         return;
@@ -122,24 +71,9 @@ pub fn init_worker() {
     std::process::exit(if ok { 0 } else { 2 });
 }
 
-/// In-process evaluation with a fresh context - runs inside the worker,
-/// where the process is ours alone. Returns the solver's textual output
-/// plus the solve time: the span of libz3's evaluation of the query
-/// text, and nothing else.
-///
-/// The span boundaries are deliberate. Everything a worker pays that is
-/// *not* a function of the query stays outside the clock, because on
-/// this z3 (4.8.12) none of it is negligible against a small query's
-/// actual solving (measured, trivial query): process
-/// spawn/exec/link/pipes ~1.6ms, `Z3_mk_context` ~4.4ms - NOT
-/// microseconds - and the SMT-LIB frontend setup z3 lazily performs on
-/// a context's first eval, ~3-4.6ms, which the empty warmup eval below
-/// flushes before the clock starts. The warmup is an empty script
-/// rather than a dummy `(check-sat)`: zero commands cannot perturb
-/// solver state or flip z3 into its incremental core, so the measured
-/// query solves exactly as it would without the warmup. (Lazy machinery
-/// the query's own first commands trigger - ~1.4ms - stays inside the
-/// span: z3 does that work because of this query's text.)
+/// In-process evaluation with a fresh context, inside the worker. The timed
+/// span is libz3's evaluation of the query only: an empty warmup eval first
+/// flushes z3's lazy frontend setup, which dwarfs small queries.
 fn eval_in_process(query: &str) -> (String, Duration) {
     let c_query = match CString::new(query) {
         Ok(c) => c,
@@ -172,12 +106,9 @@ fn eval_in_process(query: &str) -> (String, Duration) {
 
 /// One query's fate, as observed by the parent.
 pub enum EvalOutcome {
-    /// The worker finished: the solver's textual output plus the solve
-    /// time measured *inside the worker*, spanning exactly libz3's
-    /// evaluation of the query text (see [`eval_in_process`]). This is
-    /// the number to report as solver time: the worker's process
-    /// lifecycle and z3's context/frontend setup - which together dwarf
-    /// small queries' actual solving - are outside the span.
+    /// The worker finished: the solver's output plus the solve time measured
+    /// inside the worker (see [`eval_in_process`]), excluding process and
+    /// context setup; this is the number to report as solver time.
     Output { text: String, solve: Duration },
     /// The deadline expired and the worker was killed - the definitive
     /// timeout signal (z3's own soft timeout is unreliable, see module
@@ -189,12 +120,9 @@ pub enum EvalOutcome {
     ChildDied(String),
 }
 
-/// Evaluate one self-contained SMT-LIB2 script in a worker subprocess,
-/// enforcing `timeout` (`None` = no limit) with SIGKILL. z3's soft
-/// timeout is also set inside the worker (belt and suspenders: when it
-/// does fire, the output carries a `canceled` reason a little before the
-/// hard deadline). Thread-safe: spawning goes through
-/// `std::process::Command`.
+/// Evaluate one SMT-LIB2 script in a worker subprocess, enforcing `timeout`
+/// (`None` = no limit) with SIGKILL; z3's soft timeout is also set, so the
+/// output may report `canceled` first. Thread-safe (`std::process::Command`).
 pub fn eval_smtlib2(query: &str, timeout: Option<Duration>) -> EvalOutcome {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -277,11 +205,9 @@ pub fn eval_smtlib2(query: &str, timeout: Option<Duration>) -> EvalOutcome {
     outcome
 }
 
-/// Parse what follows a completed worker's handshake line: the
-/// `t:<nanoseconds>` in-worker solve time, then the solver's output.
-/// Parent and worker are always the same binary, so a malformed payload
-/// is a genuine protocol violation (reported loudly), never version
-/// skew.
+/// Parse what follows a worker's handshake: the `t:<nanoseconds>` solve time,
+/// then the solver's output. Parent and worker are the same binary, so a
+/// malformed payload is a protocol violation (reported loudly).
 fn parse_worker_payload(rest: &str) -> EvalOutcome {
     let payload = rest.strip_prefix('\n').unwrap_or(rest);
     let Some((nanos, output)) = payload
@@ -308,13 +234,9 @@ fn parse_worker_payload(rest: &str) -> EvalOutcome {
 mod tests {
     use super::*;
 
-    /// Diagnostic (run alone, `--ignored --nocapture`, so libz3 is
-    /// still uninitialized in this process, like it is in a fresh
-    /// worker): where does a worker's in-process evaluation time go?
-    /// Prints per-phase timings for two rounds. Measured on z3 4.8.12:
-    /// context creation costs ~4ms on EVERY round (not one-time init),
-    /// the empty warmup eval flushes ~3-4.6ms of lazy SMT-LIB frontend
-    /// setup, and only then does an eval's time track the script.
+    /// Diagnostic (run alone with `--ignored --nocapture`, so libz3 is fresh):
+    /// prints per-phase in-process timings for two rounds, showing context
+    /// creation and the lazy frontend setup that the warmup eval flushes.
     #[test]
     #[ignore = "diagnostic: prints in-process phase timings"]
     fn in_process_phase_timings() {

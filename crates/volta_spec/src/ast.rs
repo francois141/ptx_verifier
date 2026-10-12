@@ -1,8 +1,6 @@
-//! The parsed (but not yet instantiated) spec: `dim`/`array` declarations
-//! plus output equations. Expression bodies are parsed directly into
-//! `volta_analysis::spec::{SpecExpr, IndexExpr}` - there is no separate
-//! expression AST in this crate, since that's exactly the type the parser
-//! needs to produce.
+//! The parsed, not yet instantiated spec: declarations plus output equations,
+//! with bodies parsed straight into `volta_analysis::spec::{SpecExpr,
+//! IndexExpr}`.
 
 use volta_analysis::spec::SpecExpr;
 use volta_common::Span;
@@ -24,11 +22,9 @@ pub struct ArrayDecl {
     pub span: Span,
 }
 
-/// A `NAME[var, ...] = expr;` output equation. `vars` names the loop
-/// variables bound over `NAME`'s declared shape, in order (so `vars.len()`
-/// must equal the matching `ArrayDecl`'s `dims.len()` - checked at
-/// instantiation, since `unfold` already validates exactly this via
-/// `SpecError::ShapeVarMismatch`, no need to duplicate the check here).
+/// A `NAME[var, ...] = expr;` output equation; `vars` are the loop variables
+/// over `NAME`'s shape, in order (arity checked by `unfold`'s
+/// `SpecError::ShapeVarMismatch`).
 #[derive(Debug, Clone)]
 pub struct OutputDecl {
     pub array: String,
@@ -37,10 +33,9 @@ pub struct OutputDecl {
     pub span: Span,
 }
 
-/// A fully parsed spec file: declarations plus equations, still in terms
-/// of named dims - nothing here is concrete yet. See
-/// [`crate::instantiate::instantiate`] for turning this into the
-/// `(SpecEnv, Vec<OutputSpec>)` pair `volta_analysis::spec::unfold` needs.
+/// A parsed spec file, still over named dims;
+/// [`crate::instantiate::instantiate`] turns it into the `(SpecEnv,
+/// Vec<OutputSpec>)` pair `unfold` needs.
 #[derive(Debug, Clone, Default)]
 pub struct ParsedSpec {
     pub dims: Vec<DimDecl>,

@@ -21,12 +21,9 @@ use crate::types::ScalarTypeExt;
 const LOG2_E_F32: f64 = std::f64::consts::LOG2_E as f32 as f64;
 
 impl<'p> Interpreter<'p> {
-    /// Evaluate a binary op. Integer ops on concrete values use exact
-    /// width/signedness semantics; symbolic values get real-valued nodes.
-    ///
-    /// `pub(in crate::eval)`: also the fold primitive `eval::warp`'s
-    /// `exec_redux_sync` uses to combine `redux.sync` lane values, since
-    /// it already has the exact signed/float-aware semantics per `ty`.
+    /// Evaluate a binary op: exact width/signedness semantics on concrete
+    /// integers, real-valued nodes for symbolic values. Also the fold primitive
+    /// `eval::warp`'s `redux.sync` uses to combine lane values.
     pub(in crate::eval) fn eval_binop(
         &mut self,
         t: ThreadId,
@@ -117,17 +114,9 @@ impl<'p> Interpreter<'p> {
         self.arena.bit_xor(a, b)
     }
 
-    /// `lop3.b32`'s truth table over operands that are not all concrete.
-    ///
-    /// `symbolic` lists the positions in `sources` with no constant bit
-    /// pattern; `words` holds the others. Each symbolic operand `x` is
-    /// Shannon-expanded as `low ^ (x & (low ^ high))`, where `low`/`high`
-    /// are the table with `x` forced to all-zeros/all-ones: bit by bit
-    /// that reproduces the table exactly, and it collapses to `low`
-    /// wherever the table does not depend on `x`. With one symbolic
-    /// operand and two constants the whole thing folds to a single masked
-    /// xor - the shape the f16 sign-decode idiom
-    /// (`lop3 d, a, 0x80008000, 0xbc00bc00, 0x6a`) wants.
+    /// `lop3.b32` over operands not all concrete (`symbolic` positions; `words`
+    /// the rest): each symbolic `x` is Shannon-expanded as `low ^ (x & (low ^ high))`,
+    /// exact bitwise, folding to one masked xor for the f16 sign-decode idiom.
     pub(in crate::eval) fn lop3_expand(
         &mut self,
         lut: u32,
@@ -154,10 +143,9 @@ impl<'p> Interpreter<'p> {
         self.b32_xor(low, selected)
     }
 
-    /// `a ^ b` over 32-bit bit patterns. The arena's own folding is
-    /// width-agnostic, so the identity `x ^ 0 = x` has to be applied here;
-    /// a symbolic side goes through [`Self::eval_xor`], which warns about a
-    /// flip of the f32 sign bit (not a negation - see there).
+    /// `a ^ b` over 32-bit bit patterns, applying `x ^ 0 = x` here since the
+    /// arena's folding is width-agnostic; a symbolic side goes through
+    /// [`Self::eval_xor`].
     fn b32_xor(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.arena.as_int_const(a), self.arena.as_int_const(b)) {
             (Some(x), Some(y)) => self.arena.int(x ^ y),
@@ -292,30 +280,17 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// `ex2(v * c)` with `c` within float32 rounding of log2(e) is the PTX
-    /// idiom for `exp(v)`, and `c ~ -log2(e)` the idiom for `exp(-v)`. `v`
-    /// itself may be spread across an `Fma`/`Add` chain that shares the
-    /// same rounded log2(e) factor per term rather than multiplying it in
-    /// once at the end - e.g. softmax's max-subtraction bias,
-    /// `fma(x, log2e, m)` where `m` was already built as `max * -log2e`,
-    /// for `(x - max) * log2e` - [`Self::factor_log2e`] pulls the shared
-    /// constant back out of that chain. Returns the exact `exp(...)`
-    /// form, or `None` when `a` doesn't factor this way.
+    /// Folds the PTX `exp(v)` idiom `ex2(v * c)`, `c` within float32 rounding of
+    /// ±log2(e) (possibly spread per term over an `Fma`/`Add` chain, see
+    /// [`Self::factor_log2e`]), to an exact `exp(...)`; `None` if `a` doesn't factor.
     fn fold_exp_idiom(&mut self, a: ExprId) -> Option<ExprId> {
         let argument = self.factor_log2e(a)?;
         Some(self.arena.exp(argument))
     }
 
-    /// `ln 2` as the exact reciprocal of float32's `log2(e)`, the constant
-    /// both `ex2` and `lg2` are read through.
-    ///
-    /// A scaled exponential is spelled `ex2(x * c)` with `c` float32's
-    /// `log2(e)` times an exactly-representable factor; pairing it with its
-    /// own exact reciprocal leaves that factor unrounded, so the result
-    /// canonicalizes to the `exp` form a spec states, and `ex2(lg2(x))`
-    /// cancels to exactly `exp(log(x))`. An f64 rounding of `ln 2` would
-    /// leave about `1e-8` of relative error in the exponent instead, which
-    /// no exact check absorbs - see also [`Self::fold_exp_idiom`].
+    /// `ln 2` as the exact reciprocal of float32's `log2(e)`, read by `ex2` and
+    /// `lg2`: scaled exponentials then canonicalize exactly to a spec's `exp` form
+    /// and `ex2(lg2(x))` cancels, where an f64 `ln 2` would leave ~1e-8 error.
     fn ln2_constant(&mut self, pc: InstrId) -> EvalResult<ExprId> {
         let unsupported = |what: String| EvalError::Unsupported { pc, what };
         let log2e = Real::from_f64(LOG2_E_F32)
@@ -326,11 +301,9 @@ impl<'p> Interpreter<'p> {
         Ok(self.arena.real(ln2))
     }
 
-    /// Pulls a `log2(e)`-ish rational constant (within float32 rounding)
-    /// out of a `Mul`/`Fma`/`Add` chain, folding each term's own sign into
-    /// the result so that `a == log2e * factor_log2e(a)` for whichever
-    /// concrete log2(e)-approximating constant `a` was actually built
-    /// with. `None` when no such factor exists at this node.
+    /// Pulls a `log2(e)`-ish constant (within float32 rounding) out of a
+    /// `Mul`/`Fma`/`Add` chain, folding in each term's sign, so that
+    /// `a == log2e * factor_log2e(a)`; `None` when no such factor exists.
     fn factor_log2e(&mut self, a: ExprId) -> Option<ExprId> {
         let log2e = std::f64::consts::LOG2_E;
         let is_log2e_like = |value: f64| (value.abs() - log2e).abs() <= log2e * 1e-6;
@@ -423,13 +396,9 @@ impl<'p> Interpreter<'p> {
                 self.arena.rcp(s)
             }
             UnaryOp::Exp => self.arena.exp(a),
-            // 2^x = e^(x*ln2), so this stays in the interpreted exp fragment
-            // rather than becoming an opaque atom. PTX has no exp instruction:
-            // compilers and hand-written kernels spell exp(v) as
-            // ex2(v * log2e) with a float32 log2e, which over the reals is
-            // exp(v * 0.99999999...) and would never match a spec's exp(v).
-            // That idiom is folded to an exact exp(v) first, in the same
-            // spirit as reading ex2.approx as an exact 2^x.
+            // 2^x = e^(x*ln2) keeps this in the exp fragment. The `ex2(v * log2e)`
+            // exp idiom (a float32 log2e, so exp(v * 0.99999999...) over the
+            // reals) is first folded to an exact exp(v), like ex2.approx as 2^x.
             UnaryOp::Ex2 => {
                 if let Some(folded) = self.fold_exp_idiom(a) {
                     folded
@@ -468,19 +437,9 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// Reinterpret a concrete operand as canonical for `ty`. Registers and
-    /// memory granules hold values canonicalized by their *producing*
-    /// instruction, so a value written as signed may be consumed as
-    /// unsigned (or vice versa): nvcc emits `mul.wide.u16 %r, %rs, -17873`
-    /// where the immediate is really the u16 magic constant 47663. Every
-    /// consumer that gives a concrete integer a type of its own re-reads
-    /// the value through this (mov, cvt sources, wide/hi multiplies,
-    /// binops with a symbolic side, float arithmetic; loads and stores go
-    /// through [`Self::canon_loaded`]/[`Self::canon_stored`]). Symbolic
-    /// operands pass through unchanged, as do genuine float constants
-    /// (always a `Real`, never an `IntConst` - a `mov.b32 %r, %f` bit-move
-    /// must not coerce the float to an int). A float `ty` decodes a
-    /// concrete integer as its bit pattern ([`float_bits::decode_float_bits`]).
+    /// Reinterpret a concrete integer operand as canonical for `ty`, since values
+    /// are canonicalized by their producer (`mul.wide.u16 %r, %rs, -17873` means
+    /// 47663); a float `ty` decodes its bits. Symbolic values and `Real`s pass through.
     pub(in crate::eval) fn canon_operand(
         &mut self,
         pc: InstrId,
@@ -507,22 +466,9 @@ impl<'p> Interpreter<'p> {
         e
     }
 
-    /// Canonicalize a value crossing a store boundary. Memory holds bit
-    /// patterns: a concrete integer is reduced to the unsigned low bits of
-    /// the store type (`st.u8` of 300 stores 44); sign/zero extension is
-    /// the *load*'s job (see [`Self::canon_loaded`]). Floats, `Undefined`,
-    /// and packed pairs at their full 4-byte width pass through unchanged.
-    ///
-    /// A *symbolic* integer stored below its source register's width would
-    /// need a truncation node we deliberately do not model, so that store
-    /// is a loud error rather than a silently unsound pass-through.
-    /// Equal-width symbolic stores are exact and pass through (an f16 half
-    /// stored from a 16-bit register via `st.u16` - the corpus's only
-    /// symbolic sub-word stores). Likewise a packed f16x2 pair stored
-    /// below 4 bytes would stuff the whole two-half value into a narrower
-    /// granule - a shape the memory model never anticipates - so it too
-    /// is a loud error (its truncation would be a half extraction we do
-    /// not model at store boundaries).
+    /// Canonicalize a value crossing a store: concrete integers keep the store
+    /// type's unsigned low bits (`st.u8` of 300 stores 44). A symbolic value or pair
+    /// stored below its source register's width is a loud error (no truncation node).
     pub(in crate::eval) fn canon_stored(
         &mut self,
         t: ThreadId,
@@ -531,16 +477,9 @@ impl<'p> Interpreter<'p> {
         src_reg_bits: Option<u32>,
         v: Value,
     ) -> EvalResult<Value> {
-        // A packed pair's own width is its *source register's* width, not a
-        // fixed 4 bytes: `Memory::read` also yields a 2-byte-native `Pair`
-        // when combining two adjacent 1-byte fp8 array elements (byte-
-        // granular arrays), held in an ordinary 16-bit register - distinct
-        // from the classic 4-byte f16x2 pair. A store matching that
-        // register's full width is an exact, lossless round-trip either
-        // way; only a store *narrower* than the source register would
-        // require a half-extraction we don't model, so gate on
-        // `src_reg_bits` (as the analogous scalar check below does)
-        // instead of a width hard-coded to the f16x2 case.
+        // A pair's width is its source register's (fp8 pairs live in 16-bit
+        // registers, f16x2 in 32-bit), so gate on `src_reg_bits`: only a narrower
+        // store would need the half-extraction we don't model.
         if matches!(v, Value::Pair(..)) && src_reg_bits.is_none_or(|reg_bits| ty.bits() < reg_bits)
         {
             return Err(EvalError::Unsupported {
@@ -593,14 +532,9 @@ impl<'p> Interpreter<'p> {
         Ok(v)
     }
 
-    /// Zero-extending a symbolic 32-bit value into a 64-bit destination is
-    /// exactly the pair (value, 0) in the packed-pair domain: this is how
-    /// nvcc/Triton feed one f32 into the lanes of an `f32x2` operand,
-    /// whether through a 32-bit load into a 64-bit register (`canon_loaded`)
-    /// or an explicit `cvt.u64.u32` (e.g. `ld.shared.b32 %rd, [..]`, then
-    /// `shl.b64`/`or.b64` to place a second value in the high lane).
-    /// `None` when the shape doesn't match (concrete/undefined values fold
-    /// or pass through their normal path instead).
+    /// Zero-extending a symbolic 32-bit value into 64 bits is exactly the pair
+    /// (value, 0): how nvcc/Triton feed an f32 into an `f32x2` lane (load or
+    /// `cvt.u64.u32`). `None` when the shape doesn't match.
     pub(in crate::eval) fn zero_extend_to_pair(
         &mut self,
         src_bits: u32,
@@ -621,26 +555,9 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Canonicalize a value crossing a load boundary: `ld` extends the
-    /// memory pattern to the destination register per the *load type* -
-    /// sign-extension for `.s8`/`.s16`/..., zero-extension for unsigned
-    /// and bits types (the ISA's ld extension rules) - so `ld.s8` of the
-    /// byte 0xFF yields -1 while `ld.u8` yields 255. Floats, packed
-    /// pairs, and `Undefined` pass through unchanged.
-    ///
-    /// A *symbolic* scalar loaded at a type narrower than the destination
-    /// register would need a **sign**-extension node we deliberately do not
-    /// model (a genuine case split on the unknown value: loud error), but
-    /// only when `ty` is actually signed. Zero-extension needs no such
-    /// node: a bits-type or unsigned symbolic value denotes the same
-    /// number whether boxed in a narrow or a wide register, so it passes
-    /// through unchanged - this is also PTX's own rule for `.b8`/`.u8`
-    /// register loads, which the ISA has no register class narrower than
-    /// 16 bits to hold natively (confirmed against
-    /// `RoPEFloat8Kernel`'s real `triton_generated.ptx`: `ld.global.b8`
-    /// of one fp8 array byte into a `.b16` register). Equal-width
-    /// symbolic loads are exact and pass through too (f16 halves loaded
-    /// into 16-bit registers).
+    /// Canonicalize a value crossing a load: extend per the load type's ISA rule
+    /// (`ld.s8` of 0xFF is -1, `ld.u8` 255). A symbolic narrow *signed* load is a
+    /// loud error (no sign-extension node); zero-extension is exact and passes through.
     pub(in crate::eval) fn canon_loaded(
         &mut self,
         t: ThreadId,
@@ -764,12 +681,9 @@ impl<'p> Interpreter<'p> {
             return Ok(self.arena.bool_val(r));
         }
 
-        // Symbolic: reinterpret a concrete side at the instruction type
-        // first, exactly like eval_binop's fallback, so
-        // `setp.eq.s32 %p, %sym, -1` and a compare against a
-        // chain-computed 4294967295 build identical nodes. Over the
-        // reals there are no NaNs, so unordered comparisons coincide
-        // with their ordered counterparts.
+        // Symbolic: reinterpret a concrete side at the instruction type (like
+        // eval_binop) so equal values build identical nodes; with no NaNs over
+        // the reals, unordered comparisons equal their ordered counterparts.
         let a = self.canon_operand(pc, ty, a)?;
         let b = self.canon_operand(pc, ty, b)?;
         Ok(match cmp {
@@ -784,18 +698,8 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// Apply a float value clamp (`.sat`/`.relu`) to a result expression.
-    ///
-    /// Over the floats-as-reals model these are exact: `.relu` is
-    /// `max(r, 0)` and `.sat` is `min(max(r, 0), 1)`. Concrete operands
-    /// fold through the arena's min/max constant folding. The spec's
-    /// `.sat` additionally flushes a NaN result to +0.0 (and cvt's
-    /// `.relu` canonicalizes NaN); NaN is out of model over the reals,
-    /// as everywhere else in the interpreter.
-    /// Decode a concrete fp8 byte (`decode` is one of `eval::float_bits`'s
-    /// decoders) into an exact real-valued `ExprId`, erroring loudly on the
-    /// format's NaN encodings - Volta's real-valued model cannot represent
-    /// NaN, same as every other NaN-ingestion point in the interpreter.
+    /// Decode a concrete fp8 byte via an `eval::float_bits` decoder into an exact
+    /// real, erroring loudly on NaN encodings (out of Volta's real-valued model).
     /// `what` names the consuming instruction and format for the message.
     pub(in crate::eval) fn decode_fp8_byte(
         &mut self,
@@ -819,6 +723,8 @@ impl<'p> Interpreter<'p> {
             })
     }
 
+    /// Apply a float clamp, exact over the reals: `.relu` is `max(r, 0)`, `.sat`
+    /// is `min(max(r, 0), 1)` (the spec's NaN flushing is out of model).
     pub(in crate::eval) fn apply_clamp(&mut self, clamp: Option<Clamp>, r: ExprId) -> ExprId {
         match clamp {
             None => r,
@@ -842,10 +748,9 @@ impl<'p> Interpreter<'p> {
         src_ty: ScalarType,
         a: ExprId,
     ) -> EvalResult<ExprId> {
-        // Float-to-float conversions (f16 <-> f32 <-> f64) are the identity
-        // over the reals; rounding is deliberately not modeled (paper). The
-        // source is still read at its own format: `cvt.f32.f16` of a
-        // `mov.b16 %h, 0x3C00` is 1.0.
+        // Float-to-float conversions are the identity over the reals (rounding
+        // deliberately not modeled, per the paper), but the source is still read
+        // at its own format: `cvt.f32.f16` of `mov.b16 %h, 0x3C00` is 1.0.
         if dst_ty.is_float() && src_ty.is_float() {
             return float_bits::decode_float_bits(&mut self.arena, pc, src_ty, a);
         }
@@ -855,12 +760,9 @@ impl<'p> Interpreter<'p> {
                 what: format!("cvt float->int ({:?} -> {:?})", src_ty, dst_ty),
             });
         }
-        // Integer source: cvt reads its source at the *source* format
-        // first (ISA Table 15: "extension ... follows the source format"),
-        // so a register canonicalized unsigned by its producer (`and.b32`
-        // leaving 4294967288) reads as -8 under `cvt.s64.s32`. Symbolic
-        // integers pass through (they are data, not addresses, so width
-        // games cannot occur in a structured-CTA).
+        // Integer source: read at the *source* format first (ISA Table 15), so
+        // `and.b32`'s 4294967288 is -8 under `cvt.s64.s32`. Symbolic integers
+        // pass through (data, not addresses, in a structured-CTA).
         let a = self.canon_int_operand(src_ty, a);
         if dst_ty.is_float() {
             return Ok(self.arena.to_float(a));

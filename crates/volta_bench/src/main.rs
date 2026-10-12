@@ -1,17 +1,6 @@
-//! Volta benchmark runner CLI.
-//!
-//! Note: run in release mode; symbolic execution of the larger kernels is
-//! ~20x slower unoptimized (the binary warns at startup when it isn't).
-//!
-//! ```bash
-//! cargo run --release -p volta_bench -- all --sample 16
-//! cargo run --release -p volta_bench -- category reduction
-//! cargo run --release -p volta_bench -- --z3 category reduction
-//! cargo run --release -p volta_bench -- single "(Red-1, Red-2)"
-//! cargo run --release -p volta_bench -- generate all
-//! cargo run --release -p volta_bench -- solve all --sample 1 --backend z3
-//! cargo run --release -p volta_bench -- list
-//! ```
+//! Volta benchmark runner CLI, e.g. `cargo run --release -p volta_bench --
+//! all --sample 16`. Run in release mode: debug symbolic execution is ~20x
+//! slower (the binary warns).
 
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -97,9 +86,8 @@ struct Cli {
     #[arg(long, global = true, default_value_t = NonZeroUsize::new(10).unwrap())]
     iterations: NonZeroUsize,
 
-    /// Also solve every equivalence benchmark's VCs with Z3 (SMT-LIB2
-    /// evaluated via libz3 in a killable worker subprocess) for a
-    /// side-by-side comparison; exp-containing benchmarks get a second
+    /// Also solve every equivalence benchmark's VCs with Z3 (libz3 in a
+    /// killable worker subprocess); exp-containing benchmarks get a second
     /// +exp-axiom sub-run
     #[arg(long, global = true)]
     z3: bool,
@@ -154,10 +142,9 @@ enum Commands {
         #[arg(long)]
         json: Option<PathBuf>,
     },
-    /// Generate and dump VCs without solving them (the pipeline's
-    /// generation phase, x --iterations); race-check benchmarks run to
-    /// their real verdicts here. Writes <out-dir>/vcs/<slug>.vcdump and
-    /// updates <out-dir>/vcs/manifest.json; `solve` runs from these
+    /// Generate and dump VCs without solving (x --iterations) to
+    /// <out-dir>/vcs/, updating manifest.json for `solve`; race-check
+    /// benchmarks reach their real verdicts here
     Generate {
         #[command(subcommand)]
         target: Target,
@@ -166,18 +153,14 @@ enum Commands {
         #[arg(long, global = true)]
         json: Option<PathBuf>,
     },
-    /// Solve previously generated VC dumps (see `generate`), x
-    /// --iterations - no parsing, lowering, or symbolic execution.
-    /// Race-check benchmarks are skipped (their verdicts come from
-    /// `generate`)
+    /// Solve previously generated VC dumps (see `generate`), x --iterations,
+    /// with no symbolic execution; race-check benchmarks are skipped
     Solve {
         #[command(subcommand)]
         target: Target,
-        /// Which backend(s) to solve with: the decision procedure, z3
-        /// (no decision verdict; the z3 outcomes are the data, except
-        /// that a not_equivalent verdict fails the row), or both side by
-        /// side. --verify-numeric confirms decision-procedure verdicts,
-        /// so it needs decision|both
+        /// Backend(s) to solve with; z3 alone gives no decision verdict (only
+        /// a not_equivalent fails the row). --verify-numeric needs
+        /// decision|both
         #[arg(long, global = true, value_enum, default_value_t = BackendArg::Decision)]
         backend: BackendArg,
         /// Also write the results document to this explicit path (the
@@ -231,11 +214,9 @@ fn print_environment_warnings(#[cfg(feature = "logging")] log_level: LogLevel) {
              timings will be ~20x off - use `cargo run --release`"
         );
     }
-    // The `logging` feature compiles volta_analysis's log statements in;
-    // at info and above they emit during the timed phases themselves
-    // (barrier/warp fires at trace, launch/completion/session recycles at
-    // info), so the timings include logging overhead. At error/warn the
-    // compiled-in statements only fire on exceptional paths.
+    // With the `logging` feature, info+ levels emit during the timed phases
+    // (barrier/warp fires, launch, recycles), so timings include logging
+    // overhead; error/warn fire only on exceptional paths.
     #[cfg(feature = "logging")]
     if log::LevelFilter::from(log_level) >= log::LevelFilter::Info {
         eprintln!(
@@ -248,11 +229,9 @@ fn print_environment_warnings(#[cfg(feature = "logging")] log_level: LogLevel) {
     }
 }
 
-/// Refuse to run a benchmark set whose names collide under the VC-dump
-/// slug sanitization: `sanitize_name` is many-to-one and dumps overwrite
-/// by slug, so a colliding set would silently clobber one benchmark's
-/// dump with another's. Prints both offending names and fails the run
-/// before anything executes.
+/// Fail before running if two benchmark names collide under `sanitize_name`:
+/// dumps are keyed by slug, so one would silently clobber the other. Prints
+/// both names.
 fn ensure_unique_slugs<'a>(
     defs: impl IntoIterator<Item = &'a BenchmarkDef>,
     log: &mut RunLog,
@@ -288,10 +267,9 @@ fn println_tolerant(line: String) {
     print_stdout(writeln!(std::io::stdout(), "{line}").map_err(anyhow::Error::from));
 }
 
-/// Write the results document: always to the timestamped file under
-/// `<out_dir>/results/`, and additionally to the explicit `--json` path
-/// when given. Failures warn rather than abort - a full disk should not
-/// repaint a completed benchmark run as failed.
+/// Write the results document to `<out_dir>/results/` and to `--json` when
+/// given. Failures only warn: a full disk should not repaint a completed run
+/// as failed.
 fn write_results(
     out_dir: &Path,
     meta: &results::RunMeta,
@@ -758,10 +736,9 @@ fn resolve_target(
     }
 }
 
-/// Console presentation for a `generate`/`solve` run: category tables
-/// (plus summary) for `all`/`category` targets, the detailed
-/// single-benchmark report for `single` - mirroring the one-shot
-/// commands' presentation.
+/// Console output for a `generate`/`solve` run, mirroring the one-shot
+/// commands: category tables plus summary for `all`/`category`, the detailed
+/// report for `single`.
 fn print_phase_results(
     results: &[BenchmarkResult],
     target: &Target,

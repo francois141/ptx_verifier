@@ -1,41 +1,14 @@
-//! PTX Lexer
-//!
-//! A lexer for NVIDIA's Parallel Thread Execution (PTX) assembly language, based on the PTX 9.1 ISA
-//! specification.
+//! PTX Lexer: a lexer for NVIDIA's Parallel Thread Execution (PTX) assembly language, based on
+//! the PTX 9.1 ISA specification.
 
 use std::fmt;
 
 use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
 use crate::instr::{self, InstrKind};
 
-// The PTX documentation is rather vague, but, by experimentation with ptxas, the PTX lexer appears
-// to work as follows:
-//
-// 1. Dot-prefixed qualifiers (.foo, .foo::bar, .foo::bar::baz) are lexed as single tokens with no
-// whitespace allowed internally
-//
-// 2. Instruction mnemonics have a set of known compound forms (st.async, cp.async.bulk, etc.) that
-// are lexed as single tokens with no whitespace allowed internally
-//
-// 3. Regular qualifiers (.weak, .u32, .global, etc.) are tokens that can be preceded by whitespace
-//
-// 4. Register component selectors (.x, .y, .z, .w) are tokens that can be preceded by whitespace
-//
-// The tricky part for a lexer implementation is distinguishing:
-// - st.async -> single instruction token which must be written without spaces
-// - st.weak -> instruction token `st` followed by a qualifier token `.weak` (whitespace allowed)
-//
-// This means the lexer should have a list of known multi-part instruction names like:
-//   - st.async
-//   - cp.async
-//   - cp.async.bulk
-//   - etc.
-// And it should interpret the longest match as a single token.
-//
-// One additonal complication is that variable names are permitted to alias instruction mnemonics,
-// e.g., `bar` could be a variable name or the synchronization instruction `bar`. The difference is
-// contextual so the lexer always returns an `Ident` token and the parser must determine whether to
-// break it up into an instruction mnemonic and qualifiers.
+// Per ptxas experiments: dotted qualifiers (`.foo::bar`) and known compound mnemonics
+// (`st.async`, longest match) are whitespace-free tokens, while `st .weak` may be spaced. Names
+// may alias mnemonics (`bar`), so the lexer emits an `Ident` and the parser splits it by context.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DottedIdent {
@@ -100,10 +73,8 @@ impl Ident {
         }
     }
 
-    /// Try to interpret this identifier as an instruction mnemonic with qualifiers. E.g.,
-    /// `st.async` would return instruction mnemonic `st.async` and qualifier `weak`. Note that the
-    /// lexer may return an `Ident` with some qualifiers, followed by additional qualifiers as
-    /// separate tokens.
+    /// Try to interpret this identifier as an instruction mnemonic plus qualifiers (e.g.
+    /// `st.async.weak` -> `st.async` and `weak`). Further qualifiers may follow as separate tokens.
     pub fn as_instr(&self) -> Option<(InstrKind, impl Iterator<Item = &[AsciiChar]>)> {
         let slice = self.name.as_slice();
         instr::get_instr_trie().get_ancestor(slice).map(|kind| {
@@ -781,15 +752,8 @@ fn consume_exponent(mut pos: usize, src: &[AsciiChar]) -> Option<usize> {
     Some(pos)
 }
 
-/// Consume a decimal floating-point literal.
-///
-/// Formats:
-/// - `.[0-9]+<exp>?`
-/// - `[0-9]+.[0-9]*<exp>`
-/// - `[0-9]+<exp>`
-///
-/// where
-/// - `<exp> ::= [eE][+-]?[0-9]+`
+/// Consume a decimal floating-point literal: `.[0-9]+<exp>?`, `[0-9]+.[0-9]*<exp>`, or
+/// `[0-9]+<exp>`, where `<exp> ::= [eE][+-]?[0-9]+`.
 fn consume_decimal_float(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     let c = *src.get(start)?;
     let starts_with_dot = c == AsciiChar::FullStop;
@@ -984,20 +948,9 @@ fn consume_float(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     consume_decimal_float(start, src)
 }
 
-/// Consume a numeric literal (integer or floating-point).
-///
-/// Integer formats:
-/// - Hexadecimal: 0[xX][0-9a-fA-F]+U?
-/// - Binary: 0[bB][01]+U?
-/// - Octal: 0[0-7]*U?
-/// - Decimal: [0-9]+U?
-///
-/// Floating-point formats:
-/// - Decimal: .[0-9]+([eE][+-]?[0-9]+)?
-/// - Decimal: [0-9]+.[0-9]*([eE][+-]?[0-9]+)?
-/// - Decimal: [0-9]+[eE][+-]?[0-9]+
-/// - Hex single (32-bit): 0[fF][0-9a-fA-F]{8}
-/// - Hex double (64-bit): 0[dD][0-9a-fA-F]{16}
+/// Consume a numeric literal. Integers: `0[xX][0-9a-fA-F]+U?`, `0[bB][01]+U?`, `0[0-7]*U?`,
+/// `[0-9]+U?`. Floats: decimal (see `consume_decimal_float`), hex single
+/// `0[fF][0-9a-fA-F]{8}`, hex double `0[dD][0-9a-fA-F]{16}`.
 fn consume_number(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     // Try float first since the prefix of a float can be an integer but not vice versa
     if let Some(result) = consume_float(start, src) {
@@ -1007,26 +960,9 @@ fn consume_number(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     consume_integer(start, src)
 }
 
-/// Consume a string.
-///
-/// Strings are enclosed in double quotes. Escape sequences are not interpreted; the string is
-/// stored verbatim.
-///
-/// Since the PTX documentation says it follows C syntax for comments and integers, one might
-/// initially assume that PTX strings follow C-style escape conventions. However, experimentation
-/// reveals that PTX does not interpret escape sequences in strings.
-///
-/// Strings are used in two notable places in PTX, the `.file` and `.pragma` directives.
-///
-/// - The pragma `"nounroll"` is valid, but `"noun\x72oll"` (where `\x72` = 'r') produces the
-///   warning `Pragma 'noun\x72oll' unsupported`. If escapes were interpreted, this would become the
-///   valid pragma `"nounroll"`. Furthermore, `"noun\\roll"` yields the warning
-///   `Pragma 'noun\\roll' unsupported` (not `'noun\roll'`)
-///
-/// - `.file` directives ultimately affect the DWARF debug info. Experimentation shows that
-///   backslashes are treated as path separators by `.file` (like forward slashes), not as escapes.
-///
-/// Finally, untermined strings result in a syntax error in ptxas, so we return `None` in that case.
+/// Consume a double-quoted string, stored verbatim: ptxas interprets no escape sequences (e.g.
+/// pragma `"noun\x72oll"` is rejected, and `.file` treats `\` as a path separator). An
+/// unterminated string is a ptxas syntax error, so it returns `None`.
 fn consume_string(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
     if src.get(start) != Some(&AsciiChar::QuotationMark) {
         return None;
@@ -1095,13 +1031,9 @@ fn consume_name(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
                 && let Some(comp_start) = consume_exact(pos, src, ascii("::"))
                 && let Some((comp_end, _)) = consume_followsyms(comp_start, src)
             {
-                // A `::`-qualified component inside a dot-prefixed segment
-                // of an instruction mnemonic, e.g. the `.L2::128B` of
-                // `ld.global.L2::128B.f32`. Consumed only when another
-                // component follows, mirroring the dotted-qualifier path
-                // below (ptxas cases 3 and 4); a `::` before any dot is
-                // not consumed (ptxas case 1: `s::t.async` is a syntax
-                // error near ':').
+                // A `::`-qualified component in a dotted mnemonic segment (`.L2::128B`), consumed
+                // only when another component follows (ptxas cases 3-4 below); a `::` before any
+                // dot is not consumed (case 1).
                 pos = comp_end;
             } else {
                 break;
@@ -1133,21 +1065,9 @@ fn consume_name(start: usize, src: &[AsciiChar]) -> Option<(usize, Token)> {
         return None;
     }
 
-    // A directive, selector, or modifier (dotted identifier).
-    //
-    // Though all dotted identifiers that appear in the PTX spec are ".[a-zA-Z0-9_]", experimenting
-    // with ptxas it appears that the lexer is tokenizing ".[a-zA-Z0-9_$]" as one thing. E.g.,
-    // "st.we$ak" yields error "unknown modifier '.we$ak'".
-    //
-    // Some interesting cases:
-    // 1. `s::t.async` yields "parsing error near ':': syntax error"
-    // 2. `st.asy::nc` yields "unknown modifier '.asy::nc'"
-    // 3. `st.async::` yields "parsing error near ':': syntax error"
-    // 4. `st.async::$` yields "parsing error near ':': syntax error"
-    // 5. `st.asy:nc` yields "parsing error near ':': syntax error"
-    //
-    // So it appears that if we see a dot (and only if we see a dot), we should try to consume a
-    // series of "[a-zA-Z0-9_$]" separated by "::".
+    // A dotted identifier: after a dot (only then), consume `[a-zA-Z0-9_$]+` runs joined by `::`,
+    // as ptxas does (`st.we$ak` -> unknown modifier `.we$ak`). ptxas cases: (1) `s::t.async`,
+    // (3) `st.async::`, (4) `st.async::$` are syntax errors; (2) `st.asy::nc` is one modifier.
     if c == AsciiChar::FullStop {
         let (mut pos, comp) = consume_followsyms(start + 1, src)?;
         let mut comps = vec![comp];
@@ -1354,10 +1274,8 @@ mod tests {
 
     #[test]
     fn test_binary_literal_invalid_digit_splits_token() {
-        // ptxas behavior: 0b101201 -> parses 0b101 (=5), then 201 is a separate token
-        // This causes a syntax error in ptxas because 201 is unexpected after a literal
-        //
-        // Our lexer should match: 0b101 is consumed as binary, 201 remains as decimal
+        // Like ptxas, 0b101201 lexes as binary 0b101 (=5) followed by a separate decimal 201
+        // token (a syntax error in ptxas, as 201 is unexpected after a literal).
         assert_eq!(
             lex("0b101201"),
             Ok(vec![sint("0b101", 5), sint("201", 201)])
@@ -1731,11 +1649,9 @@ mod tests {
 
     #[test]
     fn test_instruction_with_glued_double_colon_qualifier() {
-        // `tcgen05.wait::ld`/`::st` glue a qualifier directly onto the
-        // mnemonic segment (no `.` before it) - the trie resolves the full
-        // `wait::ld`/`wait::st` name to its own InstrKind, so the returned
-        // qualifier suffix is clean: no leftover "::ld"/"::st" text, only
-        // the trailing `.sync.aligned` modifiers.
+        // `tcgen05.wait::ld`/`::st` glue a qualifier onto the mnemonic segment; the trie
+        // resolves the full name to its own InstrKind, so the suffix holds only the trailing
+        // `.sync.aligned` modifiers, no leftover "::ld"/"::st".
         assert_eq!(
             lex("tcgen05.wait::ld.sync.aligned"),
             Ok(vec![ident("tcgen05.wait::ld.sync.aligned")])

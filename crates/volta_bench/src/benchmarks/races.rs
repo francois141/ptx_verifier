@@ -1,12 +1,6 @@
-//! FaialAA data-race benchmarks (Table 7): pre-fix (racy) and post-fix
-//! versions of OpenMM and Megatron-LM kernels.
-//!
-//! Scalar dimensions are baked into these PTX files (they were compiled
-//! from specialized sources); array extents here are sized generously and
-//! only serve bounds checking. The pre-fix PTX line counts match paper
-//! Table 7 exactly (94/132/1190/924/546), so the corpus is the paper's
-//! artifact. The three OpenMM kernels run as a single work group
-//! (grid (1,1,1); none of their PTX reads `%nctaid`).
+//! FaialAA data-race benchmarks (Table 7): pre-fix (racy) and post-fix OpenMM
+//! and Megatron-LM kernels. Scalar dims are baked into the PTX (line counts
+//! match Table 7); array extents only bound-check. OpenMM runs one CTA.
 
 use volta_analysis::eval::{AnalysisConfig, ParamValue};
 
@@ -52,18 +46,9 @@ fn pair_with(
     ]
 }
 
-/// `computeBucketPositions(unsigned int* bucketOffset)`: an exclusive-scan
-/// over bucket counts; the pre-fix version misses a barrier in the scan.
-///
-/// 64 threads is deliberate: `numBuckets = 1024` is baked into the .cu, and
-/// the pre-fix race is *cross-pass* (pass i+1's `posBuffer[tid]` store vs
-/// pass i's post-barrier `posBuffer[blockDim.x-1]` reads), so the outer
-/// loop must run more than once, i.e. blockDim.x < 1024 (here: 16 passes).
-/// The GPUVerify header's `--blockDim=1024` would run a single pass and
-/// mask the race. `bucketOffset` is read and written back over [0..1024)
-/// (inout); 1 << 20 is generous bounds slack. Dynamic shared is real
-/// (`.extern .shared posBuffer[]`) but touches only blockDim.x u32s =
-/// 256 bytes; 64 KiB is a generous uniform figure for this category.
+/// `computeBucketPositions` exclusive scan; pre-fix misses a barrier. The race
+/// is cross-pass, so blockDim.x = 64 < the baked `numBuckets = 1024` (16
+/// passes); GPUVerify's `--blockDim=1024` would run one pass and mask it.
 fn bucket_positions() -> AnalysisConfig {
     let mut config = AnalysisConfig::new((64, 1, 1));
     config.arrays = vec![u32_inout("bucketOffset", 0x1_0000_0000, 1 << 20)];
@@ -72,21 +57,9 @@ fn bucket_positions() -> AnalysisConfig {
     config
 }
 
-/// `computeRange(const int* data, int* range)` min/max reduction.
-///
-/// 64 threads: the .cu bakes `length = 1024`, and its GPUVerify header says
-/// `--blockDim=1024`, but the pre-fix missing barrier (between the
-/// `rangeBuffer[0]` reads and the `rangeBuffer[tid] = maximum` stores)
-/// races at any blockDim >= 2; 64 keeps the run cheap. The .cu's
-/// `getValue(v)` macro discards its argument in favor of the `SORT_KEY`
-/// module global, and nvcc elides the dead `data[index]` load entirely
-/// (param_0 is never `ld.param`ed), so the `data` array is an unread
-/// placeholder for the pointer param. Of the three `.global` keys the PTX
-/// loads, only `MAX_KEY` gets an (arbitrary) concrete value; `MIN_KEY` and
-/// `SORT_KEY` stay unset - they feed pure data values (never an address
-/// or branch), which a race check tolerates. `range` gets [0..2) written
-/// by thread 0 (output); extents are generous slack. Dynamic shared is
-/// real but rangeBuffer touches blockDim.x u32s = 256 bytes << 64 KiB.
+/// `computeRange` min/max reduction; the pre-fix missing barrier races at any
+/// blockDim >= 2 (64 keeps it cheap). `data` is never loaded; unset
+/// `MIN_KEY`/`SORT_KEY` feed only data values, which a race check tolerates.
 fn compute_range() -> AnalysisConfig {
     let mut config = AnalysisConfig::new((64, 1, 1));
     config.arrays = vec![
@@ -102,21 +75,9 @@ fn compute_range() -> AnalysisConfig {
     config
 }
 
-/// `computeRMSDPart1(posq, referencePos, particles, buffer)` with the
-/// particle count (`numParticles = 1024`) baked into the PTX. `particles`
-/// is an index array (`posq[particles[i]]`), so it holds concrete identity
-/// indices - Volta needs concrete addresses, and this is exactly the
-/// `M[x]` pattern the paper's FaialAA comparison discusses.
-///
-/// 64 threads: the GPUVerify header says `--blockDim=1024`, but the
-/// pre-fix race (`temp[thread] = value` racing the previous
-/// `reduceValue`'s post-barrier `temp[0]` reads) fires at any
-/// blockDim >= 2; 64 keeps the run cheap. Extents are generous slack:
-/// posq/refpos are float4 arrays read at identity indices [0..1024), i.e.
-/// f32 elements [0..4096+3); `buffer` is written only ([0..13), by thread
-/// 0; inout is conservative - OpenMM treats it as an accumulation
-/// buffer). Dynamic shared is real; `temp` touches blockDim.x f32s =
-/// 256 bytes << 64 KiB.
+/// `computeRMSDPart1` with `numParticles = 1024` baked; `particles` is a
+/// concrete identity index array (the paper's `M[x]` pattern). The pre-fix
+/// `temp[thread]` vs `temp[0]` race fires at any blockDim >= 2; 64 is cheap.
 fn reduce_value() -> AnalysisConfig {
     let mut config = AnalysisConfig::new((64, 1, 1));
     config.arrays = vec![
@@ -135,35 +96,9 @@ fn reduce_value() -> AnalysisConfig {
     config
 }
 
-/// `cuApplyLayerNorm(out, mean, invvar, vals, n1, n2, eps, gamma, beta,
-/// has_gamma, has_beta)`.
-///
-/// This Megatron fork is a "small flat test" specialization: the .cu bakes
-/// `N1_ROWS = 1`, `N2_COLS = 1`, and `BLK_X = 8`/`BLK_Y = 1` into the
-/// index math, and the PTX loads only params 0-3 and 6 (the four pointers
-/// and eps) - n1, n2, gamma, beta, has_gamma, and has_beta are declared
-/// but never read, so their config values are placeholders and the array
-/// extents (sized for the nominal N1 = 2, N2 = 1024 problem) are generous
-/// slack. CTA (0,0) touches only vals[0] (read) and out[0]/mean[0]/
-/// invvar[0] (written by thread (0,0)).
-///
-/// One warp per block (y = 1), for both versions - and exactly 32
-/// threads, because the Welford reduction uses full-mask
-/// `__shfl_sync(0xffffffff, ..)`, which needs all 32 lanes resident.
-/// Both compilations of this fork dereference an unassigned
-/// `__shared__ U* buf` on the `blockDim.y > 1` inter-warp reduction path,
-/// which nvcc compiles to `trap`; with y > 1 the first thread of warp 2
-/// traps before any race is reachable. One warp is also all the pre-fix
-/// race needs: thread (0,0) writes the `smu`/`sinv` shared broadcast
-/// values that every thread then reads with no barrier in between (the
-/// `__syncthreads()` the fix commit adds).
-///
-/// grid.y = 2 reflects the nominal one-CTA-per-row launch; `%nctaid.y` is
-/// read only as the row-loop stride, and with N1_ROWS = 1 baked any
-/// grid.y >= 1 gives CTA (0,0) exactly row 0. No dynamic shared: neither
-/// PTX has `.extern .shared` (`smu`/`sinv` are demoted static `.shared`
-/// f32s and `buf` a static shared pointer), so the interpreter would
-/// ignore any value here.
+/// `cuApplyLayerNorm` (flat-test fork: N1 = N2 = 1 baked; most params unread).
+/// Exactly one warp: full-mask shfl needs 32 lanes and y > 1 hits a `trap`;
+/// pre-fix races on `smu`/`sinv` broadcast with no barrier. No dyn. shared.
 fn layer_norm() -> AnalysisConfig {
     const N1: i64 = 2;
     const N2: i64 = 1024;
@@ -193,23 +128,9 @@ fn layer_norm() -> AnalysisConfig {
     config
 }
 
-/// `cuComputeGradInput(dout, input, mean, invvar, eps, gamma, grad_input)` -
-/// the .cu comments n1/n2/has_gamma out of the signature (7 params) and
-/// bakes `n1 = n2 = 8`, `has_gamma = 1` ("small param for flat test"; eps
-/// is also never `ld.param`ed, so `1e-5` is a placeholder).
-///
-/// grid.y = 1 << 20 is load-bearing: the PTX reads `%nctaid.y` as the
-/// grid-strided row-loop stride, so any grid.y > n1 = 8 makes CTA (0,0)
-/// process only row 0; huge documents the intent. The per-version
-/// `block_y` is the point of the pair: the kernel's shared reduction
-/// indexes `buf[2*threadIdx.x]`, ignoring threadIdx.y, so pre-fix with
-/// y = 4 the four y-threads of each x collide on one slot (the reported
-/// race); the fixed kernel keeps the flat-1D layout and is only y-safe at
-/// y = 1, the layout the fix commit assumes. Extents are generous slack:
-/// row 0 means dout/input/gamma are read on [0..8), mean/invvar on
-/// [0..1), and grad_input written on [0..8). Dynamic shared is real
-/// (`.extern .shared buf[]`) but touches 2*blockDim.x f32s = 256 bytes
-/// << 64 KiB.
+/// `cuComputeGradInput` (n1 = n2 = 8 baked). Huge grid.y makes CTA (0,0) do
+/// row 0 only. `block_y` is the point: `buf[2*threadIdx.x]` ignores y, so
+/// pre-fix at y = 4 collides (the race); the fix is y-safe only at y = 1.
 fn grad_input(block_y: u32) -> AnalysisConfig {
     let mut config = AnalysisConfig::new((32, block_y, 1));
     config.grid_dim = (1, 1 << 20, 1);

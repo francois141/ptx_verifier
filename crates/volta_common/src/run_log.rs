@@ -1,12 +1,6 @@
-//! Per-run log file.
-//!
-//! Every invocation of a Volta binary gets its own timestamped file under
-//! the log directory (default `./volta-logs`), recording the command line
-//! and a one-line summary of the outcome - independent of the `logging`
-//! feature, so it works in a plain `cargo install` build. Binaries built
-//! with their `logging` feature additionally mirror the `log` crate's
-//! trace/debug/info/warn output into the same file via [`RunLog::tee`]
-//! (stderr output is unaffected).
+//! Per-run log file: each Volta binary invocation gets a timestamped file under
+//! the log directory recording argv and an outcome summary, feature-independent;
+//! `logging`-feature builds also mirror `log` output into it via [`RunLog::tee`].
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -19,12 +13,9 @@ pub struct RunLog {
 }
 
 impl RunLog {
-    /// Create `<dir>/<unix-seconds>-<pid>-<command>.log` and write the argv
-    /// line. The pid component keeps two runs in the same wall-clock second
-    /// (scripted loops, parallel invocations) from truncating each other's
-    /// log. A missing/unwritable log directory should never stop an
-    /// analysis from running, so failures here just disable logging with a
-    /// warning.
+    /// Create `<dir>/<unix-seconds>-<pid>-<command>.log` (the pid keeps same-second
+    /// runs apart) and write the argv line. Failures only disable logging with a
+    /// warning: a bad log directory must never stop an analysis.
     pub fn open(dir: &Path, command: &str, disabled: bool) -> Self {
         if disabled {
             return Self {

@@ -1,61 +1,6 @@
-//! Translates the arithmetic + Exp + Max/Min fragment of `ExprArena` into
-//! SMT-LIB2 text for Z3 as a **direct semantic image**: every node maps
-//! to its defining SMT term, and all algebraic reasoning - commutativity,
-//! associativity, cancellation, distribution, max/min case analysis - is
-//! left to the solver. This is deliberate: the backend exists to measure
-//! what an off-the-shelf solver can do against `canon` (the paper's
-//! section 6.5 comparison), so the translation must not pre-digest the
-//! query. An earlier design canonicalized aggressively (sorted multisets,
-//! structural interning, opaque max/min atoms, a short-circuit for
-//! structurally identical sides); it made many corpus queries never reach
-//! Z3 at all, measuring the translator instead of the solver, and its
-//! opaque atoms were both unsound to key naively and incomplete however
-//! keyed. `max`/`min` render as `ite` over real comparisons - Z3's native
-//! case-split machinery, exactly the treatment the paper waves at
-//! ("handled by case splits") - which makes sat verdicts genuine
-//! countermodels for exp-free queries.
-//!
-//! What the translation still owns (fidelity and transport, not
-//! reasoning):
-//!
-//! - **Exact literals**: a `RealConst` renders as its exact rational
-//!   (`p/q` - the arena stores exact rationals, the same reading `canon`
-//!   and the numeric oracle use); shortest-decimal rendering of the old
-//!   f64 constants would silently reinterpret `0.1f64` as 1/10 and let
-//!   the backends reach opposite verdicts on the same VC. The infinities
-//!   have no SMT real image and are refused loudly.
-//! - **DAG sharing**: `ExprArena` is a DAG (the softmax row-max is
-//!   shared by every term), so each compound node is bound to a `let`
-//!   variable once per side, memoized by `ExprId`. Text stays linear in
-//!   the arena; z3 parses 100k-deep nested lets instantly (flat
-//!   `define-fun` chains do not - measured, macro expansion chokes).
-//! - **Namespaces**: generated names (`|tN|` binders, `e`, `uexp`, `sN`
-//!   machine symbols) and user-controlled names must never collide -
-//!   `|t0|` and `t0` are the *same* SMT symbol, so an unprefixed user
-//!   symbol named `t0` would be captured by a let binding and corrupt
-//!   the query. The rendered names are an injection of the typed
-//!   `SymbolRef` namespaces: `sym:` parameters as `|p!name|`, input
-//!   elements as `|e!array[index]|`, machine symbols as `sN`.
-//! - **The exponential** ([`ExpMode`]): the default renders `Exp(a)` as
-//!   `(^ e a)` with `e` a free constant strictly bounded between two
-//!   rationals bracketing Euler's number (defining `e` as a rational let
-//!   z3 prove `exp(1)` equal to it - a false EQUIVALENT); the
-//!   [`ExpMode::AdditionAxiom`] mode renders `(uexp a)` with the
-//!   quantified addition law, the paper's "with axiom" baseline that
-//!   drives Z3 into an unbounded instantiation loop on softmax VCs.
-//!
-//! One semantic divergence to know: SMT-LIB real division is total but
-//! underspecified at zero, so identities like `x/x = 1` that hold in
-//! `canon`'s rational-field model are falsifiable here (countermodel
-//! `x = 0`) - the direct encoding inherits SMT's semantics rather than
-//! papering over them. Corpus VCs only divide inside exp-laden softmax
-//! terms, where the verdict is `unknown` regardless.
-//!
-//! Ops with no real-arithmetic image in this encoding (`Select`,
-//! comparisons, bitwise ops, `Rem`, `Log`, `Sqrt`, `Abs`,
-//! `SymbolicRead`, ...) are refused as `Unsupported` rather than modeled
-//! unsoundly. (`Select` and comparisons could be encoded via `ite`/Bool
-//! like max/min - unimplemented because no corpus VC contains them.)
+//! Translates the arithmetic + Exp + Max/Min fragment of `ExprArena` to SMT-LIB2 as a *direct
+//! semantic image*: no canonicalization, all algebra left to Z3, so timings measure the solver.
+//! Caveat: SMT division is underspecified at zero, so `x/x = 1` is falsifiable (unlike `canon`).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -65,27 +10,21 @@ use volta_analysis::symbolic::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 #[error("unsupported by the Z3 backend: {0}")]
 pub struct Unsupported(pub String);
 
-/// How `Exp` nodes are encoded for the solver (see the module docs).
+/// How `Exp` nodes are encoded for the solver; the paper's section 6.5 baselines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExpMode {
-    /// `(^ e a)` with `e` a free constant strictly bounded around
-    /// Euler's number: sound, and z3 answers `unknown` on the exp
-    /// identities - the paper's no-intervention baseline.
+    /// `(^ e a)` with `e` a free constant strictly bounded around Euler's number (a rational
+    /// `e` proved false equivalences); z3 answers `unknown` on exp identities.
     #[default]
     PowerBounded,
-    /// Uninterpreted `(uexp a)` plus the quantified addition law
-    /// `forall x y. uexp(x)*uexp(y) = uexp(x+y)` - the paper's
-    /// "with axiom" baseline, which drives z3 into an unbounded
-    /// E-matching loop on softmax-shaped VCs (reported as Timeout).
+    /// Uninterpreted `(uexp a)` plus `forall x y. uexp(x)*uexp(y) = uexp(x+y)` - the paper's
+    /// "with axiom" baseline; z3 E-matches without bound on softmax VCs (reported as Timeout).
     AdditionAxiom,
 }
 
-/// Accumulates declared symbols and `let` bindings for one query. The
-/// reference and optimized sides of one VC element share a `Builder`, so
-/// a shared input symbol (e.g. both kernels reading `in[5]`) resolves to
-/// the same declared constant. `bindings` is filled in dependency order
-/// (a binding's definition only references earlier bindings), so wrapping
-/// the final query body in the bindings in order is always well-scoped.
+/// Declared symbols and `let` bindings for one query, shared by both sides of a VC element so
+/// shared inputs resolve to one constant. `bindings` is in dependency order, so wrapping the
+/// body in them in order is always well-scoped.
 #[derive(Default)]
 pub struct Builder {
     /// Names needing `(declare-const _ Real)`, sorted for deterministic
@@ -122,7 +61,7 @@ impl Builder {
 
     /// SMT-LIB2 preamble: every declared symbol as a `declare-const`,
     /// plus - when the query uses `Exp` - the encoding of the exponential
-    /// per `exp_mode` (see the module docs).
+    /// per `exp_mode` (see [`ExpMode`]).
     pub fn preamble(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
@@ -148,12 +87,9 @@ impl Builder {
         out
     }
 
-    /// Wrap `body` in every accumulated `let` binding, first binding
-    /// outermost - so each definition's free variables are already in
-    /// scope. Built linearly (prefixes, body, closing parens): re-copying
-    /// the accumulated string per binding would be quadratic in the query
-    /// size, and attention-scale queries have tens of thousands of
-    /// bindings.
+    /// Wrap `body` in every `let` binding, first outermost, so each definition's free variables
+    /// are in scope. Built linearly: re-copying per binding would be quadratic, and attention
+    /// queries have tens of thousands of bindings (nested lets parse fast; `define-fun` don't).
     pub fn wrap_in_lets(&self, body: &str) -> String {
         let bindings_len: usize = self
             .bindings
@@ -174,11 +110,9 @@ impl Builder {
     }
 }
 
-/// Quote a launch-config `sym:` parameter into the reserved `p!`
-/// namespace. The prefix keeps user-controlled names disjoint from every
-/// generated name (`tN` binders, `e`, `uexp`, `sN`) and from the `e!`
-/// element namespace; the escaping keeps the mapping injective (z3
-/// accepts `\|`/`\\` inside quoted symbols).
+/// Quote a launch-config `sym:` parameter into the reserved `p!` namespace, disjoint from
+/// generated names (`|tN|` = `tN`, `e`, `uexp`, `sN`) and `e!` elements; escaping keeps it
+/// injective (z3 accepts `\|`/`\\` inside quoted symbols).
 fn quote_param(name: &str) -> String {
     format!("|p!{}|", escape(name))
 }
@@ -194,10 +128,9 @@ fn escape(name: &str) -> String {
     name.replace('\\', "\\\\").replace('|', "\\|")
 }
 
-/// Exact SMT real literal for a `Real` constant: the rational rendered as
-/// an integer or an exact fraction, negation outside (see the module docs
-/// for why not the shortest decimal). The infinities have no real image
-/// and are refused loudly, exactly as non-finite f64 constants were.
+/// Exact SMT real literal for a `Real` (integer or exact fraction, negation outside), the same
+/// reading as `canon` and the oracle; a shortest decimal could flip verdicts. Infinities have no
+/// real image and are refused loudly.
 fn real_literal(v: &Real) -> Result<String, Unsupported> {
     let q = match v.repr() {
         RealRepr::NegInf | RealRepr::PosInf => {
@@ -238,13 +171,9 @@ fn int_literal(v: i64) -> String {
 
 type Memo = HashMap<ExprId, String>;
 
-/// Translate one expression to its rendered term (a literal, a declared
-/// symbol, or the `|tN|` binder of its definition). `memo` caches this
-/// arena's `ExprId -> term` mapping, so a node shared by many parents is
-/// bound once - the query's size is linear in the arena, not the tree
-/// expansion. Guarded by `stacker::maybe_grow` like every other deep
-/// recursion over expression chains in this workspace: an accumulator
-/// loop of N iterations is an N-deep spine.
+/// Translate one expression to its term (literal, declared symbol, or `|tN|` binder). `memo`
+/// binds shared nodes once, keeping the query linear in the arena; `stacker`-guarded because an
+/// N-iteration accumulator is an N-deep spine.
 fn translate(
     bld: &mut Builder,
     memo: &mut Memo,
@@ -341,10 +270,8 @@ fn describe(node: &ExprNode) -> String {
     s.split([' ', '{', '(']).next().unwrap_or(&s).to_string()
 }
 
-/// Translate a whole root expression, returning its rendered term text.
-/// Starts a fresh per-arena memo; use one call per side (reference and
-/// optimized) sharing the same `Builder`, so launch-config symbols
-/// resolve to the same declared constants across the two sides.
+/// Translate a whole root expression with a fresh memo. Use one call per side (reference and
+/// optimized) on the same `Builder`, so launch-config symbols resolve to the same constants.
 pub fn translate_root(
     bld: &mut Builder,
     arena: &ExprArena,

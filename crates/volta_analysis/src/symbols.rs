@@ -1,7 +1,5 @@
-//! Symbol table for PTX lowering
-//!
-//! This module provides the symbol table that tracks register declarations,
-//! labels, parameters, and shared memory allocations during lowering.
+//! Symbol table for PTX lowering: tracks register declarations, labels,
+//! parameters, and shared memory allocations.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -80,16 +78,9 @@ impl fmt::Display for ParamId {
     }
 }
 
-/// Identifies one `{}` block's label-declaration scope. PTX ISA scopes
-/// label declarations - and references to them - to the enclosing block:
-/// two labels of the same name in unrelated (e.g. sibling) blocks are
-/// independent declarations, not a redeclaration, and a label is only
-/// visible from within its own scope or one nested inside it. This is the
-/// one symbol kind Volta gives real block scoping to; every other kind
-/// (registers, params, shared/local/global vars) still shares one flat,
-/// whole-kernel namespace via `SymbolTable::reserve_name` - labels are the
-/// only kind observed in practice (nvcc's per-block inline-asm spin-wait
-/// idiom, e.g. two independent `{ waitLoop: ...; }` blocks) to need it.
+/// One `{}` block's label scope: PTX scopes labels to their block, so same-named
+/// labels in sibling blocks are independent (nvcc's per-block spin-wait idiom).
+/// Labels are the only block-scoped kind; all others share `SymbolTable::reserve_name`.
 #[id_type]
 pub struct LabelScopeId(pub u32);
 
@@ -259,13 +250,9 @@ pub struct SharedMemInfo {
     pub is_extern: bool,
 }
 
-/// A `.extern .shared` declaration recorded during collection, before it can
-/// be placed. All extern shared names alias the one dynamic-shared window,
-/// and the CUDA ABI bases that window *after* every static `.shared`
-/// allocation - which are not all known yet when the extern is declared
-/// (module-level declarations are collected before function-body ones). So
-/// declaration only records the request; `finalize_shared_layout` assigns
-/// the offset.
+/// A `.extern .shared` declaration awaiting placement: extern names alias the
+/// dynamic window the CUDA ABI bases *after* all static `.shared` allocations,
+/// not all known yet, so `finalize_shared_layout` assigns the offset later.
 #[derive(Debug, Clone)]
 struct PendingExternShared {
     name: String,
@@ -306,21 +293,13 @@ pub struct GlobalVarInfo {
     pub element_ty: ScalarType,
 }
 
-/// Base address for module-scope `.global` variables. Analysis configs
-/// must not place input/output arrays overlapping the window these occupy
-/// (`[MODULE_GLOBAL_BASE, MODULE_GLOBAL_BASE + module_global_size())`);
-/// `Interpreter::new` rejects configs that do.
+/// Base address for module-scope `.global` variables; `Interpreter::new` rejects
+/// configs whose arrays overlap `[MODULE_GLOBAL_BASE, + module_global_size())`.
 pub const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;
 
-/// Round `offset` up to the next multiple of `alignment` (a power of two),
-/// or `None` when the rounded offset overflows u64 (checked arithmetic,
-/// release-active: packing must reject hostile sizes loudly, not wrap).
-///
-/// Natural alignment of every lowering-assigned address rests on this:
-/// the `declare_*` functions raise the alignment to at least the element
-/// size before calling, so shared/local packing and module-global
-/// assignment (from the naturally-aligned `MODULE_GLOBAL_BASE`) always
-/// yield naturally aligned, `.align`-honoring addresses.
+/// Round `offset` up to a multiple of `alignment` (a power of two), `None` on
+/// u64 overflow (release-active). Callers pass at least the element size, so
+/// every lowering-assigned address is naturally aligned.
 fn align_up(offset: u64, alignment: u64) -> Option<u64> {
     // PTX requires `.align` values to be powers of two (and every scalar
     // element size is one); the bit trick below is wrong otherwise.
@@ -332,11 +311,9 @@ fn align_up(offset: u64, alignment: u64) -> Option<u64> {
     Some(offset.checked_add(alignment - 1)? & !(alignment - 1))
 }
 
-/// The loud rejection for a declaration whose byte size or packed
-/// placement overflows the u64 address space. Every declare-time sum and
-/// product below is checked against this (release-active): a hostile
-/// declaration like `.shared .u32 A[0x4000000000000001]` would otherwise
-/// wrap to byte size 4 and be silently mismodeled.
+/// The loud rejection for a declaration whose size or placement overflows u64
+/// (release-active): `.shared .u32 A[0x4000000000000001]` would otherwise wrap
+/// to byte size 4 and be silently mismodeled.
 fn size_overflow(kind: &str, name: &str) -> LowerError {
     LowerError::VariableSizeOverflow {
         what: format!("{} '{}'", kind, name),
@@ -434,10 +411,8 @@ impl SymbolTable {
         Ok(())
     }
 
-    /// Declare a register or range of registers
-    ///
-    /// For parameterized registers like `%r<100>`, this declares %r0 through %r99.
-    /// Returns the RegId of the first register declared.
+    /// Declare a register or range (`%r<100>` declares %r0 through %r99),
+    /// returning the RegId of the first one.
     pub fn declare_register(
         &mut self,
         base_name: &str,
@@ -513,14 +488,9 @@ impl SymbolTable {
         self.label_scope_parents.push(Some(parent))
     }
 
-    /// Declare a label at the given PC, within `scope`. Cross-kind name
-    /// collisions (vs. a register/param/shared/etc.) still use the one
-    /// flat, whole-kernel namespace (`reserve_name`) every other symbol
-    /// kind shares - only label-vs-label collisions get real block
-    /// scoping: an identical name is a redeclaration only if it's already
-    /// visible from `scope` (declared in `scope` itself or an enclosing
-    /// one); a same-named label in a sibling or already-exited block is an
-    /// independent declaration.
+    /// Declare a label at the given PC within `scope`. Cross-kind collisions use
+    /// the flat `reserve_name` namespace; a same-named label is a redeclaration
+    /// only if visible from `scope` (declared there or in an enclosing scope).
     pub fn declare_label(
         &mut self,
         name: &str,
@@ -560,13 +530,9 @@ impl SymbolTable {
         Ok(())
     }
 
-    /// Declare shared memory variable.
-    ///
-    /// Static variables are packed at increasing offsets in declaration
-    /// order. Extern (`.extern .shared`) variables are only *recorded* here:
-    /// they all alias the one dynamic-shared window, which the CUDA ABI
-    /// bases after every static allocation, so their offset cannot be known
-    /// until `finalize_shared_layout` runs.
+    /// Declare a shared memory variable: statics are packed in declaration
+    /// order; `.extern .shared` ones are only recorded, since their window's
+    /// offset is unknown until `finalize_shared_layout` runs.
     pub fn declare_shared(
         &mut self,
         name: &str,
@@ -621,15 +587,9 @@ impl SymbolTable {
         Ok(())
     }
 
-    /// Place the `.extern .shared` window and enter the finalized state.
-    ///
-    /// All extern shared declarations alias one dynamic window that the CUDA
-    /// ABI bases immediately after every static allocation, aligned to at
-    /// least 16 bytes and to every extern's declared alignment. Must be
-    /// called exactly once, after all shared declarations are collected and
-    /// before any shared symbol is resolved to an address; declaring shared
-    /// variables after this call panics. Errors when the window's aligned
-    /// base overflows the address space (hostile static sizes).
+    /// Place the `.extern .shared` window after all static allocations (aligned
+    /// to 16 and every extern's alignment). Call exactly once, after collection and
+    /// before resolving shared addresses; errors if the base overflows u64.
     pub fn finalize_shared_layout(&mut self) -> LowerResult<()> {
         let pending = match &mut self.extern_layout {
             ExternSharedLayout::Collecting(pending) => std::mem::take(pending),
@@ -665,12 +625,9 @@ impl SymbolTable {
         Ok(())
     }
 
-    /// Base offset of the dynamic (`.extern .shared`) window, or `None` if
-    /// the kernel declares no extern shared memory. The window spans from
-    /// this base for however many dynamic shared bytes the launch supplies.
-    ///
-    /// Panics if `finalize_shared_layout` has not run: before then no
-    /// placement exists to report.
+    /// Base offset of the dynamic (`.extern .shared`) window, or `None` if the
+    /// kernel declares no extern shared memory. Panics if
+    /// `finalize_shared_layout` has not run.
     pub fn extern_shared_base(&self) -> Option<u64> {
         match self.extern_layout {
             ExternSharedLayout::Finalized { extern_base } => {
@@ -738,10 +695,8 @@ impl SymbolTable {
         let end = offset
             .checked_add(size_bytes)
             .ok_or_else(|| size_overflow("global variable", name))?;
-        // The variable must also fit above the reserved base:
-        // `MODULE_GLOBAL_BASE + end` is exactly the window end
-        // `Interpreter::new` computes (and the region end `push_region`
-        // re-checks), so its representability is established here once.
+        // The variable must also fit above the reserved base: this establishes
+        // once that the window end `Interpreter::new` computes is representable.
         if MODULE_GLOBAL_BASE.checked_add(end).is_none() {
             return Err(size_overflow("global variable", name));
         }
@@ -829,10 +784,8 @@ impl SymbolTable {
         self.global_vars.values()
     }
 
-    /// Bytes of the reserved module-global window in use: the module-scope
-    /// `.global` variables occupy `[MODULE_GLOBAL_BASE, MODULE_GLOBAL_BASE
-    /// + module_global_size())`. The window end is representable in u64
-    /// (`declare_global_var` checks it for every variable it places).
+    /// Bytes of the module-global window in use, starting at `MODULE_GLOBAL_BASE`;
+    /// the window end is representable in u64 (`declare_global_var` checks it).
     pub fn module_global_size(&self) -> u64 {
         self.module_global_size
     }
@@ -865,11 +818,9 @@ impl SymbolTable {
         self.params_ordered.get(id)
     }
 
-    /// Get total *static* shared memory size. The dynamic (`.extern
-    /// .shared`) window is not included: it begins at `extern_shared_base()`
-    /// and its size is only known at launch (dynamic shared bytes), so any
-    /// capacity accounting for a kernel with extern shared memory must use
-    /// `extern_shared_base() + dynamic bytes` as the end of shared memory.
+    /// Total *static* shared memory size, excluding the dynamic window: with
+    /// extern shared memory, the end of shared memory is
+    /// `extern_shared_base() + dynamic bytes`.
     pub fn shared_mem_size(&self) -> u64 {
         self.shared_mem_size
     }
@@ -1030,10 +981,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// The bug this scoping fix addresses: two sibling `{}` blocks (real
-    /// PTX, e.g. nvcc's per-buffer `mbarrier.try_wait.parity` spin-wait
-    /// idiom) legally reuse the same label name - not a redeclaration,
-    /// since neither is visible from the other's scope.
+    /// Two sibling `{}` blocks (nvcc's per-buffer `mbarrier.try_wait.parity`
+    /// spin-wait idiom) legally reuse a label name: not a redeclaration.
     #[test]
     fn test_sibling_scopes_may_reuse_a_label_name() {
         use id_collections::Id;
@@ -1074,9 +1023,7 @@ mod tests {
     }
 
     /// A label declared inside a nested block is not visible from the
-    /// enclosing (parent) scope - only inward visibility (enclosing →
-    /// nested) is real lexical scoping; outward would let a name declared
-    /// in one block leak into unrelated code around it.
+    /// enclosing scope: visibility only flows inward.
     #[test]
     fn test_label_not_visible_outside_its_own_scope() {
         use id_collections::Id;
@@ -1139,10 +1086,8 @@ mod tests {
     // Hostile declaration sizes: every packing sum/product is checked
     // =========================================================================
 
-    /// The review's shape: `.shared .u32 A[0x4000000000000001]` has a byte
-    /// size of 2^64 + 4, which release-wraps to 4. Each packer entry point
-    /// must reject the overflow loudly instead (checked arithmetic is
-    /// release-active).
+    /// `.shared .u32 A[0x4000000000000001]` (byte size 2^64 + 4, release-wraps
+    /// to 4): every packer entry point must reject the overflow loudly.
     #[test]
     fn test_hostile_element_count_rejected_per_space() {
         let huge = 0x4000_0000_0000_0001; // * 4 bytes wraps u64 to 4
@@ -1275,12 +1220,9 @@ mod tests {
         assert_eq!(symbols.extern_shared_base(), Some(16));
     }
 
-    /// Packing is naturally aligned in every variable space: after an
-    /// odd-sized `.b8` variable, wider variables still land on multiples of
-    /// their element size (the `declare_*` functions raise the alignment to
-    /// at least the element size before `align_up`). This is what lets the
-    /// evaluator's per-access natural-alignment checks trust
-    /// lowering-assigned shared/local/module-global addresses.
+    /// Packing is naturally aligned in every variable space: after an odd-sized
+    /// `.b8` variable, wider ones still land on multiples of their element size
+    /// (the evaluator's alignment checks trust lowering-assigned addresses).
     #[test]
     fn test_var_packing_is_naturally_aligned() {
         let mut symbols = SymbolTable::new();

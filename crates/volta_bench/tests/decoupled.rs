@@ -1,9 +1,6 @@
-//! End-to-end check of the phase-decoupled workflow: `generate` then
-//! `solve` must reach exactly the verdict the one-shot pipeline reaches,
-//! from a dump plus manifest that `generate` really wrote. Runs the
-//! smallest real equivalence benchmark, so this exercises the actual
-//! kernels, symbolic execution, dump format, manifest, and decision
-//! procedure (one iteration each - the timing loop is not under test).
+//! End-to-end check of the phase-decoupled workflow: `generate` then `solve` must
+//! reach the one-shot pipeline's verdict from a real dump + manifest, on the smallest
+//! real equivalence benchmark (one iteration each; timing is not under test).
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -105,10 +102,8 @@ fn generate_then_solve_matches_the_one_shot_verdict() {
     assert!(record.get("dump_load_secs").is_some());
     assert!(record.get("vc_gen_iters_secs").is_none());
 
-    // A race-check benchmark under solve: skipped, its verdict belongs
-    // to generate (where it runs fully - covered by the smoke runs; the
-    // interpreter work is identical to the one-shot path by
-    // construction, as both call the same generation phase).
+    // A race-check benchmark under solve is skipped: its verdict belongs to
+    // generate, which shares the one-shot path's generation phase.
     let race = benchmark("Red-5 (racy)");
     let items = runner(Some(vcs_dir))
         .solve_suite(std::slice::from_ref(&race), SolveBackend::Decision)
@@ -141,10 +136,8 @@ const TINY_PTX: &str = "\
 }
 ";
 
-/// A failed regeneration must not leave an older run's dump behind: a
-/// later `solve` would silently solve the pre-failure VCs. Sequence
-/// under test: generate ok -> generate fails (forced via a bad
-/// kernels-dir) -> the stale dump file and its manifest entry are gone
+/// A failed regeneration must not leave a stale dump for `solve` to silently use:
+/// generate ok -> generate fails (bad kernels-dir) -> dump and manifest entry gone
 /// -> solve fails loudly, naming `generate`.
 #[test]
 fn failed_regeneration_removes_the_stale_dump() {
