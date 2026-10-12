@@ -7,6 +7,7 @@
 //! must be concrete (the structured-CTA assumption).
 
 pub mod arithm;
+pub mod async_bulk;
 pub mod config;
 pub mod error;
 pub mod float_bits;

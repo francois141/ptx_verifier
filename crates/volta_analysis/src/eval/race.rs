@@ -30,7 +30,7 @@
 //! destination straight after an `mbarrier` wait and never fences. What such
 //! an access does need is for the copy to have *completed*: `async_locks`
 //! keeps a bulk copy's destination locked from issue until a waiter observes
-//! the tracking mbarrier's phase (`eval::interp`'s `InflightBulkCopy`), so a
+//! the tracking mbarrier's phase (`eval::async_bulk`'s `InflightBulkCopy`), so a
 //! read that skips the wait is still caught - as an in-flight-copy hazard.
 //! Non-bulk `cp.async` is a generic-proxy operation (PTX ISA 9.7.10.28.3)
 //! and so is a generic read of its destination, so no proxy question
