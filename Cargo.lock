@@ -763,9 +763,8 @@ dependencies = [
  "rug",
  "serde",
  "stacker",
- "volta_analysis",
  "volta_expr",
- "volta_frontend",
+ "volta_spec",
 ]
 
 [[package]]
