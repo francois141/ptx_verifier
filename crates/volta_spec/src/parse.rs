@@ -8,7 +8,7 @@ use volta_common::Span;
 use volta_common::report::Locate;
 use volta_expr::spec::{Bound, IndexExpr, ReduceOp, SpecExpr};
 
-use crate::ast::{ArrayDecl, DimDecl, OutputDecl, ParsedSpec};
+use crate::ast::{ArrayDecl, DimDecl, OutputDecl, ParamDecl, ParsedSpec};
 use crate::lex::{Lexer, Token, TokenKind};
 
 #[derive(Debug)]
@@ -168,6 +168,15 @@ impl Parser {
                         span,
                     });
                 }
+                TokenKind::Ident(name) if name == "param" => {
+                    self.bump();
+                    let (param_name, span) = self.eat_ident()?;
+                    self.expect(TokenKind::Semicolon, "';'")?;
+                    spec.params.push(ParamDecl {
+                        name: param_name,
+                        span,
+                    });
+                }
                 TokenKind::Ident(name) if name == "array" => {
                     self.bump();
                     spec.arrays.push(self.parse_array_decl()?);
@@ -175,7 +184,9 @@ impl Parser {
                 TokenKind::Ident(_) => {
                     spec.outputs.push(self.parse_output_decl()?);
                 }
-                _ => return Err(self.unexpected("'dim', 'array', or an output equation")),
+                _ => {
+                    return Err(self.unexpected("'dim', 'param', 'array', or an output equation"));
+                }
             }
         }
         Ok(spec)
@@ -662,5 +673,12 @@ mod tests {
     fn missing_semicolon_is_reported() {
         let err = parse_spec("dim N array A[N];").unwrap_err();
         assert!(matches!(err.error, ParseErrorKind::UnexpectedToken { .. }));
+    }
+
+    #[test]
+    fn param_declarations_are_collected() {
+        let spec = parse_spec("param alpha; dim N; array C[N]; C[i] = alpha * C[i];").unwrap();
+        assert_eq!(spec.params.len(), 1);
+        assert_eq!(spec.params[0].name, "alpha");
     }
 }

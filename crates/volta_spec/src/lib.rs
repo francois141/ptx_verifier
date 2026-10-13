@@ -7,6 +7,6 @@ pub mod instantiate;
 pub mod lex;
 pub mod parse;
 
-pub use ast::{ArrayDecl, DimDecl, OutputDecl, ParsedSpec};
+pub use ast::{ArrayDecl, DimDecl, OutputDecl, ParamDecl, ParsedSpec};
 pub use instantiate::{InstantiateErrorKind, instantiate};
 pub use parse::{ParseError, ParseErrorKind, parse_spec};

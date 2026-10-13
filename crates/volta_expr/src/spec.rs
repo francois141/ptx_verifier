@@ -2,7 +2,7 @@
 //! [`SymbolicOutputs`] with the same [`ExprArena`] constructors the interpreter uses, so a
 //! kernel checks against a spec like against a second kernel. Bounds/indices are concrete.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::outputs::SymbolicOutputs;
@@ -278,13 +278,14 @@ pub struct OutputSpec {
     pub body: SpecExpr,
 }
 
-/// The concrete context a spec unfolds under: named loop bounds (e.g. `K`
-/// in matmul) and the shapes of every array a spec's `SpecExpr::Index`
-/// nodes read.
+/// The concrete context a spec unfolds under: named loop bounds (e.g. `K` in matmul), the
+/// shapes of every array a `SpecExpr::Index` reads, and the scalar parameters (symbolic,
+/// matched to a kernel's `SymFloat` params by name).
 #[derive(Debug, Clone, Default)]
 pub struct SpecEnv {
     pub dims: HashMap<String, u64>,
     pub arrays: HashMap<String, Shape>,
+    pub params: HashSet<String>,
 }
 
 /// Errors from unfolding a spec: all boundary violations in the spec
@@ -580,6 +581,9 @@ fn eval(
     match expr {
         SpecExpr::Int(v) => Ok(arena.int(*v)),
         SpecExpr::Real(v) => Ok(arena.float_from_f64(*v)?),
+        SpecExpr::Var(name) if env.params.contains(name) && !bindings.contains_key(name) => {
+            Ok(arena.param_symbol(name))
+        }
         SpecExpr::Var(name) => {
             let v = resolve_var(name, env, bindings)?;
             Ok(arena.int(v as i64))
@@ -715,6 +719,7 @@ mod tests {
                 ("A".to_string(), Shape::new(vec![2, 3])),
                 ("B".to_string(), Shape::new(vec![3, 2])),
             ]),
+            ..SpecEnv::default()
         }
     }
 
@@ -740,6 +745,7 @@ mod tests {
         let env = SpecEnv {
             dims: HashMap::new(),
             arrays: HashMap::from([("A".to_string(), Shape::new(vec![1, 1]))]),
+            ..SpecEnv::default()
         };
         assert!(matches!(
             unfold(&specs, &env, 0),
@@ -759,6 +765,7 @@ mod tests {
         let env = SpecEnv {
             dims: HashMap::new(),
             arrays: HashMap::from([("A".to_string(), Shape::new(vec![3]))]),
+            ..SpecEnv::default()
         };
         assert!(matches!(
             unfold(&specs, &env, 0),
@@ -786,6 +793,7 @@ mod tests {
         let env = SpecEnv {
             dims: HashMap::new(),
             arrays: HashMap::from([("A".to_string(), Shape::new(vec![1]))]),
+            ..SpecEnv::default()
         };
         let output = unfold(&specs, &env, 0).unwrap();
         let (_, elems) = &output.outputs[0];
@@ -815,6 +823,7 @@ mod tests {
         let env = SpecEnv {
             dims: HashMap::from([("N".to_string(), 3)]),
             arrays: HashMap::from([("A".to_string(), Shape::new(vec![2, 3]))]),
+            ..SpecEnv::default()
         };
         let output = unfold(&specs, &env, 0).unwrap();
         let (_, elems) = &output.outputs[0];

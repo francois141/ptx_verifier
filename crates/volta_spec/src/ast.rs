@@ -13,6 +13,14 @@ pub struct DimDecl {
     pub span: Span,
 }
 
+/// A `param NAME;` declaration: a symbolic scalar, matched to a kernel's
+/// symbolic float parameter of the same name (e.g. GEMM's `alpha`).
+#[derive(Debug, Clone)]
+pub struct ParamDecl {
+    pub name: String,
+    pub span: Span,
+}
+
 /// An `array NAME[dim, ...];` declaration: an array's shape, given as a
 /// list of named dims (resolved to a concrete `Shape` at instantiation).
 #[derive(Debug, Clone)]
@@ -39,6 +47,7 @@ pub struct OutputDecl {
 #[derive(Debug, Clone, Default)]
 pub struct ParsedSpec {
     pub dims: Vec<DimDecl>,
+    pub params: Vec<ParamDecl>,
     pub arrays: Vec<ArrayDecl>,
     pub outputs: Vec<OutputDecl>,
 }

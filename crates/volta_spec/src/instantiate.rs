@@ -2,7 +2,7 @@
 //! `(SpecEnv, Vec<OutputSpec>)` pair `volta_expr::spec::unfold` needs, given a value
 //! for every declared `dim`. Separate from parsing so one parsed spec serves many sizes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use volta_expr::spec::{OutputSpec, Shape, SpecEnv};
@@ -16,6 +16,7 @@ pub enum InstantiateErrorKind {
     /// An `array`'s shape references a dim name never declared via `dim`.
     UnknownDim(String),
     DuplicateDim(String),
+    DuplicateParam(String),
     DuplicateArray(String),
     /// An output equation's LHS array was never declared via `array`.
     UnknownArray(String),
@@ -31,6 +32,13 @@ impl fmt::Display for InstantiateErrorKind {
                 write!(f, "reference to dim '{}', which was never declared", name)
             }
             Self::DuplicateDim(name) => write!(f, "dim '{}' declared more than once", name),
+            Self::DuplicateParam(name) => {
+                write!(
+                    f,
+                    "param '{}' declared more than once (or also as a dim)",
+                    name
+                )
+            }
             Self::DuplicateArray(name) => write!(f, "array '{}' declared more than once", name),
             Self::UnknownArray(name) => write!(
                 f,
@@ -59,6 +67,13 @@ pub fn instantiate(
             .copied()
             .ok_or_else(|| InstantiateErrorKind::MissingDimValue(d.name.clone()))?;
         dims.insert(d.name.clone(), value);
+    }
+
+    let mut params = HashSet::with_capacity(spec.params.len());
+    for p in &spec.params {
+        if dims.contains_key(&p.name) || !params.insert(p.name.clone()) {
+            return Err(InstantiateErrorKind::DuplicateParam(p.name.clone()));
+        }
     }
 
     let mut arrays = HashMap::with_capacity(spec.arrays.len());
@@ -95,5 +110,12 @@ pub fn instantiate(
         })
         .collect::<Result<Vec<_>, InstantiateErrorKind>>()?;
 
-    Ok((SpecEnv { dims, arrays }, outputs))
+    Ok((
+        SpecEnv {
+            dims,
+            arrays,
+            params,
+        },
+        outputs,
+    ))
 }
