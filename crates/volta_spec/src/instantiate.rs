@@ -7,7 +7,7 @@ use std::fmt;
 
 use volta_expr::spec::{OutputSpec, Shape, SpecEnv};
 
-use crate::ast::ParsedSpec;
+use crate::ast::{Padding, ParsedSpec};
 
 #[derive(Debug)]
 pub enum InstantiateErrorKind {
@@ -110,11 +110,18 @@ pub fn instantiate(
         })
         .collect::<Result<Vec<_>, InstantiateErrorKind>>()?;
 
+    let zero_padded = spec
+        .arrays
+        .iter()
+        .filter(|a| a.padding == Padding::Zero)
+        .map(|a| a.name.clone())
+        .collect();
     Ok((
         SpecEnv {
             dims,
             arrays,
             params,
+            zero_padded,
         },
         outputs,
     ))

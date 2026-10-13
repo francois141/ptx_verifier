@@ -21,12 +21,22 @@ pub struct ParamDecl {
     pub span: Span,
 }
 
-/// An `array NAME[dim, ...];` declaration: an array's shape, given as a
-/// list of named dims (resolved to a concrete `Shape` at instantiation).
+/// What reading an array outside its shape means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Padding {
+    /// An out-of-shape read is a spec error.
+    None,
+    /// `array NAME[...] padded;`: an out-of-shape read is 0 (convolution borders).
+    Zero,
+}
+
+/// An `array NAME[dim, ...] [padded];` declaration: an array's shape, given as
+/// a list of named dims (resolved to a concrete `Shape` at instantiation).
 #[derive(Debug, Clone)]
 pub struct ArrayDecl {
     pub name: String,
     pub dims: Vec<String>,
+    pub padding: Padding,
     pub span: Span,
 }
 

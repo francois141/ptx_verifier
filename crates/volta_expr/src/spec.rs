@@ -279,13 +279,14 @@ pub struct OutputSpec {
 }
 
 /// The concrete context a spec unfolds under: named loop bounds (e.g. `K` in matmul), the
-/// shapes of every array a `SpecExpr::Index` reads, and the scalar parameters (symbolic,
-/// matched to a kernel's `SymFloat` params by name).
+/// shapes of every array a `SpecExpr::Index` reads, the scalar parameters (symbolic, matched
+/// to a kernel's `SymFloat` params by name), and the arrays whose out-of-shape reads are 0.
 #[derive(Debug, Clone, Default)]
 pub struct SpecEnv {
     pub dims: HashMap<String, u64>,
     pub arrays: HashMap<String, Shape>,
     pub params: HashSet<String>,
+    pub zero_padded: HashSet<String>,
 }
 
 /// Errors from unfolding a spec: all boundary violations in the spec
@@ -308,10 +309,9 @@ pub enum SpecError {
     },
     IndexOutOfBounds {
         array: String,
-        index: Vec<u64>,
+        index: Vec<i64>,
         shape: Vec<u64>,
     },
-    IndexUnderflow,
     Nan(NanError),
 }
 
@@ -348,7 +348,6 @@ impl fmt::Display for SpecError {
                 "array '{}': index {:?} out of bounds for shape {:?}",
                 array, index, shape
             ),
-            Self::IndexUnderflow => write!(f, "index expression underflow"),
             Self::Nan(_) => write!(f, "spec contains a NaN float literal"),
         }
     }
@@ -432,18 +431,18 @@ fn resolve_var(
         .ok_or_else(|| SpecError::UnboundVar(name.to_string()))
 }
 
+/// Signed, so a zero-padded array's out-of-shape taps (e.g. `4 * h + kh - 2` near the
+/// border) can go negative; the read site decides whether that is an error.
 fn eval_index(
     expr: &IndexExpr,
     env: &SpecEnv,
     bindings: &HashMap<String, u64>,
-) -> Result<u64, SpecError> {
+) -> Result<i64, SpecError> {
     match expr {
-        IndexExpr::Int(v) => Ok(*v),
-        IndexExpr::Var(name) => resolve_var(name, env, bindings),
+        IndexExpr::Int(v) => Ok(*v as i64),
+        IndexExpr::Var(name) => resolve_var(name, env, bindings).map(|v| v as i64),
         IndexExpr::Add(a, b) => Ok(eval_index(a, env, bindings)? + eval_index(b, env, bindings)?),
-        IndexExpr::Sub(a, b) => eval_index(a, env, bindings)?
-            .checked_sub(eval_index(b, env, bindings)?)
-            .ok_or(SpecError::IndexUnderflow),
+        IndexExpr::Sub(a, b) => Ok(eval_index(a, env, bindings)? - eval_index(b, env, bindings)?),
         IndexExpr::Mul(a, b) => Ok(eval_index(a, env, bindings)? * eval_index(b, env, bindings)?),
     }
 }
@@ -600,17 +599,25 @@ fn eval(
                     found: indices.len(),
                 });
             }
-            let idx: Vec<u64> = indices
+            let idx: Vec<i64> = indices
                 .iter()
                 .map(|e| eval_index(e, env, bindings))
                 .collect::<Result<_, _>>()?;
-            if idx.iter().zip(shape.dims()).any(|(&i, &d)| i >= d) {
+            if idx
+                .iter()
+                .zip(shape.dims())
+                .any(|(&i, &d)| i < 0 || i as u64 >= d)
+            {
+                if env.zero_padded.contains(array) {
+                    return Ok(arena.int(0));
+                }
                 return Err(SpecError::IndexOutOfBounds {
                     array: array.clone(),
                     index: idx,
                     shape: shape.dims().to_vec(),
                 });
             }
+            let idx: Vec<u64> = idx.into_iter().map(|i| i as u64).collect();
             let flat = shape.flatten(&idx);
             let sid = array_string_id(array, arena, array_ids);
             Ok(arena.input_element(sid, flat))

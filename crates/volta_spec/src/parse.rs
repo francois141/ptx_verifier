@@ -8,7 +8,7 @@ use volta_common::Span;
 use volta_common::report::Locate;
 use volta_expr::spec::{Bound, IndexExpr, ReduceOp, SpecExpr};
 
-use crate::ast::{ArrayDecl, DimDecl, OutputDecl, ParamDecl, ParsedSpec};
+use crate::ast::{ArrayDecl, DimDecl, OutputDecl, Padding, ParamDecl, ParsedSpec};
 use crate::lex::{Lexer, Token, TokenKind};
 
 #[derive(Debug)]
@@ -211,8 +211,20 @@ impl Parser {
         self.expect(TokenKind::LBracket, "'['")?;
         let dims = self.parse_ident_list()?;
         self.expect(TokenKind::RBracket, "']'")?;
+        let padding = match &self.peek().kind {
+            TokenKind::Ident(word) if word == "padded" => {
+                self.bump();
+                Padding::Zero
+            }
+            _ => Padding::None,
+        };
         self.expect(TokenKind::Semicolon, "';'")?;
-        Ok(ArrayDecl { name, dims, span })
+        Ok(ArrayDecl {
+            name,
+            dims,
+            padding,
+            span,
+        })
     }
 
     fn parse_output_decl(&mut self) -> Result<OutputDecl, ParseError> {
@@ -680,5 +692,16 @@ mod tests {
         let spec = parse_spec("param alpha; dim N; array C[N]; C[i] = alpha * C[i];").unwrap();
         assert_eq!(spec.params.len(), 1);
         assert_eq!(spec.params[0].name, "alpha");
+    }
+
+    #[test]
+    fn padded_marks_an_array_zero_padded() {
+        let spec = parse_spec("dim N; array x[N] padded; array y[N]; y[i] = x[i];").unwrap();
+        let padding: Vec<_> = spec
+            .arrays
+            .iter()
+            .map(|a| (a.name.as_str(), a.padding))
+            .collect();
+        assert_eq!(padding, [("x", Padding::Zero), ("y", Padding::None)]);
     }
 }
