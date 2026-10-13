@@ -186,6 +186,14 @@ sudo apt-get install -y libz3-dev
 cargo run --release -p volta_cli -- compare <ref.ptx> <opt.ptx> ... --backend z3
 ```
 
+On macOS, install the Homebrew formula instead (its keg-only library path is discovered automatically):
+
+```bash
+brew install z3
+```
+
+For a nonstandard installation, set `Z3_LIB_DIR` to the directory containing `libz3` when invoking Cargo.
+
 The expected shape of the results reproduces the paper's Section 6.5 and Table 9. Z3 decides the polynomial fragment (reduction/matmul/conv) in milliseconds. On the exponential fragment (softmax/attention) the backend implements both documented baselines:
 
 - **Default encoding**: the exponential is a nonlinear power term with a strictly-bounded base. Z3 returns `unknown` — no decision procedure covers symbolic real exponents. This is the paper's no-intervention baseline.
