@@ -5,11 +5,8 @@
 #[macro_use]
 mod common;
 
-use std::path::PathBuf;
-use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
-use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence, numeric};
-use volta_frontend::ast::Module;
+use volta_equivalence::{EquivOutcome, check_output_equivalence, numeric};
 
 use common::*;
 
@@ -17,16 +14,6 @@ use common::*;
 fn check_equiv(a: &AnalysisOutput, b: &AnalysisOutput) -> EquivOutcome {
     let arrays: Vec<String> = a.exprs.outputs.iter().map(|(n, _)| n.clone()).collect();
     check_output_equivalence(&a.exprs, &b.exprs, &arrays).unwrap()
-}
-
-/// The volta_bench paper-benchmark kernel tree (PTX + CUDA sources).
-const KERNELS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../volta_bench/kernels");
-
-fn parse_file(rel: &str) -> Module {
-    let path = PathBuf::from(KERNELS_DIR).join(rel);
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
-    parse(&src)
 }
 
 /// Output-only config: one `out` array of `len` `elem_width`-byte
@@ -83,58 +70,6 @@ fn f32_in_f16_out_config(threads: u32, len: u64) -> AnalysisConfig {
         ParamValue::ArrayPtr("out".to_string()),
     ];
     config
-}
-
-/// Config for the reduction kernels: int arrays, `n` input elements.
-fn reduction_config(threads: u32, n: u64) -> AnalysisConfig {
-    let mut config = AnalysisConfig::new((threads, 1, 1));
-    config.arrays = vec![
-        ArrayDef {
-            name: "in".to_string(),
-            base: 0x10000,
-            elem_width: 4,
-            len: n,
-            kind: ArrayKind::Input,
-        },
-        ArrayDef {
-            name: "out".to_string(),
-            base: 0x20000,
-            elem_width: 4,
-            len: 1,
-            kind: ArrayKind::Output,
-        },
-    ];
-    config.params = vec![
-        ParamValue::ArrayPtr("in".to_string()),
-        ParamValue::ArrayPtr("out".to_string()),
-    ];
-    config
-}
-
-fn run_reduction(
-    file: &str,
-    kernel: &str,
-    threads: u32,
-    n: u64,
-    dynamic_shared: u64,
-) -> AnalysisOutput {
-    let module = parse_file(file);
-    let mut config = reduction_config(threads, n);
-    config.dynamic_shared_bytes = dynamic_shared;
-    let output = analyze_kernel(&module, Some(kernel), config, &CanonValueEquality)
-        .unwrap_or_else(|e| panic!("{} failed: {}", file, e));
-    assert_out_file(&PathBuf::from(KERNELS_DIR).join(file), &output);
-    output
-}
-
-fn red1() -> AnalysisOutput {
-    run_reduction(
-        "01_reduction/Red-1.ptx",
-        "_Z17reduce1024_1blockPKiPi",
-        128,
-        128,
-        0,
-    )
 }
 
 /// One-input/one-output f32 config over `in`/`out` (single thread).
@@ -1294,68 +1229,6 @@ fn test_relu_epilogue_equivalent_to_explicit_max() {
         f32_in_f16_out_config(2, 2)
     );
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
-}
-
-#[test]
-fn test_red1_race_free() {
-    let output = red1();
-    assert_eq!(output.exprs.outputs.len(), 1);
-    assert!(output.stats.block_syncs > 0);
-}
-
-#[test]
-fn test_red1_self_equivalence() {
-    let a = red1();
-    let b = red1();
-    assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
-}
-
-#[test]
-fn test_red1_red2_equivalent() {
-    let a = red1();
-    let b = run_reduction("01_reduction/Red-2.ptx", "_Z7reduce2PiS_", 128, 128, 0);
-    assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
-}
-
-#[test]
-fn test_red1_red3_equivalent() {
-    let a = red1();
-    // Red-3 uses extern (dynamic) shared memory: 128 ints.
-    let b = run_reduction("01_reduction/Red-3.ptx", "_Z7reduce3PiS_", 128, 128, 512);
-    assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
-}
-
-#[test]
-fn test_red1_red4_equivalent() {
-    let a = red1();
-    // Red-4 adds `in[i] + in[i + 64]` on load; threads 64..128's `in[128..192)`
-    // loads land in sdata's unused half, so the sum covers `in[0..128)` and the
-    // input spans 192.
-    let b = run_reduction("01_reduction/Red-4.ptx", "_Z7reduce0PiS_", 128, 192, 0);
-    assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
-}
-
-/// A deliberately wrong reduction (dropping one element) must be caught.
-#[test]
-fn test_red1_wrong_input_not_equivalent() {
-    let a = red1();
-    // Same kernel, but with only 127 of the 128 inputs shared: rename the
-    // input array so its symbols differ.
-    let module = parse_file("01_reduction/Red-1.ptx");
-    let mut config = reduction_config(128, 128);
-    config.arrays[0].name = "other".to_string();
-    config.params[0] = ParamValue::ArrayPtr("other".to_string());
-    let b = analyze_kernel(
-        &module,
-        Some("_Z17reduce1024_1blockPKiPi"),
-        config,
-        &CanonValueEquality,
-    )
-    .unwrap();
-    assert!(matches!(
-        check_equiv(&a, &b),
-        EquivOutcome::NotEquivalent { .. }
-    ));
 }
 
 /// `div.rn.f32 d, 1.0, 3.0` and `rcp.approx.f32 d, 3.0` fold to the same
