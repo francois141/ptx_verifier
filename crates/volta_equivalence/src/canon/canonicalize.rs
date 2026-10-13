@@ -2,7 +2,7 @@
 //! bottom-up pass shared by both kernels. Only multi-parent nodes, roots, and
 //! exp/atom arguments are interned, else chains would retain O(K^2) prefixes.
 
-use crate::symbolic::{ExprArena, ExprId, ExprNode};
+use volta_expr::{ExprArena, ExprId, ExprNode};
 
 use super::arena::{Atom, Factor, FactorId, PolyId, Rat, Term, TermId, UninterpOp};
 use super::coeff::Coeff;

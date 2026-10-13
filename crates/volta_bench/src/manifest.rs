@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use volta_analysis::symbolic::ExprId;
+use volta_expr::ExprId;
 
 use crate::results::sanitize_name;
 
@@ -210,7 +210,7 @@ pub fn write_manifest(vcs_dir: &Path, manifest: &VcsManifest) -> Result<()> {
 }
 
 /// Per-array element counts of one snapshot's output footprint (the
-/// `outputs` shape shared by `AnalysisOutput` and `VcSnapshot`).
+/// `SymbolicOutputs::outputs` shape).
 pub fn element_counts(outputs: &[(String, Vec<(u64, ExprId)>)]) -> BTreeMap<String, u64> {
     outputs
         .iter()

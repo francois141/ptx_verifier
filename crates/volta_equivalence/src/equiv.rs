@@ -4,7 +4,8 @@
 
 use crate::canon::{CanonError, Session};
 use crate::logging::info;
-use crate::symbolic::{ExprArena, ExprId};
+
+use volta_expr::{ExprArena, ExprId, ValueEquality};
 
 /// Errors from equivalence checking.
 #[derive(Debug)]
@@ -92,6 +93,16 @@ pub fn check_equivalent(
     e2: ExprId,
 ) -> EquivResult<bool> {
     EquivSession::new(arena1, arena2).check(e1, e2)
+}
+
+/// The race detector's benign same-value store check, decided by canon.
+/// A canon error (e.g. an undefined operand) counts as "not the same".
+pub struct CanonValueEquality;
+
+impl ValueEquality for CanonValueEquality {
+    fn same_value(&self, arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+        check_equivalent(arena, a, arena, b).unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -231,7 +242,7 @@ mod tests {
     /// must not intern to the same canon variable as machine `Symbol(N)`.
     #[test]
     fn named_symbol_does_not_alias_machine_symbol() {
-        use crate::symbolic::ExprNode;
+        use volta_expr::ExprNode;
 
         let mut arena = ExprArena::new();
         let machine = arena.symbol();

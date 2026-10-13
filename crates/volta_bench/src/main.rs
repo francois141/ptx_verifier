@@ -77,7 +77,7 @@ struct Cli {
     /// Recycle the VC intern tables past this many interned terms. Lower
     /// values bound VC memory at the cost of re-canonicalizing shared
     /// structure (0 = never recycle).
-    #[arg(long, global = true, default_value_t = volta_analysis::equiv::DEFAULT_RECYCLE_TERMS)]
+    #[arg(long, global = true, default_value_t = volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS)]
     recycle_terms: usize,
 
     /// Run every timed phase (VC generation, decision solve, and the Z3
@@ -511,7 +511,7 @@ fn main() -> ExitCode {
             if cli.verify_numeric {
                 ignored.push("--verify-numeric");
             }
-            if cli.recycle_terms != volta_analysis::equiv::DEFAULT_RECYCLE_TERMS {
+            if cli.recycle_terms != volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS {
                 ignored.push("--recycle-terms");
             }
             if cli.z3_timeout != DEFAULT_Z3_TIMEOUT_SECS {
@@ -579,7 +579,7 @@ fn main() -> ExitCode {
                      it has no effect with --backend z3"
                 );
             }
-            if cli.recycle_terms != volta_analysis::equiv::DEFAULT_RECYCLE_TERMS
+            if cli.recycle_terms != volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS
                 && !backend.runs_decision()
             {
                 eprintln!(

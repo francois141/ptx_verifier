@@ -8,6 +8,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
+use volta_equivalence::CanonValueEquality;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
@@ -53,8 +54,8 @@ pub fn ptx_path(name: &str) -> PathBuf {
 
 /// `analyze!` for a `(name, source)` pair from `ptx_case!`.
 pub fn analyze_case(name: &str, src: &str, config: AnalysisConfig) -> AnalysisOutput {
-    let output =
-        analyze_kernel(&parse(src), None, config).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let output = analyze_kernel(&parse(src), None, config, &CanonValueEquality)
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
     assert_out_file(&ptx_path(name), &output);
     output
 }
@@ -64,12 +65,12 @@ pub fn analyze_case(name: &str, src: &str, config: AnalysisConfig) -> AnalysisOu
 /// `s0, s1, ...` in order of first appearance to keep the text deterministic.
 pub fn render_outputs(output: &AnalysisOutput) -> String {
     let mut text = String::new();
-    for (array, elems) in &output.outputs {
+    for (array, elems) in &output.exprs.outputs {
         for (index, expr) in elems {
             writeln!(
                 text,
                 "{array}[{index}] = {}",
-                output.arena.display_expr(*expr)
+                output.exprs.arena.display_expr(*expr)
             )
             .unwrap();
         }
@@ -160,16 +161,11 @@ pub fn in_out_config(threads: u32, len: u64) -> AnalysisConfig {
 }
 
 pub fn display_output(output: &AnalysisOutput, array: &str, index: u64) -> String {
-    let (_, elems) = output
-        .outputs
-        .iter()
-        .find(|(n, _)| n == array)
-        .expect("output array");
-    let (_, e) = elems
-        .iter()
-        .find(|(i, _)| *i == index)
-        .expect("element written");
-    output.arena.display_expr(*e)
+    let e = output
+        .exprs
+        .element(array, index)
+        .unwrap_or_else(|| panic!("{array}[{index}] not written"));
+    output.exprs.arena.display_expr(e)
 }
 
 /// A byte-element global scratch array (kind Input, so it is never

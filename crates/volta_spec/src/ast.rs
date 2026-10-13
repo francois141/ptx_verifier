@@ -1,9 +1,9 @@
 //! The parsed, not yet instantiated spec: declarations plus output equations,
-//! with bodies parsed straight into `volta_analysis::spec::{SpecExpr,
+//! with bodies parsed straight into `volta_expr::spec::{SpecExpr,
 //! IndexExpr}`.
 
-use volta_analysis::spec::SpecExpr;
 use volta_common::Span;
+use volta_expr::spec::SpecExpr;
 
 /// A `dim NAME;` declaration: a named integer bound, resolved to a
 /// concrete `u64` at instantiation time (e.g. `--dim K=4096`).

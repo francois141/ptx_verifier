@@ -9,7 +9,7 @@ mod ops;
 
 use std::collections::HashMap;
 
-use crate::symbolic::{ExprArena, ExprId};
+use volta_expr::{ExprArena, ExprId};
 
 pub use arena::{CanonArena, Rat};
 pub use coeff::{Coeff, CoeffError};
@@ -131,7 +131,7 @@ impl Default for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbolic::ExprArena;
+    use volta_expr::ExprArena;
 
     fn check(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
         Session::new().check_equivalent(arena, a, arena, b).unwrap()
@@ -452,7 +452,7 @@ mod tests {
 #[cfg(test)]
 mod chain_perf_tests {
     use super::*;
-    use crate::symbolic::ExprArena;
+    use volta_expr::ExprArena;
 
     #[test]
     fn test_chain_ops_linear() {

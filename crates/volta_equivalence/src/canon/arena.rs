@@ -8,7 +8,7 @@ use std::hash::Hash;
 use id_collections::{IdVec, id_type};
 
 use super::coeff::Coeff;
-use crate::symbolic::{SymbolId, SymbolRef};
+use volta_expr::{SymbolId, SymbolRef};
 
 #[id_type]
 pub struct PolyId(pub u32);

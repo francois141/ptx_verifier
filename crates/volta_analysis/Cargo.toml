@@ -10,6 +10,7 @@ logging = ["dep:log"]  # Full logging when enabled
 [dependencies]
 log = { workspace = true, optional = true }
 volta_common.workspace = true
+volta_expr.workspace = true
 volta_frontend.workspace = true
 
 bincode.workspace = true
@@ -20,3 +21,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 stacker.workspace = true
 fixedbitset.workspace = true
+
+[dev-dependencies]
+volta_equivalence.workspace = true

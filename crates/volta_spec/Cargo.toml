@@ -4,5 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-volta_analysis.workspace = true
 volta_common.workspace = true
+volta_expr.workspace = true
+
+[dev-dependencies]
+volta_equivalence.workspace = true

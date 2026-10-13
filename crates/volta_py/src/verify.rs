@@ -7,11 +7,12 @@ use std::num::NonZeroUsize;
 
 use pyo3::prelude::*;
 
-use volta_analysis::driver::{
-    EquivCheckOptions, EquivOutcome, analyze_kernel, check_output_equivalence_with,
+use volta_analysis::driver::analyze_kernel;
+use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
+use volta_equivalence::{
+    CanonValueEquality, EquivCheckOptions, EquivOutcome, check_output_equivalence_with,
 };
-use volta_analysis::equiv::DEFAULT_RECYCLE_TERMS;
-use volta_analysis::spec::unfold;
+use volta_expr::spec::unfold;
 
 use crate::analyze::{StatsPy, parse_module};
 use crate::config::ConfigPy;
@@ -83,14 +84,19 @@ pub fn verify(
         }
     }
 
-    let mut kernel_output =
-        analyze_kernel(&module, kernel, config.0.clone()).map_err(analysis_error_to_py)?;
+    let mut kernel_output = analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
+        .map_err(analysis_error_to_py)?;
 
     // `sample` also caps generation: truncate the kernel's elements to the
     // ascending prefix `unfold` builds, so both sides pair (as in `cmd_verify`).
     if sample > 0 {
         for name in &check_arrays {
-            if let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == name) {
+            if let Some((_, elems)) = kernel_output
+                .exprs
+                .outputs
+                .iter_mut()
+                .find(|(n, _)| n == name)
+            {
                 elems.truncate(sample as usize);
             }
         }
@@ -105,7 +111,7 @@ pub fn verify(
         iterations: NonZeroUsize::MIN,
     };
     let report =
-        check_output_equivalence_with(&kernel_output, &spec_output, &check_arrays, &options)
+        check_output_equivalence_with(&kernel_output.exprs, &spec_output, &check_arrays, &options)
             .map_err(other_error_to_py)?;
 
     let (equivalent, mismatches) = match report.outcome {

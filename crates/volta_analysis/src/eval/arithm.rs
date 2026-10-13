@@ -11,9 +11,9 @@ use crate::eval::interp::{Interpreter, reg_bits};
 use crate::eval::value::Value;
 use crate::logging::warn;
 use crate::lowered::{BinOp, Clamp, CmpOp, InstrId, UnaryOp};
-use crate::symbolic::{ExprId, ExprNode, Real};
 use crate::symbols::RegId;
 use crate::types::ScalarTypeExt;
+use volta_expr::{ExprId, ExprNode, Real};
 
 /// `log2(e)` rounded to float32 - the constant PTX kernels actually
 /// multiply by before `ex2`, and the one Volta's base conversion is

@@ -4,9 +4,9 @@
 
 use std::fmt;
 
-use volta_analysis::spec::{Bound, IndexExpr, ReduceOp, SpecExpr};
 use volta_common::Span;
 use volta_common::report::Locate;
+use volta_expr::spec::{Bound, IndexExpr, ReduceOp, SpecExpr};
 
 use crate::ast::{ArrayDecl, DimDecl, OutputDecl, ParsedSpec};
 use crate::lex::{Lexer, Token, TokenKind};
@@ -19,7 +19,7 @@ pub enum ParseErrorKind {
     },
     UnknownFunction(String),
     /// A reduction's (`sum`/`max`) range must start at the literal `0` -
-    /// `Reduce` in `volta_analysis::spec` only expresses `0..bound`, no
+    /// `Reduce` in `volta_expr::spec` only expresses `0..bound`, no
     /// arbitrary start (see that module's docs).
     ReductionRangeMustStartAtZero,
     /// A `sum` bound (or an array dim reference) must be an integer

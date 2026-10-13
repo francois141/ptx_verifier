@@ -13,8 +13,8 @@ use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
 use crate::eval::{ThreadId, WARPGROUP_SIZE};
 use crate::lowered::{InstrId, LoweredInstr, MemSpace};
-use crate::symbolic::{ExprId, Real};
 use crate::tensor_core::wgmma_m64n_k16;
+use volta_expr::{ExprId, Real};
 
 impl Interpreter<'_> {
     /// Execute a complete warpgroup blocked at `pc`; `members` are the *live*

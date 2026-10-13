@@ -10,7 +10,6 @@ use id_collections::IdVec;
 
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
-use crate::equiv::EquivSession;
 use crate::eval::async_bulk::InflightBulkCopy;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
@@ -29,11 +28,13 @@ use crate::lowered::{
     BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
     Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind,
 };
-use crate::symbolic::{ExprArena, ExprId, ExprNode, Real, StringId, structurally_equal};
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::tensor_core::MmaShape;
 use crate::tensor_map::TensormapFieldWrite;
 use crate::types::{RegClass, ScalarTypeExt};
+use volta_expr::{
+    ExprArena, ExprId, ExprNode, Real, StringId, SymbolicOutputs, ValueEquality, structurally_equal,
+};
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
 pub type OutputFootprints = Vec<(String, Vec<(u64, ExprId)>)>;
@@ -298,10 +299,8 @@ struct MemRegions {
 /// Result of a completed analysis.
 #[derive(Debug)]
 pub struct AnalysisOutput {
-    pub arena: ExprArena,
-    /// Output arrays: (name, written elements as (index, expression)),
-    /// sorted by index. Only elements the kernel wrote appear.
-    pub outputs: Vec<(String, Vec<(u64, ExprId)>)>,
+    /// The written output elements' expressions, what equivalence checking consumes.
+    pub exprs: SymbolicOutputs,
     pub stats: Stats,
     /// Instructions executed, broken down by kind (`LoweredInstr::kind_name`)
     /// summed across all threads. A `BTreeMap` keeps printed/exported tables
@@ -312,6 +311,7 @@ pub struct AnalysisOutput {
 pub struct Interpreter<'p> {
     pub(in crate::eval) program: &'p LoweredProgram,
     pub(in crate::eval) arena: ExprArena,
+    value_equality: &'p dyn ValueEquality,
     config: AnalysisConfig,
     n_threads: u32,
     /// Shared `Undefined` node returned for reads of never-written
@@ -351,6 +351,7 @@ impl<'p> Interpreter<'p> {
         program: &'p LoweredProgram,
         config: AnalysisConfig,
         features: TargetFeatures,
+        value_equality: &'p dyn ValueEquality,
     ) -> EvalResult<Self> {
         let n_threads = config.num_threads();
         if n_threads == 0 {
@@ -524,6 +525,7 @@ impl<'p> Interpreter<'p> {
         Ok(Self {
             program,
             arena,
+            value_equality,
             config,
             n_threads,
             undefined,
@@ -674,8 +676,10 @@ impl<'p> Interpreter<'p> {
             .map(|(i, &count)| (crate::lowered::KIND_NAMES[i], count))
             .collect();
         Ok(AnalysisOutput {
-            arena: self.arena,
-            outputs,
+            exprs: SymbolicOutputs {
+                arena: self.arena,
+                outputs,
+            },
             stats: self.stats,
             op_counts,
         })
@@ -3888,7 +3892,7 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Whether two values denote the same reals lane by lane: same node,
-    /// structural equality, or the canonical equivalence check. Only consulted
+    /// structural equality, or the injected `ValueEquality`. Only consulted
     /// after a write-write conflict, so rarely paid.
     fn same_real_value(&self, a: Value, b: Value) -> bool {
         let lanes = match (a, b) {
@@ -3896,11 +3900,10 @@ impl<'p> Interpreter<'p> {
             (Value::Pair(x_lo, x_hi), Value::Pair(y_lo, y_hi)) => vec![(x_lo, y_lo), (x_hi, y_hi)],
             _ => return false,
         };
-        let mut session = EquivSession::new(&self.arena, &self.arena);
         lanes.into_iter().all(|(x, y)| {
             x == y
                 || structurally_equal(&self.arena, x, &self.arena, y)
-                || session.check(x, y).unwrap_or(false)
+                || self.value_equality.same_value(&self.arena, x, y)
         })
     }
 

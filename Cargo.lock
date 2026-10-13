@@ -704,6 +704,8 @@ dependencies = [
  "stacker",
  "thiserror",
  "volta_common",
+ "volta_equivalence",
+ "volta_expr",
  "volta_frontend",
 ]
 
@@ -720,6 +722,8 @@ dependencies = [
  "serde_json",
  "volta_analysis",
  "volta_common",
+ "volta_equivalence",
+ "volta_expr",
  "volta_frontend",
  "volta_z3",
 ]
@@ -734,6 +738,8 @@ dependencies = [
  "log",
  "volta_analysis",
  "volta_common",
+ "volta_equivalence",
+ "volta_expr",
  "volta_frontend",
  "volta_spec",
  "volta_z3",
@@ -745,6 +751,31 @@ version = "0.1.0"
 dependencies = [
  "ansi_term",
  "textwrap",
+]
+
+[[package]]
+name = "volta_equivalence"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "id_collections",
+ "log",
+ "rug",
+ "serde",
+ "stacker",
+ "volta_analysis",
+ "volta_expr",
+ "volta_frontend",
+]
+
+[[package]]
+name = "volta_expr"
+version = "0.1.0"
+dependencies = [
+ "id_collections",
+ "rug",
+ "serde",
+ "stacker",
 ]
 
 [[package]]
@@ -761,6 +792,8 @@ dependencies = [
  "pyo3",
  "volta_analysis",
  "volta_common",
+ "volta_equivalence",
+ "volta_expr",
  "volta_frontend",
  "volta_spec",
 ]
@@ -769,8 +802,9 @@ dependencies = [
 name = "volta_spec"
 version = "0.1.0"
 dependencies = [
- "volta_analysis",
  "volta_common",
+ "volta_equivalence",
+ "volta_expr",
 ]
 
 [[package]]
@@ -781,6 +815,8 @@ dependencies = [
  "stacker",
  "thiserror",
  "volta_analysis",
+ "volta_equivalence",
+ "volta_expr",
  "volta_frontend",
 ]
 

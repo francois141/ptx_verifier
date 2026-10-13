@@ -7,13 +7,16 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use volta_analysis::driver::{
-    AnalysisError, ElementCheckTime, EquivCheckOptions, EquivOutcome, PairedFootprints, VcDump,
-    VcSnapshot, analyze_kernel, check_output_equivalence_with, paired_elements, sampled_elements,
-    vc_dump::write_vc_dump_to,
-};
+use volta_analysis::driver::{AnalysisError, analyze_kernel};
 use volta_analysis::eval::{AnalysisOutput, EvalError};
-use volta_analysis::symbolic::ExprId;
+use volta_equivalence::CanonValueEquality;
+use volta_equivalence::check::{
+    ElementCheckTime, EquivCheckOptions, EquivOutcome, PairedFootprints,
+    check_output_equivalence_with, paired_elements, sampled_elements,
+};
+use volta_equivalence::vc_dump::{VcDump, write_vc_dump_to};
+use volta_expr::ExprId;
+use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
@@ -44,7 +47,7 @@ pub struct BenchmarkStats {
     /// when the flag was on. Excluded from `solve_iters_secs`.
     pub verify_numeric_secs: Option<f64>,
     /// Iteration 1's per-element decision-procedure check durations, in
-    /// `driver::sampled_elements` order (summing to
+    /// `volta_equivalence::check::sampled_elements` order (summing to
     /// `solve_iters_secs[0]`); empty when no solve ran.
     pub decision_elements: Vec<ElementCheckTime>,
     /// Time reading the `.vcdump` file (`solve` subcommand only; `None`
@@ -195,7 +198,7 @@ impl Default for RunnerConfig {
             verbose: false,
             sample: 0,
             verify_numeric: false,
-            recycle_terms: volta_analysis::equiv::DEFAULT_RECYCLE_TERMS,
+            recycle_terms: volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS,
             iterations: NonZeroUsize::MIN,
             vcs_dir: None,
             z3: None,
@@ -262,8 +265,8 @@ enum GeneratedRun {
 /// and what got persisted. `stats` holds the generation-phase numbers; solves add theirs.
 struct GeneratedVcs {
     stats: BenchmarkStats,
-    reference: AnalysisOutput,
-    optimized: AnalysisOutput,
+    reference: SymbolicOutputs,
+    optimized: SymbolicOutputs,
     paired: PairedFootprints,
     /// What became of the VC dump. A failed write is a warning in the one-shot pipeline
     /// (the verdict is still computable) but a failure for `generate` (the dump is its product).
@@ -357,7 +360,7 @@ fn generate(loaded: &LoadedBenchmark) -> Result<Generated> {
     // Pair along the reference config's declared output arrays - the
     // tail of VC generation, shared by both solve backends.
     let arrays = reference_run.config.output_array_names();
-    let paired = paired_elements(&reference, &optimized, &arrays)
+    let paired = paired_elements(&reference.exprs, &optimized.exprs, &arrays)
         .map_err(|e| anyhow!("pairing footprints: {}", e))?;
     Ok(Generated::Equivalence {
         reference,
@@ -370,7 +373,12 @@ fn generate(loaded: &LoadedBenchmark) -> Result<Generated> {
 /// inner one is an analysis rejection (race, deadlock, ...), which for a race-check
 /// benchmark is itself the expected outcome.
 fn analyze(module: &Module, run: &KernelRun) -> Result<Result<AnalysisOutput, EvalError>> {
-    match analyze_kernel(module, Some(&run.kernel), run.config.clone()) {
+    match analyze_kernel(
+        module,
+        Some(&run.kernel),
+        run.config.clone(),
+        &CanonValueEquality,
+    ) {
         Ok(output) => Ok(Ok(output)),
         Err(AnalysisError::Eval(e)) => Ok(Err(e)),
         Err(e) => Err(anyhow!("{}: {}", run.path, e)),
@@ -405,8 +413,8 @@ struct KernelFingerprint {
 
 fn kernel_fingerprint(output: &AnalysisOutput) -> KernelFingerprint {
     KernelFingerprint {
-        node_count: output.arena.node_count(),
-        outputs: output.outputs.clone(),
+        node_count: output.exprs.arena.node_count(),
+        outputs: output.exprs.outputs.clone(),
     }
 }
 
@@ -897,8 +905,8 @@ impl BenchmarkRunner {
         let persisted = persist_vcs(
             self.config.vcs_dir.as_deref(),
             &def.name,
-            reference,
-            optimized,
+            reference.exprs,
+            optimized.exprs,
         );
         stats.dump_write_secs = persisted.dump.write_secs();
 
@@ -912,12 +920,12 @@ impl BenchmarkRunner {
     }
 
     /// The decision-solve phase: compare the outputs per element over the named arrays,
-    /// `iterations` times (loop in `volta_analysis::driver`), filling `stats`' solve fields.
+    /// `iterations` times (loop in `volta_equivalence::check`), filling `stats`' solve fields.
     /// Shared by the one-shot pipeline and `crate::solve`.
     pub(crate) fn check_equivalence(
         &self,
-        reference: &AnalysisOutput,
-        optimized: &AnalysisOutput,
+        reference: &SymbolicOutputs,
+        optimized: &SymbolicOutputs,
         arrays: &[String],
         stats: &mut BenchmarkStats,
     ) -> Result<ActualOutcome> {
@@ -993,11 +1001,11 @@ fn warn_noisy_phases(result: &BenchmarkResult) {
     }
 }
 
-/// The result of [`persist_vcs`]: the analysis outputs (moved through the
+/// The result of [`persist_vcs`]: the output expressions (moved through the
 /// dump, never cloned - the arenas can be GiB-scale) plus what got written.
 struct PersistedVcs {
-    reference: AnalysisOutput,
-    optimized: AnalysisOutput,
+    reference: SymbolicOutputs,
+    optimized: SymbolicOutputs,
     dump: DumpPersistence,
 }
 
@@ -1012,14 +1020,13 @@ fn write_dump_hashed(path: &Path, dump: &VcDump) -> std::io::Result<u64> {
     Ok(writer.fingerprint())
 }
 
-/// Persist the VCs to `<vcs_dir>/<sanitized-name>.vcdump` (shared `driver::vc_dump` format),
-/// overwriting; a write failure only warns. Moving outputs through the dump clears their
-/// `stats`/`op_counts`, so record those first. Byte-identity assumes no machine symbols.
+/// Persist the VCs to `<vcs_dir>/<sanitized-name>.vcdump` (shared `volta_equivalence::vc_dump` format),
+/// overwriting; a write failure only warns. Byte-identity assumes no machine symbols.
 fn persist_vcs(
     vcs_dir: Option<&Path>,
     benchmark_name: &str,
-    reference: AnalysisOutput,
-    optimized: AnalysisOutput,
+    reference: SymbolicOutputs,
+    optimized: SymbolicOutputs,
 ) -> PersistedVcs {
     let Some(vcs_dir) = vcs_dir else {
         return PersistedVcs {
@@ -1030,8 +1037,8 @@ fn persist_vcs(
     };
     let path = vc_dump_path(vcs_dir, benchmark_name);
     let dump = VcDump {
-        reference: VcSnapshot::from_output(reference),
-        optimized: VcSnapshot::from_output(optimized),
+        reference,
+        optimized,
     };
     // The directory is a one-time setup cost, not part of any dump's
     // write time - create it before starting the write timer. (Hashing
@@ -1051,8 +1058,8 @@ fn persist_vcs(
         }
     };
     PersistedVcs {
-        reference: dump.reference.into_analysis_output(),
-        optimized: dump.optimized.into_analysis_output(),
+        reference: dump.reference,
+        optimized: dump.optimized,
         dump: persisted,
     }
 }

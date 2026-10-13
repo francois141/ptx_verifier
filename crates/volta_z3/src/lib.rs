@@ -11,8 +11,8 @@ pub use translate::{Builder, ExpMode, Unsupported, translate_root};
 use std::fmt;
 use std::time::Duration;
 
-use volta_analysis::driver::EquivCheckError;
-use volta_analysis::symbolic::{ExprArena, ExprId};
+use volta_equivalence::check::EquivCheckError;
+use volta_expr::{ExprArena, ExprId, SymbolicOutputs};
 
 /// Outcome of one Z3 query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,20 +245,20 @@ impl Z3EquivReport {
     }
 }
 
-/// Check `driver::sampled_elements` over `driver::paired_elements` (the
+/// Check `volta_equivalence::check::sampled_elements` over `paired_elements` (the
 /// decision procedure's exact list) with Z3, recording each element's outcome
 /// without aborting; `Err` is only a pairing failure.
 pub fn check_output_equivalence(
-    reference: &volta_analysis::eval::AnalysisOutput,
-    optimized: &volta_analysis::eval::AnalysisOutput,
+    reference: &SymbolicOutputs,
+    optimized: &SymbolicOutputs,
     arrays: &[String],
     sample: u64,
     timeout: Option<Duration>,
     mode: ExpMode,
 ) -> Result<Z3EquivReport, EquivCheckError> {
-    let paired = volta_analysis::driver::paired_elements(reference, optimized, arrays)?;
+    let paired = volta_equivalence::check::paired_elements(reference, optimized, arrays)?;
     let mut elements = Vec::new();
-    for (name, index, r, o) in volta_analysis::driver::sampled_elements(&paired, sample) {
+    for (name, index, r, o) in volta_equivalence::check::sampled_elements(&paired, sample) {
         let (outcome, solve) =
             match check_equivalent(&reference.arena, r, &optimized.arena, o, timeout, mode) {
                 Ok(res) => (
@@ -588,7 +588,7 @@ mod tests {
     /// machine `Symbol(N)`.
     #[test]
     fn named_symbol_does_not_alias_machine_symbol() {
-        use volta_analysis::symbolic::ExprNode;
+        use volta_expr::ExprNode;
 
         let mut ar = ExprArena::new();
         let machine = ar.symbol();

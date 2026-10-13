@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::symbolic::{Real, RealRepr};
+use volta_expr::{Real, RealRepr};
 
 /// A reduced dyadic-scaled rational: `num * 2^exp2 / den`, with `den > 0`,
 /// `num` and `den` both odd, and gcd(num, den) = 1. Zero is `0 * 2^0 / 1`.

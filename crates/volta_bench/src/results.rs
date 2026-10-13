@@ -32,7 +32,7 @@ pub fn sanitize_name(name: &str) -> String {
 }
 
 /// Where a benchmark's VC dump lives: `<slug>.vcdump` in the shared
-/// `driver::vc_dump` format (so `volta compare --from-dump` replays it),
+/// `volta_equivalence::vc_dump` format (so `volta compare --from-dump` replays it),
 /// overwritten on rerun.
 pub fn vc_dump_path(vcs_dir: &Path, benchmark_name: &str) -> PathBuf {
     vcs_dir.join(format!("{}.vcdump", sanitize_name(benchmark_name)))
@@ -598,7 +598,7 @@ mod tests {
         let mut result = result_with(crate::runner::ActualOutcome::Equivalent, true);
         result.stats.vc_gen_iters_secs = vec![2.0, 1.0, 1.0];
         result.stats.solve_iters_secs = vec![4.0, 2.0];
-        result.stats.decision_elements = vec![volta_analysis::driver::ElementCheckTime {
+        result.stats.decision_elements = vec![volta_equivalence::check::ElementCheckTime {
             array: "out".to_string(),
             index: 7,
             check: Duration::from_millis(250),

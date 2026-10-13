@@ -2,8 +2,11 @@
 //! one semantic detail and must come back `NotEquivalent` through the full
 //! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
-use volta_analysis::driver::{EquivOutcome, analyze_kernel, check_output_equivalence};
+use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
+use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence};
+use volta_expr::SymbolicOutputs;
+use volta_expr::text::{read_text, to_text};
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
@@ -114,8 +117,13 @@ struct NegativePair {
 }
 
 fn run(name: &str, kernel: &Kernel) -> AnalysisOutput {
-    analyze_kernel(&parse(&kernel.src), None, kernel.config.clone())
-        .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e))
+    analyze_kernel(
+        &parse(&kernel.src),
+        None,
+        kernel.config.clone(),
+        &CanonValueEquality,
+    )
+    .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e))
 }
 
 /// Run both kernels of a pair and check them along the reference run's
@@ -124,9 +132,13 @@ fn run(name: &str, kernel: &Kernel) -> AnalysisOutput {
 fn check_pair(pair: &NegativePair) -> EquivOutcome {
     let reference = run(pair.name, &pair.reference);
     let mutant = run(pair.name, &pair.mutant);
-    let arrays: Vec<String> = reference.outputs.iter().map(|(n, _)| n.clone()).collect();
-    check_output_equivalence(&reference, &mutant, &arrays)
-        .unwrap_or_else(|e| panic!("{}: equivalence check errored: {}", pair.name, e))
+    let arrays: Vec<String> = reference
+        .exprs
+        .outputs
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect();
+    checked_with_and_without_text(pair.name, &reference.exprs, &mutant.exprs, &arrays)
 }
 
 /// Assert the pair is `NotEquivalent` and that the report names exactly
@@ -151,12 +163,36 @@ fn assert_not_equivalent(pair: &NegativePair, expected_mismatches: &[(&str, u64)
 
 /// Assert a control pair IS equivalent (used where a nearby positive
 /// direction pins down what the negative test distinguishes).
+/// The verdict on the in-memory outputs, after asserting that writing both
+/// sides as `.vexpr` text and reading them back yields the same verdict.
+fn checked_with_and_without_text(
+    name: &str,
+    reference: &SymbolicOutputs,
+    other: &SymbolicOutputs,
+    arrays: &[String],
+) -> EquivOutcome {
+    let check = |a: &SymbolicOutputs, b: &SymbolicOutputs| {
+        check_output_equivalence(a, b, arrays)
+            .unwrap_or_else(|e| panic!("{}: equivalence check errored: {}", name, e))
+    };
+    let reread = |exprs: &SymbolicOutputs| {
+        read_text(&to_text(exprs)).unwrap_or_else(|e| panic!("{}: reread .vexpr: {}", name, e))
+    };
+    let outcome = check(reference, other);
+    let from_text = check(&reread(reference), &reread(other));
+    assert_eq!(
+        format!("{from_text:?}"),
+        format!("{outcome:?}"),
+        "{name}: the .vexpr round trip changed the verdict"
+    );
+    outcome
+}
+
 fn assert_equivalent_control(name: &str, reference: &Kernel, other: &Kernel) {
     let a = run(name, reference);
     let b = run(name, other);
-    let arrays: Vec<String> = a.outputs.iter().map(|(n, _)| n.clone()).collect();
-    let outcome = check_output_equivalence(&a, &b, &arrays)
-        .unwrap_or_else(|e| panic!("{}: equivalence check errored: {}", name, e));
+    let arrays: Vec<String> = a.exprs.outputs.iter().map(|(n, _)| n.clone()).collect();
+    let outcome = checked_with_and_without_text(name, &a.exprs, &b.exprs, &arrays);
     assert!(
         matches!(outcome, EquivOutcome::Equivalent),
         "positive control '{}' must be Equivalent",
@@ -165,16 +201,11 @@ fn assert_equivalent_control(name: &str, reference: &Kernel, other: &Kernel) {
 }
 
 fn display_output(output: &AnalysisOutput, array: &str, index: u64) -> String {
-    let (_, elems) = output
-        .outputs
-        .iter()
-        .find(|(n, _)| n == array)
-        .expect("output array");
-    let (_, e) = elems
-        .iter()
-        .find(|(i, _)| *i == index)
-        .expect("element written");
-    output.arena.display_expr(*e)
+    let e = output
+        .exprs
+        .element(array, index)
+        .unwrap_or_else(|| panic!("{array}[{index}] not written"));
+    output.exprs.arena.display_expr(e)
 }
 
 // =========================================================================

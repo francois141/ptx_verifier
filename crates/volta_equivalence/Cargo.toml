@@ -1,0 +1,22 @@
+[package]
+name = "volta_equivalence"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+logging = ["dep:log"]  # Full logging when enabled
+
+[dependencies]
+log = { workspace = true, optional = true }
+volta_expr.workspace = true
+
+bincode.workspace = true
+id_collections.workspace = true
+rug.workspace = true
+serde.workspace = true
+stacker.workspace = true
+
+[dev-dependencies]
+volta_analysis.workspace = true
+volta_frontend.workspace = true

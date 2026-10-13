@@ -9,6 +9,7 @@ use volta_analysis::AnalysisError;
 use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, EvalError, ParamValue, ThreadId};
 use volta_analysis::lowered::MemSpace;
+use volta_equivalence::CanonValueEquality;
 
 use common::*;
 
@@ -17,7 +18,7 @@ use common::*;
 fn test_shared_write_write_race() {
     let module = ptx!(parse "execution_error/shared_write_write_race");
     let config = AnalysisConfig::new((2, 1, 1));
-    let err = analyze_kernel(&module, None, config).unwrap_err();
+    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
         "expected data race, got: {}",
@@ -28,7 +29,7 @@ fn test_shared_write_write_race() {
 #[test]
 fn test_shared_exchange_without_barrier_races() {
     let module = ptx!(parse "execution_error/shared_exchange_without_barrier_races");
-    let err = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap_err();
+    let err = analyze_kernel(&module, None, in_out_config(2, 2), &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
         "expected data race, got: {}",
@@ -42,7 +43,13 @@ fn test_shared_exchange_without_barrier_races() {
 #[test]
 fn test_same_write_read_without_the_wait_still_races() {
     let module = ptx!(parse "execution_error/same_write_read_without_the_wait_still_races");
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((2, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
         "expected a data race, got: {}",
@@ -62,7 +69,13 @@ fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_wait_ld_after_bar_sync_is_rejected"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
             assert!(!pending.is_write);
@@ -77,7 +90,13 @@ fn test_tcgen05_wait_st_after_mbarrier_arrive_is_rejected() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_wait_st_after_mbarrier_arrive_is_rejected"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
             assert!(pending.is_write);
@@ -102,7 +121,13 @@ fn test_tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected() {
         ),
     ] {
         let module = parse(&src);
-        let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+        let err = analyze_kernel(
+            &module,
+            None,
+            AnalysisConfig::new((32, 1, 1)),
+            &CanonValueEquality,
+        )
+        .unwrap_err();
         match &err {
             AnalysisError::Eval(EvalError::Tcgen05AsyncHazard { prior, current, .. }) => {
                 assert_eq!(prior.is_write, is_write, "{op}");
@@ -125,7 +150,13 @@ fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_mma_bar_sync_before_completion_orders_nothing"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((64, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::TensorMemoryRace {
             lane,
@@ -150,7 +181,13 @@ fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((64, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05AsyncHazard {
             quadrant,
@@ -175,7 +212,13 @@ fn test_tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((64, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::AsyncCopyHazard {
             space,
@@ -201,7 +244,13 @@ fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((64, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::TensorMemoryRace {
             lane,
@@ -227,7 +276,13 @@ fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
     let module = parse(&ptx!(
         "execution_error/tcgen05_dealloc_with_an_mma_in_flight_is_rejected"
     ));
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((64, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05AsyncHazard { prior, current, .. }) => {
             assert_eq!(prior.thread, ThreadId(0));
@@ -244,7 +299,7 @@ fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
 #[test]
 fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
     let module = ptx!(parse "execution_error/cp_async_same_thread_peek_before_wait_is_hazard");
-    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    let err = analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
         "expected an async-copy hazard, got: {}",
@@ -259,7 +314,7 @@ fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
 fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
     let module =
         ptx!(parse "execution_error/cp_async_cross_thread_read_of_locked_destination_is_hazard");
-    let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
+    let err = analyze_kernel(&module, None, in_out_config(2, 1), &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
         "expected an async-copy hazard, got: {}",
@@ -274,7 +329,7 @@ fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
 fn test_cp_async_cross_thread_write_of_locked_source_is_hazard() {
     let module =
         ptx!(parse "execution_error/cp_async_cross_thread_write_of_locked_source_is_hazard");
-    let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
+    let err = analyze_kernel(&module, None, in_out_config(2, 1), &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
         "expected an async-copy hazard, got: {}",
@@ -288,7 +343,7 @@ fn test_cp_async_cross_thread_write_of_locked_source_is_hazard() {
 #[test]
 fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
     let module = ptx!(parse "execution_error/cp_async_post_wait_cross_thread_read_without_sync_is_data_race");
-    let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
+    let err = analyze_kernel(&module, None, in_out_config(2, 1), &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
         "expected an ordinary data race (missing sync after wait_group), got: {}",
@@ -323,7 +378,7 @@ fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let err = analyze_kernel(&module, None, config).unwrap_err();
+    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
         "expected an in-flight async-copy hazard, got: {}",
@@ -339,7 +394,7 @@ fn test_cp_async_bulk_bar_sync_before_completion_orders_nothing() {
     let module = parse(&ptx!(
         "execution_error/cp_async_bulk_bar_sync_before_completion_orders_nothing"
     ));
-    let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
+    let err = analyze_kernel(&module, None, bulk_copy_config(), &CanonValueEquality).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::DataRace {
             space,
@@ -365,7 +420,7 @@ fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
     let module = parse(&ptx!(
         "execution_error/cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard"
     ));
-    let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
+    let err = analyze_kernel(&module, None, bulk_copy_config(), &CanonValueEquality).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::AsyncCopyHazard { prior, current, .. }) => {
             assert_eq!(prior.thread, ThreadId(0));
@@ -382,7 +437,13 @@ fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
 #[test]
 fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
     let module = ptx!(parse "execution_error/wgmma_fence_hazard_ordinary_write_breaks_chain");
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((128, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::WgmmaFenceHazard { .. })),
         "expected a wgmma fence hazard, got: {}",
@@ -396,7 +457,13 @@ fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
 fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
     let module =
         ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_read_of_pending_accumulator");
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((128, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     assert!(
         matches!(
             err,
@@ -414,7 +481,13 @@ fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
 fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
     let module =
         ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_write_of_pending_accumulator");
-    let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((128, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
     assert!(
         matches!(
             err,
@@ -430,7 +503,7 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
 #[test]
 fn test_different_value_store_to_one_address_races() {
     let differ = ptx!(parse "execution_error/same_value_warp_uniform_store_is_not_a_race_differ");
-    let err = analyze_kernel(&differ, None, in_out_config(2, 1)).unwrap_err();
+    let err = analyze_kernel(&differ, None, in_out_config(2, 1), &CanonValueEquality).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
         "expected data race, got: {}",

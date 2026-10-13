@@ -22,8 +22,7 @@ fn main() {
     let dump_path = args.next().expect(usage);
     let n: usize = args.next().expect(usage).parse().expect(usage);
 
-    let dump =
-        volta_analysis::driver::vc_dump::read_vc_dump(Path::new(&dump_path)).expect("read dump");
+    let dump = volta_equivalence::vc_dump::read_vc_dump(Path::new(&dump_path)).expect("read dump");
     let (name, ref_elems) = &dump.reference.outputs[0];
     let opt_elems: std::collections::HashMap<u64, _> = dump
         .optimized

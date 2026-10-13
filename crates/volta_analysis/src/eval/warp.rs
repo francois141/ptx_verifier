@@ -11,13 +11,13 @@ use crate::eval::tensor_memory::LANES;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::lowered::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
-use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::tensor_core::{
     FragmentElement, MmaLayout, MmaOperand, MmaShape, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16,
     m16n8k32_byte, m16n16k16_f16,
 };
 use crate::types::ScalarTypeExt;
+use volta_expr::ExprId;
 
 /// A dense matrix of expressions being assembled from lane fragments.
 struct Grid {

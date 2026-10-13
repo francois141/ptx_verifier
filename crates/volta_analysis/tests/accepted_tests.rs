@@ -6,17 +6,17 @@
 mod common;
 
 use std::path::PathBuf;
-use volta_analysis::driver::{EquivOutcome, analyze_kernel, check_output_equivalence};
+use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
-use volta_analysis::numeric;
+use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence, numeric};
 use volta_frontend::ast::Module;
 
 use common::*;
 
 /// Check equivalence along the reference run's output arrays.
 fn check_equiv(a: &AnalysisOutput, b: &AnalysisOutput) -> EquivOutcome {
-    let arrays: Vec<String> = a.outputs.iter().map(|(n, _)| n.clone()).collect();
-    check_output_equivalence(a, b, &arrays).unwrap()
+    let arrays: Vec<String> = a.exprs.outputs.iter().map(|(n, _)| n.clone()).collect();
+    check_output_equivalence(&a.exprs, &b.exprs, &arrays).unwrap()
 }
 
 /// The volta_bench paper-benchmark kernel tree (PTX + CUDA sources).
@@ -121,7 +121,7 @@ fn run_reduction(
     let module = parse_file(file);
     let mut config = reduction_config(threads, n);
     config.dynamic_shared_bytes = dynamic_shared;
-    let output = analyze_kernel(&module, Some(kernel), config)
+    let output = analyze_kernel(&module, Some(kernel), config, &CanonValueEquality)
         .unwrap_or_else(|e| panic!("{} failed: {}", file, e));
     assert_out_file(&PathBuf::from(KERNELS_DIR).join(file), &output);
     output
@@ -1299,7 +1299,7 @@ fn test_relu_epilogue_equivalent_to_explicit_max() {
 #[test]
 fn test_red1_race_free() {
     let output = red1();
-    assert_eq!(output.outputs.len(), 1);
+    assert_eq!(output.exprs.outputs.len(), 1);
     assert!(output.stats.block_syncs > 0);
 }
 
@@ -1345,7 +1345,13 @@ fn test_red1_wrong_input_not_equivalent() {
     let mut config = reduction_config(128, 128);
     config.arrays[0].name = "other".to_string();
     config.params[0] = ParamValue::ArrayPtr("other".to_string());
-    let b = analyze_kernel(&module, Some("_Z17reduce1024_1blockPKiPi"), config).unwrap();
+    let b = analyze_kernel(
+        &module,
+        Some("_Z17reduce1024_1blockPKiPi"),
+        config,
+        &CanonValueEquality,
+    )
+    .unwrap();
     assert!(matches!(
         check_equiv(&a, &b),
         EquivOutcome::NotEquivalent { .. }
@@ -1852,9 +1858,14 @@ fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
     );
     // `abs`/`select` don't fold over constants (canon treats `Abs` as opaque),
     // so check via the f64 oracle: (+3) + (-3) + (+3) + (-3) = 0.
-    let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
+    let (_, elems) = output
+        .exprs
+        .outputs
+        .iter()
+        .find(|(n, _)| n == "out")
+        .unwrap();
     let (_, expr) = elems.iter().find(|(i, _)| *i == 0).unwrap();
-    let value = numeric::eval_f64(&output.arena, *expr, 0).expect("numeric eval");
+    let value = numeric::eval_f64(&output.exprs.arena, *expr, 0).expect("numeric eval");
     assert_eq!(value, 0.0);
 }
 
@@ -1981,10 +1992,15 @@ fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
         "success/e4m3x2_decodes_a_concrete_scalar_bit_pattern",
         config
     );
-    let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
+    let (_, elems) = output
+        .exprs
+        .outputs
+        .iter()
+        .find(|(n, _)| n == "out")
+        .unwrap();
     let get = |i: u64| {
         let (_, e) = elems.iter().find(|(idx, _)| *idx == i).unwrap();
-        numeric::eval_f64(&output.arena, *e, 0).expect("numeric eval")
+        numeric::eval_f64(&output.exprs.arena, *e, 0).expect("numeric eval")
     };
     assert_eq!(get(0), 1.0);
     assert_eq!(get(1), -1.0);
@@ -2008,10 +2024,15 @@ fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
         "success/e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero",
         config
     );
-    let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
+    let (_, elems) = output
+        .exprs
+        .outputs
+        .iter()
+        .find(|(n, _)| n == "out")
+        .unwrap();
     let get = |i: u64| {
         let (_, e) = elems.iter().find(|(idx, _)| *idx == i).unwrap();
-        numeric::eval_f64(&output.arena, *e, 0).expect("numeric eval")
+        numeric::eval_f64(&output.exprs.arena, *e, 0).expect("numeric eval")
     };
     assert_eq!(get(0), 1.0);
     assert_eq!(get(1), 0.0);

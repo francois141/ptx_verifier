@@ -8,16 +8,16 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use volta_analysis::driver::{
-    EquivCheckOptions, EquivOutcome, VcDump, VcSnapshot, analyze_kernel,
-    check_output_equivalence_with,
-    vc_dump::{read_vc_dump, write_vc_dump},
-    write_op_counts,
-};
-use volta_analysis::equiv::DEFAULT_RECYCLE_TERMS;
-use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
-use volta_analysis::spec::unfold;
+use volta_analysis::driver::{analyze_kernel, write_op_counts};
+use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_common::run_log;
+use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
+use volta_equivalence::vc_dump::{VcDump, read_vc_dump, write_vc_dump};
+use volta_equivalence::{
+    CanonValueEquality, EquivCheckOptions, EquivOutcome, check_output_equivalence_with,
+};
+use volta_expr::SymbolicOutputs;
+use volta_expr::spec::unfold;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::{Module, TopLevelItem};
 use volta_frontend::file_cache::FileCache;
@@ -57,7 +57,7 @@ impl From<LogLevel> for log::LevelFilter {
 /// Which decision procedure to check equivalence with.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum BackendArg {
-    /// `volta_analysis::canon` - Volta's own decision procedure (default)
+    /// `volta_equivalence::canon` - Volta's own decision procedure (default)
     Decision,
     /// Z3, via SMT-LIB2 evaluated by libz3 in a worker subprocess: a narrower fragment, per-element
     /// unsat/sat/unknown verdicts. Requires `--features z3`, else selecting it fails at run time.
@@ -160,15 +160,25 @@ struct AnalyzeArgs {
     /// Skip the per-instruction-kind execution profile (shown by default)
     #[arg(long = "no-profile", action = clap::ArgAction::SetFalse, default_value_t = true)]
     profile: bool,
+
+    /// Write the output expressions to this file in the `.vexpr` text format,
+    /// which `compare --exprs` reads back.
+    #[arg(long, value_name = "FILE")]
+    emit_exprs: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct CompareArgs {
-    /// Reference PTX file (omit when using --from-dump)
+    /// Reference PTX file, or `.vexpr` file with --exprs (omit when using --from-dump)
     file1: Option<PathBuf>,
 
-    /// Optimized PTX file (omit when using --from-dump)
+    /// Optimized PTX file, or `.vexpr` file with --exprs (omit when using --from-dump)
     file2: Option<PathBuf>,
+
+    /// FILE1 and FILE2 are `.vexpr` expression files (from `analyze --emit-exprs`):
+    /// check them directly, without parsing PTX or running symbolic execution.
+    #[arg(long, conflicts_with_all = ["from_dump", "dump_vcs"])]
+    exprs: bool,
 
     /// Reference kernel entry name (defaults to the first in the module)
     #[arg(long)]
@@ -451,6 +461,18 @@ fn build_config(input: ConfigInput) -> Result<AnalysisConfig, String> {
     Ok(config)
 }
 
+fn write_exprs(path: &Path, exprs: &SymbolicOutputs) -> std::io::Result<()> {
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    volta_expr::text::write_text(&mut out, exprs)?;
+    std::io::Write::flush(&mut out)
+}
+
+fn read_exprs(path: &Path) -> Result<SymbolicOutputs, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    volta_expr::text::read_text(&text).map_err(|e| format!("{}: {}", path.display(), e))
+}
+
 fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     let file = &args.file;
     let module = match load_module(file) {
@@ -467,7 +489,7 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     };
 
     let start = Instant::now();
-    let result = analyze_kernel(&module, args.kernel.as_deref(), config);
+    let result = analyze_kernel(&module, args.kernel.as_deref(), config, &CanonValueEquality);
     let elapsed = start.elapsed().as_secs_f64();
 
     match result {
@@ -480,14 +502,14 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
                 output.stats.block_syncs,
                 output.stats.warp_syncs
             );
-            for (name, elems) in &output.outputs {
+            for (name, elems) in &output.exprs.outputs {
                 println!("  output '{}': {} element(s) written", name, elems.len());
                 for (index, expr) in elems.iter().take(args.print_outputs as usize) {
                     println!(
                         "    {}[{}] = {}",
                         name,
                         index,
-                        output.arena.display_expr(*expr)
+                        output.exprs.arena.display_expr(*expr)
                     );
                 }
                 if elems.len() as u64 > args.print_outputs {
@@ -500,6 +522,13 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
                     "instruction",
                     &output.op_counts,
                 );
+            }
+            if let Some(path) = &args.emit_exprs {
+                if let Err(e) = write_exprs(path, &output.exprs) {
+                    eprintln!("error: failed to write {}: {}", path.display(), e);
+                    return ExitCode::FAILURE;
+                }
+                println!("Wrote output expressions to {}", path.display());
             }
             log.record(&format!(
                 "analyze {}: OK in {:.3}s, {} instructions",
@@ -573,8 +602,28 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
         eprintln!("note: --iterations only affects --backend decision");
     }
 
-    let (reference, optimized, exec_secs): (AnalysisOutput, AnalysisOutput, Option<f64>) =
-        if let Some(dump_path) = &args.from_dump {
+    let (reference, optimized, exec_secs): (SymbolicOutputs, SymbolicOutputs, Option<f64>) =
+        if args.exprs {
+            let (Some(file1), Some(file2)) = (args.file1.as_ref(), args.file2.as_ref()) else {
+                eprintln!("error: compare --exprs needs FILE1 and FILE2 (.vexpr files)");
+                return ExitCode::FAILURE;
+            };
+            let reference = match read_exprs(file1) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let optimized = match read_exprs(file2) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            (reference, optimized, None)
+        } else if let Some(dump_path) = &args.from_dump {
             if args.file1.is_some() || args.file2.is_some() {
                 eprintln!("note: --from-dump ignores FILE1/FILE2 and the launch-config flags");
             }
@@ -585,11 +634,7 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            (
-                dump.reference.into_analysis_output(),
-                dump.optimized.into_analysis_output(),
-                None,
-            )
+            (dump.reference, dump.optimized, None)
         } else {
             let (Some(file1), Some(file2)) = (args.file1.as_ref(), args.file2.as_ref()) else {
                 eprintln!("error: compare needs FILE1 and FILE2 (or --from-dump)");
@@ -641,7 +686,12 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
             }
 
             let start = Instant::now();
-            let reference = match analyze_kernel(&module1, args.kernel1.as_deref(), config1) {
+            let reference = match analyze_kernel(
+                &module1,
+                args.kernel1.as_deref(),
+                config1,
+                &CanonValueEquality,
+            ) {
                 Ok(o) => o,
                 Err(e) => {
                     eprintln!("error: reference kernel: {}", e);
@@ -649,7 +699,12 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let optimized = match analyze_kernel(&module2, args.kernel2.as_deref(), config2) {
+            let optimized = match analyze_kernel(
+                &module2,
+                args.kernel2.as_deref(),
+                config2,
+                &CanonValueEquality,
+            ) {
                 Ok(o) => o,
                 Err(e) => {
                     eprintln!("error: optimized kernel: {}", e);
@@ -674,26 +729,23 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
 
             if let Some(dump_path) = &args.dump_vcs {
                 let dump = VcDump {
-                    reference: VcSnapshot::from_output(reference),
-                    optimized: VcSnapshot::from_output(optimized),
+                    reference: reference.exprs,
+                    optimized: optimized.exprs,
                 };
                 if let Err(e) = write_vc_dump(dump_path, &dump) {
                     eprintln!("error: failed to write dump {}: {}", dump_path.display(), e);
                     return ExitCode::FAILURE;
                 }
                 println!("Dumped verification conditions to {}", dump_path.display());
-                (
-                    dump.reference.into_analysis_output(),
-                    dump.optimized.into_analysis_output(),
-                    Some(exec_secs),
-                )
+                (dump.reference, dump.optimized, Some(exec_secs))
             } else {
-                (reference, optimized, Some(exec_secs))
+                (reference.exprs, optimized.exprs, Some(exec_secs))
             }
         };
 
     if exec_secs.is_none() {
-        println!("Loaded verification conditions from dump (no fresh symbolic execution).");
+        let source = if args.exprs { ".vexpr files" } else { "dump" };
+        println!("Loaded verification conditions from {source} (no fresh symbolic execution).");
     }
 
     // The arrays to check: exactly the --check-array names, in their given
@@ -965,14 +1017,15 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 
     let start = Instant::now();
-    let mut kernel_output = match analyze_kernel(&module, args.kernel.as_deref(), config) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("error: {}", e);
-            log.record(&format!("verify {}: FAILED: {}", args.file.display(), e));
-            return ExitCode::FAILURE;
-        }
-    };
+    let mut kernel_output =
+        match analyze_kernel(&module, args.kernel.as_deref(), config, &CanonValueEquality) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                log.record(&format!("verify {}: FAILED: {}", args.file.display(), e));
+                return ExitCode::FAILURE;
+            }
+        };
     let exec_secs = start.elapsed().as_secs_f64();
 
     if args.profile {
@@ -995,7 +1048,12 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
     // `unfold` builds, so the two sides still pair up.
     if args.sample > 0 {
         for name in &check_arrays {
-            if let Some((_, elems)) = kernel_output.outputs.iter_mut().find(|(n, _)| n == name) {
+            if let Some((_, elems)) = kernel_output
+                .exprs
+                .outputs
+                .iter_mut()
+                .find(|(n, _)| n == name)
+            {
                 elems.truncate(args.sample as usize);
             }
         }
@@ -1017,7 +1075,7 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
     };
     let vc_start = Instant::now();
     let report =
-        check_output_equivalence_with(&kernel_output, &spec_output, &check_arrays, &options);
+        check_output_equivalence_with(&kernel_output.exprs, &spec_output, &check_arrays, &options);
     let vc_secs = vc_start.elapsed().as_secs_f64();
 
     match report {

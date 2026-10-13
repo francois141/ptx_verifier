@@ -2,9 +2,9 @@
 
 use id_collections::id_type;
 
-use crate::symbolic::ExprId;
 use crate::symbols::RegId;
 use crate::types::{RegClass, RegCounts};
+use volta_expr::ExprId;
 
 /// Handle to one `mbarrier` object's state, which lives in an interpreter
 /// table; `Copy` and `ExprId`-sized, so `Value::Mbarrier` doesn't grow `Value`.

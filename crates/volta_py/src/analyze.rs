@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use pyo3::prelude::*;
 
 use volta_analysis::driver;
+use volta_equivalence::CanonValueEquality;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::Module;
 use volta_frontend::parse as ptx_parse;
@@ -59,16 +60,17 @@ pub struct AnalyzeResultPy {
 #[pyo3(signature = (source, config, kernel=None))]
 pub fn analyze(source: &str, config: &ConfigPy, kernel: Option<&str>) -> PyResult<AnalyzeResultPy> {
     let module = parse_module(source)?;
-    let output =
-        driver::analyze_kernel(&module, kernel, config.0.clone()).map_err(analysis_error_to_py)?;
+    let output = driver::analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
+        .map_err(analysis_error_to_py)?;
 
     let outputs = output
+        .exprs
         .outputs
         .iter()
         .map(|(name, elems)| {
             let elems = elems
                 .iter()
-                .map(|(index, expr)| (*index, output.arena.display_expr(*expr)))
+                .map(|(index, expr)| (*index, output.exprs.arena.display_expr(*expr)))
                 .collect();
             (name.clone(), elems)
         })

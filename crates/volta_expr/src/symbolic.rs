@@ -572,7 +572,7 @@ impl ExprArena {
     // -----------------------------------------------------------------
 
     /// Push a node into the arena and return its id.
-    fn push(&mut self, node: ExprNode) -> ExprId {
+    pub(crate) fn push(&mut self, node: ExprNode) -> ExprId {
         self.nodes.push(node)
     }
 

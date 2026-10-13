@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::symbolic::{ExprArena, ExprId, ExprNode, SymbolRef};
+use volta_expr::{ExprArena, ExprId, ExprNode, SymbolRef};
 
 /// Numeric evaluation failure.
 #[derive(Debug, Clone, PartialEq)]
@@ -244,7 +244,7 @@ mod tests {
     /// values, else the oracle is blind to canon conflating them.
     #[test]
     fn named_and_machine_symbols_get_independent_values() {
-        use crate::symbolic::ExprNode;
+        use volta_expr::ExprNode;
 
         let mut ar = ExprArena::new();
         let machine = ar.symbol();

@@ -1,13 +1,12 @@
 //! End-to-end: parse a textual matmul spec, instantiate and unfold it, and
 //! check it against a hand-built reference through the kernel equivalence
-//! pipeline (like `volta_analysis::spec`'s test, but from spec source text).
+//! pipeline (like `volta_equivalence`'s spec tests, but from spec source text).
 
 use std::collections::HashMap;
 
-use volta_analysis::driver::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
-use volta_analysis::eval::{AnalysisOutput, Stats};
-use volta_analysis::spec::unfold;
-use volta_analysis::symbolic::ExprArena;
+use volta_equivalence::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
+use volta_expr::spec::unfold;
+use volta_expr::{ExprArena, SymbolicOutputs};
 
 const MATMUL_SPEC: &str = "
 dim M;
@@ -52,11 +51,9 @@ fn parsed_matmul_spec_matches_a_hand_built_reference() {
             elems.push((i * 2 + j, acc));
         }
     }
-    let hand_built = AnalysisOutput {
+    let hand_built = SymbolicOutputs {
         arena,
         outputs: vec![("C".to_string(), elems)],
-        stats: Stats::default(),
-        op_counts: Default::default(),
     };
 
     let report = check_output_equivalence_with(

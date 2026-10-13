@@ -5,8 +5,8 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use volta_analysis::eval::AnalysisOutput;
-use volta_analysis::symbolic::{ExprId, ExprNode};
+use volta_expr::SymbolicOutputs;
+use volta_expr::{ExprId, ExprNode};
 use volta_z3::{ElementOutcome, ElementResult, ExpMode, Z3Counts};
 
 use crate::results::median;
@@ -31,7 +31,7 @@ pub struct Z3ModeRun {
     /// Per-outcome element counts (iteration 1's verdicts).
     pub counts: Z3Counts,
     /// Iteration 1's per-element outcomes and solve times, in
-    /// `driver::sampled_elements` order - positionally aligned with the
+    /// `volta_equivalence::check::sampled_elements` order - positionally aligned with the
     /// decision procedure's per-element results.
     pub elements: Vec<ElementResult>,
 }
@@ -65,7 +65,7 @@ pub enum Z3PhaseOutcome {
 
 /// Does any expression reachable from the outputs contain `Exp` (deciding
 /// the `+exp-axiom` rerun)? Iterative DFS from output roots only.
-fn vc_uses_exp(output: &AnalysisOutput) -> bool {
+fn vc_uses_exp(output: &SymbolicOutputs) -> bool {
     let mut visited = vec![false; output.arena.node_count()];
     let mut stack: Vec<_> = output
         .outputs
@@ -102,9 +102,9 @@ fn carved_out(outcome: &ElementOutcome) -> bool {
 /// compared (z3's unknown/timeout boundary is budget-dependent); elements that
 /// never reach the solver contribute zero, as in iteration 1.
 fn z3_resolve_time(
-    reference: &AnalysisOutput,
+    reference: &SymbolicOutputs,
     r: ExprId,
-    optimized: &AnalysisOutput,
+    optimized: &SymbolicOutputs,
     o: ExprId,
     timeout: Option<Duration>,
     mode: ExpMode,
@@ -116,10 +116,10 @@ fn z3_resolve_time(
 }
 
 /// Run Z3 `iterations` times over `sampled` (the caller's
-/// `driver::sampled_elements` list), applying the carve-out on re-solves.
+/// `volta_equivalence::check::sampled_elements` list), applying the carve-out on re-solves.
 fn z3_iterations(
-    reference: &AnalysisOutput,
-    optimized: &AnalysisOutput,
+    reference: &SymbolicOutputs,
+    optimized: &SymbolicOutputs,
     arrays: &[String],
     sampled: &[(&str, u64, ExprId, ExprId)],
     sample: u64,
@@ -133,7 +133,7 @@ fn z3_iterations(
             .map_err(|e| format!("z3: {}", e))?;
     let counts = report.counts();
     // The re-solve loop pairs `report.elements` with `sampled` positionally;
-    // both derive from `driver::sampled_elements`, so check (in release too)
+    // both derive from `volta_equivalence::check::sampled_elements`, so check (in release too)
     // that they agree - a silent mispairing would re-solve the wrong exprs.
     if report.elements.len() != sampled.len()
         || report
@@ -144,7 +144,7 @@ fn z3_iterations(
     {
         return Err(format!(
             "z3 element list ({} elements) does not match the sampled VC list ({}): \
-             volta_z3::check_output_equivalence and driver::sampled_elements must \
+             volta_z3::check_output_equivalence and volta_equivalence::check::sampled_elements must \
              sample identically",
             report.elements.len(),
             sampled.len(),
@@ -179,12 +179,12 @@ fn z3_iterations(
 }
 
 /// Run one benchmark's Z3 phase (default exp encoding, plus `+exp-axiom` when
-/// the VCs use exp) over `driver::sampled_elements`. Never panics: failures
+/// the VCs use exp) over `volta_equivalence::check::sampled_elements`. Never panics: failures
 /// become [`Z3PhaseOutcome::Failed`] so a batch run keeps going.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_z3_phase(
-    reference: &AnalysisOutput,
-    optimized: &AnalysisOutput,
+    reference: &SymbolicOutputs,
+    optimized: &SymbolicOutputs,
     arrays: &[String],
     sampled: &[(&str, u64, ExprId, ExprId)],
     sample: u64,

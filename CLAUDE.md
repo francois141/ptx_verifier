@@ -23,7 +23,9 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
 crates/
 ├── volta_common/     # Base utilities (spans, file caching, error reporting, run logs)
 ├── volta_frontend/   # PTX lexer and parser
-├── volta_analysis/   # Abstract interpreter
+├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
+├── volta_analysis/   # Abstract interpreter (PTX -> expressions)
+├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_z3/         # Z3 comparison backend (SMT-LIB2 via linked libz3)
 ├── volta_bench/      # Paper-evaluation benchmark harness
 └── volta_cli/        # Command-line interface
@@ -34,13 +36,19 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli      → volta_z3, volta_analysis, volta_frontend, volta_common
-volta_bench    → volta_z3, volta_analysis, volta_frontend, volta_common
-volta_z3       → volta_analysis
-volta_analysis → volta_frontend, volta_common
-volta_frontend → volta_common
-volta_common   → (nothing)
+volta_cli         → volta_z3, volta_equivalence, volta_analysis, volta_expr, volta_frontend, volta_common
+volta_bench       → volta_z3, volta_equivalence, volta_analysis, volta_expr, volta_frontend, volta_common
+volta_z3          → volta_equivalence, volta_expr
+volta_equivalence → volta_expr
+volta_analysis    → volta_expr, volta_frontend, volta_common
+volta_expr        → (nothing)
+volta_frontend    → volta_common
+volta_common      → (nothing)
 ```
+
+`volta_analysis` (the producer) and `volta_equivalence` (the consumer) share
+only the expression language; neither depends on the other. Each lists the
+other as a dev-dependency only, for end-to-end tests.
 
 ## Crate: volta_common
 
@@ -79,21 +87,14 @@ Pratt parser producing AST. Entry point: `parse_module()`.
 - `ParsedInstruction` - Strongly-typed enum (~105 instruction variants, defined in `ast.rs`)
 - Converts generic `Instruction` to typed variants with validated modifiers
 
-## Crate: volta_analysis
+## Crate: volta_expr
 
-**Path**: `crates/volta_analysis/`
+**Path**: `crates/volta_expr/`
 
-### ID Types
-
-Strongly-typed IDs (`#[id_type]` from `id_collections`), each declared next
-to its subsystem:
-
-- `InstrId` (`lowered.rs`), `ThreadId` (`eval/mod.rs`), `ParamId` and
-  `RegId` = `RegClass` + `RegIndex` (`symbols.rs`; class: Pred,
-  Bits8/16/32/64/128), `ExprId`/`StringId`/`SymbolId` (`symbolic.rs`;
-  `SymbolId::fresh()` draws from a process-global counter)
-- `types.rs` holds `ScalarTypeExt` (width/kind helpers over the AST's
-  `ScalarType`), not IDs
+The expression language shared by producers (the interpreter, specs) and
+consumers (the decision procedure, Z3, the oracle). Depends on no other
+Volta crate. IDs: `ExprId`/`StringId`/`SymbolId` (`SymbolId::fresh()` draws
+from a process-global counter).
 
 ### Symbolic Expressions (`symbolic.rs`)
 
@@ -123,6 +124,68 @@ real zero alike - anything/0) build unfolded nodes.
 - **Comparison**: `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge` (return boolean)
 - **Boolean**: `And`, `Or`, `Not`
 - **Other**: `Select` (ternary), `Min`, `Max`, `Abs`, type conversions
+
+### Outputs (`outputs.rs`)
+
+`SymbolicOutputs { arena, outputs }`: one run's written output elements as
+`(index, root ExprId)` per array, sorted by index - the hand-off type
+(`AnalysisOutput::exprs`, `spec::unfold`'s result, both sides of a
+`VcDump`, the checker's input). `validate()` bounds-checks every id;
+`element(array, index)` looks one up.
+
+### Specs (`spec.rs`)
+
+Mathematical specs: an output array as a formula over other arrays
+(`OutputSpec`, `SpecExpr`, `Shape`, `SpecEnv`), unfolded by `unfold` into a
+`SymbolicOutputs` with the arena's own constructors, so a kernel checks
+against a spec exactly like against a second kernel (`volta verify`). The
+`volta_spec` crate parses the textual `.spec` language into these types.
+
+### Value equality (`value_equality.rs`)
+
+`ValueEquality`: the race detector's hook for a benign same-value store,
+injected into `analyze_kernel` so the interpreter needs no decision
+procedure; `volta_equivalence::CanonValueEquality` implements it.
+
+### Text format (`text.rs`, `.vexpr`)
+
+A producer-neutral exchange format: `write_text`/`to_text` and
+`read_text`. Header `volta-expr 1`, then one node per line numbered densely
+from `n0`, children before parents (sharing preserved, so size is linear in
+the DAG), then `out "array" index nK` lines in ascending index order;
+`#` comments and blank lines allowed.
+
+```
+volta-expr 1
+n0 = elem "in" 0
+n1 = elem "in" 1
+n2 = add n0 n1
+out "out" 0 n2
+```
+
+Operations: `int`/`real`/`bool`/`sym`/`param "name"`/`elem "array" i`/
+`read "array" nK`/`discarded`/`undefined`, then the node names lowercased
+(`add`, `fma`, `select`, `bitand`, `lshr`, `tofloat`, ...). Reals are exact
+(`p/q`, `inf`, `-inf`). Only nodes reachable from an output are written, so
+the interpreter's address/predicate scratch nodes drop out and the file is
+deterministic. Reading rebuilds nodes exactly as written (no constant
+folding) and validates; the writer's `match` is exhaustive over `ExprNode`,
+so a new node kind cannot ship without a text form.
+
+## Crate: volta_analysis
+
+**Path**: `crates/volta_analysis/`
+
+### ID Types
+
+Strongly-typed IDs (`#[id_type]` from `id_collections`), each declared next
+to its subsystem:
+
+- `InstrId` (`lowered.rs`), `ThreadId` (`eval/mod.rs`), `ParamId` and
+  `RegId` = `RegClass` + `RegIndex` (`symbols.rs`; class: Pred,
+  Bits8/16/32/64/128); the expression ids live in `volta_expr`
+- `types.rs` holds `ScalarTypeExt` (width/kind helpers over the AST's
+  `ScalarType`), not IDs
 
 ### Lowering (`lowering.rs`, `lowered.rs`)
 
@@ -154,6 +217,7 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), sync χ over the full mask (exited lanes included), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
 - `eval/config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
 - `eval/error.rs` - `EvalError`: `DataRace`, `Deadlock`, `NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.
+- `eval/value_equality.rs` - `ValueEquality`, the injected hook the race detector asks whether a write-write conflict stores the same real (a benign store) once id and structural equality fail; `volta_equivalence::CanonValueEquality` decides it with canon, keeping the dependency one-way
 
 Key semantics: input-array symbols materialize lazily on first read; reads of
 never-written registers/shared bytes yield `Undefined` (an error only if it
@@ -162,8 +226,33 @@ nvcc's `selp` accumulator-init idiom both rely on this.
 
 ### Driver (`driver.rs`)
 
-- `analyze_kernel(module, kernel_name, config) -> Result<AnalysisOutput, AnalysisError>`
-- `AnalysisOutput`: per-output-array written elements as `(index, ExprId)` + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end)
+- `analyze_kernel(module, kernel_name, config, value_equality) -> Result<AnalysisOutput, AnalysisError>` (`value_equality`: the race detector's `ValueEquality` hook; every binary passes `CanonValueEquality`)
+- `AnalysisOutput`: `exprs: SymbolicOutputs` (per-output-array written elements as `(index, ExprId)`) + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end)
+- `write_op_counts(out, label, counts)` - the one profile-table formatter,
+  used by both `volta` and `volta-bench`
+
+### Logging (`logging.rs`)
+
+Gated by the `logging` feature (`volta_analysis` and `volta_equivalence`,
+both passed through by `volta_cli`/`volta_bench`); without it the macros
+are no-op stubs. Wired at the decision points: barrier/warp-group fires
+(trace), deadlock (warn), launch config and completion stats (info) in
+`volta_analysis`; VC session recycles (info) and fraction-equality
+escalation (debug) in `volta_equivalence`. `cargo run -p volta_cli
+--features logging -- --log-level info analyze ...` narrates a run.
+
+## Crate: volta_equivalence
+
+**Path**: `crates/volta_equivalence/`
+
+Everything after VC extraction: takes two `SymbolicOutputs` and decides them
+element by element. Depends only on `volta_expr`, so it checks expressions
+from any producer - in memory, from a `.vcdump`, or from `.vexpr` text.
+`equiv::CanonValueEquality` implements the interpreter's `ValueEquality`
+hook.
+
+### Output checking (`check.rs`)
+
 - `paired_elements(ref, opt, arrays)` - pairs the two outputs' written
   elements for each array the caller names (both sides must have each
   named array with identical index sets; unnamed arrays are not compared
@@ -196,14 +285,18 @@ nvcc's `selp` accumulator-init idiom both rely on this.
   time, `Some` iff `verify_numeric`).
 - `check_output_equivalence(ref, opt, arrays)` - the Default-options wrapper
   (all elements, no oracle, one iteration)
-- `VcSnapshot`/`VcDump` - serde-serializable arena + output footprint, the
+
+### VC dumps (`vc_dump.rs`)
+
+- `VcDump { reference, optimized }` (two `SymbolicOutputs`, wire-identical
+  to the former `VcSnapshot`s) - serde-serializable arena + output footprint, the
   payload of `volta compare --dump-vcs`/`--from-dump` and of volta-bench's
   per-benchmark VC files; `validate()` checks
   every id (in bounds and children-before-parents) so a corrupt dump errors
   instead of panicking. The arena's serde impls are plain derives over
   `IdVec` via `id_collections`'s `serde` feature (wire-identical to `Vec`,
   serialized in place - no clone of GiB-scale arenas at dump time).
-- `vc_dump` submodule - the one `.vcdump` on-disk format implementation:
+- the one `.vcdump` on-disk format implementation:
   `write_vc_dump(path, &VcDump)` / `read_vc_dump(path)`, layered over
   `write_vc_dump_to(&mut impl Write, ..)` / `read_vc_dump_bytes(&[u8])`
   so volta-bench can hash the exact byte stream on write (through a tee
@@ -213,8 +306,6 @@ nvcc's `selp` accumulator-init idiom both rely on this.
   its own), bincode fixint payload with decode allocations capped at
   payload size, `validate()` on load. Shared by `volta_cli` and
   `volta_bench`, so a dump written by either tool loads in both.
-- `write_op_counts(out, label, counts)` - the one profile-table formatter,
-  used by both `volta` and `volta-bench`
 
 ### Decision procedure (`canon/`, `equiv.rs`, `numeric.rs`)
 
@@ -242,15 +333,6 @@ The paper's canonicalizer, in Rust:
   `verify_verdict` confirms EQUIV/DIFF claims (volta-bench
   `--verify-numeric`). Agreement at random points ⇒ equality almost surely
   for this fragment (the paper's own Schwartz-Zippel argument).
-
-### Logging (`logging.rs`)
-
-Gated by the `logging` feature (`volta_analysis`, passed through by
-`volta_cli`); without it the macros are no-op stubs. Wired at the decision
-points: barrier/warp-group fires (trace), deadlock (warn), launch config,
-completion stats, and VC session recycles (info), fraction-equality
-escalation (debug). `cargo run -p volta_cli --features logging --
---log-level info analyze ...` narrates a run.
 
 ## Crate: volta_z3
 
@@ -316,7 +398,7 @@ budget kills them, reported `Timeout` - Table 8's "with axiom" column,
   a genuine solver query - no structural short-circuit, so identical
   sides cost a full spawn+solve, which is the point), verdict
   parsing, `Z3Counts`, `check_output_equivalence` over
-  `driver::paired_elements` (the same element pairing as the decision
+  `volta_equivalence::check::paired_elements` (the same element pairing as the decision
   procedure), and the regression tests for every invariant above.
   Reported solve time (`Z3CheckResult::solve`) is the in-worker
   measurement - process spawn and translation excluded; Timeout
@@ -353,10 +435,10 @@ kind only, since diagnostic text may embed schedule-dependent details -
 verdict kinds are the contract; a mismatch fails the benchmark loudly), then
 the dump written once from the last generation (timed as
 `dump_write_secs`), then **decision solve** (`--iterations` runs via
-`driver::check_output_equivalence_with` - fresh session per iteration,
+`volta_equivalence::check_output_equivalence_with` - fresh session per iteration,
 verdict from iteration 1, later iterations must agree), then the
 optional **Z3 solve** (`--z3`; `src/z3_phase.rs`) over the exact same
-`driver::sampled_elements` list. Race-check benchmarks stop after
+`volta_equivalence::check::sampled_elements` list. Race-check benchmarks stop after
 generation (no dump/solve/Z3). Every timed phase defaults to
 `--iterations` 10; tables print medians (the convention: median is the
 headline number - iteration 1 includes process/allocator warmup, the
@@ -423,7 +505,7 @@ fields plus `dump_load_secs`, and the header adds `backend` +
 
 Output files under `--out-dir` (default `bench-out/`, gitignored):
 `vcs/<sanitized-name>.vcdump` per equivalence benchmark (written via the
-shared `driver::vc_dump` module, so `volta compare --from-dump` replays
+shared `volta_equivalence::vc_dump` module, so `volta compare --from-dump` replays
 them; overwritten on rerun; a run whose benchmark names collide under
 sanitization is rejected up front naming both offenders -
 `results::check_slug_collisions`, corpus-guarded by a test; race-check
@@ -458,7 +540,7 @@ run one category at a time under `ulimit -v` with `--recycle-terms 250000`
 Commands:
 
 - `volta parse <file>` - Check syntax
-- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run symbolic execution, report races/deadlocks, print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip)
+- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run symbolic execution, report races/deadlocks, print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip); `--emit-exprs FILE` writes them as `.vexpr` text
 - `volta compare <ref.ptx> <opt.ptx> --kernel1 .. --kernel2 .. --check-array out` - Two-kernel
   equivalence check (launch flags shared with `analyze` via a flattened
   `LaunchArgs`; `--block2`/`--grid2` override the optimized kernel's dims).
@@ -467,9 +549,11 @@ Commands:
   declared config before execution and by `paired_elements` after.
   `--backend decision|z3`, `--iterations N` (decision backend only,
   default 1), `--dump-vcs`/
-  `--from-dump` (the shared `driver::vc_dump` format - volta-bench's
-  `bench-out/vcs/*.vcdump` files replay here too). Exits 0 only when every
-  checked element is proved equivalent.
+  `--from-dump` (the shared `volta_equivalence::vc_dump` format - volta-bench's
+  `bench-out/vcs/*.vcdump` files replay here too). `--exprs` reads FILE1/
+  FILE2 as `.vexpr` files instead (e.g. from `analyze --emit-exprs`): no PTX,
+  no symbolic execution. Exits 0 only when every checked element is proved
+  equivalent.
 
 Every run writes a `volta_common::run_log` file (`--log-dir`/
 `--no-log-file`).
@@ -495,10 +579,10 @@ Lowering (lowering.rs) ──► LoweredProgram (resolved RegIds, InstrIds)
 Evaluator (eval/interp.rs) ──► Symbolic execution with N threads
     │                           (χ race detection, warp/tensor-core ops)
     ▼
-AnalysisOutput ──► per-element output expressions + statistics
-    │
+AnalysisOutput ──► SymbolicOutputs (volta_expr) + statistics
+    │                 (optionally via .vcdump or .vexpr files)
     ▼
-Decision procedure (canon/ via equiv.rs) ──► per-element VC checking
+volta_equivalence (canon/ via equiv.rs) ──► per-element VC checking
                                              (+ numeric.rs oracle)
 ```
 

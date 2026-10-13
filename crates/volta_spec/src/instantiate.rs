@@ -1,11 +1,11 @@
 //! Turn a [`ParsedSpec`] (named, symbolic dims) into the concrete
-//! `(SpecEnv, Vec<OutputSpec>)` pair `volta_analysis::spec::unfold` needs, given a value
+//! `(SpecEnv, Vec<OutputSpec>)` pair `volta_expr::spec::unfold` needs, given a value
 //! for every declared `dim`. Separate from parsing so one parsed spec serves many sizes.
 
 use std::collections::HashMap;
 use std::fmt;
 
-use volta_analysis::spec::{OutputSpec, Shape, SpecEnv};
+use volta_expr::spec::{OutputSpec, Shape, SpecEnv};
 
 use crate::ast::ParsedSpec;
 

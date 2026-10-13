@@ -1,12 +1,12 @@
 //! Probe canon `Session` reuse, timing each check. A: one session, footprint
 //! order; B: one session, mid-row element first; C: fresh session per element.
-//! Usage: cargo run --release -p volta_analysis --example canon_order -- <dump>
+//! Usage: cargo run --release -p volta_equivalence --example canon_order -- <dump>
 
 use std::time::Instant;
 
-use volta_analysis::driver::vc_dump::read_vc_dump;
-use volta_analysis::equiv::EquivSession;
-use volta_analysis::symbolic::{ExprArena, ExprId};
+use volta_equivalence::equiv::EquivSession;
+use volta_equivalence::vc_dump::read_vc_dump;
+use volta_expr::{ExprArena, ExprId};
 
 /// Time a replica of the session's `ensure_ref_counts` prepass: parent
 /// counts over every node of the arena (the one-time per-side cost the

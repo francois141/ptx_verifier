@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use volta_analysis::symbolic::{ExprArena, ExprId, ExprNode, Real, RealRepr};
+use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("unsupported by the Z3 backend: {0}")]

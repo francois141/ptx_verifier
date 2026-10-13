@@ -1,15 +1,15 @@
-//! Mathematical specs: an output array as a formula over other arrays, unfolded into an
-//! [`AnalysisOutput`] via the interpreter's [`ExprArena`] constructors, so a kernel checks
-//! against a spec like against a second kernel. All bounds/indices are concrete (unrolled).
+//! Mathematical specs: an output array as a formula over other arrays, unfolded into
+//! [`SymbolicOutputs`] with the same [`ExprArena`] constructors the interpreter uses, so a
+//! kernel checks against a spec like against a second kernel. Bounds/indices are concrete.
 
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::eval::{AnalysisOutput, Stats};
+use crate::outputs::SymbolicOutputs;
 use crate::symbolic::{ExprArena, ExprId, NanError, StringId};
 
 /// A row-major shape flattening a multi-dimensional index into the flat element index of
-/// `InputElement` and `AnalysisOutput::outputs` - the convention a kernel's own address
+/// `InputElement` and `SymbolicOutputs::outputs` - the convention a kernel's own address
 /// arithmetic produces, so a spec's reads/writes line up with the interpreter's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape(Vec<u64>);
@@ -44,7 +44,7 @@ impl Shape {
 
     /// Every multi-dim index in ascending flat order (so `unfold`'s
     /// per-array element list comes out sorted by index, matching
-    /// `AnalysisOutput::outputs`'s contract).
+    /// `SymbolicOutputs::outputs`'s contract).
     fn indices(&self) -> impl Iterator<Item = Vec<u64>> + '_ {
         (0..self.size()).map(move |mut flat| {
             let mut idx = vec![0u64; self.0.len()];
@@ -361,14 +361,14 @@ impl From<NanError> for SpecError {
     }
 }
 
-/// Unfold every `OutputSpec` into one `AnalysisOutput` over one shared arena (repeated reads
+/// Unfold every `OutputSpec` into one `SymbolicOutputs` over one shared arena (repeated reads
 /// share `InputElement` identity). `sample` keeps each array's first `sample` indices (0 =
 /// all), bounding construction too; sample the kernel's output identically so indices pair.
 pub fn unfold(
     specs: &[OutputSpec],
     env: &SpecEnv,
     sample: u64,
-) -> Result<AnalysisOutput, SpecError> {
+) -> Result<SymbolicOutputs, SpecError> {
     let mut arena = ExprArena::new();
     let mut array_ids: HashMap<String, StringId> = HashMap::new();
     let mut memo: ReduceMemo = HashMap::new();
@@ -402,12 +402,7 @@ pub fn unfold(
         }
         outputs.push((spec.array.clone(), elems));
     }
-    Ok(AnalysisOutput {
-        arena,
-        outputs,
-        stats: Stats::default(),
-        op_counts: Default::default(),
-    })
+    Ok(SymbolicOutputs { arena, outputs })
 }
 
 fn resolve_bound(bound: &Bound, env: &SpecEnv) -> Result<u64, SpecError> {
@@ -696,7 +691,6 @@ fn eval(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
 
     /// `C[i,j] = sum_k A[i,k] * B[k,j]` over an M x N x K env.
     fn matmul_spec() -> Vec<OutputSpec> {
@@ -732,47 +726,6 @@ mod tests {
         assert_eq!(name, "C");
         let indices: Vec<u64> = elems.iter().map(|&(i, _)| i).collect();
         assert_eq!(indices, vec![0, 1, 2, 3]);
-    }
-
-    /// A spec's unfolded `AnalysisOutput` must work as one side of the kernel equivalence
-    /// pipeline: a manual `Fma` chain over the same `InputElement`s must check equivalent
-    /// to the matmul spec through `check_output_equivalence_with`.
-    #[test]
-    fn unfolded_matmul_is_equivalent_to_a_hand_built_reference() {
-        let spec_output = unfold(&matmul_spec(), &matmul_env(), 0).unwrap();
-
-        let mut arena = ExprArena::new();
-        let a = arena.intern_string("A");
-        let b = arena.intern_string("B");
-        let mut elems = Vec::new();
-        for i in 0u64..2 {
-            for j in 0u64..2 {
-                let mut acc = arena.int(0);
-                for k in 0u64..3 {
-                    let av = arena.input_element(a, i * 3 + k);
-                    let bv = arena.input_element(b, k * 2 + j);
-                    let term = arena.mul(av, bv);
-                    acc = arena.add(acc, term);
-                }
-                elems.push((i * 2 + j, acc));
-            }
-        }
-        let hand_built = AnalysisOutput {
-            arena,
-            outputs: vec![("C".to_string(), elems)],
-            stats: Stats::default(),
-            op_counts: Default::default(),
-        };
-
-        let report = check_output_equivalence_with(
-            &spec_output,
-            &hand_built,
-            &["C".to_string()],
-            &EquivCheckOptions::default(),
-        )
-        .unwrap();
-        assert!(matches!(report.outcome, EquivOutcome::Equivalent));
-        assert_eq!(report.elements_checked, 4);
     }
 
     #[test]
@@ -813,58 +766,6 @@ mod tests {
         ));
     }
 
-    /// A `dim`'s concrete value must be usable as a plain value in an expression body (e.g.
-    /// a mean's divisor), not just as a bound or shape: `SpecExpr::Var`/`IndexExpr::Var` must
-    /// fall back to `SpecEnv::dims`.
-    #[test]
-    fn dim_value_is_usable_directly_in_an_expression() {
-        // mean[i] = sum(j in 0..N, A[i,j]) / N
-        let body = SpecExpr::sum(
-            "j",
-            Bound::Named("N".to_string()),
-            SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("j")]),
-        ) / SpecExpr::var("N");
-        let specs = vec![OutputSpec {
-            array: "mean".to_string(),
-            shape: Shape::new(vec![2]),
-            vars: vec!["i".to_string()],
-            body,
-        }];
-        let env = SpecEnv {
-            dims: HashMap::from([("N".to_string(), 4)]),
-            arrays: HashMap::from([("A".to_string(), Shape::new(vec![2, 4]))]),
-        };
-        let output = unfold(&specs, &env, 0).unwrap();
-
-        let mut hand_arena = ExprArena::new();
-        let a = hand_arena.intern_string("A");
-        let mut elems = Vec::new();
-        for i in 0u64..2 {
-            let mut acc = hand_arena.int(0);
-            for j in 0u64..4 {
-                let term = hand_arena.input_element(a, i * 4 + j);
-                acc = hand_arena.add(acc, term);
-            }
-            let n = hand_arena.int(4);
-            elems.push((i, hand_arena.div(acc, n)));
-        }
-        let hand_built = AnalysisOutput {
-            arena: hand_arena,
-            outputs: vec![("mean".to_string(), elems)],
-            stats: Stats::default(),
-            op_counts: Default::default(),
-        };
-
-        let report = check_output_equivalence_with(
-            &output,
-            &hand_built,
-            &["mean".to_string()],
-            &EquivCheckOptions::default(),
-        )
-        .unwrap();
-        assert!(matches!(report.outcome, EquivOutcome::Equivalent));
-    }
-
     /// Sanity check for the transcendental variants added for the spec
     /// grammar's builtin functions (`exp`/`log`/`sqrt`/`abs`): the
     /// unfolded tree must land on the matching arena node.
@@ -890,56 +791,6 @@ mod tests {
         let (_, elems) = &output.outputs[0];
         let (_, id) = elems[0];
         assert!(matches!(output.arena.node(id), ExprNode::Abs(_)));
-    }
-
-    /// `max` reduction computes the same value as a hand-built running-max
-    /// chain (`M[i] = max(j in 0..N, A[i,j])`), including the empty-range
-    /// identity built into `ExprArena::max`'s own chain convention.
-    #[test]
-    fn max_reduction_matches_a_hand_built_running_max() {
-        let body = SpecExpr::max_reduce(
-            "j",
-            Bound::Named("N".to_string()),
-            SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("j")]),
-        );
-        let specs = vec![OutputSpec {
-            array: "M".to_string(),
-            shape: Shape::new(vec![2]),
-            vars: vec!["i".to_string()],
-            body,
-        }];
-        let env = SpecEnv {
-            dims: HashMap::from([("N".to_string(), 3)]),
-            arrays: HashMap::from([("A".to_string(), Shape::new(vec![2, 3]))]),
-        };
-        let spec_output = unfold(&specs, &env, 0).unwrap();
-
-        let mut arena = ExprArena::new();
-        let a = arena.intern_string("A");
-        let mut elems = Vec::new();
-        for i in 0u64..2 {
-            let mut acc = arena.float_from_f64(f64::NEG_INFINITY).unwrap();
-            for j in 0u64..3 {
-                let v = arena.input_element(a, i * 3 + j);
-                acc = arena.max(acc, v);
-            }
-            elems.push((i, acc));
-        }
-        let hand_built = AnalysisOutput {
-            arena,
-            outputs: vec![("M".to_string(), elems)],
-            stats: Stats::default(),
-            op_counts: Default::default(),
-        };
-
-        let report = check_output_equivalence_with(
-            &spec_output,
-            &hand_built,
-            &["M".to_string()],
-            &EquivCheckOptions::default(),
-        )
-        .unwrap();
-        assert!(matches!(report.outcome, EquivOutcome::Equivalent));
     }
 
     /// `Reduce`'s memo: the row max in `out[i,k] = A[i,k] - max(j in 0..N, A[i,j])` is

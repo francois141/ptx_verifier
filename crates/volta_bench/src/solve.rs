@@ -5,7 +5,8 @@
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use volta_analysis::driver::{paired_elements, sampled_elements, vc_dump::read_vc_dump_bytes};
+use volta_equivalence::check::{paired_elements, sampled_elements};
+use volta_equivalence::vc_dump::read_vc_dump_bytes;
 
 use crate::config::{BenchmarkCategory, BenchmarkDef};
 use crate::manifest::{self, ManifestCheck, VcsManifest};
@@ -191,8 +192,8 @@ impl BenchmarkRunner {
         drop(bytes);
         let dump_load_secs = load_start.elapsed().as_secs_f64();
 
-        let reference = dump.reference.into_analysis_output();
-        let optimized = dump.optimized.into_analysis_output();
+        let reference = dump.reference;
+        let optimized = dump.optimized;
         let arrays = def.reference.config.output_array_names();
         let mut stats = BenchmarkStats {
             dump_load_secs: Some(dump_load_secs),
@@ -249,9 +250,10 @@ impl BenchmarkRunner {
 
 #[cfg(test)]
 mod tests {
-    use volta_analysis::driver::{VcDump, VcSnapshot, vc_dump::write_vc_dump};
     use volta_analysis::eval::AnalysisConfig;
-    use volta_analysis::symbolic::{ExprArena, ExprId};
+    use volta_equivalence::vc_dump::{VcDump, write_vc_dump};
+    use volta_expr::SymbolicOutputs;
+    use volta_expr::{ExprArena, ExprId};
 
     use super::*;
     use crate::config::{BenchmarkDef, KernelRun, f32_output};
@@ -267,12 +269,12 @@ mod tests {
     }
 
     /// A snapshot writing `out[0..len)` as reads of input array `src`.
-    fn snapshot(src: &str, len: u64) -> VcSnapshot {
+    fn snapshot(src: &str, len: u64) -> SymbolicOutputs {
         let mut arena = ExprArena::new();
         let sid = arena.intern_string(src);
         let elems: Vec<(u64, ExprId)> =
             (0..len).map(|i| (i, arena.input_element(sid, i))).collect();
-        VcSnapshot {
+        SymbolicOutputs {
             arena,
             outputs: vec![("out".to_string(), elems)],
         }

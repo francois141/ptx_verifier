@@ -4,10 +4,10 @@
 
 use std::time::Duration;
 
-use volta_analysis::driver::{
-    EquivOutcome, analyze_kernel, check_output_equivalence, paired_elements, sampled_elements,
-};
+use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
+use volta_equivalence::check::{paired_elements, sampled_elements};
+use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence};
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::parse::Parser;
 use volta_z3::{ExpMode, Z3Verdict};
@@ -88,7 +88,8 @@ fn analyze(src: &str) -> AnalysisOutput {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    analyze_kernel(&module, None, config).unwrap_or_else(|e| panic!("analysis failed: {}", e))
+    analyze_kernel(&module, None, config, &CanonValueEquality)
+        .unwrap_or_else(|e| panic!("analysis failed: {}", e))
 }
 
 /// Sum of 4 inputs vs sum of 3: NotEquivalent under the decision procedure
@@ -101,7 +102,7 @@ fn dropped_term_is_not_equivalent_under_both_backends() {
     let arrays = vec!["out".to_string()];
 
     // Decision procedure: NotEquivalent, naming the one element.
-    let outcome = check_output_equivalence(&reference, &mutant, &arrays)
+    let outcome = check_output_equivalence(&reference.exprs, &mutant.exprs, &arrays)
         .expect("decision procedure must decide this polynomial VC");
     let EquivOutcome::NotEquivalent { mismatches } = outcome else {
         panic!("SOUNDNESS BUG: dropped-term pair was proved Equivalent by canon");
@@ -113,15 +114,15 @@ fn dropped_term_is_not_equivalent_under_both_backends() {
     );
 
     // Z3, on the same element pairing the decision procedure used.
-    let paired =
-        paired_elements(&reference, &mutant, &arrays).expect("footprints pair by construction");
+    let paired = paired_elements(&reference.exprs, &mutant.exprs, &arrays)
+        .expect("footprints pair by construction");
     let elements = sampled_elements(&paired, 0);
     assert_eq!(elements.len(), 1, "one written output element");
     let (_, _, r, o) = elements[0];
     let result = volta_z3::check_equivalent(
-        &reference.arena,
+        &reference.exprs.arena,
         r,
-        &mutant.arena,
+        &mutant.exprs.arena,
         o,
         Some(Duration::from_secs(60)),
         ExpMode::PowerBounded,
