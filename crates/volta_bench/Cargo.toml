@@ -27,3 +27,6 @@ serde.workspace = true
 serde_json.workspace = true
 env_logger = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
+
+[dev-dependencies]
+volta_spec.workspace = true

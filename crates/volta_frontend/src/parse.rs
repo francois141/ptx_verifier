@@ -1886,9 +1886,6 @@ mod tests {
     use super::*;
     use crate::ascii::AsAscii;
 
-    /// The volta_bench paper-benchmark kernel tree (PTX + CUDA sources).
-    const KERNELS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../volta_bench/kernels");
-
     fn parse(src: &[u8]) -> Result<Expr, ParseError> {
         let ascii_src = src.as_ascii_slice().expect("test input must be ASCII");
         Parser::new(ascii_src).parse_const_expr()
@@ -3006,32 +3003,6 @@ DONE:
                 }
             }
             _ => panic!("Expected Entry"),
-        }
-    }
-
-    #[test]
-    fn test_parse_all_kernel_files() {
-        // Test that all PTX files in volta_bench/kernels can be parsed
-        for entry in std::fs::read_dir(KERNELS_DIR).expect("read kernels dir") {
-            let dir = entry.expect("read kernels dir entry").path();
-            if !dir.is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(&dir).expect("read category dir") {
-                let path = entry.expect("read category dir entry").path();
-                if path.extension().is_none_or(|e| e != "ptx") {
-                    continue;
-                }
-                let src = std::fs::read(&path)
-                    .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
-                let result = parse_module(&src);
-                assert!(
-                    result.is_ok(),
-                    "Failed to parse {}: {:?}",
-                    path.display(),
-                    result.err()
-                );
-            }
         }
     }
 

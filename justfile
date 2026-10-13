@@ -16,7 +16,10 @@ test: test-rust test-python
 
 # Rust unit + integration tests
 test-rust:
-    cargo test --workspace --exclude volta_z3 --exclude volta_bench
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --release --workspace --exclude volta_z3 -- --test-threads 16 --color always \
+        | grep --line-buffered -v 'has been running for over 60 seconds'
 
 # Python bindings tests
 test-python:

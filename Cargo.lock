@@ -725,6 +725,7 @@ dependencies = [
  "volta_equivalence",
  "volta_expr",
  "volta_frontend",
+ "volta_spec",
  "volta_z3",
 ]
 
