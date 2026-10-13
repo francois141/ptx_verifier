@@ -1,0 +1,27 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<8>;
+    .reg .s32 %s<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.u32 %r1, 0x11111111;
+    mov.u32 %r2, 0x22222222;
+    mov.s32 %s1, -1;
+    shf.l.clamp.b32 %r3, %r1, %r2, %s1;
+    shf.r.clamp.b32 %r4, %r1, %r2, %s1;
+    shf.l.wrap.b32 %r5, %r1, %r2, %s1;
+    shf.r.wrap.b32 %r6, %r1, %r2, %s1;
+    st.global.u32 [%rd1], %r3;
+    st.global.u32 [%rd1+4], %r4;
+    st.global.u32 [%rd1+8], %r5;
+    st.global.u32 [%rd1+12], %r6;
+    ret;
+}

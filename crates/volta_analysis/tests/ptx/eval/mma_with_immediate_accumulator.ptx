@@ -1,0 +1,32 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<3>;
+    .reg .b32 %r<9>;
+    .reg .f32 %f<5>;
+    .reg .b64 %rd<4>;
+
+    mov.u16 %rs1, 0;
+    mov.u16 %rs2, 0;
+    mov.b32 %r1, {%rs1, %rs2};
+    mov.b32 %r2, {%rs1, %rs2};
+    mov.b32 %r3, {%rs1, %rs2};
+    mov.b32 %r4, {%rs1, %rs2};
+    mov.b32 %r5, {%rs1, %rs2};
+    mov.b32 %r6, {%rs1, %rs2};
+
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%f1, %f2, %f3, %f4}, {%r1, %r2, %r3, %r4}, {%r5, %r6}, {0f3F800000, 0f00000000, 0f00000000, 0f00000000};
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r7, %tid.x;
+    mul.lo.u32 %r8, %r7, 16;
+    cvt.u64.u32 %rd2, %r8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v4.f32 [%rd3], {%f1, %f2, %f3, %f4};
+    ret;
+}

@@ -1,0 +1,19 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f64 %fd<4>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    cvta.to.global.u64 %rd1, %rd1;
+    mov.f64 %fd1, 0d3FB999999999999A;
+    mov.f64 %fd2, 0d3FC999999999999A;
+    add.f64 %fd3, %fd1, %fd2;
+    st.global.f64 [%rd1], %fd3;
+    ret;
+}

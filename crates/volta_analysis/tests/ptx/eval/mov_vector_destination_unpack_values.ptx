@@ -1,0 +1,22 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<4>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd1, [k_param_0];
+
+    // 0x1234ABCD: lo 16 bits = 0xABCD = 43981, hi 16 bits = 0x1234 = 4660.
+    mov.u32 %r1, 0x1234ABCD;
+    mov.b32 {%rs1, %rs2}, %r1;
+    st.global.u16 [%rd1], %rs1;
+    st.global.u16 [%rd1+2], %rs2;
+
+    ret;
+}

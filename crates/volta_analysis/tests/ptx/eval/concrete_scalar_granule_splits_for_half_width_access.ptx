@@ -1,0 +1,33 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b16 %h<4>;
+    .reg .f32 %f<5>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<3>;
+    .shared .align 4 .b8 sdata[4];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r3, sdata;
+    mov.u32 %r2, 0;
+    st.shared.b32 [%r3], %r2;
+    ld.global.f32 %f1, [%rd1];
+    cvt.rn.f16.f32 %h1, %f1;
+    st.shared.b16 [%r3+2], %h1;
+    ld.shared.b16 %h2, [%r3+2];
+    ld.shared.b16 %h3, [%r3];
+    cvt.f32.f16 %f2, %h2;
+    cvt.f32.f16 %f3, %h3;
+    add.f32 %f4, %f2, %f3;
+    st.global.f32 [%rd2], %f4;
+    ret;
+}

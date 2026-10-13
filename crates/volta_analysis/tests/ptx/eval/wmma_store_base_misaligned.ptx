@@ -1,0 +1,24 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<3>;
+    .reg .f32 %f<9>;
+    .shared .align 32 .b8 sdata[4096];
+
+    mov.f32 %f1, 0f3F800000;
+    mov.f32 %f2, 0f3F800000;
+    mov.f32 %f3, 0f3F800000;
+    mov.f32 %f4, 0f3F800000;
+    mov.f32 %f5, 0f3F800000;
+    mov.f32 %f6, 0f3F800000;
+    mov.f32 %f7, 0f3F800000;
+    mov.f32 %f8, 0f3F800000;
+    mov.u32 %r1, sdata;
+    add.s32 %r1, %r1, 8;
+    mov.u32 %r2, 16;
+    wmma.store.d.sync.aligned.row.m16n16k16.shared.f32 [%r1], {%f1, %f2, %f3, %f4, %f5, %f6, %f7, %f8}, %r2;
+    ret;
+}

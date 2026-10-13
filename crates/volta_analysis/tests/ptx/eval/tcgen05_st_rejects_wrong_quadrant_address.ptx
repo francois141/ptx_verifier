@@ -1,0 +1,21 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<6>;
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r5, %tid.x;
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    bar.sync 0;
+
+    // Wrong on purpose: this warp's own quadrant is 0, not 32.
+    or.b32 %r2, %r1, 2097152;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r2], %r5;
+    ret;
+}

@@ -1,0 +1,20 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<2>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.global.f32 %f1, [%rd1];
+    setp.gt.f32 %p1, %f1, 0f00000000;
+    @%p1 bra $L1;
+$L1:
+    ret;
+}

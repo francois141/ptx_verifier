@@ -1,0 +1,26 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+    // At shared address 0, where the descriptors' operands start.
+    .shared .align 1024 .b8 operands[32768];
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 512;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+    mov.u32 %r4, %tid.x;
+    setp.eq.u32 %p1, %r4, 0;
+    mov.u64 %rd1, 4611756662049472512;
+    mov.u64 %rd2, 4611756662049472512;
+    mov.u32 %r2, 1212219408;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, %p0;
+    ret;
+}

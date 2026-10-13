@@ -1,0 +1,24 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.extern .shared .align 16 .b8 buf[];
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<2>;
+    .shared .align 4 .f32 lut[64];
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.u32 %r1, buf;
+    mov.f32 %f1, 0f42280000;
+    st.shared.f32 [%r1], %f1;
+    mov.u32 %r2, lut;
+    ld.shared.f32 %f2, [%r2];
+    st.global.f32 [%rd1], %f2;
+    ret;
+}

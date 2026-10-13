@@ -1,0 +1,43 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.extern .func  (.param .b32 func_retval0) __symexpf
+(
+    .param .b32 __symexpf_param_0
+)
+;
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<4>;
+    .reg .b16 %rs<6>;
+    .reg .f32 %f<12>;
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<10>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.global.f32 %f1, [%rd1];
+    ld.global.f32 %f2, [%rd1+4];
+    mul.f32 %f3, %f1, %f2;
+    { // callseq 0, 0
+    .reg .b32 temp_param_reg;
+    .param .b32 param0;
+    st.param.f32 [param0+0], %f3;
+    .param .b32 retval0;
+    call.uni (retval0),
+    __symexpf,
+    (
+    param0
+    );
+    ld.param.f32 %f4, [retval0+0];
+    } // callseq 0
+    st.global.f32 [%rd2], %f4;
+    ret;
+}

@@ -1,0 +1,14 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<3>;
+    .shared .align 4 .b8 sdata[8];
+
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, sdata;
+    st.shared.u32 [%r2+64], %r1;
+    ret;
+}

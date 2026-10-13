@@ -1,0 +1,32 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>;
+    .reg .b64 %rd<3>;
+    .shared .align 16 .b8 buf[128];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+
+    // Only lanes 0-7's addresses are consulted (num=1): `src + tid*16` gives
+    // lane r row r's address.
+    mov.u32 %r1, buf;
+    mad.lo.u32 %r2, %r0, 16, %r1;
+
+    // Per-lane source value: distinct and directly checkable.
+    add.u32 %r3, %r0, 1000;
+
+    stmatrix.sync.aligned.x1.m8n8.shared.b16 [%r2], {%r3};
+    bar.sync 0;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.shared.u32 %r4, [%r1+20];
+    @%p1 st.global.u32 [%rd1], %r4;
+    ret;
+}

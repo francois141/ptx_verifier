@@ -1,0 +1,20 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<6>;
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3+0], 32;
+    mov.u32 %r1, 0;
+    // Columns 31 and 32: the last of the first allocation, the first of
+    // the second.
+    mov.u32 %r2, 31;
+    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r2], {%r1, %r1};
+    tcgen05.wait::st.sync.aligned;
+    ret;
+}

@@ -1,0 +1,40 @@
+.version 8.0
+.target sm_90a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<2>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 gate;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r4, full;
+    mov.u32 %r6, gate;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    setp.lt.u32 %p2, %r5, 32;
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    @%p1 mbarrier.init.shared.b64 [%r6], 32;
+    bar.sync 0;
+    @!%p1 bra ISSUED;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r4];
+ISSUED:
+    @!%p2 bra SYNC;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+SYNC:
+    bar.sync 0;
+    @%p2 bra DONE;
+    ld.shared.u32 %r7, [buf];
+DONE:
+    ret;
+}

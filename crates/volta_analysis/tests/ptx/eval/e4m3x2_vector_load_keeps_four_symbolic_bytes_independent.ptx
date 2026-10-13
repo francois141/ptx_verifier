@@ -1,0 +1,38 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b16 %h<8>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd0, [k_param_0];
+    ld.param.u64 %rd1, [k_param_1];
+
+    ld.global.v2.b32 {%r0,%r1}, [%rd0];
+
+    mov.b32 {%h0,%h1}, %r0;
+
+    cvt.rn.f16x2.e4m3x2 %r2, %h0;
+    cvt.rn.f16x2.e4m3x2 %r3, %h1;
+
+    mov.b32 {%h4,%h5}, %r2;
+    mov.b32 {%h6,%h7}, %r3;
+
+    cvt.f32.f16 %f0, %h4;
+    cvt.f32.f16 %f1, %h5;
+    cvt.f32.f16 %f2, %h6;
+    cvt.f32.f16 %f3, %h7;
+
+    st.global.f32 [%rd1], %f0;
+    st.global.f32 [%rd1+4], %f1;
+    st.global.f32 [%rd1+8], %f2;
+    st.global.f32 [%rd1+12], %f3;
+    ret;
+}

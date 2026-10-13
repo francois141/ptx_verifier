@@ -21,6 +21,30 @@ use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
 
+/// The PTX test kernel at `tests/ptx/<name>.ptx` as source text, or as a
+/// parsed module with `ptx!(parse "<name>")`.
+macro_rules! ptx {
+    (parse $name:literal) => {
+        parse(&ptx!($name))
+    };
+    ($name:literal) => {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/ptx/",
+            $name,
+            ".ptx"
+        ))
+        .to_string()
+    };
+}
+
+/// `(name, source)` for the PTX test kernel `name`, so failures name the file.
+macro_rules! ptx_case {
+    ($name:literal) => {
+        ($name, ptx!($name))
+    };
+}
+
 fn parse(src: &str) -> Module {
     let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
     Parser::new(ascii)
@@ -36,28 +60,6 @@ fn parse_file(rel: &str) -> Module {
     let src =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     parse(&src)
-}
-
-const HEADER: &str = ".version 8.0\n.target sm_80\n.address_size 64\n\n";
-
-fn wrap(body: &str) -> String {
-    format!("{}{}", HEADER, body)
-}
-
-/// Same as [`wrap`], but `sm_90a` - for tests exercising the sm_90+-gated
-/// `fence.proxy.async` hazard check (`TargetFeatures::async_proxy_fence`).
-const HEADER_SM90A: &str = ".version 8.0\n.target sm_90a\n.address_size 64\n\n";
-
-fn wrap_sm90a(body: &str) -> String {
-    format!("{}{}", HEADER_SM90A, body)
-}
-
-/// Same as [`wrap`], but `sm_100a` - the `tcgen05` family is only valid
-/// on Blackwell-class targets (lowering rejects it on `sm_80`).
-const HEADER_SM100A: &str = ".version 8.6\n.target sm_100a\n.address_size 64\n\n";
-
-fn wrap_sm100a(body: &str) -> String {
-    format!("{}{}", HEADER_SM100A, body)
 }
 
 /// in/out f32 arrays at fixed bases.
@@ -106,20 +108,7 @@ fn display_output(output: &AnalysisOutput, array: &str, index: u64) -> String {
 /// Two threads write the same shared address without synchronization.
 #[test]
 fn test_shared_write_write_race() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b32 %r<3>;
-    .shared .align 4 .b8 sdata[8];
-
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, sdata;
-    st.shared.u32 [%r2], %r1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shared_write_write_race");
     let config = AnalysisConfig::new((2, 1, 1));
     let err = analyze_kernel(&module, None, config).unwrap_err();
     assert!(
@@ -131,43 +120,9 @@ fn test_shared_write_write_race() {
 
 /// Neighbor exchange through shared memory, correctly synchronized:
 /// out[tid] = in[tid ^ 1].
-const SWAP_BODY: &str = ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b32 %r<7>;
-    .reg .b64 %rd<7>;
-    .shared .align 4 .b8 sdata[8];
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    shl.b32 %r2, %r1, 2;
-    cvt.u64.u32 %rd3, %r2;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    mov.u32 %r3, sdata;
-    add.s32 %r4, %r3, %r2;
-    st.shared.f32 [%r4], %f1;
-    BARRIER
-    xor.b32 %r5, %r1, 1;
-    shl.b32 %r5, %r5, 2;
-    add.s32 %r6, %r3, %r5;
-    ld.shared.f32 %f2, [%r6];
-    add.s64 %rd5, %rd2, %rd3;
-    st.global.f32 [%rd5], %f2;
-    ret;
-}
-";
-
 #[test]
 fn test_shared_exchange_with_barrier() {
-    let src = wrap(&SWAP_BODY.replace("BARRIER", "bar.sync 0;"));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shared_exchange_with_barrier");
     let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[1]");
     assert_eq!(display_output(&output, "out", 1), "in[0]");
@@ -176,8 +131,7 @@ fn test_shared_exchange_with_barrier() {
 
 #[test]
 fn test_shared_exchange_without_barrier_races() {
-    let src = wrap(&SWAP_BODY.replace("BARRIER", ""));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shared_exchange_without_barrier_races");
     let err = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -191,30 +145,7 @@ fn test_shared_exchange_without_barrier_races() {
 /// so the `lut` read surfaces as `UndefinedOutput`.
 #[test]
 fn test_extern_shared_store_invisible_through_static_shared() {
-    let src = wrap(
-        ".extern .shared .align 16 .b8 buf[];
-.visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<2>;
-    .shared .align 4 .f32 lut[64];
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, buf;
-    mov.f32 %f1, 0f42280000;
-    st.shared.f32 [%r1], %f1;
-    mov.u32 %r2, lut;
-    ld.shared.f32 %f2, [%r2];
-    st.global.f32 [%rd1], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/extern_shared_store_invisible_through_static_shared");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
     let err = analyze_kernel(&module, None, config).unwrap_err();
@@ -229,36 +160,7 @@ fn test_extern_shared_store_invisible_through_static_shared() {
 /// variable from different threads are not a race: the regions are disjoint.
 #[test]
 fn test_extern_vs_static_shared_no_false_race() {
-    let src = wrap(
-        ".extern .shared .align 16 .b8 buf[];
-.visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<3>;
-    .reg .f32 %f<4>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<2>;
-    .shared .align 4 .f32 lut[64];
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p1, %r1, 0;
-    setp.eq.s32 %p2, %r1, 1;
-    mov.u32 %r2, buf;
-    mov.f32 %f1, 0f42280000;
-@%p1 st.shared.f32 [%r2], %f1;
-    mov.u32 %r3, lut;
-    mov.f32 %f2, 0f40E00000;
-@%p2 st.shared.f32 [%r3], %f2;
-@%p2 ld.shared.f32 %f3, [%r3];
-@%p2 st.global.f32 [%rd1], %f3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/extern_vs_static_shared_no_false_race");
     let mut config = in_out_config(2, 1);
     config.dynamic_shared_bytes = 16;
     let output = analyze_kernel(&module, None, config)
@@ -271,35 +173,14 @@ fn test_extern_vs_static_shared_no_false_race() {
 /// dynamic_shared_bytes bounds it.
 #[test]
 fn test_extern_only_shared_placement_and_bounds() {
-    let body = ".extern .shared .align 16 .b8 buf[];
-.visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, buf;
-    mov.f32 %f1, 0f42280000;
-    st.shared.f32 [%r1OFFSET], %f1;
-    ld.shared.f32 %f2, [%r1];
-    st.global.f32 [%rd1], %f2;
-    ret;
-}
-";
     // In-bounds roundtrip at buf[0].
-    let src = wrap(&body.replace("OFFSET", ""));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
     let output = analyze_kernel(&module, None, config).expect("in-bounds extern access");
     assert_eq!(display_output(&output, "out", 0), "42");
 
     // Without dynamic_shared_bytes the launch is rejected.
-    let module = parse(&src);
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(
@@ -312,8 +193,7 @@ fn test_extern_only_shared_placement_and_bounds() {
     );
 
     // A store ending one byte past the window end is out of bounds.
-    let src = wrap(&body.replace("OFFSET", "+16"));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds_past_end");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
     let err = analyze_kernel(&module, None, config).unwrap_err();
@@ -327,25 +207,7 @@ fn test_extern_only_shared_placement_and_bounds() {
 /// Threads waiting on different barrier ids never fire: deadlock.
 #[test]
 fn test_mismatched_barriers_deadlock() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<2>;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p1, %r1, 0;
-    @%p1 bra $L1;
-    bar.sync 0;
-    bra $L2;
-$L1:
-    bar.sync 1;
-$L2:
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mismatched_barriers_deadlock");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
@@ -358,21 +220,7 @@ $L2:
 /// Sync rule allows `return`), so this does NOT deadlock.
 #[test]
 fn test_exited_thread_releases_barrier() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<2>;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p1, %r1, 0;
-    @%p1 ret;
-    bar.sync 0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/exited_thread_releases_barrier");
     analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap();
 }
 
@@ -381,37 +229,7 @@ fn test_exited_thread_releases_barrier() {
 /// *different* thread's arrive completes the phase.
 #[test]
 fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .f32 %f<2>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<4>;
-    .shared .align 8 .b64 mbar;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p0, %r1, 0;
-    mov.u32 %r2, mbar;
-
-    @%p0 mbarrier.init.shared::cta.b64 [%r2], 2;
-    bar.sync 0;
-    mbarrier.arrive.shared::cta.b64 _, [%r2];
-    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mul.wide.u32 %rd2, %r1, 4;
-    add.s64 %rd3, %rd1, %rd2;
-    mov.f32 %f1, 0f3F800000;
-    st.global.f32 [%rd3], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mbarrier_wait_wakes_on_another_threads_arrive");
     let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "1");
     assert_eq!(display_output(&output, "out", 1), "1");
@@ -422,26 +240,7 @@ fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
 /// CTA.
 #[test]
 fn test_mbarrier_wait_never_satisfied_deadlocks() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<3>;
-    .shared .align 8 .b64 mbar;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p0, %r1, 0;
-    mov.u32 %r2, mbar;
-
-    @%p0 mbarrier.init.shared::cta.b64 [%r2], 2;
-    bar.sync 0;
-    @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
-    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mbarrier_wait_never_satisfied_deadlocks");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
@@ -455,32 +254,7 @@ fn test_mbarrier_wait_never_satisfied_deadlocks() {
 /// outstanding transaction.
 #[test]
 fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p0;
-    .reg .f32 %f0;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-    .shared .align 8 .b64 mbar;
-
-    mov.u32 %r1, mbar;
-    mbarrier.init.shared::cta.b64 [%r1], 1;
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
-    mbarrier.complete_tx.shared::cta.b64 [%r1], 16;
-    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r1], 0;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.f32 %f0, 0f3F800000;
-    st.global.f32 [%rd1], %f0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mbarrier_expect_tx_blocks_until_complete_tx");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "1");
 }
@@ -490,42 +264,7 @@ fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
 /// with no race reported.
 #[test]
 fn test_mbarrier_arrive_wait_establishes_happens_before() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .f32 %f<2>;
-    .reg .b32 %r<7>;
-    .reg .b64 %rd<4>;
-    .shared .align 8 .b64 mbar;
-    .shared .align 4 .b32 data;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p0, %r1, 0;
-    mov.u32 %r2, mbar;
-    mov.u32 %r4, data;
-
-    @%p0 mbarrier.init.shared::cta.b64 [%r2], 1;
-    @%p0 mov.u32 %r5, 42;
-    @%p0 st.shared.u32 [%r4], %r5;
-    @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
-
-    @!%p0 mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
-    @!%p0 ld.shared.u32 %r6, [%r4];
-    @!%p0 cvt.rn.f32.u32 %f1, %r6;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mul.wide.u32 %rd2, %r1, 4;
-    add.s64 %rd3, %rd1, %rd2;
-    @!%p0 st.global.f32 [%rd3], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mbarrier_arrive_wait_establishes_happens_before");
     let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
     assert_eq!(display_output(&output, "out", 1), "42");
 }
@@ -535,26 +274,7 @@ fn test_mbarrier_arrive_wait_establishes_happens_before() {
 /// shape.
 #[test]
 fn test_same_write_read_without_the_wait_still_races() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<7>;
-    .shared .align 4 .b32 data;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p0, %r1, 0;
-    mov.u32 %r4, data;
-
-    @%p0 mov.u32 %r5, 42;
-    @%p0 st.shared.u32 [%r4], %r5;
-
-    @!%p0 ld.shared.u32 %r6, [%r4];
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/same_write_read_without_the_wait_still_races");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -568,31 +288,16 @@ fn test_same_write_read_without_the_wait_still_races() {
 /// make the happens-before edge unsound.
 #[test]
 fn test_mbarrier_relaxed_semantics_rejected() {
-    for (form, expect) in [
+    for (expect, (form, src)) in [
         (
-            "mbarrier.arrive.relaxed.cta.shared::cta.b64 _, [%r2];",
             "mbarrier.arrive",
+            ptx_case!("eval/mbarrier_relaxed_semantics_rejected_arrive"),
         ),
         (
-            "mbarrier.try_wait.parity.relaxed.cta.shared::cta.b64 %p1, [%r2], 0;",
             "mbarrier.try_wait",
+            ptx_case!("eval/mbarrier_relaxed_semantics_rejected_try_wait"),
         ),
     ] {
-        let src = wrap(&format!(
-            ".visible .entry k()
-{{
-    .reg .pred %p<2>;
-    .reg .b32 %r<3>;
-    .shared .align 8 .b64 mbar;
-
-    mov.u32 %r2, mbar;
-    mbarrier.init.shared::cta.b64 [%r2], 1;
-    mbarrier.arrive.shared::cta.b64 _, [%r2];
-    {form}
-    ret;
-}}
-"
-        ));
         let module = parse(&src);
         let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
         match &err {
@@ -612,25 +317,7 @@ fn test_mbarrier_relaxed_semantics_rejected() {
 /// through.
 #[test]
 fn test_tcgen05_fence_is_a_no_op() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f0;
-    .reg .b64 %rd0;
-
-    tcgen05.fence::before_thread_sync;
-    tcgen05.fence::after_thread_sync;
-
-    ld.param.u64 %rd0, [k_param_0];
-    mov.f32 %f0, 0f3F800000;
-    st.global.f32 [%rd0], %f0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_fence_is_a_no_op");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -649,30 +336,7 @@ fn test_tcgen05_fence_is_a_no_op() {
 /// state-space path.
 #[test]
 fn test_tcgen05_commit_satisfies_mbarrier_wait() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p0;
-    .reg .f32 %f0;
-    .reg .b32 %r0;
-    .reg .b64 %rd0;
-    .shared .align 8 .b64 mbar;
-
-    mov.u32 %r0, mbar;
-    mbarrier.init.shared::cta.b64 [%r0], 1;
-    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r0];
-    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r0], 0;
-
-    ld.param.u64 %rd0, [k_param_0];
-    mov.f32 %f0, 0f3F800000;
-    st.global.f32 [%rd0], %f0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_commit_satisfies_mbarrier_wait");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -686,50 +350,42 @@ fn test_tcgen05_commit_satisfies_mbarrier_wait() {
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
-/// Lower `body` (one warp's kernel body using `%r<6>` and a `taddr_slot`)
-/// under `header`.
-fn tcgen05_kernel(header: &str, body: &str) -> Module {
-    parse(&format!(
-        "{header}.visible .entry k()
-{{
-    .reg .b32 %r<6>;
-    .shared .align 4 .b32 taddr_slot;
-
-    mov.u32 %r3, taddr_slot;
-{body}
-    ret;
-}}
-"
-    ))
-}
-
 /// The warp-collective `tcgen05.*` instructions require `.sync.aligned`
 /// (PTX ISA: "The mandatory .sync qualifier" / "The mandatory .aligned
 /// qualifier"); dropping either is invalid PTX.
 #[test]
 fn test_tcgen05_rejects_missing_sync_aligned() {
-    for (body, missing) in [
+    for (src, missing) in [
         (
-            "    tcgen05.alloc.cta_group::1.aligned.shared::cta.b32 [%r3], 32;",
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_alloc_sync"),
             ".sync",
         ),
         (
-            "    tcgen05.alloc.cta_group::1.sync.shared::cta.b32 [%r3], 32;",
-            ".aligned",
-        ),
-        ("    tcgen05.ld.32x32b.x1.b32 %r1, [%r3];", ".sync"),
-        ("    tcgen05.st.sync.32x32b.x1.b32 [%r3], %r1;", ".aligned"),
-        ("    tcgen05.wait::ld.aligned;", ".sync"),
-        (
-            "    tcgen05.dealloc.cta_group::1.sync.b32 %r3, 32;",
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_alloc_aligned"),
             ".aligned",
         ),
         (
-            "    tcgen05.relinquish_alloc_permit.cta_group::1.sync;",
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_ld"),
+            ".sync",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_st"),
+            ".aligned",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_wait_ld"),
+            ".sync",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_dealloc"),
+            ".aligned",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_relinquish"),
             ".aligned",
         ),
     ] {
-        let module = tcgen05_kernel(HEADER_SM100A, body);
+        let module = parse(&src);
         expect_invalid_instruction(&module, &format!("mandatory {missing} qualifier"));
     }
 }
@@ -739,11 +395,10 @@ fn test_tcgen05_rejects_missing_sync_aligned() {
 /// allocations (PTX ISA 9.7.18.7.1).
 #[test]
 fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
-    let alloc = |n: u32| {
-        format!("    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], {n};\n")
-    };
     let err = analyze_kernel(
-        &tcgen05_kernel(HEADER_SM100A, &alloc(16)),
+        &parse(&ptx!(
+            "eval/tcgen05_alloc_rejects_invalid_sizes_and_order_16"
+        )),
         None,
         AnalysisConfig::new((32, 1, 1)),
     )
@@ -756,7 +411,9 @@ fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
         "{err}"
     );
     let err = analyze_kernel(
-        &tcgen05_kernel(HEADER_SM100A, &(alloc(32) + &alloc(64))),
+        &parse(&ptx!(
+            "eval/tcgen05_alloc_rejects_invalid_sizes_and_order_32_then_64"
+        )),
         None,
         AnalysisConfig::new((32, 1, 1)),
     )
@@ -779,16 +436,11 @@ fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
 /// columns is not a power of 2).
 #[test]
 fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
-    for body in [
-        "    tcgen05.alloc.exclusive.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 96;",
-        "    tcgen05.dealloc.exclusive.cta_group::1.sync.aligned.b32 %r3, 96;",
+    for src in [
+        ptx!("eval/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_alloc"),
+        ptx!("eval/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_dealloc"),
     ] {
-        let err = analyze_kernel(
-            &tcgen05_kernel(HEADER_SM100A, body),
-            None,
-            AnalysisConfig::new((32, 1, 1)),
-        )
-        .unwrap_err();
+        let err = analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
         match &err {
             AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. }) => {
                 let reason = reason.as_deref().unwrap_or("");
@@ -807,17 +459,9 @@ fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
 /// adjacent live allocation (so every cell it touches is allocated).
 #[test]
 fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
-    let module = tcgen05_kernel(
-        HEADER_SM100A,
-        "    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3+0], 32;
-    mov.u32 %r1, 0;
-    // Columns 31 and 32: the last of the first allocation, the first of
-    // the second.
-    mov.u32 %r2, 31;
-    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r2], {%r1, %r1};
-    tcgen05.wait::st.sync.aligned;",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -837,45 +481,7 @@ fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
 /// quadrant and read back exactly their own value.
 #[test]
 fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<2>;
-    .reg .f32 %f<2>;
-    .reg .b32 %r<10>;
-    .reg .b64 %rd<3>;
-    .shared .align 4 .b32 taddr_slot;
-
-    mov.u32 %r9, %tid.x;
-    setp.lt.u32 %p1, %r9, 32;
-    mov.u32 %r3, taddr_slot;
-    @%p1 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    bar.sync 0;
-    ld.shared.u32 %r1, [%r3];
-    bar.sync 0;
-
-    shr.u32 %r4, %r9, 5;
-    shl.u32 %r5, %r4, 5;
-    shl.u32 %r6, %r5, 16;
-    or.b32 %r7, %r1, %r6;
-
-    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r7], %r4;
-    tcgen05.wait::st.sync.aligned;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r8, [%r7];
-    tcgen05.wait::ld.sync.aligned;
-    cvt.rn.f32.u32 %f1, %r8;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mul.wide.u32 %rd2, %r9, 4;
-    add.s64 %rd2, %rd1, %rd2;
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_st_ld_respects_warp_quadrant_addressing");
     let mut config = AnalysisConfig::new((64, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -897,27 +503,7 @@ fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
 /// from `ThreadId`.
 #[test]
 fn test_tcgen05_st_rejects_wrong_quadrant_address() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b32 %r<6>;
-    .shared .align 4 .b32 taddr_slot;
-
-    mov.u32 %r5, %tid.x;
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    bar.sync 0;
-    ld.shared.u32 %r1, [%r3];
-    bar.sync 0;
-
-    // Wrong on purpose: this warp's own quadrant is 0, not 32.
-    or.b32 %r2, %r1, 2097152;
-    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r2], %r5;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_st_rejects_wrong_quadrant_address");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05LaneRestrictionViolation {
@@ -932,43 +518,16 @@ fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     }
 }
 
-/// One warp allocates Tensor Memory, then runs `body` with `%r1` its
-/// quadrant-0 base, `%r2` a stored value, and `%r4` a `count = 32` mbarrier
-/// (for the `tcgen05.wait` tests).
-fn tcgen05_wait_ordering_kernel(body: &str) -> Module {
-    parse(&wrap(&format!(
-        ".visible .entry k()
-{{
-    .reg .b32 %r<6>;
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mbar;
-
-    mov.u32 %r2, %tid.x;
-    mov.u32 %r3, taddr_slot;
-    mov.u32 %r4, mbar;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    mbarrier.init.shared::cta.b64 [%r4], 32;
-    bar.sync 0;
-    ld.shared.u32 %r1, [%r3];
-    bar.sync 0;
-
-{body}
-    ret;
-}}
-"
-    )))
-}
+// One warp allocates Tensor Memory, then runs its body with `%r1` its
+// quadrant-0 base, `%r2` a stored value, and `%r4` a `count = 32` mbarrier
+// (the `tcgen05.wait` tests below).
 
 /// A `tcgen05.wait::ld` placed *after* a barrier arrival is too late: the
 /// wait is what completes the `.ld` for its issuer, so the barrier orders
 /// nothing about it for the other participants. The arrival is rejected.
 #[test]
 fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
-    let module = tcgen05_wait_ordering_kernel(
-        "    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
-    bar.sync 0;
-    tcgen05.wait::ld.sync.aligned;",
-    );
+    let module = parse(&ptx!("eval/tcgen05_wait_ld_after_bar_sync_is_rejected"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
@@ -981,11 +540,9 @@ fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
 /// Same for `tcgen05.wait::st` after an mbarrier arrive.
 #[test]
 fn test_tcgen05_wait_st_after_mbarrier_arrive_is_rejected() {
-    let module = tcgen05_wait_ordering_kernel(
-        "    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
-    mbarrier.arrive.shared::cta.b64 _, [%r4];
-    tcgen05.wait::st.sync.aligned;",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_wait_st_after_mbarrier_arrive_is_rejected"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
@@ -998,14 +555,7 @@ fn test_tcgen05_wait_st_after_mbarrier_arrive_is_rejected() {
 /// The control: the same `.ld`/`.st` waited *before* the arrivals pass.
 #[test]
 fn test_tcgen05_wait_before_sync_is_accepted() {
-    let module = tcgen05_wait_ordering_kernel(
-        "    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
-    tcgen05.wait::st.sync.aligned;
-    mbarrier.arrive.shared::cta.b64 _, [%r4];
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
-    tcgen05.wait::ld.sync.aligned;
-    bar.sync 0;",
-    );
+    let module = parse(&ptx!("eval/tcgen05_wait_before_sync_is_accepted"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
@@ -1014,14 +564,17 @@ fn test_tcgen05_wait_before_sync_is_accepted() {
 /// that are no longer allocated.
 #[test]
 fn test_tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected() {
-    for (op, is_write) in [
-        ("tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];", false),
-        ("tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;", true),
+    for (is_write, (op, src)) in [
+        (
+            false,
+            ptx_case!("eval/tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected_ld"),
+        ),
+        (
+            true,
+            ptx_case!("eval/tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected_st"),
+        ),
     ] {
-        let module = tcgen05_wait_ordering_kernel(&format!(
-            "    {op}
-    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;"
-        ));
+        let module = parse(&src);
         let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
         match &err {
             AnalysisError::Eval(EvalError::Tcgen05AsyncHazard { prior, current, .. }) => {
@@ -1037,13 +590,7 @@ fn test_tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected() {
 /// pass.
 #[test]
 fn test_tcgen05_dealloc_after_waiting_is_accepted() {
-    let module = tcgen05_wait_ordering_kernel(
-        "    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
-    tcgen05.wait::st.sync.aligned;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
-    tcgen05.wait::ld.sync.aligned;
-    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;",
-    );
+    let module = parse(&ptx!("eval/tcgen05_dealloc_after_waiting_is_accepted"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
@@ -1052,63 +599,16 @@ fn test_tcgen05_dealloc_after_waiting_is_accepted() {
 /// `fill_mode` zeros past `global_dim`; `complete_tx` unblocks the wait.
 #[test]
 fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
-    let template = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p0;
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    .shared .align 128 .b8 sd0[128];
-    .global .align 128 .b8 gbl[128];
-    .shared .align 8 .b8 full[8];
-    .shared .align 16 .b8 sa[32];
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    mbarrier.init.shared::cta.b64 [full], 1;
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [full], 32;
-
-    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
-    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
-    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
-    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
-    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [sd0], 0;
-
-    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
-    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
-
-    mov.u32 %r1, 6;
-    mov.u32 %r2, 6;
-    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
-
-    mbarrier.try_wait.parity.shared::cta.b64 %p0, [full], 0;
-
-    ld.shared.u16 %rs1, [sa];
-    ld.shared.u16 %rs2, [sa+30];
-
-    ld.param.u64 %rd2, [k_param_1];
-    st.global.u16 [%rd2], %rs1;
-    st.global.u16 [%rd2+2], %rs2;
-    ret;
-}
-",
-    );
-    for scope in ["cluster", "cta"] {
-        let src = template.replace("shared::cluster.global", &format!("shared::{scope}.global"));
+    for (scope, src) in [
+        (
+            "cluster",
+            ptx!("eval/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds"),
+        ),
+        (
+            "cta",
+            ptx!("eval/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds_cta"),
+        ),
+    ] {
         let module = parse(&src);
         let mut config = AnalysisConfig::new((1, 1, 1));
         config.arrays = vec![
@@ -1142,48 +642,7 @@ fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
 /// a default.
 #[test]
 fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<2>;
-
-    .shared .align 128 .b8 sd0[128];
-    .global .align 128 .b8 gbl[128];
-    .shared .align 8 .b8 full[8];
-    .shared .align 16 .b8 sa[32];
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    mbarrier.init.shared::cta.b64 [full], 1;
-
-    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
-    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
-    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
-    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
-    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
-
-    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
-    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
-
-    mov.u32 %r1, 0;
-    mov.u32 %r2, 0;
-    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_bulk_tensor_rejects_an_incomplete_tensor_map");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "in".to_string(),
@@ -1207,33 +666,7 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
 /// each thread encodes both as one f32.
 #[test]
 fn test_elect_sync_elects_the_lowest_active_lane() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<2>;
-    .reg .f32 %f<4>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    mov.u32 %r1, %tid.x;
-    elect.sync %r2|%p0, -1;
-
-    mov.f32 %f1, 0f00000000;
-    @%p0 cvt.rn.f32.u32 %f2, %r2;
-    @%p0 mov.f32 %f3, 0f447A0000;
-    @%p0 add.f32 %f1, %f2, %f3;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mul.wide.u32 %rd2, %r1, 4;
-    add.s64 %rd2, %rd1, %rd2;
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/elect_sync_elects_the_lowest_active_lane");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1253,36 +686,7 @@ fn test_elect_sync_elects_the_lowest_active_lane() {
 /// arrived but cannot be leader, so lane 1 is elected.
 #[test]
 fn test_elect_sync_skips_an_already_exited_lane() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .f32 %f<4>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.s32 %p1, %r1, 0;
-    @%p1 ret;
-
-    elect.sync %r2|%p0, -1;
-
-    mov.f32 %f1, 0f00000000;
-    @%p0 cvt.rn.f32.u32 %f2, %r2;
-    @%p0 mov.f32 %f3, 0f447A0000;
-    @%p0 add.f32 %f1, %f2, %f3;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mul.wide.u32 %rd2, %r1, 4;
-    add.s64 %rd2, %rd1, %rd2;
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/elect_sync_skips_an_already_exited_lane");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1302,40 +706,7 @@ fn test_elect_sync_skips_an_already_exited_lane() {
 /// buffers: every `(m, n, k)` address must land in bounds.
 #[test]
 fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<5>;
-    .shared .align 1024 .b8 a_buf[16384];
-    .shared .align 1024 .b8 b_buf[32768];
-    .shared .align 4 .b32 taddr_slot;
-
-    // tcgen05.alloc is warp-collective: every lane of this one-warp CTA
-    // issues it unconditionally.
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 256;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r5, %tid.x;
-    setp.eq.s32 %p1, %r5, 0;
-
-    mov.u64 %rd1, a_buf;
-    shr.u64 %rd1, %rd1, 4;
-    or.b64 %rd1, %rd1, 4611756662049472512;
-    mov.u64 %rd2, b_buf;
-    shr.u64 %rd2, %rd2, 4;
-    or.b64 %rd2, %rd2, 4611756662083026944;
-    mov.u32 %r2, 138477584;
-    mov.pred %p0, 0;
-    // tcgen05.mma is single-thread-issued: only the warp's lane 0 issues it.
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_real_kernel_descriptors_run_to_completion");
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
@@ -1344,40 +715,7 @@ fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
 /// `exec_tcgen05_mma`'s addressing end to end.
 #[test]
 fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<5>;
-    .shared .align 1024 .b8 a_buf[4096];
-    .shared .align 1024 .b8 b_buf[1024];
-    .shared .align 4 .b32 taddr_slot;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r5, %tid.x;
-    setp.eq.s32 %p1, %r5, 0;
-
-    // SwizzleMode::None, stride_dim_byte_offset = 32 bytes (K=16 f16
-    // elements, tightly packed - no atom concept for this mode).
-    mov.u64 %rd1, a_buf;
-    shr.u64 %rd1, %rd1, 4;
-    or.b64 %rd1, %rd1, 70377334112256;
-    mov.u64 %rd2, b_buf;
-    shr.u64 %rd2, %rd2, 4;
-    or.b64 %rd2, %rd2, 70377334112256;
-    // dense, D=f32, A/B=f16, no negate/transpose, M=128, N=8.
-    mov.u32 %r2, 134348816;
-    mov.pred %p0, 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_no_swizzle_mode_runs_to_completion");
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
 }
 
@@ -1386,156 +724,7 @@ fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
 /// `test_tcgen05_mma_numeric_correctness`, must produce `136`.
 #[test]
 fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<7>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .b16 %rs<2>;
-    .shared .align 1024 .b8 a_buf[16384];
-    .shared .align 1024 .b8 b_buf[4096];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .reg .pred %pw;
-    .reg .b32 %rbar;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r6, %tid.x;
-    setp.eq.s32 %p1, %r6, 0;
-
-    mov.u64 %rd1, a_buf;
-    mov.u64 %rd2, b_buf;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+0], %rs1;
-    mov.f32 %f1, 0f40000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+2], %rs1;
-    mov.f32 %f1, 0f40400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+4], %rs1;
-    mov.f32 %f1, 0f40800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+6], %rs1;
-    mov.f32 %f1, 0f40A00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+8], %rs1;
-    mov.f32 %f1, 0f40C00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+10], %rs1;
-    mov.f32 %f1, 0f40E00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+12], %rs1;
-    mov.f32 %f1, 0f41000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+14], %rs1;
-    mov.f32 %f1, 0f41100000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+16], %rs1;
-    mov.f32 %f1, 0f41200000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+18], %rs1;
-    mov.f32 %f1, 0f41300000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+20], %rs1;
-    mov.f32 %f1, 0f41400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+22], %rs1;
-    mov.f32 %f1, 0f41500000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+24], %rs1;
-    mov.f32 %f1, 0f41600000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+26], %rs1;
-    mov.f32 %f1, 0f41700000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+28], %rs1;
-    mov.f32 %f1, 0f41800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+30], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+0], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+144], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+288], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+432], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+576], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+720], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+864], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1008], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1024], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1168], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1312], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1456], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1600], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1744], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1888], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+2032], %rs1;
-
-    shr.u64 %rd3, %rd1, 4;
-    or.b64 %rd3, %rd3, 4611756662049472512;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd4, %rd4, 4611756662049472512;
-    mov.u32 %r2, 134414352;
-    mov.pred %p0, 0;
-    // Proper async completion: publish the operand stores to the async
-    // proxy, commit the MMA to an mbarrier, wait on it, then fence.
-    fence.proxy.async.shared::cta;
-    mov.u32 %rbar, mma_bar;
-    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
-    bar.sync 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, %p0;
-    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
-MMA_WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
-    @!%pw bra MMA_WAIT;
-    tcgen05.fence::after_thread_sync;
-
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
-    ld.param.u64 %rd1, [k_param_0];
-    @%p1 st.global.f32 [%rd1], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_without_an_explicit_disable_output_lane_mask");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1554,74 +743,7 @@ MMA_WAIT:
 /// `tcgen05.st`, so `D[0][0] = 16 + 1 = 17`.
 #[test]
 fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
-    let a_offsets = (0..16).map(|k| 2 * k);
-    let b_offsets = [
-        0, 144, 288, 432, 576, 720, 864, 1008, 1024, 1168, 1312, 1456, 1600, 1744, 1888, 2032,
-    ];
-    let mut stores = String::new();
-    for off in a_offsets {
-        stores += &format!("    @%p1 st.shared.b16 [%rd1+{off}], %rs1;\n");
-    }
-    for off in b_offsets {
-        stores += &format!("    @%p1 st.shared.b16 [%rd2+{off}], %rs1;\n");
-    }
-    let src = wrap(&format!(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{{
-    .reg .pred %p<3>;
-    .reg .b32 %r<8>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .b16 %rs<2>;
-    .shared .align 1024 .b8 a_buf[16384];
-    .shared .align 1024 .b8 b_buf[4096];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .reg .pred %pw;
-    .reg .b32 %rbar;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r6, %tid.x;
-    setp.eq.s32 %p1, %r6, 0;
-
-    mov.b32 %r7, 0x3F800000;
-    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r7;
-    tcgen05.wait::st.sync.aligned;
-
-    mov.u64 %rd1, a_buf;
-    mov.u64 %rd2, b_buf;
-    mov.b16 %rs1, 0x3C00;
-{stores}
-    shr.u64 %rd3, %rd1, 4;
-    or.b64 %rd3, %rd3, 4611756662049472512;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd4, %rd4, 4611756662049472512;
-    mov.u32 %r2, 134414352;
-    mov.pred %p0, 1;
-    fence.proxy.async.shared::cta;
-    mov.u32 %rbar, mma_bar;
-    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
-    bar.sync 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, %p0;
-    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
-MMA_WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
-    @!%pw bra MMA_WAIT;
-    tcgen05.fence::after_thread_sync;
-
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
-    ld.param.u64 %rd1, [k_param_0];
-    @%p1 st.global.f32 [%rd1], %f1;
-    ret;
-}}
-"
-    ));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_decodes_raw_operand_and_accumulator_bits");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1640,156 +762,7 @@ MMA_WAIT:
 /// `D[0][0]` must read back as `136`.
 #[test]
 fn test_tcgen05_mma_numeric_correctness() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<7>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .b16 %rs<2>;
-    .shared .align 1024 .b8 a_buf[16384];
-    .shared .align 1024 .b8 b_buf[4096];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .reg .pred %pw;
-    .reg .b32 %rbar;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r6, %tid.x;
-    setp.eq.s32 %p1, %r6, 0;
-
-    mov.u64 %rd1, a_buf;
-    mov.u64 %rd2, b_buf;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+0], %rs1;
-    mov.f32 %f1, 0f40000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+2], %rs1;
-    mov.f32 %f1, 0f40400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+4], %rs1;
-    mov.f32 %f1, 0f40800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+6], %rs1;
-    mov.f32 %f1, 0f40A00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+8], %rs1;
-    mov.f32 %f1, 0f40C00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+10], %rs1;
-    mov.f32 %f1, 0f40E00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+12], %rs1;
-    mov.f32 %f1, 0f41000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+14], %rs1;
-    mov.f32 %f1, 0f41100000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+16], %rs1;
-    mov.f32 %f1, 0f41200000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+18], %rs1;
-    mov.f32 %f1, 0f41300000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+20], %rs1;
-    mov.f32 %f1, 0f41400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+22], %rs1;
-    mov.f32 %f1, 0f41500000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+24], %rs1;
-    mov.f32 %f1, 0f41600000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+26], %rs1;
-    mov.f32 %f1, 0f41700000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+28], %rs1;
-    mov.f32 %f1, 0f41800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+30], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+0], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+144], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+288], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+432], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+576], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+720], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+864], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1008], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1024], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1168], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1312], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1456], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1600], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1744], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1888], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+2032], %rs1;
-
-    shr.u64 %rd3, %rd1, 4;
-    or.b64 %rd3, %rd3, 4611756662049472512;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd4, %rd4, 4611756662049472512;
-    mov.u32 %r2, 134414352;
-    mov.pred %p0, 0;
-    // Proper async completion: publish the operand stores to the async
-    // proxy, commit the MMA to an mbarrier, wait on it, then fence.
-    fence.proxy.async.shared::cta;
-    mov.u32 %rbar, mma_bar;
-    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
-    bar.sync 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, {0,0,0,0}, %p0;
-    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
-MMA_WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
-    @!%pw bra MMA_WAIT;
-    tcgen05.fence::after_thread_sync;
-
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
-    ld.param.u64 %rd1, [k_param_0];
-    @%p1 st.global.f32 [%rd1], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_numeric_correctness");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1808,156 +781,7 @@ MMA_WAIT:
 /// reads back as `UndefinedOutput`, not `136`.
 #[test]
 fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<7>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .b16 %rs<2>;
-    .shared .align 1024 .b8 a_buf[16384];
-    .shared .align 1024 .b8 b_buf[4096];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .reg .pred %pw;
-    .reg .b32 %rbar;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r6, %tid.x;
-    setp.eq.s32 %p1, %r6, 0;
-
-    mov.u64 %rd1, a_buf;
-    mov.u64 %rd2, b_buf;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+0], %rs1;
-    mov.f32 %f1, 0f40000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+2], %rs1;
-    mov.f32 %f1, 0f40400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+4], %rs1;
-    mov.f32 %f1, 0f40800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+6], %rs1;
-    mov.f32 %f1, 0f40A00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+8], %rs1;
-    mov.f32 %f1, 0f40C00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+10], %rs1;
-    mov.f32 %f1, 0f40E00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+12], %rs1;
-    mov.f32 %f1, 0f41000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+14], %rs1;
-    mov.f32 %f1, 0f41100000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+16], %rs1;
-    mov.f32 %f1, 0f41200000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+18], %rs1;
-    mov.f32 %f1, 0f41300000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+20], %rs1;
-    mov.f32 %f1, 0f41400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+22], %rs1;
-    mov.f32 %f1, 0f41500000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+24], %rs1;
-    mov.f32 %f1, 0f41600000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+26], %rs1;
-    mov.f32 %f1, 0f41700000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+28], %rs1;
-    mov.f32 %f1, 0f41800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+30], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+0], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+144], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+288], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+432], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+576], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+720], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+864], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1008], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1024], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1168], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1312], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1456], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1600], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1744], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+1888], %rs1;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+2032], %rs1;
-
-    shr.u64 %rd3, %rd1, 4;
-    or.b64 %rd3, %rd3, 4611756662049472512;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd4, %rd4, 4611756662049472512;
-    mov.u32 %r2, 134414352;
-    mov.pred %p0, 0;
-    // Proper async completion: publish the operand stores to the async
-    // proxy, commit the MMA to an mbarrier, wait on it, then fence.
-    fence.proxy.async.shared::cta;
-    mov.u32 %rbar, mma_bar;
-    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
-    bar.sync 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, {1,0,0,0}, %p0;
-    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
-MMA_WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
-    @!%pw bra MMA_WAIT;
-    tcgen05.fence::after_thread_sync;
-
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
-    ld.param.u64 %rd1, [k_param_0];
-    @%p1 st.global.f32 [%rd1], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_disable_output_lane_skips_the_write");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1975,79 +799,18 @@ MMA_WAIT:
     );
 }
 
-/// Two-warp CTA: thread 0 issues an M=128, N=8 `tcgen05.mma` (D spans both
-/// warps' lanes) committed to `mma_bar`. `%r1` = TMEM base, `%r4` = mbarrier,
-/// `%r6` = `count = 32` `gate`, `%p2` = "in warp 0".
-fn tcgen05_mma_two_warp_kernel(body: &str) -> Module {
-    parse(&wrap(&format!(
-        ".visible .entry k()
-{{
-    .reg .pred %p<4>;
-    .reg .pred %pw;
-    .reg .b32 %r<8>;
-    .reg .b64 %rd<3>;
-    .shared .align 1024 .b8 a_buf[4096];
-    .shared .align 1024 .b8 b_buf[1024];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .shared .align 8 .b64 gate;
-
-    mov.u32 %r3, taddr_slot;
-    mov.u32 %r4, mma_bar;
-    mov.u32 %r6, gate;
-    mov.u32 %r5, %tid.x;
-    setp.eq.s32 %p1, %r5, 0;
-    setp.lt.u32 %p2, %r5, 32;
-    @!%p2 bra ALLOCATED;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-ALLOCATED:
-    @%p1 mbarrier.init.shared.b64 [%r4], 1;
-    @%p1 mbarrier.init.shared.b64 [%r6], 32;
-    bar.sync 0;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u64 %rd1, a_buf;
-    shr.u64 %rd1, %rd1, 4;
-    or.b64 %rd1, %rd1, 70377334112256;
-    mov.u64 %rd2, b_buf;
-    shr.u64 %rd2, %rd2, 4;
-    or.b64 %rd2, %rd2, 70377334112256;
-    mov.u32 %r2, 134348816;
-    mov.pred %p0, 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {{0,0,0,0}}, %p0;
-    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
-
-{body}
-    ret;
-}}
-"
-    )))
-}
+// Two-warp CTA: thread 0 issues an M=128, N=8 `tcgen05.mma` (D spans both
+// warps' lanes) committed to `mma_bar`. `%r1` = TMEM base, `%r4` = mbarrier,
+// `%r6` = `count = 32` `gate`, `%p2` = "in warp 0".
 
 /// A `bar.sync` between commit and completion orders nothing about the MMA:
 /// warp 1, released by `gate` via a bare `complete_tx` (no edge), still races
 /// the MMA's write of `D`.
 #[test]
 fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    bar.sync 0;
-    @!%p2 bra READ;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-    setp.eq.s32 %p3, %r5, 1;
-    @%p3 mbarrier.complete_tx.shared::cta.b64 [%r6], 32;
-    bra DONE;
-READ:
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r6], 1;
-GATE:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r6], 0;
-    @!%pw bra GATE;
-    add.u32 %r7, %r1, 2097152;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r7];
-    tcgen05.wait::ld.sync.aligned;
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_mma_bar_sync_before_completion_orders_nothing"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::TensorMemoryRace {
@@ -2070,12 +833,9 @@ DONE:",
 /// hits the in-flight record.
 #[test]
 fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    @!%p2 bra DONE;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r1];
-    tcgen05.wait::ld.sync.aligned;
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05AsyncHazard {
@@ -2098,13 +858,9 @@ DONE:",
 /// race.
 #[test]
 fn test_tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    bar.sync 0;
-    @%p2 bra DONE;
-    mov.u64 %rd1, a_buf;
-    st.shared.u32 [%rd1], %r5;
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::AsyncCopyHazard {
@@ -2127,19 +883,9 @@ DONE:",
 /// order the MMA before warp 1's read.
 #[test]
 fn test_tcgen05_mma_bar_sync_after_completion_orders_the_read() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    @!%p2 bra SYNC;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-SYNC:
-    bar.sync 0;
-    @%p2 bra DONE;
-    add.u32 %r6, %r1, 2097152;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
-    tcgen05.wait::ld.sync.aligned;
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_mma_bar_sync_after_completion_orders_the_read"
+    ));
     analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
 }
 
@@ -2147,17 +893,7 @@ DONE:",
 /// completion, whatever `bar.sync` ran before it.
 #[test]
 fn test_tcgen05_mma_every_reader_waiting_is_accepted() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    bar.sync 0;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-    @%p2 bra DONE;
-    add.u32 %r6, %r1, 2097152;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
-    tcgen05.wait::ld.sync.aligned;
-DONE:",
-    );
+    let module = parse(&ptx!("eval/tcgen05_mma_every_reader_waiting_is_accepted"));
     analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
 }
 
@@ -2166,68 +902,8 @@ DONE:",
 /// `complete_tx` only, races the write.
 #[test]
 fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
-    let module = parse(&wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<4>;
-    .reg .pred %pw;
-    .reg .b32 %r<9>;
-    .reg .b64 %rd<3>;
-    .shared .align 1024 .b8 a_buf[4096];
-    .shared .align 1024 .b8 b_buf[1024];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .shared .align 8 .b64 gate;
-
-    mov.u32 %r3, taddr_slot;
-    mov.u32 %r4, mma_bar;
-    mov.u32 %r6, gate;
-    mov.u32 %r5, %tid.x;
-    setp.eq.s32 %p1, %r5, 0;
-    setp.lt.u32 %p2, %r5, 32;
-    @!%p2 bra ALLOCATED;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-ALLOCATED:
-    @%p1 mbarrier.init.shared.b64 [%r4], 1;
-    @%p1 mbarrier.init.shared.b64 [%r6], 1;
-    bar.sync 0;
-    ld.shared.u32 %r1, [%r3];
-    @!%p2 bra READ;
-    @!%p1 bra SYNC;
-
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r6], 4;
-GATE:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r6], 0;
-    @!%pw bra GATE;
-    mov.u64 %rd1, a_buf;
-    shr.u64 %rd1, %rd1, 4;
-    or.b64 %rd1, %rd1, 70377334112256;
-    mov.u64 %rd2, b_buf;
-    shr.u64 %rd2, %rd2, 4;
-    or.b64 %rd2, %rd2, 70377334112256;
-    mov.u32 %r2, 134348816;
-    mov.pred %p0, 0;
-    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
-    bra SYNC;
-
-READ:
-    add.u32 %r7, %r1, 2097152;
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r8, [%r7];
-    tcgen05.wait::ld.sync.aligned;
-    setp.eq.s32 %p3, %r5, 32;
-    @%p3 mbarrier.complete_tx.shared::cta.b64 [%r6], 4;
-
-SYNC:
-    bar.sync 0;
-    @!%p1 bra DONE;
-    tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-DONE:
-    ret;
-}
-",
+    let module = parse(&ptx!(
+        "eval/tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
@@ -2252,11 +928,9 @@ DONE:
 /// rejected.
 #[test]
 fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    @!%p2 bra DONE;
-    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_dealloc_with_an_mma_in_flight_is_rejected"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05AsyncHazard { prior, current, .. }) => {
@@ -2271,14 +945,9 @@ DONE:",
 /// The control: deallocating after waiting on `mma_bar` is accepted.
 #[test]
 fn test_tcgen05_dealloc_after_the_mma_completed_is_accepted() {
-    let module = tcgen05_mma_two_warp_kernel(
-        "    @!%p2 bra DONE;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/tcgen05_dealloc_after_the_mma_completed_is_accepted"
+    ));
     analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
 }
 
@@ -2287,78 +956,7 @@ DONE:",
 /// `LBO` stepping and per-operand decoders.
 #[test]
 fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<7>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .shared .align 1024 .b8 a_buf[4096];
-    .shared .align 1024 .b8 b_buf[256];
-    .shared .align 4 .b32 taddr_slot;
-    .shared .align 8 .b64 mma_bar;
-    .reg .pred %pw;
-    .reg .b32 %rbar;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    ld.shared.u32 %r1, [%r3];
-
-    mov.u32 %r6, %tid.x;
-    setp.eq.s32 %p1, %r6, 0;
-
-    // A row 0: e4m3 1..=16, at k = 0..15 (first core matrix) and again
-    // at k = 16..31 (second core matrix, LBO = 128 bytes away).
-    mov.u64 %rd1, a_buf;
-    mov.u64 %rd2, b_buf;
-    @%p1 st.shared.b32 [%rd1+0], 0x48444038;
-    @%p1 st.shared.b32 [%rd1+4], 0x504e4c4a;
-    @%p1 st.shared.b32 [%rd1+8], 0x54535251;
-    @%p1 st.shared.b32 [%rd1+12], 0x58575655;
-    @%p1 st.shared.b32 [%rd1+128], 0x48444038;
-    @%p1 st.shared.b32 [%rd1+132], 0x504e4c4a;
-    @%p1 st.shared.b32 [%rd1+136], 0x54535251;
-    @%p1 st.shared.b32 [%rd1+140], 0x58575655;
-    // B row 0: e5m2 1.0 (0x3c) at k = 0..15, 2.0 (0x40) at k = 16..31.
-    @%p1 st.shared.b32 [%rd2+0], 0x3c3c3c3c;
-    @%p1 st.shared.b32 [%rd2+4], 0x3c3c3c3c;
-    @%p1 st.shared.b32 [%rd2+8], 0x3c3c3c3c;
-    @%p1 st.shared.b32 [%rd2+12], 0x3c3c3c3c;
-    @%p1 st.shared.b32 [%rd2+128], 0x40404040;
-    @%p1 st.shared.b32 [%rd2+132], 0x40404040;
-    @%p1 st.shared.b32 [%rd2+136], 0x40404040;
-    @%p1 st.shared.b32 [%rd2+140], 0x40404040;
-
-    // SwizzleMode::None, LBO = 128, SBO = 256, descriptor version 1.
-    shr.u64 %rd3, %rd1, 4;
-    or.b64 %rd3, %rd3, 70437464178688;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd4, %rd4, 70437464178688;
-    // dense, D=f32, A=e4m3, B=e5m2, no negate/transpose, M=128, N=8.
-    mov.u32 %r2, 134349840;
-    mov.pred %p0, 0;
-    fence.proxy.async.shared::cta;
-    mov.u32 %rbar, mma_bar;
-    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
-    bar.sync 0;
-    @%p1 tcgen05.mma.cta_group::1.kind::f8f6f4 [%r1+0], %rd3, %rd4, %r2, {0,0,0,0}, %p0;
-    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
-MMA_WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
-    @!%pw bra MMA_WAIT;
-    tcgen05.fence::after_thread_sync;
-
-    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
-    ld.param.u64 %rd1, [k_param_0];
-    @%p1 st.global.f32 [%rd1], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_kind_f8f6f4_numeric_correctness");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -2377,24 +975,7 @@ MMA_WAIT:
 /// generic "not yet implemented".
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_kind() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p0;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    mov.u32 %r1, 0;
-    mov.u64 %rd1, 0;
-    mov.u64 %rd2, 0;
-    mov.u32 %r2, 0;
-    mov.pred %p0, 0;
-    tcgen05.mma.cta_group::1.kind::tf32 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_rejects_unmodeled_kind");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Lower(LowerError::UnsupportedInstruction {
@@ -2419,26 +1000,7 @@ fn test_tcgen05_mma_rejects_unmodeled_kind() {
 /// descriptor-addressing error.
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p0;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    mov.u32 %r1, 0;
-    mov.u64 %rd1, 0;
-    mov.u64 %rd2, 0;
-    // dtype=F32, atype=bf16, M=128, N=256 (bit-packed by hand; see the
-    // session notes for the derivation).
-    mov.u32 %r2, 138412176;
-    mov.pred %p0, 0;
-    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_rejects_unmodeled_idesc_fields");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -2457,25 +1019,7 @@ fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
 /// A/B=f16, M=128, N=256 - otherwise fully modeled) plus `1 << 29`.
 #[test]
 fn test_tcgen05_mma_rejects_k_dimension_bit() {
-    let idesc = 138477584u32 | (1 << 29);
-    let src = wrap(&format!(
-        ".visible .entry k()
-{{
-    .reg .pred %p0;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    mov.u32 %r1, 0;
-    mov.u64 %rd1, 0;
-    mov.u64 %rd2, 0;
-    mov.u32 %r2, {idesc};
-    mov.pred %p0, 0;
-    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {{0,0,0,0}}, %p0;
-    ret;
-}}
-"
-    ));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tcgen05_mma_rejects_k_dimension_bit");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -2489,73 +1033,11 @@ fn test_tcgen05_mma_rejects_k_dimension_bit() {
     }
 }
 
-/// The corpus f16 `idesc`: dense, D=f32, A/B=f16, B transposed, M=128,
-/// N=256 - fully valid and modeled.
-const F16_IDESC: u32 = 138477584;
-/// A well-formed `Swizzle128B` shared-memory descriptor (start 0, stride
-/// 1024, the fixed `0b001` at bits 46-48) - the corpus kernel's `a-desc`.
-const SWIZZLE128B_DESC: u64 = 0x4000_4040_0000_0000;
-
-/// Replace `idesc`'s M field (bits 24-28, `M >> 4`) and N field (bits
-/// 17-22, `N >> 3`).
-fn with_shape(idesc: u32, m: u32, n: u32) -> u32 {
-    (idesc & !(0x1F << 24) & !(0x3F << 17)) | ((m >> 4) << 24) | ((n >> 3) << 17)
-}
-
-/// Run one `tcgen05.mma{.ws}.cta_group::1.kind::{kind}` (issued by thread
-/// 0, D in a fresh 512-column allocation) with the given `idesc` and
-/// descriptors.
-fn run_tcgen05_mma(
-    kind: &str,
-    ws: bool,
-    idesc: u32,
-    a_desc: u64,
-    b_desc: u64,
-) -> Result<AnalysisOutput, AnalysisError> {
-    run_tcgen05_mma_at(0, kind, ws, idesc, a_desc, b_desc)
-}
-
-/// [`run_tcgen05_mma`] with `D` at `d_offset` from the allocation's base
-/// address.
-fn run_tcgen05_mma_at(
-    d_offset: u32,
-    kind: &str,
-    ws: bool,
-    idesc: u32,
-    a_desc: u64,
-    b_desc: u64,
-) -> Result<AnalysisOutput, AnalysisError> {
-    let mma = if ws {
-        format!("tcgen05.mma.ws.cta_group::1.kind::{kind} [%r1+{d_offset}], %rd1, %rd2, %r2, %p0")
-    } else {
-        format!("tcgen05.mma.cta_group::1.kind::{kind} [%r1+{d_offset}], %rd1, %rd2, %r2, %p0")
-    };
-    let src = wrap_sm100a(&format!(
-        ".visible .entry k()
-{{
-    .reg .pred %p<2>;
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<3>;
-    // At shared address 0, where the descriptors' operands start.
-    .shared .align 1024 .b8 operands[32768];
-    .shared .align 4 .b32 taddr_slot;
-
-    mov.u32 %r3, taddr_slot;
-    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 512;
-    bar.sync 0;
-    ld.shared.u32 %r1, [%r3];
-    mov.u32 %r4, %tid.x;
-    setp.eq.u32 %p1, %r4, 0;
-    mov.u64 %rd1, {a_desc};
-    mov.u64 %rd2, {b_desc};
-    mov.u32 %r2, {idesc};
-    mov.pred %p0, 0;
-    @%p1 {mma};
-    ret;
-}}
-"
-    ));
-    analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1)))
+/// Run a one-`tcgen05.mma` kernel from `tests/ptx/eval/tcgen05_mma_encoding/`
+/// (thread 0 issues it, D in a fresh 512-column allocation). The variants
+/// differ only in the `idesc`, the descriptors, `.ws`, and D's offset.
+fn run_tcgen05_mma(src: &str) -> Result<AnalysisOutput, AnalysisError> {
+    analyze_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)))
 }
 
 /// Assert `result` is an `InvalidEncoding` whose message contains `needle`.
@@ -2574,25 +1056,37 @@ fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle
 /// 63's 8-bit transposed B needs N % 16 == 0.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_shapes() {
-    let d = SWIZZLE128B_DESC;
-    for (ws, m, n) in [
-        (false, 32, 64),
-        (false, 128, 264),
-        (true, 128, 16),
-        (true, 128, 0),
+    for (shape, src) in [
+        ("M=32 N=64", ptx!("eval/tcgen05_mma_encoding/shape_m32_n64")),
+        (
+            "M=128 N=264",
+            ptx!("eval/tcgen05_mma_encoding/shape_m128_n264"),
+        ),
+        (
+            ".ws M=128 N=16",
+            ptx!("eval/tcgen05_mma_encoding/shape_ws_m128_n16"),
+        ),
+        (
+            ".ws M=128 N=0",
+            ptx!("eval/tcgen05_mma_encoding/shape_ws_m128_n0"),
+        ),
     ] {
-        expect_invalid_encoding(
-            run_tcgen05_mma("f16", ws, with_shape(F16_IDESC, m, n), d, d),
-            "is not a valid .cta_group::1 dense shape",
-        );
+        match run_tcgen05_mma(&src) {
+            Err(AnalysisError::Eval(EvalError::InvalidEncoding { what, .. })) => {
+                let needle = "is not a valid .cta_group::1 dense shape";
+                assert!(
+                    what.contains(needle),
+                    "{shape}: expected {needle:?} in: {what}"
+                );
+            }
+            other => panic!("{shape}: expected InvalidEncoding, got: {other:?}"),
+        }
     }
-    // The same M = 32 is a valid (and modeled) `.ws` shape.
-    run_tcgen05_mma("f16", true, with_shape(F16_IDESC, 32, 64), d, d)
+    run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/shape_ws_m32_n64"))
         .expect("M = 32, N = 64 under .ws");
-    // The fp8 corpus idesc (M = 128, N = 16), with B transposed and N = 8.
-    let fp8_idesc = with_shape(0x0804_0010 | 1 << 16, 128, 8);
+    // The fp8 corpus idesc (M = 128) with B transposed and N = 8.
     expect_invalid_encoding(
-        run_tcgen05_mma("f8f6f4", false, fp8_idesc, d, d),
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/shape_fp8_n8")),
         "steps of 16",
     );
 }
@@ -2602,43 +1096,45 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
 /// (bits 4-5) must be at most f32 = 1.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
-    let d = SWIZZLE128B_DESC;
-    for bit in [6, 23] {
-        expect_invalid_encoding(
-            run_tcgen05_mma("f16", false, F16_IDESC | 1 << bit, d, d),
-            &format!("reserved bit {bit}"),
-        );
-    }
     expect_invalid_encoding(
-        run_tcgen05_mma("f16", false, F16_IDESC | 1 << 3, d, d),
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_reserved_bit6")),
+        "reserved bit 6",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_reserved_bit23")),
+        "reserved bit 23",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_saturate")),
         "saturate",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma("f16", false, F16_IDESC | 1 << 30, d, d),
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_max_shift")),
         "maximum shift",
     );
     // Under `.ws` the same shift is a legal (performance-only) hint.
-    run_tcgen05_mma("f16", true, with_shape(F16_IDESC, 128, 64) | 1 << 30, d, d)
+    run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_max_shift_ws"))
         .expect("max shift under .ws");
-    for dtype in [2, 3] {
-        expect_invalid_encoding(
-            run_tcgen05_mma("f16", false, (F16_IDESC & !(0b11 << 4)) | dtype << 4, d, d),
-            "D type field",
-        );
-    }
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_dtype2")),
+        "D type field",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_dtype3")),
+        "D type field",
+    );
 }
 
 /// Malformed shared-memory descriptors (PTX ISA Table 49) are rejected: a
 /// reserved bit, or the fixed `0b001` at bits 46-48 missing.
 #[test]
 fn test_tcgen05_mma_rejects_malformed_descriptors() {
-    let d = SWIZZLE128B_DESC;
     expect_invalid_encoding(
-        run_tcgen05_mma("f16", false, F16_IDESC, d | 1 << 15, d),
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/a_desc_bit15")),
         "a-desc",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma("f16", false, F16_IDESC, d, d & !(1 << 46)),
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/b_desc_no_bit46")),
         "fixed-constant field at bit 46",
     );
 }
@@ -2648,10 +1144,13 @@ fn test_tcgen05_mma_rejects_malformed_descriptors() {
 /// lane, rather than read as a column far outside the allocation.
 #[test]
 fn test_tcgen05_mma_rejects_a_d_address_off_lane_0() {
-    let d = SWIZZLE128B_DESC;
-    run_tcgen05_mma_at(8, "f16", false, F16_IDESC, d, d).expect("D at lane 0, column 8");
-    for lane in [32, 128] {
-        match run_tcgen05_mma_at(lane << 16, "f16", false, F16_IDESC, d, d) {
+    run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/d_lane0_col8"))
+        .expect("D at lane 0, column 8");
+    for (lane, src) in [
+        (32, ptx!("eval/tcgen05_mma_encoding/d_lane32")),
+        (128, ptx!("eval/tcgen05_mma_encoding/d_lane128")),
+    ] {
+        match run_tcgen05_mma(&src) {
             Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
                 let needle = format!("[d-tmem] at lane {lane}");
                 assert!(what.contains(&needle), "expected {needle:?} in: {what}");
@@ -2666,11 +1165,9 @@ fn test_tcgen05_mma_rejects_a_d_address_off_lane_0() {
 /// use every swizzling mode except 128B with 32B atomicity.
 #[test]
 fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
-    let d = SWIZZLE128B_DESC;
-    // `F16_IDESC` transposes B; give B 128B-with-32B-atomicity (mode 1).
-    let atomic32 = (d & !(0x7 << 61)) | 1 << 61;
+    // The f16 idesc transposes B; B's descriptor is 128B-with-32B-atomicity.
     expect_invalid_encoding(
-        run_tcgen05_mma("f16", false, F16_IDESC, d, atomic32),
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/b_swizzle128b_atom32")),
         "transposed B with 128B swizzling with 32B atomicity",
     );
 }
@@ -2680,17 +1177,20 @@ fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
 /// but is unimplemented.
 #[test]
 fn test_membar_levels() {
-    let kernel = |level: &str| {
-        parse(&wrap(&format!(
-            ".visible .entry k()\n{{\n    membar{level};\n    ret;\n}}\n"
-        )))
-    };
-    let analyze = |level| analyze_kernel(&kernel(level), None, AnalysisConfig::new((1, 1, 1)));
-    for level in [".cta", ".gl", ".sys"] {
-        analyze(level).unwrap_or_else(|e| panic!("membar{level}: {e}"));
+    let analyze = |src: String| analyze_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1)));
+    for (level, src) in [
+        (".cta", ptx!("eval/membar_levels_cta")),
+        (".gl", ptx!("eval/membar_levels_gl")),
+        (".sys", ptx!("eval/membar_levels_sys")),
+    ] {
+        analyze(src).unwrap_or_else(|e| panic!("membar{level}: {e}"));
     }
-    for level in [".cluster", ".gpu", ""] {
-        match analyze(level) {
+    for (level, src) in [
+        (".cluster", ptx!("eval/membar_levels_cluster")),
+        (".gpu", ptx!("eval/membar_levels_gpu")),
+        ("", ptx!("eval/membar_levels_none")),
+    ] {
+        match analyze(src) {
             Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
                 let reason = reason.unwrap_or_default();
                 assert!(reason.contains("parsing failed"), "membar{level}: {reason}");
@@ -2698,11 +1198,11 @@ fn test_membar_levels() {
             other => panic!("membar{level}: expected a parse failure, got {other:?}"),
         }
     }
-    for proxy in ["alias", "async"] {
-        let src = wrap_sm90a(&format!(
-            ".visible .entry k()\n{{\n    membar.proxy.{proxy};\n    ret;\n}}\n"
-        ));
-        match analyze_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1))) {
+    for (proxy, src) in [
+        ("alias", ptx!("eval/membar_levels_proxy_alias")),
+        ("async", ptx!("eval/membar_levels_proxy_async")),
+    ] {
+        match analyze(src) {
             Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
                 let reason = reason.unwrap_or_default();
                 assert!(reason.contains("not implemented yet"), "{proxy}: {reason}");
@@ -2727,27 +1227,15 @@ fn expect_invalid_instruction(module: &Module, needle: &str) {
 /// valid but unmodeled.
 #[test]
 fn test_mbarrier_shared_cluster_validity() {
-    let kernel = |body: &str| {
-        parse(&wrap_sm90a(&format!(
-            ".visible .entry k()
-{{
-    .reg .pred %p<2>;
-    .reg .b32 %r<4>;
-{body}
-    ret;
-}}
-"
-        )))
-    };
-    for body in [
-        "    mbarrier.init.shared::cluster.b64 [%r1], 1;",
-        "    mbarrier.inval.shared::cluster.b64 [%r1];",
-        "    mbarrier.test_wait.parity.shared::cluster.b64 %p0, [%r1], %r2;",
-        "    mbarrier.try_wait.parity.shared::cluster.b64 %p0, [%r1], %r2;",
+    for src in [
+        ptx!("eval/mbarrier_shared_cluster_validity_init"),
+        ptx!("eval/mbarrier_shared_cluster_validity_inval"),
+        ptx!("eval/mbarrier_shared_cluster_validity_test_wait"),
+        ptx!("eval/mbarrier_shared_cluster_validity_try_wait"),
     ] {
-        expect_invalid_instruction(&kernel(body), "has no .shared::cluster form");
+        expect_invalid_instruction(&parse(&src), "has no .shared::cluster form");
     }
-    let arrive = kernel("    mbarrier.arrive.shared::cluster.b64 _, [%r1];");
+    let arrive = parse(&ptx!("eval/mbarrier_shared_cluster_validity_arrive"));
     match analyze_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1))) {
         Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
             let reason = reason.unwrap_or_default();
@@ -2762,31 +1250,35 @@ fn test_mbarrier_shared_cluster_validity() {
 /// invalid, `.abs`/`.NaN` unmodeled.
 #[test]
 fn test_redux_sync_forms() {
-    let kernel = |form: &str| {
-        let r = if form.ends_with("f32") { "%f" } else { "%r" };
-        parse(&format!(
-            ".version 8.8\n.target sm_100a\n.address_size 64\n\n.visible .entry k()
-{{
-    .reg .b32 %r<4>;
-    .reg .f32 %f<4>;
-    redux.sync.{form} {r}1, {r}2, -1;
-    ret;
-}}
-"
-        ))
-    };
-    let analyze = |form| analyze_kernel(&kernel(form), None, AnalysisConfig::new((32, 1, 1)));
-    for form in ["add.u32", "max.s32", "xor.b32", "min.f32", "max.f32"] {
-        analyze(form).unwrap_or_else(|e| panic!("{form}: {e}"));
+    let analyze = |src: &str| analyze_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)));
+    for (form, src) in [
+        ("add.u32", ptx!("eval/redux_sync/add_u32")),
+        ("max.s32", ptx!("eval/redux_sync/max_s32")),
+        ("xor.b32", ptx!("eval/redux_sync/xor_b32")),
+        ("min.f32", ptx!("eval/redux_sync/min_f32")),
+        ("max.f32", ptx!("eval/redux_sync/max_f32")),
+    ] {
+        analyze(&src).unwrap_or_else(|e| panic!("{form}: {e}"));
     }
-    for form in ["add.f32", "and.u32", "min.b32", "xor.s32"] {
-        expect_invalid_instruction(&kernel(form), "not a redux.sync form");
+    for src in [
+        ptx!("eval/redux_sync/add_f32"),
+        ptx!("eval/redux_sync/and_u32"),
+        ptx!("eval/redux_sync/min_b32"),
+        ptx!("eval/redux_sync/xor_s32"),
+    ] {
+        expect_invalid_instruction(&parse(&src), "not a redux.sync form");
     }
-    for form in ["add.NaN.u32", "or.abs.b32"] {
-        expect_invalid_instruction(&kernel(form), "only apply to redux.sync.f32");
+    for src in [
+        ptx!("eval/redux_sync/add_nan_u32"),
+        ptx!("eval/redux_sync/or_abs_b32"),
+    ] {
+        expect_invalid_instruction(&parse(&src), "only apply to redux.sync.f32");
     }
-    for form in ["min.abs.f32", "max.NaN.f32"] {
-        match analyze(form) {
+    for (form, src) in [
+        ("min.abs.f32", ptx!("eval/redux_sync/min_abs_f32")),
+        ("max.NaN.f32", ptx!("eval/redux_sync/max_nan_f32")),
+    ] {
+        match analyze(&src) {
             Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { .. })) => {}
             other => panic!("{form}: expected unsupported, got {other:?}"),
         }
@@ -2798,23 +1290,11 @@ fn test_redux_sync_forms() {
 /// lowering must see (and reject) it.
 #[test]
 fn test_redux_sync_sign_trick_never_fuses_nan() {
-    let kernel = |nan: &str| {
-        parse(&wrap(&format!(
-            ".visible .entry k()
-{{
-    .reg .pred %p<2>;
-    .reg .b32 %r<4>;
-    .reg .f16 %h<2>;
-    mov.b32 %r1, {{%h1, %h1}};
-    redux.sync.max{nan}.s32 %r2, %r1, -1;
-    setp.lt.s32 %p1, %r2, 0;
-    @%p1 redux.sync.min.s32 %r2, %r1, -1;
-    ret;
-}}
-"
-        )))
-    };
-    let result = analyze_kernel(&kernel(""), None, AnalysisConfig::new((32, 1, 1)));
+    let result = analyze_kernel(
+        &parse(&ptx!("eval/redux_sync_sign_trick_never_fuses_nan")),
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+    );
     assert!(
         !matches!(
             result,
@@ -2823,32 +1303,17 @@ fn test_redux_sync_sign_trick_never_fuses_nan() {
         "{:?}",
         result.err()
     );
-    expect_invalid_instruction(&kernel(".NaN"), "only apply to redux.sync.f32");
+    expect_invalid_instruction(
+        &parse(&ptx!("eval/redux_sync_sign_trick_never_fuses_nan_max_nan")),
+        "only apply to redux.sync.f32",
+    );
 }
 
 /// An uninitialized shared read is tolerated during execution (the paper's
 /// race example depends on it), but an output computed from one is an error.
 #[test]
 fn test_uninitialized_shared_read_flows_to_output() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-    .shared .align 4 .b8 sdata[8];
-
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, sdata;
-    ld.shared.u32 %r2, [%r1];
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/uninitialized_shared_read_flows_to_output");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
@@ -2859,20 +1324,7 @@ fn test_uninitialized_shared_read_flows_to_output() {
 
 #[test]
 fn test_out_of_bounds_shared_access() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b32 %r<3>;
-    .shared .align 4 .b8 sdata[8];
-
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, sdata;
-    st.shared.u32 [%r2+64], %r1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/out_of_bounds_shared_access");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
@@ -2888,24 +1340,7 @@ fn test_out_of_bounds_shared_access() {
 /// A 4-byte load at an address 2 mod 4 is misaligned.
 #[test]
 fn test_misaligned_scalar_load() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.f32 %f1, [%rd1+2];
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/misaligned_scalar_load");
     let err = analyze_kernel(&module, None, in_out_config(1, 4)).unwrap_err();
     assert!(
         matches!(
@@ -2921,20 +1356,7 @@ fn test_misaligned_scalar_load() {
 /// same chokepoint).
 #[test]
 fn test_misaligned_scalar_store() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b32 %r<3>;
-    .shared .align 4 .b8 sdata[16];
-
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, sdata;
-    st.shared.u32 [%r2+2], %r1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/misaligned_scalar_store");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -2951,24 +1373,7 @@ fn test_misaligned_scalar_store() {
 /// ordinary f16 access pattern must keep working.
 #[test]
 fn test_aligned_u16_access_at_2_mod_4() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u16 %rs1, [%rd1+2];
-    st.global.u16 [%rd2+2], %rs1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/aligned_u16_access_at_2_mod_4");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -2999,24 +1404,7 @@ fn test_aligned_u16_access_at_2_mod_4() {
 /// even though every element taken alone is 4-aligned.
 #[test]
 fn test_misaligned_vector_load() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd1+4];
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/misaligned_vector_load");
     let err = analyze_kernel(&module, None, in_out_config(1, 8)).unwrap_err();
     assert!(
         matches!(
@@ -3031,24 +1419,7 @@ fn test_misaligned_vector_load() {
 /// The same vector load at a 16-byte boundary is legal.
 #[test]
 fn test_aligned_vector_load() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.v4.f32 {%f1, %f2, %f3, %f4}, [%rd1];
-    st.global.f32 [%rd2], %f4;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/aligned_vector_load");
     let output = analyze_kernel(&module, None, in_out_config(1, 8)).expect("aligned v4 load");
     assert_eq!(display_output(&output, "out", 0), "in[3]");
 }
@@ -3058,25 +1429,7 @@ fn test_aligned_vector_load() {
 /// destination.
 #[test]
 fn test_vector_store_with_immediate_source() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.f32 %f1, [%rd1];
-    ld.global.f32 %f2, [%rd1+4];
-    st.global.v4.f32 [%rd2], {%f1, 0f00000000, %f2, 0f3F800000};
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/vector_store_with_immediate_source");
     let mut config = in_out_config(1, 8);
     config.arrays[1].len = 4; // out: exactly the 4 stored elements
     let output = analyze_kernel(&module, None, config).expect("vector store with immediate");
@@ -3086,33 +1439,14 @@ fn test_vector_store_with_immediate_source() {
     assert_eq!(display_output(&output, "out", 3), "1");
 }
 
-/// One full-warp ldmatrix.x4 body; each lane supplies the row address
-/// `sdata + tid*16 + extra` (lane i*8+r owns row r of matrix i).
-fn ldmatrix_body(extra: u32) -> String {
-    format!(
-        ".visible .entry k()
-{{
-    .reg .b32 %r<10>;
-    .shared .align 16 .b8 sdata[1024];
-
-    mov.u32 %r1, %tid.x;
-    shl.b32 %r2, %r1, 4;
-    mov.u32 %r3, sdata;
-    add.s32 %r4, %r3, %r2;
-    add.s32 %r4, %r4, {};
-    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {{%r5, %r6, %r7, %r8}}, [%r4];
-    ret;
-}}
-",
-        extra
-    )
-}
+// Full-warp ldmatrix.x4 kernels; each lane supplies the row address
+// `sdata + tid*16 + extra` (lane i*8+r owns row r of matrix i).
 
 /// ldmatrix row addresses are legal at 16-byte boundaries: each 8x8 b16
 /// matrix row is fetched by four lanes as one 16-byte access.
 #[test]
 fn test_aligned_ldmatrix() {
-    let module = parse(&wrap(&ldmatrix_body(0)));
+    let module = parse(&ptx!("eval/aligned_ldmatrix"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("aligned ldmatrix");
 }
 
@@ -3121,7 +1455,7 @@ fn test_aligned_ldmatrix() {
 /// 4-aligned.
 #[test]
 fn test_misaligned_ldmatrix_row_address() {
-    let module = parse(&wrap(&ldmatrix_body(8)));
+    let module = parse(&ptx!("eval/misaligned_ldmatrix_row_address"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -3138,50 +1472,7 @@ fn test_misaligned_ldmatrix_row_address() {
 /// are checked against `in[expected_index]`.
 #[test]
 fn test_ldmatrix_trans_mapping() {
-    let mut init = String::new();
-    for k in 0..64u32 {
-        init.push_str(&format!(
-            "    ld.global.u16 %rs1, [%rd1+{off}];\n    st.shared.u16 [%r1+{off}], %rs1;\n",
-            off = k * 2
-        ));
-    }
-    let src = wrap(&format!(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .pred %p<2>;
-    .reg .b32 %r<10>;
-    .reg .b16 %rs<5>;
-    .reg .b64 %rd<5>;
-    .shared .align 16 .b8 sdata[128];
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, sdata;
-    mov.u32 %r2, %tid.x;
-    setp.eq.u32 %p1, %r2, 0;
-    @!%p1 bra $L1;
-{init}
-$L1:
-    bar.sync 0;
-    shl.b32 %r3, %r2, 4;
-    add.s32 %r4, %r1, %r3;
-    ldmatrix.sync.aligned.x1.trans.m8n8.shared.b16 {{%r5}}, [%r4];
-    mov.b32 {{%rs2, %rs3}}, %r5;
-    shl.b32 %r6, %r2, 2;
-    cvt.s64.s32 %rd3, %r6;
-    add.s64 %rd4, %rd2, %rd3;
-    st.global.u16 [%rd4], %rs2;
-    st.global.u16 [%rd4+2], %rs3;
-    ret;
-}}
-",
-        init = init
-    ));
-
-    let module = parse(&src);
+    let module = ptx!(parse "eval/ldmatrix_trans_mapping");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -3231,40 +1522,7 @@ $L1:
 /// registers get the literal `{1.0, 0, 0, 0}`.
 #[test]
 fn test_mma_with_immediate_accumulator() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<9>;
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<4>;
-
-    mov.u16 %rs1, 0;
-    mov.u16 %rs2, 0;
-    mov.b32 %r1, {%rs1, %rs2};
-    mov.b32 %r2, {%rs1, %rs2};
-    mov.b32 %r3, {%rs1, %rs2};
-    mov.b32 %r4, {%rs1, %rs2};
-    mov.b32 %r5, {%rs1, %rs2};
-    mov.b32 %r6, {%rs1, %rs2};
-
-    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 \
-        {%f1, %f2, %f3, %f4}, {%r1, %r2, %r3, %r4}, {%r5, %r6}, \
-        {0f3F800000, 0f00000000, 0f00000000, 0f00000000};
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u32 %r7, %tid.x;
-    mul.lo.u32 %r8, %r7, 16;
-    cvt.u64.u32 %rd2, %r8;
-    add.s64 %rd3, %rd1, %rd2;
-    st.global.v4.f32 [%rd3], {%f1, %f2, %f3, %f4};
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mma_with_immediate_accumulator");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -3285,42 +1543,7 @@ fn test_mma_with_immediate_accumulator() {
 /// decoded as f32 bits: thread 0's `D[0][0]` is 1.0, not 1065353216.
 #[test]
 fn test_mma_accumulator_register_decodes_raw_bits() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<11>;
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<4>;
-
-    mov.u16 %rs1, 0;
-    mov.u16 %rs2, 0;
-    mov.b32 %r1, {%rs1, %rs2};
-    mov.b32 %r2, {%rs1, %rs2};
-    mov.b32 %r3, {%rs1, %rs2};
-    mov.b32 %r4, {%rs1, %rs2};
-    mov.b32 %r5, {%rs1, %rs2};
-    mov.b32 %r6, {%rs1, %rs2};
-    mov.b32 %r9, 0x3F800000;
-    mov.b32 %r10, 0;
-
-    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 \
-        {%f1, %f2, %f3, %f4}, {%r1, %r2, %r3, %r4}, {%r5, %r6}, \
-        {%r9, %r10, %r10, %r10};
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u32 %r7, %tid.x;
-    mul.lo.u32 %r8, %r7, 16;
-    cvt.u64.u32 %rd2, %r8;
-    add.s64 %rd3, %rd1, %rd2;
-    st.global.v4.f32 [%rd3], {%f1, %f2, %f3, %f4};
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mma_accumulator_register_decodes_raw_bits");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -3335,65 +1558,17 @@ fn test_mma_accumulator_register_decodes_raw_bits() {
     assert_eq!(display_output(&output, "out", 1), "0");
 }
 
-/// One full-warp wmma.load.a body with base `sdata + extra` and the given
-/// stride (in f16 elements).
-fn wmma_load_body(extra: u32, stride: u32) -> String {
-    format!(
-        ".visible .entry k()
-{{
-    .reg .b32 %r<12>;
-    .shared .align 32 .b8 sdata[2048];
-
-    mov.u32 %r1, sdata;
-    add.s32 %r1, %r1, {};
-    mov.u32 %r2, {};
-    wmma.load.a.sync.aligned.row.m16n16k16.shared.f16 \
-         {{%r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10}}, [%r1], %r2;
-    ret;
-}}
-",
-        extra, stride
-    )
-}
-
-/// One full-warp wmma.store.d body with base `sdata + extra` and the given
-/// stride (in f32 elements).
-fn wmma_store_body(extra: u32, stride: u32) -> String {
-    format!(
-        ".visible .entry k()
-{{
-    .reg .b32 %r<3>;
-    .reg .f32 %f<9>;
-    .shared .align 32 .b8 sdata[4096];
-
-    mov.f32 %f1, 0f3F800000;
-    mov.f32 %f2, 0f3F800000;
-    mov.f32 %f3, 0f3F800000;
-    mov.f32 %f4, 0f3F800000;
-    mov.f32 %f5, 0f3F800000;
-    mov.f32 %f6, 0f3F800000;
-    mov.f32 %f7, 0f3F800000;
-    mov.f32 %f8, 0f3F800000;
-    mov.u32 %r1, sdata;
-    add.s32 %r1, %r1, {};
-    mov.u32 %r2, {};
-    wmma.store.d.sync.aligned.row.m16n16k16.shared.f32 \
-         [%r1], {{%f1, %f2, %f3, %f4, %f5, %f6, %f7, %f8}}, %r2;
-    ret;
-}}
-",
-        extra, stride
-    )
-}
+// Full-warp wmma.load.a / wmma.store.d kernels with base `sdata + extra`
+// and a stride in f16 (load) or f32 (store) elements.
 
 /// wmma with a 32-byte-aligned base and the default stride (16 elements)
 /// is legal, for both the f16 a-fragment load and the f32 d-fragment store.
 #[test]
 fn test_aligned_wmma_load_and_store() {
-    let module = parse(&wrap(&wmma_load_body(0, 16)));
+    let module = parse(&ptx!("eval/aligned_wmma_load_and_store_load"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("aligned wmma.load");
 
-    let module = parse(&wrap(&wmma_store_body(0, 16)));
+    let module = parse(&ptx!("eval/aligned_wmma_load_and_store_store"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("aligned wmma.store");
 }
 
@@ -3401,7 +1576,7 @@ fn test_aligned_wmma_load_and_store() {
 /// of a larger matrix) as long as it keeps rows aligned.
 #[test]
 fn test_wmma_stride_above_default_is_legal() {
-    let module = parse(&wrap(&wmma_load_body(0, 32)));
+    let module = parse(&ptx!("eval/wmma_stride_above_default_is_legal"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("stride-32 wmma.load");
 }
 
@@ -3410,7 +1585,7 @@ fn test_wmma_stride_above_default_is_legal() {
 /// aligned, which must stay legal.
 #[test]
 fn test_wmma_skewed_stride_is_legal() {
-    let module = parse(&wrap(&wmma_load_body(0, 24)));
+    let module = parse(&ptx!("eval/wmma_skewed_stride_is_legal"));
     analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("stride-24 wmma.load");
 }
 
@@ -3418,7 +1593,7 @@ fn test_wmma_skewed_stride_is_legal() {
 /// (PTX ISA 9.7.14.4.2) even though each f16 element read is 2-aligned.
 #[test]
 fn test_wmma_load_base_misaligned() {
-    let module = parse(&wrap(&wmma_load_body(8, 16)));
+    let module = parse(&ptx!("eval/wmma_load_base_misaligned"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -3433,7 +1608,7 @@ fn test_wmma_load_base_misaligned() {
 /// The store side enforces the same base alignment.
 #[test]
 fn test_wmma_store_base_misaligned() {
-    let module = parse(&wrap(&wmma_store_body(8, 16)));
+    let module = parse(&ptx!("eval/wmma_store_base_misaligned"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -3449,7 +1624,7 @@ fn test_wmma_store_base_misaligned() {
 /// undefined behavior by itself (PTX ISA 9.7.14.4.3).
 #[test]
 fn test_wmma_stride_below_default() {
-    let module = parse(&wrap(&wmma_load_body(0, 8)));
+    let module = parse(&ptx!("eval/wmma_stride_below_default"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -3470,7 +1645,7 @@ fn test_wmma_stride_below_default() {
 /// 20 f16 elements = 40 bytes.
 #[test]
 fn test_wmma_stride_misaligned() {
-    let module = parse(&wrap(&wmma_load_body(0, 20)));
+    let module = parse(&ptx!("eval/wmma_stride_misaligned"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -3486,19 +1661,7 @@ fn test_wmma_stride_misaligned() {
 /// when the analysis is configured, not per access.
 #[test]
 fn test_config_rejects_misaligned_array_base() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/config_rejects_misaligned_array_base");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "in".to_string(),
@@ -3521,31 +1684,7 @@ fn test_config_rejects_misaligned_array_base() {
 /// unsigned.
 #[test]
 fn test_mul_wide_u16_magic_division() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<5>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u16 %rs1, 14;
-    mul.wide.u16 %r1, %rs1, -17873;
-    shr.u32 %r2, %r1, 19;
-    cvt.u16.u32 %rs2, %r2;
-    mul.lo.s16 %rs3, %rs2, 11;
-    sub.s16 %rs4, %rs1, %rs3;
-    cvt.u32.u16 %r3, %rs4;
-    st.global.u32 [%rd1], %r2;
-    st.global.u32 [%rd1+4], %r3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mul_wide_u16_magic_division");
     let output = analyze_kernel(&module, None, in_out_config(1, 2)).expect("analysis");
     // 14 / 11 = 1, 14 % 11 = 3.
     assert_eq!(display_output(&output, "out", 0), "1");
@@ -3556,24 +1695,7 @@ fn test_mul_wide_u16_magic_division() {
 /// half of 0xFFFFFFFF * 2 is 1, not -1's sign fill.
 #[test]
 fn test_mul_hi_u32_negative_operand() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, -1;
-    mul.hi.u32 %r2, %r1, 2;
-    st.global.u32 [%rd1], %r2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mul_hi_u32_negative_operand");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "1");
 }
@@ -3583,33 +1705,7 @@ fn test_mul_hi_u32_negative_operand() {
 /// low 5 bits, i.e. 31.
 #[test]
 fn test_shf_clamp_negative_shift_amount_saturates() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<8>;
-    .reg .s32 %s<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, 0x11111111;
-    mov.u32 %r2, 0x22222222;
-    mov.s32 %s1, -1;
-    shf.l.clamp.b32 %r3, %r1, %r2, %s1;
-    shf.r.clamp.b32 %r4, %r1, %r2, %s1;
-    shf.l.wrap.b32 %r5, %r1, %r2, %s1;
-    shf.r.wrap.b32 %r6, %r1, %r2, %s1;
-    st.global.u32 [%rd1], %r3;
-    st.global.u32 [%rd1+4], %r4;
-    st.global.u32 [%rd1+8], %r5;
-    st.global.u32 [%rd1+12], %r6;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shf_clamp_negative_shift_amount_saturates");
     let output = analyze_kernel(&module, None, in_out_config(1, 4)).expect("analysis");
     // shf.l.clamp, n = min(0xFFFFFFFF, 32) = 32: the whole of hi is shifted
     // out and lo fills the result, so d = lo = 0x11111111.
@@ -3640,34 +1736,7 @@ fn test_shf_clamp_negative_shift_amount_saturates() {
 /// by 0x10000 is over-wide (>= 16), not a shift by 0x10000 & 0xFFFF = 0.
 #[test]
 fn test_b16_shift_amount_is_read_as_u32() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<5>;
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, 0x10000;
-    mov.b16 %h1, 1;
-    mov.b16 %h2, 0x8000;
-    shl.b16 %h3, %h1, %r1;
-    shr.u16 %h4, %h2, %r1;
-    cvt.u32.u16 %r2, %h3;
-    cvt.u32.u16 %r3, %h4;
-    shr.s16 %h4, %h2, %r1;
-    cvt.u32.u16 %r4, %h4;
-    st.global.u32 [%rd1], %r2;
-    st.global.u32 [%rd1+4], %r3;
-    st.global.u32 [%rd1+8], %r4;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/b16_shift_amount_is_read_as_u32");
     let output = analyze_kernel(&module, None, in_out_config(1, 3)).expect("analysis");
     // shl.b16 1 by >= 16: every bit is shifted out, so d = 0 (not 1).
     assert_eq!(display_output(&output, "out", 0), "0");
@@ -3683,27 +1752,7 @@ fn test_b16_shift_amount_is_read_as_u32() {
 /// i32::MIN).
 #[test]
 fn test_int_abs_read_at_signed_width() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<8>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, 0xFFFFFFFB;
-    abs.s32 %r2, %r1;
-    mov.u32 %r4, 0x80000000;
-    abs.s32 %r5, %r4;
-    st.global.u32 [%rd1], %r2;
-    st.global.u32 [%rd1+4], %r5;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/int_abs_read_at_signed_width");
     let output = analyze_kernel(&module, None, in_out_config(1, 2)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(
@@ -3716,31 +1765,7 @@ fn test_int_abs_read_at_signed_width() {
 /// 0xFF800000 (-inf) gives inf. A symbolic operand stays an `abs` node.
 #[test]
 fn test_float_abs_decodes_raw_bits() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<7>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.b32 %f1, 0xC0A00000;
-    abs.f32 %f2, %f1;
-    mov.b32 %f3, 0xFF800000;
-    abs.f32 %f4, %f3;
-    ld.global.f32 %f5, [%rd1];
-    abs.f32 %f6, %f5;
-    st.global.f32 [%rd2], %f2;
-    st.global.f32 [%rd2+4], %f4;
-    st.global.f32 [%rd2+8], %f6;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/float_abs_decodes_raw_bits");
     let output = analyze_kernel(&module, None, in_out_config(1, 3)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(display_output(&output, "out", 1), "inf");
@@ -3752,40 +1777,7 @@ fn test_float_abs_decodes_raw_bits() {
 /// float-to-float `cvt` (f16 0x3C00).
 #[test]
 fn test_float_ops_decode_raw_bit_patterns() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<2>;
-    .reg .f32 %f<12>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.b32 %f1, 0x3F800000;
-    fma.rn.f32 %f2, %f1, %f1, %f1;
-    mov.b32 %f3, 0x40800000;
-    rcp.rn.f32 %f4, %f3;
-    sqrt.rn.f32 %f5, %f3;
-    mov.b16 %h1, 0x3C00;
-    cvt.f32.f16 %f6, %h1;
-    mov.b32 %f7, 0xBF800000;
-    copysign.f32 %f8, %f7, %f3;
-    ld.global.f32 %f9, [%rd1];
-    copysign.f32 %f10, %f7, %f9;
-    st.global.f32 [%rd2], %f2;
-    st.global.f32 [%rd2+4], %f4;
-    st.global.f32 [%rd2+8], %f5;
-    st.global.f32 [%rd2+12], %f6;
-    st.global.f32 [%rd2+16], %f8;
-    st.global.f32 [%rd2+20], %f10;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/float_ops_decode_raw_bit_patterns");
     let output = analyze_kernel(&module, None, in_out_config(1, 6)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "2");
     assert_eq!(display_output(&output, "out", 1), "0.25");
@@ -3800,27 +1792,7 @@ fn test_float_ops_decode_raw_bit_patterns() {
 /// is `1 * 2 + 1 = 3`.
 #[test]
 fn test_mixed_precision_fma_decodes_multiplicands_at_their_own_type() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<3>;
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd2, [k_param_1];
-    mov.b16 %h1, 0x3C00;
-    mov.b16 %h2, 0x4000;
-    mov.b32 %f1, 0x3F800000;
-    fma.rn.f32.f16 %f2, %h1, %h2, %f1;
-    st.global.f32 [%rd2], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mixed_precision_fma_decodes_multiplicands_at_their_own_type");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "3");
 }
@@ -3829,24 +1801,7 @@ fn test_mixed_precision_fma_decodes_multiplicands_at_their_own_type() {
 /// left in place as an integer: Volta's real-valued model has no NaN.
 #[test]
 fn test_float_op_rejects_nan_bit_pattern() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd2, [k_param_1];
-    mov.b32 %f1, 0x7FC00000;
-    add.f32 %f2, %f1, %f1;
-    st.global.f32 [%rd2], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/float_op_rejects_nan_bit_pattern");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -3861,38 +1816,7 @@ fn test_float_op_rejects_nan_bit_pattern() {
 /// (0xC0A00000 is -5.0). Symbolic stays a `neg` node.
 #[test]
 fn test_neg_reads_operand_as_instruction_type() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<5>;
-    .reg .f32 %f<7>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, 0xFFFFFFFB;
-    neg.s32 %r2, %r1;
-    mov.u32 %r3, 0x80000000;
-    neg.s32 %r4, %r3;
-    mov.b32 %f1, 0xC0A00000;
-    neg.f32 %f2, %f1;
-    mov.b32 %f3, 0xFF800000;
-    neg.f32 %f4, %f3;
-    ld.global.f32 %f5, [%rd1];
-    neg.f32 %f6, %f5;
-    st.global.u32 [%rd2], %r2;
-    st.global.u32 [%rd2+4], %r4;
-    st.global.f32 [%rd2+8], %f2;
-    st.global.f32 [%rd2+12], %f4;
-    st.global.f32 [%rd2+16], %f6;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/neg_reads_operand_as_instruction_type");
     let output = analyze_kernel(&module, None, in_out_config(1, 5)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(
@@ -3909,28 +1833,7 @@ fn test_neg_reads_operand_as_instruction_type() {
 /// Concrete integer division (index math) still evaluates exactly.
 #[test]
 fn test_symbolic_integer_div_is_unsupported() {
-    let kernel = |divide: &str| {
-        wrap(&format!(
-            ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u32 %r1, [%rd1];
-    {divide};
-    st.global.u32 [%rd2], %r2;
-    ret;
-}}
-"
-        ))
-    };
-
-    let module = parse(&kernel("div.u32 %r2, %r1, 2"));
+    let module = parse(&ptx!("eval/symbolic_integer_div_is_unsupported"));
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -3943,7 +1846,7 @@ fn test_symbolic_integer_div_is_unsupported() {
         other => panic!("expected EvalError::Unsupported, got: {}", other),
     }
 
-    let module = parse(&kernel("mov.u32 %r3, 7;\n    div.u32 %r2, %r3, 2"));
+    let module = parse(&ptx!("eval/symbolic_integer_div_is_unsupported_concrete"));
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "3");
 }
@@ -3952,31 +1855,12 @@ fn test_symbolic_integer_div_is_unsupported() {
 /// the ISA types it - not rejected as a width mismatch against `.b64`.
 #[test]
 fn test_b64_shift_by_u32_register() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<6>;
-
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u64 %rd3, 3;
-    mov.u32 %r2, 40;
-    shl.b64 %rd4, %rd3, %r2;
-    shr.u64 %rd5, %rd4, %r2;
-    st.global.u64 [%rd2], %rd4;
-    st.global.u64 [%rd2+8], %rd5;
-    ret;
-}
-",
-    );
+    let module = ptx!(parse "eval/b64_shift_by_u32_register");
     let mut config = in_out_config(1, 2);
     for array in &mut config.arrays {
         array.elem_width = 8;
     }
-    let output = analyze_kernel(&parse(&src), None, config).expect("analysis");
+    let output = analyze_kernel(&module, None, config).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), (3u64 << 40).to_string());
     assert_eq!(display_output(&output, "out", 1), "3");
 }
@@ -3986,35 +1870,27 @@ fn test_b64_shift_by_u32_register() {
 /// `add.u32 x, -1` are the same op, and `-1` stays `-1` under `.u32`.
 #[test]
 fn test_ring_op_constant_signedness_is_irrelevant() {
-    let kernel = |op: &str| {
-        let module = parse(&wrap(&format!(
-            ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u32 %r1, [%rd1];
-    {op};
-    st.global.u32 [%rd2], %r2;
-    ret;
-}}
-"
-        )));
+    let kernel = |src: String| {
+        let module = parse(&src);
         analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis")
     };
-    for (signed, unsigned) in [
-        ("add.s32 %r2, %r1, -1", "add.u32 %r2, %r1, -1"),
-        ("sub.s32 %r2, %r1, -7", "sub.u32 %r2, %r1, -7"),
-        ("mul.lo.s32 %r2, %r1, -3", "mul.lo.u32 %r2, %r1, -3"),
+    for ((signed, signed_src), (unsigned, unsigned_src)) in [
+        (
+            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),
+            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_u32_neg1"),
+        ),
+        (
+            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_sub_s32_neg7"),
+            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_sub_u32_neg7"),
+        ),
+        (
+            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_mul_lo_s32_neg3"),
+            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_mul_lo_u32_neg3"),
+        ),
     ] {
         assert!(
             matches!(
-                check_equiv(&kernel(signed), &kernel(unsigned)),
+                check_equiv(&kernel(signed_src), &kernel(unsigned_src)),
                 EquivOutcome::Equivalent
             ),
             "`{signed}` not proved equal to `{unsigned}`"
@@ -4022,12 +1898,12 @@ fn test_ring_op_constant_signedness_is_irrelevant() {
     }
 
     // A negative constant reads as a subtraction, whatever the signedness.
-    for op in [
-        "add.u32 %r2, %r1, -1",
-        "add.s32 %r2, %r1, -1",
-        "sub.u32 %r2, %r1, 1",
+    for (op, src) in [
+        ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_u32_neg1"),
+        ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),
+        ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_sub_u32_1"),
     ] {
-        let rendered = display_output(&kernel(op), "out", 0);
+        let rendered = display_output(&kernel(src), "out", 0);
         assert!(
             rendered.contains("- 1") && !rendered.contains("4294967295"),
             "`{op}` rendered as {rendered}"
@@ -4037,44 +1913,7 @@ fn test_ring_op_constant_signedness_is_irrelevant() {
 
 #[test]
 fn test_bfe_extract_and_sign_fill() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<10>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    // 0b1010 = 10; bits [0:4) unsigned = 0b1010 = 10 (no sign bit).
-    mov.u32 %r1, 10;
-    bfe.u32 %r2, %r1, 0, 4;
-    st.global.u32 [%rd1], %r2;
-
-    // Signed: the field's top bit (bit 3 of 0b1010) is 1, so it sign-fills to
-    // 0xFFFFFFFA (-6 in 4-bit two's complement).
-    mov.u32 %r3, 10;
-    bfe.s32 %r4, %r3, 0, 4;
-    st.global.u32 [%rd1+4], %r4;
-
-    // start=40 is beyond the s32 msb (31): the whole result is filled with
-    // a's own sign bit (bit 31 of -1 is 1) - not 0, which a plain
-    // `(a >> 40) & mask` would wrongly produce for any width > 0.
-    mov.u32 %r5, -1;
-    bfe.s32 %r6, %r5, 40, 4;
-    st.global.u32 [%rd1+8], %r6;
-
-    // len == 0: the result is always 0, regardless of a's sign.
-    mov.u32 %r7, -1;
-    bfe.u32 %r8, %r7, 4, 0;
-    st.global.u32 [%rd1+12], %r8;
-
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/bfe_extract_and_sign_fill");
     let output = analyze_kernel(&module, None, out_only_config(4, 4)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "10");
     assert_eq!(display_output(&output, "out", 1), "4294967290");
@@ -4084,38 +1923,7 @@ fn test_bfe_extract_and_sign_fill() {
 
 #[test]
 fn test_bfi_clips_field_to_register_width() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    // Plain insert: a=0b11 into bits [4:6) of b=0 gives 0b110000 = 48.
-    bfi.b32 %r1, 3, 0, 4, 2;
-    st.global.u32 [%rd1], %r1;
-
-    // len=64 overruns the b32 msb: only bits [4:32) are replaced, so b's
-    // low nibble (5) survives - not 0, which a full-width mask produces.
-    bfi.b32 %r2, 0, 5, 4, 64;
-    st.global.u32 [%rd1+4], %r2;
-
-    // start=64 is beyond the msb: nothing is inserted, the result is b.
-    bfi.b32 %r3, -1, 5, 64, 4;
-    st.global.u32 [%rd1+8], %r3;
-
-    // start=40 (also beyond the b32 msb) with len=0: again b.
-    bfi.b32 %r4, -1, 7, 40, 0;
-    st.global.u32 [%rd1+12], %r4;
-
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/bfi_clips_field_to_register_width");
     let output = analyze_kernel(&module, None, out_only_config(4, 4)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "48");
     assert_eq!(display_output(&output, "out", 1), "5");
@@ -4125,28 +1933,7 @@ fn test_bfi_clips_field_to_register_width() {
 
 #[test]
 fn test_mov_vector_destination_unpack_values() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b16 %rs<4>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    // 0x1234ABCD: lo 16 bits = 0xABCD = 43981, hi 16 bits = 0x1234 = 4660.
-    mov.u32 %r1, 0x1234ABCD;
-    mov.b32 {%rs1, %rs2}, %r1;
-    st.global.u16 [%rd1], %rs1;
-    st.global.u16 [%rd1+2], %rs2;
-
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mov_vector_destination_unpack_values");
     let output = analyze_kernel(&module, None, out_only_config(2, 2)).expect("analysis");
     assert_eq!(display_output(&output, "out", 0), "43981");
     assert_eq!(display_output(&output, "out", 1), "4660");
@@ -4157,30 +1944,12 @@ fn test_cvt_pack_halves_values() {
     // cvt.rn.f16x2.f32 d, a, b: `a` goes to the *high* half and `b` to the
     // *low* (opposite mov.b32's brace order); also exercises storing a Pair and
     // reading its 2-byte granules back.
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    mov.f32 %f1, 0f3FC00000; // 1.5
-    mov.f32 %f2, 0f40200000; // 2.5
-    cvt.rn.f16x2.f32 %r1, %f1, %f2;
-    st.global.b32 [%rd1], %r1;
-
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cvt_pack_halves_values");
     let output = analyze_kernel(&module, None, out_only_config(2, 2)).expect("analysis");
-    assert_eq!(display_output(&output, "out", 0), "2.5"); // low half: b
-    assert_eq!(display_output(&output, "out", 1), "1.5"); // high half: a
+    let low = display_output(&output, "out", 0);
+    let high = display_output(&output, "out", 1);
+    assert_eq!(low, "2.5"); // low half: b
+    assert_eq!(high, "1.5"); // high half: a
 }
 
 #[test]
@@ -4188,27 +1957,7 @@ fn test_mov_unpack_native_pair_source() {
     // `ld.global.b32` over a 2-byte array yields a `Value::Pair`; `mov.b32
     // {lo,hi}` must split its real halves directly, not bit-mask an opaque
     // integer (nvcc/Triton's f16 idiom).
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.b32 %r1, [%rd1];
-    mov.b32 {%rs1, %rs2}, %r1;
-    st.global.u16 [%rd2], %rs1;
-    st.global.u16 [%rd2+2], %rs2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mov_unpack_native_pair_source");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -4240,27 +1989,7 @@ fn test_mov_pack_b32_always_builds_pair() {
     // The mirror image: `mov.b32 dst, {lo, hi}` always writes `Value::Pair(lo,
     // hi)`, not bit-packing, so packed f16 or integer halves round-trip exactly
     // through memory.
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u16 %rs1, [%rd1];
-    ld.global.u16 %rs2, [%rd1+2];
-    mov.b32 %r1, {%rs1, %rs2};
-    st.global.b32 [%rd2], %r1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mov_pack_b32_always_builds_pair");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -4292,24 +2021,7 @@ fn test_mov_pack_b32_always_builds_pair() {
 /// scalar (here, the u64 output).
 #[test]
 fn test_mov_pack_b64_integer_halves_recombine() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u32 %r1, 5;
-    mov.u32 %r2, 3;
-    mov.b64 %rd2, {%r1, %r2};
-    st.global.u64 [%rd1], %rd2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/mov_pack_b64_integer_halves_recombine");
     let output = analyze_kernel(&module, None, out_only_config(8, 1)).expect("b64 pack analysis");
     // 5 | (3 << 32) = 12884901893
     assert_eq!(display_output(&output, "out", 0), "12884901893");
@@ -4362,36 +2074,8 @@ fn u8_scratch_config() -> AnalysisConfig {
 /// constant.
 #[test]
 fn test_mov_neg1_equivalent_to_not_zero() {
-    let mov_kernel = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u32 %r1, -1;
-    st.global.u32 [%rd1], %r1;
-    ret;
-}
-",
-    );
-    let not_kernel = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    not.b32 %r1, 0;
-    st.global.u32 [%rd1], %r1;
-    ret;
-}
-",
-    );
+    let mov_kernel = ptx!("eval/mov_neg1_equivalent_to_not_zero");
+    let not_kernel = ptx!("eval/mov_neg1_equivalent_to_not_zero_2");
     let a = analyze_kernel(&parse(&mov_kernel), None, out_only_config(4, 1)).unwrap();
     let b = analyze_kernel(&parse(&not_kernel), None, out_only_config(4, 1)).unwrap();
     assert_eq!(display_output(&a, "out", 0), "4294967295");
@@ -4404,47 +2088,8 @@ fn test_mov_neg1_equivalent_to_not_zero() {
 /// identical comparison and select nodes.
 #[test]
 fn test_setp_selp_canonicalize_operands() {
-    let literal = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u32 %r1, [%rd1];
-    setp.eq.s32 %p1, %r1, -1;
-    selp.b32 %r2, -1, 0, %p1;
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let computed = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u32 %r1, [%rd1];
-    not.b32 %r3, 0;
-    setp.eq.s32 %p1, %r1, %r3;
-    selp.b32 %r2, %r3, 0, %p1;
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
+    let literal = ptx!("eval/setp_selp_canonicalize_operands");
+    let computed = ptx!("eval/setp_selp_canonicalize_operands_2");
     let a = analyze_kernel(&parse(&literal), None, in_out_config(1, 1)).unwrap();
     let b = analyze_kernel(&parse(&computed), None, in_out_config(1, 1)).unwrap();
     let da = display_output(&a, "out", 0);
@@ -4463,27 +2108,8 @@ fn test_setp_selp_canonicalize_operands() {
 /// 300 to 44); `ld.u8` zero-extends it back.
 #[test]
 fn test_store_u8_truncates_to_low_bits() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, 44;
-    add.s32 %r2, %r1, 256;
-    st.global.u8 [%rd1], %r2;
-    ld.global.u8 %r3, [%rd1];
-    st.global.u32 [%rd2], %r3;
-    ret;
-}
-",
-    );
-    let output = analyze_kernel(&parse(&src), None, u8_scratch_config()).unwrap();
+    let module = ptx!(parse "eval/store_u8_truncates_to_low_bits");
+    let output = analyze_kernel(&module, None, u8_scratch_config()).unwrap();
     assert_eq!(display_output(&output, "out", 0), "44");
 }
 
@@ -4492,41 +2118,8 @@ fn test_store_u8_truncates_to_low_bits() {
 /// directly.
 #[test]
 fn test_load_s8_sign_extends() {
-    let via_byte = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, 255;
-    st.global.u8 [%rd1], %r1;
-    ld.global.s8 %r2, [%rd1];
-    st.global.s32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let direct = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, -1;
-    st.global.u32 [%rd2], %r1;
-    ret;
-}
-",
-    );
+    let via_byte = ptx!("eval/load_s8_sign_extends");
+    let direct = ptx!("eval/load_s8_sign_extends_2");
     let a = analyze_kernel(&parse(&via_byte), None, u8_scratch_config()).unwrap();
     let b = analyze_kernel(&parse(&direct), None, u8_scratch_config()).unwrap();
     assert_eq!(display_output(&a, "out", 0), "4294967295");
@@ -4539,27 +2132,7 @@ fn test_load_s8_sign_extends() {
 /// `sub.s32`'s -8 widens 4294967288.
 #[test]
 fn test_cvt_reinterprets_at_source_format() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<4>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u32 %r1, -5;
-    and.b32 %r2, %r1, -4;
-    cvt.s64.s32 %rd2, %r2;
-    st.global.s64 [%rd1], %rd2;
-    mov.u32 %r3, 3;
-    sub.s32 %r4, %r3, 11;
-    cvt.u64.u32 %rd3, %r4;
-    st.global.u64 [%rd1+8], %rd3;
-    ret;
-}
-",
-    );
+    let src = ptx!("eval/cvt_reinterprets_at_source_format");
     let output = analyze_kernel(&parse(&src), None, out_only_config(8, 2)).unwrap();
     // (-5 & -4) at 32 bits is 0xFFFFFFF8; sign-extended through s32: -8.
     assert_eq!(display_output(&output, "out", 0), "-8");
@@ -4571,23 +2144,7 @@ fn test_cvt_reinterprets_at_source_format() {
 /// a truncation node we do not model: loud error, not silent nonsense.
 #[test]
 fn test_symbolic_sub_register_store_rejected() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.u32 %r1, [%rd1];
-    st.global.u8 [%rd2], %r1;
-    ret;
-}
-",
-    );
+    let src = ptx!("eval/symbolic_sub_register_store_rejected");
     let err = analyze_kernel(&parse(&src), None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(
@@ -4604,23 +2161,7 @@ fn test_symbolic_sub_register_store_rejected() {
 /// register would need an extension node we do not model: loud error.
 #[test]
 fn test_symbolic_sub_register_load_rejected() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.s8 %r1, [%rd1];
-    st.global.u32 [%rd2], %r1;
-    ret;
-}
-",
-    );
+    let src = ptx!("eval/symbolic_sub_register_load_rejected");
     // The byte array serves as the kernel's input here: loading one of
     // its symbolic elements at s8 into a 32-bit register would need an
     // extension.
@@ -4641,23 +2182,7 @@ fn test_symbolic_sub_register_load_rejected() {
 /// `.b8`/`.u8` loads too).
 #[test]
 fn test_unsigned_sub_register_load_passes_through() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.b8 %r1, [%rd1];
-    st.global.u32 [%rd2], %r1;
-    ret;
-}
-",
-    );
+    let src = ptx!("eval/unsigned_sub_register_load_passes_through");
     let output = analyze_kernel(&parse(&src), None, u8_scratch_config()).unwrap();
     assert_eq!(display_output(&output, "out", 0), "scratch[0]");
 }
@@ -4667,31 +2192,7 @@ fn test_unsigned_sub_register_load_passes_through() {
 /// value and the discarded high lane stays `Undefined`.
 #[test]
 fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<2>;
-    .reg .b32 %r<2>;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    ld.param.u64 %rd1, [k_param_1];
-
-    mov.u16 %h0, 0;
-    ld.global.b8 %h0, [%rd0];
-    cvt.rn.f16x2.e4m3x2 %r0, %h0;
-    mov.b32 {%h1, _}, %r0;
-    cvt.f32.f16 %f0, %h1;
-    st.global.f32 [%rd1], %f0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_scalar_source_from_a_zero_extended_byte_load");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -4722,31 +2223,7 @@ fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
 /// fabricated `0.0`.
 #[test]
 fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<2>;
-    .reg .b32 %r<2>;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    ld.param.u64 %rd1, [k_param_1];
-
-    mov.u16 %h0, 0;
-    ld.global.b8 %h0, [%rd0];
-    cvt.rn.f16x2.e4m3x2 %r0, %h0;
-    mov.b32 {_, %h1}, %r0;
-    cvt.f32.f16 %f0, %h1;
-    st.global.f32 [%rd1], %f0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -4781,28 +2258,8 @@ fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
 /// nonsense.
 #[test]
 fn test_pair_sub_width_store_rejected() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u16 %rs1, 1;
-    mov.u16 %rs2, 2;
-    st.global.u16 [%rd1], %rs1;
-    st.global.u16 [%rd1+2], %rs2;
-    ld.global.u32 %r1, [%rd1];
-    st.global.u16 [%rd1+4], %r1;
-    ret;
-}
-",
-    );
-    let err = analyze_kernel(&parse(&src), None, u8_scratch_config()).unwrap_err();
+    let module = ptx!(parse "eval/pair_sub_width_store_rejected");
+    let err = analyze_kernel(&module, None, u8_scratch_config()).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -4817,26 +2274,7 @@ fn test_pair_sub_width_store_rejected() {
 /// Branching on input data violates structured-CTA.
 #[test]
 fn test_symbolic_branch_rejected() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.global.f32 %f1, [%rd1];
-    setp.gt.f32 %p1, %f1, 0f00000000;
-    @%p1 bra $L1;
-$L1:
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/symbolic_branch_rejected");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::NotConcrete { .. })),
@@ -4848,42 +2286,7 @@ $L1:
 /// The `__symexpf` callseq idiom becomes symbolic exp.
 #[test]
 fn test_symexpf_callseq() {
-    let src = wrap(
-        ".extern .func  (.param .b32 func_retval0) __symexpf
-(
-    .param .b32 __symexpf_param_0
-)
-;
-
-.visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.f32 %f1, [%rd1];
-    { // callseq 0, 0
-    .reg .b32 temp_param_reg;
-    .param .b32 param0;
-    st.param.f32 [param0+0], %f1;
-    .param .b32 retval0;
-    call.uni (retval0),
-    __symexpf,
-    (
-    param0
-    );
-    ld.param.f32 %f2, [retval0+0];
-    } // callseq 0
-    st.global.f32 [%rd2], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/symexpf_callseq");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "exp(in[0])");
 }
@@ -4893,25 +2296,7 @@ fn test_symexpf_callseq() {
 /// and folds to zero at 0.
 #[test]
 fn test_tanh_approx_expands_to_exp_fragment() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    ld.global.f32 %f1, [%rd1];
-    tanh.approx.f32 %f2, %f1;
-    st.global.f32 [%rd2], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/tanh_approx_expands_to_exp_fragment");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
     assert_eq!(
         display_output(&output, "out", 0),
@@ -4924,37 +2309,8 @@ fn test_tanh_approx_expands_to_exp_fragment() {
 /// the collapse.
 #[test]
 fn test_tanh_approx_zero_equivalent_to_zero() {
-    let tanh_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.f32 %f1, 0f00000000;
-    tanh.approx.f32 %f2, %f1;
-    st.global.f32 [%rd1], %f2;
-    ret;
-}
-",
-    );
-    let zero_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.f32 %f1, 0f00000000;
-    st.global.f32 [%rd1], %f1;
-    ret;
-}
-",
-    );
+    let tanh_src = ptx!("eval/tanh_approx_zero_equivalent_to_zero");
+    let zero_src = ptx!("eval/tanh_approx_zero_equivalent_to_zero_2");
     let a = analyze_kernel(&parse(&tanh_src), None, out_only_config(4, 1)).expect("tanh analysis");
     let b = analyze_kernel(&parse(&zero_src), None, out_only_config(4, 1)).expect("zero analysis");
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
@@ -4964,34 +2320,7 @@ fn test_tanh_approx_zero_equivalent_to_zero() {
 /// out[tid] = in[tid ^ 1].
 #[test]
 fn test_shfl_sync_idx_exchange() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<7>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    mov.u32 %r1, %tid.x;
-    shl.b32 %r2, %r1, 2;
-    cvt.u64.u32 %rd3, %r2;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    xor.b32 %r3, %r1, 1;
-    mov.u32 %r4, 31;
-    mov.u32 %r5, 3;
-    shfl.sync.idx.b32 %f2, %f1, %r3, %r4, %r5;
-    add.s64 %rd5, %rd2, %rd3;
-    st.global.f32 [%rd5], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shfl_sync_idx_exchange");
     let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[1]");
     assert_eq!(display_output(&output, "out", 1), "in[0]");
@@ -5019,29 +2348,7 @@ fn warp_out_config(elem_width: u64, len: u64) -> AnalysisConfig {
 /// to every lane - one `redux.sync` fires per group.
 #[test]
 fn test_redux_sync_max_min_full_warp() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    mov.u32 %r0, %tid.x;
-    redux.sync.max.u32 %r1, %r0, -1;
-    sub.s32 %r2, %r0, 16;
-    redux.sync.min.s32 %r3, %r2, -1;
-    mul.wide.u32 %rd1, %r0, 8;
-    add.u64 %rd2, %rd0, %rd1;
-    st.global.u32 [%rd2], %r1;
-    add.u64 %rd2, %rd2, 4;
-    st.global.u32 [%rd2], %r3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/redux_sync_max_min_full_warp");
     let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
     // max(0..31) = 31, min(-16..15) = -16, broadcast to lanes 0 and 31;
     // `st.global.u32` stores raw unsigned bits, so -16 reads back as
@@ -5057,31 +2364,7 @@ fn test_redux_sync_max_min_full_warp() {
 /// `.b32`/`.u32`, no signedness distinction).
 #[test]
 fn test_redux_sync_and_or_add_full_warp() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    mov.u32 %r0, %tid.x;
-    redux.sync.and.b32 %r1, %r0, -1;
-    redux.sync.or.b32 %r2, %r0, -1;
-    redux.sync.add.u32 %r3, %r0, -1;
-    mul.wide.u32 %rd1, %r0, 12;
-    add.u64 %rd2, %rd0, %rd1;
-    st.global.u32 [%rd2], %r1;
-    add.u64 %rd2, %rd2, 4;
-    st.global.u32 [%rd2], %r2;
-    add.u64 %rd2, %rd2, 4;
-    st.global.u32 [%rd2], %r3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/redux_sync_and_or_add_full_warp");
     let output = analyze_kernel(&module, None, warp_out_config(4, 96)).unwrap();
     // AND(0..31) = 0, OR(0..31) = 31, SUM(0..31) = 496.
     assert_eq!(display_output(&output, "out", 0), "0");
@@ -5095,32 +2378,7 @@ fn test_redux_sync_and_or_add_full_warp() {
 /// `min.s32` result.
 #[test]
 fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    mov.u32 %r0, %tid.x;
-    sub.s32 %r1, %r0, 16;
-    redux.sync.min.s32 %r2, %r1, -1;
-    setp.lt.u32 %p0, %r0, 16;
-    mov.u32 %r3, 999;
-@%p0 redux.sync.max.s32 %r3, %r1, 0x0000ffff;
-    mul.wide.u32 %rd1, %r0, 8;
-    add.u64 %rd2, %rd0, %rd1;
-    st.global.u32 [%rd2], %r2;
-    add.u64 %rd2, %rd2, 4;
-    st.global.u32 [%rd2], %r3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/redux_sync_partial_mask_skips_unguarded_lanes");
     let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
     // Lane 0 (guarded, mask 0..15): min over 32 lanes is -16, max over 0..15 is
     // -1; stored as raw unsigned bits, they read back as 4294967280/4294967295.
@@ -5137,27 +2395,7 @@ fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
 /// the way to the clamped constant.
 #[test]
 fn test_add_sat_f32_concrete_clamps() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.f32 %f1, 0f3F400000;
-    add.sat.f32 %f2, %f1, %f1;
-    st.global.f32 [%rd1], %f2;
-    mov.f32 %f3, 0fBF400000;
-    add.sat.f32 %f4, %f3, 0f3E800000;
-    st.global.f32 [%rd1+4], %f4;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/add_sat_f32_concrete_clamps");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -5204,28 +2442,7 @@ fn f32_in_f16_out_config(threads: u32, len: u64) -> AnalysisConfig {
 /// transformation max(x, 0) on a symbolic input.
 #[test]
 fn test_cvt_relu_symbolic_is_max() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<2>;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1];
-    cvt.rn.relu.f16.f32 %rs1, %f1;
-    st.global.u16 [%rd2], %rs1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cvt_relu_symbolic_is_max");
     let output = analyze_kernel(&module, None, f32_in_f16_out_config(1, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "max(in[0], 0)");
 }
@@ -5235,47 +2452,8 @@ fn test_cvt_relu_symbolic_is_max() {
 /// max are the same real function, and canon flattens max atoms.
 #[test]
 fn test_relu_epilogue_equivalent_to_explicit_max() {
-    const PROLOGUE: &str = ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<2>;
-    .reg .f32 %f<4>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<7>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    shl.b32 %r2, %r1, 2;
-    cvt.u64.u32 %rd3, %r2;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    shl.b32 %r3, %r1, 1;
-    cvt.u64.u32 %rd5, %r3;
-    add.s64 %rd6, %rd2, %rd5;
-";
-    let fused = wrap(&format!(
-        "{}    cvt.rn.relu.f16.f32 %rs1, %f1;
-    st.global.u16 [%rd6], %rs1;
-    ret;
-}}
-",
-        PROLOGUE
-    ));
-    let explicit = wrap(&format!(
-        "{}    mov.f32 %f2, 0f00000000;
-    max.f32 %f3, %f2, %f1;
-    cvt.rn.f16.f32 %rs1, %f3;
-    st.global.u16 [%rd6], %rs1;
-    ret;
-}}
-",
-        PROLOGUE
-    ));
+    let fused = ptx!("eval/relu_epilogue_equivalent_to_explicit_max_fused");
+    let explicit = ptx!("eval/relu_epilogue_equivalent_to_explicit_max_explicit");
     let a = analyze_kernel(&parse(&fused), None, f32_in_f16_out_config(2, 2)).unwrap();
     let b = analyze_kernel(&parse(&explicit), None, f32_in_f16_out_config(2, 2)).unwrap();
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
@@ -5404,49 +2582,8 @@ fn one_elem_config() -> AnalysisConfig {
 /// exact rational 1/3, so kernels using either spelling are equivalent.
 #[test]
 fn test_div_by_three_equivalent_to_rcp_of_three() {
-    let div_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1];
-    div.rn.f32 %f2, 0f3F800000, 0f40400000;
-    mul.f32 %f3, %f1, %f2;
-    st.global.f32 [%rd2], %f3;
-    ret;
-}
-",
-    );
-    let rcp_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1];
-    mov.f32 %f2, 0f40400000;
-    rcp.approx.f32 %f3, %f2;
-    mul.f32 %f4, %f1, %f3;
-    st.global.f32 [%rd2], %f4;
-    ret;
-}
-",
-    );
+    let div_src = ptx!("eval/div_by_three_equivalent_to_rcp_of_three");
+    let rcp_src = ptx!("eval/div_by_three_equivalent_to_rcp_of_three_2");
     let a = analyze_kernel(&parse(&div_src), None, one_elem_config()).unwrap();
     let b = analyze_kernel(&parse(&rcp_src), None, one_elem_config()).unwrap();
     // Both fold to the exact rational 1/3.
@@ -5460,47 +2597,8 @@ fn test_div_by_three_equivalent_to_rcp_of_three() {
 /// and reported a false DIFF; the exact fold makes them equivalent.
 #[test]
 fn test_div_by_n_equivalent_to_mul_by_computed_reciprocal() {
-    let div_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1];
-    div.rn.f32 %f2, %f1, 0f44400000;
-    st.global.f32 [%rd2], %f2;
-    ret;
-}
-",
-    );
-    let recip_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<5>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1];
-    div.rn.f32 %f2, 0f3F800000, 0f44400000;
-    mul.f32 %f3, %f1, %f2;
-    st.global.f32 [%rd2], %f3;
-    ret;
-}
-",
-    );
+    let div_src = ptx!("eval/div_by_n_equivalent_to_mul_by_computed_reciprocal");
+    let recip_src = ptx!("eval/div_by_n_equivalent_to_mul_by_computed_reciprocal_2");
     let a = analyze_kernel(&parse(&div_src), None, one_elem_config()).unwrap();
     let b = analyze_kernel(&parse(&recip_src), None, one_elem_config()).unwrap();
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
@@ -5524,45 +2622,8 @@ fn f64_out_config() -> AnalysisConfig {
 /// rounding (the old f64 folds could disagree between the two spellings).
 #[test]
 fn test_concrete_fma_equivalent_to_mul_add() {
-    let fma_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f64 %fd<5>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.f64 %fd1, 0d3FB999999999999A;
-    mov.f64 %fd2, 0d3FC999999999999A;
-    mov.f64 %fd3, 0d3FD3333333333333;
-    fma.rn.f64 %fd4, %fd1, %fd2, %fd3;
-    st.global.f64 [%rd1], %fd4;
-    ret;
-}
-",
-    );
-    let mul_add_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f64 %fd<6>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.f64 %fd1, 0d3FB999999999999A;
-    mov.f64 %fd2, 0d3FC999999999999A;
-    mov.f64 %fd3, 0d3FD3333333333333;
-    mul.f64 %fd4, %fd1, %fd2;
-    add.f64 %fd5, %fd4, %fd3;
-    st.global.f64 [%rd1], %fd5;
-    ret;
-}
-",
-    );
+    let fma_src = ptx!("eval/concrete_fma_equivalent_to_mul_add");
+    let mul_add_src = ptx!("eval/concrete_fma_equivalent_to_mul_add_2");
     let a = analyze_kernel(&parse(&fma_src), None, f64_out_config()).unwrap();
     let b = analyze_kernel(&parse(&mul_add_src), None, f64_out_config()).unwrap();
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
@@ -5573,40 +2634,8 @@ fn test_concrete_fma_equivalent_to_mul_add() {
 /// produce.
 #[test]
 fn test_runtime_sum_differs_from_prerounded_literal() {
-    let sum_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f64 %fd<4>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.f64 %fd1, 0d3FB999999999999A;
-    mov.f64 %fd2, 0d3FC999999999999A;
-    add.f64 %fd3, %fd1, %fd2;
-    st.global.f64 [%rd1], %fd3;
-    ret;
-}
-",
-    );
-    let literal_src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f64 %fd<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.f64 %fd1, 0d3FD3333333333334;
-    st.global.f64 [%rd1], %fd1;
-    ret;
-}
-",
-    );
+    let sum_src = ptx!("eval/runtime_sum_differs_from_prerounded_literal");
+    let literal_src = ptx!("eval/runtime_sum_differs_from_prerounded_literal_2");
     let a = analyze_kernel(&parse(&sum_src), None, f64_out_config()).unwrap();
     let b = analyze_kernel(&parse(&literal_src), None, f64_out_config()).unwrap();
     assert!(matches!(
@@ -5619,22 +2648,7 @@ fn test_runtime_sum_differs_from_prerounded_literal() {
 /// real number, so it cannot enter the analysis model.
 #[test]
 fn test_nan_literal_rejected_at_lowering() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.f32 %f1, 0f7FC00000;
-    st.global.f32 [%rd1], %f1;
-    ret;
-}
-",
-    );
+    let module = ptx!(parse "eval/nan_literal_rejected_at_lowering");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -5644,7 +2658,7 @@ fn test_nan_literal_rejected_at_lowering() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let err = analyze_kernel(&parse(&src), None, config).unwrap_err();
+    let err = analyze_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Lower(_)),
         "expected lowering rejection of the NaN literal, got: {}",
@@ -5660,15 +2674,7 @@ fn test_nan_literal_rejected_at_lowering() {
 /// A NaN float parameter is a config validation error.
 #[test]
 fn test_nan_float_param_rejected() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .f32 k_param_0
-)
-{
-    ret;
-}
-",
-    );
+    let src = ptx!("eval/nan_float_param_rejected");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.params = vec![ParamValue::Float(f64::NAN)];
     let err = analyze_kernel(&parse(&src), None, config).unwrap_err();
@@ -5684,22 +2690,7 @@ fn test_nan_float_param_rejected() {
 /// denominator when the element is checked.
 #[test]
 fn test_zero_over_zero_is_a_loud_equivalence_error() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<2>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    cvta.to.global.u64 %rd1, %rd1;
-    div.rn.f32 %f2, 0f00000000, 0f00000000;
-    st.global.f32 [%rd1], %f2;
-    ret;
-}
-",
-    );
+    let src = ptx!("eval/zero_over_zero_is_a_loud_equivalence_error");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -5731,88 +2722,13 @@ fn test_zero_over_zero_is_a_loud_equivalence_error() {
 /// Sync rule, and the ISA's), so it sums in[0..16].
 #[test]
 fn test_tail_exit_warp_shfl_reduction() {
-    let mut body = String::from(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<7>;
-    .reg .f32 %f<7>;
-    .reg .b32 %r<13>;
-    .reg .b64 %rd<6>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    setp.gt.u32 %p1, %r1, 15;
-@%p1 ret;
-    shl.b32 %r2, %r1, 2;
-    cvt.u64.u32 %rd3, %r2;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    mov.u32 %r3, 31;
-    mov.u32 %r4, -1;
-",
-    );
-    for (round, offset) in [8u32, 4, 2, 1].into_iter().enumerate() {
-        let (w, p, r) = (round + 2, round + 2, round + 5);
-        body.push_str(&format!(
-            "    mov.u32 %r{r}, {offset};
-    shfl.sync.down.b32 %f{w}, %f1, %r{r}, %r3, %r4;
-    add.u32 %r{r2}, %r1, {offset};
-    setp.lt.u32 %p{p}, %r{r2}, 16;
-@%p{p} add.f32 %f1, %f1, %f{w};
-",
-            r2 = round + 9,
-        ));
-    }
-    body.push_str(
-        "    setp.ne.u32 %p6, %r1, 0;
-@%p6 ret;
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&wrap(&body));
+    let module = parse(&ptx!("eval/tail_exit_warp_shfl_reduction"));
     let a = analyze_kernel(&module, None, in_out_config(32, 16)).unwrap();
     assert_eq!(a.stats.warp_syncs, 4);
 
     // Reference: one thread sums in[0..16] sequentially.
-    let mut ref_body = String::from(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<3>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1];
-",
-    );
-    for i in 1..16 {
-        ref_body.push_str(&format!(
-            "    ld.global.f32 %f2, [%rd1+{}];
-    add.f32 %f1, %f1, %f2;
-",
-            i * 4
-        ));
-    }
-    ref_body.push_str(
-        "    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let b = analyze_kernel(&parse(&wrap(&ref_body)), None, in_out_config(1, 16)).unwrap();
+    let reference = ptx!("eval/tail_exit_warp_shfl_reduction_reference");
+    let b = analyze_kernel(&parse(&reference), None, in_out_config(1, 16)).unwrap();
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
@@ -5821,39 +2737,7 @@ fn test_tail_exit_warp_shfl_reduction() {
 /// thread"); the group still fires.
 #[test]
 fn test_shfl_from_exited_lane_is_undefined() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .f32 %f<3>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<6>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    setp.gt.u32 %p1, %r1, 15;
-@%p1 ret;
-    shl.b32 %r2, %r1, 2;
-    cvt.u64.u32 %rd3, %r2;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    mov.u32 %r3, 31;
-    mov.u32 %r4, -1;
-    mov.u32 %r5, 8;
-    shfl.sync.down.b32 %f2, %f1, %r5, %r3, %r4;
-    add.s64 %rd5, %rd2, %rd3;
-    st.global.f32 [%rd5], %f2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shfl_from_exited_lane_is_undefined");
     // Lanes 8..15 source exited lanes 16..23 and store the Undefined result.
     let err = analyze_kernel(&module, None, in_out_config(32, 16)).unwrap_err();
     assert!(
@@ -5868,25 +2752,7 @@ fn test_shfl_from_exited_lane_is_undefined() {
 /// of I, the returned lane included.
 #[test]
 fn test_bar_warp_sync_clears_chi_for_exited_reader() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<4>;
-    .shared .align 4 .b8 sdata[8];
-
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, sdata;
-    setp.eq.u32 %p1, %r1, 1;
-@%p1 ld.shared.u32 %r3, [%r2];
-@%p1 ret;
-    bar.warp.sync 3;
-    st.shared.u32 [%r2], %r1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/bar_warp_sync_clears_chi_for_exited_reader");
     analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1)))
         .expect("read-then-exit / sync / write must not race under the paper's syncMem");
 }
@@ -5896,33 +2762,7 @@ fn test_bar_warp_sync_clears_chi_for_exited_reader() {
 /// visible (syncMem clears ordering state, not memory).
 #[test]
 fn test_bar_warp_sync_clears_chi_for_exited_writer() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<2>;
-    .shared .align 4 .b8 sdata[8];
-
-    ld.param.u64 %rd1, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r1, %tid.x;
-    mov.u32 %r2, sdata;
-    setp.eq.u32 %p1, %r1, 1;
-    mov.u32 %r3, 42;
-@%p1 st.shared.u32 [%r2], %r3;
-@%p1 ret;
-    bar.warp.sync 3;
-    ld.shared.u32 %r4, [%r2];
-    st.global.u32 [%rd1], %r4;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/bar_warp_sync_clears_chi_for_exited_writer");
     let output = analyze_kernel(&module, None, in_out_config(2, 1))
         .expect("write-then-exit / sync / read must not race under the paper's syncMem");
     assert_eq!(display_output(&output, "out", 0), "42");
@@ -5933,8 +2773,7 @@ fn test_bar_warp_sync_clears_chi_for_exited_writer() {
 /// of a CTA barrier.
 #[test]
 fn test_bar_warp_sync_neighbor_exchange() {
-    let src = wrap(&SWAP_BODY.replace("BARRIER", "bar.warp.sync 3;"));
-    let module = parse(&src);
+    let module = ptx!(parse "eval/bar_warp_sync_neighbor_exchange");
     let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[1]");
     assert_eq!(display_output(&output, "out", 1), "in[0]");
@@ -5947,8 +2786,10 @@ fn test_bar_warp_sync_neighbor_exchange() {
 /// barrier{.cta}.sync.aligned").
 #[test]
 fn test_barrier_sync_is_bar_sync() {
-    for form in ["barrier.sync 0;", "barrier.cta.sync.aligned 0;"] {
-        let src = wrap(&SWAP_BODY.replace("BARRIER", form));
+    for (form, src) in [
+        ptx_case!("eval/barrier_sync_is_bar_sync"),
+        ptx_case!("eval/barrier_sync_is_bar_sync_cta_aligned"),
+    ] {
         let module = parse(&src);
         let output = analyze_kernel(&module, None, in_out_config(2, 2))
             .unwrap_or_else(|e| panic!("{} failed: {}", form, e));
@@ -5962,45 +2803,16 @@ fn test_barrier_sync_is_bar_sync() {
 // activemask: exact for the converged case (existing, non-exited lanes)
 // =========================================================================
 
-/// activemask kernel: each thread records its mask; a CTA barrier after the
-/// query means no thread has exited yet, making the all-alive answer
-/// deterministic.
-fn activemask_body(barrier: &str) -> String {
-    format!(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .pred %p<2>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<4>;
-
-    ld.param.u64 %rd1, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r2, %tid.x;
-    {barrier}
-    activemask.b32 %r1;
-    shl.b32 %r3, %r2, 2;
-    cvt.u64.u32 %rd2, %r3;
-    add.s64 %rd3, %rd1, %rd2;
-    st.global.u32 [%rd3], %r1;
-    ret;
-}}
-"
-    )
-}
+// activemask kernels: each thread records its mask; a CTA barrier after the
+// query means no thread has exited yet, making the all-alive answer
+// deterministic.
 
 /// All 32 lanes alive: every thread reads 0xFFFFFFFF. The barrier comes
 /// *after* activemask here, so each thread queries while all others are
 /// alive (blocked or not-yet-run, never exited).
 #[test]
 fn test_activemask_all_alive_full_warp() {
-    let body = activemask_body("").replace(
-        "activemask.b32 %r1;",
-        "activemask.b32 %r1;\n    bar.sync 0;",
-    );
-    let module = parse(&wrap(&body));
+    let module = parse(&ptx!("eval/activemask_all_alive_full_warp"));
     let output = analyze_kernel(&module, None, in_out_config(32, 32)).unwrap();
     for i in 0..32 {
         assert_eq!(display_output(&output, "out", i), "4294967295");
@@ -6012,11 +2824,7 @@ fn test_activemask_all_alive_full_warp() {
 /// all queries happen before any exit).
 #[test]
 fn test_activemask_16_thread_block() {
-    let body = activemask_body("").replace(
-        "activemask.b32 %r1;",
-        "activemask.b32 %r1;\n    bar.sync 0;",
-    );
-    let module = parse(&wrap(&body));
+    let module = parse(&ptx!("eval/activemask_16_thread_block"));
     let output = analyze_kernel(&module, None, in_out_config(16, 16)).unwrap();
     for i in 0..16 {
         assert_eq!(display_output(&output, "out", i), "65535");
@@ -6028,12 +2836,7 @@ fn test_activemask_16_thread_block() {
 /// promises nothing about exit order.
 #[test]
 fn test_activemask_after_tail_exit() {
-    let mut body = activemask_body("bar.sync 0;");
-    body = body.replace(
-        "    mov.u32 %r2, %tid.x;\n",
-        "    mov.u32 %r2, %tid.x;\n    setp.gt.u32 %p1, %r2, 15;\n@%p1 ret;\n",
-    );
-    let module = parse(&wrap(&body));
+    let module = parse(&ptx!("eval/activemask_after_tail_exit"));
     let output = analyze_kernel(&module, None, in_out_config(32, 32)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "65535");
 }
@@ -6047,22 +2850,7 @@ fn test_activemask_after_tail_exit() {
 /// caught (hardware happens to tolerate this; the model must not).
 #[test]
 fn test_shared_array_overflow_read_is_out_of_bounds() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b32 %r<6>;
-    .shared .align 4 .b8 A[192];
-
-    mov.u32 %r1, %tid.x;
-    shl.b32 %r2, %r1, 2;
-    mov.u32 %r3, A;
-    add.s32 %r4, %r3, %r2;
-    ld.shared.u32 %r5, [%r4];
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/shared_array_overflow_read_is_out_of_bounds");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -6079,20 +2867,7 @@ fn test_shared_array_overflow_read_is_out_of_bounds() {
 /// neighbor read.
 #[test]
 fn test_vector_straddling_adjacent_shared_arrays() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b32 %r<7>;
-    .shared .align 4 .b8 A[40];
-    .shared .align 4 .b8 B[64];
-
-    mov.u32 %r1, A;
-    ld.shared.v4.u32 {%r2, %r3, %r4, %r5}, [%r1+32];
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/vector_straddling_adjacent_shared_arrays");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -6113,32 +2888,7 @@ fn test_vector_straddling_adjacent_shared_arrays() {
 /// every build profile, including release.
 #[test]
 fn test_negative_index_wrap_is_out_of_bounds() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<2>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<6>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    add.s32 %r2, %r1, -1;
-    cvt.s64.s32 %rd3, %r2;
-    shl.b64 %rd3, %rd3, 2;
-    add.s64 %rd4, %rd1, %rd3;
-    ld.global.f32 %f1, [%rd4];
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/negative_index_wrap_is_out_of_bounds");
     let mut config = in_out_config(1, 4);
     config.arrays[0].base = 0; // x based at 0: base + (-4) wraps
     let err = analyze_kernel(&module, None, config).unwrap_err();
@@ -6158,39 +2908,7 @@ fn test_negative_index_wrap_is_out_of_bounds() {
 /// at the region end.
 #[test]
 fn test_region_edge_exact_fit_accesses_pass() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<13>;
-    .reg .b64 %rd<2>;
-    .shared .align 4 .b8 A[48];
-    .shared .align 4 .b8 B[64];
-
-    ld.param.u64 %rd1, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r1, A;
-    mov.u32 %r2, 1;
-    mov.u32 %r3, 2;
-    mov.u32 %r4, 3;
-    mov.u32 %r5, 4;
-    st.shared.v4.u32 [%r1+32], {%r2, %r3, %r4, %r5};
-    mov.u32 %r6, 7;
-    st.shared.u32 [%r1+44], %r6;
-    ld.shared.u32 %r7, [%r1+44];
-    ld.shared.v4.u32 {%r8, %r9, %r10, %r11}, [%r1+32];
-    mov.u32 %r12, B;
-    st.shared.u32 [%r12], %r7;
-    ld.shared.u32 %r7, [%r12];
-    st.global.u32 [%rd1], %r7;
-    st.global.u32 [%rd1+4], %r8;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/region_edge_exact_fit_accesses_pass");
     let output = analyze_kernel(&module, None, in_out_config(1, 2))
         .expect("exact-fit edge accesses must stay in bounds");
     // The scalar store at A+44 overwrote the v4's last element; the v4
@@ -6204,26 +2922,7 @@ fn test_region_edge_exact_fit_accesses_pass() {
 /// this is in bounds.
 #[test]
 fn test_upper_half_address_space_access_in_bounds() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    ld.global.f32 %f1, [%rd1+16];
-    st.global.f32 [%rd2], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/upper_half_address_space_access_in_bounds");
     let mut config = in_out_config(1, 8);
     config.arrays[0].base = 0x7FFF_FFFF_FFFF_FFF0;
     let output = analyze_kernel(&module, None, config)
@@ -6241,18 +2940,10 @@ fn test_upper_half_address_space_access_in_bounds() {
 #[test]
 fn test_array_overlapping_module_global_window_rejected() {
     const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;
-    let src = wrap(
-        ".global .align 4 .b32 g;
-.visible .entry k()
-{
-    ret;
-}
-",
-    );
+    let module = ptx!(parse "eval/array_overlapping_module_global_window_rejected");
 
     // The probe scenario: an array based exactly at the module-global
     // base, covering the global `g`.
-    let module = parse(&src);
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays.push(ArrayDef {
         name: "in".to_string(),
@@ -6301,16 +2992,7 @@ fn test_array_overlapping_module_global_window_rejected() {
 /// a tiny size.
 #[test]
 fn test_hostile_shared_declaration_size_rejected() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .shared .align 4 .u32 A[2147483648][2147483648];
-
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/hostile_shared_declaration_size_rejected");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -6326,31 +3008,10 @@ fn test_hostile_shared_declaration_size_rejected() {
 // cvta restriction: only cvta.to.global (the corpus form) is accepted
 // =========================================================================
 
-fn cvta_kernel(form: &str) -> String {
-    wrap(&format!(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[16];
-
-    ld.param.u64 %rd1, [k_param_1];
-    mov.u32 %r1, sdata;
-    cvt.u64.u32 %rd2, %r1;
-    {form}
-    ret;
-}}
-"
-    ))
-}
-
 /// The corpus's one cvta form is accepted as the identity.
 #[test]
 fn test_cvta_to_global_accepted() {
-    let module = parse(&cvta_kernel("cvta.to.global.u64 %rd3, %rd1;"));
+    let module = parse(&ptx!("eval/cvta_to_global_accepted"));
     analyze_kernel(&module, None, in_out_config(1, 1)).expect("cvta.to.global is the corpus form");
 }
 
@@ -6359,20 +3020,24 @@ fn test_cvta_to_global_accepted() {
 /// wrong space.
 #[test]
 fn test_cvta_other_forms_rejected() {
-    for (form, expect, reason_fragment) in [
-        ("cvta.global.u64 %rd3, %rd1;", "cvta.global", "corpus"),
+    for (expect, reason_fragment, (form, src)) in [
         (
-            "cvta.shared.u64 %rd3, %rd2;",
+            "cvta.global",
+            "corpus",
+            ptx_case!("eval/cvta_other_forms_rejected_global"),
+        ),
+        (
             "cvta.shared",
             "per-space windows",
+            ptx_case!("eval/cvta_other_forms_rejected_shared"),
         ),
         (
-            "cvta.to.shared.u64 %rd3, %rd1;",
             "cvta.to.shared",
             "per-space windows",
+            ptx_case!("eval/cvta_other_forms_rejected_to_shared"),
         ),
     ] {
-        let module = parse(&cvta_kernel(form));
+        let module = parse(&src);
         let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
         match &err {
             AnalysisError::Lower(LowerError::UnsupportedInstruction {
@@ -6405,30 +3070,7 @@ fn test_cvta_other_forms_rejected() {
 /// χ-tracking.
 #[test]
 fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r1, sdata;
-    cp.async.ca.shared.global [%r1], [%rd1], 4;
-    cp.async.commit_group;
-    ld.shared.u32 %r2, [%r1];
-    ld.param.u64 %rd2, [out];
-    cvta.to.global.u64 %rd2, %rd2;
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_same_thread_peek_before_wait_is_hazard");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
@@ -6441,31 +3083,7 @@ fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
 /// deposits the source value into shared memory, readable once waited on.
 #[test]
 fn test_cp_async_wait_group_completes_copy() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r1, sdata;
-    cp.async.ca.shared.global [%r1], [%rd1], 4;
-    cp.async.commit_group;
-    cp.async.wait_group 0;
-    ld.shared.u32 %r2, [%r1];
-    ld.param.u64 %rd2, [out];
-    cvta.to.global.u64 %rd2, %rd2;
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_wait_group_completes_copy");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
@@ -6475,38 +3093,7 @@ fn test_cp_async_wait_group_completes_copy() {
 /// would finish first).
 #[test]
 fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.u32 %p1, %r1, 0;
-    mov.u32 %r2, sdata;
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-
-    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
-    @%p1 cp.async.commit_group;
-    @%p1 bar.sync 0;
-    @%p1 cp.async.wait_group 0;
-    @%p1 bra $DONE;
-
-    @!%p1 ld.shared.u32 %r3, [%r2];
-    @!%p1 bar.sync 0;
-
-$DONE:
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_cross_thread_read_of_locked_destination_is_hazard");
     let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
@@ -6520,39 +3107,7 @@ $DONE:
 /// destination half).
 #[test]
 fn test_cp_async_cross_thread_write_of_locked_source_is_hazard() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.u32 %p1, %r1, 0;
-    mov.u32 %r2, sdata;
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-
-    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
-    @%p1 cp.async.commit_group;
-    @%p1 bar.sync 0;
-    @%p1 cp.async.wait_group 0;
-    @%p1 bra $DONE;
-
-    @!%p1 mov.u32 %r4, 7;
-    @!%p1 st.global.u32 [%rd1], %r4;
-    @!%p1 bar.sync 0;
-
-$DONE:
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_cross_thread_write_of_locked_source_is_hazard");
     let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
@@ -6566,33 +3121,7 @@ $DONE:
 /// race (via χ, not the lock).
 #[test]
 fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.u32 %p1, %r1, 0;
-    mov.u32 %r2, sdata;
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-
-    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
-    @%p1 cp.async.commit_group;
-    @%p1 cp.async.wait_group 0;
-
-    @!%p1 ld.shared.u32 %r3, [%r2];
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_post_wait_cross_thread_read_without_sync_is_data_race");
     let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -6606,37 +3135,7 @@ fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
 /// race in the previous test is exactly about the missing synchronization.
 #[test]
 fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<6>;
-    .shared .align 4 .b8 sdata[4];
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.u32 %p1, %r1, 0;
-    mov.u32 %r2, sdata;
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-
-    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
-    @%p1 cp.async.commit_group;
-    @%p1 cp.async.wait_group 0;
-    bar.sync 0;
-
-    @!%p1 ld.shared.u32 %r3, [%r2];
-    @!%p1 ld.param.u64 %rd2, [out];
-    @!%p1 cvta.to.global.u64 %rd2, %rd2;
-    @!%p1 st.global.u32 [%rd2], %r3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_post_wait_cross_thread_read_with_sync_succeeds");
     let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
@@ -6650,31 +3149,7 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
 /// `fence.proxy.async` is needed.
 #[test]
 fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
-    let src = wrap_sm90a(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r1, sdata;
-    cp.async.ca.shared.global [%r1], [%rd1], 4;
-    cp.async.commit_group;
-    cp.async.wait_group 0;
-    ld.shared.u32 %r2, [%r1];
-    ld.param.u64 %rd2, [out];
-    cvta.to.global.u64 %rd2, %rd2;
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_without_fence_proxy_async_is_clean_on_sm90");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
@@ -6684,32 +3159,7 @@ fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
 /// must pass clean too.
 #[test]
 fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
-    let src = wrap_sm90a(
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-    mov.u32 %r1, sdata;
-    cp.async.ca.shared.global [%r1], [%rd1], 4;
-    cp.async.commit_group;
-    cp.async.wait_group 0;
-    fence.proxy.async.shared::cta;
-    ld.shared.u32 %r2, [%r1];
-    ld.param.u64 %rd2, [out];
-    cvta.to.global.u64 %rd2, %rd2;
-    st.global.u32 [%rd2], %r2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_with_fence_proxy_async_succeeds_on_sm90");
     let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
@@ -6719,39 +3169,7 @@ fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
 /// below sm_90 it must never be flagged.
 #[test]
 fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
-    let src = format!(
-        "{}{}",
-        ".version 8.0\n.target sm_89\n.address_size 64\n\n",
-        ".visible .entry k(
-    .param .u64 in,
-    .param .u64 out
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    mov.u32 %r1, %tid.x;
-    setp.eq.u32 %p1, %r1, 0;
-    mov.u32 %r2, sdata;
-    ld.param.u64 %rd1, [in];
-    cvta.to.global.u64 %rd1, %rd1;
-
-    @%p1 cp.async.ca.shared.global [%r2], [%rd1], 4;
-    @%p1 cp.async.commit_group;
-    @%p1 cp.async.wait_group 0;
-    bar.sync 0;
-
-    @!%p1 ld.shared.u32 %r3, [%r2];
-    @!%p1 ld.param.u64 %rd2, [out];
-    @!%p1 cvta.to.global.u64 %rd2, %rd2;
-    @!%p1 st.global.u32 [%rd2], %r3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89");
     let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
@@ -6761,62 +3179,7 @@ fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
 /// as the bulk-tensor test, under `sm_90a`.
 #[test]
 fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
-    let src = wrap_sm90a(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .pred %p0;
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    .shared .align 128 .b8 sd0[128];
-    .global .align 128 .b8 gbl[128];
-    .shared .align 8 .b8 full[8];
-    .shared .align 16 .b8 sa[32];
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    mbarrier.init.shared::cta.b64 [full], 1;
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [full], 32;
-
-    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
-    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
-    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
-    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
-    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [sd0], 0;
-
-    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
-    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
-
-    mov.u32 %r1, 6;
-    mov.u32 %r2, 6;
-    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
-
-    mbarrier.try_wait.parity.shared::cta.b64 %p0, [full], 0;
-
-    ld.shared.u16 %rs1, [sa];
-    ld.shared.u16 %rs2, [sa+30];
-
-    ld.param.u64 %rd2, [k_param_1];
-    st.global.u16 [%rd2], %rs1;
-    st.global.u16 [%rd2+2], %rs2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -6848,59 +3211,7 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
 /// destination lock.
 #[test]
 fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
-    let src = wrap_sm90a(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %rs<3>;
-    .reg .b32 %r<3>;
-    .reg .b64 %rd<3>;
-
-    .shared .align 128 .b8 sd0[128];
-    .global .align 128 .b8 gbl[128];
-    .shared .align 8 .b8 full[8];
-    .shared .align 16 .b8 sa[32];
-
-    ld.param.u64 %rd1, [k_param_0];
-
-    mbarrier.init.shared::cta.b64 [full], 1;
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [full], 32;
-
-    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
-    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 0, 8;
-    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [sd0], 1, 8;
-    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [sd0], 0, 16;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 0, 4;
-    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [sd0], 1, 4;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 0, 1;
-    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [sd0], 1, 1;
-    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [sd0], 6;
-    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
-    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [sd0], 0;
-
-    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
-    fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
-
-    mov.u32 %r1, 6;
-    mov.u32 %r2, 6;
-    cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
-
-    ld.shared.u16 %rs1, [sa];
-    ld.shared.u16 %rs2, [sa+30];
-
-    ld.param.u64 %rd2, [k_param_1];
-    st.global.u16 [%rd2], %rs1;
-    st.global.u16 [%rd2+2], %rs2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -6930,42 +3241,9 @@ fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
     );
 }
 
-/// Two-warp CTA: thread 0 arms the `count = 1` mbarrier `full` (`%r4`) for 16
-/// bytes and bulk-copies `in[0..4]` into `buf`. `%r6` = `count = 32` `gate`,
-/// `%p2` = "in warp 0".
-fn bulk_copy_two_warp_kernel(body: &str) -> Module {
-    parse(&wrap_sm90a(&format!(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{{
-    .reg .pred %p<4>;
-    .reg .pred %pw;
-    .reg .b32 %r<8>;
-    .reg .b64 %rd<2>;
-    .shared .align 16 .b8 buf[16];
-    .shared .align 8 .b64 full;
-    .shared .align 8 .b64 gate;
-
-    ld.param.u64 %rd1, [k_param_0];
-    mov.u32 %r4, full;
-    mov.u32 %r6, gate;
-    mov.u32 %r5, %tid.x;
-    setp.eq.s32 %p1, %r5, 0;
-    setp.lt.u32 %p2, %r5, 32;
-    @%p1 mbarrier.init.shared.b64 [%r4], 1;
-    @%p1 mbarrier.init.shared.b64 [%r6], 32;
-    bar.sync 0;
-    @!%p1 bra ISSUED;
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
-    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r4];
-ISSUED:
-{body}
-    ret;
-}}
-"
-    )))
-}
+// Two-warp CTA: thread 0 arms the `count = 1` mbarrier `full` (`%r4`) for 16
+// bytes and bulk-copies `in[0..4]` into `buf`. `%r6` = `count = 32` `gate`,
+// `%p2` = "in warp 0".
 
 /// `in` as four `u32`s, passed as the kernel's only parameter.
 fn bulk_copy_config() -> AnalysisConfig {
@@ -6986,23 +3264,9 @@ fn bulk_copy_config() -> AnalysisConfig {
 /// (a χ race, not the lock).
 #[test]
 fn test_cp_async_bulk_bar_sync_before_completion_orders_nothing() {
-    let module = bulk_copy_two_warp_kernel(
-        "    bar.sync 0;
-    @!%p2 bra READ;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-    setp.eq.s32 %p3, %r5, 1;
-    @%p3 mbarrier.complete_tx.shared::cta.b64 [%r6], 32;
-    bra DONE;
-READ:
-    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r6], 1;
-GATE:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r6], 0;
-    @!%pw bra GATE;
-    ld.shared.u32 %r7, [buf];
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/cp_async_bulk_bar_sync_before_completion_orders_nothing"
+    ));
     let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::DataRace {
@@ -7026,12 +3290,9 @@ DONE:",
 /// nothing. Nobody waits here, and warp 1 reads `buf` after the barrier.
 #[test]
 fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
-    let module = bulk_copy_two_warp_kernel(
-        "    bar.sync 0;
-    @%p2 bra DONE;
-    ld.shared.u32 %r7, [buf];
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard"
+    ));
     let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::AsyncCopyHazard { prior, current, .. }) => {
@@ -7047,17 +3308,9 @@ DONE:",
 /// order the copy before warp 1's read.
 #[test]
 fn test_cp_async_bulk_bar_sync_after_completion_orders_the_read() {
-    let module = bulk_copy_two_warp_kernel(
-        "    @!%p2 bra SYNC;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-SYNC:
-    bar.sync 0;
-    @%p2 bra DONE;
-    ld.shared.u32 %r7, [buf];
-DONE:",
-    );
+    let module = parse(&ptx!(
+        "eval/cp_async_bulk_bar_sync_after_completion_orders_the_read"
+    ));
     analyze_kernel(&module, None, bulk_copy_config()).unwrap();
 }
 
@@ -7065,15 +3318,7 @@ DONE:",
 /// copy, whatever `bar.sync` ran before it.
 #[test]
 fn test_cp_async_bulk_every_reader_waiting_is_accepted() {
-    let module = bulk_copy_two_warp_kernel(
-        "    bar.sync 0;
-WAIT:
-    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
-    @!%pw bra WAIT;
-    @%p2 bra DONE;
-    ld.shared.u32 %r7, [buf];
-DONE:",
-    );
+    let module = parse(&ptx!("eval/cp_async_bulk_every_reader_waiting_is_accepted"));
     analyze_kernel(&module, None, bulk_copy_config()).unwrap();
 }
 
@@ -7086,114 +3331,7 @@ DONE:",
 /// `sum(1..=16) = 136`.
 #[test]
 fn test_wgmma_mma_async_numeric_correctness() {
-    let src = wrap_sm90a(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<6>;
-    .reg .f32 %f<2>;
-    .reg .b16 %rs<2>;
-    .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[256];
-    .shared .align 16 .b8 b_col[256];
-
-    mov.u32 %r0, %tid.x;
-    setp.eq.u32 %p1, %r0, 0;
-
-    mov.u64 %rd1, a_row;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+0], %rs1;
-    mov.f32 %f1, 0f40000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+2], %rs1;
-    mov.f32 %f1, 0f40400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+4], %rs1;
-    mov.f32 %f1, 0f40800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+6], %rs1;
-    mov.f32 %f1, 0f40A00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+8], %rs1;
-    mov.f32 %f1, 0f40C00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+10], %rs1;
-    mov.f32 %f1, 0f40E00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+12], %rs1;
-    mov.f32 %f1, 0f41000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+14], %rs1;
-    mov.f32 %f1, 0f41100000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+128], %rs1;
-    mov.f32 %f1, 0f41200000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+130], %rs1;
-    mov.f32 %f1, 0f41300000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+132], %rs1;
-    mov.f32 %f1, 0f41400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+134], %rs1;
-    mov.f32 %f1, 0f41500000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+136], %rs1;
-    mov.f32 %f1, 0f41600000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+138], %rs1;
-    mov.f32 %f1, 0f41700000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+140], %rs1;
-    mov.f32 %f1, 0f41800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+142], %rs1;
-
-    mov.u64 %rd2, b_col;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+0], %rs1;
-    @%p1 st.shared.b16 [%rd2+2], %rs1;
-    @%p1 st.shared.b16 [%rd2+4], %rs1;
-    @%p1 st.shared.b16 [%rd2+6], %rs1;
-    @%p1 st.shared.b16 [%rd2+8], %rs1;
-    @%p1 st.shared.b16 [%rd2+10], %rs1;
-    @%p1 st.shared.b16 [%rd2+12], %rs1;
-    @%p1 st.shared.b16 [%rd2+14], %rs1;
-    @%p1 st.shared.b16 [%rd2+128], %rs1;
-    @%p1 st.shared.b16 [%rd2+130], %rs1;
-    @%p1 st.shared.b16 [%rd2+132], %rs1;
-    @%p1 st.shared.b16 [%rd2+134], %rs1;
-    @%p1 st.shared.b16 [%rd2+136], %rs1;
-    @%p1 st.shared.b16 [%rd2+138], %rs1;
-    @%p1 st.shared.b16 [%rd2+140], %rs1;
-    @%p1 st.shared.b16 [%rd2+142], %rs1;
-
-    fence.proxy.async.shared::cta;
-    bar.sync 0;
-
-    shr.u64 %rd3, %rd1, 4;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd3, %rd3, 0x80000;
-    or.b64 %rd4, %rd4, 0x80000;
-    setp.ne.u32 %p2, %r0, %r0;
-
-    wgmma.fence.sync.aligned;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    wgmma.commit_group.sync.aligned;
-    wgmma.wait_group.sync.aligned 0;
-
-    ld.param.u64 %rd5, [k_param_0];
-    @%p1 st.global.f32 [%rd5], %d0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/wgmma_mma_async_numeric_correctness");
     let mut config = AnalysisConfig::new((128, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -7212,116 +3350,7 @@ fn test_wgmma_mma_async_numeric_correctness() {
 /// fence exemption): `272`.
 #[test]
 fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
-    let src = wrap_sm90a(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<6>;
-    .reg .f32 %f<2>;
-    .reg .b16 %rs<2>;
-    .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[256];
-    .shared .align 16 .b8 b_col[256];
-
-    mov.u32 %r0, %tid.x;
-    setp.eq.u32 %p1, %r0, 0;
-
-    mov.u64 %rd1, a_row;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+0], %rs1;
-    mov.f32 %f1, 0f40000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+2], %rs1;
-    mov.f32 %f1, 0f40400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+4], %rs1;
-    mov.f32 %f1, 0f40800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+6], %rs1;
-    mov.f32 %f1, 0f40A00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+8], %rs1;
-    mov.f32 %f1, 0f40C00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+10], %rs1;
-    mov.f32 %f1, 0f40E00000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+12], %rs1;
-    mov.f32 %f1, 0f41000000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+14], %rs1;
-    mov.f32 %f1, 0f41100000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+128], %rs1;
-    mov.f32 %f1, 0f41200000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+130], %rs1;
-    mov.f32 %f1, 0f41300000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+132], %rs1;
-    mov.f32 %f1, 0f41400000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+134], %rs1;
-    mov.f32 %f1, 0f41500000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+136], %rs1;
-    mov.f32 %f1, 0f41600000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+138], %rs1;
-    mov.f32 %f1, 0f41700000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+140], %rs1;
-    mov.f32 %f1, 0f41800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd1+142], %rs1;
-
-    mov.u64 %rd2, b_col;
-    mov.f32 %f1, 0f3F800000;
-    cvt.rn.f16.f32 %rs1, %f1;
-    @%p1 st.shared.b16 [%rd2+0], %rs1;
-    @%p1 st.shared.b16 [%rd2+2], %rs1;
-    @%p1 st.shared.b16 [%rd2+4], %rs1;
-    @%p1 st.shared.b16 [%rd2+6], %rs1;
-    @%p1 st.shared.b16 [%rd2+8], %rs1;
-    @%p1 st.shared.b16 [%rd2+10], %rs1;
-    @%p1 st.shared.b16 [%rd2+12], %rs1;
-    @%p1 st.shared.b16 [%rd2+14], %rs1;
-    @%p1 st.shared.b16 [%rd2+128], %rs1;
-    @%p1 st.shared.b16 [%rd2+130], %rs1;
-    @%p1 st.shared.b16 [%rd2+132], %rs1;
-    @%p1 st.shared.b16 [%rd2+134], %rs1;
-    @%p1 st.shared.b16 [%rd2+136], %rs1;
-    @%p1 st.shared.b16 [%rd2+138], %rs1;
-    @%p1 st.shared.b16 [%rd2+140], %rs1;
-    @%p1 st.shared.b16 [%rd2+142], %rs1;
-
-    fence.proxy.async.shared::cta;
-    bar.sync 0;
-
-    shr.u64 %rd3, %rd1, 4;
-    shr.u64 %rd4, %rd2, 4;
-    or.b64 %rd3, %rd3, 0x80000;
-    or.b64 %rd4, %rd4, 0x80000;
-    setp.ne.u32 %p2, %r0, %r0;
-
-    wgmma.fence.sync.aligned;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    setp.eq.u32 %p2, %r0, %r0;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    wgmma.commit_group.sync.aligned;
-    wgmma.wait_group.sync.aligned 0;
-
-    ld.param.u64 %rd5, [k_param_0];
-    @%p1 st.global.f32 [%rd5], %d0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/wgmma_chained_same_shape_accumulator_needs_no_extra_fence");
     let mut config = AnalysisConfig::new((128, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -7340,46 +3369,7 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
 /// has no `wgmma.fence`.
 #[test]
 fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
-    let src = wrap_sm90a(
-        ".visible .entry k()
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[256];
-    .shared .align 16 .b8 b_col[256];
-
-    mov.u32 %r0, %tid.x;
-    setp.eq.u32 %p1, %r0, 0;
-    mov.u64 %rd1, a_row;
-    mov.u64 %rd2, b_col;
-    bar.sync 0;
-
-    shr.u64 %rd3, %rd1, 4;
-    shr.u64 %rd4, %rd2, 4;
-    setp.ne.u32 %p2, %r0, %r0;
-
-    wgmma.fence.sync.aligned;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    wgmma.commit_group.sync.aligned;
-    wgmma.wait_group.sync.aligned 0;
-
-    // Ordinary write to %d0, released and no longer pending - breaks the
-    // same-shape chain, and no wgmma.fence follows it.
-    mov.f32 %f1, 0f00000000;
-    mov.f32 %d0, %f1;
-
-    setp.eq.u32 %p2, %r0, %r0;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    wgmma.commit_group.sync.aligned;
-    wgmma.wait_group.sync.aligned 0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/wgmma_fence_hazard_ordinary_write_breaks_chain");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::WgmmaFenceHazard { .. })),
@@ -7392,37 +3382,7 @@ fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
 /// register still pending a `wgmma.wait_group` release.
 #[test]
 fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
-    let src = wrap_sm90a(
-        ".visible .entry k()
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[256];
-    .shared .align 16 .b8 b_col[256];
-
-    mov.u32 %r0, %tid.x;
-    setp.eq.u32 %p1, %r0, 0;
-    mov.u64 %rd1, a_row;
-    mov.u64 %rd2, b_col;
-    bar.sync 0;
-
-    shr.u64 %rd3, %rd1, 4;
-    shr.u64 %rd4, %rd2, 4;
-    setp.ne.u32 %p2, %r0, %r0;
-
-    wgmma.fence.sync.aligned;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    wgmma.commit_group.sync.aligned;
-    // No wait_group yet - %d0 is still pending when read below.
-    mov.f32 %f1, %d0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/wgmma_wait_group_hazard_plain_read_of_pending_accumulator");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -7439,38 +3399,7 @@ fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
 /// `read_reg`'s).
 #[test]
 fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
-    let src = wrap_sm90a(
-        ".visible .entry k()
-{
-    .reg .pred %p<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<5>;
-    .reg .f32 %f<2>;
-    .reg .f32 %d<4>;
-    .shared .align 16 .b8 a_row[256];
-    .shared .align 16 .b8 b_col[256];
-
-    mov.u32 %r0, %tid.x;
-    setp.eq.u32 %p1, %r0, 0;
-    mov.u64 %rd1, a_row;
-    mov.u64 %rd2, b_col;
-    bar.sync 0;
-
-    shr.u64 %rd3, %rd1, 4;
-    shr.u64 %rd4, %rd2, 4;
-    setp.ne.u32 %p2, %r0, %r0;
-
-    wgmma.fence.sync.aligned;
-    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
-    wgmma.commit_group.sync.aligned;
-    // No wait_group yet - %d0 is still pending when written below.
-    mov.f32 %f1, 0f00000000;
-    mov.f32 %d0, %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/wgmma_wait_group_hazard_plain_write_of_pending_accumulator");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -7487,38 +3416,7 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
 /// `src+20`.
 #[test]
 fn test_stmatrix_writes_the_expected_byte_per_lane() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .pred %p<2>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<3>;
-    .shared .align 16 .b8 buf[128];
-
-    mov.u32 %r0, %tid.x;
-    setp.eq.u32 %p1, %r0, 0;
-
-    // Only lanes 0-7's addresses are consulted (num=1): `src + tid*16` gives
-    // lane r row r's address.
-    mov.u32 %r1, buf;
-    mad.lo.u32 %r2, %r0, 16, %r1;
-
-    // Per-lane source value: distinct and directly checkable.
-    add.u32 %r3, %r0, 1000;
-
-    stmatrix.sync.aligned.x1.m8n8.shared.b16 [%r2], {%r3};
-    bar.sync 0;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.shared.u32 %r4, [%r1+20];
-    @%p1 st.global.u32 [%rd1], %r4;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/stmatrix_writes_the_expected_byte_per_lane");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -7536,54 +3434,17 @@ fn test_stmatrix_writes_the_expected_byte_per_lane() {
 // Packed single precision (f32x2, sm_100+)
 // =========================================================================
 
-/// Two threads, two f32 elements each: `out[i] = in[i] * in[i] + in[i]`;
-/// `BODY` maps `{%f1, %f2}` to `{%f3, %f4}`, or `[%rd4]` to `[%rd5]` for
-/// 64-bit memory variants.
-fn f32x2_kernel(body: &str) -> String {
-    wrap(&format!(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .f32 %f<5>;
-    .reg .b32 %r<5>;
-    .reg .b64 %rd<12>;
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    shl.b32 %r2, %r1, 3;
-    cvt.u64.u32 %rd3, %r2;
-    add.s64 %rd4, %rd1, %rd3;
-    add.s64 %rd5, %rd2, %rd3;
-    {body}
-    ret;
-}}
-",
-    ))
-}
-
-const F32X2_SCALAR_REFERENCE: &str = "ld.global.v2.f32 {%f1, %f2}, [%rd4];
-    fma.rn.f32 %f3, %f1, %f1, %f1;
-    fma.rn.f32 %f4, %f2, %f2, %f2;
-    st.global.v2.f32 [%rd5], {%f3, %f4};";
-
-fn f32x2_outcome(candidate_body: &str) -> EquivOutcome {
+// Two threads, two f32 elements each: `out[i] = in[i] * in[i] + in[i]`;
+// each body maps `{%f1, %f2}` to `{%f3, %f4}`, or `[%rd4]` to `[%rd5]` for
+// 64-bit memory variants.
+fn f32x2_outcome(candidate: &str) -> EquivOutcome {
     let reference = analyze_kernel(
-        &parse(&f32x2_kernel(F32X2_SCALAR_REFERENCE)),
+        &parse(&ptx!("eval/f32x2_scalar_reference")),
         None,
         in_out_config(2, 4),
     )
     .unwrap();
-    let candidate = analyze_kernel(
-        &parse(&f32x2_kernel(candidate_body)),
-        None,
-        in_out_config(2, 4),
-    )
-    .unwrap();
+    let candidate = analyze_kernel(&parse(candidate), None, in_out_config(2, 4)).unwrap();
     check_equiv(&reference, &candidate)
 }
 
@@ -7591,27 +3452,14 @@ fn f32x2_outcome(candidate_body: &str) -> EquivOutcome {
 /// works per lane, `mov.b64 {%f_lo, %f_hi}, %rd` unpacks the result.
 #[test]
 fn test_f32x2_fma_via_register_pack() {
-    let outcome = f32x2_outcome(
-        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
-    mov.b64 %rd6, {%f1, %f2};
-    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
-    mov.b64 {%f3, %f4}, %rd7;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_fma_via_register_pack"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
 /// `mul.f32x2` then `add.f32x2` compute the same reals as the fused form.
 #[test]
 fn test_f32x2_mul_add_via_register_pack() {
-    let outcome = f32x2_outcome(
-        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
-    mov.b64 %rd6, {%f1, %f2};
-    mul.rn.f32x2 %rd8, %rd6, %rd6;
-    add.rn.f32x2 %rd7, %rd8, %rd6;
-    mov.b64 {%f3, %f4}, %rd7;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_mul_add_via_register_pack"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -7619,11 +3467,7 @@ fn test_f32x2_mul_add_via_register_pack() {
 /// and a 64-bit store of the pair writes both output elements.
 #[test]
 fn test_f32x2_fma_via_64bit_memory_access() {
-    let outcome = f32x2_outcome(
-        "ld.global.b64 %rd6, [%rd4];
-    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
-    st.global.b64 [%rd5], %rd7;",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_fma_via_64bit_memory_access"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -7631,29 +3475,14 @@ fn test_f32x2_fma_via_64bit_memory_access() {
 /// lanes (1.0f each); the point is that the constant lanes read correctly.
 #[test]
 fn test_f32x2_constant_bit_pattern_operand() {
-    let outcome = f32x2_outcome(
-        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
-    mov.b64 %rd6, {%f1, %f2};
-    mov.b64 %rd8, 4575657222473777152;
-    fma.rn.f32x2 %rd9, %rd6, %rd8, %rd6;
-    sub.f32x2 %rd10, %rd9, %rd6;
-    fma.rn.f32x2 %rd7, %rd10, %rd10, %rd10;
-    mov.b64 {%f3, %f4}, %rd7;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_constant_bit_pattern_operand"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
 /// The lanes really are computed: dropping the addend changes the result.
 #[test]
 fn test_f32x2_wrong_lane_math_is_not_equivalent() {
-    let outcome = f32x2_outcome(
-        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
-    mov.b64 %rd6, {%f1, %f2};
-    mul.rn.f32x2 %rd7, %rd6, %rd6;
-    mov.b64 {%f3, %f4}, %rd7;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_wrong_lane_math_is_not_equivalent"));
     assert!(
         matches!(outcome, EquivOutcome::NotEquivalent { .. }),
         "{:?}",
@@ -7665,18 +3494,8 @@ fn test_f32x2_wrong_lane_math_is_not_equivalent() {
 /// the 64-bit integer (here a byte offset of 8) when read as a scalar.
 #[test]
 fn test_mov_b64_integer_pack_recombines_as_scalar() {
-    let packed = f32x2_kernel(
-        "ld.global.f32 %f1, [%rd4];
-    mov.u32 %r3, 8;
-    mov.u32 %r4, 0;
-    mov.b64 %rd6, {%r3, %r4};
-    add.s64 %rd7, %rd2, %rd6;
-    st.global.f32 [%rd7], %f1;",
-    );
-    let direct = f32x2_kernel(
-        "ld.global.f32 %f1, [%rd4];
-    st.global.f32 [%rd2+8], %f1;",
-    );
+    let packed = ptx!("eval/mov_b64_integer_pack_recombines_as_scalar_packed");
+    let direct = ptx!("eval/mov_b64_integer_pack_recombines_as_scalar_direct");
     let a = analyze_kernel(&parse(&packed), None, in_out_config(1, 4)).unwrap();
     let b = analyze_kernel(&parse(&direct), None, in_out_config(1, 4)).unwrap();
     assert_eq!(display_output(&a, "out", 2), display_output(&b, "out", 2));
@@ -7688,17 +3507,7 @@ fn test_mov_b64_integer_pack_recombines_as_scalar() {
 /// place them in the two lanes (with an `and.b64` lane mask thrown in).
 #[test]
 fn test_f32x2_operand_assembled_with_shift_and_or() {
-    let outcome = f32x2_outcome(
-        "ld.global.b32 %rd6, [%rd4];
-    ld.global.b32 %rd8, [%rd4+4];
-    shl.b64 %rd9, %rd8, 32;
-    or.b64 %rd10, %rd9, %rd6;
-    and.b64 %rd11, %rd10, 4294967295;
-    or.b64 %rd6, %rd11, %rd9;
-    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
-    mov.b64 {%f3, %f4}, %rd7;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_operand_assembled_with_shift_and_or"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -7706,14 +3515,7 @@ fn test_f32x2_operand_assembled_with_shift_and_or() {
 /// through a 64-bit-to-32-bit unpack.
 #[test]
 fn test_f32x2_lane_extracted_with_shift() {
-    let outcome = f32x2_outcome(
-        "ld.global.b64 %rd6, [%rd4];
-    fma.rn.f32x2 %rd7, %rd6, %rd6, %rd6;
-    shr.u64 %rd8, %rd7, 32;
-    mov.b64 {%f3, _}, %rd7;
-    mov.b64 {%f4, _}, %rd8;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!("eval/f32x2_lane_extracted_with_shift"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -7721,22 +3523,9 @@ fn test_f32x2_lane_extracted_with_shift() {
 /// into an `f32x2` lane, and `cvt.u32.u64` truncation reads a lane back.
 #[test]
 fn test_f32x2_operand_assembled_with_cvt_zero_extension() {
-    let outcome = f32x2_outcome(
-        "ld.global.v2.f32 {%f1, %f2}, [%rd4];
-    mov.b32 %r3, %f1;
-    mov.b32 %r4, %f2;
-    cvt.u64.u32 %rd6, %r3;
-    cvt.u64.u32 %rd8, %r4;
-    shl.b64 %rd9, %rd8, 32;
-    or.b64 %rd10, %rd6, %rd9;
-    fma.rn.f32x2 %rd7, %rd10, %rd10, %rd10;
-    shr.u64 %rd11, %rd7, 32;
-    cvt.u32.u64 %r3, %rd7;
-    cvt.u32.u64 %r4, %rd11;
-    mov.b32 %f3, %r3;
-    mov.b32 %f4, %r4;
-    st.global.v2.f32 [%rd5], {%f3, %f4};",
-    );
+    let outcome = f32x2_outcome(&ptx!(
+        "eval/f32x2_operand_assembled_with_cvt_zero_extension"
+    ));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -7745,43 +3534,16 @@ fn test_f32x2_operand_assembled_with_cvt_zero_extension() {
 /// still is.
 #[test]
 fn test_same_value_warp_uniform_store_is_not_a_race() {
-    let body = |value: &str| {
-        wrap(&format!(
-            ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{{
-    .reg .pred %p<2>;
-    .reg .f32 %f<4>;
-    .reg .b32 %r<6>;
-    .reg .b64 %rd<4>;
-    .shared .align 4 .b8 sdata[4];
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r1, %tid.x;
-    ld.global.f32 %f1, [%rd1];
-    {value}
-    mov.u32 %r3, sdata;
-    st.shared.f32 [%r3], %f2;
-    bar.sync 0;
-    ld.shared.f32 %f3, [%r3];
-    setp.eq.u32 %p1, %r1, 0;
-    @%p1 st.global.f32 [%rd2], %f3;
-    ret;
-}}
-",
-        ))
-    };
     // Both threads store in[0] * 2: identical expressions, no race.
-    let same = parse(&body("mul.f32 %f2, %f1, 0f40000000;"));
+    let same = parse(&ptx!(
+        "eval/same_value_warp_uniform_store_is_not_a_race_same"
+    ));
     let out = analyze_kernel(&same, None, in_out_config(2, 1)).expect("same-value store");
     assert_eq!(display_output(&out, "out", 0), "(in[0] * 2)");
     // Thread-dependent values at the same address: a real race.
-    let differ = parse(&body("cvt.rn.f32.u32 %f2, %r1;"));
+    let differ = parse(&ptx!(
+        "eval/same_value_warp_uniform_store_is_not_a_race_differ"
+    ));
     let err = analyze_kernel(&differ, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -7795,39 +3557,8 @@ fn test_same_value_warp_uniform_store_is_not_a_race() {
 /// back one 16-bit half at a time: its halves are known bit patterns.
 #[test]
 fn test_concrete_scalar_granule_splits_for_half_width_access() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<4>;
-    .reg .f32 %f<5>;
-    .reg .b32 %r<4>;
-    .reg .b64 %rd<3>;
-    .shared .align 4 .b8 sdata[4];
-
-    ld.param.u64 %rd1, [k_param_0];
-    ld.param.u64 %rd2, [k_param_1];
-    cvta.to.global.u64 %rd1, %rd1;
-    cvta.to.global.u64 %rd2, %rd2;
-    mov.u32 %r3, sdata;
-    mov.u32 %r2, 0;
-    st.shared.b32 [%r3], %r2;
-    ld.global.f32 %f1, [%rd1];
-    cvt.rn.f16.f32 %h1, %f1;
-    st.shared.b16 [%r3+2], %h1;
-    ld.shared.b16 %h2, [%r3+2];
-    ld.shared.b16 %h3, [%r3];
-    cvt.f32.f16 %f2, %h2;
-    cvt.f32.f16 %f3, %h3;
-    add.f32 %f4, %f2, %f3;
-    st.global.f32 [%rd2], %f4;
-    ret;
-}
-",
-    );
-    let out = analyze_kernel(&parse(&src), None, in_out_config(1, 1)).expect("split scalar");
+    let module = ptx!(parse "eval/concrete_scalar_granule_splits_for_half_width_access");
+    let out = analyze_kernel(&module, None, in_out_config(1, 1)).expect("split scalar");
     assert_eq!(display_output(&out, "out", 0), "in[0]");
 }
 
@@ -7836,47 +3567,7 @@ fn test_concrete_scalar_granule_splits_for_half_width_access() {
 /// `copysign.f32 %v0, %x0, %v0` reuse idiom.
 #[test]
 fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .f32 %f<9>;
-    .reg .b64 %rd<2>;
-
-    // d = copysign(sign_src=+2.0, magnitude_src=+3.0) = +3.0
-    mov.f32 %f1, 0f40000000;
-    mov.f32 %f2, 0f40400000;
-    copysign.f32 %f3, %f1, %f2;
-
-    // d = copysign(sign_src=-2.0, magnitude_src=+3.0) = -3.0
-    mov.f32 %f4, 0fC0000000;
-    mov.f32 %f5, 0f40400000;
-    copysign.f32 %f6, %f4, %f5;
-
-    // d = copysign(sign_src=+2.0, magnitude_src=-3.0) = +3.0
-    mov.f32 %f7, 0f40000000;
-    mov.f32 %f8, 0fC0400000;
-    copysign.f32 %f8, %f7, %f8;
-    add.f32 %f3, %f3, %f8;
-
-    // d = copysign(sign_src=-2.0, magnitude_src=-3.0) = -3.0
-    // (register self-reuse for dst, matching the real GELU idiom:
-    // `copysign.f32 %v0, %x0, %v0`)
-    mov.f32 %f4, 0fC0000000;
-    mov.f32 %f7, 0fC0400000;
-    copysign.f32 %f7, %f4, %f7;
-    add.f32 %f6, %f6, %f7;
-
-    add.f32 %f3, %f3, %f6;
-
-    ld.param.u64 %rd1, [k_param_0];
-    st.global.f32 [%rd1], %f3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/copysign_combines_the_sign_of_a_with_the_magnitude_of_b");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -7900,16 +3591,7 @@ fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
 /// specific reason.
 #[test]
 fn test_copysign_rejects_a_type_other_than_f32_f64() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b16 %h<3>;
-    copysign.f16 %h0, %h1, %h2;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/copysign_rejects_a_type_other_than_f32_f64");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
@@ -7924,44 +3606,7 @@ fn test_copysign_rejects_a_type_other_than_f32_f64() {
 /// reals: `x[0]`..`x[3]` stay distinct.
 #[test]
 fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<4>;
-    .reg .b16 %h<8>;
-    .reg .f32 %f<4>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    ld.param.u64 %rd1, [k_param_1];
-
-    ld.global.v2.b32 {%r0,%r1}, [%rd0];
-
-    mov.b32 {%h0,%h1}, %r0;
-
-    cvt.rn.f16x2.e4m3x2 %r2, %h0;
-    cvt.rn.f16x2.e4m3x2 %r3, %h1;
-
-    mov.b32 {%h4,%h5}, %r2;
-    mov.b32 {%h6,%h7}, %r3;
-
-    cvt.f32.f16 %f0, %h4;
-    cvt.f32.f16 %f1, %h5;
-    cvt.f32.f16 %f2, %h6;
-    cvt.f32.f16 %f3, %h7;
-
-    st.global.f32 [%rd1], %f0;
-    st.global.f32 [%rd1+4], %f1;
-    st.global.f32 [%rd1+8], %f2;
-    st.global.f32 [%rd1+12], %f3;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_vector_load_keeps_four_symbolic_bytes_independent");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -7995,41 +3640,7 @@ fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
 /// the low `Pair` of byte lanes.
 #[test]
 fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b32 %r<3>;
-    .reg .b16 %h<4>;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    ld.param.u64 %rd1, [k_param_1];
-
-    ld.global.b32 %r0, [%rd0];
-
-    cvt.u16.u32 %h0, %r0;
-    mov.b32 {_, %h1}, %r0;
-
-    cvt.rn.f16x2.e4m3x2 %r1, %h0;
-    cvt.rn.f16x2.e4m3x2 %r2, %h1;
-
-    mov.b32 {%h2, _}, %r1;
-    mov.b32 {%h3, _}, %r2;
-
-    cvt.f32.f16 %f0, %h2;
-    cvt.f32.f16 %f1, %h3;
-
-    st.global.f32 [%rd1], %f0;
-    st.global.f32 [%rd1+4], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -8061,38 +3672,8 @@ fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
 /// narrower store truncates.
 #[test]
 fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
-    let src = wrap(
-        ".extern .shared .align 16 .b8 buf[];
-.visible .entry k(
-    .param .u64 k_param_0,
-    .param .u64 k_param_1
-)
-{
-    .reg .b16 %h<2>;
-    .reg .b32 %r<2>;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd<3>;
-
-    ld.param.u64 %rd0, [k_param_0];
-    ld.param.u64 %rd1, [k_param_1];
-
-    ld.global.b16 %h0, [%rd0];
-    mov.u32 %r0, buf;
-    st.shared.b16 [%r0], %h0;
-    ld.shared.b16 %h1, [%r0];
-
-    cvt.rn.f16x2.e4m3x2 %r1, %h1;
-    mov.b32 {%h0, %h1}, %r1;
-    cvt.f32.f16 %f0, %h0;
-    cvt.f32.f16 %f1, %h1;
-
-    st.global.f32 [%rd1], %f0;
-    st.global.f32 [%rd1+4], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module =
+        ptx!(parse "eval/byte_pair_round_trips_through_shared_memory_at_native_16_bit_width");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.dynamic_shared_bytes = 16;
     config.arrays = vec![
@@ -8125,30 +3706,7 @@ fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
 /// -> low half of `d`).
 #[test]
 fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b16 %h<4>;
-    .reg .b32 %r0;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd0;
-
-    mov.u16 %h0, 47160; // 0xB838
-    cvt.rn.f16x2.e4m3x2 %r0, %h0;
-    mov.b32 {%h2,%h3}, %r0;
-    cvt.f32.f16 %f0, %h2;
-    cvt.f32.f16 %f1, %h3;
-
-    ld.param.u64 %rd0, [k_param_0];
-    st.global.f32 [%rd0], %f0;
-    st.global.f32 [%rd0+4], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_decodes_a_concrete_scalar_bit_pattern");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -8173,30 +3731,7 @@ fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
 /// byte (-1.0) clamps to 0.
 #[test]
 fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
-    let src = wrap(
-        ".visible .entry k(
-    .param .u64 k_param_0
-)
-{
-    .reg .b16 %h<4>;
-    .reg .b32 %r0;
-    .reg .f32 %f<2>;
-    .reg .b64 %rd0;
-
-    mov.u16 %h0, 47160; // 0xB838
-    cvt.rn.relu.f16x2.e4m3x2 %r0, %h0;
-    mov.b32 {%h2,%h3}, %r0;
-    cvt.f32.f16 %f0, %h2;
-    cvt.f32.f16 %f1, %h3;
-
-    ld.param.u64 %rd0, [k_param_0];
-    st.global.f32 [%rd0], %f0;
-    st.global.f32 [%rd0+4], %f1;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -8220,19 +3755,7 @@ fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
 /// represent NaN, so a concrete byte hitting it must error loudly.
 #[test]
 fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
-    let src = wrap(
-        ".visible .entry k()
-{
-    .reg .b16 %h0;
-    .reg .b32 %r0;
-
-    mov.u16 %h0, 32512; // 0x7F00: upper byte 0x7F = NaN, lower byte 0x00 = 0.0
-    cvt.rn.f16x2.e4m3x2 %r0, %h0;
-    ret;
-}
-",
-    );
-    let module = parse(&src);
+    let module = ptx!(parse "eval/e4m3x2_rejects_the_concrete_nan_byte_pattern");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {

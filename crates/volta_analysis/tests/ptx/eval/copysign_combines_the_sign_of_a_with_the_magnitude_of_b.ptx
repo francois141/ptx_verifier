@@ -1,0 +1,41 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .f32 %f<9>;
+    .reg .b64 %rd<2>;
+
+    // d = copysign(sign_src=+2.0, magnitude_src=+3.0) = +3.0
+    mov.f32 %f1, 0f40000000;
+    mov.f32 %f2, 0f40400000;
+    copysign.f32 %f3, %f1, %f2;
+
+    // d = copysign(sign_src=-2.0, magnitude_src=+3.0) = -3.0
+    mov.f32 %f4, 0fC0000000;
+    mov.f32 %f5, 0f40400000;
+    copysign.f32 %f6, %f4, %f5;
+
+    // d = copysign(sign_src=+2.0, magnitude_src=-3.0) = +3.0
+    mov.f32 %f7, 0f40000000;
+    mov.f32 %f8, 0fC0400000;
+    copysign.f32 %f8, %f7, %f8;
+    add.f32 %f3, %f3, %f8;
+
+    // d = copysign(sign_src=-2.0, magnitude_src=-3.0) = -3.0
+    // (register self-reuse for dst, matching the real GELU idiom:
+    // `copysign.f32 %v0, %x0, %v0`)
+    mov.f32 %f4, 0fC0000000;
+    mov.f32 %f7, 0fC0400000;
+    copysign.f32 %f7, %f4, %f7;
+    add.f32 %f6, %f6, %f7;
+
+    add.f32 %f3, %f3, %f6;
+
+    ld.param.u64 %rd1, [k_param_0];
+    st.global.f32 [%rd1], %f3;
+    ret;
+}

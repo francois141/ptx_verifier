@@ -1,0 +1,13 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b16 %h0;
+    .reg .b32 %r0;
+
+    mov.u16 %h0, 32512; // 0x7F00: upper byte 0x7F = NaN, lower byte 0x00 = 0.0
+    cvt.rn.f16x2.e4m3x2 %r0, %h0;
+    ret;
+}

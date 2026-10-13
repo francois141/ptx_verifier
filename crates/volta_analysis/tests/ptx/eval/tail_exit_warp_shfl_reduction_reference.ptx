@@ -1,0 +1,50 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    ld.global.f32 %f1, [%rd1];
+    ld.global.f32 %f2, [%rd1+4];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+8];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+12];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+16];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+20];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+24];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+28];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+32];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+36];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+40];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+44];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+48];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+52];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+56];
+    add.f32 %f1, %f1, %f2;
+    ld.global.f32 %f2, [%rd1+60];
+    add.f32 %f1, %f1, %f2;
+    st.global.f32 [%rd2], %f1;
+    ret;
+}

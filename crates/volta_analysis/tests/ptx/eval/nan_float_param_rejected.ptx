@@ -1,0 +1,10 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .f32 k_param_0
+)
+{
+    ret;
+}

@@ -1,0 +1,52 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<7>;
+    .reg .f32 %f<7>;
+    .reg .b32 %r<13>;
+    .reg .b64 %rd<6>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    setp.gt.u32 %p1, %r1, 15;
+@%p1 ret;
+    shl.b32 %r2, %r1, 2;
+    cvt.u64.u32 %rd3, %r2;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mov.u32 %r3, 31;
+    mov.u32 %r4, -1;
+    mov.u32 %r5, 8;
+    shfl.sync.down.b32 %f2, %f1, %r5, %r3, %r4;
+    add.u32 %r9, %r1, 8;
+    setp.lt.u32 %p2, %r9, 16;
+@%p2 add.f32 %f1, %f1, %f2;
+    mov.u32 %r6, 4;
+    shfl.sync.down.b32 %f3, %f1, %r6, %r3, %r4;
+    add.u32 %r10, %r1, 4;
+    setp.lt.u32 %p3, %r10, 16;
+@%p3 add.f32 %f1, %f1, %f3;
+    mov.u32 %r7, 2;
+    shfl.sync.down.b32 %f4, %f1, %r7, %r3, %r4;
+    add.u32 %r11, %r1, 2;
+    setp.lt.u32 %p4, %r11, 16;
+@%p4 add.f32 %f1, %f1, %f4;
+    mov.u32 %r8, 1;
+    shfl.sync.down.b32 %f5, %f1, %r8, %r3, %r4;
+    add.u32 %r12, %r1, 1;
+    setp.lt.u32 %p5, %r12, 16;
+@%p5 add.f32 %f1, %f1, %f5;
+    setp.ne.u32 %p6, %r1, 0;
+@%p6 ret;
+    st.global.f32 [%rd2], %f1;
+    ret;
+}

@@ -1,0 +1,89 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<2>;
+    .reg .b16 %rs<2>;
+    .shared .align 1024 .b8 a_buf[16384];
+    .shared .align 1024 .b8 b_buf[4096];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u32 %r6, %tid.x;
+    setp.eq.s32 %p1, %r6, 0;
+
+    mov.b32 %r7, 0x3F800000;
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r7;
+    tcgen05.wait::st.sync.aligned;
+
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    mov.b16 %rs1, 0x3C00;
+    @%p1 st.shared.b16 [%rd1+0], %rs1;
+    @%p1 st.shared.b16 [%rd1+2], %rs1;
+    @%p1 st.shared.b16 [%rd1+4], %rs1;
+    @%p1 st.shared.b16 [%rd1+6], %rs1;
+    @%p1 st.shared.b16 [%rd1+8], %rs1;
+    @%p1 st.shared.b16 [%rd1+10], %rs1;
+    @%p1 st.shared.b16 [%rd1+12], %rs1;
+    @%p1 st.shared.b16 [%rd1+14], %rs1;
+    @%p1 st.shared.b16 [%rd1+16], %rs1;
+    @%p1 st.shared.b16 [%rd1+18], %rs1;
+    @%p1 st.shared.b16 [%rd1+20], %rs1;
+    @%p1 st.shared.b16 [%rd1+22], %rs1;
+    @%p1 st.shared.b16 [%rd1+24], %rs1;
+    @%p1 st.shared.b16 [%rd1+26], %rs1;
+    @%p1 st.shared.b16 [%rd1+28], %rs1;
+    @%p1 st.shared.b16 [%rd1+30], %rs1;
+    @%p1 st.shared.b16 [%rd2+0], %rs1;
+    @%p1 st.shared.b16 [%rd2+144], %rs1;
+    @%p1 st.shared.b16 [%rd2+288], %rs1;
+    @%p1 st.shared.b16 [%rd2+432], %rs1;
+    @%p1 st.shared.b16 [%rd2+576], %rs1;
+    @%p1 st.shared.b16 [%rd2+720], %rs1;
+    @%p1 st.shared.b16 [%rd2+864], %rs1;
+    @%p1 st.shared.b16 [%rd2+1008], %rs1;
+    @%p1 st.shared.b16 [%rd2+1024], %rs1;
+    @%p1 st.shared.b16 [%rd2+1168], %rs1;
+    @%p1 st.shared.b16 [%rd2+1312], %rs1;
+    @%p1 st.shared.b16 [%rd2+1456], %rs1;
+    @%p1 st.shared.b16 [%rd2+1600], %rs1;
+    @%p1 st.shared.b16 [%rd2+1744], %rs1;
+    @%p1 st.shared.b16 [%rd2+1888], %rs1;
+    @%p1 st.shared.b16 [%rd2+2032], %rs1;
+
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 4611756662049472512;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 4611756662049472512;
+    mov.u32 %r2, 134414352;
+    mov.pred %p0, 1;
+    fence.proxy.async.shared::cta;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
+
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    ld.param.u64 %rd1, [k_param_0];
+    @%p1 st.global.f32 [%rd1], %f1;
+    ret;
+}

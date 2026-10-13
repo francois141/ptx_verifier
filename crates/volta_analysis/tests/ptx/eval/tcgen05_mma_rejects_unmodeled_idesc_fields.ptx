@@ -1,0 +1,20 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p0;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+
+    mov.u32 %r1, 0;
+    mov.u64 %rd1, 0;
+    mov.u64 %rd2, 0;
+    // dtype=F32, atype=bf16, M=128, N=256 (bit-packed by hand; see the
+    // session notes for the derivation).
+    mov.u32 %r2, 138412176;
+    mov.pred %p0, 0;
+    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
+    ret;
+}
