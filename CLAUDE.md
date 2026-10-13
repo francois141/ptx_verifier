@@ -49,7 +49,9 @@ volta_common      → (nothing)
 `volta_analysis` (the producer) and `volta_equivalence` (the consumer) share
 only the expression language; neither depends on the other. Tests follow the
 split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
-over the `.spec` files in `tests/specs/`, dev-dependency `volta_spec` only), while PTX-to-verdict end-to-end tests live in
+over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
+one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
+dev-dependency `volta_spec` only), while PTX-to-verdict end-to-end tests live in
 `volta_analysis/tests/` (dev-dependency `volta_equivalence`).
 
 ## Crate: volta_common
