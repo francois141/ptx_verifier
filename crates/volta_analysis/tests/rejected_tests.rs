@@ -14,7 +14,7 @@ use volta_frontend::ast::Module;
 
 use common::*;
 
-/// Run a one-`tcgen05.mma` kernel from `tests/ptx/eval/tcgen05_mma_encoding/`
+/// Run a one-`tcgen05.mma` kernel from `tests/ptx/failing/tcgen05_mma_encoding_*`
 /// (thread 0 issues it, D in a fresh 512-column allocation). The variants
 /// differ only in the `idesc`, the descriptors, `.ws`, and D's offset.
 fn run_tcgen05_mma(src: &str) -> Result<AnalysisOutput, AnalysisError> {
@@ -47,7 +47,7 @@ fn expect_invalid_instruction(module: &Module, needle: &str) {
 /// so the `lut` read surfaces as `UndefinedOutput`.
 #[test]
 fn test_extern_shared_store_invisible_through_static_shared() {
-    let module = ptx!(parse "eval/extern_shared_store_invisible_through_static_shared");
+    let module = ptx!(parse "failing/extern_shared_store_invisible_through_static_shared");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
     let err = analyze_kernel(&module, None, config).unwrap_err();
@@ -62,7 +62,7 @@ fn test_extern_shared_store_invisible_through_static_shared() {
 /// window: a missing size errors and a store past the end is out of bounds.
 #[test]
 fn test_extern_only_shared_placement_and_bounds() {
-    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds");
+    let module = ptx!(parse "failing/extern_only_shared_placement_and_bounds");
     // Without dynamic_shared_bytes the launch is rejected.
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
@@ -76,7 +76,7 @@ fn test_extern_only_shared_placement_and_bounds() {
     );
 
     // A store ending one byte past the window end is out of bounds.
-    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds_past_end");
+    let module = ptx!(parse "failing/extern_only_shared_placement_and_bounds_past_end");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
     let err = analyze_kernel(&module, None, config).unwrap_err();
@@ -90,7 +90,7 @@ fn test_extern_only_shared_placement_and_bounds() {
 /// Threads waiting on different barrier ids never fire: deadlock.
 #[test]
 fn test_mismatched_barriers_deadlock() {
-    let module = ptx!(parse "eval/mismatched_barriers_deadlock");
+    let module = ptx!(parse "failing/mismatched_barriers_deadlock");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
@@ -104,7 +104,7 @@ fn test_mismatched_barriers_deadlock() {
 /// CTA.
 #[test]
 fn test_mbarrier_wait_never_satisfied_deadlocks() {
-    let module = ptx!(parse "eval/mbarrier_wait_never_satisfied_deadlocks");
+    let module = ptx!(parse "failing/mbarrier_wait_never_satisfied_deadlocks");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
@@ -121,11 +121,11 @@ fn test_mbarrier_relaxed_semantics_rejected() {
     for (expect, (form, src)) in [
         (
             "mbarrier.arrive",
-            ptx_case!("eval/mbarrier_relaxed_semantics_rejected_arrive"),
+            ptx_case!("failing/mbarrier_relaxed_semantics_rejected_arrive"),
         ),
         (
             "mbarrier.try_wait",
-            ptx_case!("eval/mbarrier_relaxed_semantics_rejected_try_wait"),
+            ptx_case!("failing/mbarrier_relaxed_semantics_rejected_try_wait"),
         ),
     ] {
         let module = parse(&src);
@@ -149,31 +149,31 @@ fn test_mbarrier_relaxed_semantics_rejected() {
 fn test_tcgen05_rejects_missing_sync_aligned() {
     for (src, missing) in [
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_alloc_sync"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_alloc_sync"),
             ".sync",
         ),
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_alloc_aligned"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_alloc_aligned"),
             ".aligned",
         ),
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_ld"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_ld"),
             ".sync",
         ),
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_st"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_st"),
             ".aligned",
         ),
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_wait_ld"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_wait_ld"),
             ".sync",
         ),
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_dealloc"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_dealloc"),
             ".aligned",
         ),
         (
-            ptx!("eval/tcgen05_rejects_missing_sync_aligned_relinquish"),
+            ptx!("failing/tcgen05_rejects_missing_sync_aligned_relinquish"),
             ".aligned",
         ),
     ] {
@@ -189,7 +189,7 @@ fn test_tcgen05_rejects_missing_sync_aligned() {
 fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
     let err = analyze_kernel(
         &parse(&ptx!(
-            "eval/tcgen05_alloc_rejects_invalid_sizes_and_order_16"
+            "failing/tcgen05_alloc_rejects_invalid_sizes_and_order_16"
         )),
         None,
         AnalysisConfig::new((32, 1, 1)),
@@ -204,7 +204,7 @@ fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
     );
     let err = analyze_kernel(
         &parse(&ptx!(
-            "eval/tcgen05_alloc_rejects_invalid_sizes_and_order_32_then_64"
+            "failing/tcgen05_alloc_rejects_invalid_sizes_and_order_32_then_64"
         )),
         None,
         AnalysisConfig::new((32, 1, 1)),
@@ -229,8 +229,8 @@ fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
 #[test]
 fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
     for src in [
-        ptx!("eval/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_alloc"),
-        ptx!("eval/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_dealloc"),
+        ptx!("failing/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_alloc"),
+        ptx!("failing/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_dealloc"),
     ] {
         let err = analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
         match &err {
@@ -252,7 +252,7 @@ fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
 #[test]
 fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
     let module = parse(&ptx!(
-        "eval/tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected"
+        "failing/tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
@@ -273,7 +273,7 @@ fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
 /// from `ThreadId`.
 #[test]
 fn test_tcgen05_st_rejects_wrong_quadrant_address() {
-    let module = ptx!(parse "eval/tcgen05_st_rejects_wrong_quadrant_address");
+    let module = ptx!(parse "failing/tcgen05_st_rejects_wrong_quadrant_address");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05LaneRestrictionViolation {
@@ -293,7 +293,7 @@ fn test_tcgen05_st_rejects_wrong_quadrant_address() {
 /// a default.
 #[test]
 fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
-    let module = ptx!(parse "eval/cp_async_bulk_tensor_rejects_an_incomplete_tensor_map");
+    let module = ptx!(parse "failing/cp_async_bulk_tensor_rejects_an_incomplete_tensor_map");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "in".to_string(),
@@ -317,7 +317,7 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
 /// reads back as `UndefinedOutput`, not `136`.
 #[test]
 fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
-    let module = ptx!(parse "eval/tcgen05_mma_disable_output_lane_skips_the_write");
+    let module = ptx!(parse "failing/tcgen05_mma_disable_output_lane_skips_the_write");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -340,7 +340,7 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
 /// generic "not yet implemented".
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_kind() {
-    let module = ptx!(parse "eval/tcgen05_mma_rejects_unmodeled_kind");
+    let module = ptx!(parse "failing/tcgen05_mma_rejects_unmodeled_kind");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Lower(LowerError::UnsupportedInstruction {
@@ -365,7 +365,7 @@ fn test_tcgen05_mma_rejects_unmodeled_kind() {
 /// descriptor-addressing error.
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
-    let module = ptx!(parse "eval/tcgen05_mma_rejects_unmodeled_idesc_fields");
+    let module = ptx!(parse "failing/tcgen05_mma_rejects_unmodeled_idesc_fields");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -384,7 +384,7 @@ fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
 /// A/B=f16, M=128, N=256 - otherwise fully modeled) plus `1 << 29`.
 #[test]
 fn test_tcgen05_mma_rejects_k_dimension_bit() {
-    let module = ptx!(parse "eval/tcgen05_mma_rejects_k_dimension_bit");
+    let module = ptx!(parse "failing/tcgen05_mma_rejects_k_dimension_bit");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -404,18 +404,21 @@ fn test_tcgen05_mma_rejects_k_dimension_bit() {
 #[test]
 fn test_tcgen05_mma_rejects_invalid_shapes() {
     for (shape, src) in [
-        ("M=32 N=64", ptx!("eval/tcgen05_mma_encoding/shape_m32_n64")),
+        (
+            "M=32 N=64",
+            ptx!("failing/tcgen05_mma_encoding_shape_m32_n64"),
+        ),
         (
             "M=128 N=264",
-            ptx!("eval/tcgen05_mma_encoding/shape_m128_n264"),
+            ptx!("failing/tcgen05_mma_encoding_shape_m128_n264"),
         ),
         (
             ".ws M=128 N=16",
-            ptx!("eval/tcgen05_mma_encoding/shape_ws_m128_n16"),
+            ptx!("failing/tcgen05_mma_encoding_shape_ws_m128_n16"),
         ),
         (
             ".ws M=128 N=0",
-            ptx!("eval/tcgen05_mma_encoding/shape_ws_m128_n0"),
+            ptx!("failing/tcgen05_mma_encoding_shape_ws_m128_n0"),
         ),
     ] {
         match run_tcgen05_mma(&src) {
@@ -431,7 +434,7 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
     }
     // The fp8 corpus idesc (M = 128) with B transposed and N = 8.
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/shape_fp8_n8")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_shape_fp8_n8")),
         "steps of 16",
     );
 }
@@ -442,27 +445,27 @@ fn test_tcgen05_mma_rejects_invalid_shapes() {
 #[test]
 fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_reserved_bit6")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_idesc_reserved_bit6")),
         "reserved bit 6",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_reserved_bit23")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_idesc_reserved_bit23")),
         "reserved bit 23",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_saturate")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_idesc_saturate")),
         "saturate",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_max_shift")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_idesc_max_shift")),
         "maximum shift",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_dtype2")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_idesc_dtype2")),
         "D type field",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_dtype3")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_idesc_dtype3")),
         "D type field",
     );
 }
@@ -472,11 +475,11 @@ fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
 #[test]
 fn test_tcgen05_mma_rejects_malformed_descriptors() {
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/a_desc_bit15")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_a_desc_bit15")),
         "a-desc",
     );
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/b_desc_no_bit46")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_b_desc_no_bit46")),
         "fixed-constant field at bit 46",
     );
 }
@@ -487,8 +490,8 @@ fn test_tcgen05_mma_rejects_malformed_descriptors() {
 #[test]
 fn test_tcgen05_mma_rejects_a_d_address_off_lane_0() {
     for (lane, src) in [
-        (32, ptx!("eval/tcgen05_mma_encoding/d_lane32")),
-        (128, ptx!("eval/tcgen05_mma_encoding/d_lane128")),
+        (32, ptx!("failing/tcgen05_mma_encoding_d_lane32")),
+        (128, ptx!("failing/tcgen05_mma_encoding_d_lane128")),
     ] {
         match run_tcgen05_mma(&src) {
             Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
@@ -507,7 +510,7 @@ fn test_tcgen05_mma_rejects_a_d_address_off_lane_0() {
 fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
     // The f16 idesc transposes B; B's descriptor is 128B-with-32B-atomicity.
     expect_invalid_encoding(
-        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/b_swizzle128b_atom32")),
+        run_tcgen05_mma(&ptx!("failing/tcgen05_mma_encoding_b_swizzle128b_atom32")),
         "transposed B with 128B swizzling with 32B atomicity",
     );
 }
@@ -519,9 +522,9 @@ fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
 fn test_membar_levels() {
     let analyze = |src: String| analyze_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1)));
     for (level, src) in [
-        (".cluster", ptx!("eval/membar_levels_cluster")),
-        (".gpu", ptx!("eval/membar_levels_gpu")),
-        ("", ptx!("eval/membar_levels_none")),
+        (".cluster", ptx!("failing/membar_levels_cluster")),
+        (".gpu", ptx!("failing/membar_levels_gpu")),
+        ("", ptx!("failing/membar_levels_none")),
     ] {
         match analyze(src) {
             Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
@@ -532,8 +535,8 @@ fn test_membar_levels() {
         }
     }
     for (proxy, src) in [
-        ("alias", ptx!("eval/membar_levels_proxy_alias")),
-        ("async", ptx!("eval/membar_levels_proxy_async")),
+        ("alias", ptx!("failing/membar_levels_proxy_alias")),
+        ("async", ptx!("failing/membar_levels_proxy_async")),
     ] {
         match analyze(src) {
             Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
@@ -551,14 +554,14 @@ fn test_membar_levels() {
 #[test]
 fn test_mbarrier_shared_cluster_validity() {
     for src in [
-        ptx!("eval/mbarrier_shared_cluster_validity_init"),
-        ptx!("eval/mbarrier_shared_cluster_validity_inval"),
-        ptx!("eval/mbarrier_shared_cluster_validity_test_wait"),
-        ptx!("eval/mbarrier_shared_cluster_validity_try_wait"),
+        ptx!("failing/mbarrier_shared_cluster_validity_init"),
+        ptx!("failing/mbarrier_shared_cluster_validity_inval"),
+        ptx!("failing/mbarrier_shared_cluster_validity_test_wait"),
+        ptx!("failing/mbarrier_shared_cluster_validity_try_wait"),
     ] {
         expect_invalid_instruction(&parse(&src), "has no .shared::cluster form");
     }
-    let arrive = parse(&ptx!("eval/mbarrier_shared_cluster_validity_arrive"));
+    let arrive = parse(&ptx!("failing/mbarrier_shared_cluster_validity_arrive"));
     match analyze_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1))) {
         Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
             let reason = reason.unwrap_or_default();
@@ -574,22 +577,22 @@ fn test_mbarrier_shared_cluster_validity() {
 fn test_redux_sync_forms() {
     let analyze = |src: &str| analyze_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)));
     for src in [
-        ptx!("eval/redux_sync/add_f32"),
-        ptx!("eval/redux_sync/and_u32"),
-        ptx!("eval/redux_sync/min_b32"),
-        ptx!("eval/redux_sync/xor_s32"),
+        ptx!("failing/redux_sync_add_f32"),
+        ptx!("failing/redux_sync_and_u32"),
+        ptx!("failing/redux_sync_min_b32"),
+        ptx!("failing/redux_sync_xor_s32"),
     ] {
         expect_invalid_instruction(&parse(&src), "not a redux.sync form");
     }
     for src in [
-        ptx!("eval/redux_sync/add_nan_u32"),
-        ptx!("eval/redux_sync/or_abs_b32"),
+        ptx!("failing/redux_sync_add_nan_u32"),
+        ptx!("failing/redux_sync_or_abs_b32"),
     ] {
         expect_invalid_instruction(&parse(&src), "only apply to redux.sync.f32");
     }
     for (form, src) in [
-        ("min.abs.f32", ptx!("eval/redux_sync/min_abs_f32")),
-        ("max.NaN.f32", ptx!("eval/redux_sync/max_nan_f32")),
+        ("min.abs.f32", ptx!("failing/redux_sync_min_abs_f32")),
+        ("max.NaN.f32", ptx!("failing/redux_sync_max_nan_f32")),
     ] {
         match analyze(&src) {
             Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { .. })) => {}
@@ -604,7 +607,7 @@ fn test_redux_sync_forms() {
 #[test]
 fn test_redux_sync_sign_trick_never_fuses_nan() {
     let result = analyze_kernel(
-        &parse(&ptx!("eval/redux_sync_sign_trick_never_fuses_nan")),
+        &parse(&ptx!("failing/redux_sync_sign_trick_never_fuses_nan")),
         None,
         AnalysisConfig::new((32, 1, 1)),
     );
@@ -617,7 +620,9 @@ fn test_redux_sync_sign_trick_never_fuses_nan() {
         result.err()
     );
     expect_invalid_instruction(
-        &parse(&ptx!("eval/redux_sync_sign_trick_never_fuses_nan_max_nan")),
+        &parse(&ptx!(
+            "failing/redux_sync_sign_trick_never_fuses_nan_max_nan"
+        )),
         "only apply to redux.sync.f32",
     );
 }
@@ -626,7 +631,7 @@ fn test_redux_sync_sign_trick_never_fuses_nan() {
 /// race example depends on it), but an output computed from one is an error.
 #[test]
 fn test_uninitialized_shared_read_flows_to_output() {
-    let module = ptx!(parse "eval/uninitialized_shared_read_flows_to_output");
+    let module = ptx!(parse "failing/uninitialized_shared_read_flows_to_output");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
@@ -637,7 +642,7 @@ fn test_uninitialized_shared_read_flows_to_output() {
 
 #[test]
 fn test_out_of_bounds_shared_access() {
-    let module = ptx!(parse "eval/out_of_bounds_shared_access");
+    let module = ptx!(parse "failing/out_of_bounds_shared_access");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
@@ -649,7 +654,7 @@ fn test_out_of_bounds_shared_access() {
 /// A 4-byte load at an address 2 mod 4 is misaligned.
 #[test]
 fn test_misaligned_scalar_load() {
-    let module = ptx!(parse "eval/misaligned_scalar_load");
+    let module = ptx!(parse "failing/misaligned_scalar_load");
     let err = analyze_kernel(&module, None, in_out_config(1, 4)).unwrap_err();
     assert!(
         matches!(
@@ -665,7 +670,7 @@ fn test_misaligned_scalar_load() {
 /// same chokepoint).
 #[test]
 fn test_misaligned_scalar_store() {
-    let module = ptx!(parse "eval/misaligned_scalar_store");
+    let module = ptx!(parse "failing/misaligned_scalar_store");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -682,7 +687,7 @@ fn test_misaligned_scalar_store() {
 /// even though every element taken alone is 4-aligned.
 #[test]
 fn test_misaligned_vector_load() {
-    let module = ptx!(parse "eval/misaligned_vector_load");
+    let module = ptx!(parse "failing/misaligned_vector_load");
     let err = analyze_kernel(&module, None, in_out_config(1, 8)).unwrap_err();
     assert!(
         matches!(
@@ -699,7 +704,7 @@ fn test_misaligned_vector_load() {
 /// 4-aligned.
 #[test]
 fn test_misaligned_ldmatrix_row_address() {
-    let module = parse(&ptx!("eval/misaligned_ldmatrix_row_address"));
+    let module = parse(&ptx!("failing/misaligned_ldmatrix_row_address"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -715,7 +720,7 @@ fn test_misaligned_ldmatrix_row_address() {
 /// (PTX ISA 9.7.14.4.2) even though each f16 element read is 2-aligned.
 #[test]
 fn test_wmma_load_base_misaligned() {
-    let module = parse(&ptx!("eval/wmma_load_base_misaligned"));
+    let module = parse(&ptx!("failing/wmma_load_base_misaligned"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -730,7 +735,7 @@ fn test_wmma_load_base_misaligned() {
 /// The store side enforces the same base alignment.
 #[test]
 fn test_wmma_store_base_misaligned() {
-    let module = parse(&ptx!("eval/wmma_store_base_misaligned"));
+    let module = parse(&ptx!("failing/wmma_store_base_misaligned"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -746,7 +751,7 @@ fn test_wmma_store_base_misaligned() {
 /// undefined behavior by itself (PTX ISA 9.7.14.4.3).
 #[test]
 fn test_wmma_stride_below_default() {
-    let module = parse(&ptx!("eval/wmma_stride_below_default"));
+    let module = parse(&ptx!("failing/wmma_stride_below_default"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -767,7 +772,7 @@ fn test_wmma_stride_below_default() {
 /// 20 f16 elements = 40 bytes.
 #[test]
 fn test_wmma_stride_misaligned() {
-    let module = parse(&ptx!("eval/wmma_stride_misaligned"));
+    let module = parse(&ptx!("failing/wmma_stride_misaligned"));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -783,7 +788,7 @@ fn test_wmma_stride_misaligned() {
 /// when the analysis is configured, not per access.
 #[test]
 fn test_config_rejects_misaligned_array_base() {
-    let module = ptx!(parse "eval/config_rejects_misaligned_array_base");
+    let module = ptx!(parse "failing/config_rejects_misaligned_array_base");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "in".to_string(),
@@ -805,7 +810,7 @@ fn test_config_rejects_misaligned_array_base() {
 /// left in place as an integer: Volta's real-valued model has no NaN.
 #[test]
 fn test_float_op_rejects_nan_bit_pattern() {
-    let module = ptx!(parse "eval/float_op_rejects_nan_bit_pattern");
+    let module = ptx!(parse "failing/float_op_rejects_nan_bit_pattern");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -819,7 +824,7 @@ fn test_float_op_rejects_nan_bit_pattern() {
 /// rational division, which would prove `(x / 2) * 2` equal to `x`.
 #[test]
 fn test_symbolic_integer_div_is_unsupported() {
-    let module = parse(&ptx!("eval/symbolic_integer_div_is_unsupported"));
+    let module = parse(&ptx!("failing/symbolic_integer_div_is_unsupported"));
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
@@ -837,7 +842,7 @@ fn test_symbolic_integer_div_is_unsupported() {
 /// a truncation node we do not model: loud error, not silent nonsense.
 #[test]
 fn test_symbolic_sub_register_store_rejected() {
-    let src = ptx!("eval/symbolic_sub_register_store_rejected");
+    let src = ptx!("failing/symbolic_sub_register_store_rejected");
     let err = analyze_kernel(&parse(&src), None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(
@@ -854,7 +859,7 @@ fn test_symbolic_sub_register_store_rejected() {
 /// register would need an extension node we do not model: loud error.
 #[test]
 fn test_symbolic_sub_register_load_rejected() {
-    let src = ptx!("eval/symbolic_sub_register_load_rejected");
+    let src = ptx!("failing/symbolic_sub_register_load_rejected");
     // The byte array serves as the kernel's input here: loading one of
     // its symbolic elements at s8 into a 32-bit register would need an
     // extension.
@@ -875,7 +880,7 @@ fn test_symbolic_sub_register_load_rejected() {
 /// fabricated `0.0`.
 #[test]
 fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
-    let module = ptx!(parse "eval/e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated");
+    let module = ptx!(parse "failing/e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -910,7 +915,7 @@ fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
 /// nonsense.
 #[test]
 fn test_pair_sub_width_store_rejected() {
-    let module = ptx!(parse "eval/pair_sub_width_store_rejected");
+    let module = ptx!(parse "failing/pair_sub_width_store_rejected");
     let err = analyze_kernel(&module, None, u8_scratch_config()).unwrap_err();
     assert!(
         matches!(
@@ -926,7 +931,7 @@ fn test_pair_sub_width_store_rejected() {
 /// Branching on input data violates structured-CTA.
 #[test]
 fn test_symbolic_branch_rejected() {
-    let module = ptx!(parse "eval/symbolic_branch_rejected");
+    let module = ptx!(parse "failing/symbolic_branch_rejected");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::NotConcrete { .. })),
@@ -939,7 +944,7 @@ fn test_symbolic_branch_rejected() {
 /// real number, so it cannot enter the analysis model.
 #[test]
 fn test_nan_literal_rejected_at_lowering() {
-    let module = ptx!(parse "eval/nan_literal_rejected_at_lowering");
+    let module = ptx!(parse "failing/nan_literal_rejected_at_lowering");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -965,7 +970,7 @@ fn test_nan_literal_rejected_at_lowering() {
 /// A NaN float parameter is a config validation error.
 #[test]
 fn test_nan_float_param_rejected() {
-    let src = ptx!("eval/nan_float_param_rejected");
+    let src = ptx!("failing/nan_float_param_rejected");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.params = vec![ParamValue::Float(f64::NAN)];
     let err = analyze_kernel(&parse(&src), None, config).unwrap_err();
@@ -981,7 +986,7 @@ fn test_nan_float_param_rejected() {
 /// denominator when the element is checked.
 #[test]
 fn test_zero_over_zero_is_a_loud_equivalence_error() {
-    let src = ptx!("eval/zero_over_zero_is_a_loud_equivalence_error");
+    let src = ptx!("failing/zero_over_zero_is_a_loud_equivalence_error");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1009,7 +1014,7 @@ fn test_zero_over_zero_is_a_loud_equivalence_error() {
 /// thread"); the group still fires.
 #[test]
 fn test_shfl_from_exited_lane_is_undefined() {
-    let module = ptx!(parse "eval/shfl_from_exited_lane_is_undefined");
+    let module = ptx!(parse "failing/shfl_from_exited_lane_is_undefined");
     // Lanes 8..15 source exited lanes 16..23 and store the Undefined result.
     let err = analyze_kernel(&module, None, in_out_config(32, 16)).unwrap_err();
     assert!(
@@ -1024,7 +1029,7 @@ fn test_shfl_from_exited_lane_is_undefined() {
 /// caught (hardware happens to tolerate this; the model must not).
 #[test]
 fn test_shared_array_overflow_read_is_out_of_bounds() {
-    let module = ptx!(parse "eval/shared_array_overflow_read_is_out_of_bounds");
+    let module = ptx!(parse "failing/shared_array_overflow_read_is_out_of_bounds");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -1041,7 +1046,7 @@ fn test_shared_array_overflow_read_is_out_of_bounds() {
 /// neighbor read.
 #[test]
 fn test_vector_straddling_adjacent_shared_arrays() {
-    let module = ptx!(parse "eval/vector_straddling_adjacent_shared_arrays");
+    let module = ptx!(parse "failing/vector_straddling_adjacent_shared_arrays");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -1062,7 +1067,7 @@ fn test_vector_straddling_adjacent_shared_arrays() {
 /// every build profile, including release.
 #[test]
 fn test_negative_index_wrap_is_out_of_bounds() {
-    let module = ptx!(parse "eval/negative_index_wrap_is_out_of_bounds");
+    let module = ptx!(parse "failing/negative_index_wrap_is_out_of_bounds");
     let mut config = in_out_config(1, 4);
     config.arrays[0].base = 0; // x based at 0: base + (-4) wraps
     let err = analyze_kernel(&module, None, config).unwrap_err();
@@ -1083,7 +1088,7 @@ fn test_negative_index_wrap_is_out_of_bounds() {
 #[test]
 fn test_array_overlapping_module_global_window_rejected() {
     const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;
-    let module = ptx!(parse "eval/array_overlapping_module_global_window_rejected");
+    let module = ptx!(parse "failing/array_overlapping_module_global_window_rejected");
 
     // The probe scenario: an array based exactly at the module-global
     // base, covering the global `g`.
@@ -1126,7 +1131,7 @@ fn test_array_overlapping_module_global_window_rejected() {
 /// a tiny size.
 #[test]
 fn test_hostile_shared_declaration_size_rejected() {
-    let module = ptx!(parse "eval/hostile_shared_declaration_size_rejected");
+    let module = ptx!(parse "failing/hostile_shared_declaration_size_rejected");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -1147,17 +1152,17 @@ fn test_cvta_other_forms_rejected() {
         (
             "cvta.global",
             "corpus",
-            ptx_case!("eval/cvta_other_forms_rejected_global"),
+            ptx_case!("failing/cvta_other_forms_rejected_global"),
         ),
         (
             "cvta.shared",
             "per-space windows",
-            ptx_case!("eval/cvta_other_forms_rejected_shared"),
+            ptx_case!("failing/cvta_other_forms_rejected_shared"),
         ),
         (
             "cvta.to.shared",
             "per-space windows",
-            ptx_case!("eval/cvta_other_forms_rejected_to_shared"),
+            ptx_case!("failing/cvta_other_forms_rejected_to_shared"),
         ),
     ] {
         let module = parse(&src);
@@ -1189,7 +1194,7 @@ fn test_cvta_other_forms_rejected() {
 /// specific reason.
 #[test]
 fn test_copysign_rejects_a_type_other_than_f32_f64() {
-    let module = ptx!(parse "eval/copysign_rejects_a_type_other_than_f32_f64");
+    let module = ptx!(parse "failing/copysign_rejects_a_type_other_than_f32_f64");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
@@ -1203,7 +1208,7 @@ fn test_copysign_rejects_a_type_other_than_f32_f64() {
 /// represent NaN, so a concrete byte hitting it must error loudly.
 #[test]
 fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
-    let module = ptx!(parse "eval/e4m3x2_rejects_the_concrete_nan_byte_pattern");
+    let module = ptx!(parse "failing/e4m3x2_rejects_the_concrete_nan_byte_pattern");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {

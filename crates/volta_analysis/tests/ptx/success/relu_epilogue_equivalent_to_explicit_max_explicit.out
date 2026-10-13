@@ -1,0 +1,2 @@
+out[0] = max(0, in[0])
+out[1] = max(0, in[1])

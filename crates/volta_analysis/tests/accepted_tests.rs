@@ -121,8 +121,10 @@ fn run_reduction(
     let module = parse_file(file);
     let mut config = reduction_config(threads, n);
     config.dynamic_shared_bytes = dynamic_shared;
-    analyze_kernel(&module, Some(kernel), config)
-        .unwrap_or_else(|e| panic!("{} failed: {}", file, e))
+    let output = analyze_kernel(&module, Some(kernel), config)
+        .unwrap_or_else(|e| panic!("{} failed: {}", file, e));
+    assert_out_file(&PathBuf::from(KERNELS_DIR).join(file), &output);
+    output
 }
 
 fn red1() -> AnalysisOutput {
@@ -157,14 +159,9 @@ fn f64_out_config() -> AnalysisConfig {
 // Two threads, two f32 elements each: `out[i] = in[i] * in[i] + in[i]`;
 // each body maps `{%f1, %f2}` to `{%f3, %f4}`, or `[%rd4]` to `[%rd5]` for
 // 64-bit memory variants.
-fn f32x2_outcome(candidate: &str) -> EquivOutcome {
-    let reference = analyze_kernel(
-        &parse(&ptx!("eval/f32x2_scalar_reference")),
-        None,
-        in_out_config(2, 4),
-    )
-    .unwrap();
-    let candidate = analyze_kernel(&parse(candidate), None, in_out_config(2, 4)).unwrap();
+fn f32x2_outcome((name, src): (&str, String)) -> EquivOutcome {
+    let reference = analyze!("success/f32x2_scalar_reference", in_out_config(2, 4));
+    let candidate = analyze_case(name, &src, in_out_config(2, 4));
     check_equiv(&reference, &candidate)
 }
 
@@ -172,8 +169,7 @@ fn f32x2_outcome(candidate: &str) -> EquivOutcome {
 /// out[tid] = in[tid ^ 1].
 #[test]
 fn test_shared_exchange_with_barrier() {
-    let module = ptx!(parse "eval/shared_exchange_with_barrier");
-    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    let output = analyze!("success/shared_exchange_with_barrier", in_out_config(2, 2));
     assert_eq!(display_output(&output, "out", 0), "in[1]");
     assert_eq!(display_output(&output, "out", 1), "in[0]");
     assert_eq!(output.stats.block_syncs, 2);
@@ -183,11 +179,9 @@ fn test_shared_exchange_with_barrier() {
 /// variable from different threads are not a race: the regions are disjoint.
 #[test]
 fn test_extern_vs_static_shared_no_false_race() {
-    let module = ptx!(parse "eval/extern_vs_static_shared_no_false_race");
     let mut config = in_out_config(2, 1);
     config.dynamic_shared_bytes = 16;
-    let output = analyze_kernel(&module, None, config)
-        .expect("disjoint extern/static shared accesses must not race");
+    let output = analyze!("success/extern_vs_static_shared_no_false_race", config);
     assert_eq!(display_output(&output, "out", 0), "7");
 }
 
@@ -195,8 +189,10 @@ fn test_extern_vs_static_shared_no_false_race() {
 /// Sync rule allows `return`), so this does NOT deadlock.
 #[test]
 fn test_exited_thread_releases_barrier() {
-    let module = ptx!(parse "eval/exited_thread_releases_barrier");
-    analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap();
+    analyze!(
+        "success/exited_thread_releases_barrier",
+        AnalysisConfig::new((2, 1, 1))
+    );
 }
 
 /// `mbarrier.init` with `count = 2` needs both threads' `arrive` before
@@ -204,8 +200,10 @@ fn test_exited_thread_releases_barrier() {
 /// *different* thread's arrive completes the phase.
 #[test]
 fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
-    let module = ptx!(parse "eval/mbarrier_wait_wakes_on_another_threads_arrive");
-    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    let output = analyze!(
+        "success/mbarrier_wait_wakes_on_another_threads_arrive",
+        in_out_config(2, 2)
+    );
     assert_eq!(display_output(&output, "out", 0), "1");
     assert_eq!(display_output(&output, "out", 1), "1");
 }
@@ -215,8 +213,10 @@ fn test_mbarrier_wait_wakes_on_another_threads_arrive() {
 /// outstanding transaction.
 #[test]
 fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
-    let module = ptx!(parse "eval/mbarrier_expect_tx_blocks_until_complete_tx");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    let output = analyze!(
+        "success/mbarrier_expect_tx_blocks_until_complete_tx",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
@@ -225,8 +225,10 @@ fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
 /// with no race reported.
 #[test]
 fn test_mbarrier_arrive_wait_establishes_happens_before() {
-    let module = ptx!(parse "eval/mbarrier_arrive_wait_establishes_happens_before");
-    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    let output = analyze!(
+        "success/mbarrier_arrive_wait_establishes_happens_before",
+        in_out_config(2, 2)
+    );
     assert_eq!(display_output(&output, "out", 1), "42");
 }
 
@@ -235,7 +237,6 @@ fn test_mbarrier_arrive_wait_establishes_happens_before() {
 /// through.
 #[test]
 fn test_tcgen05_fence_is_a_no_op() {
-    let module = ptx!(parse "eval/tcgen05_fence_is_a_no_op");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -245,7 +246,7 @@ fn test_tcgen05_fence_is_a_no_op() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/tcgen05_fence_is_a_no_op", config);
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
@@ -254,7 +255,6 @@ fn test_tcgen05_fence_is_a_no_op() {
 /// state-space path.
 #[test]
 fn test_tcgen05_commit_satisfies_mbarrier_wait() {
-    let module = ptx!(parse "eval/tcgen05_commit_satisfies_mbarrier_wait");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -264,7 +264,7 @@ fn test_tcgen05_commit_satisfies_mbarrier_wait() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/tcgen05_commit_satisfies_mbarrier_wait", config);
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
@@ -273,7 +273,6 @@ fn test_tcgen05_commit_satisfies_mbarrier_wait() {
 /// quadrant and read back exactly their own value.
 #[test]
 fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
-    let module = ptx!(parse "eval/tcgen05_st_ld_respects_warp_quadrant_addressing");
     let mut config = AnalysisConfig::new((64, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -283,7 +282,10 @@ fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/tcgen05_st_ld_respects_warp_quadrant_addressing",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "0");
     assert_eq!(display_output(&output, "out", 31), "0");
     assert_eq!(display_output(&output, "out", 32), "1");
@@ -293,16 +295,20 @@ fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
 /// The control: the same `.ld`/`.st` waited *before* the arrivals pass.
 #[test]
 fn test_tcgen05_wait_before_sync_is_accepted() {
-    let module = parse(&ptx!("eval/tcgen05_wait_before_sync_is_accepted"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_wait_before_sync_is_accepted",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// The control: the same `.ld`/`.st` waited before the `tcgen05.dealloc`
 /// pass.
 #[test]
 fn test_tcgen05_dealloc_after_waiting_is_accepted() {
-    let module = parse(&ptx!("eval/tcgen05_dealloc_after_waiting_is_accepted"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_dealloc_after_waiting_is_accepted",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// `tensormap.replace` (8x8 f16 map built in shared) +
@@ -311,16 +317,9 @@ fn test_tcgen05_dealloc_after_waiting_is_accepted() {
 #[test]
 fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
     for (scope, src) in [
-        (
-            "cluster",
-            ptx!("eval/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds"),
-        ),
-        (
-            "cta",
-            ptx!("eval/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds_cta"),
-        ),
+        ptx_case!("success/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds"),
+        ptx_case!("success/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds_cta"),
     ] {
-        let module = parse(&src);
         let mut config = AnalysisConfig::new((1, 1, 1));
         config.arrays = vec![
             ArrayDef {
@@ -342,7 +341,7 @@ fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
             ParamValue::ArrayPtr("in".to_string()),
             ParamValue::ArrayPtr("out".to_string()),
         ];
-        let output = analyze_kernel(&module, None, config).unwrap();
+        let output = analyze_case(scope, &src, config);
         assert_eq!(display_output(&output, "out", 0), "in[54]", "{scope}");
         assert_eq!(display_output(&output, "out", 1), "0", "{scope}");
     }
@@ -353,7 +352,6 @@ fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
 /// each thread encodes both as one f32.
 #[test]
 fn test_elect_sync_elects_the_lowest_active_lane() {
-    let module = ptx!(parse "eval/elect_sync_elects_the_lowest_active_lane");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -363,7 +361,7 @@ fn test_elect_sync_elects_the_lowest_active_lane() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/elect_sync_elects_the_lowest_active_lane", config);
     assert_eq!(display_output(&output, "out", 0), "1000");
     assert_eq!(display_output(&output, "out", 1), "0");
     assert_eq!(display_output(&output, "out", 31), "0");
@@ -373,7 +371,6 @@ fn test_elect_sync_elects_the_lowest_active_lane() {
 /// arrived but cannot be leader, so lane 1 is elected.
 #[test]
 fn test_elect_sync_skips_an_already_exited_lane() {
-    let module = ptx!(parse "eval/elect_sync_skips_an_already_exited_lane");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -383,7 +380,7 @@ fn test_elect_sync_skips_an_already_exited_lane() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/elect_sync_skips_an_already_exited_lane", config);
     assert_eq!(display_output(&output, "out", 1), "1001");
     assert_eq!(display_output(&output, "out", 5), "0");
 }
@@ -393,8 +390,10 @@ fn test_elect_sync_skips_an_already_exited_lane() {
 /// buffers: every `(m, n, k)` address must land in bounds.
 #[test]
 fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
-    let module = ptx!(parse "eval/tcgen05_mma_real_kernel_descriptors_run_to_completion");
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_mma_real_kernel_descriptors_run_to_completion",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// A synthetic `.kind::f16` `tcgen05.mma` (M=128, N=8) with
@@ -402,8 +401,10 @@ fn test_tcgen05_mma_real_kernel_descriptors_run_to_completion() {
 /// `exec_tcgen05_mma`'s addressing end to end.
 #[test]
 fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
-    let module = ptx!(parse "eval/tcgen05_mma_no_swizzle_mode_runs_to_completion");
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_mma_no_swizzle_mode_runs_to_completion",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// LLVM's NVPTX backend emits 5-operand `tcgen05.mma` with no
@@ -411,7 +412,6 @@ fn test_tcgen05_mma_no_swizzle_mode_runs_to_completion() {
 /// `test_tcgen05_mma_numeric_correctness`, must produce `136`.
 #[test]
 fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
-    let module = ptx!(parse "eval/tcgen05_mma_without_an_explicit_disable_output_lane_mask");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -421,7 +421,10 @@ fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/tcgen05_mma_without_an_explicit_disable_output_lane_mask",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
@@ -430,7 +433,6 @@ fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
 /// `tcgen05.st`, so `D[0][0] = 16 + 1 = 17`.
 #[test]
 fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
-    let module = ptx!(parse "eval/tcgen05_mma_decodes_raw_operand_and_accumulator_bits");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -440,7 +442,10 @@ fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/tcgen05_mma_decodes_raw_operand_and_accumulator_bits",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "17");
 }
 
@@ -449,7 +454,6 @@ fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
 /// `D[0][0]` must read back as `136`.
 #[test]
 fn test_tcgen05_mma_numeric_correctness() {
-    let module = ptx!(parse "eval/tcgen05_mma_numeric_correctness");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -459,7 +463,7 @@ fn test_tcgen05_mma_numeric_correctness() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/tcgen05_mma_numeric_correctness", config);
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
@@ -467,27 +471,29 @@ fn test_tcgen05_mma_numeric_correctness() {
 /// order the MMA before warp 1's read.
 #[test]
 fn test_tcgen05_mma_bar_sync_after_completion_orders_the_read() {
-    let module = parse(&ptx!(
-        "eval/tcgen05_mma_bar_sync_after_completion_orders_the_read"
-    ));
-    analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_mma_bar_sync_after_completion_orders_the_read",
+        AnalysisConfig::new((64, 1, 1))
+    );
 }
 
 /// The control: warp 1 waiting on `mma_bar` itself is ordered after the
 /// completion, whatever `bar.sync` ran before it.
 #[test]
 fn test_tcgen05_mma_every_reader_waiting_is_accepted() {
-    let module = parse(&ptx!("eval/tcgen05_mma_every_reader_waiting_is_accepted"));
-    analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_mma_every_reader_waiting_is_accepted",
+        AnalysisConfig::new((64, 1, 1))
+    );
 }
 
 /// The control: deallocating after waiting on `mma_bar` is accepted.
 #[test]
 fn test_tcgen05_dealloc_after_the_mma_completed_is_accepted() {
-    let module = parse(&ptx!(
-        "eval/tcgen05_dealloc_after_the_mma_completed_is_accepted"
-    ));
-    analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap();
+    analyze!(
+        "success/tcgen05_dealloc_after_the_mma_completed_is_accepted",
+        AnalysisConfig::new((64, 1, 1))
+    );
 }
 
 /// `.kind::f8f6f4` with e4m3 `A`, e5m2 `B`, K = 32, `SwizzleMode::None` (`LBO
@@ -495,7 +501,6 @@ fn test_tcgen05_dealloc_after_the_mma_completed_is_accepted() {
 /// `LBO` stepping and per-operand decoders.
 #[test]
 fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
-    let module = ptx!(parse "eval/tcgen05_mma_kind_f8f6f4_numeric_correctness");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -505,7 +510,10 @@ fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/tcgen05_mma_kind_f8f6f4_numeric_correctness",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "408");
 }
 
@@ -514,7 +522,6 @@ fn test_tcgen05_mma_kind_f8f6f4_numeric_correctness() {
 /// ordinary f16 access pattern must keep working.
 #[test]
 fn test_aligned_u16_access_at_2_mod_4() {
-    let module = ptx!(parse "eval/aligned_u16_access_at_2_mod_4");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -536,15 +543,14 @@ fn test_aligned_u16_access_at_2_mod_4() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).expect("aligned u16 access");
+    let output = analyze!("success/aligned_u16_access_at_2_mod_4", config);
     assert_eq!(display_output(&output, "out", 1), "in[1]");
 }
 
 /// The same vector load at a 16-byte boundary is legal.
 #[test]
 fn test_aligned_vector_load() {
-    let module = ptx!(parse "eval/aligned_vector_load");
-    let output = analyze_kernel(&module, None, in_out_config(1, 8)).expect("aligned v4 load");
+    let output = analyze!("success/aligned_vector_load", in_out_config(1, 8));
     assert_eq!(display_output(&output, "out", 0), "in[3]");
 }
 
@@ -553,10 +559,9 @@ fn test_aligned_vector_load() {
 /// destination.
 #[test]
 fn test_vector_store_with_immediate_source() {
-    let module = ptx!(parse "eval/vector_store_with_immediate_source");
     let mut config = in_out_config(1, 8);
     config.arrays[1].len = 4; // out: exactly the 4 stored elements
-    let output = analyze_kernel(&module, None, config).expect("vector store with immediate");
+    let output = analyze!("success/vector_store_with_immediate_source", config);
     assert_eq!(display_output(&output, "out", 0), "in[0]");
     assert_eq!(display_output(&output, "out", 1), "0");
     assert_eq!(display_output(&output, "out", 2), "in[1]");
@@ -570,8 +575,7 @@ fn test_vector_store_with_immediate_source() {
 /// matrix row is fetched by four lanes as one 16-byte access.
 #[test]
 fn test_aligned_ldmatrix() {
-    let module = parse(&ptx!("eval/aligned_ldmatrix"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("aligned ldmatrix");
+    analyze!("success/aligned_ldmatrix", AnalysisConfig::new((32, 1, 1)));
 }
 
 /// `ldmatrix.trans.x1`: lane `l` gets (row `2*(l%4)`, col `l/4`) low and (row
@@ -579,7 +583,6 @@ fn test_aligned_ldmatrix() {
 /// are checked against `in[expected_index]`.
 #[test]
 fn test_ldmatrix_trans_mapping() {
-    let module = ptx!(parse "eval/ldmatrix_trans_mapping");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -601,7 +604,7 @@ fn test_ldmatrix_trans_mapping() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).expect("ldmatrix.trans mapping");
+    let output = analyze!("success/ldmatrix_trans_mapping", config);
 
     for lane in 0u64..32 {
         let row_lo = 2 * (lane % 4);
@@ -629,7 +632,6 @@ fn test_ldmatrix_trans_mapping() {
 /// registers get the literal `{1.0, 0, 0, 0}`.
 #[test]
 fn test_mma_with_immediate_accumulator() {
-    let module = ptx!(parse "eval/mma_with_immediate_accumulator");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -639,7 +641,7 @@ fn test_mma_with_immediate_accumulator() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).expect("mma with immediate accumulator");
+    let output = analyze!("success/mma_with_immediate_accumulator", config);
     assert_eq!(display_output(&output, "out", 0), "1");
     assert_eq!(display_output(&output, "out", 1), "0");
     assert_eq!(display_output(&output, "out", 2), "0");
@@ -650,7 +652,6 @@ fn test_mma_with_immediate_accumulator() {
 /// decoded as f32 bits: thread 0's `D[0][0]` is 1.0, not 1065353216.
 #[test]
 fn test_mma_accumulator_register_decodes_raw_bits() {
-    let module = ptx!(parse "eval/mma_accumulator_register_decodes_raw_bits");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -660,7 +661,7 @@ fn test_mma_accumulator_register_decodes_raw_bits() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).expect("mma with bit-pattern accumulator");
+    let output = analyze!("success/mma_accumulator_register_decodes_raw_bits", config);
     assert_eq!(display_output(&output, "out", 0), "1");
     assert_eq!(display_output(&output, "out", 1), "0");
 }
@@ -672,19 +673,25 @@ fn test_mma_accumulator_register_decodes_raw_bits() {
 /// is legal, for both the f16 a-fragment load and the f32 d-fragment store.
 #[test]
 fn test_aligned_wmma_load_and_store() {
-    let module = parse(&ptx!("eval/aligned_wmma_load_and_store_load"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("aligned wmma.load");
+    analyze!(
+        "success/aligned_wmma_load_and_store_load",
+        AnalysisConfig::new((32, 1, 1))
+    );
 
-    let module = parse(&ptx!("eval/aligned_wmma_load_and_store_store"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("aligned wmma.store");
+    analyze!(
+        "success/aligned_wmma_load_and_store_store",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// A stride *larger* than the default is explicitly allowed (a submatrix
 /// of a larger matrix) as long as it keeps rows aligned.
 #[test]
 fn test_wmma_stride_above_default_is_legal() {
-    let module = parse(&ptx!("eval/wmma_stride_above_default_is_legal"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("stride-32 wmma.load");
+    analyze!(
+        "success/wmma_stride_above_default_is_legal",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// nvcc's bank-conflict skew (`half tile[..][16 + 8]`, Conv2D-opt) gives a
@@ -692,8 +699,10 @@ fn test_wmma_stride_above_default_is_legal() {
 /// aligned, which must stay legal.
 #[test]
 fn test_wmma_skewed_stride_is_legal() {
-    let module = parse(&ptx!("eval/wmma_skewed_stride_is_legal"));
-    analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).expect("stride-24 wmma.load");
+    analyze!(
+        "success/wmma_skewed_stride_is_legal",
+        AnalysisConfig::new((32, 1, 1))
+    );
 }
 
 /// nvcc's u16 magic-number division (Conv2D-opt): the immediate -17873 is u16
@@ -701,8 +710,7 @@ fn test_wmma_skewed_stride_is_legal() {
 /// unsigned.
 #[test]
 fn test_mul_wide_u16_magic_division() {
-    let module = ptx!(parse "eval/mul_wide_u16_magic_division");
-    let output = analyze_kernel(&module, None, in_out_config(1, 2)).expect("analysis");
+    let output = analyze!("success/mul_wide_u16_magic_division", in_out_config(1, 2));
     // 14 / 11 = 1, 14 % 11 = 3.
     assert_eq!(display_output(&output, "out", 0), "1");
     assert_eq!(display_output(&output, "out", 1), "3");
@@ -712,8 +720,7 @@ fn test_mul_wide_u16_magic_division() {
 /// half of 0xFFFFFFFF * 2 is 1, not -1's sign fill.
 #[test]
 fn test_mul_hi_u32_negative_operand() {
-    let module = ptx!(parse "eval/mul_hi_u32_negative_operand");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
+    let output = analyze!("success/mul_hi_u32_negative_operand", in_out_config(1, 1));
     assert_eq!(display_output(&output, "out", 0), "1");
 }
 
@@ -722,8 +729,10 @@ fn test_mul_hi_u32_negative_operand() {
 /// low 5 bits, i.e. 31.
 #[test]
 fn test_shf_clamp_negative_shift_amount_saturates() {
-    let module = ptx!(parse "eval/shf_clamp_negative_shift_amount_saturates");
-    let output = analyze_kernel(&module, None, in_out_config(1, 4)).expect("analysis");
+    let output = analyze!(
+        "success/shf_clamp_negative_shift_amount_saturates",
+        in_out_config(1, 4)
+    );
     // shf.l.clamp, n = min(0xFFFFFFFF, 32) = 32: the whole of hi is shifted
     // out and lo fills the result, so d = lo = 0x11111111.
     assert_eq!(
@@ -753,8 +762,10 @@ fn test_shf_clamp_negative_shift_amount_saturates() {
 /// by 0x10000 is over-wide (>= 16), not a shift by 0x10000 & 0xFFFF = 0.
 #[test]
 fn test_b16_shift_amount_is_read_as_u32() {
-    let module = ptx!(parse "eval/b16_shift_amount_is_read_as_u32");
-    let output = analyze_kernel(&module, None, in_out_config(1, 3)).expect("analysis");
+    let output = analyze!(
+        "success/b16_shift_amount_is_read_as_u32",
+        in_out_config(1, 3)
+    );
     // shl.b16 1 by >= 16: every bit is shifted out, so d = 0 (not 1).
     assert_eq!(display_output(&output, "out", 0), "0");
     // shr.u16 0x8000 by >= 16: logical shift, so d = 0 (not 0x8000).
@@ -769,8 +780,7 @@ fn test_b16_shift_amount_is_read_as_u32() {
 /// i32::MIN).
 #[test]
 fn test_int_abs_read_at_signed_width() {
-    let module = ptx!(parse "eval/int_abs_read_at_signed_width");
-    let output = analyze_kernel(&module, None, in_out_config(1, 2)).expect("analysis");
+    let output = analyze!("success/int_abs_read_at_signed_width", in_out_config(1, 2));
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(
         display_output(&output, "out", 1),
@@ -782,8 +792,7 @@ fn test_int_abs_read_at_signed_width() {
 /// 0xFF800000 (-inf) gives inf. A symbolic operand stays an `abs` node.
 #[test]
 fn test_float_abs_decodes_raw_bits() {
-    let module = ptx!(parse "eval/float_abs_decodes_raw_bits");
-    let output = analyze_kernel(&module, None, in_out_config(1, 3)).expect("analysis");
+    let output = analyze!("success/float_abs_decodes_raw_bits", in_out_config(1, 3));
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(display_output(&output, "out", 1), "inf");
     assert_eq!(display_output(&output, "out", 2), "abs(in[0])");
@@ -794,8 +803,10 @@ fn test_float_abs_decodes_raw_bits() {
 /// float-to-float `cvt` (f16 0x3C00).
 #[test]
 fn test_float_ops_decode_raw_bit_patterns() {
-    let module = ptx!(parse "eval/float_ops_decode_raw_bit_patterns");
-    let output = analyze_kernel(&module, None, in_out_config(1, 6)).expect("analysis");
+    let output = analyze!(
+        "success/float_ops_decode_raw_bit_patterns",
+        in_out_config(1, 6)
+    );
     assert_eq!(display_output(&output, "out", 0), "2");
     assert_eq!(display_output(&output, "out", 1), "0.25");
     assert_eq!(display_output(&output, "out", 2), "sqrt(4)");
@@ -809,8 +820,10 @@ fn test_float_ops_decode_raw_bit_patterns() {
 /// is `1 * 2 + 1 = 3`.
 #[test]
 fn test_mixed_precision_fma_decodes_multiplicands_at_their_own_type() {
-    let module = ptx!(parse "eval/mixed_precision_fma_decodes_multiplicands_at_their_own_type");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
+    let output = analyze!(
+        "success/mixed_precision_fma_decodes_multiplicands_at_their_own_type",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "3");
 }
 
@@ -819,8 +832,10 @@ fn test_mixed_precision_fma_decodes_multiplicands_at_their_own_type() {
 /// (0xC0A00000 is -5.0). Symbolic stays a `neg` node.
 #[test]
 fn test_neg_reads_operand_as_instruction_type() {
-    let module = ptx!(parse "eval/neg_reads_operand_as_instruction_type");
-    let output = analyze_kernel(&module, None, in_out_config(1, 5)).expect("analysis");
+    let output = analyze!(
+        "success/neg_reads_operand_as_instruction_type",
+        in_out_config(1, 5)
+    );
     assert_eq!(display_output(&output, "out", 0), "5");
     assert_eq!(
         display_output(&output, "out", 1),
@@ -835,12 +850,11 @@ fn test_neg_reads_operand_as_instruction_type() {
 /// the ISA types it - not rejected as a width mismatch against `.b64`.
 #[test]
 fn test_b64_shift_by_u32_register() {
-    let module = ptx!(parse "eval/b64_shift_by_u32_register");
     let mut config = in_out_config(1, 2);
     for array in &mut config.arrays {
         array.elem_width = 8;
     }
-    let output = analyze_kernel(&module, None, config).expect("analysis");
+    let output = analyze!("success/b64_shift_by_u32_register", config);
     assert_eq!(display_output(&output, "out", 0), (3u64 << 40).to_string());
     assert_eq!(display_output(&output, "out", 1), "3");
 }
@@ -850,27 +864,24 @@ fn test_b64_shift_by_u32_register() {
 /// `add.u32 x, -1` are the same op, and `-1` stays `-1` under `.u32`.
 #[test]
 fn test_ring_op_constant_signedness_is_irrelevant() {
-    let kernel = |src: String| {
-        let module = parse(&src);
-        analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis")
-    };
+    let kernel = |name: &str, src: String| analyze_case(name, &src, in_out_config(1, 1));
     for ((signed, signed_src), (unsigned, unsigned_src)) in [
         (
-            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),
-            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_u32_neg1"),
+            ptx_case!("success/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),
+            ptx_case!("success/ring_op_constant_signedness_is_irrelevant_add_u32_neg1"),
         ),
         (
-            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_sub_s32_neg7"),
-            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_sub_u32_neg7"),
+            ptx_case!("success/ring_op_constant_signedness_is_irrelevant_sub_s32_neg7"),
+            ptx_case!("success/ring_op_constant_signedness_is_irrelevant_sub_u32_neg7"),
         ),
         (
-            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_mul_lo_s32_neg3"),
-            ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_mul_lo_u32_neg3"),
+            ptx_case!("success/ring_op_constant_signedness_is_irrelevant_mul_lo_s32_neg3"),
+            ptx_case!("success/ring_op_constant_signedness_is_irrelevant_mul_lo_u32_neg3"),
         ),
     ] {
         assert!(
             matches!(
-                check_equiv(&kernel(signed_src), &kernel(unsigned_src)),
+                check_equiv(&kernel(signed, signed_src), &kernel(unsigned, unsigned_src)),
                 EquivOutcome::Equivalent
             ),
             "`{signed}` not proved equal to `{unsigned}`"
@@ -879,11 +890,11 @@ fn test_ring_op_constant_signedness_is_irrelevant() {
 
     // A negative constant reads as a subtraction, whatever the signedness.
     for (op, src) in [
-        ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_u32_neg1"),
-        ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),
-        ptx_case!("eval/ring_op_constant_signedness_is_irrelevant_sub_u32_1"),
+        ptx_case!("success/ring_op_constant_signedness_is_irrelevant_add_u32_neg1"),
+        ptx_case!("success/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),
+        ptx_case!("success/ring_op_constant_signedness_is_irrelevant_sub_u32_1"),
     ] {
-        let rendered = display_output(&kernel(src), "out", 0);
+        let rendered = display_output(&kernel(op, src), "out", 0);
         assert!(
             rendered.contains("- 1") && !rendered.contains("4294967295"),
             "`{op}` rendered as {rendered}"
@@ -893,8 +904,7 @@ fn test_ring_op_constant_signedness_is_irrelevant() {
 
 #[test]
 fn test_bfe_extract_and_sign_fill() {
-    let module = ptx!(parse "eval/bfe_extract_and_sign_fill");
-    let output = analyze_kernel(&module, None, out_only_config(4, 4)).expect("analysis");
+    let output = analyze!("success/bfe_extract_and_sign_fill", out_only_config(4, 4));
     assert_eq!(display_output(&output, "out", 0), "10");
     assert_eq!(display_output(&output, "out", 1), "4294967290");
     assert_eq!(display_output(&output, "out", 2), "4294967295");
@@ -903,8 +913,10 @@ fn test_bfe_extract_and_sign_fill() {
 
 #[test]
 fn test_bfi_clips_field_to_register_width() {
-    let module = ptx!(parse "eval/bfi_clips_field_to_register_width");
-    let output = analyze_kernel(&module, None, out_only_config(4, 4)).expect("analysis");
+    let output = analyze!(
+        "success/bfi_clips_field_to_register_width",
+        out_only_config(4, 4)
+    );
     assert_eq!(display_output(&output, "out", 0), "48");
     assert_eq!(display_output(&output, "out", 1), "5");
     assert_eq!(display_output(&output, "out", 2), "5");
@@ -913,8 +925,10 @@ fn test_bfi_clips_field_to_register_width() {
 
 #[test]
 fn test_mov_vector_destination_unpack_values() {
-    let module = ptx!(parse "eval/mov_vector_destination_unpack_values");
-    let output = analyze_kernel(&module, None, out_only_config(2, 2)).expect("analysis");
+    let output = analyze!(
+        "success/mov_vector_destination_unpack_values",
+        out_only_config(2, 2)
+    );
     assert_eq!(display_output(&output, "out", 0), "43981");
     assert_eq!(display_output(&output, "out", 1), "4660");
 }
@@ -924,8 +938,7 @@ fn test_cvt_pack_halves_values() {
     // cvt.rn.f16x2.f32 d, a, b: `a` goes to the *high* half and `b` to the
     // *low* (opposite mov.b32's brace order); also exercises storing a Pair and
     // reading its 2-byte granules back.
-    let module = ptx!(parse "eval/cvt_pack_halves_values");
-    let output = analyze_kernel(&module, None, out_only_config(2, 2)).expect("analysis");
+    let output = analyze!("success/cvt_pack_halves_values", out_only_config(2, 2));
     let low = display_output(&output, "out", 0);
     let high = display_output(&output, "out", 1);
     assert_eq!(low, "2.5"); // low half: b
@@ -937,7 +950,6 @@ fn test_mov_unpack_native_pair_source() {
     // `ld.global.b32` over a 2-byte array yields a `Value::Pair`; `mov.b32
     // {lo,hi}` must split its real halves directly, not bit-mask an opaque
     // integer (nvcc/Triton's f16 idiom).
-    let module = ptx!(parse "eval/mov_unpack_native_pair_source");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -959,7 +971,7 @@ fn test_mov_unpack_native_pair_source() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).expect("pair unpack analysis");
+    let output = analyze!("success/mov_unpack_native_pair_source", config);
     assert_eq!(display_output(&output, "out", 0), "in[0]");
     assert_eq!(display_output(&output, "out", 1), "in[1]");
 }
@@ -969,7 +981,6 @@ fn test_mov_pack_b32_always_builds_pair() {
     // The mirror image: `mov.b32 dst, {lo, hi}` always writes `Value::Pair(lo,
     // hi)`, not bit-packing, so packed f16 or integer halves round-trip exactly
     // through memory.
-    let module = ptx!(parse "eval/mov_pack_b32_always_builds_pair");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -991,7 +1002,7 @@ fn test_mov_pack_b32_always_builds_pair() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).expect("pair pack analysis");
+    let output = analyze!("success/mov_pack_b32_always_builds_pair", config);
     assert_eq!(display_output(&output, "out", 0), "in[0]");
     assert_eq!(display_output(&output, "out", 1), "in[1]");
 }
@@ -1001,8 +1012,10 @@ fn test_mov_pack_b32_always_builds_pair() {
 /// scalar (here, the u64 output).
 #[test]
 fn test_mov_pack_b64_integer_halves_recombine() {
-    let module = ptx!(parse "eval/mov_pack_b64_integer_halves_recombine");
-    let output = analyze_kernel(&module, None, out_only_config(8, 1)).expect("b64 pack analysis");
+    let output = analyze!(
+        "success/mov_pack_b64_integer_halves_recombine",
+        out_only_config(8, 1)
+    );
     // 5 | (3 << 32) = 12884901893
     assert_eq!(display_output(&output, "out", 0), "12884901893");
 }
@@ -1012,10 +1025,14 @@ fn test_mov_pack_b64_integer_halves_recombine() {
 /// constant.
 #[test]
 fn test_mov_neg1_equivalent_to_not_zero() {
-    let mov_kernel = ptx!("eval/mov_neg1_equivalent_to_not_zero");
-    let not_kernel = ptx!("eval/mov_neg1_equivalent_to_not_zero_2");
-    let a = analyze_kernel(&parse(&mov_kernel), None, out_only_config(4, 1)).unwrap();
-    let b = analyze_kernel(&parse(&not_kernel), None, out_only_config(4, 1)).unwrap();
+    let a = analyze!(
+        "success/mov_neg1_equivalent_to_not_zero",
+        out_only_config(4, 1)
+    );
+    let b = analyze!(
+        "success/mov_neg1_equivalent_to_not_zero_2",
+        out_only_config(4, 1)
+    );
     assert_eq!(display_output(&a, "out", 0), "4294967295");
     assert_eq!(display_output(&b, "out", 0), "4294967295");
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
@@ -1026,10 +1043,14 @@ fn test_mov_neg1_equivalent_to_not_zero() {
 /// identical comparison and select nodes.
 #[test]
 fn test_setp_selp_canonicalize_operands() {
-    let literal = ptx!("eval/setp_selp_canonicalize_operands");
-    let computed = ptx!("eval/setp_selp_canonicalize_operands_2");
-    let a = analyze_kernel(&parse(&literal), None, in_out_config(1, 1)).unwrap();
-    let b = analyze_kernel(&parse(&computed), None, in_out_config(1, 1)).unwrap();
+    let a = analyze!(
+        "success/setp_selp_canonicalize_operands",
+        in_out_config(1, 1)
+    );
+    let b = analyze!(
+        "success/setp_selp_canonicalize_operands_2",
+        in_out_config(1, 1)
+    );
     let da = display_output(&a, "out", 0);
     let db = display_output(&b, "out", 0);
     assert_eq!(da, db);
@@ -1046,8 +1067,10 @@ fn test_setp_selp_canonicalize_operands() {
 /// 300 to 44); `ld.u8` zero-extends it back.
 #[test]
 fn test_store_u8_truncates_to_low_bits() {
-    let module = ptx!(parse "eval/store_u8_truncates_to_low_bits");
-    let output = analyze_kernel(&module, None, u8_scratch_config()).unwrap();
+    let output = analyze!(
+        "success/store_u8_truncates_to_low_bits",
+        u8_scratch_config()
+    );
     assert_eq!(display_output(&output, "out", 0), "44");
 }
 
@@ -1056,10 +1079,8 @@ fn test_store_u8_truncates_to_low_bits() {
 /// directly.
 #[test]
 fn test_load_s8_sign_extends() {
-    let via_byte = ptx!("eval/load_s8_sign_extends");
-    let direct = ptx!("eval/load_s8_sign_extends_2");
-    let a = analyze_kernel(&parse(&via_byte), None, u8_scratch_config()).unwrap();
-    let b = analyze_kernel(&parse(&direct), None, u8_scratch_config()).unwrap();
+    let a = analyze!("success/load_s8_sign_extends", u8_scratch_config());
+    let b = analyze!("success/load_s8_sign_extends_2", u8_scratch_config());
     assert_eq!(display_output(&a, "out", 0), "4294967295");
     assert_eq!(display_output(&b, "out", 0), "4294967295");
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
@@ -1070,8 +1091,10 @@ fn test_load_s8_sign_extends() {
 /// `sub.s32`'s -8 widens 4294967288.
 #[test]
 fn test_cvt_reinterprets_at_source_format() {
-    let src = ptx!("eval/cvt_reinterprets_at_source_format");
-    let output = analyze_kernel(&parse(&src), None, out_only_config(8, 2)).unwrap();
+    let output = analyze!(
+        "success/cvt_reinterprets_at_source_format",
+        out_only_config(8, 2)
+    );
     // (-5 & -4) at 32 bits is 0xFFFFFFF8; sign-extended through s32: -8.
     assert_eq!(display_output(&output, "out", 0), "-8");
     // 3 - 11 = -8; zero-extended through u32: 4294967288.
@@ -1083,8 +1106,10 @@ fn test_cvt_reinterprets_at_source_format() {
 /// `.b8`/`.u8` loads too).
 #[test]
 fn test_unsigned_sub_register_load_passes_through() {
-    let src = ptx!("eval/unsigned_sub_register_load_passes_through");
-    let output = analyze_kernel(&parse(&src), None, u8_scratch_config()).unwrap();
+    let output = analyze!(
+        "success/unsigned_sub_register_load_passes_through",
+        u8_scratch_config()
+    );
     assert_eq!(display_output(&output, "out", 0), "scratch[0]");
 }
 
@@ -1093,7 +1118,6 @@ fn test_unsigned_sub_register_load_passes_through() {
 /// value and the discarded high lane stays `Undefined`.
 #[test]
 fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
-    let module = ptx!(parse "eval/e4m3x2_scalar_source_from_a_zero_extended_byte_load");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -1115,15 +1139,17 @@ fn test_e4m3x2_scalar_source_from_a_zero_extended_byte_load() {
         ParamValue::ArrayPtr("x".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/e4m3x2_scalar_source_from_a_zero_extended_byte_load",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "x[0]");
 }
 
 /// The `__symexpf` callseq idiom becomes symbolic exp.
 #[test]
 fn test_symexpf_callseq() {
-    let module = ptx!(parse "eval/symexpf_callseq");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    let output = analyze!("success/symexpf_callseq", in_out_config(1, 1));
     assert_eq!(display_output(&output, "out", 0), "exp(in[0])");
 }
 
@@ -1132,8 +1158,10 @@ fn test_symexpf_callseq() {
 /// and folds to zero at 0.
 #[test]
 fn test_tanh_approx_expands_to_exp_fragment() {
-    let module = ptx!(parse "eval/tanh_approx_expands_to_exp_fragment");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    let output = analyze!(
+        "success/tanh_approx_expands_to_exp_fragment",
+        in_out_config(1, 1)
+    );
     assert_eq!(
         display_output(&output, "out", 0),
         "((exp((in[0] * 2)) - 1) / (exp((in[0] * 2)) + 1))"
@@ -1145,10 +1173,14 @@ fn test_tanh_approx_expands_to_exp_fragment() {
 /// the collapse.
 #[test]
 fn test_tanh_approx_zero_equivalent_to_zero() {
-    let tanh_src = ptx!("eval/tanh_approx_zero_equivalent_to_zero");
-    let zero_src = ptx!("eval/tanh_approx_zero_equivalent_to_zero_2");
-    let a = analyze_kernel(&parse(&tanh_src), None, out_only_config(4, 1)).expect("tanh analysis");
-    let b = analyze_kernel(&parse(&zero_src), None, out_only_config(4, 1)).expect("zero analysis");
+    let a = analyze!(
+        "success/tanh_approx_zero_equivalent_to_zero",
+        out_only_config(4, 1)
+    );
+    let b = analyze!(
+        "success/tanh_approx_zero_equivalent_to_zero_2",
+        out_only_config(4, 1)
+    );
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
@@ -1156,8 +1188,7 @@ fn test_tanh_approx_zero_equivalent_to_zero() {
 /// out[tid] = in[tid ^ 1].
 #[test]
 fn test_shfl_sync_idx_exchange() {
-    let module = ptx!(parse "eval/shfl_sync_idx_exchange");
-    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    let output = analyze!("success/shfl_sync_idx_exchange", in_out_config(2, 2));
     assert_eq!(display_output(&output, "out", 0), "in[1]");
     assert_eq!(display_output(&output, "out", 1), "in[0]");
     // Warp syncs count once per fired group.
@@ -1169,8 +1200,10 @@ fn test_shfl_sync_idx_exchange() {
 /// to every lane - one `redux.sync` fires per group.
 #[test]
 fn test_redux_sync_max_min_full_warp() {
-    let module = ptx!(parse "eval/redux_sync_max_min_full_warp");
-    let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
+    let output = analyze!(
+        "success/redux_sync_max_min_full_warp",
+        warp_out_config(4, 64)
+    );
     // max(0..31) = 31, min(-16..15) = -16, broadcast to lanes 0 and 31;
     // `st.global.u32` stores raw unsigned bits, so -16 reads back as
     // 4294967280.
@@ -1185,8 +1218,10 @@ fn test_redux_sync_max_min_full_warp() {
 /// `.b32`/`.u32`, no signedness distinction).
 #[test]
 fn test_redux_sync_and_or_add_full_warp() {
-    let module = ptx!(parse "eval/redux_sync_and_or_add_full_warp");
-    let output = analyze_kernel(&module, None, warp_out_config(4, 96)).unwrap();
+    let output = analyze!(
+        "success/redux_sync_and_or_add_full_warp",
+        warp_out_config(4, 96)
+    );
     // AND(0..31) = 0, OR(0..31) = 31, SUM(0..31) = 496.
     assert_eq!(display_output(&output, "out", 0), "0");
     assert_eq!(display_output(&output, "out", 1), "31");
@@ -1199,8 +1234,10 @@ fn test_redux_sync_and_or_add_full_warp() {
 /// `min.s32` result.
 #[test]
 fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
-    let module = ptx!(parse "eval/redux_sync_partial_mask_skips_unguarded_lanes");
-    let output = analyze_kernel(&module, None, warp_out_config(4, 64)).unwrap();
+    let output = analyze!(
+        "success/redux_sync_partial_mask_skips_unguarded_lanes",
+        warp_out_config(4, 64)
+    );
     // Lane 0 (guarded, mask 0..15): min over 32 lanes is -16, max over 0..15 is
     // -1; stored as raw unsigned bits, they read back as 4294967280/4294967295.
     assert_eq!(display_output(&output, "out", 0), "4294967280");
@@ -1216,7 +1253,6 @@ fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
 /// the way to the clamped constant.
 #[test]
 fn test_add_sat_f32_concrete_clamps() {
-    let module = ptx!(parse "eval/add_sat_f32_concrete_clamps");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1226,7 +1262,7 @@ fn test_add_sat_f32_concrete_clamps() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/add_sat_f32_concrete_clamps", config);
     // 0.75 + 0.75 = 1.5 saturates to 1.0.
     assert_eq!(display_output(&output, "out", 0), "1");
     // -0.75 + 0.25 = -0.5 saturates to 0.0.
@@ -1237,8 +1273,10 @@ fn test_add_sat_f32_concrete_clamps() {
 /// transformation max(x, 0) on a symbolic input.
 #[test]
 fn test_cvt_relu_symbolic_is_max() {
-    let module = ptx!(parse "eval/cvt_relu_symbolic_is_max");
-    let output = analyze_kernel(&module, None, f32_in_f16_out_config(1, 1)).unwrap();
+    let output = analyze!(
+        "success/cvt_relu_symbolic_is_max",
+        f32_in_f16_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "max(in[0], 0)");
 }
 
@@ -1247,10 +1285,14 @@ fn test_cvt_relu_symbolic_is_max() {
 /// max are the same real function, and canon flattens max atoms.
 #[test]
 fn test_relu_epilogue_equivalent_to_explicit_max() {
-    let fused = ptx!("eval/relu_epilogue_equivalent_to_explicit_max_fused");
-    let explicit = ptx!("eval/relu_epilogue_equivalent_to_explicit_max_explicit");
-    let a = analyze_kernel(&parse(&fused), None, f32_in_f16_out_config(2, 2)).unwrap();
-    let b = analyze_kernel(&parse(&explicit), None, f32_in_f16_out_config(2, 2)).unwrap();
+    let a = analyze!(
+        "success/relu_epilogue_equivalent_to_explicit_max_fused",
+        f32_in_f16_out_config(2, 2)
+    );
+    let b = analyze!(
+        "success/relu_epilogue_equivalent_to_explicit_max_explicit",
+        f32_in_f16_out_config(2, 2)
+    );
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
@@ -1314,10 +1356,14 @@ fn test_red1_wrong_input_not_equivalent() {
 /// exact rational 1/3, so kernels using either spelling are equivalent.
 #[test]
 fn test_div_by_three_equivalent_to_rcp_of_three() {
-    let div_src = ptx!("eval/div_by_three_equivalent_to_rcp_of_three");
-    let rcp_src = ptx!("eval/div_by_three_equivalent_to_rcp_of_three_2");
-    let a = analyze_kernel(&parse(&div_src), None, one_elem_config()).unwrap();
-    let b = analyze_kernel(&parse(&rcp_src), None, one_elem_config()).unwrap();
+    let a = analyze!(
+        "success/div_by_three_equivalent_to_rcp_of_three",
+        one_elem_config()
+    );
+    let b = analyze!(
+        "success/div_by_three_equivalent_to_rcp_of_three_2",
+        one_elem_config()
+    );
     // Both fold to the exact rational 1/3.
     assert_eq!(display_output(&a, "out", 0), "(in[0] * 1/3)");
     assert_eq!(display_output(&b, "out", 0), "(in[0] * 1/3)");
@@ -1329,10 +1375,14 @@ fn test_div_by_three_equivalent_to_rcp_of_three() {
 /// and reported a false DIFF; the exact fold makes them equivalent.
 #[test]
 fn test_div_by_n_equivalent_to_mul_by_computed_reciprocal() {
-    let div_src = ptx!("eval/div_by_n_equivalent_to_mul_by_computed_reciprocal");
-    let recip_src = ptx!("eval/div_by_n_equivalent_to_mul_by_computed_reciprocal_2");
-    let a = analyze_kernel(&parse(&div_src), None, one_elem_config()).unwrap();
-    let b = analyze_kernel(&parse(&recip_src), None, one_elem_config()).unwrap();
+    let a = analyze!(
+        "success/div_by_n_equivalent_to_mul_by_computed_reciprocal",
+        one_elem_config()
+    );
+    let b = analyze!(
+        "success/div_by_n_equivalent_to_mul_by_computed_reciprocal_2",
+        one_elem_config()
+    );
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
@@ -1340,10 +1390,14 @@ fn test_div_by_n_equivalent_to_mul_by_computed_reciprocal() {
 /// rounding (the old f64 folds could disagree between the two spellings).
 #[test]
 fn test_concrete_fma_equivalent_to_mul_add() {
-    let fma_src = ptx!("eval/concrete_fma_equivalent_to_mul_add");
-    let mul_add_src = ptx!("eval/concrete_fma_equivalent_to_mul_add_2");
-    let a = analyze_kernel(&parse(&fma_src), None, f64_out_config()).unwrap();
-    let b = analyze_kernel(&parse(&mul_add_src), None, f64_out_config()).unwrap();
+    let a = analyze!(
+        "success/concrete_fma_equivalent_to_mul_add",
+        f64_out_config()
+    );
+    let b = analyze!(
+        "success/concrete_fma_equivalent_to_mul_add_2",
+        f64_out_config()
+    );
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
@@ -1352,10 +1406,14 @@ fn test_concrete_fma_equivalent_to_mul_add() {
 /// produce.
 #[test]
 fn test_runtime_sum_differs_from_prerounded_literal() {
-    let sum_src = ptx!("eval/runtime_sum_differs_from_prerounded_literal");
-    let literal_src = ptx!("eval/runtime_sum_differs_from_prerounded_literal_2");
-    let a = analyze_kernel(&parse(&sum_src), None, f64_out_config()).unwrap();
-    let b = analyze_kernel(&parse(&literal_src), None, f64_out_config()).unwrap();
+    let a = analyze!(
+        "success/runtime_sum_differs_from_prerounded_literal",
+        f64_out_config()
+    );
+    let b = analyze!(
+        "success/runtime_sum_differs_from_prerounded_literal_2",
+        f64_out_config()
+    );
     assert!(matches!(
         check_equiv(&a, &b),
         EquivOutcome::NotEquivalent { .. }
@@ -1367,13 +1425,17 @@ fn test_runtime_sum_differs_from_prerounded_literal() {
 /// Sync rule, and the ISA's), so it sums in[0..16].
 #[test]
 fn test_tail_exit_warp_shfl_reduction() {
-    let module = parse(&ptx!("eval/tail_exit_warp_shfl_reduction"));
-    let a = analyze_kernel(&module, None, in_out_config(32, 16)).unwrap();
+    let a = analyze!(
+        "success/tail_exit_warp_shfl_reduction",
+        in_out_config(32, 16)
+    );
     assert_eq!(a.stats.warp_syncs, 4);
 
     // Reference: one thread sums in[0..16] sequentially.
-    let reference = ptx!("eval/tail_exit_warp_shfl_reduction_reference");
-    let b = analyze_kernel(&parse(&reference), None, in_out_config(1, 16)).unwrap();
+    let b = analyze!(
+        "success/tail_exit_warp_shfl_reduction_reference",
+        in_out_config(1, 16)
+    );
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
 
@@ -1382,9 +1444,10 @@ fn test_tail_exit_warp_shfl_reduction() {
 /// of I, the returned lane included.
 #[test]
 fn test_bar_warp_sync_clears_chi_for_exited_reader() {
-    let module = ptx!(parse "eval/bar_warp_sync_clears_chi_for_exited_reader");
-    analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1)))
-        .expect("read-then-exit / sync / write must not race under the paper's syncMem");
+    analyze!(
+        "success/bar_warp_sync_clears_chi_for_exited_reader",
+        AnalysisConfig::new((2, 1, 1))
+    );
 }
 
 /// Mirrored variant: a lane writes shared memory and exits; the survivor
@@ -1392,9 +1455,10 @@ fn test_bar_warp_sync_clears_chi_for_exited_reader() {
 /// visible (syncMem clears ordering state, not memory).
 #[test]
 fn test_bar_warp_sync_clears_chi_for_exited_writer() {
-    let module = ptx!(parse "eval/bar_warp_sync_clears_chi_for_exited_writer");
-    let output = analyze_kernel(&module, None, in_out_config(2, 1))
-        .expect("write-then-exit / sync / read must not race under the paper's syncMem");
+    let output = analyze!(
+        "success/bar_warp_sync_clears_chi_for_exited_writer",
+        in_out_config(2, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "42");
 }
 
@@ -1403,8 +1467,10 @@ fn test_bar_warp_sync_clears_chi_for_exited_writer() {
 /// of a CTA barrier.
 #[test]
 fn test_bar_warp_sync_neighbor_exchange() {
-    let module = ptx!(parse "eval/bar_warp_sync_neighbor_exchange");
-    let output = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap();
+    let output = analyze!(
+        "success/bar_warp_sync_neighbor_exchange",
+        in_out_config(2, 2)
+    );
     assert_eq!(display_output(&output, "out", 0), "in[1]");
     assert_eq!(display_output(&output, "out", 1), "in[0]");
     assert_eq!(output.stats.block_syncs, 0);
@@ -1417,12 +1483,10 @@ fn test_bar_warp_sync_neighbor_exchange() {
 #[test]
 fn test_barrier_sync_is_bar_sync() {
     for (form, src) in [
-        ptx_case!("eval/barrier_sync_is_bar_sync"),
-        ptx_case!("eval/barrier_sync_is_bar_sync_cta_aligned"),
+        ptx_case!("success/barrier_sync_is_bar_sync"),
+        ptx_case!("success/barrier_sync_is_bar_sync_cta_aligned"),
     ] {
-        let module = parse(&src);
-        let output = analyze_kernel(&module, None, in_out_config(2, 2))
-            .unwrap_or_else(|e| panic!("{} failed: {}", form, e));
+        let output = analyze_case(form, &src, in_out_config(2, 2));
         assert_eq!(display_output(&output, "out", 0), "in[1]");
         assert_eq!(display_output(&output, "out", 1), "in[0]");
         assert_eq!(output.stats.block_syncs, 2);
@@ -1438,8 +1502,10 @@ fn test_barrier_sync_is_bar_sync() {
 /// alive (blocked or not-yet-run, never exited).
 #[test]
 fn test_activemask_all_alive_full_warp() {
-    let module = parse(&ptx!("eval/activemask_all_alive_full_warp"));
-    let output = analyze_kernel(&module, None, in_out_config(32, 32)).unwrap();
+    let output = analyze!(
+        "success/activemask_all_alive_full_warp",
+        in_out_config(32, 32)
+    );
     for i in 0..32 {
         assert_eq!(display_output(&output, "out", i), "4294967295");
     }
@@ -1450,8 +1516,7 @@ fn test_activemask_all_alive_full_warp() {
 /// all queries happen before any exit).
 #[test]
 fn test_activemask_16_thread_block() {
-    let module = parse(&ptx!("eval/activemask_16_thread_block"));
-    let output = analyze_kernel(&module, None, in_out_config(16, 16)).unwrap();
+    let output = analyze!("success/activemask_16_thread_block", in_out_config(16, 16));
     for i in 0..16 {
         assert_eq!(display_output(&output, "out", i), "65535");
     }
@@ -1462,8 +1527,7 @@ fn test_activemask_16_thread_block() {
 /// promises nothing about exit order.
 #[test]
 fn test_activemask_after_tail_exit() {
-    let module = parse(&ptx!("eval/activemask_after_tail_exit"));
-    let output = analyze_kernel(&module, None, in_out_config(32, 32)).unwrap();
+    let output = analyze!("success/activemask_after_tail_exit", in_out_config(32, 32));
     assert_eq!(display_output(&output, "out", 0), "65535");
 }
 
@@ -1472,9 +1536,10 @@ fn test_activemask_after_tail_exit() {
 /// at the region end.
 #[test]
 fn test_region_edge_exact_fit_accesses_pass() {
-    let module = ptx!(parse "eval/region_edge_exact_fit_accesses_pass");
-    let output = analyze_kernel(&module, None, in_out_config(1, 2))
-        .expect("exact-fit edge accesses must stay in bounds");
+    let output = analyze!(
+        "success/region_edge_exact_fit_accesses_pass",
+        in_out_config(1, 2)
+    );
     // The scalar store at A+44 overwrote the v4's last element; the v4
     // read back yields {1, 2, 3, 7}.
     assert_eq!(display_output(&output, "out", 0), "7");
@@ -1486,27 +1551,26 @@ fn test_region_edge_exact_fit_accesses_pass() {
 /// this is in bounds.
 #[test]
 fn test_upper_half_address_space_access_in_bounds() {
-    let module = ptx!(parse "eval/upper_half_address_space_access_in_bounds");
     let mut config = in_out_config(1, 8);
     config.arrays[0].base = 0x7FFF_FFFF_FFFF_FFF0;
-    let output = analyze_kernel(&module, None, config)
-        .expect("crossing 2^63 without wrapping u64 is in bounds");
+    let output = analyze!("success/upper_half_address_space_access_in_bounds", config);
     assert_eq!(display_output(&output, "out", 0), "in[4]");
 }
 
 /// The corpus's one cvta form is accepted as the identity.
 #[test]
 fn test_cvta_to_global_accepted() {
-    let module = parse(&ptx!("eval/cvta_to_global_accepted"));
-    analyze_kernel(&module, None, in_out_config(1, 1)).expect("cvta.to.global is the corpus form");
+    analyze!("success/cvta_to_global_accepted", in_out_config(1, 1));
 }
 
 /// The happy path: `cp.async` + `commit_group` + `wait_group 0` correctly
 /// deposits the source value into shared memory, readable once waited on.
 #[test]
 fn test_cp_async_wait_group_completes_copy() {
-    let module = ptx!(parse "eval/cp_async_wait_group_completes_copy");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    let output = analyze!(
+        "success/cp_async_wait_group_completes_copy",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
@@ -1515,8 +1579,10 @@ fn test_cp_async_wait_group_completes_copy() {
 /// race in the previous test is exactly about the missing synchronization.
 #[test]
 fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
-    let module = ptx!(parse "eval/cp_async_post_wait_cross_thread_read_with_sync_succeeds");
-    let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
+    let output = analyze!(
+        "success/cp_async_post_wait_cross_thread_read_with_sync_succeeds",
+        in_out_config(2, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
@@ -1525,8 +1591,10 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
 /// `fence.proxy.async` is needed.
 #[test]
 fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
-    let module = ptx!(parse "eval/cp_async_without_fence_proxy_async_is_clean_on_sm90");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    let output = analyze!(
+        "success/cp_async_without_fence_proxy_async_is_clean_on_sm90",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
@@ -1535,8 +1603,10 @@ fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
 /// must pass clean too.
 #[test]
 fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
-    let module = ptx!(parse "eval/cp_async_with_fence_proxy_async_succeeds_on_sm90");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap();
+    let output = analyze!(
+        "success/cp_async_with_fence_proxy_async_succeeds_on_sm90",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
@@ -1545,8 +1615,10 @@ fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
 /// below sm_90 it must never be flagged.
 #[test]
 fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
-    let module = ptx!(parse "eval/cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89");
-    let output = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap();
+    let output = analyze!(
+        "success/cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89",
+        in_out_config(2, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "in[0]");
 }
 
@@ -1555,7 +1627,6 @@ fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
 /// as the bulk-tensor test, under `sm_90a`.
 #[test]
 fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
-    let module = ptx!(parse "eval/cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -1577,7 +1648,10 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "in[54]");
     assert_eq!(display_output(&output, "out", 1), "0");
 }
@@ -1586,18 +1660,20 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
 /// order the copy before warp 1's read.
 #[test]
 fn test_cp_async_bulk_bar_sync_after_completion_orders_the_read() {
-    let module = parse(&ptx!(
-        "eval/cp_async_bulk_bar_sync_after_completion_orders_the_read"
-    ));
-    analyze_kernel(&module, None, bulk_copy_config()).unwrap();
+    analyze!(
+        "success/cp_async_bulk_bar_sync_after_completion_orders_the_read",
+        bulk_copy_config()
+    );
 }
 
 /// The control: every reader waiting on `full` itself is ordered after the
 /// copy, whatever `bar.sync` ran before it.
 #[test]
 fn test_cp_async_bulk_every_reader_waiting_is_accepted() {
-    let module = parse(&ptx!("eval/cp_async_bulk_every_reader_waiting_is_accepted"));
-    analyze_kernel(&module, None, bulk_copy_config()).unwrap();
+    analyze!(
+        "success/cp_async_bulk_every_reader_waiting_is_accepted",
+        bulk_copy_config()
+    );
 }
 
 /// `wgmma.fence` -> `mma_async.m64n8k16.f32.f16.f16` -> `commit_group` ->
@@ -1605,7 +1681,6 @@ fn test_cp_async_bulk_every_reader_waiting_is_accepted() {
 /// `sum(1..=16) = 136`.
 #[test]
 fn test_wgmma_mma_async_numeric_correctness() {
-    let module = ptx!(parse "eval/wgmma_mma_async_numeric_correctness");
     let mut config = AnalysisConfig::new((128, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1615,7 +1690,7 @@ fn test_wgmma_mma_async_numeric_correctness() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/wgmma_mma_async_numeric_correctness", config);
     assert_eq!(display_output(&output, "out", 0), "136");
 }
 
@@ -1624,7 +1699,6 @@ fn test_wgmma_mma_async_numeric_correctness() {
 /// fence exemption): `272`.
 #[test]
 fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
-    let module = ptx!(parse "eval/wgmma_chained_same_shape_accumulator_needs_no_extra_fence");
     let mut config = AnalysisConfig::new((128, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1634,7 +1708,10 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/wgmma_chained_same_shape_accumulator_needs_no_extra_fence",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "272");
 }
 
@@ -1643,7 +1720,6 @@ fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
 /// `src+20`.
 #[test]
 fn test_stmatrix_writes_the_expected_byte_per_lane() {
-    let module = ptx!(parse "eval/stmatrix_writes_the_expected_byte_per_lane");
     let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1653,7 +1729,7 @@ fn test_stmatrix_writes_the_expected_byte_per_lane() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!("success/stmatrix_writes_the_expected_byte_per_lane", config);
     assert_eq!(display_output(&output, "out", 0), "1005");
 }
 
@@ -1661,14 +1737,14 @@ fn test_stmatrix_writes_the_expected_byte_per_lane() {
 /// works per lane, `mov.b64 {%f_lo, %f_hi}, %rd` unpacks the result.
 #[test]
 fn test_f32x2_fma_via_register_pack() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_fma_via_register_pack"));
+    let outcome = f32x2_outcome(ptx_case!("success/f32x2_fma_via_register_pack"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
 /// `mul.f32x2` then `add.f32x2` compute the same reals as the fused form.
 #[test]
 fn test_f32x2_mul_add_via_register_pack() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_mul_add_via_register_pack"));
+    let outcome = f32x2_outcome(ptx_case!("success/f32x2_mul_add_via_register_pack"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -1676,7 +1752,7 @@ fn test_f32x2_mul_add_via_register_pack() {
 /// and a 64-bit store of the pair writes both output elements.
 #[test]
 fn test_f32x2_fma_via_64bit_memory_access() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_fma_via_64bit_memory_access"));
+    let outcome = f32x2_outcome(ptx_case!("success/f32x2_fma_via_64bit_memory_access"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -1684,14 +1760,14 @@ fn test_f32x2_fma_via_64bit_memory_access() {
 /// lanes (1.0f each); the point is that the constant lanes read correctly.
 #[test]
 fn test_f32x2_constant_bit_pattern_operand() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_constant_bit_pattern_operand"));
+    let outcome = f32x2_outcome(ptx_case!("success/f32x2_constant_bit_pattern_operand"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
 /// The lanes really are computed: dropping the addend changes the result.
 #[test]
 fn test_f32x2_wrong_lane_math_is_not_equivalent() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_wrong_lane_math_is_not_equivalent"));
+    let outcome = f32x2_outcome(ptx_case!("success/f32x2_wrong_lane_math_is_not_equivalent"));
     assert!(
         matches!(outcome, EquivOutcome::NotEquivalent { .. }),
         "{:?}",
@@ -1703,10 +1779,14 @@ fn test_f32x2_wrong_lane_math_is_not_equivalent() {
 /// the 64-bit integer (here a byte offset of 8) when read as a scalar.
 #[test]
 fn test_mov_b64_integer_pack_recombines_as_scalar() {
-    let packed = ptx!("eval/mov_b64_integer_pack_recombines_as_scalar_packed");
-    let direct = ptx!("eval/mov_b64_integer_pack_recombines_as_scalar_direct");
-    let a = analyze_kernel(&parse(&packed), None, in_out_config(1, 4)).unwrap();
-    let b = analyze_kernel(&parse(&direct), None, in_out_config(1, 4)).unwrap();
+    let a = analyze!(
+        "success/mov_b64_integer_pack_recombines_as_scalar_packed",
+        in_out_config(1, 4)
+    );
+    let b = analyze!(
+        "success/mov_b64_integer_pack_recombines_as_scalar_direct",
+        in_out_config(1, 4)
+    );
     assert_eq!(display_output(&a, "out", 2), display_output(&b, "out", 2));
     assert!(matches!(check_equiv(&a, &b), EquivOutcome::Equivalent));
 }
@@ -1716,7 +1796,9 @@ fn test_mov_b64_integer_pack_recombines_as_scalar() {
 /// place them in the two lanes (with an `and.b64` lane mask thrown in).
 #[test]
 fn test_f32x2_operand_assembled_with_shift_and_or() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_operand_assembled_with_shift_and_or"));
+    let outcome = f32x2_outcome(ptx_case!(
+        "success/f32x2_operand_assembled_with_shift_and_or"
+    ));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -1724,7 +1806,7 @@ fn test_f32x2_operand_assembled_with_shift_and_or() {
 /// through a 64-bit-to-32-bit unpack.
 #[test]
 fn test_f32x2_lane_extracted_with_shift() {
-    let outcome = f32x2_outcome(&ptx!("eval/f32x2_lane_extracted_with_shift"));
+    let outcome = f32x2_outcome(ptx_case!("success/f32x2_lane_extracted_with_shift"));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
 
@@ -1732,8 +1814,8 @@ fn test_f32x2_lane_extracted_with_shift() {
 /// into an `f32x2` lane, and `cvt.u32.u64` truncation reads a lane back.
 #[test]
 fn test_f32x2_operand_assembled_with_cvt_zero_extension() {
-    let outcome = f32x2_outcome(&ptx!(
-        "eval/f32x2_operand_assembled_with_cvt_zero_extension"
+    let outcome = f32x2_outcome(ptx_case!(
+        "success/f32x2_operand_assembled_with_cvt_zero_extension"
     ));
     assert!(matches!(outcome, EquivOutcome::Equivalent), "{:?}", outcome);
 }
@@ -1743,8 +1825,10 @@ fn test_f32x2_operand_assembled_with_cvt_zero_extension() {
 /// back one 16-bit half at a time: its halves are known bit patterns.
 #[test]
 fn test_concrete_scalar_granule_splits_for_half_width_access() {
-    let module = ptx!(parse "eval/concrete_scalar_granule_splits_for_half_width_access");
-    let out = analyze_kernel(&module, None, in_out_config(1, 1)).expect("split scalar");
+    let out = analyze!(
+        "success/concrete_scalar_granule_splits_for_half_width_access",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&out, "out", 0), "in[0]");
 }
 
@@ -1753,7 +1837,6 @@ fn test_concrete_scalar_granule_splits_for_half_width_access() {
 /// `copysign.f32 %v0, %x0, %v0` reuse idiom.
 #[test]
 fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
-    let module = ptx!(parse "eval/copysign_combines_the_sign_of_a_with_the_magnitude_of_b");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1763,7 +1846,10 @@ fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/copysign_combines_the_sign_of_a_with_the_magnitude_of_b",
+        config
+    );
     // `abs`/`select` don't fold over constants (canon treats `Abs` as opaque),
     // so check via the f64 oracle: (+3) + (-3) + (+3) + (-3) = 0.
     let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
@@ -1777,7 +1863,6 @@ fn test_copysign_combines_the_sign_of_a_with_the_magnitude_of_b() {
 /// reals: `x[0]`..`x[3]` stay distinct.
 #[test]
 fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
-    let module = ptx!(parse "eval/e4m3x2_vector_load_keeps_four_symbolic_bytes_independent");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -1799,7 +1884,10 @@ fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
         ParamValue::ArrayPtr("x".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/e4m3x2_vector_load_keeps_four_symbolic_bytes_independent",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "x[0]");
     assert_eq!(display_output(&output, "out", 1), "x[1]");
     assert_eq!(display_output(&output, "out", 2), "x[2]");
@@ -1811,7 +1899,6 @@ fn test_e4m3x2_vector_load_keeps_four_symbolic_bytes_independent() {
 /// the low `Pair` of byte lanes.
 #[test]
 fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
-    let module = ptx!(parse "eval/e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -1833,7 +1920,10 @@ fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
         ParamValue::ArrayPtr("x".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "x[0]");
     assert_eq!(display_output(&output, "out", 1), "x[2]");
 }
@@ -1843,8 +1933,6 @@ fn test_e4m3x2_low_half_extracted_via_cvt_u16_u32_truncation_of_a_quad() {
 /// narrower store truncates.
 #[test]
 fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
-    let module =
-        ptx!(parse "eval/byte_pair_round_trips_through_shared_memory_at_native_16_bit_width");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.dynamic_shared_bytes = 16;
     config.arrays = vec![
@@ -1867,7 +1955,10 @@ fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
         ParamValue::ArrayPtr("x".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/byte_pair_round_trips_through_shared_memory_at_native_16_bit_width",
+        config
+    );
     assert_eq!(display_output(&output, "out", 0), "x[0]");
     assert_eq!(display_output(&output, "out", 1), "x[1]");
 }
@@ -1877,7 +1968,6 @@ fn test_byte_pair_round_trips_through_shared_memory_at_native_16_bit_width() {
 /// -> low half of `d`).
 #[test]
 fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
-    let module = ptx!(parse "eval/e4m3x2_decodes_a_concrete_scalar_bit_pattern");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1887,7 +1977,10 @@ fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/e4m3x2_decodes_a_concrete_scalar_bit_pattern",
+        config
+    );
     let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
     let get = |i: u64| {
         let (_, e) = elems.iter().find(|(idx, _)| *idx == i).unwrap();
@@ -1902,7 +1995,6 @@ fn test_e4m3x2_decodes_a_concrete_scalar_bit_pattern() {
 /// byte (-1.0) clamps to 0.
 #[test]
 fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
-    let module = ptx!(parse "eval/e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
@@ -1912,7 +2004,10 @@ fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let output = analyze_kernel(&module, None, config).unwrap();
+    let output = analyze!(
+        "success/e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero",
+        config
+    );
     let (_, elems) = output.outputs.iter().find(|(n, _)| n == "out").unwrap();
     let get = |i: u64| {
         let (_, e) = elems.iter().find(|(idx, _)| *idx == i).unwrap();
@@ -1926,8 +2021,10 @@ fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
 /// post-reduction layout idiom) is not a race.
 #[test]
 fn test_same_value_warp_uniform_store_is_not_a_race() {
-    let same = ptx!(parse "eval/same_value_warp_uniform_store_is_not_a_race_same");
-    let out = analyze_kernel(&same, None, in_out_config(2, 1)).expect("same-value store");
+    let out = analyze!(
+        "success/same_value_warp_uniform_store_is_not_a_race_same",
+        in_out_config(2, 1)
+    );
     assert_eq!(display_output(&out, "out", 0), "(in[0] * 2)");
 }
 
@@ -1935,23 +2032,21 @@ fn test_same_value_warp_uniform_store_is_not_a_race() {
 /// starts at offset 0 and a sized buffer round-trips at `buf[0]`.
 #[test]
 fn test_extern_only_shared_roundtrip() {
-    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
-    let output = analyze_kernel(&module, None, config).expect("in-bounds extern access");
+    let output = analyze!("success/extern_only_shared_placement_and_bounds", config);
     assert_eq!(display_output(&output, "out", 0), "42");
 }
 
 /// `membar.cta`/`.gl`/`.sys` lower (PTX ISA 9.7.15.4).
 #[test]
 fn test_membar_valid_levels_lower() {
-    for (level, src) in [
-        (".cta", ptx!("eval/membar_levels_cta")),
-        (".gl", ptx!("eval/membar_levels_gl")),
-        (".sys", ptx!("eval/membar_levels_sys")),
+    for (name, src) in [
+        ptx_case!("success/membar_levels_cta"),
+        ptx_case!("success/membar_levels_gl"),
+        ptx_case!("success/membar_levels_sys"),
     ] {
-        analyze_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1)))
-            .unwrap_or_else(|e| panic!("membar{level}: {e}"));
+        analyze_case(name, &src, AnalysisConfig::new((1, 1, 1)));
     }
 }
 
@@ -1959,23 +2054,24 @@ fn test_membar_valid_levels_lower() {
 /// `.and/.or/.xor` on `.b32`, `.min/.max` on `.f32`.
 #[test]
 fn test_redux_sync_valid_forms() {
-    for (form, src) in [
-        ("add.u32", ptx!("eval/redux_sync/add_u32")),
-        ("max.s32", ptx!("eval/redux_sync/max_s32")),
-        ("xor.b32", ptx!("eval/redux_sync/xor_b32")),
-        ("min.f32", ptx!("eval/redux_sync/min_f32")),
-        ("max.f32", ptx!("eval/redux_sync/max_f32")),
+    for (name, src) in [
+        ptx_case!("success/redux_sync_add_u32"),
+        ptx_case!("success/redux_sync_max_s32"),
+        ptx_case!("success/redux_sync_xor_b32"),
+        ptx_case!("success/redux_sync_min_f32"),
+        ptx_case!("success/redux_sync_max_f32"),
     ] {
-        analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1)))
-            .unwrap_or_else(|e| panic!("{form}: {e}"));
+        analyze_case(name, &src, AnalysisConfig::new((32, 1, 1)));
     }
 }
 
 /// Concrete integer division (index math) evaluates exactly.
 #[test]
 fn test_concrete_integer_div_evaluates() {
-    let module = ptx!(parse "eval/symbolic_integer_div_is_unsupported_concrete");
-    let output = analyze_kernel(&module, None, in_out_config(1, 1)).expect("analysis");
+    let output = analyze!(
+        "success/symbolic_integer_div_is_unsupported_concrete",
+        in_out_config(1, 1)
+    );
     assert_eq!(display_output(&output, "out", 0), "3");
 }
 
@@ -1984,7 +2080,6 @@ fn test_concrete_integer_div_evaluates() {
 #[test]
 fn test_array_ending_at_module_global_window_is_disjoint() {
     const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;
-    let module = ptx!(parse "eval/array_overlapping_module_global_window_rejected");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays.push(ArrayDef {
         name: "in".to_string(),
@@ -1993,7 +2088,10 @@ fn test_array_ending_at_module_global_window_is_disjoint() {
         len: 4,
         kind: ArrayKind::Input,
     });
-    analyze_kernel(&module, None, config).expect("an array ending at the window base is disjoint");
+    analyze!(
+        "success/array_overlapping_module_global_window_rejected",
+        config
+    );
 }
 
 /// Boundary `tcgen05.mma` encodings that are valid and modeled: M = 32 under
@@ -2001,21 +2099,11 @@ fn test_array_ending_at_module_global_window_is_disjoint() {
 /// lane 0 with a column offset.
 #[test]
 fn test_tcgen05_mma_accepts_boundary_encodings() {
-    for (case, src) in [
-        (
-            ".ws M=32 N=64",
-            ptx!("eval/tcgen05_mma_encoding/shape_ws_m32_n64"),
-        ),
-        (
-            ".ws max shift",
-            ptx!("eval/tcgen05_mma_encoding/idesc_max_shift_ws"),
-        ),
-        (
-            "D at lane 0, column 8",
-            ptx!("eval/tcgen05_mma_encoding/d_lane0_col8"),
-        ),
+    for (name, src) in [
+        ptx_case!("success/tcgen05_mma_encoding_shape_ws_m32_n64"),
+        ptx_case!("success/tcgen05_mma_encoding_idesc_max_shift_ws"),
+        ptx_case!("success/tcgen05_mma_encoding_d_lane0_col8"),
     ] {
-        analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1)))
-            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        analyze_case(name, &src, AnalysisConfig::new((32, 1, 1)));
     }
 }

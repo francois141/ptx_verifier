@@ -1,0 +1,4 @@
+out[0] = fma((fma(in[0], 1, in[0]) - in[0]), (fma(in[0], 1, in[0]) - in[0]), (fma(in[0], 1, in[0]) - in[0]))
+out[1] = fma((fma(in[1], 1, in[1]) - in[1]), (fma(in[1], 1, in[1]) - in[1]), (fma(in[1], 1, in[1]) - in[1]))
+out[2] = fma((fma(in[2], 1, in[2]) - in[2]), (fma(in[2], 1, in[2]) - in[2]), (fma(in[2], 1, in[2]) - in[2]))
+out[3] = fma((fma(in[3], 1, in[3]) - in[3]), (fma(in[3], 1, in[3]) - in[3]), (fma(in[3], 1, in[3]) - in[3]))

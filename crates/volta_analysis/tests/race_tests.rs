@@ -15,7 +15,7 @@ use common::*;
 /// Two threads write the same shared address without synchronization.
 #[test]
 fn test_shared_write_write_race() {
-    let module = ptx!(parse "eval/shared_write_write_race");
+    let module = ptx!(parse "execution_error/shared_write_write_race");
     let config = AnalysisConfig::new((2, 1, 1));
     let err = analyze_kernel(&module, None, config).unwrap_err();
     assert!(
@@ -27,7 +27,7 @@ fn test_shared_write_write_race() {
 
 #[test]
 fn test_shared_exchange_without_barrier_races() {
-    let module = ptx!(parse "eval/shared_exchange_without_barrier_races");
+    let module = ptx!(parse "execution_error/shared_exchange_without_barrier_races");
     let err = analyze_kernel(&module, None, in_out_config(2, 2)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -41,7 +41,7 @@ fn test_shared_exchange_without_barrier_races() {
 /// shape.
 #[test]
 fn test_same_write_read_without_the_wait_still_races() {
-    let module = ptx!(parse "eval/same_write_read_without_the_wait_still_races");
+    let module = ptx!(parse "execution_error/same_write_read_without_the_wait_still_races");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -59,7 +59,9 @@ fn test_same_write_read_without_the_wait_still_races() {
 /// nothing about it for the other participants. The arrival is rejected.
 #[test]
 fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
-    let module = parse(&ptx!("eval/tcgen05_wait_ld_after_bar_sync_is_rejected"));
+    let module = parse(&ptx!(
+        "execution_error/tcgen05_wait_ld_after_bar_sync_is_rejected"
+    ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05UnwaitedAtSync { pending, .. }) => {
@@ -73,7 +75,7 @@ fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
 #[test]
 fn test_tcgen05_wait_st_after_mbarrier_arrive_is_rejected() {
     let module = parse(&ptx!(
-        "eval/tcgen05_wait_st_after_mbarrier_arrive_is_rejected"
+        "execution_error/tcgen05_wait_st_after_mbarrier_arrive_is_rejected"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
@@ -92,11 +94,11 @@ fn test_tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected() {
     for (is_write, (op, src)) in [
         (
             false,
-            ptx_case!("eval/tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected_ld"),
+            ptx_case!("execution_error/tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected_ld"),
         ),
         (
             true,
-            ptx_case!("eval/tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected_st"),
+            ptx_case!("execution_error/tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected_st"),
         ),
     ] {
         let module = parse(&src);
@@ -121,7 +123,7 @@ fn test_tcgen05_dealloc_with_an_unwaited_ld_or_st_is_rejected() {
 #[test]
 fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
     let module = parse(&ptx!(
-        "eval/tcgen05_mma_bar_sync_before_completion_orders_nothing"
+        "execution_error/tcgen05_mma_bar_sync_before_completion_orders_nothing"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
@@ -146,7 +148,7 @@ fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
 #[test]
 fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {
     let module = parse(&ptx!(
-        "eval/tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard"
+        "execution_error/tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
@@ -171,7 +173,7 @@ fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {
 #[test]
 fn test_tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard() {
     let module = parse(&ptx!(
-        "eval/tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard"
+        "execution_error/tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
@@ -197,7 +199,7 @@ fn test_tcgen05_mma_operand_write_after_bar_sync_is_an_inflight_hazard() {
 #[test]
 fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
     let module = parse(&ptx!(
-        "eval/tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing"
+        "execution_error/tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
@@ -223,7 +225,7 @@ fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
 #[test]
 fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
     let module = parse(&ptx!(
-        "eval/tcgen05_dealloc_with_an_mma_in_flight_is_rejected"
+        "execution_error/tcgen05_dealloc_with_an_mma_in_flight_is_rejected"
     ));
     let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     match &err {
@@ -241,7 +243,7 @@ fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
 /// χ-tracking.
 #[test]
 fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
-    let module = ptx!(parse "eval/cp_async_same_thread_peek_before_wait_is_hazard");
+    let module = ptx!(parse "execution_error/cp_async_same_thread_peek_before_wait_is_hazard");
     let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
@@ -255,7 +257,8 @@ fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
 /// would finish first).
 #[test]
 fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
-    let module = ptx!(parse "eval/cp_async_cross_thread_read_of_locked_destination_is_hazard");
+    let module =
+        ptx!(parse "execution_error/cp_async_cross_thread_read_of_locked_destination_is_hazard");
     let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
@@ -269,7 +272,8 @@ fn test_cp_async_cross_thread_read_of_locked_destination_is_hazard() {
 /// destination half).
 #[test]
 fn test_cp_async_cross_thread_write_of_locked_source_is_hazard() {
-    let module = ptx!(parse "eval/cp_async_cross_thread_write_of_locked_source_is_hazard");
+    let module =
+        ptx!(parse "execution_error/cp_async_cross_thread_write_of_locked_source_is_hazard");
     let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::AsyncCopyHazard { .. })),
@@ -283,7 +287,7 @@ fn test_cp_async_cross_thread_write_of_locked_source_is_hazard() {
 /// race (via χ, not the lock).
 #[test]
 fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
-    let module = ptx!(parse "eval/cp_async_post_wait_cross_thread_read_without_sync_is_data_race");
+    let module = ptx!(parse "execution_error/cp_async_post_wait_cross_thread_read_without_sync_is_data_race");
     let err = analyze_kernel(&module, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),
@@ -297,7 +301,7 @@ fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
 /// destination lock.
 #[test]
 fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
-    let module = ptx!(parse "eval/cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard");
+    let module = ptx!(parse "execution_error/cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -333,7 +337,7 @@ fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
 #[test]
 fn test_cp_async_bulk_bar_sync_before_completion_orders_nothing() {
     let module = parse(&ptx!(
-        "eval/cp_async_bulk_bar_sync_before_completion_orders_nothing"
+        "execution_error/cp_async_bulk_bar_sync_before_completion_orders_nothing"
     ));
     let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
     match &err {
@@ -359,7 +363,7 @@ fn test_cp_async_bulk_bar_sync_before_completion_orders_nothing() {
 #[test]
 fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
     let module = parse(&ptx!(
-        "eval/cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard"
+        "execution_error/cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard"
     ));
     let err = analyze_kernel(&module, None, bulk_copy_config()).unwrap_err();
     match &err {
@@ -377,7 +381,7 @@ fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
 /// has no `wgmma.fence`.
 #[test]
 fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
-    let module = ptx!(parse "eval/wgmma_fence_hazard_ordinary_write_breaks_chain");
+    let module = ptx!(parse "execution_error/wgmma_fence_hazard_ordinary_write_breaks_chain");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::WgmmaFenceHazard { .. })),
@@ -390,7 +394,8 @@ fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
 /// register still pending a `wgmma.wait_group` release.
 #[test]
 fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
-    let module = ptx!(parse "eval/wgmma_wait_group_hazard_plain_read_of_pending_accumulator");
+    let module =
+        ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_read_of_pending_accumulator");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -407,7 +412,8 @@ fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
 /// `read_reg`'s).
 #[test]
 fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
-    let module = ptx!(parse "eval/wgmma_wait_group_hazard_plain_write_of_pending_accumulator");
+    let module =
+        ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_write_of_pending_accumulator");
     let err = analyze_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
     assert!(
         matches!(
@@ -423,7 +429,7 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
 /// the same-value store in `accepted_tests.rs`).
 #[test]
 fn test_different_value_store_to_one_address_races() {
-    let differ = ptx!(parse "eval/same_value_warp_uniform_store_is_not_a_race_differ");
+    let differ = ptx!(parse "execution_error/same_value_warp_uniform_store_is_not_a_race_differ");
     let err = analyze_kernel(&differ, None, in_out_config(2, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::DataRace { .. })),

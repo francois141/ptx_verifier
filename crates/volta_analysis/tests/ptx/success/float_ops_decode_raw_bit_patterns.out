@@ -1,0 +1,6 @@
+out[0] = 2
+out[1] = 0.25
+out[2] = sqrt(4)
+out[3] = 1
+out[4] = -4
+out[5] = (-abs(in[0]))
