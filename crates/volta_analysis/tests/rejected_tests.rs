@@ -1,0 +1,1214 @@
+//! Evaluator tests on ill-formed or unsupported kernels other than races:
+//! invalid instructions and encodings, deadlocks, out-of-bounds or
+//! misaligned accesses, undefined outputs, and unmodeled forms.
+
+#[macro_use]
+mod common;
+
+use volta_analysis::driver::{analyze_kernel, check_output_equivalence};
+use volta_analysis::eval::{
+    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, EvalError, ParamValue,
+};
+use volta_analysis::{AnalysisError, LowerError};
+use volta_frontend::ast::Module;
+
+use common::*;
+
+/// Run a one-`tcgen05.mma` kernel from `tests/ptx/eval/tcgen05_mma_encoding/`
+/// (thread 0 issues it, D in a fresh 512-column allocation). The variants
+/// differ only in the `idesc`, the descriptors, `.ws`, and D's offset.
+fn run_tcgen05_mma(src: &str) -> Result<AnalysisOutput, AnalysisError> {
+    analyze_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)))
+}
+
+/// Assert `result` is an `InvalidEncoding` whose message contains `needle`.
+fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle: &str) {
+    match result {
+        Err(AnalysisError::Eval(EvalError::InvalidEncoding { what, .. })) => {
+            assert!(what.contains(needle), "expected {needle:?} in: {what}");
+        }
+        Err(other) => panic!("expected InvalidEncoding ({needle}), got: {other}"),
+        Ok(_) => panic!("expected InvalidEncoding ({needle}), got Ok"),
+    }
+}
+
+fn expect_invalid_instruction(module: &Module, needle: &str) {
+    match analyze_kernel(module, None, AnalysisConfig::new((32, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::InvalidInstruction { reason, .. })) => {
+            assert!(reason.contains(needle), "expected {needle:?} in: {reason}");
+        }
+        Err(other) => panic!("expected InvalidInstruction ({needle}), got: {other}"),
+        Ok(_) => panic!("expected InvalidInstruction ({needle}), got Ok"),
+    }
+}
+
+/// A store through the `.extern .shared` window must not be visible through a
+/// static `.shared` variable (the dynamic segment follows all static ones),
+/// so the `lut` read surfaces as `UndefinedOutput`.
+#[test]
+fn test_extern_shared_store_invisible_through_static_shared() {
+    let module = ptx!(parse "eval/extern_shared_store_invisible_through_static_shared");
+    let mut config = in_out_config(1, 1);
+    config.dynamic_shared_bytes = 16;
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected undefined output (buf and lut must not alias), got: {}",
+        err
+    );
+}
+
+/// An extern-only kernel needs `dynamic_shared_bytes`, which also bounds its
+/// window: a missing size errors and a store past the end is out of bounds.
+#[test]
+fn test_extern_only_shared_placement_and_bounds() {
+    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds");
+    // Without dynamic_shared_bytes the launch is rejected.
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Config { message })
+                if message.contains("dynamic_shared_bytes")
+        ),
+        "expected missing dynamic_shared_bytes error, got: {}",
+        err
+    );
+
+    // A store ending one byte past the window end is out of bounds.
+    let module = ptx!(parse "eval/extern_only_shared_placement_and_bounds_past_end");
+    let mut config = in_out_config(1, 1);
+    config.dynamic_shared_bytes = 16;
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
+        "expected out-of-bounds, got: {}",
+        err
+    );
+}
+
+/// Threads waiting on different barrier ids never fire: deadlock.
+#[test]
+fn test_mismatched_barriers_deadlock() {
+    let module = ptx!(parse "eval/mismatched_barriers_deadlock");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
+        "expected deadlock, got: {}",
+        err
+    );
+}
+
+/// Same shape, but only thread 0 arrives: `count = 2` is never satisfied, so
+/// its `try_wait.parity` blocks forever - a genuine deadlock of the whole
+/// CTA.
+#[test]
+fn test_mbarrier_wait_never_satisfied_deadlocks() {
+    let module = ptx!(parse "eval/mbarrier_wait_never_satisfied_deadlocks");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((2, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
+        "expected deadlock, got: {}",
+        err
+    );
+}
+
+/// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at lowering:
+/// it has no ordering semantics (9.7.14.16.16/.19), so accepting it would
+/// make the happens-before edge unsound.
+#[test]
+fn test_mbarrier_relaxed_semantics_rejected() {
+    for (expect, (form, src)) in [
+        (
+            "mbarrier.arrive",
+            ptx_case!("eval/mbarrier_relaxed_semantics_rejected_arrive"),
+        ),
+        (
+            "mbarrier.try_wait",
+            ptx_case!("eval/mbarrier_relaxed_semantics_rejected_try_wait"),
+        ),
+    ] {
+        let module = parse(&src);
+        let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+        match &err {
+            AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
+                assert_eq!(instruction, expect, "wrong instruction name for {}", form);
+            }
+            other => panic!(
+                "expected UnsupportedInstruction for {}, got: {}",
+                form, other
+            ),
+        }
+    }
+}
+
+/// The warp-collective `tcgen05.*` instructions require `.sync.aligned`
+/// (PTX ISA: "The mandatory .sync qualifier" / "The mandatory .aligned
+/// qualifier"); dropping either is invalid PTX.
+#[test]
+fn test_tcgen05_rejects_missing_sync_aligned() {
+    for (src, missing) in [
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_alloc_sync"),
+            ".sync",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_alloc_aligned"),
+            ".aligned",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_ld"),
+            ".sync",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_st"),
+            ".aligned",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_wait_ld"),
+            ".sync",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_dealloc"),
+            ".aligned",
+        ),
+        (
+            ptx!("eval/tcgen05_rejects_missing_sync_aligned_relinquish"),
+            ".aligned",
+        ),
+    ] {
+        let module = parse(&src);
+        expect_invalid_instruction(&module, &format!("mandatory {missing} qualifier"));
+    }
+}
+
+/// `nCols` below the 32-column allocation unit is invalid even when it is
+/// a power of 2, and the column count must not increase between two
+/// allocations (PTX ISA 9.7.18.7.1).
+#[test]
+fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
+    let err = analyze_kernel(
+        &parse(&ptx!(
+            "eval/tcgen05_alloc_rejects_invalid_sizes_and_order_16"
+        )),
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05InvalidColumnCount { num_cols: 16, .. })
+        ),
+        "{err}"
+    );
+    let err = analyze_kernel(
+        &parse(&ptx!(
+            "eval/tcgen05_alloc_rejects_invalid_sizes_and_order_32_then_64"
+        )),
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05IncreasingColumnCount {
+                previous: 32,
+                requested: 64,
+                ..
+            })
+        ),
+        "{err}"
+    );
+}
+
+/// `.exclusive` allocation and deallocation (PTX ISA 9.4+) are rejected as
+/// unsupported naming `.exclusive`, not judged by the non-exclusive rules (96
+/// columns is not a power of 2).
+#[test]
+fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
+    for src in [
+        ptx!("eval/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_alloc"),
+        ptx!("eval/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_dealloc"),
+    ] {
+        let err = analyze_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+        match &err {
+            AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. }) => {
+                let reason = reason.as_deref().unwrap_or("");
+                assert!(
+                    reason.contains(".exclusive") && reason.contains("not implemented"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected UnsupportedInstruction, got: {other}"),
+        }
+    }
+}
+
+/// A `tcgen05.st` whose column range starts in one allocation and runs
+/// past its end is rejected, even though the next columns belong to an
+/// adjacent live allocation (so every cell it touches is allocated).
+#[test]
+fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
+    let module = parse(&ptx!(
+        "eval/tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected"
+    ));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05AccessOutsideAllocation {
+                start_col: 31,
+                num_cols: 2,
+                ..
+            })
+        ),
+        "{err}"
+    );
+}
+
+/// A `taddr` naming a lane quadrant other than the issuing warp's (PTX ISA
+/// 9.7.17.8.1) must error, not be silently "corrected" by deriving the lane
+/// from `ThreadId`.
+#[test]
+fn test_tcgen05_st_rejects_wrong_quadrant_address() {
+    let module = ptx!(parse "eval/tcgen05_st_rejects_wrong_quadrant_address");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Tcgen05LaneRestrictionViolation {
+            lane_base,
+            expected_quadrant_base,
+            ..
+        }) => {
+            assert_eq!(*lane_base, 32);
+            assert_eq!(*expected_quadrant_base, 0);
+        }
+        other => panic!("expected Tcgen05LaneRestrictionViolation, got: {}", other),
+    }
+}
+
+/// `cp.async.bulk.tensor` on a tensor-map missing a field (`.fill_mode`) must
+/// error naming it: an incomplete map is a kernel bug, not a gap to fill with
+/// a default.
+#[test]
+fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
+    let module = ptx!(parse "eval/cp_async_bulk_tensor_rejects_an_incomplete_tensor_map");
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "in".to_string(),
+        base: 0x10000,
+        elem_width: 2,
+        len: 64,
+        kind: ArrayKind::Input,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("in".to_string())];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::TensorMapFieldMissing { field, .. }) => {
+            assert_eq!(field, "fill_mode");
+        }
+        other => panic!("expected TensorMapFieldMissing, got: {}", other),
+    }
+}
+
+/// Like `test_tcgen05_mma_numeric_correctness`, but `disable-output-lane`
+/// masks lane 0 (PTX ISA 9.7.17.10.9.1): `D[0][0]` is never written, so it
+/// reads back as `UndefinedOutput`, not `136`.
+#[test]
+fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
+    let module = ptx!(parse "eval/tcgen05_mma_disable_output_lane_skips_the_write");
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected UndefinedOutput (lane 0 must never be written), got: {}",
+        err
+    );
+}
+
+/// Only `.kind::f16` and `.kind::f8f6f4` are modeled; other kinds are
+/// rejected at lowering naming the rejected and modeled kinds, not the
+/// generic "not yet implemented".
+#[test]
+fn test_tcgen05_mma_rejects_unmodeled_kind() {
+    let module = ptx!(parse "eval/tcgen05_mma_rejects_unmodeled_kind");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Lower(LowerError::UnsupportedInstruction {
+            instruction,
+            reason,
+        }) => {
+            assert_eq!(instruction, "tcgen05.mma");
+            let reason = reason.as_deref().unwrap_or("");
+            for expected in ["kind::tf32", ".kind::f16", ".kind::f8f6f4"] {
+                assert!(
+                    reason.contains(expected),
+                    "expected the reason to mention {expected}, got: {reason:?}"
+                );
+            }
+        }
+        other => panic!("expected UnsupportedInstruction, got: {}", other),
+    }
+}
+
+/// A bf16 `idesc` operand type is rejected at eval with a message specific to
+/// that gap, proving validation reports the actual problem, not the
+/// descriptor-addressing error.
+#[test]
+fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
+    let module = ptx!(parse "eval/tcgen05_mma_rejects_unmodeled_idesc_fields");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(
+                what.contains("bf16"),
+                "expected the bf16-operand error, got: {}",
+                what
+            );
+        }
+        other => panic!("expected EvalError::Unsupported, got: {}", other),
+    }
+}
+
+/// An `idesc` with the K Dimension bit (29) set is rejected rather than
+/// run at the kind's base `K`: the corpus f16 descriptor (dense, D=f32,
+/// A/B=f16, M=128, N=256 - otherwise fully modeled) plus `1 << 29`.
+#[test]
+fn test_tcgen05_mma_rejects_k_dimension_bit() {
+    let module = ptx!(parse "eval/tcgen05_mma_rejects_k_dimension_bit");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(
+                what.contains("K Dimension bit (29)") && what.contains("K = 16"),
+                "expected the K-dimension error, got: {}",
+                what
+            );
+        }
+        other => panic!("expected EvalError::Unsupported, got: {}", other),
+    }
+}
+
+/// Shapes outside PTX ISA Table 48's `.cta_group::1` dense set are invalid:
+/// `M = 32` is `.ws`-only, N <= 256, `.ws` takes N = 64/128/256, and Table
+/// 63's 8-bit transposed B needs N % 16 == 0.
+#[test]
+fn test_tcgen05_mma_rejects_invalid_shapes() {
+    for (shape, src) in [
+        ("M=32 N=64", ptx!("eval/tcgen05_mma_encoding/shape_m32_n64")),
+        (
+            "M=128 N=264",
+            ptx!("eval/tcgen05_mma_encoding/shape_m128_n264"),
+        ),
+        (
+            ".ws M=128 N=16",
+            ptx!("eval/tcgen05_mma_encoding/shape_ws_m128_n16"),
+        ),
+        (
+            ".ws M=128 N=0",
+            ptx!("eval/tcgen05_mma_encoding/shape_ws_m128_n0"),
+        ),
+    ] {
+        match run_tcgen05_mma(&src) {
+            Err(AnalysisError::Eval(EvalError::InvalidEncoding { what, .. })) => {
+                let needle = "is not a valid .cta_group::1 dense shape";
+                assert!(
+                    what.contains(needle),
+                    "{shape}: expected {needle:?} in: {what}"
+                );
+            }
+            other => panic!("{shape}: expected InvalidEncoding, got: {other:?}"),
+        }
+    }
+    // The fp8 corpus idesc (M = 128) with B transposed and N = 8.
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/shape_fp8_n8")),
+        "steps of 16",
+    );
+}
+
+/// Reserved/limited `idesc` fields: bits 6 and 23 must be 0, saturate (bit 3)
+/// is integer-only, B-reuse shift (bits 30-31) is `.ws`-only, and D type
+/// (bits 4-5) must be at most f32 = 1.
+#[test]
+fn test_tcgen05_mma_rejects_invalid_idesc_fields() {
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_reserved_bit6")),
+        "reserved bit 6",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_reserved_bit23")),
+        "reserved bit 23",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_saturate")),
+        "saturate",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_max_shift")),
+        "maximum shift",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_dtype2")),
+        "D type field",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/idesc_dtype3")),
+        "D type field",
+    );
+}
+
+/// Malformed shared-memory descriptors (PTX ISA Table 49) are rejected: a
+/// reserved bit, or the fixed `0b001` at bits 46-48 missing.
+#[test]
+fn test_tcgen05_mma_rejects_malformed_descriptors() {
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/a_desc_bit15")),
+        "a-desc",
+    );
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/b_desc_no_bit46")),
+        "fixed-constant field at bit 46",
+    );
+}
+
+/// `D` must start at Tensor Memory lane 0: a `[d-tmem]` address with a
+/// nonzero lane field (bits 31-16) is rejected as unmodeled, naming the
+/// lane, rather than read as a column far outside the allocation.
+#[test]
+fn test_tcgen05_mma_rejects_a_d_address_off_lane_0() {
+    for (lane, src) in [
+        (32, ptx!("eval/tcgen05_mma_encoding/d_lane32")),
+        (128, ptx!("eval/tcgen05_mma_encoding/d_lane128")),
+    ] {
+        match run_tcgen05_mma(&src) {
+            Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
+                let needle = format!("[d-tmem] at lane {lane}");
+                assert!(what.contains(&needle), "expected {needle:?} in: {what}");
+            }
+            Err(other) => panic!("lane {lane}: expected Unsupported, got: {other}"),
+            Ok(_) => panic!("lane {lane}: expected Unsupported, got Ok"),
+        }
+    }
+}
+
+/// PTX ISA Table 65: for 8- and 16-bit operands a transposed matrix may
+/// use every swizzling mode except 128B with 32B atomicity.
+#[test]
+fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
+    // The f16 idesc transposes B; B's descriptor is 128B-with-32B-atomicity.
+    expect_invalid_encoding(
+        run_tcgen05_mma(&ptx!("eval/tcgen05_mma_encoding/b_swizzle128b_atom32")),
+        "transposed B with 128B swizzling with 32B atomicity",
+    );
+}
+
+/// `membar.level` is mandatory `.cta`/`.gl`/`.sys` (PTX ISA 9.7.15.4):
+/// `.cluster`/`.gpu` or no level fail to parse; `membar.proxy` parses but is
+/// unimplemented.
+#[test]
+fn test_membar_levels() {
+    let analyze = |src: String| analyze_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1)));
+    for (level, src) in [
+        (".cluster", ptx!("eval/membar_levels_cluster")),
+        (".gpu", ptx!("eval/membar_levels_gpu")),
+        ("", ptx!("eval/membar_levels_none")),
+    ] {
+        match analyze(src) {
+            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+                let reason = reason.unwrap_or_default();
+                assert!(reason.contains("parsing failed"), "membar{level}: {reason}");
+            }
+            other => panic!("membar{level}: expected a parse failure, got {other:?}"),
+        }
+    }
+    for (proxy, src) in [
+        ("alias", ptx!("eval/membar_levels_proxy_alias")),
+        ("async", ptx!("eval/membar_levels_proxy_async")),
+    ] {
+        match analyze(src) {
+            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+                let reason = reason.unwrap_or_default();
+                assert!(reason.contains("not implemented yet"), "{proxy}: {reason}");
+            }
+            other => panic!("membar.proxy.{proxy}: expected unsupported, got {other:?}"),
+        }
+    }
+}
+
+/// `mbarrier.init`/`inval`/`test_wait`/`try_wait` take only `.shared{::cta}`
+/// (PTX ISA 9.7.15.16), so `.shared::cluster` is invalid; on `arrive` it is
+/// valid but unmodeled.
+#[test]
+fn test_mbarrier_shared_cluster_validity() {
+    for src in [
+        ptx!("eval/mbarrier_shared_cluster_validity_init"),
+        ptx!("eval/mbarrier_shared_cluster_validity_inval"),
+        ptx!("eval/mbarrier_shared_cluster_validity_test_wait"),
+        ptx!("eval/mbarrier_shared_cluster_validity_try_wait"),
+    ] {
+        expect_invalid_instruction(&parse(&src), "has no .shared::cluster form");
+    }
+    let arrive = parse(&ptx!("eval/mbarrier_shared_cluster_validity_arrive"));
+    match analyze_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(reason.contains("single-CTA analysis only"), "{reason}");
+        }
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+}
+
+/// `redux.sync` forms outside PTX ISA 9.7.15.13's set are invalid, as are
+/// `.abs`/`.NaN` outside `.f32`; on `.f32` they are unmodeled.
+#[test]
+fn test_redux_sync_forms() {
+    let analyze = |src: &str| analyze_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)));
+    for src in [
+        ptx!("eval/redux_sync/add_f32"),
+        ptx!("eval/redux_sync/and_u32"),
+        ptx!("eval/redux_sync/min_b32"),
+        ptx!("eval/redux_sync/xor_s32"),
+    ] {
+        expect_invalid_instruction(&parse(&src), "not a redux.sync form");
+    }
+    for src in [
+        ptx!("eval/redux_sync/add_nan_u32"),
+        ptx!("eval/redux_sync/or_abs_b32"),
+    ] {
+        expect_invalid_instruction(&parse(&src), "only apply to redux.sync.f32");
+    }
+    for (form, src) in [
+        ("min.abs.f32", ptx!("eval/redux_sync/min_abs_f32")),
+        ("max.NaN.f32", ptx!("eval/redux_sync/max_nan_f32")),
+    ] {
+        match analyze(&src) {
+            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { .. })) => {}
+            other => panic!("{form}: expected unsupported, got {other:?}"),
+        }
+    }
+}
+
+/// nvcc's warp-max sign trick fuses into one `ReduxSyncBroadcastMax`, but
+/// never over a `.NaN` reduction: that is invalid on `.s32`, so the normal
+/// lowering must see (and reject) it.
+#[test]
+fn test_redux_sync_sign_trick_never_fuses_nan() {
+    let result = analyze_kernel(
+        &parse(&ptx!("eval/redux_sync_sign_trick_never_fuses_nan")),
+        None,
+        AnalysisConfig::new((32, 1, 1)),
+    );
+    assert!(
+        !matches!(
+            result,
+            Err(AnalysisError::Lower(LowerError::InvalidInstruction { .. }))
+        ),
+        "{:?}",
+        result.err()
+    );
+    expect_invalid_instruction(
+        &parse(&ptx!("eval/redux_sync_sign_trick_never_fuses_nan_max_nan")),
+        "only apply to redux.sync.f32",
+    );
+}
+
+/// An uninitialized shared read is tolerated during execution (the paper's
+/// race example depends on it), but an output computed from one is an error.
+#[test]
+fn test_uninitialized_shared_read_flows_to_output() {
+    let module = ptx!(parse "eval/uninitialized_shared_read_flows_to_output");
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected undefined output, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_out_of_bounds_shared_access() {
+    let module = ptx!(parse "eval/out_of_bounds_shared_access");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
+        "expected out-of-bounds, got: {}",
+        err
+    );
+}
+
+/// A 4-byte load at an address 2 mod 4 is misaligned.
+#[test]
+fn test_misaligned_scalar_load() {
+    let module = ptx!(parse "eval/misaligned_scalar_load");
+    let err = analyze_kernel(&module, None, in_out_config(1, 4)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 4, .. })
+        ),
+        "expected misaligned access, got: {}",
+        err
+    );
+}
+
+/// A 4-byte store at an address 2 mod 4 is misaligned (write side of the
+/// same chokepoint).
+#[test]
+fn test_misaligned_scalar_store() {
+    let module = ptx!(parse "eval/misaligned_scalar_store");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 4, .. })
+        ),
+        "expected misaligned access, got: {}",
+        err
+    );
+}
+
+/// The access size of a vector load is the *total* bytes accessed
+/// (ld.v4.f32 is one 16-byte access), so an address 4 mod 16 is misaligned
+/// even though every element taken alone is 4-aligned.
+#[test]
+fn test_misaligned_vector_load() {
+    let module = ptx!(parse "eval/misaligned_vector_load");
+    let err = analyze_kernel(&module, None, in_out_config(1, 8)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 16, .. })
+        ),
+        "expected misaligned vector access, got: {}",
+        err
+    );
+}
+
+/// A row address 8 mod 16 violates ldmatrix's 16-byte row alignment
+/// (PTX ISA 9.7.14.5.15) even though each lane's own 4-byte read would be
+/// 4-aligned.
+#[test]
+fn test_misaligned_ldmatrix_row_address() {
+    let module = parse(&ptx!("eval/misaligned_ldmatrix_row_address"));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 16, .. })
+        ),
+        "expected misaligned ldmatrix row, got: {}",
+        err
+    );
+}
+
+/// A wmma base address 8 mod 32 violates the 32-byte fragment alignment
+/// (PTX ISA 9.7.14.4.2) even though each f16 element read is 2-aligned.
+#[test]
+fn test_wmma_load_base_misaligned() {
+    let module = parse(&ptx!("eval/wmma_load_base_misaligned"));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 32, .. })
+        ),
+        "expected misaligned wmma base, got: {}",
+        err
+    );
+}
+
+/// The store side enforces the same base alignment.
+#[test]
+fn test_wmma_store_base_misaligned() {
+    let module = parse(&ptx!("eval/wmma_store_base_misaligned"));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 32, .. })
+        ),
+        "expected misaligned wmma store base, got: {}",
+        err
+    );
+}
+
+/// A stride below the leading dimension (16 elements for m16n16k16) is
+/// undefined behavior by itself (PTX ISA 9.7.14.4.3).
+#[test]
+fn test_wmma_stride_below_default() {
+    let module = parse(&ptx!("eval/wmma_stride_below_default"));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::WmmaStrideTooSmall {
+                stride: 8,
+                minimum: 16,
+                ..
+            })
+        ),
+        "expected wmma stride below default, got: {}",
+        err
+    );
+}
+
+/// A stride that is legal in *size* but whose byte pitch breaks the
+/// 16-byte stride granularity leaves rows past the first misaligned:
+/// 20 f16 elements = 40 bytes.
+#[test]
+fn test_wmma_stride_misaligned() {
+    let module = parse(&ptx!("eval/wmma_stride_misaligned"));
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Misaligned { required: 16, .. })
+        ),
+        "expected misaligned wmma stride, got: {}",
+        err
+    );
+}
+
+/// An array base that is not a multiple of the element width is rejected
+/// when the analysis is configured, not per access.
+#[test]
+fn test_config_rejects_misaligned_array_base() {
+    let module = ptx!(parse "eval/config_rejects_misaligned_array_base");
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "in".to_string(),
+        base: 2,
+        elem_width: 4,
+        len: 4,
+        kind: ArrayKind::Input,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("in".to_string())];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::Config { .. })),
+        "expected config error, got: {}",
+        err
+    );
+}
+
+/// A raw bit pattern that decodes to NaN is rejected loudly rather than
+/// left in place as an integer: Volta's real-valued model has no NaN.
+#[test]
+fn test_float_op_rejects_nan_bit_pattern() {
+    let module = ptx!(parse "eval/float_op_rejects_nan_bit_pattern");
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(what.contains("NaN"), "{what}");
+        }
+        other => panic!("expected Unsupported NaN, got: {}", other),
+    }
+}
+
+/// Symbolic integer division is rejected rather than modeled as exact
+/// rational division, which would prove `(x / 2) * 2` equal to `x`.
+#[test]
+fn test_symbolic_integer_div_is_unsupported() {
+    let module = parse(&ptx!("eval/symbolic_integer_div_is_unsupported"));
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(
+                what.contains("div.u32"),
+                "expected the integer-division error, got: {}",
+                what
+            );
+        }
+        other => panic!("expected EvalError::Unsupported, got: {}", other),
+    }
+}
+
+/// A symbolic value stored below its source register's width would need
+/// a truncation node we do not model: loud error, not silent nonsense.
+#[test]
+fn test_symbolic_sub_register_store_rejected() {
+    let src = ptx!("eval/symbolic_sub_register_store_rejected");
+    let err = analyze_kernel(&parse(&src), None, in_out_config(1, 1)).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Unsupported { what, .. })
+                if what.contains("symbolic value stored")
+        ),
+        "expected symbolic sub-register store rejection, got: {}",
+        err
+    );
+}
+
+/// A symbolic scalar loaded at a type narrower than the destination
+/// register would need an extension node we do not model: loud error.
+#[test]
+fn test_symbolic_sub_register_load_rejected() {
+    let src = ptx!("eval/symbolic_sub_register_load_rejected");
+    // The byte array serves as the kernel's input here: loading one of
+    // its symbolic elements at s8 into a 32-bit register would need an
+    // extension.
+    let err = analyze_kernel(&parse(&src), None, u8_scratch_config()).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Unsupported { what, .. })
+                if what.contains("symbolic value loaded")
+        ),
+        "expected symbolic sub-register load rejection, got: {}",
+        err
+    );
+}
+
+/// The flip side: a kernel that *keeps* that high lane (from the load's
+/// `Undefined` upper byte) must get a loud `UndefinedOutput`, not a
+/// fabricated `0.0`.
+#[test]
+fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
+    let module = ptx!(parse "eval/e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated");
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "x".to_string(),
+            base: 0x10000,
+            elem_width: 1,
+            len: 1,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 1,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("x".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(&err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected UndefinedOutput for the discarded/kept high lane, got: {}",
+        err
+    );
+}
+
+/// Storing a packed f16x2 pair (a 32-bit value) at a sub-4-byte width would
+/// stuff both halves into one 2-byte granule: a loud error, not silent
+/// nonsense.
+#[test]
+fn test_pair_sub_width_store_rejected() {
+    let module = ptx!(parse "eval/pair_sub_width_store_rejected");
+    let err = analyze_kernel(&module, None, u8_scratch_config()).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Unsupported { what, .. })
+                if what.contains("pair stored")
+        ),
+        "expected pair sub-width store rejection, got: {}",
+        err
+    );
+}
+
+/// Branching on input data violates structured-CTA.
+#[test]
+fn test_symbolic_branch_rejected() {
+    let module = ptx!(parse "eval/symbolic_branch_rejected");
+    let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::NotConcrete { .. })),
+        "expected structured-CTA violation, got: {}",
+        err
+    );
+}
+
+/// A NaN literal (0f7FC00000) is rejected at lowering: NaN denotes no
+/// real number, so it cannot enter the analysis model.
+#[test]
+fn test_nan_literal_rejected_at_lowering() {
+    let module = ptx!(parse "eval/nan_literal_rejected_at_lowering");
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Lower(_)),
+        "expected lowering rejection of the NaN literal, got: {}",
+        err
+    );
+    assert!(
+        err.to_string().contains("NaN literal"),
+        "unexpected message: {}",
+        err
+    );
+}
+
+/// A NaN float parameter is a config validation error.
+#[test]
+fn test_nan_float_param_rejected() {
+    let src = ptx!("eval/nan_float_param_rejected");
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.params = vec![ParamValue::Float(f64::NAN)];
+    let err = analyze_kernel(&parse(&src), None, config).unwrap_err();
+    assert!(
+        matches!(&err, AnalysisError::Eval(EvalError::Config { message }) if message.contains("NaN")),
+        "expected NaN config validation error, got: {}",
+        err
+    );
+}
+
+/// `0.0 / 0.0` no longer mints a NaN: the division stays a symbolic node
+/// and the decision procedure errors loudly on the formally-zero
+/// denominator when the element is checked.
+#[test]
+fn test_zero_over_zero_is_a_loud_equivalence_error() {
+    let src = ptx!("eval/zero_over_zero_is_a_loud_equivalence_error");
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let a = analyze_kernel(&parse(&src), None, config.clone()).unwrap();
+    // The output expression is the unfolded division, not a constant.
+    assert_eq!(display_output(&a, "out", 0), "(0 / 0)");
+    let b = analyze_kernel(&parse(&src), None, config).unwrap();
+    let arrays: Vec<String> = a.outputs.iter().map(|(n, _)| n.clone()).collect();
+    let err = check_output_equivalence(&a, &b, &arrays).unwrap_err();
+    assert!(
+        err.to_string().contains("division"),
+        "expected a division-by-zero equivalence error, got: {}",
+        err
+    );
+}
+
+/// A shfl value sourced from an exited in-mask lane is Undefined (ISA:
+/// "results are undefined if a thread sources a register from an inactive
+/// thread"); the group still fires.
+#[test]
+fn test_shfl_from_exited_lane_is_undefined() {
+    let module = ptx!(parse "eval/shfl_from_exited_lane_is_undefined");
+    // Lanes 8..15 source exited lanes 16..23 and store the Undefined result.
+    let err = analyze_kernel(&module, None, in_out_config(32, 16)).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
+        "expected undefined output from exited source lane, got: {}",
+        err
+    );
+}
+
+/// The paper's own §6.2 pattern: `__shared__ int A[48]` read at
+/// `A[tid]` by 64 threads - threads 48..63 read out of bounds and must be
+/// caught (hardware happens to tolerate this; the model must not).
+#[test]
+fn test_shared_array_overflow_read_is_out_of_bounds() {
+    let module = ptx!(parse "eval/shared_array_overflow_read_is_out_of_bounds");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::OutOfBounds { addr: 192, .. })
+        ),
+        "expected out-of-bounds at A+192, got: {}",
+        err
+    );
+}
+
+/// A v4 load starting in shared array A whose tail runs into adjacent B: the
+/// whole-footprint ownership check makes it a loud OutOfBounds, not a silent
+/// neighbor read.
+#[test]
+fn test_vector_straddling_adjacent_shared_arrays() {
+    let module = ptx!(parse "eval/vector_straddling_adjacent_shared_arrays");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::OutOfBounds {
+                addr: 32,
+                width: 16,
+                ..
+            })
+        ),
+        "expected the v4 straddle to be out of bounds, got: {}",
+        err
+    );
+}
+
+/// `x[tid - 1]` at tid = 0 with the array at address 0 wraps to
+/// 0xFFFF_FFFF_FFFF_FFFC; the subtraction-form bounds check rejects it in
+/// every build profile, including release.
+#[test]
+fn test_negative_index_wrap_is_out_of_bounds() {
+    let module = ptx!(parse "eval/negative_index_wrap_is_out_of_bounds");
+    let mut config = in_out_config(1, 4);
+    config.arrays[0].base = 0; // x based at 0: base + (-4) wraps
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::OutOfBounds { addr, width: 4, .. })
+                if addr == u64::MAX - 3
+        ),
+        "expected the wrapped address to be out of bounds, got: {}",
+        err
+    );
+}
+
+/// A config array overlapping the reserved module-global window is a loud
+/// setup error, not a silent shadowing: both families land in the one
+/// global region list, whose disjointness `check_bounds` relies on.
+#[test]
+fn test_array_overlapping_module_global_window_rejected() {
+    const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;
+    let module = ptx!(parse "eval/array_overlapping_module_global_window_rejected");
+
+    // The probe scenario: an array based exactly at the module-global
+    // base, covering the global `g`.
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays.push(ArrayDef {
+        name: "in".to_string(),
+        base: MODULE_GLOBAL_BASE,
+        elem_width: 4,
+        len: 4,
+        kind: ArrayKind::Input,
+    });
+    let err = analyze_kernel(&module, None, config.clone()).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Config { message })
+                if message.contains("module-global")
+        ),
+        "expected a module-global overlap config error, got: {}",
+        err
+    );
+
+    // Range overlap, not just base membership: an array based below the
+    // window whose tail reaches into it is rejected too.
+    config.arrays[0].base = MODULE_GLOBAL_BASE - 8;
+    let err = analyze_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Config { message })
+                if message.contains("module-global")
+        ),
+        "expected a module-global overlap config error, got: {}",
+        err
+    );
+}
+
+/// A shared declaration whose byte size overflows u64 (2^31 * 2^31 u32
+/// elements) is rejected at lowering; release-wrapping would silently give it
+/// a tiny size.
+#[test]
+fn test_hostile_shared_declaration_size_rejected() {
+    let module = ptx!(parse "eval/hostile_shared_declaration_size_rejected");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Lower(LowerError::VariableSizeOverflow { what }) if what.contains("A")
+        ),
+        "expected a variable-size overflow error, got: {}",
+        err
+    );
+}
+
+/// Other cvta forms are rejected by name: `cvta.global` is compatible but
+/// unused by the corpus, while shared/local forms would mint addresses in the
+/// wrong space.
+#[test]
+fn test_cvta_other_forms_rejected() {
+    for (expect, reason_fragment, (form, src)) in [
+        (
+            "cvta.global",
+            "corpus",
+            ptx_case!("eval/cvta_other_forms_rejected_global"),
+        ),
+        (
+            "cvta.shared",
+            "per-space windows",
+            ptx_case!("eval/cvta_other_forms_rejected_shared"),
+        ),
+        (
+            "cvta.to.shared",
+            "per-space windows",
+            ptx_case!("eval/cvta_other_forms_rejected_to_shared"),
+        ),
+    ] {
+        let module = parse(&src);
+        let err = analyze_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
+        match &err {
+            AnalysisError::Lower(LowerError::UnsupportedInstruction {
+                instruction,
+                reason,
+            }) => {
+                assert_eq!(instruction, expect, "wrong instruction name for {}", form);
+                assert!(
+                    reason.as_deref().unwrap_or("").contains(reason_fragment),
+                    "reason for {} should mention '{}', got: {:?}",
+                    form,
+                    reason_fragment,
+                    reason
+                );
+            }
+            other => panic!(
+                "expected UnsupportedInstruction for {}, got: {}",
+                form, other
+            ),
+        }
+    }
+}
+
+/// `copysign.f16` parses (the type parser accepts any `ScalarType`), so
+/// `lower_copysign`'s `.f32`/`.f64` restriction must reject it with a
+/// specific reason.
+#[test]
+fn test_copysign_rejects_a_type_other_than_f32_f64() {
+    let module = ptx!(parse "eval/copysign_rejects_a_type_other_than_f32_f64");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
+            assert_eq!(instruction, "copysign");
+        }
+        other => panic!("expected UnsupportedInstruction, got: {}", other),
+    }
+}
+
+/// `0x7F` is `.e4m3`'s NaN (PTX ISA 5.2.3); Volta's real-valued model cannot
+/// represent NaN, so a concrete byte hitting it must error loudly.
+#[test]
+fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
+    let module = ptx!(parse "eval/e4m3x2_rejects_the_concrete_nan_byte_pattern");
+    let err = analyze_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
+            assert!(what.contains("NaN"), "unexpected message: {}", what);
+        }
+        other => panic!("expected Unsupported (NaN byte), got: {}", other),
+    }
+}
