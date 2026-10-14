@@ -2,6 +2,56 @@
   <img src="docs/volta-logo.png" alt="Volta logo" width="400">
 </p>
 
+## Crate overview
+
+```
+          +-------------------------------------------------------------+
+          |  volta_cli               volta_bench            volta_py    |
+          |  `volta` binary:         `volta-bench`:         Python      |
+          |  analyze, compare,       the paper's            bindings    |
+          |  verify                  evaluation                         |
+          +-------------------------------------------------------------+
+                 |   front ends: wire a producer to a consumer
+                 v
+
+     kernel.ptx                                             kernel.spec
+         |                                                       |
+         v                                                       v
+ +----------------+     AST     +------------------+     +----------------+
+ | volta_frontend | ----------> |  volta_analysis  |     |   volta_spec   |
+ | PTX lexer,     |             | lowering,        |     | parser for the |
+ | parser, typed  |             | symbolic exec,   |     | .spec language |
+ | instructions   |             | race + deadlock  |     |                |
+ +----------------+             | detection        |     +----------------+
+                                +------------------+             |
+                                         |                       |
+                          kernel outputs |   as SymbolicOutputs  | unfolded spec
+                                         v                       v
+                    +------------------------------------------------------+
+                    |                      volta_expr                      |
+                    |  the shared expression language: arena, specs,       |
+                    |  SymbolicOutputs, .vexpr text format (no deps)       |
+                    +------------------------------------------------------+
+                                         |  two SymbolicOutputs: reference vs
+                                         |  optimized kernel, or kernel vs spec
+                              +----------+--------------+
+                              v                         v
+                   +---------------------+   +---------------------+
+                   |  volta_equivalence  |<--|      volta_z3       |
+                   |  canon decision     |   |  Z3 baseline: same  |
+                   |  procedure, f64     |   |  VCs as SMT-LIB2,   |
+                   |  oracle, .vcdump    |   |  solved by libz3    |
+                   +---------------------+   +---------------------+
+                              |                         |
+                              v                         v
+                    per-output-element verdict (equivalent / not / unknown)
+
+ volta_common (spans, file cache, error reporting, run logs) sits under
+ volta_frontend, volta_analysis, volta_spec and the front ends.
+```
+
+Arrows show data flow. `volta_analysis` (the producer) and `volta_equivalence` (the consumer) never depend on each other outside tests: `volta_expr` is their only shared contract, so the checker accepts expressions from a kernel, a spec, a `.vcdump`, or a `.vexpr` file alike. `volta_z3` reuses `volta_equivalence`'s element pairing so both backends check exactly the same elements.
+
 # NOTICE
 
 This is an experimental fork of Volta, for the original repo see [here](https://github.com/willtunnels/volta).
