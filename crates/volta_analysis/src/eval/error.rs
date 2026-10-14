@@ -31,6 +31,20 @@ impl fmt::Display for AccessSite {
     }
 }
 
+/// Why a `clusterlaunchcontrol` use is undefined behavior. Every response is
+/// declined under Volta's never-steal assumption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClcMisuse {
+    /// `get_first_ctaid` decoded a declined response.
+    CtaidOfDeclinedResponse,
+    /// A `try_cancel` issued after `observer`'s `is_canceled` at
+    /// `observed_at` decoded a declined one.
+    RequestAfterObservedDecline {
+        observer: ThreadId,
+        observed_at: InstrId,
+    },
+}
+
 /// Errors detected by the symbolic evaluator. `DataRace` and `Deadlock` are the analysis
 /// *results* the paper proves sound and complete; the rest are structured-CTA violations or
 /// implementation limits, which the paper models as raised exceptions.
@@ -188,6 +202,12 @@ pub enum EvalError {
     /// descriptor bit, an invalid shape, ...) - unlike [`Self::Unsupported`], no hardware
     /// would accept it either.
     InvalidEncoding { pc: InstrId, what: String },
+    /// A `clusterlaunchcontrol` use the ISA leaves undefined.
+    ClusterLaunchControlMisuse {
+        thread: ThreadId,
+        pc: InstrId,
+        misuse: ClcMisuse,
+    },
     /// The per-analysis instruction budget was exhausted (runaway loop guard).
     InstructionLimit { limit: u64 },
     /// Configuration problem detected before/while setting up execution.
@@ -498,6 +518,23 @@ impl fmt::Display for EvalError {
             }
             Self::Unsupported { pc, what } => write!(f, "unsupported at {}: {}", pc, what),
             Self::InvalidEncoding { pc, what } => write!(f, "invalid encoding at {}: {}", pc, what),
+            Self::ClusterLaunchControlMisuse { thread, pc, misuse } => match misuse {
+                ClcMisuse::CtaidOfDeclinedResponse => write!(
+                    f,
+                    "{}: clusterlaunchcontrol.query_cancel.get_first_ctaid at {} on a declined \
+                     try_cancel response is undefined behavior (guard it with is_canceled)",
+                    thread, pc
+                ),
+                ClcMisuse::RequestAfterObservedDecline {
+                    observer,
+                    observed_at,
+                } => write!(
+                    f,
+                    "{}: clusterlaunchcontrol.try_cancel at {} after {} observed a declined \
+                     request at {} is undefined behavior",
+                    thread, pc, observer, observed_at
+                ),
+            },
             Self::InstructionLimit { limit } => {
                 write!(f, "instruction limit exceeded ({} instructions)", limit)
             }

@@ -11,6 +11,7 @@ use id_collections::IdVec;
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::eval::async_bulk::InflightBulkCopy;
+use crate::eval::cluster_launch_control::ObservedDecline;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
@@ -329,6 +330,8 @@ pub struct Interpreter<'p> {
     /// Issued `cp.async.bulk{.tensor}` copies no waiter has yet observed
     /// complete - see `async_bulk::InflightBulkCopy`.
     pub(in crate::eval) bulk_inflight: Vec<InflightBulkCopy>,
+    /// The first declined cluster-launch-control response decoded, if any.
+    pub(in crate::eval) clc_observed_decline: Option<ObservedDecline>,
     regions: MemRegions,
     pub(in crate::eval) race: RaceTracker,
     pub(in crate::eval) mbarriers: MbarrierTable,
@@ -537,6 +540,7 @@ impl<'p> Interpreter<'p> {
             tensor: TensorMemory::new(),
             tcgen05_inflight: Vec::new(),
             bulk_inflight: Vec::new(),
+            clc_observed_decline: None,
             regions,
             race: RaceTracker::new(n_threads as usize),
             mbarriers: MbarrierTable::new(n_threads as usize),
@@ -2155,13 +2159,23 @@ impl<'p> Interpreter<'p> {
                 self.exec_cp_async_bulk_load(t, pc, dst, src, size, mbar)?;
             }
 
-            LoweredInstr::ClcTryCancel { .. }
-            | LoweredInstr::ClcQueryIsCanceled { .. }
-            | LoweredInstr::ClcQueryGetFirstCtaid { .. } => {
-                return Err(EvalError::Unsupported {
-                    pc,
-                    what: "clusterlaunchcontrol evaluation is not implemented yet".to_string(),
-                });
+            LoweredInstr::ClcTryCancel {
+                addr_base,
+                addr_offset,
+                mbar_base,
+                mbar_offset,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                let mbar = self.effective_addr(t, pc, mbar_base, *mbar_offset)?;
+                self.exec_clc_try_cancel(t, pc, addr, mbar)?;
+            }
+
+            LoweredInstr::ClcQueryIsCanceled { dst, response } => {
+                self.exec_clc_query_is_canceled(t, pc, *dst, *response)?;
+            }
+
+            LoweredInstr::ClcQueryGetFirstCtaid { response, .. } => {
+                self.exec_clc_query_get_first_ctaid(t, pc, *response)?;
             }
 
             // mbarrier: per-thread ops, not warp-cooperative - any single

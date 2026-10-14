@@ -1,0 +1,17 @@
+// A b128 value that no try_cancel wrote is not a declined response.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p0;
+    .reg .b32 %r<2>;
+    .reg .b128 %q0;
+
+    mov.u32 %r0, 0;
+    mov.u32 %r1, 1;
+    mov.b128 %q0, {%r1, %r0, %r0, %r0};
+    clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p0, %q0;
+    ret;
+}

@@ -1,0 +1,26 @@
+// Decoding a ctaid out of a declined response is undefined behavior, and
+// under the never-steal assumption every response is declined.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p0;
+    .reg .b32 %r<4>;
+    .reg .b128 %q0;
+    .shared .align 16 .b8 clc_response[16];
+    .shared .align 8 .b64 clc_mbar;
+
+    mov.u32 %r1, clc_mbar;
+    mov.u32 %r2, clc_response;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r2], [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r1], 0;
+    @!%p0 bra WAIT;
+    ld.shared.b128 %q0, [%r2];
+    clusterlaunchcontrol.query_cancel.get_first_ctaid.v4.b32.b128 {%r0, %r3, _, _}, %q0;
+    ret;
+}

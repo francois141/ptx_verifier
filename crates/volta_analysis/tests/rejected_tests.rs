@@ -7,7 +7,7 @@ mod common;
 
 use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{
-    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, EvalError, ParamValue,
+    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ClcMisuse, EvalError, ParamValue, ThreadId,
 };
 use volta_analysis::{AnalysisError, LowerError};
 use volta_equivalence::{CanonValueEquality, check_output_equivalence};
@@ -1378,5 +1378,81 @@ fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
             assert!(what.contains("NaN"), "unexpected message: {}", what);
         }
         other => panic!("expected Unsupported (NaN byte), got: {}", other),
+    }
+}
+
+fn analyze_one_thread(module: &Module) -> Result<AnalysisOutput, AnalysisError> {
+    analyze_kernel(
+        module,
+        None,
+        AnalysisConfig::new((1, 1, 1)),
+        &CanonValueEquality,
+    )
+}
+
+/// Every `try_cancel` response is declined, so an unguarded `get_first_ctaid`
+/// decodes a declined response: undefined behavior.
+#[test]
+fn test_clusterlaunchcontrol_unguarded_get_first_ctaid_is_rejected() {
+    let module = ptx!(parse "failing/clusterlaunchcontrol_unguarded_get_first_ctaid_is_rejected");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Eval(EvalError::ClusterLaunchControlMisuse { misuse, .. })) => {
+            assert_eq!(misuse, ClcMisuse::CtaidOfDeclinedResponse);
+        }
+        other => panic!("expected ClusterLaunchControlMisuse, got {other:?}"),
+    }
+}
+
+/// A second `try_cancel` after `is_canceled` observed the first one declined
+/// is undefined behavior.
+#[test]
+fn test_clusterlaunchcontrol_try_cancel_after_observed_decline_is_rejected() {
+    let module =
+        ptx!(parse "failing/clusterlaunchcontrol_try_cancel_after_observed_decline_is_rejected");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Eval(EvalError::ClusterLaunchControlMisuse { misuse, .. })) => {
+            assert!(
+                matches!(
+                    misuse,
+                    ClcMisuse::RequestAfterObservedDecline {
+                        observer: ThreadId(0),
+                        ..
+                    }
+                ),
+                "{misuse:?}"
+            );
+        }
+        other => panic!("expected ClusterLaunchControlMisuse, got {other:?}"),
+    }
+}
+
+/// `query_cancel` only decodes the declined response a `try_cancel` wrote;
+/// anything else would be a successful cancel, outside the never-steal model.
+#[test]
+fn test_clusterlaunchcontrol_query_of_a_fabricated_response_is_rejected() {
+    let module =
+        ptx!(parse "failing/clusterlaunchcontrol_query_of_a_fabricated_response_is_rejected");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
+            assert!(
+                what.contains("not a declined try_cancel response"),
+                "{what}"
+            );
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+/// `.multicast::cluster::all` writes the response into every CTA of the
+/// cluster, beyond the single CTA Volta analyzes.
+#[test]
+fn test_clusterlaunchcontrol_multicast_try_cancel_is_rejected() {
+    let module = ptx!(parse "failing/clusterlaunchcontrol_multicast_try_cancel_is_rejected");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(reason.contains("multicast::cluster::all"), "{reason}");
+        }
+        other => panic!("expected UnsupportedInstruction, got {other:?}"),
     }
 }

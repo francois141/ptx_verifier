@@ -2013,3 +2013,16 @@ fn test_tcgen05_mma_accepts_boundary_encodings() {
         analyze_case(name, &src, AnalysisConfig::new((32, 1, 1)));
     }
 }
+
+/// Cluster launch control under the never-steal assumption: thread 0's
+/// `try_cancel` is always declined, so each of the 64 threads processes only
+/// its own CTA's tile and the persistent loop exits after one pass.
+#[test]
+fn test_clusterlaunchcontrol_declined_cancel_ends_the_persistent_loop() {
+    let output = analyze!(
+        "success/clusterlaunchcontrol_declined_cancel_ends_the_persistent_loop",
+        in_out_config(64, 64)
+    );
+    assert_eq!(display_output(&output, "out", 0), "(in[0] + in[0])");
+    assert_eq!(display_output(&output, "out", 63), "(in[63] + in[63])");
+}

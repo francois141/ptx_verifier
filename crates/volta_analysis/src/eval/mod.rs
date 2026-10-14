@@ -4,6 +4,7 @@
 
 pub mod arithm;
 pub mod async_bulk;
+pub mod cluster_launch_control;
 pub mod config;
 pub mod error;
 pub mod float_bits;
@@ -52,7 +53,7 @@ impl ThreadId {
 pub const WARPGROUP_SIZE: u32 = WARP_SIZE * 4;
 
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
-pub use error::{AccessSite, EvalError, EvalResult};
+pub use error::{AccessSite, ClcMisuse, EvalError, EvalResult};
 pub use interp::{AnalysisOutput, Interpreter, Stats};
 pub use target::TargetFeatures;
 pub use value::Value;

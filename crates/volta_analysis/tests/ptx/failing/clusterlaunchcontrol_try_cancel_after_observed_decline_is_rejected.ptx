@@ -1,0 +1,28 @@
+// Issuing a second request after observing that the first one was declined
+// is undefined behavior.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<4>;
+    .reg .b128 %q0;
+    .shared .align 16 .b8 clc_response[16];
+    .shared .align 8 .b64 clc_mbar;
+
+    mov.u32 %r1, clc_mbar;
+    mov.u32 %r2, clc_response;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r2], [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r1], 0;
+    @!%p0 bra WAIT;
+    ld.shared.b128 %q0, [%r2];
+    clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p1, %q0;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r2], [%r1];
+    ret;
+}

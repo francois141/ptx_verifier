@@ -510,3 +510,27 @@ fn test_different_value_store_to_one_address_races() {
         err
     );
 }
+
+/// A `try_cancel` response is an async write locked until a waiter observes
+/// its mbarrier: warp 1 reads it after `bar.sync` alone and trips the lock.
+#[test]
+fn test_clusterlaunchcontrol_response_read_without_waiting_is_an_inflight_hazard() {
+    let module = ptx!(
+        parse "execution_error/clusterlaunchcontrol_response_read_without_waiting_is_an_inflight_hazard"
+    );
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((64, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
+    match &err {
+        AnalysisError::Eval(EvalError::AsyncCopyHazard { prior, current, .. }) => {
+            assert_eq!(prior.thread, ThreadId(0));
+            assert!(prior.is_write);
+            assert_eq!(current.thread, ThreadId(32));
+        }
+        other => panic!("expected AsyncCopyHazard, got: {}", other),
+    }
+}

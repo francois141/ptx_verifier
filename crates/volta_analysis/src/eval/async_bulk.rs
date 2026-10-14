@@ -320,7 +320,7 @@ impl<'p> Interpreter<'p> {
 
     /// Perform a complete-tx of `bytes` on the mbarrier object at shared
     /// address `addr`.
-    fn mbarrier_complete_tx(
+    pub(in crate::eval) fn mbarrier_complete_tx(
         &mut self,
         t: ThreadId,
         pc: InstrId,
@@ -335,7 +335,7 @@ impl<'p> Interpreter<'p> {
     /// Lock a just-landed copy's destination until the mbarrier at
     /// `mbar_addr` moves past the current phase. Called after the write so it
     /// doesn't trip its own lock; unwaited accesses are reported.
-    fn begin_inflight_bulk_copy(
+    pub(in crate::eval) fn begin_inflight_bulk_copy(
         &mut self,
         t: ThreadId,
         pc: InstrId,

@@ -1,0 +1,18 @@
+// A multicast request writes the response into every CTA of the cluster,
+// but Volta analyzes a single CTA.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<3>;
+    .shared .align 16 .b8 clc_response[16];
+    .shared .align 8 .b64 clc_mbar;
+
+    mov.u32 %r1, clc_mbar;
+    mov.u32 %r2, clc_response;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.multicast::cluster::all.b128 [%r2], [%r1];
+    ret;
+}
