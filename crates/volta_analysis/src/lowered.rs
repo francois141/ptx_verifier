@@ -1003,6 +1003,26 @@ pub enum LoweredInstr {
     },
 
     // =========================================================================
+    // Cluster launch control (PTX ISA 9.7.19)
+    // =========================================================================
+    /// `clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128
+    /// [addr], [mbar]`: request to cancel a not-yet-launched cluster, writing
+    /// the 16-byte response to `addr` and completing 16 tx-bytes on `mbar`.
+    ClcTryCancel {
+        addr_base: Operand,
+        addr_offset: i64,
+        mbar_base: Operand,
+        mbar_offset: i64,
+    },
+
+    /// `clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 dst, response`.
+    ClcQueryIsCanceled { dst: RegId, response: RegId },
+
+    /// `clusterlaunchcontrol.query_cancel.get_first_ctaid{::dim}.{v4.}b32.b128`:
+    /// `dst` holds the requested ctaid components (sinks dropped).
+    ClcQueryGetFirstCtaid { dst: Vec<RegId>, response: RegId },
+
+    // =========================================================================
     // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
     // =========================================================================
     /// `mbarrier.init{.shared{::cta}}.b64 [addr], count`: create a fresh
@@ -1179,6 +1199,9 @@ define_instr_kinds!(
     FenceProxyTensormap,
     CpAsyncBulkTensorLoad,
     CpAsyncBulkLoad,
+    ClcTryCancel,
+    ClcQueryIsCanceled,
+    ClcQueryGetFirstCtaid,
     MbarrierInit,
     MbarrierInval,
     MbarrierArrive,
@@ -1499,6 +1522,13 @@ impl LoweredInstr {
                 mbar_base,
                 ..
             } => from_ops(&[*dst_base, *src_base, *size, *mbar_base]),
+            Self::ClcTryCancel {
+                addr_base,
+                mbar_base,
+                ..
+            } => from_ops(&[*addr_base, *mbar_base]),
+            Self::ClcQueryIsCanceled { response, .. }
+            | Self::ClcQueryGetFirstCtaid { response, .. } => vec![*response],
 
             // mbarrier
             Self::MbarrierInit {
@@ -1563,7 +1593,8 @@ impl LoweredInstr {
             | Self::Shf { dst, .. }
             | Self::ReduxSync { dst, .. }
             | Self::ReduxSyncBroadcastMax { dst, .. }
-            | Self::Activemask { dst } => vec![*dst],
+            | Self::Activemask { dst }
+            | Self::ClcQueryIsCanceled { dst, .. } => vec![*dst],
 
             // Vector destinations
             Self::LoadVec { dst, .. }
@@ -1572,7 +1603,8 @@ impl LoweredInstr {
             | Self::WmmaLoad { dst, .. }
             | Self::WmmaMma { dst, .. }
             | Self::Tcgen05Ld { dst, .. }
-            | Self::WgmmaMmaAsync { dst, .. } => dst.clone(),
+            | Self::WgmmaMmaAsync { dst, .. }
+            | Self::ClcQueryGetFirstCtaid { dst, .. } => dst.clone(),
 
             // Shuffle: dst + optional dst_pred
             Self::Shfl { dst, dst_pred, .. } | Self::ShflSync { dst, dst_pred, .. } => {
@@ -1636,6 +1668,7 @@ impl LoweredInstr {
             | Self::FenceProxyTensormap
             | Self::CpAsyncBulkTensorLoad { .. }
             | Self::CpAsyncBulkLoad { .. }
+            | Self::ClcTryCancel { .. }
             | Self::MbarrierInit { .. }
             | Self::MbarrierInval { .. }
             | Self::MbarrierCompleteTx { .. }

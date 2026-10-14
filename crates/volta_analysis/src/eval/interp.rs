@@ -2155,6 +2155,15 @@ impl<'p> Interpreter<'p> {
                 self.exec_cp_async_bulk_load(t, pc, dst, src, size, mbar)?;
             }
 
+            LoweredInstr::ClcTryCancel { .. }
+            | LoweredInstr::ClcQueryIsCanceled { .. }
+            | LoweredInstr::ClcQueryGetFirstCtaid { .. } => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: "clusterlaunchcontrol evaluation is not implemented yet".to_string(),
+                });
+            }
+
             // mbarrier: per-thread ops, not warp-cooperative - any single
             // thread issues these independently (unlike the tensor-core
             // family above).

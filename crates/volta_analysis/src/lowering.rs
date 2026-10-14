@@ -37,7 +37,7 @@ use crate::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode, TensormapFieldWrite,
 };
-use crate::types::{ScalarTypeExt, TypeCompatibility, check_type_compatibility};
+use crate::types::{RegClass, ScalarTypeExt, TypeCompatibility, check_type_compatibility};
 
 // =============================================================================
 // Loud Rejection Helpers
@@ -2424,6 +2424,25 @@ fn lower_parsed_instruction(
             operands,
         } => {
             lower_cp_async_bulk(ctx, modifiers, operands, predicate)?;
+        }
+
+        // =========================================================================
+        // Cluster launch control (PTX ISA 9.7.19)
+        // =========================================================================
+        ParsedInstruction::Other {
+            kind: InstrKind::ClusterlaunchcontrolTryCancel,
+            modifiers,
+            operands,
+        } => {
+            lower_clc_try_cancel(ctx, modifiers, operands, predicate)?;
+        }
+
+        ParsedInstruction::Other {
+            kind: InstrKind::ClusterlaunchcontrolQueryCancel,
+            modifiers,
+            operands,
+        } => {
+            lower_clc_query_cancel(ctx, modifiers, operands, predicate)?;
         }
 
         // =========================================================================
@@ -6425,6 +6444,159 @@ fn lower_cp_async_bulk(
 }
 
 // =========================================================================
+// Cluster launch control lowering (PTX ISA 9.7.19)
+// =========================================================================
+
+/// Lower `clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128
+/// [addr], [mbar]`. `.multicast::cluster::all` writes the response into every
+/// CTA of the cluster, beyond the one CTA Volta analyzes, so it is rejected.
+fn lower_clc_try_cancel(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "clusterlaunchcontrol.try_cancel";
+    let modifiers: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+    if modifiers.contains(&"multicast::cluster::all") {
+        return Err(unsupported(
+            NAME,
+            ".multicast::cluster::all (it writes the response into every CTA of the \
+             cluster; only the executing CTA is modeled)",
+        ));
+    }
+    if modifiers
+        != [
+            "async",
+            "shared::cta",
+            "mbarrier::complete_tx::bytes",
+            "b128",
+        ]
+    {
+        return Err(unsupported(
+            NAME,
+            format!(
+                "modifiers .{} (only .async.shared::cta.mbarrier::complete_tx::bytes.b128 \
+                 is modeled)",
+                modifiers.join(".")
+            ),
+        ));
+    }
+
+    let [addr, mbar] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [addr], [mbar]",
+        });
+    };
+    let (addr_base, addr_offset) = resolve_addr_operand(ctx, addr)?;
+    let (mbar_base, mbar_offset) = resolve_addr_operand(ctx, mbar)?;
+    ctx.emit(
+        LoweredInstr::ClcTryCancel {
+            addr_base,
+            addr_offset,
+            mbar_base,
+            mbar_offset,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `clusterlaunchcontrol.query_cancel`'s `.is_canceled.pred.b128` and
+/// `.get_first_ctaid{::x,::y,::z}.b32.b128` / `.get_first_ctaid.v4.b32.b128` forms.
+fn lower_clc_query_cancel(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "clusterlaunchcontrol.query_cancel";
+    let invalid = |reason| LowerError::InvalidOperand {
+        instruction: NAME.to_string(),
+        operand: format!("{:?}", operands),
+        reason,
+    };
+    let [dst, response] = operands else {
+        return Err(invalid(
+            "expected a destination and a .b128 response register",
+        ));
+    };
+    let response = match ctx.resolve_operand(response)?.as_reg() {
+        Some(reg) if reg.class == RegClass::Bits128 => reg,
+        _ => return Err(invalid("the response must be a .b128 register")),
+    };
+
+    let modifiers: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+    let instr = match modifiers.as_slice() {
+        ["is_canceled", "pred", "b128"] => {
+            let dst = ctx.resolve_dst(dst)?;
+            if dst.class != RegClass::Pred {
+                return Err(invalid(
+                    "is_canceled's destination must be a .pred register",
+                ));
+            }
+            LoweredInstr::ClcQueryIsCanceled { dst, response }
+        }
+        [
+            "get_first_ctaid::x" | "get_first_ctaid::y" | "get_first_ctaid::z",
+            "b32",
+            "b128",
+        ] => LoweredInstr::ClcQueryGetFirstCtaid {
+            dst: vec![resolve_b32_dst(ctx, dst, invalid)?],
+            response,
+        },
+        ["get_first_ctaid", "v4", "b32", "b128"] => {
+            let AstOperand::Vector(elems) = dst else {
+                return Err(invalid(
+                    "get_first_ctaid.v4 needs a 4-element vector destination",
+                ));
+            };
+            if elems.len() != 4 {
+                return Err(invalid(
+                    "get_first_ctaid.v4 needs a 4-element vector destination",
+                ));
+            }
+            let mut regs = Vec::with_capacity(elems.len());
+            for elem in elems {
+                if !matches!(elem, AstOperand::Underscore) {
+                    regs.push(resolve_b32_dst(ctx, elem, invalid)?);
+                }
+            }
+            LoweredInstr::ClcQueryGetFirstCtaid {
+                dst: regs,
+                response,
+            }
+        }
+        _ => {
+            return Err(unsupported(
+                NAME,
+                format!("modifiers .{}", modifiers.join(".")),
+            ));
+        }
+    };
+    ctx.emit(instr, predicate)?;
+    Ok(())
+}
+
+fn resolve_b32_dst(
+    ctx: &LoweringContext,
+    dst: &AstOperand,
+    invalid: impl Fn(&'static str) -> LowerError,
+) -> LowerResult<RegId> {
+    let reg = ctx.resolve_dst(dst)?;
+    if reg.class != RegClass::Bits32 {
+        return Err(invalid(
+            "get_first_ctaid's destinations must be .b32 registers",
+        ));
+    }
+    Ok(reg)
+}
+
+// =========================================================================
 // mbarrier lowering helpers
 // =========================================================================
 
@@ -7985,6 +8157,50 @@ mod tests {
         if let Err(e) = lower_body(body) {
             panic!("expected {:?} to lower, got {:?}", body, e);
         }
+    }
+
+    #[test]
+    fn test_clusterlaunchcontrol_try_cancel_forms() {
+        assert_lowers(
+            "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];",
+        );
+        assert_rejected(
+            "clusterlaunchcontrol.try_cancel.async.shared::cta.mbarrier::complete_tx::bytes.multicast::cluster::all.b128 [%r1], [%r2];",
+            "only the executing CTA is modeled",
+        );
+        assert_rejected(
+            "clusterlaunchcontrol.try_cancel.async.mbarrier::complete_tx::bytes.b128 [%r1], [%r2];",
+            "only .async.shared::cta.mbarrier::complete_tx::bytes.b128 is modeled",
+        );
+    }
+
+    #[test]
+    fn test_clusterlaunchcontrol_query_cancel_forms() {
+        assert_lowers("clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p1, %q1;");
+        assert_lowers("clusterlaunchcontrol.query_cancel.get_first_ctaid::y.b32.b128 %r1, %q1;");
+        let prog = lower_body(
+            "clusterlaunchcontrol.query_cancel.get_first_ctaid.v4.b32.b128 {%r1, %r2, _, _}, %q1;",
+        )
+        .unwrap();
+        assert!(prog.instructions.values().any(|instr| matches!(
+            instr,
+            LoweredInstr::ClcQueryGetFirstCtaid { dst, .. } if dst.len() == 2
+        )));
+        for body in [
+            "clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %r1, %q1;",
+            "clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p1, %rd1;",
+            "clusterlaunchcontrol.query_cancel.get_first_ctaid::x.b32.b128 %rd1, %q1;",
+            "clusterlaunchcontrol.query_cancel.get_first_ctaid.v4.b32.b128 {%r1, %r2}, %q1;",
+        ] {
+            assert!(
+                matches!(lower_body(body), Err(LowerError::InvalidOperand { .. })),
+                "expected {body:?} to be an invalid operand"
+            );
+        }
+        assert_rejected(
+            "clusterlaunchcontrol.query_cancel.get_first_ctaid::w.b32.b128 %r1, %q1;",
+            "get_first_ctaid::w",
+        );
     }
 
     /// Lower `body` (which must contain exactly one clamp-capable
