@@ -192,19 +192,16 @@ fn arrival_after_init(synced: bool) -> (EventGraph, SyncObjectId, EventId) {
 }
 
 #[test]
-fn an_mbarrier_operation_must_be_ordered_after_the_init() {
+fn an_mbarrier_operation_not_ordered_after_the_init_is_unresolved() {
     let (g, _, _) = arrival_after_init(true);
     assert_eq!(check(&g).verdict(), Verdict::Pass);
-    let (g, object, event) = arrival_after_init(false);
-    let bound = g.object(object).init.unwrap();
-    assert_eq!(
-        check(&g).violations(),
-        [LifetimeViolation::OutsideObjectLifetime {
-            object,
-            bound,
-            event
-        }]
-    );
+    let (g, _, event) = arrival_after_init(false);
+    let result = check(&g);
+    let [u] = result.unresolved() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(u.event, Some(event));
+    assert!(u.reason.contains("init"), "{u:?}");
 }
 
 #[test]

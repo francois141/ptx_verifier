@@ -11,9 +11,11 @@
 //!   in-flight `tcgen05` operations:
 //!   (T1) every effect on columns a dealloc frees happens before the dealloc, an async effect
 //!   through its observed completion; (T2) the allocation providing a column happens before
-//!   every effect on it; (M1) every operation on an mbarrier happens after its init and before
-//!   its inval; (M2) every memory effect on an mbarrier's 8 bytes happens before its init or
-//!   after its inval.
+//!   every effect on it; (M1) every operation on an mbarrier happens before its inval; (M2)
+//!   every memory effect on an mbarrier's 8 bytes happens before its init or after its inval.
+//!   An operation not ordered after its mbarrier's init is unresolved, not failed: how an
+//!   init is published to other threads (`fence.mbarrier_init`, a barrier) is not modeled,
+//!   and the interpreter's semantics accept a wait that races the init.
 //! * Unresolved by design, since no justified theory is available: Tensor Memory still allocated,
 //!   and async operations never observed complete, when the execution completes (whether CTA
 //!   exit frees or waits for them is not modeled); an mbarrier re-initialized without an
@@ -123,8 +125,23 @@ pub fn check_lifetimes(
         };
         resources.run(graph, &candidate).0
     };
+    let (unpublished, found): (Vec<_>, Vec<_>) =
+        found.into_iter().partition(|v| races_the_init(graph, v));
+    let definite: Vec<_> = definite
+        .into_iter()
+        .filter(|v| !races_the_init(graph, v))
+        .collect();
     let definite_keys: HashSet<_> = definite.iter().map(|&v| key(graph, v)).collect();
     let mut unresolved = resources.unresolved(graph);
+    for v in &unpublished {
+        unresolved.push(Unresolved::at(
+            v.position(),
+            format!(
+                "{v:?}: the operation is not ordered after the mbarrier's init, and how an init \
+                 is published to other threads is not modeled"
+            ),
+        ));
+    }
     for &v in &found {
         if !definite_keys.contains(&key(graph, v)) {
             unresolved.push(Unresolved::at(
@@ -135,6 +152,12 @@ pub fn check_lifetimes(
     }
     unresolved.sort_by_key(|u| u.event);
     PropertyResult::from_findings(evidence, definite, unresolved)
+}
+
+/// An (M1) violation whose bound is the object's init.
+fn races_the_init(graph: &EventGraph, v: &LifetimeViolation) -> bool {
+    matches!(*v, LifetimeViolation::OutsideObjectLifetime { bound, .. }
+        if matches!(graph.event(bound).kind, EventKind::ObjectInit(_)))
 }
 
 /// Who performed a use: a thread at a point, or an async op.
