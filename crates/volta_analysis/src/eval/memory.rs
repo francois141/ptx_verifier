@@ -152,6 +152,41 @@ impl Memory {
             return Ok(Value::Quad(*b0, *b1, *b2, *b3));
         }
 
+        // 16-byte read combining four adjacent 4-byte scalars into a `Quad`,
+        // the 4x32 lane form of a `.b128` register (`ld.shared.b128`).
+        if width == 16
+            && let (Some(c0), Some(c1), Some(c2), Some(c3)) = (
+                self.cells.get(&addr),
+                self.cells.get(&(addr + 4)),
+                self.cells.get(&(addr + 8)),
+                self.cells.get(&(addr + 12)),
+            )
+            && let (
+                Cell {
+                    width: 4,
+                    value: Value::Scalar(w0),
+                    ..
+                },
+                Cell {
+                    width: 4,
+                    value: Value::Scalar(w1),
+                    ..
+                },
+                Cell {
+                    width: 4,
+                    value: Value::Scalar(w2),
+                    ..
+                },
+                Cell {
+                    width: 4,
+                    value: Value::Scalar(w3),
+                    ..
+                },
+            ) = (c0, c1, c2, c3)
+        {
+            return Ok(Value::Quad(*w0, *w1, *w2, *w3));
+        }
+
         // Half-width read (1, 2, or 4 bytes) of one half of a pair granule.
         if matches!(width, 1 | 2 | 4) {
             let pair_width = width * 2;
@@ -657,6 +692,25 @@ mod tests {
                 width: 4,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn test_combine_words_into_b128_quad() {
+        let mut arena = ExprArena::new();
+        let words: Vec<_> = (0..4).map(|k| arena.int(k)).collect();
+        let mut mem = Memory::new();
+        for (k, &w) in words.iter().enumerate() {
+            mem.write(0x10 + 4 * k as u64, 4, Value::Scalar(w)).unwrap();
+        }
+        assert_eq!(
+            mem.read(0x10, 16),
+            Ok(Value::Quad(words[0], words[1], words[2], words[3]))
+        );
+        mem.write(0x18, 8, Value::Scalar(words[0])).unwrap();
+        assert!(matches!(
+            mem.read(0x10, 16),
+            Err(MemAccessError::Reinterpret { .. })
         ));
     }
 

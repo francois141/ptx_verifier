@@ -167,6 +167,18 @@ fn test_mbarrier_arrive_wait_establishes_happens_before() {
     assert_eq!(display_output(&output, "out", 1), "42");
 }
 
+/// `ld.shared.b128` of four separately stored 4-byte words reads them as the
+/// `.b128` register's four 32-bit lanes, in address order.
+#[test]
+fn test_ld_shared_b128_reads_four_stored_words() {
+    let output = analyze!(
+        "success/ld_shared_b128_reads_four_stored_words",
+        in_out_config(1, 4)
+    );
+    assert_eq!(display_output(&output, "out", 0), "in[0]");
+    assert_eq!(display_output(&output, "out", 3), "in[3]");
+}
+
 /// `tcgen05.fence::before_thread_sync`/`::after_thread_sync` parse (via the
 /// `::`-glued trie fallback) and are pure ordering fences: eval just falls
 /// through.
