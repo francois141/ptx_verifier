@@ -34,7 +34,7 @@ use crate::types::{RegClass, ScalarTypeExt};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId, SymbolicOutputs};
 use volta_graph::{
     AccessMode, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily,
-    Provenance, Proxy, Space, Terminal,
+    OperandRole, Provenance, Proxy, Space, Terminal,
 };
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
@@ -1235,16 +1235,22 @@ impl<'p> Interpreter<'p> {
                 // The source is read now: exact only if nothing writes it
                 // before the copy completes, which race checking must show.
                 let op = self.record_async_issue(t, pc, AsyncOpKind::CpAsync);
-                let origin = AccessOrigin::Async {
+                let source = AccessOrigin::Async {
                     op,
                     proxy: Proxy::Generic,
+                    role: OperandRole::Source,
+                };
+                let destination = AccessOrigin::Async {
+                    op,
+                    proxy: Proxy::Generic,
+                    role: OperandRole::Destination,
                 };
                 let zero = Value::Scalar(self.arena.int(0));
                 let mut words = Vec::with_capacity((cp_size / 4) as usize);
                 for i in 0..cp_size / 4 {
                     let byte = i * 4;
                     let v = if byte < real_bytes {
-                        self.mem_read_from(t, pc, MemSpace::Global, src_addr + byte, 4, origin)?
+                        self.mem_read_from(t, pc, MemSpace::Global, src_addr + byte, 4, source)?
                     } else {
                         zero
                     };
@@ -1252,7 +1258,7 @@ impl<'p> Interpreter<'p> {
                 }
                 for (i, &v) in words.iter().enumerate() {
                     let addr = dst_addr + i as u64 * 4;
-                    self.record_mem_access(t, pc, MemSpace::Shared, addr, 4, Some(v), origin);
+                    self.record_mem_access(t, pc, MemSpace::Shared, addr, 4, Some(v), destination);
                 }
 
                 self.threads[t].uncommitted.push(PendingCopy {
@@ -2556,7 +2562,7 @@ impl<'p> Interpreter<'p> {
                 let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
                 check_mma_operand_layout(pc, &a_md, id.transpose_a, "A")?;
                 let a_operand = (&a_md, major(id.transpose_a), a_format);
-                self.read_mma_operand(t, pc, op, a_operand, id.m, k_dim)?
+                self.read_mma_operand(t, pc, (op, OperandRole::MmaA), a_operand, id.m, k_dim)?
             }
             Tcgen05MmaA::Tmem { base, offset } => {
                 if a_format != OperandFormat::F16 {
@@ -2576,7 +2582,7 @@ impl<'p> Interpreter<'p> {
             }
         };
         let b_operand = (&b_md, major(id.transpose_b), b_format);
-        let b = self.read_mma_operand(t, pc, op, b_operand, id.n, k_dim)?;
+        let b = self.read_mma_operand(t, pc, (op, OperandRole::MmaB), b_operand, id.n, k_dim)?;
         if let Some(Tcgen05Collector { buffer, op }) = collector {
             let slot = &mut self.threads[t].tcgen05_collectors[buffer as usize];
             if matches!(op, Tcgen05CollectorOp::Use | Tcgen05CollectorOp::LastUse)
@@ -2622,10 +2628,11 @@ impl<'p> Interpreter<'p> {
         let lane_enabled = |lane: u32| (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 == 0;
         let d_lanes: Vec<u32> = (0..128).filter(|&lane| lane_enabled(lane)).collect();
         let d_cols = (d_col_base, d_num_cols);
+        let accumulator = |mode| (mode, OperandRole::Accumulator);
         if enable_input_d {
-            self.record_tmem_lanes(op, t, AccessMode::Read, &d_lanes, d_cols);
+            self.record_tmem_lanes(op, t, accumulator(AccessMode::Read), &d_lanes, d_cols);
         }
-        self.record_tmem_lanes(op, t, AccessMode::Write, &d_lanes, d_cols);
+        self.record_tmem_lanes(op, t, accumulator(AccessMode::Write), &d_lanes, d_cols);
 
         for m in 0..id.m {
             for n in 0..id.n {
@@ -2680,7 +2687,7 @@ impl<'p> Interpreter<'p> {
         &mut self,
         t: ThreadId,
         pc: InstrId,
-        op: AsyncOpId,
+        (op, role): (AsyncOpId, OperandRole),
         (desc, major, format): (&tcgen05_mma::MatrixDescriptor, Major, OperandFormat),
         rows: u32,
         k_dim: usize,
@@ -2688,6 +2695,7 @@ impl<'p> Interpreter<'p> {
         let origin = AccessOrigin::Async {
             op,
             proxy: Proxy::Async,
+            role,
         };
         let elem_bytes = format.bytes();
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
@@ -2784,7 +2792,8 @@ impl<'p> Interpreter<'p> {
         self.tensor
             .check_range(start_col, num_cols)
             .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
-        self.record_tmem_effect(op, t, AccessMode::Read, 0, rows, start_col, num_cols);
+        let a = (AccessMode::Read, OperandRole::MmaA);
+        self.record_tmem_effect(op, t, a, 0, rows, start_col, num_cols);
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
         for lane in 0..rows {
             for c in 0..num_cols {

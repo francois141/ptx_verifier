@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use volta_graph::{
-    AccessMode, Footprint, MemAccess, OrderingKind, Proxy, Space, Terminal, ThreadIx,
+    AccessMode, Footprint, MemAccess, OperandRole, OrderingKind, Proxy, Space, Terminal, ThreadIx,
 };
 use volta_graph_check::Verdict;
 use volta_graph_check::well_formed::check_well_formed;
@@ -59,6 +59,7 @@ fn an_atomic_effect_is_unknown() {
         ordering: OrderingKind::Atomic,
         proxy: Proxy::Generic,
         footprint: Footprint::Bytes { addr: 0, width: 4 },
+        role: OperandRole::Plain,
         attributed: ThreadIx(0),
         value: None,
     };

@@ -185,6 +185,25 @@ impl Footprint {
     }
 }
 
+/// Which operand of its instruction an effect is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperandRole {
+    /// The memory operand of an ordinary load/store or warp-cooperative access.
+    Plain,
+    /// An async copy's source read.
+    Source,
+    /// An async copy's destination write.
+    Destination,
+    /// A matrix-multiply `A` operand read (shared memory or Tensor Memory).
+    MmaA,
+    /// A matrix-multiply `B` operand read.
+    MmaB,
+    /// A matrix-multiply accumulator (`D`) read or write in Tensor Memory.
+    Accumulator,
+    /// The Tensor Memory cells of a `tcgen05.ld`/`.st`.
+    TmemData,
+}
+
 /// A value stored by a write, as expressions of the producer's arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoredValue {
@@ -205,6 +224,7 @@ pub struct MemAccess {
     pub ordering: OrderingKind,
     pub proxy: Proxy,
     pub footprint: Footprint,
+    pub role: OperandRole,
     /// The thread the effect is attributed to: the issuer, or the lane a collective op
     /// performs it for.
     pub attributed: ThreadIx,

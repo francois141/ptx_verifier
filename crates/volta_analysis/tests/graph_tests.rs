@@ -3,6 +3,7 @@
 //! consumed without graph verification.
 
 #[macro_use]
+#[allow(unused_macros)]
 mod common;
 
 use volta_analysis::analysis::AnalysisResult;

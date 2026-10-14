@@ -6,7 +6,7 @@ use volta_frontend::ast::ScalarType;
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
-use volta_graph::{AsyncOpId, AsyncOpKind, Proxy};
+use volta_graph::{AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
@@ -124,7 +124,7 @@ impl Interpreter<'_> {
                     let a_e = self.read_wgmma_element(
                         t,
                         pc,
-                        op,
+                        (op, OperandRole::MmaA),
                         (&a_md, a_major, *a_type),
                         elem.row as u64,
                         k,
@@ -132,7 +132,7 @@ impl Interpreter<'_> {
                     let b_e = self.read_wgmma_element(
                         t,
                         pc,
-                        op,
+                        (op, OperandRole::MmaB),
                         (&b_md, b_major, *b_type),
                         elem.col as u64,
                         k,
@@ -156,7 +156,7 @@ impl Interpreter<'_> {
         &mut self,
         t: ThreadId,
         pc: InstrId,
-        op: AsyncOpId,
+        (op, role): (AsyncOpId, OperandRole),
         (desc, major, ty): (&MatrixDescriptor, Major, ScalarType),
         mn_idx: u64,
         k_idx: u64,
@@ -171,6 +171,7 @@ impl Interpreter<'_> {
         let origin = AccessOrigin::Async {
             op,
             proxy: Proxy::Async,
+            role,
         };
         let Value::Scalar(e) =
             self.mem_read_from(t, pc, MemSpace::Shared, addr, elem_bytes, origin)?

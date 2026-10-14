@@ -4,7 +4,7 @@
 
 use crate::eval::ThreadId;
 use crate::eval::error::{ClcMisuse, EvalError, EvalResult};
-use volta_graph::{AsyncOpKind, Proxy};
+use volta_graph::{AsyncOpKind, OperandRole, Proxy};
 
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
@@ -51,6 +51,7 @@ impl<'p> Interpreter<'p> {
         let origin = AccessOrigin::Async {
             op,
             proxy: Proxy::Async,
+            role: OperandRole::Destination,
         };
         for word in (0..RESPONSE_BYTES).step_by(WORD_BYTES as usize) {
             let zero = Value::Scalar(self.arena.int(0));

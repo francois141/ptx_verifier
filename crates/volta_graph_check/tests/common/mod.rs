@@ -6,8 +6,8 @@ use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
     AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph, EventId,
     Footprint, GenerationEvidence, GenerationId, GenerationKind, GraphBuilder, InstructionInfo,
-    MemAccess, OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space, StoredValue,
-    SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    MemAccess, OperandRole, OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space,
+    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 
 pub const PC: ProgramPoint = ProgramPoint(0);
@@ -71,7 +71,7 @@ impl Scenario {
         addr: u64,
         width: u32,
         value: Option<ExprId>,
-        proxy: Proxy,
+        (proxy, role): (Proxy, OperandRole),
     ) -> MemAccess {
         let value = value.map(|v| self.b.value(StoredValue::Scalar(v)));
         MemAccess {
@@ -80,6 +80,7 @@ impl Scenario {
             ordering: OrderingKind::Ordinary,
             proxy,
             footprint: Footprint::Bytes { addr, width },
+            role,
             attributed: t(thread),
             value,
         }
@@ -93,7 +94,7 @@ impl Scenario {
             addr,
             4,
             None,
-            Proxy::Generic,
+            (Proxy::Generic, OperandRole::Plain),
         );
         self.b.thread_access(t(thread), PC, a)
     }
@@ -107,7 +108,7 @@ impl Scenario {
             addr,
             4,
             Some(v),
-            Proxy::Generic,
+            (Proxy::Generic, OperandRole::Plain),
         );
         self.b.thread_access(t(thread), PC, a)
     }
@@ -120,7 +121,7 @@ impl Scenario {
             addr,
             4,
             Some(value),
-            Proxy::Generic,
+            (Proxy::Generic, OperandRole::Plain),
         );
         self.b.thread_access(t(thread), PC, a)
     }
@@ -242,9 +243,25 @@ impl Scenario {
         addr: u64,
         proxy: Proxy,
     ) -> AsyncOpId {
+        let role = match mode {
+            AccessMode::Read => OperandRole::Source,
+            AccessMode::Write => OperandRole::Destination,
+        };
+        self.async_op_as(issuer, kind, mode, addr, (proxy, role))
+    }
+
+    /// [`Self::async_op`] with an explicit operand role.
+    pub fn async_op_as(
+        &mut self,
+        issuer: u32,
+        kind: AsyncOpKind,
+        mode: AccessMode,
+        addr: u64,
+        (proxy, role): (Proxy, OperandRole),
+    ) -> AsyncOpId {
         let op = self.b.async_issue(t(issuer), PC, kind);
         let value = (mode == AccessMode::Write).then(|| self.arena.int(99));
-        let a = self.access(issuer, Space::Shared, mode, addr, 4, value, proxy);
+        let a = self.access(issuer, Space::Shared, mode, addr, 4, value, (proxy, role));
         self.b.async_effect(op, a);
         op
     }

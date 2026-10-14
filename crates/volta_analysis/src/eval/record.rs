@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use volta_graph::{
     AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals, BlockedOn, BlockedThread,
     CollectiveSide, ContributionKind, EventId, Footprint, GenerationEvidence, GenerationId,
-    GenerationKind, MbarrierState, MemAccess, OrderingKind, Parity, ProgramPoint, Proxy, Space,
-    StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
+    GenerationKind, MbarrierState, MemAccess, OperandRole, OrderingKind, Parity, ProgramPoint,
+    Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
 };
 
 use crate::eval::interp::{BarrierArrivals, Interpreter, Status};
@@ -22,8 +22,12 @@ use crate::lowered::{InstrId, MemSpace};
 pub(in crate::eval) enum AccessOrigin {
     /// The thread's own synchronous access.
     Thread,
-    /// An effect of asynchronous operation `op`, through `proxy`.
-    Async { op: AsyncOpId, proxy: Proxy },
+    /// An effect of asynchronous operation `op` on its `role` operand, through `proxy`.
+    Async {
+        op: AsyncOpId,
+        proxy: Proxy,
+        role: OperandRole,
+    },
     /// The deferred application of an effect recorded at issue (a landing `cp.async`).
     Applied,
 }
@@ -128,9 +132,9 @@ impl Interpreter<'_> {
             Some(v) => (AccessMode::Write, Some(self.graph.value(stored(v)))),
             None => (AccessMode::Read, None),
         };
-        let proxy = match origin {
-            AccessOrigin::Thread => Proxy::Generic,
-            AccessOrigin::Async { proxy, .. } => proxy,
+        let (proxy, role) = match origin {
+            AccessOrigin::Thread => (Proxy::Generic, OperandRole::Plain),
+            AccessOrigin::Async { proxy, role, .. } => (proxy, role),
             AccessOrigin::Applied => return,
         };
         let access = MemAccess {
@@ -142,6 +146,7 @@ impl Interpreter<'_> {
                 addr,
                 width: width as u32,
             },
+            role,
             attributed: tix(t),
             value,
         };
@@ -163,7 +168,7 @@ impl Interpreter<'_> {
         &mut self,
         op: AsyncOpId,
         t: ThreadId,
-        mode: AccessMode,
+        (mode, role): (AccessMode, OperandRole),
         lane: u32,
         lanes: u32,
         col: u32,
@@ -183,6 +188,7 @@ impl Interpreter<'_> {
                     col: col as u16,
                     cols: cols as u16,
                 },
+                role,
                 attributed: tix(t),
                 value,
             },
@@ -195,7 +201,7 @@ impl Interpreter<'_> {
         &mut self,
         op: AsyncOpId,
         t: ThreadId,
-        mode: AccessMode,
+        effect: (AccessMode, OperandRole),
         lane_base: u32,
         col_base: u32,
         cells: impl Iterator<Item = (u32, u32)>,
@@ -206,14 +212,14 @@ impl Interpreter<'_> {
             run = match run {
                 Some((l, c, n)) if l == lane && c + n == col => Some((l, c, n + 1)),
                 Some((l, c, n)) => {
-                    self.record_tmem_effect(op, t, mode, l, 1, c, n);
+                    self.record_tmem_effect(op, t, effect, l, 1, c, n);
                     Some((lane, col, 1))
                 }
                 None => Some((lane, col, 1)),
             };
         }
         if let Some((l, c, n)) = run {
-            self.record_tmem_effect(op, t, mode, l, 1, c, n);
+            self.record_tmem_effect(op, t, effect, l, 1, c, n);
         }
     }
 
@@ -223,7 +229,7 @@ impl Interpreter<'_> {
         &mut self,
         op: AsyncOpId,
         t: ThreadId,
-        mode: AccessMode,
+        effect: (AccessMode, OperandRole),
         lanes: &[u32],
         (col, cols): (u32, u32),
     ) {
@@ -234,7 +240,7 @@ impl Interpreter<'_> {
             while end < lanes.len() && lanes[end] == lanes[end - 1] + 1 {
                 end += 1;
             }
-            self.record_tmem_effect(op, t, mode, start, (end - i) as u32, col, cols);
+            self.record_tmem_effect(op, t, effect, start, (end - i) as u32, col, cols);
             i = end;
         }
     }

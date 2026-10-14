@@ -2,7 +2,7 @@
 //! global to shared, mbarrier-completed). The data lands eagerly at issue; an
 //! observed mbarrier phase is the copy's only completion signal (9.7.9.25.2).
 
-use volta_graph::{AsyncOpId, AsyncOpKind, Proxy};
+use volta_graph::{AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
@@ -204,10 +204,7 @@ impl<'p> Interpreter<'p> {
 
         let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();
         let op = self.record_async_issue(t, pc, AsyncOpKind::TensorCopy);
-        let origin = AccessOrigin::Async {
-            op,
-            proxy: Proxy::Async,
-        };
+        let (source, destination) = copy_origins(op);
         let mut idx = vec![0u32; real_rank];
         let mut global_idx = vec![0i64; real_rank];
         for linear in 0..total_elems {
@@ -231,7 +228,7 @@ impl<'p> Interpreter<'p> {
                 for d in 1..real_rank {
                     byte_addr += global_idx[d] as u64 * global_strides[d - 1];
                 }
-                self.mem_read_from(t, pc, MemSpace::Global, byte_addr, elem_bytes, origin)?
+                self.mem_read_from(t, pc, MemSpace::Global, byte_addr, elem_bytes, source)?
             } else if elemtype.is_float() {
                 Value::Scalar(
                     self.arena
@@ -258,7 +255,7 @@ impl<'p> Interpreter<'p> {
                 dst_elem_addr,
                 elem_bytes,
                 value,
-                origin,
+                destination,
             )?;
         }
 
@@ -290,15 +287,12 @@ impl<'p> Interpreter<'p> {
         self.check_alignment(t, pc, MemSpace::Shared, dst_addr, 16)?;
 
         let op = self.record_async_issue(t, pc, AsyncOpKind::BulkCopy);
-        let origin = AccessOrigin::Async {
-            op,
-            proxy: Proxy::Async,
-        };
+        let (source, destination) = copy_origins(op);
         for byte in (0..size).step_by(WORD_BYTES as usize) {
             let src = src_addr + byte;
-            let value = self.mem_read_from(t, pc, MemSpace::Global, src, WORD_BYTES, origin)?;
+            let value = self.mem_read_from(t, pc, MemSpace::Global, src, WORD_BYTES, source)?;
             let dst = dst_addr + byte;
-            self.mem_write_from(t, pc, MemSpace::Shared, dst, WORD_BYTES, value, origin)?;
+            self.mem_write_from(t, pc, MemSpace::Shared, dst, WORD_BYTES, value, destination)?;
         }
 
         self.mbarrier_complete_tx(t, pc, mbar_addr, size, op)
@@ -330,4 +324,17 @@ impl<'p> Interpreter<'p> {
         self.record_mbarrier_progress(id, before);
         Ok(())
     }
+}
+
+/// A bulk copy's source and destination effects, both through the async proxy.
+fn copy_origins(op: AsyncOpId) -> (AccessOrigin, AccessOrigin) {
+    let origin = |role| AccessOrigin::Async {
+        op,
+        proxy: Proxy::Async,
+        role,
+    };
+    (
+        origin(OperandRole::Source),
+        origin(OperandRole::Destination),
+    )
 }

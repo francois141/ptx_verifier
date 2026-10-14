@@ -154,7 +154,7 @@ impl EventGraph {
                     let a = &self.accesses[acc];
                     write!(
                         out,
-                        "{} {} {} {} by t{} ",
+                        "{} {} {} {} {:?} by t{} ",
                         match a.mode {
                             AccessMode::Read => "read",
                             AccessMode::Write => "write",
@@ -169,6 +169,7 @@ impl EventGraph {
                             Proxy::Async => "async",
                         },
                         space(a.space),
+                        a.role,
                         a.attributed.0
                     )?;
                     match a.footprint {

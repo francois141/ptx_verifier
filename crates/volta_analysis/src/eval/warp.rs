@@ -5,7 +5,7 @@
 
 use volta_frontend::ast::ScalarType;
 
-use volta_graph::{AccessMode, AsyncOpKind, GenerationId, GroupFamily};
+use volta_graph::{AccessMode, AsyncOpKind, GenerationId, GroupFamily, OperandRole};
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
@@ -1158,7 +1158,8 @@ impl Interpreter<'_> {
         let op = self.record_async_issue(members[0], pc, AsyncOpKind::Tcgen05Ld);
         for &m in members {
             let cells = (0..dst.len() as u32).map(|k| shape.cell(m.0 % WARP_SIZE, k));
-            self.record_tmem_cells(op, m, AccessMode::Read, lane_base, base_col, cells);
+            let effect = (AccessMode::Read, OperandRole::TmemData);
+            self.record_tmem_cells(op, m, effect, lane_base, base_col, cells);
         }
         self.record_tcgen05_pending(members[0].0 / WARP_SIZE, Tcgen05Wait::Ld, op);
         for &m in members {
@@ -1200,7 +1201,8 @@ impl Interpreter<'_> {
         let op = self.record_async_issue(members[0], pc, AsyncOpKind::Tcgen05St);
         for &m in members {
             let cells = (0..src.len() as u32).map(|k| shape.cell(m.0 % WARP_SIZE, k));
-            self.record_tmem_cells(op, m, AccessMode::Write, lane_base, base_col, cells);
+            let effect = (AccessMode::Write, OperandRole::TmemData);
+            self.record_tmem_cells(op, m, effect, lane_base, base_col, cells);
         }
         self.record_tcgen05_pending(members[0].0 / WARP_SIZE, Tcgen05Wait::St, op);
         for &m in members {

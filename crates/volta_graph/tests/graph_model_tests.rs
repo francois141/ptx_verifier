@@ -4,8 +4,9 @@
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
     AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventKind, ExecContext, Footprint,
-    GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OrderingKind,
-    ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal, ThreadIx,
+    GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole,
+    OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
+    ThreadIx,
 };
 
 fn provenance(threads: u32, instructions: usize) -> Provenance {
@@ -37,6 +38,7 @@ fn shared(thread: u32, mode: AccessMode, addr: u64, b: &mut GraphBuilder) -> Mem
         ordering: OrderingKind::Ordinary,
         proxy: Proxy::Generic,
         footprint: Footprint::Bytes { addr, width: 4 },
+        role: OperandRole::Plain,
         attributed: ThreadIx(thread),
         value,
     }
@@ -105,7 +107,7 @@ fn the_dump_is_deterministic_and_names_every_edge() {
     assert!(a.contains("generation g0 o0#0 barrier full-cta complete=e4"));
     assert!(a.contains("  contrib e1 blocking"));
     assert!(a.contains("  release e5 e6"));
-    assert!(a.contains("e0 t0 pc0 write ordinary generic shared by t0 [0x0,+4) = n0"));
+    assert!(a.contains("e0 t0 pc0 write ordinary generic shared Plain by t0 [0x0,+4) = n0"));
     assert!(a.ends_with("terminal completed\n"));
 }
 
