@@ -1,0 +1,15 @@
+// Clusters are assumed to hold a single CTA, so rank 1 is outside the cluster.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<4>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r0, mbar;
+    mov.u32 %r1, 1;
+    mapa.shared::cluster.u32 %r2, %r0, %r1;
+    ret;
+}

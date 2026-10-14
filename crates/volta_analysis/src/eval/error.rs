@@ -208,6 +208,13 @@ pub enum EvalError {
         pc: InstrId,
         misuse: ClcMisuse,
     },
+    /// `mapa` named a CTA rank other than 0: clusters are assumed to hold
+    /// exactly one CTA, so any other rank is outside the cluster.
+    MapaRankOutsideCluster {
+        thread: ThreadId,
+        pc: InstrId,
+        rank: i64,
+    },
     /// The per-analysis instruction budget was exhausted (runaway loop guard).
     InstructionLimit { limit: u64 },
     /// Configuration problem detected before/while setting up execution.
@@ -539,6 +546,12 @@ impl fmt::Display for EvalError {
                 write!(f, "instruction limit exceeded ({} instructions)", limit)
             }
             Self::Config { message } => write!(f, "configuration error: {}", message),
+            Self::MapaRankOutsideCluster { thread, pc, rank } => write!(
+                f,
+                "{}: mapa at {} names CTA rank {}, but clusters are assumed to hold a \
+                 single CTA (rank 0)",
+                thread, pc, rank
+            ),
             Self::Tcgen05InvalidColumnCount {
                 thread,
                 pc,

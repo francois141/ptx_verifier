@@ -1457,6 +1457,17 @@ fn test_clusterlaunchcontrol_multicast_try_cancel_is_rejected() {
     }
 }
 
+/// Clusters are assumed to hold a single CTA, so `mapa` into rank 1 names a
+/// CTA outside the cluster.
+#[test]
+fn test_mapa_nonzero_rank_is_rejected() {
+    let module = ptx!(parse "failing/mapa_nonzero_rank_is_rejected");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Eval(EvalError::MapaRankOutsideCluster { rank: 1, .. })) => {}
+        other => panic!("expected MapaRankOutsideCluster, got {other:?}"),
+    }
+}
+
 /// Generic addresses have no per-space windows, so generic `mapa` is rejected.
 #[test]
 fn test_mapa_generic_is_rejected() {

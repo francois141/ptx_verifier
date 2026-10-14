@@ -1704,3 +1704,13 @@ fn test_clusterlaunchcontrol_declined_cancel_ends_the_persistent_loop() {
         in_out_config(64, 64)
     );
 }
+
+/// Clusters are assumed to hold a single CTA, so `mapa` into rank 0 returns
+/// each thread's own shared address unchanged.
+#[test]
+fn test_mapa_rank_zero_is_the_identity() {
+    analyze!(
+        "success/mapa_rank_zero_is_the_identity",
+        in_out_config(4, 4)
+    );
+}

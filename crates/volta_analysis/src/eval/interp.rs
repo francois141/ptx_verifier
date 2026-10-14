@@ -1277,11 +1277,17 @@ impl<'p> Interpreter<'p> {
                 self.write_reg(t, pc, *dst, v)?;
             }
 
-            LoweredInstr::Mapa { .. } => {
-                return Err(EvalError::Unsupported {
-                    pc,
-                    what: "mapa evaluation is not implemented yet".to_string(),
-                });
+            LoweredInstr::Mapa { dst, src, rank } => {
+                let rank = self.concrete_operand(t, pc, rank, "mapa CTA rank")?;
+                if rank != 0 {
+                    return Err(EvalError::MapaRankOutsideCluster {
+                        thread: t,
+                        pc,
+                        rank,
+                    });
+                }
+                let v = self.operand_value(t, pc, src)?;
+                self.write_reg(t, pc, *dst, v)?;
             }
 
             LoweredInstr::Prmt {
