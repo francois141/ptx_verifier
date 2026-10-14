@@ -16,6 +16,25 @@ use crate::lowered::{InstrId, LoweredInstr, MemSpace};
 use crate::tensor_core::wgmma_m64n_k16;
 use volta_expr::{ExprId, Real};
 
+/// One fired `wgmma.mma_async`, linking each member's wgmma-groups to the
+/// operation's shared-memory lock.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(in crate::eval) struct WgmmaOpId(u64);
+
+/// A fired `wgmma.mma_async` whose `A`/`B` reads are not known complete. Data
+/// is computed at issue; the operand bytes stay write-locked until every live
+/// member's `wgmma.wait_group` released it, since a warp's wait only covers
+/// the groups it committed itself (PTX ISA 9.7.17.7.3).
+#[derive(Debug)]
+pub(in crate::eval) struct InflightWgmma {
+    id: WgmmaOpId,
+    issuer: ThreadId,
+    pc: InstrId,
+    /// Deduplicated shared-memory bytes read as `A`/`B`.
+    operand_bytes: Vec<u64>,
+    unwaited_members: usize,
+}
+
 impl Interpreter<'_> {
     /// Execute a complete warpgroup blocked at `pc`; `members` are the *live*
     /// threads, exited lanes arrive implicitly. Like `execute_warp_op`, but
@@ -138,6 +157,30 @@ impl Interpreter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Count one wait per entry of `waited` (one per member whose
+    /// `wgmma.wait_group` released that op); an op every live member has
+    /// waited on is complete, so its operand locks drop.
+    pub(in crate::eval) fn release_waited_wgmmas(&mut self, waited: &[WgmmaOpId]) {
+        for &id in waited {
+            let op = self
+                .wgmma_inflight
+                .iter_mut()
+                .find(|op| op.id == id)
+                .expect("a wgmma op stays in flight until its last member waits");
+            op.unwaited_members -= 1;
+        }
+        let (done, in_flight): (Vec<_>, Vec<_>) = std::mem::take(&mut self.wgmma_inflight)
+            .into_iter()
+            .partition(|op| op.unwaited_members == 0);
+        self.wgmma_inflight = in_flight;
+        for op in done {
+            for byte in op.operand_bytes {
+                self.race
+                    .release_src(MemSpace::Shared, byte, 1, op.issuer, op.pc);
+            }
+        }
     }
 
     /// Read `A`/`B` element `(mn_idx, k_idx)` (PTX ISA 9.7.17.5.1.2.1.3

@@ -23,6 +23,7 @@ use crate::eval::tcgen05_mma::{self, InflightMma, KSelect, Major, OperandFormat,
 use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
+use crate::eval::warpgroup::{InflightWgmma, WgmmaOpId};
 use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
@@ -163,6 +164,14 @@ pub(in crate::eval) struct ThreadState {
 /// sequential), so only the register is kept.
 type PendingWgmmaAccum = RegId;
 
+/// One wgmma-group as one thread sees it: its accumulator writebacks and the
+/// `wgmma.mma_async` operations whose shared-memory locks it holds open.
+#[derive(Debug, Default)]
+struct WgmmaGroup {
+    accums: Vec<PendingWgmmaAccum>,
+    ops: Vec<WgmmaOpId>,
+}
+
 /// Per-thread `wgmma.mma_async` register-hazard state (PTX ISA 9.7.17.7). Lives
 /// on `ThreadState`, not `RaceTracker`: registers are thread-local, so no
 /// cross-thread state is read.
@@ -179,12 +188,12 @@ pub(in crate::eval) struct WgmmaRegState {
     /// `wgmma.mma_async` writeback of that shape. Removed by any ordinary
     /// write; overwritten by another wgmma writeback.
     reg_shape: HashMap<RegId, MmaShape>,
-    /// Hazard B (`wgmma.wait_group`, 9.7.17.7.3): accumulator writebacks
+    /// Hazard B (`wgmma.wait_group`, 9.7.17.7.3): writebacks and operations
     /// since the last `wgmma.commit_group`, not yet sealed into a group.
-    uncommitted: Vec<PendingWgmmaAccum>,
+    uncommitted: WgmmaGroup,
     /// Hazard B: committed wgmma-groups, oldest first; `wgmma.wait_group
     /// N` pops from the front while more than `N` remain.
-    groups: VecDeque<Vec<PendingWgmmaAccum>>,
+    groups: VecDeque<WgmmaGroup>,
     /// Hazard B: refcount + latest issuing pc per register across `uncommitted`
     /// and `groups`, for O(1) pending checks on the hot path. Counted, since
     /// one register can sit in several outstanding groups.
@@ -231,10 +240,16 @@ impl WgmmaRegState {
     fn record_wgmma_write(&mut self, reg: RegId, shape: MmaShape, pc: InstrId) {
         self.reg_epoch.insert(reg, (self.fence_epoch, pc));
         self.reg_shape.insert(reg, shape);
-        self.uncommitted.push(reg);
+        self.uncommitted.accums.push(reg);
         let entry = self.pending.entry(reg).or_insert((0, pc));
         entry.0 += 1;
         entry.1 = pc;
+    }
+
+    /// Record that this thread took part in `wgmma.mma_async` `op`: the next
+    /// `commit_group` seals it into this thread's group.
+    pub(in crate::eval) fn record_wgmma_op(&mut self, op: WgmmaOpId) {
+        self.uncommitted.ops.push(op);
     }
 
     /// `wgmma.fence`: establishes an ordering point for every register.
@@ -250,11 +265,13 @@ impl WgmmaRegState {
     }
 
     /// `wgmma.wait_group N`: releases wgmma-groups past the `N` most
-    /// recent.
-    pub(in crate::eval) fn wait_group(&mut self, n: u32) {
+    /// recent, returning the operations they held.
+    pub(in crate::eval) fn wait_group(&mut self, n: u32) -> Vec<WgmmaOpId> {
+        let mut released = Vec::new();
         while self.groups.len() > n as usize {
             let group = self.groups.pop_front().unwrap();
-            for reg in group {
+            released.extend(group.ops);
+            for reg in group.accums {
                 if let Some((count, _)) = self.pending.get_mut(&reg) {
                     *count -= 1;
                     if *count == 0 {
@@ -263,6 +280,7 @@ impl WgmmaRegState {
                 }
             }
         }
+        released
     }
 }
 
@@ -330,6 +348,10 @@ pub struct Interpreter<'p> {
     /// Issued `cp.async.bulk{.tensor}` copies no waiter has yet observed
     /// complete - see `async_bulk::InflightBulkCopy`.
     pub(in crate::eval) bulk_inflight: Vec<InflightBulkCopy>,
+    /// Fired `wgmma.mma_async`s some live member has not yet waited on - see
+    /// `warpgroup::InflightWgmma`.
+    pub(in crate::eval) wgmma_inflight: Vec<InflightWgmma>,
+    pub(in crate::eval) next_wgmma_op: WgmmaOpId,
     /// The first declined cluster-launch-control response decoded, if any.
     pub(in crate::eval) clc_observed_decline: Option<ObservedDecline>,
     regions: MemRegions,
@@ -540,6 +562,8 @@ impl<'p> Interpreter<'p> {
             tensor: TensorMemory::new(),
             tcgen05_inflight: Vec::new(),
             bulk_inflight: Vec::new(),
+            wgmma_inflight: Vec::new(),
+            next_wgmma_op: WgmmaOpId::default(),
             clc_observed_decline: None,
             regions,
             race: RaceTracker::new(n_threads as usize),

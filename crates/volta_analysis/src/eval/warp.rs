@@ -1278,17 +1278,19 @@ impl Interpreter<'_> {
     }
 
     /// A converged `wgmma.fence`/`commit_group`/`wait_group`: each live lane
-    /// updates only its own register-hazard state.
+    /// updates its own wgmma-group state, and a wait may complete operations.
     fn exec_wgmma_hazard_op(&mut self, members: &[ThreadId], instr: &LoweredInstr) {
+        let mut waited = Vec::new();
         for &t in members {
             let wgmma = &mut self.threads[t].wgmma;
             match instr {
                 LoweredInstr::WgmmaFence => wgmma.fence(),
                 LoweredInstr::WgmmaCommitGroup => wgmma.commit_group(),
-                LoweredInstr::WgmmaWaitGroup { n } => wgmma.wait_group(*n),
+                LoweredInstr::WgmmaWaitGroup { n } => waited.extend(wgmma.wait_group(*n)),
                 other => unreachable!("{:?} is not a wgmma hazard op", other),
             }
         }
+        self.release_waited_wgmmas(&waited);
     }
 
     /// Place one lane's packed-f16 fragment registers into a matrix grid.
