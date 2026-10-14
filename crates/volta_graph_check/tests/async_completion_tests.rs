@@ -210,3 +210,81 @@ fn a_sync_before_the_tcgen05_ld_completes_fails() {
         volta_graph::EventKind::Contribute(_)
     ));
 }
+
+/// A one-lane wait collective of `warp` by thread `lane`, its exit tracking `ops`.
+fn warp_wait(s: &mut Scenario, warp: u32, lane: u32, ops: &[AsyncOpId]) -> GenerationId {
+    let object = s.b.sync_object(SyncObjectKind::WarpCollective { warp });
+    let kind = |side| GenerationKind::Collective {
+        pc: PC,
+        mask: 1,
+        side,
+    };
+    let entry = s.b.open_generation(object, 0, kind(CollectiveSide::Entry));
+    s.b.contribute(t(lane), PC, entry, ContributionKind::Blocking);
+    s.b.complete_generation(entry, GenerationEvidence::default());
+    s.b.resume(t(lane), PC, entry);
+    let exit = s.b.open_generation(object, 0, kind(CollectiveSide::Exit));
+    for &op in ops {
+        s.b.track(op, exit, 0);
+    }
+    s.b.contribute(t(lane), PC, exit, ContributionKind::Blocking);
+    s.b.complete_generation(exit, GenerationEvidence::default());
+    s.b.resume(t(lane), PC, exit);
+    exit
+}
+
+/// One `wgmma.mma_async` instance: a share per member reading `A`, then the `committers`'
+/// commits; `waiter` (a lane of warp `waiter / 32`) then waits on every share.
+fn wgmma(
+    threads: u32,
+    members: &[u32],
+    committers: &[u32],
+    waiter: u32,
+) -> volta_graph::EventGraph {
+    let mut s = Scenario::new(threads);
+    let shares: Vec<AsyncOpId> = members
+        .iter()
+        .map(|&m| {
+            s.async_op_as(
+                m,
+                AsyncOpKind::WgmmaMma { instance: 0 },
+                AccessMode::Read,
+                0x40,
+                (Proxy::Async, volta_graph::OperandRole::MmaA),
+            )
+        })
+        .collect();
+    for &c in committers {
+        s.b.group_commit(t(c), PC, GroupFamily::Wgmma);
+    }
+    warp_wait(&mut s, waiter / 32, waiter, &shares);
+    s.completed(threads).0
+}
+
+#[test]
+fn any_member_warps_wait_observes_the_whole_wgmma() {
+    let graph = wgmma(33, &[0, 32], &[0, 32], 0);
+    let (result, certificate) = check_async_completion(&graph, &SyncCertificate::assume_all());
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.completions.contains(&AsyncOpId(1)));
+}
+
+#[test]
+fn a_wait_outside_the_warpgroup_is_misassociated() {
+    let graph = wgmma(129, &[0], &[0, 128], 128);
+    let (result, _) = check_async_completion(&graph, &SyncCertificate::assume_all());
+    assert!(
+        matches!(
+            result.violations(),
+            [CompletionViolation::Misassociated { .. }]
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_wait_by_a_warp_that_never_committed_is_misassociated() {
+    let graph = wgmma(33, &[0, 32], &[32], 0);
+    let (result, _) = check_async_completion(&graph, &SyncCertificate::assume_all());
+    assert_eq!(result.violations().len(), 2, "{result:?}");
+}

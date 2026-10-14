@@ -15,9 +15,10 @@
 //!   pending copies); bulk, TMA and CLC copies by the one mbarrier phase forming at issue,
 //!   counting exactly the bytes they write; `tcgen05.mma` by phases its issuer committed to
 //!   after issuing it; `tcgen05.ld`/`.st` by a later wait collective of the issuing warp;
-//!   a `wgmma.mma_async` share by a later `wgmma.wait_group` of its member's warp, after that
-//!   member's commit. Which `wait` kind (`::ld`/`::st`) and which `wait_group` depth released
-//!   an op is not re-derived (the graph does not record it).
+//!   a `wgmma.mma_async` share by later `wgmma.wait_group`s of warps of its warpgroup, each
+//!   after that warp's commit (Volta's model: the warpgroup op completes as a whole, so any
+//!   member warp's wait observes every share). Which `wait` kind (`::ld`/`::st`) and which
+//!   `wait_group` depth released an op is not re-derived (the graph does not record it).
 //! * Volta model rule (the PTX ISA leaves no other way for a CTA-level sync to order an
 //!   incomplete `tcgen05.ld`/`.st`): no thread of the issuing warp contributes to a named
 //!   barrier or mbarrier between the op's issue and its wait.
@@ -310,23 +311,31 @@ fn check_mechanism(
             [g] if is_warp_exit(graph, *g, a.issuer.0 / 32) && after_issue(*g) => Ok(()),
             _ => Err("not tracked by one later wait of its warp".to_string()),
         },
-        AsyncOpKind::WgmmaMma { .. } => match a.tracking.as_slice() {
-            [] => Ok(()),
-            [g] if is_warp_exit(graph, *g, a.issuer.0 / 32) && after_issue(*g) => {
-                let done = graph.generation(*g).completion;
-                let committed = graph.program_order(a.issuer).iter().any(|&e| {
-                    e > a.issue
-                        && done.is_none_or(|d| e < d)
-                        && graph.event(e).kind == EventKind::GroupCommit(GroupFamily::Wgmma)
+        AsyncOpKind::WgmmaMma { .. } => {
+            let warpgroup = a.issuer.0 / 128;
+            for &g in &a.tracking {
+                let Some(warp) = (warpgroup * 4..warpgroup * 4 + 4)
+                    .find(|&w| is_warp_exit(graph, g, w))
+                    .filter(|_| after_issue(g))
+                else {
+                    return Err(
+                        "not tracked by a later wait_group of a warp of its warpgroup".to_string(),
+                    );
+                };
+                let done = graph.generation(g).completion;
+                let committed = (warp * 32..(warp * 32 + 32).min(graph.threads())).any(|lane| {
+                    graph.program_order(ThreadIx(lane)).iter().any(|&e| {
+                        e > a.issue
+                            && done.is_none_or(|d| e < d)
+                            && graph.event(e).kind == EventKind::GroupCommit(GroupFamily::Wgmma)
+                    })
                 });
-                if committed {
-                    Ok(())
-                } else {
-                    Err("released by a wait_group without a commit in between".to_string())
+                if !committed {
+                    return Err("released by a wait_group without a commit in between".to_string());
                 }
             }
-            _ => Err("not tracked by one later wait_group of its member's warp".to_string()),
-        },
+            Ok(())
+        }
     }
 }
 

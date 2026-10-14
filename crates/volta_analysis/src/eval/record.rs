@@ -76,6 +76,8 @@ pub(in crate::eval) struct Recording {
     unobserved_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
     tcgen05_pending: HashMap<(u32, Tcgen05Wait), Vec<AsyncOpId>>,
     wgmma_parts: HashMap<(WgmmaOpId, ThreadId), AsyncOpId>,
+    /// Every member share of each wgmma op, and the waits already tracking them.
+    wgmma_shares: HashMap<WgmmaOpId, (Vec<AsyncOpId>, Vec<GenerationId>)>,
     next_wgmma_instance: u32,
 }
 
@@ -813,9 +815,11 @@ impl Interpreter<'_> {
     /// Member `t`'s share of wgmma op `id` is graph op `op`.
     pub(in crate::eval) fn record_wgmma_part(&mut self, id: WgmmaOpId, t: ThreadId, op: AsyncOpId) {
         self.rec.wgmma_parts.insert((id, t), op);
+        self.rec.wgmma_shares.entry(id).or_default().0.push(op);
     }
 
-    /// Member `t`'s `wgmma.wait_group` released `released`; their shares complete into `exit`.
+    /// Member `t`'s `wgmma.wait_group` released `released` into `exit`. The warpgroup op
+    /// completes as a whole, so the wait observes every member's share of it.
     pub(in crate::eval) fn record_wgmma_released(
         &mut self,
         t: ThreadId,
@@ -823,7 +827,17 @@ impl Interpreter<'_> {
         exit: GenerationId,
     ) {
         for id in released {
-            if let Some(op) = self.rec.wgmma_parts.remove(&(*id, t)) {
+            if self.rec.wgmma_parts.remove(&(*id, t)).is_none() {
+                continue;
+            }
+            let Some((shares, waits)) = self.rec.wgmma_shares.get_mut(id) else {
+                continue;
+            };
+            if waits.contains(&exit) {
+                continue;
+            }
+            waits.push(exit);
+            for &op in shares.iter() {
                 self.graph.track(op, exit, 0);
             }
         }
