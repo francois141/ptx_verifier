@@ -4,6 +4,7 @@
 //! symbolic facts (the producer's arena, a value-equality oracle) are explicit inputs where a
 //! property needs them.
 
+pub mod async_completion;
 pub mod barrier;
 pub mod hb;
 pub mod result;
