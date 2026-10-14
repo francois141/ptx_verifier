@@ -8,6 +8,7 @@ pub mod async_completion;
 pub mod barrier;
 pub mod hb;
 pub mod pipeline;
+pub mod proxy;
 pub mod result;
 pub mod well_formed;
 
