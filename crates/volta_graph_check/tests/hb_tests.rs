@@ -24,10 +24,10 @@ fn hb(graph: &EventGraph, admission: &Admission, a: EventId, b: EventId) -> bool
         if e == b {
             answer = Some(match (a_point, a_op) {
                 (Some(p), _) => {
-                    if let Point::Thread(cur) = view.point() {
-                        if cur.thread == p.thread {
-                            assert!(p.index <= cur.index);
-                        }
+                    if let Point::Thread(cur) = view.point()
+                        && cur.thread == p.thread
+                    {
+                        assert!(p.index <= cur.index);
                     }
                     view.thread_hb(p)
                 }
