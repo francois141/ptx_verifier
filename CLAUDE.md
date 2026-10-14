@@ -159,9 +159,10 @@ against a spec exactly like against a second kernel (`volta verify`). The
 
 ### Value equality (`value_equality.rs`)
 
-`ValueEquality`: the race detector's hook for a benign same-value store,
-injected into `analyze_kernel` so the interpreter needs no decision
-procedure; `volta_equivalence::CanonValueEquality` implements it.
+`ValueEquality`: the memory-conflict checker's query for a benign same-value
+store, passed explicitly to the graph branch (`SymbolicFacts`) so neither the
+interpreter nor the checkers depend on a decision procedure;
+`volta_equivalence::CanonValueEquality` implements it.
 
 ### Text format (`text.rs`, `.vexpr`)
 
@@ -272,7 +273,7 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/value.rs` - `Value::{Scalar, Pair}` (`Pair` = packed f16 halves in a 32-bit register) and per-thread `RegFile`
 - `eval/memory.rs` - byte-addressed granule memory; 4-byte reads combine two 2-byte granules into a `Pair`, 2-byte accesses split `Pair` granules; program writes are `dirty` (the output footprint)
 - `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
-- `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it, since a warp's wait only covers the groups it committed itself
+- `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it (a warp's wait covers the groups it committed itself). In the graph each member has a share (an async op); the warpgroup op completes as a whole, so a member warp's wait tracks every share of the instances it releases
 - `eval/config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
 - `eval/error.rs` - `EvalError`: `Deadlock`, `NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.; the race/async-hazard variants (`DataRace`, `AsyncCopyHazard`, `TensorMemoryRace`, ...) are kept as the report format but the evaluator no longer produces them
 
@@ -614,7 +615,11 @@ second in-memory copy - plus informational per-array element counts;
 read-modify-write per dump with the read just before the atomic
 temp+rename write, so partial regenerations keep other entries; single
 writer per out-dir assumed) - race-check benchmarks reach their real
-verdicts here, so the race table comes from a `generate` run;
+verdicts here, so the race table comes from a `generate` run (`RACE`
+for a failed graph property that is a race, `OK` only when graph
+verification is `Verified`, `UNKNOWN` (`ActualOutcome::Unverified`) when
+nothing failed but verification is incomplete; every generation record
+carries `graph_verification`);
 equivalence benchmarks report `GEN` (`ActualOutcome::VcsGenerated`), a
 failed dump/manifest write fails them (the dump is the product), and any
 failure leaving no fresh dump also deletes the benchmark's stale dump +
@@ -752,11 +757,11 @@ Memory addresses must be concrete (`u64`) for race detection. Thread indices are
 
 ### 3. Race Detection Is Not Part of the Evaluator
 
-The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed; data-race and async-hazard verification is being rebuilt as a separate, graph-based downstream branch.
+The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream, one checker per property (memory conflicts through typed happens-before, never untyped reachability). Passing every property implies schedule independence only in the `ProofScope::ScheduleIndependent` fragment; elsewhere it is a candidate-execution fact, reported as UNKNOWN.
 
 ### 4. Round-Robin Scheduling
 
-Simple, deterministic interleaving. Sufficient for race detection (any interleaving that produces a race proves the race exists).
+Simple, deterministic interleaving: the candidate execution. A conflict unordered through every candidate edge proves a race; absence of one proves nothing on its own (see 3).
 
 ### 5. Strongly-Typed IDs
 
