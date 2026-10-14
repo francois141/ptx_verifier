@@ -24,9 +24,10 @@ use volta_graph::{
 
 use crate::result::{PropertyResult, Unresolved};
 
-/// Pipelined accumulator chains: an op's chain and its position in it.
+/// Pipelined accumulator chains (ops in issue order) and each op's chain and position.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PipelineCertificate {
+    chains: Vec<Vec<AsyncOpId>>,
     position: HashMap<AsyncOpId, (usize, usize)>,
 }
 
@@ -45,11 +46,11 @@ impl PipelineCertificate {
     }
 
     /// The ops pipelined after `op` on its accumulator, in issue order.
-    pub fn successors(&self, op: AsyncOpId) -> impl Iterator<Item = AsyncOpId> + '_ {
-        let here = self.position.get(&op).copied();
-        self.position.iter().filter_map(move |(&other, &(c, p))| {
-            here.filter(|&(hc, hp)| hc == c && p > hp).map(|_| other)
-        })
+    pub fn successors(&self, op: AsyncOpId) -> &[AsyncOpId] {
+        match self.position.get(&op) {
+            Some(&(c, p)) => &self.chains[c][p + 1..],
+            None => &[],
+        }
     }
 }
 
@@ -102,7 +103,6 @@ pub fn check_pipeline(graph: &EventGraph) -> (PipelineResult, PipelineCertificat
     }
     let mut unresolved = Vec::new();
     let mut chains: HashMap<(ThreadIx, Vec<Footprint>), usize> = HashMap::new();
-    let mut members: Vec<usize> = Vec::new();
     let mut certificate = PipelineCertificate::none();
     for (op, a) in graph.async_ops().iter() {
         if a.kind != AsyncOpKind::Tcgen05Mma {
@@ -118,17 +118,22 @@ pub fn check_pipeline(graph: &EventGraph) -> (PipelineResult, PipelineCertificat
         }
         let next = chains.len();
         let chain = *chains.entry((a.issuer, d)).or_insert(next);
-        if chain == members.len() {
-            members.push(0);
+        if chain == certificate.chains.len() {
+            certificate.chains.push(Vec::new());
         }
-        certificate.position.insert(op, (chain, members[chain]));
-        members[chain] += 1;
+        let ops = &mut certificate.chains[chain];
+        certificate.position.insert(op, (chain, ops.len()));
+        ops.push(op);
     }
-    let certified_pairs = members.iter().map(|&n| n * n.saturating_sub(1) / 2).sum();
+    let certified_pairs = certificate
+        .chains
+        .iter()
+        .map(|c| c.len() * c.len().saturating_sub(1) / 2)
+        .sum();
     (
         PropertyResult::from_findings(
             PipelineEvidence {
-                chains: members.len(),
+                chains: certificate.chains.len(),
                 certified_pairs,
             },
             Vec::new(),
