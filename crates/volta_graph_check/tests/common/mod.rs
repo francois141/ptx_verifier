@@ -62,6 +62,7 @@ impl Scenario {
         self.arena.int(v)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn access(
         &mut self,
         thread: u32,
