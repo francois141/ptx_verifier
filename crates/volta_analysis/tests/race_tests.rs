@@ -498,6 +498,44 @@ fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
     );
 }
 
+/// A `wgmma.mma_async`'s shared `A`/`B` stay write-locked until every live
+/// member's `wgmma.wait_group` releases it: thread 0 overwriting `A` before
+/// waiting (`_before_wait_group`), or under a `wait_group 1` that keeps the
+/// group pending (`_after_wait_group_1`), trips the lock.
+#[test]
+fn test_wgmma_operand_write_while_in_flight_is_an_inflight_hazard() {
+    for (name, src) in [
+        ptx_case!("execution_error/wgmma_operand_write_before_wait_group_is_an_inflight_hazard"),
+        ptx_case!("execution_error/wgmma_operand_write_after_wait_group_1_is_an_inflight_hazard"),
+    ] {
+        let mut config = AnalysisConfig::new((128, 1, 1));
+        config.arrays = vec![ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 1,
+            kind: ArrayKind::Output,
+        }];
+        config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+        let err = analyze_kernel(&parse(&src), None, config, &CanonValueEquality).unwrap_err();
+        match &err {
+            AnalysisError::Eval(EvalError::AsyncCopyHazard {
+                space,
+                prior,
+                current,
+                ..
+            }) => {
+                assert_eq!(*space, MemSpace::Shared, "{name}");
+                assert_eq!(prior.thread, ThreadId(0), "{name}");
+                assert!(!prior.is_write, "{name}");
+                assert_eq!(current.thread, ThreadId(0), "{name}");
+                assert!(current.is_write, "{name}");
+            }
+            other => panic!("{name}: expected AsyncCopyHazard, got: {}", other),
+        }
+    }
+}
+
 /// Two threads storing different values to one shared address race (unlike
 /// the same-value store in `accepted_tests.rs`).
 #[test]

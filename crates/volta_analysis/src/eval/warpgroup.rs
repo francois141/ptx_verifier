@@ -117,6 +117,7 @@ impl Interpreter<'_> {
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
         let (a_major, b_major) = (major(*transpose_a), major(*transpose_b));
 
+        let mut operand_bytes = Vec::new();
         for &t in members {
             let lane = t.0 % WARPGROUP_SIZE;
             for elem in wgmma_m64n_k16::matrix_d(lane, n) {
@@ -143,6 +144,7 @@ impl Interpreter<'_> {
                         (&a_md, a_major, *a_type),
                         elem.row as u64,
                         k,
+                        &mut operand_bytes,
                     )?;
                     let b_e = self.read_wgmma_element(
                         t,
@@ -150,13 +152,38 @@ impl Interpreter<'_> {
                         (&b_md, b_major, *b_type),
                         elem.col as u64,
                         k,
+                        &mut operand_bytes,
                     )?;
                     acc = self.arena.fma(a_e, b_e, acc);
                 }
                 self.write_reg_wgmma_accum(t, pc, reg, *shape, Value::Scalar(acc))?;
             }
         }
+        operand_bytes.sort_unstable();
+        operand_bytes.dedup();
+        self.lock_wgmma_operands(pc, members, operand_bytes);
         Ok(())
+    }
+
+    /// Write-lock `operand_bytes` for the op fired at `pc` and enter it in
+    /// every live member's uncommitted wgmma-group.
+    fn lock_wgmma_operands(&mut self, pc: InstrId, members: &[ThreadId], operand_bytes: Vec<u64>) {
+        let id = self.next_wgmma_op;
+        self.next_wgmma_op = WgmmaOpId(id.0 + 1);
+        let issuer = members[0];
+        for &byte in &operand_bytes {
+            self.race.lock_src(MemSpace::Shared, byte, 1, issuer, pc);
+        }
+        for &t in members {
+            self.threads[t].wgmma.record_wgmma_op(id);
+        }
+        self.wgmma_inflight.push(InflightWgmma {
+            id,
+            issuer,
+            pc,
+            operand_bytes,
+            unwaited_members: members.len(),
+        });
     }
 
     /// Count one wait per entry of `waited` (one per member whose
@@ -184,8 +211,8 @@ impl Interpreter<'_> {
     }
 
     /// Read `A`/`B` element `(mn_idx, k_idx)` (PTX ISA 9.7.17.5.1.2.1.3
-    /// layouts) via the async proxy. Concrete elements decode from f16/bf16/fp8
-    /// bits; symbolic ones are already real values.
+    /// layouts) via the async proxy, appending its bytes to `bytes`. Concrete
+    /// elements decode from f16/bf16/fp8 bits; symbolic ones are real values.
     fn read_wgmma_element(
         &mut self,
         t: ThreadId,
@@ -193,6 +220,7 @@ impl Interpreter<'_> {
         (desc, major, ty): (&MatrixDescriptor, Major, ScalarType),
         mn_idx: u64,
         k_idx: u64,
+        bytes: &mut Vec<u64>,
     ) -> EvalResult<ExprId> {
         let elem_bytes = u64::from(ty.bits() / 8);
         let addr = tcgen05_mma::operand_element_addr(desc, major, mn_idx, k_idx, elem_bytes)
@@ -201,6 +229,7 @@ impl Interpreter<'_> {
                 what: "wgmma.mma_async MN-major operand without swizzling is not modeled"
                     .to_string(),
             })?;
+        bytes.extend(addr..addr + elem_bytes);
         let Value::Scalar(e) =
             self.mem_read_via(t, pc, MemSpace::Shared, addr, elem_bytes, Proxy::Async)?
         else {
