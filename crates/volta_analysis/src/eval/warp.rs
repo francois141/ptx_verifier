@@ -1,4 +1,5 @@
-//! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`): the
+//! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`,
+//! `wgmma.fence`/`commit_group`/`wait_group`, the warp-scoped `tcgen05` ops): the
 //! paper's `sync I` over the lane group once all lanes reach the same pc and mask, then the
 //! op, with each memory access attributed to its owning lane (`tensor_core` tables).
 
@@ -195,6 +196,9 @@ impl Interpreter<'_> {
             LoweredInstr::Tcgen05Wait { is_st } => {
                 self.exec_tcgen05_wait(members, *is_st);
             }
+            LoweredInstr::WgmmaFence
+            | LoweredInstr::WgmmaCommitGroup
+            | LoweredInstr::WgmmaWaitGroup { .. } => self.exec_wgmma_hazard_op(members, &instr),
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
@@ -293,6 +297,10 @@ impl Interpreter<'_> {
             // The ISA states no exited-lane UB for `tcgen05.wait::ld`/`::st`
             // (unlike `.alloc`/`.ld`/...), so a partial warp is accepted.
             LoweredInstr::Tcgen05Wait { .. } => Ok(()),
+            // Likewise for the wgmma register-ordering ops: no exited-lane UB.
+            LoweredInstr::WgmmaFence
+            | LoweredInstr::WgmmaCommitGroup
+            | LoweredInstr::WgmmaWaitGroup { .. } => Ok(()),
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),
@@ -1267,6 +1275,20 @@ impl Interpreter<'_> {
     fn exec_tcgen05_wait(&mut self, members: &[ThreadId], is_st: bool) {
         let quadrant = Self::tcgen05_lane(members[0]) / WARP_SIZE;
         self.race.tcgen05_wait(quadrant, members[0].warp(), is_st);
+    }
+
+    /// A converged `wgmma.fence`/`commit_group`/`wait_group`: each live lane
+    /// updates only its own register-hazard state.
+    fn exec_wgmma_hazard_op(&mut self, members: &[ThreadId], instr: &LoweredInstr) {
+        for &t in members {
+            let wgmma = &mut self.threads[t].wgmma;
+            match instr {
+                LoweredInstr::WgmmaFence => wgmma.fence(),
+                LoweredInstr::WgmmaCommitGroup => wgmma.commit_group(),
+                LoweredInstr::WgmmaWaitGroup { n } => wgmma.wait_group(*n),
+                other => unreachable!("{:?} is not a wgmma hazard op", other),
+            }
+        }
     }
 
     /// Place one lane's packed-f16 fragment registers into a matrix grid.

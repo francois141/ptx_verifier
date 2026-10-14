@@ -136,6 +136,26 @@ fn test_mbarrier_wait_never_satisfied_deadlocks() {
     );
 }
 
+/// `wgmma.fence` is `.sync.aligned`: lane 0 skips it and blocks at
+/// `commit_group` while lanes 1-31 wait at the fence for it - a deadlock,
+/// not a per-thread no-op.
+#[test]
+fn test_wgmma_fence_skipped_by_one_lane_deadlocks() {
+    let module = ptx!(parse "failing/wgmma_fence_skipped_by_one_lane_deadlocks");
+    let err = analyze_kernel(
+        &module,
+        None,
+        AnalysisConfig::new((128, 1, 1)),
+        &CanonValueEquality,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
+        "expected deadlock, got: {}",
+        err
+    );
+}
+
 /// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at lowering:
 /// it has no ordering semantics (9.7.14.16.16/.19), so accepting it would
 /// make the happens-before edge unsound.

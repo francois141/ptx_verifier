@@ -152,7 +152,7 @@ pub(in crate::eval) struct ThreadState {
     groups: VecDeque<Vec<PendingCopy>>,
     /// `wgmma.mma_async` register-hazard tracking (PTX ISA 9.7.17.7.1/.2/.3), a
     /// separate domain from `uncommitted`/`groups` above.
-    wgmma: WgmmaRegState,
+    pub(in crate::eval) wgmma: WgmmaRegState,
     /// `tcgen05.mma.ws` collector buffers `b0`-`b3`: the `B` elements the
     /// last `::fill` loaded, until a `::lastuse`/`::discard` drops them.
     tcgen05_collectors: [Option<Vec<ExprId>>; 4],
@@ -167,7 +167,7 @@ type PendingWgmmaAccum = RegId;
 /// on `ThreadState`, not `RaceTracker`: registers are thread-local, so no
 /// cross-thread state is read.
 #[derive(Debug, Default)]
-struct WgmmaRegState {
+pub(in crate::eval) struct WgmmaRegState {
     /// Hazard A (`wgmma.fence`, 9.7.17.7.1): incremented by every
     /// `wgmma.fence` this thread executes.
     fence_epoch: u64,
@@ -238,20 +238,20 @@ impl WgmmaRegState {
     }
 
     /// `wgmma.fence`: establishes an ordering point for every register.
-    fn fence(&mut self) {
+    pub(in crate::eval) fn fence(&mut self) {
         self.fence_epoch += 1;
     }
 
     /// `wgmma.commit_group`: seals this thread's uncommitted accumulator
     /// writebacks into a new wgmma-group.
-    fn commit_group(&mut self) {
+    pub(in crate::eval) fn commit_group(&mut self) {
         let sealed = std::mem::take(&mut self.uncommitted);
         self.groups.push_back(sealed);
     }
 
     /// `wgmma.wait_group N`: releases wgmma-groups past the `N` most
     /// recent.
-    fn wait_group(&mut self, n: u32) {
+    pub(in crate::eval) fn wait_group(&mut self, n: u32) {
         while self.groups.len() > n as usize {
             let group = self.groups.pop_front().unwrap();
             for reg in group {
@@ -1993,18 +1993,13 @@ impl<'p> Interpreter<'p> {
             }
 
             // wgmma.fence/commit_group/wait_group (PTX ISA 9.7.17.7.{1,2,3})
-            // track register hazards only, never memory, and their state is
-            // per-thread, so they dispatch per-thread like cp.async groups.
-            LoweredInstr::WgmmaFence => {
-                self.threads[t].wgmma.fence();
-            }
-
-            LoweredInstr::WgmmaCommitGroup => {
-                self.threads[t].wgmma.commit_group();
-            }
-
-            LoweredInstr::WgmmaWaitGroup { n } => {
-                self.threads[t].wgmma.wait_group(*n);
+            // are `.sync.aligned`: each thread waits for its whole warp, like
+            // tcgen05.wait. Their hazard state stays per-thread.
+            LoweredInstr::WgmmaFence
+            | LoweredInstr::WgmmaCommitGroup
+            | LoweredInstr::WgmmaWaitGroup { .. } => {
+                self.block_at_warp_op(t, pc, u32::MAX)?;
+                return Ok(());
             }
 
             // Tensor Memory allocation management: PTX ISA 9.7.17.5 ("Issue

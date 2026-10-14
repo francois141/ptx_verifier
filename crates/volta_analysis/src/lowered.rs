@@ -930,19 +930,19 @@ pub enum LoweredInstr {
         transpose_b: bool,
     },
 
-    /// `wgmma.fence` (PTX ISA 9.7.17.7.1): orders a warpgroup's register
-    /// accesses before `wgmma.mma_async`. Volta does not track register
-    /// hazards here (like `Tcgen05Fence`), so this is a genuine no-op.
+    /// `wgmma.fence.sync.aligned` (PTX ISA 9.7.17.7.1): a warp rendezvous
+    /// that opens a new fence epoch in each lane's `ThreadState::wgmma`,
+    /// ordering prior register accesses before `wgmma.mma_async`.
     WgmmaFence,
 
-    /// `wgmma.commit_group` (PTX ISA 9.7.17.7.2): batches this warp's
-    /// uncommitted `wgmma.mma_async` ops into a wgmma-group; a no-op, since
-    /// evaluation is eager and group membership is not tracked.
+    /// `wgmma.commit_group.sync.aligned` (PTX ISA 9.7.17.7.2): a warp
+    /// rendezvous that seals each lane's uncommitted `wgmma.mma_async`
+    /// accumulator writebacks into a wgmma-group.
     WgmmaCommitGroup,
 
-    /// `wgmma.wait_group N` (PTX ISA 9.7.17.7.3): wait until at most `N`
-    /// groups are pending. `N` is a lowering-validated constant, kept for
-    /// `ThreadState::wgmma` to know how many groups to release.
+    /// `wgmma.wait_group.sync.aligned N` (PTX ISA 9.7.17.7.3): a warp
+    /// rendezvous releasing all but each lane's `N` most recent wgmma-groups.
+    /// `N` is a lowering-validated constant.
     WgmmaWaitGroup { n: u32 },
 
     /// `stmatrix...m8n8.shared.b16` (PTX ISA 9.7.14.5.17): `ldmatrix`'s
