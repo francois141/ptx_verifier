@@ -217,19 +217,17 @@ false (an implicit 1x1x1 cluster).
 
 The interpreter from the paper (per-thread round-robin symbolic execution):
 
-- `eval/interp.rs` - `Interpreter`: scheduler (run a thread until it blocks or exits), instruction evaluation into the arena, barrier firing per the paper's Sync rule, deadlock detection, structured-CTA concreteness checks. Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync'/syncMem semantics: exited threads count as arrived *and* are included in the χ-clear over the whole sync set I - stronger than the ISA's participating-threads-only memory ordering, so a spec-level race pairing a pre-sync exit with a post-sync access is intentionally not reported; tensor-core ops are the one deliberate exception to the paper's rule (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead)
+- `eval/interp.rs` - `Interpreter`: scheduler (run a thread until it blocks or exits), instruction evaluation into the arena, barrier firing per the paper's Sync rule, deadlock detection, structured-CTA concreteness checks. Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync' rule for *firing*: exited threads count as arrived; tensor-core ops are the one deliberate exception (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead). The interpreter runs one candidate schedule and performs **no** data-race or async-hazard checking (the former χ detector, `eval/race.rs`, was removed; graph-based verification replaces it)
 - `eval/arithm.rs` - arithmetic evaluation as a second `impl Interpreter`: binary/unary ops, comparisons, `cvt`, the `ex2`/`lg2` base-conversion folds, and integer/width canonicalization of operands and of values crossing a register or memory width
-- `eval/async_bulk.rs` - `cp.async.bulk{.tensor}` evaluation as another `impl Interpreter`: the TMA tensor copy and the plain bulk copy (global to shared, mbarrier-completed), and `InflightBulkCopy` tracking - the destination stays locked until a waiter observes the tracking mbarrier's phase, when the write is recorded in χ afresh
-- `eval/cluster_launch_control.rs` - `clusterlaunchcontrol.try_cancel`/`query_cancel` under the *never-steal* assumption: no cancel request ever succeeds, so every response is the declined one (encoded as 16 zero bytes, written like a `cp.async.bulk` destination - async proxy, locked until a waiter observes the mbarrier, 16-byte `complete_tx`); `is_canceled` always decodes `false`, any other value is rejected as unmodeled, and the ISA's UB cases (`get_first_ctaid` of a declined response, a new request after a decline was observed) are `EvalError::ClusterLaunchControlMisuse`; `.multicast::cluster::all` is rejected (it writes other CTAs' shared memory)
+- `eval/async_bulk.rs` - `cp.async.bulk{.tensor}` evaluation as another `impl Interpreter`: the TMA tensor copy and the plain bulk copy (global to shared, mbarrier-completed); the data lands eagerly at issue and the copy's `complete_tx` is applied then
+- `eval/cluster_launch_control.rs` - `clusterlaunchcontrol.try_cancel`/`query_cancel` under the *never-steal* assumption: no cancel request ever succeeds, so every response is the declined one (encoded as 16 zero bytes, written like a `cp.async.bulk` destination - async proxy, 16-byte `complete_tx`); `is_canceled` always decodes `false`, any other value is rejected as unmodeled, and the ISA's UB cases (`get_first_ctaid` of a declined response, a new request after a decline was observed) are `EvalError::ClusterLaunchControlMisuse`; `.multicast::cluster::all` is rejected (it writes other CTAs' shared memory)
 - `mapa.shared::cluster` assumes every cluster holds exactly one CTA: rank 0 maps an address to itself, any other concrete rank is `EvalError::MapaRankOutsideCluster`, and the generic (spaceless) form is rejected at lowering
 - `eval/value.rs` - `Value::{Scalar, Pair}` (`Pair` = packed f16 halves in a 32-bit register) and per-thread `RegFile`
 - `eval/memory.rs` - byte-addressed granule memory; 4-byte reads combine two 2-byte granules into a `Pair`, 2-byte accesses split `Pair` granules; program writes are `dirty` (the output footprint)
-- `eval/race.rs` - χ-context race detection per byte (paper Section 3.2); full-CTA barrier sync is a wholesale clear
-- `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), sync χ over the full mask (exited lanes included), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
-- `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; its `A`/`B` shared-memory bytes stay write-locked (`InflightWgmma`) until every live member's `wgmma.wait_group` has released the op's group, since a warp's wait only covers the groups it committed itself
+- `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
+- `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it, since a warp's wait only covers the groups it committed itself
 - `eval/config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
-- `eval/error.rs` - `EvalError`: `DataRace`, `Deadlock`, `NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.
-- `eval/value_equality.rs` - `ValueEquality`, the injected hook the race detector asks whether a write-write conflict stores the same real (a benign store) once id and structural equality fail; `volta_equivalence::CanonValueEquality` decides it with canon, keeping the dependency one-way
+- `eval/error.rs` - `EvalError`: `Deadlock`, `NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.; the race/async-hazard variants (`DataRace`, `AsyncCopyHazard`, `TensorMemoryRace`, ...) are kept as the report format but the evaluator no longer produces them
 
 Key semantics: input-array symbols materialize lazily on first read; reads of
 never-written registers/shared bytes yield `Undefined` (an error only if it
@@ -238,8 +236,8 @@ nvcc's `selp` accumulator-init idiom both rely on this.
 
 ### Driver (`driver.rs`)
 
-- `analyze_kernel(module, kernel_name, config, value_equality) -> Result<AnalysisOutput, AnalysisError>` (`value_equality`: the race detector's `ValueEquality` hook; every binary passes `CanonValueEquality`)
-- `AnalysisOutput`: `exprs: SymbolicOutputs` (per-output-array written elements as `(index, ExprId)`) + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end)
+- `analyze_kernel(module, kernel_name, config, value_equality) -> Result<AnalysisOutput, AnalysisError>` (`value_equality`: the benign same-value store oracle for race verification, currently unused; every binary passes `CanonValueEquality`)
+- `AnalysisOutput`: `exprs: SymbolicOutputs` (per-output-array written elements as `(index, ExprId)`) + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end) + `race_verification` (`RaceVerification::Unavailable`: front ends must not report race freedom)
 - `write_op_counts(out, label, counts)` - the one profile-table formatter,
   used by both `volta` and `volta-bench`
 
@@ -589,7 +587,7 @@ Lowering (lowering.rs) ──► LoweredProgram (resolved RegIds, InstrIds)
     │
     ▼
 Evaluator (eval/interp.rs) ──► Symbolic execution with N threads
-    │                           (χ race detection, warp/tensor-core ops)
+    │                           (one candidate schedule, warp/tensor-core ops)
     ▼
 AnalysisOutput ──► SymbolicOutputs (volta_expr) + statistics
     │                 (optionally via .vcdump or .vexpr files)
@@ -608,9 +606,9 @@ All values are `Expr` (symbolic expressions). This allows analyzing behavior for
 
 Memory addresses must be concrete (`u64`) for race detection. Thread indices are concrete (specific block configuration). Symbolic address accesses produce a `NotConcrete` error.
 
-### 3. χ-Context for Race Detection
+### 3. Race Detection Is Not Part of the Evaluator
 
-From the paper (Section 4.2): Track which threads haven't synchronized since each memory access. After barrier, threads in sync set remove each other from "needs sync" sets. Race detected when accessing thread is in the "needs sync" set.
+The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed; data-race and async-hazard verification is being rebuilt as a separate, graph-based downstream branch.
 
 ### 4. Round-Robin Scheduling
 

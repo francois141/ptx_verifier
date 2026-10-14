@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use volta_analysis::driver::{analyze_kernel, write_op_counts};
-use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_analysis::eval::{
+    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue, RaceVerification,
+};
 use volta_common::run_log;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_equivalence::vc_dump::{VcDump, read_vc_dump, write_vc_dump};
@@ -473,6 +475,18 @@ fn read_exprs(path: &Path) -> Result<SymbolicOutputs, String> {
     volta_expr::text::read_text(&text).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
+/// Say on stderr that `output` carries no race-freedom guarantee, so no verdict built on it
+/// silently claims one.
+fn warn_unverified(label: &str, output: &AnalysisOutput) {
+    match output.race_verification {
+        RaceVerification::Unavailable => eprintln!(
+            "WARNING: {}: data-race and async-hazard verification is UNAVAILABLE; \
+             race freedom was NOT checked",
+            label
+        ),
+    }
+}
+
 fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     let file = &args.file;
     let module = match load_module(file) {
@@ -494,7 +508,11 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
 
     match result {
         Ok(output) => {
-            println!("Analysis complete: no data races or deadlocks detected.");
+            println!(
+                "Analysis complete: no deadlock or structured-CTA error; data-race \
+                 verdict: UNKNOWN (race verification unavailable)."
+            );
+            warn_unverified("analyze", &output);
             println!(
                 "  time: {:.3}s  instructions: {}  block syncs: {}  warp syncs: {}",
                 elapsed,
@@ -531,12 +549,12 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
                 println!("Wrote output expressions to {}", path.display());
             }
             log.record(&format!(
-                "analyze {}: OK in {:.3}s, {} instructions",
+                "analyze {}: UNKNOWN (race verification unavailable) in {:.3}s, {} instructions",
                 file.display(),
                 elapsed,
                 output.stats.instructions
             ));
-            ExitCode::SUCCESS
+            ExitCode::FAILURE
         }
         Err(e) => {
             eprintln!("analysis failed: {}", e);
@@ -713,6 +731,8 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                 }
             };
             let exec_secs = start.elapsed().as_secs_f64();
+            warn_unverified("reference kernel", &reference);
+            warn_unverified("optimized kernel", &optimized);
 
             if args.profile {
                 let mut out = std::io::stdout().lock();
@@ -1027,6 +1047,7 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
             }
         };
     let exec_secs = start.elapsed().as_secs_f64();
+    warn_unverified("kernel", &kernel_output);
 
     if args.profile {
         let _ = write_op_counts(

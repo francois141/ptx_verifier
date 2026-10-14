@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use volta_analysis::driver::{AnalysisError, analyze_kernel};
-use volta_analysis::eval::{AnalysisOutput, EvalError};
+use volta_analysis::eval::{AnalysisOutput, EvalError, RaceVerification};
 use volta_equivalence::CanonValueEquality;
 use volta_equivalence::check::{
     ElementCheckTime, EquivCheckOptions, EquivOutcome, PairedFootprints,
@@ -874,8 +874,15 @@ impl BenchmarkRunner {
                 stats.block_syncs = reference.stats.block_syncs;
                 stats.warp_syncs = reference.stats.warp_syncs;
                 stats.reference_op_counts = reference.op_counts.clone();
+                let outcome = match reference.race_verification {
+                    RaceVerification::Unavailable => ActualOutcome::Error {
+                        message: "race verification unavailable: the analysis ran to \
+                                  completion, but no data-race check was performed"
+                            .to_string(),
+                    },
+                };
                 return Ok(GeneratedRun::Done(RunOutput {
-                    outcome: ActualOutcome::RaceFree,
+                    outcome,
                     stats,
                     dump_path: None,
                     z3: None,

@@ -14,7 +14,7 @@ use volta_equivalence::{
 };
 use volta_expr::spec::unfold;
 
-use crate::analyze::{StatsPy, parse_module};
+use crate::analyze::{StatsPy, parse_module, warn_unverified};
 use crate::config::ConfigPy;
 use crate::error::{VoltaError, analysis_error_to_py, other_error_to_py, spec_parse_error_to_py};
 
@@ -42,6 +42,7 @@ pub struct VerifyResultPy {
 #[pyo3(signature = (source, spec, config, kernel=None, dims=None, sample=0, verify_numeric=false))]
 #[allow(clippy::too_many_arguments)]
 pub fn verify(
+    py: Python<'_>,
     source: &str,
     spec: &str,
     config: &ConfigPy,
@@ -86,6 +87,7 @@ pub fn verify(
 
     let mut kernel_output = analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
         .map_err(analysis_error_to_py)?;
+    warn_unverified(py, &kernel_output)?;
 
     // `sample` also caps generation: truncate the kernel's elements to the
     // ascending prefix `unfold` builds, so both sides pair (as in `cmd_verify`).

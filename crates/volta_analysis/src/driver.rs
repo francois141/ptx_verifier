@@ -1,5 +1,6 @@
 //! High-level analysis driver: parse tree in, per-output-element symbolic
-//! expressions (or a race/deadlock/structured-CTA error) out.
+//! expressions (or a deadlock/structured-CTA error) out. Race verification is
+//! not performed here (see `AnalysisOutput::race_verification`).
 
 use std::fmt;
 
@@ -7,7 +8,7 @@ use volta_frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 
 use volta_expr::ValueEquality;
 
-use crate::eval::{AnalysisConfig, AnalysisOutput, EvalError, Interpreter, TargetFeatures};
+use crate::eval::{AnalysisConfig, AnalysisOutput, EvalError, Interpreter};
 use crate::logging::info;
 use crate::lower_error::LowerError;
 use crate::lowering::lower_function;
@@ -83,13 +84,14 @@ pub fn module_vars(module: &Module) -> Vec<VarDecl> {
 }
 
 /// Analyze one kernel: lower it and symbolically execute all threads of
-/// CTA (0,0,0) under the given configuration. `value_equality` decides
-/// benign same-value stores for the race detector.
+/// CTA (0,0,0) under the given configuration. No data-race or async-hazard
+/// verdict is produced (`AnalysisOutput::race_verification` says so), so
+/// `_value_equality`, the benign same-value store oracle, is unused.
 pub fn analyze_kernel(
     module: &Module,
     kernel: Option<&str>,
     config: AnalysisConfig,
-    value_equality: &dyn ValueEquality,
+    _value_equality: &dyn ValueEquality,
 ) -> Result<AnalysisOutput, AnalysisError> {
     let func = find_kernel(module, kernel)?;
     let vars = module_vars(module);
@@ -98,8 +100,7 @@ pub fn analyze_kernel(
         "analyzing kernel {:?}: block={:?} grid={:?}",
         kernel, config.block_dim, config.grid_dim
     );
-    let features = TargetFeatures::from_target(&module.target);
-    let mut interp = Interpreter::new(&program, config, features, value_equality)?;
+    let mut interp = Interpreter::new(&program, config)?;
     interp.run()?;
     Ok(interp.into_output()?)
 }

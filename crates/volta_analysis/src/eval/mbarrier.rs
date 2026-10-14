@@ -25,11 +25,10 @@ struct MbarrierState {
     completed_phases: u64,
     /// Threads that arrived during the forming phase; `complete_tx` makes no
     /// access of its own so it doesn't count (ISA 9.7.14.16.15). Seeds
-    /// `prior_participants` at phase completion; waiters sync against that.
+    /// `prior_participants` at phase completion.
     participants: FixedBitSet,
-    /// Snapshot of `participants` at the last phase completion: the arrivers a
-    /// waiter syncs with (ISA 9.7.14.16.19). Known limitation: a waiter lagging
-    /// a whole later phase would see that phase's arrivers instead (unsound).
+    /// Snapshot of `participants` at the last phase completion: the arrivers of
+    /// the phase a waiter woken now observes (ISA 9.7.14.16.19).
     prior_participants: FixedBitSet,
 }
 
@@ -123,8 +122,7 @@ impl MbarrierTable {
         self.states[id].parity_complete(phase_parity)
     }
 
-    /// The arriving threads a waiter observing this mbarrier's last
-    /// completed phase should establish a happens-before edge with - see
+    /// The threads that arrived on this mbarrier's last completed phase - see
     /// [`MbarrierState::prior_participants`].
     pub fn prior_participants(&self, id: MbarrierId) -> &FixedBitSet {
         &self.states[id].prior_participants

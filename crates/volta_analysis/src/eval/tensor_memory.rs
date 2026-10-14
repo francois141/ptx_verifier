@@ -1,6 +1,5 @@
 //! Tensor Memory (PTX ISA 9.7.17.1): per-CTA 32-bit-cell scratch private to `tcgen05.*`, kept
 //! apart from byte-addressed `Memory` (never an output; bounds set dynamically by `.alloc`).
-//! Races are tracked per cell by `RaceTracker` (`tcgen05.mma` writes all 128 lanes).
 
 use crate::eval::value::Value;
 

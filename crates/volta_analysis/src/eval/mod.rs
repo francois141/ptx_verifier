@@ -1,6 +1,6 @@
-//! Symbolic evaluator for lowered PTX: the paper's round-robin interpreter
-//! with χ-context race detection. Floats are symbolic reals; addresses and
-//! branch predicates must be concrete (structured-CTA assumption).
+//! Symbolic evaluator for lowered PTX: the paper's round-robin interpreter.
+//! Floats are symbolic reals; addresses and branch predicates must be
+//! concrete (structured-CTA assumption). Race checking is not done here.
 
 pub mod arithm;
 pub mod async_bulk;
@@ -11,7 +11,6 @@ pub mod float_bits;
 pub mod interp;
 pub mod mbarrier;
 pub mod memory;
-pub mod race;
 pub mod target;
 pub mod tcgen05_mma;
 pub mod tensor_map_table;
@@ -54,6 +53,6 @@ pub const WARPGROUP_SIZE: u32 = WARP_SIZE * 4;
 
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 pub use error::{AccessSite, ClcMisuse, EvalError, EvalResult};
-pub use interp::{AnalysisOutput, Interpreter, Stats};
+pub use interp::{AnalysisOutput, Interpreter, RaceVerification, Stats};
 pub use target::TargetFeatures;
 pub use value::Value;

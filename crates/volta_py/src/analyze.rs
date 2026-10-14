@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
+use pyo3::exceptions::PyRuntimeWarning;
 use pyo3::prelude::*;
 
 use volta_analysis::driver;
+use volta_analysis::eval::{AnalysisOutput, RaceVerification};
 use volta_equivalence::CanonValueEquality;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::Module;
@@ -51,6 +53,25 @@ pub struct AnalyzeResultPy {
     pub outputs: Vec<(String, Vec<(u64, String)>)>,
     #[pyo3(get)]
     pub op_counts: BTreeMap<String, u64>,
+    /// Whether data races and async-operation hazards were checked.
+    #[pyo3(get)]
+    pub race_verified: bool,
+}
+
+/// Emit a `RuntimeWarning` when `output` carries no race-freedom guarantee, so
+/// a returned result never silently stands for a race check.
+pub(crate) fn warn_unverified(py: Python<'_>, output: &AnalysisOutput) -> PyResult<bool> {
+    match output.race_verification {
+        RaceVerification::Unavailable => {
+            PyErr::warn(
+                py,
+                &py.get_type::<PyRuntimeWarning>(),
+                c"data-race and async-hazard verification is unavailable: race freedom was NOT checked",
+                1,
+            )?;
+            Ok(false)
+        }
+    }
 }
 
 /// Symbolically execute `kernel` (or the module's unique entry) under
@@ -58,10 +79,16 @@ pub struct AnalyzeResultPy {
 /// `VoltaError` for any other analysis failure.
 #[pyfunction]
 #[pyo3(signature = (source, config, kernel=None))]
-pub fn analyze(source: &str, config: &ConfigPy, kernel: Option<&str>) -> PyResult<AnalyzeResultPy> {
+pub fn analyze(
+    py: Python<'_>,
+    source: &str,
+    config: &ConfigPy,
+    kernel: Option<&str>,
+) -> PyResult<AnalyzeResultPy> {
     let module = parse_module(source)?;
     let output = driver::analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
         .map_err(analysis_error_to_py)?;
+    let race_verified = warn_unverified(py, &output)?;
 
     let outputs = output
         .exprs
@@ -88,5 +115,6 @@ pub fn analyze(source: &str, config: &ConfigPy, kernel: Option<&str>) -> PyResul
             .iter()
             .map(|(k, v)| (k.to_string(), *v))
             .collect(),
+        race_verified,
     })
 }

@@ -682,9 +682,9 @@ pub enum LoweredInstr {
     /// the separate `FenceProxyAsync`, which has one.
     Fence,
 
-    /// `fence.proxy.async{.space}`: clears this thread's unfenced async-proxy
-    /// write marks within `restrict` (`None` = all; both `.shared::` spaces
-    /// map to `Shared`), via `RaceTracker::clear_async_proxy_fence`.
+    /// `fence.proxy.async{.space}`: a generic/async proxy fence by this thread
+    /// within `restrict` (`None` = all; both `.shared::` spaces map to
+    /// `Shared`). No data effect.
     FenceProxyAsync { restrict: Option<MemSpace> },
 
     /// Seal all of this thread's uncommitted `CpAsync` copies into a new
@@ -873,8 +873,7 @@ pub enum LoweredInstr {
         src: Vec<Operand>,
     },
 
-    /// `tcgen05.wait::{ld,st}`: release this warp quadrant's pending
-    /// `.ld`/`.st` async-hazard footprints (`RaceTracker::tcgen05_wait`); the
+    /// `tcgen05.wait::{ld,st}`: completes this warp's prior `.ld`/`.st`; the
     /// data effect already happened, as execution is sequential.
     Tcgen05Wait { is_st: bool },
 

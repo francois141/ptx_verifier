@@ -23,7 +23,7 @@ pub(in crate::eval) struct ObservedDecline {
 
 impl<'p> Interpreter<'p> {
     /// The response is written like a `cp.async.bulk` destination: through
-    /// the async proxy, and locked until a waiter observes `mbar`'s phase.
+    /// the async proxy, complete once a waiter observes `mbar`'s phase.
     /// Volta encodes the opaque declined response as 16 zero bytes.
     pub(in crate::eval) fn exec_clc_try_cancel(
         &mut self,
@@ -48,8 +48,6 @@ impl<'p> Interpreter<'p> {
             let zero = Value::Scalar(self.arena.int(0));
             self.mem_write(t, pc, MemSpace::Shared, addr + word, WORD_BYTES, zero)?;
         }
-        self.race.clear_generic_unfenced(addr, RESPONSE_BYTES);
-        self.begin_inflight_bulk_copy(t, pc, mbar_addr, vec![(addr, RESPONSE_BYTES)])?;
         self.mbarrier_complete_tx(t, pc, mbar_addr, RESPONSE_BYTES)
     }
 

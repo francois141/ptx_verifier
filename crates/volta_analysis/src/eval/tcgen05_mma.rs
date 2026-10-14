@@ -2,9 +2,7 @@
 //! shared-memory matrix descriptor (9.7.17.4.1), and swizzled addressing,
 //! checked against the ISA's Figures 219/222-229 (`base_offset == 0` only).
 
-use crate::eval::ThreadId;
-use crate::eval::value::MbarrierId;
-use crate::lowered::{InstrId, Tcgen05MmaKind};
+use crate::lowered::Tcgen05MmaKind;
 
 /// Decoded `idesc` fields shared by `.kind::f16` and `.kind::f8f6f4` (ISA
 /// 9.7.17.4.2, Table 45: same layout; type fields stay raw for the caller).
@@ -324,10 +322,6 @@ pub fn operand_element_addr(
     }
 }
 
-/// Lanes per Tensor Memory access quadrant, one per warp of a warpgroup
-/// (PTX ISA 9.7.17.8.1).
-const LANES_PER_QUADRANT: u32 = 32;
-
 /// Lanes of Tensor Memory one `.cta_group::1` operation's `D` always
 /// spans, whatever its `M` (PTX ISA 9.7.17.1).
 const D_LANES: u32 = 128;
@@ -338,76 +332,6 @@ const D_LANES: u32 = 128;
 pub fn d_cell(m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
     let cols_per_group = n_dim / (D_LANES / m_dim);
     (m + m_dim * (n / cols_per_group), n % cols_per_group)
-}
-
-/// An issued `tcgen05.mma` whose completion (an mbarrier phase via a later
-/// `tcgen05.commit`, ISA 9.7.17.6) no thread has observed. Data is computed at
-/// issue; this keeps operands write-locked and `D` access-locked until then.
-#[derive(Debug, Clone)]
-pub(crate) struct InflightMma {
-    pub issuer: ThreadId,
-    pub pc: InstrId,
-    /// Deduplicated shared-memory bytes read as `A`/`B`.
-    pub operand_bytes: Vec<u64>,
-    /// Tensor Memory cells read as `A`, for the `[a-tmem]` form only -
-    /// `None` when `A` came from shared memory through a descriptor, whose
-    /// footprint `operand_bytes` carries instead.
-    pub a_tmem: Option<TmemRange>,
-    /// Tensor Memory lanes `D` writes (lanes not masked off by
-    /// `disable-output-lane`), ascending.
-    pub d_lanes: Vec<u32>,
-    pub d_start_col: u32,
-    pub d_num_cols: u32,
-    /// `(mbarrier, phase index)` for every `tcgen05.commit` by `issuer`
-    /// since issue - any one of them completing and being observed
-    /// completes this operation.
-    pub trackers: Vec<(MbarrierId, u64)>,
-}
-
-impl InflightMma {
-    /// Whether `D` overlaps columns `[start_col, start_col + num_cols)` of
-    /// the 32-lane `quadrant`.
-    pub fn d_overlaps(&self, quadrant: u32, start_col: u32, num_cols: u32) -> bool {
-        start_col < self.d_start_col + self.d_num_cols
-            && self.d_start_col < start_col + num_cols
-            && self
-                .d_lanes
-                .iter()
-                .any(|&lane| lane / LANES_PER_QUADRANT == quadrant)
-    }
-
-    /// Whether an `[a-tmem]` `A` operand overlaps the same range. Always
-    /// false for the shared-memory-descriptor form.
-    pub fn a_overlaps(&self, quadrant: u32, start_col: u32, num_cols: u32) -> bool {
-        self.a_tmem
-            .is_some_and(|a| a.overlaps(quadrant, start_col, num_cols))
-    }
-}
-
-/// A rectangle of Tensor Memory cells: lanes `[lane_base, lane_base +
-/// num_lanes)` of columns `[start_col, start_col + num_cols)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TmemRange {
-    pub lane_base: u32,
-    pub num_lanes: u32,
-    pub start_col: u32,
-    pub num_cols: u32,
-}
-
-impl TmemRange {
-    /// The 32-lane quadrants this range's lanes fall in.
-    pub fn quadrants(&self) -> impl Iterator<Item = u32> {
-        self.lane_base / LANES_PER_QUADRANT
-            ..(self.lane_base + self.num_lanes).div_ceil(LANES_PER_QUADRANT)
-    }
-
-    /// Whether this range overlaps columns `[start_col, start_col +
-    /// num_cols)` of the 32-lane `quadrant`.
-    pub fn overlaps(&self, quadrant: u32, start_col: u32, num_cols: u32) -> bool {
-        start_col < self.start_col + self.num_cols
-            && self.start_col < start_col + num_cols
-            && self.quadrants().any(|q| q == quadrant)
-    }
 }
 
 #[cfg(test)]

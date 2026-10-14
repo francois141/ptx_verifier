@@ -6705,8 +6705,8 @@ enum MbarrierClusterForm {
 }
 
 /// Reject any `.sem` other than `expected` (the ISA default: `.release` for
-/// `arrive`, `.acquire` for the waits), the only case for which
-/// `try_fire_mbarrier`'s χ happens-before edge is sound (`.relaxed` is not).
+/// `arrive`, `.acquire` for the waits), the only case for which an
+/// arrive-to-wait happens-before edge is sound (`.relaxed` is not).
 fn check_mbarrier_sem(
     instruction: &str,
     sem: Option<MemSemantics>,

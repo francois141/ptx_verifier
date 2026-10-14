@@ -1,6 +1,6 @@
 //! `cp.async.bulk{.tensor}` evaluation (TMA tensor and plain bulk copies,
-//! global to shared, mbarrier-completed) and the in-flight locks held until a
-//! waiter observes the copy's mbarrier phase.
+//! global to shared, mbarrier-completed). The data lands eagerly at issue; an
+//! observed mbarrier phase is the copy's only completion signal (9.7.9.25.2).
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
@@ -10,25 +10,6 @@ use crate::eval::tensor_map_table;
 use crate::eval::value::{MbarrierId, Value};
 use crate::lowered::{InstrId, MemSpace, Operand};
 use crate::tensor_map::TensorFillMode;
-
-/// A bulk copy whose completion no waiter has observed yet. Its data lands
-/// eagerly, but its destination stays locked until then: an observed mbarrier
-/// phase is its only completion signal (9.7.9.25.2).
-#[derive(Debug)]
-pub(in crate::eval) struct InflightBulkCopy {
-    issuer: ThreadId,
-    /// The issuing instruction, for lock diagnostics and as the `pc` the
-    /// destination locks were taken under.
-    pc: InstrId,
-    /// Locked destination ranges as `(addr, width)` - `.tensor`'s swizzled
-    /// box is written element by element, not as one contiguous range.
-    dst: Vec<(u64, u64)>,
-    mbar: MbarrierId,
-    /// `MbarrierTable::completed_phases` at issue: the copy's own
-    /// complete-tx belongs to the phase forming then, so the copy has
-    /// completed once `mbar` has moved past it.
-    phase: u64,
-}
 
 impl<'p> Interpreter<'p> {
     /// `.tile` TMA tensor copy, global to shared (ISA 9.7.9.26.5.2, 5.5.3):
@@ -219,7 +200,6 @@ impl<'p> Interpreter<'p> {
         }
 
         let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();
-        let mut dst_ranges = Vec::with_capacity(total_elems as usize);
         let mut idx = vec![0u32; real_rank];
         let mut global_idx = vec![0i64; real_rank];
         for linear in 0..total_elems {
@@ -264,19 +244,13 @@ impl<'p> Interpreter<'p> {
             let dst_elem_addr =
                 tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
             self.mem_write(t, pc, MemSpace::Shared, dst_elem_addr, elem_bytes, value)?;
-            // A TMA write goes through the async proxy, not the generic one
-            // `mem_write` just marked these bytes as written through.
-            self.race.clear_generic_unfenced(dst_elem_addr, elem_bytes);
-            dst_ranges.push((dst_elem_addr, elem_bytes));
         }
 
-        self.begin_inflight_bulk_copy(t, pc, mbar_addr, dst_ranges)?;
         self.mbarrier_complete_tx(t, pc, mbar_addr, total_elems * elem_bytes)
     }
 
     /// `cp.async.bulk` global -> shared of `size` bytes, completing `size`
-    /// tx-bytes on the mbarrier; the write lands immediately in 4-byte words
-    /// and the destination stays locked in flight.
+    /// tx-bytes on the mbarrier; the write lands immediately in 4-byte words.
     pub(in crate::eval) fn exec_cp_async_bulk_load(
         &mut self,
         t: ThreadId,
@@ -303,9 +277,7 @@ impl<'p> Interpreter<'p> {
             let value = self.mem_read(t, pc, MemSpace::Global, src_addr + byte, WORD_BYTES)?;
             self.mem_write(t, pc, MemSpace::Shared, dst_addr + byte, WORD_BYTES, value)?;
         }
-        self.race.clear_generic_unfenced(dst_addr, size);
 
-        self.begin_inflight_bulk_copy(t, pc, mbar_addr, vec![(dst_addr, size)])?;
         self.mbarrier_complete_tx(t, pc, mbar_addr, size)
     }
 
@@ -329,57 +301,6 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<()> {
         let id = self.mbarrier_handle(t, pc, addr)?;
         self.mbarriers.complete_tx(id, bytes);
-        Ok(())
-    }
-
-    /// Lock a just-landed copy's destination until the mbarrier at
-    /// `mbar_addr` moves past the current phase. Called after the write so it
-    /// doesn't trip its own lock; unwaited accesses are reported.
-    pub(in crate::eval) fn begin_inflight_bulk_copy(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-        mbar_addr: u64,
-        dst: Vec<(u64, u64)>,
-    ) -> EvalResult<()> {
-        let mbar = self.mbarrier_handle(t, pc, mbar_addr)?;
-        let phase = self.mbarriers.completed_phases(mbar);
-        for &(addr, width) in &dst {
-            self.race
-                .lock_dst(MemSpace::Shared, addr, width, t, pc)
-                .map_err(EvalError::from)?;
-        }
-        self.bulk_inflight.push(InflightBulkCopy {
-            issuer: t,
-            pc,
-            dst,
-            mbar,
-            phase,
-        });
-        Ok(())
-    }
-
-    /// A waiter observes `mbar`'s completed phase: drop its copies' locks
-    /// (the implicit proxy fence, 9.7.9.25.2) and record their writes in χ
-    /// afresh, since the copy only completed now.
-    pub(in crate::eval) fn release_observed_bulk_copies(
-        &mut self,
-        mbar: MbarrierId,
-    ) -> EvalResult<()> {
-        let observed = self.mbarriers.completed_phases(mbar);
-        let (done, in_flight): (Vec<_>, Vec<_>) = std::mem::take(&mut self.bulk_inflight)
-            .into_iter()
-            .partition(|copy| copy.mbar == mbar && copy.phase < observed);
-        self.bulk_inflight = in_flight;
-        for copy in &done {
-            for &(addr, width) in &copy.dst {
-                self.race
-                    .release_dst(MemSpace::Shared, addr, width, copy.issuer, copy.pc);
-                self.race
-                    .write(MemSpace::Shared, addr, width, copy.issuer, copy.pc)
-                    .map_err(EvalError::from)?;
-            }
-        }
         Ok(())
     }
 }

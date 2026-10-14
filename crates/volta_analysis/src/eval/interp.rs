@@ -1,29 +1,25 @@
-//! The interpreter: round-robin symbolic execution with χ race detection (paper
-//! §3, §5). Threads run until they block or exit; then complete groups fire,
-//! else deadlock. By confluence, this schedule is as good as any.
+//! The interpreter: round-robin symbolic execution (paper §3, §5). Threads run
+//! until they block or exit; then complete groups fire, else deadlock. It runs
+//! one candidate schedule and checks no data races itself.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
-use fixedbitset::FixedBitSet;
 use id_collections::IdVec;
 
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
-use crate::eval::async_bulk::InflightBulkCopy;
 use crate::eval::cluster_launch_control::ObservedDecline;
 use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
-use crate::eval::race::{MemHazard, Proxy, RaceTracker};
-use crate::eval::target::TargetFeatures;
-use crate::eval::tcgen05_mma::{self, InflightMma, KSelect, Major, OperandFormat, TmemRange};
+use crate::eval::tcgen05_mma::{self, KSelect, Major, OperandFormat};
 use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
-use crate::eval::warpgroup::{InflightWgmma, WgmmaOpId};
+use crate::eval::warpgroup::WgmmaOpId;
 use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
@@ -34,9 +30,7 @@ use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::tensor_core::MmaShape;
 use crate::tensor_map::TensormapFieldWrite;
 use crate::types::{RegClass, ScalarTypeExt};
-use volta_expr::{
-    ExprArena, ExprId, ExprNode, Real, StringId, SymbolicOutputs, ValueEquality, structurally_equal,
-};
+use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId, SymbolicOutputs};
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
 pub type OutputFootprints = Vec<(String, Vec<(u64, ExprId)>)>;
@@ -127,17 +121,11 @@ pub(in crate::eval) enum Status {
 #[derive(Debug, Clone)]
 struct PendingCopy {
     dst_addr: u64,
-    src_addr: u64,
-    /// Total slot width in bytes (always 4, 8, or 16).
-    cp_size: u64,
-    /// How many bytes of `src_addr` were actually locked/read (<= cp_size,
-    /// zero if `ignore-src` held).
-    real_bytes: u64,
     /// One resolved value per 4-byte word (`cp_size / 4` entries), already
     /// zero-filled where the source's real-byte prefix didn't cover it.
     words: Vec<Value>,
-    /// The issuing `cp.async` instruction, for lock diagnostics and as the
-    /// attributed pc of the deferred write.
+    /// The issuing `cp.async` instruction, the attributed pc of the deferred
+    /// write.
     pc: InstrId,
 }
 
@@ -173,8 +161,8 @@ struct WgmmaGroup {
 }
 
 /// Per-thread `wgmma.mma_async` register-hazard state (PTX ISA 9.7.17.7). Lives
-/// on `ThreadState`, not `RaceTracker`: registers are thread-local, so no
-/// cross-thread state is read.
+/// on `ThreadState`: registers are thread-local, so no cross-thread state is
+/// read.
 #[derive(Debug, Default)]
 pub(in crate::eval) struct WgmmaRegState {
     /// Hazard A (`wgmma.fence`, 9.7.17.7.1): incremented by every
@@ -315,6 +303,14 @@ struct MemRegions {
     local: Vec<Region>,
 }
 
+/// Whether an [`AnalysisOutput`] was checked for data races and async-operation
+/// hazards; consumers must not report race freedom unless it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaceVerification {
+    /// No race or hazard check ran on this execution.
+    Unavailable,
+}
+
 /// Result of a completed analysis.
 #[derive(Debug)]
 pub struct AnalysisOutput {
@@ -325,12 +321,12 @@ pub struct AnalysisOutput {
     /// summed across all threads. A `BTreeMap` keeps printed/exported tables
     /// in deterministic order.
     pub op_counts: std::collections::BTreeMap<&'static str, u64>,
+    pub race_verification: RaceVerification,
 }
 
 pub struct Interpreter<'p> {
     pub(in crate::eval) program: &'p LoweredProgram,
     pub(in crate::eval) arena: ExprArena,
-    value_equality: &'p dyn ValueEquality,
     config: AnalysisConfig,
     n_threads: u32,
     /// Shared `Undefined` node returned for reads of never-written
@@ -342,20 +338,10 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) shared: Memory,
     locals: IdVec<ThreadId, Memory>,
     pub(in crate::eval) tensor: TensorMemory,
-    /// Issued `tcgen05.mma`s no waiter has yet observed complete - see
-    /// `tcgen05_mma::InflightMma`.
-    pub(in crate::eval) tcgen05_inflight: Vec<InflightMma>,
-    /// Issued `cp.async.bulk{.tensor}` copies no waiter has yet observed
-    /// complete - see `async_bulk::InflightBulkCopy`.
-    pub(in crate::eval) bulk_inflight: Vec<InflightBulkCopy>,
-    /// Fired `wgmma.mma_async`s some live member has not yet waited on - see
-    /// `warpgroup::InflightWgmma`.
-    pub(in crate::eval) wgmma_inflight: Vec<InflightWgmma>,
     pub(in crate::eval) next_wgmma_op: WgmmaOpId,
     /// The first declined cluster-launch-control response decoded, if any.
     pub(in crate::eval) clc_observed_decline: Option<ObservedDecline>,
     regions: MemRegions,
-    pub(in crate::eval) race: RaceTracker,
     pub(in crate::eval) mbarriers: MbarrierTable,
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
     barriers: [PendingArrivals; NUM_BARRIERS],
@@ -365,19 +351,10 @@ pub struct Interpreter<'p> {
     /// fixed array since `step` bumps it per instruction; `finish` folds it
     /// into `AnalysisOutput`'s `BTreeMap`.
     pub(in crate::eval) op_counts: [u64; crate::lowered::KIND_COUNT],
-    /// The analyzed module's target-arch-derived feature gates (see
-    /// `eval::target::TargetFeatures`) - a fact about the module, computed
-    /// once by the caller, not user launch config.
-    features: TargetFeatures,
 }
 
 impl<'p> Interpreter<'p> {
-    pub fn new(
-        program: &'p LoweredProgram,
-        config: AnalysisConfig,
-        features: TargetFeatures,
-        value_equality: &'p dyn ValueEquality,
-    ) -> EvalResult<Self> {
+    pub fn new(program: &'p LoweredProgram, config: AnalysisConfig) -> EvalResult<Self> {
         let n_threads = config.num_threads();
         if n_threads == 0 {
             return Err(EvalError::Config {
@@ -550,7 +527,6 @@ impl<'p> Interpreter<'p> {
         Ok(Self {
             program,
             arena,
-            value_equality,
             config,
             n_threads,
             undefined,
@@ -560,19 +536,14 @@ impl<'p> Interpreter<'p> {
             shared: Memory::new(),
             locals,
             tensor: TensorMemory::new(),
-            tcgen05_inflight: Vec::new(),
-            bulk_inflight: Vec::new(),
-            wgmma_inflight: Vec::new(),
             next_wgmma_op: WgmmaOpId::default(),
             clc_observed_decline: None,
             regions,
-            race: RaceTracker::new(n_threads as usize),
             mbarriers: MbarrierTable::new(n_threads as usize),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
             tensor_maps: TensorMapTable::new(),
             stats: Stats::default(),
             op_counts: [0; crate::lowered::KIND_COUNT],
-            features,
         })
     }
 
@@ -710,6 +681,7 @@ impl<'p> Interpreter<'p> {
             },
             stats: self.stats,
             op_counts,
+            race_verification: RaceVerification::Unavailable,
         })
     }
 
@@ -774,9 +746,8 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Wake every `AtMbarrier` thread whose phase parity now holds, first
-    /// χ-syncing each with the arrivers that completed its phase (PTX ISA
-    /// 9.7.14.16.19, ordering items 1-3). Returns whether any woke.
+    /// Wake every `AtMbarrier` thread whose phase parity now holds. Returns
+    /// whether any woke.
     fn try_fire_mbarrier(&mut self) -> EvalResult<bool> {
         let ready: Vec<(ThreadId, MbarrierId)> = self
             .threads
@@ -790,19 +761,6 @@ impl<'p> Interpreter<'p> {
                 _ => None,
             })
             .collect();
-        let mut waiters_by_barrier: HashMap<MbarrierId, FixedBitSet> = HashMap::new();
-        for (tid, id) in &ready {
-            waiters_by_barrier
-                .entry(*id)
-                .or_insert_with(|| FixedBitSet::with_capacity(self.n_threads as usize))
-                .insert(tid.0 as usize);
-        }
-        for (id, waiters) in &waiters_by_barrier {
-            self.release_observed_mmas(*id)?;
-            self.release_observed_bulk_copies(*id)?;
-            let participants = self.mbarriers.prior_participants(*id);
-            self.race.sync_mbarrier_waiters(participants, waiters);
-        }
         for (tid, _) in &ready {
             let pc = self.threads[*tid].pc;
             let Some(LoweredInstr::MbarrierWaitParity { wait_complete, .. }) =
@@ -852,7 +810,7 @@ impl<'p> Interpreter<'p> {
                     }
                     // An exited lane counts as arrived at every warp op (the
                     // paper's Sync rule; the ISA's "all non-exited threads" for
-                    // shfl.sync): it executes nothing but rejoins the χ-clear.
+                    // shfl.sync): it executes nothing.
                     Status::Exited => {}
                     // A live lane elsewhere: not ready. Matching only at one pc
                     // is a deliberate conservative deviation from paper and
@@ -945,7 +903,6 @@ impl<'p> Interpreter<'p> {
                     if !every_live_thread_waits || waiting.len() != live_waiters {
                         continue;
                     }
-                    self.race.sync_all();
                     trace!("fired bar.sync {} (full CTA)", id);
                     let waiting = waiting.clone();
                     self.advance_thread_group(&waiting);
@@ -969,16 +926,7 @@ impl<'p> Interpreter<'p> {
                     ),
                 });
             }
-            // Participants: the blocked threads plus the `bar.arrive` arrivers.
-            // χ-syncing them is the ISA's ordering, relaxed to also order
-            // arrivers' post-arrival accesses.
-            let participants: Vec<ThreadId> = arrived
-                .iter()
-                .copied()
-                .chain(waiting.iter().copied())
-                .collect();
             self.barriers[id] = PendingArrivals::default();
-            self.sync_thread_group(&participants);
             trace!("fired bar.sync {} ({} threads)", id, count);
             let waiting = waiting.clone();
             self.advance_thread_group(&waiting);
@@ -1032,31 +980,6 @@ impl<'p> Interpreter<'p> {
             .collect();
         warn!("deadlock: {} threads blocked", blocked.len());
         EvalError::Deadlock { blocked }
-    }
-
-    /// Apply the χ sync of a fired group (warp group, warpgroup, or counted
-    /// barrier). Called before a warp group's cooperative accesses so they
-    /// cannot race with its own pre-sync accesses.
-    pub(in crate::eval) fn sync_thread_group(&mut self, members: &[ThreadId]) {
-        let mut group = fixedbitset::FixedBitSet::with_capacity(self.n_threads as usize);
-        for &m in members {
-            group.insert(m.0 as usize);
-        }
-        self.race.sync_group(&group);
-    }
-
-    /// Reject `t` reaching a sync at `pc` with a `tcgen05.ld`/`.st` not yet
-    /// `tcgen05.wait`-ed. Checked at every arrival that publishes `t`'s
-    /// accesses: `bar.sync`/`bar.arrive` and the mbarrier arrives.
-    fn check_tcgen05_waited(&self, t: ThreadId, pc: InstrId) -> EvalResult<()> {
-        match self.race.tcgen05_unwaited(t.warp()) {
-            Some(pending) => Err(EvalError::Tcgen05UnwaitedAtSync {
-                thread: t,
-                pc,
-                pending,
-            }),
-            None => Ok(()),
-        }
     }
 
     /// Unblock the members of a fired group of threads and advance their
@@ -1238,17 +1161,8 @@ impl<'p> Interpreter<'p> {
                 }
                 self.check_alignment(t, pc, MemSpace::Global, src_addr, cp_size)?;
 
-                // Lock the destination (exclusive) and the source's real prefix
-                // (write-exclusive) for the in-flight window, then read the
-                // source now - exact, since the lock forbids changes.
-                self.race
-                    .lock_dst(MemSpace::Shared, dst_addr, cp_size, t, pc)
-                    .map_err(EvalError::from)?;
-                if real_bytes > 0 {
-                    self.race
-                        .lock_src(MemSpace::Global, src_addr, real_bytes, t, pc);
-                }
-
+                // The source is read now: exact only if nothing writes it
+                // before the copy completes, which race checking must show.
                 let zero = Value::Scalar(self.arena.int(0));
                 let mut words = Vec::with_capacity((cp_size / 4) as usize);
                 for i in 0..cp_size / 4 {
@@ -1263,9 +1177,6 @@ impl<'p> Interpreter<'p> {
 
                 self.threads[t].uncommitted.push(PendingCopy {
                     dst_addr,
-                    src_addr,
-                    cp_size,
-                    real_bytes,
                     words,
                     pc,
                 });
@@ -1923,7 +1834,6 @@ impl<'p> Interpreter<'p> {
                 barrier_id,
                 thread_count,
             } => {
-                self.check_tcgen05_waited(t, pc)?;
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, thread_count.as_ref())?;
                 self.stats.block_syncs += 1;
@@ -1935,7 +1845,6 @@ impl<'p> Interpreter<'p> {
                 barrier_id,
                 thread_count,
             } => {
-                self.check_tcgen05_waited(t, pc)?;
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, Some(thread_count))?;
                 let pending = &mut self.barriers[id as usize];
@@ -1949,11 +1858,10 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::Membar { .. } | LoweredInstr::Fence | LoweredInstr::Nop => {}
-
-            LoweredInstr::FenceProxyAsync { restrict } => {
-                self.race.clear_async_proxy_fence(t, *restrict);
-            }
+            LoweredInstr::Membar { .. }
+            | LoweredInstr::Fence
+            | LoweredInstr::FenceProxyAsync { .. }
+            | LoweredInstr::Nop => {}
 
             LoweredInstr::CpAsyncCommitGroup => {
                 let uncommitted = std::mem::take(&mut self.threads[t].uncommitted);
@@ -2079,7 +1987,6 @@ impl<'p> Interpreter<'p> {
                 addr_base,
                 addr_offset,
             } => {
-                self.check_tcgen05_waited(t, pc)?;
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
@@ -2087,7 +1994,6 @@ impl<'p> Interpreter<'p> {
                     .shared
                     .read_mbarrier(addr)
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
-                self.commit_tcgen05_mmas(t, id);
                 self.mbarriers.arrive(id, t, 1, None);
             }
 
@@ -2099,7 +2005,6 @@ impl<'p> Interpreter<'p> {
                 addr_offset,
                 noinc,
             } => {
-                self.check_tcgen05_waited(t, pc)?;
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
@@ -2247,7 +2152,6 @@ impl<'p> Interpreter<'p> {
                 count,
                 expect_tx,
             } => {
-                self.check_tcgen05_waited(t, pc)?;
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
@@ -2525,20 +2429,11 @@ impl<'p> Interpreter<'p> {
         // reported before any operand read.
         let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
         check_mma_operand_layout(pc, &b_md, id.transpose_b, "B")?;
-        let mut operand_bytes = Vec::new();
-        let (a, a_tmem) = match a {
+        let a = match a {
             Tcgen05MmaA::Desc(desc) => {
                 let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
                 check_mma_operand_layout(pc, &a_md, id.transpose_a, "A")?;
-                let a = self.read_mma_operand(
-                    t,
-                    pc,
-                    (&a_md, major(id.transpose_a), a_format),
-                    id.m,
-                    k_dim,
-                    &mut operand_bytes,
-                )?;
-                (a, None)
+                self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?
             }
             Tcgen05MmaA::Tmem { base, offset } => {
                 if a_format != OperandFormat::F16 {
@@ -2557,16 +2452,8 @@ impl<'p> Interpreter<'p> {
                 self.read_mma_a_tmem(t, pc, (base, *offset), (id.m, k_dim))?
             }
         };
-        let b = self.read_mma_operand(
-            t,
-            pc,
-            (&b_md, major(id.transpose_b), b_format),
-            id.n,
-            k_dim,
-            &mut operand_bytes,
-        )?;
-        operand_bytes.sort_unstable();
-        operand_bytes.dedup();
+        let b =
+            self.read_mma_operand(t, pc, (&b_md, major(id.transpose_b), b_format), id.n, k_dim)?;
         if let Some(Tcgen05Collector { buffer, op }) = collector {
             let slot = &mut self.threads[t].tcgen05_collectors[buffer as usize];
             if matches!(op, Tcgen05CollectorOp::Use | Tcgen05CollectorOp::LastUse)
@@ -2610,32 +2497,6 @@ impl<'p> Interpreter<'p> {
             *slot = self.concrete_operand(t, pc, op, "tcgen05.mma disable-output-lane")? as u32;
         }
         let lane_enabled = |lane: u32| (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 == 0;
-        // `D` spans all 128 lanes whatever `M` is - an `M < 128` result
-        // simply folds `N` across them (`tcgen05_mma::d_cell`).
-        let d_lanes: Vec<u32> = (0..128).filter(|&lane| lane_enabled(lane)).collect();
-
-        let current = AccessSite {
-            thread: t,
-            pc,
-            is_write: true,
-        };
-        let mut quadrants: Vec<u32> = d_lanes.iter().map(|lane| lane / WARP_SIZE).collect();
-        quadrants.dedup();
-        for quadrant in quadrants {
-            if let Some(prior) = self
-                .race
-                .tcgen05_pending_conflict(quadrant, d_col_base, d_num_cols, true)
-            {
-                return Err(EvalError::Tcgen05AsyncHazard {
-                    quadrant,
-                    start_col: d_col_base,
-                    num_cols: d_num_cols,
-                    prior,
-                    current,
-                });
-            }
-            self.check_inflight_mma_tmem(quadrant, d_col_base, d_num_cols, current, Some(t))?;
-        }
 
         for m in 0..id.m {
             for n in 0..id.n {
@@ -2645,9 +2506,6 @@ impl<'p> Interpreter<'p> {
                     continue;
                 }
                 let mut acc = if enable_input_d {
-                    self.race
-                        .tmem_read(lane, col, t, pc)
-                        .map_err(EvalError::from)?;
                     match self
                         .tensor
                         .read(lane, col)
@@ -2682,28 +2540,12 @@ impl<'p> Interpreter<'p> {
                     .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
             }
         }
-
-        for &byte in &operand_bytes {
-            self.race.lock_src(MemSpace::Shared, byte, 1, t, pc);
-        }
-        let op = InflightMma {
-            issuer: t,
-            pc,
-            operand_bytes,
-            a_tmem,
-            d_lanes,
-            d_start_col: d_col_base,
-            d_num_cols,
-            trackers: Vec::new(),
-        };
-        Self::record_mma_accesses(&mut self.race, &op)?;
-        self.tcgen05_inflight.push(op);
         Ok(())
     }
 
     /// Read one `tcgen05.mma` operand (`rows x k_dim`, row-major) from shared
-    /// memory, appending touched bytes to `bytes`. Concrete elements are
-    /// decoded from f16/fp8 bits; symbolic ones are real values.
+    /// memory. Concrete elements are decoded from f16/fp8 bits; symbolic ones
+    /// are real values.
     fn read_mma_operand(
         &mut self,
         t: ThreadId,
@@ -2711,7 +2553,6 @@ impl<'p> Interpreter<'p> {
         (desc, major, format): (&tcgen05_mma::MatrixDescriptor, Major, OperandFormat),
         rows: u32,
         k_dim: usize,
-        bytes: &mut Vec<u64>,
     ) -> EvalResult<Vec<ExprId>> {
         let elem_bytes = format.bytes();
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
@@ -2723,8 +2564,7 @@ impl<'p> Interpreter<'p> {
                         what: "tcgen05.mma MN-major operand without swizzling is not modeled"
                             .to_string(),
                     })?;
-                let Value::Scalar(e) =
-                    self.mem_read_via(t, pc, MemSpace::Shared, addr, elem_bytes, Proxy::Async)?
+                let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)?
                 else {
                     return Err(EvalError::ValueKindMismatch {
                         thread: t,
@@ -2739,7 +2579,6 @@ impl<'p> Interpreter<'p> {
                 };
                 let e = float_bits::decode_float_bits(&mut self.arena, pc, ty, e)?;
                 elems.push(e);
-                bytes.extend(addr..addr + elem_bytes);
             }
         }
         Ok(elems)
@@ -2783,14 +2622,13 @@ impl<'p> Interpreter<'p> {
 
     /// Read `tcgen05.mma`'s `[a-tmem]` `A`: `rows x k_dim` f16s, row `m` in
     /// lane `m`, element `k` in half `k % 2` of column `col_base + k / 2`.
-    /// Cells are χ-checked at issue; returns elements and cell range.
     fn read_mma_a_tmem(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         (base, offset): (&Operand, i64),
         (rows, k_dim): (u32, usize),
-    ) -> EvalResult<(Vec<ExprId>, Option<TmemRange>)> {
+    ) -> EvalResult<Vec<ExprId>> {
         let packed = self.effective_addr(t, pc, base, offset)? as u32;
         // `A` shares `D`'s layout, row `m` in lane `m` from lane 0; any other
         // lane would silently shift `A`'s rows.
@@ -2803,50 +2641,16 @@ impl<'p> Interpreter<'p> {
                 ),
             });
         }
-        let range = TmemRange {
-            lane_base: 0,
-            num_lanes: rows,
-            start_col: packed & 0xFFFF,
-            // Two f16 elements ride in each 32-bit column.
-            num_cols: (k_dim / 2) as u32,
-        };
+        let start_col = packed & 0xFFFF;
+        // Two f16 elements ride in each 32-bit column.
+        let num_cols = (k_dim / 2) as u32;
         self.tensor
-            .check_range(range.start_col, range.num_cols)
+            .check_range(start_col, num_cols)
             .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
-        let current = AccessSite {
-            thread: t,
-            pc,
-            is_write: false,
-        };
-        for quadrant in range.quadrants() {
-            if let Some(prior) =
-                self.race
-                    .tcgen05_pending_conflict(quadrant, range.start_col, range.num_cols, false)
-            {
-                return Err(EvalError::Tcgen05AsyncHazard {
-                    quadrant,
-                    start_col: range.start_col,
-                    num_cols: range.num_cols,
-                    prior,
-                    current,
-                });
-            }
-            self.check_inflight_mma_tmem(
-                quadrant,
-                range.start_col,
-                range.num_cols,
-                current,
-                Some(t),
-            )?;
-        }
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
-        for row in 0..rows {
-            let lane = range.lane_base + row;
-            for c in 0..range.num_cols {
-                let col = range.start_col + c;
-                self.race
-                    .tmem_read(lane, col, t, pc)
-                    .map_err(EvalError::from)?;
+        for lane in 0..rows {
+            for c in 0..num_cols {
+                let col = start_col + c;
                 let cell = self
                     .tensor
                     .read(lane, col)
@@ -2869,87 +2673,7 @@ impl<'p> Interpreter<'p> {
                 elems.push(hi);
             }
         }
-        Ok((elems, Some(range)))
-    }
-
-    /// Reject an access to TMEM columns `[start_col, start_col + num_cols)` of
-    /// `quadrant` still owned by an in-flight `tcgen05.mma` not issued by
-    /// `exempt`: its `D` range, or for writes its `A` range.
-    pub(in crate::eval) fn check_inflight_mma_tmem(
-        &self,
-        quadrant: u32,
-        start_col: u32,
-        num_cols: u32,
-        current: AccessSite,
-        exempt: Option<ThreadId>,
-    ) -> EvalResult<()> {
-        match self.tcgen05_inflight.iter().find(|op| {
-            Some(op.issuer) != exempt
-                && (op.d_overlaps(quadrant, start_col, num_cols)
-                    || (current.is_write && op.a_overlaps(quadrant, start_col, num_cols)))
-        }) {
-            Some(op) => Err(EvalError::Tcgen05AsyncHazard {
-                quadrant,
-                start_col,
-                num_cols,
-                prior: AccessSite {
-                    thread: op.issuer,
-                    pc: op.pc,
-                    is_write: true,
-                },
-                current,
-            }),
-            None => Ok(()),
-        }
-    }
-
-    /// `tcgen05.commit`'s tracking half: every MMA `t` has in flight
-    /// becomes completable by `mbar`'s forming phase.
-    fn commit_tcgen05_mmas(&mut self, t: ThreadId, mbar: MbarrierId) {
-        let phase = self.mbarriers.completed_phases(mbar);
-        for op in self.tcgen05_inflight.iter_mut().filter(|op| op.issuer == t) {
-            op.trackers.push((mbar, phase));
-        }
-    }
-
-    /// χ-check and record `op`'s smem operand reads (async proxy) and `D`
-    /// writes, attributed to its issuer: at issue for the check, again at
-    /// observed completion for the record.
-    fn record_mma_accesses(race: &mut RaceTracker, op: &InflightMma) -> EvalResult<()> {
-        for &byte in &op.operand_bytes {
-            race.read_via(MemSpace::Shared, byte, 1, op.issuer, op.pc, Proxy::Async)
-                .map_err(EvalError::from)?;
-        }
-        for &lane in &op.d_lanes {
-            for col in op.d_start_col..op.d_start_col + op.d_num_cols {
-                race.tmem_write(lane, col, op.issuer, op.pc)
-                    .map_err(EvalError::from)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// A waiter is about to observe `mbar`'s last phase: drop the locks of
-    /// every MMA it tracks, re-recording their accesses in χ first, since they
-    /// only completed now and order only for the waiters.
-    fn release_observed_mmas(&mut self, mbar: MbarrierId) -> EvalResult<()> {
-        let observed = self.mbarriers.completed_phases(mbar);
-        let (done, in_flight) = std::mem::take(&mut self.tcgen05_inflight)
-            .into_iter()
-            .partition(|op| {
-                op.trackers
-                    .iter()
-                    .any(|&(m, phase)| m == mbar && phase < observed)
-            });
-        self.tcgen05_inflight = in_flight;
-        for op in &done {
-            Self::record_mma_accesses(&mut self.race, op)?;
-            for &byte in &op.operand_bytes {
-                self.race
-                    .release_src(MemSpace::Shared, byte, 1, op.issuer, op.pc);
-            }
-        }
-        Ok(())
+        Ok(elems)
     }
 
     // =====================================================================
@@ -3731,19 +3455,10 @@ impl<'p> Interpreter<'p> {
         Ok((base as u64).wrapping_add(offset as u64))
     }
 
-    /// Land one deferred `cp.async` copy: drop its locks, then perform
-    /// its shared-memory write. Shared by `cp.async.wait_group` and
-    /// `cp.async.mbarrier.arrive`, the two completion points.
+    /// Land one deferred `cp.async` copy: perform its shared-memory write.
+    /// Shared by `cp.async.wait_group` and `cp.async.mbarrier.arrive`, the two
+    /// completion points.
     fn complete_cp_async_copy(&mut self, t: ThreadId, copy: PendingCopy) -> EvalResult<()> {
-        // Release before writing: the deferred write must not trip the copy's
-        // own dst lock (an earlier same-thread peek must still be caught by
-        // it).
-        self.race
-            .release_dst(MemSpace::Shared, copy.dst_addr, copy.cp_size, t, copy.pc);
-        if copy.real_bytes > 0 {
-            self.race
-                .release_src(MemSpace::Global, copy.src_addr, copy.real_bytes, t, copy.pc);
-        }
         for (i, v) in copy.words.into_iter().enumerate() {
             self.mem_write(
                 t,
@@ -3754,11 +3469,6 @@ impl<'p> Interpreter<'p> {
                 v,
             )?;
         }
-        // The copy's own completion mechanism orders these bytes for a
-        // later async-proxy read, so the generic mark `mem_write` just
-        // left behind comes straight back off.
-        self.race
-            .clear_generic_unfenced(copy.dst_addr, copy.cp_size);
         Ok(())
     }
 
@@ -3820,9 +3530,8 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Bounds-check, race-check, and read memory. Never-written in-bounds bytes
-    /// read `Undefined` but are still recorded in χ, so a later conflicting
-    /// write is a race (the paper's motivating example).
+    /// Bounds-check and read memory. Never-written in-bounds bytes read
+    /// `Undefined` (the paper's motivating example relies on this).
     pub(in crate::eval) fn mem_read(
         &mut self,
         t: ThreadId,
@@ -3831,36 +3540,14 @@ impl<'p> Interpreter<'p> {
         addr: u64,
         width: u64,
     ) -> EvalResult<Value> {
-        self.mem_read_via(t, pc, space, addr, width, Proxy::Generic)
-    }
-
-    /// [`Self::mem_read`] through a given memory proxy (see
-    /// `RaceTracker::read_via`).
-    pub(in crate::eval) fn mem_read_via(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-        space: MemSpace,
-        addr: u64,
-        width: u64,
-        proxy: Proxy,
-    ) -> EvalResult<Value> {
         self.check_bounds(t, pc, space, addr, width)?;
         // Every program access flows through here, so this is the one
         // natural-alignment chokepoint. Param space never reaches it
         // (`check_bounds` rejects it; `LoadParam` is not memory).
         self.check_alignment(t, pc, space, addr, width)?;
         let memory = match space {
-            MemSpace::Global | MemSpace::Shared => {
-                self.race
-                    .read_via(space, addr, width, t, pc, proxy)
-                    .map_err(EvalError::from)?;
-                if space == MemSpace::Global {
-                    &self.global
-                } else {
-                    &self.shared
-                }
-            }
+            MemSpace::Global => &self.global,
+            MemSpace::Shared => &self.shared,
             MemSpace::Local => &self.locals[t],
             _ => unreachable!("bounds check rejects other spaces"),
         };
@@ -3966,23 +3653,7 @@ impl<'p> Interpreter<'p> {
         any
     }
 
-    /// Whether two values denote the same reals lane by lane: same node,
-    /// structural equality, or the injected `ValueEquality`. Only consulted
-    /// after a write-write conflict, so rarely paid.
-    fn same_real_value(&self, a: Value, b: Value) -> bool {
-        let lanes = match (a, b) {
-            (Value::Scalar(x), Value::Scalar(y)) => vec![(x, y)],
-            (Value::Pair(x_lo, x_hi), Value::Pair(y_lo, y_hi)) => vec![(x_lo, y_lo), (x_hi, y_hi)],
-            _ => return false,
-        };
-        lanes.into_iter().all(|(x, y)| {
-            x == y
-                || structurally_equal(&self.arena, x, &self.arena, y)
-                || self.value_equality.same_value(&self.arena, x, y)
-        })
-    }
-
-    /// Bounds-check, race-check, and write memory.
+    /// Bounds-check and write memory.
     pub(in crate::eval) fn mem_write(
         &mut self,
         t: ThreadId,
@@ -3995,46 +3666,7 @@ impl<'p> Interpreter<'p> {
         self.check_bounds(t, pc, space, addr, width)?;
         // See `mem_read`: the write-side natural-alignment chokepoint.
         self.check_alignment(t, pc, space, addr, width)?;
-        let memory = match space {
-            MemSpace::Global | MemSpace::Shared => {
-                let result = self.race.write_with(space, addr, width, t, pc, false);
-                // A store of the value already there is benign against the
-                // previous writer (`RaceTracker::write_with`). Fetched only
-                // once a write-write conflict is found.
-                let benign = if let Err(MemHazard::Race(info)) = &result
-                    && info.prior.is_write
-                {
-                    let present = if space == MemSpace::Global {
-                        self.global.read(addr, width).ok()
-                    } else {
-                        self.shared.read(addr, width).ok()
-                    };
-                    present.is_some_and(|present| self.same_real_value(present, value))
-                } else {
-                    false
-                };
-                if benign {
-                    self.race
-                        .write_with(space, addr, width, t, pc, true)
-                        .map_err(EvalError::from)?;
-                } else {
-                    result.map_err(EvalError::from)?;
-                }
-                if space == MemSpace::Global {
-                    &mut self.global
-                } else {
-                    // sm_90+: a later async-proxy read (`tcgen05.mma`) needs a
-                    // `fence.proxy.async` after this write. Async copies clear
-                    // this mark (`RaceTracker::clear_generic_unfenced`).
-                    if self.features.async_proxy_fence {
-                        self.race.mark_generic_unfenced(addr, width, t, pc);
-                    }
-                    &mut self.shared
-                }
-            }
-            MemSpace::Local => &mut self.locals[t],
-            _ => unreachable!("bounds check rejects other spaces"),
-        };
+        let memory = self.memory_mut(space, t);
         match memory.write(addr, width, value) {
             Err(MemAccessError::Reinterpret {
                 found: Some((start, found_width, GranuleKind::Scalar)),

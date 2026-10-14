@@ -5,7 +5,6 @@ use std::fmt;
 
 use crate::eval::ThreadId;
 use crate::eval::memory::{GranuleKind, MemAccessError};
-use crate::eval::race::{MemHazard, TensorMemRaceInfo};
 use crate::eval::tensor_memory::TensorMemError;
 use crate::lowered::{InstrId, MemSpace};
 use crate::symbols::RegId;
@@ -45,9 +44,10 @@ pub enum ClcMisuse {
     },
 }
 
-/// Errors detected by the symbolic evaluator. `DataRace` and `Deadlock` are the analysis
-/// *results* the paper proves sound and complete; the rest are structured-CTA violations or
-/// implementation limits, which the paper models as raised exceptions.
+/// Errors of one kernel analysis. `DataRace` and `Deadlock` are the analysis *results* the paper
+/// proves sound and complete; the rest are structured-CTA violations or implementation limits,
+/// which the paper models as raised exceptions. The race and async-hazard variants are a report
+/// format only: the evaluator itself no longer detects them.
 #[derive(Debug)]
 pub enum EvalError {
     /// Two unsynchronized conflicting accesses to the same address.
@@ -270,8 +270,8 @@ pub enum EvalError {
         num_cols: u32,
     },
     /// A Tensor Memory access or `tcgen05.dealloc` overlapped an outstanding async op: an
-    /// un-`tcgen05.wait`-ed `.ld`/`.st` (see `RaceTracker::tcgen05_begin`) or a
-    /// `tcgen05.mma` whose completion no thread has observed.
+    /// un-`tcgen05.wait`-ed `.ld`/`.st` or a `tcgen05.mma` whose completion no thread has
+    /// observed.
     Tcgen05AsyncHazard {
         quadrant: u32,
         start_col: u32,
@@ -281,7 +281,7 @@ pub enum EvalError {
     },
     /// `thread` arrived at a sync point (`bar.*`, mbarrier arrive, `tcgen05.commit`) at `pc`
     /// with a `pending` un-`tcgen05.wait`-ed `.ld`/`.st`: the wait must precede the arrival
-    /// for the sync to order the op for other participants (`RaceTracker::tcgen05_unwaited`).
+    /// for the sync to order the op for other participants.
     Tcgen05UnwaitedAtSync {
         thread: ThreadId,
         pc: InstrId,
@@ -788,42 +788,6 @@ impl EvalError {
                 lane,
                 col,
             },
-        }
-    }
-}
-
-impl From<MemHazard> for EvalError {
-    fn from(hazard: MemHazard) -> Self {
-        match hazard {
-            MemHazard::Race(race) => EvalError::DataRace {
-                space: race.space,
-                addr: race.addr,
-                prior: race.prior,
-                current: race.current,
-            },
-            MemHazard::AsyncCopy(h) => EvalError::AsyncCopyHazard {
-                space: h.space,
-                addr: h.addr,
-                prior: h.prior,
-                current: h.current,
-            },
-            MemHazard::GenericProxyUnfenced(h) => EvalError::GenericProxyFenceHazard {
-                space: h.space,
-                addr: h.addr,
-                prior: h.prior,
-                current: h.current,
-            },
-        }
-    }
-}
-
-impl From<TensorMemRaceInfo> for EvalError {
-    fn from(race: TensorMemRaceInfo) -> Self {
-        EvalError::TensorMemoryRace {
-            lane: race.lane,
-            col: race.col,
-            prior: race.prior,
-            current: race.current,
         }
     }
 }

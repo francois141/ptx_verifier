@@ -14,16 +14,33 @@ check_ai_compiler_gemm:
 # Run the Rust and Python tests
 test: test-rust test-python
 
-# Rust unit + integration tests
+# Rust unit + integration tests (minus any listed in test-exclusions.txt)
 test-rust:
     #!/usr/bin/env bash
     set -euo pipefail
+    skips=()
+    if [[ -f test-exclusions.txt ]]; then
+        while read -r kind name; do
+            if [[ "$kind" == rust ]]; then skips+=(--skip "$name"); fi
+        done < <(grep -v '^[[:space:]]*#' test-exclusions.txt)
+        echo "note: skipping ${#skips[@]} test argument(s) listed in test-exclusions.txt" >&2
+    fi
+    if (( ${#skips[@]} )); then skips+=(--exact); fi
     cargo test --release --workspace --exclude volta_z3 -- --test-threads 16 --color always \
+        ${skips[@]+"${skips[@]}"} \
         | grep --line-buffered -v 'has been running for over 60 seconds'
 
-# Python bindings tests
+# Python bindings tests (rebuilding the extension; minus test-exclusions.txt)
 test-python:
-    uv run pytest crates/volta_py
+    #!/usr/bin/env bash
+    set -euo pipefail
+    deselect=()
+    if [[ -f test-exclusions.txt ]]; then
+        while read -r kind name; do
+            if [[ "$kind" == python ]]; then deselect+=(--deselect "$name"); fi
+        done < <(grep -v '^[[:space:]]*#' test-exclusions.txt)
+    fi
+    uv run --reinstall-package volta pytest crates/volta_py ${deselect[@]+"${deselect[@]}"}
 
 # Static checks
 check: check-rust check-python
