@@ -707,6 +707,7 @@ dependencies = [
  "volta_equivalence",
  "volta_expr",
  "volta_frontend",
+ "volta_graph",
 ]
 
 [[package]]
@@ -783,6 +784,14 @@ name = "volta_frontend"
 version = "0.1.0"
 dependencies = [
  "volta_common",
+]
+
+[[package]]
+name = "volta_graph"
+version = "0.1.0"
+dependencies = [
+ "id_collections",
+ "volta_expr",
 ]
 
 [[package]]

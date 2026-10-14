@@ -13,6 +13,7 @@ volta_common = { path = "./crates/volta_common" }
 volta_equivalence = { path = "./crates/volta_equivalence" }
 volta_expr = { path = "./crates/volta_expr" }
 volta_frontend = { path = "./crates/volta_frontend" }
+volta_graph = { path = "./crates/volta_graph" }
 volta_spec = { path = "./crates/volta_spec" }
 volta_z3 = { path = "./crates/volta_z3" }
 

@@ -5,9 +5,12 @@
 
 use volta_frontend::ast::ScalarType;
 
+use volta_graph::{AccessMode, AsyncOpKind, GenerationId, GroupFamily};
+
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
 use crate::eval::interp::Interpreter;
+use crate::eval::record::{Tcgen05Wait, point, tix};
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::lowered::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
@@ -93,6 +96,7 @@ impl Interpreter<'_> {
         // provably mutates nothing.
         self.check_warp_op_preconditions(pc, &instr, members)?;
         self.stats.warp_syncs += 1;
+        let exit = self.record_warp_op_entry(pc, mask, members);
 
         match &instr {
             LoweredInstr::BarWarpSync { .. } => {}
@@ -179,13 +183,23 @@ impl Interpreter<'_> {
             } => {
                 self.exec_tcgen05_st(pc, members, *shape, (taddr_base, *taddr_offset), src)?;
             }
-            LoweredInstr::Tcgen05Wait { .. } => {}
+            LoweredInstr::Tcgen05Wait { is_st } => {
+                let wait = if *is_st {
+                    Tcgen05Wait::St
+                } else {
+                    Tcgen05Wait::Ld
+                };
+                self.record_tcgen05_wait(members[0].0 / WARP_SIZE, wait, exit);
+            }
             LoweredInstr::WgmmaFence
             | LoweredInstr::WgmmaCommitGroup
-            | LoweredInstr::WgmmaWaitGroup { .. } => self.exec_wgmma_hazard_op(members, &instr),
+            | LoweredInstr::WgmmaWaitGroup { .. } => {
+                self.exec_wgmma_hazard_op(pc, members, &instr, exit)
+            }
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
+        self.record_collective_exit(exit, pc, members);
         self.advance_thread_group(members);
         Ok(())
     }
@@ -1070,6 +1084,8 @@ impl Interpreter<'_> {
             .tensor
             .alloc(num_cols)
             .map_err(|e| EvalError::from_tensor_mem(leader, pc, e))?;
+        self.graph
+            .tmem_alloc(tix(leader), point(pc), taddr as u16, num_cols as u16);
         let value = Value::Scalar(self.arena.int(taddr as i64));
         self.mem_write(leader, pc, MemSpace::Shared, dst_addr, 4, value)
     }
@@ -1085,7 +1101,10 @@ impl Interpreter<'_> {
         let taddr = self.uniform_concrete(pc, members, taddr, "tcgen05.dealloc taddr")? as u32;
         self.tensor
             .dealloc(taddr, num_cols)
-            .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))
+            .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))?;
+        self.graph
+            .tmem_dealloc(tix(members[0]), point(pc), taddr as u16, num_cols as u16);
+        Ok(())
     }
 
     /// The Tensor Memory lane quadrant (32 of 128 lanes) a thread's warp may access:
@@ -1136,6 +1155,12 @@ impl Interpreter<'_> {
         self.tensor
             .check_range(base_col, num_cols)
             .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))?;
+        let op = self.record_async_issue(members[0], pc, AsyncOpKind::Tcgen05Ld);
+        for &m in members {
+            let cells = (0..dst.len() as u32).map(|k| shape.cell(m.0 % WARP_SIZE, k));
+            self.record_tmem_cells(op, m, AccessMode::Read, lane_base, base_col, cells);
+        }
+        self.record_tcgen05_pending(members[0].0 / WARP_SIZE, Tcgen05Wait::Ld, op);
         for &m in members {
             for (k, &reg) in dst.iter().enumerate() {
                 let (lane, col) = shape.cell(m.0 % WARP_SIZE, k as u32);
@@ -1172,6 +1197,12 @@ impl Interpreter<'_> {
         self.tensor
             .check_range(base_col, num_cols)
             .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))?;
+        let op = self.record_async_issue(members[0], pc, AsyncOpKind::Tcgen05St);
+        for &m in members {
+            let cells = (0..src.len() as u32).map(|k| shape.cell(m.0 % WARP_SIZE, k));
+            self.record_tmem_cells(op, m, AccessMode::Write, lane_base, base_col, cells);
+        }
+        self.record_tcgen05_pending(members[0].0 / WARP_SIZE, Tcgen05Wait::St, op);
         for &m in members {
             for (k, op) in src.iter().enumerate() {
                 let (lane, col) = shape.cell(m.0 % WARP_SIZE, k as u32);
@@ -1193,15 +1224,27 @@ impl Interpreter<'_> {
     }
 
     /// A converged `wgmma.fence`/`commit_group`/`wait_group`: each live lane
-    /// updates its own wgmma-group state.
-    fn exec_wgmma_hazard_op(&mut self, members: &[ThreadId], instr: &LoweredInstr) {
+    /// updates its own wgmma-group state; a wait completes the shares it
+    /// releases into the op's `exit` generation.
+    fn exec_wgmma_hazard_op(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        instr: &LoweredInstr,
+        exit: GenerationId,
+    ) {
         for &t in members {
             let wgmma = &mut self.threads[t].wgmma;
             match instr {
                 LoweredInstr::WgmmaFence => wgmma.fence(),
-                LoweredInstr::WgmmaCommitGroup => wgmma.commit_group(),
+                LoweredInstr::WgmmaCommitGroup => {
+                    wgmma.commit_group();
+                    self.graph
+                        .group_commit(tix(t), point(pc), GroupFamily::Wgmma);
+                }
                 LoweredInstr::WgmmaWaitGroup { n } => {
-                    wgmma.wait_group(*n);
+                    let released = wgmma.wait_group(*n);
+                    self.record_wgmma_released(t, &released, exit);
                 }
                 other => unreachable!("{:?} is not a wgmma hazard op", other),
             }

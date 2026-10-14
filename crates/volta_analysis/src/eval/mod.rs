@@ -11,6 +11,7 @@ pub mod float_bits;
 pub mod interp;
 pub mod mbarrier;
 pub mod memory;
+pub mod record;
 pub mod target;
 pub mod tcgen05_mma;
 pub mod tensor_map_table;
@@ -53,6 +54,8 @@ pub const WARPGROUP_SIZE: u32 = WARP_SIZE * 4;
 
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 pub use error::{AccessSite, ClcMisuse, EvalError, EvalResult};
-pub use interp::{AnalysisOutput, Interpreter, RaceVerification, Stats};
+pub use interp::{
+    AnalysisOutput, Interpreter, OutputsUnavailable, RaceVerification, RunArtifacts, RunEnd, Stats,
+};
 pub use target::TargetFeatures;
 pub use value::Value;

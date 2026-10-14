@@ -133,6 +133,22 @@ impl MbarrierTable {
     pub fn completed_phases(&self, id: MbarrierId) -> u64 {
         self.states[id].completed_phases
     }
+
+    /// Net outstanding transaction bytes of `id` (what a just-completed phase left).
+    pub fn pending_tx(&self, id: MbarrierId) -> i64 {
+        self.states[id].pending_tx
+    }
+
+    /// `(completed phases, arrivals, expected arrivals, pending tx)` of `id`'s forming phase.
+    pub fn forming_state(&self, id: MbarrierId) -> (u64, u64, u64, i64) {
+        let s = &self.states[id];
+        (
+            s.completed_phases,
+            s.arrived,
+            s.expected_arrivals,
+            s.pending_tx,
+        )
+    }
 }
 
 #[cfg(test)]

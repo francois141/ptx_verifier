@@ -693,6 +693,51 @@ impl std::error::Error for EvalError {}
 pub type EvalResult<T> = Result<T, EvalError>;
 
 impl EvalError {
+    /// The thread and instruction the error arose at, where it names them.
+    pub fn location(&self) -> (Option<ThreadId>, Option<InstrId>) {
+        match self {
+            Self::DataRace { current, .. }
+            | Self::AsyncCopyHazard { current, .. }
+            | Self::GenericProxyFenceHazard { current, .. }
+            | Self::Tcgen05AsyncHazard { current, .. }
+            | Self::TensorMemoryRace { current, .. } => (Some(current.thread), Some(current.pc)),
+            Self::WgmmaFenceHazard { thread, pc, .. }
+            | Self::WgmmaWaitGroupHazard { thread, pc, .. }
+            | Self::UninitializedRegister { thread, pc, .. }
+            | Self::UninitializedMemory { thread, pc, .. }
+            | Self::OutOfBounds { thread, pc, .. }
+            | Self::Misaligned { thread, pc, .. }
+            | Self::Reinterpretation { thread, pc, .. }
+            | Self::NotConcrete { thread, pc, .. }
+            | Self::ValueKindMismatch { thread, pc, .. }
+            | Self::MbarrierOverwrite { thread, pc, .. }
+            | Self::NoLiveMbarrier { thread, pc, .. }
+            | Self::TrapReached { thread, pc }
+            | Self::ClusterLaunchControlMisuse { thread, pc, .. }
+            | Self::MapaRankOutsideCluster { thread, pc, .. }
+            | Self::Tcgen05InvalidColumnCount { thread, pc, .. }
+            | Self::Tcgen05IncreasingColumnCount { thread, pc, .. }
+            | Self::Tcgen05OutOfSpace { thread, pc, .. }
+            | Self::Tcgen05AllocAfterRelinquish { thread, pc }
+            | Self::Tcgen05DeallocMismatch { thread, pc, .. }
+            | Self::Tcgen05NotAllocated { thread, pc, .. }
+            | Self::Tcgen05AccessOutsideAllocation { thread, pc, .. }
+            | Self::Tcgen05UnwaitedAtSync { thread, pc, .. }
+            | Self::Tcgen05LaneRestrictionViolation { thread, pc, .. }
+            | Self::TensorMapNotFound { thread, pc, .. }
+            | Self::TensorMapFieldMissing { thread, pc, .. } => (Some(*thread), Some(*pc)),
+            Self::WmmaStrideTooSmall { pc, .. }
+            | Self::WarpMismatch { pc, .. }
+            | Self::BarrierMismatch { pc, .. }
+            | Self::Unsupported { pc, .. }
+            | Self::InvalidEncoding { pc, .. } => (None, Some(*pc)),
+            Self::Deadlock { .. }
+            | Self::UndefinedOutput { .. }
+            | Self::InstructionLimit { .. }
+            | Self::Config { .. } => (None, None),
+        }
+    }
+
     /// The error for a failed memory access by `t` at `pc`.
     pub(in crate::eval) fn from_mem_access(
         t: ThreadId,

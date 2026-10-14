@@ -2,9 +2,12 @@
 //! global to shared, mbarrier-completed). The data lands eagerly at issue; an
 //! observed mbarrier phase is the copy's only completion signal (9.7.9.25.2).
 
+use volta_graph::{AsyncOpId, AsyncOpKind, Proxy};
+
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::interp::Interpreter;
+use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table;
 use crate::eval::value::{MbarrierId, Value};
@@ -200,6 +203,11 @@ impl<'p> Interpreter<'p> {
         }
 
         let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();
+        let op = self.record_async_issue(t, pc, AsyncOpKind::TensorCopy);
+        let origin = AccessOrigin::Async {
+            op,
+            proxy: Proxy::Async,
+        };
         let mut idx = vec![0u32; real_rank];
         let mut global_idx = vec![0i64; real_rank];
         for linear in 0..total_elems {
@@ -223,7 +231,7 @@ impl<'p> Interpreter<'p> {
                 for d in 1..real_rank {
                     byte_addr += global_idx[d] as u64 * global_strides[d - 1];
                 }
-                self.mem_read(t, pc, MemSpace::Global, byte_addr, elem_bytes)?
+                self.mem_read_from(t, pc, MemSpace::Global, byte_addr, elem_bytes, origin)?
             } else if elemtype.is_float() {
                 Value::Scalar(
                     self.arena
@@ -243,10 +251,18 @@ impl<'p> Interpreter<'p> {
             let leading_idx = idx[0] as u64;
             let dst_elem_addr =
                 tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
-            self.mem_write(t, pc, MemSpace::Shared, dst_elem_addr, elem_bytes, value)?;
+            self.mem_write_from(
+                t,
+                pc,
+                MemSpace::Shared,
+                dst_elem_addr,
+                elem_bytes,
+                value,
+                origin,
+            )?;
         }
 
-        self.mbarrier_complete_tx(t, pc, mbar_addr, total_elems * elem_bytes)
+        self.mbarrier_complete_tx(t, pc, mbar_addr, total_elems * elem_bytes, op)
     }
 
     /// `cp.async.bulk` global -> shared of `size` bytes, completing `size`
@@ -273,12 +289,19 @@ impl<'p> Interpreter<'p> {
         self.check_alignment(t, pc, MemSpace::Global, src_addr, 16)?;
         self.check_alignment(t, pc, MemSpace::Shared, dst_addr, 16)?;
 
+        let op = self.record_async_issue(t, pc, AsyncOpKind::BulkCopy);
+        let origin = AccessOrigin::Async {
+            op,
+            proxy: Proxy::Async,
+        };
         for byte in (0..size).step_by(WORD_BYTES as usize) {
-            let value = self.mem_read(t, pc, MemSpace::Global, src_addr + byte, WORD_BYTES)?;
-            self.mem_write(t, pc, MemSpace::Shared, dst_addr + byte, WORD_BYTES, value)?;
+            let src = src_addr + byte;
+            let value = self.mem_read_from(t, pc, MemSpace::Global, src, WORD_BYTES, origin)?;
+            let dst = dst_addr + byte;
+            self.mem_write_from(t, pc, MemSpace::Shared, dst, WORD_BYTES, value, origin)?;
         }
 
-        self.mbarrier_complete_tx(t, pc, mbar_addr, size)
+        self.mbarrier_complete_tx(t, pc, mbar_addr, size, op)
     }
 
     /// Resolve the mbarrier object living at shared address `addr`.
@@ -290,17 +313,21 @@ impl<'p> Interpreter<'p> {
             .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))
     }
 
-    /// Perform a complete-tx of `bytes` on the mbarrier object at shared
-    /// address `addr`.
+    /// `op`'s completion performs a complete-tx of `bytes` on the mbarrier
+    /// object at shared address `addr`.
     pub(in crate::eval) fn mbarrier_complete_tx(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         addr: u64,
         bytes: u64,
+        op: AsyncOpId,
     ) -> EvalResult<()> {
         let id = self.mbarrier_handle(t, pc, addr)?;
+        self.record_tracked_by_mbarrier(op, id, bytes);
+        let before = self.mbarriers.completed_phases(id);
         self.mbarriers.complete_tx(id, bytes);
+        self.record_mbarrier_progress(id, before);
         Ok(())
     }
 }

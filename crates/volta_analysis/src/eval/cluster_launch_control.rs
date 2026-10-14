@@ -4,7 +4,10 @@
 
 use crate::eval::ThreadId;
 use crate::eval::error::{ClcMisuse, EvalError, EvalResult};
+use volta_graph::{AsyncOpKind, Proxy};
+
 use crate::eval::interp::Interpreter;
+use crate::eval::record::AccessOrigin;
 use crate::eval::value::Value;
 use crate::lowered::{InstrId, MemSpace};
 use crate::symbols::RegId;
@@ -44,11 +47,24 @@ impl<'p> Interpreter<'p> {
         }
         self.check_bounds(t, pc, MemSpace::Shared, addr, RESPONSE_BYTES)?;
         self.check_alignment(t, pc, MemSpace::Shared, addr, RESPONSE_BYTES)?;
+        let op = self.record_async_issue(t, pc, AsyncOpKind::ClcResponse);
+        let origin = AccessOrigin::Async {
+            op,
+            proxy: Proxy::Async,
+        };
         for word in (0..RESPONSE_BYTES).step_by(WORD_BYTES as usize) {
             let zero = Value::Scalar(self.arena.int(0));
-            self.mem_write(t, pc, MemSpace::Shared, addr + word, WORD_BYTES, zero)?;
+            self.mem_write_from(
+                t,
+                pc,
+                MemSpace::Shared,
+                addr + word,
+                WORD_BYTES,
+                zero,
+                origin,
+            )?;
         }
-        self.mbarrier_complete_tx(t, pc, mbar_addr, RESPONSE_BYTES)
+        self.mbarrier_complete_tx(t, pc, mbar_addr, RESPONSE_BYTES, op)
     }
 
     pub(in crate::eval) fn exec_clc_query_is_canceled(

@@ -8,7 +8,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use volta_analysis::driver::{analyze_kernel, write_op_counts};
+use volta_analysis::analyze;
+use volta_analysis::driver::{analyze_kernel, legacy_output, write_op_counts};
 use volta_analysis::eval::{
     AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue, RaceVerification,
 };
@@ -167,6 +168,11 @@ struct AnalyzeArgs {
     /// which `compare --exprs` reads back.
     #[arg(long, value_name = "FILE")]
     emit_exprs: Option<PathBuf>,
+
+    /// Write the candidate execution's event graph to this file in the
+    /// deterministic `volta-graph 1` text format (also when the run fails).
+    #[arg(long, value_name = "FILE")]
+    dump_graph: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -503,7 +509,15 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     };
 
     let start = Instant::now();
-    let result = analyze_kernel(&module, args.kernel.as_deref(), config, &CanonValueEquality);
+    let result = analyze(&module, args.kernel.as_deref(), config).and_then(|result| {
+        if let Some(path) = &args.dump_graph {
+            match std::fs::write(path, result.graph.dump()) {
+                Ok(()) => eprintln!("Wrote event graph to {}", path.display()),
+                Err(e) => eprintln!("error: failed to write {}: {}", path.display(), e),
+            }
+        }
+        legacy_output(result.into_parts())
+    });
     let elapsed = start.elapsed().as_secs_f64();
 
     match result {

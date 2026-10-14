@@ -6,7 +6,10 @@ use volta_frontend::ast::ScalarType;
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
+use volta_graph::{AsyncOpId, AsyncOpKind, Proxy};
+
 use crate::eval::interp::Interpreter;
+use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma::{self, Major, MatrixDescriptor};
 use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
@@ -16,7 +19,7 @@ use crate::tensor_core::wgmma_m64n_k16;
 use volta_expr::{ExprId, Real};
 
 /// One fired `wgmma.mma_async`, as each member's wgmma-groups record it.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::eval) struct WgmmaOpId(u64);
 
 impl Interpreter<'_> {
@@ -35,12 +38,14 @@ impl Interpreter<'_> {
             .clone();
 
         self.stats.warp_syncs += 1; // reuses the existing "#Warp Sync" counter - see the plan's note
+        let exit = self.record_warpgroup_op_entry(pc, members);
 
         match &instr {
             LoweredInstr::WgmmaMmaAsync { .. } => self.exec_wgmma_mma_async(pc, members, &instr)?,
             other => unreachable!("{:?} passed warpgroup-op dispatch", other),
         }
 
+        self.record_collective_exit(exit, pc, members);
         self.advance_thread_group(members);
         Ok(())
     }
@@ -91,7 +96,12 @@ impl Interpreter<'_> {
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
         let (a_major, b_major) = (major(*transpose_a), major(*transpose_b));
 
+        let id = self.next_wgmma_op;
+        self.next_wgmma_op = WgmmaOpId(id.0 + 1);
+        let instance = self.next_wgmma_instance();
         for &t in members {
+            let op = self.record_async_issue(t, pc, AsyncOpKind::WgmmaMma { instance });
+            self.record_wgmma_part(id, t, op);
             let lane = t.0 % WARPGROUP_SIZE;
             for elem in wgmma_m64n_k16::matrix_d(lane, n) {
                 let reg = dst[elem.reg_idx];
@@ -114,6 +124,7 @@ impl Interpreter<'_> {
                     let a_e = self.read_wgmma_element(
                         t,
                         pc,
+                        op,
                         (&a_md, a_major, *a_type),
                         elem.row as u64,
                         k,
@@ -121,6 +132,7 @@ impl Interpreter<'_> {
                     let b_e = self.read_wgmma_element(
                         t,
                         pc,
+                        op,
                         (&b_md, b_major, *b_type),
                         elem.col as u64,
                         k,
@@ -130,8 +142,6 @@ impl Interpreter<'_> {
                 self.write_reg_wgmma_accum(t, pc, reg, *shape, Value::Scalar(acc))?;
             }
         }
-        let id = self.next_wgmma_op;
-        self.next_wgmma_op = WgmmaOpId(id.0 + 1);
         for &t in members {
             self.threads[t].wgmma.record_wgmma_op(id);
         }
@@ -139,12 +149,14 @@ impl Interpreter<'_> {
     }
 
     /// Read `A`/`B` element `(mn_idx, k_idx)` (PTX ISA 9.7.17.5.1.2.1.3
-    /// layouts). Concrete elements decode from f16/bf16/fp8 bits; symbolic
-    /// ones are real values.
+    /// layouts) as an async-proxy effect of `op`. Concrete elements decode from
+    /// f16/bf16/fp8 bits; symbolic ones are real values.
+    #[allow(clippy::too_many_arguments)]
     fn read_wgmma_element(
         &mut self,
         t: ThreadId,
         pc: InstrId,
+        op: AsyncOpId,
         (desc, major, ty): (&MatrixDescriptor, Major, ScalarType),
         mn_idx: u64,
         k_idx: u64,
@@ -156,7 +168,13 @@ impl Interpreter<'_> {
                 what: "wgmma.mma_async MN-major operand without swizzling is not modeled"
                     .to_string(),
             })?;
-        let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)? else {
+        let origin = AccessOrigin::Async {
+            op,
+            proxy: Proxy::Async,
+        };
+        let Value::Scalar(e) =
+            self.mem_read_from(t, pc, MemSpace::Shared, addr, elem_bytes, origin)?
+        else {
             return Err(EvalError::ValueKindMismatch {
                 thread: t,
                 pc,

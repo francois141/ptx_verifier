@@ -1,0 +1,9 @@
+[package]
+name = "volta_graph"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+volta_expr.workspace = true
+
+id_collections.workspace = true

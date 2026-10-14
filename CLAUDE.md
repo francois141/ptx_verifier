@@ -24,7 +24,8 @@ crates/
 ├── volta_common/     # Base utilities (spans, file caching, error reporting, run logs)
 ├── volta_frontend/   # PTX lexer and parser
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
-├── volta_analysis/   # Abstract interpreter (PTX -> expressions)
+├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
+├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_z3/         # Z3 comparison backend (SMT-LIB2 via linked libz3)
 ├── volta_bench/      # Paper-evaluation benchmark harness
@@ -40,14 +41,17 @@ volta_cli         → volta_z3, volta_equivalence, volta_analysis, volta_expr, v
 volta_bench       → volta_z3, volta_equivalence, volta_analysis, volta_expr, volta_frontend, volta_common
 volta_z3          → volta_equivalence, volta_expr
 volta_equivalence → volta_expr
-volta_analysis    → volta_expr, volta_frontend, volta_common
+volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
+volta_graph       → volta_expr
 volta_expr        → (nothing)
 volta_frontend    → volta_common
 volta_common      → (nothing)
 ```
 
 `volta_analysis` (the producer) and `volta_equivalence` (the consumer) share
-only the expression language; neither depends on the other. Tests follow the
+only the expression language; neither depends on the other. Likewise the
+event graph (`volta_graph`) is the analysis's only contract with graph
+verification. Tests follow the
 split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
 over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
 one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
@@ -176,6 +180,41 @@ deterministic. Reading rebuilds nodes exactly as written (no constant
 folding) and validates; the writer's `match` is exhaustive over `ExprNode`,
 so a new node kind cannot ship without a text form.
 
+## Crate: volta_graph
+
+**Path**: `crates/volta_graph/`
+
+The typed operation/event graph of one candidate execution, recorded by the
+analysis and consumed by graph property checkers; depends only on
+`volta_expr` (stored values are `ExprId`s of the analysis's arena). The
+crate-level docs in `lib.rs` are the contract.
+
+- Events (`EventId` = trace position) with an `ExecContext`: `Thread(t)`
+  (program order of issuance), `Async(op)` (an async op's effect or
+  completion, in no program order), `Generation(g)` (a generation's
+  completion). Kinds: `Access`, `Contribute`, `WaitStart`, `Resume`,
+  `GenerationComplete`, `AsyncIssue`, `AsyncComplete`, `GroupCommit`, `Fence`,
+  `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`, `Exit`.
+- `MemAccess`: space (`Global`/`Shared`/`Tensor`; local memory is not
+  recorded), mode, `OrderingKind` (only `Ordinary` produced), proxy, canonical
+  `Footprint` (byte range, or TMEM lane x column rectangle), attributed
+  thread, stored value for writes.
+- Sync objects (named barrier, mbarrier lifetime, warp/warpgroup collective,
+  a thread's cp.async group waits) with logical `Generation`s: typed
+  `Contribution`s (`Blocking`, `Arrival`, `Exited`, `AsyncCompletion`,
+  `CompleteTx`), releases (`Resume` events), completion event, evidence.
+  Collective instances have an `Entry` and an `Exit` generation around the
+  op's effects.
+- `AsyncOp`: issuer, issue event, effects, completion, tentative `tracking`
+  generations (an mbarrier phase, a wait collective, a wait-group).
+- `Terminal`: `Completed`, `Stuck` (each blocked thread's wait condition and
+  state) or `Aborted` (partial graph). `Provenance`: launch, targets,
+  `Assumption`s, per-instruction kind and source span.
+- `EventGraph::validate` checks the representation invariants (every typed
+  edge runs forward in trace order, so the relation is acyclic);
+  `EventGraph::dump` is the deterministic `volta-graph 1` text form
+  (`volta analyze --dump-graph FILE`).
+
 ## Crate: volta_analysis
 
 **Path**: `crates/volta_analysis/`
@@ -233,6 +272,18 @@ Key semantics: input-array symbols materialize lazily on first read; reads of
 never-written registers/shared bytes yield `Undefined` (an error only if it
 reaches an output or a concreteness point) - the paper's race example and
 nvcc's `selp` accumulator-init idiom both rely on this.
+
+### Analysis stage (`analysis.rs`)
+
+- `analyze(module, kernel_name, config) -> Result<AnalysisResult, AnalysisError>`:
+  lowering plus one candidate execution, no verdict. `AnalysisResult` holds
+  the arena, the event graph (always; partial on abort), stats, op counts,
+  and the symbolic outputs only when the execution completed and its outputs
+  read back (`symbolic_outputs()` / `into_parts()`; else `OutputsUnavailable`:
+  `Aborted`, `Stuck`, `Extraction`).
+- `eval/record.rs` records the graph at the interpreter's effect and sync
+  points (`AccessOrigin` tags async effects); its `Recording` bookkeeping is
+  never read by execution.
 
 ### Driver (`driver.rs`)
 

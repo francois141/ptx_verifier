@@ -12,6 +12,7 @@ log = { workspace = true, optional = true }
 volta_common.workspace = true
 volta_expr.workspace = true
 volta_frontend.workspace = true
+volta_graph.workspace = true
 
 bincode.workspace = true
 id_collections.workspace = true

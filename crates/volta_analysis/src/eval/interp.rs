@@ -15,6 +15,7 @@ use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
+use crate::eval::record::{AccessOrigin, Recording, point, tix};
 use crate::eval::tcgen05_mma::{self, KSelect, Major, OperandFormat};
 use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
@@ -31,6 +32,10 @@ use crate::tensor_core::MmaShape;
 use crate::tensor_map::TensormapFieldWrite;
 use crate::types::{RegClass, ScalarTypeExt};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId, SymbolicOutputs};
+use volta_graph::{
+    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily,
+    Provenance, Proxy, Space, Terminal,
+};
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
 pub type OutputFootprints = Vec<(String, Vec<(u64, ExprId)>)>;
@@ -86,6 +91,37 @@ struct PendingArrivals {
     arrivals: Option<BarrierArrivals>,
 }
 
+/// How one candidate execution ended: a fact about the run, not a verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunEnd {
+    /// Every thread exited.
+    Completed,
+    /// Live threads remain but none can proceed and no group can fire.
+    Stuck,
+}
+
+/// Why a run has no symbolic outputs.
+#[derive(Debug)]
+pub enum OutputsUnavailable {
+    /// The analysis stopped the candidate execution.
+    Aborted(EvalError),
+    /// The execution got stuck; `(thread, pc)` of every blocked thread.
+    Stuck { blocked: Vec<(ThreadId, InstrId)> },
+    /// The execution completed, but an output could not be read back.
+    Extraction(EvalError),
+}
+
+/// Everything one interpreter run produced: the expression arena, the output footprint (when
+/// there is one) and the event graph of the candidate execution.
+#[derive(Debug)]
+pub struct RunArtifacts {
+    pub arena: ExprArena,
+    pub outputs: Result<OutputFootprints, OutputsUnavailable>,
+    pub graph: EventGraph,
+    pub stats: Stats,
+    pub op_counts: std::collections::BTreeMap<&'static str, u64>,
+}
+
 /// Scheduling status of one thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::eval) enum Status {
@@ -120,6 +156,7 @@ pub(in crate::eval) enum Status {
 /// `cp.async.wait_group` releases the group it's committed into.
 #[derive(Debug, Clone)]
 struct PendingCopy {
+    op: AsyncOpId,
     dst_addr: u64,
     /// One resolved value per 4-byte word (`cp_size / 4` entries), already
     /// zero-filled where the source's real-byte prefix didn't cover it.
@@ -346,6 +383,9 @@ pub struct Interpreter<'p> {
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
     barriers: [PendingArrivals; NUM_BARRIERS],
     pub(in crate::eval) tensor_maps: TensorMapTable,
+    /// The candidate execution's event graph under construction.
+    pub(in crate::eval) graph: GraphBuilder,
+    pub(in crate::eval) rec: Recording,
     pub(in crate::eval) stats: Stats,
     /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`. A
     /// fixed array since `step` bumps it per instruction; `finish` folds it
@@ -354,7 +394,11 @@ pub struct Interpreter<'p> {
 }
 
 impl<'p> Interpreter<'p> {
-    pub fn new(program: &'p LoweredProgram, config: AnalysisConfig) -> EvalResult<Self> {
+    pub fn new(
+        program: &'p LoweredProgram,
+        config: AnalysisConfig,
+        provenance: Provenance,
+    ) -> EvalResult<Self> {
         let n_threads = config.num_threads();
         if n_threads == 0 {
             return Err(EvalError::Config {
@@ -542,13 +586,15 @@ impl<'p> Interpreter<'p> {
             mbarriers: MbarrierTable::new(n_threads as usize),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
             tensor_maps: TensorMapTable::new(),
+            graph: GraphBuilder::new(provenance),
+            rec: Recording::default(),
             stats: Stats::default(),
             op_counts: [0; crate::lowered::KIND_COUNT],
         })
     }
 
-    /// Run to completion (all threads exited) or an analysis error.
-    pub fn run(&mut self) -> EvalResult<()> {
+    /// Run until every thread exited, no thread can proceed, or an analysis error.
+    pub fn run(&mut self) -> EvalResult<RunEnd> {
         loop {
             match self.next_ready() {
                 Some(t) => self.run_thread(t)?,
@@ -558,13 +604,64 @@ impl<'p> Interpreter<'p> {
                             "execution complete: {} instructions, {} block syncs, {} warp syncs",
                             self.stats.instructions, self.stats.block_syncs, self.stats.warp_syncs
                         );
-                        return Ok(());
+                        return Ok(RunEnd::Completed);
                     }
                     if !self.try_fire()? {
-                        return Err(self.deadlock_error());
+                        return Ok(RunEnd::Stuck);
                     }
                 }
             }
+        }
+    }
+
+    /// Close the event graph with `end`'s terminal state and read back the outputs.
+    pub fn finish(mut self, end: EvalResult<RunEnd>) -> RunArtifacts {
+        let (terminal, outputs) = match end {
+            Ok(RunEnd::Completed) => (
+                Terminal::Completed,
+                self.extract_outputs()
+                    .map_err(OutputsUnavailable::Extraction),
+            ),
+            Ok(RunEnd::Stuck) => {
+                let live: Vec<ThreadId> = self
+                    .threads
+                    .iter()
+                    .filter(|(_, t)| t.status != Status::Exited)
+                    .map(|(id, _)| id)
+                    .collect();
+                warn!("stuck: {} threads blocked", live.len());
+                let records = live.iter().map(|&t| self.blocked_record(t)).collect();
+                let blocked = live.iter().map(|&t| (t, self.threads[t].pc)).collect();
+                (
+                    Terminal::Stuck { blocked: records },
+                    Err(OutputsUnavailable::Stuck { blocked }),
+                )
+            }
+            Err(e) => {
+                let (thread, pc) = e.location();
+                (
+                    Terminal::Aborted {
+                        thread: thread.map(tix),
+                        pc: pc.map(point),
+                        reason: e.to_string(),
+                    },
+                    Err(OutputsUnavailable::Aborted(e)),
+                )
+            }
+        };
+        let op_counts = self
+            .op_counts
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| count > 0)
+            .map(|(i, &count)| (crate::lowered::KIND_NAMES[i], count))
+            .collect();
+        RunArtifacts {
+            arena: self.arena,
+            outputs,
+            graph: self.graph.finish(terminal),
+            stats: self.stats,
+            op_counts,
         }
     }
 
@@ -664,27 +761,6 @@ impl<'p> Interpreter<'p> {
         Ok(outputs)
     }
 
-    /// Consume the interpreter, producing the analysis output.
-    pub fn into_output(mut self) -> EvalResult<AnalysisOutput> {
-        let outputs = self.extract_outputs()?;
-        let op_counts = self
-            .op_counts
-            .iter()
-            .enumerate()
-            .filter(|&(_, &count)| count > 0)
-            .map(|(i, &count)| (crate::lowered::KIND_NAMES[i], count))
-            .collect();
-        Ok(AnalysisOutput {
-            exprs: SymbolicOutputs {
-                arena: self.arena,
-                outputs,
-            },
-            stats: self.stats,
-            op_counts,
-            race_verification: RaceVerification::Unavailable,
-        })
-    }
-
     pub fn stats(&self) -> Stats {
         self.stats
     }
@@ -761,6 +837,10 @@ impl<'p> Interpreter<'p> {
                 _ => None,
             })
             .collect();
+        for &(tid, id) in &ready {
+            let pc = self.threads[tid].pc;
+            self.record_mbarrier_wake(tid, pc, id);
+        }
         for (tid, _) in &ready {
             let pc = self.threads[*tid].pc;
             let Some(LoweredInstr::MbarrierWaitParity { wait_complete, .. }) =
@@ -905,6 +985,7 @@ impl<'p> Interpreter<'p> {
                     }
                     trace!("fired bar.sync {} (full CTA)", id);
                     let waiting = waiting.clone();
+                    self.record_barrier_fire(id as u32, BarrierArrivals::FullCta, &waiting);
                     self.advance_thread_group(&waiting);
                     return Ok(true);
                 }
@@ -929,6 +1010,7 @@ impl<'p> Interpreter<'p> {
             self.barriers[id] = PendingArrivals::default();
             trace!("fired bar.sync {} ({} threads)", id, count);
             let waiting = waiting.clone();
+            self.record_barrier_fire(id as u32, BarrierArrivals::Count(count), &waiting);
             self.advance_thread_group(&waiting);
             return Ok(true);
         }
@@ -969,17 +1051,6 @@ impl<'p> Interpreter<'p> {
             });
         }
         Ok((id as u32, BarrierArrivals::Count(count as u32)))
-    }
-
-    fn deadlock_error(&self) -> EvalError {
-        let blocked: Vec<_> = self
-            .threads
-            .iter()
-            .filter(|(_, t)| !matches!(t.status, Status::Exited))
-            .map(|(id, t)| (id, t.pc))
-            .collect();
-        warn!("deadlock: {} threads blocked", blocked.len());
-        EvalError::Deadlock { blocked }
     }
 
     /// Unblock the members of a fired group of threads and advance their
@@ -1163,19 +1234,29 @@ impl<'p> Interpreter<'p> {
 
                 // The source is read now: exact only if nothing writes it
                 // before the copy completes, which race checking must show.
+                let op = self.record_async_issue(t, pc, AsyncOpKind::CpAsync);
+                let origin = AccessOrigin::Async {
+                    op,
+                    proxy: Proxy::Generic,
+                };
                 let zero = Value::Scalar(self.arena.int(0));
                 let mut words = Vec::with_capacity((cp_size / 4) as usize);
                 for i in 0..cp_size / 4 {
                     let byte = i * 4;
                     let v = if byte < real_bytes {
-                        self.mem_read(t, pc, MemSpace::Global, src_addr + byte, 4)?
+                        self.mem_read_from(t, pc, MemSpace::Global, src_addr + byte, 4, origin)?
                     } else {
                         zero
                     };
                     words.push(v);
                 }
+                for (i, &v) in words.iter().enumerate() {
+                    let addr = dst_addr + i as u64 * 4;
+                    self.record_mem_access(t, pc, MemSpace::Shared, addr, 4, Some(v), origin);
+                }
 
                 self.threads[t].uncommitted.push(PendingCopy {
+                    op,
                     dst_addr,
                     words,
                     pc,
@@ -1826,6 +1907,7 @@ impl<'p> Interpreter<'p> {
                         ),
                     });
                 }
+                self.record_exit(t, pc);
                 self.threads[t].status = Status::Exited;
                 return Ok(());
             }
@@ -1837,6 +1919,7 @@ impl<'p> Interpreter<'p> {
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, thread_count.as_ref())?;
                 self.stats.block_syncs += 1;
+                self.record_barrier_arrival(t, pc, id, arrivals, true);
                 self.threads[t].status = Status::AtBarrier { id, arrivals };
                 return Ok(()); // pc advances when the barrier fires
             }
@@ -1847,6 +1930,7 @@ impl<'p> Interpreter<'p> {
             } => {
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, Some(thread_count))?;
+                self.record_barrier_arrival(t, pc, id, arrivals, false);
                 let pending = &mut self.barriers[id as usize];
                 pending.arrivals = Some(arrivals);
                 pending.threads.push(t);
@@ -1858,22 +1942,33 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::Membar { .. }
-            | LoweredInstr::Fence
-            | LoweredInstr::FenceProxyAsync { .. }
-            | LoweredInstr::Nop => {}
+            LoweredInstr::Membar { .. } | LoweredInstr::Fence | LoweredInstr::Nop => {}
+
+            LoweredInstr::FenceProxyAsync { restrict } => {
+                let space = restrict.map(|s| match s {
+                    MemSpace::Global => Space::Global,
+                    _ => Space::Shared,
+                });
+                self.graph
+                    .fence(tix(t), point(pc), FenceKind::ProxyAsync { space });
+            }
 
             LoweredInstr::CpAsyncCommitGroup => {
                 let uncommitted = std::mem::take(&mut self.threads[t].uncommitted);
                 self.threads[t].groups.push_back(uncommitted);
+                self.graph
+                    .group_commit(tix(t), point(pc), GroupFamily::CpAsync);
             }
 
             LoweredInstr::CpAsyncWaitGroup { n } => {
+                let mut landing = Vec::new();
                 while self.threads[t].groups.len() > *n as usize {
-                    let group = self.threads[t].groups.pop_front().unwrap();
-                    for copy in group {
-                        self.complete_cp_async_copy(t, copy)?;
-                    }
+                    landing.extend(self.threads[t].groups.pop_front().unwrap());
+                }
+                let ops: Vec<AsyncOpId> = landing.iter().map(|copy| copy.op).collect();
+                self.record_group_wait(t, pc, *n, &ops);
+                for copy in landing {
+                    self.complete_cp_async_copy(t, copy)?;
                 }
             }
 
@@ -1978,7 +2073,9 @@ impl<'p> Interpreter<'p> {
             // tcgen05.fence::before_thread_sync/::after_thread_sync: pure
             // ordering fence, no data effect - a genuine no-op under
             // Volta's sequential, non-reordering execution model.
-            LoweredInstr::Tcgen05Fence => {}
+            LoweredInstr::Tcgen05Fence => {
+                self.graph.fence(tix(t), point(pc), FenceKind::Tcgen05);
+            }
 
             // tcgen05.commit: once this thread's async `tcgen05` ops complete,
             // arrive-on(count=1) the mbarrier (single-thread, like
@@ -1994,7 +2091,11 @@ impl<'p> Interpreter<'p> {
                     .shared
                     .read_mbarrier(addr)
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                self.record_mma_commit(t, id);
+                self.record_mbarrier_arrival(t, pc, id, 1, 0);
+                let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, t, 1, None);
+                self.record_mbarrier_progress(id, before);
             }
 
             // cp.async.mbarrier.arrive: arrive once all this thread's prior
@@ -2018,10 +2119,16 @@ impl<'p> Interpreter<'p> {
                     .flatten()
                     .chain(std::mem::take(&mut thread.uncommitted))
                     .collect();
+                for copy in &copies {
+                    self.record_tracked_by_mbarrier(copy.op, id, 0);
+                }
                 for copy in copies {
                     self.complete_cp_async_copy(t, copy)?;
                 }
+                self.record_mbarrier_arrival(t, pc, id, u64::from(*noinc), 0);
+                let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, t, u64::from(*noinc), None);
+                self.record_mbarrier_progress(id, before);
             }
 
             LoweredInstr::TensormapReplace {
@@ -2131,6 +2238,7 @@ impl<'p> Interpreter<'p> {
                 self.shared
                     .write(addr, 8, Value::Mbarrier(id))
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                self.record_mbarrier_init(t, pc, id, addr, count);
             }
 
             LoweredInstr::MbarrierInval {
@@ -2140,9 +2248,13 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
                 self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let live = self.shared.read_mbarrier(addr).ok();
                 self.shared
                     .invalidate_mbarrier(addr)
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                if let Some(id) = live {
+                    self.record_mbarrier_inval(t, pc, id);
+                }
             }
 
             LoweredInstr::MbarrierArrive {
@@ -2172,7 +2284,10 @@ impl<'p> Interpreter<'p> {
                     )?),
                     None => None,
                 };
+                self.record_mbarrier_arrival(t, pc, id, count, expect_tx.unwrap_or(0));
+                let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, t, count, expect_tx);
+                self.record_mbarrier_progress(id, before);
                 if let Some(dst) = state {
                     // The opaque phase token: only `.parity` waits are
                     // supported, which never consume it, so `Undefined` is the
@@ -2196,7 +2311,10 @@ impl<'p> Interpreter<'p> {
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 let tx_count =
                     self.non_negative_operand(t, pc, tx_count, "mbarrier.complete_tx txCount")?;
+                self.record_mbarrier_complete_tx(t, pc, id, tx_count);
+                let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.complete_tx(id, tx_count);
+                self.record_mbarrier_progress(id, before);
             }
 
             LoweredInstr::MbarrierWaitParity {
@@ -2227,6 +2345,7 @@ impl<'p> Interpreter<'p> {
                         });
                     }
                 };
+                self.record_mbarrier_wait(t, pc, id, phase_parity);
                 self.threads[t].status = Status::AtMbarrier { id, phase_parity };
                 return Ok(()); // pc advances when the wait's condition is satisfied
             }
@@ -2272,6 +2391,7 @@ impl<'p> Interpreter<'p> {
                 reason: format!("executing lane {} is not in mask {:#010x}", lane, mask),
             });
         }
+        self.record_warp_op_arrival(t, pc, mask);
         self.threads[t].status = Status::AtWarpOp { mask };
         Ok(())
     }
@@ -2279,7 +2399,8 @@ impl<'p> Interpreter<'p> {
     /// Block `t` at a warpgroup-cooperative instruction. Membership is
     /// implicit; `find_ready_warpgroup_op` checks the warpgroup's range once
     /// the whole group arrives.
-    fn block_at_warpgroup_op(&mut self, t: ThreadId, _pc: InstrId) -> EvalResult<()> {
+    fn block_at_warpgroup_op(&mut self, t: ThreadId, pc: InstrId) -> EvalResult<()> {
+        self.record_warpgroup_op_arrival(t, pc);
         self.threads[t].status = Status::AtWarpgroupOp;
         Ok(())
     }
@@ -2429,11 +2550,13 @@ impl<'p> Interpreter<'p> {
         // reported before any operand read.
         let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
         check_mma_operand_layout(pc, &b_md, id.transpose_b, "B")?;
+        let op = self.record_async_issue(t, pc, AsyncOpKind::Tcgen05Mma);
         let a = match a {
             Tcgen05MmaA::Desc(desc) => {
                 let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
                 check_mma_operand_layout(pc, &a_md, id.transpose_a, "A")?;
-                self.read_mma_operand(t, pc, (&a_md, major(id.transpose_a), a_format), id.m, k_dim)?
+                let a_operand = (&a_md, major(id.transpose_a), a_format);
+                self.read_mma_operand(t, pc, op, a_operand, id.m, k_dim)?
             }
             Tcgen05MmaA::Tmem { base, offset } => {
                 if a_format != OperandFormat::F16 {
@@ -2449,11 +2572,11 @@ impl<'p> Interpreter<'p> {
                             .to_string(),
                     ));
                 }
-                self.read_mma_a_tmem(t, pc, (base, *offset), (id.m, k_dim))?
+                self.read_mma_a_tmem(t, pc, op, (base, *offset), (id.m, k_dim))?
             }
         };
-        let b =
-            self.read_mma_operand(t, pc, (&b_md, major(id.transpose_b), b_format), id.n, k_dim)?;
+        let b_operand = (&b_md, major(id.transpose_b), b_format);
+        let b = self.read_mma_operand(t, pc, op, b_operand, id.n, k_dim)?;
         if let Some(Tcgen05Collector { buffer, op }) = collector {
             let slot = &mut self.threads[t].tcgen05_collectors[buffer as usize];
             if matches!(op, Tcgen05CollectorOp::Use | Tcgen05CollectorOp::LastUse)
@@ -2497,6 +2620,12 @@ impl<'p> Interpreter<'p> {
             *slot = self.concrete_operand(t, pc, op, "tcgen05.mma disable-output-lane")? as u32;
         }
         let lane_enabled = |lane: u32| (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 == 0;
+        let d_lanes: Vec<u32> = (0..128).filter(|&lane| lane_enabled(lane)).collect();
+        let d_cols = (d_col_base, d_num_cols);
+        if enable_input_d {
+            self.record_tmem_lanes(op, t, AccessMode::Read, &d_lanes, d_cols);
+        }
+        self.record_tmem_lanes(op, t, AccessMode::Write, &d_lanes, d_cols);
 
         for m in 0..id.m {
             for n in 0..id.n {
@@ -2540,20 +2669,26 @@ impl<'p> Interpreter<'p> {
                     .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
             }
         }
+        self.record_mma_issued(t, op);
         Ok(())
     }
 
     /// Read one `tcgen05.mma` operand (`rows x k_dim`, row-major) from shared
-    /// memory. Concrete elements are decoded from f16/fp8 bits; symbolic ones
-    /// are real values.
+    /// memory as an async-proxy effect of `op`. Concrete elements are decoded
+    /// from f16/fp8 bits; symbolic ones are real values.
     fn read_mma_operand(
         &mut self,
         t: ThreadId,
         pc: InstrId,
+        op: AsyncOpId,
         (desc, major, format): (&tcgen05_mma::MatrixDescriptor, Major, OperandFormat),
         rows: u32,
         k_dim: usize,
     ) -> EvalResult<Vec<ExprId>> {
+        let origin = AccessOrigin::Async {
+            op,
+            proxy: Proxy::Async,
+        };
         let elem_bytes = format.bytes();
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
         for row in 0..rows as u64 {
@@ -2564,7 +2699,8 @@ impl<'p> Interpreter<'p> {
                         what: "tcgen05.mma MN-major operand without swizzling is not modeled"
                             .to_string(),
                     })?;
-                let Value::Scalar(e) = self.mem_read(t, pc, MemSpace::Shared, addr, elem_bytes)?
+                let Value::Scalar(e) =
+                    self.mem_read_from(t, pc, MemSpace::Shared, addr, elem_bytes, origin)?
                 else {
                     return Err(EvalError::ValueKindMismatch {
                         thread: t,
@@ -2626,6 +2762,7 @@ impl<'p> Interpreter<'p> {
         &mut self,
         t: ThreadId,
         pc: InstrId,
+        op: AsyncOpId,
         (base, offset): (&Operand, i64),
         (rows, k_dim): (u32, usize),
     ) -> EvalResult<Vec<ExprId>> {
@@ -2647,6 +2784,7 @@ impl<'p> Interpreter<'p> {
         self.tensor
             .check_range(start_col, num_cols)
             .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
+        self.record_tmem_effect(op, t, AccessMode::Read, 0, rows, start_col, num_cols);
         let mut elems = Vec::with_capacity(rows as usize * k_dim);
         for lane in 0..rows {
             for c in 0..num_cols {
@@ -3460,13 +3598,14 @@ impl<'p> Interpreter<'p> {
     /// completion points.
     fn complete_cp_async_copy(&mut self, t: ThreadId, copy: PendingCopy) -> EvalResult<()> {
         for (i, v) in copy.words.into_iter().enumerate() {
-            self.mem_write(
+            self.mem_write_from(
                 t,
                 copy.pc,
                 MemSpace::Shared,
                 copy.dst_addr + i as u64 * 4,
                 4,
                 v,
+                AccessOrigin::Applied,
             )?;
         }
         Ok(())
@@ -3540,11 +3679,25 @@ impl<'p> Interpreter<'p> {
         addr: u64,
         width: u64,
     ) -> EvalResult<Value> {
+        self.mem_read_from(t, pc, space, addr, width, AccessOrigin::Thread)
+    }
+
+    /// [`Self::mem_read`] performed for `origin`, which the event graph records.
+    pub(in crate::eval) fn mem_read_from(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        origin: AccessOrigin,
+    ) -> EvalResult<Value> {
         self.check_bounds(t, pc, space, addr, width)?;
         // Every program access flows through here, so this is the one
         // natural-alignment chokepoint. Param space never reaches it
         // (`check_bounds` rejects it; `LoadParam` is not memory).
         self.check_alignment(t, pc, space, addr, width)?;
+        self.record_mem_access(t, pc, space, addr, width, None, origin);
         let memory = match space {
             MemSpace::Global => &self.global,
             MemSpace::Shared => &self.shared,
@@ -3663,9 +3816,25 @@ impl<'p> Interpreter<'p> {
         width: u64,
         value: Value,
     ) -> EvalResult<()> {
+        self.mem_write_from(t, pc, space, addr, width, value, AccessOrigin::Thread)
+    }
+
+    /// [`Self::mem_write`] performed for `origin`, which the event graph records.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::eval) fn mem_write_from(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        value: Value,
+        origin: AccessOrigin,
+    ) -> EvalResult<()> {
         self.check_bounds(t, pc, space, addr, width)?;
         // See `mem_read`: the write-side natural-alignment chokepoint.
         self.check_alignment(t, pc, space, addr, width)?;
+        self.record_mem_access(t, pc, space, addr, width, Some(value), origin);
         let memory = self.memory_mut(space, t);
         match memory.write(addr, width, value) {
             Err(MemAccessError::Reinterpret {
