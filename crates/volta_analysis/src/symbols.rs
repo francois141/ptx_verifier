@@ -108,6 +108,22 @@ pub enum SpecialRegKind {
     NctaidX,
     NctaidY,
     NctaidZ,
+    // Cluster
+    ClusterCtaidX,
+    ClusterCtaidY,
+    ClusterCtaidZ,
+    ClusterNctaidX,
+    ClusterNctaidY,
+    ClusterNctaidZ,
+    ClusterCtarank,
+    ClusterNctarank,
+    ClusteridX,
+    ClusteridY,
+    ClusteridZ,
+    NclusteridX,
+    NclusteridY,
+    NclusteridZ,
+    IsExplicitCluster,
     // Warp-level
     LaneId,
     WarpId,
@@ -146,6 +162,20 @@ impl SpecialRegKind {
             | Self::NctaidX
             | Self::NctaidY
             | Self::NctaidZ
+            | Self::ClusterCtaidX
+            | Self::ClusterCtaidY
+            | Self::ClusterCtaidZ
+            | Self::ClusterNctaidX
+            | Self::ClusterNctaidY
+            | Self::ClusterNctaidZ
+            | Self::ClusterCtarank
+            | Self::ClusterNctarank
+            | Self::ClusteridX
+            | Self::ClusteridY
+            | Self::ClusteridZ
+            | Self::NclusteridX
+            | Self::NclusteridY
+            | Self::NclusteridZ
             | Self::LaneId
             | Self::WarpId
             | Self::NWarpId
@@ -161,6 +191,7 @@ impl SpecialRegKind {
             | Self::DynamicSmemSize => ScalarType::U32,
             // 64-bit unsigned
             Self::Clock64 => ScalarType::U64,
+            Self::IsExplicitCluster => ScalarType::Pred,
         }
     }
 
@@ -180,6 +211,21 @@ impl SpecialRegKind {
             "nctaid.x" => Self::NctaidX,
             "nctaid.y" => Self::NctaidY,
             "nctaid.z" => Self::NctaidZ,
+            "cluster_ctaid.x" => Self::ClusterCtaidX,
+            "cluster_ctaid.y" => Self::ClusterCtaidY,
+            "cluster_ctaid.z" => Self::ClusterCtaidZ,
+            "cluster_nctaid.x" => Self::ClusterNctaidX,
+            "cluster_nctaid.y" => Self::ClusterNctaidY,
+            "cluster_nctaid.z" => Self::ClusterNctaidZ,
+            "cluster_ctarank" => Self::ClusterCtarank,
+            "cluster_nctarank" => Self::ClusterNctarank,
+            "clusterid.x" => Self::ClusteridX,
+            "clusterid.y" => Self::ClusteridY,
+            "clusterid.z" => Self::ClusteridZ,
+            "nclusterid.x" => Self::NclusteridX,
+            "nclusterid.y" => Self::NclusteridY,
+            "nclusterid.z" => Self::NclusteridZ,
+            "is_explicit_cluster" => Self::IsExplicitCluster,
             "laneid" => Self::LaneId,
             "warpid" => Self::WarpId,
             "nwarpid" => Self::NWarpId,
@@ -213,6 +259,21 @@ impl SpecialRegKind {
             Self::NctaidX => "%nctaid.x",
             Self::NctaidY => "%nctaid.y",
             Self::NctaidZ => "%nctaid.z",
+            Self::ClusterCtaidX => "%cluster_ctaid.x",
+            Self::ClusterCtaidY => "%cluster_ctaid.y",
+            Self::ClusterCtaidZ => "%cluster_ctaid.z",
+            Self::ClusterNctaidX => "%cluster_nctaid.x",
+            Self::ClusterNctaidY => "%cluster_nctaid.y",
+            Self::ClusterNctaidZ => "%cluster_nctaid.z",
+            Self::ClusterCtarank => "%cluster_ctarank",
+            Self::ClusterNctarank => "%cluster_nctarank",
+            Self::ClusteridX => "%clusterid.x",
+            Self::ClusteridY => "%clusterid.y",
+            Self::ClusteridZ => "%clusterid.z",
+            Self::NclusteridX => "%nclusterid.x",
+            Self::NclusteridY => "%nclusterid.y",
+            Self::NclusteridZ => "%nclusterid.z",
+            Self::IsExplicitCluster => "%is_explicit_cluster",
             Self::LaneId => "%laneid",
             Self::WarpId => "%warpid",
             Self::NWarpId => "%nwarpid",

@@ -1714,3 +1714,16 @@ fn test_mapa_rank_zero_is_the_identity() {
         in_out_config(4, 4)
     );
 }
+
+/// Every cluster is assumed to hold a single CTA, so the cluster special
+/// registers are hardcoded: rank 0 of an implicit 1x1x1 cluster, cluster grid =
+/// CTA grid.
+#[test]
+fn test_cluster_special_registers_describe_a_single_cta_cluster() {
+    let mut config = in_out_config(1, 15);
+    config.grid_dim = (2, 3, 4);
+    analyze!(
+        "success/cluster_special_registers_describe_a_single_cta_cluster",
+        config
+    );
+}

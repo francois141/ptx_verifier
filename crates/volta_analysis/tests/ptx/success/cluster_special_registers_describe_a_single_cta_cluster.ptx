@@ -1,0 +1,49 @@
+// Every cluster is assumed to hold exactly one CTA: the CTA is rank 0 of an
+// implicit 1x1x1 cluster, and the cluster grid is the CTA grid (2x3x4 here).
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<15>;
+    .reg .b64 %rd<2>;
+
+    ld.param.u64 %rd0, [k_param_1];
+    mov.u32 %r0, %cluster_ctaid.x;
+    st.global.u32 [%rd0+0], %r0;
+    mov.u32 %r1, %cluster_ctaid.y;
+    st.global.u32 [%rd0+4], %r1;
+    mov.u32 %r2, %cluster_ctaid.z;
+    st.global.u32 [%rd0+8], %r2;
+    mov.u32 %r3, %cluster_nctaid.x;
+    st.global.u32 [%rd0+12], %r3;
+    mov.u32 %r4, %cluster_nctaid.y;
+    st.global.u32 [%rd0+16], %r4;
+    mov.u32 %r5, %cluster_nctaid.z;
+    st.global.u32 [%rd0+20], %r5;
+    mov.u32 %r6, %cluster_ctarank;
+    st.global.u32 [%rd0+24], %r6;
+    mov.u32 %r7, %cluster_nctarank;
+    st.global.u32 [%rd0+28], %r7;
+    mov.u32 %r8, %clusterid.x;
+    st.global.u32 [%rd0+32], %r8;
+    mov.u32 %r9, %clusterid.y;
+    st.global.u32 [%rd0+36], %r9;
+    mov.u32 %r10, %clusterid.z;
+    st.global.u32 [%rd0+40], %r10;
+    mov.u32 %r11, %nclusterid.x;
+    st.global.u32 [%rd0+44], %r11;
+    mov.u32 %r12, %nclusterid.y;
+    st.global.u32 [%rd0+48], %r12;
+    mov.u32 %r13, %nclusterid.z;
+    st.global.u32 [%rd0+52], %r13;
+    mov.pred %p0, %is_explicit_cluster;
+    selp.u32 %r14, 1, 0, %p0;
+    st.global.u32 [%rd0+56], %r14;
+    ret;
+}

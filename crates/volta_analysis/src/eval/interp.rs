@@ -3058,10 +3058,7 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<Value> {
         match op {
             Operand::Reg(reg) => self.read_reg(t, pc, *reg),
-            Operand::SpecialReg(kind) => {
-                let v = self.special_reg(t, pc, *kind)?;
-                Ok(Value::Scalar(self.arena.int(v)))
-            }
+            Operand::SpecialReg(kind) => Ok(Value::Scalar(self.special_reg(t, pc, *kind)?)),
             Operand::ImmI64(v) => Ok(Value::Scalar(self.arena.int(*v))),
             Operand::ImmU64(v) => Ok(Value::Scalar(self.arena.int(*v as i64))),
             // Exact ingestion. Lowering rejects NaN literals, so this only
@@ -3645,7 +3642,12 @@ impl<'p> Interpreter<'p> {
         (t.0 % bx, (t.0 / bx) % by, t.0 / (bx * by))
     }
 
-    fn special_reg(&self, t: ThreadId, pc: InstrId, kind: SpecialRegKind) -> EvalResult<i64> {
+    fn special_reg(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        kind: SpecialRegKind,
+    ) -> EvalResult<ExprId> {
         let (x, y, z) = self.thread_coords(t);
         let v = match kind {
             SpecialRegKind::TidX => x as i64,
@@ -3660,6 +3662,24 @@ impl<'p> Interpreter<'p> {
             SpecialRegKind::NctaidX => self.config.grid_dim.0 as i64,
             SpecialRegKind::NctaidY => self.config.grid_dim.1 as i64,
             SpecialRegKind::NctaidZ => self.config.grid_dim.2 as i64,
+            // Every cluster is assumed to hold exactly one CTA, so the CTA is
+            // rank 0 of its cluster and the cluster grid is the CTA grid.
+            SpecialRegKind::ClusterCtaidX
+            | SpecialRegKind::ClusterCtaidY
+            | SpecialRegKind::ClusterCtaidZ
+            | SpecialRegKind::ClusterCtarank
+            | SpecialRegKind::ClusteridX
+            | SpecialRegKind::ClusteridY
+            | SpecialRegKind::ClusteridZ => 0,
+            SpecialRegKind::ClusterNctaidX
+            | SpecialRegKind::ClusterNctaidY
+            | SpecialRegKind::ClusterNctaidZ
+            | SpecialRegKind::ClusterNctarank => 1,
+            SpecialRegKind::NclusteridX => self.config.grid_dim.0 as i64,
+            SpecialRegKind::NclusteridY => self.config.grid_dim.1 as i64,
+            SpecialRegKind::NclusteridZ => self.config.grid_dim.2 as i64,
+            // A launch without cluster dimensions runs in implicit 1x1x1 clusters.
+            SpecialRegKind::IsExplicitCluster => return Ok(self.arena.bool_val(false)),
             SpecialRegKind::LaneId => (t.0 % WARP_SIZE) as i64,
             SpecialRegKind::WarpId => (t.0 / WARP_SIZE) as i64,
             SpecialRegKind::NWarpId => self.n_threads.div_ceil(WARP_SIZE) as i64,
@@ -3671,7 +3691,7 @@ impl<'p> Interpreter<'p> {
                 });
             }
         };
-        Ok(v)
+        Ok(self.arena.int(v))
     }
 
     // =====================================================================

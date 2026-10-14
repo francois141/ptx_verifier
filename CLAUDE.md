@@ -207,6 +207,10 @@ Converts AST to linear instruction format:
 ### Special Registers (`symbols.rs`)
 
 `SpecialRegKind`: `TidX/Y/Z`, `NtidX/Y/Z`, `CtaidX/Y/Z`, `LaneId`, `WarpId`, etc.
+The cluster registers are hardcoded for one CTA per cluster: `%cluster_ctaid`/
+`%cluster_ctarank` are 0, `%cluster_nctaid`/`%cluster_nctarank` are 1, and
+`%clusterid`/`%nclusterid` equal `%ctaid`/`%nctaid`, and `%is_explicit_cluster` is
+false (an implicit 1x1x1 cluster).
 
 ### Evaluator (`eval/`)
 
