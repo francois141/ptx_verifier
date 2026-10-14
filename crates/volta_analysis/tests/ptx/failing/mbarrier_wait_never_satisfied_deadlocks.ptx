@@ -15,6 +15,8 @@
     @%p0 mbarrier.init.shared::cta.b64 [%r2], 2;
     bar.sync 0;
     @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
+WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+    @!%p1 bra WAIT;
     ret;
 }

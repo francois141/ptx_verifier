@@ -6,6 +6,8 @@
 {
     .reg .pred %p<2>;
     .reg .b32 %r<4>;
+WAIT:
     mbarrier.try_wait.parity.shared::cluster.b64 %p0, [%r1], %r2;
+    @!%p0 bra WAIT;
     ret;
 }

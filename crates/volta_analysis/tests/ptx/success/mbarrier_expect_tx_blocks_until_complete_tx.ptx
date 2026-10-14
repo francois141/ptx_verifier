@@ -17,7 +17,9 @@
     mbarrier.init.shared::cta.b64 [%r1], 1;
     mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
     mbarrier.complete_tx.shared::cta.b64 [%r1], 16;
+WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %p0, [%r1], 0;
+    @!%p0 bra WAIT;
 
     ld.param.u64 %rd1, [k_param_1];
     mov.f32 %f0, 0f3F800000;

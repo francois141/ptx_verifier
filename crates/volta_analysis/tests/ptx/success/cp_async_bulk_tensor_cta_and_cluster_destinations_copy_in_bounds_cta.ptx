@@ -44,7 +44,9 @@
     mov.u32 %r2, 6;
     cp.async.bulk.tensor.2d.shared::cta.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
 
+WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %p0, [full], 0;
+    @!%p0 bra WAIT;
 
     ld.shared.u16 %rs1, [sa];
     ld.shared.u16 %rs2, [sa+30];

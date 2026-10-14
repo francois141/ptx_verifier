@@ -1070,9 +1070,9 @@ pub enum LoweredInstr {
         tx_count: Operand,
     },
 
-    /// `mbarrier.{test,try}_wait.parity`: block until `phase_parity`'s phase
-    /// completes, then set `waitComplete`. Both collapse to blocking, else
-    /// the `@!p bra retry` loop would spin round-robin forever.
+    /// The retry loop `L: mbarrier.{test,try}_wait.parity p, ..; @!p bra L;`
+    /// as one instruction: block until `phase_parity`'s phase completes, set
+    /// `waitComplete`, fall through past the dropped `bra` (no other form).
     MbarrierWaitParity {
         wait_complete: RegId,
         addr_base: Operand,

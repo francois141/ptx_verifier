@@ -24,7 +24,7 @@ use volta_frontend::lex::DottedIdent;
 
 use id_collections::{Id, IdVec};
 
-use crate::lower_error::{LowerError, LowerResult};
+use crate::lower_error::{LowerError, LowerResult, MbarrierWaitKind};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
     MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector,
@@ -1220,9 +1220,9 @@ fn lower_body(ctx: &mut LoweringContext, body: &FunctionBody) -> LowerResult<()>
     lower_statements(ctx, &body.statements)
 }
 
-/// Lower a run of statements one at a time, except where a multi-instruction
-/// idiom matches a window (see [`match_warp_max_sign_trick`]). Windows span
-/// only consecutive instructions, so an interposed label breaks the match.
+/// Lower a run of statements one at a time, except where a multi-statement
+/// idiom matches a window (see [`match_warp_max_sign_trick`] and
+/// [`match_mbarrier_wait_loop`]). Windows span only consecutive statements.
 fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResult<()> {
     let mut i = 0;
     while i < stmts.len() {
@@ -1241,6 +1241,18 @@ fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResu
                 None,
             )?;
             i += WARP_MAX_SIGN_TRICK_LEN;
+            continue;
+        }
+        if let Some(wait_loop) = match_mbarrier_wait_loop(ctx, &stmts[i..]) {
+            // The label resolves to the blocking wait; the retry `bra` is
+            // dropped, so waking falls through to the loop's exit.
+            lower_statement(ctx, &stmts[i])?;
+            ctx.current_span = statement_span(&stmts[i + 1]);
+            match &wait_loop {
+                MbarrierWaitLoop::Test(wait) => lower_mbarrier_test_wait(ctx, wait)?,
+                MbarrierWaitLoop::Try(wait) => lower_mbarrier_try_wait(ctx, wait)?,
+            }
+            i += MBARRIER_WAIT_LOOP_LEN;
             continue;
         }
         lower_statement(ctx, &stmts[i])?;
@@ -2485,12 +2497,16 @@ fn lower_parsed_instruction(
             lower_mbarrier_complete_tx(ctx, complete_tx, predicate)?;
         }
 
-        ParsedInstruction::MbarrierTestWait(wait) => {
-            lower_mbarrier_test_wait(ctx, wait, predicate)?;
+        ParsedInstruction::MbarrierTestWait(_) => {
+            return Err(LowerError::MbarrierWaitOutsideRetryLoop {
+                wait: MbarrierWaitKind::TestWait,
+            });
         }
 
-        ParsedInstruction::MbarrierTryWait(wait) => {
-            lower_mbarrier_try_wait(ctx, wait, predicate)?;
+        ParsedInstruction::MbarrierTryWait(_) => {
+            return Err(LowerError::MbarrierWaitOutsideRetryLoop {
+                wait: MbarrierWaitKind::TryWait,
+            });
         }
 
         // =========================================================================
@@ -4618,6 +4634,96 @@ fn lower_elect_sync(
     Ok(())
 }
 
+/// A statement's mnemonic, without parsing modifiers or operands. `None`
+/// for anything but a raw instruction (the parser only pre-parses `call`).
+fn statement_kind(stmt: &Statement) -> Option<InstrKind> {
+    match stmt {
+        Statement::Instruction(Instruction {
+            op: InstructionOp::Unparsed { kind, .. },
+            ..
+        }) => Some(*kind),
+        _ => None,
+    }
+}
+
+fn statement_span(stmt: &Statement) -> Option<Span> {
+    match stmt {
+        Statement::Instruction(instr) => Some(instr.span),
+        _ => None,
+    }
+}
+
+/// A statement's typed instruction plus guard predicate, converted
+/// speculatively as `lower_instruction` would. `None` if not an
+/// instruction or it does not parse.
+fn parsed_instruction(stmt: &Statement) -> Option<(ParsedInstruction, Option<&ast::Predicate>)> {
+    let Statement::Instruction(instr) = stmt else {
+        return None;
+    };
+    let parsed = match &instr.op {
+        InstructionOp::Parsed(parsed) => parsed.clone(),
+        InstructionOp::Unparsed {
+            kind,
+            modifiers,
+            operands,
+        } => parse_instruction(*kind, modifiers.clone(), operands.clone()).ok()?,
+    };
+    Some((parsed, instr.predicate.as_ref()))
+}
+
+/// Source statements spanned by an mbarrier wait loop: the loop label, the
+/// wait, and the retry `bra`.
+const MBARRIER_WAIT_LOOP_LEN: usize = 3;
+
+/// The wait instruction of a matched mbarrier wait loop.
+enum MbarrierWaitLoop {
+    Test(MbarrierTestWaitInstr),
+    Try(MbarrierTryWaitInstr),
+}
+
+/// Match the retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph;
+/// @!p bra L;` - the only form in which Volta models an mbarrier wait,
+/// since the scheduler can only block a thread, not spin it.
+fn match_mbarrier_wait_loop(
+    ctx: &LoweringContext,
+    stmts: &[Statement],
+) -> Option<MbarrierWaitLoop> {
+    let [Statement::Label(label), wait, retry] = stmts.get(..MBARRIER_WAIT_LOOP_LEN)? else {
+        return None;
+    };
+    if !matches!(
+        statement_kind(wait),
+        Some(InstrKind::MbarrierTestWait | InstrKind::MbarrierTryWait)
+    ) || statement_kind(retry) != Some(InstrKind::Bra)
+    {
+        return None;
+    }
+
+    let (wait_loop, wait_complete) = match parsed_instruction(wait)? {
+        (ParsedInstruction::MbarrierTestWait(w), None) => {
+            let wait_complete = ctx.resolve_dst(&w.wait_complete).ok()?;
+            (MbarrierWaitLoop::Test(w), wait_complete)
+        }
+        (ParsedInstruction::MbarrierTryWait(w), None) => {
+            let wait_complete = ctx.resolve_dst(&w.wait_complete).ok()?;
+            (MbarrierWaitLoop::Try(w), wait_complete)
+        }
+        _ => return None,
+    };
+
+    let (ParsedInstruction::Bra(bra), Some(guard)) = parsed_instruction(retry)? else {
+        return None;
+    };
+    let guard = ctx.resolve_predicate(guard).ok()?;
+    let (AstOperand::Ident(target) | AstOperand::Symbol(target)) = &bra.target else {
+        return None;
+    };
+    if !guard.negated || guard.reg != wait_complete || *target != label.name {
+        return None;
+    }
+    Some(wait_loop)
+}
+
 /// Source instructions spanned by the warp-max sign trick: the broadcast
 /// `mov`, the `redux.sync.max.s32`, the sign-check `setp`, and the
 /// predicated fixup `redux.sync.min.s32`.
@@ -4645,45 +4751,6 @@ fn match_warp_max_sign_trick(
     ctx: &LoweringContext,
     stmts: &[Statement],
 ) -> Option<WarpMaxSignTrick> {
-    /// A statement's mnemonic, without parsing modifiers or operands. `None`
-    /// for anything but a raw instruction (the parser only pre-parses `call`).
-    fn statement_kind(stmt: &Statement) -> Option<InstrKind> {
-        match stmt {
-            Statement::Instruction(Instruction {
-                op: InstructionOp::Unparsed { kind, .. },
-                ..
-            }) => Some(*kind),
-            _ => None,
-        }
-    }
-
-    fn statement_span(stmt: &Statement) -> Option<Span> {
-        match stmt {
-            Statement::Instruction(instr) => Some(instr.span),
-            _ => None,
-        }
-    }
-
-    /// A statement's typed instruction plus guard predicate, converted
-    /// speculatively as `lower_instruction` would. `None` if not an
-    /// instruction or it does not parse.
-    fn parsed_instruction(
-        stmt: &Statement,
-    ) -> Option<(ParsedInstruction, Option<&ast::Predicate>)> {
-        let Statement::Instruction(instr) = stmt else {
-            return None;
-        };
-        let parsed = match &instr.op {
-            InstructionOp::Parsed(parsed) => parsed.clone(),
-            InstructionOp::Unparsed {
-                kind,
-                modifiers,
-                operands,
-            } => parse_instruction(*kind, modifiers.clone(), operands.clone()).ok()?,
-        };
-        Some((parsed, instr.predicate.as_ref()))
-    }
-
     let window = stmts.get(..WARP_MAX_SIGN_TRICK_LEN)?;
 
     // Cheap pre-filter on mnemonics alone, so ordinary code pays a handful
@@ -6795,7 +6862,6 @@ fn lower_mbarrier_complete_tx(
 fn lower_mbarrier_test_wait(
     ctx: &mut LoweringContext,
     wait: &MbarrierTestWaitInstr,
-    predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     lower_mbarrier_wait_parity(
         ctx,
@@ -6807,7 +6873,6 @@ fn lower_mbarrier_test_wait(
         &wait.wait_complete,
         &wait.addr,
         &wait.state_or_parity,
-        predicate,
     )
 }
 
@@ -6817,7 +6882,6 @@ fn lower_mbarrier_test_wait(
 fn lower_mbarrier_try_wait(
     ctx: &mut LoweringContext,
     wait: &MbarrierTryWaitInstr,
-    predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     if let Some(hint) = &wait.suspend_hint {
         ctx.resolve_operand(hint)?;
@@ -6832,13 +6896,12 @@ fn lower_mbarrier_try_wait(
         &wait.wait_complete,
         &wait.addr,
         &wait.state_or_parity,
-        predicate,
     )
 }
 
-/// Shared lowering for `test_wait`/`try_wait`'s `.parity` form: Volta
-/// collapses both to one blocking `LoweredInstr::MbarrierWaitParity` (see
-/// its doc comment for why).
+/// Shared lowering for a matched wait loop's `test_wait`/`try_wait` (see
+/// `match_mbarrier_wait_loop`): both collapse to one unpredicated, blocking
+/// `LoweredInstr::MbarrierWaitParity`.
 #[allow(clippy::too_many_arguments)]
 fn lower_mbarrier_wait_parity(
     ctx: &mut LoweringContext,
@@ -6850,7 +6913,6 @@ fn lower_mbarrier_wait_parity(
     wait_complete: &AstOperand,
     addr: &AstOperand,
     phase_parity: &AstOperand,
-    predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     ctx.convert_mbarrier_space(space, space_qualifier, MbarrierClusterForm::Absent, name)?;
     if !parity {
@@ -6870,7 +6932,7 @@ fn lower_mbarrier_wait_parity(
             addr_offset,
             phase_parity,
         },
-        predicate,
+        None,
     )?;
     Ok(())
 }
@@ -8796,6 +8858,62 @@ mod tests {
         assert_rejected(
             "cp.async.cg.shared::cluster.global [smem+4], [%rd0], 16;",
             "shared::cluster",
+        );
+    }
+
+    /// The retry loop becomes one unpredicated blocking wait: the retry `bra`
+    /// is gone.
+    #[test]
+    fn test_mbarrier_wait_loop_lowers_to_one_blocking_wait() {
+        for wait in ["try_wait", "test_wait"] {
+            let prog = lower_body(&format!(
+                "WAIT:\n\
+                 mbarrier.{wait}.parity.acquire.cta.shared::cta.b64 %p1, [smem], %r1;\n\
+                 @!%p1 bra WAIT;"
+            ))
+            .unwrap_or_else(|e| panic!("{wait}: {e:?}"));
+            let wait_pc = InstrId::from_index(0);
+            assert!(
+                matches!(
+                    prog.instructions.values().collect::<Vec<_>>().as_slice(),
+                    [LoweredInstr::MbarrierWaitParity { .. }, LoweredInstr::Ret]
+                ),
+                "{wait}: {:?}",
+                prog.instructions
+            );
+            assert!(prog.predicate(wait_pc).is_none(), "{wait}");
+        }
+    }
+
+    /// Any wait outside the exact `L: wait; @!p bra L;` window is rejected,
+    /// including CUTLASS's `@p bra DONE; bra L;` spelling of the same loop.
+    #[test]
+    fn test_mbarrier_wait_outside_the_retry_loop_is_rejected() {
+        fn assert_rejected_wait(body: &str, expected: MbarrierWaitKind) {
+            match lower_body(body) {
+                Err(LowerError::MbarrierWaitOutsideRetryLoop { wait }) => {
+                    assert_eq!(wait, expected, "{body:?}")
+                }
+                other => panic!("expected {body:?} to be rejected as a wait, got {other:?}"),
+            }
+        }
+        let wait = "mbarrier.try_wait.parity.shared::cta.b64 %p1, [smem], 0;";
+        for body in [
+            wait.to_string(),
+            format!("WAIT:\nadd.u32 %r1, %r1, 1;\n{wait}\n@!%p1 bra WAIT;"),
+            format!("WAIT:\n@%p0 {wait}\n@!%p1 bra WAIT;"),
+            format!("WAIT:\n{wait}\n@%p1 bra WAIT;"),
+            format!("WAIT:\n{wait}\n@!%p2 bra WAIT;"),
+            format!("WAIT:\n{wait}\nbra WAIT;"),
+            format!("OTHER:\nWAIT:\n{wait}\n@!%p1 bra OTHER;"),
+            format!("WAIT:\n{wait}\n@%p1 bra DONE;\nbra WAIT;\nDONE:"),
+            format!("WAIT:\n{wait}\nadd.u32 %r1, %r1, 1;\n@!%p1 bra WAIT;"),
+        ] {
+            assert_rejected_wait(&body, MbarrierWaitKind::TryWait);
+        }
+        assert_rejected_wait(
+            "mbarrier.test_wait.parity.shared::cta.b64 %p1, [smem], 0;",
+            MbarrierWaitKind::TestWait,
         );
     }
 }

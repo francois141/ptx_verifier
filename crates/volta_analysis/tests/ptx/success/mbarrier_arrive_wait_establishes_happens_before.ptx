@@ -24,7 +24,11 @@
     @%p0 st.shared.u32 [%r4], %r5;
     @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
 
-    @!%p0 mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+    @%p0 bra WAITED;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 0;
+    @!%p1 bra WAIT;
+WAITED:
     @!%p0 ld.shared.u32 %r6, [%r4];
     @!%p0 cvt.rn.f32.u32 %f1, %r6;
 
