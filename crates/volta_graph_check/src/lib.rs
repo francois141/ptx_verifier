@@ -13,6 +13,11 @@ pub mod progress;
 pub mod proxy;
 pub mod race;
 pub mod result;
+pub mod scope;
+pub mod suite;
 pub mod well_formed;
 
+pub use race::SymbolicFacts;
 pub use result::{Property, PropertyResult, Unresolved, Verdict};
+pub use scope::ProofScope;
+pub use suite::{GraphReport, PropertySummary, check_graph};

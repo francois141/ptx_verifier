@@ -105,6 +105,27 @@ impl Property {
         Property::Progress,
     ];
 
+    /// The properties whose certificates this property's checker consumes; [`Self::ALL`]
+    /// lists every property after its prerequisites.
+    pub fn prerequisites(self) -> &'static [Property] {
+        use Property::*;
+        match self {
+            WellFormed => &[],
+            BarrierProtocol | PipelineOrder => &[WellFormed],
+            AsyncCompletion => &[WellFormed, BarrierProtocol],
+            ProxyOrder | ResourceLifetime | Progress => {
+                &[WellFormed, BarrierProtocol, AsyncCompletion]
+            }
+            MemoryConflicts => &[
+                WellFormed,
+                BarrierProtocol,
+                AsyncCompletion,
+                PipelineOrder,
+                ProxyOrder,
+            ],
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Property::WellFormed => "graph well-formedness",

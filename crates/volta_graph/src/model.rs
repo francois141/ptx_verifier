@@ -365,6 +365,21 @@ pub enum AsyncOpKind {
     WgmmaMma { instance: u32 },
 }
 
+impl AsyncOpKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            AsyncOpKind::CpAsync => "cp.async",
+            AsyncOpKind::BulkCopy => "cp.async.bulk",
+            AsyncOpKind::TensorCopy => "cp.async.bulk.tensor",
+            AsyncOpKind::ClcResponse => "clusterlaunchcontrol.try_cancel",
+            AsyncOpKind::Tcgen05Mma => "tcgen05.mma",
+            AsyncOpKind::Tcgen05Ld => "tcgen05.ld",
+            AsyncOpKind::Tcgen05St => "tcgen05.st",
+            AsyncOpKind::WgmmaMma { .. } => "wgmma.mma_async",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsyncOp {
     pub kind: AsyncOpKind,
