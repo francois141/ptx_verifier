@@ -9,6 +9,7 @@ pub mod barrier;
 pub mod hb;
 pub mod lifetime;
 pub mod pipeline;
+pub mod progress;
 pub mod proxy;
 pub mod race;
 pub mod result;
