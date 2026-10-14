@@ -400,6 +400,15 @@ pub enum LoweredInstr {
         space: MemSpace,
     },
 
+    /// `mapa.shared::cluster d, a, rank`: `a`'s shared variable in CTA `rank`
+    /// of the cluster. Clusters are assumed to hold one CTA, so the only valid
+    /// rank is 0 and the executing CTA's address is also its cluster address.
+    Mapa {
+        dst: RegId,
+        src: Operand,
+        rank: Operand,
+    },
+
     /// `prmt.b32 d, a, b, selector` byte permutation.
     Prmt {
         dst: RegId,
@@ -1136,6 +1145,7 @@ define_instr_kinds!(
     CpAsync,
     Mov,
     Cvta,
+    Mapa,
     Prmt,
     Lop3,
     BinOp,
@@ -1258,6 +1268,7 @@ impl LoweredInstr {
             }
             Self::Mov { src, .. } => from_op(src).into_iter().collect(),
             Self::Cvta { src, .. } => from_op(src).into_iter().collect(),
+            Self::Mapa { src, rank, .. } => from_ops(&[*src, *rank]),
             Self::Prmt {
                 src_a,
                 src_b,
@@ -1571,6 +1582,7 @@ impl LoweredInstr {
             | Self::Load { dst, .. }
             | Self::Mov { dst, .. }
             | Self::Cvta { dst, .. }
+            | Self::Mapa { dst, .. }
             | Self::Prmt { dst, .. }
             | Self::Lop3 { dst, .. }
             | Self::BinOp { dst, .. }

@@ -1456,3 +1456,16 @@ fn test_clusterlaunchcontrol_multicast_try_cancel_is_rejected() {
         other => panic!("expected UnsupportedInstruction, got {other:?}"),
     }
 }
+
+/// Generic addresses have no per-space windows, so generic `mapa` is rejected.
+#[test]
+fn test_mapa_generic_is_rejected() {
+    let module = ptx!(parse "failing/mapa_generic_is_rejected");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(reason.contains("generic addressing"), "{reason}");
+        }
+        other => panic!("expected UnsupportedInstruction, got {other:?}"),
+    }
+}

@@ -2007,6 +2007,27 @@ fn lower_parsed_instruction(
             )?;
         }
 
+        ParsedInstruction::Mapa(mapa) => {
+            let ast::MapaInstr {
+                space,
+                ty: _ty, // pointer width; the identity holds at either width
+                dst,
+                src,
+                cta,
+            } = mapa;
+            if *space == ast::MapaSpace::Generic {
+                return Err(unsupported(
+                    "mapa",
+                    "generic addressing (only mapa.shared::cluster is modeled; generic \
+                     addresses have no per-space windows in this model)",
+                ));
+            }
+            let dst = ctx.resolve_dst(dst)?;
+            let src = ctx.resolve_operand(src)?;
+            let rank = ctx.resolve_operand(cta)?;
+            ctx.emit(LoweredInstr::Mapa { dst, src, rank }, predicate)?;
+        }
+
         ParsedInstruction::Prmt(prmt) => {
             if prmt.mode != ast::PrmtMode::None {
                 return Err(unsupported("prmt", "mode modifiers"));

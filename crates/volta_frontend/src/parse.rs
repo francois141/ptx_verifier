@@ -3538,7 +3538,7 @@ DONE:
     // Strongly-typed instruction tests: each parses to the expected variant.
     // =========================================================================
 
-    use crate::instr_parse::parse_instruction;
+    use crate::instr_parse::{InstrParseError, parse_instruction};
 
     /// Helper to get the first instruction from a parsed module
     fn get_first_instruction(module: &Module) -> &Instruction {
@@ -4579,6 +4579,61 @@ DONE:
                 _ => panic!("expected an unparsed instruction"),
             }
         }
+    }
+
+    /// `mapa{.shared::cluster}.{u32,u64}`: no space is generic, `::cluster`
+    /// is the only explicit space, and other types are rejected.
+    #[test]
+    fn test_mapa_parsing() {
+        fn parse_mapa(src_instr: &str) -> Result<ParsedInstruction, InstrParseError> {
+            let src = wrap_in_module(&format!(".reg .b32 %r<3>;\n{src_instr}"));
+            let module = parse_ok(&src);
+            match &get_first_instruction(&module).op {
+                InstructionOp::Unparsed {
+                    kind,
+                    modifiers,
+                    operands,
+                } => parse_instruction(*kind, modifiers.clone(), operands.clone()),
+                _ => panic!("expected an unparsed instruction"),
+            }
+        }
+
+        for (src_instr, expected_space, expected_ty) in [
+            (
+                "mapa.shared::cluster.u32 %r0, %r1, %r2;",
+                MapaSpace::SharedCluster,
+                ScalarType::U32,
+            ),
+            ("mapa.u64 %r0, %r1, 0;", MapaSpace::Generic, ScalarType::U64),
+        ] {
+            match parse_mapa(src_instr) {
+                Ok(ParsedInstruction::Mapa(MapaInstr { space, ty, .. })) => {
+                    assert_eq!((space, ty), (expected_space, expected_ty), "{src_instr}");
+                }
+                other => panic!("expected Mapa for {src_instr:?}, got {other:?}"),
+            }
+        }
+
+        for src_instr in [
+            "mapa.shared.u32 %r0, %r1, %r2;",
+            "mapa.shared::cta.u32 %r0, %r1, %r2;",
+        ] {
+            assert!(
+                matches!(
+                    parse_mapa(src_instr),
+                    Err(InstrParseError::MissingModifier(_))
+                ),
+                "{src_instr}"
+            );
+        }
+        assert!(matches!(
+            parse_mapa("mapa.shared::cluster.b32 %r0, %r1, %r2;"),
+            Err(InstrParseError::InvalidTypeForInstruction(ScalarType::B32))
+        ));
+        assert!(matches!(
+            parse_mapa("mapa.shared::cluster.u32 %r0, %r1;"),
+            Err(InstrParseError::WrongOperandCount { .. })
+        ));
     }
 
     /// `mbarrier.*`'s optional `{.shared{::cta|::cluster}}` space (none =

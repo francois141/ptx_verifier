@@ -1,0 +1,15 @@
+// Generic addresses have no per-space windows in Volta's model, so only
+// mapa.shared::cluster is supported.
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b64 %rd<4>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u64 %rd0, mbar;
+    mapa.u64 %rd1, %rd0, 0;
+    ret;
+}

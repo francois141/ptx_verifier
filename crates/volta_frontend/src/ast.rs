@@ -2803,11 +2803,17 @@ pub struct IsspacepInstr {
     pub src: Operand,
 }
 
-/// mapa: `mapa{.space}.type d, a, b` (Block 101)
+/// `mapa`'s address space: `.shared::cluster` is the only explicit form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapaSpace {
+    Generic,
+    SharedCluster,
+}
+
+/// mapa: `mapa{.shared::cluster}.{u32,u64} d, a, b` (Block 101)
 #[derive(Debug, Clone)]
 pub struct MapaInstr {
-    pub space: Option<StateSpace>,
-    pub space_qualifier: Option<StateSpaceQualifier>,
+    pub space: MapaSpace,
     pub ty: ScalarType,
     pub dst: Operand,
     pub src: Operand,

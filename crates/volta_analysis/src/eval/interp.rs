@@ -1277,6 +1277,13 @@ impl<'p> Interpreter<'p> {
                 self.write_reg(t, pc, *dst, v)?;
             }
 
+            LoweredInstr::Mapa { .. } => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: "mapa evaluation is not implemented yet".to_string(),
+                });
+            }
+
             LoweredInstr::Prmt {
                 dst,
                 src_a,

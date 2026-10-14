@@ -3089,15 +3089,23 @@ fn parse_mapa(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let space = mp.try_parse::<StateSpace>();
+    let space = match mp.try_consume_shared_state_space(ascii("shared"))? {
+        None => MapaSpace::Generic,
+        Some(SharedStateSpaceQualifier::Cluster) => MapaSpace::SharedCluster,
+        Some(SharedStateSpaceQualifier::Cta) => {
+            return Err(InstrParseError::MissingModifier(ascii("shared::cluster")));
+        }
+    };
     let ty = mp.require_scalar_type()?;
+    if !matches!(ty, ScalarType::U32 | ScalarType::U64) {
+        return Err(InstrParseError::InvalidTypeForInstruction(ty));
+    }
 
     let [dst, src, cta] = expect_operands(operands)?;
 
     mp.finish()?;
     Ok(ParsedInstruction::Mapa(MapaInstr {
         space,
-        space_qualifier: None,
         ty,
         dst,
         src,
