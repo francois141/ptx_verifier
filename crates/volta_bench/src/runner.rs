@@ -69,6 +69,9 @@ pub struct BenchmarkStats {
     /// Optimized kernel's instructions executed, broken down by kind.
     /// Empty for race-only benchmarks (no optimized kernel).
     pub optimized_op_counts: std::collections::BTreeMap<&'static str, u64>,
+    /// Graph verification of the analyzed kernels: `VERIFIED`, or `UNKNOWN: <reasons>` when
+    /// no property failed but verification is incomplete; `None` before generation finished.
+    pub graph_verification: Option<String>,
 }
 
 impl BenchmarkStats {
@@ -100,6 +103,11 @@ pub enum ActualOutcome {
         is_race: bool,
     },
     RaceFree,
+    /// No property failed, but graph verification is not complete (unresolved obligations,
+    /// or passes on the candidate execution only), so race freedom is not established.
+    Unverified {
+        reasons: Vec<String>,
+    },
     /// The `generate` subcommand's outcome for an equivalence benchmark:
     /// its VCs were generated and dumped without being solved, so no
     /// equivalence claim exists yet (that is `solve`'s job).
@@ -113,6 +121,22 @@ pub enum ActualOutcome {
     Error {
         message: String,
     },
+}
+
+/// The combined graph-verification status of analyzed kernels, for the records.
+fn graph_verification(outputs: &[&AnalysisOutput]) -> String {
+    let reasons: Vec<String> = outputs
+        .iter()
+        .filter_map(|o| match &o.race_verification {
+            RaceVerification::Verified => None,
+            RaceVerification::Unknown { reasons } => Some(reasons.join("; ")),
+        })
+        .collect();
+    if reasons.is_empty() {
+        "VERIFIED".to_string()
+    } else {
+        format!("UNKNOWN: {}", reasons.join(" | "))
+    }
 }
 
 impl ActualOutcome {
@@ -139,6 +163,7 @@ impl ActualOutcome {
             Self::Rejected { is_race: true, .. } => "RACE",
             Self::Rejected { is_race: false, .. } => "REJECT",
             Self::RaceFree => "OK",
+            Self::Unverified { .. } => "UNKNOWN",
             Self::VcsGenerated => "GEN",
             Self::Z3Only { refutations: 0 } => "Z3",
             Self::Z3Only { .. } => "Z3 DIFF",
@@ -874,11 +899,11 @@ impl BenchmarkRunner {
                 stats.block_syncs = reference.stats.block_syncs;
                 stats.warp_syncs = reference.stats.warp_syncs;
                 stats.reference_op_counts = reference.op_counts.clone();
-                let outcome = match reference.race_verification {
-                    RaceVerification::Unavailable => ActualOutcome::Error {
-                        message: "race verification unavailable: the analysis ran to \
-                                  completion, but no data-race check was performed"
-                            .to_string(),
+                stats.graph_verification = Some(graph_verification(&[&reference]));
+                let outcome = match &reference.race_verification {
+                    RaceVerification::Verified => ActualOutcome::RaceFree,
+                    RaceVerification::Unknown { reasons } => ActualOutcome::Unverified {
+                        reasons: reasons.clone(),
                     },
                 };
                 return Ok(GeneratedRun::Done(RunOutput {
@@ -902,6 +927,7 @@ impl BenchmarkRunner {
         stats.warp_syncs = optimized.stats.warp_syncs;
         stats.reference_op_counts = reference.op_counts.clone();
         stats.optimized_op_counts = optimized.op_counts.clone();
+        stats.graph_verification = Some(graph_verification(&[&reference, &optimized]));
         // The footprint size is generation data (the solve phases
         // re-derive the same total from the same pairing).
         stats.elements_total = paired.iter().map(|(_, common)| common.len() as u64).sum();

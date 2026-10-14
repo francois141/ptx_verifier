@@ -208,11 +208,6 @@ impl From<BackendArg> for SolveBackend {
 /// Loud stderr warnings for environments that make the timed phases
 /// untrustworthy. Warnings, not errors: the run proceeds either way.
 fn print_environment_warnings(#[cfg(feature = "logging")] log_level: LogLevel) {
-    eprintln!(
-        "WARNING: data-race and async-hazard verification is unavailable in this build; \
-         race-check benchmarks report ERROR and equivalence verdicts assume race freedom \
-         that was NOT checked"
-    );
     if cfg!(debug_assertions) {
         eprintln!(
             "WARNING: built without optimizations (debug_assertions on); \

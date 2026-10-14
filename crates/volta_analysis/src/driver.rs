@@ -1,32 +1,59 @@
-//! The legacy single-kernel entry point: the analysis stage plus a conversion of its result
-//! to the original `Result<AnalysisOutput, AnalysisError>` contract. Race verification is not
-//! performed here (see `AnalysisOutput::race_verification`).
+//! The legacy single-kernel entry point: the analysis stage, then the graph-verification
+//! branch, its first failure reported as the removed embedded detector reported it (see
+//! `legacy`), packaged as the original `Result<AnalysisOutput, AnalysisError>` contract.
 
 use volta_frontend::ast::Module;
 
 use volta_expr::ValueEquality;
+use volta_graph_check::{SymbolicFacts, check_graph};
 
 pub use crate::analysis::{AnalysisError, find_kernel, module_vars};
 use crate::analysis::{AnalysisParts, analyze};
 use crate::eval::{
     AnalysisConfig, AnalysisOutput, EvalError, OutputsUnavailable, RaceVerification,
 };
+use crate::legacy;
 
-/// Analyze one kernel: lower it and symbolically execute all threads of
-/// CTA (0,0,0) under the given configuration. No data-race or async-hazard
-/// verdict is produced (`AnalysisOutput::race_verification` says so), so
-/// `_value_equality`, the benign same-value store oracle, is unused.
+/// Analyze one kernel: lower it, symbolically execute all threads of CTA (0,0,0) under the
+/// given configuration, and check every graph property of the execution. A failed property
+/// is the error (a data race, an async hazard, a deadlock, ...); otherwise
+/// `AnalysisOutput::race_verification` says whether verification is complete.
+/// `value_equality` decides benign same-value stores.
 pub fn analyze_kernel(
     module: &Module,
     kernel: Option<&str>,
     config: AnalysisConfig,
-    _value_equality: &dyn ValueEquality,
+    value_equality: &dyn ValueEquality,
 ) -> Result<AnalysisOutput, AnalysisError> {
-    legacy_output(analyze(module, kernel, config)?.into_parts())
+    let result = analyze(module, kernel, config)?;
+    let report = check_graph(
+        &result.graph,
+        &SymbolicFacts {
+            arena: result.arena(),
+            value_equality,
+        },
+    );
+    if let Some(e) = legacy::first_failure(&result.graph, &report) {
+        return Err(AnalysisError::Eval(e));
+    }
+    legacy_output(result.into_parts(), legacy::race_verification(&report))
 }
 
-/// The original contract's view of the analysis stage's artifacts.
-pub fn legacy_output(parts: AnalysisParts) -> Result<AnalysisOutput, AnalysisError> {
+/// The first failure of `report` (over `graph`) in the error format `analyze_kernel` returns,
+/// for front ends that run the graph branch themselves.
+pub fn first_failure(
+    graph: &volta_graph::EventGraph,
+    report: &volta_graph_check::GraphReport,
+) -> Option<EvalError> {
+    legacy::first_failure(graph, report)
+}
+
+/// The original contract's view of the analysis stage's artifacts, given what graph
+/// verification established.
+pub fn legacy_output(
+    parts: AnalysisParts,
+    race_verification: RaceVerification,
+) -> Result<AnalysisOutput, AnalysisError> {
     let AnalysisParts {
         outputs,
         stats,
@@ -38,7 +65,7 @@ pub fn legacy_output(parts: AnalysisParts) -> Result<AnalysisOutput, AnalysisErr
             exprs,
             stats,
             op_counts,
-            race_verification: RaceVerification::Unavailable,
+            race_verification,
         }),
         Err(OutputsUnavailable::Aborted(e) | OutputsUnavailable::Extraction(e)) => {
             Err(AnalysisError::Eval(e))

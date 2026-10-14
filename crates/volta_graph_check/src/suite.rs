@@ -29,6 +29,17 @@ pub struct GraphReport {
     pub scope: ProofScope,
 }
 
+/// The graph branch's conclusion for one kernel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphConclusion {
+    /// Every property passed, and the proof scope extends that to every schedule.
+    Verified,
+    /// Some property failed: those properties, with their witnesses.
+    Rejected { failed: Vec<PropertySummary> },
+    /// Nothing failed, but these obligations are unresolved or the passes are candidate-only.
+    Unknown { reasons: Vec<String> },
+}
+
 /// One property's outcome, without its typed payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertySummary {
@@ -86,6 +97,44 @@ impl GraphReport {
 
     pub fn verdict(&self, property: Property) -> Verdict {
         self.summary(property).verdict
+    }
+
+    pub fn conclusion(&self) -> GraphConclusion {
+        let summaries = self.summaries();
+        let failed: Vec<PropertySummary> = summaries
+            .iter()
+            .filter(|s| s.verdict == Verdict::Fail)
+            .cloned()
+            .collect();
+        if !failed.is_empty() {
+            return GraphConclusion::Rejected { failed };
+        }
+        let mut reasons: Vec<String> = summaries
+            .iter()
+            .filter(|s| s.verdict == Verdict::Unknown)
+            .map(|s| match s.findings.len() {
+                0 => format!("{}: unknown", s.property.name()),
+                1 => format!("{}: {}", s.property.name(), s.findings[0]),
+                n => format!(
+                    "{}: {} (and {} more)",
+                    s.property.name(),
+                    s.findings[0],
+                    n - 1
+                ),
+            })
+            .collect();
+        if let ProofScope::CandidateOnly { reasons: scope } = &self.scope {
+            reasons.extend(
+                scope
+                    .iter()
+                    .map(|r| format!("passes hold for the candidate execution only: {r}")),
+            );
+        }
+        if reasons.is_empty() {
+            GraphConclusion::Verified
+        } else {
+            GraphConclusion::Unknown { reasons }
+        }
     }
 
     /// `Fail` if any property fails, else `Unknown` if any is unknown, else `Pass`. Says

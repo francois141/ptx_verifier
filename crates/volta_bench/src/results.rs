@@ -228,6 +228,10 @@ fn insert_gen_fields(obj: &mut serde_json::Map<String, Value>, r: &BenchmarkResu
     obj.insert("instructions".into(), json!(r.stats.instructions));
     obj.insert("block_syncs".into(), json!(r.stats.block_syncs));
     obj.insert("warp_syncs".into(), json!(r.stats.warp_syncs));
+    obj.insert(
+        "graph_verification".into(),
+        json!(r.stats.graph_verification),
+    );
 }
 
 /// The solve-phase fields (the one-shot and `solve` records).

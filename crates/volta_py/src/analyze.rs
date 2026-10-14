@@ -53,23 +53,30 @@ pub struct AnalyzeResultPy {
     pub outputs: Vec<(String, Vec<(u64, String)>)>,
     #[pyo3(get)]
     pub op_counts: BTreeMap<String, u64>,
-    /// Whether data races and async-operation hazards were checked.
+    /// Whether graph verification is complete: every property (data races, async hazards,
+    /// synchronization protocol, resource lifetime, progress) passed in a
+    /// schedule-independent scope. A failed property raises instead.
     #[pyo3(get)]
     pub race_verified: bool,
+    /// Why verification is incomplete; empty when `race_verified`.
+    #[pyo3(get)]
+    pub unresolved: Vec<String>,
 }
 
-/// Emit a `RuntimeWarning` when `output` carries no race-freedom guarantee, so
-/// a returned result never silently stands for a race check.
-pub(crate) fn warn_unverified(py: Python<'_>, output: &AnalysisOutput) -> PyResult<bool> {
-    match output.race_verification {
-        RaceVerification::Unavailable => {
-            PyErr::warn(
-                py,
-                &py.get_type::<PyRuntimeWarning>(),
-                c"data-race and async-hazard verification is unavailable: race freedom was NOT checked",
-                1,
-            )?;
-            Ok(false)
+/// Emit a `RuntimeWarning` when graph verification of `output` is incomplete, so a returned
+/// result never silently stands for a race-freedom proof; returns the unresolved reasons.
+pub(crate) fn warn_unverified(py: Python<'_>, output: &AnalysisOutput) -> PyResult<Vec<String>> {
+    match &output.race_verification {
+        RaceVerification::Verified => Ok(Vec::new()),
+        RaceVerification::Unknown { reasons } => {
+            let message = format!(
+                "graph verification is UNKNOWN, race freedom is not established: {}",
+                reasons.join("; ")
+            );
+            let message = std::ffi::CString::new(message.replace('\0', " "))
+                .expect("NUL bytes were replaced");
+            PyErr::warn(py, &py.get_type::<PyRuntimeWarning>(), &message, 1)?;
+            Ok(reasons.clone())
         }
     }
 }
@@ -88,7 +95,7 @@ pub fn analyze(
     let module = parse_module(source)?;
     let output = driver::analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
         .map_err(analysis_error_to_py)?;
-    let race_verified = warn_unverified(py, &output)?;
+    let unresolved = warn_unverified(py, &output)?;
 
     let outputs = output
         .exprs
@@ -115,6 +122,7 @@ pub fn analyze(
             .iter()
             .map(|(k, v)| (k.to_string(), *v))
             .collect(),
-        race_verified,
+        race_verified: unresolved.is_empty(),
+        unresolved,
     })
 }

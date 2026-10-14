@@ -291,6 +291,9 @@ pub fn describe(outcome: &ActualOutcome) -> String {
         }
         ActualOutcome::Rejected { description, .. } => description.clone(),
         ActualOutcome::RaceFree => "race-free".to_string(),
+        ActualOutcome::Unverified { reasons } => {
+            format!("graph verification UNKNOWN: {}", reasons.join("; "))
+        }
         ActualOutcome::VcsGenerated => {
             "VCs generated and dumped (not solved; run `volta-bench solve`)".to_string()
         }

@@ -33,6 +33,9 @@ pub struct VerifyResultPy {
     /// The kernel's own execution statistics (the spec has none to report).
     #[pyo3(get)]
     pub stats: StatsPy,
+    /// Whether the kernel's graph verification is complete (see `AnalyzeResult`).
+    #[pyo3(get)]
+    pub race_verified: bool,
 }
 
 /// Check `kernel` against `spec` (grammar in `volta_spec`) given every `dim`.
@@ -87,7 +90,7 @@ pub fn verify(
 
     let mut kernel_output = analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
         .map_err(analysis_error_to_py)?;
-    warn_unverified(py, &kernel_output)?;
+    let race_verified = warn_unverified(py, &kernel_output)?.is_empty();
 
     // `sample` also caps generation: truncate the kernel's elements to the
     // ascending prefix `unfold` builds, so both sides pair (as in `cmd_verify`).
@@ -134,5 +137,6 @@ pub fn verify(
             block_syncs: kernel_output.stats.block_syncs,
             warp_syncs: kernel_output.stats.warp_syncs,
         },
+        race_verified,
     })
 }

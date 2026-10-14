@@ -198,6 +198,14 @@ pub enum EvalError {
     BarrierMismatch { pc: InstrId, reason: String },
     /// The instruction (or one of its modes) is not supported by the evaluator.
     Unsupported { pc: InstrId, what: String },
+    /// A graph property checker (`property`) rejected the candidate execution with a
+    /// witness that has no dedicated report format.
+    GraphPropertyViolation {
+        property: &'static str,
+        thread: Option<ThreadId>,
+        pc: Option<InstrId>,
+        witness: String,
+    },
     /// A runtime operand encodes something the PTX ISA defines as invalid (a reserved
     /// descriptor bit, an invalid shape, ...) - unlike [`Self::Unsupported`], no hardware
     /// would accept it either.
@@ -524,6 +532,21 @@ impl fmt::Display for EvalError {
                 write!(f, "barrier mismatch at {}: {}", pc, reason)
             }
             Self::Unsupported { pc, what } => write!(f, "unsupported at {}: {}", pc, what),
+            Self::GraphPropertyViolation {
+                property,
+                thread,
+                pc,
+                witness,
+            } => {
+                write!(f, "{} violated", property)?;
+                if let Some(t) = thread {
+                    write!(f, " by {}", t)?;
+                }
+                if let Some(pc) = pc {
+                    write!(f, " at {}", pc)?;
+                }
+                write!(f, ": {}", witness)
+            }
             Self::InvalidEncoding { pc, what } => write!(f, "invalid encoding at {}: {}", pc, what),
             Self::ClusterLaunchControlMisuse { thread, pc, misuse } => match misuse {
                 ClcMisuse::CtaidOfDeclinedResponse => write!(
@@ -731,6 +754,7 @@ impl EvalError {
             | Self::BarrierMismatch { pc, .. }
             | Self::Unsupported { pc, .. }
             | Self::InvalidEncoding { pc, .. } => (None, Some(*pc)),
+            Self::GraphPropertyViolation { thread, pc, .. } => (*thread, *pc),
             Self::Deadlock { .. }
             | Self::UndefinedOutput { .. }
             | Self::InstructionLimit { .. }

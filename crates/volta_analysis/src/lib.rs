@@ -7,6 +7,7 @@ mod logging;
 pub mod analysis;
 pub mod driver;
 pub mod eval;
+mod legacy;
 pub mod lower_error;
 pub mod lowered;
 pub mod lowering;

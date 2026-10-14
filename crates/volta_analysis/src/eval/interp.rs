@@ -111,6 +111,20 @@ pub enum OutputsUnavailable {
     Extraction(EvalError),
 }
 
+impl std::fmt::Display for OutputsUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aborted(e) => write!(f, "the execution stopped: {}", e),
+            Self::Stuck { blocked } => write!(
+                f,
+                "the execution is stuck with {} blocked thread(s)",
+                blocked.len()
+            ),
+            Self::Extraction(e) => write!(f, "an output could not be read back: {}", e),
+        }
+    }
+}
+
 /// Everything one interpreter run produced: the expression arena, the output footprint (when
 /// there is one) and the event graph of the candidate execution.
 #[derive(Debug)]
@@ -340,12 +354,15 @@ struct MemRegions {
     local: Vec<Region>,
 }
 
-/// Whether an [`AnalysisOutput`] was checked for data races and async-operation
-/// hazards; consumers must not report race freedom unless it was.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What graph verification established for an [`AnalysisOutput`] that no property failed
+/// on; consumers must not report race freedom unless it is `Verified`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RaceVerification {
-    /// No race or hazard check ran on this execution.
-    Unavailable,
+    /// Every graph property passed, and the proof scope extends that to every schedule.
+    Verified,
+    /// No property failed, but these obligations are unresolved or the passes hold for the
+    /// candidate execution only.
+    Unknown { reasons: Vec<String> },
 }
 
 /// Result of a completed analysis.

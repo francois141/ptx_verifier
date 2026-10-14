@@ -1,24 +1,22 @@
 //! Volta CLI - PTX analysis tool: `parse <file>` (syntax check), `analyze <file>` (symbolically
 //! execute one kernel), `compare <file1> <file2>` (equivalence), `verify <file>` (against a spec).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use volta_analysis::analyze;
-use volta_analysis::driver::{analyze_kernel, legacy_output, write_op_counts};
+use volta_analysis::analysis::AnalysisParts;
+use volta_analysis::driver::{first_failure, write_op_counts};
 use volta_analysis::eval::{
-    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue, RaceVerification,
+    AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
 };
 use volta_common::run_log;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_equivalence::vc_dump::{VcDump, read_vc_dump, write_vc_dump};
-use volta_equivalence::{
-    CanonValueEquality, EquivCheckOptions, EquivOutcome, check_output_equivalence_with,
-};
+use volta_equivalence::{CanonValueEquality, EquivCheckOptions, EquivOutcome};
 use volta_expr::SymbolicOutputs;
 use volta_expr::spec::unfold;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
@@ -26,6 +24,11 @@ use volta_frontend::ast::{Module, TopLevelItem};
 use volta_frontend::file_cache::FileCache;
 use volta_frontend::parse;
 use volta_frontend::report::{Report, locate_path, report_error};
+use volta_graph::EventGraph;
+use volta_graph_check::{GraphConclusion, GraphReport, ProofScope, Verdict as PropertyVerdict};
+use volta_pipeline::{
+    Decision, EquivalenceVerdict, KernelEvidence, Verdict, check_equivalence, decide, verify_kernel,
+};
 
 /// Log level for controlling output verbosity
 #[cfg(feature = "logging")]
@@ -481,16 +484,113 @@ fn read_exprs(path: &Path) -> Result<SymbolicOutputs, String> {
     volta_expr::text::read_text(&text).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
-/// Say on stderr that `output` carries no race-freedom guarantee, so no verdict built on it
-/// silently claims one.
-fn warn_unverified(label: &str, output: &AnalysisOutput) {
-    match output.race_verification {
-        RaceVerification::Unavailable => eprintln!(
-            "WARNING: {}: data-race and async-hazard verification is UNAVAILABLE; \
-             race freedom was NOT checked",
-            label
-        ),
+/// Exit status of a verdict: 0 only for ACCEPT (or a verified graph), 1 for REJECT, 2 for
+/// UNKNOWN.
+fn exit_code(verdict: Verdict) -> ExitCode {
+    match verdict {
+        Verdict::Accept => ExitCode::SUCCESS,
+        Verdict::Reject => ExitCode::FAILURE,
+        Verdict::Unknown => ExitCode::from(2),
     }
+}
+
+/// One kernel after the analysis stage and the graph branch.
+struct KernelSide {
+    label: &'static str,
+    graph: EventGraph,
+    report: GraphReport,
+}
+
+impl KernelSide {
+    fn evidence(&self) -> KernelEvidence<'_> {
+        KernelEvidence {
+            label: self.label,
+            graph: &self.report,
+            assumptions: &self.graph.provenance().assumptions,
+        }
+    }
+}
+
+/// Print the graph branch's per-property verdicts for one kernel, its proof scope and its
+/// first failure in the legacy report format.
+fn print_graph_report(side: &KernelSide) {
+    println!("{}: graph verification", side.label);
+    for s in side.report.summaries() {
+        let verdict = match s.verdict {
+            PropertyVerdict::Pass => "PASS",
+            PropertyVerdict::Fail => "FAIL",
+            PropertyVerdict::Unknown => "UNKNOWN",
+        };
+        println!("  {:<45} {}", s.property.name(), verdict);
+        for f in s.findings.iter().take(3) {
+            println!("      {}", f);
+        }
+        if s.findings.len() > 3 {
+            println!("      ... ({} more)", s.findings.len() - 3);
+        }
+    }
+    match &side.report.scope {
+        ProofScope::ScheduleIndependent => println!("  scope: schedule-independent"),
+        ProofScope::CandidateOnly { reasons } => {
+            println!("  scope: the candidate execution only");
+            for r in reasons {
+                println!("      {}", r);
+            }
+        }
+    }
+    if let Some(e) = first_failure(&side.graph, &side.report) {
+        println!("  first failure: {}", e);
+    }
+}
+
+fn print_decision(decision: &Decision) -> ExitCode {
+    println!("VERDICT: {}", decision.verdict.name());
+    for e in &decision.evidence {
+        println!("  {}", e);
+    }
+    if !decision.assumptions.is_empty() {
+        println!("  under the assumptions:");
+        for a in &decision.assumptions {
+            println!("    - {}", a.describe());
+        }
+    }
+    exit_code(decision.verdict)
+}
+
+/// One kernel's analysis artifacts other than its graph.
+struct KernelRun {
+    outputs: Result<SymbolicOutputs, OutputsUnavailable>,
+    stats: Stats,
+    op_counts: BTreeMap<&'static str, u64>,
+}
+
+/// Analysis stage plus graph branch for one kernel, split into its owned parts.
+fn run_kernel(
+    label: &'static str,
+    module: &Module,
+    kernel: Option<&str>,
+    config: AnalysisConfig,
+) -> Result<(KernelRun, KernelSide), String> {
+    let verified = verify_kernel(module, kernel, config, &CanonValueEquality)
+        .map_err(|e| format!("{} kernel: {}", label, e))?;
+    let AnalysisParts {
+        outputs,
+        graph,
+        stats,
+        op_counts,
+    } = verified.analysis.into_parts();
+    Ok((
+        KernelRun {
+            outputs,
+            stats,
+            op_counts,
+        },
+        KernelSide {
+            label,
+            graph,
+            report: verified.graph,
+        },
+    ))
 }
 
 fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
@@ -509,73 +609,88 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     };
 
     let start = Instant::now();
-    let result = analyze(&module, args.kernel.as_deref(), config).and_then(|result| {
-        if let Some(path) = &args.dump_graph {
-            match std::fs::write(path, result.graph.dump()) {
-                Ok(()) => eprintln!("Wrote event graph to {}", path.display()),
-                Err(e) => eprintln!("error: failed to write {}: {}", path.display(), e),
-            }
+    let (run, side) = match run_kernel("kernel", &module, args.kernel.as_deref(), config) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("analysis failed: {}", e);
+            log.record(&format!("analyze {}: FAILED: {}", file.display(), e));
+            return ExitCode::FAILURE;
         }
-        legacy_output(result.into_parts())
-    });
+    };
     let elapsed = start.elapsed().as_secs_f64();
+    if let Some(path) = &args.dump_graph {
+        match std::fs::write(path, side.graph.dump()) {
+            Ok(()) => eprintln!("Wrote event graph to {}", path.display()),
+            Err(e) => eprintln!("error: failed to write {}: {}", path.display(), e),
+        }
+    }
 
-    match result {
-        Ok(output) => {
-            println!(
-                "Analysis complete: no deadlock or structured-CTA error; data-race \
-                 verdict: UNKNOWN (race verification unavailable)."
-            );
-            warn_unverified("analyze", &output);
-            println!(
-                "  time: {:.3}s  instructions: {}  block syncs: {}  warp syncs: {}",
-                elapsed,
-                output.stats.instructions,
-                output.stats.block_syncs,
-                output.stats.warp_syncs
-            );
-            for (name, elems) in &output.exprs.outputs {
+    println!(
+        "  time: {:.3}s  instructions: {}  block syncs: {}  warp syncs: {}",
+        elapsed, run.stats.instructions, run.stats.block_syncs, run.stats.warp_syncs
+    );
+    match &run.outputs {
+        Ok(exprs) => {
+            for (name, elems) in &exprs.outputs {
                 println!("  output '{}': {} element(s) written", name, elems.len());
                 for (index, expr) in elems.iter().take(args.print_outputs as usize) {
                     println!(
                         "    {}[{}] = {}",
                         name,
                         index,
-                        output.exprs.arena.display_expr(*expr)
+                        exprs.arena.display_expr(*expr)
                     );
                 }
                 if elems.len() as u64 > args.print_outputs {
                     println!("    ... ({} more)", elems.len() as u64 - args.print_outputs);
                 }
             }
-            if args.profile {
-                let _ = write_op_counts(
-                    &mut std::io::stdout().lock(),
-                    "instruction",
-                    &output.op_counts,
-                );
-            }
-            if let Some(path) = &args.emit_exprs {
-                if let Err(e) = write_exprs(path, &output.exprs) {
-                    eprintln!("error: failed to write {}: {}", path.display(), e);
-                    return ExitCode::FAILURE;
-                }
-                println!("Wrote output expressions to {}", path.display());
-            }
-            log.record(&format!(
-                "analyze {}: UNKNOWN (race verification unavailable) in {:.3}s, {} instructions",
-                file.display(),
-                elapsed,
-                output.stats.instructions
-            ));
-            ExitCode::FAILURE
         }
-        Err(e) => {
-            eprintln!("analysis failed: {}", e);
-            log.record(&format!("analyze {}: FAILED: {}", file.display(), e));
-            ExitCode::FAILURE
-        }
+        Err(why) => println!("  no outputs: {}", why),
     }
+    if args.profile {
+        let _ = write_op_counts(&mut std::io::stdout().lock(), "instruction", &run.op_counts);
+    }
+    if let (Some(path), Ok(exprs)) = (&args.emit_exprs, &run.outputs) {
+        if let Err(e) = write_exprs(path, exprs) {
+            eprintln!("error: failed to write {}: {}", path.display(), e);
+            return ExitCode::FAILURE;
+        }
+        println!("Wrote output expressions to {}", path.display());
+    }
+
+    print_graph_report(&side);
+    let (verdict, reasons) = match side.report.conclusion() {
+        GraphConclusion::Verified => (Verdict::Accept, Vec::new()),
+        GraphConclusion::Rejected { failed } => (
+            Verdict::Reject,
+            failed
+                .iter()
+                .map(|s| format!("{} failed", s.property.name()))
+                .collect(),
+        ),
+        GraphConclusion::Unknown { reasons } => (Verdict::Unknown, reasons),
+    };
+    let name = match verdict {
+        Verdict::Accept => "VERIFIED",
+        Verdict::Reject => "REJECTED",
+        Verdict::Unknown => "UNKNOWN",
+    };
+    println!(
+        "GRAPH VERIFICATION: {} (no equivalence check requested)",
+        name
+    );
+    for r in &reasons {
+        println!("  {}", r);
+    }
+    log.record(&format!(
+        "analyze {}: {} in {:.3}s, {} instructions",
+        file.display(),
+        name,
+        elapsed,
+        run.stats.instructions
+    ));
+    exit_code(verdict)
 }
 
 /// How a whole Z3 comparison run maps to an exit status: only a run that *proved* every element
@@ -607,6 +722,58 @@ fn z3_verdict(counts: &volta_z3::Z3Counts) -> Z3Verdict {
     }
 }
 
+/// The equivalence branch's verdict from a Z3 run: claimed differences count as refutations
+/// only once the numeric oracle separates them; undecided elements are unproven.
+#[cfg(feature = "z3")]
+fn z3_equivalence(
+    report: &volta_z3::Z3EquivReport,
+    reference: &SymbolicOutputs,
+    optimized: &SymbolicOutputs,
+    arrays: &[String],
+    counts: &volta_z3::Z3Counts,
+) -> EquivalenceVerdict {
+    let elements = |keep: fn(&volta_z3::ElementOutcome) -> bool| -> Vec<(String, u64)> {
+        report
+            .elements
+            .iter()
+            .filter(|e| keep(&e.outcome))
+            .map(|e| (e.array.clone(), e.index))
+            .collect()
+    };
+    let differing = elements(|o| matches!(o, volta_z3::ElementOutcome::NotEquivalent));
+    let undecided = elements(|o| {
+        !matches!(
+            o,
+            volta_z3::ElementOutcome::Equivalent | volta_z3::ElementOutcome::NotEquivalent
+        )
+    });
+    match z3_verdict(counts) {
+        Z3Verdict::AllEquivalent => {
+            let total = volta_equivalence::check::paired_elements(reference, optimized, arrays)
+                .map_or(report.elements.len() as u64, |paired| {
+                    paired.iter().map(|(_, common)| common.len() as u64).sum()
+                });
+            EquivalenceVerdict::Equivalent {
+                checked: report.elements.len() as u64,
+                total,
+            }
+        }
+        Z3Verdict::HasDifference => {
+            let (refuted, mut unproven) =
+                volta_pipeline::confirm_differences(reference, optimized, &differing);
+            if refuted.is_empty() {
+                unproven.extend(undecided);
+                EquivalenceVerdict::Unproven { elements: unproven }
+            } else {
+                EquivalenceVerdict::Refuted { elements: refuted }
+            }
+        }
+        Z3Verdict::OnlyUndecided { .. } => EquivalenceVerdict::Unproven {
+            elements: undecided,
+        },
+    }
+}
+
 /// Reject duplicate `--check-array` names (they would double-count elements). Clap enforces at
 /// least one; membership is checked against the launch config before symbolic execution and by
 /// `paired_elements` (the authority) after.
@@ -634,6 +801,9 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
         eprintln!("note: --iterations only affects --backend decision");
     }
 
+    // Kernel inputs run both branches; expression inputs (.vexpr files, a dump) carry no
+    // event graph, so only the equivalence branch.
+    let mut sides: Option<[KernelSide; 2]> = None;
     let (reference, optimized, exec_secs): (SymbolicOutputs, SymbolicOutputs, Option<f64>) =
         if args.exprs {
             let (Some(file1), Some(file2)) = (args.file1.as_ref(), args.file2.as_ref()) else {
@@ -718,53 +888,67 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
             }
 
             let start = Instant::now();
-            let reference = match analyze_kernel(
+            let analyzed = run_kernel(
+                "reference kernel",
                 &module1,
                 args.kernel1.as_deref(),
                 config1,
-                &CanonValueEquality,
-            ) {
-                Ok(o) => o,
+            )
+            .and_then(|r| {
+                run_kernel(
+                    "optimized kernel",
+                    &module2,
+                    args.kernel2.as_deref(),
+                    config2,
+                )
+                .map(|o| (r, o))
+            });
+            let ((run1, side1), (run2, side2)) = match analyzed {
+                Ok(both) => both,
                 Err(e) => {
-                    eprintln!("error: reference kernel: {}", e);
-                    log.record(&format!("compare: reference kernel FAILED: {}", e));
-                    return ExitCode::FAILURE;
-                }
-            };
-            let optimized = match analyze_kernel(
-                &module2,
-                args.kernel2.as_deref(),
-                config2,
-                &CanonValueEquality,
-            ) {
-                Ok(o) => o,
-                Err(e) => {
-                    eprintln!("error: optimized kernel: {}", e);
-                    log.record(&format!("compare: optimized kernel FAILED: {}", e));
+                    eprintln!("error: {}", e);
+                    log.record(&format!("compare: FAILED: {}", e));
                     return ExitCode::FAILURE;
                 }
             };
             let exec_secs = start.elapsed().as_secs_f64();
-            warn_unverified("reference kernel", &reference);
-            warn_unverified("optimized kernel", &optimized);
 
             if args.profile {
                 let mut out = std::io::stdout().lock();
-                let _ = write_op_counts(&mut out, "reference instruction", &reference.op_counts);
-                let _ = write_op_counts(&mut out, "optimized instruction", &optimized.op_counts);
+                let _ = write_op_counts(&mut out, "reference instruction", &run1.op_counts);
+                let _ = write_op_counts(&mut out, "optimized instruction", &run2.op_counts);
             }
             println!(
                 "Exec: {:.3}s  instructions: {}  block syncs: {}  warp syncs: {}",
                 exec_secs,
-                reference.stats.instructions + optimized.stats.instructions,
-                optimized.stats.block_syncs,
-                optimized.stats.warp_syncs
+                run1.stats.instructions + run2.stats.instructions,
+                run2.stats.block_syncs,
+                run2.stats.warp_syncs
             );
+            print_graph_report(&side1);
+            print_graph_report(&side2);
+            let (reference, optimized) = match (run1.outputs, run2.outputs) {
+                (Ok(r), Ok(o)) => (r, o),
+                (r, o) => {
+                    let reason = [(side1.label, r.err()), (side2.label, o.err())]
+                        .into_iter()
+                        .filter_map(|(label, why)| why.map(|w| format!("{}: {}", label, w)))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    let decision = decide(
+                        &EquivalenceVerdict::Failed { reason },
+                        &[side1.evidence(), side2.evidence()],
+                    );
+                    log.record(&format!("compare: {}", decision.verdict.name()));
+                    return print_decision(&decision);
+                }
+            };
+            sides = Some([side1, side2]);
 
             if let Some(dump_path) = &args.dump_vcs {
                 let dump = VcDump {
-                    reference: reference.exprs,
-                    optimized: optimized.exprs,
+                    reference,
+                    optimized,
                 };
                 if let Err(e) = write_vc_dump(dump_path, &dump) {
                     eprintln!("error: failed to write dump {}: {}", dump_path.display(), e);
@@ -773,7 +957,7 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                 println!("Dumped verification conditions to {}", dump_path.display());
                 (dump.reference, dump.optimized, Some(exec_secs))
             } else {
-                (reference.exprs, optimized.exprs, Some(exec_secs))
+                (reference, optimized, Some(exec_secs))
             }
         };
 
@@ -786,7 +970,7 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
     // order. `paired_elements` rejects any that both runs don't have.
     let check_arrays: &[String] = &args.check_arrays;
 
-    match args.backend {
+    let equivalence = match args.backend {
         BackendArg::Decision => {
             let options = EquivCheckOptions {
                 sample: args.sample,
@@ -795,12 +979,11 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                 iterations: args.iterations,
             };
             let vc_start = Instant::now();
-            let report =
-                check_output_equivalence_with(&reference, &optimized, check_arrays, &options);
+            let (verdict, report) =
+                check_equivalence(&reference, &optimized, check_arrays, &options);
             let vc_secs = vc_start.elapsed().as_secs_f64();
-
             match report {
-                Ok(report) => {
+                Some(report) => {
                     let elems = if report.elements_checked == report.elements_total {
                         format!("{}", report.elements_total)
                     } else {
@@ -825,14 +1008,13 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                             per_iter.join(", ")
                         );
                     }
-                    match report.outcome {
+                    match &report.outcome {
                         EquivOutcome::Equivalent => {
                             println!("EQUIVALENT");
                             log.record(&format!(
                                 "compare: EQUIVALENT ({} elements, exec {:?}, vc {:.3}s)",
                                 elems, exec_secs, vc_secs
                             ));
-                            ExitCode::SUCCESS
                         }
                         EquivOutcome::NotEquivalent { mismatches } => {
                             println!("NOT EQUIVALENT: {} mismatched element(s)", mismatches.len());
@@ -846,16 +1028,17 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                                 "compare: NOT EQUIVALENT, {} mismatches",
                                 mismatches.len()
                             ));
-                            ExitCode::FAILURE
                         }
                     }
                 }
-                Err(e) => {
-                    eprintln!("error: {}", e);
-                    log.record(&format!("compare: FAILED: {}", e));
-                    ExitCode::FAILURE
+                None => {
+                    if let EquivalenceVerdict::Failed { reason } = &verdict {
+                        eprintln!("error: {}", reason);
+                        log.record(&format!("compare: FAILED: {}", reason));
+                    }
                 }
             }
+            verdict
         }
         #[cfg(not(feature = "z3"))]
         BackendArg::Z3 => {
@@ -864,7 +1047,7 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                  (rebuild with `--features z3`)"
             );
             log.record("compare (z3): FAILED: built without z3 support");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
         #[cfg(feature = "z3")]
         BackendArg::Z3 => {
@@ -911,27 +1094,44 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                         counts.compact(),
                         vc_secs
                     ));
-                    // Exit 0 must mean "every element proved equivalent": a run that only
-                    // failed to *decide* some elements (unknown/unsupported/solver error) still
-                    // exits nonzero.
-                    match z3_verdict(&counts) {
-                        Z3Verdict::AllEquivalent => ExitCode::SUCCESS,
-                        Z3Verdict::HasDifference => ExitCode::FAILURE,
-                        Z3Verdict::OnlyUndecided { undecided } => {
-                            println!(
-                                "z3 could not decide {} element(s); exiting nonzero \
-                                 (only fully-proved runs exit 0)",
-                                undecided
-                            );
-                            ExitCode::FAILURE
-                        }
-                    }
+                    z3_equivalence(&report, &reference, &optimized, check_arrays, &counts)
                 }
                 Err(e) => {
                     eprintln!("error: {}", e);
                     log.record(&format!("compare (z3): FAILED: {}", e));
-                    ExitCode::FAILURE
+                    EquivalenceVerdict::Failed {
+                        reason: e.to_string(),
+                    }
                 }
+            }
+        }
+    };
+    match &equivalence {
+        EquivalenceVerdict::Refuted { elements } => println!(
+            "  {} element(s) refuted by a numeric counterexample",
+            elements.len()
+        ),
+        EquivalenceVerdict::Unproven { elements } => println!(
+            "  {} element(s) neither proved equivalent nor refuted numerically",
+            elements.len()
+        ),
+        _ => {}
+    }
+    match sides {
+        Some([reference, optimized]) => {
+            let decision = decide(&equivalence, &[reference.evidence(), optimized.evidence()]);
+            log.record(&format!("compare: {}", decision.verdict.name()));
+            print_decision(&decision)
+        }
+        None => {
+            println!(
+                "(equivalence branch only: expression inputs carry no event graph, so no graph \
+                 property was checked)"
+            );
+            if matches!(equivalence, EquivalenceVerdict::Equivalent { .. }) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
         }
     }
@@ -1051,44 +1251,50 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 
     let start = Instant::now();
-    let mut kernel_output =
-        match analyze_kernel(&module, args.kernel.as_deref(), config, &CanonValueEquality) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("error: {}", e);
-                log.record(&format!("verify {}: FAILED: {}", args.file.display(), e));
-                return ExitCode::FAILURE;
-            }
-        };
+    let (run, side) = match run_kernel("kernel", &module, args.kernel.as_deref(), config) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            log.record(&format!("verify {}: FAILED: {}", args.file.display(), e));
+            return ExitCode::FAILURE;
+        }
+    };
     let exec_secs = start.elapsed().as_secs_f64();
-    warn_unverified("kernel", &kernel_output);
 
     if args.profile {
-        let _ = write_op_counts(
-            &mut std::io::stdout().lock(),
-            "instruction",
-            &kernel_output.op_counts,
-        );
+        let _ = write_op_counts(&mut std::io::stdout().lock(), "instruction", &run.op_counts);
     }
     println!(
         "Exec: {:.3}s  instructions: {}  block syncs: {}  warp syncs: {}",
-        exec_secs,
-        kernel_output.stats.instructions,
-        kernel_output.stats.block_syncs,
-        kernel_output.stats.warp_syncs
+        exec_secs, run.stats.instructions, run.stats.block_syncs, run.stats.warp_syncs
     );
+    print_graph_report(&side);
+    let mut kernel_exprs = match run.outputs {
+        Ok(exprs) => exprs,
+        Err(why) => {
+            let decision = decide(
+                &EquivalenceVerdict::Failed {
+                    reason: format!("kernel: {}", why),
+                },
+                &[side.evidence()],
+            );
+            log.record(&format!("verify: {}", decision.verdict.name()));
+            return print_decision(&decision);
+        }
+    };
 
     // --sample also caps *generation* (a big kernel's footprint is impractical to unroll a
     // Sum-heavy spec over): truncate the kernel's elements to the same ascending prefix
     // `unfold` builds, so the two sides still pair up.
+    let untruncated: u64 = kernel_exprs
+        .outputs
+        .iter()
+        .filter(|(n, _)| check_arrays.contains(n))
+        .map(|(_, elems)| elems.len() as u64)
+        .sum();
     if args.sample > 0 {
         for name in &check_arrays {
-            if let Some((_, elems)) = kernel_output
-                .exprs
-                .outputs
-                .iter_mut()
-                .find(|(n, _)| n == name)
-            {
+            if let Some((_, elems)) = kernel_exprs.outputs.iter_mut().find(|(n, _)| n == name) {
                 elems.truncate(args.sample as usize);
             }
         }
@@ -1109,12 +1315,18 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         iterations: args.iterations,
     };
     let vc_start = Instant::now();
-    let report =
-        check_output_equivalence_with(&kernel_output.exprs, &spec_output, &check_arrays, &options);
+    let (mut equivalence, report) =
+        check_equivalence(&kernel_exprs, &spec_output, &check_arrays, &options);
     let vc_secs = vc_start.elapsed().as_secs_f64();
+    if let EquivalenceVerdict::Equivalent { checked, total } = &mut equivalence {
+        *total = (*total).max(untruncated);
+        if *checked > *total {
+            *checked = *total;
+        }
+    }
 
-    match report {
-        Ok(report) => {
+    match &report {
+        Some(report) => {
             let elems = if report.elements_checked == report.elements_total {
                 format!("{}", report.elements_total)
             } else {
@@ -1137,14 +1349,13 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
                     per_iter.join(", ")
                 );
             }
-            match report.outcome {
+            match &report.outcome {
                 EquivOutcome::Equivalent => {
                     println!("EQUIVALENT (matches spec)");
                     log.record(&format!(
                         "verify: EQUIVALENT ({} elements, exec {:.3}s, vc {:.3}s)",
                         elems, exec_secs, vc_secs
                     ));
-                    ExitCode::SUCCESS
                 }
                 EquivOutcome::NotEquivalent { mismatches } => {
                     println!(
@@ -1161,16 +1372,19 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
                         "verify: NOT EQUIVALENT, {} mismatches",
                         mismatches.len()
                     ));
-                    ExitCode::FAILURE
                 }
             }
         }
-        Err(e) => {
-            eprintln!("error: {}", e);
-            log.record(&format!("verify: FAILED: {}", e));
-            ExitCode::FAILURE
+        None => {
+            if let EquivalenceVerdict::Failed { reason } = &equivalence {
+                eprintln!("error: {}", reason);
+                log.record(&format!("verify: FAILED: {}", reason));
+            }
         }
     }
+    let decision = decide(&equivalence, &[side.evidence()]);
+    log.record(&format!("verify: {}", decision.verdict.name()));
+    print_decision(&decision)
 }
 
 /// Load and parse a module, reporting errors nicely.

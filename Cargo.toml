@@ -15,6 +15,7 @@ volta_expr = { path = "./crates/volta_expr" }
 volta_frontend = { path = "./crates/volta_frontend" }
 volta_graph = { path = "./crates/volta_graph" }
 volta_graph_check = { path = "./crates/volta_graph_check" }
+volta_pipeline = { path = "./crates/volta_pipeline" }
 volta_spec = { path = "./crates/volta_spec" }
 volta_z3 = { path = "./crates/volta_z3" }
 

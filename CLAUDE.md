@@ -25,8 +25,10 @@ crates/
 ├── volta_frontend/   # PTX lexer and parser
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
-├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
+├── volta_graph_check/ # Graph property checkers (one per property) and their suite
+├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph) + legacy facade
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
+├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
 ├── volta_z3/         # Z3 comparison backend (SMT-LIB2 via linked libz3)
 ├── volta_bench/      # Paper-evaluation benchmark harness
 └── volta_cli/        # Command-line interface
@@ -37,11 +39,13 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli         → volta_z3, volta_equivalence, volta_analysis, volta_expr, volta_frontend, volta_common
+volta_cli         → volta_pipeline, volta_z3, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend, volta_common
 volta_bench       → volta_z3, volta_equivalence, volta_analysis, volta_expr, volta_frontend, volta_common
+volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_z3          → volta_equivalence, volta_expr
 volta_equivalence → volta_expr
-volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
+volta_analysis    → volta_graph_check (legacy facade only), volta_graph, volta_expr, volta_frontend, volta_common
+volta_graph_check → volta_graph, volta_expr
 volta_graph       → volta_expr
 volta_expr        → (nothing)
 volta_frontend    → volta_common
@@ -51,7 +55,11 @@ volta_common      → (nothing)
 `volta_analysis` (the producer) and `volta_equivalence` (the consumer) share
 only the expression language; neither depends on the other. Likewise the
 event graph (`volta_graph`) is the analysis's only contract with graph
-verification. Tests follow the
+verification (`volta_graph_check`). The analysis *stage* (`analysis.rs`,
+`eval/`, lowering) runs no checker and no equivalence; only the legacy facade
+(`driver.rs` + `legacy.rs`) composes the stage with the graph branch, and the
+two branches never depend on each other or on the stage
+(`volta_pipeline/tests/architecture_tests.rs` enforces all three). Tests follow the
 split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
 over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
 one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
@@ -285,10 +293,23 @@ nvcc's `selp` accumulator-init idiom both rely on this.
   points (`AccessOrigin` tags async effects); its `Recording` bookkeeping is
   never read by execution.
 
-### Driver (`driver.rs`)
+### Driver (`driver.rs`, `legacy.rs`): the legacy facade
 
-- `analyze_kernel(module, kernel_name, config, value_equality) -> Result<AnalysisOutput, AnalysisError>` (`value_equality`: the benign same-value store oracle for race verification, currently unused; every binary passes `CanonValueEquality`)
-- `AnalysisOutput`: `exprs: SymbolicOutputs` (per-output-array written elements as `(index, ExprId)`) + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end) + `race_verification` (`RaceVerification::Unavailable`: front ends must not report race freedom)
+- `analyze_kernel(module, kernel_name, config, value_equality) -> Result<AnalysisOutput, AnalysisError>`:
+  the analysis stage, then `volta_graph_check::check_graph` (`value_equality`:
+  the benign same-value store query; every binary passes `CanonValueEquality`).
+  A failed graph property is the `Err`, rendered by `legacy.rs` in the removed
+  detector's format with its precedence: earliest trace position; within one
+  access an in-flight hazard (`AsyncCopyHazard`/`Tcgen05AsyncHazard`: the prior
+  effect's op is not yet observed - issue to first release of a generation
+  tracking it), then `GenericProxyFenceHazard`, then a χ-style race
+  (`DataRace`/`TensorMemoryRace`, bytes ascending, readers before the writer);
+  `Tcgen05UnwaitedAtSync`, `BarrierMismatch`, `Deadlock` (progress, last), and
+  `GraphPropertyViolation` for witnesses with no legacy form. An aborted
+  execution's own error comes after any graph failure in its prefix.
+- `AnalysisOutput`: `exprs: SymbolicOutputs` (per-output-array written elements as `(index, ExprId)`) + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end) + `race_verification`: `Verified` (every property passed, schedule-independent scope) or `Unknown { reasons }` (nothing failed, but verification is incomplete) - front ends must not report race freedom unless `Verified`
+- `first_failure(graph, report)` - the same legacy rendering for front ends that
+  run the graph branch themselves; `legacy_output(parts, race_verification)`
 - `write_op_counts(out, label, counts)` - the one profile-table formatter,
   used by both `volta` and `volta-bench`
 
@@ -301,6 +322,68 @@ are no-op stubs. Wired at the decision points: barrier/warp-group fires
 `volta_analysis`; VC session recycles (info) and fraction-equality
 escalation (debug) in `volta_equivalence`. `cargo run -p volta_cli
 --features logging -- --log-level info analyze ...` narrates a run.
+
+## Crate: volta_graph_check
+
+**Path**: `crates/volta_graph_check/`
+
+One checker per property, each callable on an `EventGraph` in isolation with
+explicitly passed certificates, each with its contract (property, scope, uses,
+prerequisites, PASS/FAIL/UNKNOWN meaning) in its module docs. Every checker
+returns `PropertyResult<E, V> = Pass(evidence) | Fail(witnesses) |
+Unknown(unresolved)`; none turns an unsupported case into `Pass`. Depends only
+on `volta_graph` and `volta_expr`.
+
+- `hb.rs` - happens-before over *admitted* typed edges only (vector-clock sweep
+  in trace order): program order; contribution -> generation -> release for
+  validated generations; async effects ordered after their issue and before
+  the releases observing their validated completion (never into the issuer's
+  program order); exited-thread arrival only under the Sync' assumption;
+  `CompleteTx` orders nothing. A derived view: it certifies nothing.
+- `well_formed.rs` (1) - representation invariants, terminal state, ordinary
+  effects only.
+- `barrier.rs` (3) - generation stability: Weft (PLDI'15) Fig. 4/Theorem 1 for
+  named barriers; Volta's mbarrier adaptation (A1-A3, no theorem: failures are
+  `Unknown`); collectives; emits the `SyncCertificate`.
+- `async_completion.rs` (4) - each op's completion association re-derived from
+  its instruction's mechanism (a commit is never completion); a warp syncing
+  past an unwaited `tcgen05.ld/st` fails; emits the `CompletionCertificate`.
+- `pipeline.rs` (6) - same-issuer `tcgen05.mma` chains on one accumulator
+  (the only certified pipeline order); emits the `PipelineCertificate`.
+- `proxy.rs` (5) - a generic write read by the async proxy needs a covering
+  `fence.proxy.async` (writer's or reader's) ordered between them.
+- `race.rs` (7) - memory-conflict freedom: W-R, W-W and R-W (buffer reuse) per
+  byte / TMEM cell, FastTrack-style; ordered only through admitted edges or a
+  certified pipeline pair; benign equal stores via the explicit
+  `SymbolicFacts { arena, value_equality }`; atomics/reductions are
+  unresolved, never judged by non-atomic rules. `Fail` only when unordered
+  through every candidate edge.
+- `lifetime.rs` (8) - TMEM alloc/dealloc and mbarrier init/inval lifetimes
+  (T1/T2/M1/M2, each lifting an interpreter-trace check to every schedule);
+  leaks and never-observed async ops at completion are unresolved.
+- `progress.rs` (2) - stuck = `Fail` (deadlock); aborted = `Unknown`;
+  completed passes only through validated generations and completions.
+- `suite.rs` - `check_graph(graph, facts) -> GraphReport` runs them in
+  `Property::ALL` order (a topological order of `Property::prerequisites`);
+  `GraphReport::conclusion()`: `Verified` / `Rejected` / `Unknown`.
+- `scope.rs` - `ProofScope`: `ScheduleIndependent` (ordinary effects,
+  CTA/named barriers, warp collectives, cp.async group waits) or
+  `CandidateOnly { reasons }` (async ops, mbarrier phases) - a candidate-only
+  pass is never a verification.
+
+## Crate: volta_pipeline
+
+**Path**: `crates/volta_pipeline/`
+
+The integration point: `verify_kernel` (analysis stage + graph branch),
+`check_equivalence` (the equivalence branch over symbolic outputs only; a
+claimed difference is a refutation only once the numeric oracle separates it,
+else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
+evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
+and every kernel `Verified`; any refutation or failed property is REJECT;
+anything else, a candidate-only pass included, is UNKNOWN. Tests:
+`aggregation_tests.rs` (real kernels through both branches) and
+`architecture_tests.rs` (the stage/branch boundaries).
 
 ## Crate: volta_equivalence
 
@@ -601,7 +684,7 @@ run one category at a time under `ulimit -v` with `--recycle-terms 250000`
 Commands:
 
 - `volta parse <file>` - Check syntax
-- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run symbolic execution, report races/deadlocks, print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip); `--emit-exprs FILE` writes them as `.vexpr` text
+- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph property's verdict, the proof scope and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph
 - `volta compare <ref.ptx> <opt.ptx> --kernel1 .. --kernel2 .. --check-array out` - Two-kernel
   equivalence check (launch flags shared with `analyze` via a flattened
   `LaunchArgs`; `--block2`/`--grid2` override the optimized kernel's dims).
@@ -613,8 +696,13 @@ Commands:
   `--from-dump` (the shared `volta_equivalence::vc_dump` format - volta-bench's
   `bench-out/vcs/*.vcdump` files replay here too). `--exprs` reads FILE1/
   FILE2 as `.vexpr` files instead (e.g. from `analyze --emit-exprs`): no PTX,
-  no symbolic execution. Exits 0 only when every checked element is proved
-  equivalent.
+  no symbolic execution. With kernel inputs both branches run and `decide`
+  prints `VERDICT: ACCEPT|REJECT|UNKNOWN` with its evidence and assumptions
+  (exit 0/1/2; a sampled check is never ACCEPT); expression inputs
+  (`--exprs`, `--from-dump`) run the equivalence branch only and exit 0 only
+  when every checked element is proved equivalent.
+- `volta verify <file> <spec>` - one kernel against a spec, through both
+  branches and `decide` (exit 0/1/2).
 
 Every run writes a `volta_common::run_log` file (`--log-dir`/
 `--no-log-file`).
@@ -640,11 +728,16 @@ Lowering (lowering.rs) ──► LoweredProgram (resolved RegIds, InstrIds)
 Evaluator (eval/interp.rs) ──► Symbolic execution with N threads
     │                           (one candidate schedule, warp/tensor-core ops)
     ▼
-AnalysisOutput ──► SymbolicOutputs (volta_expr) + statistics
-    │                 (optionally via .vcdump or .vexpr files)
-    ▼
-volta_equivalence (canon/ via equiv.rs) ──► per-element VC checking
-                                             (+ numeric.rs oracle)
+AnalysisResult ──► SymbolicOutputs (volta_expr) + EventGraph (volta_graph) + statistics
+    │                 (no verdict; outputs optionally via .vcdump or .vexpr files)
+    ├──────────────────────────────┐
+    ▼                              ▼
+volta_equivalence (canon/)     volta_graph_check (check_graph)
+  per-element VC checking        one checker per property, dependency order
+  (+ numeric.rs oracle)          (+ ProofScope)
+    └──────────────┬───────────────┘
+                   ▼
+volta_pipeline::decide ──► ACCEPT / REJECT / UNKNOWN (+ evidence, assumptions)
 ```
 
 ## Key Design Decisions

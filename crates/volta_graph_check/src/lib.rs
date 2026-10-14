@@ -20,4 +20,4 @@ pub mod well_formed;
 pub use race::SymbolicFacts;
 pub use result::{Property, PropertyResult, Unresolved, Verdict};
 pub use scope::ProofScope;
-pub use suite::{GraphReport, PropertySummary, check_graph};
+pub use suite::{GraphConclusion, GraphReport, PropertySummary, check_graph};
