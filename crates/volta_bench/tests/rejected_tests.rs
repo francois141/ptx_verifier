@@ -1,4 +1,4 @@
-//! Evaluator tests on ill-formed or unsupported kernels other than races:
+//! End-to-end tests on ill-formed or unsupported kernels other than races:
 //! invalid instructions and encodings, deadlocks (a failed progress
 //! property), out-of-bounds or misaligned accesses, undefined outputs, and
 //! unmodeled forms.

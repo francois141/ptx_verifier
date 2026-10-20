@@ -704,33 +704,22 @@ dependencies = [
  "stacker",
  "thiserror",
  "volta_common",
- "volta_equivalence",
  "volta_expr",
  "volta_frontend",
  "volta_graph",
- "volta_graph_check",
 ]
 
 [[package]]
 name = "volta_bench"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "id_collections",
- "log",
- "serde",
- "serde_json",
  "volta_analysis",
- "volta_common",
  "volta_equivalence",
  "volta_expr",
  "volta_frontend",
+ "volta_graph",
  "volta_graph_check",
  "volta_pipeline",
- "volta_spec",
- "volta_z3",
 ]
 
 [[package]]

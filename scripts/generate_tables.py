@@ -377,15 +377,14 @@ def main():
     ap.add_argument(
         "--kernels-dir",
         type=Path,
-        default=Path("crates/volta_bench/kernels"),
-        help="kernel corpus for the PTX LOC columns",
+        help="kernel corpus for the PTX LOC columns (omitted without it)",
     )
     args = ap.parse_args()
 
     runs = load_runs(args.results_dir)
     if not runs:
         sys.exit(f"no volta-bench results files found in {args.results_dir}")
-    kernels_dir = args.kernels_dir if args.kernels_dir.is_dir() else None
+    kernels_dir = args.kernels_dir if args.kernels_dir and args.kernels_dir.is_dir() else None
     text = RENDERERS[args.format](build_doc(runs, kernels_dir))
     if args.output:
         args.output.write_text(text)

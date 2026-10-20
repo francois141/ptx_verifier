@@ -6,10 +6,10 @@
 
 ```
           +-------------------------------------------------------------+
-          |  volta_cli               volta_bench            volta_py    |
-          |  `volta` binary:         `volta-bench`:         Python      |
-          |  analyze, compare,       the paper's            bindings    |
-          |  verify                  evaluation                         |
+          |  volta_cli                                      volta_py    |
+          |  `volta` binary:                                Python      |
+          |  analyze, compare,                              bindings    |
+          |  verify                                                     |
           +-------------------------------------------------------------+
                  |   front ends: wire a producer to a consumer
                  v
@@ -50,7 +50,9 @@
  volta_frontend, volta_analysis, volta_spec and the front ends.
 ```
 
-Arrows show data flow. `volta_analysis` (the producer) and `volta_equivalence` (the consumer) never depend on each other outside tests: `volta_expr` is their only shared contract, so the checker accepts expressions from a kernel, a spec, a `.vcdump`, or a `.vexpr` file alike. `volta_z3` reuses `volta_equivalence`'s element pairing so both backends check exactly the same elements.
+`volta_bench` holds only the end-to-end tests: PTX kernels run through the whole pipeline, checking race verdicts and symbolic outputs.
+
+Arrows show data flow. `volta_analysis` (the producer) and `volta_equivalence` (the consumer) never depend on each other: `volta_expr` is their only shared contract, so the checker accepts expressions from a kernel, a spec, a `.vcdump`, or a `.vexpr` file alike. `volta_z3` reuses `volta_equivalence`'s element pairing so both backends check exactly the same elements.
 
 # NOTICE
 
@@ -114,7 +116,7 @@ Volta is a data race and equivalence checker for NVIDIA GPU kernels, implementin
 
 ## Relationship to the paper
 
-The evaluation in the published version of the paper was produced with this implementation. The raw results live in [`results/`](results/): the full 2026-08-12 run at commit `e86ef2d`, plus a 2026-08-14 re-measurement of the racy reduction kernels at commit `cc9fb434` after recompiling them at the correct block size — `results/README.md` records the exact provenance. [Reproducing the paper's evaluation](#reproducing-the-papers-evaluation) below regenerates all of it.
+The evaluation in the published version of the paper was produced with this implementation. The raw results live in [`results/`](results/): the full 2026-08-12 run at commit `e86ef2d`, plus a 2026-08-14 re-measurement of the racy reduction kernels at commit `cc9fb434` after recompiling them at the correct block size — `results/README.md` records the exact provenance. `python3 scripts/generate_tables.py results/2026-08-12/` renders the paper's tables from them. The `volta-bench` harness and kernel corpus that produced them are no longer in the tree; commit `a8e9967` is the last one that has both.
 
 ## Features
 
@@ -163,7 +165,7 @@ cargo build --release   # release mode matters: ~20x faster analysis
 cargo test --workspace  # run the test suite
 ```
 
-The workspace has two binaries — `volta` (the analysis CLI, package `volta_cli`) and `volta-bench` (the benchmark harness, package `volta_bench`) — so `cargo run` needs `-p`; equivalently, run `target/release/volta` and `target/release/volta-bench` directly.
+The workspace's one binary is `volta` (the analysis CLI, package `volta_cli`), so `cargo run` needs `-p volta_cli`; equivalently, run `target/release/volta` directly.
 
 ## Usage
 
@@ -205,7 +207,10 @@ cargo run --release -p volta_cli -- compare <ref.ptx> <opt.ptx> \
     --param ptr:in --param ptr:out --check-array out
 ```
 
-- `--sample N`, `--verify-numeric`, `--recycle-terms N`, `--iterations N`: same meaning as the `volta-bench` flags below (`--iterations` defaults to 1 here and applies to the decision backend only)
+- `--sample N`: check at most N output elements per array (0 = all)
+- `--verify-numeric`: confirm every verdict with the f64 oracle (iteration 1 only)
+- `--recycle-terms N`: recycle the VC intern tables past N interned terms (0 = never); lower values bound memory at the cost of re-canonicalizing shared structure
+- `--iterations N` (default 1, decision backend only): re-solve the same elements N times, a fresh session each; the verdict comes from iteration 1 and later iterations must agree
 - `--backend decision|z3` (default `decision`): which decision procedure checks equivalence — see [Z3 backend](#z3-backend)
 - `--exp-axiom` (with `--backend z3`): the paper's "with axiom" exponential encoding
 - `--no-profile`: skip the per-instruction-kind execution profile
@@ -221,7 +226,7 @@ cargo run --release -p volta_cli -- compare --from-dump pair.vcdump --check-arra
 
 ### Logging
 
-Every `volta`/`volta-bench` run writes a log file under `volta-logs/` (`<unix-seconds>-<pid>-<command>.log`), recording the exact command line and a one-line outcome summary — independent of the `logging` feature, so it works in a plain build. `--log-dir <path>` changes the directory; `--no-log-file` disables it. Building with `--features logging` also mirrors the `log` crate's trace/debug/info/warn output into the same file (level via `--log-level`), in addition to stderr:
+Every `volta` run writes a log file under `volta-logs/` (`<unix-seconds>-<pid>-<command>.log`), recording the exact command line and a one-line outcome summary — independent of the `logging` feature, so it works in a plain build. `--log-dir <path>` changes the directory; `--no-log-file` disables it. Building with `--features logging` also mirrors the `log` crate's trace/debug/info/warn output into the same file (level via `--log-level`), in addition to stderr:
 
 ```bash
 cargo run --release -p volta_cli --features logging -- --log-level info analyze ...
@@ -254,88 +259,6 @@ The expected shape of the results reproduces the paper's Section 6.5 and Table 9
 Reported Z3 time is _solver_ time only, measured inside the worker around exactly libz3's evaluation of the query text: process spawn and z3 context setup (~10.5 ms together, measured) and translation/query construction are excluded. Elements that exhaust the budget report the budget itself as their time — the paper's convention for timeout rows. Because the translation deliberately does no reasoning, every element costs a genuine spawn+solve, so a full-footprint run over tens of thousands of elements takes hours where the decision procedure takes seconds; that gap is a result, not an inefficiency. Use `--sample` to bound the element count (the paper's Table 9 uses `--sample 1`).
 
 The translation covers the arithmetic + `exp` + `max`/`min` fragment as a direct semantic image: every expression node maps to its defining SMT term, and all algebraic reasoning (commutativity, cancellation, distribution, `max`/`min` case analysis) is left to the solver, so the timings measure Z3, not the translator. Float constants translate as exact rationals (the same reading as the decision procedure and the numeric oracle), and `let`-bound DAG sharing keeps query text linear in the expression arena. One inherited SMT semantic: real division is total but underspecified at zero, so field identities like `x/x = 1` are falsifiable (countermodel `x = 0`) — corpus VCs only divide inside exp-laden softmax terms, where the verdict is `unknown` regardless. Anything outside the fragment (`select`, comparisons, bitwise ops, data-dependent array reads, ...) is reported `unsupported` for that element rather than guessed at unsoundly. See `crates/volta_z3/src/translate.rs` for the exact boundary.
-
-### Reproducing the paper's evaluation
-
-`volta-bench` runs every benchmark from the paper (39 in total) over the PTX collected in `crates/volta_bench/kernels/`:
-
-```bash
-cargo run --release -p volta_bench -- list
-cargo run --release -p volta_bench -- all
-cargo run --release -p volta_bench -- category <reduction|matmul|attention|causal|conv|agent|tilelang|race>
-cargo run --release -p volta_bench -- single "(Attention, FA1)"
-```
-
-Every benchmark runs through one pipeline: generate the verification conditions, write the VC dump, solve with the decision procedure, and optionally solve with Z3 (`--z3`), recording everything in one results document. Race-check benchmarks stop after generation — their whole analysis is the symbolic execution. The pipeline's two halves also run separately, over the same `all`/`category`/`single` selectors: `generate` runs just the generation phase and writes the dumps (plus `vcs/manifest.json`), and `solve` replays just the solve phase(s) from those dumps — no parsing, lowering, or symbolic execution — with `--backend decision|z3|both` choosing the solver(s). Both halves call the same phase functions as the one-shot pipeline, so they measure and decide exactly the same things.
-
-Global flags:
-
-- `--sample N`: check at most N output elements per array (0 = all)
-- `--verify-numeric`: confirm every verdict with the f64 oracle (iteration 1 only)
-- `--recycle-terms N`: recycle the VC intern tables past N interned terms (0 = never). Lower values bound memory at the cost of re-canonicalizing shared structure
-- `--iterations N` (default 10): run every timed phase N times per benchmark — see [Timing and output files](#timing-and-output-files)
-- `--z3` / `--z3-timeout N`: also solve every equivalence benchmark's VCs with Z3, side by side with the decision procedure (`--z3` belongs to the one-shot commands; `solve` picks its solver with `--backend`)
-- `--out-dir <path>` (default `bench-out/`): where VC dumps and results JSON files land
-- `--json <path>`: _also_ write the results document to this explicit path (the timestamped file under `<out-dir>/results/` is always written)
-
-The full evaluation is four commands — generate every benchmark's VCs once, then solve the same dumps three ways. Each command runs its own timed phase the default 10 `--iterations`:
-
-```bash
-# 1. Generate and dump every benchmark's VCs - the "VC Gen" timings; no solving.
-#    This also settles the race table (Table 8): those verdicts come from
-#    generation, and `solve` skips race-check benchmarks with a note.
-cargo run --release -p volta_bench -- generate all
-
-# 2. Decision-solve ALL elements from the dumps - the full-footprint "VC Time" timings.
-cargo run --release -p volta_bench -- --recycle-terms 0 solve all
-
-# 3. Decision-solve one element per output array - the paper's sampled setting.
-cargo run --release -p volta_bench -- solve all --sample 1
-
-# 4. Z3 on the same sampled elements under a 10-minute budget - Table 9.
-#    unknown/timeout/unsupported are Table 9's data, never failures; a z3
-#    `not_equivalent` on any element FAILS that row (`Z3 DIFF`, nonzero exit).
-cargo run --release -p volta_bench -- solve all --sample 1 --backend z3 --z3-timeout 600
-```
-
-Steps 2–4 never re-execute a kernel: they load `bench-out/vcs/*.vcdump`, hashing each file's bytes against `bench-out/vcs/manifest.json` _before_ decoding, so a stale, mixed, or corrupted dump directory fails loudly instead of quietly solving the wrong VCs (load time is reported separately as `dump_load_secs`). On a memory-limited machine, replace step 2 with per-category `solve category <c>` runs under a positive `--recycle-terms` (see the memory note below) — step 2 as written wants the full-footprint attention working set.
-
-Render the tables from the four results files with
-
-```bash
-python3 scripts/generate_tables.py bench-out/results/
-```
-
-which emits the paper's tables in markdown or LaTeX (`--format latex`, booktabs), auto-discovering each run by its header and computing PTX LOC from the corpus. Every table includes a VC-generation column, even where the paper's version omits one.
-
-**Z3 comparison details** (`--z3`, or step 4 above): the same sampled elements are solved by both backends, and the tables gain the median Z3 solve time plus a per-element equivalent/not-equivalent/unknown/timeout/unsupported/error breakdown. Both timing columns measure only the deciding work, so they are comparable. One carve-out: an element whose iteration-1 outcome is timeout/unsupported/error is not re-solved in later iterations — its iteration-1 time is charged to every iteration's total, and verdict counts always come from iteration 1. Benchmarks whose VCs contain exponentials additionally get a `+exp-axiom` sub-row: the same elements rerun under the axiom encoding (expected outcome: `timeout`, versus `unknown` on the default row). One caveat on small machines: the axiom-induced grind also eats memory, and if z3 exhausts memory before the deadline it gives up with `unknown` instead of surviving to the kill (measured on a 15 GiB box, the memory wall arrives after roughly half a minute; the paper's 10-minute timeouts ran on a 995 GB machine). Pick a budget below the memory wall — e.g. `--z3-timeout 20` — to see the `timeout` outcome on constrained hardware, and run one category at a time.
-
-**Memory note**: symbolic execution plus a warm VC session can use tens of GiB on the attention benchmarks (each output row retains a large shared softmax denominator). On machines with limited RAM, run one category at a time and bound the VC tables, e.g.:
-
-```bash
-bash -c 'ulimit -v 12582912; exec cargo run --release -p volta_bench -- \
-    --recycle-terms 250000 category attention'
-```
-
-which holds peak memory near the symbolic-execution floor (~5 GiB) in exchange for slower VC checking. The other categories are far lighter (full matmul: ~2 GiB).
-
-### Timing and output files
-
-Each benchmark's work splits into separately-timed phases: **VC generation** (`vc_gen_*`: lowering, both kernels' symbolic executions, and footprint pairing; parsing and dump-writing are excluded, the latter reported as `dump_write_secs`), **VC solving** (`solve_*`: the per-element equivalence checks only), and optionally **Z3 solving** (in-worker solver time, as above). Each phase runs `--iterations` times (default 10); **the median is the headline number** — iteration 1 includes process/allocator warmup, and the median absorbs it. The results JSON keeps every phase's full per-iteration array plus median/min/mean and the coefficient of variation, and the harness warns per benchmark when a phase's CV exceeds 0.10. At startup the binary also prints loud warnings when the environment would corrupt the timings: a build without `--release` (~20x off) or, under the `logging` feature, a `--log-level` of `info` or above.
-
-Re-running phases doubles as a correctness check: every solve iteration re-solves the same elements from a fresh VC session and must reproduce iteration 1's verdicts, and every generation iteration must reproduce iteration 1's fingerprint (outcome kind, written footprints, and expression identities), so a nondeterministic interpreter regression fails loudly instead of silently timing different work.
-
-Each run writes under `--out-dir` (default `bench-out/`, gitignored):
-
-- `bench-out/vcs/<name>.vcdump` — each equivalence benchmark's verification conditions (both kernels' expression arenas + output footprints), named by a sanitized benchmark name (`(Attention, FA1)` becomes `attention-fa1.vcdump`) and overwritten on rerun; VCs are deterministic and dumps are byte-identical across runs. These are exactly `volta compare --dump-vcs` files, so they replay directly:
-
-  ```bash
-  cargo run --release -p volta_cli -- compare --from-dump bench-out/vcs/red-1-red-2.vcdump
-  ```
-
-- `bench-out/vcs/manifest.json` — per-dump provenance: benchmark name, generation timestamp, a hash of the exact dump bytes, and per-array element counts. `solve` verifies every dump against it before decoding and hard-errors on disagreement; a `generate` run that fails for a benchmark deletes that benchmark's leftover dump and entry. A missing manifest or entry is only a warning, so hand-copied dumps stay usable.
-
-- `bench-out/results/<unix-seconds>-<pid>-<command>.json` — the results document: a header (argv, timestamp, iterations, sample, recycle-terms, Z3 settings; `solve` headers add the `backend` and `vcs_from_dumps: true`) and one record per benchmark with identity and verdict (`name`, `category`, `status`, `detail`, `passed`, `elements_checked`/`elements_total`), per-phase timing stats, iteration-1 per-element decision times (`decision_elements`), the `z3` section when applicable (per-iteration totals, verdict counts, iteration-1 elements, and the `axiom` sub-section), and instruction and sync counters. `generate` records carry only generation fields; `solve` records carry only solve fields plus `dump_load_secs`, with skipped race-check benchmarks as `status: "SKIP"` records.
 
 ## Citation
 

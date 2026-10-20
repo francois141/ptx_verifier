@@ -217,9 +217,8 @@ fn provenance(
     }
 }
 
-/// Write a per-instruction-kind execution profile, most-executed first. The one formatter for
-/// `AnalysisResult::op_counts`, shared by `volta` and `volta-bench` so their profile tables
-/// cannot drift.
+/// Write a per-instruction-kind execution profile (`AnalysisResult::op_counts`),
+/// most-executed first.
 pub fn write_op_counts(
     out: &mut dyn std::io::Write,
     label: &str,

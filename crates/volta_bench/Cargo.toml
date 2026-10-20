@@ -2,33 +2,13 @@
 name = "volta_bench"
 version.workspace = true
 edition.workspace = true
-description = "Benchmark suite for Volta PTX equivalence checker"
+description = "End-to-end tests: PTX kernels through the Volta pipeline"
 
-[[bin]]
-name = "volta-bench"
-path = "src/main.rs"
-
-[features]
-default = []
-logging = ["volta_analysis/logging", "volta_equivalence/logging", "dep:env_logger", "dep:log"]
-
-[dependencies]
+[dev-dependencies]
 volta_analysis.workspace = true
-volta_common.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true
 volta_frontend.workspace = true
+volta_graph.workspace = true
 volta_graph_check.workspace = true
 volta_pipeline.workspace = true
-volta_z3.workspace = true
-
-anyhow.workspace = true
-clap.workspace = true
-id_collections.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-env_logger = { workspace = true, optional = true }
-log = { workspace = true, optional = true }
-
-[dev-dependencies]
-volta_spec.workspace = true

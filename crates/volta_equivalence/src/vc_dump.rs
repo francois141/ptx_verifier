@@ -1,4 +1,4 @@
-//! The `.vcdump` on-disk format shared by `volta` and volta-bench: a 12-byte header (magic +
+//! The `.vcdump` on-disk format of `volta compare`: a 12-byte header (magic +
 //! version), checked before decoding, then a bincode (fixint little-endian) payload whose ids
 //! are validated on load, so a truncated, foreign or corrupt file errors instead of panicking.
 
@@ -9,7 +9,7 @@ use bincode::Options;
 use volta_expr::SymbolicOutputs;
 
 /// The reference and optimized kernels' verification conditions, as persisted to `.vcdump`
-/// files by `volta compare --dump-vcs` and the bench harness and reloaded by `--from-dump`;
+/// files by `volta compare --dump-vcs` and reloaded by `--from-dump`;
 /// the on-disk format is this module's. Each side has the same wire layout as the former
 /// `VcSnapshot` (`arena`, then `outputs`), so older dumps still load.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -48,7 +48,7 @@ pub fn write_vc_dump(path: &Path, dump: &VcDump) -> io::Result<()> {
 }
 
 /// Serialize `dump` (header + payload) into any writer - the exact bytes [`write_vc_dump`]
-/// writes - so volta-bench can hash them through a tee writer without a second GiB-scale
+/// writes - so a caller can hash them through a tee writer without a second GiB-scale
 /// copy in memory. Does not flush.
 pub fn write_vc_dump_to(writer: &mut impl Write, dump: &VcDump) -> io::Result<()> {
     writer.write_all(DUMP_MAGIC)?;
@@ -66,8 +66,8 @@ pub fn read_vc_dump(path: &Path) -> io::Result<VcDump> {
     read_vc_dump_bytes(&std::fs::read(path)?)
 }
 
-/// Decode a dump from its full file contents (see [`read_vc_dump`]), so volta-bench's
-/// `solve` can fingerprint the raw bytes before decoding without reading the file twice.
+/// Decode a dump from its full file contents (see [`read_vc_dump`]), so a caller can
+/// fingerprint the raw bytes before decoding without reading the file twice.
 pub fn read_vc_dump_bytes(bytes: &[u8]) -> io::Result<VcDump> {
     if bytes.len() < 12 {
         return Err(io::Error::new(

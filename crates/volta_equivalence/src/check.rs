@@ -113,7 +113,7 @@ pub struct EquivCheckReport {
     pub element_checks: Vec<ElementCheckTime>,
     /// Time spent pairing the two footprints (`paired_elements`). Callers
     /// that account "VC generation" as symbolic execution plus pairing
-    /// (the bench harness) add this to their execution time.
+    /// add this to their execution time.
     pub pair_time: Duration,
     /// Total f64-oracle time (`verify_verdict`, iteration 1 only). `Some` exactly when
     /// `EquivCheckOptions::verify_numeric` was set (`None` = oracle off, not free); kept out of
@@ -191,7 +191,7 @@ pub fn paired_elements(
 
 /// Flatten paired footprints into the check list: each array's element prefix, capped at
 /// `sample` per array (0 = all), in `paired` order. The one definition of *which* elements are
-/// checked - decision procedure, Z3 backend and bench re-solve loop correspond positionally.
+/// checked - the decision procedure and the Z3 backend correspond positionally.
 pub fn sampled_elements(
     paired: &[PairedFootprint],
     sample: u64,

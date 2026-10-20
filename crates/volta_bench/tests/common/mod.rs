@@ -1,13 +1,13 @@
-//! Helpers shared by the evaluator test crates: PTX loading, parsing,
-//! launch configs, running a kernel through the analysis stage and the graph
-//! branch, and output rendering.
+//! Helpers shared by the end-to-end test crates: PTX loading, parsing, launch
+//! configs, running a kernel through `volta_pipeline::verify_kernel` (the
+//! analysis stage, then the graph branch), and output rendering.
 
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use volta_analysis::analysis::{AnalysisError, AnalysisResult, analyze};
+use volta_analysis::analysis::{AnalysisError, AnalysisResult};
 use volta_analysis::eval::{
     AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
 };
@@ -16,7 +16,8 @@ use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
-use volta_graph_check::{GraphConclusion, GraphReport, SymbolicFacts, check_graph};
+use volta_graph_check::{GraphConclusion, GraphReport};
+use volta_pipeline::verify_kernel;
 
 /// The PTX test kernel at `tests/ptx/<name>.ptx` as source text, or as a
 /// parsed module with `ptx!(parse "<name>")`.
@@ -66,16 +67,12 @@ pub struct Checked {
 /// Run the analysis stage and every graph property checker; panics if the execution cannot
 /// start (no kernel, a lowering or configuration error).
 pub fn check(module: &Module, kernel: Option<&str>, config: AnalysisConfig) -> Checked {
-    let analysis =
-        analyze(module, kernel, config).unwrap_or_else(|e| panic!("analysis cannot start: {e}"));
-    let report = check_graph(
-        &analysis.graph,
-        &SymbolicFacts {
-            arena: analysis.arena(),
-            value_equality: &CanonValueEquality,
-        },
-    );
-    Checked { analysis, report }
+    let verified = verify_kernel(module, kernel, config, &CanonValueEquality)
+        .unwrap_or_else(|e| panic!("analysis cannot start: {e}"));
+    Checked {
+        analysis: verified.analysis,
+        report: verified.graph,
+    }
 }
 
 /// A kernel that ran to completion with no failed graph property.
@@ -85,26 +82,20 @@ pub struct Completed {
     pub stats: Stats,
 }
 
-/// Run a kernel expected to complete: its outputs, or why it produced none (it could not
-/// start, or its execution raised an error). A failed graph property panics: it is not an
-/// execution error, and tests expecting one inspect `check`'s report.
+/// Run a kernel expected to complete: first its race freedom (no graph property may fail),
+/// then its outputs, or why it produced none (it could not start, or its execution raised an
+/// error). A failed graph property panics: it is not an execution error, and tests expecting
+/// one inspect `check`'s report.
 pub fn run_kernel(
     module: &Module,
     kernel: Option<&str>,
     config: AnalysisConfig,
 ) -> Result<Completed, AnalysisError> {
-    let analysis = analyze(module, kernel, config)?;
-    let report = check_graph(
-        &analysis.graph,
-        &SymbolicFacts {
-            arena: analysis.arena(),
-            value_equality: &CanonValueEquality,
-        },
-    );
-    if let GraphConclusion::Rejected { failed } = report.conclusion() {
+    let verified = verify_kernel(module, kernel, config, &CanonValueEquality)?;
+    if let GraphConclusion::Rejected { failed } = verified.graph.conclusion() {
         panic!("a graph property failed: {failed:#?}");
     }
-    let parts = analysis.into_parts();
+    let parts = verified.analysis.into_parts();
     match parts.outputs {
         Ok(exprs) => Ok(Completed {
             exprs,

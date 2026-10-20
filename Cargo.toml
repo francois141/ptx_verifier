@@ -8,7 +8,6 @@ edition = "2024"
 
 [workspace.dependencies]
 volta_analysis = { path = "./crates/volta_analysis" }
-volta_bench = { path = "./crates/volta_bench" }
 volta_common = { path = "./crates/volta_common" }
 volta_equivalence = { path = "./crates/volta_equivalence" }
 volta_expr = { path = "./crates/volta_expr" }

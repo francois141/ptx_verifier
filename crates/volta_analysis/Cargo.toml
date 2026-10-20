@@ -22,7 +22,3 @@ serde_json.workspace = true
 thiserror.workspace = true
 stacker.workspace = true
 fixedbitset.workspace = true
-
-[dev-dependencies]
-volta_equivalence.workspace = true
-volta_graph_check.workspace = true

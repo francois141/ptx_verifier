@@ -2,15 +2,6 @@
 help:
     @just --list --unsorted
 
-# Check the B200 AI-compiler FP16 GEMM kernel for races/deadlocks
-check_ai_compiler_gemm:
-    cargo run --release -p volta_cli -- analyze crates/volta_bench/kernels/B200_ai_compiler/gemm_f16_4096.ptx \
-        -b 256 -g 16,16 --dyn-shared 196448 --print-outputs 10 \
-        --array "A:0x100000000:2:16777216:in" \
-        --array "B:0x200000000:2:16777216:in" \
-        --array "C:0x300000000:2:16777216:out" \
-        --param ptr:A --param ptr:B --param ptr:C --param int:0 --param int:0
-
 # Run the Rust and Python tests
 test: test-rust test-python
 
@@ -30,8 +21,8 @@ check: check-rust check-python
 
 # cargo check + clippy
 check-rust:
-    cargo check --workspace --exclude volta_z3 --exclude volta_bench
-    cargo clippy --workspace --exclude volta_z3 --exclude volta_bench
+    cargo check --workspace --exclude volta_z3
+    cargo clippy --workspace --exclude volta_z3
 
 # Lint the Python bindings
 check-python:

@@ -30,7 +30,7 @@ crates/
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
 ├── volta_z3/         # Z3 comparison backend (SMT-LIB2 via linked libz3)
-├── volta_bench/      # Paper-evaluation benchmark harness
+├── volta_bench/      # End-to-end tests only (PTX kernels through the pipeline)
 └── volta_cli/        # Command-line interface
 ```
 
@@ -40,7 +40,7 @@ Direct dependencies of each crate:
 
 ```
 volta_cli         → volta_pipeline, volta_z3, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend, volta_common
-volta_bench       → volta_pipeline, volta_z3, volta_equivalence, volta_analysis, volta_graph_check, volta_expr, volta_frontend, volta_common
+volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_z3          → volta_equivalence, volta_expr
 volta_equivalence → volta_expr
@@ -62,10 +62,13 @@ the stage (`volta_pipeline/tests/architecture_tests.rs` enforces both). Tests fo
 split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
 over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
 one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
-dev-dependency `volta_spec` only), while PTX-to-verdict end-to-end tests live in
-`volta_analysis/tests/` (dev-dependencies `volta_equivalence` and
-`volta_graph_check`: `common::check` runs the stage and `check_graph`, and race
-and deadlock tests assert on the failed property's typed witness).
+dev-dependency `volta_spec` only), while every PTX-driven test is end-to-end in
+`volta_bench/tests/` (kernels under `tests/ptx/`): `common::check` runs
+`volta_pipeline::verify_kernel`, race and deadlock tests assert on the failed
+property's typed witness, and accepted kernels must pass every graph property
+before their symbolic outputs are compared with the kernel's `.out` file
+(`VOLTA_BLESS=1` rewrites them). `volta_analysis` keeps only its inline unit
+tests of internals.
 
 ## Crate: volta_common
 
@@ -75,7 +78,7 @@ and deadlock tests assert on the failed property's typed witness).
 - `FileCache` - Caches file content to make sure we always use a consistent version of each file
 - `Locate<E>` - Error wrapper with optional location info (span + file path)
 - `report_error` - Produces an error message from a title, message, span, and file content. Extracts out and includes the code snippet at the given span in the given file content
-- `run_log::RunLog` - Per-invocation log file (`<unix-seconds>-<pid>-<command>.log` under `--log-dir`, default `volta-logs/`), shared by the `volta` and `volta-bench` binaries; `tee` mirrors an `env_logger` target into it under the binaries' `logging` features
+- `run_log::RunLog` - Per-invocation log file (`<unix-seconds>-<pid>-<command>.log` under `--log-dir`, default `volta-logs/`), written by the `volta` binary; `tee` mirrors an `env_logger` target into it under its `logging` feature
 
 The pattern is to create an error kind type, and then an alias for `Locate` of that error kind. `locate_span` can be used to tag a `Locate` with a span if it does not already have one. `locate_path` can be used to tag a `Locate` with a path if it does not already have one.
 
@@ -294,13 +297,13 @@ nvcc's `selp` accumulator-init idiom both rely on this.
 - `eval/record.rs` records the graph at the interpreter's effect and sync
   points (`AccessOrigin` tags async effects); its `Recording` bookkeeping is
   never read by execution.
-- `write_op_counts(out, label, counts)` - the one profile-table formatter,
-  used by both `volta` and `volta-bench`
+- `write_op_counts(out, label, counts)` - the profile-table formatter `volta`
+  prints
 
 ### Logging (`logging.rs`)
 
 Gated by the `logging` feature (`volta_analysis` and `volta_equivalence`,
-both passed through by `volta_cli`/`volta_bench`); without it the macros
+both passed through by `volta_cli`); without it the macros
 are no-op stubs. Wired at the decision points: barrier/warp-group fires
 (trace), deadlock (warn), launch config and completion stats (info) in
 `volta_analysis`; VC session recycles (info) and fraction-equality
@@ -385,14 +388,12 @@ hook.
   elements for each array the caller names (both sides must have each
   named array with identical index sets; unnamed arrays are not compared
   - FlashAttention's optimized-only `l`/`m` exports rely on this; an
-  empty list is an error). Callers supply the list explicitly: the bench
-  harness derives it from the reference config's declared output arrays;
-  the CLI requires it on the command line (`--check-array`).
+  empty list is an error). Callers supply the list explicitly: the CLI
+  requires it on the command line (`--check-array`).
   Shared by the decision procedure and `volta_z3` so both backends check
   exactly the same elements. `sampled_elements(paired, sample)` flattens
   the paired footprints to each array's sampled prefix - the one
-  definition of *which* elements get checked, used by both backends and
-  the bench harness's Z3 re-solve loop
+  definition of *which* elements get checked, used by both backends
 - `check_output_equivalence_with(ref, opt, arrays, options)` - the per-element
   check, one shared `EquivSession` per solve iteration.
   `EquivCheckOptions`: `sample`, `verify_numeric` (f64 oracle per
@@ -407,8 +408,7 @@ hook.
   the oracle excluded; `check_time()` = iteration 1's), `element_checks:
   Vec<ElementCheckTime>` (iteration 1's per-element check durations in
   `sampled_elements` order - the same measurements `check_iters[0]`
-  sums, recorded outside the timed spans, so carrying them is free; the
-  bench harness's `decision_elements`), `pair_time`
+  sums, recorded outside the timed spans, so carrying them is free), `pair_time`
   (the `paired_elements` call), and `verify_time` (the oracle's total
   time, `Some` iff `verify_numeric`).
 - `check_output_equivalence(ref, opt, arrays)` - the Default-options wrapper
@@ -418,8 +418,7 @@ hook.
 
 - `VcDump { reference, optimized }` (two `SymbolicOutputs`, wire-identical
   to the former `VcSnapshot`s) - serde-serializable arena + output footprint, the
-  payload of `volta compare --dump-vcs`/`--from-dump` and of volta-bench's
-  per-benchmark VC files; `validate()` checks
+  payload of `volta compare --dump-vcs`/`--from-dump`; `validate()` checks
   every id (in bounds and children-before-parents) so a corrupt dump errors
   instead of panicking. The arena's serde impls are plain derives over
   `IdVec` via `id_collections`'s `serde` feature (wire-identical to `Vec`,
@@ -427,13 +426,12 @@ hook.
 - the one `.vcdump` on-disk format implementation:
   `write_vc_dump(path, &VcDump)` / `read_vc_dump(path)`, layered over
   `write_vc_dump_to(&mut impl Write, ..)` / `read_vc_dump_bytes(&[u8])`
-  so volta-bench can hash the exact byte stream on write (through a tee
-  writer) and fingerprint-check raw file bytes before decoding on solve.
+  (to hash the exact byte stream on write through a tee writer, or
+  fingerprint raw file bytes before decoding).
   `VOLTAVCD` magic
   + u16 major/minor header (a reader accepts its own major with minor <=
   its own), bincode fixint payload with decode allocations capped at
-  payload size, `validate()` on load. Shared by `volta_cli` and
-  `volta_bench`, so a dump written by either tool loads in both.
+  payload size, `validate()` on load.
 
 ### Decision procedure (`canon/`, `equiv.rs`, `numeric.rs`)
 
@@ -458,8 +456,8 @@ The paper's canonicalizer, in Rust:
   each, so one warm FlashAttention output row retains several GiB; small
   bounds trade re-canonicalization time for bounded memory.
 - `numeric.rs` - the f64 oracle: seeded random inputs, memoized DAG eval;
-  `verify_verdict` confirms EQUIV/DIFF claims (volta-bench
-  `--verify-numeric`). Agreement at random points ⇒ equality almost surely
+  `verify_verdict` confirms EQUIV/DIFF claims (`volta compare
+  --verify-numeric`). Agreement at random points ⇒ equality almost surely
   for this fragment (the paper's own Schwartz-Zippel argument).
 
 ## Crate: volta_z3
@@ -538,132 +536,21 @@ budget kills them, reported `Timeout` - Table 8's "with axiom" column,
 
 **Path**: `crates/volta_bench/`
 
-Reproduces the paper's evaluation over `kernels/` (the `.cu` + `.ptx` for
-every benchmark in the paper, organized by table/section).
-Benchmark definitions with full launch/param configs live in
-`src/benchmarks/*.rs`. Run with `cargo run --release -p volta_bench --
-category <reduction|matmul|attention|causal|conv|agent|tilelang|race>
-[--sample N] [--verify-numeric] [--recycle-terms N] [--iterations N]
-[--z3] [--z3-timeout N] [--out-dir DIR]` (also `all`, `single <name>`,
-`list`, and the phase-decoupled `generate`/`solve` below; release mode
-matters: ~20x, and the binary prints loud stderr
-warnings at startup for a debug build or, under the `logging` feature,
-a `--log-level` of info+ - both corrupt timings).
+Only end-to-end tests: no library, no binary, dev-dependencies only. Each suite
+in `tests/` runs PTX kernels from `tests/ptx/` through
+`volta_pipeline::verify_kernel` (`common::check` / `common::run_kernel`):
 
-One pipeline per benchmark (`src/runner.rs`): **VC generation**
-(`--iterations` timed runs of lowering + both symbolic executions +
-`paired_elements`; kernel files are read and parsed once, outside the
-timed loop; only the last generation's outputs are kept - each
-iteration drops its predecessor, peak memory = one generation - and
-every iteration is fingerprint-checked against iteration 1: same
-outcome kind, per-array footprints, and expression identities (arena
-node count + per-element `ExprId`s - fresh deterministic arenas make id
-equality a strong check at zero cost); rejections compare by rejection
-kind only, since diagnostic text may embed schedule-dependent details -
-verdict kinds are the contract; a mismatch fails the benchmark loudly), then
-the dump written once from the last generation (timed as
-`dump_write_secs`), then **decision solve** (`--iterations` runs via
-`volta_equivalence::check_output_equivalence_with` - fresh session per iteration,
-verdict from iteration 1, later iterations must agree), then the
-optional **Z3 solve** (`--z3`; `src/z3_phase.rs`) over the exact same
-`volta_equivalence::check::sampled_elements` list. Race-check benchmarks stop after
-generation (no dump/solve/Z3). Every timed phase defaults to
-`--iterations` 10; tables print medians (the convention: median is the
-headline number - iteration 1 includes process/allocator warmup, the
-median absorbs it), and the harness warns per benchmark when a phase's
-CV (sample sd/mean) exceeds 0.10 (`runner::NOISY_CV_THRESHOLD`).
-
-The Z3 phase (columns appear in the tables only under `--z3`) solves
-with `ExpMode::PowerBounded`, plus a `+exp-axiom` sub-run
-(`ExpMode::AdditionAxiom`) when the VCs contain `Exp` nodes. Solve
-columns cover the deciding work only, so they are comparable:
-decision = summed `EquivSession::check` (pairing and the optional
-numeric oracle excluded), Z3 = in-worker libz3 solve time (worker
-spawn/exec and translation excluded; timeout elements count the full
-budget). One Z3 carve-out: elements whose iteration-1 outcome is
-timeout/unsupported/error are solved once, their iteration-1 time
-charged to every iteration's total (re-solving a timeout would multiply
-its budget); Z3 verdict counts and per-element results always come from
-iteration 1. A Z3 phase *failure* (not an unknown/timeout verdict -
-those are data) fails the benchmark (`Z3PhaseOutcome::Failed`). Paper
-Table 8 reproduction: `--sample 1 --z3 --z3-timeout 600 all`.
-
-The pipeline's halves also run separately, calling the same phase
-functions (no duplicated pipeline): `generate <all|category <c>|single
-<name>>` runs the generation half only (`generate_inner`: fingerprint
-check, dump write) and records each dump in `vcs/manifest.json`
-(`src/manifest.rs`: benchmark name, timestamp, `vc_fingerprint` = FNV-1a
-of the exact dump bytes as written - hashed through a tee writer, no
-second in-memory copy - plus informational per-array element counts;
-read-modify-write per dump with the read just before the atomic
-temp+rename write, so partial regenerations keep other entries; single
-writer per out-dir assumed) - race-check benchmarks reach their real
-verdicts here, so the race table comes from a `generate` run (`RACE`
-for a failed graph property that is a race, `OK` only when graph
-verification is `Verified`, `UNKNOWN` (`ActualOutcome::Unverified`) when
-nothing failed but verification is incomplete; every generation record
-carries `graph_verification`);
-equivalence benchmarks report `GEN` (`ActualOutcome::VcsGenerated`), a
-failed dump/manifest write fails them (the dump is the product), and any
-failure leaving no fresh dump also deletes the benchmark's stale dump +
-manifest entry so a later `solve` errs on the missing dump instead of
-silently solving pre-failure VCs. `solve <target> [--backend
-decision|z3|both]` (`src/solve.rs`) replays the solve phase(s) from the
-dumps via `check_equivalence`/`run_z3_phase`: each dump's raw bytes are
-fingerprint-checked against the manifest *before* decoding (catches any
-content difference from what the last successful `generate` recorded,
-including same-shape expression drift; deliberately does not check
-currency with the source tree - regenerated-together stale sets pass by
-design; missing manifest = warning only), then decoded through the
-shared validated reader (`dump_load_secs` recorded, excluded from solve
-timings); a missing dump or a fingerprint/name disagreement is a
-per-benchmark failure naming `generate` (with `dump_path` still set
-whenever the file exists), race benchmarks are skipped with a note, and
-`--backend z3` yields no decision verdict (`ActualOutcome::Z3Only`:
-passing = the phase completed *and* z3 refuted nothing - a
-`not_equivalent` count > 0, plain or `+exp-axiom`, fails the row as `Z3
-DIFF`, since nothing else rules it and even a spurious refutation -
-volta_z3's division-at-zero divergence - must surface;
-unknown/timeout/unsupported stay non-failing data). `--sample` applies
-to `solve`; `--verify-numeric`/`--recycle-terms` act on its decision
-phase and `--z3-timeout` on its z3 phase (each noted-and-ignored under a
-backend without that phase, and by `generate`); `--z3` is one-shot-only
-and both new subcommands reject it. Records split accordingly:
-`generate` records carry gen fields only, `solve` records carry solve
-fields plus `dump_load_secs`, and the header adds `backend` +
-`vcs_from_dumps`. Paper workflow: `generate all`, then `--recycle-terms
-0 solve all`, `solve all --sample 1`, `solve all --sample 1 --backend z3
---z3-timeout 600` (Table 8; Table 7 is static, from `generate`).
-
-Output files under `--out-dir` (default `bench-out/`, gitignored):
-`vcs/<sanitized-name>.vcdump` per equivalence benchmark (written via the
-shared `volta_equivalence::vc_dump` module, so `volta compare --from-dump` replays
-them; overwritten on rerun; a run whose benchmark names collide under
-sanitization is rejected up front naming both offenders -
-`results::check_slug_collisions`, corpus-guarded by a test; race-check
-benchmarks are skipped with a console note) and
-`results/<unix-seconds>-<pid>-<command>.json` for every run command,
-one schema (built in `src/results.rs`): header
-(argv/timestamp/iterations/sample/recycle-terms/`z3` flag + timeout +
-the carve-out convention) and per-benchmark records - status/detail/
-passed, element counts, per-phase stats (`vc_gen_*` and `solve_*`: full
-`*_iters_secs` array + median/min/mean/cv), `dump_write_secs`,
-`verify_numeric_secs` (oracle time, `Some` iff the flag),
-`decision_elements` (iteration 1's per-element decision times, from
-`EquivCheckReport::element_checks`), a `z3` section (null without
-`--z3`; else `solve_*` stats + verdict `counts` + iteration-1
-`elements` as `{array, index, outcome, detail, solve_secs}`, an `axiom`
-sub-section of the same shape or null, and `error`), instruction/sync
-counters, and `dump_path` - kept on failures that occur after the dump
-was written. `--json <path>` additionally writes the same document to
-an explicit path. Results files are written before any console report
-prints (`all`/`category` tables and `single`'s result block alike), and
-report printing tolerates a broken stdout pipe (`| head`), so
-the files always land. Every run writes a `volta_common::run_log` file
-(`--log-dir`/`--no-log-file`).
-Memory: full-element attention wants tens of GiB warm - on small machines
-run one category at a time under `ulimit -v` with `--recycle-terms 250000`
-(bounded at ~5 GiB, slower VCs).
+- `accepted_tests.rs` - race-free kernels: every graph property passes, then
+  the rendered symbolic outputs must match the kernel's `.out` file exactly
+  (`VOLTA_BLESS=1` rewrites them).
+- `race_tests.rs` - races and async hazards: the failed property's typed
+  witness (conflict kind, location, each side's thread, access mode and async
+  op); the wgmma register hazards are execution errors.
+- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors) and
+  deadlocks (the progress property's witness).
+- `graph_tests.rs` - the event graph the analysis stage records, no checker.
+- `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
+  detail must not be proved equivalent.
 
 ## Crate: volta_cli
 
@@ -681,8 +568,7 @@ Commands:
   declared config before execution and by `paired_elements` after.
   `--backend decision|z3`, `--iterations N` (decision backend only,
   default 1), `--dump-vcs`/
-  `--from-dump` (the shared `volta_equivalence::vc_dump` format - volta-bench's
-  `bench-out/vcs/*.vcdump` files replay here too). `--exprs` reads FILE1/
+  `--from-dump` (the `volta_equivalence::vc_dump` format). `--exprs` reads FILE1/
   FILE2 as `.vexpr` files instead (e.g. from `analyze --emit-exprs`): no PTX,
   no symbolic execution. With kernel inputs both branches run and `decide`
   prints `VERDICT: ACCEPT|REJECT|UNKNOWN` with its evidence and assumptions
