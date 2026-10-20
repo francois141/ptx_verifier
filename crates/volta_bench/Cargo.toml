@@ -18,6 +18,8 @@ volta_common.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true
 volta_frontend.workspace = true
+volta_graph_check.workspace = true
+volta_pipeline.workspace = true
 volta_z3.workspace = true
 
 anyhow.workspace = true

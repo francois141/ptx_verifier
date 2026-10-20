@@ -8,8 +8,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use volta_analysis::analysis::AnalysisParts;
-use volta_analysis::driver::{first_failure, write_op_counts};
+use volta_analysis::analysis::{AnalysisParts, write_op_counts};
 use volta_analysis::eval::{
     AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
 };
@@ -511,8 +510,8 @@ impl KernelSide {
     }
 }
 
-/// Print the graph branch's per-property verdicts for one kernel, its proof scope and its
-/// first failure in the legacy report format.
+/// Print the graph branch's per-property verdicts for one kernel, with each failed property's
+/// witnesses, and its proof scope.
 fn print_graph_report(side: &KernelSide) {
     println!("{}: graph verification", side.label);
     for s in side.report.summaries() {
@@ -537,9 +536,6 @@ fn print_graph_report(side: &KernelSide) {
                 println!("      {}", r);
             }
         }
-    }
-    if let Some(e) = first_failure(&side.graph, &side.report) {
-        println!("  first failure: {}", e);
     }
 }
 

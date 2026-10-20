@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use volta_analysis::driver::write_op_counts;
+use volta_analysis::analysis::write_op_counts;
 use volta_bench::{
     BenchmarkCategory, BenchmarkDef, BenchmarkResult, BenchmarkRunner, KERNELS_DIR, RunnerConfig,
     SolveBackend, SolveItem, TableMode, Z3Options, all_benchmarks, print_all_results,

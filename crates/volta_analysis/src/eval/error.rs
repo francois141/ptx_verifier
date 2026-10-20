@@ -1,5 +1,5 @@
 //! Errors produced during symbolic evaluation. Program counters (`InstrId`) are carried so
-//! the driver can map errors back to source spans via the `SourceMap`.
+//! front ends can map errors back to source spans via the `SourceMap`.
 
 use std::fmt;
 
@@ -44,37 +44,11 @@ pub enum ClcMisuse {
     },
 }
 
-/// Errors of one kernel analysis. `DataRace` and `Deadlock` are the analysis *results* the paper
-/// proves sound and complete; the rest are structured-CTA violations or implementation limits,
-/// which the paper models as raised exceptions. The race and async-hazard variants are a report
-/// format only: the evaluator itself no longer detects them.
+/// Errors of one candidate execution: structured-CTA violations or implementation limits, which
+/// the paper models as raised exceptions. Data races, async hazards and deadlocks are not
+/// errors here: they are graph property failures (`volta_graph_check`).
 #[derive(Debug)]
 pub enum EvalError {
-    /// Two unsynchronized conflicting accesses to the same address.
-    DataRace {
-        space: MemSpace,
-        addr: u64,
-        prior: AccessSite,
-        current: AccessSite,
-    },
-    /// An access conflicted with a still-in-flight async operation (`cp.async`, or a
-    /// `tcgen05.mma` reading shared operands): its destination was touched or its source
-    /// modified before completion.
-    AsyncCopyHazard {
-        space: MemSpace,
-        addr: u64,
-        prior: AccessSite,
-        current: AccessSite,
-    },
-    /// An async-proxy read (a `tcgen05.mma` operand) observed a generic-proxy write whose
-    /// *writer* has not executed `fence.proxy.async` since: the ISA only makes generic writes
-    /// visible to the async proxy via the writer's own fence, ordered before the reader by a sync.
-    GenericProxyFenceHazard {
-        space: MemSpace,
-        addr: u64,
-        prior: AccessSite,
-        current: AccessSite,
-    },
     /// A `wgmma.mma_async` accessed an accumulator register without an intervening
     /// `wgmma.fence` (PTX ISA 9.7.17.7.1): no fence ever ran (`prior_write: None`), or an access
     /// other than a same-shape `wgmma.mma_async` chain link touched it since the last fence.
@@ -93,11 +67,6 @@ pub enum EvalError {
         pc: InstrId,
         reg: RegId,
         prior_write: AccessSite,
-    },
-    /// All live threads are blocked and no barrier or warp group can fire.
-    Deadlock {
-        /// (thread, pc it is blocked at) for every blocked thread
-        blocked: Vec<(ThreadId, InstrId)>,
     },
     /// A register was read before ever being written.
     UninitializedRegister {
@@ -198,14 +167,6 @@ pub enum EvalError {
     BarrierMismatch { pc: InstrId, reason: String },
     /// The instruction (or one of its modes) is not supported by the evaluator.
     Unsupported { pc: InstrId, what: String },
-    /// A graph property checker (`property`) rejected the candidate execution with a
-    /// witness that has no dedicated report format.
-    GraphPropertyViolation {
-        property: &'static str,
-        thread: Option<ThreadId>,
-        pc: Option<InstrId>,
-        witness: String,
-    },
     /// A runtime operand encodes something the PTX ISA defines as invalid (a reserved
     /// descriptor bit, an invalid shape, ...) - unlike [`Self::Unsupported`], no hardware
     /// would accept it either.
@@ -277,33 +238,6 @@ pub enum EvalError {
         start_col: u32,
         num_cols: u32,
     },
-    /// A Tensor Memory access or `tcgen05.dealloc` overlapped an outstanding async op: an
-    /// un-`tcgen05.wait`-ed `.ld`/`.st` or a `tcgen05.mma` whose completion no thread has
-    /// observed.
-    Tcgen05AsyncHazard {
-        quadrant: u32,
-        start_col: u32,
-        num_cols: u32,
-        prior: AccessSite,
-        current: AccessSite,
-    },
-    /// `thread` arrived at a sync point (`bar.*`, mbarrier arrive, `tcgen05.commit`) at `pc`
-    /// with a `pending` un-`tcgen05.wait`-ed `.ld`/`.st`: the wait must precede the arrival
-    /// for the sync to order the op for other participants.
-    Tcgen05UnwaitedAtSync {
-        thread: ThreadId,
-        pc: InstrId,
-        pending: AccessSite,
-    },
-    /// Two unsynchronized conflicting accesses to one Tensor Memory cell - e.g. a
-    /// `tcgen05.ld` of a `tcgen05.mma` result without syncing with the MMA's issuer
-    /// (normally via the mbarrier its `tcgen05.commit` arrives on).
-    TensorMemoryRace {
-        lane: u32,
-        col: u32,
-        prior: AccessSite,
-        current: AccessSite,
-    },
     /// A `tcgen05.ld`/`.st`'s `taddr` lane bits `[31:16]` (PTX ISA 9.7.17.1.1) name a 32-lane
     /// quadrant other than the issuing warp's own (9.7.17.8.1). A real kernel bug, so the lane
     /// is not silently re-derived from `ThreadId`.
@@ -335,39 +269,6 @@ pub enum EvalError {
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DataRace {
-                space,
-                addr,
-                prior,
-                current,
-            } => write!(
-                f,
-                "data race on {:?}[{:#x}]: {} conflicts with {}",
-                space, addr, current, prior
-            ),
-            Self::AsyncCopyHazard {
-                space,
-                addr,
-                prior,
-                current,
-            } => write!(
-                f,
-                "async-operation hazard on {:?}[{:#x}]: {} conflicts with in-flight {}",
-                space, addr, current, prior
-            ),
-            Self::GenericProxyFenceHazard {
-                space,
-                addr,
-                prior,
-                current,
-            } => write!(
-                f,
-                "missing fence.proxy.async on {:?}[{:#x}]: async-proxy {} (tcgen05.mma operand) \
-                 observed the generic-proxy {} whose writer has not executed fence.proxy.async \
-                 since (the writer must fence before the sync that orders its write ahead of \
-                 the tensor-core read)",
-                space, addr, current, prior
-            ),
             Self::WgmmaFenceHazard {
                 thread,
                 pc,
@@ -408,9 +309,6 @@ impl fmt::Display for EvalError {
                  unless the access is that same wgmma.mma_async chain's own next same-shape \
                  accumulator seed-read or writeback)"
             ),
-            Self::Deadlock { blocked } => {
-                write!(f, "deadlock: {} thread(s) blocked", blocked.len())
-            }
             Self::UninitializedRegister { thread, pc, reg } => {
                 write!(
                     f,
@@ -532,21 +430,6 @@ impl fmt::Display for EvalError {
                 write!(f, "barrier mismatch at {}: {}", pc, reason)
             }
             Self::Unsupported { pc, what } => write!(f, "unsupported at {}: {}", pc, what),
-            Self::GraphPropertyViolation {
-                property,
-                thread,
-                pc,
-                witness,
-            } => {
-                write!(f, "{} violated", property)?;
-                if let Some(t) = thread {
-                    write!(f, " by {}", t)?;
-                }
-                if let Some(pc) = pc {
-                    write!(f, " at {}", pc)?;
-                }
-                write!(f, ": {}", witness)
-            }
             Self::InvalidEncoding { pc, what } => write!(f, "invalid encoding at {}: {}", pc, what),
             Self::ClusterLaunchControlMisuse { thread, pc, misuse } => match misuse {
                 ClcMisuse::CtaidOfDeclinedResponse => write!(
@@ -643,44 +526,6 @@ impl fmt::Display for EvalError {
                 start_col,
                 start_col + num_cols
             ),
-            Self::Tcgen05AsyncHazard {
-                quadrant,
-                start_col,
-                num_cols,
-                prior,
-                current,
-            } => write!(
-                f,
-                "tcgen05 async hazard on tensor-memory quadrant {} cols [{}, {}): {} conflicts with in-flight {}",
-                quadrant,
-                start_col,
-                start_col + num_cols,
-                current,
-                prior
-            ),
-            Self::Tcgen05UnwaitedAtSync {
-                thread,
-                pc,
-                pending,
-            } => {
-                let kind = if pending.is_write { "st" } else { "ld" };
-                write!(
-                    f,
-                    "{}: synchronization at {} with tcgen05.{} ({}) still in flight - \
-                     tcgen05.wait::{} must precede the arrival",
-                    thread, pc, kind, pending, kind
-                )
-            }
-            Self::TensorMemoryRace {
-                lane,
-                col,
-                prior,
-                current,
-            } => write!(
-                f,
-                "data race on tensor-memory (lane={}, col={}): {} conflicts with {}",
-                lane, col, current, prior
-            ),
             Self::Tcgen05LaneRestrictionViolation {
                 thread,
                 pc,
@@ -719,11 +564,6 @@ impl EvalError {
     /// The thread and instruction the error arose at, where it names them.
     pub fn location(&self) -> (Option<ThreadId>, Option<InstrId>) {
         match self {
-            Self::DataRace { current, .. }
-            | Self::AsyncCopyHazard { current, .. }
-            | Self::GenericProxyFenceHazard { current, .. }
-            | Self::Tcgen05AsyncHazard { current, .. }
-            | Self::TensorMemoryRace { current, .. } => (Some(current.thread), Some(current.pc)),
             Self::WgmmaFenceHazard { thread, pc, .. }
             | Self::WgmmaWaitGroupHazard { thread, pc, .. }
             | Self::UninitializedRegister { thread, pc, .. }
@@ -745,7 +585,6 @@ impl EvalError {
             | Self::Tcgen05DeallocMismatch { thread, pc, .. }
             | Self::Tcgen05NotAllocated { thread, pc, .. }
             | Self::Tcgen05AccessOutsideAllocation { thread, pc, .. }
-            | Self::Tcgen05UnwaitedAtSync { thread, pc, .. }
             | Self::Tcgen05LaneRestrictionViolation { thread, pc, .. }
             | Self::TensorMapNotFound { thread, pc, .. }
             | Self::TensorMapFieldMissing { thread, pc, .. } => (Some(*thread), Some(*pc)),
@@ -754,11 +593,9 @@ impl EvalError {
             | Self::BarrierMismatch { pc, .. }
             | Self::Unsupported { pc, .. }
             | Self::InvalidEncoding { pc, .. } => (None, Some(*pc)),
-            Self::GraphPropertyViolation { thread, pc, .. } => (*thread, *pc),
-            Self::Deadlock { .. }
-            | Self::UndefinedOutput { .. }
-            | Self::InstructionLimit { .. }
-            | Self::Config { .. } => (None, None),
+            Self::UndefinedOutput { .. } | Self::InstructionLimit { .. } | Self::Config { .. } => {
+                (None, None)
+            }
         }
     }
 

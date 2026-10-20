@@ -26,7 +26,7 @@ crates/
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # Graph property checkers (one per property) and their suite
-├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph) + legacy facade
+├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
 ├── volta_z3/         # Z3 comparison backend (SMT-LIB2 via linked libz3)
@@ -40,11 +40,11 @@ Direct dependencies of each crate:
 
 ```
 volta_cli         → volta_pipeline, volta_z3, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend, volta_common
-volta_bench       → volta_z3, volta_equivalence, volta_analysis, volta_expr, volta_frontend, volta_common
+volta_bench       → volta_pipeline, volta_z3, volta_equivalence, volta_analysis, volta_graph_check, volta_expr, volta_frontend, volta_common
 volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_z3          → volta_equivalence, volta_expr
 volta_equivalence → volta_expr
-volta_analysis    → volta_graph_check (legacy facade only), volta_graph, volta_expr, volta_frontend, volta_common
+volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
 volta_graph_check → volta_graph, volta_expr
 volta_graph       → volta_expr
 volta_expr        → (nothing)
@@ -55,16 +55,17 @@ volta_common      → (nothing)
 `volta_analysis` (the producer) and `volta_equivalence` (the consumer) share
 only the expression language; neither depends on the other. Likewise the
 event graph (`volta_graph`) is the analysis's only contract with graph
-verification (`volta_graph_check`). The analysis *stage* (`analysis.rs`,
-`eval/`, lowering) runs no checker and no equivalence; only the legacy facade
-(`driver.rs` + `legacy.rs`) composes the stage with the graph branch, and the
-two branches never depend on each other or on the stage
-(`volta_pipeline/tests/architecture_tests.rs` enforces all three). Tests follow the
+verification (`volta_graph_check`). The analysis runs no checker and no
+equivalence and depends on neither branch; only `volta_pipeline` composes the
+stage with the branches, and the two branches never depend on each other or on
+the stage (`volta_pipeline/tests/architecture_tests.rs` enforces both). Tests follow the
 split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
 over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
 one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
 dev-dependency `volta_spec` only), while PTX-to-verdict end-to-end tests live in
-`volta_analysis/tests/` (dev-dependency `volta_equivalence`).
+`volta_analysis/tests/` (dev-dependencies `volta_equivalence` and
+`volta_graph_check`: `common::check` runs the stage and `check_graph`, and race
+and deadlock tests assert on the failed property's typed witness).
 
 ## Crate: volta_common
 
@@ -145,7 +146,7 @@ real zero alike - anything/0) build unfolded nodes.
 
 `SymbolicOutputs { arena, outputs }`: one run's written output elements as
 `(index, root ExprId)` per array, sorted by index - the hand-off type
-(`AnalysisOutput::exprs`, `spec::unfold`'s result, both sides of a
+(`AnalysisResult::symbolic_outputs`, `spec::unfold`'s result, both sides of a
 `VcDump`, the checker's input). `validate()` bounds-checks every id;
 `element(array, index)` looks one up.
 
@@ -275,7 +276,7 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
 - `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it (a warp's wait covers the groups it committed itself). In the graph each member has a share (an async op); the warpgroup op completes as a whole, so a member warp's wait tracks every share of the instances it releases
 - `eval/config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
-- `eval/error.rs` - `EvalError`: `Deadlock`, `NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.; the race/async-hazard variants (`DataRace`, `AsyncCopyHazard`, `TensorMemoryRace`, ...) are kept as the report format but the evaluator no longer produces them
+- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, the wgmma register hazards, etc.); data races, async hazards and deadlocks are not `EvalError`s but graph property failures
 
 Key semantics: input-array symbols materialize lazily on first read; reads of
 never-written registers/shared bytes yield `Undefined` (an error only if it
@@ -293,24 +294,6 @@ nvcc's `selp` accumulator-init idiom both rely on this.
 - `eval/record.rs` records the graph at the interpreter's effect and sync
   points (`AccessOrigin` tags async effects); its `Recording` bookkeeping is
   never read by execution.
-
-### Driver (`driver.rs`, `legacy.rs`): the legacy facade
-
-- `analyze_kernel(module, kernel_name, config, value_equality) -> Result<AnalysisOutput, AnalysisError>`:
-  the analysis stage, then `volta_graph_check::check_graph` (`value_equality`:
-  the benign same-value store query; every binary passes `CanonValueEquality`).
-  A failed graph property is the `Err`, rendered by `legacy.rs` in the removed
-  detector's format with its precedence: earliest trace position; within one
-  access an in-flight hazard (`AsyncCopyHazard`/`Tcgen05AsyncHazard`: the prior
-  effect's op is not yet observed - issue to first release of a generation
-  tracking it), then `GenericProxyFenceHazard`, then a χ-style race
-  (`DataRace`/`TensorMemoryRace`, bytes ascending, readers before the writer);
-  `Tcgen05UnwaitedAtSync`, `BarrierMismatch`, `Deadlock` (progress, last), and
-  `GraphPropertyViolation` for witnesses with no legacy form. An aborted
-  execution's own error comes after any graph failure in its prefix.
-- `AnalysisOutput`: `exprs: SymbolicOutputs` (per-output-array written elements as `(index, ExprId)`) + `Stats` (instructions, block syncs; warp syncs counted per fired group, not per thread) + `op_counts` (per-instruction-kind execution counts; the interpreter tallies into a fixed `[u64; KIND_COUNT]` and folds to this `BTreeMap` at the end) + `race_verification`: `Verified` (every property passed, schedule-independent scope) or `Unknown { reasons }` (nothing failed, but verification is incomplete) - front ends must not report race freedom unless `Verified`
-- `first_failure(graph, report)` - the same legacy rendering for front ends that
-  run the graph branch themselves; `legacy_output(parts, race_verification)`
 - `write_op_counts(out, label, counts)` - the one profile-table formatter,
   used by both `volta` and `volta-bench`
 

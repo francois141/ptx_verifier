@@ -31,7 +31,7 @@ use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::tensor_core::MmaShape;
 use crate::tensor_map::TensormapFieldWrite;
 use crate::types::{RegClass, ScalarTypeExt};
-use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId, SymbolicOutputs};
+use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
     AccessMode, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily,
     OperandRole, Provenance, Proxy, Space, Terminal,
@@ -354,30 +354,6 @@ struct MemRegions {
     local: Vec<Region>,
 }
 
-/// What graph verification established for an [`AnalysisOutput`] that no property failed
-/// on; consumers must not report race freedom unless it is `Verified`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RaceVerification {
-    /// Every graph property passed, and the proof scope extends that to every schedule.
-    Verified,
-    /// No property failed, but these obligations are unresolved or the passes hold for the
-    /// candidate execution only.
-    Unknown { reasons: Vec<String> },
-}
-
-/// Result of a completed analysis.
-#[derive(Debug)]
-pub struct AnalysisOutput {
-    /// The written output elements' expressions, what equivalence checking consumes.
-    pub exprs: SymbolicOutputs,
-    pub stats: Stats,
-    /// Instructions executed, broken down by kind (`LoweredInstr::kind_name`)
-    /// summed across all threads. A `BTreeMap` keeps printed/exported tables
-    /// in deterministic order.
-    pub op_counts: std::collections::BTreeMap<&'static str, u64>,
-    pub race_verification: RaceVerification,
-}
-
 pub struct Interpreter<'p> {
     pub(in crate::eval) program: &'p LoweredProgram,
     pub(in crate::eval) arena: ExprArena,
@@ -406,7 +382,7 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) stats: Stats,
     /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`. A
     /// fixed array since `step` bumps it per instruction; `finish` folds it
-    /// into `AnalysisOutput`'s `BTreeMap`.
+    /// into `AnalysisResult::op_counts`.
     pub(in crate::eval) op_counts: [u64; crate::lowered::KIND_COUNT],
 }
 

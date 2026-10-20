@@ -1,5 +1,5 @@
-//! The pipeline's boundaries, checked on the sources and manifests: the analysis stage runs
-//! no checker and no equivalence, and the two branches never depend on each other.
+//! The pipeline's boundaries, checked on the sources and manifests: the analysis runs no
+//! checker and no equivalence, and the two branches never depend on each other.
 
 use std::path::{Path, PathBuf};
 
@@ -38,13 +38,10 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn the_analysis_stage_runs_no_checker_and_no_equivalence() {
-    let src = crates_dir().join("volta_analysis/src");
+fn the_analysis_runs_no_checker_and_no_equivalence() {
     let mut files = Vec::new();
-    rust_sources(&src, &mut files);
-    // The legacy facade composes the stage with the graph branch; the stage is the rest.
-    let facade = [src.join("driver.rs"), src.join("legacy.rs")];
-    for file in files.iter().filter(|f| !facade.contains(f)) {
+    rust_sources(&crates_dir().join("volta_analysis/src"), &mut files);
+    for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
         let code: Vec<&str> = text
             .lines()
@@ -58,7 +55,13 @@ fn the_analysis_stage_runs_no_checker_and_no_equivalence() {
             );
         }
     }
-    assert!(!dependencies("volta_analysis").contains(&"volta_equivalence".to_string()));
+    let deps = dependencies("volta_analysis");
+    for forbidden in ["volta_graph_check", "volta_equivalence", "volta_pipeline"] {
+        assert!(
+            !deps.iter().any(|d| d == forbidden),
+            "the analysis depends on {forbidden}"
+        );
+    }
 }
 
 #[test]

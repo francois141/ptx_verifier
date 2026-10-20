@@ -1,5 +1,5 @@
 //! Check a PTX kernel against a math spec (`volta verify`): instantiate the
-//! spec under caller-supplied `dim` values, unfold it into an `AnalysisOutput`
+//! spec under caller-supplied `dim` values, unfold it into `SymbolicOutputs`
 //! standing in for a second kernel, then run the usual equivalence pipeline.
 
 use std::collections::HashMap;
@@ -7,16 +7,13 @@ use std::num::NonZeroUsize;
 
 use pyo3::prelude::*;
 
-use volta_analysis::driver::analyze_kernel;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
-use volta_equivalence::{
-    CanonValueEquality, EquivCheckOptions, EquivOutcome, check_output_equivalence_with,
-};
+use volta_equivalence::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
 use volta_expr::spec::unfold;
 
-use crate::analyze::{StatsPy, parse_module, warn_unverified};
+use crate::analyze::{StatsPy, check_kernel, parse_module};
 use crate::config::ConfigPy;
-use crate::error::{VoltaError, analysis_error_to_py, other_error_to_py, spec_parse_error_to_py};
+use crate::error::{VoltaError, other_error_to_py, spec_parse_error_to_py};
 
 #[pyclass(name = "VerifyResult")]
 pub struct VerifyResultPy {
@@ -88,9 +85,8 @@ pub fn verify(
         }
     }
 
-    let mut kernel_output = analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
-        .map_err(analysis_error_to_py)?;
-    let race_verified = warn_unverified(py, &kernel_output)?.is_empty();
+    let mut kernel_output = check_kernel(py, &module, kernel, config.0.clone())?;
+    let race_verified = kernel_output.unresolved.is_empty();
 
     // `sample` also caps generation: truncate the kernel's elements to the
     // ascending prefix `unfold` builds, so both sides pair (as in `cmd_verify`).

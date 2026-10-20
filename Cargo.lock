@@ -727,6 +727,8 @@ dependencies = [
  "volta_equivalence",
  "volta_expr",
  "volta_frontend",
+ "volta_graph_check",
+ "volta_pipeline",
  "volta_spec",
  "volta_z3",
 ]
@@ -829,6 +831,8 @@ dependencies = [
  "volta_equivalence",
  "volta_expr",
  "volta_frontend",
+ "volta_graph_check",
+ "volta_pipeline",
  "volta_spec",
 ]
 

@@ -216,3 +216,25 @@ fn provenance(
         instructions,
     }
 }
+
+/// Write a per-instruction-kind execution profile, most-executed first. The one formatter for
+/// `AnalysisResult::op_counts`, shared by `volta` and `volta-bench` so their profile tables
+/// cannot drift.
+pub fn write_op_counts(
+    out: &mut dyn std::io::Write,
+    label: &str,
+    counts: &BTreeMap<&'static str, u64>,
+) -> std::io::Result<()> {
+    if counts.is_empty() {
+        return Ok(());
+    }
+    let total: u64 = counts.values().sum();
+    let mut entries: Vec<_> = counts.iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    writeln!(out, "{} profile:", label)?;
+    for (kind, count) in entries {
+        let pct = 100.0 * *count as f64 / total as f64;
+        writeln!(out, "  {:<16} {:>10}  ({:>5.1}%)", kind, count, pct)?;
+    }
+    Ok(())
+}

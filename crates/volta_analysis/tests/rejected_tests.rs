@@ -1,34 +1,30 @@
 //! Evaluator tests on ill-formed or unsupported kernels other than races:
-//! invalid instructions and encodings, deadlocks, out-of-bounds or
-//! misaligned accesses, undefined outputs, and unmodeled forms.
+//! invalid instructions and encodings, deadlocks (a failed progress
+//! property), out-of-bounds or misaligned accesses, undefined outputs, and
+//! unmodeled forms.
 
 #[macro_use]
 mod common;
 
-use volta_analysis::driver::analyze_kernel;
 use volta_analysis::eval::{
-    AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ClcMisuse, EvalError, ParamValue, ThreadId,
+    AnalysisConfig, ArrayDef, ArrayKind, ClcMisuse, EvalError, ParamValue, ThreadId,
 };
 use volta_analysis::{AnalysisError, LowerError};
-use volta_equivalence::{CanonValueEquality, check_output_equivalence};
+use volta_equivalence::check_output_equivalence;
 use volta_frontend::ast::Module;
+use volta_graph_check::progress::Deadlock;
 
 use common::*;
 
 /// Run a one-`tcgen05.mma` kernel from `tests/ptx/failing/tcgen05_mma_encoding_*`
 /// (thread 0 issues it, D in a fresh 512-column allocation). The variants
 /// differ only in the `idesc`, the descriptors, `.ws`, and D's offset.
-fn run_tcgen05_mma(src: &str) -> Result<AnalysisOutput, AnalysisError> {
-    analyze_kernel(
-        &parse(src),
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
+fn run_tcgen05_mma(src: &str) -> Result<Completed, AnalysisError> {
+    run_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)))
 }
 
 /// Assert `result` is an `InvalidEncoding` whose message contains `needle`.
-fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle: &str) {
+fn expect_invalid_encoding(result: Result<Completed, AnalysisError>, needle: &str) {
     match result {
         Err(AnalysisError::Eval(EvalError::InvalidEncoding { what, .. })) => {
             assert!(what.contains(needle), "expected {needle:?} in: {what}");
@@ -39,12 +35,7 @@ fn expect_invalid_encoding(result: Result<AnalysisOutput, AnalysisError>, needle
 }
 
 fn expect_invalid_instruction(module: &Module, needle: &str) {
-    match analyze_kernel(
-        module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    ) {
+    match run_kernel(module, None, AnalysisConfig::new((32, 1, 1))) {
         Err(AnalysisError::Lower(LowerError::InvalidInstruction { reason, .. })) => {
             assert!(reason.contains(needle), "expected {needle:?} in: {reason}");
         }
@@ -61,7 +52,7 @@ fn test_extern_shared_store_invisible_through_static_shared() {
     let module = ptx!(parse "failing/extern_shared_store_invisible_through_static_shared");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
         "expected undefined output (buf and lut must not alias), got: {}",
@@ -75,7 +66,7 @@ fn test_extern_shared_store_invisible_through_static_shared() {
 fn test_extern_only_shared_placement_and_bounds() {
     let module = ptx!(parse "failing/extern_only_shared_placement_and_bounds");
     // Without dynamic_shared_bytes the launch is rejected.
-    let err = analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -90,7 +81,7 @@ fn test_extern_only_shared_placement_and_bounds() {
     let module = ptx!(parse "failing/extern_only_shared_placement_and_bounds_past_end");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
         "expected out-of-bounds, got: {}",
@@ -98,22 +89,20 @@ fn test_extern_only_shared_placement_and_bounds() {
     );
 }
 
+/// The progress property's one deadlock witness for `module` on `threads` threads.
+fn deadlock(module: &Module, threads: u32) -> Deadlock {
+    let checked = check(module, None, AnalysisConfig::new((threads, 1, 1)));
+    match checked.report.progress.violations() {
+        [d] => d.clone(),
+        _ => panic!("expected a deadlock, got: {:?}", checked.report.progress),
+    }
+}
+
 /// Threads waiting on different barrier ids never fire: deadlock.
 #[test]
 fn test_mismatched_barriers_deadlock() {
-    let module = ptx!(parse "failing/mismatched_barriers_deadlock");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((2, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
-    assert!(
-        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
-        "expected deadlock, got: {}",
-        err
-    );
+    let blocked = deadlock(&ptx!(parse "failing/mismatched_barriers_deadlock"), 2).blocked;
+    assert!(!blocked.is_empty());
 }
 
 /// Same shape, but only thread 0 arrives: `count = 2` is never satisfied, so
@@ -121,19 +110,12 @@ fn test_mismatched_barriers_deadlock() {
 /// CTA.
 #[test]
 fn test_mbarrier_wait_never_satisfied_deadlocks() {
-    let module = ptx!(parse "failing/mbarrier_wait_never_satisfied_deadlocks");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((2, 1, 1)),
-        &CanonValueEquality,
+    let blocked = deadlock(
+        &ptx!(parse "failing/mbarrier_wait_never_satisfied_deadlocks"),
+        2,
     )
-    .unwrap_err();
-    assert!(
-        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
-        "expected deadlock, got: {}",
-        err
-    );
+    .blocked;
+    assert!(!blocked.is_empty());
 }
 
 /// `wgmma.fence` is `.sync.aligned`: lane 0 skips it and blocks at
@@ -141,19 +123,12 @@ fn test_mbarrier_wait_never_satisfied_deadlocks() {
 /// not a per-thread no-op.
 #[test]
 fn test_wgmma_fence_skipped_by_one_lane_deadlocks() {
-    let module = ptx!(parse "failing/wgmma_fence_skipped_by_one_lane_deadlocks");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((128, 1, 1)),
-        &CanonValueEquality,
+    let blocked = deadlock(
+        &ptx!(parse "failing/wgmma_fence_skipped_by_one_lane_deadlocks"),
+        128,
     )
-    .unwrap_err();
-    assert!(
-        matches!(err, AnalysisError::Eval(EvalError::Deadlock { .. })),
-        "expected deadlock, got: {}",
-        err
-    );
+    .blocked;
+    assert!(!blocked.is_empty());
 }
 
 /// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at lowering:
@@ -172,13 +147,7 @@ fn test_mbarrier_relaxed_semantics_rejected() {
         ),
     ] {
         let module = parse(&src);
-        let err = analyze_kernel(
-            &module,
-            None,
-            AnalysisConfig::new((1, 1, 1)),
-            &CanonValueEquality,
-        )
-        .unwrap_err();
+        let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
         match &err {
             AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
                 assert_eq!(instruction, expect, "wrong instruction name for {}", form);
@@ -236,13 +205,12 @@ fn test_tcgen05_rejects_missing_sync_aligned() {
 /// allocations (PTX ISA 9.7.18.7.1).
 #[test]
 fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
-    let err = analyze_kernel(
+    let err = run_kernel(
         &parse(&ptx!(
             "failing/tcgen05_alloc_rejects_invalid_sizes_and_order_16"
         )),
         None,
         AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
     )
     .unwrap_err();
     assert!(
@@ -252,13 +220,12 @@ fn test_tcgen05_alloc_rejects_invalid_sizes_and_order() {
         ),
         "{err}"
     );
-    let err = analyze_kernel(
+    let err = run_kernel(
         &parse(&ptx!(
             "failing/tcgen05_alloc_rejects_invalid_sizes_and_order_32_then_64"
         )),
         None,
         AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
     )
     .unwrap_err();
     assert!(
@@ -283,13 +250,7 @@ fn test_tcgen05_exclusive_alloc_and_dealloc_are_not_implemented() {
         ptx!("failing/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_alloc"),
         ptx!("failing/tcgen05_exclusive_alloc_and_dealloc_are_not_implemented_dealloc"),
     ] {
-        let err = analyze_kernel(
-            &parse(&src),
-            None,
-            AnalysisConfig::new((32, 1, 1)),
-            &CanonValueEquality,
-        )
-        .unwrap_err();
+        let err = run_kernel(&parse(&src), None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
         match &err {
             AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. }) => {
                 let reason = reason.as_deref().unwrap_or("");
@@ -311,13 +272,7 @@ fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
     let module = parse(&ptx!(
         "failing/tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected"
     ));
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -337,13 +292,7 @@ fn test_tcgen05_access_past_an_allocation_into_an_adjacent_one_is_rejected() {
 #[test]
 fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     let module = ptx!(parse "failing/tcgen05_st_rejects_wrong_quadrant_address");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Tcgen05LaneRestrictionViolation {
             lane_base,
@@ -372,7 +321,7 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
         kind: ArrayKind::Input,
     }];
     config.params = vec![ParamValue::ArrayPtr("in".to_string())];
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::TensorMapFieldMissing { field, .. }) => {
             assert_eq!(field, "fill_mode");
@@ -396,7 +345,7 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
         "expected UndefinedOutput (lane 0 must never be written), got: {}",
@@ -410,13 +359,7 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_kind() {
     let module = ptx!(parse "failing/tcgen05_mma_rejects_unmodeled_kind");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Lower(LowerError::UnsupportedInstruction {
             instruction,
@@ -441,13 +384,7 @@ fn test_tcgen05_mma_rejects_unmodeled_kind() {
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
     let module = ptx!(parse "failing/tcgen05_mma_rejects_unmodeled_idesc_fields");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
             assert!(
@@ -466,13 +403,7 @@ fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
 #[test]
 fn test_tcgen05_mma_rejects_k_dimension_bit() {
     let module = ptx!(parse "failing/tcgen05_mma_rejects_k_dimension_bit");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
             assert!(
@@ -607,14 +538,7 @@ fn test_tcgen05_mma_rejects_invalid_layout_combinations() {
 /// unimplemented.
 #[test]
 fn test_membar_levels() {
-    let analyze = |src: String| {
-        analyze_kernel(
-            &parse(&src),
-            None,
-            AnalysisConfig::new((1, 1, 1)),
-            &CanonValueEquality,
-        )
-    };
+    let analyze = |src: String| run_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1)));
     for (level, src) in [
         (".cluster", ptx!("failing/membar_levels_cluster")),
         (".gpu", ptx!("failing/membar_levels_gpu")),
@@ -656,12 +580,7 @@ fn test_mbarrier_shared_cluster_validity() {
         expect_invalid_instruction(&parse(&src), "has no .shared::cluster form");
     }
     let arrive = parse(&ptx!("failing/mbarrier_shared_cluster_validity_arrive"));
-    match analyze_kernel(
-        &arrive,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    ) {
+    match run_kernel(&arrive, None, AnalysisConfig::new((1, 1, 1))) {
         Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
             let reason = reason.unwrap_or_default();
             assert!(reason.contains("single-CTA analysis only"), "{reason}");
@@ -674,14 +593,7 @@ fn test_mbarrier_shared_cluster_validity() {
 /// `.abs`/`.NaN` outside `.f32`; on `.f32` they are unmodeled.
 #[test]
 fn test_redux_sync_forms() {
-    let analyze = |src: &str| {
-        analyze_kernel(
-            &parse(src),
-            None,
-            AnalysisConfig::new((32, 1, 1)),
-            &CanonValueEquality,
-        )
-    };
+    let analyze = |src: &str| run_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)));
     for src in [
         ptx!("failing/redux_sync_add_f32"),
         ptx!("failing/redux_sync_and_u32"),
@@ -712,11 +624,10 @@ fn test_redux_sync_forms() {
 /// lowering must see (and reject) it.
 #[test]
 fn test_redux_sync_sign_trick_never_fuses_nan() {
-    let result = analyze_kernel(
+    let result = run_kernel(
         &parse(&ptx!("failing/redux_sync_sign_trick_never_fuses_nan")),
         None,
         AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
     );
     assert!(
         !matches!(
@@ -739,7 +650,7 @@ fn test_redux_sync_sign_trick_never_fuses_nan() {
 #[test]
 fn test_uninitialized_shared_read_flows_to_output() {
     let module = ptx!(parse "failing/uninitialized_shared_read_flows_to_output");
-    let err = analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
         "expected undefined output, got: {}",
@@ -750,13 +661,7 @@ fn test_uninitialized_shared_read_flows_to_output() {
 #[test]
 fn test_out_of_bounds_shared_access() {
     let module = ptx!(parse "failing/out_of_bounds_shared_access");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::OutOfBounds { .. })),
         "expected out-of-bounds, got: {}",
@@ -768,7 +673,7 @@ fn test_out_of_bounds_shared_access() {
 #[test]
 fn test_misaligned_scalar_load() {
     let module = ptx!(parse "failing/misaligned_scalar_load");
-    let err = analyze_kernel(&module, None, in_out_config(1, 4), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 4)).unwrap_err();
     assert!(
         matches!(
             err,
@@ -784,13 +689,7 @@ fn test_misaligned_scalar_load() {
 #[test]
 fn test_misaligned_scalar_store() {
     let module = ptx!(parse "failing/misaligned_scalar_store");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -807,7 +706,7 @@ fn test_misaligned_scalar_store() {
 #[test]
 fn test_misaligned_vector_load() {
     let module = ptx!(parse "failing/misaligned_vector_load");
-    let err = analyze_kernel(&module, None, in_out_config(1, 8), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 8)).unwrap_err();
     assert!(
         matches!(
             err,
@@ -824,13 +723,7 @@ fn test_misaligned_vector_load() {
 #[test]
 fn test_misaligned_ldmatrix_row_address() {
     let module = parse(&ptx!("failing/misaligned_ldmatrix_row_address"));
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -846,13 +739,7 @@ fn test_misaligned_ldmatrix_row_address() {
 #[test]
 fn test_wmma_load_base_misaligned() {
     let module = parse(&ptx!("failing/wmma_load_base_misaligned"));
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -867,13 +754,7 @@ fn test_wmma_load_base_misaligned() {
 #[test]
 fn test_wmma_store_base_misaligned() {
     let module = parse(&ptx!("failing/wmma_store_base_misaligned"));
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -889,13 +770,7 @@ fn test_wmma_store_base_misaligned() {
 #[test]
 fn test_wmma_stride_below_default() {
     let module = parse(&ptx!("failing/wmma_stride_below_default"));
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -916,13 +791,7 @@ fn test_wmma_stride_below_default() {
 #[test]
 fn test_wmma_stride_misaligned() {
     let module = parse(&ptx!("failing/wmma_stride_misaligned"));
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -947,7 +816,7 @@ fn test_config_rejects_misaligned_array_base() {
         kind: ArrayKind::Input,
     }];
     config.params = vec![ParamValue::ArrayPtr("in".to_string())];
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::Config { .. })),
         "expected config error, got: {}",
@@ -960,7 +829,7 @@ fn test_config_rejects_misaligned_array_base() {
 #[test]
 fn test_float_op_rejects_nan_bit_pattern() {
     let module = ptx!(parse "failing/float_op_rejects_nan_bit_pattern");
-    let err = analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
             assert!(what.contains("NaN"), "{what}");
@@ -974,7 +843,7 @@ fn test_float_op_rejects_nan_bit_pattern() {
 #[test]
 fn test_symbolic_integer_div_is_unsupported() {
     let module = parse(&ptx!("failing/symbolic_integer_div_is_unsupported"));
-    let err = analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
             assert!(
@@ -992,8 +861,7 @@ fn test_symbolic_integer_div_is_unsupported() {
 #[test]
 fn test_symbolic_sub_register_store_rejected() {
     let src = ptx!("failing/symbolic_sub_register_store_rejected");
-    let err =
-        analyze_kernel(&parse(&src), None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&parse(&src), None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -1013,8 +881,7 @@ fn test_symbolic_sub_register_load_rejected() {
     // The byte array serves as the kernel's input here: loading one of
     // its symbolic elements at s8 into a 32-bit register would need an
     // extension.
-    let err =
-        analyze_kernel(&parse(&src), None, u8_scratch_config(), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&parse(&src), None, u8_scratch_config()).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -1053,7 +920,7 @@ fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
         ParamValue::ArrayPtr("x".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(&err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
         "expected UndefinedOutput for the discarded/kept high lane, got: {}",
@@ -1067,7 +934,7 @@ fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
 #[test]
 fn test_pair_sub_width_store_rejected() {
     let module = ptx!(parse "failing/pair_sub_width_store_rejected");
-    let err = analyze_kernel(&module, None, u8_scratch_config(), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, u8_scratch_config()).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -1083,7 +950,7 @@ fn test_pair_sub_width_store_rejected() {
 #[test]
 fn test_symbolic_branch_rejected() {
     let module = ptx!(parse "failing/symbolic_branch_rejected");
-    let err = analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::NotConcrete { .. })),
         "expected structured-CTA violation, got: {}",
@@ -1105,7 +972,7 @@ fn test_nan_literal_rejected_at_lowering() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Lower(_)),
         "expected lowering rejection of the NaN literal, got: {}",
@@ -1124,7 +991,7 @@ fn test_nan_float_param_rejected() {
     let src = ptx!("failing/nan_float_param_rejected");
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.params = vec![ParamValue::Float(f64::NAN)];
-    let err = analyze_kernel(&parse(&src), None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&parse(&src), None, config).unwrap_err();
     assert!(
         matches!(&err, AnalysisError::Eval(EvalError::Config { message }) if message.contains("NaN")),
         "expected NaN config validation error, got: {}",
@@ -1147,10 +1014,10 @@ fn test_zero_over_zero_is_a_loud_equivalence_error() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    let a = analyze_kernel(&parse(&src), None, config.clone(), &CanonValueEquality).unwrap();
+    let a = run_kernel(&parse(&src), None, config.clone()).unwrap();
     // The output expression is the unfolded division, not a constant.
     assert_eq!(display_output(&a, "out", 0), "(0 / 0)");
-    let b = analyze_kernel(&parse(&src), None, config, &CanonValueEquality).unwrap();
+    let b = run_kernel(&parse(&src), None, config).unwrap();
     let arrays: Vec<String> = a.exprs.outputs.iter().map(|(n, _)| n.clone()).collect();
     let err = check_output_equivalence(&a.exprs, &b.exprs, &arrays).unwrap_err();
     assert!(
@@ -1167,8 +1034,7 @@ fn test_zero_over_zero_is_a_loud_equivalence_error() {
 fn test_shfl_from_exited_lane_is_undefined() {
     let module = ptx!(parse "failing/shfl_from_exited_lane_is_undefined");
     // Lanes 8..15 source exited lanes 16..23 and store the Undefined result.
-    let err =
-        analyze_kernel(&module, None, in_out_config(32, 16), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, in_out_config(32, 16)).unwrap_err();
     assert!(
         matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
         "expected undefined output from exited source lane, got: {}",
@@ -1182,13 +1048,7 @@ fn test_shfl_from_exited_lane_is_undefined() {
 #[test]
 fn test_shared_array_overflow_read_is_out_of_bounds() {
     let module = ptx!(parse "failing/shared_array_overflow_read_is_out_of_bounds");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((64, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1205,13 +1065,7 @@ fn test_shared_array_overflow_read_is_out_of_bounds() {
 #[test]
 fn test_vector_straddling_adjacent_shared_arrays() {
     let module = ptx!(parse "failing/vector_straddling_adjacent_shared_arrays");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1234,7 +1088,7 @@ fn test_negative_index_wrap_is_out_of_bounds() {
     let module = ptx!(parse "failing/negative_index_wrap_is_out_of_bounds");
     let mut config = in_out_config(1, 4);
     config.arrays[0].base = 0; // x based at 0: base + (-4) wraps
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1264,7 +1118,7 @@ fn test_array_overlapping_module_global_window_rejected() {
         len: 4,
         kind: ArrayKind::Input,
     });
-    let err = analyze_kernel(&module, None, config.clone(), &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config.clone()).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -1278,7 +1132,7 @@ fn test_array_overlapping_module_global_window_rejected() {
     // Range overlap, not just base membership: an array based below the
     // window whose tail reaches into it is rejected too.
     config.arrays[0].base = MODULE_GLOBAL_BASE - 8;
-    let err = analyze_kernel(&module, None, config, &CanonValueEquality).unwrap_err();
+    let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -1296,13 +1150,7 @@ fn test_array_overlapping_module_global_window_rejected() {
 #[test]
 fn test_hostile_shared_declaration_size_rejected() {
     let module = ptx!(parse "failing/hostile_shared_declaration_size_rejected");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -1336,8 +1184,7 @@ fn test_cvta_other_forms_rejected() {
         ),
     ] {
         let module = parse(&src);
-        let err =
-            analyze_kernel(&module, None, in_out_config(1, 1), &CanonValueEquality).unwrap_err();
+        let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
         match &err {
             AnalysisError::Lower(LowerError::UnsupportedInstruction {
                 instruction,
@@ -1366,13 +1213,7 @@ fn test_cvta_other_forms_rejected() {
 #[test]
 fn test_copysign_rejects_a_type_other_than_f32_f64() {
     let module = ptx!(parse "failing/copysign_rejects_a_type_other_than_f32_f64");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Lower(LowerError::UnsupportedInstruction { instruction, .. }) => {
             assert_eq!(instruction, "copysign");
@@ -1386,13 +1227,7 @@ fn test_copysign_rejects_a_type_other_than_f32_f64() {
 #[test]
 fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
     let module = ptx!(parse "failing/e4m3x2_rejects_the_concrete_nan_byte_pattern");
-    let err = analyze_kernel(
-        &module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
-    .unwrap_err();
+    let err = run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
             assert!(what.contains("NaN"), "unexpected message: {}", what);
@@ -1401,13 +1236,8 @@ fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
     }
 }
 
-fn analyze_one_thread(module: &Module) -> Result<AnalysisOutput, AnalysisError> {
-    analyze_kernel(
-        module,
-        None,
-        AnalysisConfig::new((1, 1, 1)),
-        &CanonValueEquality,
-    )
+fn analyze_one_thread(module: &Module) -> Result<Completed, AnalysisError> {
+    run_kernel(module, None, AnalysisConfig::new((1, 1, 1)))
 }
 
 /// Every `try_cancel` response is declined, so an unguarded `get_first_ctaid`

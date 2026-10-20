@@ -13,7 +13,6 @@ volta_common.workspace = true
 volta_expr.workspace = true
 volta_frontend.workspace = true
 volta_graph.workspace = true
-volta_graph_check.workspace = true
 
 bincode.workspace = true
 id_collections.workspace = true
@@ -26,3 +25,4 @@ fixedbitset.workspace = true
 
 [dev-dependencies]
 volta_equivalence.workspace = true
+volta_graph_check.workspace = true

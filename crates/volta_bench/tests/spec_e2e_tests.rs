@@ -5,10 +5,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use volta_analysis::driver::analyze_kernel;
+use volta_analysis::analyze;
 use volta_bench::runner::load_module;
 use volta_bench::{KERNELS_DIR, KernelRun, all_benchmarks};
-use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence};
+use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::spec::unfold;
 
@@ -56,14 +56,11 @@ fn benchmark_run(path: &str) -> KernelRun {
 fn kernel_outputs(run: &KernelRun) -> SymbolicOutputs {
     let module = load_module(&Path::new(KERNELS_DIR).join(&run.path))
         .unwrap_or_else(|e| panic!("{}: {e:#}", run.path));
-    analyze_kernel(
-        &module,
-        Some(&run.kernel),
-        run.config.clone(),
-        &CanonValueEquality,
-    )
-    .unwrap_or_else(|e| panic!("{}: analysis failed: {e}", run.path))
-    .exprs
+    analyze(&module, Some(&run.kernel), run.config.clone())
+        .unwrap_or_else(|e| panic!("{}: analysis failed: {e}", run.path))
+        .into_parts()
+        .outputs
+        .unwrap_or_else(|why| panic!("{}: no outputs: {why}", run.path))
 }
 
 /// The kernel's outputs cut down to the checked arrays' first `SAMPLE` elements; an element

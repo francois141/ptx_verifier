@@ -5,9 +5,7 @@
 mod logging;
 
 pub mod analysis;
-pub mod driver;
 pub mod eval;
-mod legacy;
 pub mod lower_error;
 pub mod lowered;
 pub mod lowering;
@@ -17,9 +15,8 @@ pub mod tensor_core;
 pub mod tensor_map;
 pub mod types;
 
-pub use analysis::{AnalysisResult, analyze};
-pub use driver::{AnalysisError, analyze_kernel};
-pub use eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, EvalError, ParamValue};
+pub use analysis::{AnalysisError, AnalysisResult, analyze, write_op_counts};
+pub use eval::{AnalysisConfig, ArrayDef, ArrayKind, EvalError, ParamValue};
 pub use lower_error::{LowerError, LowerResult};
 pub use lowered::{InstrId, LoweredInstr, LoweredProgram, Operand, Predicate};
 pub use lowering::{LoweringContext, lower_function};

@@ -2,13 +2,14 @@
 //! dump write, timed decision solve, optional Z3 solve. `generate`/`solve` subcommands run the
 //! same phase functions separately; race-check benchmarks stop after generation.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
-use volta_analysis::driver::{AnalysisError, analyze_kernel};
-use volta_analysis::eval::{AnalysisOutput, EvalError, RaceVerification};
+use volta_analysis::analysis::AnalysisError;
+use volta_analysis::eval::Stats;
 use volta_equivalence::CanonValueEquality;
 use volta_equivalence::check::{
     ElementCheckTime, EquivCheckOptions, EquivOutcome, PairedFootprints,
@@ -20,6 +21,8 @@ use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
+use volta_graph_check::{GraphConclusion, Property, PropertySummary};
+use volta_pipeline::verify_kernel;
 
 use crate::config::{BenchmarkCategory, BenchmarkDef, ExpectedOutcome, KernelRun};
 use crate::results::{cv, median, vc_dump_path};
@@ -88,6 +91,14 @@ impl BenchmarkStats {
     }
 }
 
+/// Whether a rejection is a race (memory-conflict freedom failed), the race-check benchmarks'
+/// expected outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionKind {
+    Race,
+    Other,
+}
+
 /// Actual outcome of running a benchmark
 #[derive(Debug, Clone)]
 pub enum ActualOutcome {
@@ -96,11 +107,11 @@ pub enum ActualOutcome {
         mismatches: usize,
         first: String,
     },
-    /// The analysis rejected the kernel (data race, deadlock, or another
-    /// soundness error); `is_race` distinguishes true races.
+    /// The kernel was rejected: a failed graph property (a race, a deadlock, ...) or an
+    /// execution error.
     Rejected {
         description: String,
-        is_race: bool,
+        kind: RejectionKind,
     },
     RaceFree,
     /// No property failed, but graph verification is not complete (unresolved obligations,
@@ -124,12 +135,12 @@ pub enum ActualOutcome {
 }
 
 /// The combined graph-verification status of analyzed kernels, for the records.
-fn graph_verification(outputs: &[&AnalysisOutput]) -> String {
-    let reasons: Vec<String> = outputs
+fn graph_verification(kernels: &[&AnalyzedKernel]) -> String {
+    let reasons: Vec<String> = kernels
         .iter()
-        .filter_map(|o| match &o.race_verification {
-            RaceVerification::Verified => None,
-            RaceVerification::Unknown { reasons } => Some(reasons.join("; ")),
+        .filter_map(|k| match &k.verification {
+            GraphVerification::Verified => None,
+            GraphVerification::Unknown { reasons } => Some(reasons.join("; ")),
         })
         .collect();
     if reasons.is_empty() {
@@ -144,7 +155,9 @@ impl ActualOutcome {
         match (self, expected) {
             (Self::Equivalent, ExpectedOutcome::Equivalent) => true,
             (Self::RaceFree, ExpectedOutcome::RaceFree) => true,
-            (Self::Rejected { is_race, .. }, ExpectedOutcome::DataRace) => *is_race,
+            (Self::Rejected { kind, .. }, ExpectedOutcome::DataRace) => {
+                *kind == RejectionKind::Race
+            }
             // Phase-limited runs make no equivalence claim, so completing the phase is all
             // they promise (race-check benchmarks never produce these outcomes).
             (Self::VcsGenerated, ExpectedOutcome::Equivalent) => true,
@@ -160,8 +173,14 @@ impl ActualOutcome {
         match self {
             Self::Equivalent => "EQUIV",
             Self::NotEquivalent { .. } => "DIFF",
-            Self::Rejected { is_race: true, .. } => "RACE",
-            Self::Rejected { is_race: false, .. } => "REJECT",
+            Self::Rejected {
+                kind: RejectionKind::Race,
+                ..
+            } => "RACE",
+            Self::Rejected {
+                kind: RejectionKind::Other,
+                ..
+            } => "REJECT",
             Self::RaceFree => "OK",
             Self::Unverified { .. } => "UNKNOWN",
             Self::VcsGenerated => "GEN",
@@ -339,12 +358,12 @@ enum Generated {
     /// soundness error) - the expected outcome for racy benchmarks.
     Rejected { outcome: ActualOutcome },
     /// A race-check benchmark ran to completion: race-free.
-    RaceFree { reference: AnalysisOutput },
+    RaceFree { reference: AnalyzedKernel },
     /// An equivalence benchmark's full VCs: both outputs plus the paired
     /// footprints along the reference config's declared output arrays.
     Equivalence {
-        reference: AnalysisOutput,
-        optimized: AnalysisOutput,
+        reference: AnalyzedKernel,
+        optimized: AnalyzedKernel,
         paired: PairedFootprints,
     },
 }
@@ -364,11 +383,7 @@ fn generate(loaded: &LoadedBenchmark) -> Result<Generated> {
     let (reference_run, reference_module) = &loaded.reference;
     let reference = match analyze(reference_module, reference_run)? {
         Ok(output) => output,
-        Err(e) => {
-            return Ok(Generated::Rejected {
-                outcome: rejected_outcome(e),
-            });
-        }
+        Err(outcome) => return Ok(Generated::Rejected { outcome }),
     };
     let Some((optimized_run, optimized_module)) = &loaded.optimized else {
         // Race-check benchmark: reaching the end means no race.
@@ -376,11 +391,7 @@ fn generate(loaded: &LoadedBenchmark) -> Result<Generated> {
     };
     let optimized = match analyze(optimized_module, optimized_run)? {
         Ok(output) => output,
-        Err(e) => {
-            return Ok(Generated::Rejected {
-                outcome: rejected_outcome(e),
-            });
-        }
+        Err(outcome) => return Ok(Generated::Rejected { outcome }),
     };
     // Pair along the reference config's declared output arrays - the
     // tail of VC generation, shared by both solve backends.
@@ -394,19 +405,53 @@ fn generate(loaded: &LoadedBenchmark) -> Result<Generated> {
     })
 }
 
-/// Lower and run one kernel. The outer error is an infrastructure failure (lowering); the
-/// inner one is an analysis rejection (race, deadlock, ...), which for a race-check
-/// benchmark is itself the expected outcome.
-fn analyze(module: &Module, run: &KernelRun) -> Result<Result<AnalysisOutput, EvalError>> {
-    match analyze_kernel(
+/// What graph verification established for a kernel no property failed on.
+enum GraphVerification {
+    Verified,
+    /// Unresolved obligations, or passes that hold for the candidate execution only.
+    Unknown {
+        reasons: Vec<String>,
+    },
+}
+
+/// One kernel that ran to completion with no failed graph property.
+struct AnalyzedKernel {
+    exprs: SymbolicOutputs,
+    stats: Stats,
+    op_counts: BTreeMap<&'static str, u64>,
+    verification: GraphVerification,
+}
+
+/// Lower and run one kernel, then check its event graph. The outer error is an
+/// infrastructure failure (lowering); the inner one is the kernel's rejection (a failed graph
+/// property or an execution error), which for a race-check benchmark is the expected outcome.
+fn analyze(module: &Module, run: &KernelRun) -> Result<Result<AnalyzedKernel, ActualOutcome>> {
+    let verified = match verify_kernel(
         module,
         Some(&run.kernel),
         run.config.clone(),
         &CanonValueEquality,
     ) {
-        Ok(output) => Ok(Ok(output)),
-        Err(AnalysisError::Eval(e)) => Ok(Err(e)),
-        Err(e) => Err(anyhow!("{}: {}", run.path, e)),
+        Ok(verified) => verified,
+        Err(AnalysisError::Eval(e)) => {
+            return Ok(Err(rejected(e.to_string(), RejectionKind::Other)));
+        }
+        Err(e) => return Err(anyhow!("{}: {}", run.path, e)),
+    };
+    let verification = match verified.graph.conclusion() {
+        GraphConclusion::Rejected { failed } => return Ok(Err(property_rejection(&failed))),
+        GraphConclusion::Verified => GraphVerification::Verified,
+        GraphConclusion::Unknown { reasons } => GraphVerification::Unknown { reasons },
+    };
+    let parts = verified.analysis.into_parts();
+    match parts.outputs {
+        Ok(exprs) => Ok(Ok(AnalyzedKernel {
+            exprs,
+            stats: parts.stats,
+            op_counts: parts.op_counts,
+            verification,
+        })),
+        Err(why) => Ok(Err(rejected(why.to_string(), RejectionKind::Other))),
     }
 }
 
@@ -436,7 +481,7 @@ struct KernelFingerprint {
     outputs: Vec<(String, Vec<(u64, ExprId)>)>,
 }
 
-fn kernel_fingerprint(output: &AnalysisOutput) -> KernelFingerprint {
+fn kernel_fingerprint(output: &AnalyzedKernel) -> KernelFingerprint {
     KernelFingerprint {
         node_count: output.exprs.arena.node_count(),
         outputs: output.exprs.outputs.clone(),
@@ -900,9 +945,9 @@ impl BenchmarkRunner {
                 stats.warp_syncs = reference.stats.warp_syncs;
                 stats.reference_op_counts = reference.op_counts.clone();
                 stats.graph_verification = Some(graph_verification(&[&reference]));
-                let outcome = match &reference.race_verification {
-                    RaceVerification::Verified => ActualOutcome::RaceFree,
-                    RaceVerification::Unknown { reasons } => ActualOutcome::Unverified {
+                let outcome = match &reference.verification {
+                    GraphVerification::Verified => ActualOutcome::RaceFree,
+                    GraphVerification::Unknown { reasons } => ActualOutcome::Unverified {
                         reasons: reasons.clone(),
                     },
                 };
@@ -1097,12 +1142,29 @@ fn persist_vcs(
     }
 }
 
-fn rejected_outcome(e: EvalError) -> ActualOutcome {
-    let is_race = matches!(e, EvalError::DataRace { .. });
-    ActualOutcome::Rejected {
-        description: e.to_string(),
-        is_race,
-    }
+fn rejected(description: String, kind: RejectionKind) -> ActualOutcome {
+    ActualOutcome::Rejected { description, kind }
+}
+
+/// A kernel whose graph failed `failed`: a race when memory-conflict freedom is among them.
+fn property_rejection(failed: &[PropertySummary]) -> ActualOutcome {
+    let description = failed
+        .iter()
+        .map(|s| match s.findings.first() {
+            Some(witness) => format!("{} failed: {}", s.property.name(), witness),
+            None => format!("{} failed", s.property.name()),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let kind = if failed
+        .iter()
+        .any(|s| s.property == Property::MemoryConflicts)
+    {
+        RejectionKind::Race
+    } else {
+        RejectionKind::Other
+    };
+    rejected(description, kind)
 }
 
 #[cfg(test)]

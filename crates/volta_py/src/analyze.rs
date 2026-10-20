@@ -3,15 +3,17 @@ use std::collections::BTreeMap;
 use pyo3::exceptions::PyRuntimeWarning;
 use pyo3::prelude::*;
 
-use volta_analysis::driver;
-use volta_analysis::eval::{AnalysisOutput, RaceVerification};
+use volta_analysis::eval::{AnalysisConfig, Stats};
 use volta_equivalence::CanonValueEquality;
+use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::Module;
 use volta_frontend::parse as ptx_parse;
+use volta_graph_check::GraphConclusion;
+use volta_pipeline::verify_kernel;
 
 use crate::config::ConfigPy;
-use crate::error::{VoltaError, analysis_error_to_py, parse_error_to_py};
+use crate::error::{VoltaError, analysis_error_to_py, graph_failure_to_py, parse_error_to_py};
 
 pub(crate) fn parse_module(source: &str) -> PyResult<Module> {
     let ascii_src: &[AsciiChar] = source
@@ -63,12 +65,31 @@ pub struct AnalyzeResultPy {
     pub unresolved: Vec<String>,
 }
 
-/// Emit a `RuntimeWarning` when graph verification of `output` is incomplete, so a returned
-/// result never silently stands for a race-freedom proof; returns the unresolved reasons.
-pub(crate) fn warn_unverified(py: Python<'_>, output: &AnalysisOutput) -> PyResult<Vec<String>> {
-    match &output.race_verification {
-        RaceVerification::Verified => Ok(Vec::new()),
-        RaceVerification::Unknown { reasons } => {
+/// One kernel that ran to completion with no failed graph property.
+pub(crate) struct CheckedKernel {
+    pub exprs: SymbolicOutputs,
+    pub stats: Stats,
+    pub op_counts: BTreeMap<&'static str, u64>,
+    /// Why graph verification is incomplete; empty when it is verified.
+    pub unresolved: Vec<String>,
+}
+
+/// Run the analysis stage and the graph branch. A failed graph property raises (see
+/// `graph_failure_to_py`), before an execution that produced no outputs raises `VoltaError`;
+/// incomplete verification emits a `RuntimeWarning`, so a returned result never silently
+/// stands for a race-freedom proof.
+pub(crate) fn check_kernel(
+    py: Python<'_>,
+    module: &Module,
+    kernel: Option<&str>,
+    config: AnalysisConfig,
+) -> PyResult<CheckedKernel> {
+    let verified =
+        verify_kernel(module, kernel, config, &CanonValueEquality).map_err(analysis_error_to_py)?;
+    let unresolved = match verified.graph.conclusion() {
+        GraphConclusion::Rejected { failed } => return Err(graph_failure_to_py(&failed)),
+        GraphConclusion::Verified => Vec::new(),
+        GraphConclusion::Unknown { reasons } => {
             let message = format!(
                 "graph verification is UNKNOWN, race freedom is not established: {}",
                 reasons.join("; ")
@@ -76,9 +97,19 @@ pub(crate) fn warn_unverified(py: Python<'_>, output: &AnalysisOutput) -> PyResu
             let message = std::ffi::CString::new(message.replace('\0', " "))
                 .expect("NUL bytes were replaced");
             PyErr::warn(py, &py.get_type::<PyRuntimeWarning>(), &message, 1)?;
-            Ok(reasons.clone())
+            reasons
         }
-    }
+    };
+    let parts = verified.analysis.into_parts();
+    let exprs = parts
+        .outputs
+        .map_err(|why| VoltaError::new_err(why.to_string()))?;
+    Ok(CheckedKernel {
+        exprs,
+        stats: parts.stats,
+        op_counts: parts.op_counts,
+        unresolved,
+    })
 }
 
 /// Symbolically execute `kernel` (or the module's unique entry) under
@@ -93,9 +124,7 @@ pub fn analyze(
     kernel: Option<&str>,
 ) -> PyResult<AnalyzeResultPy> {
     let module = parse_module(source)?;
-    let output = driver::analyze_kernel(&module, kernel, config.0.clone(), &CanonValueEquality)
-        .map_err(analysis_error_to_py)?;
-    let unresolved = warn_unverified(py, &output)?;
+    let output = check_kernel(py, &module, kernel, config.0.clone())?;
 
     let outputs = output
         .exprs
@@ -122,7 +151,7 @@ pub fn analyze(
             .iter()
             .map(|(k, v)| (k.to_string(), *v))
             .collect(),
-        race_verified: unresolved.is_empty(),
-        unresolved,
+        race_verified: output.unresolved.is_empty(),
+        unresolved: output.unresolved,
     })
 }

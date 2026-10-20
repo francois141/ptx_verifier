@@ -52,7 +52,9 @@ def test_analyze_copy_kernel_stats_and_op_counts():
 def test_analyze_data_race_raises_data_race_error():
     with pytest.raises(volta.DataRaceError) as exc_info:
         volta.analyze(RACE_KERNEL, volta.Config(block=(2, 1, 1)))
-    assert "data race" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "memory-conflict freedom failed" in message
+    assert "WriteWrite" in message
     # DataRaceError must stay catchable as the base exception too.
     assert isinstance(exc_info.value, volta.VoltaError)
 

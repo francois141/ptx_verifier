@@ -2,9 +2,9 @@
 //! one semantic detail and must come back `NotEquivalent` through the full
 //! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
-use volta_analysis::driver::analyze_kernel;
-use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
-use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence};
+use volta_analysis::analyze;
+use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::text::{read_text, to_text};
 use volta_frontend::ascii::AsAscii;
@@ -116,14 +116,13 @@ struct NegativePair {
     mutant: Kernel,
 }
 
-fn run(name: &str, kernel: &Kernel) -> AnalysisOutput {
-    analyze_kernel(
-        &parse(&kernel.src),
-        None,
-        kernel.config.clone(),
-        &CanonValueEquality,
-    )
-    .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e))
+/// The kernel's symbolic outputs: all the equivalence branch consumes.
+fn run(name: &str, kernel: &Kernel) -> SymbolicOutputs {
+    analyze(&parse(&kernel.src), None, kernel.config.clone())
+        .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e))
+        .into_parts()
+        .outputs
+        .unwrap_or_else(|why| panic!("{}: no outputs: {}", name, why))
 }
 
 /// Run both kernels of a pair and check them along the reference run's
@@ -132,13 +131,8 @@ fn run(name: &str, kernel: &Kernel) -> AnalysisOutput {
 fn check_pair(pair: &NegativePair) -> EquivOutcome {
     let reference = run(pair.name, &pair.reference);
     let mutant = run(pair.name, &pair.mutant);
-    let arrays: Vec<String> = reference
-        .exprs
-        .outputs
-        .iter()
-        .map(|(n, _)| n.clone())
-        .collect();
-    checked_with_and_without_text(pair.name, &reference.exprs, &mutant.exprs, &arrays)
+    let arrays: Vec<String> = reference.outputs.iter().map(|(n, _)| n.clone()).collect();
+    checked_with_and_without_text(pair.name, &reference, &mutant, &arrays)
 }
 
 /// Assert the pair is `NotEquivalent` and that the report names exactly
@@ -191,8 +185,8 @@ fn checked_with_and_without_text(
 fn assert_equivalent_control(name: &str, reference: &Kernel, other: &Kernel) {
     let a = run(name, reference);
     let b = run(name, other);
-    let arrays: Vec<String> = a.exprs.outputs.iter().map(|(n, _)| n.clone()).collect();
-    let outcome = checked_with_and_without_text(name, &a.exprs, &b.exprs, &arrays);
+    let arrays: Vec<String> = a.outputs.iter().map(|(n, _)| n.clone()).collect();
+    let outcome = checked_with_and_without_text(name, &a, &b, &arrays);
     assert!(
         matches!(outcome, EquivOutcome::Equivalent),
         "positive control '{}' must be Equivalent",
@@ -200,12 +194,11 @@ fn assert_equivalent_control(name: &str, reference: &Kernel, other: &Kernel) {
     );
 }
 
-fn display_output(output: &AnalysisOutput, array: &str, index: u64) -> String {
+fn display_output(output: &SymbolicOutputs, array: &str, index: u64) -> String {
     let e = output
-        .exprs
         .element(array, index)
         .unwrap_or_else(|| panic!("{array}[{index}] not written"));
-    output.exprs.arena.display_expr(e)
+    output.arena.display_expr(e)
 }
 
 // =========================================================================

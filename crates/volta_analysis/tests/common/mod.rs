@@ -1,17 +1,22 @@
 //! Helpers shared by the evaluator test crates: PTX loading, parsing,
-//! launch configs, and output rendering.
+//! launch configs, running a kernel through the analysis stage and the graph
+//! branch, and output rendering.
 
 #![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use volta_analysis::driver::analyze_kernel;
-use volta_analysis::eval::{AnalysisConfig, AnalysisOutput, ArrayDef, ArrayKind, ParamValue};
+use volta_analysis::analysis::{AnalysisError, AnalysisResult, analyze};
+use volta_analysis::eval::{
+    AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
+};
 use volta_equivalence::CanonValueEquality;
+use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
+use volta_graph_check::{GraphConclusion, GraphReport, SymbolicFacts, check_graph};
 
 /// The PTX test kernel at `tests/ptx/<name>.ptx` as source text, or as a
 /// parsed module with `ptx!(parse "<name>")`.
@@ -52,10 +57,71 @@ pub fn ptx_path(name: &str) -> PathBuf {
         .join(format!("{name}.ptx"))
 }
 
+/// One kernel through the analysis stage and the graph branch.
+pub struct Checked {
+    pub analysis: AnalysisResult,
+    pub report: GraphReport,
+}
+
+/// Run the analysis stage and every graph property checker; panics if the execution cannot
+/// start (no kernel, a lowering or configuration error).
+pub fn check(module: &Module, kernel: Option<&str>, config: AnalysisConfig) -> Checked {
+    let analysis =
+        analyze(module, kernel, config).unwrap_or_else(|e| panic!("analysis cannot start: {e}"));
+    let report = check_graph(
+        &analysis.graph,
+        &SymbolicFacts {
+            arena: analysis.arena(),
+            value_equality: &CanonValueEquality,
+        },
+    );
+    Checked { analysis, report }
+}
+
+/// A kernel that ran to completion with no failed graph property.
+#[derive(Debug)]
+pub struct Completed {
+    pub exprs: SymbolicOutputs,
+    pub stats: Stats,
+}
+
+/// Run a kernel expected to complete: its outputs, or why it produced none (it could not
+/// start, or its execution raised an error). A failed graph property panics: it is not an
+/// execution error, and tests expecting one inspect `check`'s report.
+pub fn run_kernel(
+    module: &Module,
+    kernel: Option<&str>,
+    config: AnalysisConfig,
+) -> Result<Completed, AnalysisError> {
+    let analysis = analyze(module, kernel, config)?;
+    let report = check_graph(
+        &analysis.graph,
+        &SymbolicFacts {
+            arena: analysis.arena(),
+            value_equality: &CanonValueEquality,
+        },
+    );
+    if let GraphConclusion::Rejected { failed } = report.conclusion() {
+        panic!("a graph property failed: {failed:#?}");
+    }
+    let parts = analysis.into_parts();
+    match parts.outputs {
+        Ok(exprs) => Ok(Completed {
+            exprs,
+            stats: parts.stats,
+        }),
+        Err(OutputsUnavailable::Aborted(e) | OutputsUnavailable::Extraction(e)) => {
+            Err(AnalysisError::Eval(e))
+        }
+        Err(why @ OutputsUnavailable::Stuck { .. }) => {
+            panic!("a stuck execution passed the progress property: {why}")
+        }
+    }
+}
+
 /// `analyze!` for a `(name, source)` pair from `ptx_case!`.
-pub fn analyze_case(name: &str, src: &str, config: AnalysisConfig) -> AnalysisOutput {
-    let output = analyze_kernel(&parse(src), None, config, &CanonValueEquality)
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+pub fn analyze_case(name: &str, src: &str, config: AnalysisConfig) -> Completed {
+    let output = run_kernel(&parse(src), None, config).unwrap_or_else(|e| panic!("{name}: {e}"));
     assert_out_file(&ptx_path(name), &output);
     output
 }
@@ -63,7 +129,7 @@ pub fn analyze_case(name: &str, src: &str, config: AnalysisConfig) -> AnalysisOu
 /// Every written output element as `array[index] = expr`, one per line.
 /// Machine symbols come from a process-global counter, so they are renamed
 /// `s0, s1, ...` in order of first appearance to keep the text deterministic.
-pub fn render_outputs(output: &AnalysisOutput) -> String {
+pub fn render_outputs(output: &Completed) -> String {
     let mut text = String::new();
     for (array, elems) in &output.exprs.outputs {
         for (index, expr) in elems {
@@ -105,7 +171,7 @@ fn renumber_machine_symbols(text: &str) -> String {
 
 /// Checks `render_outputs(output)` against the `.out` file beside
 /// `ptx_path`. `VOLTA_BLESS=1` (re)writes the file instead.
-pub fn assert_out_file(ptx_path: &Path, output: &AnalysisOutput) {
+pub fn assert_out_file(ptx_path: &Path, output: &Completed) {
     let out_path = ptx_path.with_extension("out");
     let actual = render_outputs(output);
     if std::env::var_os("VOLTA_BLESS").is_some_and(|v| v == "1") {
@@ -160,7 +226,7 @@ pub fn in_out_config(threads: u32, len: u64) -> AnalysisConfig {
     config
 }
 
-pub fn display_output(output: &AnalysisOutput, array: &str, index: u64) -> String {
+pub fn display_output(output: &Completed, array: &str, index: u64) -> String {
     let e = output
         .exprs
         .element(array, index)
