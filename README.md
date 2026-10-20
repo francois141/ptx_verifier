@@ -34,16 +34,15 @@
                     +------------------------------------------------------+
                                          |  two SymbolicOutputs: reference vs
                                          |  optimized kernel, or kernel vs spec
-                              +----------+--------------+
-                              v                         v
-                   +---------------------+   +---------------------+
-                   |  volta_equivalence  |<--|      volta_z3       |
-                   |  canon decision     |   |  Z3 baseline: same  |
-                   |  procedure, f64     |   |  VCs as SMT-LIB2,   |
-                   |  oracle, .vcdump    |   |  solved by libz3    |
-                   +---------------------+   +---------------------+
-                              |                         |
-                              v                         v
+                                         v
+                              +---------------------+
+                              |  volta_equivalence  |
+                              |  canon decision     |
+                              |  procedure, f64     |
+                              |  oracle, .vcdump    |
+                              +---------------------+
+                                         |
+                                         v
                     per-output-element verdict (equivalent / not / unknown)
 
  volta_common (spans, file cache, error reporting, run logs) sits under
@@ -52,7 +51,7 @@
 
 `volta_bench` holds only the end-to-end tests: PTX kernels run through the whole pipeline, checking race verdicts and symbolic outputs.
 
-Arrows show data flow. `volta_analysis` (the producer) and `volta_equivalence` (the consumer) never depend on each other: `volta_expr` is their only shared contract, so the checker accepts expressions from a kernel, a spec, a `.vcdump`, or a `.vexpr` file alike. `volta_z3` reuses `volta_equivalence`'s element pairing so both backends check exactly the same elements.
+Arrows show data flow. `volta_analysis` (the producer) and `volta_equivalence` (the consumer) never depend on each other: `volta_expr` is their only shared contract, so the checker accepts expressions from a kernel, a spec, a `.vcdump`, or a `.vexpr` file alike.
 
 # NOTICE
 
@@ -116,7 +115,7 @@ Volta is a data race and equivalence checker for NVIDIA GPU kernels, implementin
 
 ## Relationship to the paper
 
-The evaluation in the published version of the paper was produced with this implementation. The raw results live in [`results/`](results/): the full 2026-08-12 run at commit `e86ef2d`, plus a 2026-08-14 re-measurement of the racy reduction kernels at commit `cc9fb434` after recompiling them at the correct block size — `results/README.md` records the exact provenance. `python3 scripts/generate_tables.py results/2026-08-12/` renders the paper's tables from them. The `volta-bench` harness and kernel corpus that produced them are no longer in the tree; commit `a8e9967` is the last one that has both.
+The evaluation in the published version of the paper was produced with this implementation. The raw results live in [`results/`](results/): the full 2026-08-12 run at commit `e86ef2d`, plus a 2026-08-14 re-measurement of the racy reduction kernels at commit `cc9fb434` after recompiling them at the correct block size — `results/README.md` records the exact provenance. `python3 scripts/generate_tables.py results/2026-08-12/` renders the paper's tables from them. The `volta-bench` harness and kernel corpus that produced them are no longer in the tree; commit `a8e9967` is the last one that has both. The Z3 baseline behind the paper's Z3 comparison (`volta_z3`, `volta compare --backend z3`) was removed later; commit `243d459` is the last one that has it.
 
 ## Features
 
@@ -125,7 +124,6 @@ The evaluation in the published version of the paper was produced with this impl
 - **Equivalence checking**: verify that optimized GPU kernels are semantically equivalent to their reference implementations
 - **CLI comparison**: `volta compare` checks a reference/optimized pair directly
 - **VC dump/replay**: persist the verification conditions from one run and rerun just the equivalence check later, skipping parse/lower/symbolic-execution entirely
-- **Z3 backend**: check the same verification conditions with Z3 instead of the built-in decision procedure, for a "decides vs. cannot decide" timing/capability comparison
 - **Per-run logging and execution profiling**: every run gets a log file, and a per-instruction-kind execution profile is available
 
 ## How it works
@@ -210,12 +208,10 @@ cargo run --release -p volta_cli -- compare <ref.ptx> <opt.ptx> \
 - `--sample N`: check at most N output elements per array (0 = all)
 - `--verify-numeric`: confirm every verdict with the f64 oracle (iteration 1 only)
 - `--recycle-terms N`: recycle the VC intern tables past N interned terms (0 = never); lower values bound memory at the cost of re-canonicalizing shared structure
-- `--iterations N` (default 1, decision backend only): re-solve the same elements N times, a fresh session each; the verdict comes from iteration 1 and later iterations must agree
-- `--backend decision|z3` (default `decision`): which decision procedure checks equivalence — see [Z3 backend](#z3-backend)
-- `--exp-axiom` (with `--backend z3`): the paper's "with axiom" exponential encoding
+- `--iterations N` (default 1): re-solve the same elements N times, a fresh session each; the verdict comes from iteration 1 and later iterations must agree
 - `--no-profile`: skip the per-instruction-kind execution profile
 
-`compare` exits 0 only when every checked element was proved equivalent (with `--backend z3`, `unknown`/`timeout`/`unsupported`/error elements also prevent exit 0, not just mismatches — a run that verified nothing does not exit 0).
+`compare` exits 0 only when every checked element was proved equivalent.
 
 **VC dump/replay**: `--dump-vcs` persists both kernels' verification conditions (the expression arenas + output footprints) after symbolic execution; `--from-dump` reruns just the equivalence check from that dump — no PTX parsing, lowering, or symbolic execution involved on replay. Dump files carry a magic/version header and are validated on load, so a truncated, corrupted, or version-skewed dump fails with a clean error rather than a crash.
 
@@ -231,34 +227,6 @@ Every `volta` run writes a log file under `volta-logs/` (`<unix-seconds>-<pid>-<
 ```bash
 cargo run --release -p volta_cli --features logging -- --log-level info analyze ...
 ```
-
-### Z3 backend
-
-Checks the same verification conditions with Z3 instead of Volta's own decision procedure, for a timing/capability comparison. Queries are generated as SMT-LIB2 text (auditable: any query can be replayed against a standalone `z3`) and evaluated through libz3's C API via a small hand-written binding — no `z3-sys`/bindgen, no temp files, and no `z3` binary needed at runtime. The one prerequisite is the Z3 shared library at build time:
-
-```bash
-sudo apt-get install -y libz3-dev
-cargo run --release -p volta_cli -- compare <ref.ptx> <opt.ptx> ... --backend z3
-```
-
-On macOS, install the Homebrew formula instead (its keg-only library path is discovered automatically):
-
-```bash
-brew install z3
-```
-
-For a nonstandard installation, set `Z3_LIB_DIR` to the directory containing `libz3` when invoking Cargo.
-
-The expected shape of the results reproduces the paper's Section 6.5 and Table 9. Z3 decides the polynomial fragment (reduction/matmul/conv) in milliseconds. On the exponential fragment (softmax/attention) the backend implements both documented baselines:
-
-- **Default encoding**: the exponential is a nonlinear power term with a strictly-bounded base. Z3 returns `unknown` — no decision procedure covers symbolic real exponents. This is the paper's no-intervention baseline.
-- **`--exp-axiom`**: the exponential becomes an uninterpreted function plus the addition-law axiom `forall x y. e^x e^y = e^(x+y)` (the paper's "Z3 with axiom" setup). The axiom sends Z3 into an unbounded quantifier-instantiation loop on softmax-shaped VCs, so instead of a fast `unknown` the query runs until the time budget kills it — reported as `timeout`. The paper used a 10-minute budget.
-
-`--z3-timeout` (default 30 s, `0` = no limit) is a _hard_ per-query bound: z3 4.8.12 does not reliably honor its own soft timeout in the axiom-induced loop (measured: a 3-second soft timeout still running after 90 seconds), so each query evaluates in a worker subprocess — this same binary re-invoking itself — that is killed on expiry. `timeout` in the element counts means the budget expired; `unknown` means z3 itself gave up with budget to spare.
-
-Reported Z3 time is _solver_ time only, measured inside the worker around exactly libz3's evaluation of the query text: process spawn and z3 context setup (~10.5 ms together, measured) and translation/query construction are excluded. Elements that exhaust the budget report the budget itself as their time — the paper's convention for timeout rows. Because the translation deliberately does no reasoning, every element costs a genuine spawn+solve, so a full-footprint run over tens of thousands of elements takes hours where the decision procedure takes seconds; that gap is a result, not an inefficiency. Use `--sample` to bound the element count (the paper's Table 9 uses `--sample 1`).
-
-The translation covers the arithmetic + `exp` + `max`/`min` fragment as a direct semantic image: every expression node maps to its defining SMT term, and all algebraic reasoning (commutativity, cancellation, distribution, `max`/`min` case analysis) is left to the solver, so the timings measure Z3, not the translator. Float constants translate as exact rationals (the same reading as the decision procedure and the numeric oracle), and `let`-bound DAG sharing keeps query text linear in the expression arena. One inherited SMT semantic: real division is total but underspecified at zero, so field identities like `x/x = 1` are falsifiable (countermodel `x = 0`) — corpus VCs only divide inside exp-laden softmax terms, where the verdict is `unknown` regardless. Anything outside the fragment (`select`, comparisons, bitwise ops, data-dependent array reads, ...) is reported `unsupported` for that element rather than guessed at unsoundly. See `crates/volta_z3/src/translate.rs` for the exact boundary.
 
 ## Citation
 

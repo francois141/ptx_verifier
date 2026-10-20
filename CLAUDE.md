@@ -29,7 +29,6 @@ crates/
 ├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
-├── volta_z3/         # Z3 comparison backend (SMT-LIB2 via linked libz3)
 ├── volta_bench/      # End-to-end tests only (PTX kernels through the pipeline)
 └── volta_cli/        # Command-line interface
 ```
@@ -39,10 +38,9 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli         → volta_pipeline, volta_z3, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend, volta_common
+volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend, volta_common
 volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
-volta_z3          → volta_equivalence, volta_expr
 volta_equivalence → volta_expr
 volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
 volta_graph_check → volta_graph, volta_expr
@@ -112,7 +110,7 @@ Pratt parser producing AST. Entry point: `parse_module()`.
 **Path**: `crates/volta_expr/`
 
 The expression language shared by producers (the interpreter, specs) and
-consumers (the decision procedure, Z3, the oracle). Depends on no other
+consumers (the decision procedure, the oracle). Depends on no other
 Volta crate. IDs: `ExprId`/`StringId`/`SymbolId` (`SymbolId::fresh()` draws
 from a process-global counter).
 
@@ -390,10 +388,9 @@ hook.
   - FlashAttention's optimized-only `l`/`m` exports rely on this; an
   empty list is an error). Callers supply the list explicitly: the CLI
   requires it on the command line (`--check-array`).
-  Shared by the decision procedure and `volta_z3` so both backends check
-  exactly the same elements. `sampled_elements(paired, sample)` flattens
-  the paired footprints to each array's sampled prefix - the one
-  definition of *which* elements get checked, used by both backends
+  `sampled_elements(paired, sample)` flattens the paired footprints to
+  each array's sampled prefix - the one definition of *which* elements
+  get checked
 - `check_output_equivalence_with(ref, opt, arrays, options)` - the per-element
   check, one shared `EquivSession` per solve iteration.
   `EquivCheckOptions`: `sample`, `verify_numeric` (f64 oracle per
@@ -460,78 +457,6 @@ The paper's canonicalizer, in Rust:
   --verify-numeric`). Agreement at random points ⇒ equality almost surely
   for this fragment (the paper's own Schwartz-Zippel argument).
 
-## Crate: volta_z3
-
-**Path**: `crates/volta_z3/`
-
-Z3 comparison backend for the same verification conditions: generates
-SMT-LIB2 text and evaluates it through libz3's C API (`ffi.rs`, a
-hand-written eight-function binding - no `z3-sys`/bindgen; building
-requires `libz3-dev`). Each query runs in a **worker subprocess** (the
-binary re-invokes itself via `std::process::Command`; thread-safe, no
-separate executable) killed on timeout expiry: z3 4.8.12 does not
-reliably honor its soft timeout or `Z3_interrupt` in the quantifier
-loop the exp-axiom mode provokes (measured), so a hard kill is the only
-real bound - which also gives per-element crash containment. Contract:
-any binary that evaluates queries through this crate calls
-`volta_z3::init_worker()` as the first statement of `main` (loudly
-checked via a handshake). A capability/timing comparison point against
-`canon`, not a replacement.
-
-Two `ExpMode`s reproduce the paper's section 6.5 baselines: the default
-`PowerBounded` (`(^ e a)`, bounded free `e`; attention VCs come back
-`unknown`) and `AdditionAxiom` (uninterpreted `uexp` plus
-`forall x y. uexp(x) uexp(y) = uexp(x+y)`; attention VCs run until the
-budget kills them, reported `Timeout` - Table 8's "with axiom" column,
-10-minute budget in the paper).
-
-- `translate.rs` - a *direct semantic image* of the fragment
-  (arithmetic + `Exp` + `Max`/`Min`; everything else `Unsupported`):
-  every node maps to its defining SMT term and ALL algebraic reasoning
-  is left to the solver, so timings measure Z3, not the translator
-  (`max`/`min` are `ite` case splits, not opaque atoms; no
-  canonicalization, no structural short-circuit). The translation owns
-  fidelity/transport only: exact rational literals straight from
-  `RealConst` (same reading as `canon`/`numeric`; the infinities are
-  loud `Unsupported`), user symbols as an injection of the
-  typed `SymbolRef` namespaces (`|p!name|` params, `|e!array[i]|`
-  elements - a param named `t0`/`e` cannot capture generated names),
-  memoized `let`-bound DAG sharing (query text linear in the arena;
-  deeply nested `let`s are fine for z3, `define-fun` chains are not -
-  measured), `stacker`-guarded recursion for deep accumulator spines,
-  linear `let`-chain assembly, and the exp base as a strictly-bounded
-  free constant (a definite rational base proved false equivalences).
-  Inherited SMT semantic: division is underspecified at zero, so
-  `x/x = 1` is falsifiable - unlike canon's field model (moot on the
-  corpus: division only occurs inside exp-laden VCs).
-- `ffi.rs` - `init_worker` (the host-binary hook that turns the
-  re-invoked process into a solver worker), `eval_smtlib2` (spawns the
-  worker, writes the query to its stdin, enforces the hard deadline via
-  kill; inside the worker: fresh context per query, no-op error handler
-  so z3 API errors surface as `(error ...)` text instead of aborting,
-  soft timeout via the process-global `timeout` param) and `z3_version`.
-  The worker times the libz3 evaluation itself (empty-script warmup
-  first, so z3's lazy per-context frontend setup stays outside the
-  span) and reports it in-band (a `t:<nanoseconds>` line after the
-  handshake); `eval_smtlib2` returns it as
-  `EvalOutcome::Output { text, solve }`. Solver time is measured there
-  because the worker's fixed scaffolding - process
-  spawn/exec/link/pipes ~1.6ms plus z3 context create/destroy and
-  frontend setup ~9ms (all measured) - is several times an entire
-  polynomial-fragment solve; an outer timer measures scaffolding, not
-  z3.
-- `lib.rs` - per-element querying (`check_equivalent`; every element is
-  a genuine solver query - no structural short-circuit, so identical
-  sides cost a full spawn+solve, which is the point), verdict
-  parsing, `Z3Counts`, `check_output_equivalence` over
-  `volta_equivalence::check::paired_elements` (the same element pairing as the decision
-  procedure), and the regression tests for every invariant above.
-  Reported solve time (`Z3CheckResult::solve`) is the in-worker
-  measurement - process spawn and translation excluded; Timeout
-  verdicts report the budget itself rather than a measurement (the
-  paper's convention for timeout rows), under either delivery
-  mechanism (hard kill or z3's in-band soft cancel).
-
 ## Crate: volta_bench
 
 **Path**: `crates/volta_bench/`
@@ -566,9 +491,8 @@ Commands:
   `--check-array NAME` (repeatable, required) names the output arrays to
   check - the explicit `paired_elements` list, checked against the
   declared config before execution and by `paired_elements` after.
-  `--backend decision|z3`, `--iterations N` (decision backend only,
-  default 1), `--dump-vcs`/
-  `--from-dump` (the `volta_equivalence::vc_dump` format). `--exprs` reads FILE1/
+  `--iterations N` (default 1), `--dump-vcs`/`--from-dump` (the
+  `volta_equivalence::vc_dump` format). `--exprs` reads FILE1/
   FILE2 as `.vexpr` files instead (e.g. from `analyze --emit-exprs`): no PTX,
   no symbolic execution. With kernel inputs both branches run and `decide`
   prints `VERDICT: ACCEPT|REJECT|UNKNOWN` with its evidence and assumptions

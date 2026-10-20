@@ -16,7 +16,6 @@ volta_graph = { path = "./crates/volta_graph" }
 volta_graph_check = { path = "./crates/volta_graph_check" }
 volta_pipeline = { path = "./crates/volta_pipeline" }
 volta_spec = { path = "./crates/volta_spec" }
-volta_z3 = { path = "./crates/volta_z3" }
 
 anyhow = "1.0"
 ansi_term = "0.12.1"

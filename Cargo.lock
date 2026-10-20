@@ -169,16 +169,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
-name = "ctor"
-version = "0.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
-dependencies = [
- "quote",
- "syn 2.0.114",
-]
-
-[[package]]
 name = "env_filter"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -739,7 +729,6 @@ dependencies = [
  "volta_graph_check",
  "volta_pipeline",
  "volta_spec",
- "volta_z3",
 ]
 
 [[package]]
@@ -832,19 +821,6 @@ dependencies = [
  "volta_common",
  "volta_equivalence",
  "volta_expr",
-]
-
-[[package]]
-name = "volta_z3"
-version = "0.1.0"
-dependencies = [
- "ctor",
- "stacker",
- "thiserror",
- "volta_analysis",
- "volta_equivalence",
- "volta_expr",
- "volta_frontend",
 ]
 
 [[package]]

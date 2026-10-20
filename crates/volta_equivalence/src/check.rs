@@ -191,7 +191,7 @@ pub fn paired_elements(
 
 /// Flatten paired footprints into the check list: each array's element prefix, capped at
 /// `sample` per array (0 = all), in `paired` order. The one definition of *which* elements are
-/// checked - the decision procedure and the Z3 backend correspond positionally.
+/// checked.
 pub fn sampled_elements(
     paired: &[PairedFootprint],
     sample: u64,

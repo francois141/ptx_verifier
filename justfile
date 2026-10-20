@@ -9,7 +9,7 @@ test: test-rust test-python
 test-rust:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo test --release --workspace --exclude volta_z3 -- --test-threads 16 --color always \
+    cargo test --release --workspace -- --test-threads 16 --color always \
         | grep --line-buffered -v 'has been running for over 60 seconds'
 
 # Python bindings tests (rebuilding the extension, so they never test a stale build)
@@ -21,8 +21,8 @@ check: check-rust check-python
 
 # cargo check + clippy
 check-rust:
-    cargo check --workspace --exclude volta_z3
-    cargo clippy --workspace --exclude volta_z3
+    cargo check --workspace
+    cargo clippy --workspace
 
 # Lint the Python bindings
 check-python:

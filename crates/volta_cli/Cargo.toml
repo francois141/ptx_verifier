@@ -10,7 +10,6 @@ path = "src/main.rs"
 [features]
 default = []
 logging = ["volta_analysis/logging", "volta_equivalence/logging", "dep:env_logger", "dep:log"]
-z3 = ["dep:volta_z3"]
 
 [dependencies]
 volta_analysis.workspace = true
@@ -22,7 +21,6 @@ volta_graph.workspace = true
 volta_graph_check.workspace = true
 volta_pipeline.workspace = true
 volta_spec.workspace = true
-volta_z3 = { workspace = true, optional = true }
 
 anyhow.workspace = true
 clap.workspace = true

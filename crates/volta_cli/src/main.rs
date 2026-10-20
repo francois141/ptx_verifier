@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use volta_analysis::analysis::{AnalysisParts, write_op_counts};
 use volta_analysis::eval::{
     AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
@@ -31,7 +31,7 @@ use volta_pipeline::{
 
 /// Log level for controlling output verbosity
 #[cfg(feature = "logging")]
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
 enum LogLevel {
     /// Only show errors
     Error,
@@ -57,16 +57,6 @@ impl From<LogLevel> for log::LevelFilter {
             LogLevel::Trace => log::LevelFilter::Trace,
         }
     }
-}
-
-/// Which decision procedure to check equivalence with.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum BackendArg {
-    /// `volta_equivalence::canon` - Volta's own decision procedure (default)
-    Decision,
-    /// Z3, via SMT-LIB2 evaluated by libz3 in a worker subprocess: a narrower fragment, per-element
-    /// unsat/sat/unknown verdicts. Requires `--features z3`, else selecting it fails at run time.
-    Z3,
 }
 
 #[derive(Parser)]
@@ -227,28 +217,13 @@ struct CompareArgs {
     recycle_terms: usize,
 
     /// Run the solve phase N times (fresh session each; verdict from
-    /// iteration 1, later iterations must agree). Decision backend only.
+    /// iteration 1, later iterations must agree)
     #[arg(long, default_value_t = NonZeroUsize::MIN)]
     iterations: NonZeroUsize,
 
     /// Skip the per-instruction-kind execution profile (shown by default)
     #[arg(long = "no-profile", action = clap::ArgAction::SetFalse, default_value_t = true)]
     profile: bool,
-
-    /// Which decision procedure to use
-    #[arg(long, value_enum, default_value = "decision")]
-    backend: BackendArg,
-
-    /// Per-query Z3 timeout in seconds, only used with --backend z3 (0 =
-    /// no limit). A hard bound: the solver worker is killed on expiry.
-    #[arg(long, default_value_t = 30)]
-    z3_timeout: u64,
-
-    /// With --backend z3: encode exp as an uninterpreted function with the addition-law axiom
-    /// instead of the bounded-base power - the paper's "Z3 with axiom" baseline, which times out
-    /// on softmax-shaped VCs rather than returning a fast `unknown`.
-    #[arg(long)]
-    exp_axiom: bool,
 
     /// After symbolic execution, dump both kernels' verification conditions (arena + output
     /// footprint) to this file; --from-dump reruns the check without parsing/symbolic execution.
@@ -307,11 +282,6 @@ struct VerifyArgs {
 }
 
 fn main() -> ExitCode {
-    // Must precede everything: if this process was spawned as a z3
-    // solver worker, this runs the query and exits (see volta_z3::ffi).
-    #[cfg(feature = "z3")]
-    volta_z3::init_worker();
-
     let cli = Cli::parse();
 
     let command_name = match &cli.command {
@@ -689,87 +659,6 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     exit_code(verdict)
 }
 
-/// How a whole Z3 comparison run maps to an exit status: only a run that *proved* every element
-/// equivalent exits 0; undecided vs. different only shapes the nonzero-exit explanation.
-#[cfg(feature = "z3")]
-#[derive(Debug, PartialEq, Eq)]
-enum Z3Verdict {
-    /// Every checked element proved equivalent (vacuously true for an empty
-    /// footprint) - exit 0.
-    AllEquivalent,
-    /// At least one element is definitively not equivalent - exit nonzero.
-    HasDifference,
-    /// No differences, but some elements could not be decided
-    /// (unknown/unsupported/solver error) - exit nonzero, since undecided
-    /// is not a proof.
-    OnlyUndecided { undecided: usize },
-}
-
-#[cfg(feature = "z3")]
-fn z3_verdict(counts: &volta_z3::Z3Counts) -> Z3Verdict {
-    if counts.all_equivalent() {
-        Z3Verdict::AllEquivalent
-    } else if counts.not_equivalent > 0 {
-        Z3Verdict::HasDifference
-    } else {
-        Z3Verdict::OnlyUndecided {
-            undecided: counts.unknown + counts.timeout + counts.unsupported + counts.error,
-        }
-    }
-}
-
-/// The equivalence branch's verdict from a Z3 run: claimed differences count as refutations
-/// only once the numeric oracle separates them; undecided elements are unproven.
-#[cfg(feature = "z3")]
-fn z3_equivalence(
-    report: &volta_z3::Z3EquivReport,
-    reference: &SymbolicOutputs,
-    optimized: &SymbolicOutputs,
-    arrays: &[String],
-    counts: &volta_z3::Z3Counts,
-) -> EquivalenceVerdict {
-    let elements = |keep: fn(&volta_z3::ElementOutcome) -> bool| -> Vec<(String, u64)> {
-        report
-            .elements
-            .iter()
-            .filter(|e| keep(&e.outcome))
-            .map(|e| (e.array.clone(), e.index))
-            .collect()
-    };
-    let differing = elements(|o| matches!(o, volta_z3::ElementOutcome::NotEquivalent));
-    let undecided = elements(|o| {
-        !matches!(
-            o,
-            volta_z3::ElementOutcome::Equivalent | volta_z3::ElementOutcome::NotEquivalent
-        )
-    });
-    match z3_verdict(counts) {
-        Z3Verdict::AllEquivalent => {
-            let total = volta_equivalence::check::paired_elements(reference, optimized, arrays)
-                .map_or(report.elements.len() as u64, |paired| {
-                    paired.iter().map(|(_, common)| common.len() as u64).sum()
-                });
-            EquivalenceVerdict::Equivalent {
-                checked: report.elements.len() as u64,
-                total,
-            }
-        }
-        Z3Verdict::HasDifference => {
-            let (refuted, mut unproven) =
-                volta_pipeline::confirm_differences(reference, optimized, &differing);
-            if refuted.is_empty() {
-                unproven.extend(undecided);
-                EquivalenceVerdict::Unproven { elements: unproven }
-            } else {
-                EquivalenceVerdict::Refuted { elements: refuted }
-            }
-        }
-        Z3Verdict::OnlyUndecided { .. } => EquivalenceVerdict::Unproven {
-            elements: undecided,
-        },
-    }
-}
-
 /// Reject duplicate `--check-array` names (they would double-count elements). Clap enforces at
 /// least one; membership is checked against the launch config before symbolic execution and by
 /// `paired_elements` (the authority) after.
@@ -789,12 +678,6 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
     if args.from_dump.is_some() && args.dump_vcs.is_some() {
         eprintln!("note: --dump-vcs is a no-op with --from-dump (nothing new to dump)");
-    }
-    if args.exp_axiom && !matches!(args.backend, BackendArg::Z3) {
-        eprintln!("note: --exp-axiom only affects --backend z3");
-    }
-    if args.iterations.get() > 1 && matches!(args.backend, BackendArg::Z3) {
-        eprintln!("note: --iterations only affects --backend decision");
     }
 
     // Kernel inputs run both branches; expression inputs (.vexpr files, a dump) carry no
@@ -966,141 +849,73 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
     // order. `paired_elements` rejects any that both runs don't have.
     let check_arrays: &[String] = &args.check_arrays;
 
-    let equivalence = match args.backend {
-        BackendArg::Decision => {
-            let options = EquivCheckOptions {
-                sample: args.sample,
-                verify_numeric: args.verify_numeric,
-                recycle_terms: args.recycle_terms,
-                iterations: args.iterations,
-            };
-            let vc_start = Instant::now();
-            let (verdict, report) =
-                check_equivalence(&reference, &optimized, check_arrays, &options);
-            let vc_secs = vc_start.elapsed().as_secs_f64();
-            match report {
-                Some(report) => {
-                    let elems = if report.elements_checked == report.elements_total {
-                        format!("{}", report.elements_total)
-                    } else {
-                        format!("{}/{}", report.elements_checked, report.elements_total)
-                    };
-                    // Wall clock for the whole phase; the parenthetical is the decision procedure
-                    // alone (summed canon checks), the figure comparable to z3's solver time.
-                    println!(
-                        "VC check: {:.3}s (decision procedure {:.3}s)  elements: {}",
-                        vc_secs,
-                        report.check_time().as_secs_f64(),
-                        elems
-                    );
-                    if report.check_iters.len() > 1 {
-                        let per_iter: Vec<String> = report
-                            .check_iters
-                            .iter()
-                            .map(|d| format!("{:.3}", d.as_secs_f64()))
-                            .collect();
-                        println!(
-                            "  decision procedure iterations (s): [{}]",
-                            per_iter.join(", ")
-                        );
-                    }
-                    match &report.outcome {
-                        EquivOutcome::Equivalent => {
-                            println!("EQUIVALENT");
-                            log.record(&format!(
-                                "compare: EQUIVALENT ({} elements, exec {:?}, vc {:.3}s)",
-                                elems, exec_secs, vc_secs
-                            ));
-                        }
-                        EquivOutcome::NotEquivalent { mismatches } => {
-                            println!("NOT EQUIVALENT: {} mismatched element(s)", mismatches.len());
-                            for m in mismatches.iter().take(10) {
-                                println!("  {}[{}]", m.array, m.index);
-                            }
-                            if mismatches.len() > 10 {
-                                println!("  ... ({} more)", mismatches.len() - 10);
-                            }
-                            log.record(&format!(
-                                "compare: NOT EQUIVALENT, {} mismatches",
-                                mismatches.len()
-                            ));
-                        }
-                    }
-                }
-                None => {
-                    if let EquivalenceVerdict::Failed { reason } = &verdict {
-                        eprintln!("error: {}", reason);
-                        log.record(&format!("compare: FAILED: {}", reason));
-                    }
-                }
-            }
-            verdict
-        }
-        #[cfg(not(feature = "z3"))]
-        BackendArg::Z3 => {
-            eprintln!(
-                "error: this build of volta was compiled without z3 support \
-                 (rebuild with `--features z3`)"
-            );
-            log.record("compare (z3): FAILED: built without z3 support");
-            return ExitCode::FAILURE;
-        }
-        #[cfg(feature = "z3")]
-        BackendArg::Z3 => {
-            let timeout = volta_z3::timeout_from_secs(args.z3_timeout);
-            let mode = if args.exp_axiom {
-                volta_z3::ExpMode::AdditionAxiom
-            } else {
-                volta_z3::ExpMode::PowerBounded
-            };
-            let vc_start = Instant::now();
-            let report = volta_z3::check_output_equivalence(
-                &reference,
-                &optimized,
-                check_arrays,
-                args.sample,
-                timeout,
-                mode,
-            );
-            let vc_secs = vc_start.elapsed().as_secs_f64();
-
-            match report {
-                Ok(report) => {
-                    let counts = report.counts();
-                    // Wall clock for the whole phase; the parenthetical is
-                    // in-worker solver time only (worker spawn/exec and
-                    // translation excluded; timeouts count their budget).
-                    println!(
-                        "VC check: {:.3}s (z3 solver time {:.3}s)  elements: {}",
-                        vc_secs,
-                        report.total_solve_secs(),
-                        report.elements.len()
-                    );
-                    println!("  {}", counts);
-                    for e in report
-                        .elements
+    let equivalence = {
+        let options = EquivCheckOptions {
+            sample: args.sample,
+            verify_numeric: args.verify_numeric,
+            recycle_terms: args.recycle_terms,
+            iterations: args.iterations,
+        };
+        let vc_start = Instant::now();
+        let (verdict, report) = check_equivalence(&reference, &optimized, check_arrays, &options);
+        let vc_secs = vc_start.elapsed().as_secs_f64();
+        match report {
+            Some(report) => {
+                let elems = if report.elements_checked == report.elements_total {
+                    format!("{}", report.elements_total)
+                } else {
+                    format!("{}/{}", report.elements_checked, report.elements_total)
+                };
+                // Wall clock for the whole phase; the parenthetical is the decision procedure
+                // alone (summed canon checks).
+                println!(
+                    "VC check: {:.3}s (decision procedure {:.3}s)  elements: {}",
+                    vc_secs,
+                    report.check_time().as_secs_f64(),
+                    elems
+                );
+                if report.check_iters.len() > 1 {
+                    let per_iter: Vec<String> = report
+                        .check_iters
                         .iter()
-                        .filter(|e| !matches!(e.outcome, volta_z3::ElementOutcome::Equivalent))
-                        .take(10)
-                    {
-                        println!("  {}[{}]: {:?}", e.array, e.index, e.outcome);
-                    }
-                    log.record(&format!(
-                        "compare (z3): {} (vc {:.3}s)",
-                        counts.compact(),
-                        vc_secs
-                    ));
-                    z3_equivalence(&report, &reference, &optimized, check_arrays, &counts)
+                        .map(|d| format!("{:.3}", d.as_secs_f64()))
+                        .collect();
+                    println!(
+                        "  decision procedure iterations (s): [{}]",
+                        per_iter.join(", ")
+                    );
                 }
-                Err(e) => {
-                    eprintln!("error: {}", e);
-                    log.record(&format!("compare (z3): FAILED: {}", e));
-                    EquivalenceVerdict::Failed {
-                        reason: e.to_string(),
+                match &report.outcome {
+                    EquivOutcome::Equivalent => {
+                        println!("EQUIVALENT");
+                        log.record(&format!(
+                            "compare: EQUIVALENT ({} elements, exec {:?}, vc {:.3}s)",
+                            elems, exec_secs, vc_secs
+                        ));
+                    }
+                    EquivOutcome::NotEquivalent { mismatches } => {
+                        println!("NOT EQUIVALENT: {} mismatched element(s)", mismatches.len());
+                        for m in mismatches.iter().take(10) {
+                            println!("  {}[{}]", m.array, m.index);
+                        }
+                        if mismatches.len() > 10 {
+                            println!("  ... ({} more)", mismatches.len() - 10);
+                        }
+                        log.record(&format!(
+                            "compare: NOT EQUIVALENT, {} mismatches",
+                            mismatches.len()
+                        ));
                     }
                 }
             }
+            None => {
+                if let EquivalenceVerdict::Failed { reason } = &verdict {
+                    eprintln!("error: {}", reason);
+                    log.record(&format!("compare: FAILED: {}", reason));
+                }
+            }
         }
+        verdict
     };
     match &equivalence {
         EquivalenceVerdict::Refuted { elements } => println!(
@@ -1484,19 +1299,6 @@ fn print_module_summary(module: &Module) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "z3")]
-    use volta_z3::Z3Counts;
-
-    #[cfg(feature = "z3")]
-    fn counts(equivalent: usize, not_equivalent: usize, unknown: usize) -> Z3Counts {
-        Z3Counts {
-            equivalent,
-            not_equivalent,
-            unknown,
-            ..Z3Counts::default()
-        }
-    }
-
     #[test]
     fn unique_check_arrays_validate() {
         // Membership is deliberately not checked here: the declared-config
@@ -1554,48 +1356,5 @@ mod tests {
         assert!(src.contains("dim N;"));
         assert_eq!(resolved, Some(path.clone()));
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[cfg(feature = "z3")]
-    #[test]
-    fn z3_verdict_all_equivalent_exits_success() {
-        assert_eq!(z3_verdict(&counts(3, 0, 0)), Z3Verdict::AllEquivalent);
-        // An empty footprint is vacuously all-equivalent (matches the
-        // decision backend), so it too exits 0.
-        assert_eq!(z3_verdict(&counts(0, 0, 0)), Z3Verdict::AllEquivalent);
-    }
-
-    #[cfg(feature = "z3")]
-    #[test]
-    fn z3_verdict_any_difference_exits_failure() {
-        assert_eq!(z3_verdict(&counts(2, 1, 0)), Z3Verdict::HasDifference);
-        // A difference dominates even when other elements are undecided.
-        assert_eq!(z3_verdict(&counts(0, 1, 5)), Z3Verdict::HasDifference);
-    }
-
-    #[cfg(feature = "z3")]
-    #[test]
-    fn z3_verdict_undecided_only_exits_failure() {
-        // The regression this guards: an all-unknown run used to exit 0.
-        assert_eq!(
-            z3_verdict(&counts(0, 0, 3)),
-            Z3Verdict::OnlyUndecided { undecided: 3 }
-        );
-        // Partial proof with leftover undecided is still not a full proof.
-        assert_eq!(
-            z3_verdict(&counts(4, 0, 2)),
-            Z3Verdict::OnlyUndecided { undecided: 2 }
-        );
-        assert_eq!(
-            z3_verdict(&Z3Counts {
-                equivalent: 1,
-                not_equivalent: 0,
-                unknown: 1,
-                timeout: 1,
-                unsupported: 2,
-                error: 3,
-            }),
-            Z3Verdict::OnlyUndecided { undecided: 7 }
-        );
     }
 }

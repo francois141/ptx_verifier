@@ -68,12 +68,7 @@ fn the_analysis_runs_no_checker_and_no_equivalence() {
 fn the_branches_never_depend_on_each_other_or_on_the_stage() {
     let graph_branch = dependencies("volta_graph_check");
     let equivalence_branch = dependencies("volta_equivalence");
-    for forbidden in [
-        "volta_equivalence",
-        "volta_analysis",
-        "volta_pipeline",
-        "volta_z3",
-    ] {
+    for forbidden in ["volta_equivalence", "volta_analysis", "volta_pipeline"] {
         assert!(
             !graph_branch.iter().any(|d| d == forbidden),
             "the graph branch depends on {forbidden}"

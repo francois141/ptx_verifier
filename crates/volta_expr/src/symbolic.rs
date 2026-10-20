@@ -288,7 +288,7 @@ impl fmt::Display for Real {
     }
 }
 
-/// The identity of a symbolic atom, shared by every backend (canon, numeric oracle, `volta_z3`).
+/// The identity of a symbolic atom, shared by every backend (canon, numeric oracle).
 /// Only launch-config names carry identity (scoped PTX names get fresh machine
 /// [`Symbol`](ExprNode::Symbol)s), and the three namespaces are disjoint by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
