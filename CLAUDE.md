@@ -63,8 +63,9 @@ one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
 dev-dependency `volta_spec` only), while every PTX-driven test is end-to-end in
 `volta_bench/tests/` (kernels under `tests/ptx/`): `common::check` runs
 `volta_pipeline::verify_kernel`, race and deadlock tests assert on the failed
-property's typed witness, and accepted kernels must pass every graph property
-before their symbolic outputs are compared with the kernel's `.out` file
+property's typed witness, and every kernel run expected to complete must
+conclude `Verified` (not merely unrejected) before its symbolic outputs are
+compared with the kernel's `.out` file
 (`VOLTA_BLESS=1` rewrites them). `volta_analysis` keeps only its inline unit
 tests of internals.
 
@@ -465,8 +466,9 @@ Only end-to-end tests: no library, no binary, dev-dependencies only. Each suite
 in `tests/` runs PTX kernels from `tests/ptx/` through
 `volta_pipeline::verify_kernel` (`common::check` / `common::run_kernel`):
 
-- `accepted_tests.rs` - race-free kernels: every graph property passes, then
-  the rendered symbolic outputs must match the kernel's `.out` file exactly
+- `accepted_tests.rs` - race-free kernels: the graph check must conclude
+  `Verified` (a candidate-only pass fails the test), then the rendered
+  symbolic outputs must match the kernel's `.out` file exactly
   (`VOLTA_BLESS=1` rewrites them).
 - `race_tests.rs` - races and async hazards: the failed property's typed
   witness (conflict kind, location, each side's thread, access mode and async
@@ -475,7 +477,7 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   deadlocks (the progress property's witness).
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
-  detail must not be proved equivalent.
+  detail, each `Verified`, must not be proved equivalent.
 
 ## Crate: volta_cli
 

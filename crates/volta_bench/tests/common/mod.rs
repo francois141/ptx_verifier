@@ -75,32 +75,38 @@ pub fn check(module: &Module, kernel: Option<&str>, config: AnalysisConfig) -> C
     }
 }
 
-/// A kernel that ran to completion with no failed graph property.
+/// A kernel that ran to completion and whose graph check concluded `Verified`.
 #[derive(Debug)]
 pub struct Completed {
     pub exprs: SymbolicOutputs,
     pub stats: Stats,
 }
 
-/// Run a kernel expected to complete: first its race freedom (no graph property may fail),
-/// then its outputs, or why it produced none (it could not start, or its execution raised an
-/// error). A failed graph property panics: it is not an execution error, and tests expecting
-/// one inspect `check`'s report.
+/// Run a kernel expected to complete: its outputs, or why it produced none (it could not
+/// start, or its execution raised an error). A failed graph property panics, and so does a
+/// completed run the graph check does not conclude `Verified`; tests expecting either inspect
+/// `check`'s report.
 pub fn run_kernel(
     module: &Module,
     kernel: Option<&str>,
     config: AnalysisConfig,
 ) -> Result<Completed, AnalysisError> {
     let verified = verify_kernel(module, kernel, config, &CanonValueEquality)?;
-    if let GraphConclusion::Rejected { failed } = verified.graph.conclusion() {
+    let conclusion = verified.graph.conclusion();
+    if let GraphConclusion::Rejected { failed } = &conclusion {
         panic!("a graph property failed: {failed:#?}");
     }
     let parts = verified.analysis.into_parts();
     match parts.outputs {
-        Ok(exprs) => Ok(Completed {
-            exprs,
-            stats: parts.stats,
-        }),
+        Ok(exprs) => {
+            if let GraphConclusion::Unknown { reasons } = conclusion {
+                panic!("the graph check did not verify the kernel: {reasons:#?}");
+            }
+            Ok(Completed {
+                exprs,
+                stats: parts.stats,
+            })
+        }
         Err(OutputsUnavailable::Aborted(e) | OutputsUnavailable::Extraction(e)) => {
             Err(AnalysisError::Eval(e))
         }

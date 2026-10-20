@@ -7,10 +7,11 @@ test: test-rust test-python
 
 # Rust unit + integration tests
 test-rust:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo test --release --workspace -- --test-threads 16 --color always \
-        | grep --line-buffered -v 'has been running for over 60 seconds'
+    cargo test --release --workspace -- --test-threads 16 --color always
+
+# volta_bench's PTX-driven tests (kernels through the analysis stage and graph branch)
+all:
+    cargo test --release -p volta_bench -- --test-threads 16 --color always
 
 # Python bindings tests (rebuilding the extension, so they never test a stale build)
 test-python:

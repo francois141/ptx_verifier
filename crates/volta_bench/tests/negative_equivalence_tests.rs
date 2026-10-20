@@ -2,14 +2,15 @@
 //! one semantic detail and must come back `NotEquivalent` through the full
 //! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
-use volta_analysis::analyze;
 use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
-use volta_equivalence::{EquivOutcome, check_output_equivalence};
+use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::text::{read_text, to_text};
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
+use volta_graph_check::GraphConclusion;
+use volta_pipeline::verify_kernel;
 
 // =========================================================================
 // Harness
@@ -118,11 +119,26 @@ struct NegativePair {
 
 /// The kernel's symbolic outputs: all the equivalence branch consumes.
 fn run(name: &str, kernel: &Kernel) -> SymbolicOutputs {
-    analyze(&parse(&kernel.src), None, kernel.config.clone())
-        .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e))
+    let verified = verify_kernel(
+        &parse(&kernel.src),
+        None,
+        kernel.config.clone(),
+        &CanonValueEquality,
+    )
+    .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e));
+    let outputs = verified
+        .analysis
         .into_parts()
         .outputs
-        .unwrap_or_else(|why| panic!("{}: no outputs: {}", name, why))
+        .unwrap_or_else(|why| panic!("{}: no outputs: {}", name, why));
+    let conclusion = verified.graph.conclusion();
+    assert_eq!(
+        conclusion,
+        GraphConclusion::Verified,
+        "{}: the graph check did not verify the kernel",
+        name
+    );
+    outputs
 }
 
 /// Run both kernels of a pair and check them along the reference run's
