@@ -51,8 +51,13 @@ pub struct Run<'a> {
     pub outcome: Outcome<'a>,
 }
 
-/// The checks whose failure is a race condition: an unordered conflicting access.
-const RACE_CHECKS: [Property; 2] = [Property::MemoryConflict, Property::TensorOrder];
+/// The checks whose failure is a race condition: an unordered conflicting access, or a
+/// cross-proxy pair no proxy fence orders.
+const RACE_CHECKS: [Property; 3] = [
+    Property::MemoryConflict,
+    Property::ProxyOrder,
+    Property::TensorOrder,
+];
 
 /// A run's outcome: what its checks concluded, or why it never got a conclusion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -971,7 +976,20 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
                             vec![c.earlier, c.later],
                         )
                     }),
-                    Property::ProxyOrder => findings(&report.proxy_order, |never| match *never {}),
+                    Property::ProxyOrder => findings(&report.proxy_order, |v| {
+                        (
+                            format!(
+                                "{} conflict at {} {:#x}: no proxy fence orders generic e{} \
+                                 before async-proxy e{}",
+                                conflict_kind(v.kind),
+                                space_name(v.location.space),
+                                v.location.addr,
+                                v.generic.0,
+                                v.asynchronous.0
+                            ),
+                            vec![v.generic, v.asynchronous],
+                        )
+                    }),
                     Property::TensorOrder => findings(&report.tensor_order, |c| {
                         (
                             format!(

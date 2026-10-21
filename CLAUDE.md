@@ -397,8 +397,9 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   `MemoryConflictFree`.
 - `proxy_order.rs` - every ordered cross-proxy pair needs a covering fence:
   an explicit `fence.proxy.async` on either side's thread, or the implicit fence
-  of a validated completion observation (async -> generic). UNPROVEDPROXYORDER
-  is `Unknown`, never `Fail`.
+  of a validated completion observation (async -> generic). An uncovered pair
+  is a `Fail` (a cross-proxy race, typed `ProxyOrderViolation`), not the
+  design's `Unknown`.
 - `tensor_order.rs` / `sync_search.rs` - conflicting TMEM pairs of distinct ops,
   oriented by issue: pipelined, or a `D` path from issue to issue through a
   source-thread `tcgen05.fence::before_thread_sync` (or tracking
@@ -557,8 +558,8 @@ The event-graph viewer; depends only on `volta_graph`, `volta_graph_check`
 &Run)` stores one run (`Outcome::Executed { graph, arena, report }` or
 `NotStarted { cause, error }`, `cause` being `Unsupported` when lowering failed)
 as a `volta-viz 1` JSON document plus a `.meta.json` summary. A run's status is
-race-free, race-condition (a memory-conflict or tensor-order failure),
-check-failed, deadlock, unsupported, unknown, error, or unchecked (no
+race-free, race-condition (a memory-conflict, proxy-order or tensor-order
+failure), check-failed, deadlock, unsupported, unknown, error, or unchecked (no
 graph check run).
 `write_page(dir, out)` inlines `viewer/{page.html,style.css,app.js}` and every
 stored run into one self-contained HTML page. Documents are compact

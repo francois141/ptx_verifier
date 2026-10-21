@@ -31,9 +31,9 @@
 //!   on each candidate thread only its latest suitable fence `f` with `(f, b) ∈ R`: if that
 //!   pair is uncovered, so is the search, and if it is covered, program order (or the
 //!   operation's shared observers) covers the actor's earlier effects through the same `f`.
-//! * `Pass`: SUCCESS (vacuous without an async proxy). There is no `Fail`: "an exhausted
-//!   search reports an unproved obligation, not a demonstrated violation", so
-//!   UNPROVEDPROXYORDER(a, b) is `Unknown`, naming `a` and `b`.
+//! * `Pass`: SUCCESS (vacuous without an async proxy). `Fail`: the first
+//!   UNPROVEDPROXYORDER(a, b). The design reports it as an unproved obligation; Volta reports
+//!   a race, since the memory model orders no cross-proxy pair that no proxy fence covers.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -42,10 +42,10 @@ use volta_graph::{
     Proxy, Space, ThreadIx,
 };
 
-use crate::domain::{ByteLocation, bytes, in_m, written_bytes};
+use crate::domain::{ByteLocation, ConflictKind, bytes, in_m, written_bytes};
 use crate::memory_conflict::MemoryConflictFree;
 use crate::relation::{ThreadPoint, ValidatedGraph, thread_points};
-use crate::result::{PropertyResult, Unresolved};
+use crate::result::PropertyResult;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyEvidence {
@@ -55,8 +55,17 @@ pub struct ProxyEvidence {
     pub vacuous: bool,
 }
 
-/// Never fails: an uncovered pair is an unproved obligation.
-pub type ProxyOrderResult = PropertyResult<ProxyEvidence, std::convert::Infallible>;
+/// UNPROVEDPROXYORDER(a, b): the generic-proxy effect `generic` and the later async-proxy
+/// effect `asynchronous` conflict at `location`, and no proxy fence covers the pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProxyOrderViolation {
+    pub kind: ConflictKind,
+    pub location: ByteLocation,
+    pub generic: EventId,
+    pub asynchronous: EventId,
+}
+
+pub type ProxyOrderResult = PropertyResult<ProxyEvidence, ProxyOrderViolation>;
 
 /// Who performed a generic-proxy effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -101,7 +110,7 @@ pub fn check_proxy_order(
     let mut generic: HashMap<ByteLocation, BTreeMap<Actor, Latest>> = HashMap::new();
     let mut checked: HashSet<(EventId, EventId)> = HashSet::new();
     let mut covered_pairs = 0;
-    let mut unproved: Option<Unresolved> = None;
+    let mut unproved: Option<ProxyOrderViolation> = None;
     h.sweep(|e, view| {
         if unproved.is_some() {
             return;
@@ -155,6 +164,11 @@ pub fn check_proxy_order(
                         let Some(a) = a else {
                             continue;
                         };
+                        let earlier = if latest.write == Some(a) {
+                            AccessMode::Write
+                        } else {
+                            AccessMode::Read
+                        };
                         if !checked.insert((a, e)) {
                             continue;
                         }
@@ -166,15 +180,13 @@ pub fn check_proxy_order(
                         if covered {
                             covered_pairs += 1;
                         } else {
-                            unproved = Some(Unresolved::between(
-                                a,
-                                e,
-                                format!(
-                                    "UNPROVEDPROXYORDER: no proxy fence covers this generic -> \
-                                     async-proxy pair at {:?} {:#x}",
-                                    location.space, location.addr
-                                ),
-                            ));
+                            unproved = Some(ProxyOrderViolation {
+                                kind: ConflictKind::of(earlier, access.mode)
+                                    .expect("one side of the pair writes"),
+                                location,
+                                generic: a,
+                                asynchronous: e,
+                            });
                             return;
                         }
                     }
@@ -183,7 +195,7 @@ pub fn check_proxy_order(
         }
     });
     match unproved {
-        Some(u) => PropertyResult::Unknown(vec![u]),
+        Some(v) => PropertyResult::Fail(vec![v]),
         None => PropertyResult::Pass(ProxyEvidence {
             covered_pairs,
             vacuous: false,

@@ -5,6 +5,7 @@ mod common;
 
 use common::*;
 use volta_graph::{AccessMode, AsyncOpKind, EventGraph, OperandRole, Parity, Proxy, Space};
+use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::memory_conflict::MemoryConflictFree;
 use volta_graph_check::proxy_order::{ProxyOrderResult, check_proxy_order};
 use volta_graph_check::relation::ValidatedGraph;
@@ -73,25 +74,23 @@ fn a_reader_fence_after_synchronizing_covers_the_pair() {
 }
 
 #[test]
-fn a_missing_fence_is_an_unproved_obligation_not_a_violation() {
+fn a_missing_fence_is_a_violation() {
     let graph = generic_write_then_async_read(FenceAt::None);
     let result = check(&graph);
-    let [u] = result.unresolved() else {
-        panic!("UNPROVEDPROXYORDER(a, b) is inconclusive: {result:?}");
+    let [v] = result.violations() else {
+        panic!("UNPROVEDPROXYORDER(a, b) is a race: {result:?}");
     };
-    assert!(u.reason.contains("UNPROVEDPROXYORDER"), "{u:?}");
-    let [a, b] = u.events[..] else {
-        panic!("{u:?}");
-    };
-    assert_eq!(graph.acting_thread(a), Some(t(0)));
-    assert_eq!(graph.acting_thread(b), Some(t(1)));
-    assert!(result.violations().is_empty());
+    assert_eq!(v.kind, ConflictKind::WriteRead);
+    assert_eq!(v.location.addr, 0x40);
+    assert_eq!(graph.acting_thread(v.generic), Some(t(0)));
+    assert_eq!(graph.acting_thread(v.asynchronous), Some(t(1)));
+    assert!(result.unresolved().is_empty());
 }
 
 #[test]
 fn a_fence_before_the_write_does_not_cover_it() {
     let result = check(&generic_write_then_async_read(FenceAt::WriterBeforeWrite));
-    assert_eq!(result.verdict(), Verdict::Unknown);
+    assert_eq!(result.verdict(), Verdict::Fail);
 }
 
 #[test]
@@ -99,7 +98,7 @@ fn a_third_threads_fence_does_not_cover_the_pair() {
     let result = check(&generic_write_then_async_read(
         FenceAt::BystanderAfterBarrier,
     ));
-    assert_eq!(result.verdict(), Verdict::Unknown, "{result:?}");
+    assert_eq!(result.verdict(), Verdict::Fail, "{result:?}");
 }
 
 #[test]
@@ -116,7 +115,7 @@ fn a_fence_over_another_space_does_not_cover_the_pair() {
         Proxy::Async,
     );
     let (g, _) = s.completed(2);
-    assert_eq!(check(&g).verdict(), Verdict::Unknown);
+    assert_eq!(check(&g).verdict(), Verdict::Fail);
 }
 
 /// t0 reads 0x40 generically, then (after a barrier) t1's bulk copy overwrites it, with an
@@ -140,10 +139,11 @@ fn generic_read_then_async_overwrite(fenced: bool) -> EventGraph {
 
 #[test]
 fn a_generic_read_before_an_async_overwrite_needs_a_fence_too() {
-    assert_eq!(
-        check(&generic_read_then_async_overwrite(false)).verdict(),
-        Verdict::Unknown
-    );
+    let unfenced = check(&generic_read_then_async_overwrite(false));
+    let [v] = unfenced.violations() else {
+        panic!("{unfenced:?}");
+    };
+    assert_eq!(v.kind, ConflictKind::ReadWrite);
     assert_eq!(
         check(&generic_read_then_async_overwrite(true)).verdict(),
         Verdict::Pass
