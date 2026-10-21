@@ -5,19 +5,24 @@
 mod arithm;
 mod async_bulk;
 mod cluster_launch_control;
+mod cp_async;
 mod error;
 mod float_bits;
 mod interp;
 mod mbarrier;
 mod memory;
 mod record;
+mod schedule;
+mod tcgen05;
 mod tcgen05_mma;
 mod tensor_map_table;
 mod tensor_memory;
+mod tensormap_replace;
 mod value;
 mod warp;
 mod warpgroup;
 mod wgmma;
+mod wgmma_hazards;
 
 use id_collections::id_type;
 

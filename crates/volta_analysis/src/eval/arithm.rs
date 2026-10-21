@@ -2,7 +2,7 @@
 //! the canonicalization of integer operands and of values crossing a
 //! register or memory width.
 
-use volta_frontend::ast::ScalarType;
+use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
@@ -10,7 +10,7 @@ use crate::eval::float_bits;
 use crate::eval::interp::{Interpreter, reg_bits};
 use crate::eval::value::Value;
 use crate::logging::warn;
-use crate::lowered::{BinOp, Clamp, CmpOp, InstrId, UnaryOp};
+use crate::lowered::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
 use crate::symbols::RegId;
 use crate::types::ScalarTypeExt;
 use volta_expr::{ExprId, ExprNode, Real};
@@ -19,6 +19,13 @@ use volta_expr::{ExprId, ExprNode, Real};
 /// multiply by before `ex2`, and the one Volta's base conversion is
 /// anchored to (see [`Interpreter::ln2_constant`]).
 const LOG2_E_F32: f64 = std::f64::consts::LOG2_E as f32 as f64;
+
+/// Which 16-bit half of a `.b32` funnel-shift operand to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneHalf {
+    Low,
+    High,
+}
 
 impl<'p> Interpreter<'p> {
     /// Evaluate a binary op: exact width/signedness semantics on concrete
@@ -768,6 +775,300 @@ impl<'p> Interpreter<'p> {
             return Ok(self.arena.int(r));
         }
         Ok(a)
+    }
+
+    /// 64-bit bitwise ops with a packed-pair operand, evaluated lane-wise with
+    /// exact bit semantics (the nvcc/Triton `f32x2` assembly idiom). `None` if
+    /// no operand is a pair; errors on inexact patterns.
+    pub(in crate::eval) fn pair_bitwise_binop(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: BinOp,
+        ty: ScalarType,
+        src_a: &Operand,
+        src_b: &Operand,
+    ) -> EvalResult<Option<Value>> {
+        if ty.bits() != 64 || !matches!(op, BinOp::Shl | BinOp::Shr | BinOp::And | BinOp::Or) {
+            return Ok(None);
+        }
+        let a = self.operand_value(t, pc, src_a)?;
+        let b = self.operand_value(t, pc, src_b)?;
+        if !matches!(a, Value::Pair(_, _)) && !matches!(b, Value::Pair(_, _)) {
+            return Ok(None);
+        }
+        let unsupported = |what: String| EvalError::Unsupported { pc, what };
+        // A concrete 64-bit scalar splits into two concrete lanes; anything
+        // else alongside a pair has no lane reading.
+        let lanes = |this: &mut Self, v: Value| -> EvalResult<(ExprId, ExprId)> {
+            match v {
+                Value::Pair(lo, hi) => Ok((lo, hi)),
+                Value::Scalar(e) => match this.arena.as_int_const(e) {
+                    Some(c) => {
+                        let lo = this.arena.int(c & 0xFFFF_FFFF);
+                        let hi = this.arena.int((c >> 32) & 0xFFFF_FFFF);
+                        Ok((lo, hi))
+                    }
+                    None => Err(unsupported(
+                        "symbolic 64-bit scalar combined bitwise with a packed pair".to_string(),
+                    )),
+                },
+                Value::Quad(..) => Err(unsupported(
+                    "packed byte-quad combined bitwise with a packed pair".to_string(),
+                )),
+                Value::Mbarrier(_) => Err(unsupported(
+                    "mbarrier handle combined bitwise with a packed pair".to_string(),
+                )),
+            }
+        };
+        let is_zero = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0);
+        let is_all_ones = |this: &Self, e: ExprId| this.arena.as_int_const(e) == Some(0xFFFF_FFFF);
+        match op {
+            BinOp::Shl | BinOp::Shr => {
+                let Value::Pair(lo, hi) = a else {
+                    return Err(unsupported(
+                        "shift amount given as a packed pair".to_string(),
+                    ));
+                };
+                let Value::Scalar(amount) = b else {
+                    return Err(unsupported(
+                        "packed pair shifted by a packed pair".to_string(),
+                    ));
+                };
+                if self.arena.as_int_const(amount) != Some(32) || ty.is_signed_int() {
+                    return Err(unsupported(format!(
+                        "packed pair shifted by other than a logical 32 ({:?} on {:?})",
+                        op, ty
+                    )));
+                }
+                let zero = self.arena.int(0);
+                Ok(Some(if op == BinOp::Shl {
+                    Value::Pair(zero, lo)
+                } else {
+                    Value::Pair(hi, zero)
+                }))
+            }
+            BinOp::Or => {
+                let (a_lo, a_hi) = lanes(self, a)?;
+                let (b_lo, b_hi) = lanes(self, b)?;
+                let mut merge = |x: ExprId, y: ExprId| -> EvalResult<ExprId> {
+                    if is_zero(self, y) {
+                        Ok(x)
+                    } else if is_zero(self, x) {
+                        Ok(y)
+                    } else {
+                        match (self.arena.as_int_const(x), self.arena.as_int_const(y)) {
+                            (Some(_), Some(_)) => {
+                                self.eval_binop(t, pc, BinOp::Or, ScalarType::U32, x, y)
+                            }
+                            _ => Err(unsupported(
+                                "or.b64 of two packed pairs with overlapping symbolic lanes"
+                                    .to_string(),
+                            )),
+                        }
+                    }
+                };
+                let lo = merge(a_lo, b_lo)?;
+                let hi = merge(a_hi, b_hi)?;
+                Ok(Some(Value::Pair(lo, hi)))
+            }
+            BinOp::And => {
+                let (a_lo, a_hi) = lanes(self, a)?;
+                let (b_lo, b_hi) = lanes(self, b)?;
+                let mut keep = |x: ExprId, y: ExprId| -> EvalResult<ExprId> {
+                    if is_all_ones(self, y) {
+                        Ok(x)
+                    } else if is_all_ones(self, x) {
+                        Ok(y)
+                    } else if is_zero(self, x) || is_zero(self, y) {
+                        Ok(self.arena.int(0))
+                    } else {
+                        match (self.arena.as_int_const(x), self.arena.as_int_const(y)) {
+                            (Some(_), Some(_)) => {
+                                self.eval_binop(t, pc, BinOp::And, ScalarType::U32, x, y)
+                            }
+                            _ => Err(unsupported(
+                                "and.b64 masking inside a packed pair's lane".to_string(),
+                            )),
+                        }
+                    }
+                };
+                let lo = keep(a_lo, b_lo)?;
+                let hi = keep(a_hi, b_hi)?;
+                Ok(Some(Value::Pair(lo, hi)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// `shf.{l,r}.{clamp,wrap}.b32 dst, lo, hi, shift` (PTX ISA 9.7.9.7):
+    /// shift the 64-bit concatenation of `hi`:`lo` and keep one 32-bit end
+    /// of it. See `LoweredInstr::Shf` for the bit-level definition.
+    #[allow(clippy::too_many_arguments)] // internal helper; the args are the instruction's operands
+    pub(in crate::eval) fn eval_shf(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        lo: &Operand,
+        hi: &Operand,
+        shift: &Operand,
+        dir: ShiftDir,
+        mode: ClampWrapMode,
+    ) -> EvalResult<Value> {
+        const WIDTH: i64 = 32;
+        const HALF_WIDTH: i64 = WIDTH / 2;
+        // Shift the 64-bit value formed by concatenating operands a and b left or right by the amount specified by the unsigned 32-bit value in c
+        // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?utm_source=chatgpt.com#logic-and-shift-instructions-shf
+        let raw = i64::from(self.concrete_operand(t, pc, shift, "shf shift amount")? as u32);
+        let n = match mode {
+            ClampWrapMode::Clamp => raw.clamp(0, WIDTH),
+            ClampWrapMode::Wrap => raw & 0x1f,
+        };
+        let lo_v = self.operand_value(t, pc, lo)?;
+        let hi_v = self.operand_value(t, pc, hi)?;
+
+        // Packed f16 lanes have no bit pattern: shifting by 0 or 32 selects
+        // one operand, by 16 the middle lanes `Pair(lo.high, hi.low)`.
+        if matches!(lo_v, Value::Pair(..)) || matches!(hi_v, Value::Pair(..)) {
+            match (dir, n) {
+                (ShiftDir::Right, 0) | (ShiftDir::Left, WIDTH) => return Ok(lo_v),
+                (ShiftDir::Left, 0) | (ShiftDir::Right, WIDTH) => return Ok(hi_v),
+                (_, HALF_WIDTH) => {
+                    let result_lo = self.shf_lane(t, pc, lo_v, LaneHalf::High)?;
+                    let result_hi = self.shf_lane(t, pc, hi_v, LaneHalf::Low)?;
+                    return Ok(Value::Pair(result_lo, result_hi));
+                }
+                _ => {}
+            }
+        }
+
+        // Ordinary bit-vector path. The ISA's `(x << (32 - n))` is a
+        // 64-bit-concatenation shift, so a 32-bit displacement contributes
+        // nothing rather than being an over-wide shift.
+        let a = self.scalar_operand(t, pc, lo)?;
+        let b = self.scalar_operand(t, pc, hi)?;
+        let (hi_shift, lo_shift) = match dir {
+            ShiftDir::Left => (n, WIDTH - n),
+            ShiftDir::Right => (WIDTH - n, n),
+        };
+
+        let zero = self.arena.int(0);
+        let hi_part = if hi_shift >= WIDTH {
+            zero
+        } else {
+            let amount = self.arena.int(hi_shift);
+            self.eval_binop(t, pc, BinOp::Shl, ScalarType::U32, b, amount)?
+        };
+
+        let lo_part = if lo_shift >= WIDTH {
+            zero
+        } else {
+            let amount = self.arena.int(lo_shift);
+            self.eval_binop(t, pc, BinOp::Shr, ScalarType::U32, a, amount)?
+        };
+
+        let d = self.eval_binop(t, pc, BinOp::Or, ScalarType::U32, hi_part, lo_part)?;
+
+        Ok(Value::Scalar(d))
+    }
+
+    /// One 16-bit lane of a `.b32` funnel-shift operand for [`Self::eval_shf`].
+    /// A symbolic scalar is accepted for its low lane only (the zero-extended
+    /// narrow-load idiom); its high lane is a loud error.
+    fn shf_lane(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        v: Value,
+        half: LaneHalf,
+    ) -> EvalResult<ExprId> {
+        const LANE_BITS: u32 = 16;
+        const LANE_MASK: i64 = 0xFFFF;
+        let e = match v {
+            Value::Pair(lo, hi) => {
+                return Ok(match half {
+                    LaneHalf::Low => lo,
+                    LaneHalf::High => hi,
+                });
+            }
+            Value::Scalar(e) => e,
+            Value::Quad(..) => {
+                return Err(EvalError::ValueKindMismatch {
+                    thread: t,
+                    pc,
+                    what: "shf operand holds a packed byte quad",
+                });
+            }
+            Value::Mbarrier(_) => {
+                return Err(EvalError::ValueKindMismatch {
+                    thread: t,
+                    pc,
+                    what: "mbarrier handle used as a shf operand",
+                });
+            }
+        };
+        match (self.arena.as_int_const(e), half) {
+            (Some(c), LaneHalf::Low) => Ok(self.arena.int(c & LANE_MASK)),
+            (Some(c), LaneHalf::High) => Ok(self.arena.int((c >> LANE_BITS) & LANE_MASK)),
+            (None, LaneHalf::Low) => Ok(e),
+            (None, LaneHalf::High) => Err(EvalError::Unsupported {
+                pc,
+                what: "shf reading the high 16-bit lane of a symbolic 32-bit operand".to_string(),
+            }),
+        }
+    }
+
+    /// Apply a byte-wise FP8 sign-bit XOR to a packed byte quad. This is the
+    /// `xor.b32 value, value, 0x80808080` idiom used before RoPE's FP8
+    /// conversion; each quad lane already represents its decoded real value.
+    pub(in crate::eval) fn quad_bitwise_binop(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: BinOp,
+        ty: ScalarType,
+        src_a: &Operand,
+        src_b: &Operand,
+    ) -> EvalResult<Option<Value>> {
+        if ty.bits() != 32 || op != BinOp::Xor {
+            return Ok(None);
+        }
+        let a = self.operand_value(t, pc, src_a)?;
+        let b = self.operand_value(t, pc, src_b)?;
+        let (lanes, mask) = match (a, b) {
+            (Value::Quad(b0, b1, b2, b3), Value::Scalar(mask))
+            | (Value::Scalar(mask), Value::Quad(b0, b1, b2, b3)) => ((b0, b1, b2, b3), mask),
+            (Value::Quad(..), Value::Quad(..)) => {
+                return Err(EvalError::Unsupported {
+                    pc,
+                    what: "xor.b32 of two packed byte quads".to_string(),
+                });
+            }
+            _ => return Ok(None),
+        };
+        let mask = self
+            .arena
+            .as_int_const(mask)
+            .ok_or(EvalError::NotConcrete {
+                thread: t,
+                pc,
+                what: "packed byte-quad xor mask",
+            })? as u32;
+        let apply = |this: &mut Self, lane: ExprId, byte_mask: u32| match byte_mask {
+            0 => Ok(lane),
+            0x80 => Ok(this.arena.neg(lane)),
+            _ => Err(EvalError::Unsupported {
+                pc,
+                what: format!(
+                    "packed byte-quad xor mask {mask:#010x} changes more than an FP8 sign bit"
+                ),
+            }),
+        };
+        let b0 = apply(self, lanes.0, mask & 0xff)?;
+        let b1 = apply(self, lanes.1, (mask >> 8) & 0xff)?;
+        let b2 = apply(self, lanes.2, (mask >> 16) & 0xff)?;
+        let b3 = apply(self, lanes.3, (mask >> 24) & 0xff)?;
+        Ok(Some(Value::Quad(b0, b1, b2, b3)))
     }
 }
 
