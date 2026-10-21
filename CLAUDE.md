@@ -256,13 +256,14 @@ Converts AST to linear instruction format. `lower/` is split by instruction
 family, each file depending only on `context` and `error`:
 
 - `lower/mod.rs` - `lower_function`, declaration collection, the statement
-  walk and the `ParsedInstruction` dispatch; `context.rs` - `LoweringContext`
-  (the program under construction), operand resolution, type checks and
-  `unsupported`; `error.rs` - `LowerError`; `idioms.rs` - the multi-statement
-  idioms below
-- one file per family: `arith.rs` (arithmetic, comparisons, `cvt`),
-  `memory.rs` (ld/st, params, `cp.async`), `control.rs` (`bra`, `call`, `bar`,
-  `fence`), `warp.rs` (shfl/elect/redux, ldmatrix/stmatrix, `mma.sync`, wmma),
+  walk and the `ParsedInstruction` dispatch (one call or expression per arm);
+  `context.rs` - `LoweringContext` (the program under construction), operand
+  resolution, type checks and `unsupported`; `error.rs` - `LowerError`;
+  `idioms.rs` - the multi-statement idioms below
+- one file per family: `arith.rs` (arithmetic, logic/shift/bit-field ops,
+  setp/selp, `cvt`), `memory.rs` (mov, ld/st, params, cvta/mapa, `cp.async`),
+  `control.rs` (`bra`, `call`, `bar`, `fence`), `warp.rs` (shfl/elect/redux,
+  bar.warp.sync, activemask, ldmatrix/stmatrix, `mma.sync`, wmma),
   `mbarrier.rs`, `tma.rs` (tensormap objects, `cp.async.bulk{.tensor}`),
   `tcgen05.rs`, `wgmma.rs`, `clc.rs`; tests in `lower/tests.rs`
 - `LoweredProgram` - `IdVec<InstrId, LoweredInstr>` + `SymbolTable` + `SourceMap`

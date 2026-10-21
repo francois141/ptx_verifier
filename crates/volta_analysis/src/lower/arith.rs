@@ -1,10 +1,13 @@
-//! Lowering of arithmetic, comparison and conversion instructions, with the
-//! packed-type checks they share.
+//! Lowering of arithmetic, logic, shift and bit-field instructions, of
+//! comparison and selection, and of `cvt`, with the packed-type checks they
+//! share.
 
 use volta_frontend::ast::{
-    AbsInstr, AddInstr, CopysignInstr, CvtInstr, CvtRounding, DivInstr, FmaInstr, FpRound,
-    MadInstr, MaxInstr, MinInstr, MulInstr, MulMode, NegInstr, Operand as AstOperand, ScalarType,
-    SetpInstr, SubInstr,
+    self, AbsInstr, AddInstr, BfeInstr, BfiInstr, CopysignInstr, CvtInstr, CvtRounding, DivInstr,
+    Ex2Instr, FmaInstr, FpRound, Lg2Instr, LogicInstr, Lop3Instr, MadInstr, MaxInstr, MinInstr,
+    MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PrmtInstr, RcpInstr, RemInstr,
+    RsqrtInstr, ScalarType, SelpInstr, SetpInstr, ShfInstr, ShiftInstr, SqrtInstr, SubInstr,
+    TanhInstr,
 };
 
 use crate::lowered::{BinOp, Clamp, LoweredInstr, Predicate, UnaryOp};
@@ -986,6 +989,33 @@ pub(super) fn lower_div(
     Ok(())
 }
 
+pub(super) fn lower_rem(
+    ctx: &mut LoweringContext,
+    rem: &RemInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&rem.dst)?;
+    let src_a_typed = ctx.resolve_operand_typed(&rem.src_a)?;
+    let src_b_typed = ctx.resolve_operand_typed(&rem.src_b)?;
+
+    ctx.check_dst_type(&dst_typed, rem.ty, "rem")?;
+    ctx.check_operand_type(&src_a_typed, rem.ty, "rem")?;
+    ctx.check_operand_type(&src_b_typed, rem.ty, "rem")?;
+
+    ctx.emit(
+        LoweredInstr::BinOp {
+            op: BinOp::Rem,
+            dst: dst_typed.reg,
+            src_a: src_a_typed.operand,
+            src_b: src_b_typed.operand,
+            ty: rem.ty,
+            clamp: None,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
 pub(super) fn lower_neg(
     ctx: &mut LoweringContext,
     neg: &NegInstr,
@@ -1108,7 +1138,7 @@ pub(super) fn lower_copysign(
 }
 
 /// Shared lowering for float unary ops (rcp, sqrt, rsqrt, ...)
-pub(super) fn lower_float_unary(
+fn lower_float_unary(
     ctx: &mut LoweringContext,
     op: UnaryOp,
     instr_name: &str,
@@ -1130,6 +1160,157 @@ pub(super) fn lower_float_unary(
             src: src_typed.operand,
             ty,
         },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_rcp(
+    ctx: &mut LoweringContext,
+    rcp: &RcpInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // rnd/ftz/approx are precision controls: floats are reals here,
+    // so every reciprocal is exact and they change nothing.
+    let (ty, dst, src) = match rcp {
+        ast::RcpInstr::Approx {
+            ftz: _ftz,
+            ty,
+            dst,
+            src,
+        } => (*ty, dst, src),
+        ast::RcpInstr::Ieee {
+            rnd: _rnd,
+            ftz: _ftz,
+            ty,
+            dst,
+            src,
+        } => (*ty, dst, src),
+    };
+    lower_float_unary(ctx, UnaryOp::Rcp, "rcp", ty, dst, src, predicate)?;
+    Ok(())
+}
+
+pub(super) fn lower_sqrt(
+    ctx: &mut LoweringContext,
+    sqrt: &SqrtInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // rnd/ftz/approx are precision controls: no effect over the reals.
+    let (ty, dst, src) = match sqrt {
+        ast::SqrtInstr::Approx {
+            ftz: _ftz,
+            dst,
+            src,
+        } => (ScalarType::F32, dst, src),
+        ast::SqrtInstr::Ieee {
+            rnd: _rnd,
+            ftz: _ftz,
+            ty,
+            dst,
+            src,
+        } => (*ty, dst, src),
+    };
+    lower_float_unary(ctx, UnaryOp::Sqrt, "sqrt", ty, dst, src, predicate)?;
+    Ok(())
+}
+
+pub(super) fn lower_rsqrt(
+    ctx: &mut LoweringContext,
+    rsqrt: &RsqrtInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // approx/ftz are precision controls: no effect over the reals.
+    let ast::RsqrtInstr {
+        approx: _approx,
+        ftz: _ftz,
+        ty,
+        dst,
+        src,
+    } = rsqrt;
+    lower_float_unary(ctx, UnaryOp::Rsqrt, "rsqrt", *ty, dst, src, predicate)?;
+    Ok(())
+}
+
+/// log2(x), evaluated as log(x) / ln2.
+pub(super) fn lower_lg2(
+    ctx: &mut LoweringContext,
+    lg2: &Lg2Instr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // approx/ftz are precision controls: no effect over the reals.
+    // `lg2` is f32-only in the ISA, so there is no type to read
+    // off the instruction.
+    let ast::Lg2Instr {
+        ftz: _ftz,
+        dst,
+        src,
+    } = lg2;
+    lower_float_unary(
+        ctx,
+        UnaryOp::Lg2,
+        "lg2",
+        ScalarType::F32,
+        dst,
+        src,
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// 2^x, evaluated as exp(x * ln2).
+pub(super) fn lower_ex2(
+    ctx: &mut LoweringContext,
+    ex2: &Ex2Instr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let (dst, src) = match ex2 {
+        ast::Ex2Instr::Float32 {
+            ftz: _ftz,
+            dst,
+            src,
+        } => (dst, src),
+        ast::Ex2Instr::HalfF16 { .. } | ast::Ex2Instr::HalfBf16 { .. } => {
+            return Err(unsupported("ex2", "f16/bf16 packed forms"));
+        }
+    };
+    lower_float_unary(
+        ctx,
+        UnaryOp::Ex2,
+        "ex2",
+        ScalarType::F32,
+        dst,
+        src,
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_tanh(
+    ctx: &mut LoweringContext,
+    tanh: &TanhInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // .f32/.f16/.bf16 and packed .f16x2/.bf16x2 (PTX ISA Block 61)
+    // are all modeled: Tanh reduces to (e^2x-1)/(e^2x+1), packed forms
+    // run per lane. Anything else is invalid PTX (fail-closed check).
+    if !matches!(
+        tanh.ty,
+        ScalarType::F32
+            | ScalarType::F16
+            | ScalarType::Bf16
+            | ScalarType::F16x2
+            | ScalarType::Bf16x2
+    ) {
+        return Err(unsupported("tanh", format!("{:?} (invalid PTX)", tanh.ty)));
+    }
+    lower_float_unary(
+        ctx,
+        UnaryOp::Tanh,
+        "tanh",
+        tanh.ty,
+        &tanh.dst,
+        &tanh.src,
         predicate,
     )?;
     Ok(())
@@ -1337,6 +1518,230 @@ pub(super) fn lower_max(
     Ok(())
 }
 
+/// `and`, `or` and `xor`.
+pub(super) fn lower_logic(
+    ctx: &mut LoweringContext,
+    op: BinOp,
+    instr_name: &str,
+    logic: &LogicInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&logic.dst)?;
+    let src_a_typed = ctx.resolve_operand_typed(&logic.src_a)?;
+    let src_b_typed = ctx.resolve_operand_typed(&logic.src_b)?;
+
+    ctx.check_dst_type(&dst_typed, logic.ty, instr_name)?;
+    ctx.check_operand_type(&src_a_typed, logic.ty, instr_name)?;
+    ctx.check_operand_type(&src_b_typed, logic.ty, instr_name)?;
+
+    ctx.emit(
+        LoweredInstr::BinOp {
+            op,
+            dst: dst_typed.reg,
+            src_a: src_a_typed.operand,
+            src_b: src_b_typed.operand,
+            ty: logic.ty,
+            clamp: None,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_not(
+    ctx: &mut LoweringContext,
+    not: &NotInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&not.dst)?;
+    let src_typed = ctx.resolve_operand_typed(&not.src)?;
+
+    ctx.check_dst_type(&dst_typed, not.ty, "not")?;
+    ctx.check_operand_type(&src_typed, not.ty, "not")?;
+
+    ctx.emit(
+        LoweredInstr::UnaryOp {
+            op: UnaryOp::Not,
+            dst: dst_typed.reg,
+            src: src_typed.operand,
+            ty: not.ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// `shl` and `shr`.
+pub(super) fn lower_shift(
+    ctx: &mut LoweringContext,
+    op: BinOp,
+    instr_name: &str,
+    shift: &ShiftInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&shift.dst)?;
+    let src_a_typed = ctx.resolve_operand_typed(&shift.src_a)?;
+    let src_b_typed = ctx.resolve_operand_typed(&shift.src_b)?;
+
+    ctx.check_dst_type(&dst_typed, shift.ty, instr_name)?;
+    ctx.check_operand_type(&src_a_typed, shift.ty, instr_name)?;
+    // PTX Documentation: Shift a left by the amount specified by unsigned 32-bit value in b. <-- U32 is the type for b
+    ctx.check_operand_type(&src_b_typed, ScalarType::U32, instr_name)?;
+
+    ctx.emit(
+        LoweredInstr::BinOp {
+            op,
+            dst: dst_typed.reg,
+            src_a: src_a_typed.operand,
+            src_b: src_b_typed.operand,
+            ty: shift.ty,
+            clamp: None,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_shf(
+    ctx: &mut LoweringContext,
+    shf: &ShfInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // Operands stay untyped here: `lo`/`hi` are `.b32` bit-vectors
+    // whose runtime value kind (plain scalar or packed f16 pair)
+    // decides the semantics - see `LoweredInstr::Shf`.
+    let dst = ctx.resolve_dst_typed(&shf.dst)?.reg;
+    let lo = ctx.resolve_operand(&shf.lo)?;
+    let hi = ctx.resolve_operand(&shf.hi)?;
+    let shift = ctx.resolve_operand(&shf.shift)?;
+
+    ctx.emit(
+        LoweredInstr::Shf {
+            dst,
+            lo,
+            hi,
+            shift,
+            dir: shf.dir,
+            mode: shf.mode,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_bfi(
+    ctx: &mut LoweringContext,
+    bfi: &BfiInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&bfi.dst)?;
+    let src_a_typed = ctx.resolve_operand_typed(&bfi.src_a)?;
+    let src_b_typed = ctx.resolve_operand_typed(&bfi.src_b)?;
+    // start and len are typically u32 immediates or registers
+    let start = ctx.resolve_operand(&bfi.start)?;
+    let len = ctx.resolve_operand(&bfi.len)?;
+
+    ctx.check_dst_type(&dst_typed, bfi.ty, "bfi")?;
+    ctx.check_operand_type(&src_a_typed, bfi.ty, "bfi")?;
+    ctx.check_operand_type(&src_b_typed, bfi.ty, "bfi")?;
+
+    ctx.emit(
+        LoweredInstr::Bfi {
+            dst: dst_typed.reg,
+            src_a: src_a_typed.operand,
+            src_b: src_b_typed.operand,
+            start,
+            len,
+            ty: bfi.ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_bfe(
+    ctx: &mut LoweringContext,
+    bfe: &BfeInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&bfe.dst)?;
+    let src_a_typed = ctx.resolve_operand_typed(&bfe.src_a)?;
+    // start and len are typically u32 immediates or registers
+    let start = ctx.resolve_operand(&bfe.start)?;
+    let len = ctx.resolve_operand(&bfe.len)?;
+
+    ctx.check_dst_type(&dst_typed, bfe.ty, "bfe")?;
+    ctx.check_operand_type(&src_a_typed, bfe.ty, "bfe")?;
+
+    ctx.emit(
+        LoweredInstr::Bfe {
+            dst: dst_typed.reg,
+            src_a: src_a_typed.operand,
+            start,
+            len,
+            ty: bfe.ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_prmt(
+    ctx: &mut LoweringContext,
+    prmt: &PrmtInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    if prmt.mode != ast::PrmtMode::None {
+        return Err(unsupported("prmt", "mode modifiers"));
+    }
+    let dst = ctx.resolve_dst_typed(&prmt.dst)?;
+    let src_a = ctx.resolve_operand_typed(&prmt.src_a)?;
+    let src_b = ctx.resolve_operand_typed(&prmt.src_b)?;
+    let selector = ctx.resolve_operand(&prmt.selector)?;
+    ctx.check_dst_type(&dst, ScalarType::B32, "prmt")?;
+    ctx.check_operand_type(&src_a, ScalarType::B32, "prmt")?;
+    ctx.check_operand_type(&src_b, ScalarType::B32, "prmt")?;
+    ctx.emit(
+        LoweredInstr::Prmt {
+            dst: dst.reg,
+            src_a: src_a.operand,
+            src_b: src_b.operand,
+            selector,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+pub(super) fn lower_lop3(
+    ctx: &mut LoweringContext,
+    lop3: &Lop3Instr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    if lop3.bool_op.is_some() || lop3.dst_pred.is_some() || lop3.pred_q.is_some() {
+        return Err(unsupported("lop3", "boolean or predicate-output modifiers"));
+    }
+    let dst = ctx.resolve_dst_typed(&lop3.dst)?;
+    let src_a = ctx.resolve_operand_typed(&lop3.src_a)?;
+    let src_b = ctx.resolve_operand_typed(&lop3.src_b)?;
+    let src_c = ctx.resolve_operand_typed(&lop3.src_c)?;
+    ctx.check_dst_type(&dst, ScalarType::B32, "lop3")?;
+    ctx.check_operand_type(&src_a, ScalarType::B32, "lop3")?;
+    ctx.check_operand_type(&src_b, ScalarType::B32, "lop3")?;
+    ctx.check_operand_type(&src_c, ScalarType::B32, "lop3")?;
+    ctx.emit(
+        LoweredInstr::Lop3 {
+            dst: dst.reg,
+            src_a: src_a.operand,
+            src_b: src_b.operand,
+            src_c: src_c.operand,
+            lut: ctx.resolve_operand(&lop3.lut)?,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
 pub(super) fn lower_setp(
     ctx: &mut LoweringContext,
     setp: &SetpInstr,
@@ -1386,6 +1791,35 @@ pub(super) fn lower_setp(
             ));
         }
     }
+    Ok(())
+}
+
+pub(super) fn lower_selp(
+    ctx: &mut LoweringContext,
+    selp: &SelpInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&selp.dst)?;
+    let src_a_typed = ctx.resolve_operand_typed(&selp.src_a)?;
+    let src_b_typed = ctx.resolve_operand_typed(&selp.src_b)?;
+    let pred_typed = ctx.resolve_operand_typed(&selp.src_c)?;
+
+    ctx.check_dst_type(&dst_typed, selp.ty, "selp")?;
+    ctx.check_operand_type(&src_a_typed, selp.ty, "selp")?;
+    ctx.check_operand_type(&src_b_typed, selp.ty, "selp")?;
+    // Predicate operand must be pred type
+    ctx.check_operand_type(&pred_typed, ScalarType::Pred, "selp")?;
+
+    ctx.emit(
+        LoweredInstr::Selp {
+            dst: dst_typed.reg,
+            src_a: src_a_typed.operand,
+            src_b: src_b_typed.operand,
+            pred: pred_typed.operand,
+            ty: selp.ty,
+        },
+        predicate,
+    )?;
     Ok(())
 }
 

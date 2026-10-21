@@ -1,14 +1,17 @@
-//! Lowering of loads, stores, parameter accesses and `cp.async`.
+//! Lowering of data movement: `mov`, loads, stores, parameter accesses,
+//! `cvta`, `mapa` and `cp.async`.
 
 use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
-    self, AddressBase, CpAsyncInstr, FromAscii, LdInstr, MemSemantics, Operand as AstOperand,
-    ScalarType, SharedStateSpaceQualifier, StInstr, StateSpace, VecWidth,
+    self, AddressBase, CpAsyncInstr, CpAsyncWaitGroupInstr, CvtaInstr, FromAscii, LdInstr,
+    MapaInstr, MemSemantics, MovInstr, Operand as AstOperand, ScalarType,
+    SharedStateSpaceQualifier, StInstr, StateSpace, VecWidth,
 };
 use volta_frontend::instr_parse::is_cache_perf_hint;
 use volta_frontend::lex::DottedIdent;
 
-use crate::lowered::{CpAsyncSrcSize, LoweredInstr, MemSpace, Predicate, UnaryOp};
+use crate::lowered::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};
+use crate::symbols::RegId;
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -76,6 +79,165 @@ fn check_vec_arity(
             reason: "the .vN width modifier must match the vector operand's register count",
         })
     }
+}
+
+pub(super) fn lower_mov(
+    ctx: &mut LoweringContext,
+    mov: &MovInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    match (&mov.dst, &mov.src) {
+        (AstOperand::Vector(_), AstOperand::Vector(_)) => {
+            return Err(LowerError::UnsupportedInstruction {
+                instruction: format!("mov.{:?} (vector-to-vector)", mov.ty),
+                reason: Some(
+                    "vector destination and vector source together are not supported".to_string(),
+                ),
+            });
+        }
+        (AstOperand::Vector(dst_elems), _) if dst_elems.len() == 2 => {
+            // Scalar-to-vector unpack: mov.bN {lo, hi}, src; the
+            // source's value kind is resolved at eval (`UnpackHalves`).
+            // Either half may be `_` (e.g. `mov.b64 {_, %r1}, %rd2`).
+            let resolve_half = |elem: &AstOperand| -> LowerResult<Option<RegId>> {
+                match elem {
+                    AstOperand::Underscore => Ok(None),
+                    other => ctx.resolve_dst(other).map(Some),
+                }
+            };
+            let lo_reg = resolve_half(&dst_elems[0])?;
+            let hi_reg = resolve_half(&dst_elems[1])?;
+            let src = ctx.resolve_operand(&mov.src)?;
+
+            ctx.emit(
+                LoweredInstr::UnpackHalves {
+                    lo: lo_reg,
+                    hi: hi_reg,
+                    src,
+                    ty: mov.ty,
+                },
+                predicate,
+            )?;
+        }
+        (AstOperand::Vector(dst_elems), _) if dst_elems.len() == 4 => {
+            // Four-lane unpack: mov.b128 {e0,e1,e2,e3}, src. Same
+            // shape as the 2-element case above, one level wider -
+            // see `UnpackQuad`. Any lane may be the `_` sink.
+            let resolve_elem = |elem: &AstOperand| -> LowerResult<Option<RegId>> {
+                match elem {
+                    AstOperand::Underscore => Ok(None),
+                    other => ctx.resolve_dst(other).map(Some),
+                }
+            };
+            let elems = [
+                resolve_elem(&dst_elems[0])?,
+                resolve_elem(&dst_elems[1])?,
+                resolve_elem(&dst_elems[2])?,
+                resolve_elem(&dst_elems[3])?,
+            ];
+            let src = ctx.resolve_operand(&mov.src)?;
+
+            ctx.emit(LoweredInstr::UnpackQuad { elems, src }, predicate)?;
+        }
+        (AstOperand::Vector(dst_elems), _) => {
+            return Err(LowerError::UnsupportedInstruction {
+                instruction: format!(
+                    "mov.{:?} (vector unpack with {} elements)",
+                    mov.ty,
+                    dst_elems.len()
+                ),
+                reason: Some("only 2- and 4-element vector unpack is supported".to_string()),
+            });
+        }
+        (_, AstOperand::Vector(elements)) if elements.len() == 2 => {
+            // Vector-to-scalar pack: mov.bN dst, {lo, hi}
+            // PTX ISA 9.7.9.4 semantics: d = lo | (hi << w)
+            // where w = type_bits / 2
+            let dst_typed = ctx.resolve_dst_typed(&mov.dst)?;
+            let dst = dst_typed.reg;
+
+            let lo = ctx.resolve_operand(&elements[0])?;
+            let hi = ctx.resolve_operand(&elements[1])?;
+
+            if matches!(mov.ty.bits(), 32 | 64) {
+                // Always a Value::Pair, exact for real and integer
+                // halves (see PackHalves): b32 packs f16x2/bf16x2,
+                // b64 packs f32x2 or two 32-bit integer halves.
+                ctx.emit(LoweredInstr::PackHalves { dst, lo, hi }, predicate)?;
+            } else {
+                // Any other width: plain bitwise pack.
+                let elem_width = mov.ty.bits() / 2;
+
+                // Step 1: dst = hi << w
+                ctx.emit(
+                    LoweredInstr::BinOp {
+                        op: BinOp::Shl,
+                        dst,
+                        src_a: hi,
+                        src_b: Operand::ImmI64(elem_width as i64),
+                        ty: mov.ty,
+                        clamp: None,
+                    },
+                    predicate,
+                )?;
+
+                // Step 2: dst = dst | lo
+                ctx.emit(
+                    LoweredInstr::BinOp {
+                        op: BinOp::Or,
+                        dst,
+                        src_a: Operand::Reg(dst),
+                        src_b: lo,
+                        ty: mov.ty,
+                        clamp: None,
+                    },
+                    predicate,
+                )?;
+            }
+        }
+        (_, AstOperand::Vector(elements)) if elements.len() == 4 => {
+            // Four-lane pack: mov.b128 dst, {e0,e1,e2,e3}. Always a
+            // `Value::Quad`, never a bitwise composition (see
+            // `PackQuad`).
+            let dst = ctx.resolve_dst_typed(&mov.dst)?.reg;
+            let elems = [
+                ctx.resolve_operand(&elements[0])?,
+                ctx.resolve_operand(&elements[1])?,
+                ctx.resolve_operand(&elements[2])?,
+                ctx.resolve_operand(&elements[3])?,
+            ];
+
+            ctx.emit(LoweredInstr::PackQuad { dst, elems }, predicate)?;
+        }
+        (_, AstOperand::Vector(elements)) => {
+            return Err(LowerError::UnsupportedInstruction {
+                instruction: format!(
+                    "mov.{:?} (vector pack with {} elements)",
+                    mov.ty,
+                    elements.len()
+                ),
+                reason: Some("only 2- and 4-element vector pack is supported".to_string()),
+            });
+        }
+        _ => {
+            // Normal scalar mov
+            let dst_typed = ctx.resolve_dst_typed(&mov.dst)?;
+            let src_typed = ctx.resolve_operand_typed(&mov.src)?;
+
+            ctx.check_dst_type(&dst_typed, mov.ty, "mov")?;
+            ctx.check_operand_type(&src_typed, mov.ty, "mov")?;
+
+            ctx.emit(
+                LoweredInstr::Mov {
+                    dst: dst_typed.reg,
+                    src: src_typed.operand,
+                    ty: mov.ty,
+                },
+                predicate,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn lower_load(
@@ -323,6 +485,31 @@ pub(super) fn lower_cp_async(
     )
 }
 
+pub(super) fn lower_cp_async_wait_group(
+    ctx: &mut LoweringContext,
+    wg: &CpAsyncWaitGroupInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let n = ctx.resolve_const_u32(
+        &wg.n,
+        "cp.async.wait_group",
+        "n must be a compile-time integer immediate",
+    )?;
+    ctx.emit(LoweredInstr::CpAsyncWaitGroup { n }, predicate)?;
+    Ok(())
+}
+
+pub(super) fn lower_cp_async_wait_all(
+    ctx: &mut LoweringContext,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    // cp.async.wait_all is exactly cp.async.commit_group followed
+    // by cp.async.wait_group 0.
+    ctx.emit(LoweredInstr::CpAsyncCommitGroup, predicate)?;
+    ctx.emit(LoweredInstr::CpAsyncWaitGroup { n: 0 }, predicate)?;
+    Ok(())
+}
+
 /// Extract the `(symbol, offset)` of a param-space address like `[param0+0]`.
 fn param_addr_symbol(ctx: &LoweringContext, addr: &AstOperand) -> LowerResult<(String, i64)> {
     if let AstOperand::Address(addr) = addr
@@ -423,6 +610,72 @@ fn lower_param_store(
     }
     let src = ctx.resolve_operand(&st.src)?;
     ctx.local_params.insert(name, LocalParamSlot::Stored(src));
+    Ok(())
+}
+
+pub(super) fn lower_cvta(
+    ctx: &mut LoweringContext,
+    cvta: &CvtaInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let ast::CvtaInstr {
+        to_generic,
+        space,
+        ty: _ty, // pointer width; the identity holds at either width
+        dst,
+        src,
+    } = cvta;
+    // Only `cvta.to.global` is accepted, as the identity (global is
+    // identity-mapped in the generic window). Other forms would mint
+    // wrong-space or arbitrary addresses (or are unused), so reject.
+    if *to_generic || *space != StateSpace::Global {
+        let form = format!(
+            "cvta{}.{}",
+            if *to_generic { "" } else { ".to" },
+            format!("{:?}", space).to_lowercase()
+        );
+        let reason = if *space == StateSpace::Global {
+            // Necessarily the to-generic direction here.
+            "cvta.global (global -> generic) would also be the identity, \
+             but the corpus never uses it; only cvta.to.global is modeled"
+        } else {
+            "only cvta.to.global is modeled (as the identity); generic \
+             addresses have no per-space windows in this model"
+        };
+        return Err(LowerError::UnsupportedInstruction {
+            instruction: form,
+            reason: Some(reason.to_string()),
+        });
+    }
+    let dst = ctx.resolve_dst(dst)?;
+    let src = ctx.resolve_operand(src)?;
+    ctx.emit(LoweredInstr::Cvta { dst, src }, predicate)?;
+    Ok(())
+}
+
+pub(super) fn lower_mapa(
+    ctx: &mut LoweringContext,
+    mapa: &MapaInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let ast::MapaInstr {
+        space,
+        ty: _ty, // pointer width; the identity holds at either width
+        dst,
+        src,
+        cta,
+    } = mapa;
+    if *space == ast::MapaSpace::Generic {
+        return Err(unsupported(
+            "mapa",
+            "generic addressing (only mapa.shared::cluster is modeled; generic \
+             addresses have no per-space windows in this model)",
+        ));
+    }
+    let dst = ctx.resolve_dst(dst)?;
+    let src = ctx.resolve_operand(src)?;
+    let rank = ctx.resolve_operand(cta)?;
+    ctx.emit(LoweredInstr::Mapa { dst, src, rank }, predicate)?;
     Ok(())
 }
 
