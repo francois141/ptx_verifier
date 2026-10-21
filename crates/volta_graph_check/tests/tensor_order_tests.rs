@@ -126,6 +126,39 @@ fn a_waiter_without_the_after_fence_is_unproved() {
 }
 
 #[test]
+fn a_waited_store_then_load_of_one_warp_is_pipelined() {
+    let mut s = Scenario::new(1);
+    let (st, _) = s.tmem_st(0, 0, (0, 1));
+    s.warp_wait(0, &[0], &[st]);
+    s.tmem_ld(0, 0, (0, 1));
+    let (g, _) = s.completed(1);
+    assert_eq!(evidence(&check(&g)), (1, 1, 0));
+}
+
+#[test]
+fn an_unwaited_store_then_load_needs_the_fence_protocol() {
+    let mut s = Scenario::new(1);
+    s.tmem_st(0, 0, (0, 1));
+    s.tmem_ld(0, 0, (0, 1));
+    let (g, _) = s.completed(1);
+    let result = check(&g);
+    let [c] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(c.kind, ConflictKind::WriteRead);
+}
+
+#[test]
+fn a_waited_store_then_an_mma_still_needs_the_fence_protocol() {
+    let mut s = Scenario::new(1);
+    let (st, _) = s.tmem_st(0, 0, (0, 8));
+    s.warp_wait(0, &[0], &[st]);
+    s.mma(0, (0, 8));
+    let (g, _) = s.completed(1);
+    assert_eq!(check(&g).verdict(), Verdict::Fail);
+}
+
+#[test]
 fn pairs_are_oriented_by_issue_order() {
     let mut s = Scenario::new(2);
     let (_, read) = s.tmem_ld(0, 0, (0, 8));

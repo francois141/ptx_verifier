@@ -339,9 +339,12 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   (`assuming_epochs` for isolated tests). Closure queries are a vector-clock
   sweep in trace order (an async effect reaches what an observer of its
   completion reaches); `successors()` gives `D` explicitly for Algorithm 5.
-- `pipeline.rs` - `E_pipeline` (graph-construction step 5): same-thread
-  `tcgen05.mma` chains on one accumulator, edges between accumulator effects
-  only, with rule, roles and covered cells. No projection contains it.
+- `pipeline.rs` - `E_pipeline` (graph-construction step 5), the PTX ISA 9.4
+  implicitly pipelined pairs (9.7.18.6.2): same-thread `tcgen05.mma` chains on
+  one accumulator (edges between accumulator effects only), and same-warp
+  `tcgen05.st`->`ld`, `st`->`st`, `ld`->`st` pairs whose earlier op's
+  `tcgen05.wait` releases the later op's issuer before its issue. Edges keep
+  rule, roles and covered cells. No projection contains it.
 - `domain.rs` - the memory domains: `M` (ordinary global/shared effects, async
   ones and shared-memory `tcgen05` operands included; Algorithms 2-3) and `A`
   (Tensor Memory effects of `tcgen05` ops; Algorithms 4 and 6).

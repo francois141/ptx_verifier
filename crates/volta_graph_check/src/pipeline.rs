@@ -10,27 +10,41 @@
 //!   covered pair of effects `a ∈ Effects(x)`, `b ∈ Effects(y)`. An edge keeps its rule, its
 //!   operand roles and the physical cells it covers. It orders operand accesses only: not
 //!   whole-operation completion, not general memory visibility.
-//! * Supported rule ([`PipelineRule::MmaAccumulatorChain`], PTX ISA "implicitly pipelined
-//!   tcgen05 instructions"): `tcgen05.mma.cta_group::1` (Volta's only form) then another, issued
-//!   by the same thread in that program order (so one warp, issue order), on the same
-//!   accumulator: identical Tensor Memory `D` footprints, hence the same address and `M x N`
-//!   shape. It covers their accumulator (`D`) effects; `A`/`B` reads are not covered. An MMA
-//!   without an accumulator write has unknown preconditions and gets no edge.
-//! * Every edge joins two operations of one thread, so all are constructed immediately; none
-//!   needs a thread handoff's validation. No projection of [`crate::relation`] contains them.
+//! * Supported rules (PTX ISA 9.4, 9.7.18.6.2 "Pipelined tcgen05 Instructions"):
+//!   - Accumulator chains ([`PipelineRule::MmaAccumulatorChain`]): `tcgen05.mma.cta_group::1`
+//!     (Volta's only form) then another, issued by the same thread in that program order (so
+//!     one warp, issue order), on the same accumulator: identical Tensor Memory `D`
+//!     footprints, hence the same address and `M x N` shape. It covers their accumulator
+//!     (`D`) effects; `A`/`B` reads are not covered. An MMA without an accumulator write has
+//!     unknown preconditions and gets no edge.
+//!   - Waited loads and stores ([`PipelineRule::WaitedLoadStore`]): `tcgen05.st` ->
+//!     `tcgen05.ld`, `st` -> `st` or `ld` -> `st` (pairs 11-13), issued by one warp in that
+//!     order, with the earlier operation's own `tcgen05.wait` (`::st` for a store, `::ld` for
+//!     a load) between them: the wait's release of the later operation's issuer precedes its
+//!     issue. It covers their Tensor Memory data effects. Instructions of different warps are
+//!     never pipelined.
+//! * Every edge joins two operations of one thread (Volta issues a warp's `tcgen05.ld`/`.st`
+//!   from its first lane and rejects them once a lane exited), so all are constructed
+//!   immediately; none needs a thread handoff's validation. No projection of
+//!   [`crate::relation`] contains them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use volta_graph::{
-    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext, Footprint,
-    OperandRole, Space, ThreadIx,
+    AccessMode, AsyncOp, AsyncOpId, AsyncOpKind, CollectiveSide, EventGraph, EventId, EventKind,
+    ExecContext, Footprint, GenerationKind, OperandRole, Space, SyncObjectKind, ThreadIx,
 };
+
+const WARP_SIZE: u32 = 32;
 
 /// A supported implicit-pipelining rule of the PTX ISA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipelineRule {
     /// `tcgen05.mma` -> `tcgen05.mma` of one thread on one accumulator.
     MmaAccumulatorChain,
+    /// `tcgen05.st` -> `.ld`, `.st` -> `.st` or `.ld` -> `.st` of one warp, the earlier one
+    /// waited for in between.
+    WaitedLoadStore,
 }
 
 /// One edge `(a, b)` of `E_pipeline`.
@@ -44,11 +58,13 @@ pub struct PipelineEdge {
     pub cells: Footprint,
 }
 
-/// `E_pipeline` of one graph: the accumulator chains, ops in issue order.
+/// `E_pipeline` of one graph: the accumulator chains and each warp's `tcgen05.ld`/`.st`, ops
+/// in issue order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PipelineEdges {
     chains: Vec<Vec<AsyncOpId>>,
     position: HashMap<AsyncOpId, (usize, usize)>,
+    loads_stores: BTreeMap<u32, Vec<AsyncOpId>>,
 }
 
 /// A Tensor Memory rectangle: first lane, lanes, first column, columns.
@@ -85,6 +101,13 @@ pub fn pipeline_edges(graph: &EventGraph) -> PipelineEdges {
     let mut keys: HashMap<(ThreadIx, Vec<Rectangle>), usize> = HashMap::new();
     let mut edges = PipelineEdges::default();
     for (op, a) in graph.async_ops().iter() {
+        if matches!(a.kind, AsyncOpKind::Tcgen05Ld | AsyncOpKind::Tcgen05St) {
+            edges
+                .loads_stores
+                .entry(a.issuer.0 / WARP_SIZE)
+                .or_default()
+                .push(op);
+        }
         if a.kind != AsyncOpKind::Tcgen05Mma {
             continue;
         }
@@ -107,8 +130,20 @@ pub fn pipeline_edges(graph: &EventGraph) -> PipelineEdges {
 
 impl PipelineEdges {
     /// The edge `(a, b)`, if `EligiblePipeline` holds for `a`'s and `b`'s operations and
-    /// effects: `a` an accumulator effect of an MMA chained before `b`'s, sharing cells.
+    /// effects under one of the rules, `a`'s operation first.
     pub fn edge(&self, graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
+        self.accumulator_chain_edge(graph, a, b)
+            .or_else(|| waited_load_store_edge(graph, a, b))
+    }
+
+    /// [`PipelineRule::MmaAccumulatorChain`]: `a` an accumulator effect of an MMA chained before
+    /// `b`'s, sharing cells.
+    fn accumulator_chain_edge(
+        &self,
+        graph: &EventGraph,
+        a: EventId,
+        b: EventId,
+    ) -> Option<PipelineEdge> {
         let (x, ax) = accumulator_effect(graph, a)?;
         let (y, by) = accumulator_effect(graph, b)?;
         let (&(cx, px), &(cy, py)) = (self.position.get(&x)?, self.position.get(&y)?);
@@ -138,7 +173,7 @@ impl PipelineEdges {
                 .collect()
         };
         let mut out = Vec::new();
-        for chain in &self.chains {
+        for chain in self.chains.iter().chain(self.loads_stores.values()) {
             for (i, &x) in chain.iter().enumerate() {
                 for &y in &chain[i + 1..] {
                     for a in effects(x) {
@@ -164,6 +199,69 @@ fn accumulator_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, 
         && access.space == Space::Tensor
         && access.role == OperandRole::Accumulator)
         .then_some((op, access.footprint))
+}
+
+/// `event`'s operation and footprint, if it is a `tcgen05.ld`/`.st`'s Tensor Memory effect.
+fn load_store_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, Footprint)> {
+    let ev = graph.event(event);
+    let (ExecContext::Async(op), EventKind::Access(acc)) = (ev.ctx, ev.kind) else {
+        return None;
+    };
+    let access = graph.access(acc);
+    (matches!(
+        graph.async_op(op).kind,
+        AsyncOpKind::Tcgen05Ld | AsyncOpKind::Tcgen05St
+    ) && access.space == Space::Tensor
+        && access.role == OperandRole::TmemData)
+        .then_some((op, access.footprint))
+}
+
+/// [`PipelineRule::WaitedLoadStore`]: `a` and `b` effects of a `st` -> `ld`, `st` -> `st` or
+/// `ld` -> `st` pair of one warp, in issue order, the earlier one waited for in between.
+fn waited_load_store_edge(graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
+    let (x, ax) = load_store_effect(graph, a)?;
+    let (y, by) = load_store_effect(graph, b)?;
+    let (earlier, later) = (graph.async_op(x), graph.async_op(y));
+    let paired = matches!(
+        (earlier.kind, later.kind),
+        (AsyncOpKind::Tcgen05St, AsyncOpKind::Tcgen05Ld)
+            | (AsyncOpKind::Tcgen05St, AsyncOpKind::Tcgen05St)
+            | (AsyncOpKind::Tcgen05Ld, AsyncOpKind::Tcgen05St)
+    );
+    let warp = earlier.issuer.0 / WARP_SIZE;
+    let ordered = paired
+        && warp == later.issuer.0 / WARP_SIZE
+        && earlier.issue < later.issue
+        && waited_before(graph, earlier, warp, later);
+    if !ordered {
+        return None;
+    }
+    Some(PipelineEdge {
+        rule: PipelineRule::WaitedLoadStore,
+        from: a,
+        to: b,
+        roles: (OperandRole::TmemData, OperandRole::TmemData),
+        cells: shared_cells(ax, by)?,
+    })
+}
+
+/// Whether a `tcgen05.wait` of `warp` completing `earlier` (a warp collective's exit tracking
+/// it) releases `later`'s issuer before `later` is issued.
+fn waited_before(graph: &EventGraph, earlier: &AsyncOp, warp: u32, later: &AsyncOp) -> bool {
+    earlier.tracking.iter().any(|&g| {
+        let generation = graph.generation(g);
+        matches!(
+            generation.kind,
+            GenerationKind::Collective {
+                side: CollectiveSide::Exit,
+                ..
+            }
+        ) && graph.object(generation.object).kind == SyncObjectKind::WarpCollective { warp }
+            && generation
+                .releases
+                .iter()
+                .any(|&r| graph.thread_of(r) == Some(later.issuer) && r < later.issue)
+    })
 }
 
 fn shared_cells(a: Footprint, b: Footprint) -> Option<Footprint> {

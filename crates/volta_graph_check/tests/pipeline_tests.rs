@@ -87,15 +87,96 @@ fn an_mma_without_an_accumulator_write_has_no_edge() {
 }
 
 #[test]
-fn only_tcgen05_mma_chains_are_a_rule() {
+fn a_store_then_an_mma_is_not_a_rule_even_when_waited() {
     let mut s = Scenario::new(1);
-    let (_, st) = s.tmem_op(
-        0,
-        AsyncOpKind::Tcgen05St,
-        &[Cells::quadrant(AccessMode::Write, 0, (0, 8))],
-    );
+    let (st, write) = s.tmem_st(0, 0, (0, 8));
+    s.warp_wait(0, &[0], &[st]);
     let (_, d) = s.mma(0, (0, 8));
     s.async_op(0, AsyncOpKind::BulkCopy, AccessMode::Write, 0, Proxy::Async);
     let (g, _) = s.completed(1);
-    assert!(pipeline_edges(&g).edge(&g, st[0], d).is_none());
+    assert!(pipeline_edges(&g).edge(&g, write, d).is_none());
+}
+
+#[test]
+fn a_waited_store_then_load_of_one_warp_is_pipelined() {
+    let mut s = Scenario::new(1);
+    let (st, write) = s.tmem_st(0, 0, (0, 1));
+    s.warp_wait(0, &[0], &[st]);
+    let (_, read) = s.tmem_ld(0, 0, (0, 1));
+    let (g, _) = s.completed(1);
+    let edges = pipeline_edges(&g);
+    let edge = edges
+        .edge(&g, write, read)
+        .expect("pairs 11-13 with the store waited");
+    assert_eq!(edge.rule, PipelineRule::WaitedLoadStore);
+    assert_eq!(edge.roles, (OperandRole::TmemData, OperandRole::TmemData));
+    assert_eq!(
+        edge.cells,
+        Footprint::Tensor {
+            lane: 0,
+            lanes: 32,
+            col: 0,
+            cols: 1
+        }
+    );
+    assert!(edges.edge(&g, read, write).is_none(), "only in issue order");
+    assert_eq!(edges.edges(&g).len(), 1);
+}
+
+#[test]
+fn waited_store_store_and_load_store_pairs_are_pipelined() {
+    let mut s = Scenario::new(1);
+    let (first, w1) = s.tmem_st(0, 0, (0, 1));
+    s.warp_wait(0, &[0], &[first]);
+    let (_, w2) = s.tmem_st(0, 0, (0, 1));
+    let (ld, read) = s.tmem_ld(0, 0, (4, 1));
+    s.warp_wait(0, &[0], &[ld]);
+    let (_, w3) = s.tmem_st(0, 0, (4, 1));
+    let (g, _) = s.completed(1);
+    let edges = pipeline_edges(&g);
+    for (a, b) in [(w1, w2), (read, w3)] {
+        assert_eq!(
+            edges.edge(&g, a, b).map(|e| e.rule),
+            Some(PipelineRule::WaitedLoadStore)
+        );
+    }
+}
+
+#[test]
+fn a_load_or_store_without_its_wait_in_between_is_not_pipelined() {
+    let mut s = Scenario::new(1);
+    let (_, unwaited) = s.tmem_st(0, 0, (0, 1));
+    let (_, read) = s.tmem_ld(0, 0, (0, 1));
+    let (late, written) = s.tmem_st(0, 0, (4, 1));
+    let (_, reread) = s.tmem_ld(0, 0, (4, 1));
+    s.warp_wait(0, &[0], &[late]);
+    let (g, _) = s.completed(1);
+    let edges = pipeline_edges(&g);
+    assert!(edges.edge(&g, unwaited, read).is_none(), "no wait at all");
+    assert!(
+        edges.edge(&g, written, reread).is_none(),
+        "the wait comes after the later issue"
+    );
+}
+
+#[test]
+fn a_wait_completing_another_operation_does_not_count() {
+    let mut s = Scenario::new(1);
+    let (_, write) = s.tmem_st(0, 0, (0, 1));
+    let (other, _) = s.tmem_st(0, 0, (4, 1));
+    s.warp_wait(0, &[0], &[other]);
+    let (_, read) = s.tmem_ld(0, 0, (0, 1));
+    let (g, _) = s.completed(1);
+    assert!(pipeline_edges(&g).edge(&g, write, read).is_none());
+}
+
+#[test]
+fn loads_and_stores_of_different_warps_are_not_pipelined() {
+    let mut s = Scenario::new(33);
+    let (st, write) = s.tmem_st(0, 0, (0, 1));
+    s.warp_wait(0, &[0], &[st]);
+    s.barrier(&[0, 32], &[]);
+    let (_, read) = s.tmem_ld(32, 0, (0, 1));
+    let (g, _) = s.completed(33);
+    assert!(pipeline_edges(&g).edge(&g, write, read).is_none());
 }

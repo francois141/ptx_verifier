@@ -4,10 +4,11 @@
 
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
-    AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph,
-    EventId, FenceKind, Footprint, GenerationEvidence, GenerationId, GenerationKind, GraphBuilder,
-    InstructionInfo, MemAccess, OperandRole, OrderingKind, Parity, ProgramPoint, Provenance, Proxy,
-    Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, CollectiveSide,
+    ContributionKind, EventGraph, EventId, FenceKind, Footprint, GenerationEvidence, GenerationId,
+    GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole, OrderingKind, Parity,
+    ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal,
+    ThreadIx,
 };
 
 pub const PC: ProgramPoint = ProgramPoint(0);
@@ -364,6 +365,68 @@ impl Scenario {
             &[Cells::quadrant(AccessMode::Read, warp, cols)],
         );
         (op, effects[0])
+    }
+
+    /// A `tcgen05.st` by `issuer` writing columns `cols` of warp `warp`'s lanes.
+    pub fn tmem_st(&mut self, issuer: u32, warp: u8, cols: (u16, u16)) -> (AsyncOpId, EventId) {
+        let (op, effects) = self.tmem_op(
+            issuer,
+            AsyncOpKind::Tcgen05St,
+            &[Cells::quadrant(AccessMode::Write, warp, cols)],
+        );
+        (op, effects[0])
+    }
+
+    /// A `tcgen05.wait` of warp `warp` by `lanes`: a warp collective whose exit completes
+    /// `ops`, as the interpreter records `tcgen05.wait::ld`/`::st`. Returns the exit.
+    pub fn warp_wait(&mut self, warp: u32, lanes: &[u32], ops: &[AsyncOpId]) -> GenerationId {
+        let known = self
+            .b
+            .graph_so_far()
+            .objects()
+            .iter()
+            .find(|(_, o)| o.kind == SyncObjectKind::WarpCollective { warp })
+            .map(|(id, _)| id);
+        let object =
+            known.unwrap_or_else(|| self.b.sync_object(SyncObjectKind::WarpCollective { warp }));
+        let index = self
+            .b
+            .graph_so_far()
+            .generations()
+            .values()
+            .filter(|g| g.object == object)
+            .count() as u32
+            / 2;
+        let mask = lanes.iter().fold(0u32, |m, &l| m | 1 << (l % 32));
+        let kind = |side| GenerationKind::Collective { pc: PC, mask, side };
+        let entry = self
+            .b
+            .open_generation(object, index, kind(CollectiveSide::Entry));
+        for &l in lanes {
+            self.b
+                .contribute(t(l), PC, entry, ContributionKind::Blocking);
+        }
+        self.b
+            .complete_generation(entry, GenerationEvidence::default());
+        for &l in lanes {
+            self.b.resume(t(l), PC, entry);
+        }
+        let exit = self
+            .b
+            .open_generation(object, index, kind(CollectiveSide::Exit));
+        for &op in ops {
+            self.b.track(op, exit, 0);
+        }
+        for &l in lanes {
+            self.b
+                .contribute(t(l), PC, exit, ContributionKind::Blocking);
+        }
+        self.b
+            .complete_generation(exit, GenerationEvidence::default());
+        for &l in lanes {
+            self.b.resume(t(l), PC, exit);
+        }
+        exit
     }
 
     /// `thread`'s `tcgen05.commit` of `ops` to phase `g`: the phase tracks them, then the

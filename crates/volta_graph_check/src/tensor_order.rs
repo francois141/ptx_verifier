@@ -20,7 +20,8 @@
 //!   by its issue events selects a direction, not an ordering proof.
 //! * `PIPELINED(a, b)`: `(a, b) ∈ E_pipeline` ([`crate::pipeline`]), whose rule covers the pair's
 //!   opcodes, operand roles, warp, CTA group, address, shape and issue order over the whole
-//!   shared footprint.
+//!   shared footprint: same-thread MMA accumulator chains, and same-warp `tcgen05.st`/`.ld`
+//!   pairs with the earlier one's `tcgen05.wait` in between.
 //! * `SEARCH` is [`crate::sync_search::search`], run once per pair of operations.
 //! * `Pass`: `B = {}`. `Fail`: `B`, each pair with its first shared cell, ordered by the later
 //!   issue (at most [`CONFLICT_CAP`] pairs are listed). `Unknown`: a Tensor Memory effect of
