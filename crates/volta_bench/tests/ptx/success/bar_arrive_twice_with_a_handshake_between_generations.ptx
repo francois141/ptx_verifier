@@ -1,0 +1,22 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<2>;
+
+    mov.u32 %r1, %tid.x;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra $PRODUCER;
+    bar.sync 1, 64;
+    bar.arrive 2, 64;
+    bar.sync 1, 64;
+    ret;
+$PRODUCER:
+    bar.arrive 1, 64;
+    bar.sync 2, 64;
+    bar.arrive 1, 64;
+    ret;
+}

@@ -133,6 +133,24 @@ fn test_wgmma_fence_skipped_by_one_lane_deadlocks() {
     assert!(!blocked.is_empty());
 }
 
+/// Warp 1 `bar.arrive`s twice while warp 0 waits in its first `bar.sync`:
+/// nothing keeps the second arrival out of the first generation, so which
+/// generation it completes depends on the schedule.
+#[test]
+fn test_bar_arrive_twice_before_the_barrier_fires() {
+    let module = ptx!(parse "failing/bar_arrive_twice_before_the_barrier_fires");
+    let err = run_kernel(&module, None, AnalysisConfig::new((64, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::BarrierMismatch { reason, .. })
+                if reason.contains("96 threads arrived at barrier 1")
+        ),
+        "expected a barrier mismatch, got: {}",
+        err
+    );
+}
+
 /// Hazard A (`WgmmaFenceHazard`): an ordinary register write between the two
 /// calls breaks the same-shape chain, and the second call's accumulator read
 /// has no `wgmma.fence`.

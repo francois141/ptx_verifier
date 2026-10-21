@@ -174,6 +174,23 @@ fn test_cp_async_same_thread_peek_before_wait_is_hazard() {
     });
 }
 
+/// Likewise for a store: thread 0 writes its own `cp.async` destination before `wait_all`, so
+/// which write the shared word ends up holding depends on when the copy lands. The other
+/// threads of the warp exit at once.
+#[test]
+fn test_cp_async_same_thread_store_before_wait_is_hazard() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/cp_async_same_thread_store_before_wait_is_hazard"),
+        in_out_config(32, 1),
+    );
+    assert_any(&ws, "thread 0's store and its own cp.async write", |w| {
+        w.kind == ConflictKind::WriteWrite
+            && on_shared(w)
+            && w.earlier == Side::effect(0, Write, AsyncOpKind::CpAsync)
+            && w.later == Side::plain(0, Write)
+    });
+}
+
 /// Another thread reading the destination while thread 0's copy is in flight conflicts with
 /// the copy; the barrier exposes the interleaving.
 #[test]

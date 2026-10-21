@@ -111,6 +111,17 @@ fn test_exited_thread_releases_barrier() {
     );
 }
 
+/// `failing/bar_arrive_twice_before_the_barrier_fires` with a handshake: warp 1
+/// waits on barrier 2, which warp 0 arrives at once past its first `bar.sync`,
+/// so each of warp 1's arrivals completes its own generation of barrier 1.
+#[test]
+fn test_bar_arrive_twice_with_a_handshake_between_generations() {
+    analyze!(
+        "success/bar_arrive_twice_with_a_handshake_between_generations",
+        AnalysisConfig::new((64, 1, 1))
+    );
+}
+
 /// `mbarrier.init` with `count = 2` needs both threads' `arrive` before
 /// `try_wait.parity` proceeds: the scheduler wakes a thread when a
 /// *different* thread's arrive completes the phase.
