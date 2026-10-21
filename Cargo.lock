@@ -658,6 +658,7 @@ dependencies = [
  "volta_graph",
  "volta_graph_check",
  "volta_pipeline",
+ "volta_viz",
 ]
 
 [[package]]
@@ -677,6 +678,7 @@ dependencies = [
  "volta_graph_check",
  "volta_pipeline",
  "volta_spec",
+ "volta_viz",
 ]
 
 [[package]]
@@ -770,6 +772,16 @@ dependencies = [
  "volta_common",
  "volta_equivalence",
  "volta_expr",
+]
+
+[[package]]
+name = "volta_viz"
+version = "0.1.0"
+dependencies = [
+ "id_collections",
+ "volta_expr",
+ "volta_graph",
+ "volta_graph_check",
 ]
 
 [[package]]

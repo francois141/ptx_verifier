@@ -1612,16 +1612,41 @@ impl ExprArena {
     /// heavily shared DAGs can print exponentially large text (multi-GB for tensor-core chains);
     /// past `MAX_DISPLAY_BYTES` this returns a short placeholder instead.
     pub fn display_expr(&self, id: ExprId) -> String {
-        use std::fmt::Write;
-
         const MAX_DISPLAY_BYTES: usize = 50 * 1024 * 1024;
 
-        // We use a wrapper that implements Display so we can use write!
+        match self.display_bounded(id, MAX_DISPLAY_BYTES) {
+            Ok(text) => text,
+            Err(_) => format!(
+                "<expression exceeds {}MB when printed - likely heavy internal \
+                 sharing in this unmemoized display path; pass --print-outputs 0 \
+                 to skip printing, or use 'volta verify'/'volta compare', which \
+                 check equivalence without ever formatting raw expressions>",
+                MAX_DISPLAY_BYTES / (1024 * 1024)
+            ),
+        }
+    }
+
+    /// At most the first `max_bytes` of the expression's text, ending in `…` when cut: unlike
+    /// [`Self::display_expr`], a cut costs only the bytes kept.
+    pub fn display_expr_prefix(&self, id: ExprId, max_bytes: usize) -> String {
+        match self.display_bounded(id, max_bytes) {
+            Ok(text) => text,
+            Err(mut prefix) => {
+                prefix.push('…');
+                prefix
+            }
+        }
+    }
+
+    /// The expression's text, or the prefix that fit in `max_bytes` (cut at a char boundary).
+    fn display_bounded(&self, id: ExprId, max_bytes: usize) -> Result<String, String> {
+        use std::fmt::Write;
+
         struct ExprDisplay<'a> {
             arena: &'a ExprArena,
             id: ExprId,
         }
-        impl<'a> fmt::Display for ExprDisplay<'a> {
+        impl fmt::Display for ExprDisplay<'_> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.arena.fmt_expr(self.id, f)
             }
@@ -1636,6 +1661,12 @@ impl ExprArena {
         impl fmt::Write for LimitedWriter {
             fn write_str(&mut self, s: &str) -> fmt::Result {
                 if s.len() > self.remaining {
+                    let mut cut = self.remaining;
+                    while !s.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    self.buf.push_str(&s[..cut]);
+                    self.remaining = 0;
                     return Err(fmt::Error);
                 }
                 self.remaining -= s.len();
@@ -1646,17 +1677,11 @@ impl ExprArena {
 
         let mut writer = LimitedWriter {
             buf: String::new(),
-            remaining: MAX_DISPLAY_BYTES,
+            remaining: max_bytes,
         };
         match write!(writer, "{}", ExprDisplay { arena: self, id }) {
-            Ok(()) => writer.buf,
-            Err(_) => format!(
-                "<expression exceeds {}MB when printed - likely heavy internal \
-                 sharing in this unmemoized display path; pass --print-outputs 0 \
-                 to skip printing, or use 'volta verify'/'volta compare', which \
-                 check equivalence without ever formatting raw expressions>",
-                MAX_DISPLAY_BYTES / (1024 * 1024)
-            ),
+            Ok(()) => Ok(writer.buf),
+            Err(_) => Err(writer.buf),
         }
     }
 }
@@ -2425,6 +2450,24 @@ mod tests {
             vec!["x".to_string()],
         );
         assert!(oob_string.validate().is_err());
+    }
+
+    /// 60 levels of self-adds would print ~2^60 leaves; the prefix stops after the bytes it keeps.
+    #[test]
+    fn display_expr_prefix_cuts_exponentially_shared_expressions_cheaply() {
+        let mut arena = ExprArena::new();
+        let mut e = arena.symbol();
+        for _ in 0..60 {
+            e = arena.add(e, e);
+        }
+        let text = arena.display_expr_prefix(e, 32);
+        assert!(text.ends_with('…'), "{text}");
+        assert!(text.len() <= 32 + '…'.len_utf8(), "{text}");
+        let small = arena.int(3);
+        assert_eq!(
+            arena.display_expr_prefix(small, 32),
+            arena.display_expr(small)
+        );
     }
 
     /// `display_expr` re-walks shared subexpressions, so 30 levels of self-adds print ~2^30 leaves

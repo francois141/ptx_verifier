@@ -689,7 +689,7 @@ fn test_b64_shift_by_u32_register() {
 /// `add.u32 x, -1` are the same op, and `-1` stays `-1` under `.u32`.
 #[test]
 fn test_ring_op_constant_signedness_is_irrelevant() {
-    let kernel = |name: &str, src: String| analyze_case(name, &src, in_out_config(1, 1));
+    let kernel = |name: &'static str, src: String| analyze_case(name, &src, in_out_config(1, 1));
     for ((signed, signed_src), (unsigned, unsigned_src)) in [
         (
             ptx_case!("success/ring_op_constant_signedness_is_irrelevant_add_s32_neg1"),

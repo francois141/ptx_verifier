@@ -6,10 +6,9 @@
 #[allow(unused_macros)]
 mod common;
 
-use volta_analysis::{AnalysisConfig, AnalysisResult, OutputsUnavailable, analyze};
+use volta_analysis::{AnalysisConfig, AnalysisResult, OutputsUnavailable};
 use volta_equivalence::EquivOutcome;
 use volta_equivalence::check::check_output_equivalence;
-use volta_frontend::ast::Module;
 use volta_graph::{
     AccessMode, AsyncOpKind, BlockedOn, CollectiveSide, ContributionKind, EventGraph, EventKind,
     ExecContext, Footprint, GenerationKind, Space, SyncObjectKind, Terminal, ThreadIx,
@@ -17,8 +16,8 @@ use volta_graph::{
 
 use common::*;
 
-fn run(module: &Module, config: AnalysisConfig) -> AnalysisResult {
-    let result = analyze(module, None, config).expect("the execution starts");
+fn run(module: &Ptx, config: AnalysisConfig) -> AnalysisResult {
+    let result = analyze_only(module, None, config).expect("the execution starts");
     assert_eq!(result.graph.validate(), Ok(()), "{}", result.graph.dump());
     result
 }

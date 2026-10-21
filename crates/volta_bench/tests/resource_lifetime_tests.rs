@@ -6,14 +6,13 @@
 mod common;
 
 use volta_analysis::AnalysisConfig;
-use volta_frontend::ast::Module;
 use volta_graph::{AccessMode, AsyncOpKind, EventKind};
 use volta_graph_check::resource_lifetime::LifetimeViolation;
 
 use common::*;
 
 /// The uses phase 1 reports as not ordered before their deallocation.
-fn freed_while_in_use(module: &Module, config: AnalysisConfig) -> Vec<Side> {
+fn freed_while_in_use(module: &Ptx, config: AnalysisConfig) -> Vec<Side> {
     let checked = check(module, None, config);
     let effects: Vec<Side> = checked
         .report
@@ -36,7 +35,7 @@ fn freed_while_in_use(module: &Module, config: AnalysisConfig) -> Vec<Side> {
 }
 
 /// The allocations the completed trace never frees, as `(thread, columns)`.
-fn never_freed(module: &Module, config: AnalysisConfig) -> Vec<(u32, u16)> {
+fn never_freed(module: &Ptx, config: AnalysisConfig) -> Vec<(u32, u16)> {
     let checked = check(module, None, config);
     let graph = &checked.analysis.graph;
     let allocs: Vec<(u32, u16)> = checked

@@ -1,0 +1,237 @@
+//! The viewer's run store and page on a hand-built graph: what a document records (lanes,
+//! typed edges, async ops, interned event text, the checks' conclusion) and what the page
+//! embeds. No producer involved; PTX-driven runs are recorded by `volta_bench`.
+
+use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
+
+use volta_expr::ExprArena;
+use volta_graph::{
+    AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph, EventId, Footprint,
+    GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole,
+    OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
+    ThreadIx,
+};
+use volta_graph_check::check_graph;
+use volta_viz::{Outcome, Run, RunId, write_page, write_run};
+
+const SOURCE: &str = "// a < b\n.entry k()\n{\n  ret;\n}\n";
+const PC: ProgramPoint = ProgramPoint(0);
+
+/// A fresh, empty directory for one test.
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("volta-viz-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+fn access(
+    thread: u32,
+    space: Space,
+    mode: AccessMode,
+    addr: u64,
+    b: &mut GraphBuilder,
+    arena: &mut ExprArena,
+) -> MemAccess {
+    let value = (mode == AccessMode::Write).then(|| b.value(StoredValue::Scalar(arena.int(7))));
+    MemAccess {
+        space,
+        mode,
+        ordering: OrderingKind::Ordinary,
+        proxy: Proxy::Generic,
+        footprint: Footprint::Bytes { addr, width: 4 },
+        role: OperandRole::Plain,
+        attributed: ThreadIx(thread),
+        value,
+    }
+}
+
+/// The events the assertions name.
+struct Events {
+    contributions: [EventId; 2],
+    completion: EventId,
+    resumes: [EventId; 2],
+    issue: EventId,
+    effects: [EventId; 2],
+    async_completion: EventId,
+}
+
+/// Two threads write shared memory around a full-CTA barrier, then thread 0 runs one
+/// two-effect `cp.async` to completion.
+fn barrier_then_copy(arena: &mut ExprArena) -> (EventGraph, Events) {
+    let mut b = GraphBuilder::new(Provenance {
+        kernel: "k".to_string(),
+        block_dim: (2, 1, 1),
+        grid_dim: (1, 1, 1),
+        targets: vec!["Sm80".to_string()],
+        assumptions: Vec::new(),
+        instructions: vec![InstructionInfo {
+            kind: "Store",
+            span: Some((SOURCE.find("ret").unwrap(), SOURCE.find("ret").unwrap() + 3)),
+        }],
+    });
+    let bar = b.sync_object(SyncObjectKind::NamedBarrier { id: 0 });
+    let g = b.open_generation(
+        bar,
+        0,
+        GenerationKind::Barrier {
+            arrivals: BarrierArrivals::FullCta,
+        },
+    );
+    let mut contributions = Vec::new();
+    for t in 0..2 {
+        let w = access(
+            t,
+            Space::Shared,
+            AccessMode::Write,
+            4 * u64::from(t),
+            &mut b,
+            arena,
+        );
+        b.thread_access(ThreadIx(t), PC, w);
+        contributions.push(b.contribute(ThreadIx(t), PC, g, ContributionKind::Blocking));
+    }
+    let completion = b.complete_generation(g, GenerationEvidence::default());
+    let resumes = [b.resume(ThreadIx(0), PC, g), b.resume(ThreadIx(1), PC, g)];
+    let op = b.async_issue(ThreadIx(0), PC, AsyncOpKind::CpAsync);
+    let source = access(0, Space::Global, AccessMode::Read, 0x1000, &mut b, arena);
+    let destination = access(0, Space::Shared, AccessMode::Write, 16, &mut b, arena);
+    let effects = [b.async_effect(op, source), b.async_effect(op, destination)];
+    let async_completion = b.async_complete(op);
+    for t in 0..2 {
+        b.exit(ThreadIx(t), PC);
+    }
+    let graph = b.finish(Terminal::Completed);
+    let issue = graph.async_ops().values().next().unwrap().issue;
+    let events = Events {
+        contributions: [contributions[0], contributions[1]],
+        completion,
+        resumes,
+        issue,
+        effects,
+        async_completion,
+    };
+    (graph, events)
+}
+
+fn id(test: &str, ordinal: u32) -> RunId {
+    RunId {
+        suite: "viewer_tests".to_string(),
+        test: test.to_string(),
+        ordinal: NonZeroU32::new(ordinal).unwrap(),
+    }
+}
+
+fn document(dir: &Path, key: &str) -> String {
+    std::fs::read_to_string(dir.join(format!("{key}.json"))).unwrap()
+}
+
+#[test]
+fn a_document_lays_out_lanes_edges_and_async_ops() {
+    let dir = scratch("document");
+    let mut arena = ExprArena::new();
+    let (graph, e) = barrier_then_copy(&mut arena);
+    let report = check_graph(&graph);
+    let run_id = id("barrier_then_copy", 1);
+    let run = Run {
+        id: &run_id,
+        ptx_file: Some("success/barrier_then_copy.ptx"),
+        source: SOURCE,
+        outcome: Outcome::Executed {
+            graph: &graph,
+            arena: &arena,
+            report: Some(&report),
+        },
+    };
+    write_run(&dir, &run).unwrap();
+    let doc = document(&dir, &run_id.key());
+
+    assert!(
+        doc.starts_with(
+            r#"{"format":"volta-viz 1","meta":{"key":"viewer_tests/barrier_then_copy""#
+        )
+    );
+    assert!(
+        doc.contains(r#""status":"verified","terminal":"completed","threads":2"#),
+        "{doc}"
+    );
+    assert!(doc.contains(
+        r#""lanes":[{"kind":"thread","label":"t0","thread":0},{"kind":"async","label":"async t0","thread":0},{"kind":"thread","label":"t1","thread":1},{"kind":"object","label":"barrier 0","thread":null}]"#
+    ), "{doc}");
+    let [c0, c1] = e.contributions.map(|x| x.0);
+    let [r0, r1] = e.resumes.map(|x| x.0);
+    let done = e.completion.0;
+    assert!(doc.contains(&format!(
+        r#""edges":{{"contribute":[{c0},{done},{c1},{done}],"release":[{done},{r0},{done},{r1}]}}"#
+    )), "{doc}");
+    let [a, b] = e.effects.map(|x| x.0);
+    assert!(
+        doc.contains(&format!(
+            r#""asyncOps":[[{},{},{a},{b}]]"#,
+            e.issue.0, e.async_completion.0
+        )),
+        "{doc}"
+    );
+    assert!(doc.contains(r#""write shared [0x0, +4)""#), "{doc}");
+    assert!(
+        doc.contains(r#""line":4"#),
+        "the instruction maps to `ret`'s line: {doc}"
+    );
+    assert!(
+        doc.contains(r#""conclusion":{"status":"verified","reasons":[]}"#),
+        "{doc}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_page_embeds_every_run_and_escapes_its_text() {
+    let dir = scratch("page");
+    let mut arena = ExprArena::new();
+    let (graph, _) = barrier_then_copy(&mut arena);
+    let executed = id("barrier_then_copy", 1);
+    let failed = id("barrier_then_copy", 2);
+    write_run(
+        &dir,
+        &Run {
+            id: &executed,
+            ptx_file: None,
+            source: SOURCE,
+            outcome: Outcome::Executed {
+                graph: &graph,
+                arena: &arena,
+                report: None,
+            },
+        },
+    )
+    .unwrap();
+    write_run(
+        &dir,
+        &Run {
+            id: &failed,
+            ptx_file: None,
+            source: SOURCE,
+            outcome: Outcome::NotStarted {
+                error: "lowering failed: </script>".to_string(),
+            },
+        },
+    )
+    .unwrap();
+    let page_path = dir.join("page.html");
+    assert_eq!(write_page(&dir, &page_path).unwrap(), 2);
+    let page = std::fs::read_to_string(&page_path).unwrap();
+
+    assert!(page.starts_with("<!doctype html>"));
+    assert!(page.contains(r#""key":"viewer_tests/barrier_then_copy","#));
+    assert!(page.contains(r#""key":"viewer_tests/barrier_then_copy~2","#));
+    assert!(page.contains(r#""status":"unchecked""#));
+    assert!(page.contains(r#""status":"not-started""#));
+    assert!(page.contains(r#"id="run-0""#) && page.contains(r#"id="run-1""#));
+    assert!(!page.contains("a < b") && !page.contains("failed: </script>"));
+    assert_eq!(
+        page.matches("</script>").count(),
+        4,
+        "index, two runs, the viewer"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -30,6 +30,7 @@ crates/
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
 ├── volta_bench/      # End-to-end tests only (PTX kernels through the pipeline)
+├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
 └── volta_cli/        # Command-line interface
 ```
 
@@ -38,8 +39,9 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend, volta_common
-volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_expr, volta_frontend
+volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_frontend, volta_common
+volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_frontend
+volta_viz         → volta_graph_check, volta_graph, volta_expr
 volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_equivalence → volta_expr
 volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
@@ -322,7 +324,8 @@ nvcc's `selp` accumulator-init idiom both rely on this.
   the arena, the event graph (always; partial on abort), stats, op counts,
   and the symbolic outputs only when the execution completed and its outputs
   read back (`symbolic_outputs()` / `into_parts()`; else `OutputsUnavailable`:
-  `Aborted`, `Stuck`, `Extraction`).
+  `Aborted`, `Stuck`, `Extraction`). `arena()` reaches the arena the graph's
+  stored values live in either way.
 - `eval/record.rs` records the graph at the interpreter's effect and sync
   points (`AccessOrigin` tags async effects); its `Recording` bookkeeping is
   never read by execution.
@@ -533,6 +536,33 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
   detail, each `Verified`, must not be proved equivalent.
 
+Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
+`check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +
+test file name). With `VOLTA_VIZ_DIR` set, each of them records the run into
+that `volta_viz` store, keyed `<suite>/<test>[~<n>]` (libtest names each test's
+thread after it; `n` counts the test's runs).
+
+## Crate: volta_viz
+
+**Path**: `crates/volta_viz/`
+
+The event-graph viewer; depends only on `volta_graph`, `volta_graph_check`
+(findings, pipeline edges) and `volta_expr` (stored values). `write_run(dir,
+&Run)` stores one run (`Outcome::Executed { graph, arena, report }` or
+`NotStarted { error }`) as a `volta-viz 1` JSON document plus a `.meta.json`
+summary; `write_page(dir, out)` inlines `viewer/{page.html,style.css,app.js}`
+and every stored run into one self-contained HTML page. Documents are compact
+(events are rows of indices into interned string and detail-pair tables, each
+async op is `[issue, completion, effects...]`) and embedded as inert
+`<script type="application/json">` blocks the page parses only when a run is
+opened. The page lays each run out as a space-time diagram: a lane per thread,
+per issuing thread's async ops and per sync object, rows by longest-path
+layering over program order and the typed edges, the checks' witnesses and a
+stuck trace's blocked threads ringed, and the PTX source behind every pc.
+Around the diagram: an overview of every run (statuses, suites) while none is
+open, a step ruler, an overview map while zoomed in, a legend that highlights
+or steps through one event kind, and keyboard navigation (`?` lists the keys).
+
 ## Crate: volta_cli
 
 **Path**: `crates/volta_cli/`
@@ -557,6 +587,7 @@ Commands:
   when every checked element is proved equivalent.
 - `volta verify <file> <spec>` - one kernel against a spec, through both
   branches and `decide` (exit 0/1/2).
+- `volta viz <store> -o <page>.html` - the `volta_viz` page over a run store.
 
 Every run writes a `volta_common::run_log` file (`--log-dir`/
 `--no-log-file`).
@@ -641,4 +672,5 @@ Global, shared, local, param memories are separate `Memory` instances, matching 
 ```sh
 just check # run linters
 just test  # run tests
+just viz   # record every volta_bench run, write target/volta-viz/volta-graphs.html
 ```

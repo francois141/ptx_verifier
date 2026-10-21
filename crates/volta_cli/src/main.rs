@@ -1,5 +1,6 @@
 //! Volta CLI - PTX analysis tool: `parse <file>` (syntax check), `analyze <file>` (symbolically
-//! execute one kernel), `compare <file1> <file2>` (equivalence), `verify <file>` (against a spec).
+//! execute one kernel), `compare <file1> <file2>` (equivalence), `verify <file>` (against a spec),
+//! `viz <store>` (the event-graph viewer page over recorded runs).
 
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
@@ -102,6 +103,20 @@ enum Commands {
     /// inline spec source if no such file exists; every array with a spec output equation must be a
     /// declared output array of the kernel.
     Verify(VerifyArgs),
+
+    /// Build the event-graph viewer: one self-contained HTML page over a store of recorded runs
+    /// (`just viz` records every volta_bench test into one, then builds the page)
+    Viz(VizArgs),
+}
+
+#[derive(Args)]
+struct VizArgs {
+    /// Directory of recorded runs (the `VOLTA_VIZ_DIR` the tests recorded into)
+    store: PathBuf,
+
+    /// The HTML page to write
+    #[arg(short, long, default_value = "volta-graphs.html")]
+    output: PathBuf,
 }
 
 /// Launch configuration shared by `analyze` and `compare` (flattened into both, so they cannot
@@ -289,6 +304,7 @@ fn main() -> ExitCode {
         Commands::Analyze(_) => "analyze",
         Commands::Compare(_) => "compare",
         Commands::Verify(_) => "verify",
+        Commands::Viz(_) => "viz",
     };
     let mut log = run_log::RunLog::open(&cli.log_dir, command_name, cli.no_log_file);
 
@@ -305,6 +321,7 @@ fn main() -> ExitCode {
         Commands::Analyze(args) => cmd_analyze(args, &mut log),
         Commands::Compare(args) => cmd_compare(args, &mut log),
         Commands::Verify(args) => cmd_verify(args, &mut log),
+        Commands::Viz(args) => cmd_viz(&args),
     };
 
     if let Some(path) = log.path() {
@@ -1232,6 +1249,30 @@ fn load_module(file: &Path) -> Result<Module, ExitCode> {
                 },
             );
             Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Write the viewer page over the runs recorded in `args.store`
+fn cmd_viz(args: &VizArgs) -> ExitCode {
+    match volta_viz::write_page(&args.store, &args.output) {
+        Ok(runs) => {
+            println!(
+                "Wrote {} run(s) from {} to {}",
+                runs,
+                args.store.display(),
+                args.output.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!(
+                "error: cannot build {} from {}: {}",
+                args.output.display(),
+                args.store.display(),
+                e
+            );
+            ExitCode::FAILURE
         }
     }
 }

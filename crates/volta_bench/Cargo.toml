@@ -12,3 +12,4 @@ volta_frontend.workspace = true
 volta_graph.workspace = true
 volta_graph_check.workspace = true
 volta_pipeline.workspace = true
+volta_viz.workspace = true

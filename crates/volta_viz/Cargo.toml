@@ -1,0 +1,12 @@
+[package]
+name = "volta_viz"
+version.workspace = true
+edition.workspace = true
+description = "Event-graph viewer: exports candidate-execution graphs and serves a web UI over them"
+
+[dependencies]
+volta_expr.workspace = true
+volta_graph.workspace = true
+volta_graph_check.workspace = true
+
+id_collections.workspace = true

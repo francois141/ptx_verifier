@@ -7,7 +7,6 @@
 mod common;
 
 use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
-use volta_frontend::ast::Module;
 use volta_graph::{AccessMode, AsyncOpKind};
 use volta_graph_check::domain::{ConflictKind, TmemCell};
 
@@ -23,7 +22,7 @@ struct Witness {
 }
 
 /// Every pair of `B` for `module`'s execution; panics if the check did not fail.
-fn unproved(module: &Module, config: AnalysisConfig) -> Vec<Witness> {
+fn unproved(module: &Ptx, config: AnalysisConfig) -> Vec<Witness> {
     let checked = check(module, None, config);
     let graph = &checked.analysis.graph;
     let witnesses: Vec<Witness> = checked

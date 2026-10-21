@@ -11,7 +11,6 @@ use volta_analysis::{
     ParamValue, ThreadId,
 };
 use volta_equivalence::check_output_equivalence;
-use volta_frontend::ast::Module;
 use volta_graph_check::Deadlock;
 
 use common::*;
@@ -34,7 +33,7 @@ fn expect_invalid_encoding(result: Result<Completed, AnalysisError>, needle: &st
     }
 }
 
-fn expect_invalid_instruction(module: &Module, needle: &str) {
+fn expect_invalid_instruction(module: &Ptx, needle: &str) {
     match run_kernel(module, None, AnalysisConfig::new((32, 1, 1))) {
         Err(AnalysisError::Lower(LowerError::InvalidInstruction { reason, .. })) => {
             assert!(reason.contains(needle), "expected {needle:?} in: {reason}");
@@ -90,7 +89,7 @@ fn test_extern_only_shared_placement_and_bounds() {
 }
 
 /// The trace generator's deadlock for `module` on `threads` threads.
-fn deadlock(module: &Module, threads: u32) -> Deadlock {
+fn deadlock(module: &Ptx, threads: u32) -> Deadlock {
     let checked = check(module, None, AnalysisConfig::new((threads, 1, 1)));
     checked.report.deadlock().unwrap_or_else(|| {
         panic!(
@@ -1305,7 +1304,7 @@ fn test_e4m3x2_rejects_the_concrete_nan_byte_pattern() {
     }
 }
 
-fn analyze_one_thread(module: &Module) -> Result<Completed, AnalysisError> {
+fn analyze_one_thread(module: &Ptx) -> Result<Completed, AnalysisError> {
     run_kernel(module, None, AnalysisConfig::new((1, 1, 1)))
 }
 

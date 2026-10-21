@@ -2,39 +2,21 @@
 //! one semantic detail and must come back `NotEquivalent` through the full
 //! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
+#[macro_use]
+#[allow(unused_macros)]
+mod common;
+
 use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::text::{read_text, to_text};
-use volta_frontend::ascii::AsAscii;
-use volta_frontend::ast::Module;
-use volta_frontend::parse::Parser;
 use volta_graph_check::GraphConclusion;
-use volta_pipeline::verify_kernel;
+
+use common::{Ptx, parse_named, verify};
 
 // =========================================================================
 // Harness
 // =========================================================================
-
-/// The PTX test kernel at `tests/ptx/<name>.ptx`.
-macro_rules! ptx {
-    ($name:literal) => {
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/ptx/",
-            $name,
-            ".ptx"
-        ))
-        .to_string()
-    };
-}
-
-fn parse(src: &str) -> Module {
-    let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
-    Parser::new(ascii)
-        .parse_module()
-        .unwrap_or_else(|e| panic!("parse error: {:?}", e.error))
-}
 
 /// Symbolic f32 `in` array plus f32 `out` array.
 fn f32_config(threads: u32, in_len: u64, out_len: u64) -> AnalysisConfig {
@@ -102,9 +84,9 @@ fn u32_out_config() -> AnalysisConfig {
     config
 }
 
-/// One runnable kernel: PTX source plus the launch config it runs under.
+/// One runnable kernel: parsed PTX plus the launch config it runs under.
 struct Kernel {
-    src: String,
+    ptx: Ptx,
     config: AnalysisConfig,
 }
 
@@ -119,7 +101,7 @@ struct NegativePair {
 
 /// The kernel's symbolic outputs: all the equivalence branch consumes.
 fn run(name: &str, kernel: &Kernel) -> SymbolicOutputs {
-    let verified = verify_kernel(&parse(&kernel.src), None, kernel.config.clone())
+    let verified = verify(&kernel.ptx, None, kernel.config.clone())
         .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e));
     let outputs = verified
         .analysis
@@ -223,11 +205,11 @@ fn pair_constant_perturbation() -> NegativePair {
     NegativePair {
         name: "constant_perturbation",
         reference: Kernel {
-            src: ptx!("negative_equivalence/constant_perturbation_ref"),
+            ptx: ptx!(parse "negative_equivalence/constant_perturbation_ref"),
             config: f32_config(1, 1, 1),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/constant_perturbation_mut"),
+            ptx: ptx!(parse "negative_equivalence/constant_perturbation_mut"),
             config: f32_config(1, 1, 1),
         },
     }
@@ -249,11 +231,11 @@ fn pair_dropped_term() -> NegativePair {
     NegativePair {
         name: "dropped_term",
         reference: Kernel {
-            src: ptx!("negative_equivalence/dropped_term_ref"),
+            ptx: ptx!(parse "negative_equivalence/dropped_term_ref"),
             config: f32_config(1, 4, 1),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/dropped_term_mut"),
+            ptx: ptx!(parse "negative_equivalence/dropped_term_mut"),
             config: f32_config(1, 4, 1),
         },
     }
@@ -274,11 +256,11 @@ fn pair_swapped_noncommutative() -> NegativePair {
     NegativePair {
         name: "swapped_noncommutative",
         reference: Kernel {
-            src: ptx!("negative_equivalence/swapped_noncommutative_ref"),
+            ptx: ptx!(parse "negative_equivalence/swapped_noncommutative_ref"),
             config: f32_config(1, 2, 2),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/swapped_noncommutative_mut"),
+            ptx: ptx!(parse "negative_equivalence/swapped_noncommutative_mut"),
             config: f32_config(1, 2, 2),
         },
     }
@@ -300,11 +282,11 @@ fn pair_off_by_one_index() -> NegativePair {
     NegativePair {
         name: "off_by_one_index",
         reference: Kernel {
-            src: ptx!("negative_equivalence/off_by_one_index_ref"),
+            ptx: ptx!(parse "negative_equivalence/off_by_one_index_ref"),
             config: f32_config(4, 8, 4),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/off_by_one_index_mut"),
+            ptx: ptx!(parse "negative_equivalence/off_by_one_index_mut"),
             config: f32_config(4, 8, 4),
         },
     }
@@ -329,11 +311,11 @@ fn pair_missing_relu_clamp() -> NegativePair {
     NegativePair {
         name: "missing_relu_clamp",
         reference: Kernel {
-            src: ptx!("negative_equivalence/missing_relu_clamp_ref"),
+            ptx: ptx!(parse "negative_equivalence/missing_relu_clamp_ref"),
             config: f16_config(3, 1),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/missing_relu_clamp_mut"),
+            ptx: ptx!(parse "negative_equivalence/missing_relu_clamp_mut"),
             config: f16_config(3, 1),
         },
     }
@@ -355,11 +337,11 @@ fn pair_sentinel_off_by_one() -> NegativePair {
     NegativePair {
         name: "sentinel_off_by_one",
         reference: Kernel {
-            src: ptx!("negative_equivalence/sentinel_off_by_one_ref"),
+            ptx: ptx!(parse "negative_equivalence/sentinel_off_by_one_ref"),
             config: u32_out_config(),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/sentinel_off_by_one_mut"),
+            ptx: ptx!(parse "negative_equivalence/sentinel_off_by_one_mut"),
             config: u32_out_config(),
         },
     }
@@ -387,11 +369,11 @@ fn pair_fma_different_addend() -> NegativePair {
     NegativePair {
         name: "fma_different_addend",
         reference: Kernel {
-            src: ptx!("negative_equivalence/fma_different_addend_ref"),
+            ptx: ptx!(parse "negative_equivalence/fma_different_addend_ref"),
             config: f32_config(1, 4, 1),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/fma_different_addend_mut"),
+            ptx: ptx!(parse "negative_equivalence/fma_different_addend_mut"),
             config: f32_config(1, 4, 1),
         },
     }
@@ -409,7 +391,7 @@ fn mutation_07_fma_vs_mul_add_different_addend_not_equivalent() {
 /// The linear-chain sum ((in[0]+in[1])+in[2])+in[3].
 fn linear_chain_sum() -> Kernel {
     Kernel {
-        src: ptx!("negative_equivalence/linear_chain_sum"),
+        ptx: ptx!(parse "negative_equivalence/linear_chain_sum"),
         config: f32_config(1, 4, 1),
     }
 }
@@ -417,13 +399,13 @@ fn linear_chain_sum() -> Kernel {
 /// The balanced tree (in[0]+in[1]) + (in[2]+LEAF), with the last leaf
 /// either honest (in[3]) or doubled (in[3]+in[3]).
 fn balanced_tree_sum(doubled_leaf: bool) -> Kernel {
-    let src = if doubled_leaf {
-        ptx!("negative_equivalence/balanced_tree_sum_doubled_leaf")
+    let ptx = if doubled_leaf {
+        ptx!(parse "negative_equivalence/balanced_tree_sum_doubled_leaf")
     } else {
-        ptx!("negative_equivalence/balanced_tree_sum")
+        ptx!(parse "negative_equivalence/balanced_tree_sum")
     };
     Kernel {
-        src,
+        ptx,
         config: f32_config(1, 4, 1),
     }
 }
@@ -461,11 +443,11 @@ fn pair_max_vs_min() -> NegativePair {
     NegativePair {
         name: "max_vs_min",
         reference: Kernel {
-            src: ptx!("negative_equivalence/max_vs_min_ref"),
+            ptx: ptx!(parse "negative_equivalence/max_vs_min_ref"),
             config: f32_config(1, 2, 1),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/max_vs_min_mut"),
+            ptx: ptx!(parse "negative_equivalence/max_vs_min_mut"),
             config: f32_config(1, 2, 1),
         },
     }
@@ -483,15 +465,15 @@ fn mutation_09_max_vs_min_not_equivalent() {
 /// out[0] = exp(in[0]) * exp(in[1]) via two __symexpf callseqs.
 fn exp_product_of_exps() -> Kernel {
     Kernel {
-        src: ptx!("negative_equivalence/exp_product_of_exps"),
+        ptx: ptx!(parse "negative_equivalence/exp_product_of_exps"),
         config: f32_config(1, 2, 1),
     }
 }
 
-/// out[0] = exp(in[0] OP in[1]), for a kernel `src` of that shape.
-fn exp_of_combined(src: String) -> Kernel {
+/// out[0] = exp(in[0] OP in[1]), for a kernel `ptx` of that shape.
+fn exp_of_combined(ptx: Ptx) -> Kernel {
     Kernel {
-        src,
+        ptx,
         config: f32_config(1, 2, 1),
     }
 }
@@ -502,7 +484,7 @@ fn pair_exp_of_product() -> NegativePair {
     NegativePair {
         name: "exp_of_product",
         reference: exp_product_of_exps(),
-        mutant: exp_of_combined(ptx!("negative_equivalence/exp_of_product")),
+        mutant: exp_of_combined(ptx!(parse "negative_equivalence/exp_of_product")),
     }
 }
 
@@ -513,7 +495,7 @@ fn mutation_10_exp_fusion_control_and_exp_of_product_not_equivalent() {
     assert_equivalent_control(
         "exp_fusion_control",
         &exp_product_of_exps(),
-        &exp_of_combined(ptx!("negative_equivalence/exp_of_sum")),
+        &exp_of_combined(ptx!(parse "negative_equivalence/exp_of_sum")),
     );
     assert_not_equivalent(&pair_exp_of_product(), &[("out", 0)]);
 }
@@ -530,11 +512,11 @@ fn mutation_11_integer_sign_bit_xor_is_not_a_negate() {
     let pair = NegativePair {
         name: "integer_sign_bit_xor",
         reference: Kernel {
-            src: ptx!("negative_equivalence/integer_sign_bit_xor_ref"),
+            ptx: ptx!(parse "negative_equivalence/integer_sign_bit_xor_ref"),
             config: f32_config(1, 1, 1),
         },
         mutant: Kernel {
-            src: ptx!("negative_equivalence/integer_sign_bit_xor_mut"),
+            ptx: ptx!(parse "negative_equivalence/integer_sign_bit_xor_mut"),
             config: f32_config(1, 1, 1),
         },
     };

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use volta_expr::SymbolicOutputs;
+use volta_expr::{ExprArena, SymbolicOutputs};
 use volta_frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance};
 
@@ -88,6 +88,12 @@ impl AnalysisResult {
             Ok(()) => Ok(&self.symbolic),
             Err(why) => Err(why),
         }
+    }
+
+    /// The arena the graph's stored values are expressions of, also when the execution
+    /// produced no outputs.
+    pub fn arena(&self) -> &ExprArena {
+        &self.symbolic.arena
     }
 
     /// Split into the two artifacts.
