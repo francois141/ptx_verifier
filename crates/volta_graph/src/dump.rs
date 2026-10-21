@@ -7,9 +7,9 @@ use id_collections::Id;
 
 use crate::graph::EventGraph;
 use crate::model::{
-    AccessMode, AsyncOpKind, BarrierArrivals, BlockedOn, CollectiveSide, ContributionKind,
-    EventKind, ExecContext, FenceKind, Footprint, GenerationKind, GroupFamily, OrderingKind,
-    Parity, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
+    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, BlockedOn, CollectiveSide,
+    ContributionKind, EventKind, ExecContext, FenceKind, Footprint, GenerationKind, GroupFamily,
+    OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
 };
 
 impl EventGraph {
@@ -280,8 +280,17 @@ impl EventGraph {
                     }
                 }
             }
-            Terminal::Aborted { thread, pc, reason } => {
-                write!(out, "terminal aborted")?;
+            Terminal::Aborted {
+                thread,
+                pc,
+                cause,
+                reason,
+            } => {
+                let cause = match cause {
+                    AbortCause::Unsupported => "unsupported",
+                    AbortCause::Error => "error",
+                };
+                write!(out, "terminal aborted {cause}")?;
                 if let Some(t) = thread {
                     write!(out, " t{}", t.0)?;
                 }

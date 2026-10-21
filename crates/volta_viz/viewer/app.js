@@ -14,14 +14,20 @@
   const MINI_W = 184;
   const MINI_H = 120;
 
+  // A run's outcome, as `Status` in export.rs names it.
   const STATUSES = [
-    ["verified", "Verified"],
-    ["rejected", "Rejected"],
+    ["race-free", "Race-free"],
+    ["race-condition", "Race condition"],
+    ["check-failed", "Check failed"],
+    ["deadlock", "Deadlock"],
+    ["unsupported", "Unsupported"],
     ["unknown", "Unknown"],
+    ["error", "Error"],
     ["unchecked", "Not checked"],
-    ["not-started", "Did not start"],
   ];
   const STATUS_NAME = Object.fromEntries(STATUSES);
+  // The outcomes that reject the kernel itself.
+  const FAILING = ["race-condition", "check-failed", "deadlock"];
 
   const CATEGORIES = {
     read: { shape: "circle", color: "--c-read", name: "Read" },
@@ -1061,17 +1067,19 @@
     else badge.removeAttribute("title");
   }
 
-  // The checks badge follows the conclusion, which a deadlock or an aborted trace decides
+  // The checks badge follows the run's outcome, which a deadlock or an aborted trace decides
   // even when every check passes.
   function updateBadges() {
     const doc = state.doc;
     const checks = (doc && doc.checks) || [];
     const failed = checks.filter((c) => c.verdict === "fail").length;
-    const status = doc && doc.conclusion ? doc.conclusion.status : null;
-    if (doc && doc.error) setBadge("badge-checks", "!", "bad", "the execution never started");
-    else if (status === "rejected") setBadge("badge-checks", failed || "!", "bad", failed ? failed + " failed" : "rejected");
-    else if (status === "unknown") setBadge("badge-checks", "?", "warn", "unknown");
-    else if (status === "verified") setBadge("badge-checks", "✓", "ok", "verified");
+    const status = doc ? INDEX[state.runIndex].status : null;
+    const name = status ? STATUS_NAME[status].toLowerCase() : "";
+    if (FAILING.includes(status)) setBadge("badge-checks", failed || "!", "bad", failed ? failed + " failed" : name);
+    else if (status === "error") setBadge("badge-checks", "!", "bad", doc.error ? "error: the execution never started" : name);
+    else if (status === "unsupported") setBadge("badge-checks", "!", "warn", name);
+    else if (status === "unknown") setBadge("badge-checks", "?", "warn", name);
+    else if (status === "race-free") setBadge("badge-checks", "✓", "ok", name);
     else setBadge("badge-checks", "");
     setBadge("badge-event", state.selected >= 0 ? "e" + state.selected : "", "mono");
   }
@@ -1179,7 +1187,9 @@
     const passed = checks.filter((k) => k.verdict === "pass").length;
     const sub = [checks.length ? passed + " of " + checks.length + " checks pass" : "analysis stage only: the graph checks were not run"];
     if (doc.terminal) sub.push("trace " + doc.terminal.kind);
-    const iconName = { verified: "check", rejected: "cross", unknown: "question" }[status] || "minus";
+    const iconName = FAILING.includes(status)
+      ? "cross"
+      : { "race-free": "check", unsupported: "alert", unknown: "question", error: "alert" }[status] || "minus";
     return h(
       "div",
       { class: "verdict-card " + status },
@@ -1251,10 +1261,16 @@
     const doc = state.doc;
     const parts = [];
     if (doc.error) {
+      const status = INDEX[state.runIndex].status;
       parts.push(
         section(
           "Execution",
-          h("div", { class: "callout bad" }, h("strong", { text: "The execution never started." }), h("pre", { text: doc.error })),
+          h(
+            "div",
+            { class: "callout " + (status === "unsupported" ? "warn" : "bad") },
+            h("strong", { text: STATUS_NAME[status] + ": the execution never started." }),
+            h("pre", { text: doc.error }),
+          ),
         ),
       );
     }
@@ -1617,7 +1633,7 @@
       const p = (100 * n) / INDEX.length;
       return (p >= 10 || p === 0 ? Math.round(p) : p.toFixed(1)) + "%";
     };
-    const rejected = [...INDEX.keys()].filter((i) => INDEX[i].status === "rejected");
+    const failing = [...INDEX.keys()].filter((i) => FAILING.includes(INDEX[i].status));
     showEmptyState(
       h(
         "div",
@@ -1670,36 +1686,36 @@
               ),
             ),
           ),
-          rejected.length
+          failing.length
             ? h(
                 "section",
                 { class: "card" },
-                h("h3", { text: "Rejected runs" }),
+                h("h3", { text: "Race conditions, failed checks and deadlocks" }),
                 h(
                   "ul",
                   { class: "quick-list" },
-                  rejected.slice(0, 12).map((i) =>
+                  failing.slice(0, 12).map((i) =>
                     h(
                       "li",
                       null,
                       h(
                         "a",
-                        { href: "#" + INDEX[i].key, title: INDEX[i].test },
-                        h("span", { class: "dot rejected" }),
+                        { href: "#" + INDEX[i].key, title: INDEX[i].test + "\n" + STATUS_NAME[INDEX[i].status] },
+                        h("span", { class: "dot " + INDEX[i].status }),
                         h("span", { class: "test-name" }, breakable(INDEX[i].test.replace(/^test_/, ""))),
                         h("span", { class: "suite-tag", text: suiteName(INDEX[i].suite) }),
                       ),
                     ),
                   ),
-                  rejected.length > 12
+                  failing.length > 12
                     ? h(
                         "li",
                         { class: "more" },
                         h("button", {
                           class: "link",
                           type: "button",
-                          text: "List all " + fmt(rejected.length) + " rejected runs",
-                          onclick: () => setStatuses(new Set(["rejected"])),
+                          text: "List all " + fmt(failing.length) + " of them",
+                          onclick: () => setStatuses(new Set(FAILING)),
                         }),
                       )
                     : null,
@@ -1725,6 +1741,7 @@
 
   function renderNotStarted() {
     const doc = state.doc;
+    const unsupported = INDEX[state.runIndex].status === "unsupported";
     showEmptyState(
       h(
         "div",
@@ -1733,11 +1750,13 @@
           "div",
           { class: "error-card" },
           h("span", { class: "error-icon" }, icon("alert")),
-          h("h2", { text: "The execution never started" }),
+          h("h2", { text: unsupported ? "Unsupported: the kernel cannot be lowered" : "Error: the execution never started" }),
           h("p", {
-            text:
-              "The analysis stopped before the first instruction ran (no such kernel, a lowering error or an invalid " +
-              "launch configuration), so this run recorded no event graph.",
+            text: unsupported
+              ? "Lowering rejected a construct Volta does not model, so the execution never started and this run " +
+                "recorded no event graph."
+              : "The analysis stopped before the first instruction ran (no such kernel or an invalid launch " +
+                "configuration), so this run recorded no event graph.",
           }),
           h("pre", { class: "error-text", text: doc.error }),
           doc.source ? h("button", { class: "btn primary", type: "button", onclick: () => setTab("source") }, "Show the PTX source") : null,

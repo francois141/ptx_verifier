@@ -20,7 +20,9 @@ use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
-use volta_graph::{AccessMode, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext};
+use volta_graph::{
+    AbortCause, AccessMode, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext,
+};
 use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::{KernelVerification, verify_kernel};
 use volta_viz::{Outcome, Run, RunId, write_run};
@@ -114,6 +116,19 @@ fn record(ptx: &Ptx, outcome: Outcome) {
     write_run(dir, &run).unwrap_or_else(|e| panic!("record into {}: {e}", dir.display()));
 }
 
+/// An analysis that never started, for the graph viewer: a kernel Volta cannot lower is
+/// unsupported.
+fn not_started(e: &AnalysisError) -> Outcome<'static> {
+    let cause = match e {
+        AnalysisError::Lower(_) => AbortCause::Unsupported,
+        AnalysisError::KernelNotFound { .. } | AnalysisError::Eval(_) => AbortCause::Error,
+    };
+    Outcome::NotStarted {
+        cause,
+        error: e.to_string(),
+    }
+}
+
 /// `verify_kernel`, recorded for the graph viewer.
 pub fn verify(
     ptx: &Ptx,
@@ -127,9 +142,7 @@ pub fn verify(
             arena: v.analysis.arena(),
             report: Some(&v.graph),
         },
-        Err(e) => Outcome::NotStarted {
-            error: e.to_string(),
-        },
+        Err(e) => not_started(e),
     };
     record(ptx, outcome);
     verified
@@ -148,9 +161,7 @@ pub fn analyze_only(
             arena: r.arena(),
             report: None,
         },
-        Err(e) => Outcome::NotStarted {
-            error: e.to_string(),
-        },
+        Err(e) => not_started(e),
     };
     record(ptx, outcome);
     analyzed

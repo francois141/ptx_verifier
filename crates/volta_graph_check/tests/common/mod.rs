@@ -4,7 +4,7 @@
 
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
-    AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, CollectiveSide,
+    AbortCause, AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, CollectiveSide,
     ContributionKind, EventGraph, EventId, FenceKind, Footprint, GenerationEvidence, GenerationId,
     GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole, OrderingKind, Parity,
     ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal,
@@ -488,6 +488,7 @@ impl Scenario {
         self.finish(Terminal::Aborted {
             thread: None,
             pc: None,
+            cause: AbortCause::Error,
             reason: "test".to_string(),
         })
     }

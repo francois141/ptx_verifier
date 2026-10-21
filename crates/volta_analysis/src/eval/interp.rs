@@ -32,8 +32,8 @@ use crate::ir::{
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
-    AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily, OperandRole,
-    Provenance, Proxy, Space, Terminal,
+    AbortCause, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily,
+    OperandRole, Provenance, Proxy, Space, Terminal,
 };
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
@@ -484,10 +484,15 @@ impl<'p> Interpreter<'p> {
             }
             Err(e) => {
                 let (thread, pc) = e.location();
+                let cause = match e {
+                    EvalError::Unsupported { .. } => AbortCause::Unsupported,
+                    _ => AbortCause::Error,
+                };
                 (
                     Terminal::Aborted {
                         thread: thread.map(tix),
                         pc: pc.map(point),
+                        cause,
                         reason: e.to_string(),
                     },
                     Err(OutputsUnavailable::Aborted(e)),

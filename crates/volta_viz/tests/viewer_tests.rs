@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 use volta_expr::ExprArena;
 use volta_graph::{
-    AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph, EventId, Footprint,
-    GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole,
-    OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
-    ThreadIx,
+    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph, EventId,
+    Footprint, GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess,
+    OperandRole, OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind,
+    Terminal, ThreadIx,
 };
 use volta_graph_check::check_graph;
 use volta_viz::{Outcome, Run, RunId, write_page, write_run};
@@ -56,10 +56,9 @@ struct Events {
     async_completion: EventId,
 }
 
-/// Two threads write shared memory around a full-CTA barrier, then thread 0 runs one
-/// two-effect `cp.async` to completion.
-fn barrier_then_copy(arena: &mut ExprArena) -> (EventGraph, Events) {
-    let mut b = GraphBuilder::new(Provenance {
+/// Two threads of kernel `k`, whose one instruction is `ret`.
+fn provenance() -> Provenance {
+    Provenance {
         kernel: "k".to_string(),
         block_dim: (2, 1, 1),
         grid_dim: (1, 1, 1),
@@ -69,7 +68,13 @@ fn barrier_then_copy(arena: &mut ExprArena) -> (EventGraph, Events) {
             kind: "Store",
             span: Some((SOURCE.find("ret").unwrap(), SOURCE.find("ret").unwrap() + 3)),
         }],
-    });
+    }
+}
+
+/// Two threads write shared memory around a full-CTA barrier, then thread 0 runs one
+/// two-effect `cp.async` to completion.
+fn barrier_then_copy(arena: &mut ExprArena) -> (EventGraph, Events) {
+    let mut b = GraphBuilder::new(provenance());
     let bar = b.sync_object(SyncObjectKind::NamedBarrier { id: 0 });
     let g = b.open_generation(
         bar,
@@ -152,7 +157,7 @@ fn a_document_lays_out_lanes_edges_and_async_ops() {
         )
     );
     assert!(
-        doc.contains(r#""status":"verified","terminal":"completed","threads":2"#),
+        doc.contains(r#""status":"race-free","terminal":"completed","threads":2"#),
         "{doc}"
     );
     assert!(doc.contains(
@@ -178,7 +183,7 @@ fn a_document_lays_out_lanes_edges_and_async_ops() {
         "the instruction maps to `ret`'s line: {doc}"
     );
     assert!(
-        doc.contains(r#""conclusion":{"status":"verified","reasons":[]}"#),
+        doc.contains(r#""conclusion":{"status":"race-free","reasons":[]}"#),
         "{doc}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -212,6 +217,7 @@ fn the_page_embeds_every_run_and_escapes_its_text() {
             ptx_file: None,
             source: SOURCE,
             outcome: Outcome::NotStarted {
+                cause: AbortCause::Unsupported,
                 error: "lowering failed: </script>".to_string(),
             },
         },
@@ -225,7 +231,7 @@ fn the_page_embeds_every_run_and_escapes_its_text() {
     assert!(page.contains(r#""key":"viewer_tests/barrier_then_copy","#));
     assert!(page.contains(r#""key":"viewer_tests/barrier_then_copy~2","#));
     assert!(page.contains(r#""status":"unchecked""#));
-    assert!(page.contains(r#""status":"not-started""#));
+    assert!(page.contains(r#""status":"unsupported""#));
     assert!(page.contains(r#"id="run-0""#) && page.contains(r#"id="run-1""#));
     assert!(!page.contains("a < b") && !page.contains("failed: </script>"));
     assert_eq!(
@@ -233,5 +239,66 @@ fn the_page_embeds_every_run_and_escapes_its_text() {
         4,
         "index, two runs, the viewer"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Thread 0 writes shared word 0, then `end` closes the trace: thread 1 writing the same word
+/// unordered and both exiting, or the execution stopping with `cause`.
+fn one_write_then(end: Option<AbortCause>, arena: &mut ExprArena) -> EventGraph {
+    let mut b = GraphBuilder::new(provenance());
+    let w = access(0, Space::Shared, AccessMode::Write, 0, &mut b, arena);
+    b.thread_access(ThreadIx(0), PC, w);
+    match end {
+        Some(cause) => b.finish(Terminal::Aborted {
+            thread: Some(ThreadIx(0)),
+            pc: Some(PC),
+            cause,
+            reason: "stopped".to_string(),
+        }),
+        None => {
+            let w = access(1, Space::Shared, AccessMode::Write, 0, &mut b, arena);
+            b.thread_access(ThreadIx(1), PC, w);
+            for t in 0..2 {
+                b.exit(ThreadIx(t), PC);
+            }
+            b.finish(Terminal::Completed)
+        }
+    }
+}
+
+#[test]
+fn a_run_is_named_by_its_outcome() {
+    let dir = scratch("outcomes");
+    let mut arena = ExprArena::new();
+    let cases = [
+        (None, "race-condition"),
+        (Some(AbortCause::Unsupported), "unsupported"),
+        (Some(AbortCause::Error), "error"),
+    ];
+    for (ordinal, (end, status)) in (1..).zip(cases) {
+        let graph = one_write_then(end, &mut arena);
+        let report = check_graph(&graph);
+        let run_id = id("one_write", ordinal);
+        let run = Run {
+            id: &run_id,
+            ptx_file: None,
+            source: SOURCE,
+            outcome: Outcome::Executed {
+                graph: &graph,
+                arena: &arena,
+                report: Some(&report),
+            },
+        };
+        write_run(&dir, &run).unwrap();
+        let doc = document(&dir, &run_id.key());
+        assert!(
+            doc.contains(&format!(r#""status":"{status}","terminal""#)),
+            "{doc}"
+        );
+        assert!(
+            doc.contains(&format!(r#""conclusion":{{"status":"{status}""#)),
+            "{doc}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

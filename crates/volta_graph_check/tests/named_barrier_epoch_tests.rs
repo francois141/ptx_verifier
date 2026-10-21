@@ -4,8 +4,8 @@ mod common;
 
 use common::*;
 use volta_graph::{
-    BarrierArrivals, ContributionKind, EventGraph, GenerationKind, Parity, SyncObjectKind,
-    Terminal, ThreadIx,
+    AbortCause, BarrierArrivals, ContributionKind, EventGraph, GenerationKind, Parity,
+    SyncObjectKind, Terminal, ThreadIx,
 };
 use volta_graph_check::Verdict;
 use volta_graph_check::barrier_epoch::{EpochViolation, check_named_barrier_epochs};
@@ -150,6 +150,7 @@ fn a_forming_next_generation_is_still_checked() {
     let (g, _) = s.finish(Terminal::Aborted {
         thread: None,
         pc: None,
+        cause: AbortCause::Error,
         reason: "test".to_string(),
     });
     let (result, _) = check_named_barrier_epochs(&g);

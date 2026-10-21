@@ -416,8 +416,18 @@ pub enum Terminal {
     Aborted {
         thread: Option<ThreadIx>,
         pc: Option<ProgramPoint>,
+        cause: AbortCause,
         reason: String,
     },
+}
+
+/// Why the producer stopped an execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortCause {
+    /// Behavior the producer does not model.
+    Unsupported,
+    /// Anything else: invalid behavior, a launch the producer cannot run, a budget.
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

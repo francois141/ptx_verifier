@@ -3,10 +3,10 @@
 
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
-    AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventKind, ExecContext, Footprint,
-    GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole,
-    OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
-    ThreadIx,
+    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventKind, ExecContext,
+    Footprint, GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess,
+    OperandRole, OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind,
+    Terminal, ThreadIx,
 };
 
 fn provenance(threads: u32, instructions: usize) -> Provenance {
@@ -169,6 +169,7 @@ fn a_release_without_completion_is_a_defect() {
     let found = defects(&b.finish(Terminal::Aborted {
         thread: None,
         pc: None,
+        cause: AbortCause::Error,
         reason: "test".to_string(),
     }));
     assert!(
@@ -200,6 +201,7 @@ fn a_contributed_pre_init_phase_is_a_defect() {
     let found = defects(&b.finish(Terminal::Aborted {
         thread: None,
         pc: None,
+        cause: AbortCause::Error,
         reason: "test".to_string(),
     }));
     assert_eq!(
@@ -227,6 +229,7 @@ fn a_contribution_after_completion_is_a_defect() {
     let found = defects(&b.finish(Terminal::Aborted {
         thread: None,
         pc: None,
+        cause: AbortCause::Error,
         reason: "test".to_string(),
     }));
     assert!(

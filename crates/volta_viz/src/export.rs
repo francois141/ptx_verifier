@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use volta_expr::ExprArena;
 use volta_graph::{
-    AccessMode, AsyncOpId, BarrierArrivals, BlockedOn, CollectiveSide, ContributionKind,
-    EventGraph, EventId, EventKind, ExecContext, FenceKind, Footprint, GenerationId,
-    GenerationKind, GroupFamily, OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectId,
-    SyncObjectKind, Terminal, ThreadIx,
+    AbortCause, AccessMode, AsyncOpId, BarrierArrivals, BlockedOn, CollectiveSide,
+    ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind, Footprint,
+    GenerationId, GenerationKind, GroupFamily, OrderingKind, Parity, Proxy, Space, StoredValue,
+    SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 use volta_graph_check::barrier_epoch::EpochViolation;
 use volta_graph_check::domain::ConflictKind;
@@ -36,8 +36,9 @@ pub enum Outcome<'a> {
         arena: &'a ExprArena,
         report: Option<&'a GraphReport>,
     },
-    /// The execution never started (no such kernel, a lowering or configuration error).
-    NotStarted { error: String },
+    /// The execution never started: lowering rejected the kernel (`Unsupported`), or there is
+    /// no such kernel or the configuration is invalid (`Error`).
+    NotStarted { cause: AbortCause, error: String },
 }
 
 /// One kernel run to visualize.
@@ -50,39 +51,74 @@ pub struct Run<'a> {
     pub outcome: Outcome<'a>,
 }
 
+/// The checks whose failure is a race condition: an unordered conflicting access.
+const RACE_CHECKS: [Property; 2] = [Property::MemoryConflict, Property::TensorOrder];
+
+/// A run's outcome: what its checks concluded, or why it never got a conclusion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {
-    Verified,
-    Rejected,
+    RaceFree,
+    RaceCondition,
+    CheckFailed,
+    Deadlock,
+    Unsupported,
     Unknown,
+    Error,
     /// Executed, but the run did not check the graph.
     Unchecked,
-    NotStarted,
 }
 
 impl Status {
     fn of(outcome: &Outcome) -> Status {
         match outcome {
-            Outcome::NotStarted { .. } => Status::NotStarted,
+            Outcome::NotStarted { cause, .. } => Status::stopped(*cause),
             Outcome::Executed { report: None, .. } => Status::Unchecked,
             Outcome::Executed {
+                graph,
                 report: Some(report),
                 ..
-            } => match report.conclusion() {
-                GraphConclusion::Verified => Status::Verified,
-                GraphConclusion::Rejected { .. } => Status::Rejected,
-                GraphConclusion::Unknown { .. } => Status::Unknown,
+            } => Status::checked(graph, report),
+        }
+    }
+
+    /// A failed race check outranks a deadlock, and an inconclusive trace that aborted is
+    /// classified by why it stopped.
+    fn checked(graph: &EventGraph, report: &GraphReport) -> Status {
+        match report.conclusion() {
+            GraphConclusion::Verified => Status::RaceFree,
+            GraphConclusion::Rejected { failed, deadlock } => {
+                if failed.iter().any(|s| RACE_CHECKS.contains(&s.property)) {
+                    Status::RaceCondition
+                } else if deadlock.is_some() {
+                    Status::Deadlock
+                } else {
+                    Status::CheckFailed
+                }
+            }
+            GraphConclusion::Unknown { .. } => match graph.terminal() {
+                Terminal::Aborted { cause, .. } => Status::stopped(*cause),
+                Terminal::Completed | Terminal::Stuck { .. } => Status::Unknown,
             },
+        }
+    }
+
+    fn stopped(cause: AbortCause) -> Status {
+        match cause {
+            AbortCause::Unsupported => Status::Unsupported,
+            AbortCause::Error => Status::Error,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
-            Status::Verified => "verified",
-            Status::Rejected => "rejected",
+            Status::RaceFree => "race-free",
+            Status::RaceCondition => "race-condition",
+            Status::CheckFailed => "check-failed",
+            Status::Deadlock => "deadlock",
+            Status::Unsupported => "unsupported",
             Status::Unknown => "unknown",
+            Status::Error => "error",
             Status::Unchecked => "unchecked",
-            Status::NotStarted => "not-started",
         }
     }
 }
@@ -120,7 +156,7 @@ pub fn document(run: &Run) -> Json {
         ("source", Json::str(run.source)),
     ];
     match &run.outcome {
-        Outcome::NotStarted { error } => fields.push(("error", Json::str(error.clone()))),
+        Outcome::NotStarted { error, .. } => fields.push(("error", Json::str(error.clone()))),
         Outcome::Executed {
             graph,
             arena,
@@ -256,7 +292,7 @@ fn graph_fields(
         ("asyncOps", async_ops(graph)),
         ("terminal", terminal(graph)),
         ("checks", Json::opt(report, |r| checks(graph, r))),
-        ("conclusion", Json::opt(report, conclusion)),
+        ("conclusion", Json::opt(report, |r| conclusion(graph, r))),
     ]
 }
 
@@ -790,7 +826,9 @@ fn terminal(graph: &EventGraph) -> Json {
                 )
             })
             .collect(),
-        Terminal::Aborted { thread, pc, reason } => {
+        Terminal::Aborted {
+            thread, pc, reason, ..
+        } => {
             let at = match (thread, pc) {
                 (Some(t), Some(pc)) => format!("t{} at pc {}: ", t.0, pc.0),
                 (Some(t), None) => format!("t{}: ", t.0),
@@ -971,9 +1009,9 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
     )
 }
 
-fn conclusion(report: &GraphReport) -> Json {
-    let (status, reasons) = match report.conclusion() {
-        GraphConclusion::Verified => (Status::Verified, Vec::new()),
+fn conclusion(graph: &EventGraph, report: &GraphReport) -> Json {
+    let reasons = match report.conclusion() {
+        GraphConclusion::Verified => Vec::new(),
         GraphConclusion::Rejected { failed, deadlock } => {
             let mut reasons: Vec<String> = failed
                 .iter()
@@ -982,12 +1020,12 @@ fn conclusion(report: &GraphReport) -> Json {
             if let Some(d) = deadlock {
                 reasons.push(format!("deadlock: {} thread(s) blocked", d.blocked.len()));
             }
-            (Status::Rejected, reasons)
+            reasons
         }
-        GraphConclusion::Unknown { reasons } => (Status::Unknown, reasons),
+        GraphConclusion::Unknown { reasons } => reasons,
     };
     Json::Obj(vec![
-        ("status", Json::str(status.name())),
+        ("status", Json::str(Status::checked(graph, report).name())),
         (
             "reasons",
             Json::Arr(reasons.into_iter().map(Json::Str).collect()),

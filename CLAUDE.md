@@ -226,7 +226,8 @@ crate-level docs in `lib.rs` are the contract.
 - `AsyncOp`: issuer, issue event, effects, completion, tentative `tracking`
   generations (an mbarrier phase, a wait collective, a wait-group).
 - `Terminal`: `Completed`, `Stuck` (each blocked thread's wait condition and
-  state) or `Aborted` (partial graph). `Provenance`: launch, targets,
+  state) or `Aborted` (partial graph; its `AbortCause` is `Unsupported` for
+  behavior the producer does not model, else `Error`). `Provenance`: launch, targets,
   `Assumption`s, per-instruction kind and source span.
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
@@ -554,9 +555,13 @@ thread after it; `n` counts the test's runs).
 The event-graph viewer; depends only on `volta_graph`, `volta_graph_check`
 (findings, pipeline edges) and `volta_expr` (stored values). `write_run(dir,
 &Run)` stores one run (`Outcome::Executed { graph, arena, report }` or
-`NotStarted { error }`) as a `volta-viz 1` JSON document plus a `.meta.json`
-summary; `write_page(dir, out)` inlines `viewer/{page.html,style.css,app.js}`
-and every stored run into one self-contained HTML page. Documents are compact
+`NotStarted { cause, error }`, `cause` being `Unsupported` when lowering failed)
+as a `volta-viz 1` JSON document plus a `.meta.json` summary. A run's status is
+race-free, race-condition (a memory-conflict or tensor-order failure),
+check-failed, deadlock, unsupported, unknown, error, or unchecked (no
+graph check run).
+`write_page(dir, out)` inlines `viewer/{page.html,style.css,app.js}` and every
+stored run into one self-contained HTML page. Documents are compact
 (events are rows of indices into interned string and detail-pair tables, each
 async op is `[issue, completion, effects...]`) and embedded as inert
 `<script type="application/json">` blocks the page parses only when a run is

@@ -5,9 +5,9 @@ use crate::ids::{
     AccessId, AsyncOpId, EventId, GenerationId, ProgramPoint, SyncObjectId, ThreadIx, ValueId,
 };
 use crate::model::{
-    AsyncOp, AsyncOpKind, Contribution, ContributionKind, Event, EventKind, ExecContext, FenceKind,
-    Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess, Parity, Provenance,
-    StoredValue, SyncObject, SyncObjectKind, Terminal,
+    AbortCause, AsyncOp, AsyncOpKind, Contribution, ContributionKind, Event, EventKind,
+    ExecContext, FenceKind, Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess,
+    Parity, Provenance, StoredValue, SyncObject, SyncObjectKind, Terminal,
 };
 
 /// Append-only construction of an [`EventGraph`] in trace order. It records what the producer
@@ -33,6 +33,7 @@ impl GraphBuilder {
                 terminal: Terminal::Aborted {
                     thread: None,
                     pc: None,
+                    cause: AbortCause::Error,
                     reason: "graph under construction".to_string(),
                 },
             },

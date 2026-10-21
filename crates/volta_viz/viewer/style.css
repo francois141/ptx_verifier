@@ -392,13 +392,17 @@ kbd {
   opacity: 0.2;
 }
 
-.status-bar .verified,
-.mini-bar .verified {
+.status-bar .race-free,
+.mini-bar .race-free {
   background: var(--ok);
 }
 
-.status-bar .rejected,
-.mini-bar .rejected {
+.status-bar .race-condition,
+.mini-bar .race-condition,
+.status-bar .check-failed,
+.mini-bar .check-failed,
+.status-bar .deadlock,
+.mini-bar .deadlock {
   background: var(--bad);
 }
 
@@ -407,14 +411,19 @@ kbd {
   background: var(--warn);
 }
 
+.status-bar .unsupported,
+.mini-bar .unsupported {
+  background: repeating-linear-gradient(135deg, var(--warn) 0 2px, transparent 2px 4px);
+}
+
 .status-bar .unchecked,
 .mini-bar .unchecked {
   background: var(--neutral);
   opacity: 0.55;
 }
 
-.status-bar .not-started,
-.mini-bar .not-started {
+.status-bar .error,
+.mini-bar .error {
   background: repeating-linear-gradient(135deg, var(--bad) 0 2px, transparent 2px 4px);
 }
 
@@ -601,11 +610,13 @@ kbd {
   background: var(--neutral);
 }
 
-.dot.verified {
+.dot.race-free {
   background: var(--ok);
 }
 
-.dot.rejected {
+.dot.race-condition,
+.dot.check-failed,
+.dot.deadlock {
   background: var(--bad);
 }
 
@@ -613,12 +624,17 @@ kbd {
   background: var(--warn);
 }
 
+.dot.unsupported {
+  background: transparent;
+  border: 1.5px dashed var(--warn);
+}
+
 .dot.unchecked {
   background: transparent;
   border: 1.5px solid var(--neutral);
 }
 
-.dot.not-started {
+.dot.error {
   background: transparent;
   border: 1.5px dashed var(--bad);
 }
@@ -847,18 +863,21 @@ kbd {
   background: currentColor;
 }
 
-.pill.verified,
+.pill.race-free,
 .pill.completed {
   background: var(--ok-soft);
   color: var(--ok);
 }
 
-.pill.rejected,
-.pill.not-started {
+.pill.race-condition,
+.pill.check-failed,
+.pill.deadlock,
+.pill.error {
   background: var(--bad-soft);
   color: var(--bad);
 }
 
+.pill.unsupported,
 .pill.unknown,
 .pill.stuck,
 .pill.aborted {
@@ -1767,6 +1786,14 @@ button.legend-item:hover {
   color: var(--bad);
 }
 
+.callout.warn {
+  background: var(--warn-soft);
+}
+
+.callout.warn strong {
+  color: var(--warn);
+}
+
 .verdict-card {
   margin-top: 14px;
   border-radius: 10px;
@@ -1775,16 +1802,20 @@ button.legend-item:hover {
   background: var(--neutral-soft);
 }
 
-.verdict-card.verified {
+.verdict-card.race-free {
   background: var(--ok-soft);
   border-color: transparent;
 }
 
-.verdict-card.rejected {
+.verdict-card.race-condition,
+.verdict-card.check-failed,
+.verdict-card.deadlock,
+.verdict-card.error {
   background: var(--bad-soft);
   border-color: transparent;
 }
 
+.verdict-card.unsupported,
 .verdict-card.unknown {
   background: var(--warn-soft);
   border-color: transparent;
@@ -1812,15 +1843,19 @@ button.legend-item:hover {
   stroke-width: 2.6;
 }
 
-.verified .verdict-icon {
+.verdict-card.race-free .verdict-icon {
   background: var(--ok);
 }
 
-.rejected .verdict-icon {
+.verdict-card.race-condition .verdict-icon,
+.verdict-card.check-failed .verdict-icon,
+.verdict-card.deadlock .verdict-icon,
+.verdict-card.error .verdict-icon {
   background: var(--bad);
 }
 
-.unknown .verdict-icon {
+.verdict-card.unsupported .verdict-icon,
+.verdict-card.unknown .verdict-icon {
   background: var(--warn);
 }
 
@@ -1830,15 +1865,19 @@ button.legend-item:hover {
   letter-spacing: -0.01em;
 }
 
-.verified .verdict-title {
+.verdict-card.race-free .verdict-title {
   color: var(--ok);
 }
 
-.rejected .verdict-title {
+.verdict-card.race-condition .verdict-title,
+.verdict-card.check-failed .verdict-title,
+.verdict-card.deadlock .verdict-title,
+.verdict-card.error .verdict-title {
   color: var(--bad);
 }
 
-.unknown .verdict-title {
+.verdict-card.unsupported .verdict-title,
+.verdict-card.unknown .verdict-title {
   color: var(--warn);
 }
 
