@@ -35,5 +35,8 @@
     mul.wide.u32 %rd2, %r9, 4;
     add.s64 %rd2, %rd1, %rd2;
     st.global.f32 [%rd2], %f1;
+    // Warp 0 allocated; it frees the columns once warp 1's waits are behind the barrier.
+    bar.sync 0;
+    @%p1 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
     ret;
 }

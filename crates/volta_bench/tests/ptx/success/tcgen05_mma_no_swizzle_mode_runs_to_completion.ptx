@@ -10,6 +10,9 @@
     .shared .align 1024 .b8 a_buf[4096];
     .shared .align 1024 .b8 b_buf[1024];
     .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
 
     mov.u32 %r3, taddr_slot;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
@@ -29,6 +32,15 @@
     // dense, D=f32, A/B=f16, no negate/transpose, M=128, N=8.
     mov.u32 %r2, 134348816;
     mov.pred %p0, 0;
+    mov.u32 %rbar, mma_bar;
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    bar.sync 0;
     @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    // Free the columns once every Tensor Memory use is observed complete.
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
     ret;
 }

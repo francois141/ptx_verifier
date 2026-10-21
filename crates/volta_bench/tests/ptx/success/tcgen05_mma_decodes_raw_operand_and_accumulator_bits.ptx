@@ -83,7 +83,10 @@ MMA_WAIT:
     tcgen05.fence::after_thread_sync;
 
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r1];
+    tcgen05.wait::ld.sync.aligned;
     ld.param.u64 %rd1, [k_param_0];
     @%p1 st.global.f32 [%rd1], %f1;
+    // Free the columns once every Tensor Memory use is observed complete.
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
     ret;
 }

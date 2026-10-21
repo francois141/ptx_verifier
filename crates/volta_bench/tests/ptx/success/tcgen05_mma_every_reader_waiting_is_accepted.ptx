@@ -48,5 +48,8 @@ WAIT:
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
     tcgen05.wait::ld.sync.aligned;
 DONE:
+    // Warp 0 allocated; it frees the columns once warp 1's wait::ld is behind the barrier.
+    bar.sync 0;
+    @%p2 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
     ret;
 }
