@@ -1,0 +1,82 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(.param .u64 gate_ptr,.param .u64 value_ptr,.param .u64 output_ptr,.param .u64 dummy_ptr1,.param .u64 dummy_ptr2)
+{
+.reg .b32 %r<12>;
+.reg .b64 %a<8>;
+.reg .b16 %h<16>;
+.reg .f32 %g<4>, %v<4>, %e<4>;
+// Map each thread to four adjacent elements of its 2048-element tile.
+ld.param.u64 %a0,[gate_ptr];
+ld.param.u64 %a1,[value_ptr];
+ld.param.u64 %a2,[output_ptr];
+mov.u32 %r0,%ctaid.x;
+mov.u32 %r1,%tid.x;
+shl.b32 %r0,%r0,11;
+shl.b32 %r1,%r1,2;
+add.u32 %r0,%r0,%r1;
+cvt.u64.u32 %a3,%r0;
+add.u64 %a4,%a0,%a3;
+add.u64 %a5,%a1,%a3;
+shl.b64 %a3,%a3,1;
+add.u64 %a6,%a2,%a3;
+// Load packed FP8 inputs and convert pairs to half precision exactly.
+ld.global.u32 %r2,[%a4];
+ld.global.u32 %r3,[%a5];
+mov.b32 {%h0,%h1},%r2;
+mov.b32 {%h2,%h3},%r3;
+cvt.rn.f16x2.e4m3x2 %r4,%h0;
+cvt.rn.f16x2.e4m3x2 %r5,%h1;
+cvt.rn.f16x2.e4m3x2 %r6,%h2;
+cvt.rn.f16x2.e4m3x2 %r7,%h3;
+mov.b32 {%h4,%h5},%r4;
+mov.b32 {%h6,%h7},%r5;
+mov.b32 {%h8,%h9},%r6;
+mov.b32 {%h10,%h11},%r7;
+// Widen inputs for the float32 sigmoid and product.
+cvt.f32.f16 %g0,%h4;
+cvt.f32.f16 %g1,%h5;
+cvt.f32.f16 %g2,%h6;
+cvt.f32.f16 %g3,%h7;
+cvt.f32.f16 %v0,%h8;
+cvt.f32.f16 %v1,%h9;
+cvt.f32.f16 %v2,%h10;
+cvt.f32.f16 %v3,%h11;
+// Evaluate exp(-gate) using the base-two exponential unit.
+mul.f32 %e0,%g0,0fBFB8AA3B;
+mul.f32 %e1,%g1,0fBFB8AA3B;
+mul.f32 %e2,%g2,0fBFB8AA3B;
+mul.f32 %e3,%g3,0fBFB8AA3B;
+ex2.approx.f32 %e0,%e0;
+ex2.approx.f32 %e1,%e1;
+ex2.approx.f32 %e2,%e2;
+ex2.approx.f32 %e3,%e3;
+add.f32 %e0,%e0,0f3F800000;
+add.f32 %e1,%e1,0f3F800000;
+add.f32 %e2,%e2,0f3F800000;
+add.f32 %e3,%e3,0f3F800000;
+rcp.approx.f32 %e0,%e0;
+rcp.approx.f32 %e1,%e1;
+rcp.approx.f32 %e2,%e2;
+rcp.approx.f32 %e3,%e3;
+// Preserve the gate-times-reciprocal then value multiplication order.
+mul.f32 %g0,%g0,%e0;
+mul.f32 %g1,%g1,%e1;
+mul.f32 %g2,%g2,%e2;
+mul.f32 %g3,%g3,%e3;
+mul.f32 %g0,%g0,%v0;
+mul.f32 %g1,%g1,%v1;
+mul.f32 %g2,%g2,%v2;
+mul.f32 %g3,%g3,%v3;
+// Round to float16 and store four contiguous results without masks.
+cvt.rn.f16.f32 %h12,%g0;
+cvt.rn.f16.f32 %h13,%g1;
+cvt.rn.f16.f32 %h14,%g2;
+cvt.rn.f16.f32 %h15,%g3;
+mov.b32 %r8,{%h12,%h13};
+mov.b32 %r9,{%h14,%h15};
+st.global.v2.b32 [%a6],{%r8,%r9};
+ret;
+}

@@ -1,0 +1,289 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+ .param .u64 a_ptr,
+ .param .u64 b_ptr,
+ .param .u64 d_ptr,
+ .param .u64 c_ptr,
+ .param .u64 dummy_ptr1,
+ .param .u64 dummy_ptr2
+)
+{
+ .reg .pred %leader,%warp0,%acc,%yes,%done,%loop,%pref,%wrap;
+ .reg .b32 %tx,%pm,%pn,%s,%bar,%slot,%tm,%ta,%warp,%desc,%zero;
+ .reg .b32 %cs,%ls,%sabase,%sbbase,%loadi,%roff,%soff,%outiter,%curbar,%prevbar,%wp,%ds;
+ .reg .f32 %v<32>;
+ .reg .b32 %r<16>,%sa,%sb,%iter,%col,%u<4>,%o<4>;
+ .reg .b64 %ap,%bp,%dp,%cp,%ga,%gb,%gd,%gc,%q,%ad,%bd,%aa,%bb;
+ .reg .b16 %h<8>;
+ .reg .b64 %A<4>,%X<4>,%Z<4>,%T<4>,%P<4>,%E<4>,%R<4>,%Sig<4>,%K<10>,%D<4>;
+ .reg .f32 %a<8>,%b<8>;
+ // Locate the output tile and load the tensor pointers.
+ ld.param.u64 %ap,[a_ptr]; ld.param.u64 %bp,[b_ptr];
+ ld.param.u64 %dp,[d_ptr]; ld.param.u64 %cp,[c_ptr];
+ mov.u32 %tx,%tid.x; mov.u32 %pm,%ctaid.x; mov.u32 %pn,%ctaid.y;
+ // Bijectively group eight M tiles for inter-CTA operand reuse.
+ and.b32 %r0,%pm,7; and.b32 %r1,%pn,24; add.u32 %r0,%r0,%r1;
+ shr.u32 %r2,%pm,3; and.b32 %r1,%pn,7; shl.b32 %r1,%r1,2;
+ add.u32 %pn,%r1,%r2; mov.u32 %pm,%r0;
+ // Use three 32768-byte operand buffers and two 8-byte barriers in dynamic shared memory.
+ mov.u32 %s,global_smem;
+ add.u32 %bar,%s,98304; mov.u32 %slot,%s;
+ setp.eq.u32 %leader,%tx,0; setp.lt.u32 %warp0,%tx,32;
+ setp.eq.u32 %yes,%tx,%tx;
+ mov.u32 %desc,0x08210010; mov.u32 %zero,0;
+ @%leader mbarrier.init.shared::cta.b64 [%bar],1;
+ add.u32 %r0,%bar,8; @%leader mbarrier.init.shared::cta.b64 [%r0],1;
+ @%warp0 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%slot],128;
+ @%warp0 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+ bar.sync 0; ld.shared.u32 %tm,[%slot]; bar.sync 0;
+ // Distribute aligned operand vectors across all threads and swizzle shared addresses.
+ shr.u32 %r0,%tx,3; and.b32 %r1,%tx,7;
+ shl.b32 %r2,%r0,13; shl.b32 %r3,%r1,4; add.u32 %r2,%r2,%r3;
+ shl.b32 %r4,%pm,20; add.u32 %r2,%r2,%r4;
+ cvt.u64.u32 %q,%r2; add.u64 %ga,%ap,%q;
+ shl.b32 %r2,%tx,4; and.b32 %r0,%r0,7; shl.b32 %r0,%r0,4;
+ xor.b32 %r2,%r2,%r0; add.u32 %sa,%s,%r2;
+ shr.u32 %r0,%tx,4; and.b32 %r1,%tx,15;
+ shl.b32 %r2,%r0,13; shl.b32 %r3,%r1,4; add.u32 %r2,%r2,%r3;
+ shl.b32 %r4,%pn,8; add.u32 %r2,%r2,%r4;
+ cvt.u64.u32 %q,%r2; add.u64 %gb,%bp,%q;
+ and.b32 %r2,%r1,7; shl.b32 %r2,%r2,4;
+ shl.b32 %r3,%r0,7; add.u32 %r2,%r2,%r3;
+ shr.u32 %r3,%r1,3; shl.b32 %r3,%r3,13; add.u32 %r2,%r2,%r3;
+ shl.b32 %r0,%r0,4; xor.b32 %r2,%r2,%r0;
+ add.u32 %r2,%r2,16384; add.u32 %sb,%s,%r2;
+ // Describe K-major A and N-major B using 128-byte swizzling.
+ shr.u32 %r0,%s,4; cvt.u64.u32 %q,%r0;
+ add.u64 %ad,%q,0x4000404000010000;
+ add.u64 %bd,%q,0x4000404002000400;
+ mov.u32 %iter,0;
+ mov.u32 %sabase,%sa; mov.u32 %sbbase,%sb; mov.u32 %loadi,0;
+PREFILL:
+ // Prime two independent asynchronous copy groups.
+ cp.async.cg.shared.global [%sa],[%ga],16;
+ cp.async.cg.shared.global [%sb],[%gb],16;
+ cp.async.cg.shared.global [%sa+2048],[%ga+131072],16;
+ cp.async.cg.shared.global [%sb+1024],[%gb+65536],16;
+ cp.async.cg.shared.global [%sa+4096],[%ga+262144],16;
+ cp.async.cg.shared.global [%sb+2048],[%gb+131072],16;
+ cp.async.cg.shared.global [%sa+6144],[%ga+393216],16;
+ cp.async.cg.shared.global [%sb+3072],[%gb+196608],16;
+ cp.async.cg.shared.global [%sa+8192],[%ga+524288],16;
+ cp.async.cg.shared.global [%sb+4096],[%gb+262144],16;
+ cp.async.cg.shared.global [%sa+10240],[%ga+655360],16;
+ cp.async.cg.shared.global [%sb+5120],[%gb+327680],16;
+ cp.async.cg.shared.global [%sa+12288],[%ga+786432],16;
+ cp.async.cg.shared.global [%sb+6144],[%gb+393216],16;
+ cp.async.cg.shared.global [%sa+14336],[%ga+917504],16;
+ cp.async.cg.shared.global [%sb+7168],[%gb+458752],16;
+ cp.async.commit_group;
+ add.u64 %ga,%ga,128; add.u64 %gb,%gb,524288;
+ add.u32 %sa,%sa,32768; add.u32 %sb,%sb,32768;
+ add.u32 %loadi,%loadi,1; setp.lt.u32 %loop,%loadi,2;
+ @%loop bra PREFILL;
+ mov.u32 %cs,0; mov.u32 %ls,65536;
+K_LOOP:
+ // Wait for this slice while the next remains in flight.
+ setp.lt.u32 %pref,%iter,63;
+ @%pref cp.async.wait_group 1; @!%pref cp.async.wait_group 0;
+ fence.proxy.async.shared::cta; bar.sync 0;
+ // Issue four ordered K=16 tensor-core operations into the FP32 accumulator.
+ and.b32 %r0,%iter,1; shl.b32 %r0,%r0,3; add.u32 %curbar,%bar,%r0;
+ @!%leader bra MMA_DONE;
+ setp.ne.u32 %acc,%iter,0;
+ cvt.u64.u32 %q,%cs; add.u64 %aa,%ad,%q; add.u64 %bb,%bd,%q;
+ tcgen05.mma.cta_group::1.kind::f16 [%tm],%aa,%bb,%desc,{%zero,%zero,%zero,%zero},%acc;
+ add.u64 %aa,%aa,2; add.u64 %bb,%bb,128;
+ tcgen05.mma.cta_group::1.kind::f16 [%tm],%aa,%bb,%desc,{%zero,%zero,%zero,%zero},%yes;
+ add.u64 %aa,%aa,2; add.u64 %bb,%bb,128;
+ tcgen05.mma.cta_group::1.kind::f16 [%tm],%aa,%bb,%desc,{%zero,%zero,%zero,%zero},%yes;
+ add.u64 %aa,%aa,2; add.u64 %bb,%bb,128;
+ tcgen05.mma.cta_group::1.kind::f16 [%tm],%aa,%bb,%desc,{%zero,%zero,%zero,%zero},%yes;
+ tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%curbar];
+MMA_DONE:
+ // Wait only for the previous slice, keeping this slice's MMA in flight.
+ setp.eq.u32 %pref,%iter,0; @%pref bra BUFFER_FREE;
+ xor.b32 %prevbar,%curbar,8;
+ sub.u32 %r0,%iter,1; shr.u32 %r0,%r0,1; and.b32 %wp,%r0,1;
+WAIT_PREVIOUS:
+ mbarrier.try_wait.parity.shared::cta.b64 %done,[%prevbar],%wp;
+ @!%done bra WAIT_PREVIOUS;
+BUFFER_FREE:
+ // Prefetch into the freed buffer, masking every access beyond K=4096.
+ setp.lt.u32 %pref,%iter,62;
+ add.u32 %sa,%sabase,%ls; add.u32 %sb,%sbbase,%ls;
+ @%pref cp.async.cg.shared.global [%sa],[%ga],16;
+ @%pref cp.async.cg.shared.global [%sb],[%gb],16;
+ @%pref cp.async.cg.shared.global [%sa+2048],[%ga+131072],16;
+ @%pref cp.async.cg.shared.global [%sb+1024],[%gb+65536],16;
+ @%pref cp.async.cg.shared.global [%sa+4096],[%ga+262144],16;
+ @%pref cp.async.cg.shared.global [%sb+2048],[%gb+131072],16;
+ @%pref cp.async.cg.shared.global [%sa+6144],[%ga+393216],16;
+ @%pref cp.async.cg.shared.global [%sb+3072],[%gb+196608],16;
+ @%pref cp.async.cg.shared.global [%sa+8192],[%ga+524288],16;
+ @%pref cp.async.cg.shared.global [%sb+4096],[%gb+262144],16;
+ @%pref cp.async.cg.shared.global [%sa+10240],[%ga+655360],16;
+ @%pref cp.async.cg.shared.global [%sb+5120],[%gb+327680],16;
+ @%pref cp.async.cg.shared.global [%sa+12288],[%ga+786432],16;
+ @%pref cp.async.cg.shared.global [%sb+6144],[%gb+393216],16;
+ @%pref cp.async.cg.shared.global [%sa+14336],[%ga+917504],16;
+ @%pref cp.async.cg.shared.global [%sb+7168],[%gb+458752],16;
+ cp.async.commit_group;
+ add.u64 %ga,%ga,128; add.u64 %gb,%gb,524288;
+ // Rotate shared buffers and descriptor start addresses.
+ add.u32 %ls,%ls,32768; setp.eq.u32 %wrap,%ls,98304; selp.u32 %ls,0,%ls,%wrap;
+ add.u32 %cs,%cs,2048; setp.eq.u32 %wrap,%cs,6144; selp.u32 %cs,0,%cs,%wrap;
+ add.u32 %iter,%iter,1; setp.lt.u32 %loop,%iter,64;
+ @%loop bra K_LOOP;
+ // Buffer two is free: prefetch all of D while the last MMA still reads buffer zero.
+ shr.u32 %r0,%tx,4; and.b32 %r1,%tx,15;
+ shl.b32 %r2,%pm,7; add.u32 %r0,%r0,%r2; shl.b32 %r0,%r0,13;
+ shl.b32 %r1,%r1,4; add.u32 %r0,%r0,%r1;
+ shl.b32 %r1,%pn,8; add.u32 %r0,%r0,%r1;
+ cvt.u64.u32 %q,%r0; add.u64 %gd,%dp,%q;
+ shl.b32 %r0,%tx,4; add.u32 %r0,%r0,65536; add.u32 %ds,%s,%r0;
+ cp.async.cg.shared.global [%ds],[%gd],16;
+ cp.async.cg.shared.global [%ds+2048],[%gd+65536],16;
+ cp.async.cg.shared.global [%ds+4096],[%gd+131072],16;
+ cp.async.cg.shared.global [%ds+6144],[%gd+196608],16;
+ cp.async.cg.shared.global [%ds+8192],[%gd+262144],16;
+ cp.async.cg.shared.global [%ds+10240],[%gd+327680],16;
+ cp.async.cg.shared.global [%ds+12288],[%gd+393216],16;
+ cp.async.cg.shared.global [%ds+14336],[%gd+458752],16;
+ cp.async.cg.shared.global [%ds+16384],[%gd+524288],16;
+ cp.async.cg.shared.global [%ds+18432],[%gd+589824],16;
+ cp.async.cg.shared.global [%ds+20480],[%gd+655360],16;
+ cp.async.cg.shared.global [%ds+22528],[%gd+720896],16;
+ cp.async.cg.shared.global [%ds+24576],[%gd+786432],16;
+ cp.async.cg.shared.global [%ds+26624],[%gd+851968],16;
+ cp.async.cg.shared.global [%ds+28672],[%gd+917504],16;
+ cp.async.cg.shared.global [%ds+30720],[%gd+983040],16;
+ cp.async.commit_group;
+WAIT_FINAL:
+ // Drain the final MMA before reusing its storage.
+ mbarrier.try_wait.parity.shared::cta.b64 %done,[%curbar],1;
+ @!%done bra WAIT_FINAL;
+ // Rearrange the accumulator in reused shared storage for coalesced output traffic.
+ tcgen05.fence::after_thread_sync;
+ and.b32 %warp,%tx,96; shl.b32 %ta,%warp,16; add.u32 %ta,%ta,%tm;
+ shl.b32 %soff,%tx,9; and.b32 %r0,%tx,7; shl.b32 %r0,%r0,4;
+ xor.b32 %soff,%soff,%r0; mov.u32 %col,0;
+UNPACK:
+ // Stage 32 columns per thread without shared bank conflicts.
+ tcgen05.ld.sync.aligned.32x32b.x32.b32 {%v0,%v1,%v2,%v3,%v4,%v5,%v6,%v7,%v8,%v9,%v10,%v11,%v12,%v13,%v14,%v15,%v16,%v17,%v18,%v19,%v20,%v21,%v22,%v23,%v24,%v25,%v26,%v27,%v28,%v29,%v30,%v31},[%ta];
+ tcgen05.wait::ld.sync.aligned;
+ xor.b32 %r0,%soff,0; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v0,%v1,%v2,%v3};
+ xor.b32 %r0,%soff,16; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v4,%v5,%v6,%v7};
+ xor.b32 %r0,%soff,32; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v8,%v9,%v10,%v11};
+ xor.b32 %r0,%soff,48; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v12,%v13,%v14,%v15};
+ xor.b32 %r0,%soff,64; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v16,%v17,%v18,%v19};
+ xor.b32 %r0,%soff,80; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v20,%v21,%v22,%v23};
+ xor.b32 %r0,%soff,96; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v24,%v25,%v26,%v27};
+ xor.b32 %r0,%soff,112; add.u32 %r0,%r0,%s; st.shared.v4.f32 [%r0],{%v28,%v29,%v30,%v31};
+ add.u32 %soff,%soff,128; add.u32 %ta,%ta,32; add.u32 %col,%col,32;
+ setp.lt.u32 %loop,%col,128; @%loop bra UNPACK;
+ // Make every prefetched residual visible before any warp consumes it.
+ cp.async.wait_group 0; bar.sync 0;
+ @%warp0 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %tm,128;
+ @%leader mbarrier.inval.shared::cta.b64 [%bar];
+ add.u32 %r0,%bar,8; @%leader mbarrier.inval.shared::cta.b64 [%r0];
+ // Each warp covers two rows, with eight adjacent output columns per lane.
+ shr.u32 %r0,%tx,4; and.b32 %r1,%tx,15;
+ shl.b32 %r2,%r0,9; and.b32 %r3,%r0,7; shl.b32 %r3,%r3,4;
+ xor.b32 %r2,%r2,%r3; shl.b32 %r3,%r1,5; xor.b32 %roff,%r2,%r3;
+ shl.b32 %r2,%pm,7; add.u32 %r0,%r0,%r2; shl.b32 %r0,%r0,13;
+ shl.b32 %r1,%r1,4; add.u32 %r0,%r0,%r1;
+ shl.b32 %r1,%pn,8; add.u32 %r0,%r0,%r1;
+ cvt.u64.u32 %q,%r0; add.u64 %gc,%cp,%q;
+ mov.u32 %outiter,0;
+ // Duplicate constants for packed two-lane FP32 arithmetic.
+ mov.b64 %K0,0x3F3504F33F3504F3; mov.b64 %K1,0x3EA7BA053EA7BA05;
+ mov.b64 %K2,0x3F8000003F800000; mov.b64 %K3,0x3F87DC223F87DC22;
+ mov.b64 %K4,0xBFBA00E3BFBA00E3; mov.b64 %K5,0x3FB5F0E33FB5F0E3;
+ mov.b64 %K6,0xBE91A98EBE91A98E; mov.b64 %K7,0x3E8279063E827906;
+ mov.b64 %K8,0xBFB8AA3BBFB8AA3B; mov.b64 %K9,0x3F0000003F000000;
+EPILOGUE:
+ // Read prefetched residuals and swizzled FP32 accumulators from shared memory.
+ add.u32 %r0,%s,%roff; ld.shared.v2.b64 {%A0,%A1},[%r0];
+ xor.b32 %r0,%roff,16; add.u32 %r0,%r0,%s; ld.shared.v2.b64 {%A2,%A3},[%r0];
+ ld.shared.v4.b32 {%u0,%u1,%u2,%u3},[%ds];
+ // Convert all residuals and form four independent adjacent FP32 pairs.
+ mov.b32 {%h0,%h1},%u0; mov.b32 {%h2,%h3},%u1;
+ mov.b32 {%h4,%h5},%u2; mov.b32 {%h6,%h7},%u3;
+ cvt.f32.f16 %a0,%h0; cvt.f32.f16 %a1,%h1;
+ cvt.f32.f16 %a2,%h2; cvt.f32.f16 %a3,%h3;
+ cvt.f32.f16 %a4,%h4; cvt.f32.f16 %a5,%h5;
+ cvt.f32.f16 %a6,%h6; cvt.f32.f16 %a7,%h7;
+ mov.b64 %D0,{%a0,%a1}; add.rn.f32x2 %X0,%A0,%D0;
+ mov.b64 %D1,{%a2,%a3}; add.rn.f32x2 %X1,%A1,%D1;
+ mov.b64 %D2,{%a4,%a5}; add.rn.f32x2 %X2,%A2,%D2;
+ mov.b64 %D3,{%a6,%a7}; add.rn.f32x2 %X3,%A3,%D3;
+ // Form erf arguments and reciprocal-polynomial coordinates.
+ mul.rn.f32x2 %Z0,%X0,%K0; mul.rn.f32x2 %Z1,%X1,%K0;
+ mul.rn.f32x2 %Z2,%X2,%K0; mul.rn.f32x2 %Z3,%X3,%K0;
+ and.b64 %T0,%Z0,0x7FFFFFFF7FFFFFFF; and.b64 %T1,%Z1,0x7FFFFFFF7FFFFFFF;
+ and.b64 %T2,%Z2,0x7FFFFFFF7FFFFFFF; and.b64 %T3,%Z3,0x7FFFFFFF7FFFFFFF;
+ fma.rn.f32x2 %T0,%T0,%K1,%K2; fma.rn.f32x2 %T1,%T1,%K1,%K2;
+ fma.rn.f32x2 %T2,%T2,%K1,%K2; fma.rn.f32x2 %T3,%T3,%K1,%K2;
+ mul.rn.f32x2 %E0,%Z0,%Z0; mul.rn.f32x2 %E1,%Z1,%Z1;
+ mul.rn.f32x2 %E2,%Z2,%Z2; mul.rn.f32x2 %E3,%Z3,%Z3;
+ mul.rn.f32x2 %E0,%E0,%K8; mul.rn.f32x2 %E1,%E1,%K8;
+ mul.rn.f32x2 %E2,%E2,%K8; mul.rn.f32x2 %E3,%E3,%K8;
+ // Overlap independent reciprocal and exponential operations.
+ mov.b64 {%a0,%a1},%T0; mov.b64 {%b0,%b1},%E0;
+ mov.b64 {%a2,%a3},%T1; mov.b64 {%b2,%b3},%E1;
+ mov.b64 {%a4,%a5},%T2; mov.b64 {%b4,%b5},%E2;
+ mov.b64 {%a6,%a7},%T3; mov.b64 {%b6,%b7},%E3;
+ rcp.approx.ftz.f32 %a0,%a0; rcp.approx.ftz.f32 %a1,%a1;
+ rcp.approx.ftz.f32 %a2,%a2; rcp.approx.ftz.f32 %a3,%a3;
+ rcp.approx.ftz.f32 %a4,%a4; rcp.approx.ftz.f32 %a5,%a5;
+ rcp.approx.ftz.f32 %a6,%a6; rcp.approx.ftz.f32 %a7,%a7;
+ ex2.approx.ftz.f32 %b0,%b0; ex2.approx.ftz.f32 %b1,%b1;
+ ex2.approx.ftz.f32 %b2,%b2; ex2.approx.ftz.f32 %b3,%b3;
+ ex2.approx.ftz.f32 %b4,%b4; ex2.approx.ftz.f32 %b5,%b5;
+ ex2.approx.ftz.f32 %b6,%b6; ex2.approx.ftz.f32 %b7,%b7;
+ mov.b64 %T0,{%a0,%a1}; mov.b64 %E0,{%b0,%b1};
+ mov.b64 %T1,{%a2,%a3}; mov.b64 %E1,{%b2,%b3};
+ mov.b64 %T2,{%a4,%a5}; mov.b64 %E2,{%b4,%b5};
+ mov.b64 %T3,{%a6,%a7}; mov.b64 %E3,{%b6,%b7};
+ // Interleave four Horner chains using packed FP32 FMAs.
+ fma.rn.f32x2 %P0,%T0,%K3,%K4; fma.rn.f32x2 %P1,%T1,%K3,%K4;
+ fma.rn.f32x2 %P2,%T2,%K3,%K4; fma.rn.f32x2 %P3,%T3,%K3,%K4;
+ fma.rn.f32x2 %P0,%P0,%T0,%K5; fma.rn.f32x2 %P1,%P1,%T1,%K5;
+ fma.rn.f32x2 %P2,%P2,%T2,%K5; fma.rn.f32x2 %P3,%P3,%T3,%K5;
+ fma.rn.f32x2 %P0,%P0,%T0,%K6; fma.rn.f32x2 %P1,%P1,%T1,%K6;
+ fma.rn.f32x2 %P2,%P2,%T2,%K6; fma.rn.f32x2 %P3,%P3,%T3,%K6;
+ fma.rn.f32x2 %P0,%P0,%T0,%K7; fma.rn.f32x2 %P1,%P1,%T1,%K7;
+ fma.rn.f32x2 %P2,%P2,%T2,%K7; fma.rn.f32x2 %P3,%P3,%T3,%K7;
+ mul.rn.f32x2 %P0,%P0,%T0; mul.rn.f32x2 %P1,%P1,%T1;
+ mul.rn.f32x2 %P2,%P2,%T2; mul.rn.f32x2 %P3,%P3,%T3;
+ xor.b64 %P0,%P0,0x8000000080000000; xor.b64 %P1,%P1,0x8000000080000000;
+ xor.b64 %P2,%P2,0x8000000080000000; xor.b64 %P3,%P3,0x8000000080000000;
+ fma.rn.f32x2 %R0,%P0,%E0,%K2; fma.rn.f32x2 %R1,%P1,%E1,%K2;
+ fma.rn.f32x2 %R2,%P2,%E2,%K2; fma.rn.f32x2 %R3,%P3,%E3,%K2;
+ // Restore erf signs and preserve the FP32 GELU multiplication order.
+ and.b64 %Sig0,%Z0,0x8000000080000000; and.b64 %Sig1,%Z1,0x8000000080000000;
+ and.b64 %Sig2,%Z2,0x8000000080000000; and.b64 %Sig3,%Z3,0x8000000080000000;
+ xor.b64 %R0,%R0,%Sig0; xor.b64 %R1,%R1,%Sig1;
+ xor.b64 %R2,%R2,%Sig2; xor.b64 %R3,%R3,%Sig3;
+ add.rn.f32x2 %R0,%R0,%K2; add.rn.f32x2 %R1,%R1,%K2;
+ add.rn.f32x2 %R2,%R2,%K2; add.rn.f32x2 %R3,%R3,%K2;
+ mul.rn.f32x2 %X0,%X0,%K9; mul.rn.f32x2 %X1,%X1,%K9;
+ mul.rn.f32x2 %X2,%X2,%K9; mul.rn.f32x2 %X3,%X3,%K9;
+ mul.rn.f32x2 %R0,%R0,%X0; mul.rn.f32x2 %R1,%R1,%X1;
+ mul.rn.f32x2 %R2,%R2,%X2; mul.rn.f32x2 %R3,%R3,%X3;
+ // Round once to FP16 and store eight contiguous values.
+ mov.b64 {%a0,%a1},%R0; cvt.rn.f16x2.f32 %o0,%a1,%a0;
+ mov.b64 {%a2,%a3},%R1; cvt.rn.f16x2.f32 %o1,%a3,%a2;
+ mov.b64 {%a4,%a5},%R2; cvt.rn.f16x2.f32 %o2,%a5,%a4;
+ mov.b64 {%a6,%a7},%R3; cvt.rn.f16x2.f32 %o3,%a7,%a6;
+ st.global.v4.b32 [%gc],{%o0,%o1,%o2,%o3};
+ // Advance eight rows, collectively covering the entire 128 by 128 tile.
+ add.u32 %roff,%roff,4096; add.u32 %ds,%ds,2048; add.u64 %gc,%gc,65536;
+ add.u32 %outiter,%outiter,1; setp.lt.u32 %loop,%outiter,16;
+ @%loop bra EPILOGUE;
+ ret;
+}

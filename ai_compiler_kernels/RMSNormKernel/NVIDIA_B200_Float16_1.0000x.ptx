@@ -1,0 +1,131 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 x_ptr,
+.param .u64 weight_ptr,
+.param .u64 output_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+){
+.reg .b32 %r<20>;
+.reg .b64 %d<4>;
+.reg .b16 %h<8>;
+.reg .f32 %x<8>, %w<8>, %s<8>, %a, %b, %inv;
+.reg .pred %p;
+// Map 512 threads to eight contiguous half elements each.
+ld.param.u64 %d0,[x_ptr];
+ld.param.u64 %d1,[weight_ptr];
+ld.param.u64 %d2,[output_ptr];
+mov.u32 %r0,%tid.x;
+mov.u32 %r1,%ctaid.x;
+shl.b32 %r2,%r1,13;
+shl.b32 %r3,%r0,4;
+add.u32 %r2,%r2,%r3;
+cvt.u64.u32 %d3,%r2;
+add.u64 %d0,%d0,%d3;
+add.u64 %d1,%d1,%d3;
+add.u64 %d2,%d2,%d3;
+// Fetch both vectors early to overlap memory access with reduction.
+ld.global.v4.b32 {%r4,%r5,%r6,%r7},[%d0];
+ld.global.v4.b32 {%r16,%r17,%r18,%r19},[%d1];
+mov.b32 {%h0,%h1},%r4;
+mov.b32 {%h2,%h3},%r5;
+mov.b32 {%h4,%h5},%r6;
+mov.b32 {%h6,%h7},%r7;
+cvt.f32.f16 %x0,%h0;
+cvt.f32.f16 %x1,%h1;
+cvt.f32.f16 %x2,%h2;
+cvt.f32.f16 %x3,%h3;
+cvt.f32.f16 %x4,%h4;
+cvt.f32.f16 %x5,%h5;
+cvt.f32.f16 %x6,%h6;
+cvt.f32.f16 %x7,%h7;
+// Compute FP32 squares and a balanced local sum.
+mul.f32 %s0,%x0,%x0;
+mul.f32 %s1,%x1,%x1;
+mul.f32 %s2,%x2,%x2;
+mul.f32 %s3,%x3,%x3;
+mul.f32 %s4,%x4,%x4;
+mul.f32 %s5,%x5,%x5;
+mul.f32 %s6,%x6,%x6;
+mul.f32 %s7,%x7,%x7;
+add.f32 %s0,%s0,%s1;
+add.f32 %s2,%s2,%s3;
+add.f32 %s4,%s4,%s5;
+add.f32 %s6,%s6,%s7;
+add.f32 %s0,%s0,%s2;
+add.f32 %s4,%s4,%s6;
+add.f32 %a,%s0,%s4;
+// Reduce each warp and publish one sum per warp in 64 dynamic bytes.
+shfl.sync.bfly.b32 %b,%a,16,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,8,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,4,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,2,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,1,31,-1;
+add.f32 %a,%a,%b;
+and.b32 %r8,%r0,31;
+shr.u32 %r9,%r0,5;
+mov.u32 %r10,global_smem;
+mad.lo.u32 %r11,%r9,4,%r10;
+setp.eq.u32 %p,%r8,0;
+@%p st.shared.f32 [%r11],%a;
+bar.sync 0;
+// Duplicate the sixteen-sum reduction in each half warp.
+and.b32 %r12,%r8,15;
+mad.lo.u32 %r11,%r12,4,%r10;
+ld.shared.f32 %a,[%r11];
+shfl.sync.bfly.b32 %b,%a,8,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,4,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,2,31,-1;
+add.f32 %a,%a,%b;
+shfl.sync.bfly.b32 %b,%a,1,31,-1;
+add.f32 %a,%a,%b;
+// Compute rsqrt(sum / 4096 + 1e-6).
+mul.f32 %a,%a,0f39800000;
+add.f32 %a,%a,0f358637bd;
+rsqrt.approx.f32 %inv,%a;
+// Unpack weights and preserve the two FP32 output multiplications.
+mov.b32 {%h0,%h1},%r16;
+mov.b32 {%h2,%h3},%r17;
+mov.b32 {%h4,%h5},%r18;
+mov.b32 {%h6,%h7},%r19;
+cvt.f32.f16 %w0,%h0;
+cvt.f32.f16 %w1,%h1;
+cvt.f32.f16 %w2,%h2;
+cvt.f32.f16 %w3,%h3;
+cvt.f32.f16 %w4,%h4;
+cvt.f32.f16 %w5,%h5;
+cvt.f32.f16 %w6,%h6;
+cvt.f32.f16 %w7,%h7;
+mul.f32 %x0,%x0,%inv;
+mul.f32 %x1,%x1,%inv;
+mul.f32 %x2,%x2,%inv;
+mul.f32 %x3,%x3,%inv;
+mul.f32 %x4,%x4,%inv;
+mul.f32 %x5,%x5,%inv;
+mul.f32 %x6,%x6,%inv;
+mul.f32 %x7,%x7,%inv;
+mul.f32 %x0,%x0,%w0;
+mul.f32 %x1,%x1,%w1;
+mul.f32 %x2,%x2,%w2;
+mul.f32 %x3,%x3,%w3;
+mul.f32 %x4,%x4,%w4;
+mul.f32 %x5,%x5,%w5;
+mul.f32 %x6,%x6,%w6;
+mul.f32 %x7,%x7,%w7;
+// Convert pairs to half and issue one aligned vector store per thread.
+cvt.rn.f16x2.f32 %r4,%x1,%x0;
+cvt.rn.f16x2.f32 %r5,%x3,%x2;
+cvt.rn.f16x2.f32 %r6,%x5,%x4;
+cvt.rn.f16x2.f32 %r7,%x7,%x6;
+st.global.v4.b32 [%d2],{%r4,%r5,%r6,%r7};
+ret;
+}

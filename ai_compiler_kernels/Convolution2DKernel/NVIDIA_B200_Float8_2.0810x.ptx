@@ -1,0 +1,361 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 x_ptr,
+    .param .u64 weight_ptr,
+    .param .u64 output_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<80>;
+    .reg .b64 %rd<24>;
+    .reg .f32 %f<32>;
+    .reg .b32 %g<6>;
+
+    // Set up the CTA tile and its weight base.
+    ld.param.u64 %rd0, [x_ptr];
+    ld.param.u64 %rd1, [weight_ptr];
+    ld.param.u64 %rd2, [output_ptr];
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %ctaid.x;
+    mov.u32 %r2, %ctaid.y;
+    mov.u32 %r3, global_smem;
+    shl.b32 %r15, %r2, 7;
+    mul.wide.u32 %rd4, %r15, 576;
+    add.u64 %rd1, %rd1, %rd4;
+
+    // The weight tile uses a 64-byte swizzle in K-major order.
+    shr.u32 %r16, %r0, 2;
+    and.b32 %r17, %r0, 3;
+    shl.b32 %r17, %r17, 4;
+    and.b32 %r18, %r16, 6;
+    shl.b32 %r18, %r18, 3;
+    xor.b32 %r18, %r17, %r18;
+    mad.lo.u32 %r19, %r16, 64, %r18;
+    add.u32 %r19, %r3, %r19;
+    mad.lo.u32 %r20, %r16, 576, %r17;
+    cvt.u64.u32 %rd5, %r20;
+    add.u64 %rd5, %rd1, %rd5;
+
+    // Prime the three-slot weight pipeline with its first K=64 tile.
+    cp.async.cg.shared.global [%r19], [%rd5], 16;
+    add.u32 %r26, %r19, 2048;
+    add.u64 %rd9, %rd5, 18432;
+    cp.async.cg.shared.global [%r26], [%rd9], 16;
+    add.u32 %r26, %r19, 4096;
+    add.u64 %rd9, %rd5, 36864;
+    cp.async.cg.shared.global [%r26], [%rd9], 16;
+    add.u32 %r26, %r19, 6144;
+    add.u64 %rd9, %rd5, 55296;
+    cp.async.cg.shared.global [%r26], [%rd9], 16;
+    cp.async.commit_group;
+
+    // Reserve the tensor accumulator and initialize its completion barrier.
+    add.u32 %r4, %r3, 32768;
+    add.u32 %r5, %r3, 32776;
+    setp.eq.u32 %p0, %r0, 0;
+    setp.lt.u32 %p1, %r0, 32;
+    @%p0 mbarrier.init.shared::cta.b64 [%r4], 1;
+    @%p1 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r5], 64;
+    @%p1 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    bar.sync 0;
+    ld.shared.u32 %r6, [%r5];
+
+    // Four-pixel groups never cross batches; mark groups crossing a row.
+    shl.b32 %r7, %r1, 6;
+    and.b32 %r8, %r0, 15;
+    shl.b32 %r8, %r8, 2;
+    add.u32 %r9, %r7, %r8;
+    div.u32 %r10, %r9, 2916;
+    rem.u32 %r11, %r9, 2916;
+    div.u32 %r12, %r11, 54;
+    rem.u32 %r13, %r11, 54;
+    mad.lo.u32 %r14, %r12, 56, %r13;
+    mad.lo.u32 %r14, %r10, 200704, %r14;
+    setp.eq.u32 %p5, %r13, 52;
+    and.b32 %r52, %r14, 3;
+    and.b32 %r14, %r14, 0xfffffffc;
+    cvt.u64.u32 %rd3, %r14;
+    add.u64 %rd3, %rd0, %rd3;
+
+    // Assign one input channel to each half warp and reuse its three filter rows.
+    shr.u32 %r62, %r0, 4;
+    mul.lo.u32 %r63, %r62, 9;
+    mul.wide.u32 %rd17, %r62, 3136;
+    add.u64 %rd3, %rd3, %rd17;
+
+    // Select bytes directly, including quads straddling the end of a row.
+    mad.lo.u32 %r52, %r52, 0x1111, 0x3210;
+    add.u32 %r64, %r52, 0x1111;
+    add.u32 %r65, %r52, 0x2222;
+    @%p5 mov.u32 %r52, 0x5410;
+    @%p5 mov.u32 %r64, 0x6521;
+    @%p5 mov.u32 %r65, 0x7632;
+
+    // Form tensor-core descriptors; B is spatial-major and transposed.
+    shr.u32 %r21, %r3, 4;
+    cvt.u64.u32 %rd6, %r21;
+    or.b64 %rd6, %rd6, 0x8000402000010000;
+    add.u32 %r22, %r3, 24576;
+    shr.u32 %r21, %r22, 4;
+    cvt.u64.u32 %rd7, %r21;
+    or.b64 %rd7, %rd7, 0x8000402001000000;
+    mov.u32 %r23, 0x08110010;
+    mov.u32 %r51, 0;
+    mov.u32 %r24, 0;
+    mov.u32 %r25, 0;
+    mov.u32 %r71, 0;
+
+K_LOOP:
+    .pragma "nounroll";
+    // Three 8 KB weight slots and two 4 KB input slots exactly fill 32 KB.
+    shl.b32 %r56, %r71, 9;
+    cvt.u64.u32 %rd14, %r56;
+    add.u64 %rd15, %rd6, %rd14;
+    and.b32 %r53, %r24, 64;
+    shl.b32 %r53, %r53, 6;
+    add.u32 %r55, %r22, %r53;
+    shr.u32 %r56, %r53, 4;
+    cvt.u64.u32 %rd14, %r56;
+    add.u64 %rd16, %rd7, %rd14;
+
+    // Fetch the next weight tile; the final stage suppresses out-of-range copies.
+    add.u32 %r72, %r71, 1;
+    setp.eq.u32 %p6, %r72, 3;
+    @%p6 mov.u32 %r72, 0;
+    shl.b32 %r73, %r72, 13;
+    add.u32 %r54, %r19, %r73;
+    add.u32 %r74, %r24, 64;
+    setp.lt.u32 %p7, %r74, 576;
+    cvt.u64.u32 %rd8, %r74;
+    add.u64 %rd8, %rd5, %rd8;
+    @%p7 cp.async.cg.shared.global [%r54], [%rd8], 16;
+    add.u32 %r26, %r54, 2048;
+    add.u64 %rd9, %rd8, 18432;
+    @%p7 cp.async.cg.shared.global [%r26], [%rd9], 16;
+    add.u32 %r26, %r54, 4096;
+    add.u64 %rd9, %rd8, 36864;
+    @%p7 cp.async.cg.shared.global [%r26], [%rd9], 16;
+    add.u32 %r26, %r54, 6144;
+    add.u64 %rd9, %rd8, 55296;
+    @%p7 cp.async.cg.shared.global [%r26], [%rd9], 16;
+    cp.async.commit_group;
+
+    // Stage t starts at channel 7*t and filter position t.
+    // Mask stores to keep exactly the 64 K rows in this reduction slice.
+    shr.u32 %r61, %r24, 6;
+    mul.wide.u32 %rd17, %r61, 21952;
+    add.u64 %rd18, %rd3, %rd17;
+    sub.u32 %r27, %r63, %r61;
+    mad.lo.u32 %r69, %r27, 64, %r8;
+
+    // Request all three filter rows early and keep reusable input lines in L1.
+    ld.global.L1::evict_last.b32 %g0, [%rd18+0];
+    ld.global.L1::evict_last.b32 %g1, [%rd18+4];
+    ld.global.L1::evict_last.b32 %g2, [%rd18+56];
+    ld.global.L1::evict_last.b32 %g3, [%rd18+60];
+    ld.global.L1::evict_last.b32 %g4, [%rd18+112];
+    ld.global.L1::evict_last.b32 %g5, [%rd18+116];
+
+    // Filter row 0: assemble four pixels while preserving output-row boundaries.
+    prmt.b32 %r66, %g0, %g1, %r52;
+    prmt.b32 %r67, %g0, %g1, %r64;
+    prmt.b32 %r68, %g0, %g1, %r65;
+    add.u32 %r28, %r69, 0;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r66;
+    add.u32 %r28, %r69, 64;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r67;
+    add.u32 %r28, %r69, 128;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r68;
+
+    // Filter row 1: assemble four pixels while preserving output-row boundaries.
+    prmt.b32 %r66, %g2, %g3, %r52;
+    prmt.b32 %r67, %g2, %g3, %r64;
+    prmt.b32 %r68, %g2, %g3, %r65;
+    add.u32 %r28, %r69, 192;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r66;
+    add.u32 %r28, %r69, 256;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r67;
+    add.u32 %r28, %r69, 320;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r68;
+
+    // Filter row 2: assemble four pixels while preserving output-row boundaries.
+    prmt.b32 %r66, %g4, %g5, %r52;
+    prmt.b32 %r67, %g4, %g5, %r64;
+    prmt.b32 %r68, %g4, %g5, %r65;
+    add.u32 %r28, %r69, 384;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r66;
+    add.u32 %r28, %r69, 448;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r67;
+    add.u32 %r28, %r69, 512;
+    setp.lt.u32 %p6, %r28, 4096;
+    shr.u32 %r35, %r28, 3;
+    lop3.b32 %r36, %r28, %r35, 48, 0x78;
+    add.u32 %r36, %r55, %r36;
+    @%p6 st.shared.b32 [%r36], %r68;
+
+    // Finish staging and retire the preceding MMA before recycling its buffer.
+    setp.ne.u32 %p3, %r24, 0;
+    @!%p3 bra ISSUE_MMA;
+WAIT_PREVIOUS:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r4], %r25;
+    @!%p4 bra WAIT_PREVIOUS;
+    xor.b32 %r25, %r25, 1;
+ISSUE_MMA:
+    @%p7 cp.async.wait_group 1;
+    @!%p7 cp.async.wait_group 0;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+
+    // One thread issues the whole 128 by 64 tile, accumulating in FP32.
+    @!%p0 bra MMA_DONE;
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%r6], %rd15, %rd16, %r23, {%r51,%r51,%r51,%r51}, %p3;
+    add.u64 %rd11, %rd15, 2;
+    add.u64 %rd12, %rd16, 128;
+    setp.eq.u32 %p3, %r0, 0;
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%r6], %rd11, %rd12, %r23, {%r51,%r51,%r51,%r51}, %p3;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%r4];
+MMA_DONE:
+    mov.u32 %r71, %r72;
+    add.u32 %r24, %r24, 64;
+    setp.lt.u32 %p2, %r24, 576;
+    @%p2 bra K_LOOP;
+WAIT_FINAL:
+    mbarrier.try_wait.parity.shared::cta.b64 %p4, [%r4], %r25;
+    @!%p4 bra WAIT_FINAL;
+
+    // Read each warp's tensor-memory rows and round the final sums to half.
+    tcgen05.fence::after_thread_sync;
+    and.b32 %r37, %r0, 96;
+    shl.b32 %r37, %r37, 16;
+    add.u32 %r37, %r37, %r6;
+
+    // Read half the columns at a time to keep register pressure low.
+    mad.lo.u32 %r38, %r0, 132, %r3;
+    mov.u32 %r70, 0;
+READ_SUMS:
+    .pragma "nounroll";
+    tcgen05.ld.sync.aligned.32x32b.x32.b32 {%f0,%f1,%f2,%f3,%f4,%f5,%f6,%f7,%f8,%f9,%f10,%f11,%f12,%f13,%f14,%f15,%f16,%f17,%f18,%f19,%f20,%f21,%f22,%f23,%f24,%f25,%f26,%f27,%f28,%f29,%f30,%f31}, [%r37];
+    tcgen05.wait::ld.sync.aligned;
+
+    // Padded rows remove shared bank conflicts in the output transpose.
+    cvt.rn.f16x2.f32 %r39, %f1, %f0;
+    st.shared.b32 [%r38+0], %r39;
+    cvt.rn.f16x2.f32 %r39, %f3, %f2;
+    st.shared.b32 [%r38+4], %r39;
+    cvt.rn.f16x2.f32 %r39, %f5, %f4;
+    st.shared.b32 [%r38+8], %r39;
+    cvt.rn.f16x2.f32 %r39, %f7, %f6;
+    st.shared.b32 [%r38+12], %r39;
+    cvt.rn.f16x2.f32 %r39, %f9, %f8;
+    st.shared.b32 [%r38+16], %r39;
+    cvt.rn.f16x2.f32 %r39, %f11, %f10;
+    st.shared.b32 [%r38+20], %r39;
+    cvt.rn.f16x2.f32 %r39, %f13, %f12;
+    st.shared.b32 [%r38+24], %r39;
+    cvt.rn.f16x2.f32 %r39, %f15, %f14;
+    st.shared.b32 [%r38+28], %r39;
+    cvt.rn.f16x2.f32 %r39, %f17, %f16;
+    st.shared.b32 [%r38+32], %r39;
+    cvt.rn.f16x2.f32 %r39, %f19, %f18;
+    st.shared.b32 [%r38+36], %r39;
+    cvt.rn.f16x2.f32 %r39, %f21, %f20;
+    st.shared.b32 [%r38+40], %r39;
+    cvt.rn.f16x2.f32 %r39, %f23, %f22;
+    st.shared.b32 [%r38+44], %r39;
+    cvt.rn.f16x2.f32 %r39, %f25, %f24;
+    st.shared.b32 [%r38+48], %r39;
+    cvt.rn.f16x2.f32 %r39, %f27, %f26;
+    st.shared.b32 [%r38+52], %r39;
+    cvt.rn.f16x2.f32 %r39, %f29, %f28;
+    st.shared.b32 [%r38+56], %r39;
+    cvt.rn.f16x2.f32 %r39, %f31, %f30;
+    st.shared.b32 [%r38+60], %r39;
+    add.u32 %r37, %r37, 32;
+    add.u32 %r38, %r38, 64;
+    add.u32 %r70, %r70, 1;
+    setp.lt.u32 %p2, %r70, 2;
+    @%p2 bra READ_SUMS;
+    bar.sync 0;
+    @%p1 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r6, 64;
+
+    // Each warp writes adjacent pairs of pixels for one output channel.
+    and.b32 %r40, %r0, 31;
+    shl.b32 %r41, %r40, 1;
+    add.u32 %r42, %r7, %r41;
+    div.u32 %r43, %r42, 2916;
+    rem.u32 %r44, %r42, 2916;
+    shr.u32 %r45, %r0, 5;
+    add.u32 %r46, %r15, %r45;
+    mad.lo.u32 %r47, %r43, 128, %r46;
+    mad.lo.u32 %r47, %r47, 2916, %r44;
+    mul.wide.u32 %rd13, %r47, 2;
+    add.u64 %rd13, %rd2, %rd13;
+    shl.b32 %r48, %r40, 2;
+    mad.lo.u32 %r48, %r45, 132, %r48;
+    add.u32 %r48, %r3, %r48;
+    mov.u32 %r49, 0;
+STORE_LOOP:
+    .pragma "nounroll";
+    // Eight independent coalesced stores hide shared and global latency.
+    ld.shared.b32 %r50, [%r48+0];
+    ld.shared.b32 %r51, [%r48+528];
+    ld.shared.b32 %r52, [%r48+1056];
+    ld.shared.b32 %r53, [%r48+1584];
+    ld.shared.b32 %r54, [%r48+2112];
+    ld.shared.b32 %r55, [%r48+2640];
+    ld.shared.b32 %r56, [%r48+3168];
+    ld.shared.b32 %r57, [%r48+3696];
+    st.global.b32 [%rd13+0], %r50;
+    st.global.b32 [%rd13+23328], %r51;
+    st.global.b32 [%rd13+46656], %r52;
+    st.global.b32 [%rd13+69984], %r53;
+    st.global.b32 [%rd13+93312], %r54;
+    st.global.b32 [%rd13+116640], %r55;
+    st.global.b32 [%rd13+139968], %r56;
+    st.global.b32 [%rd13+163296], %r57;
+    add.u32 %r48, %r48, 4224;
+    add.u64 %rd13, %rd13, 186624;
+    add.u32 %r49, %r49, 8;
+    setp.lt.u32 %p2, %r49, 32;
+    @%p2 bra STORE_LOOP;
+    ret;
+}

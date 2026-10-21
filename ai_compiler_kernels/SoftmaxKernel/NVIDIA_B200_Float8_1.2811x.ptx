@@ -1,0 +1,156 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 output_ptr,
+    .param .u64 input_ptr,
+    .param .u32 input_row_stride,
+    .param .u32 output_row_stride,
+    .param .u32 n_rows,
+    .param .u32 n_cols,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %done;
+    .reg .b32 %lane, %group, %row, %step, %rows, %is, %os;
+    .reg .b32 %raw<2>, %a<4>, %m<2>, %out<4>;
+    .reg .b16 %b<4>, %h<8>, %hl, %hh;
+    .reg .b64 %ib, %ob, %ip, %op, %scale, %t0;
+    .reg .b64 %s<3>, %v<4>;
+    .reg .f32 %x<8>, %max, %sum, %tmp;
+
+    // A 32-by-4 block assigns one full warp to each of four independent rows.
+    ld.param.u32 %rows, [n_rows];
+    mov.u32 %row, %ctaid.x;
+    mov.u32 %step, %nctaid.x;
+    mov.u32 %lane, %tid.x;
+    mov.u32 %group, %tid.y;
+    mad.lo.u32 %row, %row, 4, %group;
+    shl.b32 %step, %step, 2;
+    setp.ge.u32 %done, %row, %rows;
+    @%done bra DONE;
+
+    // Hoist lane offsets and express the contiguous FP16 output stride in bytes.
+    ld.param.u64 %ib, [input_ptr];
+    ld.param.u64 %ob, [output_ptr];
+    ld.param.u32 %is, [input_row_stride];
+    ld.param.u32 %os, [output_row_stride];
+    mad.wide.u32 %ib, %lane, 8, %ib;
+    mad.wide.u32 %ob, %lane, 16, %ob;
+    shl.b32 %os, %os, 1;
+    mov.b64 %scale, 0x3fb8aa3b3fb8aa3b;
+
+ROW_LOOP:
+    // Load eight adjacent immutable FP8 values per lane; all 256 columns are unmasked.
+    mad.wide.u32 %ip, %row, %is, %ib;
+    ld.global.nc.v2.b32 {%raw0, %raw1}, [%ip];
+    mov.b32 {%b0, %b1}, %raw0;
+    mov.b32 {%b2, %b3}, %raw1;
+    cvt.rn.f16x2.e4m3x2 %a0, %b0;
+    cvt.rn.f16x2.e4m3x2 %a1, %b1;
+    cvt.rn.f16x2.e4m3x2 %a2, %b2;
+    cvt.rn.f16x2.e4m3x2 %a3, %b3;
+
+    // FP16 represents every FP8 value exactly; packed maxima precede a native warp reduction.
+    max.NaN.f16x2 %m0, %a0, %a1;
+    max.NaN.f16x2 %m1, %a2, %a3;
+    max.NaN.f16x2 %m0, %m0, %m1;
+    mov.b32 {%hl, %hh}, %m0;
+    max.NaN.f16 %hl, %hl, %hh;
+    cvt.f32.f16 %max, %hl;
+    redux.sync.max.NaN.f32 %max, %max, 0xffffffff;
+
+    // Widen each input and subtract the row maximum with one FP32 mixed-precision instruction.
+    mov.b32 {%h0, %h1}, %a0;
+    mov.b32 {%h2, %h3}, %a1;
+    mov.b32 {%h4, %h5}, %a2;
+    mov.b32 {%h6, %h7}, %a3;
+    sub.f32.f16 %x0, %h0, %max;
+    sub.f32.f16 %x1, %h1, %max;
+    sub.f32.f16 %x2, %h2, %max;
+    sub.f32.f16 %x3, %h3, %max;
+    sub.f32.f16 %x4, %h4, %max;
+    sub.f32.f16 %x5, %h5, %max;
+    sub.f32.f16 %x6, %h6, %max;
+    sub.f32.f16 %x7, %h7, %max;
+
+    // Scale FP32 pairs by log2(e), then evaluate stable exponentials.
+    mov.b64 %v0, {%x0, %x1};
+    mov.b64 %v1, {%x2, %x3};
+    mov.b64 %v2, {%x4, %x5};
+    mov.b64 %v3, {%x6, %x7};
+    mul.f32x2 %v0, %v0, %scale;
+    mul.f32x2 %v1, %v1, %scale;
+    mul.f32x2 %v2, %v2, %scale;
+    mul.f32x2 %v3, %v3, %scale;
+    mov.b64 {%x0, %x1}, %v0;
+    mov.b64 {%x2, %x3}, %v1;
+    mov.b64 {%x4, %x5}, %v2;
+    mov.b64 {%x6, %x7}, %v3;
+
+    // FP32 subnormal exponentials cannot affect a denominator of at least one or an FP16 output.
+    ex2.approx.ftz.f32 %x0, %x0;
+    ex2.approx.ftz.f32 %x1, %x1;
+    ex2.approx.ftz.f32 %x2, %x2;
+    ex2.approx.ftz.f32 %x3, %x3;
+    ex2.approx.ftz.f32 %x4, %x4;
+    ex2.approx.ftz.f32 %x5, %x5;
+    ex2.approx.ftz.f32 %x6, %x6;
+    ex2.approx.ftz.f32 %x7, %x7;
+
+    // Accumulate a balanced local FP32 sum and keep the exponentials in registers.
+    mov.b64 %v0, {%x0, %x1};
+    mov.b64 %v1, {%x2, %x3};
+    mov.b64 %v2, {%x4, %x5};
+    mov.b64 %v3, {%x6, %x7};
+    add.f32x2 %s0, %v0, %v1;
+    add.f32x2 %s1, %v2, %v3;
+    add.f32x2 %s2, %s0, %s1;
+    mov.b64 {%sum, %tmp}, %s2;
+    add.f32 %sum, %sum, %tmp;
+
+    // Combine the 32 lane sums without shared memory or CTA barriers.
+    shfl.sync.bfly.b32 %tmp, %sum, 16, 31, 0xffffffff;
+    add.f32 %sum, %sum, %tmp;
+    shfl.sync.bfly.b32 %tmp, %sum, 8, 31, 0xffffffff;
+    add.f32 %sum, %sum, %tmp;
+    shfl.sync.bfly.b32 %tmp, %sum, 4, 31, 0xffffffff;
+    add.f32 %sum, %sum, %tmp;
+    shfl.sync.bfly.b32 %tmp, %sum, 2, 31, 0xffffffff;
+    add.f32 %sum, %sum, %tmp;
+    shfl.sync.bfly.b32 %tmp, %sum, 1, 31, 0xffffffff;
+    add.f32 %sum, %sum, %tmp;
+
+    // The finite denominator lies in [1, 256], so its reciprocal is always normal.
+    rcp.approx.ftz.f32 %sum, %sum;
+
+    // Normalize FP32 pairs and round the results to adjacent FP16 pairs.
+    mov.b64 %t0, {%sum, %sum};
+    mul.f32x2 %v0, %v0, %t0;
+    mul.f32x2 %v1, %v1, %t0;
+    mul.f32x2 %v2, %v2, %t0;
+    mul.f32x2 %v3, %v3, %t0;
+    mov.b64 {%x0, %x1}, %v0;
+    cvt.rn.f16x2.f32 %out0, %x1, %x0;
+    mov.b64 {%x2, %x3}, %v1;
+    cvt.rn.f16x2.f32 %out1, %x3, %x2;
+    mov.b64 {%x4, %x5}, %v2;
+    cvt.rn.f16x2.f32 %out2, %x5, %x4;
+    mov.b64 {%x6, %x7}, %v3;
+    cvt.rn.f16x2.f32 %out3, %x7, %x6;
+
+    // A coalesced 128-bit store per lane writes the entire output row.
+    mad.wide.u32 %op, %row, %os, %ob;
+    st.global.v4.b32 [%op], {%out0, %out1, %out2, %out3};
+
+    // Advance by the number of row-owning warps in the grid and check the runtime row count.
+    add.u32 %row, %row, %step;
+    setp.lt.u32 %done, %row, %rows;
+    @%done bra ROW_LOOP;
+DONE:
+    ret;
+}

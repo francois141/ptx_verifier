@@ -1,0 +1,76 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 x_ptr,
+    .param .u64 output_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p<2>;
+    .reg .b16 %h<8>;
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<6>;
+    .reg .f32 %f<10>;
+
+    // One warp covers the entire tile with eight adjacent halves per lane.
+    mov.u32 %r0, %tid.x;
+    setp.ge.u32 %p0, %r0, 32;
+    @%p0 bra DONE;
+    ld.param.u64 %rd0, [x_ptr];
+    ld.param.u64 %rd1, [output_ptr];
+    mov.u32 %r1, %ctaid.x;
+    mov.u32 %r2, %ctaid.y;
+    shl.b32 %r3, %r2, 13;
+    shl.b32 %r4, %r1, 9;
+    add.u32 %r3, %r3, %r4;
+    mad.lo.u32 %r3, %r0, 16, %r3;
+    cvt.u64.u32 %rd2, %r3;
+    add.u64 %rd2, %rd0, %rd2;
+    ld.global.v4.b32 {%r5, %r6, %r7, %r8}, [%rd2];
+
+    // Convert all eight half inputs before performing a balanced FP32 sum.
+    mov.b32 {%h0, %h1}, %r5;
+    mov.b32 {%h2, %h3}, %r6;
+    mov.b32 {%h4, %h5}, %r7;
+    mov.b32 {%h6, %h7}, %r8;
+    cvt.f32.f16 %f0, %h0;
+    cvt.f32.f16 %f1, %h1;
+    cvt.f32.f16 %f2, %h2;
+    cvt.f32.f16 %f3, %h3;
+    cvt.f32.f16 %f4, %h4;
+    cvt.f32.f16 %f5, %h5;
+    cvt.f32.f16 %f6, %h6;
+    cvt.f32.f16 %f7, %h7;
+    add.f32 %f0, %f0, %f1;
+    add.f32 %f2, %f2, %f3;
+    add.f32 %f4, %f4, %f5;
+    add.f32 %f6, %f6, %f7;
+    add.f32 %f0, %f0, %f2;
+    add.f32 %f4, %f4, %f6;
+    add.f32 %f0, %f0, %f4;
+
+    // Reduce the tile within the active warp without a block barrier.
+    shfl.sync.bfly.b32 %f8, %f0, 16, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f8;
+    shfl.sync.bfly.b32 %f8, %f0, 8, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f8;
+    shfl.sync.bfly.b32 %f8, %f0, 4, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f8;
+    shfl.sync.bfly.b32 %f8, %f0, 2, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f8;
+    shfl.sync.bfly.b32 %f8, %f0, 1, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f8;
+
+    // Preserve the existing row output with one atomic addition per tile.
+    setp.eq.u32 %p1, %r0, 0;
+    mul.wide.u32 %rd3, %r2, 4;
+    add.u64 %rd4, %rd1, %rd3;
+    @%p1 red.relaxed.gpu.global.add.f32 [%rd4], %f0;
+DONE:
+    ret;
+}

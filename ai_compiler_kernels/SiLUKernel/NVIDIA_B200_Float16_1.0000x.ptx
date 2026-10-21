@@ -1,0 +1,61 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 x_ptr,
+.param .u64 output_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+)
+{
+.reg .b32 %t, %b, %idx;
+.reg .b64 %x, %y, %off, %a, %o;
+.reg .b16 %h<4>;
+.reg .b32 %v<4>;
+.reg .f32 %f<4>, %e<4>, %s<4>;
+// Cover the entire 512-element tile with four consecutive elements per thread.
+ld.param.u64 %x, [x_ptr];
+ld.param.u64 %y, [output_ptr];
+mov.u32 %t, %tid.x;
+mov.u32 %b, %ctaid.x;
+mad.lo.u32 %idx, %b, 128, %t;
+mul.wide.u32 %off, %idx, 8;
+add.u64 %a, %x, %off;
+add.u64 %o, %y, %off;
+// Load four half values; the fixed shape has no partial tiles.
+ld.global.v2.b32 {%v0, %v1}, [%a];
+mov.b32 {%h0, %h1}, %v0;
+mov.b32 {%h2, %h3}, %v1;
+cvt.f32.f16 %f0, %h0;
+cvt.f32.f16 %f1, %h1;
+cvt.f32.f16 %f2, %h2;
+cvt.f32.f16 %f3, %h3;
+// Evaluate exp(-x) using the base-two exponential in float32.
+mul.f32 %e0, %f0, 0fBFB8AA3B;
+mul.f32 %e1, %f1, 0fBFB8AA3B;
+mul.f32 %e2, %f2, 0fBFB8AA3B;
+mul.f32 %e3, %f3, 0fBFB8AA3B;
+ex2.approx.f32 %e0, %e0;
+ex2.approx.f32 %e1, %e1;
+ex2.approx.f32 %e2, %e2;
+ex2.approx.f32 %e3, %e3;
+// Form the sigmoid denominators and multiply x by their reciprocals.
+add.f32 %s0, %e0, 0f3F800000;
+add.f32 %s1, %e1, 0f3F800000;
+add.f32 %s2, %e2, 0f3F800000;
+add.f32 %s3, %e3, 0f3F800000;
+rcp.approx.f32 %s0, %s0;
+rcp.approx.f32 %s1, %s1;
+rcp.approx.f32 %s2, %s2;
+rcp.approx.f32 %s3, %s3;
+mul.f32 %f0, %f0, %s0;
+mul.f32 %f1, %f1, %s1;
+mul.f32 %f2, %f2, %s2;
+mul.f32 %f3, %f3, %s3;
+// Round and pack pairs into half precision, preserving element order.
+cvt.rn.f16x2.f32 %v2, %f1, %f0;
+cvt.rn.f16x2.f32 %v3, %f3, %f2;
+st.global.v2.b32 [%o], {%v2, %v3};
+ret;
+}

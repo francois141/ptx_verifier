@@ -1,0 +1,291 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 a_ptr,
+    .param .u64 x_ptr,
+    .param .u64 y_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p<8>;
+    .reg .b32 %r<32>, %a<128>, %x<64>, %out;
+    .reg .b64 %g<8>, %state;
+    .reg .f32 %c<16>, %sum0, %sum1, %v<8>, %tmp;
+
+    // Each warp computes two real rows using eight independent K slices per MMA.
+    ld.param.u64 %g0, [a_ptr];
+    ld.param.u64 %g1, [x_ptr];
+    ld.param.u64 %g2, [y_ptr];
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %ctaid.x;
+    mov.u32 %r2, global_smem;
+    shr.u32 %r3, %r0, 5;
+    and.b32 %r4, %r0, 31;
+    shl.b32 %r5, %r1, 18;
+    cvt.u64.u32 %g3, %r5;
+    add.u64 %g3, %g0, %g3;
+    shl.b32 %r6, %r0, 4;
+    cvt.u64.u32 %g4, %r6;
+    add.u64 %g4, %g1, %g4;
+    add.u32 %r6, %r6, %r2;
+    shl.b32 %r7, %r4, 4;
+    add.u32 %r7, %r7, %r2;
+    shl.b32 %r8, %r3, 1;
+    mad.lo.u32 %r8, %r1, 32, %r8;
+    mad.wide.u32 %g5, %r8, 2, %g2;
+    setp.eq.u32 %p0, %r0, 0;
+    setp.eq.u32 %p1, %r4, 0;
+
+    // Stage the vector once in temporary shared memory while the first matrix tile arrives.
+    cp.async.cg.shared.global [%r6], [%g4], 16;
+    cp.async.cg.shared.global [%r6+2048], [%g4+2048], 16;
+    cp.async.cg.shared.global [%r6+4096], [%g4+4096], 16;
+    cp.async.cg.shared.global [%r6+6144], [%g4+6144], 16;
+    cp.async.commit_group;
+    add.u32 %r9, %r2, 131072;
+    add.u32 %r10, %r9, 8;
+    @%p0 mbarrier.init.shared.b64 [%r9], 1;
+    @%p0 mbarrier.init.shared.b64 [%r10], 1;
+    fence.mbarrier_init.release.cluster;
+    add.u32 %r11, %r2, 65536;
+    @%p0 mbarrier.arrive.expect_tx.shared.b64 %state, [%r9], 65536;
+    @%p0 cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%r11], [%g3], 65536, [%r9];
+    cp.async.wait_group 0;
+    bar.sync 0;
+
+    // Keep the complete vector in registers, in conflict-free MMA fragment order.
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x0,%x1,%x2,%x3}, [%r7+0];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x4,%x5,%x6,%x7}, [%r7+512];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x8,%x9,%x10,%x11}, [%r7+1024];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x12,%x13,%x14,%x15}, [%r7+1536];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x16,%x17,%x18,%x19}, [%r7+2048];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x20,%x21,%x22,%x23}, [%r7+2560];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x24,%x25,%x26,%x27}, [%r7+3072];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x28,%x29,%x30,%x31}, [%r7+3584];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x32,%x33,%x34,%x35}, [%r7+4096];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x36,%x37,%x38,%x39}, [%r7+4608];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x40,%x41,%x42,%x43}, [%r7+5120];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x44,%x45,%x46,%x47}, [%r7+5632];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x48,%x49,%x50,%x51}, [%r7+6144];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x52,%x53,%x54,%x55}, [%r7+6656];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x56,%x57,%x58,%x59}, [%r7+7168];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%x60,%x61,%x62,%x63}, [%r7+7680];
+    bar.sync 0;
+
+    // Reshape contiguous rows into bank-conflict-free 16-by-16 MMA fragments.
+    and.b32 %r12, %r4, 7;
+    shl.b32 %r12, %r12, 4;
+    and.b32 %r13, %r4, 8;
+    mad.lo.u32 %r12, %r13, 1024, %r12;
+    and.b32 %r13, %r4, 16;
+    mad.lo.u32 %r12, %r13, 8, %r12;
+    mad.lo.u32 %r12, %r3, 16384, %r12;
+    add.u32 %r12, %r12, %r2;
+    and.b32 %r13, %r4, 7;
+    shr.u32 %r14, %r13, 1;
+    mad.lo.u32 %r13, %r13, 4, %r14;
+    and.b32 %r14, %r4, 4;
+    setp.ne.u32 %p2, %r14, 0;
+    mov.u32 %r15, 0;
+    mov.u32 %r16, 65536;
+    mov.u32 %r17, 0;
+    mov.u32 %r18, 0;
+    add.u64 %g3, %g3, 65536;
+
+ROWS:
+    // One contiguous bulk copy prefetches the next eight rows into the other buffer.
+    setp.eq.u32 %p3, %r15, 3;
+    @%p3 bra NO_PREFETCH;
+    add.u32 %r19, %r2, %r17;
+    @%p0 mbarrier.arrive.expect_tx.shared.b64 %state, [%r10], 65536;
+    @%p0 cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%r19], [%g3], 65536, [%r10];
+NO_PREFETCH:
+WAIT_MATRIX:
+    mbarrier.try_wait.parity.shared.b64 %p4, [%r9], %r18;
+    @!%p4 bra WAIT_MATRIX;
+    add.u32 %r20, %r12, %r16;
+    mov.f32 %sum0, 0f00000000;
+    mov.f32 %sum1, 0f00000000;
+
+    // Prefetch all matrix fragments; four independent accumulators retain the four K tiles.
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0,%a1,%a2,%a3}, [%r20+0];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a4,%a5,%a6,%a7}, [%r20+256];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a8,%a9,%a10,%a11}, [%r20+512];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a12,%a13,%a14,%a15}, [%r20+768];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a16,%a17,%a18,%a19}, [%r20+1024];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a20,%a21,%a22,%a23}, [%r20+1280];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a24,%a25,%a26,%a27}, [%r20+1536];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a28,%a29,%a30,%a31}, [%r20+1792];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a32,%a33,%a34,%a35}, [%r20+2048];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a36,%a37,%a38,%a39}, [%r20+2304];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a40,%a41,%a42,%a43}, [%r20+2560];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a44,%a45,%a46,%a47}, [%r20+2816];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a48,%a49,%a50,%a51}, [%r20+3072];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a52,%a53,%a54,%a55}, [%r20+3328];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a56,%a57,%a58,%a59}, [%r20+3584];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a60,%a61,%a62,%a63}, [%r20+3840];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a64,%a65,%a66,%a67}, [%r20+4096];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a68,%a69,%a70,%a71}, [%r20+4352];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a72,%a73,%a74,%a75}, [%r20+4608];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a76,%a77,%a78,%a79}, [%r20+4864];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a80,%a81,%a82,%a83}, [%r20+5120];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a84,%a85,%a86,%a87}, [%r20+5376];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a88,%a89,%a90,%a91}, [%r20+5632];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a92,%a93,%a94,%a95}, [%r20+5888];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a96,%a97,%a98,%a99}, [%r20+6144];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a100,%a101,%a102,%a103}, [%r20+6400];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a104,%a105,%a106,%a107}, [%r20+6656];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a108,%a109,%a110,%a111}, [%r20+6912];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a112,%a113,%a114,%a115}, [%r20+7168];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a116,%a117,%a118,%a119}, [%r20+7424];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a120,%a121,%a122,%a123}, [%r20+7680];
+    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a124,%a125,%a126,%a127}, [%r20+7936];
+    mov.f32 %c0, 0f00000000;
+    mov.f32 %c1, 0f00000000;
+    mov.f32 %c2, 0f00000000;
+    mov.f32 %c3, 0f00000000;
+    mov.f32 %c4, 0f00000000;
+    mov.f32 %c5, 0f00000000;
+    mov.f32 %c6, 0f00000000;
+    mov.f32 %c7, 0f00000000;
+    mov.f32 %c8, 0f00000000;
+    mov.f32 %c9, 0f00000000;
+    mov.f32 %c10, 0f00000000;
+    mov.f32 %c11, 0f00000000;
+    mov.f32 %c12, 0f00000000;
+    mov.f32 %c13, 0f00000000;
+    mov.f32 %c14, 0f00000000;
+    mov.f32 %c15, 0f00000000;
+    // Interleave the independent tensor-core chains to cover MMA accumulator latency.
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a0,%a1,%a2,%a3}, {%x0,%x1}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a32,%a33,%a34,%a35}, {%x16,%x17}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a64,%a65,%a66,%a67}, {%x32,%x33}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a96,%a97,%a98,%a99}, {%x48,%x49}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a4,%a5,%a6,%a7}, {%x2,%x3}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a36,%a37,%a38,%a39}, {%x18,%x19}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a68,%a69,%a70,%a71}, {%x34,%x35}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a100,%a101,%a102,%a103}, {%x50,%x51}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a8,%a9,%a10,%a11}, {%x4,%x5}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a40,%a41,%a42,%a43}, {%x20,%x21}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a72,%a73,%a74,%a75}, {%x36,%x37}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a104,%a105,%a106,%a107}, {%x52,%x53}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a12,%a13,%a14,%a15}, {%x6,%x7}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a44,%a45,%a46,%a47}, {%x22,%x23}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a76,%a77,%a78,%a79}, {%x38,%x39}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a108,%a109,%a110,%a111}, {%x54,%x55}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a16,%a17,%a18,%a19}, {%x8,%x9}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a48,%a49,%a50,%a51}, {%x24,%x25}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a80,%a81,%a82,%a83}, {%x40,%x41}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a112,%a113,%a114,%a115}, {%x56,%x57}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a20,%a21,%a22,%a23}, {%x10,%x11}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a52,%a53,%a54,%a55}, {%x26,%x27}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a84,%a85,%a86,%a87}, {%x42,%x43}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a116,%a117,%a118,%a119}, {%x58,%x59}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a24,%a25,%a26,%a27}, {%x12,%x13}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a56,%a57,%a58,%a59}, {%x28,%x29}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a88,%a89,%a90,%a91}, {%x44,%x45}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a120,%a121,%a122,%a123}, {%x60,%x61}, {%c12,%c13,%c14,%c15};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3}, {%a28,%a29,%a30,%a31}, {%x14,%x15}, {%c0,%c1,%c2,%c3};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7}, {%a60,%a61,%a62,%a63}, {%x30,%x31}, {%c4,%c5,%c6,%c7};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11}, {%a92,%a93,%a94,%a95}, {%x46,%x47}, {%c8,%c9,%c10,%c11};
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15}, {%a124,%a125,%a126,%a127}, {%x62,%x63}, {%c12,%c13,%c14,%c15};
+    // Extract diagonal products for all four K tiles before reducing their independent slices.
+    selp.f32 %v0, %c1, %c0, %p2;
+    shfl.sync.idx.b32 %v0, %v0, %r13, 31, -1;
+    selp.f32 %v1, %c3, %c2, %p2;
+    shfl.sync.idx.b32 %v1, %v1, %r13, 31, -1;
+    selp.f32 %v2, %c5, %c4, %p2;
+    shfl.sync.idx.b32 %v2, %v2, %r13, 31, -1;
+    selp.f32 %v3, %c7, %c6, %p2;
+    shfl.sync.idx.b32 %v3, %v3, %r13, 31, -1;
+    selp.f32 %v4, %c9, %c8, %p2;
+    shfl.sync.idx.b32 %v4, %v4, %r13, 31, -1;
+    selp.f32 %v5, %c11, %c10, %p2;
+    shfl.sync.idx.b32 %v5, %v5, %r13, 31, -1;
+    selp.f32 %v6, %c13, %c12, %p2;
+    shfl.sync.idx.b32 %v6, %v6, %r13, 31, -1;
+    selp.f32 %v7, %c15, %c14, %p2;
+    shfl.sync.idx.b32 %v7, %v7, %r13, 31, -1;
+    shfl.sync.bfly.b32 %tmp, %v0, 1, 31, -1;
+    add.f32 %v0, %v0, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v1, 1, 31, -1;
+    add.f32 %v1, %v1, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v2, 1, 31, -1;
+    add.f32 %v2, %v2, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v3, 1, 31, -1;
+    add.f32 %v3, %v3, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v4, 1, 31, -1;
+    add.f32 %v4, %v4, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v5, 1, 31, -1;
+    add.f32 %v5, %v5, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v6, 1, 31, -1;
+    add.f32 %v6, %v6, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v7, 1, 31, -1;
+    add.f32 %v7, %v7, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v0, 2, 31, -1;
+    add.f32 %v0, %v0, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v1, 2, 31, -1;
+    add.f32 %v1, %v1, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v2, 2, 31, -1;
+    add.f32 %v2, %v2, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v3, 2, 31, -1;
+    add.f32 %v3, %v3, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v4, 2, 31, -1;
+    add.f32 %v4, %v4, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v5, 2, 31, -1;
+    add.f32 %v5, %v5, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v6, 2, 31, -1;
+    add.f32 %v6, %v6, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v7, 2, 31, -1;
+    add.f32 %v7, %v7, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v0, 4, 31, -1;
+    add.f32 %v0, %v0, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v1, 4, 31, -1;
+    add.f32 %v1, %v1, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v2, 4, 31, -1;
+    add.f32 %v2, %v2, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v3, 4, 31, -1;
+    add.f32 %v3, %v3, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v4, 4, 31, -1;
+    add.f32 %v4, %v4, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v5, 4, 31, -1;
+    add.f32 %v5, %v5, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v6, 4, 31, -1;
+    add.f32 %v6, %v6, %tmp;
+    shfl.sync.bfly.b32 %tmp, %v7, 4, 31, -1;
+    add.f32 %v7, %v7, %tmp;
+    // Add the four 1024-column dot products in their original order.
+    add.f32 %sum0, %sum0, %v0;
+    add.f32 %sum1, %sum1, %v1;
+    add.f32 %sum0, %sum0, %v2;
+    add.f32 %sum1, %sum1, %v3;
+    add.f32 %sum0, %sum0, %v4;
+    add.f32 %sum1, %sum1, %v5;
+    add.f32 %sum0, %sum0, %v6;
+    add.f32 %sum1, %sum1, %v7;
+    // A single lane writes the adjacent output pair with one packed half store.
+    cvt.rn.f16x2.f32 %out, %sum1, %sum0;
+    @%p1 st.global.b32 [%g5], %out;
+
+    // Readers finish before either 64-KiB matrix buffer is reused.
+    bar.sync 0;
+    mov.u32 %r21, %r16;
+    mov.u32 %r16, %r17;
+    mov.u32 %r17, %r21;
+    mov.u32 %r21, %r9;
+    mov.u32 %r9, %r10;
+    mov.u32 %r10, %r21;
+    add.u64 %g3, %g3, 65536;
+    add.u64 %g5, %g5, 16;
+    add.u32 %r15, %r15, 1;
+    shr.u32 %r18, %r15, 1;
+    and.b32 %r18, %r18, 1;
+    setp.lt.u32 %p5, %r15, 4;
+    @%p5 bra ROWS;
+    ret;
+}

@@ -1,0 +1,88 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 x_ptr,
+.param .u64 output_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+){
+.reg .b64 %x,%y,%a,%b,%off;
+.reg .b32 %t,%c,%idx,%w<2>,%h<4>,%o<4>;
+.reg .b16 %v<4>,%s<8>;
+.reg .f32 %f<8>;
+// Map each thread to eight adjacent elements of the CTA tile.
+ld.param.u64 %x,[x_ptr];
+ld.param.u64 %y,[output_ptr];
+mov.u32 %t,%tid.x;
+mov.u32 %c,%ctaid.x;
+shl.b32 %idx,%c,10;
+shl.b32 %t,%t,3;
+add.u32 %idx,%idx,%t;
+cvt.u64.u32 %off,%idx;
+add.u64 %a,%x,%off;
+shl.b64 %off,%off,1;
+add.u64 %b,%y,%off;
+// Vector-load eight FP8 values and decode four pairs.
+ld.global.v2.b32 {%w0,%w1},[%a];
+mov.b32 {%v0,%v1},%w0;
+mov.b32 {%v2,%v3},%w1;
+cvt.rn.f16x2.e4m3x2 %h0,%v0;
+cvt.rn.f16x2.e4m3x2 %h1,%v1;
+cvt.rn.f16x2.e4m3x2 %h2,%v2;
+cvt.rn.f16x2.e4m3x2 %h3,%v3;
+mov.b32 {%s0,%s1},%h0;
+mov.b32 {%s2,%s3},%h1;
+mov.b32 {%s4,%s5},%h2;
+mov.b32 {%s6,%s7},%h3;
+cvt.f32.f16 %f0,%s0;
+cvt.f32.f16 %f1,%s1;
+cvt.f32.f16 %f2,%s2;
+cvt.f32.f16 %f3,%s3;
+cvt.f32.f16 %f4,%s4;
+cvt.f32.f16 %f5,%s5;
+cvt.f32.f16 %f6,%s6;
+cvt.f32.f16 %f7,%s7;
+// Compute exp(-x) in FP32; independent elements expose instruction parallelism.
+mul.f32 %f0,%f0,0fBFB8AA3B;
+mul.f32 %f1,%f1,0fBFB8AA3B;
+mul.f32 %f2,%f2,0fBFB8AA3B;
+mul.f32 %f3,%f3,0fBFB8AA3B;
+mul.f32 %f4,%f4,0fBFB8AA3B;
+mul.f32 %f5,%f5,0fBFB8AA3B;
+mul.f32 %f6,%f6,0fBFB8AA3B;
+mul.f32 %f7,%f7,0fBFB8AA3B;
+ex2.approx.f32 %f0,%f0;
+ex2.approx.f32 %f1,%f1;
+ex2.approx.f32 %f2,%f2;
+ex2.approx.f32 %f3,%f3;
+ex2.approx.f32 %f4,%f4;
+ex2.approx.f32 %f5,%f5;
+ex2.approx.f32 %f6,%f6;
+ex2.approx.f32 %f7,%f7;
+// Form the sigmoid denominator and reciprocal.
+add.f32 %f0,%f0,0f3F800000;
+add.f32 %f1,%f1,0f3F800000;
+add.f32 %f2,%f2,0f3F800000;
+add.f32 %f3,%f3,0f3F800000;
+add.f32 %f4,%f4,0f3F800000;
+add.f32 %f5,%f5,0f3F800000;
+add.f32 %f6,%f6,0f3F800000;
+add.f32 %f7,%f7,0f3F800000;
+rcp.approx.f32 %f0,%f0;
+rcp.approx.f32 %f1,%f1;
+rcp.approx.f32 %f2,%f2;
+rcp.approx.f32 %f3,%f3;
+rcp.approx.f32 %f4,%f4;
+rcp.approx.f32 %f5,%f5;
+rcp.approx.f32 %f6,%f6;
+rcp.approx.f32 %f7,%f7;
+// Pack the rounded half results and issue one aligned vector store.
+cvt.rn.f16x2.f32 %o0,%f1,%f0;
+cvt.rn.f16x2.f32 %o1,%f3,%f2;
+cvt.rn.f16x2.f32 %o2,%f5,%f4;
+cvt.rn.f16x2.f32 %o3,%f7,%f6;
+st.global.v4.b32 [%b],{%o0,%o1,%o2,%o3};
+ret;
+}

@@ -1,0 +1,66 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 x_ptr,
+    .param .u64 output_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .b32 %t, %b, %i, %a<2>, %o<2>;
+    .reg .b64 %x, %y, %off, %px, %py;
+    .reg .b16 %h<4>;
+    .reg .f32 %f<4>;
+
+    // Map each thread to four consecutive elements of the 1024-element tile.
+    ld.param.u64 %x, [x_ptr];
+    ld.param.u64 %y, [output_ptr];
+    mov.u32 %t, %tid.x;
+    mov.u32 %b, %ctaid.x;
+    shl.b32 %i, %b, 10;
+    mad.lo.u32 %i, %t, 4, %i;
+    mul.wide.u32 %off, %i, 2;
+    add.u64 %px, %x, %off;
+    add.u64 %py, %y, %off;
+
+    // Load four aligned half values and promote them to float32.
+    ld.global.v2.b32 {%a0, %a1}, [%px];
+    mov.b32 {%h0, %h1}, %a0;
+    mov.b32 {%h2, %h3}, %a1;
+    cvt.f32.f16 %f0, %h0;
+    cvt.f32.f16 %f1, %h1;
+    cvt.f32.f16 %f2, %h2;
+    cvt.f32.f16 %f3, %h3;
+
+    // Compute exp(-x) using exp2(-x * log2(e)).
+    mul.f32 %f0, %f0, 0fBFB8AA3B;
+    mul.f32 %f1, %f1, 0fBFB8AA3B;
+    mul.f32 %f2, %f2, 0fBFB8AA3B;
+    mul.f32 %f3, %f3, 0fBFB8AA3B;
+    ex2.approx.f32 %f0, %f0;
+    ex2.approx.f32 %f1, %f1;
+    ex2.approx.f32 %f2, %f2;
+    ex2.approx.f32 %f3, %f3;
+
+    // Complete the sigmoid independently for all four elements.
+    add.f32 %f0, %f0, 0f3F800000;
+    add.f32 %f1, %f1, 0f3F800000;
+    add.f32 %f2, %f2, 0f3F800000;
+    add.f32 %f3, %f3, 0f3F800000;
+    rcp.approx.f32 %f0, %f0;
+    rcp.approx.f32 %f1, %f1;
+    rcp.approx.f32 %f2, %f2;
+    rcp.approx.f32 %f3, %f3;
+
+    // Round and pack pairs; the first conversion source occupies the high half.
+    cvt.rn.f16x2.f32 %o0, %f1, %f0;
+    cvt.rn.f16x2.f32 %o1, %f3, %f2;
+
+    // The fixed tile has no masked elements; store all four outputs.
+    st.global.v2.b32 [%py], {%o0, %o1};
+    ret;
+}

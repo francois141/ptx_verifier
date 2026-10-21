@@ -1,0 +1,48 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 x_ptr,
+.param .u64 output_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+)
+{
+.reg .b32 %t, %b, %i, %v<4>, %o<8>;
+.reg .b16 %h<8>;
+.reg .b64 %x, %y, %a, %d;
+// Each thread owns eight elements in each half of the full tile.
+ld.param.u64 %x, [x_ptr];
+ld.param.u64 %y, [output_ptr];
+mov.u32 %t, %tid.x;
+mov.u32 %b, %ctaid.x;
+shl.b32 %i, %t, 3;
+mad.lo.u32 %i, %b, 2048, %i;
+cvta.to.global.u64 %x, %x;
+cvta.to.global.u64 %y, %y;
+cvt.u64.u32 %a, %i;
+add.u64 %a, %x, %a;
+mul.wide.u32 %d, %i, 2;
+add.u64 %d, %y, %d;
+// Read two coalesced eight-byte slices, covering all 2048 elements.
+ld.global.v2.b32 {%v0,%v1}, [%a];
+ld.global.v2.b32 {%v2,%v3}, [%a+1024];
+// Convert packed FP8 pairs with fused ReLU, preserving NaNs.
+mov.b32 {%h0,%h1}, %v0;
+mov.b32 {%h2,%h3}, %v1;
+mov.b32 {%h4,%h5}, %v2;
+mov.b32 {%h6,%h7}, %v3;
+cvt.rn.relu.f16x2.e4m3x2 %o0, %h0;
+cvt.rn.relu.f16x2.e4m3x2 %o1, %h1;
+cvt.rn.relu.f16x2.e4m3x2 %o2, %h2;
+cvt.rn.relu.f16x2.e4m3x2 %o3, %h3;
+cvt.rn.relu.f16x2.e4m3x2 %o4, %h4;
+cvt.rn.relu.f16x2.e4m3x2 %o5, %h5;
+cvt.rn.relu.f16x2.e4m3x2 %o6, %h6;
+cvt.rn.relu.f16x2.e4m3x2 %o7, %h7;
+// Write contiguous 16-byte slices without gaps between threads.
+st.global.v4.b32 [%d], {%o0,%o1,%o2,%o3};
+st.global.v4.b32 [%d+2048], {%o4,%o5,%o6,%o7};
+ret;
+}

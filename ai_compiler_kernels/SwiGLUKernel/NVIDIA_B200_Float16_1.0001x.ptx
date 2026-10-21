@@ -1,0 +1,115 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 gate_ptr,
+.param .u64 value_ptr,
+.param .u64 output_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+){
+.reg .b32 %r<3>,%g<4>,%v<4>,%o<4>;
+.reg .b64 %a<4>;
+.reg .b16 %h<16>;
+.reg .f32 %x<8>,%y<8>,%e<8>;
+// Each thread owns eight adjacent elements in a complete 1024-element tile.
+ld.param.u64 %a0,[gate_ptr];
+ld.param.u64 %a1,[value_ptr];
+ld.param.u64 %a2,[output_ptr];
+mov.u32 %r0,%ctaid.x;
+mov.u32 %r1,%tid.x;
+shl.b32 %r0,%r0,11;
+shl.b32 %r1,%r1,4;
+add.u32 %r2,%r0,%r1;
+cvt.u64.u32 %a3,%r2;
+add.u64 %a0,%a0,%a3;
+add.u64 %a1,%a1,%a3;
+add.u64 %a2,%a2,%a3;
+// Aligned 16-byte loads cover all eight half values without masks.
+ld.global.v4.b32 {%g0,%g1,%g2,%g3},[%a0];
+ld.global.v4.b32 {%v0,%v1,%v2,%v3},[%a1];
+mov.b32 {%h0,%h1},%g0;
+mov.b32 {%h2,%h3},%g1;
+mov.b32 {%h4,%h5},%g2;
+mov.b32 {%h6,%h7},%g3;
+mov.b32 {%h8,%h9},%v0;
+mov.b32 {%h10,%h11},%v1;
+mov.b32 {%h12,%h13},%v2;
+mov.b32 {%h14,%h15},%v3;
+// Expand the inputs to float32 before doing arithmetic.
+cvt.f32.f16 %x0,%h0;
+cvt.f32.f16 %x1,%h1;
+cvt.f32.f16 %x2,%h2;
+cvt.f32.f16 %x3,%h3;
+cvt.f32.f16 %x4,%h4;
+cvt.f32.f16 %x5,%h5;
+cvt.f32.f16 %x6,%h6;
+cvt.f32.f16 %x7,%h7;
+cvt.f32.f16 %y0,%h8;
+cvt.f32.f16 %y1,%h9;
+cvt.f32.f16 %y2,%h10;
+cvt.f32.f16 %y3,%h11;
+cvt.f32.f16 %y4,%h12;
+cvt.f32.f16 %y5,%h13;
+cvt.f32.f16 %y6,%h14;
+cvt.f32.f16 %y7,%h15;
+// Convert the exponential argument to base two using -log2(e).
+mul.f32 %e0,%x0,0fBFB8AA3B;
+mul.f32 %e1,%x1,0fBFB8AA3B;
+mul.f32 %e2,%x2,0fBFB8AA3B;
+mul.f32 %e3,%x3,0fBFB8AA3B;
+mul.f32 %e4,%x4,0fBFB8AA3B;
+mul.f32 %e5,%x5,0fBFB8AA3B;
+mul.f32 %e6,%x6,0fBFB8AA3B;
+mul.f32 %e7,%x7,0fBFB8AA3B;
+ex2.approx.f32 %e0,%e0;
+ex2.approx.f32 %e1,%e1;
+ex2.approx.f32 %e2,%e2;
+ex2.approx.f32 %e3,%e3;
+ex2.approx.f32 %e4,%e4;
+ex2.approx.f32 %e5,%e5;
+ex2.approx.f32 %e6,%e6;
+ex2.approx.f32 %e7,%e7;
+// Form the sigmoid denominators and their reciprocals.
+add.f32 %e0,%e0,0f3F800000;
+add.f32 %e1,%e1,0f3F800000;
+add.f32 %e2,%e2,0f3F800000;
+add.f32 %e3,%e3,0f3F800000;
+add.f32 %e4,%e4,0f3F800000;
+add.f32 %e5,%e5,0f3F800000;
+add.f32 %e6,%e6,0f3F800000;
+add.f32 %e7,%e7,0f3F800000;
+rcp.approx.f32 %e0,%e0;
+rcp.approx.f32 %e1,%e1;
+rcp.approx.f32 %e2,%e2;
+rcp.approx.f32 %e3,%e3;
+rcp.approx.f32 %e4,%e4;
+rcp.approx.f32 %e5,%e5;
+rcp.approx.f32 %e6,%e6;
+rcp.approx.f32 %e7,%e7;
+// Preserve the order: divide gate first, then multiply by value.
+mul.f32 %x0,%x0,%e0;
+mul.f32 %x1,%x1,%e1;
+mul.f32 %x2,%x2,%e2;
+mul.f32 %x3,%x3,%e3;
+mul.f32 %x4,%x4,%e4;
+mul.f32 %x5,%x5,%e5;
+mul.f32 %x6,%x6,%e6;
+mul.f32 %x7,%x7,%e7;
+mul.f32 %x0,%x0,%y0;
+mul.f32 %x1,%x1,%y1;
+mul.f32 %x2,%x2,%y2;
+mul.f32 %x3,%x3,%y3;
+mul.f32 %x4,%x4,%y4;
+mul.f32 %x5,%x5,%y5;
+mul.f32 %x6,%x6,%y6;
+mul.f32 %x7,%x7,%y7;
+// Round and pack pairs, then write one aligned 16-byte vector.
+cvt.rn.f16x2.f32 %o0,%x1,%x0;
+cvt.rn.f16x2.f32 %o1,%x3,%x2;
+cvt.rn.f16x2.f32 %o2,%x5,%x4;
+cvt.rn.f16x2.f32 %o3,%x7,%x6;
+st.global.v4.b32 [%a2],{%o0,%o1,%o2,%o3};
+ret;
+}

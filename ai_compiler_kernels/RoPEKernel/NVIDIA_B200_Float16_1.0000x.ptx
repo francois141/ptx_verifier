@@ -1,0 +1,61 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 input_ptr,
+    .param .u64 cos_ptr,
+    .param .u64 sin_ptr,
+    .param .u64 output_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p;
+    .reg .b16 %h<4>;
+    .reg .b32 %r<9>;
+    .reg .b64 %rd<10>;
+    .reg .f32 %f<6>;
+
+    // Interleave opposite-half partners in adjacent lanes of every warp.
+    ld.param.u64 %rd0, [input_ptr];
+    ld.param.u64 %rd1, [cos_ptr];
+    ld.param.u64 %rd2, [sin_ptr];
+    ld.param.u64 %rd3, [output_ptr];
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %ctaid.x;
+    bfi.b32 %r2, %r0, %r0, 7, 1;
+    and.b32 %r2, %r2, 254;
+    shl.b32 %r3, %r1, 8;
+    or.b32 %r4, %r3, %r2;
+    and.b32 %r5, %r4, 65535;
+    and.b32 %r6, %r0, 1;
+
+    // Stream input and retain the small, repeating coefficient tables in L1.
+    cvt.u64.u32 %rd4, %r4;
+    cvt.u64.u32 %rd5, %r5;
+    add.u64 %rd6, %rd0, %rd4;
+    add.u64 %rd7, %rd1, %rd5;
+    add.u64 %rd8, %rd2, %rd5;
+    add.u64 %rd9, %rd3, %rd4;
+    ld.global.L1::evict_first.u16 %h0, [%rd6];
+    ld.global.L1::evict_last.u16 %h1, [%rd7];
+    ld.global.L1::evict_last.u16 %h2, [%rd8];
+
+    // A warp shuffle supplies the partner, avoiding a second input load.
+    cvt.f32.f16 %f0, %h0;
+    shfl.sync.bfly.b32 %f1, %f0, 1, 31, 0xffffffff;
+    cvt.f32.f16 %f2, %h1;
+    cvt.f32.f16 %f3, %h2;
+    setp.eq.u32 %p, %r6, 0;
+    @%p neg.f32 %f1, %f1;
+    mul.f32 %f4, %f1, %f3;
+    fma.rn.f32 %f5, %f0, %f2, %f4;
+
+    // Round to float16 and stream all 128 output features to global memory.
+    cvt.rn.f16.f32 %h3, %f5;
+    st.global.cs.u16 [%rd9], %h3;
+    ret;
+}

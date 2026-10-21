@@ -1,0 +1,471 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 a_ptr,
+    .param .u64 b_ptr,
+    .param .u64 d_ptr,
+    .param .u64 c_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %pI, %p96, %pL, %w2, %p0, %pT, %pw, %pa, %pt, %pn;
+    .reg .b32 %tx, %bm, %bn, %sm, %ts, %tm, %ta;
+    .reg .b32 %row, %col, %idx, %sw, %j, %phase, %stage;
+    .reg .b32 %idesc, %zero, %u0, %u1, %u2, %hpair;
+    .reg .b32 %mapS, %mapSD, %be, %sd, %sd0, %sdbase;
+    .reg .b64 %mapD, %mapG, %input;
+    .reg .b32 %br, %bf, %sa, %sb, %mapSA, %mapSB, %kk, %mm, %nn;
+    .reg .b64 %A, %B, %D, %C, %mapA, %mapB, %gd, %gc, %off;
+    .reg .b64 %ad, %bd, %da, %db;
+    .reg .b16 %h0, %h1, %h2, %h3;
+    .reg .f32 %v<8>, %z<8>, %t<8>, %er<8>, %tmp<8>;
+    .reg .f32 %acc<32>, %bias<8>;
+    .reg .b32 %out<4>, %ss, %sl, %sl0, %svec, %ri;
+
+    // Locate the complete 128 by 128 tile and its private descriptor scratch.
+    ld.param.u64 %A, [a_ptr];
+    ld.param.u64 %B, [b_ptr];
+    ld.param.u64 %D, [d_ptr];
+    ld.param.u64 %C, [c_ptr];
+    mov.u32 %tx, %tid.x;
+    mov.u32 %bm, %ctaid.x;
+    mov.u32 %bn, %ctaid.y;
+    mov.u32 %sm, global_smem;
+    setp.eq.u32 %p0, %tx, 0;
+    setp.eq.u32 %pT, %tx, 32;
+    setp.lt.u32 %pw, %tx, 32;
+    shl.b32 %mm, %bm, 7;
+    shl.b32 %nn, %bn, 7;
+    mad.lo.u32 %idx, %mm, 4096, %nn;
+    mul.wide.u32 %off, %idx, 2;
+    add.u64 %mapA, %C, %off;
+    add.u64 %mapB, %mapA, 128;
+    add.u64 %mapD, %mapA, 8192;
+    setp.eq.u32 %pL, %tx, 64;
+    setp.ge.u32 %w2, %tx, 64;
+    add.u32 %br, %sm, 81920;
+    add.u32 %bf, %sm, 81952;
+    add.u32 %ts, %sm, 81984;
+    add.u32 %be, %sm, 81992;
+    add.u32 %mapSA, %sm, 82048;
+    add.u32 %mapSB, %mapSA, 128;
+    add.u32 %mapSD, %mapSB, 128;
+    add.u32 %sdbase, %sm, 65536;
+
+    // Initialize copy and reuse barriers, the addend barrier, and tensor memory.
+    @%p0 mbarrier.init.shared::cta.b64 [%br], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%br+8], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%br+16], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%br+24], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%bf], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%bf+8], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%bf+16], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%bf+24], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%be], 1;
+    @%pw tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%ts], 128;
+    @%pw tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    mad.lo.u32 %ss, %tx, 4, %mapSA;
+    setp.lt.u32 %pt, %tx, 96;
+    @%pt st.shared.u32 [%ss], 0;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    ld.shared.u32 %tm, [%ts];
+
+    // Three warp leaders build maps for A, B, and the FP8 addend in parallel.
+    setp.lt.u32 %p96, %tx, 96;
+    or.pred %pI, %p0, %pT;
+    or.pred %pI, %pI, %pL;
+    selp.u32 %mapS, %mapSA, %mapSB, %pw;
+    selp.u64 %mapG, %mapA, %mapB, %pw;
+    selp.u64 %input, %A, %B, %pw;
+    @%w2 mov.u32 %mapS, %mapSD;
+    @%w2 mov.u64 %mapG, %mapD;
+    @%w2 mov.u64 %input, %D;
+    @!%pI bra MAPS_READY;
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [%mapS], %input;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [%mapS], 1;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%mapS], 0, 4096;
+    tensormap.replace.tile.global_dim.shared::cta.b1024.b32 [%mapS], 1, 4096;
+    selp.u32 %u1, 64, 128, %pw;
+    selp.u32 %u2, 64, 128, %pT;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%mapS], 0, %u1;
+    tensormap.replace.tile.box_dim.shared::cta.b1024.b32 [%mapS], 1, %u2;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%mapS], 0, 1;
+    tensormap.replace.tile.element_stride.shared::cta.b1024.b32 [%mapS], 1, 1;
+    tensormap.replace.tile.global_stride.shared::cta.b1024.b64 [%mapS], 0, 4096;
+    tensormap.replace.tile.elemtype.shared::cta.b1024.b32 [%mapS], 0;
+    tensormap.replace.tile.interleave_layout.shared::cta.b1024.b32 [%mapS], 0;
+    @%pw tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%mapS], 2;
+    @!%pw tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [%mapS], 3;
+    tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [%mapS], 0;
+    tensormap.replace.tile.fill_mode.shared::cta.b1024.b32 [%mapS], 0;
+MAPS_READY:
+    bar.sync 0;
+    // Publish maps in private output scratch; final stores overwrite every byte.
+    @%p96 tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [%mapG], [%mapS], 128;
+    bar.sync 0;
+    mov.u32 %j, 0;
+    mov.u32 %stage, 0;
+    mov.u32 %zero, 0;
+    mov.u32 %idesc, 136380432;
+    @%pT bra PRODUCER;
+    @%pL bra LOAD_ADDEND;
+    @!%p0 bra JOIN;
+
+    // Consume four shared stages, splitting each original K block into two halves.
+    mov.u32 %phase, 0;
+    shr.u32 %u0, %sm, 4;
+    cvt.u64.u32 %off, %u0;
+    add.u64 %ad, %off, 0x8000402000010000;
+    add.u64 %bd, %off, 0x4000404002000200;
+CONSUMER:
+    mbarrier.test_wait.parity.acquire.cta.shared::cta.b64 %pt, [%br], %phase;
+    @!%pt bra CONSUMER;
+    setp.ne.u32 %pa, %j, 0;
+    mov.b64 %da, %ad;
+    mov.b64 %db, %bd;
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%tm], %da, %db, %idesc, {%zero, %zero, %zero, %zero}, %pa;
+    add.u64 %da, %da, 2;
+    add.u64 %db, %db, 256;
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%tm], %da, %db, %idesc, {%zero, %zero, %zero, %zero}, %p0;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%bf];
+    add.u32 %j, %j, 1;
+    setp.eq.u32 %pt, %j, 64;
+    @%pt bra DRAIN;
+    add.u32 %stage, %stage, 1;
+    add.u32 %br, %br, 8;
+    add.u32 %bf, %bf, 8;
+    add.u64 %ad, %ad, 1024;
+    add.u64 %bd, %bd, 1024;
+    setp.lt.u32 %pt, %stage, 4;
+    @%pt bra CONSUMER;
+    mov.u32 %stage, 0;
+    sub.u32 %br, %br, 32;
+    sub.u32 %bf, %bf, 32;
+    sub.u64 %ad, %ad, 4096;
+    sub.u64 %bd, %bd, 4096;
+    xor.b32 %phase, %phase, 1;
+    bra CONSUMER;
+DRAIN:
+    // Final completion includes every earlier product and its input reads.
+    mbarrier.test_wait.parity.acquire.cta.shared::cta.b64 %pt, [%bf], %phase;
+    @!%pt bra DRAIN;
+    bra JOIN;
+
+PRODUCER:
+    // Feed two TMA copies per half-block while the tensor cores execute.
+    fence.proxy.tensormap::generic.acquire.gpu [%mapA], 128;
+    fence.proxy.tensormap::generic.acquire.gpu [%mapB], 128;
+    mov.u32 %phase, 1;
+    mov.u32 %sa, %sm;
+    add.u32 %sb, %sm, 8192;
+    mov.u32 %kk, 0;
+PRODUCE_LOOP:
+    setp.lt.u32 %pt, %j, 4;
+    @%pt bra ISSUE_TMA;
+WAIT_FREE:
+    mbarrier.test_wait.parity.acquire.cta.shared::cta.b64 %pt, [%bf], %phase;
+    @!%pt bra WAIT_FREE;
+ISSUE_TMA:
+    mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 _, [%br], 16384;
+    cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes [%sa], [%mapA, {%kk, %mm}], [%br];
+    cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes [%sb], [%mapB, {%nn, %kk}], [%br];
+    add.u32 %j, %j, 1;
+    add.u32 %kk, %kk, 64;
+    setp.eq.u32 %pt, %j, 64;
+    @%pt bra JOIN;
+    add.u32 %stage, %stage, 1;
+    add.u32 %sa, %sa, 16384;
+    add.u32 %sb, %sb, 16384;
+    add.u32 %br, %br, 8;
+    add.u32 %bf, %bf, 8;
+    setp.lt.u32 %pt, %stage, 4;
+    @%pt bra PRODUCE_LOOP;
+    mov.u32 %stage, 0;
+    sub.u32 %sa, %sa, 65536;
+    sub.u32 %sb, %sb, 65536;
+    sub.u32 %br, %br, 32;
+    sub.u32 %bf, %bf, 32;
+    xor.b32 %phase, %phase, 1;
+    bra PRODUCE_LOOP;
+LOAD_ADDEND:
+    // Prefetch the entire addend tile concurrently with matrix multiplication.
+    fence.proxy.tensormap::generic.acquire.gpu [%mapD], 128;
+    mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 _, [%be], 16384;
+    cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes [%sdbase], [%mapD, {%nn, %mm}], [%be];
+JOIN:
+    // Join the workers and wait for the addend before reusing input storage.
+    bar.sync 0;
+WAIT_ADDEND:
+    mbarrier.test_wait.parity.acquire.cta.shared::cta.b64 %pt, [%be], 0;
+    @!%pt bra WAIT_ADDEND;
+
+    // Drain 32 output columns at a time through swizzled shared memory.
+    tcgen05.fence::after_thread_sync;
+    and.b32 %row, %tx, 96;
+    shl.b32 %ta, %row, 16;
+    add.u32 %ta, %ta, %tm;
+    shl.b32 %ss, %tx, 7;
+    and.b32 %sw, %tx, 7;
+    shl.b32 %sw, %sw, 4;
+    xor.b32 %ss, %ss, %sw;
+    add.u32 %ss, %ss, %sm;
+    shr.u32 %row, %tx, 2;
+    and.b32 %col, %tx, 3;
+    shl.b32 %col, %col, 3;
+    mad.lo.u32 %sd0, %row, 128, %col;
+    shl.b32 %sl0, %row, 7;
+    shl.b32 %u0, %col, 2;
+    add.u32 %sl0, %sl0, %u0;
+    and.b32 %sw, %row, 7;
+    shl.b32 %sw, %sw, 4;
+    xor.b32 %sl0, %sl0, %sw;
+    add.u32 %sl0, %sl0, %sm;
+    shl.b32 %u0, %bm, 7;
+    add.u32 %row, %row, %u0;
+    shl.b32 %u0, %bn, 7;
+    add.u32 %col, %col, %u0;
+    mad.lo.u32 %idx, %row, 4096, %col;
+    cvt.u64.u32 %off, %idx;
+    shl.b64 %off, %off, 1;
+    add.u64 %C, %C, %off;
+    mov.u32 %j, 0;
+EPILOGUE_TILE:
+    // Address the prefetched FP8 addend in its 128-byte XOR layout.
+    add.u32 %sd, %sd0, %j;
+    xor.b32 %sd, %sd, %sw;
+    add.u32 %sd, %sd, %sdbase;
+    tcgen05.ld.sync.aligned.32x32b.x32.b32 {%acc0, %acc1, %acc2, %acc3, %acc4, %acc5, %acc6, %acc7, %acc8, %acc9, %acc10, %acc11, %acc12, %acc13, %acc14, %acc15, %acc16, %acc17, %acc18, %acc19, %acc20, %acc21, %acc22, %acc23, %acc24, %acc25, %acc26, %acc27, %acc28, %acc29, %acc30, %acc31}, [%ta];
+    tcgen05.wait::ld.sync.aligned;
+
+    // The XOR layout avoids bank conflicts in row-wise accumulator stores.
+    xor.b32 %svec, %ss, 0;
+    st.shared.v4.b32 [%svec], {%acc0, %acc1, %acc2, %acc3};
+    xor.b32 %svec, %ss, 16;
+    st.shared.v4.b32 [%svec], {%acc4, %acc5, %acc6, %acc7};
+    xor.b32 %svec, %ss, 32;
+    st.shared.v4.b32 [%svec], {%acc8, %acc9, %acc10, %acc11};
+    xor.b32 %svec, %ss, 48;
+    st.shared.v4.b32 [%svec], {%acc12, %acc13, %acc14, %acc15};
+    xor.b32 %svec, %ss, 64;
+    st.shared.v4.b32 [%svec], {%acc16, %acc17, %acc18, %acc19};
+    xor.b32 %svec, %ss, 80;
+    st.shared.v4.b32 [%svec], {%acc20, %acc21, %acc22, %acc23};
+    xor.b32 %svec, %ss, 96;
+    st.shared.v4.b32 [%svec], {%acc24, %acc25, %acc26, %acc27};
+    xor.b32 %svec, %ss, 112;
+    st.shared.v4.b32 [%svec], {%acc28, %acc29, %acc30, %acc31};
+    bar.sync 0;
+    mov.u32 %sl, %sl0;
+    mov.u64 %gc, %C;
+    mov.u32 %ri, 0;
+EPILOGUE_ROWS:
+    // Assign neighboring columns to neighboring threads and expand FP8 exactly.
+    ld.shared.v4.b32 {%acc0, %acc1, %acc2, %acc3}, [%sl];
+    xor.b32 %svec, %sl, 16;
+    ld.shared.v4.b32 {%acc4, %acc5, %acc6, %acc7}, [%svec];
+    ld.shared.v2.b32 {%u0, %u1}, [%sd];
+    mov.b32 {%h0, %h1}, %u0;
+    cvt.rn.f16x2.e4m3x2 %hpair, %h0;
+    mov.b32 {%h2, %h3}, %hpair;
+    cvt.f32.f16 %bias0, %h2;
+    cvt.f32.f16 %bias1, %h3;
+    cvt.rn.f16x2.e4m3x2 %hpair, %h1;
+    mov.b32 {%h2, %h3}, %hpair;
+    cvt.f32.f16 %bias2, %h2;
+    cvt.f32.f16 %bias3, %h3;
+    mov.b32 {%h0, %h1}, %u1;
+    cvt.rn.f16x2.e4m3x2 %hpair, %h0;
+    mov.b32 {%h2, %h3}, %hpair;
+    cvt.f32.f16 %bias4, %h2;
+    cvt.f32.f16 %bias5, %h3;
+    cvt.rn.f16x2.e4m3x2 %hpair, %h1;
+    mov.b32 {%h2, %h3}, %hpair;
+    cvt.f32.f16 %bias6, %h2;
+    cvt.f32.f16 %bias7, %h3;
+
+    // Evaluate eight erf values with a rational approximation and independent FP32 chains.
+    add.f32 %v0, %acc0, %bias0;
+    add.f32 %v1, %acc1, %bias1;
+    add.f32 %v2, %acc2, %bias2;
+    add.f32 %v3, %acc3, %bias3;
+    add.f32 %v4, %acc4, %bias4;
+    add.f32 %v5, %acc5, %bias5;
+    add.f32 %v6, %acc6, %bias6;
+    add.f32 %v7, %acc7, %bias7;
+    mul.f32 %z0, %v0, 0f3F3504F3;
+    mul.f32 %z1, %v1, 0f3F3504F3;
+    mul.f32 %z2, %v2, 0f3F3504F3;
+    mul.f32 %z3, %v3, 0f3F3504F3;
+    mul.f32 %z4, %v4, 0f3F3504F3;
+    mul.f32 %z5, %v5, 0f3F3504F3;
+    mul.f32 %z6, %v6, 0f3F3504F3;
+    mul.f32 %z7, %v7, 0f3F3504F3;
+    abs.f32 %z0, %z0;
+    abs.f32 %z1, %z1;
+    abs.f32 %z2, %z2;
+    abs.f32 %z3, %z3;
+    abs.f32 %z4, %z4;
+    abs.f32 %z5, %z5;
+    abs.f32 %z6, %z6;
+    abs.f32 %z7, %z7;
+    fma.rn.f32 %t0, %z0, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t1, %z1, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t2, %z2, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t3, %z3, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t4, %z4, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t5, %z5, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t6, %z6, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t7, %z7, 0f38349F67, 0f39910039;
+    fma.rn.f32 %t0, %t0, %z0, 0f391F6607;
+    fma.rn.f32 %t1, %t1, %z1, 0f391F6607;
+    fma.rn.f32 %t2, %t2, %z2, 0f391F6607;
+    fma.rn.f32 %t3, %t3, %z3, 0f391F6607;
+    fma.rn.f32 %t4, %t4, %z4, 0f391F6607;
+    fma.rn.f32 %t5, %t5, %z5, 0f391F6607;
+    fma.rn.f32 %t6, %t6, %z6, 0f391F6607;
+    fma.rn.f32 %t7, %t7, %z7, 0f391F6607;
+    fma.rn.f32 %t0, %t0, %z0, 0f3C17E369;
+    fma.rn.f32 %t1, %t1, %z1, 0f3C17E369;
+    fma.rn.f32 %t2, %t2, %z2, 0f3C17E369;
+    fma.rn.f32 %t3, %t3, %z3, 0f3C17E369;
+    fma.rn.f32 %t4, %t4, %z4, 0f3C17E369;
+    fma.rn.f32 %t5, %t5, %z5, 0f3C17E369;
+    fma.rn.f32 %t6, %t6, %z6, 0f3C17E369;
+    fma.rn.f32 %t7, %t7, %z7, 0f3C17E369;
+    fma.rn.f32 %t0, %t0, %z0, 0f3D2D2FE7;
+    fma.rn.f32 %t1, %t1, %z1, 0f3D2D2FE7;
+    fma.rn.f32 %t2, %t2, %z2, 0f3D2D2FE7;
+    fma.rn.f32 %t3, %t3, %z3, 0f3D2D2FE7;
+    fma.rn.f32 %t4, %t4, %z4, 0f3D2D2FE7;
+    fma.rn.f32 %t5, %t5, %z5, 0f3D2D2FE7;
+    fma.rn.f32 %t6, %t6, %z6, 0f3D2D2FE7;
+    fma.rn.f32 %t7, %t7, %z7, 0f3D2D2FE7;
+    fma.rn.f32 %t0, %t0, %z0, 0f3D906E67;
+    fma.rn.f32 %t1, %t1, %z1, 0f3D906E67;
+    fma.rn.f32 %t2, %t2, %z2, 0f3D906E67;
+    fma.rn.f32 %t3, %t3, %z3, 0f3D906E67;
+    fma.rn.f32 %t4, %t4, %z4, 0f3D906E67;
+    fma.rn.f32 %t5, %t5, %z5, 0f3D906E67;
+    fma.rn.f32 %t6, %t6, %z6, 0f3D906E67;
+    fma.rn.f32 %t7, %t7, %z7, 0f3D906E67;
+    fma.rn.f32 %t0, %t0, %z0, 0f3F800000;
+    fma.rn.f32 %t1, %t1, %z1, 0f3F800000;
+    fma.rn.f32 %t2, %t2, %z2, 0f3F800000;
+    fma.rn.f32 %t3, %t3, %z3, 0f3F800000;
+    fma.rn.f32 %t4, %t4, %z4, 0f3F800000;
+    fma.rn.f32 %t5, %t5, %z5, 0f3F800000;
+    fma.rn.f32 %t6, %t6, %z6, 0f3F800000;
+    fma.rn.f32 %t7, %t7, %z7, 0f3F800000;
+    rcp.approx.ftz.f32 %t0, %t0;
+    rcp.approx.ftz.f32 %t1, %t1;
+    rcp.approx.ftz.f32 %t2, %t2;
+    rcp.approx.ftz.f32 %t3, %t3;
+    rcp.approx.ftz.f32 %t4, %t4;
+    rcp.approx.ftz.f32 %t5, %t5;
+    rcp.approx.ftz.f32 %t6, %t6;
+    rcp.approx.ftz.f32 %t7, %t7;
+
+    // Four squarings form the sixteenth power in the erf complement.
+    mul.f32 %t0, %t0, %t0;
+    mul.f32 %t1, %t1, %t1;
+    mul.f32 %t2, %t2, %t2;
+    mul.f32 %t3, %t3, %t3;
+    mul.f32 %t4, %t4, %t4;
+    mul.f32 %t5, %t5, %t5;
+    mul.f32 %t6, %t6, %t6;
+    mul.f32 %t7, %t7, %t7;
+    mul.f32 %t0, %t0, %t0;
+    mul.f32 %t1, %t1, %t1;
+    mul.f32 %t2, %t2, %t2;
+    mul.f32 %t3, %t3, %t3;
+    mul.f32 %t4, %t4, %t4;
+    mul.f32 %t5, %t5, %t5;
+    mul.f32 %t6, %t6, %t6;
+    mul.f32 %t7, %t7, %t7;
+    mul.f32 %t0, %t0, %t0;
+    mul.f32 %t1, %t1, %t1;
+    mul.f32 %t2, %t2, %t2;
+    mul.f32 %t3, %t3, %t3;
+    mul.f32 %t4, %t4, %t4;
+    mul.f32 %t5, %t5, %t5;
+    mul.f32 %t6, %t6, %t6;
+    mul.f32 %t7, %t7, %t7;
+    mul.f32 %t0, %t0, %t0;
+    mul.f32 %t1, %t1, %t1;
+    mul.f32 %t2, %t2, %t2;
+    mul.f32 %t3, %t3, %t3;
+    mul.f32 %t4, %t4, %t4;
+    mul.f32 %t5, %t5, %t5;
+    mul.f32 %t6, %t6, %t6;
+    mul.f32 %t7, %t7, %t7;
+    sub.f32 %er0, 0f3F800000, %t0;
+    sub.f32 %er1, 0f3F800000, %t1;
+    sub.f32 %er2, 0f3F800000, %t2;
+    sub.f32 %er3, 0f3F800000, %t3;
+    sub.f32 %er4, 0f3F800000, %t4;
+    sub.f32 %er5, 0f3F800000, %t5;
+    sub.f32 %er6, 0f3F800000, %t6;
+    sub.f32 %er7, 0f3F800000, %t7;
+    copysign.f32 %er0, %v0, %er0;
+    copysign.f32 %er1, %v1, %er1;
+    copysign.f32 %er2, %v2, %er2;
+    copysign.f32 %er3, %v3, %er3;
+    copysign.f32 %er4, %v4, %er4;
+    copysign.f32 %er5, %v5, %er5;
+    copysign.f32 %er6, %v6, %er6;
+    copysign.f32 %er7, %v7, %er7;
+    add.f32 %er0, %er0, 0f3F800000;
+    add.f32 %er1, %er1, 0f3F800000;
+    add.f32 %er2, %er2, 0f3F800000;
+    add.f32 %er3, %er3, 0f3F800000;
+    add.f32 %er4, %er4, 0f3F800000;
+    add.f32 %er5, %er5, 0f3F800000;
+    add.f32 %er6, %er6, 0f3F800000;
+    add.f32 %er7, %er7, 0f3F800000;
+    mul.f32 %tmp0, %v0, 0f3F000000;
+    mul.f32 %tmp1, %v1, 0f3F000000;
+    mul.f32 %tmp2, %v2, 0f3F000000;
+    mul.f32 %tmp3, %v3, 0f3F000000;
+    mul.f32 %tmp4, %v4, 0f3F000000;
+    mul.f32 %tmp5, %v5, 0f3F000000;
+    mul.f32 %tmp6, %v6, 0f3F000000;
+    mul.f32 %tmp7, %v7, 0f3F000000;
+    mul.f32 %acc0, %tmp0, %er0;
+    mul.f32 %acc1, %tmp1, %er1;
+    mul.f32 %acc2, %tmp2, %er2;
+    mul.f32 %acc3, %tmp3, %er3;
+    mul.f32 %acc4, %tmp4, %er4;
+    mul.f32 %acc5, %tmp5, %er5;
+    mul.f32 %acc6, %tmp6, %er6;
+    mul.f32 %acc7, %tmp7, %er7;
+
+    // Round once to FP16 and store eight adjacent results per thread without masks.
+    cvt.rn.f16x2.f32 %out0, %acc1, %acc0;
+    cvt.rn.f16x2.f32 %out1, %acc3, %acc2;
+    cvt.rn.f16x2.f32 %out2, %acc5, %acc4;
+    cvt.rn.f16x2.f32 %out3, %acc7, %acc6;
+    st.global.v4.b32 [%gc], {%out0, %out1, %out2, %out3};
+    add.u64 %gc, %gc, 262144;
+    add.u32 %sl, %sl, 4096;
+    add.u32 %sd, %sd, 4096;
+    add.u32 %ri, %ri, 1;
+    setp.lt.u32 %pt, %ri, 4;
+    @%pt bra EPILOGUE_ROWS;
+    bar.sync 0;
+    add.u32 %ta, %ta, 32;
+    add.u64 %C, %C, 64;
+    add.u32 %j, %j, 32;
+    setp.lt.u32 %pt, %j, 128;
+    @%pt bra EPILOGUE_TILE;
+
+    // Release tensor memory after every warp has finished its loads.
+    bar.sync 0;
+    @%pw tcgen05.dealloc.cta_group::1.sync.aligned.b32 %tm, 128;
+    ret;
+}

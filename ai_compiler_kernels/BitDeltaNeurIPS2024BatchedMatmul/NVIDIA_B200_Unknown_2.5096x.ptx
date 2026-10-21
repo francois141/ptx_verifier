@@ -1,0 +1,382 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 a_ptr,
+.param .u64 b_ptr,
+.param .u64 c_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+)
+{
+.reg .pred %leader,%warp0,%ready,%more,%acc,%yes,%upper;
+.reg .b32 %t,%pid,%batch,%m,%n,%x,%y,%z,%s,%bar,%slot;
+.reg .b32 %ar,%ak,%as,%bs,%iter,%phase,%v<4>,%h<32>,%tm,%ta,%col,%desc;
+.reg .b32 %buf,%aa,%bt<8>,%packed<4>,%words<8>,%ctrl,%warp,%dst<8>,%row,%lane,%copy,%in;
+.reg .b64 %ap,%bp,%cp,%ga,%gb,%gc,%off,%ad,%bd,%ad1,%bd1,%abase,%bbase,%ad2,%ad3,%bd2,%bd3;
+.reg .f32 %f<64>;
+// Decode the grouped 128 by 256 output tile and batch.
+ld.param.u64 %ap,[a_ptr];
+ld.param.u64 %bp,[b_ptr];
+ld.param.u64 %cp,[c_ptr];
+mov.u32 %t,%tid.x;
+mov.u32 %pid,%ctaid.x;
+mov.u32 %batch,%ctaid.y;
+shr.u32 %m,%pid,7;
+shl.b32 %m,%m,3;
+and.b32 %x,%pid,7;
+add.u32 %m,%m,%x;
+shl.b32 %m,%m,7;
+and.b32 %n,%pid,127;
+shr.u32 %n,%n,3;
+shl.b32 %n,%n,8;
+mov.u32 %s,global_smem;
+add.u32 %bar,%s,102400;
+add.u32 %slot,%s,102416;
+setp.eq.u32 %leader,%t,0;
+setp.lt.u32 %warp0,%t,32;
+mov.u32 %z,0;
+setp.eq.u32 %yes,%z,0;
+// Reserve the FP32 accumulator in tensor memory.
+@%leader mbarrier.init.shared::cta.b64 [%bar],1;
+@%warp0 tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%slot],256;
+@%warp0 tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+bar.sync 0;
+ld.shared.b32 %tm,[%slot];
+// Form coalesced A vectors and their 128-byte-swizzled destinations.
+shr.u32 %ar,%t,3;
+and.b32 %ak,%t,7;
+add.u32 %x,%m,%ar;
+mad.lo.u32 %x,%batch,4096,%x;
+shl.b32 %x,%x,13;
+shl.b32 %y,%ak,4;
+add.u32 %x,%x,%y;
+cvt.u64.u32 %off,%x;
+add.u64 %ga,%ap,%off;
+and.b32 %x,%ar,7;
+xor.b32 %x,%x,%ak;
+shl.b32 %x,%x,4;
+mad.lo.u32 %x,%ar,128,%x;
+add.u32 %as,%s,%x;
+// Each warp decodes sixteen K positions across all B columns.
+and.b32 %x,%t,31;
+mad.lo.u32 %x,%x,8,%n;
+mad.lo.u32 %x,%batch,524288,%x;
+and.b32 %y,%t,64;
+shl.b32 %y,%y,6;
+add.u32 %x,%x,%y;
+mul.wide.u32 %off,%x,4;
+add.u64 %gb,%bp,%off;
+and.b32 %x,%t,7;
+shl.b32 %x,%x,4;
+and.b32 %y,%t,24;
+mad.lo.u32 %x,%y,1024,%x;
+shr.u32 %warp,%t,5;
+mad.lo.u32 %x,%warp,2048,%x;
+add.u32 %x,%x,16384;
+add.u32 %bs,%s,%x;
+and.b32 %x,%t,32;
+setp.ne.u32 %upper,%x,0;
+selp.u32 %ctrl,0x7632,0x5410,%upper;
+// Double-buffer the 49152-byte input panels.
+shr.u32 %x,%s,4;
+cvt.u64.u32 %abase,%x;
+or.b64 %abase,%abase,0x4000404000010000;
+add.u32 %x,%s,16384;
+shr.u32 %x,%x,4;
+cvt.u64.u32 %bbase,%x;
+or.b64 %bbase,%bbase,0x4000404002000000;
+mov.u32 %desc,0x08410010;
+mov.u32 %iter,0;
+mov.u32 %phase,0;
+mov.u32 %buf,0;
+// Prime the weight register pipeline.
+ld.global.v4.b32 {%words0,%words1,%words2,%words3},[%gb];
+ld.global.v4.b32 {%words4,%words5,%words6,%words7},[%gb+16];
+K_LOOP:
+// Copy A while the preceding tensor operations run.
+add.u32 %aa,%as,%buf;
+cp.async.cg.shared.global [%aa],[%ga],16;
+cp.async.cg.shared.global [%aa+2048],[%ga+131072],16;
+cp.async.cg.shared.global [%aa+4096],[%ga+262144],16;
+cp.async.cg.shared.global [%aa+6144],[%ga+393216],16;
+cp.async.cg.shared.global [%aa+8192],[%ga+524288],16;
+cp.async.cg.shared.global [%aa+10240],[%ga+655360],16;
+cp.async.cg.shared.global [%aa+12288],[%ga+786432],16;
+cp.async.cg.shared.global [%aa+14336],[%ga+917504],16;
+cp.async.commit_group;
+// Pair columns and prefetch the next packed panel without crossing K=4096.
+prmt.b32 %packed0,%words0,%words1,%ctrl;
+prmt.b32 %packed1,%words2,%words3,%ctrl;
+prmt.b32 %packed2,%words4,%words5,%ctrl;
+prmt.b32 %packed3,%words6,%words7,%ctrl;
+setp.lt.u32 %more,%iter,63;
+@%more ld.global.v4.b32 {%words0,%words1,%words2,%words3},[%gb+32768];
+@%more ld.global.v4.b32 {%words4,%words5,%words6,%words7},[%gb+32784];
+// Form bank-conflict-free shared addresses for eight K rows.
+add.u32 %bt0,%bs,%buf;
+xor.b32 %bt1,%bt0,16; add.u32 %bt1,%bt1,128;
+xor.b32 %bt2,%bt0,32; add.u32 %bt2,%bt2,256;
+xor.b32 %bt3,%bt0,48; add.u32 %bt3,%bt3,384;
+xor.b32 %bt4,%bt0,64; add.u32 %bt4,%bt4,512;
+xor.b32 %bt5,%bt0,80; add.u32 %bt5,%bt5,640;
+xor.b32 %bt6,%bt0,96; add.u32 %bt6,%bt6,768;
+xor.b32 %bt7,%bt0,112; add.u32 %bt7,%bt7,896;
+// Expand local K rows 0 through 3 into exact FP16 signs.
+shl.b32 %v0,%packed0,15; shl.b32 %v1,%packed1,15;
+shl.b32 %v2,%packed2,15; shl.b32 %v3,%packed3,15;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt0],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,14; shl.b32 %v1,%packed1,14;
+shl.b32 %v2,%packed2,14; shl.b32 %v3,%packed3,14;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt1],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,13; shl.b32 %v1,%packed1,13;
+shl.b32 %v2,%packed2,13; shl.b32 %v3,%packed3,13;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt2],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,12; shl.b32 %v1,%packed1,12;
+shl.b32 %v2,%packed2,12; shl.b32 %v3,%packed3,12;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt3],{%v0,%v1,%v2,%v3};
+// Expand local K rows 4 through 7.
+shl.b32 %v0,%packed0,11; shl.b32 %v1,%packed1,11;
+shl.b32 %v2,%packed2,11; shl.b32 %v3,%packed3,11;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt4],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,10; shl.b32 %v1,%packed1,10;
+shl.b32 %v2,%packed2,10; shl.b32 %v3,%packed3,10;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt5],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,9; shl.b32 %v1,%packed1,9;
+shl.b32 %v2,%packed2,9; shl.b32 %v3,%packed3,9;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt6],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,8; shl.b32 %v1,%packed1,8;
+shl.b32 %v2,%packed2,8; shl.b32 %v3,%packed3,8;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt7],{%v0,%v1,%v2,%v3};
+// Expand local K rows 8 through 11.
+shl.b32 %v0,%packed0,7; shl.b32 %v1,%packed1,7;
+shl.b32 %v2,%packed2,7; shl.b32 %v3,%packed3,7;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt0+1024],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,6; shl.b32 %v1,%packed1,6;
+shl.b32 %v2,%packed2,6; shl.b32 %v3,%packed3,6;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt1+1024],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,5; shl.b32 %v1,%packed1,5;
+shl.b32 %v2,%packed2,5; shl.b32 %v3,%packed3,5;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt2+1024],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,4; shl.b32 %v1,%packed1,4;
+shl.b32 %v2,%packed2,4; shl.b32 %v3,%packed3,4;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt3+1024],{%v0,%v1,%v2,%v3};
+// Expand local K rows 12 through 15.
+shl.b32 %v0,%packed0,3; shl.b32 %v1,%packed1,3;
+shl.b32 %v2,%packed2,3; shl.b32 %v3,%packed3,3;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt4+1024],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,2; shl.b32 %v1,%packed1,2;
+shl.b32 %v2,%packed2,2; shl.b32 %v3,%packed3,2;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt5+1024],{%v0,%v1,%v2,%v3};
+shl.b32 %v0,%packed0,1; shl.b32 %v1,%packed1,1;
+shl.b32 %v2,%packed2,1; shl.b32 %v3,%packed3,1;
+lop3.b32 %v0,%v0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%v1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%v2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%v3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt6+1024],{%v0,%v1,%v2,%v3};
+lop3.b32 %v0,%packed0,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v1,%packed1,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v2,%packed2,0x80008000,0xbc00bc00,0x6a;
+lop3.b32 %v3,%packed3,0x80008000,0xbc00bc00,0x6a;
+st.shared.v4.b32 [%bt7+1024],{%v0,%v1,%v2,%v3};
+// Publish this panel and wait for the preceding tensor reads.
+cp.async.wait_group 0;
+fence.proxy.async.shared::cta;
+setp.ne.u32 %acc,%iter,0;
+@!%leader bra STAGE_READY;
+@!%acc bra STAGE_READY;
+WAIT_PREVIOUS:
+mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %ready,[%bar],%phase;
+@!%ready bra WAIT_PREVIOUS;
+xor.b32 %phase,%phase,1;
+STAGE_READY:
+bar.sync 0;
+@!%leader bra NEXT_STAGE;
+// Accumulate four ordered K=16 products in FP32.
+shr.u32 %x,%buf,4;
+cvt.u64.u32 %off,%x;
+add.u64 %ad,%abase,%off;
+add.u64 %bd,%bbase,%off;
+add.u64 %ad1,%ad,2; add.u64 %bd1,%bd,128;
+add.u64 %ad2,%ad,4; add.u64 %bd2,%bd,256;
+add.u64 %ad3,%ad,6; add.u64 %bd3,%bd,384;
+tcgen05.fence::after_thread_sync;
+tcgen05.mma.cta_group::1.kind::f16 [%tm],%ad,%bd,%desc,{%z,%z,%z,%z},%acc;
+tcgen05.mma.cta_group::1.kind::f16 [%tm],%ad1,%bd1,%desc,{%z,%z,%z,%z},%yes;
+tcgen05.mma.cta_group::1.kind::f16 [%tm],%ad2,%bd2,%desc,{%z,%z,%z,%z},%yes;
+tcgen05.mma.cta_group::1.kind::f16 [%tm],%ad3,%bd3,%desc,{%z,%z,%z,%z},%yes;
+tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%bar];
+NEXT_STAGE:
+xor.b32 %buf,%buf,49152;
+add.u64 %ga,%ga,128;
+add.u64 %gb,%gb,32768;
+add.u32 %iter,%iter,1;
+setp.lt.u32 %more,%iter,64;
+@%more bra K_LOOP;
+// Complete the final tensor operations before reusing their input buffers.
+@!%leader bra OUTPUT_READY;
+WAIT_FINAL:
+mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %ready,[%bar],%phase;
+@!%ready bra WAIT_FINAL;
+OUTPUT_READY:
+bar.sync 0;
+tcgen05.fence::after_thread_sync;
+and.b32 %x,%t,96;
+shl.b32 %x,%x,16;
+add.u32 %ta,%tm,%x;
+// Stage output rows with an XOR swizzle for conflict-free shared accesses.
+shl.b32 %x,%t,9;
+and.b32 %y,%t,7;
+shl.b32 %y,%y,4;
+add.u32 %x,%x,%y;
+add.u32 %dst0,%s,%x;
+xor.b32 %dst1,%dst0,16;
+xor.b32 %dst2,%dst0,32;
+xor.b32 %dst3,%dst0,48;
+xor.b32 %dst4,%dst0,64;
+xor.b32 %dst5,%dst0,80;
+xor.b32 %dst6,%dst0,96;
+xor.b32 %dst7,%dst0,112;
+mov.u32 %col,0;
+STORE_LOOP:
+// Drain tensor memory and round each result to FP16 exactly once.
+tcgen05.ld.sync.aligned.32x32b.x64.b32 {%f0,%f1,%f2,%f3,%f4,%f5,%f6,%f7,%f8,%f9,%f10,%f11,%f12,%f13,%f14,%f15,%f16,%f17,%f18,%f19,%f20,%f21,%f22,%f23,%f24,%f25,%f26,%f27,%f28,%f29,%f30,%f31,%f32,%f33,%f34,%f35,%f36,%f37,%f38,%f39,%f40,%f41,%f42,%f43,%f44,%f45,%f46,%f47,%f48,%f49,%f50,%f51,%f52,%f53,%f54,%f55,%f56,%f57,%f58,%f59,%f60,%f61,%f62,%f63},[%ta];
+tcgen05.wait::ld.sync.aligned;
+cvt.rn.f16x2.f32 %h0,%f1,%f0;
+cvt.rn.f16x2.f32 %h1,%f3,%f2;
+cvt.rn.f16x2.f32 %h2,%f5,%f4;
+cvt.rn.f16x2.f32 %h3,%f7,%f6;
+cvt.rn.f16x2.f32 %h4,%f9,%f8;
+cvt.rn.f16x2.f32 %h5,%f11,%f10;
+cvt.rn.f16x2.f32 %h6,%f13,%f12;
+cvt.rn.f16x2.f32 %h7,%f15,%f14;
+cvt.rn.f16x2.f32 %h8,%f17,%f16;
+cvt.rn.f16x2.f32 %h9,%f19,%f18;
+cvt.rn.f16x2.f32 %h10,%f21,%f20;
+cvt.rn.f16x2.f32 %h11,%f23,%f22;
+cvt.rn.f16x2.f32 %h12,%f25,%f24;
+cvt.rn.f16x2.f32 %h13,%f27,%f26;
+cvt.rn.f16x2.f32 %h14,%f29,%f28;
+cvt.rn.f16x2.f32 %h15,%f31,%f30;
+cvt.rn.f16x2.f32 %h16,%f33,%f32;
+cvt.rn.f16x2.f32 %h17,%f35,%f34;
+cvt.rn.f16x2.f32 %h18,%f37,%f36;
+cvt.rn.f16x2.f32 %h19,%f39,%f38;
+cvt.rn.f16x2.f32 %h20,%f41,%f40;
+cvt.rn.f16x2.f32 %h21,%f43,%f42;
+cvt.rn.f16x2.f32 %h22,%f45,%f44;
+cvt.rn.f16x2.f32 %h23,%f47,%f46;
+cvt.rn.f16x2.f32 %h24,%f49,%f48;
+cvt.rn.f16x2.f32 %h25,%f51,%f50;
+cvt.rn.f16x2.f32 %h26,%f53,%f52;
+cvt.rn.f16x2.f32 %h27,%f55,%f54;
+cvt.rn.f16x2.f32 %h28,%f57,%f56;
+cvt.rn.f16x2.f32 %h29,%f59,%f58;
+cvt.rn.f16x2.f32 %h30,%f61,%f60;
+cvt.rn.f16x2.f32 %h31,%f63,%f62;
+st.shared.v4.b32 [%dst0],{%h0,%h1,%h2,%h3};
+st.shared.v4.b32 [%dst1],{%h4,%h5,%h6,%h7};
+st.shared.v4.b32 [%dst2],{%h8,%h9,%h10,%h11};
+st.shared.v4.b32 [%dst3],{%h12,%h13,%h14,%h15};
+st.shared.v4.b32 [%dst4],{%h16,%h17,%h18,%h19};
+st.shared.v4.b32 [%dst5],{%h20,%h21,%h22,%h23};
+st.shared.v4.b32 [%dst6],{%h24,%h25,%h26,%h27};
+st.shared.v4.b32 [%dst7],{%h28,%h29,%h30,%h31};
+add.u32 %ta,%ta,64;
+add.u32 %dst0,%dst0,128;
+add.u32 %dst1,%dst1,128;
+add.u32 %dst2,%dst2,128;
+add.u32 %dst3,%dst3,128;
+add.u32 %dst4,%dst4,128;
+add.u32 %dst5,%dst5,128;
+add.u32 %dst6,%dst6,128;
+add.u32 %dst7,%dst7,128;
+add.u32 %col,%col,64;
+setp.lt.u32 %more,%col,256;
+@%more bra STORE_LOOP;
+// Redistribute shared output rows to fully coalesced global stores.
+bar.sync 0;
+@%warp0 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %tm,256;
+shr.u32 %row,%t,5;
+and.b32 %lane,%t,31;
+xor.b32 %x,%lane,%row;
+shl.b32 %x,%x,4;
+mad.lo.u32 %x,%row,512,%x;
+add.u32 %in,%s,%x;
+add.u32 %x,%m,%row;
+mad.lo.u32 %x,%batch,4096,%x;
+shl.b32 %x,%x,12;
+add.u32 %x,%x,%n;
+mad.lo.u32 %x,%lane,8,%x;
+mul.wide.u32 %off,%x,2;
+add.u64 %gc,%cp,%off;
+mov.u32 %copy,0;
+COPY_OUTPUT:
+ld.shared.v4.b32 {%h0,%h1,%h2,%h3},[%in];
+st.global.v4.b32 [%gc],{%h0,%h1,%h2,%h3};
+add.u32 %in,%in,2048;
+xor.b32 %in,%in,64;
+add.u64 %gc,%gc,32768;
+add.u32 %copy,%copy,1;
+setp.lt.u32 %more,%copy,32;
+@%more bra COPY_OUTPUT;
+ret;
+}

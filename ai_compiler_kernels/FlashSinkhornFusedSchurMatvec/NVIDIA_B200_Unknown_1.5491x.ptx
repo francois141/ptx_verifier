@@ -1,0 +1,415 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 x_ptr,
+    .param .u64 y_ptr,
+    .param .u64 f_hat_ptr,
+    .param .u64 g_hat_ptr,
+    .param .u64 log_a_ptr,
+    .param .u64 log_b_ptr,
+    .param .u64 f_out_ptr,
+    .param .u64 g_out_ptr,
+    .param .u64 label_x_ptr,
+    .param .u64 label_y_ptr,
+    .param .u64 W_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+.reg .pred %pf,%p,%leader;
+.reg .b32 %r<40>,%a<32>,%b<16>;
+.reg .b64 %rd<20>;
+.reg .f32 %c<16>,%bias<4>,%v<8>,%mx<4>,%ss<4>,%q<12>;
+
+// Select fixed-row and reduction-side pointers for either symmetric update.
+mov.u32 %r0,%tid.x;
+mov.u32 %r1,%ctaid.x;
+shr.u32 %r2,%r0,5;
+and.b32 %r3,%r0,31;
+and.b32 %r4,%r3,3;
+shr.u32 %r5,%r3,2;
+setp.lt.u32 %pf,%r1,32;
+and.b32 %r6,%r1,31;
+shl.b32 %r6,%r6,5;
+ld.param.u64 %rd0,[x_ptr];
+ld.param.u64 %rd1,[y_ptr];
+selp.b64 %rd2,%rd0,%rd1,%pf;
+selp.b64 %rd3,%rd1,%rd0,%pf;
+ld.param.u64 %rd0,[f_hat_ptr];
+ld.param.u64 %rd1,[g_hat_ptr];
+selp.b64 %rd4,%rd0,%rd1,%pf;
+selp.b64 %rd5,%rd1,%rd0,%pf;
+ld.param.u64 %rd0,[log_a_ptr];
+ld.param.u64 %rd1,[log_b_ptr];
+selp.b64 %rd6,%rd1,%rd0,%pf;
+ld.param.u64 %rd0,[f_out_ptr];
+ld.param.u64 %rd1,[g_out_ptr];
+selp.b64 %rd7,%rd0,%rd1,%pf;
+mov.u32 %r7,global_smem;
+
+// Stage all 32 fixed vectors into an XOR-swizzled 4096-byte tile.
+shl.b32 %r8,%r0,4;
+shr.u32 %r9,%r8,3;
+and.b32 %r9,%r9,112;
+xor.b32 %r9,%r8,%r9;
+add.u32 %r9,%r7,%r9;
+mad.lo.u32 %r10,%r6,128,%r8;
+cvt.u64.u32 %rd9,%r10;
+add.u64 %rd8,%rd2,%rd9;
+cp.async.cg.shared.global [%r9],[%rd8],16;
+cp.async.commit_group;
+cp.async.wait_group 0;
+bar.sync 0;
+
+// Load the fixed tensor-core fragments once and retain them in registers.
+and.b32 %r10,%r3,15;
+shl.b32 %r10,%r10,7;
+shr.u32 %r11,%r3,4;
+shl.b32 %r11,%r11,4;
+and.b32 %r12,%r3,7;
+shl.b32 %r12,%r12,4;
+xor.b32 %r11,%r11,%r12;
+add.u32 %r10,%r10,%r11;
+xor.b32 %r12,%r10,0;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0,%a1,%a2,%a3},[%r12];
+xor.b32 %r12,%r10,32;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a4,%a5,%a6,%a7},[%r12];
+xor.b32 %r12,%r10,64;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a8,%a9,%a10,%a11},[%r12];
+xor.b32 %r12,%r10,96;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a12,%a13,%a14,%a15},[%r12];
+xor.b32 %r12,%r10,0;
+add.u32 %r12,%r12,2048;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a16,%a17,%a18,%a19},[%r12];
+xor.b32 %r12,%r10,32;
+add.u32 %r12,%r12,2048;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a20,%a21,%a22,%a23},[%r12];
+xor.b32 %r12,%r10,64;
+add.u32 %r12,%r12,2048;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a24,%a25,%a26,%a27},[%r12];
+xor.b32 %r12,%r10,96;
+add.u32 %r12,%r12,2048;
+add.u32 %r12,%r7,%r12;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a28,%a29,%a30,%a31},[%r12];
+bar.sync 0;
+
+// Private warp buffers occupy bytes 4096 through 20479 only.
+mad.lo.u32 %r13,%r2,2048,4096;
+add.u32 %r13,%r13,%r7;
+add.u32 %r14,%r13,%r10;
+xor.b32 %r15,%r10,32;
+add.u32 %r15,%r13,%r15;
+xor.b32 %r16,%r10,64;
+add.u32 %r16,%r13,%r16;
+xor.b32 %r17,%r10,96;
+add.u32 %r17,%r13,%r17;
+shl.b32 %r18,%r3,4;
+shr.u32 %r19,%r18,3;
+and.b32 %r19,%r19,112;
+xor.b32 %r19,%r18,%r19;
+add.u32 %r20,%r13,%r19;
+xor.b32 %r21,%r19,64;
+add.u32 %r21,%r21,512;
+add.u32 %r21,%r13,%r21;
+add.u32 %r22,%r20,1024;
+add.u32 %r23,%r21,1024;
+shl.b32 %r24,%r2,4;
+mad.lo.u32 %r25,%r24,128,%r18;
+cvt.u64.u32 %rd9,%r25;
+add.u64 %rd10,%rd3,%rd9;
+mad.lo.u32 %r25,%r4,2,%r24;
+mul.wide.u32 %rd9,%r25,4;
+add.u64 %rd11,%rd5,%rd9;
+add.u64 %rd12,%rd6,%rd9;
+
+// Start the first panel and initialize independent lane LSE states.
+cp.async.cg.shared.global [%r20],[%rd10],16;
+cp.async.cg.shared.global [%r21],[%rd10+512],16;
+cp.async.cg.shared.global [%r22],[%rd10+1024],16;
+cp.async.cg.shared.global [%r23],[%rd10+1536],16;
+cp.async.commit_group;
+mov.f32 %mx0,0fFF800000;
+mov.f32 %ss0,0f00000000;
+mov.f32 %mx1,0fFF800000;
+mov.f32 %ss1,0f00000000;
+mov.f32 %mx2,0fFF800000;
+mov.f32 %ss2,0f00000000;
+mov.f32 %mx3,0fFF800000;
+mov.f32 %ss3,0f00000000;
+
+LOOP:
+// Capture this panel completely before its shared buffer is reused.
+cp.async.wait_group 0;
+bar.warp.sync 0xffffffff;
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%b0,%b1,%b2,%b3},[%r14];
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%b4,%b5,%b6,%b7},[%r15];
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%b8,%b9,%b10,%b11},[%r16];
+ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%b12,%b13,%b14,%b15},[%r17];
+bar.warp.sync 0xffffffff;
+
+// Prefetch the following panel; the final iteration suppresses out-of-range loads.
+add.u64 %rd10,%rd10,16384;
+add.u32 %r24,%r24,128;
+setp.lt.u32 %p,%r24,1024;
+@%p cp.async.cg.shared.global [%r20],[%rd10],16;
+@%p cp.async.cg.shared.global [%r21],[%rd10+512],16;
+@%p cp.async.cg.shared.global [%r22],[%rd10+1024],16;
+@%p cp.async.cg.shared.global [%r23],[%rd10+1536],16;
+cp.async.commit_group;
+
+// Load this panel's potential and log-weight while coordinates are prefetched.
+ld.global.v2.f32 {%v0,%v1},[%rd11];
+ld.global.v2.f32 {%v2,%v3},[%rd12];
+ld.global.v2.f32 {%v4,%v5},[%rd11+32];
+ld.global.v2.f32 {%v6,%v7},[%rd12+32];
+
+// Accumulate all 64 coordinates in FP32 using the original half inputs.
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3},{%a0,%a1,%a2,%a3},{%b0,%b2},{0f00000000,0f00000000,0f00000000,0f00000000};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7},{%a0,%a1,%a2,%a3},{%b1,%b3},{0f00000000,0f00000000,0f00000000,0f00000000};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11},{%a16,%a17,%a18,%a19},{%b0,%b2},{0f00000000,0f00000000,0f00000000,0f00000000};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15},{%a16,%a17,%a18,%a19},{%b1,%b3},{0f00000000,0f00000000,0f00000000,0f00000000};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3},{%a4,%a5,%a6,%a7},{%b4,%b6},{%c0,%c1,%c2,%c3};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7},{%a4,%a5,%a6,%a7},{%b5,%b7},{%c4,%c5,%c6,%c7};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11},{%a20,%a21,%a22,%a23},{%b4,%b6},{%c8,%c9,%c10,%c11};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15},{%a20,%a21,%a22,%a23},{%b5,%b7},{%c12,%c13,%c14,%c15};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3},{%a8,%a9,%a10,%a11},{%b8,%b10},{%c0,%c1,%c2,%c3};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7},{%a8,%a9,%a10,%a11},{%b9,%b11},{%c4,%c5,%c6,%c7};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11},{%a24,%a25,%a26,%a27},{%b8,%b10},{%c8,%c9,%c10,%c11};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15},{%a24,%a25,%a26,%a27},{%b9,%b11},{%c12,%c13,%c14,%c15};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c0,%c1,%c2,%c3},{%a12,%a13,%a14,%a15},{%b12,%b14},{%c0,%c1,%c2,%c3};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c4,%c5,%c6,%c7},{%a12,%a13,%a14,%a15},{%b13,%b15},{%c4,%c5,%c6,%c7};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c8,%c9,%c10,%c11},{%a28,%a29,%a30,%a31},{%b12,%b14},{%c8,%c9,%c10,%c11};
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%c12,%c13,%c14,%c15},{%a28,%a29,%a30,%a31},{%b13,%b15},{%c12,%c13,%c14,%c15};
+
+// Form the base-two potential and log-weight bias.
+mul.f32 %v2,%v2,0f3FB8AA3B;
+mul.f32 %v3,%v3,0f3FB8AA3B;
+mul.f32 %v6,%v6,0f3FB8AA3B;
+mul.f32 %v7,%v7,0f3FB8AA3B;
+fma.rn.f32 %bias0,%v0,0f3FB8AA3B,%v2;
+fma.rn.f32 %bias1,%v1,0f3FB8AA3B,%v3;
+fma.rn.f32 %bias2,%v4,0f3FB8AA3B,%v6;
+fma.rn.f32 %bias3,%v5,0f3FB8AA3B,%v7;
+
+// Fold the coordinate scale into log2(e) and add the bias.
+fma.rn.f32 %c0,%c0,0f4038AA3B,%bias0;
+fma.rn.f32 %c1,%c1,0f4038AA3B,%bias1;
+fma.rn.f32 %c2,%c2,0f4038AA3B,%bias0;
+fma.rn.f32 %c3,%c3,0f4038AA3B,%bias1;
+fma.rn.f32 %c4,%c4,0f4038AA3B,%bias2;
+fma.rn.f32 %c5,%c5,0f4038AA3B,%bias3;
+fma.rn.f32 %c6,%c6,0f4038AA3B,%bias2;
+fma.rn.f32 %c7,%c7,0f4038AA3B,%bias3;
+fma.rn.f32 %c8,%c8,0f4038AA3B,%bias0;
+fma.rn.f32 %c9,%c9,0f4038AA3B,%bias1;
+fma.rn.f32 %c10,%c10,0f4038AA3B,%bias0;
+fma.rn.f32 %c11,%c11,0f4038AA3B,%bias1;
+fma.rn.f32 %c12,%c12,0f4038AA3B,%bias2;
+fma.rn.f32 %c13,%c13,0f4038AA3B,%bias3;
+fma.rn.f32 %c14,%c14,0f4038AA3B,%bias2;
+fma.rn.f32 %c15,%c15,0f4038AA3B,%bias3;
+
+// Stable local LSE for row fragment zero; defer lane reductions.
+max.f32 %q0,%c0,%c1;
+max.f32 %q0,%q0,%c4;
+max.f32 %q0,%q0,%c5;
+max.f32 %q0,%q0,%mx0;
+sub.f32 %q4,%mx0,%q0;
+ex2.approx.ftz.f32 %q4,%q4;
+sub.f32 %c0,%c0,%q0;
+sub.f32 %c1,%c1,%q0;
+sub.f32 %c4,%c4,%q0;
+sub.f32 %c5,%c5,%q0;
+ex2.approx.ftz.f32 %c0,%c0;
+ex2.approx.ftz.f32 %c1,%c1;
+ex2.approx.ftz.f32 %c4,%c4;
+ex2.approx.ftz.f32 %c5,%c5;
+add.f32 %q5,%c0,%c1;
+add.f32 %q6,%c4,%c5;
+add.f32 %q5,%q5,%q6;
+fma.rn.f32 %ss0,%ss0,%q4,%q5;
+mov.f32 %mx0,%q0;
+
+// Stable local LSE for row fragment one.
+max.f32 %q0,%c2,%c3;
+max.f32 %q0,%q0,%c6;
+max.f32 %q0,%q0,%c7;
+max.f32 %q0,%q0,%mx1;
+sub.f32 %q4,%mx1,%q0;
+ex2.approx.ftz.f32 %q4,%q4;
+sub.f32 %c2,%c2,%q0;
+sub.f32 %c3,%c3,%q0;
+sub.f32 %c6,%c6,%q0;
+sub.f32 %c7,%c7,%q0;
+ex2.approx.ftz.f32 %c2,%c2;
+ex2.approx.ftz.f32 %c3,%c3;
+ex2.approx.ftz.f32 %c6,%c6;
+ex2.approx.ftz.f32 %c7,%c7;
+add.f32 %q5,%c2,%c3;
+add.f32 %q6,%c6,%c7;
+add.f32 %q5,%q5,%q6;
+fma.rn.f32 %ss1,%ss1,%q4,%q5;
+mov.f32 %mx1,%q0;
+
+// Stable local LSE for row fragment two.
+max.f32 %q0,%c8,%c9;
+max.f32 %q0,%q0,%c12;
+max.f32 %q0,%q0,%c13;
+max.f32 %q0,%q0,%mx2;
+sub.f32 %q4,%mx2,%q0;
+ex2.approx.ftz.f32 %q4,%q4;
+sub.f32 %c8,%c8,%q0;
+sub.f32 %c9,%c9,%q0;
+sub.f32 %c12,%c12,%q0;
+sub.f32 %c13,%c13,%q0;
+ex2.approx.ftz.f32 %c8,%c8;
+ex2.approx.ftz.f32 %c9,%c9;
+ex2.approx.ftz.f32 %c12,%c12;
+ex2.approx.ftz.f32 %c13,%c13;
+add.f32 %q5,%c8,%c9;
+add.f32 %q6,%c12,%c13;
+add.f32 %q5,%q5,%q6;
+fma.rn.f32 %ss2,%ss2,%q4,%q5;
+mov.f32 %mx2,%q0;
+
+// Stable local LSE for row fragment three.
+max.f32 %q0,%c10,%c11;
+max.f32 %q0,%q0,%c14;
+max.f32 %q0,%q0,%c15;
+max.f32 %q0,%q0,%mx3;
+sub.f32 %q4,%mx3,%q0;
+ex2.approx.ftz.f32 %q4,%q4;
+sub.f32 %c10,%c10,%q0;
+sub.f32 %c11,%c11,%q0;
+sub.f32 %c14,%c14,%q0;
+sub.f32 %c15,%c15,%q0;
+ex2.approx.ftz.f32 %c10,%c10;
+ex2.approx.ftz.f32 %c11,%c11;
+ex2.approx.ftz.f32 %c14,%c14;
+ex2.approx.ftz.f32 %c15,%c15;
+add.f32 %q5,%c10,%c11;
+add.f32 %q6,%c14,%c15;
+add.f32 %q5,%q5,%q6;
+fma.rn.f32 %ss3,%ss3,%q4,%q5;
+mov.f32 %mx3,%q0;
+
+// Advance the bias pointers across 128-column supertiles.
+add.u64 %rd11,%rd11,512;
+add.u64 %rd12,%rd12,512;
+@%p bra LOOP;
+
+// Merge four lane partitions once, after the complete reduction-side sweep.
+mov.f32 %q0,%mx0;
+shfl.sync.bfly.b32 %q1,%q0,1,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+shfl.sync.bfly.b32 %q1,%q0,2,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+sub.f32 %q1,%mx0,%q0;
+ex2.approx.ftz.f32 %q1,%q1;
+mul.f32 %ss0,%ss0,%q1;
+shfl.sync.bfly.b32 %q1,%ss0,1,31,0xffffffff;
+add.f32 %ss0,%ss0,%q1;
+shfl.sync.bfly.b32 %q1,%ss0,2,31,0xffffffff;
+add.f32 %ss0,%ss0,%q1;
+mov.f32 %mx0,%q0;
+mov.f32 %q0,%mx1;
+shfl.sync.bfly.b32 %q1,%q0,1,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+shfl.sync.bfly.b32 %q1,%q0,2,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+sub.f32 %q1,%mx1,%q0;
+ex2.approx.ftz.f32 %q1,%q1;
+mul.f32 %ss1,%ss1,%q1;
+shfl.sync.bfly.b32 %q1,%ss1,1,31,0xffffffff;
+add.f32 %ss1,%ss1,%q1;
+shfl.sync.bfly.b32 %q1,%ss1,2,31,0xffffffff;
+add.f32 %ss1,%ss1,%q1;
+mov.f32 %mx1,%q0;
+mov.f32 %q0,%mx2;
+shfl.sync.bfly.b32 %q1,%q0,1,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+shfl.sync.bfly.b32 %q1,%q0,2,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+sub.f32 %q1,%mx2,%q0;
+ex2.approx.ftz.f32 %q1,%q1;
+mul.f32 %ss2,%ss2,%q1;
+shfl.sync.bfly.b32 %q1,%ss2,1,31,0xffffffff;
+add.f32 %ss2,%ss2,%q1;
+shfl.sync.bfly.b32 %q1,%ss2,2,31,0xffffffff;
+add.f32 %ss2,%ss2,%q1;
+mov.f32 %mx2,%q0;
+mov.f32 %q0,%mx3;
+shfl.sync.bfly.b32 %q1,%q0,1,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+shfl.sync.bfly.b32 %q1,%q0,2,31,0xffffffff;
+max.f32 %q0,%q0,%q1;
+sub.f32 %q1,%mx3,%q0;
+ex2.approx.ftz.f32 %q1,%q1;
+mul.f32 %ss3,%ss3,%q1;
+shfl.sync.bfly.b32 %q1,%ss3,1,31,0xffffffff;
+add.f32 %ss3,%ss3,%q1;
+shfl.sync.bfly.b32 %q1,%ss3,2,31,0xffffffff;
+add.f32 %ss3,%ss3,%q1;
+mov.f32 %mx3,%q0;
+
+// Reuse the fixed-row tile for eight max/sum pairs per output row.
+setp.eq.u32 %leader,%r4,0;
+shl.b32 %r26,%r5,6;
+mad.lo.u32 %r26,%r2,8,%r26;
+add.u32 %r26,%r7,%r26;
+@%leader st.shared.v2.f32 [%r26],{%mx0,%ss0};
+@%leader st.shared.v2.f32 [%r26+512],{%mx1,%ss1};
+@%leader st.shared.v2.f32 [%r26+1024],{%mx2,%ss2};
+@%leader st.shared.v2.f32 [%r26+1536],{%mx3,%ss3};
+bar.sync 0;
+
+// Eight lanes merge a row's warp partitions.
+shl.b32 %r26,%r0,3;
+add.u32 %r26,%r7,%r26;
+ld.shared.v2.f32 {%q0,%q1},[%r26];
+mov.f32 %q2,%q0;
+shfl.sync.bfly.b32 %q3,%q2,1,31,0xffffffff;
+max.f32 %q2,%q2,%q3;
+shfl.sync.bfly.b32 %q3,%q2,2,31,0xffffffff;
+max.f32 %q2,%q2,%q3;
+shfl.sync.bfly.b32 %q3,%q2,4,31,0xffffffff;
+max.f32 %q2,%q2,%q3;
+sub.f32 %q0,%q0,%q2;
+ex2.approx.ftz.f32 %q0,%q0;
+mul.f32 %q1,%q1,%q0;
+shfl.sync.bfly.b32 %q3,%q1,1,31,0xffffffff;
+add.f32 %q1,%q1,%q3;
+shfl.sync.bfly.b32 %q3,%q1,2,31,0xffffffff;
+add.f32 %q1,%q1,%q3;
+shfl.sync.bfly.b32 %q3,%q1,4,31,0xffffffff;
+add.f32 %q1,%q1,%q3;
+
+// Convert to natural-log LSE and store one symmetric average per row.
+and.b32 %r27,%r0,7;
+setp.eq.u32 %leader,%r27,0;
+shr.u32 %r28,%r0,3;
+add.u32 %r28,%r28,%r6;
+mul.wide.u32 %rd9,%r28,4;
+add.u64 %rd13,%rd4,%rd9;
+add.u64 %rd14,%rd7,%rd9;
+max.NaN.f32 %q1,%q1,0f000116C2;
+lg2.approx.ftz.f32 %q1,%q1;
+add.f32 %q1,%q1,%q2;
+mul.f32 %q1,%q1,0f3F317218;
+@%leader ld.global.f32 %q4,[%rd13];
+mul.f32 %q4,%q4,0f3F000000;
+fma.rn.f32 %q4,%q1,0fBF000000,%q4;
+@%leader st.global.f32 [%rd14],%q4;
+ret;
+}

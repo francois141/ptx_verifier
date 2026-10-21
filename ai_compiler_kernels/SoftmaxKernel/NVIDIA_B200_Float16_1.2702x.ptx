@@ -1,0 +1,146 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 output_ptr,
+    .param .u64 input_ptr,
+    .param .u32 input_row_stride,
+    .param .u32 output_row_stride,
+    .param .u32 n_rows,
+    .param .u32 n_cols,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p<2>;
+    .reg .b16 %h<10>;
+    .reg .b32 %r<24>;
+    .reg .b64 %rd<12>;
+    .reg .f32 %f<24>;
+
+    // Assign one row per warp and partition all rows with a four-warp grid stride.
+    ld.param.u64 %rd0, [output_ptr];
+    ld.param.u64 %rd1, [input_ptr];
+    ld.param.u32 %r0, [input_row_stride];
+    ld.param.u32 %r1, [output_row_stride];
+    ld.param.u32 %r2, [n_rows];
+    mov.u32 %r3, %ctaid.x;
+    mov.u32 %r4, %nctaid.x;
+    mov.u32 %r5, %tid.x;
+    shr.u32 %r6, %r5, 5;
+    and.b32 %r7, %r5, 31;
+    mad.lo.u32 %r3, %r3, 4, %r6;
+    shl.b32 %r4, %r4, 2;
+    shl.b32 %r7, %r7, 3;
+    setp.ge.u32 %p0, %r3, %r2;
+    @%p0 bra DONE;
+
+    // Form runtime-stride pointers and their increments once before the row loop.
+    mad.lo.u32 %r8, %r3, %r0, %r7;
+    mad.lo.u32 %r9, %r3, %r1, %r7;
+    mul.wide.u32 %rd2, %r8, 2;
+    mul.wide.u32 %rd3, %r9, 2;
+    add.u64 %rd4, %rd1, %rd2;
+    add.u64 %rd5, %rd0, %rd3;
+    mul.lo.u32 %r8, %r4, %r0;
+    mul.lo.u32 %r9, %r4, %r1;
+    mul.wide.u32 %rd6, %r8, 2;
+    mul.wide.u32 %rd7, %r9, 2;
+
+ROW:
+    // Eight adjacent half values per lane cover the unmasked 256-column tile.
+    ld.global.v4.b32 {%r10, %r11, %r12, %r13}, [%rd4];
+
+    // Reduce packed half maxima locally, followed by a native warp maximum.
+    max.NaN.f16x2 %r14, %r10, %r11;
+    max.NaN.f16x2 %r15, %r12, %r13;
+    max.NaN.f16x2 %r14, %r14, %r15;
+    mov.b32 {%h0, %h1}, %r14;
+    max.NaN.f16 %h0, %h0, %h1;
+    cvt.f32.f16 %f0, %h0;
+    redux.sync.max.NaN.f32 %f0, %f0, 0xffffffff;
+    cvt.rn.f16x2.f32 %r14, %f0, %f0;
+
+    // Round the subtraction in half precision, as in the source kernel.
+    sub.rn.f16x2 %r10, %r10, %r14;
+    sub.rn.f16x2 %r11, %r11, %r14;
+    sub.rn.f16x2 %r12, %r12, %r14;
+    sub.rn.f16x2 %r13, %r13, %r14;
+    mov.b32 {%h2, %h3}, %r10;
+    mov.b32 {%h4, %h5}, %r11;
+    mov.b32 {%h6, %h7}, %r12;
+    mov.b32 {%h8, %h9}, %r13;
+    cvt.f32.f16 %f2, %h2;
+    cvt.f32.f16 %f3, %h3;
+    cvt.f32.f16 %f4, %h4;
+    cvt.f32.f16 %f5, %h5;
+    cvt.f32.f16 %f6, %h6;
+    cvt.f32.f16 %f7, %h7;
+    cvt.f32.f16 %f8, %h8;
+    cvt.f32.f16 %f9, %h9;
+
+    // Evaluate the eight exponentials in float using base-two exponentiation.
+    mul.f32 %f2, %f2, 0f3fb8aa3b;
+    mul.f32 %f3, %f3, 0f3fb8aa3b;
+    mul.f32 %f4, %f4, 0f3fb8aa3b;
+    mul.f32 %f5, %f5, 0f3fb8aa3b;
+    mul.f32 %f6, %f6, 0f3fb8aa3b;
+    mul.f32 %f7, %f7, 0f3fb8aa3b;
+    mul.f32 %f8, %f8, 0f3fb8aa3b;
+    mul.f32 %f9, %f9, 0f3fb8aa3b;
+    ex2.approx.f32 %f2, %f2;
+    ex2.approx.f32 %f3, %f3;
+    ex2.approx.f32 %f4, %f4;
+    ex2.approx.f32 %f5, %f5;
+    ex2.approx.f32 %f6, %f6;
+    ex2.approx.f32 %f7, %f7;
+    ex2.approx.f32 %f8, %f8;
+    ex2.approx.f32 %f9, %f9;
+
+    // Sum locally with a balanced tree, then all-reduce across the warp.
+    add.f32 %f10, %f2, %f3;
+    add.f32 %f11, %f4, %f5;
+    add.f32 %f12, %f6, %f7;
+    add.f32 %f13, %f8, %f9;
+    add.f32 %f10, %f10, %f11;
+    add.f32 %f12, %f12, %f13;
+    add.f32 %f10, %f10, %f12;
+    shfl.sync.bfly.b32 %f11, %f10, 16, 31, 0xffffffff;
+    add.f32 %f10, %f10, %f11;
+    shfl.sync.bfly.b32 %f11, %f10, 8, 31, 0xffffffff;
+    add.f32 %f10, %f10, %f11;
+    shfl.sync.bfly.b32 %f11, %f10, 4, 31, 0xffffffff;
+    add.f32 %f10, %f10, %f11;
+    shfl.sync.bfly.b32 %f11, %f10, 2, 31, 0xffffffff;
+    add.f32 %f10, %f10, %f11;
+    shfl.sync.bfly.b32 %f11, %f10, 1, 31, 0xffffffff;
+    add.f32 %f10, %f10, %f11;
+
+    // Normalize in float and convert each result only at the final half store.
+    rcp.approx.f32 %f10, %f10;
+    mul.f32 %f2, %f2, %f10;
+    mul.f32 %f3, %f3, %f10;
+    mul.f32 %f4, %f4, %f10;
+    mul.f32 %f5, %f5, %f10;
+    mul.f32 %f6, %f6, %f10;
+    mul.f32 %f7, %f7, %f10;
+    mul.f32 %f8, %f8, %f10;
+    mul.f32 %f9, %f9, %f10;
+    cvt.rn.f16x2.f32 %r10, %f3, %f2;
+    cvt.rn.f16x2.f32 %r11, %f5, %f4;
+    cvt.rn.f16x2.f32 %r12, %f7, %f6;
+    cvt.rn.f16x2.f32 %r13, %f9, %f8;
+    st.global.v4.b32 [%rd5], {%r10, %r11, %r12, %r13};
+
+    // Advance each warp to its next row, with a row bound but no column mask.
+    add.u32 %r3, %r3, %r4;
+    add.u64 %rd4, %rd4, %rd6;
+    add.u64 %rd5, %rd5, %rd7;
+    setp.lt.u32 %p0, %r3, %r2;
+    @%p0 bra ROW;
+DONE:
+    ret;
+}

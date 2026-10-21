@@ -1,0 +1,64 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+.param .u64 x_ptr,
+.param .u64 output_ptr,
+.param .u64 dummy_ptr1,
+.param .u64 dummy_ptr2
+)
+{
+.reg .b64 %x, %y, %a, %b, %off;
+.reg .b32 %t, %c, %i, %v, %p0, %p1, %o0, %o1;
+.reg .b16 %q0, %q1, %h0, %h1, %h2, %h3;
+.reg .f32 %f<4>, %e<4>;
+// Each thread processes four adjacent elements of its 1024-element tile.
+ld.param.u64 %x, [x_ptr];
+ld.param.u64 %y, [output_ptr];
+mov.u32 %t, %tid.x;
+mov.u32 %c, %ctaid.x;
+shl.b32 %i, %t, 2;
+mad.lo.u32 %i, %c, 1024, %i;
+cvt.u64.u32 %off, %i;
+add.u64 %a, %x, %off;
+shl.b64 %off, %off, 1;
+add.u64 %b, %y, %off;
+// Load four FP8 numbers and decode pairs into half precision.
+ld.global.u32 %v, [%a];
+mov.b32 {%q0, %q1}, %v;
+cvt.rn.f16x2.e4m3x2 %p0, %q0;
+cvt.rn.f16x2.e4m3x2 %p1, %q1;
+mov.b32 {%h0, %h1}, %p0;
+mov.b32 {%h2, %h3}, %p1;
+cvt.f32.f16 %f0, %h0;
+cvt.f32.f16 %f1, %h1;
+cvt.f32.f16 %f2, %h2;
+cvt.f32.f16 %f3, %h3;
+// Compute x / (1 + exp(-x)) in float32.
+mul.f32 %e0, %f0, 0fBFB8AA3B;
+mul.f32 %e1, %f1, 0fBFB8AA3B;
+mul.f32 %e2, %f2, 0fBFB8AA3B;
+mul.f32 %e3, %f3, 0fBFB8AA3B;
+ex2.approx.f32 %e0, %e0;
+ex2.approx.f32 %e1, %e1;
+ex2.approx.f32 %e2, %e2;
+ex2.approx.f32 %e3, %e3;
+add.f32 %e0, %e0, 0f3F800000;
+add.f32 %e1, %e1, 0f3F800000;
+add.f32 %e2, %e2, 0f3F800000;
+add.f32 %e3, %e3, 0f3F800000;
+rcp.approx.f32 %e0, %e0;
+rcp.approx.f32 %e1, %e1;
+rcp.approx.f32 %e2, %e2;
+rcp.approx.f32 %e3, %e3;
+mul.f32 %f0, %f0, %e0;
+mul.f32 %f1, %f1, %e1;
+mul.f32 %f2, %f2, %e2;
+mul.f32 %f3, %f3, %e3;
+// Round to half and store four contiguous outputs.
+cvt.rn.f16x2.f32 %o0, %f1, %f0;
+cvt.rn.f16x2.f32 %o1, %f3, %f2;
+st.global.v2.u32 [%b], {%o0, %o1};
+ret;
+}

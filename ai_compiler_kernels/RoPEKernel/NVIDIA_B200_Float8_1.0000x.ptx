@@ -1,0 +1,65 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 input_ptr,
+    .param .u64 cos_ptr,
+    .param .u64 sin_ptr,
+    .param .u64 output_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %first;
+    .reg .b32 %r<14>;
+    .reg .b64 %rd<8>;
+    .reg .b16 %h<6>;
+
+    // One thread per feature covers the full 128-element row without masks.
+    ld.param.u64 %rd0, [input_ptr];
+    ld.param.u64 %rd1, [cos_ptr];
+    ld.param.u64 %rd2, [sin_ptr];
+    ld.param.u64 %rd3, [output_ptr];
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %ctaid.x;
+    mad.lo.u32 %r2, %r1, 128, %r0;
+    xor.b32 %r3, %r2, 64;
+    and.b32 %r4, %r2, 32767;
+    setp.lt.u32 %first, %r0, 64;
+
+    // The paired feature is 64 positions away; coefficients repeat every 256 rows.
+    mad.wide.u32 %rd4, %r2, 1, %rd0;
+    mad.wide.u32 %rd5, %r3, 1, %rd0;
+    mad.wide.u32 %rd6, %r4, 1, %rd1;
+    mad.wide.u32 %rd7, %r4, 1, %rd2;
+    ld.global.nc.L1::evict_first.u8 %r5, [%rd4];
+    ld.global.nc.L1::evict_first.u8 %r6, [%rd5];
+    ld.global.nc.L1::evict_last.u8 %r7, [%rd6];
+    ld.global.nc.L1::evict_last.u8 %r8, [%rd7];
+
+    // Negate the first-half partner and decode two FP8 values per conversion.
+    @%first xor.b32 %r6, %r6, 128;
+    prmt.b32 %r9, %r5, %r6, 0x4440;
+    prmt.b32 %r10, %r7, %r8, 0x4440;
+    cvt.u16.u32 %h0, %r9;
+    cvt.u16.u32 %h1, %r10;
+    cvt.rn.f16x2.e4m3x2 %r11, %h0;
+    cvt.rn.f16x2.e4m3x2 %r12, %h1;
+
+    // Quarter scaling keeps every finite E4M3 product exact in FP16 without overflow.
+    mov.b32 %r0, 0x34003400;
+    mul.rn.f16x2 %r11, %r11, %r0;
+    mul.rn.f16x2 %r13, %r11, %r12;
+    mov.b32 {%h2, %h3}, %r13;
+    add.rn.f16 %h5, %h2, %h3;
+
+    // Rescaling gives the same final FP16 rounding, including small results and overflow.
+    mov.b16 %h4, 0x4400;
+    mul.rn.f16 %h5, %h5, %h4;
+    mad.wide.u32 %rd4, %r2, 2, %rd3;
+    st.global.cs.u16 [%rd4], %h5;
+    ret;
+}

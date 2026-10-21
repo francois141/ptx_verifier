@@ -1,0 +1,313 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+    .param .u64 a_ptr,
+    .param .u64 b_ptr,
+    .param .u64 c_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p0, %pwarp, %pprod, %pcons, %pdone, %pacc, %ploop, %pwrap, %ptail;
+    .reg .b32 %t, %pm, %pn, %sm, %ctrl, %slot, %tm, %tm1, %tl;
+    .reg .b32 %x, %y, %z, %as, %bs, %k, %phase, %stage, %full, %empty, %col, %idesc, %zero, %bo;
+    .reg .b32 %h<32>;
+    .reg .b32 %esw, %erd, %ew;
+    .reg .f32 %f<64>;
+    .reg .b64 %a, %b, %c, %ag, %bg, %out, %off;
+    .reg .b64 %ad, %ad1, %bd, %da, %db;
+
+    // Each CTA owns a 256 by 256 output tile; all dimensions divide evenly.
+    ld.param.u64 %a, [a_ptr];
+    ld.param.u64 %b, [b_ptr];
+    ld.param.u64 %c, [c_ptr];
+    mov.u32 %t, %tid.x;
+    mov.u32 %pm, %ctaid.x;
+    mov.u32 %pn, %ctaid.y;
+    mov.u32 %sm, global_smem;
+    add.u32 %ctrl, %sm, 163840;
+    add.u32 %slot, %ctrl, 128;
+    setp.eq.u32 %p0, %t, 0;
+    setp.lt.u32 %pwarp, %t, 32;
+    setp.lt.u32 %pprod, %t, 192;
+    setp.eq.u32 %pcons, %t, 192;
+
+    // Ring-buffer barriers separate ready operands from buffers still in use.
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+0], 192;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+64], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+8], 192;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+72], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+16], 192;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+80], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+24], 192;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+88], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+32], 192;
+    @%p0 mbarrier.init.shared::cta.b64 [%ctrl+96], 1;
+    @%pwarp tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%slot], 512;
+    @%pwarp tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    ld.shared.u32 %tm, [%slot];
+    add.u32 %tm1, %tm, 256;
+    mov.u32 %full, %ctrl;
+    add.u32 %empty, %ctrl, 64;
+    mov.u32 %stage, 0;
+    mov.u32 %k, 0;
+    @%pprod bra PRODUCER;
+    @%pcons bra CONSUMER;
+    bra FINISHED;
+
+PRODUCER:
+    // Six warps copy coalesced 16-byte vectors into bank-swizzled A and B tiles.
+    shr.u32 %x, %t, 2;
+    and.b32 %y, %t, 3;
+    shl.b32 %y, %y, 4;
+    mad.lo.u32 %z, %pm, 256, %x;
+    mad.lo.u32 %z, %z, 4096, %y;
+    cvt.u64.u32 %off, %z;
+    add.u64 %ag, %a, %off;
+    and.b32 %z, %x, 6;
+    shl.b32 %z, %z, 3;
+    xor.b32 %y, %y, %z;
+    mad.lo.u32 %as, %x, 64, %y;
+    add.u32 %as, %as, %sm;
+    shr.u32 %x, %t, 4;
+    and.b32 %y, %t, 15;
+    shl.b32 %y, %y, 4;
+    mad.lo.u32 %z, %pn, 256, %y;
+    mad.lo.u32 %z, %x, 4096, %z;
+    cvt.u64.u32 %off, %z;
+    add.u64 %bg, %b, %off;
+    and.b32 %z, %y, 128;
+    shl.b32 %z, %z, 6;
+    and.b32 %y, %y, 127;
+    mad.lo.u32 %bs, %x, 128, %y;
+    and.b32 %y, %x, 7;
+    shl.b32 %y, %y, 4;
+    xor.b32 %bs, %bs, %y;
+    add.u32 %bs, %bs, %z;
+    add.u32 %bs, %bs, 16384;
+    add.u32 %bs, %bs, %sm;
+    setp.lt.u32 %ptail, %t, 64;
+    mov.u32 %phase, 1;
+
+PRODUCE_LOOP:
+    // Initial buffers are empty; later visits wait for the previous MMA reads.
+    setp.lt.u32 %ploop, %k, 320;
+    @%ploop bra COPY_TILE;
+WAIT_EMPTY:
+    mbarrier.try_wait.parity.shared::cta.b64 %pdone, [%empty], %phase;
+    @!%pdone bra WAIT_EMPTY;
+COPY_TILE:
+    // Odd B row groups need the opposite half of the 128-byte XOR swizzle.
+    xor.b32 %bo, %bs, 64;
+    cp.async.cg.shared.global [%as+0], [%ag+0], 16;
+    cp.async.cg.shared.global [%bs+0], [%bg+0], 16;
+    cp.async.cg.shared.global [%as+3072], [%ag+196608], 16;
+    cp.async.cg.shared.global [%bo+1536], [%bg+49152], 16;
+    cp.async.cg.shared.global [%as+6144], [%ag+393216], 16;
+    cp.async.cg.shared.global [%bs+3072], [%bg+98304], 16;
+    cp.async.cg.shared.global [%as+9216], [%ag+589824], 16;
+    cp.async.cg.shared.global [%bo+4608], [%bg+147456], 16;
+    cp.async.cg.shared.global [%as+12288], [%ag+786432], 16;
+    cp.async.cg.shared.global [%bs+6144], [%bg+196608], 16;
+    @%ptail cp.async.cg.shared.global [%as+15360], [%ag+983040], 16;
+    @%ptail cp.async.cg.shared.global [%bo+7680], [%bg+245760], 16;
+    cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%full];
+
+    // Advance the producer independently of the tensor-core issuing thread.
+    add.u64 %ag, %ag, 64;
+    add.u64 %bg, %bg, 262144;
+    add.u32 %as, %as, 32768;
+    add.u32 %bs, %bs, 32768;
+    add.u32 %full, %full, 8;
+    add.u32 %empty, %empty, 8;
+    add.u32 %stage, %stage, 1;
+    setp.eq.u32 %pwrap, %stage, 5;
+    @%pwrap sub.u32 %as, %as, 163840;
+    @%pwrap sub.u32 %bs, %bs, 163840;
+    @%pwrap sub.u32 %full, %full, 40;
+    @%pwrap sub.u32 %empty, %empty, 40;
+    @%pwrap xor.b32 %phase, %phase, 1;
+    @%pwrap mov.u32 %stage, 0;
+    add.u32 %k, %k, 64;
+    setp.lt.u32 %ploop, %k, 4096;
+    @%ploop bra PRODUCE_LOOP;
+    bra FINISHED;
+
+CONSUMER:
+    // Reuse each B operand in the collector across the two 128-row MMAs.
+    shr.u32 %x, %sm, 4;
+    cvt.u64.u32 %ad, %x;
+    or.b64 %ad, %ad, 0x8000402000010000;
+    add.u32 %x, %sm, 16384;
+    shr.u32 %x, %x, 4;
+    cvt.u64.u32 %bd, %x;
+    or.b64 %bd, %bd, 0x4000404002000000;
+    mov.u32 %zero, 0;
+    mov.u32 %idesc, 0x08410010;
+    mov.u32 %phase, 0;
+    setp.ne.u32 %pacc, %k, 0;
+
+CONSUME_LOOP:
+    // Acquire complete copies before exposing them to the tensor-core proxy.
+WAIT_FULL:
+    mbarrier.try_wait.parity.shared::cta.b64 %pdone, [%full], %phase;
+    @!%pdone bra WAIT_FULL;
+    fence.proxy.async.shared::cta;
+    tcgen05.fence::after_thread_sync;
+    mov.b64 %da, %ad;
+    mov.b64 %db, %bd;
+    add.u64 %ad1, %da, 512;
+    tcgen05.mma.ws.cta_group::1.kind::f8f6f4.collector::b0::fill [%tm], %da, %db, %idesc, %pacc;
+    tcgen05.mma.ws.cta_group::1.kind::f8f6f4.collector::b0::lastuse [%tm1], %ad1, %db, %idesc, %pacc;
+    setp.eq.u32 %pacc, %zero, 0;
+    add.u64 %da, %da, 2;
+    add.u64 %db, %db, 256;
+    add.u64 %ad1, %da, 512;
+    tcgen05.mma.ws.cta_group::1.kind::f8f6f4.collector::b0::fill [%tm], %da, %db, %idesc, %pacc;
+    tcgen05.mma.ws.cta_group::1.kind::f8f6f4.collector::b0::lastuse [%tm1], %ad1, %db, %idesc, %pacc;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%empty];
+    add.u32 %k, %k, 64;
+    setp.eq.u32 %ploop, %k, 4096;
+    @%ploop bra WAIT_FINAL;
+
+    // Rotate descriptors and barrier phases through the shared-memory ring.
+    add.u64 %ad, %ad, 2048;
+    add.u64 %bd, %bd, 2048;
+    add.u32 %full, %full, 8;
+    add.u32 %empty, %empty, 8;
+    add.u32 %stage, %stage, 1;
+    setp.eq.u32 %pwrap, %stage, 5;
+    @%pwrap sub.u64 %ad, %ad, 10240;
+    @%pwrap sub.u64 %bd, %bd, 10240;
+    @%pwrap sub.u32 %full, %full, 40;
+    @%pwrap sub.u32 %empty, %empty, 40;
+    @%pwrap xor.b32 %phase, %phase, 1;
+    @%pwrap mov.u32 %stage, 0;
+    bra CONSUME_LOOP;
+
+WAIT_FINAL:
+    // The last commit covers every pending MMA from the issuing thread.
+    mbarrier.try_wait.parity.shared::cta.b64 %pdone, [%empty], %phase;
+    @!%pdone bra WAIT_FINAL;
+FINISHED:
+    bar.sync 0;
+    // Each warpgroup drains its own 128-row accumulator without padding or masks.
+    tcgen05.fence::after_thread_sync;
+    and.b32 %x, %t, 96;
+    shl.b32 %x, %x, 16;
+    shr.u32 %y, %t, 7;
+    shl.b32 %y, %y, 8;
+    add.u32 %tl, %tm, %x;
+    add.u32 %tl, %tl, %y;
+    // A vector-granularity XOR layout is conflict-free for both epilogue passes.
+    shl.b32 %esw, %t, 7;
+    and.b32 %x, %t, 7;
+    shl.b32 %x, %x, 4;
+    xor.b32 %esw, %esw, %x;
+    shr.u32 %y, %t, 3;
+    and.b32 %z, %y, 7;
+    shl.b32 %z, %z, 4;
+    shl.b32 %erd, %t, 4;
+    xor.b32 %erd, %erd, %z;
+    add.u32 %erd, %erd, %sm;
+    mad.lo.u32 %y, %pm, 256, %y;
+    shl.b32 %y, %y, 13;
+    shl.b32 %z, %pn, 9;
+    add.u32 %y, %y, %z;
+    add.u32 %y, %y, %x;
+    cvt.u64.u32 %off, %y;
+    add.u64 %out, %c, %off;
+    mov.u32 %col, 0;
+STORE_LOOP:
+    tcgen05.ld.sync.aligned.32x32b.x64.b32 {%f0, %f1, %f2, %f3, %f4, %f5, %f6, %f7, %f8, %f9, %f10, %f11, %f12, %f13, %f14, %f15, %f16, %f17, %f18, %f19, %f20, %f21, %f22, %f23, %f24, %f25, %f26, %f27, %f28, %f29, %f30, %f31, %f32, %f33, %f34, %f35, %f36, %f37, %f38, %f39, %f40, %f41, %f42, %f43, %f44, %f45, %f46, %f47, %f48, %f49, %f50, %f51, %f52, %f53, %f54, %f55, %f56, %f57, %f58, %f59, %f60, %f61, %f62, %f63}, [%tl];
+    tcgen05.wait::ld.sync.aligned;
+    cvt.rn.f16x2.f32 %h0, %f1, %f0;
+    cvt.rn.f16x2.f32 %h1, %f3, %f2;
+    cvt.rn.f16x2.f32 %h2, %f5, %f4;
+    cvt.rn.f16x2.f32 %h3, %f7, %f6;
+    cvt.rn.f16x2.f32 %h4, %f9, %f8;
+    cvt.rn.f16x2.f32 %h5, %f11, %f10;
+    cvt.rn.f16x2.f32 %h6, %f13, %f12;
+    cvt.rn.f16x2.f32 %h7, %f15, %f14;
+    cvt.rn.f16x2.f32 %h8, %f17, %f16;
+    cvt.rn.f16x2.f32 %h9, %f19, %f18;
+    cvt.rn.f16x2.f32 %h10, %f21, %f20;
+    cvt.rn.f16x2.f32 %h11, %f23, %f22;
+    cvt.rn.f16x2.f32 %h12, %f25, %f24;
+    cvt.rn.f16x2.f32 %h13, %f27, %f26;
+    cvt.rn.f16x2.f32 %h14, %f29, %f28;
+    cvt.rn.f16x2.f32 %h15, %f31, %f30;
+    cvt.rn.f16x2.f32 %h16, %f33, %f32;
+    cvt.rn.f16x2.f32 %h17, %f35, %f34;
+    cvt.rn.f16x2.f32 %h18, %f37, %f36;
+    cvt.rn.f16x2.f32 %h19, %f39, %f38;
+    cvt.rn.f16x2.f32 %h20, %f41, %f40;
+    cvt.rn.f16x2.f32 %h21, %f43, %f42;
+    cvt.rn.f16x2.f32 %h22, %f45, %f44;
+    cvt.rn.f16x2.f32 %h23, %f47, %f46;
+    cvt.rn.f16x2.f32 %h24, %f49, %f48;
+    cvt.rn.f16x2.f32 %h25, %f51, %f50;
+    cvt.rn.f16x2.f32 %h26, %f53, %f52;
+    cvt.rn.f16x2.f32 %h27, %f55, %f54;
+    cvt.rn.f16x2.f32 %h28, %f57, %f56;
+    cvt.rn.f16x2.f32 %h29, %f59, %f58;
+    cvt.rn.f16x2.f32 %h30, %f61, %f60;
+    cvt.rn.f16x2.f32 %h31, %f63, %f62;
+    // Reuse the completed input buffer to arrange fully coalesced output vectors.
+    xor.b32 %ew, %esw, 0;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h0, %h1, %h2, %h3};
+    xor.b32 %ew, %esw, 16;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h4, %h5, %h6, %h7};
+    xor.b32 %ew, %esw, 32;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h8, %h9, %h10, %h11};
+    xor.b32 %ew, %esw, 48;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h12, %h13, %h14, %h15};
+    xor.b32 %ew, %esw, 64;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h16, %h17, %h18, %h19};
+    xor.b32 %ew, %esw, 80;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h20, %h21, %h22, %h23};
+    xor.b32 %ew, %esw, 96;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h24, %h25, %h26, %h27};
+    xor.b32 %ew, %esw, 112;
+    add.u32 %ew, %ew, %sm;
+    st.shared.v4.b32 [%ew], {%h28, %h29, %h30, %h31};
+    bar.sync 0;
+    ld.shared.v4.b32 {%h0, %h1, %h2, %h3}, [%erd+0];
+    ld.shared.v4.b32 {%h4, %h5, %h6, %h7}, [%erd+4096];
+    ld.shared.v4.b32 {%h8, %h9, %h10, %h11}, [%erd+8192];
+    ld.shared.v4.b32 {%h12, %h13, %h14, %h15}, [%erd+12288];
+    ld.shared.v4.b32 {%h16, %h17, %h18, %h19}, [%erd+16384];
+    ld.shared.v4.b32 {%h20, %h21, %h22, %h23}, [%erd+20480];
+    ld.shared.v4.b32 {%h24, %h25, %h26, %h27}, [%erd+24576];
+    ld.shared.v4.b32 {%h28, %h29, %h30, %h31}, [%erd+28672];
+    st.global.v4.b32 [%out+0], {%h0, %h1, %h2, %h3};
+    st.global.v4.b32 [%out+262144], {%h4, %h5, %h6, %h7};
+    st.global.v4.b32 [%out+524288], {%h8, %h9, %h10, %h11};
+    st.global.v4.b32 [%out+786432], {%h12, %h13, %h14, %h15};
+    st.global.v4.b32 [%out+1048576], {%h16, %h17, %h18, %h19};
+    st.global.v4.b32 [%out+1310720], {%h20, %h21, %h22, %h23};
+    st.global.v4.b32 [%out+1572864], {%h24, %h25, %h26, %h27};
+    st.global.v4.b32 [%out+1835008], {%h28, %h29, %h30, %h31};
+    bar.sync 0;
+    add.u32 %tl, %tl, 64;
+    add.u64 %out, %out, 128;
+    add.u32 %col, %col, 64;
+    setp.lt.u32 %ploop, %col, 256;
+    @%ploop bra STORE_LOOP;
+
+    // All tensor-memory loads finish before its allocation is released.
+    bar.sync 0;
+    @%pwarp tcgen05.dealloc.cta_group::1.sync.aligned.b32 %tm, 512;
+    ret;
+}

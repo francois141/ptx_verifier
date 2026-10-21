@@ -1,0 +1,248 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 a_ptr,
+    .param .u64 x_ptr,
+    .param .u64 y_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .b64 %ap, %xp, %yp, %pa, %px, %py, %off, %ad, %bd;
+    .reg .b32 %thread, %bid, %warp, %lane, %sm, %row, %v, %u, %zero;
+    .reg .b32 %sc, %scodd, %copybase, %write, %read, %step, %chunk, %inner, %xs;
+    .reg .b32 %tslot, %bar, %tm, %dst, %ta, %phase, %idesc, %al, %ah, %bl, %bh;
+    .reg .f32 %f<4>, %sum;
+    .reg .b16 %h;
+    .reg .pred %p, %leader, %firstwarp, %use, %xloader;
+
+    // Matrix stages occupy [0,131072); vector and padding occupy [131072,132224).
+    // The tensor pointer and barrier occupy [133104,133120).
+    ld.param.u64 %ap, [a_ptr];
+    ld.param.u64 %xp, [x_ptr];
+    ld.param.u64 %yp, [y_ptr];
+    mov.u32 %thread, %tid.x;
+    mov.u32 %bid, %ctaid.x;
+    shr.u32 %warp, %thread, 5;
+    and.b32 %lane, %thread, 31;
+    mov.u32 %sm, global_smem;
+    mov.u32 %zero, 0;
+    add.u32 %tslot, %sm, 133104;
+    add.u32 %bar, %sm, 133112;
+    setp.eq.u32 %leader, %thread, 0;
+    setp.lt.u32 %firstwarp, %thread, 32;
+    setp.lt.u32 %xloader, %thread, 64;
+    @%leader mbarrier.init.shared.b64 [%bar], 1;
+    @%firstwarp tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%tslot], 32;
+    @%firstwarp tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;
+    shl.b32 %v, %thread, 2;
+    add.u32 %v, %v, %sm;
+    add.u32 %v, %v, 132096;
+    @%firstwarp st.shared.b32 [%v], %zero;
+    bar.sync 0;
+    ld.shared.u32 %tm, [%tslot];
+
+    // Each warp copies a contiguous 512-byte segment from one matrix row.
+    mad.lo.u32 %row, %bid, 64, %warp;
+    mul.wide.u32 %off, %row, 4096;
+    add.u64 %pa, %ap, %off;
+    shl.b32 %v, %lane, 4;
+    cvt.u64.u32 %off, %v;
+    add.u64 %pa, %pa, %off;
+    // Arrange those bytes into 128-byte-swizzled tensor-core tiles.
+    shr.u32 %copybase, %lane, 3;
+    shl.b32 %copybase, %copybase, 14;
+    shl.b32 %u, %warp, 7;
+    add.u32 %copybase, %copybase, %u;
+    and.b32 %v, %lane, 7;
+    shl.b32 %v, %v, 4;
+    shl.b32 %u, %warp, 4;
+    xor.b32 %v, %v, %u;
+    add.u32 %copybase, %copybase, %v;
+    add.u32 %copybase, %copybase, %sm;
+    // Two vector halves feed columns zero and eight of the tensor product.
+    and.b32 %v, %thread, 31;
+    shl.b32 %v, %v, 4;
+    and.b32 %u, %thread, 32;
+    shl.b32 %u, %u, 6;
+    add.u32 %v, %v, %u;
+    cvt.u64.u32 %off, %v;
+    add.u64 %px, %xp, %off;
+    shl.b32 %v, %thread, 4;
+    add.u32 %xs, %sm, 131072;
+    add.u32 %xs, %xs, %v;
+    mov.u32 %write, 0;
+    mov.u32 %read, 0;
+    mov.u32 %step, 0;
+    mov.u32 %phase, 0;
+    mov.u32 %idesc, 0x08040010;
+    mov.u32 %ah, 0x40004040;
+    mov.u32 %bh, 0x00004020;
+
+PIPE:
+    // Commit the current vector before the future matrix prefetch.
+    setp.eq.u32 %p, %step, 0;
+    @%p bra COPY_A;
+    @%xloader cp.async.cg.shared.global [%xs], [%px], 16;
+    cp.async.commit_group;
+    add.u64 %px, %px, 512;
+COPY_A:
+    setp.ge.u32 %p, %step, 4;
+    @%p bra COMMIT;
+    add.u32 %sc, %copybase, %write;
+    // Virtual rows r and r+64 hold columns 0:2048 and 2048:4096 of row r.
+    // Double-buffer these halves with contiguous warp-wide global reads.
+    xor.b32 %scodd, %sc, 64;
+    cp.async.cg.shared.global [%sc+0], [%pa+0], 16;
+    cp.async.cg.shared.global [%scodd+512], [%pa+16384], 16;
+    cp.async.cg.shared.global [%sc+1024], [%pa+32768], 16;
+    cp.async.cg.shared.global [%scodd+1536], [%pa+49152], 16;
+    cp.async.cg.shared.global [%sc+2048], [%pa+65536], 16;
+    cp.async.cg.shared.global [%scodd+2560], [%pa+81920], 16;
+    cp.async.cg.shared.global [%sc+3072], [%pa+98304], 16;
+    cp.async.cg.shared.global [%scodd+3584], [%pa+114688], 16;
+    cp.async.cg.shared.global [%sc+4096], [%pa+131072], 16;
+    cp.async.cg.shared.global [%scodd+4608], [%pa+147456], 16;
+    cp.async.cg.shared.global [%sc+5120], [%pa+163840], 16;
+    cp.async.cg.shared.global [%scodd+5632], [%pa+180224], 16;
+    cp.async.cg.shared.global [%sc+6144], [%pa+196608], 16;
+    cp.async.cg.shared.global [%scodd+6656], [%pa+212992], 16;
+    cp.async.cg.shared.global [%sc+7168], [%pa+229376], 16;
+    cp.async.cg.shared.global [%scodd+7680], [%pa+245760], 16;
+    cp.async.cg.shared.global [%sc+8192], [%pa+2048], 16;
+    cp.async.cg.shared.global [%scodd+8704], [%pa+18432], 16;
+    cp.async.cg.shared.global [%sc+9216], [%pa+34816], 16;
+    cp.async.cg.shared.global [%scodd+9728], [%pa+51200], 16;
+    cp.async.cg.shared.global [%sc+10240], [%pa+67584], 16;
+    cp.async.cg.shared.global [%scodd+10752], [%pa+83968], 16;
+    cp.async.cg.shared.global [%sc+11264], [%pa+100352], 16;
+    cp.async.cg.shared.global [%scodd+11776], [%pa+116736], 16;
+    cp.async.cg.shared.global [%sc+12288], [%pa+133120], 16;
+    cp.async.cg.shared.global [%scodd+12800], [%pa+149504], 16;
+    cp.async.cg.shared.global [%sc+13312], [%pa+165888], 16;
+    cp.async.cg.shared.global [%scodd+13824], [%pa+182272], 16;
+    cp.async.cg.shared.global [%sc+14336], [%pa+198656], 16;
+    cp.async.cg.shared.global [%scodd+14848], [%pa+215040], 16;
+    cp.async.cg.shared.global [%sc+15360], [%pa+231424], 16;
+    cp.async.cg.shared.global [%scodd+15872], [%pa+247808], 16;
+COMMIT:
+    cp.async.commit_group;
+    setp.eq.u32 %p, %step, 0;
+    @%p bra NEXT;
+    cp.async.wait_group 1;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    @!%leader bra WAIT;
+
+    // Columns zero and eight see the two vector halves; other columns are unused.
+    add.u32 %al, %sm, %read;
+    shr.u32 %al, %al, 4;
+    or.b32 %al, %al, 0x00010000;
+    add.u32 %bl, %sm, 131072;
+    shr.u32 %bl, %bl, 4;
+    or.b32 %bl, %bl, 0x00010000;
+    sub.u32 %chunk, %step, 1;
+    shr.u32 %v, %chunk, 1;
+    shl.b32 %v, %v, 4;
+    add.u32 %dst, %tm, %v;
+    and.b32 %v, %chunk, 1;
+    setp.ne.u32 %use, %v, 0;
+    mov.u32 %inner, 0;
+MMA:
+    // Two successive 512-column stages form each 1024-column FP32 dot product.
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    setp.eq.u32 %use, 0, 0;
+    add.u32 %al, %al, 2;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 2;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 2;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 1018;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 2;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 2;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 2;
+    add.u32 %bl, %bl, 2;
+    mov.b64 %ad, {%al,%ah};
+    mov.b64 %bd, {%bl,%bh};
+    tcgen05.mma.cta_group::1.kind::f8f6f4 [%dst], %ad, %bd, %idesc, {%zero,%zero,%zero,%zero}, %use;
+    add.u32 %al, %al, 1018;
+    add.u32 %bl, %bl, 2;
+    add.u32 %inner, %inner, 1;
+    setp.lt.u32 %p, %inner, 2;
+    @%p bra MMA;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%bar];
+WAIT:
+    // Finish tensor-core reads before reusing matrix or vector shared storage.
+    mbarrier.try_wait.parity.shared.b64 %p, [%bar], %phase;
+    @!%p bra WAIT;
+    xor.b32 %phase, %phase, 1;
+    xor.b32 %read, %read, 65536;
+NEXT:
+    add.u64 %pa, %pa, 512;
+    xor.b32 %write, %write, 65536;
+    add.u32 %step, %step, 1;
+    setp.lt.u32 %p, %step, 5;
+    @%p bra PIPE;
+
+    // Fetch the appropriate vector column for each of the two virtual row sets.
+    cp.async.wait_group 0;
+    tcgen05.fence::after_thread_sync;
+    shl.b32 %ta, %warp, 21;
+    add.u32 %ta, %ta, %tm;
+    shr.u32 %v, %warp, 1;
+    shl.b32 %v, %v, 3;
+    add.u32 %ta, %ta, %v;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%f0}, [%ta];
+    add.u32 %ta, %ta, 16;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 {%f1}, [%ta];
+    tcgen05.wait::ld.sync.aligned;
+
+    // Reuse the completed matrix stage to exchange the last two partial sums.
+    and.b32 %row, %thread, 63;
+    shl.b32 %sc, %row, 3;
+    add.u32 %sc, %sc, %sm;
+    @!%xloader st.shared.v2.f32 [%sc], {%f0,%f1};
+    bar.sync 0;
+    @%firstwarp tcgen05.dealloc.cta_group::1.sync.aligned.b32 %tm, 32;
+    @!%xloader bra DONE;
+    ld.shared.v2.f32 {%f2,%f3}, [%sc];
+    // Add the four dot products in order, then round once to FP16.
+    add.f32 %sum, %f0, %f1;
+    add.f32 %sum, %sum, %f2;
+    add.f32 %sum, %sum, %f3;
+    mad.lo.u32 %row, %bid, 64, %row;
+    mul.wide.u32 %off, %row, 2;
+    add.u64 %py, %yp, %off;
+    cvt.rn.f16.f32 %h, %sum;
+    st.global.b16 [%py], %h;
+DONE:
+    ret;
+}

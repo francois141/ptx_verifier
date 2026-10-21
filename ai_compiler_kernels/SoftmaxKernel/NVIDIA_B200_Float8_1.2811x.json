@@ -1,0 +1,6 @@
+{
+  "num_threads_x": 32,
+  "num_threads_y": 4,
+  "num_threads_z": 1,
+  "num_warps": 4
+}

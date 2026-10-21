@@ -1,0 +1,65 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+.extern .shared .align 16 .b8 global_smem[];
+
+.visible .entry kernel(
+    .param .u64 x_ptr,
+    .param .u64 output_ptr,
+    .param .u64 dummy_ptr1,
+    .param .u64 dummy_ptr2
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<6>, %a<16>;
+    .reg .b64 %rd<4>;
+    .reg .f32 %f<11>;
+
+    // Keep the 256-thread launch and process four unrolled slices in one full warp.
+    mov.u32 %r0, %tid.x;
+    setp.ge.u32 %p0, %r0, 32;
+    @%p0 bra DONE;
+    ld.param.u64 %rd0, [x_ptr];
+    ld.param.u64 %rd1, [output_ptr];
+    mov.u32 %r1, %ctaid.x;
+    mov.u32 %r2, %ctaid.y;
+    shl.b32 %r3, %r2, 12;
+    shl.b32 %r4, %r1, 11;
+    add.u32 %r3, %r3, %r4;
+    mad.lo.u32 %r3, %r0, 16, %r3;
+    cvt.u64.u32 %rd2, %r3;
+    add.u64 %rd2, %rd0, %rd2;
+    mad.wide.u32 %rd3, %r2, 4, %rd1;
+
+    // Each 512-byte slice is coalesced, and the four loads cover the entire 2048-byte tile.
+    ld.global.v4.u32 {%a0, %a1, %a2, %a3}, [%rd2];
+    ld.global.v4.u32 {%a4, %a5, %a6, %a7}, [%rd2+512];
+    ld.global.v4.u32 {%a8, %a9, %a10, %a11}, [%rd2+1024];
+    ld.global.v4.u32 {%a12, %a13, %a14, %a15}, [%rd2+1536];
+
+    // Two independent FP32 accumulators hide tensor-core latency while summing FP8 rows.
+    mov.u32 %r5, 0x38383838;
+    mov.f32 %f8, 0f00000000;
+    mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%f0, %f1, %f2, %f3}, {%a0, %a1, %a2, %a3}, {%r5, %r5}, {%f8, %f8, %f8, %f8};
+    mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%f4, %f5, %f6, %f7}, {%a4, %a5, %a6, %a7}, {%r5, %r5}, {%f8, %f8, %f8, %f8};
+    mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%f0, %f1, %f2, %f3}, {%a8, %a9, %a10, %a11}, {%r5, %r5}, {%f0, %f1, %f2, %f3};
+    mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%f4, %f5, %f6, %f7}, {%a12, %a13, %a14, %a15}, {%r5, %r5}, {%f4, %f5, %f6, %f7};
+    add.f32 %f0, %f0, %f4;
+    add.f32 %f2, %f2, %f6;
+    add.f32 %f0, %f0, %f2;
+
+    // Combine eight distinct row pairs without counting duplicate matrix columns.
+    shfl.sync.bfly.b32 %f9, %f0, 16, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f9;
+    shfl.sync.bfly.b32 %f9, %f0, 8, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f9;
+    shfl.sync.bfly.b32 %f9, %f0, 4, 31, 0xffffffff;
+    add.f32 %f0, %f0, %f9;
+
+    // One atomic update preserves the output; no later access requires acquire ordering.
+    setp.eq.u32 %p1, %r0, 0;
+    @%p1 red.release.gpu.global.add.f32 [%rd3], %f0;
+DONE:
+    ret;
+}

@@ -1,0 +1,9 @@
+{
+  "num_threads_x": 256,
+  "num_threads_y": 1,
+  "num_threads_z": 1,
+  "block_m": 256,
+  "block_n": 256,
+  "block_k": 64,
+  "num_warps": 8
+}

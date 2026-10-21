@@ -1,0 +1,34 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+.extern .shared .align 16 .b8 global_smem[];
+.visible .entry kernel(
+ .param .u64 x_ptr,
+ .param .u64 output_ptr,
+ .param .u64 dummy_ptr1,
+ .param .u64 dummy_ptr2
+)
+{
+ .reg .b32 %t, %b, %o, %z, %v<4>;
+ .reg .b64 %x, %y, %d, %a, %c;
+ // Each thread owns eight contiguous halves in the 1024-element tile.
+ ld.param.u64 %x, [x_ptr];
+ ld.param.u64 %y, [output_ptr];
+ mov.u32 %t, %tid.x;
+ mov.u32 %b, %ctaid.x;
+ shl.b32 %o, %b, 11;
+ mad.lo.u32 %o, %t, 16, %o;
+ cvt.u64.u32 %d, %o;
+ add.u64 %a, %x, %d;
+ add.u64 %c, %y, %d;
+ // Load eight halves and apply NaN-propagating ReLU to packed pairs.
+ mov.b32 %z, 0;
+ ld.global.v4.b32 {%v0, %v1, %v2, %v3}, [%a];
+ max.NaN.f16x2 %v0, %v0, %z;
+ max.NaN.f16x2 %v1, %v1, %z;
+ max.NaN.f16x2 %v2, %v2, %z;
+ max.NaN.f16x2 %v3, %v3, %z;
+ // Store the complete tile without a mask, matching the source.
+ st.global.v4.b32 [%c], {%v0, %v1, %v2, %v3};
+ ret;
+}
