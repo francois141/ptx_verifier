@@ -74,7 +74,9 @@
     fence.proxy.async.shared::cta;
     mov.u32 %rbar, mma_bar;
     @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    tcgen05.fence::before_thread_sync;
     bar.sync 0;
+    tcgen05.fence::after_thread_sync;
     @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd3, %rd4, %r2, %p0;
     @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
 MMA_WAIT:

@@ -336,9 +336,9 @@ fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
     );
 }
 
-/// `tcgen05.mma` decodes concrete operands from their bits: `A`/`B` hold raw
-/// f16 `0x3C00` (1.0, not 15360) and `D` is seeded with raw f32 1.0 via
-/// `tcgen05.st`, so `D[0][0] = 16 + 1 = 17`.
+/// `tcgen05.mma` decodes concrete operands from their bits: `A`/`B` hold raw f16 `0x3C00` (1.0,
+/// not 15360) and `D` is seeded with raw f32 1.0 via `tcgen05.st`, so `D[0][0] = 16 + 1 = 17`.
+/// The `tcgen05` fences around `bar.sync` order the seed before the MMA.
 #[test]
 fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
     let mut config = AnalysisConfig::new((32, 1, 1));
@@ -373,8 +373,8 @@ fn test_tcgen05_mma_numeric_correctness() {
     analyze!("success/tcgen05_mma_numeric_correctness", config);
 }
 
-/// The control: a `bar.sync` *after* warp 0 observed the completion does
-/// order the MMA before warp 1's read.
+/// The control: a `bar.sync` *after* warp 0 observed the completion, then warp 1's
+/// `tcgen05.fence::after_thread_sync`, orders the MMA before warp 1's read.
 #[test]
 fn test_tcgen05_mma_bar_sync_after_completion_orders_the_read() {
     analyze!(
@@ -1626,12 +1626,12 @@ fn test_e4m3x2_relu_clamps_a_negative_decoded_lane_to_zero() {
     );
 }
 
-/// Every lane storing the same reduced value to one shared address (the
-/// post-reduction layout idiom) is not a race.
+/// Two threads storing the same value to one shared address are not a race once a
+/// `bar.sync` orders the stores: thread 0 stores before it, thread 1 after it.
 #[test]
-fn test_same_value_warp_uniform_store_is_not_a_race() {
+fn test_same_value_stores_separated_by_bar_sync_are_not_a_race() {
     analyze!(
-        "success/same_value_warp_uniform_store_is_not_a_race_same",
+        "success/same_value_stores_separated_by_bar_sync_are_not_a_race",
         in_out_config(2, 1)
     );
 }

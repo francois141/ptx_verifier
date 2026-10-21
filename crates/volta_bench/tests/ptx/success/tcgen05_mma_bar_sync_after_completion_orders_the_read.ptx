@@ -45,6 +45,7 @@ WAIT:
     @!%pw bra WAIT;
 SYNC:
     bar.sync 0;
+    tcgen05.fence::after_thread_sync;
     @%p2 bra DONE;
     add.u32 %r6, %r1, 2097152;
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];

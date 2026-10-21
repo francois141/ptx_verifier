@@ -106,6 +106,23 @@ fn test_same_write_read_without_the_wait_still_races() {
     );
 }
 
+/// Two threads storing the same value to one shared address conflict too: Algorithm 2 has no
+/// exception for equal values. A `bar.sync` between the stores makes the kernel race-free
+/// (`test_same_value_stores_separated_by_bar_sync_are_not_a_race`).
+#[test]
+fn test_same_value_store_to_one_address_races() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/same_value_store_to_one_address_races"),
+        in_out_config(2, 1),
+    );
+    assert_any(&ws, "a write-write pair of threads 0 and 1", |w| {
+        w.kind == ConflictKind::WriteWrite
+            && on_shared(w)
+            && w.earlier == Side::plain(0, Write)
+            && w.later == Side::plain(1, Write)
+    });
+}
+
 /// Two threads storing different values to one shared address conflict.
 #[test]
 fn test_different_value_store_to_one_address_races() {

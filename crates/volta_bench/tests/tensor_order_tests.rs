@@ -6,7 +6,7 @@
 #[allow(unused_macros)]
 mod common;
 
-use volta_analysis::eval::AnalysisConfig;
+use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_frontend::ast::Module;
 use volta_graph::{AccessMode, AsyncOpKind};
 use volta_graph_check::domain::{ConflictKind, TmemCell};
@@ -137,6 +137,66 @@ fn test_tcgen05_mma_reader_without_fence_after_thread_sync_is_rejected() {
                 && w.later == Side::effect(32, Read, AsyncOpKind::Tcgen05Ld)
         },
     );
+}
+
+/// Warp 1 skips the wait: warp 0's `bar.sync` after the completion carries the order to it, but
+/// it reads `D` without `tcgen05.fence::after_thread_sync`. With the fence, the same kernel is
+/// accepted (`test_tcgen05_mma_bar_sync_after_completion_orders_the_read`).
+#[test]
+fn test_tcgen05_mma_bar_sync_reader_without_fence_after_thread_sync_is_rejected() {
+    let ws = unproved(
+        &parse(&ptx!(
+            "execution_error/tcgen05_mma_bar_sync_reader_without_fence_after_thread_sync_is_rejected"
+        )),
+        AnalysisConfig::new((64, 1, 1)),
+    );
+    assert_any(
+        &ws,
+        "warp 1's read of D at lane 32 after the MMA's write",
+        |w| {
+            w.kind == ConflictKind::WriteRead
+                && w.cell.lane == 32
+                && w.earlier == Side::effect(0, Write, AsyncOpKind::Tcgen05Mma)
+                && w.later == Side::effect(32, Read, AsyncOpKind::Tcgen05Ld)
+        },
+    );
+}
+
+/// One warp seeds `D` with `tcgen05.st` and `tcgen05.wait::st`, then thread 0's MMA reads and
+/// overwrites it after a `bar.sync`, with no `tcgen05` fence. With the fences, the same kernel
+/// is accepted (`test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits`).
+#[test]
+fn test_tcgen05_st_then_mma_without_thread_sync_fences_is_rejected() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let ws = unproved(
+        &parse(&ptx!(
+            "execution_error/tcgen05_st_then_mma_without_thread_sync_fences_is_rejected"
+        )),
+        config,
+    );
+    for (kind, mode) in [
+        (ConflictKind::WriteRead, Read),
+        (ConflictKind::WriteWrite, Write),
+    ] {
+        assert_any(
+            &ws,
+            &format!("thread 1's store to lane 1 before the MMA's {mode:?} of D"),
+            |w| {
+                w.kind == kind
+                    && w.cell.lane == 1
+                    && w.earlier == Side::effect(1, Write, AsyncOpKind::Tcgen05St)
+                    && w.later == Side::effect(0, mode, AsyncOpKind::Tcgen05Mma)
+            },
+        );
+    }
 }
 
 /// A `tcgen05.wait::ld` placed after a barrier arrival is too late for the warp's other
