@@ -190,17 +190,11 @@ fn a_failed_graph_property_rejects_whatever_the_equivalence() {
 }
 
 #[test]
-fn candidate_only_passes_are_reported_as_unknown() {
+fn an_mbarrier_kernel_passing_the_six_checks_is_accepted() {
     let (a, b) = (run(COPY), run(THROUGH_MBARRIER));
     assert_eq!(b.graph.verdict_overall(), PropertyVerdict::Pass);
+    assert_eq!(b.graph.conclusion(), GraphConclusion::Verified);
     let eq = equivalence(&a, &b);
     let decision = decide_pair(&eq, &a, &b);
-    assert_eq!(decision.verdict, Verdict::Unknown);
-    assert!(
-        decision
-            .evidence
-            .iter()
-            .any(|e| e.contains("candidate execution only") && e.contains("mbarrier")),
-        "{decision:?}"
-    );
+    assert_eq!(decision.verdict, Verdict::Accept, "{decision:?}");
 }

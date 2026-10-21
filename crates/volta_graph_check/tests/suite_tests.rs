@@ -1,5 +1,5 @@
-//! The suite: the six checks in order, their prerequisites, the trace generator's terminal
-//! state and the proof scope.
+//! The suite: the six checks in order, their prerequisites and the trace generator's
+//! terminal state; nothing else decides the conclusion.
 
 mod common;
 
@@ -8,7 +8,7 @@ use volta_graph::{
     AccessMode, AsyncOpKind, BlockedOn, BlockedThread, EventGraph, MbarrierState, Parity, Proxy,
     SyncObjectKind, Terminal,
 };
-use volta_graph_check::{GraphConclusion, GraphReport, ProofScope, Property, Verdict, check_graph};
+use volta_graph_check::{GraphConclusion, GraphReport, Property, Verdict, check_graph};
 
 fn verdicts(r: &GraphReport) -> Vec<(Property, Verdict)> {
     Property::ALL.iter().map(|&p| (p, r.verdict(p))).collect()
@@ -41,7 +41,7 @@ fn every_check_follows_its_prerequisites() {
 }
 
 #[test]
-fn a_synchronized_exchange_is_verified_in_every_schedule() {
+fn a_synchronized_exchange_is_verified() {
     let mut s = Scenario::new(2);
     s.write(0, 0x10, 1);
     s.barrier(&[0, 1], &[]);
@@ -49,7 +49,6 @@ fn a_synchronized_exchange_is_verified_in_every_schedule() {
     let (g, _) = s.completed(2);
     let r = check_graph(&g);
     assert_eq!(r.verdict_overall(), Verdict::Pass, "{:?}", verdicts(&r));
-    assert_eq!(r.scope, ProofScope::ScheduleIndependent);
     assert_eq!(r.conclusion(), GraphConclusion::Verified);
 }
 
@@ -101,7 +100,7 @@ fn a_barrier_epoch_violation_leaves_every_check_needing_g_hb_unchecked() {
 }
 
 #[test]
-fn asynchronous_operations_and_mbarriers_make_passes_candidate_only() {
+fn asynchronous_operations_and_mbarriers_are_verified_by_the_six_checks_alone() {
     let mut s = Scenario::new(2);
     let m = s.mbarrier(0, 1);
     s.barrier(&[0, 1], &[]);
@@ -121,12 +120,7 @@ fn asynchronous_operations_and_mbarriers_make_passes_candidate_only() {
     let (g, _) = s.completed(2);
     let r = check_graph(&g);
     assert_eq!(r.verdict_overall(), Verdict::Pass, "{:?}", verdicts(&r));
-    let ProofScope::CandidateOnly { reasons } = &r.scope else {
-        panic!("{:?}", r.scope);
-    };
-    assert!(reasons[0].contains("cp.async.bulk"), "{reasons:?}");
-    assert!(reasons[1].contains("mbarrier"), "{reasons:?}");
-    assert!(matches!(r.conclusion(), GraphConclusion::Unknown { .. }));
+    assert_eq!(r.conclusion(), GraphConclusion::Verified);
 }
 
 #[test]

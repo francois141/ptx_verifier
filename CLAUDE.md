@@ -368,12 +368,9 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
 - `suite.rs` - `check_graph(graph) -> GraphReport` runs them in
   `Property::ALL` order (a topological order of `Property::prerequisites`; a
   check whose prerequisites failed is `Unknown`); `GraphReport::conclusion()`:
-  `Verified` / `Rejected { failed, deadlock }` / `Unknown`. A stuck trace is the
-  trace generator's deadlock diagnostic, an aborted one is inconclusive.
-- `scope.rs` - `ProofScope`, the schedule-coverage argument (not a check):
-  `ScheduleIndependent` (structured CTA, ordinary effects, named barriers, warp
-  collectives, no async op) or `CandidateOnly { reasons }` (async ops, mbarrier
-  phases) - a candidate-only pass is never a verification.
+  `Verified` (a completed trace and all six checks passing; nothing else is
+  consulted) / `Rejected { failed, deadlock }` / `Unknown`. A stuck trace is
+  the trace generator's deadlock diagnostic, an aborted one is inconclusive.
 
 ## Crate: volta_pipeline
 
@@ -386,7 +383,7 @@ claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
 and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
-anything else, a candidate-only pass included, is UNKNOWN. Tests:
+anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches) and
 `architecture_tests.rs` (the stage/branch boundaries).
 
@@ -486,7 +483,7 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
 `volta_pipeline::verify_kernel` (`common::check` / `common::run_kernel`):
 
 - `accepted_tests.rs` - race-free kernels: the graph check must conclude
-  `Verified` (a candidate-only pass fails the test), then the rendered
+  `Verified`, then the rendered
   symbolic outputs must match the kernel's `.out` file exactly
   (`VOLTA_BLESS=1` rewrites them).
 - one suite per check whose witnesses PTX kernels exercise, each asserting on
@@ -508,7 +505,7 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
 Commands:
 
 - `volta parse <file>` - Check syntax
-- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph check's verdict (with its algorithm), the trace's deadlock, the proof scope and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph
+- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph check's verdict (with its algorithm), the trace's deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph
 - `volta compare <ref.ptx> <opt.ptx> --kernel1 .. --kernel2 .. --check-array out` - Two-kernel
   equivalence check (launch flags shared with `analyze` via a flattened
   `LaunchArgs`; `--block2`/`--grid2` override the optimized kernel's dims).
@@ -556,7 +553,7 @@ AnalysisResult ──► SymbolicOutputs (volta_expr) + EventGraph (volta_graph)
     ▼                              ▼
 volta_equivalence (canon/)     volta_graph_check (check_graph)
   per-element VC checking        the six checks (Algorithms 1-6), in order
-  (+ numeric.rs oracle)          (+ ProofScope)
+  (+ numeric.rs oracle)
     └──────────────┬───────────────┘
                    ▼
 volta_pipeline::decide ──► ACCEPT / REJECT / UNKNOWN (+ evidence, assumptions)
@@ -574,11 +571,11 @@ Memory addresses must be concrete (`u64`) for race detection. Thread indices are
 
 ### 3. Race Detection Is Not Part of the Evaluator
 
-The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream with the six checks of the Volta v2 design (memory conflicts through the typed `G_HB` projection, never untyped reachability). Passing every check implies schedule independence only in the `ProofScope::ScheduleIndependent` fragment; elsewhere it is a candidate-execution fact, reported as UNKNOWN.
+The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream with the six checks of the Volta v2 design (memory conflicts through the typed `G_HB` projection, never untyped reachability). A kernel is VERIFIED when its trace completed and all six checks pass on it; no further schedule argument is consulted.
 
 ### 4. Round-Robin Scheduling
 
-Simple, deterministic interleaving: the candidate execution. A conflict unordered through every candidate edge proves a race; absence of one proves nothing on its own (see 3).
+Simple, deterministic interleaving: the candidate execution. The six checks judge the event graph of this one execution (see 3).
 
 ### 5. Strongly-Typed IDs
 

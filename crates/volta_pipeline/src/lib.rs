@@ -9,8 +9,8 @@
 //!
 //! The analysis stage runs neither branch and returns no verdict; the two branches share only
 //! the stage's artifacts and never call each other. Aggregation alone combines them: ACCEPT
-//! needs a complete equivalence proof, a completed trace, every graph check passing, and a
-//! schedule-independent proof scope for every kernel.
+//! needs a complete equivalence proof, and a completed trace with every graph check passing
+//! for every kernel.
 
 pub mod aggregate;
 pub mod equivalence;

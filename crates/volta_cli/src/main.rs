@@ -24,7 +24,7 @@ use volta_frontend::file_cache::FileCache;
 use volta_frontend::parse;
 use volta_frontend::report::{Report, locate_path, report_error};
 use volta_graph::EventGraph;
-use volta_graph_check::{GraphConclusion, GraphReport, ProofScope, Verdict as PropertyVerdict};
+use volta_graph_check::{GraphConclusion, GraphReport, Verdict as PropertyVerdict};
 use volta_pipeline::{
     Decision, EquivalenceVerdict, KernelEvidence, Verdict, check_equivalence, decide, verify_kernel,
 };
@@ -481,7 +481,7 @@ impl KernelSide {
 }
 
 /// Print the graph branch's per-check verdicts for one kernel, with each failed check's
-/// witnesses, the trace generator's deadlock, and its proof scope.
+/// witnesses and the trace generator's deadlock.
 fn print_graph_report(side: &KernelSide) {
     println!("{}: graph verification", side.label);
     for s in side.report.summaries() {
@@ -504,15 +504,6 @@ fn print_graph_report(side: &KernelSide) {
             "  trace: deadlock, {} blocked thread(s)",
             deadlock.blocked.len()
         );
-    }
-    match &side.report.scope {
-        ProofScope::ScheduleIndependent => println!("  scope: schedule-independent"),
-        ProofScope::CandidateOnly { reasons } => {
-            println!("  scope: the candidate execution only");
-            for r in reasons {
-                println!("      {}", r);
-            }
-        }
     }
 }
 

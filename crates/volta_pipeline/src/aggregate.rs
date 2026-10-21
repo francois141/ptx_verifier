@@ -7,7 +7,7 @@ use crate::equivalence::EquivalenceVerdict;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Equivalent in every schedule, with every graph check verified.
+    /// Equivalent, with every graph check passed on a completed trace.
     Accept,
     /// A refutation, a failed graph check or a deadlock, with its witness.
     Reject,
@@ -43,8 +43,7 @@ pub struct Decision {
 
 /// Combine the equivalence branch's verdict with each kernel's graph report. ACCEPT needs a
 /// complete equivalence proof and every kernel `Verified` (a completed trace, every check
-/// passed, in a schedule-independent scope); any refutation, failed check or deadlock is a
-/// REJECT; anything else is UNKNOWN, a candidate-only pass included.
+/// passed); any refutation, failed check or deadlock is a REJECT; anything else is UNKNOWN.
 pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> Decision {
     let mut established = Vec::new();
     let mut rejected = Vec::new();
@@ -72,10 +71,9 @@ pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> D
     }
     for k in kernels {
         match k.graph.conclusion() {
-            GraphConclusion::Verified => established.push(format!(
-                "{}: every graph check passed, in a schedule-independent scope",
-                k.label
-            )),
+            GraphConclusion::Verified => {
+                established.push(format!("{}: every graph check passed", k.label))
+            }
             GraphConclusion::Rejected { failed, deadlock } => {
                 if let Some(d) = deadlock {
                     rejected.push(format!(

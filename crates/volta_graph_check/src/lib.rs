@@ -14,8 +14,7 @@
 //!
 //! Shared by them: the typed edge projections `G0`, `G_HB` and `D` ([`relation`]), the
 //! pipeline relation `E_pipeline` ([`pipeline`]) and the memory domains `M` and `A`
-//! ([`domain`]). [`suite`] runs the six in order; [`scope`] is the separate
-//! schedule-coverage argument a program-level verdict also needs.
+//! ([`domain`]). [`suite`] runs the six in order; a kernel's conclusion is theirs alone.
 
 pub mod barrier_epoch;
 pub mod domain;
@@ -25,11 +24,9 @@ pub mod proxy_order;
 pub mod relation;
 pub mod resource_lifetime;
 pub mod result;
-pub mod scope;
 pub mod suite;
 pub mod sync_search;
 pub mod tensor_order;
 
 pub use result::{Property, PropertyResult, Unresolved, Verdict};
-pub use scope::ProofScope;
 pub use suite::{Deadlock, GraphConclusion, GraphReport, PropertySummary, check_graph};

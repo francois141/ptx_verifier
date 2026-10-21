@@ -14,8 +14,8 @@
 //! Projections:
 //!
 //! * [`IndependentGraph`] (`G0`, the barrier-epoch checks' input): `E_PO ∪ E_causal` and every
-//!   thread join of the candidate execution, as Weft's separation criterion uses them (its
-//!   Theorem 1 justifies checking the candidate joins with themselves). It excludes the
+//!   thread join of the candidate execution, which Weft's separation criterion, as the design
+//!   applies it, orders the next generation's operations through. It excludes the
 //!   associations still under verification, the async completions joined into mbarrier
 //!   phases ("this candidate join becomes ordering evidence only after the barrier-epoch check
 //!   validates the phase association"); completions joined into a warp's wait collective or a

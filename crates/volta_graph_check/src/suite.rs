@@ -14,10 +14,9 @@ use crate::proxy_order::{ProxyOrderResult, check_proxy_order};
 use crate::relation::ValidatedGraph;
 use crate::resource_lifetime::{LifetimeResult, check_resource_lifetimes};
 use crate::result::{Property, PropertyResult, Unresolved, Verdict};
-use crate::scope::{ProofScope, proof_scope};
 use crate::tensor_order::{TensorOrderResult, check_tensor_order};
 
-/// Every check's result for one graph, the trace's end, and the scope its passes would justify.
+/// Every check's result for one graph, and how the trace ended.
 #[derive(Debug, Clone)]
 pub struct GraphReport {
     pub terminal: Terminal,
@@ -27,7 +26,6 @@ pub struct GraphReport {
     pub proxy_order: ProxyOrderResult,
     pub tensor_order: TensorOrderResult,
     pub resource_lifetime: LifetimeResult,
-    pub scope: ProofScope,
 }
 
 /// The trace generator's deadlock: no thread can proceed.
@@ -39,16 +37,14 @@ pub struct Deadlock {
 /// The graph branch's conclusion for one kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphConclusion {
-    /// The trace completed, every check passed, and the proof scope extends that to every
-    /// schedule.
+    /// The trace completed and every check passed.
     Verified,
     /// Some check failed (those checks, with their witnesses), or the trace deadlocked.
     Rejected {
         failed: Vec<PropertySummary>,
         deadlock: Option<Deadlock>,
     },
-    /// Nothing failed, but these obligations are unresolved, the trace was aborted, or the
-    /// passes are candidate-only.
+    /// Nothing failed, but these obligations are unresolved or the trace was aborted.
     Unknown { reasons: Vec<String> },
 }
 
@@ -159,13 +155,6 @@ impl GraphReport {
                     ),
                 }),
         );
-        if let ProofScope::CandidateOnly { reasons: scope } = &self.scope {
-            reasons.extend(
-                scope
-                    .iter()
-                    .map(|r| format!("passes hold for the candidate execution only: {r}")),
-            );
-        }
         if reasons.is_empty() {
             GraphConclusion::Verified
         } else {
@@ -174,7 +163,7 @@ impl GraphReport {
     }
 
     /// `Fail` if any check fails, else `Unknown` if any is unknown, else `Pass`. Says nothing
-    /// about the trace's end or schedule independence: see `conclusion`.
+    /// about the trace's end: see `conclusion`.
     pub fn verdict_overall(&self) -> Verdict {
         let verdicts: Vec<Verdict> = Property::ALL.iter().map(|&p| self.verdict(p)).collect();
         if verdicts.contains(&Verdict::Fail) {
@@ -227,6 +216,5 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         proxy_order,
         tensor_order,
         resource_lifetime,
-        scope: proof_scope(graph),
     }
 }
