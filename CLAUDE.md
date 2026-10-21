@@ -205,8 +205,10 @@ crate-level docs in `lib.rs` are the contract.
   (program order of issuance), `Async(op)` (an async op's effect or
   completion, in no program order), `Generation(g)` (a generation's
   completion). Kinds: `Access`, `Contribute`, `WaitStart`, `Resume`,
-  `GenerationComplete`, `AsyncIssue`, `AsyncComplete`, `GroupCommit`, `Fence`,
-  `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`, `Exit`.
+  `GenerationComplete`, `AsyncIssue`, `AsyncComplete`, `GroupCommit`, `Fence`
+  (`fence.proxy.async` over a space, `tcgen05.fence::before_thread_sync`,
+  `::after_thread_sync`), `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`,
+  `Exit`.
 - `MemAccess`: space (`Global`/`Shared`/`Tensor`; local memory is not
   recorded), mode, `OrderingKind` (only `Ordinary` produced), proxy, canonical
   `Footprint` (byte range, or TMEM lane x column rectangle), attributed

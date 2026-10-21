@@ -100,8 +100,12 @@ impl Parity {
 pub enum FenceKind {
     /// `fence.proxy.async`: a generic/async proxy fence over `space` (`None` = every space).
     ProxyAsync { space: Option<Space> },
-    /// `tcgen05.fence::before_thread_sync` / `::after_thread_sync`.
-    Tcgen05,
+    /// `tcgen05.fence::before_thread_sync`: the thread's prior async `tcgen05` ops, before its
+    /// next thread synchronization.
+    Tcgen05BeforeThreadSync,
+    /// `tcgen05.fence::after_thread_sync`: the thread's prior thread synchronization, before its
+    /// later async `tcgen05` ops.
+    Tcgen05AfterThreadSync,
 }
 
 // =========================================================================

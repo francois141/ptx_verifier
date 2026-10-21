@@ -300,6 +300,15 @@ pub enum Tcgen05CollectorOp {
     Discard,
 }
 
+/// Which side of a thread synchronization a `tcgen05.fence` orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcgen05FenceDirection {
+    /// `::before_thread_sync`
+    BeforeThreadSync,
+    /// `::after_thread_sync`
+    AfterThreadSync,
+}
+
 /// Shuffle mode for warp shuffle operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShflMode {
@@ -900,8 +909,8 @@ pub enum LoweredInstr {
     // =========================================================================
     /// `tcgen05.fence::before_thread_sync` / `::after_thread_sync`: pure
     /// ordering fence, no data effect - a no-op under Volta's sequential,
-    /// non-reordering execution model.
-    Tcgen05Fence,
+    /// non-reordering execution model. The event graph keeps its direction.
+    Tcgen05Fence { direction: Tcgen05FenceDirection },
 
     /// `tcgen05.commit...mbarrier::arrive::one`: once all of this thread's
     /// async `tcgen05` ops complete, arrive (count 1) on the mbarrier at
@@ -1463,7 +1472,7 @@ impl LoweredInstr {
             }
 
             // Fence & commit
-            Self::Tcgen05Fence => vec![],
+            Self::Tcgen05Fence { .. } => vec![],
             Self::Tcgen05Commit { addr_base, .. } => from_op(addr_base).into_iter().collect(),
 
             // Asynchronous warpgroup-level matrix multiply-accumulate
@@ -1668,7 +1677,7 @@ impl LoweredInstr {
             | Self::Tcgen05St { .. }
             | Self::Tcgen05Wait { .. }
             | Self::Tcgen05Mma { .. }
-            | Self::Tcgen05Fence
+            | Self::Tcgen05Fence { .. }
             | Self::Tcgen05Commit { .. }
             | Self::WgmmaFence
             | Self::WgmmaCommitGroup

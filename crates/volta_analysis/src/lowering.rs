@@ -28,7 +28,8 @@ use crate::lower_error::{LowerError, LowerResult, MbarrierWaitKind};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
     MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector,
-    Tcgen05CollectorOp, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind, UnaryOp,
+    Tcgen05CollectorOp, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
+    UnaryOp,
 };
 use crate::source_map::SourceMapBuilder;
 use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
@@ -5787,28 +5788,31 @@ fn lower_tcgen05_fence(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "tcgen05.fence";
-    let mut saw_direction = false;
+    let mut direction = None;
 
     for modifier in modifiers {
         if let DottedIdent::Qualified(parts) = modifier
-            && let [empty, direction] = parts.as_slice()
+            && let [empty, qualifier] = parts.as_slice()
             && empty.as_slice().is_empty()
-            && matches!(
-                direction.as_slice().as_bytes(),
-                b"before_thread_sync" | b"after_thread_sync"
-            )
+            && direction.is_none()
         {
-            saw_direction = true;
-            continue;
+            direction = match qualifier.as_slice().as_bytes() {
+                b"before_thread_sync" => Some(Tcgen05FenceDirection::BeforeThreadSync),
+                b"after_thread_sync" => Some(Tcgen05FenceDirection::AfterThreadSync),
+                _ => None,
+            };
+            if direction.is_some() {
+                continue;
+            }
         }
         return Err(unsupported(NAME, format!("modifier {}", modifier)));
     }
-    if !saw_direction {
+    let Some(direction) = direction else {
         return Err(unsupported(
             NAME,
             "missing ::before_thread_sync/::after_thread_sync qualifier",
         ));
-    }
+    };
     if !operands.is_empty() {
         return Err(LowerError::InvalidOperand {
             instruction: NAME.to_string(),
@@ -5817,7 +5821,7 @@ fn lower_tcgen05_fence(
         });
     }
 
-    ctx.emit(LoweredInstr::Tcgen05Fence, predicate)?;
+    ctx.emit(LoweredInstr::Tcgen05Fence { direction }, predicate)?;
     Ok(())
 }
 

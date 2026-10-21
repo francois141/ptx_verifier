@@ -218,7 +218,12 @@ impl EventGraph {
                     Some(s) => writeln!(out, "fence proxy.async {}", space(s))?,
                     None => writeln!(out, "fence proxy.async")?,
                 },
-                EventKind::Fence(FenceKind::Tcgen05) => writeln!(out, "fence tcgen05")?,
+                EventKind::Fence(FenceKind::Tcgen05BeforeThreadSync) => {
+                    writeln!(out, "fence tcgen05::before_thread_sync")?
+                }
+                EventKind::Fence(FenceKind::Tcgen05AfterThreadSync) => {
+                    writeln!(out, "fence tcgen05::after_thread_sync")?
+                }
                 EventKind::ObjectInit(o) => writeln!(out, "init o{}", o.0)?,
                 EventKind::ObjectInval(o) => writeln!(out, "inval o{}", o.0)?,
                 EventKind::TmemAlloc {

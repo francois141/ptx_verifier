@@ -25,7 +25,7 @@ use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
 use crate::logging::{info, trace, warn};
 use crate::lowered::{
     BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
-    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind,
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection, Tcgen05MmaA, Tcgen05MmaKind,
 };
 use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::tensor_core::MmaShape;
@@ -2072,8 +2072,12 @@ impl<'p> Interpreter<'p> {
             // tcgen05.fence::before_thread_sync/::after_thread_sync: pure
             // ordering fence, no data effect - a genuine no-op under
             // Volta's sequential, non-reordering execution model.
-            LoweredInstr::Tcgen05Fence => {
-                self.graph.fence(tix(t), point(pc), FenceKind::Tcgen05);
+            LoweredInstr::Tcgen05Fence { direction } => {
+                let kind = match direction {
+                    Tcgen05FenceDirection::BeforeThreadSync => FenceKind::Tcgen05BeforeThreadSync,
+                    Tcgen05FenceDirection::AfterThreadSync => FenceKind::Tcgen05AfterThreadSync,
+                };
+                self.graph.fence(tix(t), point(pc), kind);
             }
 
             // tcgen05.commit: once this thread's async `tcgen05` ops complete,
