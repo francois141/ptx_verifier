@@ -1,0 +1,68 @@
+.version 8.0
+.target sm_90
+.address_size 64
+
+// Thread 0 hands in[i] to threads 1 and 2 through one shared slot, twice.
+// Both consumers wait on `full` (count 1) and arrive on `empty` (count 2),
+// which the producer waits on before refilling the slot; the consumers never
+// synchronize with each other. Consumer c stores its copies at out[2c + i].
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<3>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<9>;
+    .reg .b64 %rd<4>;
+    .shared .align 8 .b64 full;
+    .shared .align 8 .b64 empty;
+    .shared .align 4 .f32 slot;
+
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, full;
+    mov.u32 %r3, empty;
+    mov.u32 %r4, slot;
+    setp.eq.u32 %p0, %r1, 0;
+    @%p0 mbarrier.init.shared::cta.b64 [%r2], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%r3], 2;
+    bar.sync 0;
+    mov.u32 %r5, 0;
+    @%p0 bra PRODUCER;
+
+    sub.u32 %r7, %r1, 1;
+    shl.b32 %r7, %r7, 1;
+    mov.u32 %r6, 0;
+CONSUME:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], %r6;
+    @!%p1 bra CONSUME;
+    ld.shared.f32 %f1, [%r4];
+    ld.param.u64 %rd1, [k_param_1];
+    add.u32 %r8, %r7, %r5;
+    mul.wide.u32 %rd2, %r8, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.f32 [%rd3], %f1;
+    mbarrier.arrive.shared::cta.b64 _, [%r3];
+    xor.b32 %r6, %r6, 1;
+    add.u32 %r5, %r5, 1;
+    setp.lt.u32 %p2, %r5, 2;
+    @%p2 bra CONSUME;
+    ret;
+
+PRODUCER:
+    mov.u32 %r6, 1;
+PRODUCE:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r3], %r6;
+    @!%p1 bra PRODUCE;
+    ld.param.u64 %rd1, [k_param_0];
+    mul.wide.u32 %rd2, %r5, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    ld.global.f32 %f1, [%rd3];
+    st.shared.f32 [%r4], %f1;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    xor.b32 %r6, %r6, 1;
+    add.u32 %r5, %r5, 1;
+    setp.lt.u32 %p2, %r5, 2;
+    @%p2 bra PRODUCE;
+    ret;
+}

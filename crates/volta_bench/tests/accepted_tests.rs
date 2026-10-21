@@ -166,6 +166,17 @@ fn test_mbarrier_producer_starts_through_the_pre_init_phase() {
     );
 }
 
+/// Two consumers wait on the same `full` phase and never synchronize with
+/// each other: a phase's waiters need no order among themselves, only its
+/// completion before their next wait, which each consumer's own release gives.
+#[test]
+fn test_mbarrier_two_consumers_wait_on_one_full_barrier() {
+    analyze!(
+        "success/mbarrier_two_consumers_wait_on_one_full_barrier",
+        in_out_config(3, 4)
+    );
+}
+
 /// `ld.shared.b128` of four separately stored 4-byte words reads them as the
 /// `.b128` register's four 32-bit lanes, in address order.
 #[test]

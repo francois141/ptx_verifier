@@ -387,9 +387,12 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   (Tensor Memory effects of `tcgen05` ops; Algorithms 4 and 6).
 - `barrier_epoch.rs` - Weft's separation criterion over `G0`: every
   synchronization `s` of generation `k` reaches (or is) the program
-  predecessor of every operation `v` of `k + 1` (an mbarrier's pre-init
-  generation is its `k = -1`); returns the first
-  VIOLATION(s, v); a pass issues `NamedBarrierEpochs` / `MbarrierEpochs`.
+  predecessor of every contribution `v` of `k + 1` (an mbarrier's pre-init
+  generation is its `k = -1`); an mbarrier wait of `k + 1` instead needs one
+  release of `k` to reach its predecessor (phase `k` complete when it
+  starts), the separation rule applying only when `k` released no thread;
+  returns the first VIOLATION(s, v); a pass issues `NamedBarrierEpochs` /
+  `MbarrierEpochs`.
 - `memory_conflict.rs` - every overlapping pair of `M` with a write ordered in
   `G_HB`; `Fail` lists all of `B` (a per-byte dominance forest finds each
   unordered pair once, at its lowest byte); no benign equal-store exception;

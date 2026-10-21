@@ -1,14 +1,18 @@
 //! **Barrier-epoch checks** (§1.3, Algorithm 1): Weft's named-barrier separation criterion
-//! (Sharma, Bauer, Aiken, PLDI'15), applied to named barriers and, as the design does "for
-//! now", unchanged to mbarrier phases. Two checks, one per barrier family:
-//! [`check_named_barrier_epochs`] (`bar.arrive`, `bar.sync`) and [`check_mbarrier_epochs`].
+//! (Sharma, Bauer, Aiken, PLDI'15), applied to named barriers and to mbarrier phases, where a
+//! wait of the next phase follows the completion rule below instead. Two checks, one per
+//! barrier family: [`check_named_barrier_epochs`] (`bar.arrive`, `bar.sync`) and
+//! [`check_mbarrier_epochs`].
 //!
 //! ```text
 //! G0 <- INDEPENDENTEDGES(G);  G0+ <- TRANSITIVECLOSURE(G0)
 //! for all b in BARRIERS(G), k such that b has generations k and k+1,
-//!         s in SYNCHRONIZATIONS(b, k), v in BARRIEROPERATIONS(b, k+1):
+//!         v in BARRIEROPERATIONS(b, k+1):
 //!     p <- PROGRAMPREDECESSOR(v)
-//!     if s != p and (s, p) not in G0+ then return VIOLATION(s, v)
+//!     if v is a wait and RELEASES(b, k) is not empty:                  -- completion rule
+//!         if no r in RELEASES(b, k) has r = p or (r, p) in G0+ then return VIOLATION(r0, v)
+//!     else for all s in SYNCHRONIZATIONS(b, k):                        -- separation rule
+//!         if s != p and (s, p) not in G0+ then return VIOLATION(s, v)
 //! return SUCCESS
 //! ```
 //!
@@ -20,14 +24,24 @@
 //!   contribution (`bar.arrive`, `bar.sync`, `mbarrier.arrive`, `complete_tx`, `tcgen05.commit`,
 //!   `cp.async.mbarrier.arrive`) or an mbarrier wait. `SYNCHRONIZATIONS(b, k)` holds the event
 //!   through which each operation of generation `k` takes part in it (a contribution's
-//!   `Contribute`, a wait's release); `BARRIEROPERATIONS(b, k + 1)` the event each operation of
-//!   generation `k + 1` begins with (a contribution's `Contribute`, a wait's `WaitStart`), whose
-//!   program predecessor `p` may be on another thread than `s`. Exited threads and async
-//!   completions are not thread operations, and a `v` that begins its thread has no `p`.
+//!   `Contribute`, a wait's release), `RELEASES(b, k)` the releases among them;
+//!   `BARRIEROPERATIONS(b, k + 1)` the event each operation of generation `k + 1` begins with
+//!   (a contribution's `Contribute`, a wait's `WaitStart`), whose program predecessor `p` may
+//!   be on another thread than `s`. Exited threads and async completions are not thread
+//!   operations, and a `v` that begins its thread has no `p`.
+//! * The separation rule binds a contribution of `k + 1` to its phase (it follows every
+//!   arrival of `k`) and keeps a wait of `k` from starting after phase `k + 1` completes (it
+//!   would then bind phase `k + 2`). A parity wait of `k + 1` instead needs phase `k`
+//!   complete when it starts, or it returns through phase `k - 1` (the ISA's "immediately
+//!   preceding phase" of the same parity). A completion reaches a thread only through the
+//!   phase's releases, so one release of `k` reaching `p` suffices, and the other waiters of
+//!   `k` need not precede the wait. A phase that released no thread offers no such witness,
+//!   and the separation rule stays.
 //! * `Pass`: SUCCESS; only then is the family's certificate issued, so the candidate joins
 //!   become ordering evidence ([`crate::relation::ValidatedGraph`]). `Fail`: the first
 //!   VIOLATION(s, v) in the algorithm's iteration order (barriers by object, `k` ascending,
-//!   `s` and `v` in trace order). `Unknown`: the graph violates its representation invariants.
+//!   `s` and `v` in trace order; under the completion rule `s` is the first release of `k`).
+//!   `Unknown`: the graph violates its representation invariants.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -55,8 +69,9 @@ impl BarrierFamily {
     }
 }
 
-/// VIOLATION(s, v): `v`, an operation of generation `next` = k + 1 of `barrier`, is not
-/// separated from `s` of generation `generation` = k.
+/// VIOLATION(s, v): `v`, an operation of generation `next` = k + 1 of `barrier`, does not
+/// follow `s` of generation `generation` = k: a synchronization that does not reach `v`'s
+/// predecessor or, for a wait under the completion rule, the first release, none of which does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpochViolation {
     pub barrier: SyncObjectId,
@@ -126,8 +141,29 @@ struct GenerationPair {
     next: GenerationId,
     /// `SYNCHRONIZATIONS(b, k)`, in trace order.
     synchronizations: Vec<EventId>,
+    /// `RELEASES(b, k)`, as ascending indexes into `synchronizations`.
+    releases: Vec<usize>,
     /// `BARRIEROPERATIONS(b, k + 1)`, in trace order.
-    operations: Vec<EventId>,
+    operations: Vec<Operation>,
+}
+
+impl GenerationPair {
+    fn rule(&self, j: usize) -> Rule<'_> {
+        match self.operations[j].kind {
+            OperationKind::Wait if !self.releases.is_empty() => Rule::Any(&self.releases),
+            _ => Rule::All(self.synchronizations.len()),
+        }
+    }
+}
+
+/// Which synchronizations of k (indexes into `synchronizations`) an operation of k + 1 must
+/// follow.
+#[derive(Debug, Clone, Copy)]
+enum Rule<'a> {
+    /// Every one of the `n` synchronizations (the separation rule).
+    All(usize),
+    /// At least one of these releases (the completion rule); never empty.
+    Any(&'a [usize]),
 }
 
 /// Algorithm 1 over the barriers of `family`.
@@ -154,15 +190,19 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
                 .map(|o| o.binds)
                 .collect();
             synchronizations.sort_unstable();
+            let releases = synchronizations
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| matches!(graph.event(**s).kind, EventKind::Resume(_)))
+                .map(|(si, _)| si)
+                .collect();
             pairs.push(GenerationPair {
                 barrier,
                 generation: w[0],
                 next: w[1],
                 synchronizations,
-                operations: operations(graph, w[1])
-                    .into_iter()
-                    .map(|o| o.begins)
-                    .collect(),
+                releases,
+                operations: operations(graph, w[1]),
             });
         }
     }
@@ -174,11 +214,12 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
     };
     let mut at: HashMap<EventId, Vec<(usize, usize)>> = HashMap::new();
     for (i, pair) in pairs.iter().enumerate() {
-        for (j, &v) in pair.operations.iter().enumerate() {
-            match predecessor(graph, v) {
-                Some(p) => at.entry(p).or_default().push((i, j)),
-                None if !pair.synchronizations.is_empty() => earliest(&mut first[i], (0, j)),
-                None => {}
+        for (j, v) in pair.operations.iter().enumerate() {
+            match (predecessor(graph, v.begins), pair.rule(j)) {
+                (Some(p), _) => at.entry(p).or_default().push((i, j)),
+                (None, Rule::All(0)) => {}
+                (None, Rule::All(_)) => earliest(&mut first[i], (0, j)),
+                (None, Rule::Any(releases)) => earliest(&mut first[i], (releases[0], j)),
             }
         }
     }
@@ -189,20 +230,28 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
             return;
         };
         for &(i, j) in queries {
-            let failing = pairs[i].synchronizations.iter().position(|&s| {
-                let s = points[s.0 as usize].expect("a synchronization is a thread event");
-                !view.thread_hb(s)
-            });
+            let pair = &pairs[i];
+            let reaches = |si: usize| {
+                let s = pair.synchronizations[si];
+                view.thread_hb(points[s.0 as usize].expect("a synchronization is a thread event"))
+            };
+            let (failing, separated) = match pair.rule(j) {
+                Rule::All(n) => ((0..n).find(|&si| !reaches(si)), n as u64),
+                Rule::Any(releases) => {
+                    let witnessed = releases.iter().any(|&si| reaches(si));
+                    ((!witnessed).then(|| releases[0]), 1)
+                }
+            };
             match failing {
                 Some(si) => earliest(&mut first[i], (si, j)),
-                None => separations += pairs[i].synchronizations.len() as u64,
+                None => separations += separated,
             }
         }
     });
 
     let violation = pairs.iter().zip(&first).find_map(|(pair, f)| {
         f.map(|(si, j)| {
-            let v = pair.operations[j];
+            let v = pair.operations[j].begins;
             EpochViolation {
                 barrier: pair.barrier,
                 generation: pair.generation,
@@ -245,12 +294,21 @@ fn malformed<E, V>(defects: &[volta_graph::GraphDefect]) -> PropertyResult<E, V>
     )
 }
 
-/// A barrier operation bound to a generation: the event it begins with in its thread, and the
-/// event through which it takes part in the generation.
+/// A barrier operation bound to a generation: the event it begins with in its thread, the
+/// event through which it takes part in the generation, and the rule that binds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Operation {
     begins: EventId,
     binds: EventId,
+    kind: OperationKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperationKind {
+    /// A thread contribution, bound to its phase by the separation rule.
+    Contribution,
+    /// An mbarrier wait, bound to its phase by the completion rule.
+    Wait,
 }
 
 /// The thread operations of generation `g`, in trace order: its thread contributions, and
@@ -265,6 +323,7 @@ fn operations(graph: &EventGraph, g: GenerationId) -> Vec<Operation> {
         .map(|c| Operation {
             begins: c.event,
             binds: c.event,
+            kind: OperationKind::Contribution,
         })
         .collect();
     for &r in &generation.releases {
@@ -275,11 +334,13 @@ fn operations(graph: &EventGraph, g: GenerationId) -> Vec<Operation> {
                 ops.push(Operation {
                     begins: before.expect("a predecessor"),
                     binds: r,
+                    kind: OperationKind::Wait,
                 })
             }
             _ => ops.push(Operation {
                 begins: r,
                 binds: r,
+                kind: OperationKind::Wait,
             }),
         }
     }

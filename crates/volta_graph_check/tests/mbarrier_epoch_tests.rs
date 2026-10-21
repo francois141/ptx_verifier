@@ -213,3 +213,94 @@ fn named_barriers_are_not_mbarriers() {
     let (g, _) = s.completed(2);
     assert_eq!(check_mbarrier_epochs(&g).0.verdict(), Verdict::Pass);
 }
+
+/// `full` (expected 1) is waited on by t1 and t2 each phase; both arrive on `empty`
+/// (expected 2), which t0 waits on before its second `full` arrival. Nothing orders t1's
+/// release from a phase before t2's next wait, which the completion rule does not need.
+#[test]
+fn a_phases_waiters_need_no_order_among_themselves() {
+    let mut s = Scenario::new(3);
+    let full = s.mbarrier(0, 1);
+    let empty = s.mbarrier(0, 2);
+    let f0 = s.phase(full, 0);
+    let e0 = s.phase(empty, 0);
+    s.arrive(0, f0);
+    s.complete(f0);
+    s.wait(1, full, Parity::Even, f0);
+    s.wait(2, full, Parity::Even, f0);
+    s.arrive(1, e0);
+    s.arrive(2, e0);
+    s.complete(e0);
+    s.wait(0, empty, Parity::Even, e0);
+    let f1 = s.phase(full, 1);
+    s.arrive(0, f1);
+    s.complete(f1);
+    s.wait(1, full, Parity::Odd, f1);
+    s.wait(2, full, Parity::Odd, f1);
+    let (g, _) = s.completed(3);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.is_some());
+}
+
+/// Phase 0 of `m` released only t1, who then hands off to t0 and t2 through `h`: t2's
+/// phase-1 wait follows phase 0's completion through t1's release, not one of its own.
+#[test]
+fn a_wait_after_another_waiters_release_passes() {
+    let mut s = Scenario::new(3);
+    let m = s.mbarrier(0, 1);
+    let h = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    let h0 = s.phase(h, 0);
+    s.arrive(0, p0);
+    s.complete(p0);
+    s.wait(1, m, Parity::Even, p0);
+    s.arrive(1, h0);
+    s.complete(h0);
+    s.wait(0, h, Parity::Even, h0);
+    s.wait(2, h, Parity::Even, h0);
+    let p1 = s.phase(m, 1);
+    s.arrive(0, p1);
+    s.complete(p1);
+    s.wait(2, m, Parity::Odd, p1);
+    let (g, _) = s.completed(3);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.is_some());
+}
+
+/// t1's release handed off to t0 orders t0's second arrival, but t2's phase-1 wait follows
+/// no release of phase 0: started before phase 0 completes, it returns through the pre-init
+/// phase. The violation names the release phase 0's completion had to reach t2 through.
+#[test]
+fn a_wait_unordered_after_the_previous_phases_completion_is_a_violation() {
+    let mut s = Scenario::new(3);
+    let full = s.mbarrier(0, 1);
+    let empty = s.mbarrier(0, 1);
+    let f0 = s.phase(full, 0);
+    let e0 = s.phase(empty, 0);
+    s.arrive(0, f0);
+    s.complete(f0);
+    let released = s.wait(1, full, Parity::Even, f0);
+    s.arrive(1, e0);
+    s.complete(e0);
+    s.wait(0, empty, Parity::Even, e0);
+    let f1 = s.phase(full, 1);
+    s.arrive(0, f1);
+    s.complete(f1);
+    let before = s.read(2, 0);
+    s.wait(2, full, Parity::Odd, f1);
+    let (g, _) = s.completed(3);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!((v.generation, v.next), (f0, f1));
+    assert_eq!(v.synchronization, released);
+    assert!(matches!(
+        g.event(v.operation).kind,
+        EventKind::WaitStart { .. }
+    ));
+    assert_eq!(v.predecessor, Some(before));
+    assert!(certificate.is_none());
+}
