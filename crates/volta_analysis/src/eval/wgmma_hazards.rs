@@ -8,8 +8,8 @@ use crate::eval::interp::Interpreter;
 use crate::eval::value::Value;
 use crate::eval::warpgroup::WgmmaOpId;
 use crate::ir::InstrId;
+use crate::ir::mma::MmaShape;
 use crate::ir::symbols::RegId;
-use crate::tensor_core::MmaShape;
 use std::collections::{HashMap, VecDeque};
 
 /// A `wgmma.mma_async` accumulator writeback not yet released by
@@ -230,9 +230,9 @@ mod wgmma_reg_state_tests {
 
     use super::WgmmaRegState;
     use crate::ir::InstrId;
+    use crate::ir::mma::MmaShape;
     use crate::ir::symbols::RegId;
     use crate::ir::types::RegClass;
-    use crate::tensor_core::MmaShape;
 
     fn pc(n: u32) -> InstrId {
         InstrId::from_index(n)

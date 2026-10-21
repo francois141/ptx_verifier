@@ -8,6 +8,7 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
 use volta_graph::{AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
+use crate::eval::fragments::wgmma_m64n_k16;
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma::{self, Major, MatrixDescriptor};
@@ -15,7 +16,6 @@ use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
 use crate::eval::{ThreadId, WARPGROUP_SIZE};
 use crate::ir::{InstrId, LoweredInstr, MemSpace};
-use crate::tensor_core::wgmma_m64n_k16;
 use volta_expr::{ExprId, Real};
 
 /// One fired `wgmma.mma_async`, as each member's wgmma-groups record it.

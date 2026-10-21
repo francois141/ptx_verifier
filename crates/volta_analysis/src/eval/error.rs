@@ -6,9 +6,9 @@ use std::fmt;
 use crate::eval::ThreadId;
 use crate::eval::memory::{GranuleKind, MemAccessError};
 use crate::eval::tensor_memory::TensorMemError;
+use crate::ir::mma::MmaShape;
 use crate::ir::symbols::RegId;
 use crate::ir::{InstrId, MemSpace};
-use crate::tensor_core::MmaShape;
 
 /// One side of a conflicting memory access pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

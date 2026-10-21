@@ -2,6 +2,7 @@
 //! register indices and branch PCs, unneeded modifiers stripped, and unified
 //! instruction formats.
 
+pub mod mma;
 pub mod source_map;
 pub mod symbols;
 pub mod tensor_map;
@@ -733,13 +734,13 @@ pub enum LoweredInstr {
     /// nvcc's first-tile idiom passes immediate-zero literals (`{0f00000000,
     /// ...}`) as the accumulator.
     Mma {
-        shape: crate::tensor_core::MmaShape,
+        shape: crate::ir::mma::MmaShape,
         dst: Vec<RegId>,
         src_a: Vec<RegId>,
         src_b: Vec<RegId>,
         src_c: Vec<Operand>,
-        a_layout: crate::tensor_core::MmaLayout,
-        b_layout: crate::tensor_core::MmaLayout,
+        a_layout: crate::ir::mma::MmaLayout,
+        b_layout: crate::ir::mma::MmaLayout,
         a_type: ScalarType,
         b_type: ScalarType,
         d_type: ScalarType,
@@ -747,9 +748,9 @@ pub enum LoweredInstr {
 
     /// WMMA cooperative matrix load (wmma.load.{a,b,c}.sync)
     WmmaLoad {
-        operand: crate::tensor_core::MmaOperand,
-        shape: crate::tensor_core::MmaShape,
-        layout: crate::tensor_core::MmaLayout,
+        operand: crate::ir::mma::MmaOperand,
+        shape: crate::ir::mma::MmaShape,
+        layout: crate::ir::mma::MmaLayout,
         dst: Vec<RegId>,
         addr: Operand,
         /// Constant byte offset folded from a `[reg+imm]` address operand;
@@ -762,8 +763,8 @@ pub enum LoweredInstr {
 
     /// WMMA cooperative matrix store (wmma.store.d.sync)
     WmmaStore {
-        shape: crate::tensor_core::MmaShape,
-        layout: crate::tensor_core::MmaLayout,
+        shape: crate::ir::mma::MmaShape,
+        layout: crate::ir::mma::MmaLayout,
         src: Vec<RegId>,
         addr: Operand,
         /// Constant byte offset folded from a `[reg+imm]` address operand;
@@ -776,7 +777,7 @@ pub enum LoweredInstr {
 
     /// WMMA matrix multiply-accumulate (wmma.mma.sync)
     WmmaMma {
-        shape: crate::tensor_core::MmaShape,
+        shape: crate::ir::mma::MmaShape,
         dst: Vec<RegId>,
         src_a: Vec<RegId>,
         src_b: Vec<RegId>,
@@ -871,7 +872,7 @@ pub enum LoweredInstr {
     /// or FP8 into `.f32`: warpgroup-wide `D = A*B (+D)`, each thread owning
     /// `n/2` `dst` registers. Register-`A` and negate are rejected.
     WgmmaMmaAsync {
-        shape: crate::tensor_core::MmaShape,
+        shape: crate::ir::mma::MmaShape,
         dst: Vec<RegId>,
         a_desc: Operand,
         b_desc: Operand,

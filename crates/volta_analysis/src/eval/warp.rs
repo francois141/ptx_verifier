@@ -1,7 +1,7 @@
 //! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`,
 //! `wgmma.fence`/`commit_group`/`wait_group`, the warp-scoped `tcgen05` ops): run once all
 //! lanes reach the same pc and mask, with each memory access attributed to its owning lane
-//! (`tensor_core` tables).
+//! (`fragments` tables).
 
 use volta_frontend::ast::ScalarType;
 
@@ -9,17 +9,17 @@ use volta_graph::{AccessMode, AsyncOpKind, GenerationId, GroupFamily, OperandRol
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
+use crate::eval::fragments::{
+    FragmentElement, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16, m16n8k32_byte, m16n16k16_f16,
+};
 use crate::eval::interp::Interpreter;
 use crate::eval::record::{Tcgen05Wait, point, tix};
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
+use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
 use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
-use crate::tensor_core::{
-    FragmentElement, MmaLayout, MmaOperand, MmaShape, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16,
-    m16n8k32_byte, m16n16k16_f16,
-};
 use volta_expr::ExprId;
 
 /// A dense matrix of expressions being assembled from lane fragments.

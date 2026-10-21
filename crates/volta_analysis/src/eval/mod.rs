@@ -8,6 +8,7 @@ mod cluster_launch_control;
 mod cp_async;
 mod error;
 mod float_bits;
+mod fragments;
 mod interp;
 mod mbarrier;
 mod memory;

@@ -9,8 +9,8 @@ use volta_frontend::ast::{
 };
 use volta_frontend::lex::DottedIdent;
 
+use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
 use crate::ir::{BinOp, LoweredInstr, MemSpace, Predicate};
-use crate::tensor_core::{MmaLayout, MmaOperand, MmaShape};
 
 use super::context::{LoweringContext, parse_scalar_type_modifier, unsupported};
 use super::error::{LowerError, LowerResult};

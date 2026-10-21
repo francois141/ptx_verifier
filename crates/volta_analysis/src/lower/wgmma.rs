@@ -4,8 +4,8 @@
 use volta_frontend::ast::{Operand as AstOperand, ScalarType};
 use volta_frontend::lex::DottedIdent;
 
+use crate::ir::mma::MmaShape;
 use crate::ir::{LoweredInstr, Operand, Predicate};
-use crate::tensor_core::MmaShape;
 
 use super::context::{LoweringContext, parse_scalar_type_modifier, unsupported};
 use super::error::{LowerError, LowerResult};

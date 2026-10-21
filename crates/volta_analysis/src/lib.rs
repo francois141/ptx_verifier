@@ -10,7 +10,6 @@ mod eval;
 mod ir;
 mod lower;
 mod target;
-mod tensor_core;
 
 pub use analysis::{AnalysisError, AnalysisParts, AnalysisResult, analyze, write_op_counts};
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
