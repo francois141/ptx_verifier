@@ -9,8 +9,8 @@ use volta_graph::{AsyncOpKind, OperandRole, Proxy};
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
 use crate::eval::value::Value;
-use crate::lowered::{InstrId, MemSpace};
-use crate::symbols::RegId;
+use crate::ir::symbols::RegId;
+use crate::ir::{InstrId, MemSpace};
 
 /// Size of a `try_cancel` response, which is also its tx-byte count.
 const RESPONSE_BYTES: u64 = 16;

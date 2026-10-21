@@ -5,7 +5,7 @@
 use volta_frontend::ast::ScalarType;
 
 use crate::eval::error::{EvalError, EvalResult};
-use crate::lowered::InstrId;
+use crate::ir::InstrId;
 use volta_expr::{ExprArena, ExprId};
 
 /// Read `e` at float/fp8 type `ty`: a concrete `IntConst` decodes at `ty`'s

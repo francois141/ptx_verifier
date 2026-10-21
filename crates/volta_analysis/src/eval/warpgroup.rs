@@ -14,7 +14,7 @@ use crate::eval::tcgen05_mma::{self, Major, MatrixDescriptor};
 use crate::eval::value::Value;
 use crate::eval::wgmma::decode_wgmma_matrix_descriptor;
 use crate::eval::{ThreadId, WARPGROUP_SIZE};
-use crate::lowered::{InstrId, LoweredInstr, MemSpace};
+use crate::ir::{InstrId, LoweredInstr, MemSpace};
 use crate::tensor_core::wgmma_m64n_k16;
 use volta_expr::{ExprId, Real};
 

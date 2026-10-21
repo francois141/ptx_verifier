@@ -39,7 +39,7 @@ impl ArrayKind {
 
 /// A global-memory array visible to the kernel. Inputs read as `name[i]`
 /// symbols at `elem_width`. Must not overlap the module-global window
-/// (`symbols::MODULE_GLOBAL_BASE`); `Interpreter::new` rejects that.
+/// (`ir::symbols::MODULE_GLOBAL_BASE`); `Interpreter::new` rejects that.
 #[derive(Debug, Clone)]
 pub struct ArrayDef {
     pub name: String,

@@ -15,7 +15,7 @@ use crate::eval::interp::{BarrierArrivals, Interpreter, Status};
 use crate::eval::value::{MbarrierId, Value};
 use crate::eval::warpgroup::WgmmaOpId;
 use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
-use crate::lowered::{InstrId, MemSpace};
+use crate::ir::{InstrId, MemSpace};
 
 /// Who performs a memory access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

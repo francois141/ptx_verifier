@@ -2,8 +2,8 @@
 
 use id_collections::id_type;
 
-use crate::symbols::RegId;
-use crate::types::{RegClass, RegCounts};
+use crate::ir::symbols::RegId;
+use crate::ir::types::{RegClass, RegCounts};
 use volta_expr::ExprId;
 
 /// Handle to one `mbarrier` object's state, which lives in an interpreter

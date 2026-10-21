@@ -4,7 +4,7 @@
 use id_collections::Id;
 use volta_frontend::ast::{self, BarMode, BraInstr, CallInstr, Operand as AstOperand};
 
-use crate::lowered::{InstrId, LoweredInstr, MemSpace, Predicate};
+use crate::ir::{InstrId, LoweredInstr, MemSpace, Predicate};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};

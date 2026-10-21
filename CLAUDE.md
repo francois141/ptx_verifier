@@ -244,16 +244,19 @@ reach. Other crates import from the root (`volta_analysis::AnalysisConfig`).
 Strongly-typed IDs (`#[id_type]` from `id_collections`), each declared next
 to its subsystem:
 
-- `InstrId` (`lowered.rs`), `ThreadId` (`eval/mod.rs`), `ParamId` and
-  `RegId` = `RegClass` + `RegIndex` (`symbols.rs`; class: Pred,
+- `InstrId` (`ir/mod.rs`), `ThreadId` (`eval/mod.rs`), `ParamId` and
+  `RegId` = `RegClass` + `RegIndex` (`ir/symbols.rs`; class: Pred,
   Bits8/16/32/64/128); the expression ids live in `volta_expr`
-- `types.rs` holds `ScalarTypeExt` (width/kind helpers over the AST's
+- `ir/types.rs` holds `ScalarTypeExt` (width/kind helpers over the AST's
   `ScalarType`), not IDs
 
-### Lowering (`lower/`, `lowered.rs`)
+### Lowering (`lower/`) and the IR (`ir/`)
 
-Converts AST to linear instruction format. `lower/` is split by instruction
-family, each file depending only on `context` and `error`:
+Converts AST to linear instruction format: the IR in `ir/` (`mod.rs`,
+`symbols.rs`, `source_map.rs`, `types.rs`, `tensor_map.rs`), the only contract
+between `lower/` and `eval/` (neither imports the other; `ir/` reaches `lower/`
+only for the `LowerError` of `SymbolTable`'s declarations). `lower/` is split by
+instruction family, each file depending only on `context` and `error`:
 
 - `lower/mod.rs` - `lower_function`, declaration collection, the statement
   walk and the `ParsedInstruction` dispatch (one call or expression per arm);
@@ -276,7 +279,7 @@ family, each file depending only on `context` and `error`:
   list: `KIND_COUNT`, `KIND_NAMES`, `kind_index()` (dense index for the
   interpreter's fixed-size counters), `kind_name()`
 
-### Special Registers (`symbols.rs`)
+### Special Registers (`ir/symbols.rs`)
 
 `SpecialRegKind`: `TidX/Y/Z`, `NtidX/Y/Z`, `CtaidX/Y/Z`, `LaneId`, `WarpId`, etc.
 The cluster registers are hardcoded for one CTA per cluster: `%cluster_ctaid`/

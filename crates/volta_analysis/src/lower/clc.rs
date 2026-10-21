@@ -3,8 +3,8 @@
 use volta_frontend::ast::Operand as AstOperand;
 use volta_frontend::lex::DottedIdent;
 
-use crate::lowered::{LoweredInstr, Predicate};
-use crate::types::RegClass;
+use crate::ir::types::RegClass;
+use crate::ir::{LoweredInstr, Predicate};
 
 use super::context::{LoweringContext, resolve_addr_operand, unsupported};
 use super::error::{LowerError, LowerResult};

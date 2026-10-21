@@ -2,7 +2,7 @@
 //! The 128-byte object is opaque (5.5.8), so it is modeled as named fields;
 //! enum `.field3` values must be immediates, so they are validated at lowering.
 
-use crate::lowered::Operand;
+use crate::ir::Operand;
 
 /// `.field3`'s `.elemtype` encoding (Table 33). Only types with a 1:1
 /// `ScalarType` are modeled; the sub-byte pack types (`new_val` 13-15) are

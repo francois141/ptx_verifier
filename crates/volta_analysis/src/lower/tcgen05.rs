@@ -4,7 +4,7 @@ use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{FromAscii, Operand as AstOperand, SharedStateSpaceQualifier};
 use volta_frontend::lex::DottedIdent;
 
-use crate::lowered::{
+use crate::ir::{
     LoweredInstr, Operand, Predicate, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection,
     Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
 };

@@ -11,8 +11,8 @@ use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table;
 use crate::eval::value::{MbarrierId, Value};
-use crate::lowered::{InstrId, MemSpace, Operand};
-use crate::tensor_map::TensorFillMode;
+use crate::ir::tensor_map::TensorFillMode;
+use crate::ir::{InstrId, MemSpace, Operand};
 
 impl<'p> Interpreter<'p> {
     /// `.tile` TMA tensor copy, global to shared (ISA 9.7.9.26.5.2, 5.5.3):

@@ -6,8 +6,8 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::interp::{BarrierArrivals, Interpreter, NUM_BARRIERS, PendingArrivals, Status};
 use crate::eval::value::{MbarrierId, Value};
 use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
+use crate::ir::{InstrId, LoweredInstr, Operand};
 use crate::logging::trace;
-use crate::lowered::{InstrId, LoweredInstr, Operand};
 
 impl<'p> Interpreter<'p> {
     pub(in crate::eval) fn next_ready(&self) -> Option<ThreadId> {

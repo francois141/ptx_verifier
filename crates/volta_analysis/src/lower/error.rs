@@ -5,7 +5,7 @@ use std::fmt;
 
 use volta_frontend::ast::ScalarType;
 
-use crate::symbols::SymbolKind;
+use crate::ir::symbols::SymbolKind;
 
 /// Errors that can occur during lowering
 #[derive(Debug)]

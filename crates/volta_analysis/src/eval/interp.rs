@@ -23,13 +23,13 @@ use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::warpgroup::WgmmaOpId;
 use crate::eval::wgmma_hazards::WgmmaRegState;
 use crate::eval::{ThreadId, WARP_SIZE};
-use crate::logging::{info, warn};
-use crate::lowered::{
+use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
+use crate::ir::types::{RegClass, ScalarTypeExt};
+use crate::ir::{
     BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
     Tcgen05FenceDirection,
 };
-use crate::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
-use crate::types::{RegClass, ScalarTypeExt};
+use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
     AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily, OperandRole,
@@ -235,7 +235,7 @@ pub struct Interpreter<'p> {
     /// Per-kind instruction counts, indexed by `LoweredInstr::kind_index`. A
     /// fixed array since `step` bumps it per instruction; `finish` folds it
     /// into `AnalysisResult::op_counts`.
-    pub(in crate::eval) op_counts: [u64; crate::lowered::KIND_COUNT],
+    pub(in crate::eval) op_counts: [u64; crate::ir::KIND_COUNT],
 }
 
 impl<'p> Interpreter<'p> {
@@ -434,7 +434,7 @@ impl<'p> Interpreter<'p> {
             graph: GraphBuilder::new(provenance),
             rec: Recording::default(),
             stats: Stats::default(),
-            op_counts: [0; crate::lowered::KIND_COUNT],
+            op_counts: [0; crate::ir::KIND_COUNT],
         })
     }
 
@@ -499,7 +499,7 @@ impl<'p> Interpreter<'p> {
             .iter()
             .enumerate()
             .filter(|&(_, &count)| count > 0)
-            .map(|(i, &count)| (crate::lowered::KIND_NAMES[i], count))
+            .map(|(i, &count)| (crate::ir::KIND_NAMES[i], count))
             .collect();
         RunArtifacts {
             arena: self.arena,
@@ -1047,9 +1047,9 @@ impl<'p> Interpreter<'p> {
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let c = self.scalar_operand(t, pc, src_c)?;
                 let product = match mode {
-                    crate::lowered::MulMode::Lo => self.eval_binop(t, pc, BinOp::Mul, *ty, a, b)?,
-                    crate::lowered::MulMode::Wide => self.mul_wide(*ty, a, b),
-                    crate::lowered::MulMode::Hi => {
+                    crate::ir::MulMode::Lo => self.eval_binop(t, pc, BinOp::Mul, *ty, a, b)?,
+                    crate::ir::MulMode::Wide => self.mul_wide(*ty, a, b),
+                    crate::ir::MulMode::Hi => {
                         // Same guard as MulHi: mul_hi composes `(a*b) >> bits`,
                         // which cannot represent the high half above 32 bits.
                         if ty.bits() > 32 {
@@ -1062,7 +1062,7 @@ impl<'p> Interpreter<'p> {
                     }
                 };
                 let r = match mode {
-                    crate::lowered::MulMode::Lo => {
+                    crate::ir::MulMode::Lo => {
                         self.eval_binop(t, pc, BinOp::Add, *ty, product, c)?
                     }
                     _ => self.arena.add(product, c),

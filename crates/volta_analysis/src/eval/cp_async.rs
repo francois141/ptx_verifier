@@ -6,7 +6,7 @@ use crate::eval::error::EvalResult;
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
 use crate::eval::value::Value;
-use crate::lowered::{InstrId, MemSpace};
+use crate::ir::{InstrId, MemSpace};
 use volta_graph::AsyncOpId;
 
 /// One `cp.async` copy issued but not yet completed: its value is captured

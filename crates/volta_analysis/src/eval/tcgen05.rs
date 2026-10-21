@@ -8,7 +8,7 @@ use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma::{self, KSelect, Major, OperandFormat};
 use crate::eval::value::Value;
-use crate::lowered::{
+use crate::ir::{
     InstrId, MemSpace, Operand, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind,
 };
 use volta_expr::{ExprId, Real};

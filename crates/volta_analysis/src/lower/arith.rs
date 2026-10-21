@@ -10,8 +10,8 @@ use volta_frontend::ast::{
     TanhInstr,
 };
 
-use crate::lowered::{BinOp, Clamp, LoweredInstr, Predicate, UnaryOp};
-use crate::types::ScalarTypeExt;
+use crate::ir::types::ScalarTypeExt;
+use crate::ir::{BinOp, Clamp, LoweredInstr, Predicate, UnaryOp};
 
 use super::context::{LoweringContext, unsupported};
 use super::error::LowerResult;

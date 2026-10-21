@@ -9,10 +9,10 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
 use crate::eval::interp::{Interpreter, reg_bits};
 use crate::eval::value::Value;
+use crate::ir::symbols::RegId;
+use crate::ir::types::ScalarTypeExt;
+use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
 use crate::logging::warn;
-use crate::lowered::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
-use crate::symbols::RegId;
-use crate::types::ScalarTypeExt;
 use volta_expr::{ExprId, ExprNode, Real};
 
 /// `log2(e)` rounded to float32 - the constant PTX kernels actually

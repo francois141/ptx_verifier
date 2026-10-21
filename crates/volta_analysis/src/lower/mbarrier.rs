@@ -7,7 +7,7 @@ use volta_frontend::ast::{
     SharedStateSpaceQualifier, StateSpace,
 };
 
-use crate::lowered::{LoweredInstr, MemSpace, Operand, Predicate};
+use crate::ir::{LoweredInstr, MemSpace, Operand, Predicate};
 
 use super::context::{LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};

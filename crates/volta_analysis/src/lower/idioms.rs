@@ -10,8 +10,8 @@ use volta_frontend::ast::{
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::parse_instruction;
 
-use crate::lowered::Operand;
-use crate::symbols::RegId;
+use crate::ir::Operand;
+use crate::ir::symbols::RegId;
 
 use super::context::LoweringContext;
 

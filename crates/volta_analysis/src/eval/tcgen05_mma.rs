@@ -2,7 +2,7 @@
 //! shared-memory matrix descriptor (9.7.17.4.1), and swizzled addressing,
 //! checked against the ISA's Figures 219/222-229 (`base_offset == 0` only).
 
-use crate::lowered::Tcgen05MmaKind;
+use crate::ir::Tcgen05MmaKind;
 
 /// Decoded `idesc` fields shared by `.kind::f16` and `.kind::f8f6f4` (ISA
 /// 9.7.17.4.2, Table 45: same layout; type fields stay raw for the caller).

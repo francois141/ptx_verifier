@@ -25,8 +25,8 @@ use volta_frontend::ast::{
 use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::parse_instruction;
 
-use crate::lowered::{BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};
-use crate::types::ScalarTypeExt;
+use crate::ir::types::ScalarTypeExt;
+use crate::ir::{BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};
 
 use arith::{
     lower_abs, lower_add, lower_bfe, lower_bfi, lower_copysign, lower_cvt, lower_div, lower_ex2,

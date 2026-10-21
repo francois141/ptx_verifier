@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use crate::lowered::MemSpace;
-use crate::tensor_map::{
+use crate::ir::MemSpace;
+use crate::ir::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode,
 };

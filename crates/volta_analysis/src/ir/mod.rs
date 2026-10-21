@@ -2,15 +2,20 @@
 //! register indices and branch PCs, unneeded modifiers stripped, and unified
 //! instruction formats.
 
+pub mod source_map;
+pub mod symbols;
+pub mod tensor_map;
+pub mod types;
+
 use std::fmt;
 
 use id_collections::{IdVec, id_type};
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
-use crate::source_map::SourceMap;
-use crate::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
-use crate::tensor_map::TensormapFieldWrite;
-use crate::types::RegCounts;
+use crate::ir::source_map::SourceMap;
+use crate::ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
+use crate::ir::tensor_map::TensormapFieldWrite;
+use crate::ir::types::RegCounts;
 
 /// Instruction index (program counter)
 #[id_type]

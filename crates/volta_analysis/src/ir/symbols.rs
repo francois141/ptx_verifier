@@ -7,9 +7,9 @@ use std::fmt;
 use id_collections::{IdVec, id_type};
 use volta_frontend::ast::ScalarType;
 
+use crate::ir::InstrId;
+use crate::ir::types::{RegClass, RegCounts};
 use crate::lower::{LowerError, LowerResult};
-use crate::lowered::InstrId;
-use crate::types::{RegClass, RegCounts};
 
 /// The kind of symbol in the PTX namespace
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

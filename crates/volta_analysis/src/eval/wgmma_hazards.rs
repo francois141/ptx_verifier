@@ -7,8 +7,8 @@ use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::interp::Interpreter;
 use crate::eval::value::Value;
 use crate::eval::warpgroup::WgmmaOpId;
-use crate::lowered::InstrId;
-use crate::symbols::RegId;
+use crate::ir::InstrId;
+use crate::ir::symbols::RegId;
 use crate::tensor_core::MmaShape;
 use std::collections::{HashMap, VecDeque};
 
@@ -229,10 +229,10 @@ mod wgmma_reg_state_tests {
     use id_collections::Id;
 
     use super::WgmmaRegState;
-    use crate::lowered::InstrId;
-    use crate::symbols::RegId;
+    use crate::ir::InstrId;
+    use crate::ir::symbols::RegId;
+    use crate::ir::types::RegClass;
     use crate::tensor_core::MmaShape;
-    use crate::types::RegClass;
 
     fn pc(n: u32) -> InstrId {
         InstrId::from_index(n)

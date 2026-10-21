@@ -13,12 +13,12 @@ use volta_frontend::ast::{
 };
 use volta_frontend::lex::DottedIdent;
 
-use crate::lowered::{
+use crate::ir::source_map::SourceMap;
+use crate::ir::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
+use crate::ir::types::{ScalarTypeExt, TypeCompatibility, check_type_compatibility};
+use crate::ir::{
     CmpOp, InstrId, LoweredInstr, MemSpace, MulMode as LoweredMulMode, Operand, Predicate, ShflMode,
 };
-use crate::source_map::SourceMap;
-use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
-use crate::types::{ScalarTypeExt, TypeCompatibility, check_type_compatibility};
 
 use super::error::{LowerError, LowerResult};
 
@@ -946,15 +946,15 @@ impl LoweringContext {
         if actual.is_float() && expected.is_integer() {
             return format!(
                 "Use cvt.{}.{} to convert float to integer",
-                crate::types::format_scalar_type(expected),
-                crate::types::format_scalar_type(actual)
+                crate::ir::types::format_scalar_type(expected),
+                crate::ir::types::format_scalar_type(actual)
             );
         }
         if actual.is_integer() && expected.is_float() {
             return format!(
                 "Use cvt.{}.{} to convert integer to float",
-                crate::types::format_scalar_type(expected),
-                crate::types::format_scalar_type(actual)
+                crate::ir::types::format_scalar_type(expected),
+                crate::ir::types::format_scalar_type(actual)
             );
         }
 
@@ -962,7 +962,7 @@ impl LoweringContext {
         if actual.bits() != expected.bits() {
             return format!(
                 "Type size mismatch: {} is {} bits, expected {} bits",
-                crate::types::format_scalar_type(actual),
+                crate::ir::types::format_scalar_type(actual),
                 actual.bits(),
                 expected.bits()
             );

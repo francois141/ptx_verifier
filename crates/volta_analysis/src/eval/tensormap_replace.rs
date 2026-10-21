@@ -4,8 +4,8 @@
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::interp::Interpreter;
-use crate::lowered::{InstrId, MemSpace, Operand};
-use crate::tensor_map::TensormapFieldWrite;
+use crate::ir::tensor_map::TensormapFieldWrite;
+use crate::ir::{InstrId, MemSpace, Operand};
 
 impl<'p> Interpreter<'p> {
     /// `tensormap.replace`: write one field of the tensor map at `addr_base +

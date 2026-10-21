@@ -8,11 +8,11 @@ use volta_frontend::ast::{
 };
 use volta_frontend::lex::DottedIdent;
 
-use crate::lowered::{LoweredInstr, MemSpace, Predicate};
-use crate::tensor_map::{
+use crate::ir::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode, TensormapFieldWrite,
 };
+use crate::ir::{LoweredInstr, MemSpace, Predicate};
 
 use super::context::{LoweringContext, resolve_addr_operand, unsupported};
 use super::error::{LowerError, LowerResult};

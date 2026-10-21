@@ -2,8 +2,8 @@ use id_collections::Id;
 use volta_frontend::ascii::AsciiString;
 use volta_frontend::ast::{self, Operand as AstOperand, ScalarType};
 
-use crate::lowered::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
-use crate::symbols::SpecialRegKind;
+use crate::ir::symbols::SpecialRegKind;
+use crate::ir::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
 
 use super::context::LoweringContext;
 use super::error::{LowerError, LowerResult, MbarrierWaitKind};

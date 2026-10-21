@@ -4,7 +4,7 @@
 use id_collections::IdVec;
 use volta_common::Span;
 
-use crate::lowered::InstrId;
+use crate::ir::InstrId;
 
 /// Maps lowered instructions back to their source locations. Built during
 /// lowering and kept separate from `LoweredProgram` so the executable

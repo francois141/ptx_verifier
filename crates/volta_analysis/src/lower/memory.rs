@@ -10,8 +10,8 @@ use volta_frontend::ast::{
 use volta_frontend::instr_parse::is_cache_perf_hint;
 use volta_frontend::lex::DottedIdent;
 
-use crate::lowered::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};
-use crate::symbols::RegId;
+use crate::ir::symbols::RegId;
+use crate::ir::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
