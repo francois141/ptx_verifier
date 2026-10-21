@@ -14,7 +14,8 @@
 //!
 //! * `G0` is [`IndependentGraph`]; `(s, p) ∈ G0+` (or `s = p`) is its non-strict
 //!   happens-before. `BARRIERS(G)` are the family's sync objects (an mbarrier lifetime is one
-//!   object), with their generations by logical index.
+//!   object), with their generations by logical index; an mbarrier's pre-init phase is its
+//!   generation -1, so the waits it releases must precede every operation of phase 0.
 //! * A *barrier operation* is a thread's instruction instance bound to a generation: a
 //!   contribution (`bar.arrive`, `bar.sync`, `mbarrier.arrive`, `complete_tx`, `tcgen05.commit`,
 //!   `cp.async.mbarrier.arrive`) or an mbarrier wait. `SYNCHRONIZATIONS(b, k)` holds the event
@@ -30,7 +31,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use volta_graph::{EventGraph, EventId, EventKind, GenerationId, SyncObjectId, SyncObjectKind};
+use volta_graph::{
+    EventGraph, EventId, EventKind, Generation, GenerationId, GenerationKind, SyncObjectId,
+    SyncObjectKind,
+};
 
 use crate::relation::{IndependentGraph, thread_points};
 use crate::result::{PropertyResult, Unresolved};
@@ -140,9 +144,9 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
     }
     let mut pairs = Vec::new();
     for (&barrier, gens) in &mut barriers {
-        gens.sort_by_key(|&g| graph.generation(g).index);
+        gens.sort_by_key(|&g| logical_index(graph.generation(g)));
         for w in gens.windows(2) {
-            if graph.generation(w[0]).index + 1 != graph.generation(w[1]).index {
+            if logical_index(graph.generation(w[0])) + 1 != logical_index(graph.generation(w[1])) {
                 continue;
             }
             let mut synchronizations: Vec<EventId> = operations(graph, w[0])
@@ -216,6 +220,13 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
             generation_pairs: pairs.len(),
             separations,
         }),
+    }
+}
+
+fn logical_index(generation: &Generation) -> i64 {
+    match generation.kind {
+        GenerationKind::MbarrierPreInit => -1,
+        _ => i64::from(generation.index),
     }
 }
 

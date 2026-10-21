@@ -39,10 +39,12 @@ pub(in crate::eval) enum Tcgen05Wait {
     St,
 }
 
-/// An mbarrier object's graph identity: one lifetime, and its phases by index.
+/// An mbarrier object's graph identity: one lifetime, the phase before its phase 0, and its
+/// phases by index.
 #[derive(Debug)]
 struct MbarrierRecord {
     object: SyncObjectId,
+    pre_init: GenerationId,
     phases: Vec<GenerationId>,
 }
 
@@ -511,7 +513,8 @@ impl Interpreter<'_> {
     // mbarriers
     // =====================================================================
 
-    /// `mbarrier.init` created object `id` at `addr`: a new lifetime with phase 0 forming.
+    /// `mbarrier.init` created object `id` at `addr`: a new lifetime, its pre-init phase
+    /// complete and phase 0 forming.
     pub(in crate::eval) fn record_mbarrier_init(
         &mut self,
         t: ThreadId,
@@ -525,6 +528,11 @@ impl Interpreter<'_> {
             expected_arrivals,
         });
         self.graph.object_init(tix(t), point(pc), object);
+        let pre_init = self
+            .graph
+            .open_generation(object, 0, GenerationKind::MbarrierPreInit);
+        self.graph
+            .complete_generation(pre_init, GenerationEvidence::default());
         let phase0 = self
             .graph
             .open_generation(object, 0, GenerationKind::MbarrierPhase);
@@ -532,6 +540,7 @@ impl Interpreter<'_> {
             id,
             MbarrierRecord {
                 object,
+                pre_init,
                 phases: vec![phase0],
             },
         );
@@ -632,16 +641,19 @@ impl Interpreter<'_> {
         self.graph.wait_start(tix(t), point(pc), object, parity);
     }
 
-    /// `t`'s wait on `id` returns, bound to the latest completed phase; ops that phase tracks
-    /// are thereby observed.
+    /// `t`'s wait on `id` returns, bound to the latest completed phase (the pre-init phase
+    /// before phase 0 completes); ops that phase tracks are thereby observed.
     pub(in crate::eval) fn record_mbarrier_wake(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         id: MbarrierId,
     ) {
-        let completed = self.mbarriers.completed_phases(id) as usize;
-        let phase = self.rec.mbarriers[&id].phases[completed - 1];
+        let record = &self.rec.mbarriers[&id];
+        let phase = match self.mbarriers.completed_phases(id) {
+            0 => record.pre_init,
+            completed => record.phases[completed as usize - 1],
+        };
         self.graph.resume(tix(t), point(pc), phase);
         let observed: Vec<AsyncOpId> = self
             .graph

@@ -178,6 +178,40 @@ fn a_release_without_completion_is_a_defect() {
 }
 
 #[test]
+fn a_contributed_pre_init_phase_is_a_defect() {
+    let mut b = GraphBuilder::new(provenance(1, 1));
+    let m = b.sync_object(SyncObjectKind::Mbarrier {
+        addr: 0,
+        expected_arrivals: 1,
+    });
+    b.object_init(ThreadIx(0), PC, m);
+    let pre_init = b.open_generation(m, 0, GenerationKind::MbarrierPreInit);
+    b.contribute(
+        ThreadIx(0),
+        PC,
+        pre_init,
+        ContributionKind::Arrival {
+            count: 1,
+            expect_tx: 0,
+        },
+    );
+    b.complete_generation(pre_init, GenerationEvidence::default());
+    b.open_generation(m, 0, GenerationKind::MbarrierPhase);
+    let found = defects(&b.finish(Terminal::Aborted {
+        thread: None,
+        pc: None,
+        reason: "test".to_string(),
+    }));
+    assert_eq!(
+        found,
+        vec![format!(
+            "pre-init generation {} is not an uncontributed, completed index 0",
+            pre_init.0
+        )]
+    );
+}
+
+#[test]
 fn a_contribution_after_completion_is_a_defect() {
     let mut b = GraphBuilder::new(provenance(1, 1));
     let bar = b.sync_object(SyncObjectKind::NamedBarrier { id: 0 });

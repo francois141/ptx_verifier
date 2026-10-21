@@ -287,6 +287,10 @@ pub enum GenerationKind {
     },
     /// The phase whose index is the generation's `index`.
     MbarrierPhase,
+    /// The phase before an mbarrier's phase 0, at index 0: complete at init, with no
+    /// contributions. An odd-parity wait on a fresh object returns through it, the PTX ISA's
+    /// "immediately preceding phase".
+    MbarrierPreInit,
     /// One side of a collective instance over the `mask` lanes, at `pc`.
     Collective {
         pc: ProgramPoint,

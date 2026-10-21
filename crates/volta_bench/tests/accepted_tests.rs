@@ -155,6 +155,17 @@ fn test_mbarrier_arrive_wait_establishes_happens_before() {
     );
 }
 
+/// A producer's first odd-parity wait on a fresh `empty` barrier returns
+/// through its pre-init phase (the ISA's "immediately preceding phase"),
+/// separated from the consumer's first arrival by the `full` handoff.
+#[test]
+fn test_mbarrier_producer_starts_through_the_pre_init_phase() {
+    analyze!(
+        "success/mbarrier_producer_starts_through_the_pre_init_phase",
+        in_out_config(2, 2)
+    );
+}
+
 /// `ld.shared.b128` of four separately stored 4-byte words reads them as the
 /// `.b128` register's four 32-bit lanes, in address order.
 #[test]

@@ -636,7 +636,10 @@ fn object_name(graph: &EventGraph, object: SyncObjectId) -> String {
 
 fn generation_name(graph: &EventGraph, g: GenerationId) -> String {
     let genr = graph.generation(g);
-    format!("{} #{}", object_name(graph, genr.object), genr.index)
+    match genr.kind {
+        GenerationKind::MbarrierPreInit => format!("{} pre-init", object_name(graph, genr.object)),
+        _ => format!("{} #{}", object_name(graph, genr.object), genr.index),
+    }
 }
 
 fn generation_kind(kind: GenerationKind) -> String {
@@ -648,6 +651,7 @@ fn generation_kind(kind: GenerationKind) -> String {
             arrivals: BarrierArrivals::Count(n),
         } => format!("barrier of {n} threads"),
         GenerationKind::MbarrierPhase => "mbarrier phase".to_string(),
+        GenerationKind::MbarrierPreInit => "mbarrier phase before init".to_string(),
         GenerationKind::Collective { pc, mask, side } => format!(
             "collective {} at pc {}, mask {mask:#010x}",
             match side {

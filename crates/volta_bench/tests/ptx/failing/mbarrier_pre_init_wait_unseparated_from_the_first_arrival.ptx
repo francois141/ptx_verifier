@@ -1,0 +1,36 @@
+.version 8.0
+.target sm_90
+.address_size 64
+
+// Both threads wait at parity 1 on a fresh barrier, then thread 1 arrives. On
+// this schedule both waits return through the pre-init phase; had thread 1
+// arrived before thread 0 waited, thread 0 would wait for phase 1 forever.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<4>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p0, %r1, 0;
+    mov.u32 %r2, mbar;
+
+    @%p0 mbarrier.init.shared::cta.b64 [%r2], 1;
+    bar.sync 0;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r2], 1;
+    @!%p1 bra WAIT;
+    @!%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];
+
+    ld.param.u64 %rd1, [k_param_1];
+    mul.wide.u32 %rd2, %r1, 4;
+    add.s64 %rd3, %rd1, %rd2;
+    mov.f32 %f1, 0f3F800000;
+    st.global.f32 [%rd3], %f1;
+    ret;
+}

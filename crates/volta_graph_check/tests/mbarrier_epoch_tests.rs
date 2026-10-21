@@ -102,6 +102,48 @@ fn a_wait_begins_at_its_wait_start() {
 }
 
 #[test]
+fn a_wait_through_the_pre_init_phase_before_phase_0s_arrival_passes() {
+    let mut s = Scenario::new(1);
+    let m = s.mbarrier(0, 1);
+    let pre = s.pre_init(m);
+    let p0 = s.phase(m, 0);
+    s.wait(0, m, Parity::Odd, pre);
+    s.arrive(0, p0);
+    s.complete(p0);
+    let (g, _) = s.completed(1);
+    let (result, _) = check_mbarrier_epochs(&g);
+    let volta_graph_check::PropertyResult::Pass(evidence) = &result else {
+        panic!("{result:?}");
+    };
+    assert_eq!(
+        evidence.generation_pairs, 1,
+        "the pre-init phase pairs with phase 0"
+    );
+}
+
+/// t0 and t1 both return through the pre-init phase, then t1 arrives: had t1 arrived before
+/// t0 waited, t0's odd-parity wait would bind phase 1 instead.
+#[test]
+fn an_arrival_unseparated_from_a_pre_init_wait_is_a_violation() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let pre = s.pre_init(m);
+    let p0 = s.phase(m, 0);
+    let early = s.wait(0, m, Parity::Odd, pre);
+    s.wait(1, m, Parity::Odd, pre);
+    let arrival = s.arrive(1, p0);
+    s.complete(p0);
+    let (g, _) = s.completed(2);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!((v.generation, v.next), (pre, p0));
+    assert_eq!((v.synchronization, v.operation), (early, arrival));
+    assert!(certificate.is_none());
+}
+
+#[test]
 fn a_complete_tx_is_a_barrier_operation() {
     let mut s = Scenario::new(2);
     let m = s.mbarrier(0, 1);

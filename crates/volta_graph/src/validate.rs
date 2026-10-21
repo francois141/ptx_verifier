@@ -5,11 +5,20 @@
 use std::collections::HashMap;
 
 use crate::graph::EventGraph;
-use crate::ids::{AccessId, EventId, GenerationId, ThreadIx};
+use crate::ids::{AccessId, EventId, GenerationId, SyncObjectId, ThreadIx};
 use crate::model::{
-    AccessMode, ContributionKind, EventKind, ExecContext, Footprint, GenerationKind, Space,
-    SyncObjectKind, Terminal,
+    AccessMode, CollectiveSide, ContributionKind, EventKind, ExecContext, Footprint,
+    GenerationKind, Space, SyncObjectKind, Terminal,
 };
+
+/// What tells two generations of one object at one index apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum IndexSlot {
+    Plain,
+    /// An mbarrier's pre-init phase shares index 0 with its phase 0.
+    PreInit,
+    Side(CollectiveSide),
+}
 
 /// One violated representation invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,14 +278,7 @@ impl EventGraph {
                 _ => {}
             }
         }
-        let mut seen_index: HashMap<
-            (
-                crate::ids::SyncObjectId,
-                u32,
-                Option<crate::model::CollectiveSide>,
-            ),
-            GenerationId,
-        > = HashMap::new();
+        let mut seen_index: HashMap<(SyncObjectId, u32, IndexSlot), GenerationId> = HashMap::new();
         for (g, genr) in self.generations.iter() {
             if genr.object.0 as usize >= self.objects.len() {
                 d.global(format!("generation {} of an unknown object", g.0));
@@ -289,7 +291,7 @@ impl EventGraph {
                     GenerationKind::Barrier { .. },
                     SyncObjectKind::NamedBarrier { .. }
                 ) | (
-                    GenerationKind::MbarrierPhase,
+                    GenerationKind::MbarrierPhase | GenerationKind::MbarrierPreInit,
                     SyncObjectKind::Mbarrier { .. }
                 ) | (
                     GenerationKind::Collective { .. },
@@ -308,11 +310,20 @@ impl EventGraph {
                     g.0, genr.kind, object
                 ));
             }
-            let side = match genr.kind {
-                GenerationKind::Collective { side, .. } => Some(side),
-                _ => None,
+            let slot = match genr.kind {
+                GenerationKind::Collective { side, .. } => IndexSlot::Side(side),
+                GenerationKind::MbarrierPreInit => IndexSlot::PreInit,
+                _ => IndexSlot::Plain,
             };
-            if let Some(other) = seen_index.insert((genr.object, genr.index, side), g) {
+            if genr.kind == GenerationKind::MbarrierPreInit
+                && (genr.index != 0 || !genr.contributions.is_empty() || genr.completion.is_none())
+            {
+                d.global(format!(
+                    "pre-init generation {} is not an uncontributed, completed index 0",
+                    g.0
+                ));
+            }
+            if let Some(other) = seen_index.insert((genr.object, genr.index, slot), g) {
                 d.global(format!(
                     "generations {} and {} share an index of one object",
                     other.0, g.0

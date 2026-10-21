@@ -69,6 +69,9 @@ impl EventGraph {
                 GenerationKind::MbarrierPhase => {
                     write!(out, "phase parity={}", parity(Parity::of_phase(genr.index)))?
                 }
+                GenerationKind::MbarrierPreInit => {
+                    write!(out, "pre-init parity={}", parity(Parity::Odd))?
+                }
                 GenerationKind::Collective { pc, mask, side } => write!(
                     out,
                     "collective pc{} mask={:#010x} {}",

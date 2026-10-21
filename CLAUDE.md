@@ -220,7 +220,9 @@ crate-level docs in `lib.rs` are the contract.
   `Contribution`s (`Blocking`, `Arrival`, `Exited`, `AsyncCompletion`,
   `CompleteTx`), releases (`Resume` events), completion event, evidence.
   Collective instances have an `Entry` and an `Exit` generation around the
-  op's effects.
+  op's effects. An mbarrier lifetime starts with an `MbarrierPreInit`
+  generation, completed at init with no contributions: an odd-parity wait on
+  the fresh object (the ISA's "immediately preceding phase") resumes from it.
 - `AsyncOp`: issuer, issue event, effects, completion, tentative `tracking`
   generations (an mbarrier phase, a wait collective, a wait-group).
 - `Terminal`: `Completed`, `Stuck` (each blocked thread's wait condition and
@@ -384,7 +386,8 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   (Tensor Memory effects of `tcgen05` ops; Algorithms 4 and 6).
 - `barrier_epoch.rs` - Weft's separation criterion over `G0`: every
   synchronization `s` of generation `k` reaches (or is) the program
-  predecessor of every operation `v` of `k + 1`; returns the first
+  predecessor of every operation `v` of `k + 1` (an mbarrier's pre-init
+  generation is its `k = -1`); returns the first
   VIOLATION(s, v); a pass issues `NamedBarrierEpochs` / `MbarrierEpochs`.
 - `memory_conflict.rs` - every overlapping pair of `M` with a write ordered in
   `G_HB`; `Fail` lists all of `B` (a per-byte dominance forest finds each
@@ -524,7 +527,9 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   symbolic outputs must match the kernel's `.out` file exactly
   (`VOLTA_BLESS=1` rewrites them).
 - one suite per check whose witnesses PTX kernels exercise, each asserting on
-  that check's typed witness only: `memory_conflict_tests.rs` (Algorithm 2:
+  that check's typed witness only: `mbarrier_epoch_tests.rs` (Algorithm 1 over
+  mbarrier phases: the unseparated synchronization and operation),
+  `memory_conflict_tests.rs` (Algorithm 2:
   conflict kind, byte, each side's thread, access mode and async op),
   `tensor_order_tests.rs` (Algorithm 4: the Tensor Memory cell and sides),
   `resource_lifetime_tests.rs` (Algorithm 6: the use freed while unordered, or

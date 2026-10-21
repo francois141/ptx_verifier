@@ -229,6 +229,15 @@ impl Scenario {
             .open_generation(object, index, GenerationKind::MbarrierPhase)
     }
 
+    /// `object`'s phase before phase 0, complete at once.
+    pub fn pre_init(&mut self, object: SyncObjectId) -> GenerationId {
+        let g = self
+            .b
+            .open_generation(object, 0, GenerationKind::MbarrierPreInit);
+        self.complete(g);
+        g
+    }
+
     pub fn arrive(&mut self, thread: u32, g: GenerationId) -> EventId {
         self.b.contribute(
             t(thread),
