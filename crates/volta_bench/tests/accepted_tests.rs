@@ -383,8 +383,9 @@ fn test_tcgen05_mma_bar_sync_after_completion_orders_the_read() {
     );
 }
 
-/// The control: warp 1 waiting on `mma_bar` itself is ordered after the
-/// completion, whatever `bar.sync` ran before it.
+/// The control: warp 1 waiting on `mma_bar` itself, then executing
+/// `tcgen05.fence::after_thread_sync`, is ordered after the MMA whatever
+/// `bar.sync` ran before it.
 #[test]
 fn test_tcgen05_mma_every_reader_waiting_is_accepted() {
     analyze!(

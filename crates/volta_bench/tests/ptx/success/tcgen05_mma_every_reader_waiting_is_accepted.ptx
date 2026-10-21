@@ -43,6 +43,7 @@ ALLOCATED:
 WAIT:
     mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
     @!%pw bra WAIT;
+    tcgen05.fence::after_thread_sync;
     @%p2 bra DONE;
     add.u32 %r6, %r1, 2097152;
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
