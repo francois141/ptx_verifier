@@ -1,7 +1,7 @@
 //! Aggregation over real kernels: both branches run on the analysis stage's artifacts and only
 //! `decide` combines them.
 
-use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_equivalence::check::EquivCheckOptions;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;

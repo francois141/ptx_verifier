@@ -233,6 +233,12 @@ crate-level docs in `lib.rs` are the contract.
 
 **Path**: `crates/volta_analysis/`
 
+Every module is private: `lib.rs` re-exports the whole API (`analyze`,
+`AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
+`AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
+`Stats`, `ThreadId`, `LowerError`), so rustc flags any code it does not
+reach. Other crates import from the root (`volta_analysis::AnalysisConfig`).
+
 ### ID Types
 
 Strongly-typed IDs (`#[id_type]` from `id_collections`), each declared next
@@ -251,7 +257,7 @@ Converts AST to linear instruction format:
 - `LoweredProgram` - `IdVec<InstrId, LoweredInstr>` + `SymbolTable` + `SourceMap`
 - `LoweredInstr` variants: `LoadParam`, `Load`, `Store`, `Mov`, `BinOp`, `UnaryOp`, `Fma`, `Mad`, `MulWide`, `MulHi`, `Setp`, `Selp`, `Cvt`, `Bra`, `Ret`, `Exit`, `BarSync`, `BarWarpSync`, `ShflSync`, `Ldmatrix`, `Mma`, `WmmaLoad/Store/Mma`, `Activemask`, `Trap`, etc.
 - `SymbolTable` - Register/param/label name → ID resolution; assigns addresses to shared/local/module-global variables
-- `SourceMap` - Maps lowered elements back to source spans
+- `SourceMap` - Maps each lowered instruction back to its source span
 - The nvcc callseq idiom for `call __symexpf` (the paper's symbolic-exp hook) collapses to `UnaryOp::Exp` at lowering time
 - The mbarrier retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` collapses to one blocking `MbarrierWaitParity` (`match_mbarrier_wait_loop`; the scheduler can block a thread, not spin it); a wait outside that exact three-statement window is a lowering error
 - `define_instr_kinds!` generates the profiling table from one variant
@@ -279,7 +285,6 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/memory.rs` - byte-addressed granule memory; 4-byte reads combine two 2-byte granules into a `Pair`, 2-byte accesses split `Pair` granules; program writes are `dirty` (the output footprint)
 - `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
 - `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it (a warp's wait covers the groups it committed itself). In the graph each member has a share (an async op); the warpgroup op completes as a whole, so a member warp's wait tracks every share of the instances it releases
-- `eval/config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
 - `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, the wgmma register hazards, etc.); data races and async hazards are not `EvalError`s but graph check failures, and a deadlock is the stuck terminal state the graph records
 
 Key semantics: input-array symbols materialize lazily on first read; reads of
@@ -287,8 +292,11 @@ never-written registers/shared bytes yield `Undefined` (an error only if it
 reaches an output or a concreteness point) - the paper's race example and
 nvcc's `selp` accumulator-init idiom both rely on this.
 
-### Analysis stage (`analysis.rs`)
+### Analysis stage (`analysis.rs`, `config.rs`, `target.rs`)
 
+- `config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
+- `target.rs` - `TargetFeatures`, derived from the module's `.target`
+  directive rather than the launch config (sm_90+ has an async proxy)
 - `analyze(module, kernel_name, config) -> Result<AnalysisResult, AnalysisError>`:
   lowering plus one candidate execution, no verdict. `AnalysisResult` holds
   the arena, the event graph (always; partial on abort), stats, op counts,

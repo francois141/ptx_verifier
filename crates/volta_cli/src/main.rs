@@ -8,9 +8,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
-use volta_analysis::analysis::{AnalysisParts, write_op_counts};
-use volta_analysis::eval::{
-    AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
+use volta_analysis::{
+    AnalysisConfig, AnalysisParts, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
+    write_op_counts,
 };
 use volta_common::run_log;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;

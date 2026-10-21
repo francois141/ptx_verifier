@@ -9,8 +9,8 @@ use id_collections::IdVec;
 
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
+use crate::config::{AnalysisConfig, ParamValue};
 use crate::eval::cluster_launch_control::ObservedDecline;
-use crate::eval::config::{AnalysisConfig, ParamValue};
 use crate::eval::error::{AccessSite, EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
@@ -3763,7 +3763,7 @@ impl<'p> Interpreter<'p> {
                 let elem_addr = array.base + i * array.elem_width;
                 if !self.global.has_cell_at(elem_addr) {
                     let value = match array.kind {
-                        crate::eval::config::ArrayKind::IndexInput => None,
+                        crate::config::ArrayKind::IndexInput => None,
                         _ => Some(
                             *array_sid.get_or_insert_with(|| self.arena.intern_string(&array.name)),
                         ),

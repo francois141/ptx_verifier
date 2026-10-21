@@ -6,10 +6,10 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::eval::{
-    AnalysisConfig, ArrayDef, ArrayKind, ClcMisuse, EvalError, ParamValue, ThreadId,
+use volta_analysis::{
+    AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, ClcMisuse, EvalError, LowerError,
+    ParamValue, ThreadId,
 };
-use volta_analysis::{AnalysisError, LowerError};
 use volta_equivalence::check_output_equivalence;
 use volta_frontend::ast::Module;
 use volta_graph_check::Deadlock;

@@ -2,7 +2,7 @@
 //! one semantic detail and must come back `NotEquivalent` through the full
 //! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
-use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::text::{read_text, to_text};

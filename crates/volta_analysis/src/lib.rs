@@ -4,22 +4,20 @@
 
 mod logging;
 
-pub mod analysis;
-pub mod eval;
-pub mod lower_error;
-pub mod lowered;
-pub mod lowering;
-pub mod source_map;
-pub mod symbols;
-pub mod tensor_core;
-pub mod tensor_map;
-pub mod types;
+mod analysis;
+mod config;
+mod eval;
+mod lower_error;
+mod lowered;
+mod lowering;
+mod source_map;
+mod symbols;
+mod target;
+mod tensor_core;
+mod tensor_map;
+mod types;
 
-pub use analysis::{AnalysisError, AnalysisResult, analyze, write_op_counts};
-pub use eval::{AnalysisConfig, ArrayDef, ArrayKind, EvalError, ParamValue};
-pub use lower_error::{LowerError, LowerResult};
-pub use lowered::{InstrId, LoweredInstr, LoweredProgram, Operand, Predicate};
-pub use lowering::{LoweringContext, lower_function};
-pub use source_map::SourceMap;
-pub use symbols::{ParamId, RegId, RegIndex, SpecialRegKind, SymbolKind, SymbolTable};
-pub use types::{RegClass, ScalarTypeExt};
+pub use analysis::{AnalysisError, AnalysisParts, AnalysisResult, analyze, write_op_counts};
+pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+pub use eval::{ClcMisuse, EvalError, OutputsUnavailable, Stats, ThreadId};
+pub use lower_error::LowerError;

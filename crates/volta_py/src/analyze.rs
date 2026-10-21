@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use pyo3::exceptions::PyRuntimeWarning;
 use pyo3::prelude::*;
 
-use volta_analysis::eval::{AnalysisConfig, Stats};
+use volta_analysis::{AnalysisConfig, Stats};
 use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::Module;

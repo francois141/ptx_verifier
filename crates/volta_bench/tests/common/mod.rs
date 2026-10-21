@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-use volta_analysis::analysis::{AnalysisError, AnalysisResult};
-use volta_analysis::eval::{
-    AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
+use volta_analysis::{
+    AnalysisConfig, AnalysisError, AnalysisResult, ArrayDef, ArrayKind, OutputsUnavailable,
+    ParamValue, Stats,
 };
 use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;

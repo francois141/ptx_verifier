@@ -5,7 +5,7 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::eval::AnalysisConfig;
+use volta_analysis::AnalysisConfig;
 use volta_frontend::ast::Module;
 use volta_graph::{AccessMode, AsyncOpKind, EventKind};
 use volta_graph_check::resource_lifetime::LifetimeViolation;

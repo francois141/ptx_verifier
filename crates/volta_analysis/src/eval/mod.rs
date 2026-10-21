@@ -2,24 +2,22 @@
 //! Floats are symbolic reals; addresses and branch predicates must be
 //! concrete (structured-CTA assumption). Race checking is not done here.
 
-pub mod arithm;
-pub mod async_bulk;
-pub mod cluster_launch_control;
-pub mod config;
-pub mod error;
-pub mod float_bits;
-pub mod interp;
-pub mod mbarrier;
-pub mod memory;
-pub mod record;
-pub mod target;
-pub mod tcgen05_mma;
-pub mod tensor_map_table;
-pub mod tensor_memory;
-pub mod value;
-pub mod warp;
-pub mod warpgroup;
-pub mod wgmma;
+mod arithm;
+mod async_bulk;
+mod cluster_launch_control;
+mod error;
+mod float_bits;
+mod interp;
+mod mbarrier;
+mod memory;
+mod record;
+mod tcgen05_mma;
+mod tensor_map_table;
+mod tensor_memory;
+mod value;
+mod warp;
+mod warpgroup;
+mod wgmma;
 
 use id_collections::id_type;
 
@@ -41,7 +39,5 @@ pub const WARP_SIZE: u32 = 32;
 /// warps such that the warp-rank of the first warp is a multiple of 4").
 pub const WARPGROUP_SIZE: u32 = WARP_SIZE * 4;
 
-pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 pub use error::{ClcMisuse, EvalError};
 pub use interp::{Interpreter, OutputsUnavailable, RunArtifacts, Stats};
-pub use target::TargetFeatures;

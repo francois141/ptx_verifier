@@ -1,10 +1,10 @@
-//! Python-facing mirror of `volta_analysis::eval::config`, wrapping the Rust
+//! Python-facing mirror of `volta_analysis::AnalysisConfig`, wrapping the Rust
 //! types 1:1 instead of the CLI's flat string mini-DSL
 //! (`"in:0x10000:4:128:in"`).
 
 use pyo3::prelude::*;
 
-use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 #[pyclass(name = "ArrayKind", eq, eq_int, from_py_object)]
 #[derive(Clone, Copy, PartialEq, Eq)]

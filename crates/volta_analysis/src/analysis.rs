@@ -9,13 +9,13 @@ use volta_expr::SymbolicOutputs;
 use volta_frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance};
 
-use crate::eval::{
-    AnalysisConfig, EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stats, TargetFeatures,
-};
+use crate::config::AnalysisConfig;
+use crate::eval::{EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stats};
 use crate::logging::info;
 use crate::lower_error::LowerError;
 use crate::lowered::LoweredProgram;
 use crate::lowering::lower_function;
+use crate::target::TargetFeatures;
 
 /// Errors that prevent the candidate execution from starting at all.
 #[derive(Debug)]

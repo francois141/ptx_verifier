@@ -1,6 +1,6 @@
 //! Target-arch-derived analysis features: a fact about the analyzed module's
 //! `.target` directive, not user launch config, so deliberately kept out of
-//! `eval::config::AnalysisConfig`.
+//! `config::AnalysisConfig`.
 
 use volta_frontend::ast::{Arch, Target};
 

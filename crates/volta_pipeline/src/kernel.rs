@@ -1,7 +1,6 @@
 //! One kernel through the analysis stage and the graph branch.
 
-use volta_analysis::analysis::{AnalysisError, AnalysisResult, analyze};
-use volta_analysis::eval::AnalysisConfig;
+use volta_analysis::{AnalysisConfig, AnalysisError, AnalysisResult, analyze};
 use volta_frontend::ast::Module;
 use volta_graph_check::{GraphReport, check_graph};
 

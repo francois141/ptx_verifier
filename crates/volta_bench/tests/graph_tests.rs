@@ -6,9 +6,7 @@
 #[allow(unused_macros)]
 mod common;
 
-use volta_analysis::analysis::AnalysisResult;
-use volta_analysis::analyze;
-use volta_analysis::eval::{AnalysisConfig, OutputsUnavailable};
+use volta_analysis::{AnalysisConfig, AnalysisResult, OutputsUnavailable, analyze};
 use volta_equivalence::EquivOutcome;
 use volta_equivalence::check::check_output_equivalence;
 use volta_frontend::ast::Module;
