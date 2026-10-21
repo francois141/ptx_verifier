@@ -1,13 +1,13 @@
-//! Builders for small, purpose-made event graphs, shared by the checker test crates.
+//! Builders for small, purpose-made event graphs, shared by the check test crates.
 
 #![allow(dead_code)]
 
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
-    AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph, EventId,
-    Footprint, GenerationEvidence, GenerationId, GenerationKind, GraphBuilder, InstructionInfo,
-    MemAccess, OperandRole, OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space,
-    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph,
+    EventId, FenceKind, Footprint, GenerationEvidence, GenerationId, GenerationKind, GraphBuilder,
+    InstructionInfo, MemAccess, OperandRole, OrderingKind, Parity, ProgramPoint, Provenance, Proxy,
+    Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 
 pub const PC: ProgramPoint = ProgramPoint(0);
@@ -17,11 +17,8 @@ pub fn provenance(threads: u32) -> Provenance {
         kernel: "k".to_string(),
         block_dim: (threads, 1, 1),
         grid_dim: (1, 1, 1),
-        targets: vec!["Sm90a".to_string()],
-        assumptions: vec![
-            volta_graph::Assumption::StructuredCta,
-            volta_graph::Assumption::ExitedThreadsArrive,
-        ],
+        targets: vec!["Sm100a".to_string()],
+        assumptions: vec![Assumption::StructuredCta, Assumption::ExitedThreadsArrive],
         instructions: vec![
             InstructionInfo {
                 kind: "test",
@@ -32,16 +29,56 @@ pub fn provenance(threads: u32) -> Provenance {
     }
 }
 
+/// [`provenance`] on a target with an async proxy.
+pub fn async_proxy_provenance(threads: u32) -> Provenance {
+    let mut p = provenance(threads);
+    p.assumptions.push(Assumption::AsyncProxy);
+    p
+}
+
 /// A graph under construction plus the arena its stored values live in.
 pub struct Scenario {
     pub b: GraphBuilder,
     pub arena: ExprArena,
     barrier: Option<SyncObjectId>,
     barrier_index: u32,
+    next_mbarrier: u64,
 }
 
 pub fn t(i: u32) -> ThreadIx {
     ThreadIx(i)
+}
+
+/// One Tensor Memory effect of a `tcgen05` op: mode, role, lanes `[l, l + n)`, columns
+/// `[c, c + m)`.
+#[derive(Debug, Clone, Copy)]
+pub struct Cells {
+    pub mode: AccessMode,
+    pub role: OperandRole,
+    pub lanes: (u8, u8),
+    pub cols: (u16, u16),
+}
+
+impl Cells {
+    /// An MMA accumulator effect over all 128 lanes.
+    pub fn accumulator(mode: AccessMode, cols: (u16, u16)) -> Cells {
+        Cells {
+            mode,
+            role: OperandRole::Accumulator,
+            lanes: (0, 128),
+            cols,
+        }
+    }
+
+    /// A `tcgen05.ld`/`.st` effect of one warp's 32-lane quadrant.
+    pub fn quadrant(mode: AccessMode, warp: u8, cols: (u16, u16)) -> Cells {
+        Cells {
+            mode,
+            role: OperandRole::TmemData,
+            lanes: (warp * 32, 32),
+            cols,
+        }
+    }
 }
 
 impl Scenario {
@@ -55,6 +92,7 @@ impl Scenario {
             arena: ExprArena::new(),
             barrier: None,
             barrier_index: 0,
+            next_mbarrier: 0x1000,
         }
     }
 
@@ -62,14 +100,11 @@ impl Scenario {
         self.arena.int(v)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn access(
         &mut self,
         thread: u32,
-        space: Space,
-        mode: AccessMode,
-        addr: u64,
-        width: u32,
+        (space, mode): (Space, AccessMode),
+        (addr, width): (u64, u32),
         value: Option<ExprId>,
         (proxy, role): (Proxy, OperandRole),
     ) -> MemAccess {
@@ -86,40 +121,33 @@ impl Scenario {
         }
     }
 
+    /// `thread` reads 4 shared bytes at `addr`.
     pub fn read(&mut self, thread: u32, addr: u64) -> EventId {
+        self.read_bytes(thread, addr, 4)
+    }
+
+    pub fn read_bytes(&mut self, thread: u32, addr: u64, width: u32) -> EventId {
         let a = self.access(
             thread,
-            Space::Shared,
-            AccessMode::Read,
-            addr,
-            4,
+            (Space::Shared, AccessMode::Read),
+            (addr, width),
             None,
             (Proxy::Generic, OperandRole::Plain),
         );
         self.b.thread_access(t(thread), PC, a)
     }
 
+    /// `thread` writes `value` to 4 shared bytes at `addr`.
     pub fn write(&mut self, thread: u32, addr: u64, value: i64) -> EventId {
         let v = self.value(value);
-        let a = self.access(
-            thread,
-            Space::Shared,
-            AccessMode::Write,
-            addr,
-            4,
-            Some(v),
-            (Proxy::Generic, OperandRole::Plain),
-        );
-        self.b.thread_access(t(thread), PC, a)
+        self.write_expr(thread, addr, v)
     }
 
     pub fn write_expr(&mut self, thread: u32, addr: u64, value: ExprId) -> EventId {
         let a = self.access(
             thread,
-            Space::Shared,
-            AccessMode::Write,
-            addr,
-            4,
+            (Space::Shared, AccessMode::Write),
+            (addr, 4),
             Some(value),
             (Proxy::Generic, OperandRole::Plain),
         );
@@ -172,15 +200,7 @@ impl Scenario {
             },
         );
         for &th in arrive {
-            self.b.contribute(
-                t(th),
-                PC,
-                g,
-                ContributionKind::Arrival {
-                    count: 1,
-                    expect_tx: 0,
-                },
-            );
+            self.arrive(th, g);
         }
         for &th in sync {
             self.b.contribute(t(th), PC, g, ContributionKind::Blocking);
@@ -192,11 +212,13 @@ impl Scenario {
         g
     }
 
+    /// A new mbarrier, initialized by `initializer`, at its own shared address.
     pub fn mbarrier(&mut self, initializer: u32, expected: u64) -> SyncObjectId {
         let o = self.b.sync_object(SyncObjectKind::Mbarrier {
-            addr: 0x1000,
+            addr: self.next_mbarrier,
             expected_arrivals: expected,
         });
+        self.next_mbarrier += 8;
         self.b.object_init(t(initializer), PC, o);
         o
     }
@@ -222,7 +244,7 @@ impl Scenario {
         self.b.complete_generation(g, GenerationEvidence::default())
     }
 
-    /// `thread` waits on `object` for `parity` and is released by `g`.
+    /// `thread` waits on `object` for `parity` and is released by `g`; returns the release.
     pub fn wait(
         &mut self,
         thread: u32,
@@ -261,9 +283,111 @@ impl Scenario {
     ) -> AsyncOpId {
         let op = self.b.async_issue(t(issuer), PC, kind);
         let value = (mode == AccessMode::Write).then(|| self.arena.int(99));
-        let a = self.access(issuer, Space::Shared, mode, addr, 4, value, (proxy, role));
+        let a = self.access(
+            issuer,
+            (Space::Shared, mode),
+            (addr, 4),
+            value,
+            (proxy, role),
+        );
         self.b.async_effect(op, a);
         op
+    }
+
+    /// The single effect event of an op built by [`Self::async_op`].
+    pub fn effect(&self, op: AsyncOpId) -> EventId {
+        self.b
+            .graph_so_far()
+            .events()
+            .iter()
+            .find(|(_, ev)| {
+                ev.ctx == volta_graph::ExecContext::Async(op)
+                    && matches!(ev.kind, volta_graph::EventKind::Access(_))
+            })
+            .expect("the op has an effect")
+            .0
+    }
+
+    /// A `tcgen05` op of `kind` by `issuer` with the Tensor Memory effects `cells`; returns
+    /// the op and its effect events.
+    pub fn tmem_op(
+        &mut self,
+        issuer: u32,
+        kind: AsyncOpKind,
+        cells: &[Cells],
+    ) -> (AsyncOpId, Vec<EventId>) {
+        let op = self.b.async_issue(t(issuer), PC, kind);
+        let effects = cells
+            .iter()
+            .map(|c| {
+                let value =
+                    (c.mode == AccessMode::Write).then(|| self.b.value(StoredValue::Opaque));
+                self.b.async_effect(
+                    op,
+                    MemAccess {
+                        space: Space::Tensor,
+                        mode: c.mode,
+                        ordering: OrderingKind::Ordinary,
+                        proxy: Proxy::Async,
+                        footprint: Footprint::Tensor {
+                            lane: c.lanes.0,
+                            lanes: c.lanes.1,
+                            col: c.cols.0,
+                            cols: c.cols.1,
+                        },
+                        role: c.role,
+                        attributed: t(issuer),
+                        value,
+                    },
+                )
+            })
+            .collect();
+        (op, effects)
+    }
+
+    /// A `tcgen05.mma` by `issuer` writing accumulator columns `cols` of every lane: the op
+    /// and its write effect.
+    pub fn mma(&mut self, issuer: u32, cols: (u16, u16)) -> (AsyncOpId, EventId) {
+        let (op, effects) = self.tmem_op(
+            issuer,
+            AsyncOpKind::Tcgen05Mma,
+            &[Cells::accumulator(AccessMode::Write, cols)],
+        );
+        (op, effects[0])
+    }
+
+    /// A `tcgen05.ld` by `issuer` reading columns `cols` of warp `warp`'s lanes.
+    pub fn tmem_ld(&mut self, issuer: u32, warp: u8, cols: (u16, u16)) -> (AsyncOpId, EventId) {
+        let (op, effects) = self.tmem_op(
+            issuer,
+            AsyncOpKind::Tcgen05Ld,
+            &[Cells::quadrant(AccessMode::Read, warp, cols)],
+        );
+        (op, effects[0])
+    }
+
+    /// `thread`'s `tcgen05.commit` of `ops` to phase `g`: the phase tracks them, then the
+    /// thread arrives on it. Returns the arrival.
+    pub fn commit(&mut self, thread: u32, g: GenerationId, ops: &[AsyncOpId]) -> EventId {
+        for &op in ops {
+            self.b.track(op, g, 0);
+        }
+        self.arrive(thread, g)
+    }
+
+    pub fn tcgen05_before(&mut self, thread: u32) -> EventId {
+        self.b
+            .fence(t(thread), PC, FenceKind::Tcgen05BeforeThreadSync)
+    }
+
+    pub fn tcgen05_after(&mut self, thread: u32) -> EventId {
+        self.b
+            .fence(t(thread), PC, FenceKind::Tcgen05AfterThreadSync)
+    }
+
+    /// `fence.proxy.async` over `space` (`None`: every space).
+    pub fn proxy_fence(&mut self, thread: u32, space: Option<Space>) -> EventId {
+        self.b.fence(t(thread), PC, FenceKind::ProxyAsync { space })
     }
 
     pub fn exit(&mut self, thread: u32) -> EventId {
@@ -285,5 +409,14 @@ impl Scenario {
     pub fn completed(mut self, threads: u32) -> (EventGraph, ExprArena) {
         self.exit_all(threads);
         self.finish(Terminal::Completed)
+    }
+
+    /// The graph so far, as an aborted (partial) trace.
+    pub fn aborted(self) -> (EventGraph, ExprArena) {
+        self.finish(Terminal::Aborted {
+            thread: None,
+            pc: None,
+            reason: "test".to_string(),
+        })
     }
 }

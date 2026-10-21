@@ -95,7 +95,7 @@ pub fn check_equivalent(
     EquivSession::new(arena1, arena2).check(e1, e2)
 }
 
-/// The race detector's benign same-value store check, decided by canon.
+/// The [`ValueEquality`] query, decided by canon.
 /// A canon error (e.g. an undefined operand) counts as "not the same".
 pub struct CanonValueEquality;
 

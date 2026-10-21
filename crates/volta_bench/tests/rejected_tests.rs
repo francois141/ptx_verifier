@@ -1,7 +1,7 @@
-//! End-to-end tests on ill-formed or unsupported kernels other than races:
-//! invalid instructions and encodings, deadlocks (a failed progress
-//! property), out-of-bounds or misaligned accesses, undefined outputs, and
-//! unmodeled forms.
+//! End-to-end tests on ill-formed or unsupported kernels other than conflicts:
+//! invalid instructions and encodings, deadlocks (the trace generator's
+//! diagnostic, not a graph check), out-of-bounds or misaligned accesses, the
+//! wgmma register hazards, undefined outputs, and unmodeled forms.
 
 #[macro_use]
 mod common;
@@ -12,7 +12,7 @@ use volta_analysis::eval::{
 use volta_analysis::{AnalysisError, LowerError};
 use volta_equivalence::check_output_equivalence;
 use volta_frontend::ast::Module;
-use volta_graph_check::progress::Deadlock;
+use volta_graph_check::Deadlock;
 
 use common::*;
 
@@ -89,13 +89,15 @@ fn test_extern_only_shared_placement_and_bounds() {
     );
 }
 
-/// The progress property's one deadlock witness for `module` on `threads` threads.
+/// The trace generator's deadlock for `module` on `threads` threads.
 fn deadlock(module: &Module, threads: u32) -> Deadlock {
     let checked = check(module, None, AnalysisConfig::new((threads, 1, 1)));
-    match checked.report.progress.violations() {
-        [d] => d.clone(),
-        _ => panic!("expected a deadlock, got: {:?}", checked.report.progress),
-    }
+    checked.report.deadlock().unwrap_or_else(|| {
+        panic!(
+            "expected a deadlock, got the terminal state {:?}",
+            checked.report.terminal
+        )
+    })
 }
 
 /// Threads waiting on different barrier ids never fire: deadlock.
@@ -129,6 +131,55 @@ fn test_wgmma_fence_skipped_by_one_lane_deadlocks() {
     )
     .blocked;
     assert!(!blocked.is_empty());
+}
+
+/// Hazard A (`WgmmaFenceHazard`): an ordinary register write between the two
+/// calls breaks the same-shape chain, and the second call's accumulator read
+/// has no `wgmma.fence`.
+#[test]
+fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
+    let module = ptx!(parse "execution_error/wgmma_fence_hazard_ordinary_write_breaks_chain");
+    let err = run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    assert!(
+        matches!(err, AnalysisError::Eval(EvalError::WgmmaFenceHazard { .. })),
+        "expected a wgmma fence hazard, got: {}",
+        err
+    );
+}
+
+/// Hazard B (`WgmmaWaitGroupHazard`): a plain read of an accumulator
+/// register still pending a `wgmma.wait_group` release.
+#[test]
+fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
+    let module =
+        ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_read_of_pending_accumulator");
+    let err = run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })
+        ),
+        "expected a wgmma wait_group hazard, got: {}",
+        err
+    );
+}
+
+/// Likewise, an ordinary *write* to a pending accumulator register before
+/// `wgmma.wait_group` is a hazard (`write_reg`'s hazard-B check, not just
+/// `read_reg`'s).
+#[test]
+fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
+    let module =
+        ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_write_of_pending_accumulator");
+    let err = run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })
+        ),
+        "expected a wgmma wait_group hazard, got: {}",
+        err
+    );
 }
 
 /// `.relaxed` on `mbarrier.arrive`/`try_wait.parity` is rejected at lowering:

@@ -1,5 +1,5 @@
 //! The typed operation/event graph of one candidate execution: the boundary between Volta's
-//! analysis (which records it) and the graph property checkers (which consume it). Neither side
+//! analysis (which records it) and the graph checks (which consume it). Neither side
 //! depends on the other; this crate is their only shared contract besides `volta_expr`.
 //!
 //! # Contract

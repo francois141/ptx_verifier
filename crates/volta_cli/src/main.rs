@@ -15,7 +15,7 @@ use volta_analysis::eval::{
 use volta_common::run_log;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_equivalence::vc_dump::{VcDump, read_vc_dump, write_vc_dump};
-use volta_equivalence::{CanonValueEquality, EquivCheckOptions, EquivOutcome};
+use volta_equivalence::{EquivCheckOptions, EquivOutcome};
 use volta_expr::SymbolicOutputs;
 use volta_expr::spec::unfold;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
@@ -480,8 +480,8 @@ impl KernelSide {
     }
 }
 
-/// Print the graph branch's per-property verdicts for one kernel, with each failed property's
-/// witnesses, and its proof scope.
+/// Print the graph branch's per-check verdicts for one kernel, with each failed check's
+/// witnesses, the trace generator's deadlock, and its proof scope.
 fn print_graph_report(side: &KernelSide) {
     println!("{}: graph verification", side.label);
     for s in side.report.summaries() {
@@ -490,13 +490,20 @@ fn print_graph_report(side: &KernelSide) {
             PropertyVerdict::Fail => "FAIL",
             PropertyVerdict::Unknown => "UNKNOWN",
         };
-        println!("  {:<45} {}", s.property.name(), verdict);
+        let check = format!("{} ({})", s.property.name(), s.property.algorithm());
+        println!("  {:<55} {}", check, verdict);
         for f in s.findings.iter().take(3) {
             println!("      {}", f);
         }
         if s.findings.len() > 3 {
             println!("      ... ({} more)", s.findings.len() - 3);
         }
+    }
+    if let Some(deadlock) = side.report.deadlock() {
+        println!(
+            "  trace: deadlock, {} blocked thread(s)",
+            deadlock.blocked.len()
+        );
     }
     match &side.report.scope {
         ProofScope::ScheduleIndependent => println!("  scope: schedule-independent"),
@@ -537,8 +544,8 @@ fn run_kernel(
     kernel: Option<&str>,
     config: AnalysisConfig,
 ) -> Result<(KernelRun, KernelSide), String> {
-    let verified = verify_kernel(module, kernel, config, &CanonValueEquality)
-        .map_err(|e| format!("{} kernel: {}", label, e))?;
+    let verified =
+        verify_kernel(module, kernel, config).map_err(|e| format!("{} kernel: {}", label, e))?;
     let AnalysisParts {
         outputs,
         graph,
@@ -628,11 +635,16 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
     print_graph_report(&side);
     let (verdict, reasons) = match side.report.conclusion() {
         GraphConclusion::Verified => (Verdict::Accept, Vec::new()),
-        GraphConclusion::Rejected { failed } => (
+        GraphConclusion::Rejected { failed, deadlock } => (
             Verdict::Reject,
-            failed
-                .iter()
-                .map(|s| format!("{} failed", s.property.name()))
+            deadlock
+                .map(|_| "the trace deadlocked".to_string())
+                .into_iter()
+                .chain(
+                    failed
+                        .iter()
+                        .map(|s| format!("{} failed", s.property.name())),
+                )
                 .collect(),
         ),
         GraphConclusion::Unknown { reasons } => (Verdict::Unknown, reasons),

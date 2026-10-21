@@ -25,7 +25,7 @@ crates/
 ├── volta_frontend/   # PTX lexer and parser
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
-├── volta_graph_check/ # Graph property checkers (one per property) and their suite
+├── volta_graph_check/ # The six graph checks of the Volta v2 design (Algorithms 1-6) and their suite
 ├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
@@ -43,7 +43,7 @@ volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analys
 volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
 volta_equivalence → volta_expr
 volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
-volta_graph_check → volta_graph, volta_expr
+volta_graph_check → volta_graph
 volta_graph       → volta_expr
 volta_expr        → (nothing)
 volta_frontend    → volta_common
@@ -162,10 +162,10 @@ against a spec exactly like against a second kernel (`volta verify`). The
 
 ### Value equality (`value_equality.rs`)
 
-`ValueEquality`: the memory-conflict checker's query for a benign same-value
-store, passed explicitly to the graph branch (`SymbolicFacts`) so neither the
-interpreter nor the checkers depend on a decision procedure;
-`volta_equivalence::CanonValueEquality` implements it.
+`ValueEquality`: a same-value query over one arena;
+`volta_equivalence::CanonValueEquality` implements it. The graph branch no
+longer consumes it: the memory-conflict check (Algorithm 2) has no benign
+equal-store exception.
 
 ### Text format (`text.rs`, `.vexpr`)
 
@@ -197,7 +197,7 @@ so a new node kind cannot ship without a text form.
 **Path**: `crates/volta_graph/`
 
 The typed operation/event graph of one candidate execution, recorded by the
-analysis and consumed by graph property checkers; depends only on
+analysis and consumed by the graph checks; depends only on
 `volta_expr` (stored values are `ExprId`s of the analysis's arena). The
 crate-level docs in `lib.rs` are the contract.
 
@@ -280,7 +280,7 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `tensor_core.rs` fragment tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
 - `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it (a warp's wait covers the groups it committed itself). In the graph each member has a share (an async op); the warpgroup op completes as a whole, so a member warp's wait tracks every share of the instances it releases
 - `eval/config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
-- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, the wgmma register hazards, etc.); data races, async hazards and deadlocks are not `EvalError`s but graph property failures
+- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, the wgmma register hazards, etc.); data races and async hazards are not `EvalError`s but graph check failures, and a deadlock is the stuck terminal state the graph records
 
 Key semantics: input-array symbols materialize lazily on first read; reads of
 never-written registers/shared bytes yield `Undefined` (an error only if it
@@ -315,60 +315,77 @@ escalation (debug) in `volta_equivalence`. `cargo run -p volta_cli
 
 **Path**: `crates/volta_graph_check/`
 
-One checker per property, each callable on an `EventGraph` in isolation with
-explicitly passed certificates, each with its contract (property, scope, uses,
-prerequisites, PASS/FAIL/UNKNOWN meaning) in its module docs. Every checker
-returns `PropertyResult<E, V> = Pass(evidence) | Fail(witnesses) |
-Unknown(unresolved)`; none turns an unsupported case into `Pass`. Depends only
-on `volta_graph` and `volta_expr`.
+Exactly the six checks of the Volta v2 design's data-race freedom check (§1.3
+of the design document), one module each, each callable on an `EventGraph` in
+isolation with explicitly passed certificates, each with its algorithm and
+contract (PASS/FAIL/UNKNOWN meaning) in its module docs. Every check returns
+`PropertyResult<E, V> = Pass(evidence) | Fail(witnesses) | Unknown(unresolved)`;
+none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
 
-- `hb.rs` - happens-before over *admitted* typed edges only (vector-clock sweep
-  in trace order): program order; contribution -> generation -> release for
-  validated generations; async effects ordered after their issue and before
-  the releases observing their validated completion (never into the issuer's
-  program order); exited-thread arrival only under the Sync' assumption;
-  `CompleteTx` orders nothing. A derived view: it certifies nothing.
-- `well_formed.rs` (1) - representation invariants, terminal state, ordinary
-  effects only.
-- `barrier.rs` (3) - generation stability: Weft (PLDI'15) Fig. 4/Theorem 1 for
-  named barriers; Volta's mbarrier adaptation (A1-A3, no theorem: failures are
-  `Unknown`); collectives; emits the `SyncCertificate`.
-- `async_completion.rs` (4) - each op's completion association re-derived from
-  its instruction's mechanism (a commit is never completion); a warp syncing
-  past an unwaited `tcgen05.ld/st` fails; emits the `CompletionCertificate`.
-- `pipeline.rs` (6) - same-issuer `tcgen05.mma` chains on one accumulator
-  (the only certified pipeline order); emits the `PipelineCertificate`.
-- `proxy.rs` (5) - a generic write read by the async proxy needs a covering
-  `fence.proxy.async` (writer's or reader's) ordered between them.
-- `race.rs` (7) - memory-conflict freedom: W-R, W-W and R-W (buffer reuse) per
-  byte / TMEM cell, FastTrack-style; ordered only through admitted edges or a
-  certified pipeline pair; benign equal stores via the explicit
-  `SymbolicFacts { arena, value_equality }`; atomics/reductions are
-  unresolved, never judged by non-atomic rules. `Fail` only when unordered
-  through every candidate edge.
-- `lifetime.rs` (8) - TMEM alloc/dealloc and mbarrier init/inval lifetimes
-  (T1/T2/M1/M2, each lifting an interpreter-trace check to every schedule);
-  leaks and never-observed async ops at completion are unresolved.
-- `progress.rs` (2) - stuck = `Fail` (deadlock); aborted = `Unknown`;
-  completed passes only through validated generations and completions.
-- `suite.rs` - `check_graph(graph, facts) -> GraphReport` runs them in
-  `Property::ALL` order (a topological order of `Property::prerequisites`);
-  `GraphReport::conclusion()`: `Verified` / `Rejected` / `Unknown`.
-- `scope.rs` - `ProofScope`: `ScheduleIndependent` (ordinary effects,
-  CTA/named barriers, warp collectives, cp.async group waits) or
-  `CandidateOnly { reasons }` (async ops, mbarrier phases) - a candidate-only
-  pass is never a verification.
+| # | `Property`          | Algorithm | Module                                |
+|---|---------------------|-----------|---------------------------------------|
+| 1 | `NamedBarrierEpoch` | 1         | `barrier_epoch.rs`                    |
+| 2 | `MbarrierEpoch`     | 1         | `barrier_epoch.rs`                    |
+| 3 | `MemoryConflict`    | 2         | `memory_conflict.rs`                  |
+| 4 | `ProxyOrder`        | 3         | `proxy_order.rs`                      |
+| 5 | `TensorOrder`       | 4 (+ 5)   | `tensor_order.rs`, `sync_search.rs`   |
+| 6 | `ResourceLifetime`  | 6         | `resource_lifetime.rs`                |
+
+- `relation.rs` - the typed edges `E = E_PO ∪ E_causal ∪ E_pipeline ∪ E_sync`
+  and their projections, never used untyped: `IndependentGraph` (`G0`: program
+  order, causal, every thread join, no mbarrier completion join) and
+  `ValidatedGraph` (`G_HB` = Algorithm 4's `D`: `G0` plus the mbarrier
+  completion joins), built only from both barrier-epoch certificates
+  (`assuming_epochs` for isolated tests). Closure queries are a vector-clock
+  sweep in trace order (an async effect reaches what an observer of its
+  completion reaches); `successors()` gives `D` explicitly for Algorithm 5.
+- `pipeline.rs` - `E_pipeline` (graph-construction step 5): same-thread
+  `tcgen05.mma` chains on one accumulator, edges between accumulator effects
+  only, with rule, roles and covered cells. No projection contains it.
+- `domain.rs` - the memory domains: `M` (ordinary global/shared effects, async
+  ones and shared-memory `tcgen05` operands included; Algorithms 2-3) and `A`
+  (Tensor Memory effects of `tcgen05` ops; Algorithms 4 and 6).
+- `barrier_epoch.rs` - Weft's separation criterion over `G0`: every
+  synchronization `s` of generation `k` reaches (or is) the program
+  predecessor of every operation `v` of `k + 1`; returns the first
+  VIOLATION(s, v); a pass issues `NamedBarrierEpochs` / `MbarrierEpochs`.
+- `memory_conflict.rs` - every overlapping pair of `M` with a write ordered in
+  `G_HB`; `Fail` lists all of `B` (a per-byte dominance forest finds each
+  unordered pair once, at its lowest byte); no benign equal-store exception;
+  atomics are outside the contract (`Unknown`); a pass issues
+  `MemoryConflictFree`.
+- `proxy_order.rs` - every ordered cross-proxy pair needs a covering fence:
+  an explicit `fence.proxy.async` on either side's thread, or the implicit fence
+  of a validated completion observation (async -> generic). UNPROVEDPROXYORDER
+  is `Unknown`, never `Fail`.
+- `tensor_order.rs` / `sync_search.rs` - conflicting TMEM pairs of distinct ops,
+  oriented by issue: pipelined, or a `D` path from issue to issue through a
+  source-thread `tcgen05.fence::before_thread_sync` (or tracking
+  `tcgen05.commit`) then a target-thread `::after_thread_sync`.
+- `resource_lifetime.rs` - TMEM allocations: each use covered by its
+  allocation, each allocation freed exactly once, then phase 1 (use reaches
+  its dealloc) and phase 2 (alloc reaches the use).
+- `suite.rs` - `check_graph(graph) -> GraphReport` runs them in
+  `Property::ALL` order (a topological order of `Property::prerequisites`; a
+  check whose prerequisites failed is `Unknown`); `GraphReport::conclusion()`:
+  `Verified` / `Rejected { failed, deadlock }` / `Unknown`. A stuck trace is the
+  trace generator's deadlock diagnostic, an aborted one is inconclusive.
+- `scope.rs` - `ProofScope`, the schedule-coverage argument (not a check):
+  `ScheduleIndependent` (structured CTA, ordinary effects, named barriers, warp
+  collectives, no async op) or `CandidateOnly { reasons }` (async ops, mbarrier
+  phases) - a candidate-only pass is never a verification.
 
 ## Crate: volta_pipeline
 
 **Path**: `crates/volta_pipeline/`
 
-The integration point: `verify_kernel` (analysis stage + graph branch),
+The integration point: `verify_kernel(module, kernel, config)` (analysis stage
++ the graph branch's six checks),
 `check_equivalence` (the equivalence branch over symbolic outputs only; a
 claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
-and every kernel `Verified`; any refutation or failed property is REJECT;
+and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
 anything else, a candidate-only pass included, is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches) and
 `architecture_tests.rs` (the stage/branch boundaries).
@@ -472,11 +489,14 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   `Verified` (a candidate-only pass fails the test), then the rendered
   symbolic outputs must match the kernel's `.out` file exactly
   (`VOLTA_BLESS=1` rewrites them).
-- `race_tests.rs` - races and async hazards: the failed property's typed
-  witness (conflict kind, location, each side's thread, access mode and async
-  op); the wgmma register hazards are execution errors.
-- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors) and
-  deadlocks (the progress property's witness).
+- one suite per check whose witnesses PTX kernels exercise, each asserting on
+  that check's typed witness only: `memory_conflict_tests.rs` (Algorithm 2:
+  conflict kind, byte, each side's thread, access mode and async op),
+  `tensor_order_tests.rs` (Algorithm 4: the Tensor Memory cell and sides),
+  `resource_lifetime_tests.rs` (Algorithm 6: the use freed while unordered).
+- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors, the
+  wgmma register hazards) and deadlocks (the trace generator's diagnostic,
+  `GraphReport::deadlock`).
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
   detail, each `Verified`, must not be proved equivalent.
@@ -488,7 +508,7 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
 Commands:
 
 - `volta parse <file>` - Check syntax
-- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph property's verdict, the proof scope and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph
+- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph check's verdict (with its algorithm), the trace's deadlock, the proof scope and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph
 - `volta compare <ref.ptx> <opt.ptx> --kernel1 .. --kernel2 .. --check-array out` - Two-kernel
   equivalence check (launch flags shared with `analyze` via a flattened
   `LaunchArgs`; `--block2`/`--grid2` override the optimized kernel's dims).
@@ -535,7 +555,7 @@ AnalysisResult ──► SymbolicOutputs (volta_expr) + EventGraph (volta_graph)
     ├──────────────────────────────┐
     ▼                              ▼
 volta_equivalence (canon/)     volta_graph_check (check_graph)
-  per-element VC checking        one checker per property, dependency order
+  per-element VC checking        the six checks (Algorithms 1-6), in order
   (+ numeric.rs oracle)          (+ ProofScope)
     └──────────────┬───────────────┘
                    ▼
@@ -554,7 +574,7 @@ Memory addresses must be concrete (`u64`) for race detection. Thread indices are
 
 ### 3. Race Detection Is Not Part of the Evaluator
 
-The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream, one checker per property (memory conflicts through typed happens-before, never untyped reachability). Passing every property implies schedule independence only in the `ProofScope::ScheduleIndependent` fragment; elsewhere it is a candidate-execution fact, reported as UNKNOWN.
+The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream with the six checks of the Volta v2 design (memory conflicts through the typed `G_HB` projection, never untyped reachability). Passing every check implies schedule independence only in the `ProofScope::ScheduleIndependent` fragment; elsewhere it is a candidate-execution fact, reported as UNKNOWN.
 
 ### 4. Round-Robin Scheduling
 

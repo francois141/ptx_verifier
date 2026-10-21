@@ -3,7 +3,7 @@
 //! pipeline, so any `Equivalent` verdict here is a soundness bug (false EQUIV).
 
 use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
-use volta_equivalence::{CanonValueEquality, EquivOutcome, check_output_equivalence};
+use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::text::{read_text, to_text};
 use volta_frontend::ascii::AsAscii;
@@ -119,13 +119,8 @@ struct NegativePair {
 
 /// The kernel's symbolic outputs: all the equivalence branch consumes.
 fn run(name: &str, kernel: &Kernel) -> SymbolicOutputs {
-    let verified = verify_kernel(
-        &parse(&kernel.src),
-        None,
-        kernel.config.clone(),
-        &CanonValueEquality,
-    )
-    .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e));
+    let verified = verify_kernel(&parse(&kernel.src), None, kernel.config.clone())
+        .unwrap_or_else(|e| panic!("{}: analysis failed: {}", name, e));
     let outputs = verified
         .analysis
         .into_parts()

@@ -1,71 +1,62 @@
-//! **Instruction/operand-specific asynchronous pipeline ordering.**
+//! **Implicit tensor-pipeline ordering** (§1.2, step 5): the typed relation `E_pipeline`.
 //!
-//! * Property: the pairs of asynchronous effects certified as ordered by an instruction's own
-//!   pipelining satisfy that instruction's conditions, operand by operand. The certificate is
-//!   what the memory-conflict checker may use instead of a completion wait.
-//! * Modeled pairing (PTX ISA, tcgen05 implicitly pipelined instructions): two
-//!   `tcgen05.mma.cta_group::1` (Volta's only form) issued by the same thread, in that program
-//!   order, on the same accumulator: identical Tensor Memory `D` footprints, hence the same
-//!   `M x N` shape. Only their accumulator (`D`) effects are ordered; their `A`/`B` reads
-//!   (shared memory or `[a-tmem]`) are not covered by the pairing.
-//! * Uses: async ops of kind `Tcgen05Mma`, their effects' space, role, mode and footprint, the
-//!   issuer's program order (issue positions).
-//! * Prerequisites: a well-formed graph.
-//! * `Pass`: every certified pair meets the conditions (the evidence counts chains and
-//!   pairs); same-issuer MMA pairs on overlapping but unequal accumulators are not certified
-//!   and left to the memory-conflict checker. `Unknown`: an MMA without an accumulator write,
-//!   whose pairing cannot be decided.
+//! ```text
+//! EligiblePipeline(x, y, a, b)  =>  (a, b) in E_pipeline
+//! ```
+//!
+//! * Candidate pairs `(x, y)` of dynamic `tcgen05` operations are matched to the supported PTX
+//!   rules by opcode and operand role; the matched rule's issue-order, warp, CTA-group,
+//!   address, shape and instruction-specific preconditions are checked, and an edge joins each
+//!   covered pair of effects `a ∈ Effects(x)`, `b ∈ Effects(y)`. An edge keeps its rule, its
+//!   operand roles and the physical cells it covers. It orders operand accesses only: not
+//!   whole-operation completion, not general memory visibility.
+//! * Supported rule ([`PipelineRule::MmaAccumulatorChain`], PTX ISA "implicitly pipelined
+//!   tcgen05 instructions"): `tcgen05.mma.cta_group::1` (Volta's only form) then another, issued
+//!   by the same thread in that program order (so one warp, issue order), on the same
+//!   accumulator: identical Tensor Memory `D` footprints, hence the same address and `M x N`
+//!   shape. It covers their accumulator (`D`) effects; `A`/`B` reads are not covered. An MMA
+//!   without an accumulator write has unknown preconditions and gets no edge.
+//! * Every edge joins two operations of one thread, so all are constructed immediately; none
+//!   needs a thread handoff's validation. No projection of [`crate::relation`] contains them.
 
 use std::collections::HashMap;
 
 use volta_graph::{
-    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, Footprint, OperandRole, Space, ThreadIx,
+    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext, Footprint,
+    OperandRole, Space, ThreadIx,
 };
 
-use crate::result::{PropertyResult, Unresolved};
+/// A supported implicit-pipelining rule of the PTX ISA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PipelineRule {
+    /// `tcgen05.mma` -> `tcgen05.mma` of one thread on one accumulator.
+    MmaAccumulatorChain,
+}
 
-/// Pipelined accumulator chains (ops in issue order) and each op's chain and position.
+/// One edge `(a, b)` of `E_pipeline`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipelineEdge {
+    pub rule: PipelineRule,
+    pub from: EventId,
+    pub to: EventId,
+    pub roles: (OperandRole, OperandRole),
+    /// The cells both effects touch.
+    pub cells: Footprint,
+}
+
+/// `E_pipeline` of one graph: the accumulator chains, ops in issue order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PipelineCertificate {
+pub struct PipelineEdges {
     chains: Vec<Vec<AsyncOpId>>,
     position: HashMap<AsyncOpId, (usize, usize)>,
 }
 
-impl PipelineCertificate {
-    /// No pipelined pair (for testing later checkers in isolation).
-    pub fn none() -> Self {
-        PipelineCertificate::default()
-    }
+/// A Tensor Memory rectangle: first lane, lanes, first column, columns.
+type Rectangle = (u8, u8, u16, u16);
 
-    /// Whether `first`'s accumulator effects are ordered before `second`'s by pipelining.
-    pub fn orders(&self, first: AsyncOpId, second: AsyncOpId) -> bool {
-        match (self.position.get(&first), self.position.get(&second)) {
-            (Some(&(c1, p1)), Some(&(c2, p2))) => c1 == c2 && p1 < p2,
-            _ => false,
-        }
-    }
-
-    /// The ops pipelined after `op` on its accumulator, in issue order.
-    pub fn successors(&self, op: AsyncOpId) -> &[AsyncOpId] {
-        match self.position.get(&op) {
-            Some(&(c, p)) => &self.chains[c][p + 1..],
-            None => &[],
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PipelineEvidence {
-    pub chains: usize,
-    pub certified_pairs: usize,
-}
-
-/// No violation is possible: the checker only certifies.
-pub type PipelineResult = PropertyResult<PipelineEvidence, std::convert::Infallible>;
-
-/// The accumulator footprints an MMA writes (its `D`), sorted.
-fn accumulator(graph: &EventGraph, op: AsyncOpId) -> Vec<Footprint> {
-    let mut d: Vec<Footprint> = graph
+/// The accumulator footprints an MMA writes, sorted: its `D`.
+fn accumulator(graph: &EventGraph, op: AsyncOpId) -> Vec<Rectangle> {
+    let mut d: Vec<Rectangle> = graph
         .async_op(op)
         .effects
         .iter()
@@ -75,70 +66,132 @@ fn accumulator(graph: &EventGraph, op: AsyncOpId) -> Vec<Footprint> {
                 && a.role == OperandRole::Accumulator
                 && a.mode == AccessMode::Write
         })
-        .map(|a| a.footprint)
+        .filter_map(|a| match a.footprint {
+            Footprint::Tensor {
+                lane,
+                lanes,
+                col,
+                cols,
+            } => Some((lane, lanes, col, cols)),
+            Footprint::Bytes { .. } => None,
+        })
         .collect();
-    d.sort_by_key(|f| match *f {
-        Footprint::Tensor {
-            lane,
-            lanes,
-            col,
-            cols,
-        } => (
-            u32::from(lane),
-            u32::from(lanes),
-            u32::from(col),
-            u32::from(cols),
-        ),
-        Footprint::Bytes { .. } => (u32::MAX, 0, 0, 0),
-    });
+    d.sort_unstable();
     d
 }
 
-pub fn check_pipeline(graph: &EventGraph) -> (PipelineResult, PipelineCertificate) {
-    if graph.validate().is_err() {
-        return (
-            PropertyResult::Unknown(vec![Unresolved::global("the graph is not well-formed")]),
-            PipelineCertificate::none(),
-        );
-    }
-    let mut unresolved = Vec::new();
-    let mut chains: HashMap<(ThreadIx, Vec<Footprint>), usize> = HashMap::new();
-    let mut certificate = PipelineCertificate::none();
+/// `E_pipeline` of `graph`.
+pub fn pipeline_edges(graph: &EventGraph) -> PipelineEdges {
+    let mut keys: HashMap<(ThreadIx, Vec<Rectangle>), usize> = HashMap::new();
+    let mut edges = PipelineEdges::default();
     for (op, a) in graph.async_ops().iter() {
         if a.kind != AsyncOpKind::Tcgen05Mma {
             continue;
         }
         let d = accumulator(graph, op);
         if d.is_empty() {
-            unresolved.push(Unresolved::at(
-                a.issue,
-                format!("tcgen05.mma {} has no accumulator write to pipeline", op.0),
-            ));
             continue;
         }
-        let next = chains.len();
-        let chain = *chains.entry((a.issuer, d)).or_insert(next);
-        if chain == certificate.chains.len() {
-            certificate.chains.push(Vec::new());
+        let next = keys.len();
+        let chain = *keys.entry((a.issuer, d)).or_insert(next);
+        if chain == edges.chains.len() {
+            edges.chains.push(Vec::new());
         }
-        let ops = &mut certificate.chains[chain];
-        certificate.position.insert(op, (chain, ops.len()));
-        ops.push(op);
+        edges
+            .position
+            .insert(op, (chain, edges.chains[chain].len()));
+        edges.chains[chain].push(op);
     }
-    let certified_pairs = certificate
-        .chains
-        .iter()
-        .map(|c| c.len() * c.len().saturating_sub(1) / 2)
-        .sum();
-    (
-        PropertyResult::from_findings(
-            PipelineEvidence {
-                chains: certificate.chains.len(),
-                certified_pairs,
-            },
-            Vec::new(),
-            unresolved,
-        ),
-        certificate,
-    )
+    edges
+}
+
+impl PipelineEdges {
+    /// The edge `(a, b)`, if `EligiblePipeline` holds for `a`'s and `b`'s operations and
+    /// effects: `a` an accumulator effect of an MMA chained before `b`'s, sharing cells.
+    pub fn edge(&self, graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
+        let (x, ax) = accumulator_effect(graph, a)?;
+        let (y, by) = accumulator_effect(graph, b)?;
+        let (&(cx, px), &(cy, py)) = (self.position.get(&x)?, self.position.get(&y)?);
+        if cx != cy || px >= py {
+            return None;
+        }
+        let cells = shared_cells(ax, by)?;
+        Some(PipelineEdge {
+            rule: PipelineRule::MmaAccumulatorChain,
+            from: a,
+            to: b,
+            roles: (OperandRole::Accumulator, OperandRole::Accumulator),
+            cells,
+        })
+    }
+
+    /// Every edge of `E_pipeline`, in issue order of their operations.
+    pub fn edges(&self, graph: &EventGraph) -> Vec<PipelineEdge> {
+        let effects = |op: AsyncOpId| -> Vec<EventId> {
+            graph
+                .events()
+                .iter()
+                .filter(|(_, ev)| {
+                    ev.ctx == ExecContext::Async(op) && matches!(ev.kind, EventKind::Access(_))
+                })
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let mut out = Vec::new();
+        for chain in &self.chains {
+            for (i, &x) in chain.iter().enumerate() {
+                for &y in &chain[i + 1..] {
+                    for a in effects(x) {
+                        for b in effects(y) {
+                            out.extend(self.edge(graph, a, b));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `event`'s operation and footprint, if it is an MMA's accumulator effect.
+fn accumulator_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, Footprint)> {
+    let ev = graph.event(event);
+    let (ExecContext::Async(op), EventKind::Access(acc)) = (ev.ctx, ev.kind) else {
+        return None;
+    };
+    let access = graph.access(acc);
+    (graph.async_op(op).kind == AsyncOpKind::Tcgen05Mma
+        && access.space == Space::Tensor
+        && access.role == OperandRole::Accumulator)
+        .then_some((op, access.footprint))
+}
+
+fn shared_cells(a: Footprint, b: Footprint) -> Option<Footprint> {
+    let (
+        Footprint::Tensor {
+            lane: al,
+            lanes: an,
+            col: ac,
+            cols: acn,
+        },
+        Footprint::Tensor {
+            lane: bl,
+            lanes: bn,
+            col: bc,
+            cols: bcn,
+        },
+    ) = (a, b)
+    else {
+        return None;
+    };
+    let lane = al.max(bl);
+    let lane_end = (u32::from(al) + u32::from(an)).min(u32::from(bl) + u32::from(bn));
+    let col = ac.max(bc);
+    let col_end = (u32::from(ac) + u32::from(acn)).min(u32::from(bc) + u32::from(bcn));
+    (u32::from(lane) < lane_end && u32::from(col) < col_end).then(|| Footprint::Tensor {
+        lane,
+        lanes: (lane_end - u32::from(lane)) as u8,
+        col,
+        cols: (col_end - u32::from(col)) as u16,
+    })
 }

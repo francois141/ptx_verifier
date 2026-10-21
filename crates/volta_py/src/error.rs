@@ -9,7 +9,7 @@ use pyo3::exceptions::PyException;
 use volta_analysis::analysis::AnalysisError;
 use volta_common::Span;
 use volta_frontend::parse::ParseError;
-use volta_graph_check::{Property, PropertySummary};
+use volta_graph_check::{Deadlock, Property, PropertySummary};
 
 create_exception!(
     volta,
@@ -91,22 +91,31 @@ pub fn analysis_error_to_py(err: AnalysisError) -> PyErr {
     VoltaError::new_err(err.to_string())
 }
 
-/// The exception for a kernel whose event graph failed `failed`: `DataRaceError` if
-/// memory-conflict freedom failed, else `DeadlockError` if progress did, else `VoltaError`.
-/// The message names every failed property with its first witness.
-pub fn graph_failure_to_py(failed: &[PropertySummary]) -> PyErr {
-    let message = failed
-        .iter()
-        .map(|s| match s.findings.first() {
+/// The exception for a kernel whose event graph failed `failed`, or whose trace `deadlock`ed:
+/// `DataRaceError` if memory-conflict freedom failed, else `DeadlockError` for a deadlock,
+/// else `VoltaError`. The message names the deadlock and every failed check with its first
+/// witness.
+pub fn graph_failure_to_py(failed: &[PropertySummary], deadlock: Option<&Deadlock>) -> PyErr {
+    let message = deadlock
+        .map(|d| {
+            format!(
+                "the trace deadlocked with {} blocked thread(s)",
+                d.blocked.len()
+            )
+        })
+        .into_iter()
+        .chain(failed.iter().map(|s| match s.findings.first() {
             Some(witness) => format!("{} failed: {}", s.property.name(), witness),
             None => format!("{} failed", s.property.name()),
-        })
+        }))
         .collect::<Vec<_>>()
         .join("; ");
-    let fails = |p: Property| failed.iter().any(|s| s.property == p);
-    if fails(Property::MemoryConflicts) {
+    if failed
+        .iter()
+        .any(|s| s.property == Property::MemoryConflict)
+    {
         DataRaceError::new_err(message)
-    } else if fails(Property::Progress) {
+    } else if deadlock.is_some() {
         DeadlockError::new_err(message)
     } else {
         VoltaError::new_err(message)
@@ -114,7 +123,7 @@ pub fn graph_failure_to_py(failed: &[PropertySummary]) -> PyErr {
 }
 
 /// Catch-all for `Display`-only errors (spec instantiation, unfolding, equivalence
-/// checks): ordinary failures, not graph property failures.
+/// checks): ordinary failures, not graph check failures.
 pub fn other_error_to_py(err: impl std::fmt::Display) -> PyErr {
     VoltaError::new_err(err.to_string())
 }

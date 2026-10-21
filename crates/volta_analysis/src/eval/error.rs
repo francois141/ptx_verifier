@@ -46,7 +46,7 @@ pub enum ClcMisuse {
 
 /// Errors of one candidate execution: structured-CTA violations or implementation limits, which
 /// the paper models as raised exceptions. Data races, async hazards and deadlocks are not
-/// errors here: they are graph property failures (`volta_graph_check`).
+/// errors here: they are graph check failures or the graph's stuck terminal state.
 #[derive(Debug)]
 pub enum EvalError {
     /// A `wgmma.mma_async` accessed an accumulator register without an intervening

@@ -1,46 +1,58 @@
-//! Every property checker over one graph, in dependency order: each checker receives exactly
-//! the certificates of its declared prerequisites ([`Property::prerequisites`]), so the suite
-//! adds no reasoning of its own.
+//! The six checks over one graph, in the design's order, each receiving exactly the
+//! certificates of its prerequisites ([`Property::prerequisites`]); the suite adds no reasoning
+//! of its own beyond reading the trace generator's terminal state.
+//!
+//! The trace generator, not a check, reports a deadlock (`¬Terminal(S) ∧ Enabled(S) = ∅`) or
+//! an abort on invalid or unsupported behavior (§1.2): a stuck trace is a diagnostic, an
+//! aborted one inconclusive, and the checks still run on the partial graph either way.
 
-use volta_graph::EventGraph;
+use volta_graph::{BlockedThread, EventGraph, Terminal};
 
-use crate::async_completion::{CompletionResult, check_async_completion};
-use crate::barrier::{BarrierResult, check_barriers};
-use crate::lifetime::{LifetimeResult, check_lifetimes};
-use crate::pipeline::{PipelineResult, check_pipeline};
-use crate::progress::{ProgressResult, check_progress};
-use crate::proxy::{ProxyResult, check_proxy};
-use crate::race::{RaceInputs, RaceResult, SymbolicFacts, check_races};
+use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
+use crate::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
+use crate::proxy_order::{ProxyOrderResult, check_proxy_order};
+use crate::relation::ValidatedGraph;
+use crate::resource_lifetime::{LifetimeResult, check_resource_lifetimes};
 use crate::result::{Property, PropertyResult, Unresolved, Verdict};
 use crate::scope::{ProofScope, proof_scope};
-use crate::well_formed::{WellFormedResult, check_well_formed};
+use crate::tensor_order::{TensorOrderResult, check_tensor_order};
 
-/// Every property's result for one graph, plus the scope its passes would justify.
+/// Every check's result for one graph, the trace's end, and the scope its passes would justify.
 #[derive(Debug, Clone)]
 pub struct GraphReport {
-    pub well_formed: WellFormedResult,
-    pub barrier: BarrierResult,
-    pub async_completion: CompletionResult,
-    pub pipeline: PipelineResult,
-    pub proxy: ProxyResult,
-    pub memory_conflicts: RaceResult,
-    pub lifetime: LifetimeResult,
-    pub progress: ProgressResult,
+    pub terminal: Terminal,
+    pub named_barrier_epoch: EpochResult,
+    pub mbarrier_epoch: EpochResult,
+    pub memory_conflict: MemoryConflictResult,
+    pub proxy_order: ProxyOrderResult,
+    pub tensor_order: TensorOrderResult,
+    pub resource_lifetime: LifetimeResult,
     pub scope: ProofScope,
+}
+
+/// The trace generator's deadlock: no thread can proceed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deadlock {
+    pub blocked: Vec<BlockedThread>,
 }
 
 /// The graph branch's conclusion for one kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphConclusion {
-    /// Every property passed, and the proof scope extends that to every schedule.
+    /// The trace completed, every check passed, and the proof scope extends that to every
+    /// schedule.
     Verified,
-    /// Some property failed: those properties, with their witnesses.
-    Rejected { failed: Vec<PropertySummary> },
-    /// Nothing failed, but these obligations are unresolved or the passes are candidate-only.
+    /// Some check failed (those checks, with their witnesses), or the trace deadlocked.
+    Rejected {
+        failed: Vec<PropertySummary>,
+        deadlock: Option<Deadlock>,
+    },
+    /// Nothing failed, but these obligations are unresolved, the trace was aborted, or the
+    /// passes are candidate-only.
     Unknown { reasons: Vec<String> },
 }
 
-/// One property's outcome, without its typed payload.
+/// One check's outcome, without its typed payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertySummary {
     pub property: Property,
@@ -70,33 +82,45 @@ fn summarize<E: std::fmt::Debug, V: std::fmt::Debug>(
 }
 
 fn render_unresolved(u: &Unresolved) -> String {
-    match u.event {
-        Some(e) => format!("event {}: {}", e.0, u.reason),
-        None => u.reason.clone(),
+    match u.events.as_slice() {
+        [] => u.reason.clone(),
+        [e] => format!("event {}: {}", e.0, u.reason),
+        events => {
+            let events: Vec<String> = events.iter().map(|e| e.0.to_string()).collect();
+            format!("events {}: {}", events.join(", "), u.reason)
+        }
     }
 }
 
 impl GraphReport {
     pub fn summary(&self, property: Property) -> PropertySummary {
         match property {
-            Property::WellFormed => summarize(property, &self.well_formed),
-            Property::BarrierProtocol => summarize(property, &self.barrier),
-            Property::AsyncCompletion => summarize(property, &self.async_completion),
-            Property::PipelineOrder => summarize(property, &self.pipeline),
-            Property::ProxyOrder => summarize(property, &self.proxy),
-            Property::MemoryConflicts => summarize(property, &self.memory_conflicts),
-            Property::ResourceLifetime => summarize(property, &self.lifetime),
-            Property::Progress => summarize(property, &self.progress),
+            Property::NamedBarrierEpoch => summarize(property, &self.named_barrier_epoch),
+            Property::MbarrierEpoch => summarize(property, &self.mbarrier_epoch),
+            Property::MemoryConflict => summarize(property, &self.memory_conflict),
+            Property::ProxyOrder => summarize(property, &self.proxy_order),
+            Property::TensorOrder => summarize(property, &self.tensor_order),
+            Property::ResourceLifetime => summarize(property, &self.resource_lifetime),
         }
     }
 
-    /// Every property's summary, in dependency order.
+    /// Every check's summary, in the design's order.
     pub fn summaries(&self) -> Vec<PropertySummary> {
         Property::ALL.iter().map(|&p| self.summary(p)).collect()
     }
 
     pub fn verdict(&self, property: Property) -> Verdict {
         self.summary(property).verdict
+    }
+
+    /// The trace generator's deadlock, if the trace is stuck with blocked threads.
+    pub fn deadlock(&self) -> Option<Deadlock> {
+        match &self.terminal {
+            Terminal::Stuck { blocked } if !blocked.is_empty() => Some(Deadlock {
+                blocked: blocked.clone(),
+            }),
+            _ => None,
+        }
     }
 
     pub fn conclusion(&self) -> GraphConclusion {
@@ -106,23 +130,35 @@ impl GraphReport {
             .filter(|s| s.verdict == Verdict::Fail)
             .cloned()
             .collect();
-        if !failed.is_empty() {
-            return GraphConclusion::Rejected { failed };
+        let deadlock = self.deadlock();
+        if !failed.is_empty() || deadlock.is_some() {
+            return GraphConclusion::Rejected { failed, deadlock };
         }
-        let mut reasons: Vec<String> = summaries
-            .iter()
-            .filter(|s| s.verdict == Verdict::Unknown)
-            .map(|s| match s.findings.len() {
-                0 => format!("{}: unknown", s.property.name()),
-                1 => format!("{}: {}", s.property.name(), s.findings[0]),
-                n => format!(
-                    "{}: {} (and {} more)",
-                    s.property.name(),
-                    s.findings[0],
-                    n - 1
-                ),
-            })
-            .collect();
+        let mut reasons = Vec::new();
+        match &self.terminal {
+            Terminal::Completed => {}
+            Terminal::Stuck { .. } => {
+                reasons.push("the trace is stuck without a blocked thread".to_string())
+            }
+            Terminal::Aborted { reason, .. } => reasons.push(format!(
+                "the trace generator aborted, so the graph is only a prefix: {reason}"
+            )),
+        }
+        reasons.extend(
+            summaries
+                .iter()
+                .filter(|s| s.verdict == Verdict::Unknown)
+                .map(|s| match s.findings.len() {
+                    0 => format!("{}: unknown", s.property.name()),
+                    1 => format!("{}: {}", s.property.name(), s.findings[0]),
+                    n => format!(
+                        "{}: {} (and {} more)",
+                        s.property.name(),
+                        s.findings[0],
+                        n - 1
+                    ),
+                }),
+        );
         if let ProofScope::CandidateOnly { reasons: scope } = &self.scope {
             reasons.extend(
                 scope
@@ -137,8 +173,8 @@ impl GraphReport {
         }
     }
 
-    /// `Fail` if any property fails, else `Unknown` if any is unknown, else `Pass`. Says
-    /// nothing about schedule independence beyond the candidate execution: see `scope`.
+    /// `Fail` if any check fails, else `Unknown` if any is unknown, else `Pass`. Says nothing
+    /// about the trace's end or schedule independence: see `conclusion`.
     pub fn verdict_overall(&self) -> Verdict {
         let verdicts: Vec<Verdict> = Property::ALL.iter().map(|&p| self.verdict(p)).collect();
         if verdicts.contains(&Verdict::Fail) {
@@ -151,35 +187,46 @@ impl GraphReport {
     }
 }
 
-/// Run every checker on `graph`. `facts` are the read-only symbolic facts the
-/// memory-conflict checker's benign-store rule needs.
-pub fn check_graph(graph: &EventGraph, facts: &SymbolicFacts) -> GraphReport {
-    let well_formed = check_well_formed(graph);
-    let (barrier, sync) = check_barriers(graph);
-    let (async_completion, completion) = check_async_completion(graph, &sync);
-    let (pipeline, pipeline_certificate) = check_pipeline(graph);
-    let (proxy, proxy_certificate) = check_proxy(graph, &sync, &completion);
-    let memory_conflicts = check_races(
-        graph,
-        facts,
-        &RaceInputs {
-            sync: &sync,
-            completion: &completion,
-            pipeline: &pipeline_certificate,
-            proxy: &proxy_certificate,
-        },
-    );
-    let lifetime = check_lifetimes(graph, &sync, &completion);
-    let progress = check_progress(graph, &sync, &completion);
+/// A check whose prerequisites did not all pass.
+fn not_run<E, V>(property: Property) -> PropertyResult<E, V> {
+    let missing: Vec<&str> = property.prerequisites().iter().map(|p| p.name()).collect();
+    PropertyResult::Unknown(vec![Unresolved::global(format!(
+        "not checked: its prerequisites ({}) did not all pass",
+        missing.join(", ")
+    ))])
+}
+
+/// Run the six checks on `graph`.
+pub fn check_graph(graph: &EventGraph) -> GraphReport {
+    let (named_barrier_epoch, named) = check_named_barrier_epochs(graph);
+    let (mbarrier_epoch, mbarrier) = check_mbarrier_epochs(graph);
+    let validated = named
+        .zip(mbarrier)
+        .map(|(named, mbarrier)| ValidatedGraph::from_epochs(named, mbarrier));
+    let (memory_conflict, conflict_free) = match &validated {
+        Some(h) => check_memory_conflicts(h),
+        None => (not_run(Property::MemoryConflict), None),
+    };
+    let proxy_order = match (&validated, &conflict_free) {
+        (Some(h), Some(free)) => check_proxy_order(h, free),
+        _ => not_run(Property::ProxyOrder),
+    };
+    let tensor_order = match &validated {
+        Some(d) => check_tensor_order(d),
+        None => not_run(Property::TensorOrder),
+    };
+    let resource_lifetime = match &validated {
+        Some(h) => check_resource_lifetimes(h),
+        None => not_run(Property::ResourceLifetime),
+    };
     GraphReport {
-        well_formed,
-        barrier,
-        async_completion,
-        pipeline,
-        proxy,
-        memory_conflicts,
-        lifetime,
-        progress,
+        terminal: graph.terminal().clone(),
+        named_barrier_epoch,
+        mbarrier_epoch,
+        memory_conflict,
+        proxy_order,
+        tensor_order,
+        resource_lifetime,
         scope: proof_scope(graph),
     }
 }

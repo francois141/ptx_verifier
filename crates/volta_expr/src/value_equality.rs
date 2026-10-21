@@ -1,5 +1,6 @@
-//! The race detector's hook for recognizing a benign same-value store,
-//! implemented outside the interpreter (`volta_equivalence::CanonValueEquality`).
+//! A same-value query over one arena, implemented outside this crate
+//! (`volta_equivalence::CanonValueEquality`). The graph checks do not use it: the
+//! memory-conflict check has no benign same-value store exception.
 
 use crate::symbolic::{ExprArena, ExprId};
 

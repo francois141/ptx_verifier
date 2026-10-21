@@ -1,27 +1,26 @@
-//! **Proof scope**: what passing every property establishes about schedules other than the
-//! candidate execution.
+//! **Proof scope**: what passing the six checks establishes about schedules other than the
+//! candidate execution. Not a check: "a program-level certificate additionally requires a
+//! schedule-coverage argument" (§1.1, Figure 1), and this is Volta's.
 //!
-//! * Schedule-independent: the graph uses only ordinary effects, CTA-wide and named
-//!   barriers, warp collectives and `cp.async` group waits. Weft's Theorem 1 (PLDI'15) makes
-//!   the barrier checker's generation stability hold in every schedule, and with stable
-//!   generations, deterministic control flow (the structured-CTA assumption) and no
-//!   unordered conflict in the candidate execution, every schedule has the same reads-from
-//!   relation, hence the same outputs: the argument of Weft's race checking and of the
-//!   paper's soundness theorem for its `Sync'` semantics.
+//! * Schedule-independent: the kernel has a fixed computation structure (the structured-CTA
+//!   assumption) and the graph uses only ordinary effects, named barriers, warp collectives
+//!   and no asynchronous operation. Weft's Theorem 1 (PLDI'15) makes generations that pass
+//!   the barrier-epoch check the same in every schedule; with them, deterministic control
+//!   flow and no unordered conflict, every schedule has the same reads-from relation, hence
+//!   the same outputs.
 //! * Candidate-only otherwise: no theorem here covers the completion ordering of
-//!   asynchronous operations or Volta's mbarrier generation-stability adaptation, so passes
-//!   are facts about the candidate execution.
+//!   asynchronous operations, nor mbarrier phases (the design applies Algorithm 1 to them "for
+//!   now"), so passes are facts about the candidate execution.
 
 use std::collections::BTreeSet;
 
-use volta_graph::{EventGraph, SyncObjectKind};
+use volta_graph::{Assumption, EventGraph, SyncObjectKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProofScope {
-    /// Passing every property implies the same verdicts and outputs in every schedule.
+    /// Passing every check implies the same verdicts and outputs in every schedule.
     ScheduleIndependent,
-    /// Passing every property is a fact about the candidate execution only, for these
-    /// reasons.
+    /// Passing every check is a fact about the candidate execution only, for these reasons.
     CandidateOnly { reasons: Vec<String> },
 }
 
@@ -33,6 +32,10 @@ impl ProofScope {
 
 pub fn proof_scope(graph: &EventGraph) -> ProofScope {
     let mut reasons = Vec::new();
+    if !graph.provenance().assumes(Assumption::StructuredCta) {
+        reasons
+            .push("the producer did not establish concrete addresses and control flow".to_string());
+    }
     let kinds: BTreeSet<&str> = graph
         .async_ops()
         .values()
@@ -51,7 +54,8 @@ pub fn proof_scope(graph: &EventGraph) -> ProofScope {
         .any(|o| matches!(o.kind, SyncObjectKind::Mbarrier { .. }))
     {
         reasons.push(
-            "mbarrier phases: Volta's generation-stability adaptation has no published theorem"
+            "mbarrier phases: Algorithm 1 is applied to them without a schedule-independence \
+             theorem"
                 .to_string(),
         );
     }

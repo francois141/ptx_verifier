@@ -1,0 +1,173 @@
+//! Check 2, the barrier-epoch check over mbarrier phases (Algorithm 1), in isolation.
+
+mod common;
+
+use common::*;
+use volta_graph::{
+    AccessMode, AsyncOpKind, ContributionKind, EventGraph, EventKind, Parity, Proxy,
+    SyncObjectKind, ThreadIx,
+};
+use volta_graph_check::Verdict;
+use volta_graph_check::barrier_epoch::check_mbarrier_epochs;
+
+#[test]
+fn a_single_phase_mbarrier_passes_and_is_certified() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.write(0, 0, 1);
+    s.arrive(0, p0);
+    s.complete(p0);
+    s.wait(1, m, Parity::Even, p0);
+    s.read(1, 0);
+    let (g, _) = s.completed(2);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.is_some());
+}
+
+/// Two phases of `full` (expected 1): t0 arrives on each, t1 waits on each. With
+/// `handshake`, t1 arrives on `empty` after its first wait and t0 waits on it before its
+/// second arrival.
+fn two_phase_pipeline(handshake: bool) -> EventGraph {
+    let mut s = Scenario::new(2);
+    let full = s.mbarrier(0, 1);
+    let empty = s.mbarrier(0, 1);
+    let f0 = s.phase(full, 0);
+    let e0 = s.phase(empty, 0);
+    s.arrive(0, f0);
+    s.complete(f0);
+    let f1 = s.phase(full, 1);
+    s.wait(1, full, Parity::Even, f0);
+    if handshake {
+        s.arrive(1, e0);
+        s.complete(e0);
+        s.wait(0, empty, Parity::Even, e0);
+    }
+    s.arrive(0, f1);
+    s.complete(f1);
+    s.wait(1, full, Parity::Odd, f1);
+    s.completed(2).0
+}
+
+#[test]
+fn a_handshaked_pipeline_passes() {
+    let graph = two_phase_pipeline(true);
+    let (result, certificate) = check_mbarrier_epochs(&graph);
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.is_some());
+}
+
+#[test]
+fn an_arrival_unseparated_from_the_previous_phases_wait_is_a_violation() {
+    let graph = two_phase_pipeline(false);
+    let (result, certificate) = check_mbarrier_epochs(&graph);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(graph.thread_of(v.synchronization), Some(ThreadIx(1)));
+    assert!(
+        matches!(graph.event(v.synchronization).kind, EventKind::Resume(_)),
+        "a wait takes part in its phase through its release"
+    );
+    assert_eq!(graph.thread_of(v.operation), Some(ThreadIx(0)));
+    assert!(matches!(
+        graph.event(v.operation).kind,
+        EventKind::Contribute(_)
+    ));
+    assert!(certificate.is_none());
+}
+
+#[test]
+fn a_wait_begins_at_its_wait_start() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.arrive(0, p0);
+    s.complete(p0);
+    let p1 = s.phase(m, 1);
+    s.arrive(0, p1);
+    s.complete(p1);
+    s.wait(1, m, Parity::Odd, p1);
+    let (g, _) = s.completed(2);
+    let (result, _) = check_mbarrier_epochs(&g);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert!(matches!(
+        g.event(v.operation).kind,
+        EventKind::WaitStart { .. }
+    ));
+    assert_eq!(v.predecessor, None, "the wait begins thread 1");
+}
+
+#[test]
+fn a_complete_tx_is_a_barrier_operation() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.b.contribute(t(1), PC, p0, ContributionKind::CompleteTx { bytes: 4 });
+    s.arrive(0, p0);
+    s.complete(p0);
+    let p1 = s.phase(m, 1);
+    s.b.contribute(t(0), PC, p1, ContributionKind::CompleteTx { bytes: 4 });
+    s.arrive(0, p1);
+    s.complete(p1);
+    let (g, _) = s.completed(2);
+    let (result, _) = check_mbarrier_epochs(&g);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(g.thread_of(v.synchronization), Some(ThreadIx(1)));
+}
+
+#[test]
+fn an_async_completion_is_no_barrier_operation() {
+    let mut s = Scenario::new(1);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.arrive(0, p0);
+    s.complete(p0);
+    let p1 = s.phase(m, 1);
+    let op = s.async_op(
+        0,
+        AsyncOpKind::BulkCopy,
+        AccessMode::Write,
+        0x40,
+        Proxy::Async,
+    );
+    s.b.track(op, p1, 4);
+    s.arrive(0, p1);
+    s.complete(p1);
+    let (g, _) = s.completed(1);
+    assert_eq!(check_mbarrier_epochs(&g).0.verdict(), Verdict::Pass);
+}
+
+#[test]
+fn each_mbarrier_lifetime_is_its_own_barrier() {
+    let mut s = Scenario::new(2);
+    let first = s.mbarrier(0, 1);
+    let p0 = s.phase(first, 0);
+    s.arrive(0, p0);
+    s.complete(p0);
+    let second = s.mbarrier(1, 1);
+    let q0 = s.phase(second, 0);
+    s.arrive(1, q0);
+    s.complete(q0);
+    let (g, _) = s.completed(2);
+    let (result, _) = check_mbarrier_epochs(&g);
+    let volta_graph_check::PropertyResult::Pass(evidence) = &result else {
+        panic!("{result:?}");
+    };
+    assert_eq!((evidence.barriers, evidence.generation_pairs), (2, 0));
+}
+
+#[test]
+fn named_barriers_are_not_mbarriers() {
+    let mut s = Scenario::new(2);
+    let bar = s.b.sync_object(SyncObjectKind::NamedBarrier { id: 1 });
+    s.counted_barrier(bar, 0, 1, &[0], &[]);
+    s.counted_barrier(bar, 1, 1, &[1], &[]);
+    let (g, _) = s.completed(2);
+    assert_eq!(check_mbarrier_epochs(&g).0.verdict(), Verdict::Pass);
+}

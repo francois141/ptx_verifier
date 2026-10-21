@@ -2,7 +2,6 @@
 //! `decide` combines them.
 
 use volta_analysis::eval::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
-use volta_equivalence::CanonValueEquality;
 use volta_equivalence::check::EquivCheckOptions;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
@@ -89,7 +88,7 @@ fn config() -> AnalysisConfig {
 }
 
 fn run(body: &str) -> KernelVerification {
-    verify_kernel(&parse(&kernel(body)), None, config(), &CanonValueEquality).unwrap()
+    verify_kernel(&parse(&kernel(body)), None, config()).unwrap()
 }
 
 fn equivalence(a: &KernelVerification, b: &KernelVerification) -> EquivalenceVerdict {
@@ -172,7 +171,7 @@ fn an_unconfirmed_difference_is_unknown() {
 fn a_failed_graph_property_rejects_whatever_the_equivalence() {
     let (a, b) = (run(COPY), run(ALL_TO_ZERO));
     assert_eq!(
-        b.graph.verdict(Property::MemoryConflicts),
+        b.graph.verdict(Property::MemoryConflict),
         PropertyVerdict::Fail
     );
     let decision = decide_pair(

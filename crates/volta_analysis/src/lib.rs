@@ -1,6 +1,6 @@
 //! PTX analysis: lowering from AST to a linear IR (`lowering`, `lowered`) and one candidate
 //! symbolic execution (`eval`), producing `volta_expr` expressions (which `volta_equivalence`
-//! checks) and a `volta_graph` event graph (which graph property checkers consume).
+//! checks) and a `volta_graph` event graph (which the graph checks consume).
 
 mod logging;
 

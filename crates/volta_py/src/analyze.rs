@@ -4,7 +4,6 @@ use pyo3::exceptions::PyRuntimeWarning;
 use pyo3::prelude::*;
 
 use volta_analysis::eval::{AnalysisConfig, Stats};
-use volta_equivalence::CanonValueEquality;
 use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::{AsAscii, AsciiChar};
 use volta_frontend::ast::Module;
@@ -65,7 +64,7 @@ pub struct AnalyzeResultPy {
     pub unresolved: Vec<String>,
 }
 
-/// One kernel that ran to completion with no failed graph property.
+/// One kernel that ran to completion with no failed graph check.
 pub(crate) struct CheckedKernel {
     pub exprs: SymbolicOutputs,
     pub stats: Stats,
@@ -74,7 +73,7 @@ pub(crate) struct CheckedKernel {
     pub unresolved: Vec<String>,
 }
 
-/// Run the analysis stage and the graph branch. A failed graph property raises (see
+/// Run the analysis stage and the graph branch. A failed graph check or a deadlock raises (see
 /// `graph_failure_to_py`), before an execution that produced no outputs raises `VoltaError`;
 /// incomplete verification emits a `RuntimeWarning`, so a returned result never silently
 /// stands for a race-freedom proof.
@@ -84,10 +83,11 @@ pub(crate) fn check_kernel(
     kernel: Option<&str>,
     config: AnalysisConfig,
 ) -> PyResult<CheckedKernel> {
-    let verified =
-        verify_kernel(module, kernel, config, &CanonValueEquality).map_err(analysis_error_to_py)?;
+    let verified = verify_kernel(module, kernel, config).map_err(analysis_error_to_py)?;
     let unresolved = match verified.graph.conclusion() {
-        GraphConclusion::Rejected { failed } => return Err(graph_failure_to_py(&failed)),
+        GraphConclusion::Rejected { failed, deadlock } => {
+            return Err(graph_failure_to_py(&failed, deadlock.as_ref()));
+        }
         GraphConclusion::Verified => Vec::new(),
         GraphConclusion::Unknown { reasons } => {
             let message = format!(

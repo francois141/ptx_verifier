@@ -1,104 +1,79 @@
-//! The memory-conflict (race) checker in isolation, on purpose-built graphs.
+//! Check 3, memory-conflict obligations (Algorithm 2), in isolation over an assumed-validated
+//! `G_HB`.
 
 mod common;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use common::*;
-use volta_expr::{ExprArena, ExprId, ValueEquality};
 use volta_graph::{
-    AccessMode, Assumption, AsyncOpId, AsyncOpKind, EventGraph, Footprint, MemAccess, OperandRole,
-    OrderingKind, Parity, Proxy, Space, StoredValue,
+    AccessMode, Assumption, AsyncOpKind, EventGraph, EventId, ExecContext, Footprint, MemAccess,
+    OperandRole, OrderingKind, Parity, Proxy, Space, SyncObjectKind,
 };
-use volta_graph_check::Verdict;
-use volta_graph_check::async_completion::CompletionCertificate;
-use volta_graph_check::barrier::SyncCertificate;
-use volta_graph_check::hb::Validated;
-use volta_graph_check::pipeline::{PipelineCertificate, check_pipeline};
-use volta_graph_check::proxy::ProxyCertificate;
-use volta_graph_check::race::{
-    ConflictKind, Location, RaceInputs, RaceResult, SymbolicFacts, check_races,
-};
+use volta_graph_check::domain::{ByteLocation, ConflictKind};
+use volta_graph_check::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
+use volta_graph_check::relation::ValidatedGraph;
+use volta_graph_check::{PropertyResult, Verdict};
 
-struct Oracle(bool);
+fn check(graph: &EventGraph) -> MemoryConflictResult {
+    let h = ValidatedGraph::assuming_epochs(graph).expect("a well-formed graph");
+    check_memory_conflicts(&h).0
+}
 
-impl ValueEquality for Oracle {
-    fn same_value(&self, _: &ExprArena, _: ExprId, _: ExprId) -> bool {
-        self.0
+fn pairs(result: &MemoryConflictResult) -> BTreeSet<(EventId, EventId)> {
+    result
+        .violations()
+        .iter()
+        .map(|c| (c.earlier, c.later))
+        .collect()
+}
+
+fn shared(addr: u64) -> ByteLocation {
+    ByteLocation {
+        space: Space::Shared,
+        addr,
     }
 }
 
-fn check_with(
-    graph: &EventGraph,
-    arena: &ExprArena,
-    sync: &SyncCertificate,
-    pipeline: &PipelineCertificate,
-    proxy: &ProxyCertificate,
-    oracle: bool,
-) -> RaceResult {
-    check_races(
-        graph,
-        &SymbolicFacts {
-            arena,
-            value_equality: &Oracle(oracle),
-        },
-        &RaceInputs {
-            sync,
-            completion: &CompletionCertificate::assume_all(),
-            pipeline,
-            proxy,
-        },
-    )
-}
-
-fn check(graph: &EventGraph, arena: &ExprArena) -> RaceResult {
-    check_with(
-        graph,
-        arena,
-        &SyncCertificate::assume_all(),
-        &PipelineCertificate::none(),
-        &ProxyCertificate::default(),
-        false,
-    )
-}
-
 #[test]
-fn unsynchronized_writes_of_different_values_race() {
+fn unsynchronized_writes_conflict() {
     let mut s = Scenario::new(2);
     let w0 = s.write(0, 0x10, 1);
     let w1 = s.write(1, 0x10, 2);
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
-    let first = result.violations()[0];
-    assert_eq!(first.kind, ConflictKind::WriteWrite);
-    assert_eq!((first.prior, first.current), (w0, w1));
-    assert_eq!(first.location, Location::Byte(Space::Shared, 0x10));
+    let (g, _) = s.completed(2);
+    let result = check(&g);
+    let [c] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(c.kind, ConflictKind::WriteWrite);
+    assert_eq!((c.earlier, c.later), (w0, w1));
+    assert_eq!(c.location, shared(0x10));
 }
 
 #[test]
-fn an_unsynchronized_read_after_a_write_races() {
+fn an_unsynchronized_read_after_a_write_conflicts_at_the_first_shared_byte() {
     let mut s = Scenario::new(2);
     s.write(0, 0x10, 1);
     s.read(1, 0x12);
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
+    let (g, _) = s.completed(2);
+    let result = check(&g);
     assert_eq!(result.violations()[0].kind, ConflictKind::WriteRead);
-    assert_eq!(
-        result.violations()[0].location,
-        Location::Byte(Space::Shared, 0x12)
-    );
+    assert_eq!(result.violations()[0].location, shared(0x12));
 }
 
 #[test]
-fn a_write_reusing_an_unsynchronized_read_buffer_races() {
+fn a_write_reusing_an_unsynchronized_read_buffer_conflicts() {
     let mut s = Scenario::new(2);
     s.write(0, 0x10, 1);
     s.barrier(&[0, 1], &[]);
     s.read(0, 0x10);
     s.write(1, 0x10, 2);
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
-    assert_eq!(result.violations()[0].kind, ConflictKind::ReadWrite);
+    let (g, _) = s.completed(2);
+    let result = check(&g);
+    let [c] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(c.kind, ConflictKind::ReadWrite);
 }
 
 #[test]
@@ -110,50 +85,70 @@ fn reads_never_conflict_and_a_barrier_orders_writes() {
     s.read(1, 0x10);
     s.barrier(&[0, 1], &[]);
     s.write(1, 0x10, 2);
-    let (g, arena) = s.completed(2);
-    assert_eq!(check(&g, &arena).verdict(), Verdict::Pass);
+    let (g, _) = s.completed(2);
+    let (result, certificate) =
+        check_memory_conflicts(&ValidatedGraph::assuming_epochs(&g).unwrap());
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(
+        certificate.is_some(),
+        "a pass certifies Algorithm 3's prerequisite"
+    );
 }
 
 #[test]
-fn equal_concurrent_stores_are_benign() {
+fn equal_concurrent_stores_still_conflict() {
     let mut s = Scenario::new(2);
     let v = s.value(42);
     s.write_expr(0, 0x10, v);
     s.write_expr(1, 0x10, v);
-    s.barrier(&[0, 1], &[]);
-    s.read(0, 0x10);
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
-    assert!(
-        matches!(&result, volta_graph_check::PropertyResult::Pass(e) if e.benign_equal_stores == 4),
-        "{result:?}"
-    );
+    let (g, _) = s.completed(2);
+    let (result, certificate) =
+        check_memory_conflicts(&ValidatedGraph::assuming_epochs(&g).unwrap());
+    assert_eq!(result.violations()[0].kind, ConflictKind::WriteWrite);
+    assert!(certificate.is_none());
 }
 
 #[test]
-fn the_value_oracle_decides_stores_of_distinct_expressions() {
-    let build = || {
-        let mut s = Scenario::new(2);
-        s.write(0, 0x10, 1);
-        s.write(1, 0x10, 2);
-        s.completed(2)
-    };
-    let (g, arena) = build();
-    let sync = SyncCertificate::assume_all();
-    let none = PipelineCertificate::none();
-    let proxy = ProxyCertificate::default();
+fn every_unordered_pair_is_in_b_once() {
+    let mut s = Scenario::new(3);
+    let w: Vec<EventId> = (0..3).map(|th| s.write(th, 0x10, i64::from(th))).collect();
+    let (g, _) = s.completed(3);
+    let result = check(&g);
     assert_eq!(
-        check_with(&g, &arena, &sync, &none, &proxy, true).verdict(),
-        Verdict::Pass
+        pairs(&result),
+        BTreeSet::from([(w[0], w[1]), (w[0], w[2]), (w[1], w[2])])
     );
-    assert_eq!(
-        check_with(&g, &arena, &sync, &none, &proxy, false).verdict(),
-        Verdict::Fail
-    );
+    assert_eq!(result.violations().len(), 3);
+}
+
+/// `w0` is ordered before `w1` by a barrier of threads 0 and 1 only; thread 2's read is
+/// unordered with both, though only `w1` is the latest write.
+#[test]
+fn an_unordered_pair_behind_an_ordered_one_is_still_in_b() {
+    let mut s = Scenario::new(3);
+    let bar = s.b.sync_object(SyncObjectKind::NamedBarrier { id: 1 });
+    let w0 = s.write(0, 0x10, 1);
+    s.counted_barrier(bar, 0, 2, &[], &[0, 1]);
+    let w1 = s.write(1, 0x10, 2);
+    let r2 = s.read(2, 0x10);
+    let (g, _) = s.completed(3);
+    assert_eq!(pairs(&check(&g)), BTreeSet::from([(w0, r2), (w1, r2)]));
+}
+
+#[test]
+fn the_pairs_are_ordered_by_their_later_effect() {
+    let mut s = Scenario::new(2);
+    s.write(0, 0x10, 1);
+    s.write(0, 0x20, 1);
+    s.read(1, 0x20);
+    s.read(1, 0x10);
+    let (g, _) = s.completed(2);
+    let later: Vec<EventId> = check(&g).violations().iter().map(|c| c.later).collect();
+    assert!(later.is_sorted(), "{later:?}");
 }
 
 /// t0 issues a bulk copy into 0x10 tracked by a phase t1 waits on; `reader` then reads it.
-fn bulk_copy_read_by(reader: u32) -> (EventGraph, ExprArena) {
+fn bulk_copy_read_by(reader: u32) -> EventGraph {
     let mut s = Scenario::new(2);
     let m = s.mbarrier(0, 1);
     let p0 = s.phase(m, 0);
@@ -169,185 +164,83 @@ fn bulk_copy_read_by(reader: u32) -> (EventGraph, ExprArena) {
     s.complete(p0);
     s.wait(1, m, Parity::Even, p0);
     s.read(reader, 0x10);
-    s.completed(2)
+    s.completed(2).0
 }
 
 #[test]
 fn a_waiter_is_ordered_after_an_async_write() {
-    let (g, arena) = bulk_copy_read_by(1);
-    assert_eq!(check(&g, &arena).verdict(), Verdict::Pass);
+    assert_eq!(check(&bulk_copy_read_by(1)).verdict(), Verdict::Pass);
 }
 
 #[test]
 fn the_issuer_is_not_ordered_after_its_own_async_write() {
-    let (g, arena) = bulk_copy_read_by(0);
-    let result = check(&g, &arena);
-    let first = result.violations()[0];
-    assert_eq!(first.kind, ConflictKind::WriteRead);
-    assert!(matches!(
-        g.event(first.prior).ctx,
-        volta_graph::ExecContext::Async(_)
-    ));
+    let g = bulk_copy_read_by(0);
+    let result = check(&g);
+    let [c] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(c.kind, ConflictKind::WriteRead);
+    assert!(matches!(g.event(c.earlier).ctx, ExecContext::Async(_)));
 }
 
 #[test]
-fn overwriting_an_in_flight_async_read_is_a_reuse_race() {
+fn an_in_flight_async_read_is_overwritten_by_a_reuse() {
     let mut s = Scenario::new(2);
-    s.async_op(
+    s.async_op_as(
         0,
         AsyncOpKind::Tcgen05Mma,
         AccessMode::Read,
         0x20,
-        Proxy::Async,
+        (Proxy::Async, OperandRole::MmaA),
     );
     s.barrier(&[0, 1], &[]);
     s.write(1, 0x20, 5);
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
-    assert_eq!(result.violations()[0].kind, ConflictKind::ReadWrite);
-}
-
-fn tmem_mma(s: &mut Scenario, issuer: u32) -> AsyncOpId {
-    let op = s.b.async_issue(t(issuer), PC, AsyncOpKind::Tcgen05Mma);
-    let value = Some(s.b.value(StoredValue::Opaque));
-    for (mode, value) in [(AccessMode::Read, None), (AccessMode::Write, value)] {
-        s.b.async_effect(
-            op,
-            MemAccess {
-                space: Space::Tensor,
-                mode,
-                ordering: OrderingKind::Ordinary,
-                proxy: Proxy::Async,
-                footprint: Footprint::Tensor {
-                    lane: 0,
-                    lanes: 128,
-                    col: 0,
-                    cols: 2,
-                },
-                role: OperandRole::Accumulator,
-                attributed: t(issuer),
-                value,
-            },
-        );
-    }
-    op
-}
-
-#[test]
-fn a_certified_accumulator_chain_needs_no_wait() {
-    let mut s = Scenario::new(1);
-    tmem_mma(&mut s, 0);
-    tmem_mma(&mut s, 0);
-    let (g, arena) = s.completed(1);
-    let (_, pipeline) = check_pipeline(&g);
-    let sync = SyncCertificate::assume_all();
-    let proxy = ProxyCertificate::default();
+    let (g, _) = s.completed(2);
+    let result = check(&g);
     assert_eq!(
-        check_with(&g, &arena, &sync, &pipeline, &proxy, false).verdict(),
-        Verdict::Pass
+        result.violations()[0].kind,
+        ConflictKind::ReadWrite,
+        "shared-memory tcgen05 effects belong to M"
     );
-    let without = check_with(
-        &g,
-        &arena,
-        &sync,
-        &PipelineCertificate::none(),
-        &proxy,
-        false,
-    );
-    let first = without.violations()[0];
-    assert_eq!(first.location, Location::Cell { lane: 0, col: 0 });
 }
 
 #[test]
-fn an_uncovered_cross_proxy_read_defers_to_the_proxy_checker() {
-    let mut p = provenance(2);
-    p.assumptions.push(Assumption::AsyncProxy);
-    let mut s = Scenario::with(p);
-    s.write(0, 0x40, 1);
-    s.barrier(&[0, 1], &[]);
-    s.async_op(
-        1,
-        AsyncOpKind::Tcgen05Mma,
-        AccessMode::Read,
-        0x40,
-        Proxy::Async,
-    );
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
-    assert_eq!(result.verdict(), Verdict::Unknown, "{result:?}");
-    assert!(result.unresolved()[0].reason.contains("proxy"));
-}
-
-fn check_unvalidated(graph: &EventGraph, arena: &ExprArena) -> RaceResult {
-    let unvalidated = SyncCertificate {
-        generations: Validated::Only(HashSet::new()),
-    };
-    check_with(
-        graph,
-        arena,
-        &unvalidated,
-        &PipelineCertificate::none(),
-        &ProxyCertificate::default(),
-        false,
-    )
+fn tensor_memory_effects_are_not_in_m() {
+    let mut s = Scenario::new(2);
+    s.mma(0, (0, 8));
+    s.mma(1, (0, 8));
+    let (g, _) = s.completed(2);
+    assert_eq!(check(&g).verdict(), Verdict::Pass, "A is Algorithm 4's");
 }
 
 #[test]
-fn ordering_only_through_an_unvalidated_barrier_is_unknown() {
+fn global_and_shared_bytes_never_overlap() {
     let mut s = Scenario::new(2);
     s.write(0, 0x10, 1);
-    s.barrier(&[0, 1], &[]);
-    s.read(1, 0x10);
-    let (g, arena) = s.completed(2);
-    assert_eq!(check(&g, &arena).verdict(), Verdict::Pass);
-    let result = check_unvalidated(&g, &arena);
-    let [u] = result.unresolved() else {
-        panic!("{result:?}");
-    };
-    assert!(u.reason.contains("unvalidated"), "{u:?}");
-}
-
-#[test]
-fn a_conflict_unordered_through_every_candidate_edge_fails_regardless() {
-    let mut s = Scenario::new(2);
-    s.write(0, 0x10, 1);
-    s.barrier(&[0, 1], &[]);
-    s.read(1, 0x10);
-    let w = s.write(1, 0x20, 1);
-    let r = s.read(0, 0x20);
-    let (g, arena) = s.completed(2);
-    let result = check_unvalidated(&g, &arena);
-    let [v] = result.violations() else {
-        panic!("{result:?}");
-    };
-    assert_eq!((v.prior, v.current), (w, r));
-    assert_eq!(v.location, Location::Byte(Space::Shared, 0x20));
-}
-
-#[test]
-fn one_conflict_is_reported_per_effect_pair_at_its_first_location() {
-    let mut s = Scenario::new(2);
-    s.write(0, 0x10, 1);
-    s.read(1, 0x11);
-    s.read(1, 0x12);
-    let (g, arena) = s.completed(2);
-    let result = check(&g, &arena);
-    let locations: Vec<Location> = result.violations().iter().map(|c| c.location).collect();
-    assert_eq!(
-        locations,
-        [
-            Location::Byte(Space::Shared, 0x11),
-            Location::Byte(Space::Shared, 0x12)
-        ]
-    );
-}
-
-#[test]
-fn atomic_effects_are_unknown() {
-    let mut s = Scenario::new(1);
-    let mut access = MemAccess {
+    let a = MemAccess {
         space: Space::Global,
-        mode: AccessMode::Write,
+        mode: AccessMode::Read,
+        ordering: OrderingKind::Ordinary,
+        proxy: Proxy::Generic,
+        footprint: Footprint::Bytes {
+            addr: 0x10,
+            width: 4,
+        },
+        role: OperandRole::Plain,
+        attributed: t(1),
+        value: None,
+    };
+    s.b.thread_access(t(1), PC, a);
+    let (g, _) = s.completed(2);
+    assert_eq!(check(&g).verdict(), Verdict::Pass);
+}
+
+#[test]
+fn atomic_effects_are_outside_the_contract() {
+    let mut s = Scenario::new(1);
+    let access = MemAccess {
+        space: Space::Global,
+        mode: AccessMode::Read,
         ordering: OrderingKind::Atomic,
         proxy: Proxy::Generic,
         footprint: Footprint::Bytes { addr: 0, width: 4 },
@@ -356,12 +249,12 @@ fn atomic_effects_are_unknown() {
         value: None,
     };
     s.b.thread_access(t(0), PC, access);
-    access.ordering = OrderingKind::Ordinary;
-    s.b.thread_access(t(0), PC, access);
-    let (g, arena) = s.completed(1);
-    let result = check(&g, &arena);
-    assert_eq!(result.verdict(), Verdict::Unknown, "{result:?}");
-    assert_eq!(result.unresolved().len(), 1);
+    let (g, _) = s.completed(1);
+    let result = check(&g);
+    let [u] = result.unresolved() else {
+        panic!("{result:?}");
+    };
+    assert!(u.reason.contains("contract"), "{u:?}");
 }
 
 #[test]
@@ -377,10 +270,18 @@ fn an_exited_writer_is_ordered_only_under_the_sync_prime_assumption() {
         s.exit(1);
         s.barrier(&[0], &[1]);
         s.read(0, 0x10);
-        s.completed(2)
+        s.completed(2).0
     };
-    let (g, arena) = build(true);
-    assert_eq!(check(&g, &arena).verdict(), Verdict::Pass);
-    let (g, arena) = build(false);
-    assert_eq!(check(&g, &arena).verdict(), Verdict::Fail);
+    assert_eq!(check(&build(true)).verdict(), Verdict::Pass);
+    assert_eq!(check(&build(false)).verdict(), Verdict::Fail);
+}
+
+#[test]
+fn without_effects_the_check_is_vacuous() {
+    let s = Scenario::new(1);
+    let (g, _) = s.completed(1);
+    assert!(matches!(
+        check(&g),
+        PropertyResult::Pass(ref e) if e.effects == 0 && e.written_bytes == 0
+    ));
 }

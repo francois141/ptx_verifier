@@ -1,5 +1,5 @@
 //! End-to-end tests on well-formed, race-free kernels: each passes every
-//! graph property, then its rendered symbolic outputs match the kernel's
+//! graph check, then its rendered symbolic outputs match the kernel's
 //! `.out` file exactly, and any stats are checked.
 
 #[macro_use]

@@ -1,8 +1,8 @@
-//! The result shape every graph property checker returns.
+//! The result shape every graph check returns, and the six checks themselves.
 
 use volta_graph::EventId;
 
-/// The three verdicts a property can have.
+/// The three verdicts a check can have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Verdict {
     Pass,
@@ -10,34 +10,41 @@ pub enum Verdict {
     Unknown,
 }
 
-/// An obligation a checker could not discharge, and why.
+/// An obligation a check could not discharge, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unresolved {
-    /// The event the obligation concerns, when there is one.
-    pub event: Option<EventId>,
+    /// The events the obligation concerns, in trace order; empty when it concerns the graph.
+    pub events: Vec<EventId>,
     pub reason: String,
 }
 
 impl Unresolved {
     pub fn at(event: EventId, reason: impl Into<String>) -> Self {
         Unresolved {
-            event: Some(event),
+            events: vec![event],
+            reason: reason.into(),
+        }
+    }
+
+    pub fn between(earlier: EventId, later: EventId, reason: impl Into<String>) -> Self {
+        Unresolved {
+            events: vec![earlier, later],
             reason: reason.into(),
         }
     }
 
     pub fn global(reason: impl Into<String>) -> Self {
         Unresolved {
-            event: None,
+            events: Vec::new(),
             reason: reason.into(),
         }
     }
 }
 
-/// One property's outcome. `Pass` carries what was established (a vacuous pass only when the
-/// checker found no applicable obligation); `Fail` carries every violation found, earliest in
-/// trace order first; `Unknown` lists every unresolved obligation. A checker never turns a
-/// missing prerequisite or an unsupported case into `Pass`.
+/// One check's outcome. `Pass` carries what was established (a vacuous pass only when the
+/// check found no applicable obligation); `Fail` carries the violations its algorithm returns;
+/// `Unknown` lists every unresolved obligation. A check never turns a missing prerequisite or
+/// an unsupported case into `Pass`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertyResult<E, V> {
     Pass(E),
@@ -80,62 +87,64 @@ impl<E, V> PropertyResult<E, V> {
     }
 }
 
-/// The graph properties, each checked by its own module.
+/// The six checks of the Volta v2 design (§1.3), in the design's order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Property {
-    WellFormed,
-    BarrierProtocol,
-    AsyncCompletion,
-    PipelineOrder,
+    /// Algorithm 1 over named barriers (`bar.arrive`, `bar.sync`).
+    NamedBarrierEpoch,
+    /// Algorithm 1 over mbarrier phases.
+    MbarrierEpoch,
+    /// Algorithm 2.
+    MemoryConflict,
+    /// Algorithm 3.
     ProxyOrder,
-    MemoryConflicts,
+    /// Algorithm 4, with Algorithm 5's synchronization search.
+    TensorOrder,
+    /// Algorithm 6.
     ResourceLifetime,
-    Progress,
 }
 
 impl Property {
-    pub const ALL: [Property; 8] = [
-        Property::WellFormed,
-        Property::BarrierProtocol,
-        Property::AsyncCompletion,
-        Property::PipelineOrder,
+    pub const ALL: [Property; 6] = [
+        Property::NamedBarrierEpoch,
+        Property::MbarrierEpoch,
+        Property::MemoryConflict,
         Property::ProxyOrder,
-        Property::MemoryConflicts,
+        Property::TensorOrder,
         Property::ResourceLifetime,
-        Property::Progress,
     ];
 
-    /// The properties whose certificates this property's checker consumes; [`Self::ALL`]
-    /// lists every property after its prerequisites.
+    /// The checks that must pass before this one can run: both barrier-epoch checks validate
+    /// the candidate joins `G_HB` and `D` contain, and Algorithm 3 requires Algorithm 2's
+    /// pass. [`Self::ALL`] lists every check after its prerequisites.
     pub fn prerequisites(self) -> &'static [Property] {
         use Property::*;
         match self {
-            WellFormed => &[],
-            BarrierProtocol | PipelineOrder => &[WellFormed],
-            AsyncCompletion => &[WellFormed, BarrierProtocol],
-            ProxyOrder | ResourceLifetime | Progress => {
-                &[WellFormed, BarrierProtocol, AsyncCompletion]
-            }
-            MemoryConflicts => &[
-                WellFormed,
-                BarrierProtocol,
-                AsyncCompletion,
-                PipelineOrder,
-                ProxyOrder,
-            ],
+            NamedBarrierEpoch | MbarrierEpoch => &[],
+            MemoryConflict | TensorOrder | ResourceLifetime => &[NamedBarrierEpoch, MbarrierEpoch],
+            ProxyOrder => &[NamedBarrierEpoch, MbarrierEpoch, MemoryConflict],
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Property::WellFormed => "graph well-formedness",
-            Property::BarrierProtocol => "barrier protocol and generation stability",
-            Property::AsyncCompletion => "async completion and wait associations",
-            Property::PipelineOrder => "async pipeline ordering",
-            Property::ProxyOrder => "cross-proxy ordering",
-            Property::MemoryConflicts => "memory-conflict freedom",
+            Property::NamedBarrierEpoch => "barrier epochs (named barriers)",
+            Property::MbarrierEpoch => "barrier epochs (mbarrier phases)",
+            Property::MemoryConflict => "memory-conflict freedom",
+            Property::ProxyOrder => "proxy ordering",
+            Property::TensorOrder => "tensor-operation ordering",
             Property::ResourceLifetime => "resource lifetime",
-            Property::Progress => "progress",
+        }
+    }
+
+    /// The algorithm of the design that implements the check.
+    pub fn algorithm(self) -> &'static str {
+        match self {
+            Property::NamedBarrierEpoch | Property::MbarrierEpoch => "Algorithm 1",
+            Property::MemoryConflict => "Algorithm 2",
+            Property::ProxyOrder => "Algorithm 3",
+            Property::TensorOrder => "Algorithms 4 and 5",
+            Property::ResourceLifetime => "Algorithm 6",
         }
     }
 }

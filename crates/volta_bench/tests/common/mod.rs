@@ -11,11 +11,11 @@ use volta_analysis::analysis::{AnalysisError, AnalysisResult};
 use volta_analysis::eval::{
     AnalysisConfig, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
 };
-use volta_equivalence::CanonValueEquality;
 use volta_expr::SymbolicOutputs;
 use volta_frontend::ascii::AsAscii;
 use volta_frontend::ast::Module;
 use volta_frontend::parse::Parser;
+use volta_graph::{AccessMode, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext};
 use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::verify_kernel;
 
@@ -64,15 +64,65 @@ pub struct Checked {
     pub report: GraphReport,
 }
 
-/// Run the analysis stage and every graph property checker; panics if the execution cannot
-/// start (no kernel, a lowering or configuration error).
+/// Run the analysis stage and the six graph checks; panics if the execution cannot start (no
+/// kernel, a lowering or configuration error).
 pub fn check(module: &Module, kernel: Option<&str>, config: AnalysisConfig) -> Checked {
-    let verified = verify_kernel(module, kernel, config, &CanonValueEquality)
+    let verified = verify_kernel(module, kernel, config)
         .unwrap_or_else(|e| panic!("analysis cannot start: {e}"));
     Checked {
         analysis: verified.analysis,
         report: verified.graph,
     }
+}
+
+/// One side of a witness: the thread it acts for, its access mode, and the async op it is an
+/// effect of (`None` for a thread's own access).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Side {
+    pub thread: u32,
+    pub mode: AccessMode,
+    pub op: Option<AsyncOpKind>,
+}
+
+impl Side {
+    pub fn plain(thread: u32, mode: AccessMode) -> Side {
+        Side {
+            thread,
+            mode,
+            op: None,
+        }
+    }
+
+    pub fn effect(thread: u32, mode: AccessMode, op: AsyncOpKind) -> Side {
+        Side {
+            thread,
+            mode,
+            op: Some(op),
+        }
+    }
+}
+
+/// The witness side of access event `e`.
+pub fn side(graph: &EventGraph, e: EventId) -> Side {
+    let ev = graph.event(e);
+    let EventKind::Access(a) = ev.kind else {
+        panic!("event {} is not a memory access: {:?}", e.0, ev.kind);
+    };
+    Side {
+        thread: graph
+            .acting_thread(e)
+            .expect("an access acts for a thread")
+            .0,
+        mode: graph.access(a).mode,
+        op: match ev.ctx {
+            ExecContext::Async(op) => Some(graph.async_op(op).kind),
+            ExecContext::Thread(_) | ExecContext::Generation(_) => None,
+        },
+    }
+}
+
+pub fn warp(thread: u32) -> u32 {
+    thread / 32
 }
 
 /// A kernel that ran to completion and whose graph check concluded `Verified`.
@@ -83,18 +133,18 @@ pub struct Completed {
 }
 
 /// Run a kernel expected to complete: its outputs, or why it produced none (it could not
-/// start, or its execution raised an error). A failed graph property panics, and so does a
-/// completed run the graph check does not conclude `Verified`; tests expecting either inspect
-/// `check`'s report.
+/// start, or its execution raised an error). A failed graph check or a deadlock panics, and so
+/// does a completed run the graph check does not conclude `Verified`; tests expecting either
+/// inspect `check`'s report.
 pub fn run_kernel(
     module: &Module,
     kernel: Option<&str>,
     config: AnalysisConfig,
 ) -> Result<Completed, AnalysisError> {
-    let verified = verify_kernel(module, kernel, config, &CanonValueEquality)?;
+    let verified = verify_kernel(module, kernel, config)?;
     let conclusion = verified.graph.conclusion();
-    if let GraphConclusion::Rejected { failed } = &conclusion {
-        panic!("a graph property failed: {failed:#?}");
+    if let GraphConclusion::Rejected { failed, deadlock } = &conclusion {
+        panic!("the graph branch rejected the kernel: {failed:#?}, deadlock: {deadlock:#?}");
     }
     let parts = verified.analysis.into_parts();
     match parts.outputs {
@@ -111,7 +161,7 @@ pub fn run_kernel(
             Err(AnalysisError::Eval(e))
         }
         Err(why @ OutputsUnavailable::Stuck { .. }) => {
-            panic!("a stuck execution passed the progress property: {why}")
+            panic!("a stuck execution was not rejected as a deadlock: {why}")
         }
     }
 }

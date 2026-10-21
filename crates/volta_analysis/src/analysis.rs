@@ -1,6 +1,6 @@
 //! The analysis stage: one candidate execution of one kernel, producing the two artifacts the
 //! downstream branches consume and no verdict. The symbolic outputs go to equivalence checking;
-//! the typed event graph goes to the graph property checkers. Neither is checked here.
+//! the typed event graph goes to the graph checks. Neither is checked here.
 
 use std::collections::BTreeMap;
 use std::fmt;

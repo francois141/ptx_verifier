@@ -782,7 +782,6 @@ dependencies = [
 name = "volta_graph_check"
 version = "0.1.0"
 dependencies = [
- "id_collections",
  "volta_expr",
  "volta_graph",
 ]

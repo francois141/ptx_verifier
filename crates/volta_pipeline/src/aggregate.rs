@@ -7,9 +7,9 @@ use crate::equivalence::EquivalenceVerdict;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Equivalent in every schedule, with every graph property verified.
+    /// Equivalent in every schedule, with every graph check verified.
     Accept,
-    /// A refutation or a failed graph property, with its witness.
+    /// A refutation, a failed graph check or a deadlock, with its witness.
     Reject,
     /// Nothing refuted, but something is not established.
     Unknown,
@@ -42,9 +42,9 @@ pub struct Decision {
 }
 
 /// Combine the equivalence branch's verdict with each kernel's graph report. ACCEPT needs a
-/// complete equivalence proof and every kernel `Verified` (every property passed, in a
-/// schedule-independent scope); any refutation or failed property is a REJECT; anything else
-/// is UNKNOWN, a candidate-only pass included.
+/// complete equivalence proof and every kernel `Verified` (a completed trace, every check
+/// passed, in a schedule-independent scope); any refutation, failed check or deadlock is a
+/// REJECT; anything else is UNKNOWN, a candidate-only pass included.
 pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> Decision {
     let mut established = Vec::new();
     let mut rejected = Vec::new();
@@ -73,10 +73,17 @@ pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> D
     for k in kernels {
         match k.graph.conclusion() {
             GraphConclusion::Verified => established.push(format!(
-                "{}: every graph property passed, in a schedule-independent scope",
+                "{}: every graph check passed, in a schedule-independent scope",
                 k.label
             )),
-            GraphConclusion::Rejected { failed } => {
+            GraphConclusion::Rejected { failed, deadlock } => {
+                if let Some(d) = deadlock {
+                    rejected.push(format!(
+                        "{}: the trace deadlocked with {} blocked thread(s)",
+                        k.label,
+                        d.blocked.len()
+                    ));
+                }
                 for s in failed {
                     rejected.push(format!(
                         "{}: {} failed: {}",
