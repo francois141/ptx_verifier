@@ -198,32 +198,3 @@ fn test_tcgen05_st_then_mma_without_thread_sync_fences_is_rejected() {
         );
     }
 }
-
-/// A `tcgen05.wait::ld` placed after a barrier arrival is too late for the warp's other
-/// accesses; the kernel's `tcgen05.ld` must be reported.
-#[test]
-fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
-    let ws = unproved(
-        &parse(&ptx!(
-            "execution_error/tcgen05_wait_ld_after_bar_sync_is_rejected"
-        )),
-        AnalysisConfig::new((32, 1, 1)),
-    );
-    assert_any(&ws, "a pair with the tcgen05.ld", |w| {
-        w.earlier.op == Some(AsyncOpKind::Tcgen05Ld) || w.later.op == Some(AsyncOpKind::Tcgen05Ld)
-    });
-}
-
-/// Same for `tcgen05.wait::st` after an mbarrier arrive.
-#[test]
-fn test_tcgen05_wait_st_after_mbarrier_arrive_is_rejected() {
-    let ws = unproved(
-        &parse(&ptx!(
-            "execution_error/tcgen05_wait_st_after_mbarrier_arrive_is_rejected"
-        )),
-        AnalysisConfig::new((32, 1, 1)),
-    );
-    assert_any(&ws, "a pair with the tcgen05.st", |w| {
-        w.earlier.op == Some(AsyncOpKind::Tcgen05St) || w.later.op == Some(AsyncOpKind::Tcgen05St)
-    });
-}

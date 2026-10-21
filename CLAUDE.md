@@ -493,7 +493,8 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   that check's typed witness only: `memory_conflict_tests.rs` (Algorithm 2:
   conflict kind, byte, each side's thread, access mode and async op),
   `tensor_order_tests.rs` (Algorithm 4: the Tensor Memory cell and sides),
-  `resource_lifetime_tests.rs` (Algorithm 6: the use freed while unordered).
+  `resource_lifetime_tests.rs` (Algorithm 6: the use freed while unordered, or
+  the allocation never freed).
 - `rejected_tests.rs` - execution errors (`EvalError`, lowering errors, the
   wgmma register hazards) and deadlocks (the trace generator's diagnostic,
   `GraphReport::deadlock`).
