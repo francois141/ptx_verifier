@@ -947,7 +947,7 @@ pub enum LoweredInstr {
 
     /// `cp.async.bulk...mbarrier::complete_tx::bytes`: non-tensor copy of
     /// `size` contiguous bytes, global to shared, completing `size` tx-bytes
-    /// on `mbar` (`lowering::lower_cp_async_bulk`).
+    /// on `mbar` (`lower::tma::lower_cp_async_bulk`).
     CpAsyncBulkLoad {
         dst_base: Operand,
         dst_offset: i64,

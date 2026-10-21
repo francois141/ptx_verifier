@@ -250,10 +250,21 @@ to its subsystem:
 - `types.rs` holds `ScalarTypeExt` (width/kind helpers over the AST's
   `ScalarType`), not IDs
 
-### Lowering (`lowering.rs`, `lowered.rs`)
+### Lowering (`lower/`, `lowered.rs`)
 
-Converts AST to linear instruction format:
+Converts AST to linear instruction format. `lower/` is split by instruction
+family, each file depending only on `context` and `error`:
 
+- `lower/mod.rs` - `lower_function`, declaration collection, the statement
+  walk and the `ParsedInstruction` dispatch; `context.rs` - `LoweringContext`
+  (the program under construction), operand resolution, type checks and
+  `unsupported`; `error.rs` - `LowerError`; `idioms.rs` - the multi-statement
+  idioms below
+- one file per family: `arith.rs` (arithmetic, comparisons, `cvt`),
+  `memory.rs` (ld/st, params, `cp.async`), `control.rs` (`bra`, `call`, `bar`,
+  `fence`), `warp.rs` (shfl/elect/redux, ldmatrix/stmatrix, `mma.sync`, wmma),
+  `mbarrier.rs`, `tma.rs` (tensormap objects, `cp.async.bulk{.tensor}`),
+  `tcgen05.rs`, `wgmma.rs`, `clc.rs`; tests in `lower/tests.rs`
 - `LoweredProgram` - `IdVec<InstrId, LoweredInstr>` + `SymbolTable` + `SourceMap`
 - `LoweredInstr` variants: `LoadParam`, `Load`, `Store`, `Mov`, `BinOp`, `UnaryOp`, `Fma`, `Mad`, `MulWide`, `MulHi`, `Setp`, `Selp`, `Cvt`, `Bra`, `Ret`, `Exit`, `BarSync`, `BarWarpSync`, `ShflSync`, `Ldmatrix`, `Mma`, `WmmaLoad/Store/Mma`, `Activemask`, `Trap`, etc.
 - `SymbolTable` - Register/param/label name → ID resolution; assigns addresses to shared/local/module-global variables
@@ -553,7 +564,7 @@ Parser (parse.rs) ──► Builds AST
 Instruction Parser (instr_parse.rs) ──► Strongly-typed ParsedInstruction
     │
     ▼
-Lowering (lowering.rs) ──► LoweredProgram (resolved RegIds, InstrIds)
+Lowering (lower/) ──► LoweredProgram (resolved RegIds, InstrIds)
     │
     ▼
 Evaluator (eval/interp.rs) ──► Symbolic execution with N threads
@@ -609,7 +620,8 @@ Global, shared, local, param memories are separate `Memory` instances, matching 
 1. **Frontend**: Add `InstrKind` variant in `instr.rs`, add to trie
 2. **Instruction Parsing**: Add `ParsedInstruction` variant, parser function
    in `instr_parse.rs` (use `expect_operands` for exact-arity operand lists)
-3. **Lowering**: Add `LoweredInstr` variant, lowering case
+3. **Lowering**: Add `LoweredInstr` variant, a `lower_*` function in its
+   family's `lower/` file, and its arm in `lower/mod.rs`'s dispatch
 4. **Evaluation**: Add evaluation case in `eval/interp.rs`
 
 ## Tooling

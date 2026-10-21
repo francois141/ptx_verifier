@@ -144,7 +144,7 @@ impl TensorFillMode {
 
 /// One `tensormap.replace` field write, already decoded/validated at
 /// lowering time (`.field3`/`ord` immediates are required by the ISA and
-/// statically known there - see `lowering::lower_tensormap_replace`).
+/// statically known there - see `lower::tma::lower_tensormap_replace`).
 #[derive(Debug, Clone)]
 pub enum TensormapFieldWrite {
     GlobalAddress(Operand),

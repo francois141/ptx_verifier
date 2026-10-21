@@ -12,9 +12,8 @@ use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance};
 use crate::config::AnalysisConfig;
 use crate::eval::{EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stats};
 use crate::logging::info;
-use crate::lower_error::LowerError;
+use crate::lower::{LowerError, lower_function};
 use crate::lowered::LoweredProgram;
-use crate::lowering::lower_function;
 use crate::target::TargetFeatures;
 
 /// Errors that prevent the candidate execution from starting at all.

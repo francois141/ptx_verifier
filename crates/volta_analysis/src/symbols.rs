@@ -7,7 +7,7 @@ use std::fmt;
 use id_collections::{IdVec, id_type};
 use volta_frontend::ast::ScalarType;
 
-use crate::lower_error::{LowerError, LowerResult};
+use crate::lower::{LowerError, LowerResult};
 use crate::lowered::InstrId;
 use crate::types::{RegClass, RegCounts};
 
