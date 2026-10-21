@@ -97,17 +97,6 @@ impl AnalysisConfig {
         self.arrays.iter().find(|a| a.name == name)
     }
 
-    /// Names of the declared output arrays, in declaration order - the
-    /// natural "arrays to check" list for an equivalence comparison over
-    /// this config.
-    pub fn output_array_names(&self) -> Vec<String> {
-        self.arrays
-            .iter()
-            .filter(|a| a.kind.is_output())
-            .map(|a| a.name.clone())
-            .collect()
-    }
-
     /// Reject configs whose identities are ambiguous: duplicate array/`sym:`
     /// names or overlapping ranges would silently conflate distinct values.
     /// Overlap with the module-global window is checked in `Interpreter::new`.

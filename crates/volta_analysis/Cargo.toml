@@ -14,11 +14,4 @@ volta_expr.workspace = true
 volta_frontend.workspace = true
 volta_graph.workspace = true
 
-bincode.workspace = true
 id_collections.workspace = true
-rug.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-stacker.workspace = true
-fixedbitset.workspace = true

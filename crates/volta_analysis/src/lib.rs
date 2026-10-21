@@ -20,6 +20,6 @@ pub use eval::{AnalysisConfig, ArrayDef, ArrayKind, EvalError, ParamValue};
 pub use lower_error::{LowerError, LowerResult};
 pub use lowered::{InstrId, LoweredInstr, LoweredProgram, Operand, Predicate};
 pub use lowering::{LoweringContext, lower_function};
-pub use source_map::{SourceMap, SourceMapBuilder};
+pub use source_map::SourceMap;
 pub use symbols::{ParamId, RegId, RegIndex, SpecialRegKind, SymbolKind, SymbolTable};
 pub use types::{RegClass, ScalarTypeExt};

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use volta_expr::{ExprArena, SymbolicOutputs};
+use volta_expr::SymbolicOutputs;
 use volta_frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance};
 
@@ -81,11 +81,6 @@ impl AnalysisResult {
             stats: run.stats,
             op_counts: run.op_counts,
         }
-    }
-
-    /// The arena every expression of the outputs and of the graph's stored values indexes.
-    pub fn arena(&self) -> &ExprArena {
-        &self.symbolic.arena
     }
 
     /// The equivalence-facing artifact, or why the execution produced none.

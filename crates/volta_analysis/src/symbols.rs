@@ -88,7 +88,6 @@ pub struct LabelScopeId(pub u32);
 #[derive(Debug, Clone)]
 pub struct RegInfo {
     pub id: RegId,
-    pub name: String,
     pub declared_type: ScalarType,
 }
 
@@ -292,22 +291,11 @@ impl SpecialRegKind {
     }
 }
 
-/// Information about a kernel parameter
-#[derive(Debug, Clone)]
-pub struct ParamInfo {
-    pub id: ParamId,
-    pub name: String,
-    pub ty: ScalarType,
-    pub size_bytes: u64,
-}
-
 /// Information about a shared memory allocation
 #[derive(Debug, Clone)]
 pub struct SharedMemInfo {
-    pub name: String,
     pub offset: u64,
     pub size_bytes: u64,
-    pub element_ty: ScalarType,
     pub is_extern: bool,
 }
 
@@ -317,7 +305,6 @@ pub struct SharedMemInfo {
 #[derive(Debug, Clone)]
 struct PendingExternShared {
     name: String,
-    element_ty: ScalarType,
     /// Declared alignment, already raised to the element size.
     alignment: u64,
 }
@@ -337,10 +324,8 @@ enum ExternSharedLayout {
 /// `__local_depot` stack array nvcc emits for spilled locals).
 #[derive(Debug, Clone)]
 pub struct LocalMemInfo {
-    pub name: String,
     pub offset: u64,
     pub size_bytes: u64,
-    pub element_ty: ScalarType,
 }
 
 /// Information about a module-scope `.global` variable (e.g. values set by the
@@ -348,10 +333,8 @@ pub struct LocalMemInfo {
 /// they cannot collide with caller-chosen input array addresses.
 #[derive(Debug, Clone)]
 pub struct GlobalVarInfo {
-    pub name: String,
     pub addr: u64,
     pub size_bytes: u64,
-    pub element_ty: ScalarType,
 }
 
 /// Base address for module-scope `.global` variables; `Interpreter::new` rejects
@@ -393,10 +376,8 @@ pub struct SymbolTable {
     /// Count of registers per class
     reg_counts: [u32; RegClass::COUNT],
 
-    /// Parameter name → info
-    params: HashMap<String, ParamInfo>,
-    /// Parameters in declaration order
-    params_ordered: IdVec<ParamId, ParamInfo>,
+    /// Parameter name → id; ids are dense in declaration order.
+    params: HashMap<String, ParamId>,
 
     /// Label name → instruction PC, one inner map per label scope (see
     /// `LabelScopeId`).
@@ -444,7 +425,6 @@ impl SymbolTable {
             registers: HashMap::new(),
             reg_counts: [0; RegClass::COUNT],
             params: HashMap::new(),
-            params_ordered: IdVec::new(),
             labels: HashMap::new(),
             label_scope_parents,
             shared_vars: HashMap::new(),
@@ -508,10 +488,9 @@ impl SymbolTable {
 
             let id = RegId::new(class, base_index + i);
             self.registers.insert(
-                name.clone(),
+                name,
                 RegInfo {
                     id,
-                    name,
                     declared_type: ty,
                 },
             );
@@ -523,23 +502,11 @@ impl SymbolTable {
 
     /// Declare a kernel parameter
     /// Returns the ParamId of the declared parameter.
-    pub fn declare_param(
-        &mut self,
-        name: &str,
-        ty: ScalarType,
-        size_bytes: u64,
-    ) -> LowerResult<ParamId> {
+    pub fn declare_param(&mut self, name: &str) -> LowerResult<ParamId> {
         self.reserve_name(name, SymbolKind::Parameter)?;
 
-        let id = ParamId(self.params_ordered.len() as u32);
-        let info = ParamInfo {
-            id,
-            name: name.to_string(),
-            ty,
-            size_bytes,
-        };
-        self.params.insert(name.to_string(), info.clone());
-        let _ = self.params_ordered.push(info);
+        let id = ParamId(self.params.len() as u32);
+        self.params.insert(name.to_string(), id);
         Ok(id)
     }
 
@@ -618,7 +585,6 @@ impl SymbolTable {
             };
             pending.push(PendingExternShared {
                 name: name.to_string(),
-                element_ty,
                 alignment,
             });
             return Ok(());
@@ -636,10 +602,8 @@ impl SymbolTable {
         self.shared_vars.insert(
             name.to_string(),
             SharedMemInfo {
-                name: name.to_string(),
                 offset,
                 size_bytes,
-                element_ty,
                 is_extern: false,
             },
         );
@@ -671,12 +635,10 @@ impl SymbolTable {
 
         for e in pending {
             self.shared_vars.insert(
-                e.name.clone(),
+                e.name,
                 SharedMemInfo {
-                    name: e.name,
                     offset: extern_base,
                     size_bytes: 0, // Size supplied at launch (dynamic shared bytes)
-                    element_ty: e.element_ty,
                     is_extern: true,
                 },
             );
@@ -721,15 +683,8 @@ impl SymbolTable {
             .checked_add(size_bytes)
             .ok_or_else(|| size_overflow("local variable", name))?;
 
-        self.local_vars.insert(
-            name.to_string(),
-            LocalMemInfo {
-                name: name.to_string(),
-                offset,
-                size_bytes,
-                element_ty,
-            },
-        );
+        self.local_vars
+            .insert(name.to_string(), LocalMemInfo { offset, size_bytes });
 
         self.local_mem_size = end;
         Ok(())
@@ -765,10 +720,8 @@ impl SymbolTable {
         self.global_vars.insert(
             name.to_string(),
             GlobalVarInfo {
-                name: name.to_string(),
                 addr: MODULE_GLOBAL_BASE + offset,
                 size_bytes,
-                element_ty,
             },
         );
 
@@ -786,14 +739,9 @@ impl SymbolTable {
         self.registers.get(name).map(|info| info.id)
     }
 
-    /// Check if name is a special register
-    pub fn resolve_special_reg(&self, name: &str) -> Option<SpecialRegKind> {
-        SpecialRegKind::from_name(name)
-    }
-
     /// Look up a parameter
-    pub fn get_param(&self, name: &str) -> Option<&ParamInfo> {
-        self.params.get(name)
+    pub fn get_param(&self, name: &str) -> Option<ParamId> {
+        self.params.get(name).copied()
     }
 
     /// Look up a label, walking outward from `scope` through its enclosing
@@ -830,11 +778,6 @@ impl SymbolTable {
         self.local_vars.get(name)
     }
 
-    /// Total local memory size per thread
-    pub fn local_mem_size(&self) -> u64 {
-        self.local_mem_size
-    }
-
     /// Look up a module-scope `.global` variable
     pub fn get_global_var(&self, name: &str) -> Option<&GlobalVarInfo> {
         self.global_vars.get(name)
@@ -851,39 +794,14 @@ impl SymbolTable {
         self.module_global_size
     }
 
-    /// Get register name from ID (for error messages)
-    pub fn register_name(&self, id: RegId) -> Option<&str> {
-        self.registers
-            .values()
-            .find(|info| info.id == id)
-            .map(|info| info.name.as_str())
-    }
-
-    /// Get register count for a class
-    pub fn register_count(&self, class: RegClass) -> u32 {
-        self.reg_counts[class as usize]
-    }
-
     /// Get all register counts
     pub fn register_counts(&self) -> RegCounts {
         RegCounts::new(self.reg_counts)
     }
 
-    /// Get parameters in order
-    pub fn params(&self) -> &IdVec<ParamId, ParamInfo> {
-        &self.params_ordered
-    }
-
-    /// Get parameter by ID
-    pub fn get_param_by_id(&self, id: ParamId) -> Option<&ParamInfo> {
-        self.params_ordered.get(id)
-    }
-
-    /// Total *static* shared memory size, excluding the dynamic window: with
-    /// extern shared memory, the end of shared memory is
-    /// `extern_shared_base() + dynamic bytes`.
-    pub fn shared_mem_size(&self) -> u64 {
-        self.shared_mem_size
+    /// Number of declared kernel parameters
+    pub fn param_count(&self) -> usize {
+        self.params.len()
     }
 
     /// Check if kernel uses dynamic (extern) shared memory
@@ -899,11 +817,6 @@ impl SymbolTable {
             .take(3)
             .cloned()
             .collect()
-    }
-
-    /// Get all register names (for debugging)
-    pub fn all_register_names(&self) -> impl Iterator<Item = &str> {
-        self.registers.keys().map(|s| s.as_str())
     }
 }
 
@@ -1124,10 +1037,10 @@ mod tests {
     #[test]
     fn test_duplicate_param_error() {
         let mut symbols = SymbolTable::new();
-        symbols.declare_param("ptr", ScalarType::U64, 8).unwrap();
+        symbols.declare_param("ptr").unwrap();
 
         // Try to declare same param again
-        let result = symbols.declare_param("ptr", ScalarType::U64, 8);
+        let result = symbols.declare_param("ptr");
         assert!(result.is_err());
     }
 
@@ -1226,7 +1139,6 @@ mod tests {
         assert!(buf.is_extern);
         assert_eq!(buf.offset, 256);
         assert_eq!(symbols.extern_shared_base(), Some(256));
-        assert_eq!(symbols.shared_mem_size(), 256);
     }
 
     /// With no statics the extern window stays at offset 0 (the pre-fix
@@ -1241,7 +1153,6 @@ mod tests {
 
         assert_eq!(symbols.get_shared_var("buf").unwrap().offset, 0);
         assert_eq!(symbols.extern_shared_base(), Some(0));
-        assert_eq!(symbols.shared_mem_size(), 0);
     }
 
     /// All extern declarations alias one buffer: same base for every name,
@@ -1371,7 +1282,7 @@ mod tests {
     fn test_label_conflicts_with_param() {
         use id_collections::Id;
         let mut symbols = SymbolTable::new();
-        symbols.declare_param("foo", ScalarType::U64, 8).unwrap();
+        symbols.declare_param("foo").unwrap();
 
         // Label should conflict with param
         let result =
@@ -1411,14 +1322,14 @@ mod tests {
         symbols.declare_register("foo", ScalarType::U32, 1).unwrap();
 
         // Param should conflict with register
-        let result = symbols.declare_param("foo", ScalarType::U64, 8);
+        let result = symbols.declare_param("foo");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_shared_conflicts_with_param() {
         let mut symbols = SymbolTable::new();
-        symbols.declare_param("foo", ScalarType::U64, 8).unwrap();
+        symbols.declare_param("foo").unwrap();
 
         // Shared should conflict with param
         let result = symbols.declare_shared("foo", ScalarType::U32, 256, false, 4);

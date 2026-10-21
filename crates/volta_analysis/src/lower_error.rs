@@ -22,22 +22,6 @@ pub enum LowerError {
         hint: String,
     },
 
-    /// Instruction used with invalid type
-    InvalidTypeForInstruction {
-        instruction: String,
-        ty: ScalarType,
-        reason: &'static str,
-    },
-
-    /// Operands have incompatible types with each other
-    OperandTypeMismatch {
-        instruction: String,
-        operand_a: String,
-        type_a: ScalarType,
-        operand_b: String,
-        type_b: ScalarType,
-    },
-
     // =========================================================================
     // Symbol Errors
     // =========================================================================
@@ -110,9 +94,6 @@ pub enum LowerError {
 
     /// No function body (declaration only)
     NoFunctionBody { name: String },
-
-    /// Internal error (should not happen)
-    Internal { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,35 +126,6 @@ impl fmt::Display for LowerError {
                     "Type error: register {} has type {:?}, but {} requires {:?}\n\
                      Hint: {}",
                     register, declared_type, instruction, used_as, hint
-                )
-            }
-
-            Self::InvalidTypeForInstruction {
-                instruction,
-                ty,
-                reason,
-            } => {
-                write!(
-                    f,
-                    "Type error: {} cannot operate on type {:?}\n\
-                     Reason: {}",
-                    instruction, ty, reason
-                )
-            }
-
-            Self::OperandTypeMismatch {
-                instruction,
-                operand_a,
-                type_a,
-                operand_b,
-                type_b,
-            } => {
-                write!(
-                    f,
-                    "Type error: {} operands have incompatible types\n\
-                     {} has type {:?}\n\
-                     {} has type {:?}",
-                    instruction, operand_a, type_a, operand_b, type_b
                 )
             }
 
@@ -277,10 +229,6 @@ impl fmt::Display for LowerError {
 
             Self::NoFunctionBody { name } => {
                 write!(f, "Function {} has no body (declaration only)", name)
-            }
-
-            Self::Internal { message } => {
-                write!(f, "Internal error: {}", message)
             }
         }
     }

@@ -27,11 +27,10 @@ use id_collections::{Id, IdVec};
 use crate::lower_error::{LowerError, LowerResult, MbarrierWaitKind};
 use crate::lowered::{
     BinOp, Clamp, CmpOp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace,
-    MembarScope, MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector,
-    Tcgen05CollectorOp, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
-    UnaryOp,
+    MulMode as LoweredMulMode, Operand, Predicate, ShflMode, Tcgen05Collector, Tcgen05CollectorOp,
+    Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind, UnaryOp,
 };
-use crate::source_map::SourceMapBuilder;
+use crate::source_map::SourceMap;
 use crate::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};
 use crate::tensor_core::{MmaLayout, MmaOperand, MmaShape};
 use crate::tensor_map::{
@@ -165,8 +164,8 @@ enum LocalParamSlot {
 pub struct LoweringContext {
     /// Symbol table being built
     symbols: SymbolTable,
-    /// Source map builder for tracking spans
-    source_map_builder: SourceMapBuilder,
+    /// Span of each emitted instruction
+    source_map: SourceMap,
     /// Lowered instructions
     instructions: Vec<LoweredInstr>,
     /// Predicates for each instruction
@@ -175,8 +174,6 @@ pub struct LoweringContext {
     /// instruction. The scope is captured when the label is seen, since a
     /// label ending a `{}` block is flushed after `label_scope` has popped.
     pending_labels: Vec<(String, LabelScopeId)>,
-    /// Pending label spans (to be associated with the next instruction)
-    pending_label_spans: Vec<Span>,
     /// Forward references to resolve (PC, label name, the scope active at
     /// the reference site - needed since resolution happens later, once
     /// `label_scope` has moved on).
@@ -233,11 +230,10 @@ impl LoweringContext {
     pub fn new() -> Self {
         Self {
             symbols: SymbolTable::new(),
-            source_map_builder: SourceMapBuilder::new(),
+            source_map: SourceMap::default(),
             instructions: Vec::new(),
             predicates: Vec::new(),
             pending_labels: Vec::new(),
-            pending_label_spans: Vec::new(),
             forward_refs: Vec::new(),
             current_span: None,
             local_params: HashMap::new(),
@@ -314,14 +310,7 @@ impl LoweringContext {
             self.symbols.declare_label(&label, scope, pc)?;
         }
 
-        // Record instruction span
-        self.source_map_builder
-            .record_instruction(pc, self.current_span);
-
-        // Record any pending label spans
-        for label_span in self.pending_label_spans.drain(..) {
-            self.source_map_builder.record_pending_label(label_span);
-        }
+        self.source_map.record_instruction(pc, self.current_span);
 
         self.instructions.push(instr);
         self.predicates.push(predicate);
@@ -331,12 +320,9 @@ impl LoweringContext {
     /// Record a label to be resolved to the next instruction. Captures
     /// `label_scope` now, not at `emit()`-flush time - see the field doc
     /// on `pending_labels`.
-    fn record_label(&mut self, name: &str, span: Option<Span>) {
+    fn record_label(&mut self, name: &str) {
         self.pending_labels
             .push((name.to_string(), self.label_scope));
-        if let Some(s) = span {
-            self.pending_label_spans.push(s);
-        }
     }
 
     /// Record a forward reference to a label, from `scope` (the scope
@@ -912,8 +898,8 @@ impl LoweringContext {
         };
 
         match check_type_compatibility(actual, expected) {
-            TypeCompatibility::Exact | TypeCompatibility::Compatible => Ok(()),
-            TypeCompatibility::Incompatible { reason: _ } => {
+            TypeCompatibility::Compatible => Ok(()),
+            TypeCompatibility::Incompatible => {
                 let name = resolved
                     .name
                     .clone()
@@ -937,8 +923,8 @@ impl LoweringContext {
         instruction: &str,
     ) -> LowerResult<()> {
         match check_type_compatibility(dst.ty, expected) {
-            TypeCompatibility::Exact | TypeCompatibility::Compatible => Ok(()),
-            TypeCompatibility::Incompatible { reason: _ } => Err(LowerError::TypeMismatch {
+            TypeCompatibility::Compatible => Ok(()),
+            TypeCompatibility::Incompatible => Err(LowerError::TypeMismatch {
                 register: dst.name.clone(),
                 declared_type: dst.ty,
                 used_as: expected,
@@ -1119,7 +1105,7 @@ pub fn lower_function(func: &Function, module_vars: &[VarDecl]) -> LowerResult<L
         instructions: IdVec::from_vec(ctx.instructions),
         predicates: IdVec::from_vec(ctx.predicates),
         symbols: ctx.symbols,
-        source_map: ctx.source_map_builder.build(),
+        source_map: ctx.source_map,
         entry_pc: InstrId::from_index(0),
     })
 }
@@ -1132,10 +1118,7 @@ fn collect_declarations(
 ) -> LowerResult<()> {
     // Collect kernel parameters
     for param in params {
-        let ty = param.ty.scalar;
-        let size_bytes = ty.size_bytes() as u64;
-        ctx.symbols
-            .declare_param(&param.name.to_string(), ty, size_bytes)?;
+        ctx.symbols.declare_param(&param.name.to_string())?;
     }
 
     // Collect declarations from body
@@ -1266,7 +1249,7 @@ fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResu
 fn lower_statement(ctx: &mut LoweringContext, stmt: &Statement) -> LowerResult<()> {
     match stmt {
         Statement::Label(label) => {
-            ctx.record_label(&label.name.to_string(), Some(label.span));
+            ctx.record_label(&label.name.to_string());
         }
         Statement::Instruction(instr) => {
             // Set current span for error reporting
@@ -2010,14 +1993,7 @@ fn lower_parsed_instruction(
             }
             let dst = ctx.resolve_dst(dst)?;
             let src = ctx.resolve_operand(src)?;
-            ctx.emit(
-                LoweredInstr::Cvta {
-                    dst,
-                    src,
-                    space: MemSpace::Global,
-                },
-                predicate,
-            )?;
+            ctx.emit(LoweredInstr::Cvta { dst, src }, predicate)?;
         }
 
         ParsedInstruction::Mapa(mapa) => {
@@ -2163,13 +2139,8 @@ fn lower_parsed_instruction(
         // =========================================================================
         // Synchronization - Membar
         // =========================================================================
-        ParsedInstruction::Membar(ast::MembarInstr::Level(level)) => {
-            let scope = match level {
-                ast::MembarLevel::Cta => MembarScope::Cta,
-                ast::MembarLevel::Gl => MembarScope::Gpu,
-                ast::MembarLevel::Sys => MembarScope::Sys,
-            };
-            ctx.emit(LoweredInstr::Membar { scope }, predicate)?;
+        ParsedInstruction::Membar(ast::MembarInstr::Level(_)) => {
+            ctx.emit(LoweredInstr::Membar, predicate)?;
         }
         ParsedInstruction::Membar(ast::MembarInstr::Proxy(_)) => {
             // TODO: implement `membar.proxy`. On sm_70+ it is a synonym for
@@ -4238,10 +4209,9 @@ fn lower_param_load(
     }
 
     // Kernel parameter
-    let Some(info) = ctx.symbols.get_param(&name) else {
+    let Some(param_id) = ctx.symbols.get_param(&name) else {
         return Err(LowerError::UndefinedSymbol { name });
     };
-    let param_id = info.id;
     if offset != 0 {
         return Err(LowerError::UnsupportedInstruction {
             instruction: format!("ld.param [{}+{}]", name, offset),
@@ -6637,10 +6607,10 @@ fn lower_clc_query_cancel(
             "get_first_ctaid::x" | "get_first_ctaid::y" | "get_first_ctaid::z",
             "b32",
             "b128",
-        ] => LoweredInstr::ClcQueryGetFirstCtaid {
-            dst: vec![resolve_b32_dst(ctx, dst, invalid)?],
-            response,
-        },
+        ] => {
+            check_b32_dst(ctx, dst, invalid)?;
+            LoweredInstr::ClcQueryGetFirstCtaid { response }
+        }
         ["get_first_ctaid", "v4", "b32", "b128"] => {
             let AstOperand::Vector(elems) = dst else {
                 return Err(invalid(
@@ -6652,16 +6622,12 @@ fn lower_clc_query_cancel(
                     "get_first_ctaid.v4 needs a 4-element vector destination",
                 ));
             }
-            let mut regs = Vec::with_capacity(elems.len());
             for elem in elems {
                 if !matches!(elem, AstOperand::Underscore) {
-                    regs.push(resolve_b32_dst(ctx, elem, invalid)?);
+                    check_b32_dst(ctx, elem, invalid)?;
                 }
             }
-            LoweredInstr::ClcQueryGetFirstCtaid {
-                dst: regs,
-                response,
-            }
+            LoweredInstr::ClcQueryGetFirstCtaid { response }
         }
         _ => {
             return Err(unsupported(
@@ -6674,18 +6640,17 @@ fn lower_clc_query_cancel(
     Ok(())
 }
 
-fn resolve_b32_dst(
+fn check_b32_dst(
     ctx: &LoweringContext,
     dst: &AstOperand,
     invalid: impl Fn(&'static str) -> LowerError,
-) -> LowerResult<RegId> {
-    let reg = ctx.resolve_dst(dst)?;
-    if reg.class != RegClass::Bits32 {
+) -> LowerResult<()> {
+    if ctx.resolve_dst(dst)?.class != RegClass::Bits32 {
         return Err(invalid(
             "get_first_ctaid's destinations must be .b32 registers",
         ));
     }
-    Ok(reg)
+    Ok(())
 }
 
 // =========================================================================
@@ -7077,11 +7042,11 @@ fn lower_mma(
 
     let a_layout = layouts[0];
     let b_layout = layouts[1];
-    // PTX syntax order: d_type, a_type, b_type, c_type
+    // PTX syntax order: d_type, a_type, b_type, c_type (every modeled
+    // combination has c_type == d_type)
     let d_type = types[0];
     let a_type = types[1];
     let b_type = types[2];
-    let c_type = types[3];
 
     ctx.emit(
         LoweredInstr::Mma {
@@ -7095,7 +7060,6 @@ fn lower_mma(
             a_type,
             b_type,
             d_type,
-            c_type,
         },
         predicate,
     )?;
@@ -7752,11 +7716,6 @@ fn lower_wmma_mma(
     let src_b = ctx.resolve_dst_vector(&operands[2])?;
     let src_c = ctx.resolve_dst_vector(&operands[3])?;
 
-    let a_layout = layouts[0];
-    let b_layout = layouts[1];
-    let d_type = types[0];
-    let c_type = types[1];
-
     ctx.emit(
         LoweredInstr::WmmaMma {
             shape,
@@ -7764,10 +7723,6 @@ fn lower_wmma_mma(
             src_a,
             src_b,
             src_c,
-            a_layout,
-            b_layout,
-            d_type,
-            c_type,
         },
         predicate,
     )?;
@@ -7794,7 +7749,7 @@ mod tests {
     #[test]
     fn test_label_recording() {
         let mut ctx = LoweringContext::new();
-        ctx.record_label("LOOP", Some(Span(0, 4)));
+        ctx.record_label("LOOP");
         ctx.emit(LoweredInstr::Nop, None).unwrap();
 
         assert_eq!(
@@ -8265,14 +8220,9 @@ mod tests {
     fn test_clusterlaunchcontrol_query_cancel_forms() {
         assert_lowers("clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p1, %q1;");
         assert_lowers("clusterlaunchcontrol.query_cancel.get_first_ctaid::y.b32.b128 %r1, %q1;");
-        let prog = lower_body(
+        assert_lowers(
             "clusterlaunchcontrol.query_cancel.get_first_ctaid.v4.b32.b128 {%r1, %r2, _, _}, %q1;",
-        )
-        .unwrap();
-        assert!(prog.instructions.values().any(|instr| matches!(
-            instr,
-            LoweredInstr::ClcQueryGetFirstCtaid { dst, .. } if dst.len() == 2
-        )));
+        );
         for body in [
             "clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %r1, %q1;",
             "clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 %p1, %rd1;",

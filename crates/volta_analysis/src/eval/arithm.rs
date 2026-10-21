@@ -428,12 +428,6 @@ impl<'p> Interpreter<'p> {
                 let ln2 = self.ln2_constant(pc)?;
                 self.arena.div(log, ln2)
             }
-            UnaryOp::Sin | UnaryOp::Cos => {
-                return Err(EvalError::Unsupported {
-                    pc,
-                    what: format!("transcendental {}", op.as_str()),
-                });
-            }
         })
     }
 

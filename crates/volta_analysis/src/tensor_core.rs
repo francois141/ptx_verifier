@@ -196,7 +196,8 @@ pub mod m16n8k16_f16 {
 
 /// Fragment mappings for `mma.m16n8k8` with `.tf32` multiplicands (PTX ISA
 /// "Matrix Fragments for mma.m16n8k8", .tf32 rows). Each 32-bit register
-/// holds one tf32 element, so `high_half` is always `None`.
+/// holds one tf32 element, so `high_half` is always `None`. C/D share
+/// `m16n8k16_f16::matrix_cd`.
 pub mod m16n8k8_tf32 {
     use super::FragmentElement;
 
@@ -236,15 +237,11 @@ pub mod m16n8k8_tf32 {
             })
             .collect()
     }
-
-    /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
-    pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {
-        super::m16n8k16_f16::matrix_cd(lane_id)
-    }
 }
 
 /// Fragment mappings for `mma.m16n8k4` with `.tf32` multiplicands (PTX ISA
-/// "Matrix Fragments for mma.m16n8k4", .tf32 rows).
+/// "Matrix Fragments for mma.m16n8k4", .tf32 rows). C/D share
+/// `m16n8k16_f16::matrix_cd`.
 pub mod m16n8k4_tf32 {
     use super::FragmentElement;
 
@@ -276,16 +273,12 @@ pub mod m16n8k4_tf32 {
             quad_lane: None,
         }]
     }
-
-    /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
-    pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {
-        super::m16n8k16_f16::matrix_cd(lane_id)
-    }
 }
 
 /// Fragment mappings for `mma.m16n8k32` with byte-wide multiplicands (fp8 and
 /// `.s8`/`.u8` share one layout, PTX ISA "Matrix Fragments for mma.m16n8k32"):
 /// four per 32-bit register, `quad_lane` 0..3 low to high as in `Value::Quad`.
+/// C/D share `m16n8k16_f16::matrix_cd`.
 pub mod m16n8k32_byte {
     use super::FragmentElement;
 
@@ -339,11 +332,6 @@ pub mod m16n8k32_byte {
             });
         }
         elements
-    }
-
-    /// Accumulator C/D fragment: identical to the m16n8k16 f16 shape.
-    pub fn matrix_cd(lane_id: u32) -> Vec<FragmentElement> {
-        super::m16n8k16_f16::matrix_cd(lane_id)
     }
 }
 

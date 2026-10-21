@@ -68,12 +68,6 @@ pub enum EvalError {
         reg: RegId,
         prior_write: AccessSite,
     },
-    /// A register was read before ever being written.
-    UninitializedRegister {
-        thread: ThreadId,
-        pc: InstrId,
-        reg: RegId,
-    },
     /// Memory was read at an address that was never written/initialized.
     UninitializedMemory {
         thread: ThreadId,
@@ -309,13 +303,6 @@ impl fmt::Display for EvalError {
                  unless the access is that same wgmma.mma_async chain's own next same-shape \
                  accumulator seed-read or writeback)"
             ),
-            Self::UninitializedRegister { thread, pc, reg } => {
-                write!(
-                    f,
-                    "{}: read of uninitialized register {} at {}",
-                    thread, reg, pc
-                )
-            }
             Self::UninitializedMemory {
                 thread,
                 pc,
@@ -566,7 +553,6 @@ impl EvalError {
         match self {
             Self::WgmmaFenceHazard { thread, pc, .. }
             | Self::WgmmaWaitGroupHazard { thread, pc, .. }
-            | Self::UninitializedRegister { thread, pc, .. }
             | Self::UninitializedMemory { thread, pc, .. }
             | Self::OutOfBounds { thread, pc, .. }
             | Self::Misaligned { thread, pc, .. }

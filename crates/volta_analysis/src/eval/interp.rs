@@ -407,12 +407,12 @@ impl<'p> Interpreter<'p> {
         let undefined = arena.undefined();
 
         // Bind parameters positionally.
-        let declared = program.symbols.params();
-        if declared.len() != config.params.len() {
+        let declared = program.symbols.param_count();
+        if declared != config.params.len() {
             return Err(EvalError::Config {
                 message: format!(
                     "kernel declares {} parameters but {} were provided",
-                    declared.len(),
+                    declared,
                     config.params.len()
                 ),
             });
@@ -576,7 +576,7 @@ impl<'p> Interpreter<'p> {
             next_wgmma_op: WgmmaOpId::default(),
             clc_observed_decline: None,
             regions,
-            mbarriers: MbarrierTable::new(n_threads as usize),
+            mbarriers: MbarrierTable::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
             tensor_maps: TensorMapTable::new(),
             graph: GraphBuilder::new(provenance),
@@ -752,10 +752,6 @@ impl<'p> Interpreter<'p> {
             outputs.push((array.name.clone(), elems));
         }
         Ok(outputs)
-    }
-
-    pub fn stats(&self) -> Stats {
-        self.stats
     }
 
     // =====================================================================
@@ -1287,7 +1283,7 @@ impl<'p> Interpreter<'p> {
             // Only `cvta.to.global` reaches evaluation; global addresses are
             // absolute and the generic window over global is identity-mapped,
             // so this is the identity.
-            LoweredInstr::Cvta { dst, src, .. } => {
+            LoweredInstr::Cvta { dst, src } => {
                 let v = self.operand_value(t, pc, src)?;
                 self.write_reg(t, pc, *dst, v)?;
             }
@@ -1658,13 +1654,6 @@ impl<'p> Interpreter<'p> {
                 self.write_reg(t, pc, *dst, Value::Scalar(r))?;
             }
 
-            LoweredInstr::Set { .. } => {
-                return Err(EvalError::Unsupported {
-                    pc,
-                    what: "set (value-producing comparison)".to_string(),
-                });
-            }
-
             LoweredInstr::Cvt {
                 dst,
                 src,
@@ -1941,7 +1930,7 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::Membar { .. } | LoweredInstr::Fence | LoweredInstr::Nop => {}
+            LoweredInstr::Membar | LoweredInstr::Fence | LoweredInstr::Nop => {}
 
             LoweredInstr::FenceProxyAsync { restrict } => {
                 let space = restrict.map(|s| match s {
@@ -1969,13 +1958,6 @@ impl<'p> Interpreter<'p> {
                 for copy in landing {
                     self.complete_cp_async_copy(t, copy)?;
                 }
-            }
-
-            LoweredInstr::Shfl { .. } => {
-                return Err(EvalError::Unsupported {
-                    pc,
-                    what: "shfl without .sync (deprecated warp-unsynchronized shuffle)".to_string(),
-                });
             }
 
             LoweredInstr::ShflSync { membermask, .. } => {
@@ -2097,7 +2079,7 @@ impl<'p> Interpreter<'p> {
                 self.record_mma_commit(t, id);
                 self.record_mbarrier_arrival(t, pc, id, 1, 0);
                 let before = self.mbarriers.completed_phases(id);
-                self.mbarriers.arrive(id, t, 1, None);
+                self.mbarriers.arrive(id, 1, None);
                 self.record_mbarrier_progress(id, before);
             }
 
@@ -2130,7 +2112,7 @@ impl<'p> Interpreter<'p> {
                 }
                 self.record_mbarrier_arrival(t, pc, id, u64::from(*noinc), 0);
                 let before = self.mbarriers.completed_phases(id);
-                self.mbarriers.arrive(id, t, u64::from(*noinc), None);
+                self.mbarriers.arrive(id, u64::from(*noinc), None);
                 self.record_mbarrier_progress(id, before);
             }
 
@@ -2221,7 +2203,7 @@ impl<'p> Interpreter<'p> {
                 self.exec_clc_query_is_canceled(t, pc, *dst, *response)?;
             }
 
-            LoweredInstr::ClcQueryGetFirstCtaid { response, .. } => {
+            LoweredInstr::ClcQueryGetFirstCtaid { response } => {
                 self.exec_clc_query_get_first_ctaid(t, pc, *response)?;
             }
 
@@ -2289,7 +2271,7 @@ impl<'p> Interpreter<'p> {
                 };
                 self.record_mbarrier_arrival(t, pc, id, count, expect_tx.unwrap_or(0));
                 let before = self.mbarriers.completed_phases(id);
-                self.mbarriers.arrive(id, t, count, expect_tx);
+                self.mbarriers.arrive(id, count, expect_tx);
                 self.record_mbarrier_progress(id, before);
                 if let Some(dst) = state {
                     // The opaque phase token: only `.parity` waits are

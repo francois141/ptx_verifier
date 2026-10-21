@@ -1,7 +1,5 @@
-//! Type system for PTX lowering: type classification, compatibility
-//! checking, and instruction category validation.
-
-use std::fmt;
+//! Type system for PTX lowering: register classes, type classification and
+//! compatibility checking.
 
 use volta_frontend::ast::ScalarType;
 
@@ -76,53 +74,6 @@ impl RegCounts {
     pub fn get(&self, class: RegClass) -> u32 {
         self.0[class as usize]
     }
-
-    pub fn pred(&self) -> u32 {
-        self.0[RegClass::Pred as usize]
-    }
-
-    pub fn b8(&self) -> u32 {
-        self.0[RegClass::Bits8 as usize]
-    }
-
-    pub fn b16(&self) -> u32 {
-        self.0[RegClass::Bits16 as usize]
-    }
-
-    pub fn b32(&self) -> u32 {
-        self.0[RegClass::Bits32 as usize]
-    }
-
-    pub fn b64(&self) -> u32 {
-        self.0[RegClass::Bits64 as usize]
-    }
-
-    pub fn b128(&self) -> u32 {
-        self.0[RegClass::Bits128 as usize]
-    }
-}
-
-impl fmt::Display for RegCounts {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let parts: Vec<_> = [
-            (self.pred(), "pred"),
-            (self.b8(), "b8"),
-            (self.b16(), "b16"),
-            (self.b32(), "b32"),
-            (self.b64(), "b64"),
-            (self.b128(), "b128"),
-        ]
-        .into_iter()
-        .filter(|(count, _)| *count > 0)
-        .map(|(count, name)| format!("{} {}", count, name))
-        .collect();
-
-        if parts.is_empty() {
-            write!(f, "none")
-        } else {
-            write!(f, "{}", parts.join(", "))
-        }
-    }
 }
 
 /// Extension trait for ScalarType to add type classification methods
@@ -133,7 +84,6 @@ pub trait ScalarTypeExt {
     fn is_integer(&self) -> bool;
     fn is_bits_type(&self) -> bool;
     fn is_predicate(&self) -> bool;
-    fn reg_class(&self) -> RegClass;
     fn size_bytes(&self) -> usize;
     /// Get the widened type (double the bit width), if one exists
     fn widen(&self) -> Option<ScalarType>;
@@ -198,10 +148,6 @@ impl ScalarTypeExt for ScalarType {
         matches!(self, ScalarType::Pred)
     }
 
-    fn reg_class(&self) -> RegClass {
-        RegClass::from_scalar_type(*self)
-    }
-
     /// True for the modeled packed float types (each lane its own `ExprId` in a
     /// `Value::Pair`): `F16x2`/`Bf16x2` in 32-bit registers, `F32x2` in 64-bit.
     /// Packed integer forms are unmodeled.
@@ -255,19 +201,16 @@ impl ScalarTypeExt for ScalarType {
 /// Result of type compatibility check
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeCompatibility {
-    /// Types are exactly equal
-    Exact,
-    /// Types are compatible (same size, or bit-type matches)
+    /// Types are equal, or the same size with a bit type or matching kinds
     Compatible,
-    /// Types are incompatible
-    Incompatible { reason: &'static str },
+    Incompatible,
 }
 
 /// Check if `actual` type can be used where `expected` is required
 pub fn check_type_compatibility(actual: ScalarType, expected: ScalarType) -> TypeCompatibility {
     // Exact match is always fine
     if actual == expected {
-        return TypeCompatibility::Exact;
+        return TypeCompatibility::Compatible;
     }
 
     let actual_size = actual.bits();
@@ -275,9 +218,7 @@ pub fn check_type_compatibility(actual: ScalarType, expected: ScalarType) -> Typ
 
     // Different sizes are never compatible
     if actual_size != expected_size {
-        return TypeCompatibility::Incompatible {
-            reason: "size mismatch",
-        };
+        return TypeCompatibility::Incompatible;
     }
 
     // Bit-types are compatible with anything of same size
@@ -294,9 +235,7 @@ pub fn check_type_compatibility(actual: ScalarType, expected: ScalarType) -> Typ
     // Float<->int of same size is NOT compatible
     // (this would be a semantic error)
     if actual.is_float() != expected.is_float() {
-        return TypeCompatibility::Incompatible {
-            reason: "cannot mix float and integer types (use cvt for conversion)",
-        };
+        return TypeCompatibility::Incompatible;
     }
 
     // Different float types of same size (e.g., f16 vs bf16) are compatible
@@ -305,94 +244,7 @@ pub fn check_type_compatibility(actual: ScalarType, expected: ScalarType) -> Typ
         return TypeCompatibility::Compatible;
     }
 
-    TypeCompatibility::Incompatible {
-        reason: "incompatible types",
-    }
-}
-
-/// Instruction categories for type validation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstrCategory {
-    /// Integer arithmetic: add, sub, mul, div, rem, neg, abs
-    IntArith,
-    /// Float arithmetic: add, sub, mul, div, neg, abs, fma
-    FloatArith,
-    /// Bitwise: and, or, xor, not, shl, shr
-    Bitwise,
-    /// Comparison: setp, set
-    Comparison,
-    /// Data movement: mov, ld, st
-    DataMove,
-    /// Conversion: cvt
-    Conversion,
-    /// Predicate logic: and, or, xor, not on predicates
-    PredicateLogic,
-    /// Transcendental: sin, cos, exp, log, sqrt, rsqrt, rcp
-    Transcendental,
-    /// Special: min, max (work on both int and float)
-    MinMax,
-}
-
-impl InstrCategory {
-    /// Check if a type is valid for this instruction category
-    pub fn validate_type(&self, ty: ScalarType) -> Result<(), &'static str> {
-        match self {
-            Self::IntArith => {
-                if ty.is_integer() {
-                    Ok(())
-                } else {
-                    Err("integer arithmetic requires integer type")
-                }
-            }
-            Self::FloatArith => {
-                if ty.is_float() {
-                    Ok(())
-                } else {
-                    Err("floating-point arithmetic requires float type")
-                }
-            }
-            Self::Bitwise => {
-                if ty.is_bits_type() || ty.is_integer() {
-                    Ok(())
-                } else {
-                    Err("bitwise operations require integer or bit type")
-                }
-            }
-            Self::Comparison => {
-                // setp/set work on any scalar type
-                Ok(())
-            }
-            Self::DataMove => {
-                // mov/ld/st work on any type
-                Ok(())
-            }
-            Self::Conversion => {
-                // cvt handles its own type checking
-                Ok(())
-            }
-            Self::PredicateLogic => {
-                if ty.is_predicate() {
-                    Ok(())
-                } else {
-                    Err("predicate logic requires pred type")
-                }
-            }
-            Self::Transcendental => {
-                if ty.is_float() {
-                    Ok(())
-                } else {
-                    Err("transcendental functions require float type")
-                }
-            }
-            Self::MinMax => {
-                if ty.is_integer() || ty.is_float() {
-                    Ok(())
-                } else {
-                    Err("min/max requires integer or float type")
-                }
-            }
-        }
-    }
+    TypeCompatibility::Incompatible
 }
 
 /// Format a scalar type as a PTX type string (e.g., ".s32", ".f32")
@@ -437,7 +289,7 @@ mod tests {
     fn test_type_compatibility_exact() {
         assert_eq!(
             check_type_compatibility(ScalarType::F32, ScalarType::F32),
-            TypeCompatibility::Exact
+            TypeCompatibility::Compatible
         );
     }
 
@@ -468,7 +320,7 @@ mod tests {
         // f32 NOT compatible with u32
         assert!(matches!(
             check_type_compatibility(ScalarType::F32, ScalarType::U32),
-            TypeCompatibility::Incompatible { .. }
+            TypeCompatibility::Incompatible
         ));
     }
 
@@ -477,7 +329,7 @@ mod tests {
         // u32 NOT compatible with u64
         assert!(matches!(
             check_type_compatibility(ScalarType::U32, ScalarType::U64),
-            TypeCompatibility::Incompatible { .. }
+            TypeCompatibility::Incompatible
         ));
     }
 
@@ -495,30 +347,6 @@ mod tests {
         assert_eq!(
             RegClass::from_scalar_type(ScalarType::F64),
             RegClass::Bits64
-        );
-    }
-
-    #[test]
-    fn test_instr_category_validation() {
-        assert!(
-            InstrCategory::IntArith
-                .validate_type(ScalarType::S32)
-                .is_ok()
-        );
-        assert!(
-            InstrCategory::IntArith
-                .validate_type(ScalarType::F32)
-                .is_err()
-        );
-        assert!(
-            InstrCategory::FloatArith
-                .validate_type(ScalarType::F32)
-                .is_ok()
-        );
-        assert!(
-            InstrCategory::FloatArith
-                .validate_type(ScalarType::S32)
-                .is_err()
         );
     }
 }

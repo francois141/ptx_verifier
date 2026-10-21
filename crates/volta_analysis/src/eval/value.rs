@@ -32,26 +32,6 @@ pub enum Value {
 }
 
 impl Value {
-    /// The scalar expression, if this is a scalar.
-    pub fn as_scalar(self) -> Option<ExprId> {
-        match self {
-            Self::Scalar(e) => Some(e),
-            Self::Pair(_, _) => None,
-            Self::Quad(..) => None,
-            Self::Mbarrier(_) => None,
-        }
-    }
-
-    /// The packed pair halves, if this is a pair.
-    pub fn as_pair(self) -> Option<(ExprId, ExprId)> {
-        match self {
-            Self::Pair(lo, hi) => Some((lo, hi)),
-            Self::Scalar(_) => None,
-            Self::Quad(..) => None,
-            Self::Mbarrier(_) => None,
-        }
-    }
-
     /// The four packed lanes, if this is a quad.
     pub fn as_quad(self) -> Option<(ExprId, ExprId, ExprId, ExprId)> {
         match self {

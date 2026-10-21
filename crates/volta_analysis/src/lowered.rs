@@ -5,7 +5,6 @@
 use std::fmt;
 
 use id_collections::{IdVec, id_type};
-use volta_common::Span;
 use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::source_map::SourceMap;
@@ -39,16 +38,6 @@ pub enum Operand {
 }
 
 impl Operand {
-    /// Check if this is a register (general or special)
-    pub fn is_register(&self) -> bool {
-        matches!(self, Self::Reg(_) | Self::SpecialReg(_))
-    }
-
-    /// Check if this is an immediate
-    pub fn is_immediate(&self) -> bool {
-        matches!(self, Self::ImmI64(_) | Self::ImmU64(_) | Self::ImmF64(_))
-    }
-
     /// Extract the RegId if this is a general-purpose register operand.
     pub fn as_reg(&self) -> Option<RegId> {
         match self {
@@ -160,8 +149,6 @@ pub enum UnaryOp {
     // Transcendental
     Ex2,
     Lg2,
-    Sin,
-    Cos,
     /// Natural exponential e^x (from `call __symexpf`, the paper's hook for
     /// symbolic exp; there is no such PTX instruction)
     Exp,
@@ -169,25 +156,6 @@ pub enum UnaryOp {
     /// in the interpreted exp fragment rather than becoming an opaque atom
     /// - the same approach as `Ex2`).
     Tanh,
-}
-
-impl UnaryOp {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Neg => "neg",
-            Self::Abs => "abs",
-            Self::Not => "not",
-            Self::Rcp => "rcp",
-            Self::Sqrt => "sqrt",
-            Self::Rsqrt => "rsqrt",
-            Self::Ex2 => "ex2",
-            Self::Lg2 => "lg2",
-            Self::Sin => "sin",
-            Self::Cos => "cos",
-            Self::Exp => "exp",
-            Self::Tanh => "tanh",
-        }
-    }
 }
 
 /// Memory space
@@ -403,11 +371,7 @@ pub enum LoweredInstr {
     },
 
     /// Convert address to generic: dst = cvta.to.space(src)
-    Cvta {
-        dst: RegId,
-        src: Operand,
-        space: MemSpace,
-    },
+    Cvta { dst: RegId, src: Operand },
 
     /// `mapa.shared::cluster d, a, rank`: `a`'s shared variable in CTA `rank`
     /// of the cluster. Clusters are assumed to hold one CTA, so the only valid
@@ -549,16 +513,6 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
-    /// Set with value: dst = (src_a cmp src_b) ? 1 : 0
-    Set {
-        cmp: CmpOp,
-        dst: RegId,
-        src_a: Operand,
-        src_b: Operand,
-        src_ty: ScalarType,
-        dst_ty: ScalarType,
-    },
-
     // =========================================================================
     // Type Conversion
     // =========================================================================
@@ -684,7 +638,7 @@ pub enum LoweredInstr {
     BarWarpSync { mask: Operand },
 
     /// Memory fence
-    Membar { scope: MembarScope },
+    Membar,
 
     /// `fence{.sem}.scope` or `fence.proxy.alias{.sem}.scope`: a pure
     /// ordering fence with no data effect to model. `fence.proxy.async` is
@@ -716,16 +670,6 @@ pub enum LoweredInstr {
     // =========================================================================
     // Warp-Level Operations
     // =========================================================================
-    /// Warp shuffle
-    Shfl {
-        mode: ShflMode,
-        dst: RegId,
-        dst_pred: Option<RegId>,
-        src: Operand,
-        offset_or_lane: Operand,
-        clamp: Operand,
-    },
-
     /// Warp shuffle with sync
     ShflSync {
         mode: ShflMode,
@@ -794,7 +738,6 @@ pub enum LoweredInstr {
         a_type: ScalarType,
         b_type: ScalarType,
         d_type: ScalarType,
-        c_type: ScalarType,
     },
 
     /// WMMA cooperative matrix load (wmma.load.{a,b,c}.sync)
@@ -833,10 +776,6 @@ pub enum LoweredInstr {
         src_a: Vec<RegId>,
         src_b: Vec<RegId>,
         src_c: Vec<RegId>,
-        a_layout: crate::tensor_core::MmaLayout,
-        b_layout: crate::tensor_core::MmaLayout,
-        d_type: ScalarType,
-        c_type: ScalarType,
     },
 
     // =========================================================================
@@ -1035,9 +974,10 @@ pub enum LoweredInstr {
     /// `clusterlaunchcontrol.query_cancel.is_canceled.pred.b128 dst, response`.
     ClcQueryIsCanceled { dst: RegId, response: RegId },
 
-    /// `clusterlaunchcontrol.query_cancel.get_first_ctaid{::dim}.{v4.}b32.b128`:
-    /// `dst` holds the requested ctaid components (sinks dropped).
-    ClcQueryGetFirstCtaid { dst: Vec<RegId>, response: RegId },
+    /// `clusterlaunchcontrol.query_cancel.get_first_ctaid{::dim}.{v4.}b32.b128`.
+    /// No destination: evaluating it is always an error (see
+    /// `exec_clc_query_get_first_ctaid`).
+    ClcQueryGetFirstCtaid { response: RegId },
 
     // =========================================================================
     // mbarrier: phased arrive/wait barriers (PTX ISA 9.7.13.15)
@@ -1167,7 +1107,6 @@ define_instr_kinds!(
     Bfe,
     Setp,
     Selp,
-    Set,
     Cvt,
     CvtE4m3x2ToF16x2,
     CvtPackHalves,
@@ -1188,7 +1127,6 @@ define_instr_kinds!(
     CpAsyncCommitGroup,
     CpAsyncWaitGroup,
     CpAsyncMbarrierArrive,
-    Shfl,
     ShflSync,
     ElectSync,
     ReduxSync,
@@ -1230,481 +1168,6 @@ define_instr_kinds!(
     Nop,
 );
 
-impl LoweredInstr {
-    /// Collect all general-purpose registers read by this instruction,
-    /// excluding predicate guards (see `LoweredProgram::predicate`) and
-    /// special registers.
-    pub fn source_regs(&self) -> Vec<RegId> {
-        fn from_op(op: &Operand) -> Option<RegId> {
-            op.as_reg()
-        }
-        fn from_ops(ops: &[Operand]) -> Vec<RegId> {
-            ops.iter().filter_map(from_op).collect()
-        }
-
-        match self {
-            // Data movement
-            Self::LoadParam { .. } => vec![],
-            Self::Load { base, .. } => from_op(base).into_iter().collect(),
-            Self::LoadVec { base, .. } => from_op(base).into_iter().collect(),
-            Self::Store { base, src, .. } => {
-                let mut r = Vec::new();
-                r.extend(from_op(base));
-                r.extend(from_op(src));
-                r
-            }
-            Self::StoreVec { base, src, .. } => {
-                let mut r: Vec<RegId> = from_op(base).into_iter().collect();
-                r.extend(from_ops(src));
-                r
-            }
-            Self::CpAsync {
-                dst_base,
-                src_base,
-                src_size,
-                ..
-            } => {
-                let mut r: Vec<RegId> = from_op(dst_base).into_iter().collect();
-                r.extend(from_op(src_base));
-                match src_size {
-                    CpAsyncSrcSize::Sized(op) | CpAsyncSrcSize::IgnoreSrc(op) => {
-                        r.extend(from_op(op));
-                    }
-                    CpAsyncSrcSize::Full => {}
-                }
-                r
-            }
-            Self::Mov { src, .. } => from_op(src).into_iter().collect(),
-            Self::Cvta { src, .. } => from_op(src).into_iter().collect(),
-            Self::Mapa { src, rank, .. } => from_ops(&[*src, *rank]),
-            Self::Prmt {
-                src_a,
-                src_b,
-                selector,
-                ..
-            } => from_ops(&[*src_a, *src_b, *selector]),
-            Self::Lop3 {
-                src_a,
-                src_b,
-                src_c,
-                lut,
-                ..
-            } => from_ops(&[*src_a, *src_b, *src_c, *lut]),
-
-            // Arithmetic
-            Self::BinOp { src_a, src_b, .. } => from_ops(&[*src_a, *src_b]),
-            Self::UnaryOp { src, .. } => from_op(src).into_iter().collect(),
-            Self::Copysign {
-                sign_src,
-                magnitude_src,
-                ..
-            } => from_ops(&[*sign_src, *magnitude_src]),
-            Self::Fma {
-                src_a,
-                src_b,
-                src_c,
-                ..
-            }
-            | Self::Mad {
-                src_a,
-                src_b,
-                src_c,
-                ..
-            } => from_ops(&[*src_a, *src_b, *src_c]),
-            Self::MulWide { src_a, src_b, .. } | Self::MulHi { src_a, src_b, .. } => {
-                from_ops(&[*src_a, *src_b])
-            }
-            Self::Bfi {
-                src_a,
-                src_b,
-                start,
-                len,
-                ..
-            } => from_ops(&[*src_a, *src_b, *start, *len]),
-            Self::Bfe {
-                src_a, start, len, ..
-            } => from_ops(&[*src_a, *start, *len]),
-
-            // Comparison & selection
-            Self::Setp { src_a, src_b, .. } | Self::Set { src_a, src_b, .. } => {
-                from_ops(&[*src_a, *src_b])
-            }
-            Self::Selp {
-                src_a, src_b, pred, ..
-            } => from_ops(&[*src_a, *src_b, *pred]),
-
-            // Type conversion
-            Self::Cvt { src, .. } => from_op(src).into_iter().collect(),
-            Self::CvtE4m3x2ToF16x2 { src, .. } => from_op(src).into_iter().collect(),
-            Self::CvtPackHalves { src_hi, src_lo, .. } => from_ops(&[*src_hi, *src_lo]),
-            Self::UnpackHalves { src, .. } => from_op(src).into_iter().collect(),
-            Self::PackHalves { lo, hi, .. } => from_ops(&[*lo, *hi]),
-            Self::PackQuad { elems, .. } => from_ops(elems),
-            Self::UnpackQuad { src, .. } => from_op(src).into_iter().collect(),
-            Self::Shf { lo, hi, shift, .. } => from_ops(&[*lo, *hi, *shift]),
-
-            // Control flow
-            Self::Bra { .. } | Self::Ret | Self::Exit | Self::Trap | Self::Nop => vec![],
-
-            // Warp queries
-            Self::Activemask { .. } => vec![],
-
-            // Synchronization
-            Self::BarSync {
-                barrier_id,
-                thread_count,
-            } => from_op(barrier_id)
-                .into_iter()
-                .chain(thread_count.as_ref().and_then(from_op))
-                .collect(),
-            Self::BarArrive {
-                barrier_id,
-                thread_count,
-            } => from_op(barrier_id)
-                .into_iter()
-                .chain(from_op(thread_count))
-                .collect(),
-            Self::BarWarpSync { mask } => from_op(mask).into_iter().collect(),
-            Self::Membar { .. } | Self::Fence | Self::FenceProxyAsync { .. } => vec![],
-            Self::CpAsyncCommitGroup | Self::CpAsyncWaitGroup { .. } => vec![],
-            Self::CpAsyncMbarrierArrive { addr_base, .. } => {
-                from_op(addr_base).into_iter().collect()
-            }
-
-            // Warp shuffle
-            Self::Shfl {
-                src,
-                offset_or_lane,
-                clamp,
-                ..
-            } => from_ops(&[*src, *offset_or_lane, *clamp]),
-            Self::ShflSync {
-                src,
-                offset_or_lane,
-                clamp,
-                membermask,
-                ..
-            } => from_ops(&[*src, *offset_or_lane, *clamp, *membermask]),
-            Self::ElectSync { membermask, .. } => from_op(membermask).into_iter().collect(),
-            Self::ReduxSync {
-                src, membermask, ..
-            } => from_ops(&[*src, *membermask]),
-            Self::ReduxSyncBroadcastMax {
-                src, membermask, ..
-            } => from_ops(&[*src, *membermask]),
-
-            // Tensor core
-            Self::Ldmatrix { addr, .. } => from_op(addr).into_iter().collect(),
-            Self::Mma {
-                src_a,
-                src_b,
-                src_c,
-                ..
-            } => {
-                let mut r = Vec::new();
-                r.extend(src_a.iter().copied());
-                r.extend(src_b.iter().copied());
-                r.extend(from_ops(src_c));
-                r
-            }
-            Self::WmmaMma {
-                src_a,
-                src_b,
-                src_c,
-                ..
-            } => {
-                let mut r = Vec::new();
-                r.extend(src_a.iter().copied());
-                r.extend(src_b.iter().copied());
-                r.extend(src_c.iter().copied());
-                r
-            }
-            Self::WmmaLoad { addr, stride, .. } => {
-                let mut r = Vec::new();
-                r.extend(from_op(addr));
-                r.extend(from_op(stride));
-                r
-            }
-            Self::WmmaStore {
-                src, addr, stride, ..
-            } => {
-                let mut r = Vec::new();
-                r.extend(src.iter().copied());
-                r.extend(from_op(addr));
-                r.extend(from_op(stride));
-                r
-            }
-
-            // Tensor Memory allocation
-            Self::Tcgen05Alloc { dst_base, .. } => from_op(dst_base).into_iter().collect(),
-            Self::Tcgen05Dealloc { taddr, .. } => from_op(taddr).into_iter().collect(),
-            Self::Tcgen05RelinquishAllocPermit => vec![],
-
-            // Tensor Memory register load/store
-            Self::Tcgen05Ld { taddr_base, .. } => from_op(taddr_base).into_iter().collect(),
-            Self::Tcgen05St {
-                taddr_base, src, ..
-            } => {
-                let mut r = Vec::new();
-                r.extend(from_op(taddr_base));
-                r.extend(from_ops(src));
-                r
-            }
-            Self::Tcgen05Wait { .. } => vec![],
-
-            // Matrix multiply and accumulate
-            Self::Tcgen05Mma {
-                d_tmem_base,
-                a,
-                b_desc,
-                idesc,
-                disable_output_lane,
-                enable_input_d,
-                ..
-            } => {
-                let a = match a {
-                    Tcgen05MmaA::Desc(desc) => *desc,
-                    Tcgen05MmaA::Tmem { base, .. } => *base,
-                };
-                let mut r = from_ops(&[*d_tmem_base, a, *b_desc, *idesc, *enable_input_d]);
-                r.extend(from_ops(disable_output_lane));
-                r
-            }
-
-            // Fence & commit
-            Self::Tcgen05Fence { .. } => vec![],
-            Self::Tcgen05Commit { addr_base, .. } => from_op(addr_base).into_iter().collect(),
-
-            // Asynchronous warpgroup-level matrix multiply-accumulate
-            Self::WgmmaMmaAsync {
-                dst,
-                a_desc,
-                b_desc,
-                scale_d,
-                ..
-            } => {
-                let mut r = from_ops(&[*a_desc, *b_desc, *scale_d]);
-                // Conservatively "maybe read": `scale_d` gates whether the
-                // accumulator is actually read, but that's a runtime value
-                // at eval time, not something known here.
-                r.extend(dst.iter().copied());
-                r
-            }
-            Self::WgmmaFence | Self::WgmmaCommitGroup | Self::WgmmaWaitGroup { .. } => vec![],
-            Self::Stmatrix { addr, src, .. } => {
-                let mut r = from_op(addr).into_iter().collect::<Vec<_>>();
-                r.extend(from_ops(src));
-                r
-            }
-
-            // Tensor-map objects & TMA tensor copy
-            Self::TensormapReplace {
-                addr_base, field, ..
-            } => {
-                let mut r: Vec<RegId> = from_op(addr_base).into_iter().collect();
-                match field {
-                    TensormapFieldWrite::GlobalAddress(v)
-                    | TensormapFieldWrite::Rank(v)
-                    | TensormapFieldWrite::BoxDim { new_val: v, .. }
-                    | TensormapFieldWrite::GlobalDim { new_val: v, .. }
-                    | TensormapFieldWrite::GlobalStride { new_val: v, .. }
-                    | TensormapFieldWrite::ElementStride { new_val: v, .. } => {
-                        r.extend(from_op(v));
-                    }
-                    TensormapFieldWrite::Elemtype(_)
-                    | TensormapFieldWrite::InterleaveLayout(_)
-                    | TensormapFieldWrite::SwizzleMode(_)
-                    | TensormapFieldWrite::SwizzleAtomicity(_)
-                    | TensormapFieldWrite::FillMode(_) => {}
-                }
-                r
-            }
-            Self::TensormapCpFenceproxy {
-                dst_base, src_base, ..
-            } => from_ops(&[*dst_base, *src_base]),
-            Self::FenceProxyTensormap => vec![],
-            Self::CpAsyncBulkTensorLoad {
-                dst_base,
-                tensormap_base,
-                coords,
-                mbar_base,
-                ..
-            } => {
-                let mut r: Vec<RegId> = from_ops(&[*dst_base, *tensormap_base, *mbar_base]);
-                r.extend(from_ops(coords));
-                r
-            }
-            Self::CpAsyncBulkLoad {
-                dst_base,
-                src_base,
-                size,
-                mbar_base,
-                ..
-            } => from_ops(&[*dst_base, *src_base, *size, *mbar_base]),
-            Self::ClcTryCancel {
-                addr_base,
-                mbar_base,
-                ..
-            } => from_ops(&[*addr_base, *mbar_base]),
-            Self::ClcQueryIsCanceled { response, .. }
-            | Self::ClcQueryGetFirstCtaid { response, .. } => vec![*response],
-
-            // mbarrier
-            Self::MbarrierInit {
-                addr_base, count, ..
-            } => from_ops(&[*addr_base, *count]),
-            Self::MbarrierInval { addr_base, .. } => from_op(addr_base).into_iter().collect(),
-            Self::MbarrierArrive {
-                addr_base,
-                count,
-                expect_tx,
-                ..
-            } => {
-                let mut r: Vec<RegId> = from_op(addr_base).into_iter().collect();
-                if let Some(c) = count {
-                    r.extend(from_op(c));
-                }
-                if let Some(tx) = expect_tx {
-                    r.extend(from_op(tx));
-                }
-                r
-            }
-            Self::MbarrierCompleteTx {
-                addr_base,
-                tx_count,
-                ..
-            } => from_ops(&[*addr_base, *tx_count]),
-            Self::MbarrierWaitParity {
-                addr_base,
-                phase_parity,
-                ..
-            } => from_ops(&[*addr_base, *phase_parity]),
-        }
-    }
-
-    /// Collect all general-purpose registers written by this instruction.
-    pub fn dest_regs(&self) -> Vec<RegId> {
-        match self {
-            // Single destination
-            Self::LoadParam { dst, .. }
-            | Self::Load { dst, .. }
-            | Self::Mov { dst, .. }
-            | Self::Cvta { dst, .. }
-            | Self::Mapa { dst, .. }
-            | Self::Prmt { dst, .. }
-            | Self::Lop3 { dst, .. }
-            | Self::BinOp { dst, .. }
-            | Self::UnaryOp { dst, .. }
-            | Self::Copysign { dst, .. }
-            | Self::Fma { dst, .. }
-            | Self::Mad { dst, .. }
-            | Self::MulWide { dst, .. }
-            | Self::MulHi { dst, .. }
-            | Self::Bfi { dst, .. }
-            | Self::Bfe { dst, .. }
-            | Self::Setp { dst, .. }
-            | Self::Selp { dst, .. }
-            | Self::Set { dst, .. }
-            | Self::Cvt { dst, .. }
-            | Self::CvtE4m3x2ToF16x2 { dst, .. }
-            | Self::CvtPackHalves { dst, .. }
-            | Self::PackHalves { dst, .. }
-            | Self::PackQuad { dst, .. }
-            | Self::Shf { dst, .. }
-            | Self::ReduxSync { dst, .. }
-            | Self::ReduxSyncBroadcastMax { dst, .. }
-            | Self::Activemask { dst }
-            | Self::ClcQueryIsCanceled { dst, .. } => vec![*dst],
-
-            // Vector destinations
-            Self::LoadVec { dst, .. }
-            | Self::Ldmatrix { dst, .. }
-            | Self::Mma { dst, .. }
-            | Self::WmmaLoad { dst, .. }
-            | Self::WmmaMma { dst, .. }
-            | Self::Tcgen05Ld { dst, .. }
-            | Self::WgmmaMmaAsync { dst, .. }
-            | Self::ClcQueryGetFirstCtaid { dst, .. } => dst.clone(),
-
-            // Shuffle: dst + optional dst_pred
-            Self::Shfl { dst, dst_pred, .. } | Self::ShflSync { dst, dst_pred, .. } => {
-                let mut r = vec![*dst];
-                if let Some(p) = dst_pred {
-                    r.push(*p);
-                }
-                r
-            }
-
-            // Unpack: two destinations
-            Self::UnpackHalves { lo, hi, .. } => lo.iter().chain(hi.iter()).copied().collect(),
-
-            // Unpack: four destinations, any of them sinkable
-            Self::UnpackQuad { elems, .. } => elems.iter().flatten().copied().collect(),
-
-            // Elect: required dst_pred + optional dst (sink-able lane id)
-            Self::ElectSync { dst, dst_pred, .. } => {
-                let mut r = vec![*dst_pred];
-                r.extend(dst.iter().copied());
-                r
-            }
-
-            // mbarrier: optional destination (arrive's discardable phase
-            // token) or a required one (wait's boolean result)
-            Self::MbarrierArrive { state, .. } => state.iter().copied().collect(),
-            Self::MbarrierWaitParity { wait_complete, .. } => vec![*wait_complete],
-
-            // No destination
-            Self::Store { .. }
-            | Self::StoreVec { .. }
-            | Self::CpAsync { .. }
-            | Self::WmmaStore { .. }
-            | Self::Bra { .. }
-            | Self::Ret
-            | Self::Exit
-            | Self::Trap
-            | Self::BarSync { .. }
-            | Self::BarArrive { .. }
-            | Self::BarWarpSync { .. }
-            | Self::Membar { .. }
-            | Self::Fence
-            | Self::FenceProxyAsync { .. }
-            | Self::CpAsyncCommitGroup
-            | Self::CpAsyncWaitGroup { .. }
-            | Self::CpAsyncMbarrierArrive { .. }
-            | Self::Tcgen05Alloc { .. }
-            | Self::Tcgen05Dealloc { .. }
-            | Self::Tcgen05RelinquishAllocPermit
-            | Self::Tcgen05St { .. }
-            | Self::Tcgen05Wait { .. }
-            | Self::Tcgen05Mma { .. }
-            | Self::Tcgen05Fence { .. }
-            | Self::Tcgen05Commit { .. }
-            | Self::WgmmaFence
-            | Self::WgmmaCommitGroup
-            | Self::WgmmaWaitGroup { .. }
-            | Self::Stmatrix { .. }
-            | Self::TensormapReplace { .. }
-            | Self::TensormapCpFenceproxy { .. }
-            | Self::FenceProxyTensormap
-            | Self::CpAsyncBulkTensorLoad { .. }
-            | Self::CpAsyncBulkLoad { .. }
-            | Self::ClcTryCancel { .. }
-            | Self::MbarrierInit { .. }
-            | Self::MbarrierInval { .. }
-            | Self::MbarrierCompleteTx { .. }
-            | Self::Nop => vec![],
-        }
-    }
-}
-
-/// Scope for memory barriers
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MembarScope {
-    Cta,
-    Gpu,
-    Sys,
-}
-
 /// A fully lowered and resolved PTX program
 #[derive(Debug)]
 pub struct LoweredProgram {
@@ -1735,29 +1198,6 @@ impl LoweredProgram {
         self.predicates.get(pc).and_then(|p| p.as_ref())
     }
 
-    /// Format a register for error messages
-    pub fn format_reg(&self, reg: RegId) -> String {
-        self.symbols
-            .register_name(reg)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{:?}[{}]", reg.class, reg.index))
-    }
-
-    /// Get the source span for an instruction
-    pub fn instruction_span(&self, pc: InstrId) -> Option<Span> {
-        self.source_map.instruction_span(pc)
-    }
-
-    /// Number of instructions
-    pub fn len(&self) -> usize {
-        self.instructions.len()
-    }
-
-    /// Check if program is empty
-    pub fn is_empty(&self) -> bool {
-        self.instructions.is_empty()
-    }
-
     /// Get register counts per class
     pub fn register_counts(&self) -> RegCounts {
         self.symbols.register_counts()
@@ -1767,18 +1207,6 @@ impl LoweredProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::RegClass;
-
-    #[test]
-    fn test_operand_types() {
-        let reg = Operand::Reg(RegId::new(RegClass::Bits32, 0));
-        assert!(reg.is_register());
-        assert!(!reg.is_immediate());
-
-        let imm = Operand::ImmI64(42);
-        assert!(!imm.is_register());
-        assert!(imm.is_immediate());
-    }
 
     #[test]
     fn test_binop_names() {
