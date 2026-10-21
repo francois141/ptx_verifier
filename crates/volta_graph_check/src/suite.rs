@@ -6,9 +6,12 @@
 //! an abort on invalid or unsupported behavior (§1.2): a stuck trace is a diagnostic, an
 //! aborted one inconclusive, and the checks still run on the partial graph either way.
 
+use std::time::Instant;
+
 use volta_graph::{BlockedThread, EventGraph, Terminal};
 
 use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
+use crate::logging::info;
 use crate::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
 use crate::proxy_order::{ProxyOrderResult, check_proxy_order};
 use crate::relation::ValidatedGraph;
@@ -185,29 +188,77 @@ fn not_run<E, V>(property: Property) -> PropertyResult<E, V> {
     ))])
 }
 
+/// One check's progress log: announced when it starts, its verdict and duration when done.
+struct CheckLog {
+    property: Property,
+    start: Instant,
+}
+
+impl CheckLog {
+    fn start(property: Property) -> Self {
+        info!(
+            "[graph] check {}/{}: {} ({})",
+            Self::position(property),
+            Property::ALL.len(),
+            property.name(),
+            property.algorithm()
+        );
+        CheckLog {
+            property,
+            start: Instant::now(),
+        }
+    }
+
+    fn finish<E, V>(self, result: &PropertyResult<E, V>) {
+        info!(
+            "[graph] check {}/{}: {} in {:.3}s",
+            Self::position(self.property),
+            Property::ALL.len(),
+            result.verdict().name(),
+            self.start.elapsed().as_secs_f64()
+        );
+    }
+
+    fn position(property: Property) -> usize {
+        Property::ALL.iter().position(|&p| p == property).unwrap() + 1
+    }
+}
+
 /// Run the six checks on `graph`.
 pub fn check_graph(graph: &EventGraph) -> GraphReport {
+    let log = CheckLog::start(Property::NamedBarrierEpoch);
     let (named_barrier_epoch, named) = check_named_barrier_epochs(graph);
+    log.finish(&named_barrier_epoch);
+    let log = CheckLog::start(Property::MbarrierEpoch);
     let (mbarrier_epoch, mbarrier) = check_mbarrier_epochs(graph);
+    log.finish(&mbarrier_epoch);
     let validated = named
         .zip(mbarrier)
         .map(|(named, mbarrier)| ValidatedGraph::from_epochs(named, mbarrier));
+    let log = CheckLog::start(Property::MemoryConflict);
     let (memory_conflict, conflict_free) = match &validated {
         Some(h) => check_memory_conflicts(h),
         None => (not_run(Property::MemoryConflict), None),
     };
+    log.finish(&memory_conflict);
+    let log = CheckLog::start(Property::ProxyOrder);
     let proxy_order = match (&validated, &conflict_free) {
         (Some(h), Some(free)) => check_proxy_order(h, free),
         _ => not_run(Property::ProxyOrder),
     };
+    log.finish(&proxy_order);
+    let log = CheckLog::start(Property::TensorOrder);
     let tensor_order = match &validated {
         Some(d) => check_tensor_order(d),
         None => not_run(Property::TensorOrder),
     };
+    log.finish(&tensor_order);
+    let log = CheckLog::start(Property::ResourceLifetime);
     let resource_lifetime = match &validated {
         Some(h) => check_resource_lifetimes(h),
         None => not_run(Property::ResourceLifetime),
     };
+    log.finish(&resource_lifetime);
     GraphReport {
         terminal: graph.terminal().clone(),
         named_barrier_epoch,

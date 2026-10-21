@@ -730,6 +730,7 @@ dependencies = [
 name = "volta_graph_check"
 version = "0.1.0"
 dependencies = [
+ "log",
  "volta_expr",
  "volta_graph",
 ]
@@ -738,6 +739,7 @@ dependencies = [
 name = "volta_pipeline"
 version = "0.1.0"
 dependencies = [
+ "log",
  "volta_analysis",
  "volta_equivalence",
  "volta_expr",

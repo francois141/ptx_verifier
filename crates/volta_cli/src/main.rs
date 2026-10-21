@@ -24,7 +24,7 @@ use volta_frontend::file_cache::FileCache;
 use volta_frontend::parse;
 use volta_frontend::report::{Report, locate_path, report_error};
 use volta_graph::EventGraph;
-use volta_graph_check::{GraphConclusion, GraphReport, Verdict as PropertyVerdict};
+use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::{
     Decision, EquivalenceVerdict, KernelEvidence, Verdict, check_equivalence, decide, verify_kernel,
 };
@@ -485,13 +485,8 @@ impl KernelSide {
 fn print_graph_report(side: &KernelSide) {
     println!("{}: graph verification", side.label);
     for s in side.report.summaries() {
-        let verdict = match s.verdict {
-            PropertyVerdict::Pass => "PASS",
-            PropertyVerdict::Fail => "FAIL",
-            PropertyVerdict::Unknown => "UNKNOWN",
-        };
         let check = format!("{} ({})", s.property.name(), s.property.algorithm());
-        println!("  {:<55} {}", check, verdict);
+        println!("  {:<55} {}", check, s.verdict.name());
         for f in s.findings.iter().take(3) {
             println!("      {}", f);
         }
@@ -582,6 +577,10 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
         }
     };
     let elapsed = start.elapsed().as_secs_f64();
+    #[cfg(feature = "logging")]
+    log::info!(
+        "[equivalence] skipped: analyze has no second kernel or spec (compare and verify run it)"
+    );
     if let Some(path) = &args.dump_graph {
         match std::fs::write(path, side.graph.dump()) {
             Ok(()) => eprintln!("Wrote event graph to {}", path.display()),

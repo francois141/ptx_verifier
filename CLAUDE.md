@@ -331,12 +331,15 @@ nvcc's `selp` accumulator-init idiom both rely on this.
 
 ### Logging (`logging.rs`)
 
-Gated by the `logging` feature (`volta_analysis` and `volta_equivalence`,
-both passed through by `volta_cli`); without it the macros
-are no-op stubs. Wired at the decision points: barrier/warp-group fires
-(trace), deadlock (warn), launch config and completion stats (info) in
-`volta_analysis`; VC session recycles (info) and fraction-equality
-escalation (debug) in `volta_equivalence`. `cargo run -p volta_cli
+Gated by the `logging` feature (`volta_analysis`, `volta_equivalence`,
+`volta_graph_check` and `volta_pipeline`, all passed through by `volta_cli`);
+without it the macros are no-op stubs. Wired at the decision points:
+barrier/warp-group fires (trace), deadlock (warn), launch config and
+completion stats (info) in `volta_analysis`; VC session recycles (info) and
+fraction-equality escalation (debug) in `volta_equivalence`; the stages at
+info, tagged `[analysis]`/`[graph]`/`[equivalence]`: graph extraction and
+the equivalence branch in `volta_pipeline`, each of the six checks (start,
+verdict, duration) in `check_graph`. `cargo run -p volta_cli
 --features logging -- --log-level info analyze ...` narrates a run.
 
 ## Crate: volta_graph_check

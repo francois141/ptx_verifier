@@ -15,6 +15,7 @@
 pub mod aggregate;
 pub mod equivalence;
 pub mod kernel;
+mod logging;
 
 pub use aggregate::{Decision, KernelEvidence, Verdict, decide};
 pub use equivalence::{Element, EquivalenceVerdict, check_equivalence, confirm_differences};

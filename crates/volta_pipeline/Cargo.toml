@@ -3,7 +3,12 @@ name = "volta_pipeline"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+logging = ["dep:log"]  # Full logging when enabled
+
 [dependencies]
+log = { workspace = true, optional = true }
 volta_analysis.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true

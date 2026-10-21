@@ -18,6 +18,7 @@
 
 pub mod barrier_epoch;
 pub mod domain;
+mod logging;
 pub mod memory_conflict;
 pub mod pipeline;
 pub mod proxy_order;

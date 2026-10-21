@@ -10,6 +10,16 @@ pub enum Verdict {
     Unknown,
 }
 
+impl Verdict {
+    pub fn name(self) -> &'static str {
+        match self {
+            Verdict::Pass => "PASS",
+            Verdict::Fail => "FAIL",
+            Verdict::Unknown => "UNKNOWN",
+        }
+    }
+}
+
 /// An obligation a check could not discharge, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unresolved {

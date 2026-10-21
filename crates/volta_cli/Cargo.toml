@@ -9,7 +9,14 @@ path = "src/main.rs"
 
 [features]
 default = []
-logging = ["volta_analysis/logging", "volta_equivalence/logging", "dep:env_logger", "dep:log"]
+logging = [
+    "volta_analysis/logging",
+    "volta_equivalence/logging",
+    "volta_graph_check/logging",
+    "volta_pipeline/logging",
+    "dep:env_logger",
+    "dep:log",
+]
 
 [dependencies]
 volta_analysis.workspace = true

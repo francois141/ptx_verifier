@@ -3,7 +3,12 @@ name = "volta_graph_check"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+logging = ["dep:log"]  # Full logging when enabled
+
 [dependencies]
+log = { workspace = true, optional = true }
 volta_graph.workspace = true
 
 [dev-dependencies]
