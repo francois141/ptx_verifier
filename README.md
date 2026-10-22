@@ -1,8 +1,15 @@
+<h1 align="center">Volta Blackwell</h1>
+
 <p align="center">
-  <img src="docs/volta-logo.png" alt="Volta logo" width="400">
+  <img src="volta-logo.png" alt="Volta Blackwell logo" width="400">
 </p>
 
-Volta checks NVIDIA PTX kernels for data races and deadlocks, and proves a kernel equivalent to a reference kernel or a math spec (floats are modeled as reals). This is an experimental fork of [Volta](https://github.com/willtunnels/volta).
+Volta Blackwell checks NVIDIA PTX kernels for data races and deadlocks, and checks a kernel for equivalence to a reference kernel or a math spec (floats are modeled as reals). This is an experimental fork of [Volta](https://github.com/willtunnels/volta).
+
+> [!CAUTION]
+> **This project is not intended to be a sound verifier, and we do not claim that it is a formal verifier. It is a best-effort verifier for catching bugs in generated kernels; a successful check does not guarantee correctness.**
+>
+> **We are aware of similar efforts, that claims to be a formal verifier but suffers from soundness issues in its handling of the Blackwell ISA. We recommend treating the output with care and using independent testing and validation as it seems there are no trusted blackwell verifiers yet. The latest up to date formal verifier is [Volta](https://github.com/willtunnels/volta).**
 
 Kernels must have statically known sizes, and their addresses and branches must resolve from thread indices and concrete parameters, not from input values. Only CTA 0 is executed; it stands for every CTA of the grid.
 
@@ -16,17 +23,6 @@ just test               # Rust and Python tests
 `cargo run --release -p volta_cli -- <command> ...` builds and runs in one step.
 
 ## CLI
-
-### Launch flags
-
-`analyze`, `verify` and `compare` share these flags. They must match the kernel's parameters.
-
-- `-b, --block X[,Y[,Z]]` / `-g, --grid X[,Y[,Z]]`: launch dims (default `1`)
-- `--array name:base:elem_width:len:kind`: a global array of `len` elements of `elem_width` bytes at address `base`; `kind` is `in`, `out`, `inout` or `index` (concrete `a[i] = i`). Repeatable.
-- `--param int:N | float:X | sym:name | ptr:array`: the kernel's parameters, in declaration order. Repeatable.
-- `--global NAME=value`: value of a module-scope `.global` variable. Repeatable.
-- `--dyn-shared N`: dynamic shared memory, in bytes
-- `--no-profile`: skip the per-instruction-kind profile
 
 ### Check a kernel for races and deadlocks
 
@@ -75,10 +71,20 @@ volta compare ref.ptx opt.ptx --kernel1 ref --kernel2 opt -b 128 \
 
 `compare` can skip symbolic execution: `--exprs a.vexpr b.vexpr` (from `analyze --emit-exprs`), or `--dump-vcs pair.vcdump` once and then `--from-dump pair.vcdump`.
 
-### Other commands
+### Launch flags
 
-- `volta parse file.ptx`: syntax check
-- `volta viz <run-store> -o page.html`: the event-graph viewer (`just viz` builds it over every test run)
+`analyze`, `verify` and `compare` share these flags. They must match the kernel's parameters.
+
+- `-b, --block X[,Y[,Z]]` / `-g, --grid X[,Y[,Z]]`: launch dims (default `1`)
+- `--array name:base:elem_width:len:kind`: a global array of `len` elements of `elem_width` bytes at address `base`; `kind` is `in`, `out`, `inout` or `index` (concrete `a[i] = i`). Repeatable.
+- `--param int:N | float:X | sym:name | ptr:array`: the kernel's parameters, in declaration order. Repeatable.
+- `--global NAME=value`: value of a module-scope `.global` variable. Repeatable.
+- `--dyn-shared N`: dynamic shared memory, in bytes
+- `--no-profile`: skip the per-instruction-kind profile
+
+### Syntax checks and logging
+
+`volta parse file.ptx` checks PTX syntax.
 
 Every run writes a log under `volta-logs/` (`--log-dir DIR`, `--no-log-file`). Build with `--features logging` and pass `--log-level info` for a trace of the run.
 
@@ -119,6 +125,28 @@ check.equivalent, check.mismatches, check.elements_checked
 ```
 
 `ArrayKind` is `Input`, `Output`, `InputOutput` or `IndexInput`. A race raises `volta.DataRaceError`, a deadlock `volta.DeadlockError`, and any other failure `volta.VoltaError` (the base class of both). An inconclusive graph check emits a `RuntimeWarning` and sets `race_verified` to `False`. `compare` is CLI-only for now.
+
+## Event-graph visualization
+
+`just viz` records the event graph of every test kernel and builds a single HTML
+page at `target/volta-viz/volta-graphs.html`. Open it in a browser to inspect the
+events, graph checks, and PTX source.
+
+```bash
+just viz
+```
+
+To build a viewer from an existing run store:
+
+```bash
+volta viz <run-store> -o page.html
+```
+
+<p align="center">
+  <img src="volta-viz.png" alt="The Volta Blackwell event-graph viewer showing warp 1's reads racing a bulk async copy">
+  <br>
+  <sub>Warp 1's reads race a <code>cp.async.bulk</code> copy that a <code>bar.sync</code> does not order.</sub>
+</p>
 
 ## Citation
 
