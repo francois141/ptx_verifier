@@ -1238,44 +1238,44 @@ fn test_cp_async_post_wait_cross_thread_read_with_sync_succeeds() {
     );
 }
 
-/// `cp.async` -> `wait_group` -> `ld.shared` under `sm_90a` with no fence:
+/// `cp.async` -> `wait_group` -> `ld.shared` with no fence:
 /// `cp.async` is a generic-proxy op (PTX ISA 9.7.10.28.3), so no
 /// `fence.proxy.async` is needed.
 #[test]
-fn test_cp_async_without_fence_proxy_async_is_clean_on_sm90() {
+fn test_cp_async_without_fence_proxy_async_is_clean() {
     analyze!(
-        "success/cp_async_without_fence_proxy_async_is_clean_on_sm90",
+        "success/cp_async_without_fence_proxy_async_is_clean",
         in_out_config(1, 1)
     );
 }
 
-/// Same kernel, same `sm_90a` target, with a (redundant)
+/// Same kernel with a (redundant)
 /// `fence.proxy.async.shared::cta;` between `wait_group` and the read -
 /// must pass clean too.
 #[test]
-fn test_cp_async_with_fence_proxy_async_succeeds_on_sm90() {
+fn test_cp_async_with_fence_proxy_async_succeeds() {
     analyze!(
-        "success/cp_async_with_fence_proxy_async_succeeds_on_sm90",
+        "success/cp_async_with_fence_proxy_async_succeeds",
         in_out_config(1, 1)
     );
 }
 
-/// Regression guard for a real astra2 sm_89 MatrixVectorMultiplicationFloat16
+/// Regression guard for a real astra2 MatrixVectorMultiplicationFloat16
 /// kernel: `cp.async`, `wait_group`, `bar.sync`, cross-thread read, no fence;
-/// below sm_90 it must never be flagged.
+/// `cp.async` is generic-proxy, so it must never be flagged.
 #[test]
-fn test_cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89() {
+fn test_cp_async_cross_thread_pattern_without_fence_is_clean() {
     analyze!(
-        "success/cp_async_cross_thread_pattern_without_fence_is_clean_on_sm89",
+        "success/cp_async_cross_thread_pattern_without_fence_is_clean",
         in_out_config(2, 1)
     );
 }
 
 /// TMA's async-proxy write needs no `fence.proxy.async` either: the
 /// completion carries an implicit proxy fence (PTX ISA 9.7.9.25.2). Same body
-/// as the bulk-tensor test, under `sm_90a`.
+/// as the bulk-tensor test.
 #[test]
-fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
+fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean() {
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         ArrayDef {
@@ -1298,7 +1298,7 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90() {
         ParamValue::ArrayPtr("out".to_string()),
     ];
     analyze!(
-        "success/cp_async_bulk_tensor_without_fence_proxy_async_is_clean_on_sm90",
+        "success/cp_async_bulk_tensor_without_fence_proxy_async_is_clean",
         config
     );
 }

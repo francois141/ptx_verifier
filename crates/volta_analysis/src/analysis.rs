@@ -14,7 +14,6 @@ use crate::eval::{EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stat
 use crate::ir::LoweredProgram;
 use crate::logging::info;
 use crate::lower::{LowerError, lower_function};
-use crate::target::TargetFeatures;
 
 /// Errors that prevent the candidate execution from starting at all.
 #[derive(Debug)]
@@ -180,7 +179,7 @@ fn provenance(
     config: &AnalysisConfig,
     program: &LoweredProgram,
 ) -> Provenance {
-    let mut assumptions = vec![
+    let assumptions = vec![
         Assumption::StructuredCta,
         Assumption::SingleCtaAnalyzed,
         Assumption::SingleCtaCluster,
@@ -188,9 +187,6 @@ fn provenance(
         Assumption::ExitedThreadsArrive,
         Assumption::EagerAsyncData,
     ];
-    if TargetFeatures::from_target(&module.target).async_proxy_fence {
-        assumptions.push(Assumption::AsyncProxy);
-    }
     let instructions = program
         .instructions
         .iter()

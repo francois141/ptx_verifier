@@ -1,5 +1,5 @@
-.version 8.0
-.target sm_90a
+.version 8.6
+.target sm_100a
 .address_size 64
 
 // The same two announced bulk copies, but thread 0 itself arrives after both

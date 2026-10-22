@@ -514,9 +514,6 @@ pub enum Assumption {
     /// Asynchronous operations compute their data at issue; only their completion is
     /// asynchronous.
     EagerAsyncData,
-    /// The target has an async proxy (sm_90+): generic writes need a proxy fence before an
-    /// async-proxy read.
-    AsyncProxy,
 }
 
 impl Assumption {
@@ -538,10 +535,6 @@ impl Assumption {
             Assumption::EagerAsyncData => {
                 "asynchronous operations compute their data at issue; only completion is \
                  asynchronous"
-            }
-            Assumption::AsyncProxy => {
-                "the target has an async proxy (sm_90+): async-proxy reads of generic writes \
-                 need a proxy fence"
             }
         }
     }

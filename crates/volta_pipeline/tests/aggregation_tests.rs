@@ -16,8 +16,8 @@ use volta_pipeline::{
 fn kernel(body: &str) -> String {
     format!(
         r#"
-.version 8.0
-.target sm_80
+.version 8.6
+.target sm_100a
 .address_size 64
 
 .visible .entry k(.param .u64 in, .param .u64 out)

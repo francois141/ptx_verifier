@@ -1,4 +1,4 @@
-.version 8.0
+.version 8.6
 .target sm_100a
 .address_size 64
 

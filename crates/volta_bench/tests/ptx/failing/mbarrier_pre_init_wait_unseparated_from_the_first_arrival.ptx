@@ -1,5 +1,5 @@
-.version 8.0
-.target sm_90
+.version 8.6
+.target sm_100a
 .address_size 64
 
 // Both threads wait at parity 1 on a fresh barrier, then thread 1 arrives. On

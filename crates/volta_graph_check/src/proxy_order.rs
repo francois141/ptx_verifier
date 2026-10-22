@@ -15,8 +15,8 @@
 //!
 //! * `H = G_HB` ([`ValidatedGraph`]); [`MemoryConflictFree`] is the prerequisite, so every
 //!   overlapping pair with a write is ordered and `ORDEREDCONFLICTS` orients it by trace order.
-//! * `SAMEPROXY`: both effects use the same proxy, or the target has no async proxy distinct
-//!   from the generic one (no `Assumption::AsyncProxy`). Virtual aliases are not modeled.
+//! * `SAMEPROXY`: both effects use the same proxy. The check never consults the target: a
+//!   proxy is a property of the instruction alone. Virtual aliases are not modeled.
 //! * `ISPROXYFENCE`: an explicit `fence.proxy.async` (over one space, or every space), and,
 //!   implicitly, a validated completion observation: a release of a generation that joins an
 //!   async operation's completion, for that operation's effects.
@@ -31,15 +31,15 @@
 //!   on each candidate thread only its latest suitable fence `f` with `(f, b) ∈ R`: if that
 //!   pair is uncovered, so is the search, and if it is covered, program order (or the
 //!   operation's shared observers) covers the actor's earlier effects through the same `f`.
-//! * `Pass`: SUCCESS (vacuous without an async proxy). `Fail`: the first
-//!   UNPROVEDPROXYORDER(a, b). The design reports it as an unproved obligation; Volta reports
-//!   a race, since the memory model orders no cross-proxy pair that no proxy fence covers.
+//! * `Pass`: SUCCESS. `Fail`: the first UNPROVEDPROXYORDER(a, b). The design reports it as an
+//!   unproved obligation; Volta reports a race, since the memory model orders no cross-proxy
+//!   pair that no proxy fence covers.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use volta_graph::{
-    AccessMode, Assumption, AsyncOpId, EventGraph, EventId, EventKind, ExecContext, FenceKind,
-    Proxy, Space, ThreadIx,
+    AccessMode, AsyncOpId, EventGraph, EventId, EventKind, ExecContext, FenceKind, Proxy, Space,
+    ThreadIx,
 };
 
 use crate::domain::{ByteLocation, ConflictKind, bytes, in_m, written_bytes};
@@ -51,8 +51,6 @@ use crate::result::PropertyResult;
 pub struct ProxyEvidence {
     /// Generic -> async-proxy pairs found covered (one per actor and later effect).
     pub covered_pairs: u64,
-    /// The target has no async proxy, so every pair is `SAMEPROXY`.
-    pub vacuous: bool,
 }
 
 /// UNPROVEDPROXYORDER(a, b): the generic-proxy effect `generic` and the later async-proxy
@@ -98,12 +96,6 @@ pub fn check_proxy_order(
         std::ptr::eq(graph, prerequisite.graph()),
         "the memory-conflict certificate is for another graph"
     );
-    if !graph.provenance().assumes(Assumption::AsyncProxy) {
-        return PropertyResult::Pass(ProxyEvidence {
-            covered_pairs: 0,
-            vacuous: true,
-        });
-    }
     let points = thread_points(graph);
     let written = written_bytes(graph);
     let mut fences: HashMap<ThreadIx, Vec<Fence>> = HashMap::new();
@@ -196,10 +188,7 @@ pub fn check_proxy_order(
     });
     match unproved {
         Some(v) => PropertyResult::Fail(vec![v]),
-        None => PropertyResult::Pass(ProxyEvidence {
-            covered_pairs,
-            vacuous: false,
-        }),
+        None => PropertyResult::Pass(ProxyEvidence { covered_pairs }),
     }
 }
 

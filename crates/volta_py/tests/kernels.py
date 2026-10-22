@@ -2,7 +2,7 @@
 
 import volta
 
-HEADER = ".version 8.0\n.target sm_80\n.address_size 64\n\n"
+HEADER = ".version 8.6\n.target sm_100a\n.address_size 64\n\n"
 
 # out[tid] = in[tid], 4 threads.
 COPY_KERNEL = (

@@ -14,7 +14,7 @@ fn provenance(threads: u32, instructions: usize) -> Provenance {
         kernel: "k".to_string(),
         block_dim: (threads, 1, 1),
         grid_dim: (1, 1, 1),
-        targets: vec!["Sm80".to_string()],
+        targets: vec!["Sm100a".to_string()],
         assumptions: Vec::new(),
         instructions: vec![
             InstructionInfo {

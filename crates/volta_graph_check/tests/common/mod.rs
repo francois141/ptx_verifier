@@ -30,13 +30,6 @@ pub fn provenance(threads: u32) -> Provenance {
     }
 }
 
-/// [`provenance`] on a target with an async proxy.
-pub fn async_proxy_provenance(threads: u32) -> Provenance {
-    let mut p = provenance(threads);
-    p.assumptions.push(Assumption::AsyncProxy);
-    p
-}
-
 /// A graph under construction plus the arena its stored values live in.
 pub struct Scenario {
     pub b: GraphBuilder,

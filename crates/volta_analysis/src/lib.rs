@@ -9,7 +9,6 @@ mod config;
 mod eval;
 mod ir;
 mod lower;
-mod target;
 
 pub use analysis::{AnalysisError, AnalysisParts, AnalysisResult, analyze, write_op_counts};
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};

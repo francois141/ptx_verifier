@@ -352,7 +352,7 @@ fn lower_module_src(src: &str) -> LoweredProgram {
 #[test]
 fn test_extern_shared_window_follows_static_shared() {
     let program = lower_module_src(
-        ".version 8.0\n.target sm_80\n.address_size 64\n\n\
+        ".version 8.6\n.target sm_100a\n.address_size 64\n\n\
          .extern .shared .align 16 .b8 buf[];\n\
          .visible .entry k()\n{\n\
          .reg .b32 %r<4>;\n\
@@ -373,7 +373,7 @@ fn test_extern_shared_window_follows_static_shared() {
 #[test]
 fn test_extern_only_shared_window_at_zero() {
     let program = lower_module_src(
-        ".version 8.0\n.target sm_80\n.address_size 64\n\n\
+        ".version 8.6\n.target sm_100a\n.address_size 64\n\n\
          .extern .shared .align 16 .b8 buf[];\n\
          .visible .entry k()\n{\n\
          .reg .b32 %r<4>;\n\
@@ -389,7 +389,7 @@ fn test_extern_only_shared_window_at_zero() {
 #[test]
 fn test_address_base_register_without_percent_prefix() {
     let program = lower_module_src(
-        ".version 8.0\n.target sm_80\n.address_size 64\n\n\
+        ".version 8.6\n.target sm_100a\n.address_size 64\n\n\
          .visible .entry k(.param .u64 x_ptr)\n{\n\
          .reg .b64 xp;\n\
          .reg .f32 %f<2>;\n\
@@ -416,7 +416,7 @@ fn lower_body(body: &str) -> LowerResult<LoweredProgram> {
     use volta_frontend::parse::Parser;
 
     let src = format!(
-        ".version 8.0\n.target sm_80\n.address_size 64\n\n\
+        ".version 8.6\n.target sm_100a\n.address_size 64\n\n\
          .visible .entry k()\n{{\n\
          .reg .pred %p<4>;\n\
          .reg .b16 %rs<8>;\n\

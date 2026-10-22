@@ -323,11 +323,12 @@ never-written registers/shared bytes yield `Undefined` (an error only if it
 reaches an output or a concreteness point) - the paper's race example and
 nvcc's `selp` accumulator-init idiom both rely on this.
 
-### Analysis stage (`analysis.rs`, `config.rs`, `target.rs`)
+### Analysis stage (`analysis.rs`, `config.rs`)
 
 - `config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
-- `target.rs` - `TargetFeatures`, derived from the module's `.target`
-  directive rather than the launch config (sm_90+ has an async proxy)
+- No behavior depends on the module's `.target` directive (recorded in the
+  graph's `Provenance` only): every kernel is analyzed and checked as on
+  Blackwell, so the proxy-order check always runs
 - `analyze(module, kernel_name, config) -> Result<AnalysisResult, AnalysisError>`:
   lowering plus one candidate execution, no verdict. `AnalysisResult` holds
   the arena, the event graph (always; partial on abort), stats, op counts,
