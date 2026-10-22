@@ -411,7 +411,8 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
 - `barrier_epoch.rs` - Weft's separation criterion over `G0`: every
   synchronization `s` of generation `k` reaches (or is) the program
   predecessor of every contribution `v` of `k + 1` (an mbarrier's pre-init
-  generation is its `k = -1`); an mbarrier wait of `k + 1` instead needs one
+  generation is its `k = -1`, and its `mbarrier.init` one of that generation's
+  synchronizations); an mbarrier wait of `k + 1` instead needs one
   release of `k` to reach its predecessor (phase `k` complete when it
   starts), the separation rule applying only when `k` released no thread;
   returns the first VIOLATION(s, v); a pass issues `NamedBarrierEpochs` /

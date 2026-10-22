@@ -166,7 +166,7 @@ fn test_mbarrier_expect_tx_blocks_until_complete_tx() {
 
 /// `mbarrier.arrive`/`try_wait.parity` is a χ happens-before edge (PTX ISA
 /// 9.7.14.16.19): thread 0 writes then arrives, thread 1 waits then reads,
-/// with no race reported.
+/// with no race reported. A `bar.sync` orders the init before the wait only.
 #[test]
 fn test_mbarrier_arrive_wait_establishes_happens_before() {
     analyze!(
@@ -291,7 +291,10 @@ fn test_tcgen05_ld_result_ordered_by_register_dependency() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    analyze!("success/tcgen05_ld_result_ordered_by_register_dependency", config);
+    analyze!(
+        "success/tcgen05_ld_result_ordered_by_register_dependency",
+        config
+    );
 }
 
 /// The control for `tcgen05_alloc_sizes_unordered`: `bar.sync 1` orders warp 0's 64-column

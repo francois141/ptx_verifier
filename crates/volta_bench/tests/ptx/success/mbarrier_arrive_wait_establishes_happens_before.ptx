@@ -20,6 +20,8 @@
     mov.u32 %r4, data;
 
     @%p0 mbarrier.init.shared::cta.b64 [%r2], 1;
+    // Orders the init before thread 1's wait; the store after it is ordered only by mbar.
+    bar.sync 0;
     @%p0 mov.u32 %r5, 42;
     @%p0 st.shared.u32 [%r4], %r5;
     @%p0 mbarrier.arrive.shared::cta.b64 _, [%r2];

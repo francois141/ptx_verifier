@@ -19,12 +19,15 @@
 //! * `G0` is [`IndependentGraph`]; `(s, p) ∈ G0+` (or `s = p`) is its non-strict
 //!   happens-before. `BARRIERS(G)` are the family's sync objects (an mbarrier lifetime is one
 //!   object), with their generations by logical index; an mbarrier's pre-init phase is its
-//!   generation -1, so the waits it releases must precede every operation of phase 0.
+//!   generation -1, so the waits it releases must precede every operation of phase 0, and so
+//!   must the `mbarrier.init` that completes it: any other mbarrier operation on a location
+//!   without a valid object is undefined (PTX ISA 9.7.15.16.13).
 //! * A *barrier operation* is a thread's instruction instance bound to a generation: a
 //!   contribution (`bar.arrive`, `bar.sync`, `mbarrier.arrive`, `complete_tx`, `tcgen05.commit`,
 //!   `cp.async.mbarrier.arrive`) or an mbarrier wait. `SYNCHRONIZATIONS(b, k)` holds the event
 //!   through which each operation of generation `k` takes part in it (a contribution's
-//!   `Contribute`, a wait's release), `RELEASES(b, k)` the releases among them;
+//!   `Contribute`, a wait's release; for a pre-init phase, also the init), `RELEASES(b, k)` the
+//!   releases among them;
 //!   `BARRIEROPERATIONS(b, k + 1)` the event each operation of generation `k + 1` begins with
 //!   (a contribution's `Contribute`, a wait's `WaitStart`), whose program predecessor `p` may
 //!   be on another thread than `s`. Exited threads and async completions are not thread
@@ -189,6 +192,9 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
                 .into_iter()
                 .map(|o| o.binds)
                 .collect();
+            if graph.generation(w[0]).kind == GenerationKind::MbarrierPreInit {
+                synchronizations.extend(graph.object(barrier).init);
+            }
             synchronizations.sort_unstable();
             let releases = synchronizations
                 .iter()

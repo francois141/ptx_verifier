@@ -87,25 +87,6 @@ fn test_inflight_complete_tx_lets_parity_wait_return_early() {
     );
 }
 
-/// Thread 1 arrives on `mbar` with nothing ordering thread 0's `mbarrier.init` first.
-#[test]
-fn test_mbarrier_init_unordered_with_other_threads_arrive() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/mbarrier_init_unordered_with_other_threads_arrive"),
-        in_out_config(2, 8),
-    );
-}
-
-/// Thread 0 re-initializes the live `mbar` unordered with thread 1's arrive: an arrive that
-/// lands first is wiped and thread 0 waits forever.
-#[test]
-fn test_mbarrier_reinit_of_live_object_races_arrive() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/mbarrier_reinit_of_live_object_races_arrive"),
-        in_out_config(2, 8),
-    );
-}
-
 /// Thread 32's TMA reads the tensor map thread 0 is still building; nothing orders them.
 #[test]
 fn test_tma_uses_tensormap_built_by_other_thread_without_sync() {

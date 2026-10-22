@@ -129,6 +129,7 @@ fn an_arrival_unseparated_from_a_pre_init_wait_is_a_violation() {
     let m = s.mbarrier(0, 1);
     let pre = s.pre_init(m);
     let p0 = s.phase(m, 0);
+    s.barrier(&[0, 1], &[]);
     let early = s.wait(0, m, Parity::Odd, pre);
     s.wait(1, m, Parity::Odd, pre);
     let arrival = s.arrive(1, p0);
@@ -141,6 +142,29 @@ fn an_arrival_unseparated_from_a_pre_init_wait_is_a_violation() {
     assert_eq!((v.generation, v.next), (pre, p0));
     assert_eq!((v.synchronization, v.operation), (early, arrival));
     assert!(certificate.is_none());
+}
+
+/// t1 arrives with nothing ordering t0's init first: on a schedule where t1 runs first, its
+/// arrive operates on an uninitialized object.
+#[test]
+fn an_arrival_unordered_after_the_init_is_a_violation() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let pre = s.pre_init(m);
+    let p0 = s.phase(m, 0);
+    let arrival = s.arrive(1, p0);
+    s.complete(p0);
+    s.wait(0, m, Parity::Even, p0);
+    let (g, _) = s.completed(2);
+    let (result, _) = check_mbarrier_epochs(&g);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!((v.generation, v.next), (pre, p0));
+    assert_eq!(
+        (Some(v.synchronization), v.operation),
+        (g.object(m).init, arrival)
+    );
 }
 
 #[test]

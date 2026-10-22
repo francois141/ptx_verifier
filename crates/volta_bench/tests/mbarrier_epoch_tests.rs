@@ -46,3 +46,29 @@ fn test_mbarrier_pre_init_wait_unseparated_from_the_first_arrival() {
     assert_eq!(g.event(v.operation).kind, EventKind::Contribute(v.next));
     assert_eq!(g.thread_of(v.operation), Some(ThreadIx(1)));
 }
+
+/// Thread 1 arrives on `mbar` with nothing ordering thread 0's `mbarrier.init` first (in the
+/// second kernel, a re-init of the live object): on a schedule where thread 1 runs first, its
+/// arrive lands on an uninitialized object, or on one the re-init then wipes.
+#[test]
+fn test_mbarrier_arrival_unordered_after_the_init() {
+    for (name, src) in [
+        ptx_case!("failing/mbarrier_init_unordered_with_other_threads_arrive"),
+        ptx_case!("failing/mbarrier_reinit_of_live_object_races_arrive"),
+    ] {
+        let (checked, v) = violation(&parse(&src), in_out_config(2, 8));
+        let g = &checked.analysis.graph;
+        assert_eq!(
+            g.event(v.synchronization).kind,
+            EventKind::ObjectInit(v.barrier),
+            "{name}"
+        );
+        assert_eq!(g.thread_of(v.synchronization), Some(ThreadIx(0)), "{name}");
+        assert_eq!(
+            g.event(v.operation).kind,
+            EventKind::Contribute(v.next),
+            "{name}"
+        );
+        assert_eq!(g.thread_of(v.operation), Some(ThreadIx(1)), "{name}");
+    }
+}
