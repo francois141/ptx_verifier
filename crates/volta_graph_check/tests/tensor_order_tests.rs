@@ -125,6 +125,91 @@ fn a_waiter_without_the_after_fence_is_unproved() {
     assert_eq!(c.kind, ConflictKind::WriteRead);
 }
 
+/// t0's MMA committed to a phase, then a barrier with t1 and t1's fenced load of the
+/// accumulator; t0 observes the completion before the barrier when `waited`, else after.
+fn committed_mma_then_barrier_load(waited: bool) -> EventGraph {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    s.barrier(&[0, 1], &[]);
+    let p0 = s.phase(m, 0);
+    let (mma, _) = s.mma(0, (0, 8));
+    s.commit(0, p0, &[mma]);
+    s.complete(p0);
+    if waited {
+        s.wait(0, m, Parity::Even, p0);
+    }
+    s.barrier(&[0, 1], &[]);
+    s.tcgen05_after(1);
+    s.tmem_ld(1, 0, (0, 8));
+    if !waited {
+        s.wait(0, m, Parity::Even, p0);
+    }
+    s.completed(2).0
+}
+
+/// An MMA and a load are not pipelined: fences around a barrier order their issues only, so
+/// the MMA's completion must be observed before the barrier (PTX ISA 9.7.18.6.4.4).
+#[test]
+fn a_barrier_before_the_mmas_completion_is_observed_orders_no_load() {
+    let result = check(&committed_mma_then_barrier_load(false));
+    let [c] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(c.kind, ConflictKind::WriteRead);
+    assert_eq!(
+        evidence(&check(&committed_mma_then_barrier_load(true))),
+        (1, 0, 1)
+    );
+}
+
+#[test]
+fn an_after_fence_before_the_completion_wait_does_not_count() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    s.barrier(&[0, 1], &[]);
+    let p0 = s.phase(m, 0);
+    let (mma, _) = s.mma(0, (0, 8));
+    s.commit(0, p0, &[mma]);
+    s.complete(p0);
+    s.tcgen05_after(1);
+    s.wait(1, m, Parity::Even, p0);
+    s.tmem_ld(1, 0, (0, 8));
+    let (g, _) = s.completed(2);
+    assert_eq!(check(&g).verdict(), Verdict::Fail);
+}
+
+/// Warp 0's store, then a before fence, a barrier with thread 32 and its fenced load of the
+/// stored cells; warp 0 waits for the store before the fence when `waited`, else after.
+fn store_then_other_warps_load(waited: bool) -> EventGraph {
+    let mut s = Scenario::new(33);
+    let (st, _) = s.tmem_st(0, 0, (0, 8));
+    if waited {
+        s.warp_wait(0, &[0], &[st]);
+    }
+    s.tcgen05_before(0);
+    s.barrier(&[0, 32], &[]);
+    s.tcgen05_after(32);
+    s.tmem_ld(32, 0, (0, 8));
+    if !waited {
+        s.warp_wait(0, &[0], &[st]);
+    }
+    s.completed(33).0
+}
+
+/// Operations of different warps are never pipelined (PTX ISA 9.7.18.6.2).
+#[test]
+fn a_store_and_another_warps_load_need_the_wait_before_the_sync() {
+    let result = check(&store_then_other_warps_load(false));
+    let [c] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!(c.kind, ConflictKind::WriteRead);
+    assert_eq!(
+        evidence(&check(&store_then_other_warps_load(true))),
+        (1, 0, 1)
+    );
+}
+
 #[test]
 fn a_waited_store_then_load_of_one_warp_is_pipelined() {
     let mut s = Scenario::new(1);

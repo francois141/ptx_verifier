@@ -25,12 +25,16 @@
 //!   operation, is a `tcgen05.fence::after_thread_sync`. Every other vertex keeps the state.
 //! * The search accepts only at `t` in state 2. It checks the fence protocol along a path of
 //!   `D`; synchronization and completion validation are the other passes' (§1.3).
+//! * [`Origin`]: the design always starts at `Issue(Op(a))` in state 0, which only orders the
+//!   issues. That suffices for a pipelinable pair, but any other pair needs the producer's
+//!   completion observed first (PTX ISA 9.7.18.6.4.4), so its search starts at that completion.
 //! * A visited `(v, s)` is never searched again: `SEARCH`'s answer depends on nothing else.
 
 use std::collections::HashSet;
 
 use volta_graph::{
-    AsyncOpId, ContributionKind, EventGraph, EventId, EventKind, FenceKind, GenerationKind,
+    AsyncOpId, AsyncOpKind, ContributionKind, EventGraph, EventId, EventKind, FenceKind,
+    GenerationKind,
 };
 
 use crate::relation::{Successors, ValidatedGraph};
@@ -93,13 +97,38 @@ pub fn after_on_target_thread(graph: &EventGraph, v: EventId, target: AsyncOpId)
         && graph.event(v).kind == EventKind::Fence(FenceKind::Tcgen05AfterThreadSync)
 }
 
-/// `SEARCH(Issue(source), 0, Issue(target), a, b)` over `d`.
-pub fn search(d: &SearchGraph, source: AsyncOpId, target: AsyncOpId) -> bool {
+/// Where a witness path out of the source operation starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Origin {
+    /// `Issue(source)` in state 0, as the design has it: the witness orders the two issues,
+    /// which orders the Tensor Memory accesses of a pipelinable pair.
+    Issue,
+    /// `source`'s completion, so the path passes a release observing it. An MMA's tracking
+    /// `tcgen05.commit` performs the before fence (PTX ISA 9.7.18.6.4.2), so its path starts in
+    /// state 1; a `tcgen05.ld`/`.st` still needs one after its `tcgen05.wait`.
+    Completion,
+}
+
+/// `SEARCH(u, s, Issue(target), a, b)` over `d`, from `origin`'s vertex `u` and state `s`; an
+/// operation never completed has no completion origin.
+pub fn search(d: &SearchGraph, source: AsyncOpId, target: AsyncOpId, origin: Origin) -> bool {
     let graph = d.graph;
-    let u = graph.async_op(source).issue;
+    let op = graph.async_op(source);
+    let start = match origin {
+        Origin::Issue => (op.issue, SearchState::Unfenced),
+        Origin::Completion => {
+            let Some(done) = op.completion else {
+                return false;
+            };
+            match op.kind {
+                AsyncOpKind::Tcgen05Mma => (done, SearchState::SourceFenced),
+                _ => (done, SearchState::Unfenced),
+            }
+        }
+    };
     let t = graph.async_op(target).issue;
     let mut visited: HashSet<(EventId, SearchState)> = HashSet::new();
-    let mut stack = vec![(u, SearchState::Unfenced)];
+    let mut stack = vec![start];
     while let Some((v, s)) = stack.pop() {
         if !visited.insert((v, s)) {
             continue;

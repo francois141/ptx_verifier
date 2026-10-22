@@ -1,0 +1,56 @@
+.version 8.0
+.target sm_100a
+.address_size 64
+
+// Warp 1 reads D after bar.sync and tcgen05.fence::after_thread_sync, but the CTA syncs before
+// warp 0 waits on mma_bar: mma -> ld is not pipelined, so the producer must wait for the MMA's
+// completion before synchronizing (PTX ISA 9.7.18.6.4.4). Warp 0 waits only to deallocate.
+.visible .entry k()
+{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<3>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[1024];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %r4, mma_bar;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    setp.lt.u32 %p2, %r5, 32;
+    @!%p2 bra ALLOCATED;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+ALLOCATED:
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u64 %rd1, a_buf;
+    shr.u64 %rd1, %rd1, 4;
+    or.b64 %rd1, %rd1, 70377334112256;
+    mov.u64 %rd2, b_buf;
+    shr.u64 %rd2, %rd2, 4;
+    or.b64 %rd2, %rd2, 70377334112256;
+    mov.u32 %r2, 134348816;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
+
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+    @%p2 bra WAIT;
+    add.u32 %r6, %r1, 2097152;
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %r7, [%r6];
+    tcgen05.wait::ld.sync.aligned;
+    bra.uni DONE;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+DONE:
+    bar.sync 0;
+    @%p2 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+    ret;
+}

@@ -7,12 +7,17 @@ use common::*;
 use volta_graph::{AsyncOpId, EventGraph, Parity, SyncObjectKind};
 use volta_graph_check::relation::ValidatedGraph;
 use volta_graph_check::sync_search::{
-    SearchGraph, after_on_target_thread, before_on_source_thread, search,
+    Origin, SearchGraph, after_on_target_thread, before_on_source_thread, search,
 };
 
-fn searched(graph: &EventGraph, source: AsyncOpId, target: AsyncOpId) -> bool {
+fn searched_from(graph: &EventGraph, source: AsyncOpId, target: AsyncOpId, origin: Origin) -> bool {
     let d = ValidatedGraph::assuming_epochs(graph).expect("a well-formed graph");
-    search(&SearchGraph::new(&d), source, target)
+    search(&SearchGraph::new(&d), source, target, origin)
+}
+
+/// The design's search, from the source's issue: the fence protocol alone.
+fn searched(graph: &EventGraph, source: AsyncOpId, target: AsyncOpId) -> bool {
+    searched_from(graph, source, target, Origin::Issue)
 }
 
 #[test]
@@ -135,4 +140,64 @@ fn a_commit_then_a_wait_on_its_phase_is_a_witness() {
     let (ld, _) = s.tmem_ld(1, 0, (0, 8));
     let (g, _) = s.completed(2);
     assert!(searched(&g, mma, ld));
+    assert!(
+        searched_from(&g, mma, ld, Origin::Completion),
+        "the commit supplies the before role of a path from the MMA's completion"
+    );
+}
+
+/// t0's MMA committed to a phase, the barrier with t1 before anyone waits on it, then t1's
+/// fenced load: the issues are ordered, the completion is not.
+#[test]
+fn a_completion_search_needs_a_release_observing_it() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    s.barrier(&[0, 1], &[]);
+    let p0 = s.phase(m, 0);
+    let (mma, _) = s.mma(0, (0, 8));
+    s.commit(0, p0, &[mma]);
+    s.complete(p0);
+    s.barrier(&[0, 1], &[]);
+    s.tcgen05_after(1);
+    let (ld, _) = s.tmem_ld(1, 0, (0, 8));
+    s.wait(0, m, Parity::Even, p0);
+    let (g, _) = s.completed(2);
+    assert!(searched(&g, mma, ld));
+    assert!(!searched_from(&g, mma, ld, Origin::Completion));
+}
+
+#[test]
+fn an_operation_never_completed_has_no_completion_origin() {
+    let mut s = Scenario::new(2);
+    let (mma, _) = s.mma(0, (0, 8));
+    s.tcgen05_before(0);
+    s.barrier(&[0, 1], &[]);
+    s.tcgen05_after(1);
+    let (ld, _) = s.tmem_ld(1, 0, (0, 8));
+    let (g, _) = s.completed(2);
+    assert!(searched(&g, mma, ld));
+    assert!(!searched_from(&g, mma, ld, Origin::Completion));
+}
+
+/// t0's `tcgen05.ld` waited for, then (when `fenced`) a before fence, the barrier with t1 and
+/// t1's fenced MMA over the same cells.
+fn waited_load_then_mma(fenced: bool) -> (EventGraph, AsyncOpId, AsyncOpId) {
+    let mut s = Scenario::new(2);
+    let (ld, _) = s.tmem_ld(0, 0, (0, 8));
+    s.warp_wait(0, &[0], &[ld]);
+    if fenced {
+        s.tcgen05_before(0);
+    }
+    s.barrier(&[0, 1], &[]);
+    s.tcgen05_after(1);
+    let (mma, _) = s.mma(1, (0, 8));
+    (s.completed(2).0, ld, mma)
+}
+
+#[test]
+fn a_loads_completion_still_needs_a_before_fence_after_its_wait() {
+    let (g, ld, mma) = waited_load_then_mma(false);
+    assert!(!searched_from(&g, ld, mma, Origin::Completion));
+    let (g, ld, mma) = waited_load_then_mma(true);
+    assert!(searched_from(&g, ld, mma, Origin::Completion));
 }

@@ -80,6 +80,31 @@ fn test_tcgen05_mma_bar_sync_before_completion_orders_nothing() {
     );
 }
 
+/// The same `bar.sync` before completion with both fence roles present (the commit's before
+/// role, warp 1's `after_thread_sync`) is still no witness: no path from the MMA to warp 1's
+/// read passes through an observation of its completion.
+#[test]
+fn test_tcgen05_mma_fenced_bar_sync_before_completion_orders_nothing() {
+    let ws = unproved(
+        &parse(&ptx!(
+            "execution_error/tcgen05_mma_fenced_bar_sync_before_completion_orders_nothing"
+        )),
+        AnalysisConfig::new((64, 1, 1)),
+    );
+    assert_any(
+        &ws,
+        "warp 1's read of D at lane 32 after the MMA's write",
+        |w| {
+            w.kind == ConflictKind::WriteRead
+                && w.cell.lane == 32
+                && w.earlier == Side::effect(0, Write, AsyncOpKind::Tcgen05Mma)
+                && w.later.mode == Read
+                && w.later.op == Some(AsyncOpKind::Tcgen05Ld)
+                && warp(w.later.thread) == 1
+        },
+    );
+}
+
 /// Warp 0 reads `D` right after the commit, without waiting and without an after-fence.
 #[test]
 fn test_tcgen05_mma_read_after_commit_without_waiting_is_an_inflight_hazard() {

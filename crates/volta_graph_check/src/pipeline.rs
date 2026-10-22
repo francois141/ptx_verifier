@@ -27,6 +27,9 @@
 //!   from its first lane and rejects them once a lane exited), so all are constructed
 //!   immediately; none needs a thread handoff's validation. No projection of
 //!   [`crate::relation`] contains them.
+//! * [`pipelinable`] is the same pairing without the one-thread and wait preconditions: a pair
+//!   the ISA would pipeline once its warp's threads are synchronized, which Algorithm 6 may
+//!   then order from the earlier operation's issue.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -216,20 +219,45 @@ fn load_store_effect(graph: &EventGraph, event: EventId) -> Option<(AsyncOpId, F
         .then_some((op, access.footprint))
 }
 
+/// Whether the PTX ISA pipelines `a`'s operation before `b`'s on these effects once both are
+/// issued by one warp (9.7.18.6.2): the accumulator effects of two MMAs on one accumulator, or
+/// the data effects of a `st` -> `ld`, `st` -> `st` or `ld` -> `st` pair. The fence protocol
+/// orders such a pair across the warp's threads (9.7.18.6.4.3); any other pair needs the
+/// earlier operation's completion (9.7.18.6.4.4).
+pub fn pipelinable(graph: &EventGraph, a: EventId, b: EventId) -> bool {
+    let warp = |op: AsyncOpId| graph.async_op(op).issuer.0 / WARP_SIZE;
+    if let (Some((x, _)), Some((y, _))) =
+        (accumulator_effect(graph, a), accumulator_effect(graph, b))
+    {
+        let d = accumulator(graph, x);
+        return warp(x) == warp(y) && !d.is_empty() && d == accumulator(graph, y);
+    }
+    match (load_store_effect(graph, a), load_store_effect(graph, b)) {
+        (Some((x, _)), Some((y, _))) => {
+            warp(x) == warp(y) && load_store_pair(graph.async_op(x), graph.async_op(y))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `earlier` -> `later` is one of the pipelined `tcgen05.ld`/`.st` pairs (11-13).
+fn load_store_pair(earlier: &AsyncOp, later: &AsyncOp) -> bool {
+    matches!(
+        (earlier.kind, later.kind),
+        (AsyncOpKind::Tcgen05St, AsyncOpKind::Tcgen05Ld)
+            | (AsyncOpKind::Tcgen05St, AsyncOpKind::Tcgen05St)
+            | (AsyncOpKind::Tcgen05Ld, AsyncOpKind::Tcgen05St)
+    )
+}
+
 /// [`PipelineRule::WaitedLoadStore`]: `a` and `b` effects of a `st` -> `ld`, `st` -> `st` or
 /// `ld` -> `st` pair of one warp, in issue order, the earlier one waited for in between.
 fn waited_load_store_edge(graph: &EventGraph, a: EventId, b: EventId) -> Option<PipelineEdge> {
     let (x, ax) = load_store_effect(graph, a)?;
     let (y, by) = load_store_effect(graph, b)?;
     let (earlier, later) = (graph.async_op(x), graph.async_op(y));
-    let paired = matches!(
-        (earlier.kind, later.kind),
-        (AsyncOpKind::Tcgen05St, AsyncOpKind::Tcgen05Ld)
-            | (AsyncOpKind::Tcgen05St, AsyncOpKind::Tcgen05St)
-            | (AsyncOpKind::Tcgen05Ld, AsyncOpKind::Tcgen05St)
-    );
     let warp = earlier.issuer.0 / WARP_SIZE;
-    let ordered = paired
+    let ordered = load_store_pair(earlier, later)
         && warp == later.issuer.0 / WARP_SIZE
         && earlier.issue < later.issue
         && waited_before(graph, earlier, warp, later);

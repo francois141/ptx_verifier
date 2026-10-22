@@ -418,9 +418,12 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   is a `Fail` (a cross-proxy race, typed `ProxyOrderViolation`), not the
   design's `Unknown`.
 - `tensor_order.rs` / `sync_search.rs` - conflicting TMEM pairs of distinct ops,
-  oriented by issue: pipelined, or a `D` path from issue to issue through a
+  oriented by issue: pipelined, or a `D` path to the target's issue through a
   source-thread `tcgen05.fence::before_thread_sync` (or tracking
-  `tcgen05.commit`) then a target-thread `::after_thread_sync`.
+  `tcgen05.commit`) then a target-thread `::after_thread_sync`. The path starts
+  at the source's issue only for a pair the ISA pipelines within one warp
+  (`pipeline::pipelinable`); any other pair's starts at the source's completion,
+  so it passes a release observing it (an MMA's commit is its before fence).
 - `resource_lifetime.rs` - TMEM allocations: each use covered by its
   allocation, each allocation freed exactly once, then phase 1 (use reaches
   its dealloc) and phase 2 (alloc reaches the use).
