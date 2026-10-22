@@ -1,4 +1,4 @@
-//! Check 4, proxy ordering (Algorithm 3), in isolation over an assumed-validated `G_HB` and an
+//! Check 5, proxy ordering (Algorithm 4), in isolation over an assumed-validated `G_HB` and an
 //! assumed memory-conflict pass.
 
 mod common;

@@ -1,5 +1,5 @@
-//! Check 5, tensor-operation ordering (Algorithm 4), in isolation over an assumed-validated
-//! `D`. Algorithm 5's search on its own is `sync_search_tests.rs`.
+//! Check 6, tensor-operation ordering (Algorithm 5), in isolation over an assumed-validated
+//! `D`. Algorithm 6's search on its own is `sync_search_tests.rs`.
 
 mod common;
 
@@ -223,7 +223,7 @@ fn shared_memory_tcgen05_effects_are_not_in_a() {
     );
     s.write(1, 0x40, 1);
     let (g, _) = s.completed(2);
-    assert_eq!(evidence(&check(&g)).0, 0, "M is Algorithm 2's");
+    assert_eq!(evidence(&check(&g)).0, 0, "M is Algorithm 3's");
 }
 
 #[test]

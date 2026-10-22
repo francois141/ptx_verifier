@@ -1,4 +1,4 @@
-//! Algorithm 5, the three-state synchronization search, on its own: its fence predicates and
+//! Algorithm 6, the three-state synchronization search, on its own: its fence predicates and
 //! its states, over an assumed-validated `D`.
 
 mod common;

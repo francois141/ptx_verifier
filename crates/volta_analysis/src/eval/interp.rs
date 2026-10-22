@@ -1840,6 +1840,24 @@ impl<'p> Interpreter<'p> {
                 }
             }
 
+            LoweredInstr::MbarrierExpectTx {
+                addr_base,
+                addr_offset,
+                tx_count,
+            } => {
+                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
+                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
+                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
+                let id = self
+                    .shared
+                    .read_mbarrier(addr)
+                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                let tx_count =
+                    self.non_negative_operand(t, pc, tx_count, "mbarrier.expect_tx txCount")?;
+                self.record_mbarrier_expect_tx(t, pc, id, tx_count);
+                self.mbarriers.expect_tx(id, tx_count);
+            }
+
             LoweredInstr::MbarrierCompleteTx {
                 addr_base,
                 addr_offset,

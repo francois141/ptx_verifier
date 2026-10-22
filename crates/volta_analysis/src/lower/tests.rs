@@ -1113,6 +1113,25 @@ fn test_mbarrier_wait_loop_lowers_to_one_blocking_wait() {
     }
 }
 
+/// A bare `expect_tx` is an announcement of its own, in every spelling the ISA gives it.
+#[test]
+fn test_mbarrier_expect_tx_lowers_to_an_announcement() {
+    for instr in [
+        "mbarrier.expect_tx.shared::cta.b64 [smem], 16;",
+        "mbarrier.expect_tx.relaxed.cta.shared.b64 [smem], %r1;",
+    ] {
+        let prog = lower_body(instr).unwrap_or_else(|e| panic!("{instr}: {e:?}"));
+        assert!(
+            matches!(
+                prog.instructions.values().collect::<Vec<_>>().as_slice(),
+                [LoweredInstr::MbarrierExpectTx { .. }, LoweredInstr::Ret]
+            ),
+            "{instr}: {:?}",
+            prog.instructions
+        );
+    }
+}
+
 /// Any wait outside the exact `L: wait; @!p bra L;` window is rejected,
 /// including CUTLASS's `@p bra DONE; bra L;` spelling of the same loop.
 #[test]

@@ -1,10 +1,10 @@
-//! Lowering of `mbarrier.*`: init, inval, arrive, complete_tx and the parity
-//! waits.
+//! Lowering of `mbarrier.*`: init, inval, arrive, expect_tx, complete_tx and
+//! the parity waits.
 
 use volta_frontend::ast::{
-    self, MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierInitInstr, MbarrierInvalInstr,
-    MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics, Operand as AstOperand,
-    SharedStateSpaceQualifier, StateSpace,
+    self, MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierExpectTxInstr, MbarrierInitInstr,
+    MbarrierInvalInstr, MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics,
+    Operand as AstOperand, SharedStateSpaceQualifier, StateSpace,
 };
 
 use crate::ir::{LoweredInstr, MemSpace, Operand, Predicate};
@@ -188,6 +188,32 @@ pub(super) fn lower_mbarrier_arrive(
             addr_offset,
             count,
             expect_tx,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// Lower `mbarrier.expect_tx{.sem.scope}{.space}.b64 [addr], txCount`.
+pub(super) fn lower_mbarrier_expect_tx(
+    ctx: &mut LoweringContext,
+    expect_tx: &MbarrierExpectTxInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "mbarrier.expect_tx";
+    ctx.convert_mbarrier_space(
+        expect_tx.space,
+        expect_tx.space_qualifier,
+        MbarrierClusterForm::Exists,
+        NAME,
+    )?;
+    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &expect_tx.addr)?;
+    let tx_count = ctx.resolve_operand(&expect_tx.tx_count)?;
+    ctx.emit(
+        LoweredInstr::MbarrierExpectTx {
+            addr_base,
+            addr_offset,
+            tx_count,
         },
         predicate,
     )?;

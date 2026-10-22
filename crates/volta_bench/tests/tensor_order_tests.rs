@@ -1,6 +1,6 @@
 //! Kernels whose Tensor Memory effects (`A`) conflict without a pipelining rule or a
-//! synchronization witness: the tensor-operation ordering check (Algorithm 4, with
-//! Algorithm 5's search) must fail, with these pairs of `B`.
+//! synchronization witness: the tensor-operation ordering check (Algorithm 5, with
+//! Algorithm 6's search) must fail, with these pairs of `B`.
 
 #[macro_use]
 #[allow(unused_macros)]

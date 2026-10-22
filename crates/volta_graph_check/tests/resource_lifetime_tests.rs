@@ -1,4 +1,4 @@
-//! Check 6, resource lifetime (Algorithm 6), in isolation over an assumed-validated `G_HB`.
+//! Check 7, resource lifetime (Algorithm 7), in isolation over an assumed-validated `G_HB`.
 
 mod common;
 

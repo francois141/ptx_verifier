@@ -107,6 +107,7 @@ impl EventGraph {
                     ContributionKind::CompleteTx { bytes } => {
                         writeln!(out, "complete-tx {}", bytes)?
                     }
+                    ContributionKind::ExpectTx { bytes } => writeln!(out, "expect-tx {}", bytes)?,
                 }
             }
             if !genr.releases.is_empty() {

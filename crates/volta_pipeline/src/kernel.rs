@@ -15,7 +15,7 @@ pub struct KernelVerification {
     pub graph: GraphReport,
 }
 
-/// Run the analysis stage, then the graph branch's six checks over its graph. An `Err` is a
+/// Run the analysis stage, then the graph branch's seven checks over its graph. An `Err` is a
 /// failure to analyze at all (no kernel, a lowering error, an invalid configuration).
 pub fn verify_kernel(
     module: &Module,
@@ -34,7 +34,7 @@ pub fn verify_kernel(
         analysis.graph.events().len(),
         describe_terminal(analysis.graph.terminal())
     );
-    info!("[graph] running the six graph checks");
+    info!("[graph] running the seven graph checks");
     let start = Instant::now();
     let graph = check_graph(&analysis.graph);
     info!(

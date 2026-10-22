@@ -54,8 +54,8 @@ pub struct AnalyzeResultPy {
     pub outputs: Vec<(String, Vec<(u64, String)>)>,
     #[pyo3(get)]
     pub op_counts: BTreeMap<String, u64>,
-    /// Whether graph verification is complete: the trace completed and the six graph checks
-    /// (barrier epochs, memory conflicts, proxy and tensor ordering, resource lifetime) all
+    /// Whether graph verification is complete: the trace completed and the seven graph checks
+    /// (barrier epochs, mbarrier ordering, memory conflicts, proxy and tensor ordering, resource lifetime) all
     /// passed. A failed check or a deadlock raises instead.
     #[pyo3(get)]
     pub race_verified: bool,

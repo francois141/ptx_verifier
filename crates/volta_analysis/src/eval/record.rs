@@ -607,6 +607,23 @@ impl Interpreter<'_> {
         );
     }
 
+    /// `t`'s `mbarrier.expect_tx` of `bytes`: an announcement without an arrival.
+    pub(in crate::eval) fn record_mbarrier_expect_tx(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        id: MbarrierId,
+        bytes: u64,
+    ) {
+        let phase = self.forming_phase(id);
+        self.graph.contribute(
+            tix(t),
+            point(pc),
+            phase,
+            ContributionKind::ExpectTx { bytes },
+        );
+    }
+
     /// `t`'s explicit `mbarrier.complete_tx` of `bytes`.
     pub(in crate::eval) fn record_mbarrier_complete_tx(
         &mut self,

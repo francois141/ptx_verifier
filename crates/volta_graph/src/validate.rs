@@ -340,7 +340,8 @@ impl EventGraph {
                 let ok = match c.kind {
                     ContributionKind::Blocking
                     | ContributionKind::Arrival { .. }
-                    | ContributionKind::CompleteTx { .. } => {
+                    | ContributionKind::CompleteTx { .. }
+                    | ContributionKind::ExpectTx { .. } => {
                         ev.kind == EventKind::Contribute(g)
                             && matches!(ev.ctx, ExecContext::Thread(_))
                     }

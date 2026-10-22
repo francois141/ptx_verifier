@@ -1,4 +1,4 @@
-//! The suite: the six checks in order, their prerequisites and the trace generator's
+//! The suite: the seven checks in order, their prerequisites and the trace generator's
 //! terminal state; nothing else decides the conclusion.
 
 mod common;
@@ -15,7 +15,7 @@ fn verdicts(r: &GraphReport) -> Vec<(Property, Verdict)> {
 }
 
 #[test]
-fn exactly_the_six_checks_of_the_design_in_its_order() {
+fn exactly_the_seven_checks_of_the_design_in_its_order() {
     let algorithms: Vec<&str> = Property::ALL.iter().map(|p| p.algorithm()).collect();
     assert_eq!(
         algorithms,
@@ -24,10 +24,38 @@ fn exactly_the_six_checks_of_the_design_in_its_order() {
             "Algorithm 1",
             "Algorithm 2",
             "Algorithm 3",
-            "Algorithms 4 and 5",
-            "Algorithm 6"
+            "Algorithm 4",
+            "Algorithms 5 and 6",
+            "Algorithm 7"
         ]
     );
+}
+
+/// An announcement no arrival protects leaves the mbarrier completion joins unvalidated, so
+/// every check over `G_HB` is unchecked and the kernel is not verified.
+#[test]
+fn an_unprotected_announcement_leaves_the_validated_checks_unchecked() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.expect_tx(0, p0, 16);
+    s.bulk_copy(0, 0x10, p0, 16);
+    s.arrive(1, p0);
+    s.complete(p0);
+    s.wait(0, m, Parity::Even, p0);
+    s.wait(1, m, Parity::Even, p0);
+    s.read(1, 0x10);
+    let (g, _) = s.completed(2);
+    let r = check_graph(&g);
+    for (p, v) in verdicts(&r) {
+        let expected = match p {
+            Property::NamedBarrierEpoch | Property::MbarrierEpoch => Verdict::Pass,
+            _ => Verdict::Unknown,
+        };
+        assert_eq!(v, expected, "{p:?}");
+    }
+    assert!(r.summary(Property::MemoryConflict).findings[0].contains("not checked"));
+    assert!(matches!(r.conclusion(), GraphConclusion::Unknown { .. }));
 }
 
 #[test]
@@ -91,7 +119,7 @@ fn a_barrier_epoch_violation_leaves_every_check_needing_g_hb_unchecked() {
     for (p, v) in verdicts(&r) {
         let expected = match p {
             Property::NamedBarrierEpoch => Verdict::Fail,
-            Property::MbarrierEpoch => Verdict::Pass,
+            Property::MbarrierEpoch | Property::MbarrierOrdering => Verdict::Pass,
             _ => Verdict::Unknown,
         };
         assert_eq!(v, expected, "{p:?}");
@@ -100,12 +128,12 @@ fn a_barrier_epoch_violation_leaves_every_check_needing_g_hb_unchecked() {
 }
 
 #[test]
-fn asynchronous_operations_and_mbarriers_are_verified_by_the_six_checks_alone() {
+fn asynchronous_operations_and_mbarriers_are_verified_by_the_seven_checks_alone() {
     let mut s = Scenario::new(2);
     let m = s.mbarrier(0, 1);
     s.barrier(&[0, 1], &[]);
     let p0 = s.phase(m, 0);
-    s.arrive(0, p0);
+    s.arrive_expect_tx(0, p0, 4);
     let op = s.async_op(
         0,
         AsyncOpKind::BulkCopy,

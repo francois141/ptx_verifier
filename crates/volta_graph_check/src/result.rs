@@ -1,4 +1,4 @@
-//! The result shape every graph check returns, and the six checks themselves.
+//! The result shape every graph check returns, and the seven checks themselves.
 
 use volta_graph::EventId;
 
@@ -97,7 +97,7 @@ impl<E, V> PropertyResult<E, V> {
     }
 }
 
-/// The six checks of the Volta v2 design (§1.3), in the design's order.
+/// The seven checks of the Volta v2 design (§1.3), in the design's order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Property {
     /// Algorithm 1 over named barriers (`bar.arrive`, `bar.sync`).
@@ -105,34 +105,45 @@ pub enum Property {
     /// Algorithm 1 over mbarrier phases.
     MbarrierEpoch,
     /// Algorithm 2.
-    MemoryConflict,
+    MbarrierOrdering,
     /// Algorithm 3.
+    MemoryConflict,
+    /// Algorithm 4.
     ProxyOrder,
-    /// Algorithm 4, with Algorithm 5's synchronization search.
+    /// Algorithm 5, with Algorithm 6's synchronization search.
     TensorOrder,
-    /// Algorithm 6.
+    /// Algorithm 7.
     ResourceLifetime,
 }
 
 impl Property {
-    pub const ALL: [Property; 6] = [
+    pub const ALL: [Property; 7] = [
         Property::NamedBarrierEpoch,
         Property::MbarrierEpoch,
+        Property::MbarrierOrdering,
         Property::MemoryConflict,
         Property::ProxyOrder,
         Property::TensorOrder,
         Property::ResourceLifetime,
     ];
 
-    /// The checks that must pass before this one can run: both barrier-epoch checks validate
-    /// the candidate joins `G_HB` and `D` contain, and Algorithm 3 requires Algorithm 2's
-    /// pass. [`Self::ALL`] lists every check after its prerequisites.
+    /// The checks that must pass before this one can run: both barrier-epoch checks and the
+    /// mbarrier ordering check validate the candidate joins `G_HB` and `D` contain, and
+    /// Algorithm 4 requires Algorithm 3's pass. [`Self::ALL`] lists every check after its
+    /// prerequisites.
     pub fn prerequisites(self) -> &'static [Property] {
         use Property::*;
         match self {
-            NamedBarrierEpoch | MbarrierEpoch => &[],
-            MemoryConflict | TensorOrder | ResourceLifetime => &[NamedBarrierEpoch, MbarrierEpoch],
-            ProxyOrder => &[NamedBarrierEpoch, MbarrierEpoch, MemoryConflict],
+            NamedBarrierEpoch | MbarrierEpoch | MbarrierOrdering => &[],
+            MemoryConflict | TensorOrder | ResourceLifetime => {
+                &[NamedBarrierEpoch, MbarrierEpoch, MbarrierOrdering]
+            }
+            ProxyOrder => &[
+                NamedBarrierEpoch,
+                MbarrierEpoch,
+                MbarrierOrdering,
+                MemoryConflict,
+            ],
         }
     }
 
@@ -140,6 +151,7 @@ impl Property {
         match self {
             Property::NamedBarrierEpoch => "barrier epochs (named barriers)",
             Property::MbarrierEpoch => "barrier epochs (mbarrier phases)",
+            Property::MbarrierOrdering => "mbarrier ordering",
             Property::MemoryConflict => "memory-conflict freedom",
             Property::ProxyOrder => "proxy ordering",
             Property::TensorOrder => "tensor-operation ordering",
@@ -151,10 +163,11 @@ impl Property {
     pub fn algorithm(self) -> &'static str {
         match self {
             Property::NamedBarrierEpoch | Property::MbarrierEpoch => "Algorithm 1",
-            Property::MemoryConflict => "Algorithm 2",
-            Property::ProxyOrder => "Algorithm 3",
-            Property::TensorOrder => "Algorithms 4 and 5",
-            Property::ResourceLifetime => "Algorithm 6",
+            Property::MbarrierOrdering => "Algorithm 2",
+            Property::MemoryConflict => "Algorithm 3",
+            Property::ProxyOrder => "Algorithm 4",
+            Property::TensorOrder => "Algorithms 5 and 6",
+            Property::ResourceLifetime => "Algorithm 7",
         }
     }
 }

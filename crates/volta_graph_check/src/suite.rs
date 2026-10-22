@@ -1,4 +1,4 @@
-//! The six checks over one graph, in the design's order, each receiving exactly the
+//! The seven checks over one graph, in the design's order, each receiving exactly the
 //! certificates of its prerequisites ([`Property::prerequisites`]); the suite adds no reasoning
 //! of its own beyond reading the trace generator's terminal state.
 //!
@@ -12,6 +12,7 @@ use volta_graph::{BlockedThread, EventGraph, Terminal};
 
 use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
 use crate::logging::info;
+use crate::mbarrier_ordering::{MbarrierOrderingResult, check_mbarrier_ordering};
 use crate::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
 use crate::proxy_order::{ProxyOrderResult, check_proxy_order};
 use crate::relation::ValidatedGraph;
@@ -25,6 +26,7 @@ pub struct GraphReport {
     pub terminal: Terminal,
     pub named_barrier_epoch: EpochResult,
     pub mbarrier_epoch: EpochResult,
+    pub mbarrier_ordering: MbarrierOrderingResult,
     pub memory_conflict: MemoryConflictResult,
     pub proxy_order: ProxyOrderResult,
     pub tensor_order: TensorOrderResult,
@@ -96,6 +98,7 @@ impl GraphReport {
         match property {
             Property::NamedBarrierEpoch => summarize(property, &self.named_barrier_epoch),
             Property::MbarrierEpoch => summarize(property, &self.mbarrier_epoch),
+            Property::MbarrierOrdering => summarize(property, &self.mbarrier_ordering),
             Property::MemoryConflict => summarize(property, &self.memory_conflict),
             Property::ProxyOrder => summarize(property, &self.proxy_order),
             Property::TensorOrder => summarize(property, &self.tensor_order),
@@ -224,7 +227,7 @@ impl CheckLog {
     }
 }
 
-/// Run the six checks on `graph`.
+/// Run the seven checks on `graph`.
 pub fn check_graph(graph: &EventGraph) -> GraphReport {
     let log = CheckLog::start(Property::NamedBarrierEpoch);
     let (named_barrier_epoch, named) = check_named_barrier_epochs(graph);
@@ -232,9 +235,15 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
     let log = CheckLog::start(Property::MbarrierEpoch);
     let (mbarrier_epoch, mbarrier) = check_mbarrier_epochs(graph);
     log.finish(&mbarrier_epoch);
+    let log = CheckLog::start(Property::MbarrierOrdering);
+    let (mbarrier_ordering, ordering) = check_mbarrier_ordering(graph);
+    log.finish(&mbarrier_ordering);
     let validated = named
         .zip(mbarrier)
-        .map(|(named, mbarrier)| ValidatedGraph::from_epochs(named, mbarrier));
+        .zip(ordering)
+        .map(|((named, mbarrier), ordering)| {
+            ValidatedGraph::from_certificates(named, mbarrier, ordering)
+        });
     let log = CheckLog::start(Property::MemoryConflict);
     let (memory_conflict, conflict_free) = match &validated {
         Some(h) => check_memory_conflicts(h),
@@ -263,6 +272,7 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         terminal: graph.terminal().clone(),
         named_barrier_epoch,
         mbarrier_epoch,
+        mbarrier_ordering,
         memory_conflict,
         proxy_order,
         tensor_order,

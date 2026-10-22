@@ -1,6 +1,6 @@
 //! Kernels that free Tensor Memory while a use of it is not ordered before the deallocation
 //! (phase 1 reports those uses), or that never free it: the resource-lifetime check
-//! (Algorithm 6) must fail.
+//! (Algorithm 7) must fail.
 
 #[macro_use]
 mod common;

@@ -1,8 +1,8 @@
-//! **Three-state synchronization search** (§1.3, Algorithm 5): Algorithm 4's search for an
+//! **Three-state synchronization search** (§1.3, Algorithm 6): Algorithm 5's search for an
 //! explicit synchronization witness between two `tcgen05` operations.
 //!
 //! ```text
-//! require: D, τ from Algorithm 4
+//! require: D, τ from Algorithm 5
 //! function SEARCH(v, s, t, a, b):
 //!     if s = 0 and BEFOREONSOURCETHREAD(v, a) then s <- 1
 //!     else if s = 1 and AFTERONTARGETTHREAD(v, b) then s <- 2
@@ -46,7 +46,7 @@ pub enum SearchState {
     TargetFenced,
 }
 
-/// `D` and `τ`, as Algorithm 4 hands them to the search.
+/// `D` and `τ`, as Algorithm 5 hands them to the search.
 pub struct SearchGraph<'g> {
     graph: &'g EventGraph,
     successors: Successors,

@@ -1,4 +1,4 @@
-//! **Resource-lifetime checks** (§1.3, Algorithm 6, the design's proposal): every use of a
+//! **Resource-lifetime checks** (§1.3, Algorithm 7, the design's proposal): every use of a
 //! resource lies between its allocation and its deallocation in `G_HB`.
 //!
 //! ```text

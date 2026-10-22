@@ -1,4 +1,4 @@
-//! Check 3, memory-conflict obligations (Algorithm 2), in isolation over an assumed-validated
+//! Check 4, memory-conflict obligations (Algorithm 3), in isolation over an assumed-validated
 //! `G_HB`.
 
 mod common;
@@ -91,7 +91,7 @@ fn reads_never_conflict_and_a_barrier_orders_writes() {
     assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
     assert!(
         certificate.is_some(),
-        "a pass certifies Algorithm 3's prerequisite"
+        "a pass certifies Algorithm 4's prerequisite"
     );
 }
 
@@ -210,7 +210,7 @@ fn tensor_memory_effects_are_not_in_m() {
     s.mma(0, (0, 8));
     s.mma(1, (0, 8));
     let (g, _) = s.completed(2);
-    assert_eq!(check(&g).verdict(), Verdict::Pass, "A is Algorithm 4's");
+    assert_eq!(check(&g).verdict(), Verdict::Pass, "A is Algorithm 5's");
 }
 
 #[test]

@@ -279,7 +279,8 @@ fn logical_index(generation: &Generation) -> i64 {
     }
 }
 
-fn malformed<E, V>(defects: &[volta_graph::GraphDefect]) -> PropertyResult<E, V> {
+/// A check's `Unknown` for a graph that violates its representation invariants.
+pub(crate) fn malformed<E, V>(defects: &[volta_graph::GraphDefect]) -> PropertyResult<E, V> {
     PropertyResult::Unknown(
         defects
             .iter()

@@ -1,5 +1,5 @@
 //! Kernels whose global or shared memory effects (`M`) conflict unordered: the memory-conflict
-//! check (Algorithm 2) must fail, with these pairs of `B`.
+//! check (Algorithm 3) must fail, with these pairs of `B`.
 
 #[macro_use]
 mod common;
@@ -105,7 +105,7 @@ fn test_same_write_read_without_the_wait_still_races() {
     );
 }
 
-/// Two threads storing the same value to one shared address conflict too: Algorithm 2 has no
+/// Two threads storing the same value to one shared address conflict too: Algorithm 3 has no
 /// exception for equal values. A `bar.sync` between the stores makes the kernel race-free
 /// (`test_same_value_stores_separated_by_bar_sync_are_not_a_race`).
 #[test]

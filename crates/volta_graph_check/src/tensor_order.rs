@@ -1,6 +1,6 @@
-//! **Tensor-operation ordering** (§1.3, Algorithm 4): every conflicting pair of Tensor Memory
+//! **Tensor-operation ordering** (§1.3, Algorithm 5): every conflicting pair of Tensor Memory
 //! effects of `tcgen05` operations is pipelined, or synchronized by the `tcgen05` fence
-//! protocol (Algorithm 5).
+//! protocol (Algorithm 6).
 //!
 //! ```text
 //! require: TMEM effects A; validated acyclic event graph D
@@ -14,7 +14,7 @@
 //! ```
 //!
 //! * `A` ([`crate::domain`]): the Tensor Memory effects of `tcgen05.mma`, `.ld` and `.st`;
-//!   shared-memory `tcgen05` effects are Algorithm 2's. `Conflicts(A)` pairs overlapping
+//!   shared-memory `tcgen05` effects are Algorithm 3's. `Conflicts(A)` pairs overlapping
 //!   effects (lane x column rectangles) of distinct operations with at least one write.
 //! * `D` is [`ValidatedGraph`], without pipeline edges; `τ` is trace order. Orienting a pair
 //!   by its issue events selects a direction, not an ordering proof.

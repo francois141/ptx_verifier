@@ -8,7 +8,7 @@
 //! * `E_sync`: each generation's joins: a thread contribution (`Blocking`, `Arrival`, and an
 //!   exit only under the Sync' assumption, `Assumption::ExitedThreadsArrive`) or a tracked
 //!   async completion before the generation completes, the completion before each release.
-//!   A relaxed `complete_tx` joins nothing.
+//!   A relaxed `expect_tx` or `complete_tx` joins nothing.
 //! * `E_pipeline`: [`crate::pipeline`]. No projection here contains it.
 //!
 //! Projections:
@@ -21,8 +21,10 @@
 //!   validates the phase association"); completions joined into a warp's wait collective or a
 //!   thread's `cp.async` wait-group are independently fixed by that warp's or thread's program
 //!   order.
-//! * [`ValidatedGraph`] (`G_HB`, and Algorithm 4's `D`): `G0` plus the validated mbarrier
-//!   completion joins. Only the two barrier-epoch certificates construct it. With one CTA and
+//! * [`ValidatedGraph`] (`G_HB`, and Algorithm 5's `D`): `G0` plus the validated mbarrier
+//!   completion joins. Only the two barrier-epoch certificates and the mbarrier ordering
+//!   certificate construct it ("accept completion joins only after epoch separation and this
+//!   check pass"). With one CTA and
 //!   no memory scope narrower than it, the happens-before projection keeps every such edge.
 //!
 //! Transitive-closure queries (`(x, y) ∈ G+`) are answered by one vector-clock sweep in trace
@@ -39,6 +41,7 @@ use volta_graph::{
 };
 
 use crate::barrier_epoch::{MbarrierEpochs, NamedBarrierEpochs};
+use crate::mbarrier_ordering::MbarrierOrdering;
 
 /// Which synchronization edges a projection admits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +69,7 @@ impl Admission {
                 self.mbarrier_completions
                     || graph.generation(generation).kind != GenerationKind::MbarrierPhase
             }
-            ContributionKind::CompleteTx { .. } => false,
+            ContributionKind::CompleteTx { .. } | ContributionKind::ExpectTx { .. } => false,
         }
     }
 }
@@ -106,12 +109,17 @@ pub struct ValidatedGraph<'g> {
 }
 
 impl<'g> ValidatedGraph<'g> {
-    /// The validated graph both barrier-epoch checks certified.
-    pub fn from_epochs(named: NamedBarrierEpochs<'g>, mbarrier: MbarrierEpochs<'g>) -> Self {
+    /// The validated graph both barrier-epoch checks and the mbarrier ordering check
+    /// certified.
+    pub fn from_certificates(
+        named: NamedBarrierEpochs<'g>,
+        mbarrier: MbarrierEpochs<'g>,
+        ordering: MbarrierOrdering<'g>,
+    ) -> Self {
         let graph = named.graph();
         assert!(
-            std::ptr::eq(graph, mbarrier.graph()),
-            "the barrier-epoch certificates are for different graphs"
+            std::ptr::eq(graph, mbarrier.graph()) && std::ptr::eq(graph, ordering.graph()),
+            "the certificates are for different graphs"
         );
         ValidatedGraph {
             graph,
@@ -119,8 +127,8 @@ impl<'g> ValidatedGraph<'g> {
         }
     }
 
-    /// The validated graph under the caller's assertion that both barrier-epoch checks passed,
-    /// for running a later check in isolation.
+    /// The validated graph under the caller's assertion that both barrier-epoch checks and the
+    /// mbarrier ordering check passed, for running a later check in isolation.
     pub fn assuming_epochs(graph: &'g EventGraph) -> Result<Self, Vec<GraphDefect>> {
         graph.validate()?;
         Ok(ValidatedGraph {
@@ -138,7 +146,7 @@ impl<'g> ValidatedGraph<'g> {
         sweep(self.graph, self.admission, visit);
     }
 
-    /// `D`'s edges as explicit successor lists, for Algorithm 5's search.
+    /// `D`'s edges as explicit successor lists, for Algorithm 6's search.
     pub fn successors(&self) -> Successors {
         successors(self.graph, self.admission)
     }
@@ -225,7 +233,9 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
                 ContributionKind::Blocking | ContributionKind::Arrival { .. } => {
                     thread_joins.insert(c.event, g);
                 }
-                ContributionKind::Exited | ContributionKind::CompleteTx { .. } => {}
+                ContributionKind::Exited
+                | ContributionKind::CompleteTx { .. }
+                | ContributionKind::ExpectTx { .. } => {}
             }
         }
     }

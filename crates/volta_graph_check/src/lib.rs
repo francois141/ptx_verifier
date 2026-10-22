@@ -1,4 +1,4 @@
-//! Graph checks over a `volta_graph::EventGraph`: exactly the six checks of the Volta v2
+//! Graph checks over a `volta_graph::EventGraph`: exactly the seven checks of the Volta v2
 //! design's data-race freedom check (§1.3), one module each, each callable on a graph in
 //! isolation with explicitly passed certificates and with its contract in its module docs.
 //! Checks never run symbolic analysis or equivalence checking.
@@ -7,18 +7,20 @@
 //! |---|----------------------------------------|-------------|-----------------------|
 //! | 1 | barrier epochs, named barriers         | 1           | [`barrier_epoch`]     |
 //! | 2 | barrier epochs, mbarrier phases        | 1           | [`barrier_epoch`]     |
-//! | 3 | memory-conflict obligations            | 2           | [`memory_conflict`]   |
-//! | 4 | proxy ordering                         | 3           | [`proxy_order`]       |
-//! | 5 | tensor-operation ordering              | 4, with 5   | [`tensor_order`], [`sync_search`] |
-//! | 6 | resource lifetime                      | 6           | [`resource_lifetime`] |
+//! | 3 | mbarrier ordering                      | 2           | [`mbarrier_ordering`] |
+//! | 4 | memory-conflict obligations            | 3           | [`memory_conflict`]   |
+//! | 5 | proxy ordering                         | 4           | [`proxy_order`]       |
+//! | 6 | tensor-operation ordering              | 5, with 6   | [`tensor_order`], [`sync_search`] |
+//! | 7 | resource lifetime                      | 7           | [`resource_lifetime`] |
 //!
 //! Shared by them: the typed edge projections `G0`, `G_HB` and `D` ([`relation`]), the
 //! pipeline relation `E_pipeline` ([`pipeline`]) and the memory domains `M` and `A`
-//! ([`domain`]). [`suite`] runs the six in order; a kernel's conclusion is theirs alone.
+//! ([`domain`]). [`suite`] runs the seven in order; a kernel's conclusion is theirs alone.
 
 pub mod barrier_epoch;
 pub mod domain;
 mod logging;
+pub mod mbarrier_ordering;
 pub mod memory_conflict;
 pub mod pipeline;
 pub mod proxy_order;

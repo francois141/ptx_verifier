@@ -88,6 +88,11 @@ impl MbarrierTable {
         self.states[id].arrive(count);
     }
 
+    /// `mbarrier.expect_tx`: announce `tx_count` more bytes; never completes a phase.
+    pub fn expect_tx(&mut self, id: MbarrierId, tx_count: u64) {
+        self.states[id].expect_tx(tx_count);
+    }
+
     /// `mbarrier.complete_tx`.
     pub fn complete_tx(&mut self, id: MbarrierId, tx_count: u64) {
         self.states[id].complete_tx(tx_count);

@@ -250,6 +250,39 @@ impl Scenario {
         )
     }
 
+    /// `thread` announces `bytes` on `g` without arriving (`mbarrier.expect_tx`).
+    pub fn expect_tx(&mut self, thread: u32, g: GenerationId, bytes: u64) -> EventId {
+        self.b
+            .contribute(t(thread), PC, g, ContributionKind::ExpectTx { bytes })
+    }
+
+    /// `thread`'s `mbarrier.arrive.expect_tx` of `bytes` on `g`.
+    pub fn arrive_expect_tx(&mut self, thread: u32, g: GenerationId, bytes: u64) -> EventId {
+        self.b.contribute(
+            t(thread),
+            PC,
+            g,
+            ContributionKind::Arrival {
+                count: 1,
+                expect_tx: bytes,
+            },
+        )
+    }
+
+    /// A bulk copy by `issuer` into 4 shared bytes at `addr` whose completion counts `bytes`
+    /// on phase `g`.
+    pub fn bulk_copy(&mut self, issuer: u32, addr: u64, g: GenerationId, bytes: u64) -> AsyncOpId {
+        let op = self.async_op(
+            issuer,
+            AsyncOpKind::BulkCopy,
+            AccessMode::Write,
+            addr,
+            Proxy::Async,
+        );
+        self.b.track(op, g, bytes);
+        op
+    }
+
     pub fn complete(&mut self, g: GenerationId) -> EventId {
         self.b.complete_generation(g, GenerationEvidence::default())
     }

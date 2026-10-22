@@ -44,8 +44,8 @@ use idioms::{
     match_warp_max_sign_trick, statement_span,
 };
 use mbarrier::{
-    lower_mbarrier_arrive, lower_mbarrier_complete_tx, lower_mbarrier_init, lower_mbarrier_inval,
-    lower_mbarrier_test_wait, lower_mbarrier_try_wait,
+    lower_mbarrier_arrive, lower_mbarrier_complete_tx, lower_mbarrier_expect_tx,
+    lower_mbarrier_init, lower_mbarrier_inval, lower_mbarrier_test_wait, lower_mbarrier_try_wait,
 };
 use memory::{
     lower_cp_async, lower_cp_async_mbarrier_arrive, lower_cp_async_wait_all,
@@ -551,6 +551,9 @@ fn lower_parsed_instruction(
         ParsedInstruction::MbarrierInit(init) => lower_mbarrier_init(ctx, init, predicate),
         ParsedInstruction::MbarrierInval(inval) => lower_mbarrier_inval(ctx, inval, predicate),
         ParsedInstruction::MbarrierArrive(arrive) => lower_mbarrier_arrive(ctx, arrive, predicate),
+        ParsedInstruction::MbarrierExpectTx(expect_tx) => {
+            lower_mbarrier_expect_tx(ctx, expect_tx, predicate)
+        }
         ParsedInstruction::MbarrierCompleteTx(complete_tx) => {
             lower_mbarrier_complete_tx(ctx, complete_tx, predicate)
         }

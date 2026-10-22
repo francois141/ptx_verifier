@@ -1,4 +1,4 @@
-//! **Proxy ordering verification** (§1.3, Algorithm 3): every ordered conflicting pair of `M`
+//! **Proxy ordering verification** (§1.3, Algorithm 4): every ordered conflicting pair of `M`
 //! whose effects use different proxies has a covering proxy fence ordered between them.
 //!
 //! ```text

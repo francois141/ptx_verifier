@@ -1,4 +1,4 @@
-//! **Memory-conflict obligations** (§1.3, Algorithm 2): every overlapping pair of effects of
+//! **Memory-conflict obligations** (§1.3, Algorithm 3): every overlapping pair of effects of
 //! `M` with at least one write is ordered in `G_HB`, in one direction.
 //!
 //! ```text
@@ -11,7 +11,7 @@
 //! ```
 //!
 //! * `M` ([`crate::domain`]): the ordinary effects on global and shared memory, asynchronous
-//!   ones at their memory-effect events; Tensor Memory effects belong to Algorithm 4.
+//!   ones at their memory-effect events; Tensor Memory effects belong to Algorithm 5.
 //!   `OVERLAP` intersects byte ranges in one space (one CTA, so one owner).
 //! * `R` is [`ValidatedGraph`]'s closure. Every edge runs forward in the trace, so of a pair
 //!   only the earlier effect can reach the later one. Equal values stored concurrently are
@@ -20,7 +20,7 @@
 //!   its effects as a forest in which an effect's children were ordered before it when it
 //!   arrived, so an earlier effect reaching the new one vouches for its whole subtree. `B` is
 //!   still exact: every unordered pair is found, each once, at its lowest shared byte.
-//! * `Pass`: `B = {}`; only then is [`MemoryConflictFree`] issued (Algorithm 3's
+//! * `Pass`: `B = {}`; only then is [`MemoryConflictFree`] issued (Algorithm 4's
 //!   prerequisite). `Fail`: `B`, ordered by the later effect (at most [`CONFLICT_CAP`]
 //!   pairs are listed). `Unknown`: an atomic or reduction effect, outside the initial
 //!   contract (§2).
@@ -55,15 +55,15 @@ pub struct MemoryConflictEvidence {
 
 pub type MemoryConflictResult = PropertyResult<MemoryConflictEvidence, MemoryConflict>;
 
-/// Algorithm 2 returned `B = {}` on `graph`.
+/// Algorithm 3 returned `B = {}` on `graph`.
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryConflictFree<'g> {
     graph: &'g EventGraph,
 }
 
 impl<'g> MemoryConflictFree<'g> {
-    /// The certificate under the caller's assertion that Algorithm 2 passed on `h`, for
-    /// running Algorithm 3 in isolation.
+    /// The certificate under the caller's assertion that Algorithm 3 passed on `h`, for
+    /// running Algorithm 4 in isolation.
     pub fn assuming(h: &ValidatedGraph<'g>) -> Self {
         MemoryConflictFree { graph: h.graph() }
     }

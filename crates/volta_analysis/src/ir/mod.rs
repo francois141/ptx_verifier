@@ -1015,6 +1015,15 @@ pub enum LoweredInstr {
         expect_tx: Option<Operand>,
     },
 
+    /// `mbarrier.expect_tx{.sem.scope}{.space}.b64 [addr], txCount`:
+    /// announce `txCount` more async-transaction bytes for the forming
+    /// phase, without arriving.
+    MbarrierExpectTx {
+        addr_base: Operand,
+        addr_offset: i64,
+        tx_count: Operand,
+    },
+
     /// `mbarrier.complete_tx{.sem.scope}{.space}.b64 [addr], txCount`:
     /// signal that `txCount` bytes of a previously-`expect_tx`'d async
     /// transaction have completed.
@@ -1167,6 +1176,7 @@ define_instr_kinds!(
     MbarrierInit,
     MbarrierInval,
     MbarrierArrive,
+    MbarrierExpectTx,
     MbarrierCompleteTx,
     MbarrierWaitParity,
     Activemask,

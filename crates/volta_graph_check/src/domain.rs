@@ -3,8 +3,8 @@
 //!
 //! * `M`: the ordinary non-atomic effects on byte-addressed memory (global and shared),
 //!   synchronous or asynchronous, the shared-memory effects of `tcgen05` operations included.
-//!   Algorithms 2 and 3 range over it.
-//! * `A`: the Tensor Memory effects of `tcgen05` operations. Algorithms 4 and 6 range over it.
+//!   Algorithms 3 and 4 range over it.
+//! * `A`: the Tensor Memory effects of `tcgen05` operations. Algorithms 5 and 7 range over it.
 //!
 //! Atomic and reduction effects belong to neither: the initial contract excludes them (§2).
 

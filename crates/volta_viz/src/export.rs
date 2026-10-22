@@ -30,7 +30,7 @@ const MAX_VALUE_BYTES: usize = 400;
 /// What the analysis produced for one run.
 pub enum Outcome<'a> {
     /// The execution ran (to completion or not) and recorded `graph`, whose stored values are
-    /// expressions of `arena`. `report` is the six checks' result, when the run checked them.
+    /// expressions of `arena`. `report` is the seven checks' result, when the run checked them.
     Executed {
         graph: &'a EventGraph,
         arena: &'a ExprArena,
@@ -722,6 +722,7 @@ fn contribution(kind: ContributionKind) -> String {
             format!("completion of a{} ({tx_bytes} tx bytes)", op.0)
         }
         ContributionKind::CompleteTx { bytes } => format!("complete_tx {bytes}"),
+        ContributionKind::ExpectTx { bytes } => format!("expect_tx {bytes}"),
     }
 }
 
@@ -963,6 +964,24 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
                     Property::MbarrierEpoch => {
                         findings(&report.mbarrier_epoch, |v| epoch_violation(graph, v))
                     }
+                    Property::MbarrierOrdering => findings(&report.mbarrier_ordering, |v| {
+                        (
+                            format!(
+                                "phase {} of the mbarrier does not balance: {} of {} \
+                                 arrival(s), {} transaction byte(s) net",
+                                graph.generation(v.phase).index,
+                                v.arrivals,
+                                v.expected_arrivals,
+                                v.net_tx
+                            ),
+                            graph
+                                .generation(v.phase)
+                                .contributions
+                                .iter()
+                                .map(|c| c.event)
+                                .collect(),
+                        )
+                    }),
                     Property::MemoryConflict => findings(&report.memory_conflict, |c| {
                         (
                             format!(

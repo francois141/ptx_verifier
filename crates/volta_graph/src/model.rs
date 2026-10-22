@@ -319,6 +319,9 @@ pub enum ContributionKind {
     AsyncCompletion { op: AsyncOpId, tx_bytes: u64 },
     /// An `mbarrier.complete_tx` of `bytes`: `.relaxed`, so it orders nothing.
     CompleteTx { bytes: u64 },
+    /// An `mbarrier.expect_tx` of `bytes`, an announcement with no arrival: `.relaxed`, so it
+    /// orders nothing.
+    ExpectTx { bytes: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
