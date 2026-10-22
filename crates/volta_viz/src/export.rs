@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use volta_expr::ExprArena;
 use volta_graph::{
-    AbortCause, AccessMode, AsyncOpId, BarrierArrivals, BlockedOn, CollectiveSide,
+    AbortCause, AccessMode, ArrivalOrdering, AsyncOpId, BarrierArrivals, BlockedOn, CollectiveSide,
     ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind, Footprint,
     GenerationId, GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space,
     StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
@@ -741,10 +741,18 @@ fn contribution(kind: ContributionKind) -> String {
         ContributionKind::Blocking => "blocking arrival".to_string(),
         ContributionKind::Arrival {
             count,
-            expect_tx: 0,
-        } => format!("arrive ×{count}"),
-        ContributionKind::Arrival { count, expect_tx } => {
-            format!("arrive ×{count}, expect_tx {expect_tx}")
+            expect_tx,
+            ordering,
+        } => {
+            let tx = match expect_tx {
+                0 => String::new(),
+                bytes => format!(", expect_tx {bytes}"),
+            };
+            let how = match ordering {
+                ArrivalOrdering::Release => "",
+                ArrivalOrdering::AsyncTracked => " once its tracked ops complete",
+            };
+            format!("arrive ×{count}{tx}{how}")
         }
         ContributionKind::Exited => "exited".to_string(),
         ContributionKind::AsyncCompletion { op, tx_bytes } => {

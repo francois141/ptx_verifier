@@ -4,11 +4,11 @@
 
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
-    AbortCause, AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, CollectiveSide,
-    ContributionKind, EventGraph, EventId, FenceKind, Footprint, GenerationEvidence, GenerationId,
-    GenerationKind, GraphBuilder, InstructionInfo, MemAccess, MemberOrdering, OperandRole,
-    OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectId,
-    SyncObjectKind, Terminal, ThreadIx,
+    AbortCause, AccessMode, ArrivalOrdering, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals,
+    CollectiveSide, ContributionKind, EventGraph, EventId, FenceKind, Footprint,
+    GenerationEvidence, GenerationId, GenerationKind, GraphBuilder, InstructionInfo, MemAccess,
+    MemberOrdering, OperandRole, OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space,
+    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 
 pub const PC: ProgramPoint = ProgramPoint(0);
@@ -246,6 +246,7 @@ impl Scenario {
             ContributionKind::Arrival {
                 count: 1,
                 expect_tx: 0,
+                ordering: ArrivalOrdering::Release,
             },
         )
     }
@@ -265,6 +266,7 @@ impl Scenario {
             ContributionKind::Arrival {
                 count: 1,
                 expect_tx: bytes,
+                ordering: ArrivalOrdering::Release,
             },
         )
     }
@@ -477,12 +479,21 @@ impl Scenario {
     }
 
     /// `thread`'s `tcgen05.commit` of `ops` to phase `g`: the phase tracks them, then the
-    /// thread arrives on it. Returns the arrival.
+    /// thread's async-tracked arrive-on. Returns the arrival.
     pub fn commit(&mut self, thread: u32, g: GenerationId, ops: &[AsyncOpId]) -> EventId {
         for &op in ops {
             self.b.track(op, g, 0);
         }
-        self.arrive(thread, g)
+        self.b.contribute(
+            t(thread),
+            PC,
+            g,
+            ContributionKind::Arrival {
+                count: 1,
+                expect_tx: 0,
+                ordering: ArrivalOrdering::AsyncTracked,
+            },
+        )
     }
 
     pub fn tcgen05_before(&mut self, thread: u32) -> EventId {

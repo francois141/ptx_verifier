@@ -321,10 +321,14 @@ pub enum GenerationKind {
 pub enum ContributionKind {
     /// The thread waits at this generation until it completes (`bar.sync`, a collective).
     Blocking,
-    /// A non-blocking arrival of `count` with release semantics (`bar.arrive`,
-    /// `mbarrier.arrive`, `cp.async.mbarrier.arrive`, `tcgen05.commit`), raising the
-    /// expected transaction bytes by `expect_tx`.
-    Arrival { count: u64, expect_tx: u64 },
+    /// A non-blocking arrival of `count` (`bar.arrive`, `mbarrier.arrive`,
+    /// `cp.async.mbarrier.arrive`, `tcgen05.commit`), raising the expected transaction bytes by
+    /// `expect_tx`.
+    Arrival {
+        count: u64,
+        expect_tx: u64,
+        ordering: ArrivalOrdering,
+    },
     /// An exited thread (its `Exit` event), counted as arrived.
     Exited,
     /// An asynchronous operation's completion (its `AsyncComplete` event), with the
@@ -335,6 +339,18 @@ pub enum ContributionKind {
     /// An `mbarrier.expect_tx` of `bytes`, an announcement with no arrival: `.relaxed`, so it
     /// orders nothing.
     ExpectTx { bytes: u64 },
+}
+
+/// What an arrival releases of the thread it is attributed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArrivalOrdering {
+    /// The thread's own arrive (`bar.arrive`, `mbarrier.arrive`): a release of everything
+    /// before it in the thread's program order.
+    Release,
+    /// An arrive-on the system performs once the thread's tracked async operations complete
+    /// (`cp.async.mbarrier.arrive`, `tcgen05.commit`): ordered with those operations' accesses
+    /// alone (PTX ISA, asynchronous operations), so it releases nothing else of the thread.
+    AsyncTracked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

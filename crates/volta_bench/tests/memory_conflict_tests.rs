@@ -391,8 +391,8 @@ fn staged_meta_config() -> AnalysisConfig {
     config
 }
 
-/// An async op's completion is ordered only with that op's own accesses, so a store the
-/// issuing thread made before issuing it is unordered with the waiter's read.
+/// An async op's completion or arrive-on is ordered only with that op's own accesses, so a
+/// store the signalling thread made before it is unordered with the waiter's read.
 fn assert_meta_races(name: &str, module: &Ptx) {
     let ws = conflicts(module, staged_meta_config());
     assert_any(&ws, &format!("{name}: thread 32's read of meta"), |w| {
@@ -408,5 +408,23 @@ fn test_tma_complete_tx_does_not_release_the_issuers_earlier_store() {
     assert_meta_races(
         "TMA",
         &ptx!(parse "execution_error/tma_complete_tx_does_not_release_the_issuers_earlier_store"),
+    );
+}
+
+#[test]
+fn test_cp_async_mbarrier_arrive_does_not_release_the_threads_earlier_store() {
+    assert_meta_races(
+        "cp.async.mbarrier.arrive",
+        &ptx!(
+            parse "execution_error/cp_async_mbarrier_arrive_does_not_release_the_threads_earlier_store"
+        ),
+    );
+}
+
+#[test]
+fn test_tcgen05_commit_does_not_release_the_threads_earlier_store() {
+    assert_meta_races(
+        "tcgen05.commit",
+        &ptx!(parse "execution_error/tcgen05_commit_does_not_release_the_threads_earlier_store"),
     );
 }

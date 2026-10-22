@@ -5,10 +5,11 @@
 use std::collections::HashMap;
 
 use volta_graph::{
-    AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals, BlockedOn, BlockedThread,
-    CollectiveSide, ContributionKind, EventId, Footprint, GenerationEvidence, GenerationId,
-    GenerationKind, MbarrierState, MemAccess, MemberOrdering, OperandRole, OrderingKind, Parity,
-    ProgramPoint, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
+    AccessMode, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals,
+    BlockedOn, BlockedThread, CollectiveSide, ContributionKind, EventId, Footprint,
+    GenerationEvidence, GenerationId, GenerationKind, MbarrierState, MemAccess, MemberOrdering,
+    OperandRole, OrderingKind, Parity, ProgramPoint, Proxy, Space, StoredValue, SyncObjectId,
+    SyncObjectKind, ThreadIx,
 };
 
 use crate::eval::interp::{BarrierArrivals, Interpreter, Status};
@@ -293,6 +294,7 @@ impl Interpreter<'_> {
             ContributionKind::Arrival {
                 count: 1,
                 expect_tx: 0,
+                ordering: ArrivalOrdering::Release,
             }
         };
         self.graph.contribute(tix(t), point(pc), generation, kind);
@@ -603,21 +605,26 @@ impl Interpreter<'_> {
         }
     }
 
-    /// `t` arrives on `id` with `count` arrivals and `expect_tx` expected bytes.
+    /// `t` arrives on `id` with `count` arrivals and `expect_tx` expected bytes, releasing what
+    /// `ordering` says.
     pub(in crate::eval) fn record_mbarrier_arrival(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         id: MbarrierId,
-        count: u64,
-        expect_tx: u64,
+        (count, expect_tx): (u64, u64),
+        ordering: ArrivalOrdering,
     ) {
         let phase = self.forming_phase(id);
         self.graph.contribute(
             tix(t),
             point(pc),
             phase,
-            ContributionKind::Arrival { count, expect_tx },
+            ContributionKind::Arrival {
+                count,
+                expect_tx,
+                ordering,
+            },
         );
     }
 

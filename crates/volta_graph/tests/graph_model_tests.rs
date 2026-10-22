@@ -3,10 +3,10 @@
 
 use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
-    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventKind, ExecContext,
-    Footprint, GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess,
-    OperandRole, OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind,
-    Terminal, ThreadIx,
+    AbortCause, AccessMode, ArrivalOrdering, AsyncOpKind, BarrierArrivals, ContributionKind,
+    EventKind, ExecContext, Footprint, GenerationEvidence, GenerationKind, GraphBuilder,
+    InstructionInfo, MemAccess, OperandRole, OrderingKind, ProgramPoint, Provenance, Proxy, Space,
+    StoredValue, SyncObjectKind, Terminal, ThreadIx,
 };
 
 fn provenance(threads: u32, instructions: usize) -> Provenance {
@@ -194,6 +194,7 @@ fn a_contributed_pre_init_phase_is_a_defect() {
         ContributionKind::Arrival {
             count: 1,
             expect_tx: 0,
+            ordering: ArrivalOrdering::Release,
         },
     );
     b.complete_generation(pre_init, GenerationEvidence::default());

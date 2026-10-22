@@ -1,0 +1,63 @@
+.version 8.0
+.target sm_100a
+.address_size 64
+
+// Thread 0 stores `meta`, issues tcgen05.mma and commits it to mma_bar. The commit's arrive-on is
+// "triggered by the system" once the MMA completes and releases none of the thread's own stores:
+// thread 32's read of `meta` after waiting on mma_bar races.
+.visible .entry k(.param .u64 pin, .param .u64 pscale, .param .u64 pout)
+{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<12>;
+    .reg .b64 %rd<6>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[1024];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 4 .b32 meta;
+    .shared .align 8 .b64 mma_bar;
+
+    ld.param.u64 %rd4, [pscale];
+    ld.param.u64 %rd5, [pout];
+    cvta.to.global.u64 %rd4, %rd4;
+    cvta.to.global.u64 %rd5, %rd5;
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %r4, mma_bar;
+    mov.u32 %r8, meta;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    setp.lt.u32 %p2, %r5, 32;
+    @!%p2 bra ALLOCATED;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+ALLOCATED:
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+
+    mov.u64 %rd1, a_buf;
+    shr.u64 %rd1, %rd1, 4;
+    or.b64 %rd1, %rd1, 70377334112256;
+    mov.u64 %rd2, b_buf;
+    shr.u64 %rd2, %rd2, 4;
+    or.b64 %rd2, %rd2, 70377334112256;
+    mov.u32 %r2, 134348816;
+    mov.pred %p0, 0;
+    @!%p1 bra ISSUED;
+    ld.global.u32 %r9, [%rd4];
+    st.shared.u32 [%r8], %r9;
+    tcgen05.mma.cta_group::1.kind::f16 [%r1+0], %rd1, %rd2, %r2, {0,0,0,0}, %p0;
+    tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
+ISSUED:
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    tcgen05.fence::after_thread_sync;
+    setp.ne.s32 %p3, %r5, 32;
+    @%p3 bra DONE;
+    ld.shared.u32 %r10, [%r8];
+    st.global.u32 [%rd5], %r10;
+DONE:
+    bar.sync 0;
+    @%p2 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+    ret;
+}

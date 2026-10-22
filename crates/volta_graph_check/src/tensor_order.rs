@@ -8,10 +8,10 @@
 //! for all {a, b} in Conflicts(A):
 //!     (a, b) <- EARLIERISSUEFIRST(a, b, τ)
 //!     if PIPELINED(a, b) then continue
-//!     if PIPELINABLE(a, b) then (u, s) <- (Issue(Op(a)), 0)
-//!     else (u, s) <- (Complete(Op(a)), 1 if Op(a) is an MMA else 0)
 //!     t <- Issue(Op(b))
-//!     if not SEARCH(u, s, t, a, b) then B <- B ∪ {{a, b}}
+//!     if PIPELINABLE(a, b) and SEARCH(Issue(Op(a)), 0, t, a, b) then continue
+//!     s <- 1 if Op(a) is an MMA else 0
+//!     if not SEARCH(Complete(Op(a)), s, t, a, b) then B <- B ∪ {{a, b}}
 //! return B
 //! ```
 //!
@@ -27,7 +27,8 @@
 //! * `PIPELINABLE(a, b)`: [`crate::pipeline::pipelinable`], a pair the ISA pipelines within one
 //!   warp. Only such a pair may be ordered by its issues (9.7.18.6.4.3); the design searches
 //!   every pair from `Issue(Op(a))`, but any other pair is ordered only once `Op(a)`'s completion
-//!   is observed (9.7.18.6.4.4), so its search starts there ([`Origin::Completion`]).
+//!   is observed (9.7.18.6.4.4), so its search starts there ([`Origin::Completion`]). That
+//!   stronger witness orders a pipelinable pair too.
 //! * `SEARCH` is [`crate::sync_search::search`], run once per pair of operations and origin.
 //! * `Pass`: `B = {}`. `Fail`: `B`, each pair with its first shared cell, ordered by the later
 //!   issue (at most [`CONFLICT_CAP`] pairs are listed). `Unknown`: a Tensor Memory effect of
@@ -116,14 +117,14 @@ pub fn check_tensor_order(d: &ValidatedGraph) -> TensorOrderResult {
             evidence.pipelined += 1;
             continue;
         }
-        let origin = if pipelinable(graph, earlier.event, later.event) {
-            Origin::Issue
-        } else {
-            Origin::Completion
+        let mut ordered_from = |origin| {
+            *searched
+                .entry((earlier.op, later.op, origin))
+                .or_insert_with(|| search(&search_graph, earlier.op, later.op, origin))
         };
-        let ordered = *searched
-            .entry((earlier.op, later.op, origin))
-            .or_insert_with(|| search(&search_graph, earlier.op, later.op, origin));
+        let ordered = (pipelinable(graph, earlier.event, later.event)
+            && ordered_from(Origin::Issue))
+            || ordered_from(Origin::Completion);
         if ordered {
             evidence.synchronized += 1;
         } else {

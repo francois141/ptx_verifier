@@ -218,7 +218,9 @@ crate-level docs in `lib.rs` are the contract.
 - Sync objects (named barrier, mbarrier lifetime, warp/warpgroup collective,
   a thread's cp.async group waits) with logical `Generation`s: typed
   `Contribution`s (`Blocking`, `Arrival`, `Exited`, `AsyncCompletion`,
-  `CompleteTx`, `ExpectTx`), releases (`Resume` events), completion event, evidence.
+  `CompleteTx`, `ExpectTx`; an `Arrival`'s `ArrivalOrdering` says whether it
+  is the thread's release or an async-tracked arrive-on), releases (`Resume`
+  events), completion event, evidence.
   Collective instances have an `Entry` and an `Exit` generation around the
   op's effects; their `MemberOrdering` is `Synchronizing` only for
   `bar.warp.sync` (and `tcgen05.alloc`, whose written address every lane
@@ -379,9 +381,10 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   `ValidatedGraph` (`G_HB` = Algorithm 5's `D`: `G0` plus the mbarrier
   completion joins), built only from both barrier-epoch certificates and the mbarrier ordering certificate
   (`assuming_epochs` for isolated tests). `G0` is execution order, `G_HB`
-  memory order: in `G_HB` an async completion carries only its op's effects,
-  not what preceded the issue (the PTX ISA orders it only with its own
-  instruction's memory operations).
+  memory order: in `G_HB` an async arrive-on (`ArrivalOrdering::AsyncTracked`:
+  `tcgen05.commit`, `cp.async.mbarrier.arrive`) joins nothing and an async
+  completion carries only its op's effects, not what preceded the issue (the
+  PTX ISA orders them only with their own instruction's memory operations).
   Closure queries are a vector-clock sweep in trace order (an async effect
   reaches what an observer of its completion reaches); `successors()` gives
   `D` explicitly for Algorithm 6, with no edge into a completion.

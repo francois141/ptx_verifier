@@ -6,7 +6,7 @@
 mod common;
 
 use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
-use volta_graph::{ContributionKind, EventGraph, EventId, EventKind, ThreadIx};
+use volta_graph::{ArrivalOrdering, ContributionKind, EventGraph, EventId, EventKind, ThreadIx};
 use volta_graph_check::{GraphConclusion, Property, Verdict};
 
 use common::*;
@@ -79,7 +79,8 @@ fn test_announcements_unordered_before_another_threads_arrival_are_inconclusive(
             contribution(g, arrival),
             ContributionKind::Arrival {
                 count: 1,
-                expect_tx: 0
+                expect_tx: 0,
+                ordering: ArrivalOrdering::Release,
             }
         );
         assert!(

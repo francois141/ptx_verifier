@@ -211,6 +211,23 @@ fn an_async_completion_carries_its_effects_not_its_issuers_earlier_stores() {
     );
 }
 
+/// A `tcgen05.commit`'s arrive-on completes its phase, so it orders execution (`G0`), but it
+/// releases nothing of the committing thread's own accesses (`G_HB`).
+#[test]
+fn an_async_tracked_arrival_orders_execution_not_memory() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    let store = s.write(0, 0x40, 1);
+    s.commit(0, p0, &[]);
+    s.complete(p0);
+    s.wait(1, m, Parity::Even, p0);
+    let after = s.read(1, 0x40);
+    let (g, _) = s.completed(2);
+    assert!(in_g0(&g, store, after));
+    assert!(!in_hb(&g, store, after));
+}
+
 #[test]
 fn a_relaxed_complete_tx_orders_nothing() {
     let mut s = Scenario::new(2);

@@ -103,7 +103,9 @@ impl Update {
     /// `None` for a contribution kind that is no mbarrier update.
     fn of(event: EventId, kind: ContributionKind) -> Option<Update> {
         let (arrivals, tx) = match kind {
-            ContributionKind::Arrival { count, expect_tx } => (count, i64::try_from(expect_tx)),
+            ContributionKind::Arrival {
+                count, expect_tx, ..
+            } => (count, i64::try_from(expect_tx)),
             ContributionKind::ExpectTx { bytes } => (0, i64::try_from(bytes)),
             ContributionKind::CompleteTx { bytes } => (0, i64::try_from(bytes).map(|b| -b)),
             ContributionKind::AsyncCompletion { tx_bytes, .. } => {

@@ -23,17 +23,18 @@
 //!   validates the phase association"); completions joined into a warp's wait collective or a
 //!   thread's `cp.async` wait-group are independently fixed by that warp's or thread's program
 //!   order.
-//!   `G0` is execution order: an async completion follows its operation's issue and
-//!   everything before it.
+//!   `G0` is execution order: an async arrive-on joins its phase, and an async completion
+//!   follows its operation's issue and everything before it.
 //! * [`ValidatedGraph`] (`G_HB`, and Algorithm 5's `D`): `G0` plus the validated mbarrier
 //!   completion joins. Only the two barrier-epoch certificates and the mbarrier ordering
 //!   certificate construct it ("accept completion joins only after epoch separation and this
 //!   check pass"). With one CTA and
 //!   no memory scope narrower than it, the happens-before projection keeps every such edge.
 //!   It is memory order, which the PTX ISA's asynchronous operations restrict: their
-//!   completion is ordered "only with respect to the memory operations performed by the same
-//!   asynchronous instruction", not the issuer's earlier ones. So a completion carries only
-//!   its operation's effects (through their observers), and `D` has no edge into a completion.
+//!   completion and arrive-on are ordered "only with respect to the memory operations
+//!   performed by the same asynchronous instruction", not the issuer's earlier ones. So an
+//!   `ArrivalOrdering::AsyncTracked` arrival joins nothing, a completion carries only its
+//!   operation's effects (through their observers), and `D` has no edge into a completion.
 //!
 //! Transitive-closure queries (`(x, y) ∈ G+`) are answered by one vector-clock sweep in trace
 //! order, which is a topological order because every edge runs forward in the trace. A thread
@@ -44,8 +45,8 @@
 use std::collections::HashMap;
 
 use volta_graph::{
-    AsyncOpId, ContributionKind, EventGraph, EventId, EventKind, ExecContext, GenerationId,
-    GenerationKind, GraphDefect, MemberOrdering,
+    ArrivalOrdering, AsyncOpId, ContributionKind, EventGraph, EventId, EventKind, ExecContext,
+    GenerationId, GenerationKind, GraphDefect, MemberOrdering,
 };
 
 use crate::barrier_epoch::{MbarrierEpochs, NamedBarrierEpochs};
@@ -54,11 +55,11 @@ use crate::mbarrier_ordering::MbarrierOrdering;
 /// The order a projection stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Projection {
-    /// `G0`, execution order: a generation completes after every arrival it joins, and an
-    /// async completion after its operation's issue.
+    /// `G0`, execution order: a generation completes after every arrival it joins, an async
+    /// arrive-on included, and an async completion after its operation's issue.
     Independent,
-    /// `G_HB`, memory order: an async completion carries nothing of the issuing thread's
-    /// earlier accesses, only its operation's own effects (through their observers).
+    /// `G_HB`, memory order: an async arrive-on or completion carries nothing of the issuing
+    /// thread's earlier accesses, only its operations' own effects (through their observers).
     Validated,
 }
 
@@ -94,7 +95,15 @@ impl Admission {
             }
         );
         match kind {
-            ContributionKind::Blocking | ContributionKind::Arrival { .. } => members_join,
+            ContributionKind::Blocking
+            | ContributionKind::Arrival {
+                ordering: ArrivalOrdering::Release,
+                ..
+            } => members_join,
+            ContributionKind::Arrival {
+                ordering: ArrivalOrdering::AsyncTracked,
+                ..
+            } => self.projection == Projection::Independent && members_join,
             ContributionKind::Exited => self.exited_threads && members_join,
             ContributionKind::AsyncCompletion { .. } => {
                 self.projection == Projection::Validated

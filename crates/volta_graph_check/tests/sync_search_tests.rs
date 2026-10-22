@@ -139,10 +139,13 @@ fn a_commit_then_a_wait_on_its_phase_is_a_witness() {
     s.tcgen05_after(1);
     let (ld, _) = s.tmem_ld(1, 0, (0, 8));
     let (g, _) = s.completed(2);
-    assert!(searched(&g, mma, ld));
     assert!(
         searched_from(&g, mma, ld, Origin::Completion),
         "the commit supplies the before role of a path from the MMA's completion"
+    );
+    assert!(
+        !searched(&g, mma, ld),
+        "the commit's arrive-on carries nothing of t0's own events to the waiter"
     );
 }
 

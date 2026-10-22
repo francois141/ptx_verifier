@@ -7,9 +7,10 @@ use id_collections::Id;
 
 use crate::graph::EventGraph;
 use crate::model::{
-    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, BlockedOn, CollectiveSide,
-    ContributionKind, EventKind, ExecContext, FenceKind, Footprint, GenerationKind, GroupFamily,
-    MemberOrdering, OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
+    AbortCause, AccessMode, ArrivalOrdering, AsyncOpKind, BarrierArrivals, BlockedOn,
+    CollectiveSide, ContributionKind, EventKind, ExecContext, FenceKind, Footprint, GenerationKind,
+    GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectKind,
+    Terminal,
 };
 
 impl EventGraph {
@@ -106,9 +107,20 @@ impl EventGraph {
                 write!(out, "  contrib e{} ", c.event.0)?;
                 match c.kind {
                     ContributionKind::Blocking => writeln!(out, "blocking")?,
-                    ContributionKind::Arrival { count, expect_tx } => {
-                        writeln!(out, "arrive count={} expect_tx={}", count, expect_tx)?
-                    }
+                    ContributionKind::Arrival {
+                        count,
+                        expect_tx,
+                        ordering,
+                    } => writeln!(
+                        out,
+                        "arrive count={} expect_tx={} {}",
+                        count,
+                        expect_tx,
+                        match ordering {
+                            ArrivalOrdering::Release => "release",
+                            ArrivalOrdering::AsyncTracked => "async-tracked",
+                        }
+                    )?,
                     ContributionKind::Exited => writeln!(out, "exited")?,
                     ContributionKind::AsyncCompletion { op, tx_bytes } => {
                         writeln!(out, "async-completion a{} tx={}", op.0, tx_bytes)?

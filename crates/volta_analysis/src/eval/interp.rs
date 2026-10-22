@@ -32,8 +32,8 @@ use crate::ir::{
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
-    AbortCause, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder, GroupFamily,
-    OperandRole, Provenance, Proxy, Space, Terminal,
+    AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder,
+    GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
 };
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
@@ -1635,7 +1635,7 @@ impl<'p> Interpreter<'p> {
                     .read_mbarrier(addr)
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 self.record_mma_commit(t, id);
-                self.record_mbarrier_arrival(t, pc, id, 1, 0);
+                self.record_mbarrier_arrival(t, pc, id, (1, 0), ArrivalOrdering::AsyncTracked);
                 let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, 1, None);
                 self.record_mbarrier_progress(id, before);
@@ -1668,7 +1668,13 @@ impl<'p> Interpreter<'p> {
                 for copy in copies {
                     self.complete_cp_async_copy(t, copy)?;
                 }
-                self.record_mbarrier_arrival(t, pc, id, u64::from(*noinc), 0);
+                self.record_mbarrier_arrival(
+                    t,
+                    pc,
+                    id,
+                    (u64::from(*noinc), 0),
+                    ArrivalOrdering::AsyncTracked,
+                );
                 let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, u64::from(*noinc), None);
                 self.record_mbarrier_progress(id, before);
@@ -1827,7 +1833,13 @@ impl<'p> Interpreter<'p> {
                     )?),
                     None => None,
                 };
-                self.record_mbarrier_arrival(t, pc, id, count, expect_tx.unwrap_or(0));
+                self.record_mbarrier_arrival(
+                    t,
+                    pc,
+                    id,
+                    (count, expect_tx.unwrap_or(0)),
+                    ArrivalOrdering::Release,
+                );
                 let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, count, expect_tx);
                 self.record_mbarrier_progress(id, before);
