@@ -115,11 +115,16 @@ pub(super) fn lower_mbarrier_init(
     Ok(())
 }
 
-/// Lower `mbarrier.inval{.shared{::cta}}.b64 [addr]`.
+/// Why `mbarrier.inval` is rejected: mbarrier operations are not memory accesses of the event
+/// graph and no check orders an object's other operations before its invalidation, so a late
+/// `arrive` racing with the reuse of the invalidated object's bytes would go unnoticed.
+const MBARRIER_INVAL: &str = "mbarrier.inval is not implemented yet (nothing orders the object's other operations before it)";
+
+/// Reject `mbarrier.inval{.shared{::cta}}.b64 [addr]` ([`MBARRIER_INVAL`]), after the state-space
+/// check that makes a `.shared::cluster` form invalid rather than unsupported.
 pub(super) fn lower_mbarrier_inval(
     ctx: &mut LoweringContext,
     inval: &MbarrierInvalInstr,
-    predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "mbarrier.inval";
     ctx.convert_mbarrier_space(
@@ -128,15 +133,7 @@ pub(super) fn lower_mbarrier_inval(
         MbarrierClusterForm::Absent,
         NAME,
     )?;
-    let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &inval.addr)?;
-    ctx.emit(
-        LoweredInstr::MbarrierInval {
-            addr_base,
-            addr_offset,
-        },
-        predicate,
-    )?;
-    Ok(())
+    Err(unsupported(NAME, MBARRIER_INVAL))
 }
 
 /// Lower `mbarrier.arrive{.expect_tx}{.shared{::cta}}.b64 state, [addr]{,

@@ -549,7 +549,7 @@ fn lower_parsed_instruction(
             operands,
         } => lower_clc_query_cancel(ctx, modifiers, operands, predicate),
         ParsedInstruction::MbarrierInit(init) => lower_mbarrier_init(ctx, init, predicate),
-        ParsedInstruction::MbarrierInval(inval) => lower_mbarrier_inval(ctx, inval, predicate),
+        ParsedInstruction::MbarrierInval(inval) => lower_mbarrier_inval(ctx, inval),
         ParsedInstruction::MbarrierArrive(arrive) => lower_mbarrier_arrive(ctx, arrive, predicate),
         ParsedInstruction::MbarrierExpectTx(expect_tx) => {
             lower_mbarrier_expect_tx(ctx, expect_tx, predicate)

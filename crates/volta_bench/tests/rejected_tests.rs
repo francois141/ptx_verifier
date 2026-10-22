@@ -634,6 +634,23 @@ fn test_membar_levels() {
     }
 }
 
+/// `mbarrier.inval` is rejected until a check orders an mbarrier's other operations before its
+/// invalidation: a late `arrive` racing with the reuse of the object's bytes would go unnoticed.
+#[test]
+fn test_mbarrier_inval_is_not_implemented() {
+    let module = parse(&ptx!("failing/mbarrier_inval_is_not_implemented"));
+    match run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(
+                reason.contains("mbarrier.inval") && reason.contains("not implemented"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+}
+
 /// `mbarrier.init`/`inval`/`test_wait`/`try_wait` take only `.shared{::cta}`
 /// (PTX ISA 9.7.15.16), so `.shared::cluster` is invalid; on `arrive` it is
 /// valid but unmodeled.

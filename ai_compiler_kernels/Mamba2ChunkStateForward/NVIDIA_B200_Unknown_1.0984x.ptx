@@ -487,6 +487,6 @@ READ_TMEM:
     // Release tensor memory only after both warps have completed their reads.
     bar.sync 0;
     @%pw tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r13, 128;
-    @%p0 mbarrier.inval.shared::cta.b64 [%r10];
+    //@%p0 mbarrier.inval.shared::cta.b64 [%r10];
     ret;
 }

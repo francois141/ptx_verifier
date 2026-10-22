@@ -298,15 +298,6 @@ impl Memory {
         }
     }
 
-    /// `mbarrier.inval`: retire a live `mbarrier` by removing its granule
-    /// outright, so its bytes can be repurposed without `put`'s overwrite
-    /// guard refusing it.
-    pub fn invalidate_mbarrier(&mut self, addr: u64) -> Result<(), MemAccessError> {
-        self.read_mbarrier(addr)?;
-        self.cells.remove(&addr);
-        Ok(())
-    }
-
     /// The dirty granules (program-written), as `(addr, width, value)`.
     pub fn dirty_cells(&self) -> impl Iterator<Item = (u64, u64, Value)> + '_ {
         self.cells

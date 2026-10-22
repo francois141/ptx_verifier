@@ -285,6 +285,7 @@ instruction family, each file depending only on `context` and `error`:
 - `SourceMap` - Maps each lowered instruction back to its source span
 - The nvcc callseq idiom for `call __symexpf` (the paper's symbolic-exp hook) collapses to `UnaryOp::Exp` at lowering time
 - The mbarrier retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` collapses to one blocking `MbarrierWaitParity` (`match_mbarrier_wait_loop`; the scheduler can block a thread, not spin it); a wait outside that exact three-statement window is a lowering error
+- `mbarrier.inval` is unsupported for now (after its state-space check): mbarrier operations are not memory accesses of the event graph and no check orders an object's other operations before its invalidation, so a late `arrive` racing with the reuse of its bytes would go unnoticed
 - `define_instr_kinds!` generates the profiling table from one variant
   list: `KIND_COUNT`, `KIND_NAMES`, `kind_index()` (dense index for the
   interpreter's fixed-size counters), `kind_name()`

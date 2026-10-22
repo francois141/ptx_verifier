@@ -1790,22 +1790,6 @@ impl<'p> Interpreter<'p> {
                 self.record_mbarrier_init(t, pc, id, addr, count);
             }
 
-            LoweredInstr::MbarrierInval {
-                addr_base,
-                addr_offset,
-            } => {
-                let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
-                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
-                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
-                let live = self.shared.read_mbarrier(addr).ok();
-                self.shared
-                    .invalidate_mbarrier(addr)
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
-                if let Some(id) = live {
-                    self.record_mbarrier_inval(t, pc, id);
-                }
-            }
-
             LoweredInstr::MbarrierArrive {
                 state,
                 addr_base,

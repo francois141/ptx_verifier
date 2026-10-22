@@ -562,18 +562,6 @@ impl Interpreter<'_> {
         );
     }
 
-    pub(in crate::eval) fn record_mbarrier_inval(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-        id: MbarrierId,
-    ) {
-        if let Some(record) = self.rec.mbarriers.get(&id) {
-            let object = record.object;
-            self.graph.object_inval(tix(t), point(pc), object);
-        }
-    }
-
     /// The forming phase of mbarrier `id`.
     pub(in crate::eval) fn forming_phase(&self, id: MbarrierId) -> GenerationId {
         *self.rec.mbarriers[&id]
