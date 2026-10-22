@@ -18,7 +18,7 @@ all:
 # test still shows the runs it recorded.
 viz out="target/volta-viz/volta-graphs.html":
     rm -rf target/volta-viz/runs
-    -VOLTA_VIZ_DIR="{{justfile_directory()}}/target/volta-viz/runs" cargo test --release -p volta_bench -- --test-threads 16
+    -VOLTA_VIZ_DIR="{{justfile_directory()}}/target/volta-viz/runs" cargo test --release --no-fail-fast -p volta_bench -- --test-threads 16
     cargo run --release -q -p volta_cli -- --no-log-file viz target/volta-viz/runs -o "{{out}}"
 
 # Python bindings tests (rebuilding the extension, so they never test a stale build)
