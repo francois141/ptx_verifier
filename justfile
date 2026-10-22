@@ -47,3 +47,7 @@ format-rust:
 # Format the Python bindings
 format-python:
     uv run ruff format crates/volta_py
+
+# Count the lines of code (Rust, Python, the viewer), per crate and per language
+loc *args:
+    python3 scripts/loc.py {{args}}

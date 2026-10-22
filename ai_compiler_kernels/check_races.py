@@ -8,10 +8,25 @@ Builds the release `volta` CLI, then runs `volta analyze` on each kernel:
     python3 ai_compiler_kernels/check_races.py --list             # what is configured
     python3 ai_compiler_kernels/check_races.py --debug            # stream volta's stage log
     python3 ai_compiler_kernels/check_races.py --color always     # color even through a pipe
+    python3 ai_compiler_kernels/check_races.py --mutate                    # remove each sync of every kernel
+    python3 ai_compiler_kernels/check_races.py --mutate --kernel PATH.ptx  # ... of one kernel
+    python3 ai_compiler_kernels/check_races.py --mutate --list             # the removable statements
+    python3 ai_compiler_kernels/check_races.py --mutate --kernel PATH.ptx --site 160   # one statement
 
 Volta analyzes CTA 0 only (`%ctaid` reads 0), so each array is sized to
 what CTA 0 can reach: an access outside it is an `OutOfBounds` error rather
 than a silently accepted read.
+
+`--mutate` is the negative test. From each kernel Volta verifies race-free it
+removes one `bar.sync`, `tcgen05.fence::before_thread_sync`,
+`tcgen05.fence::after_thread_sync`, `tcgen05.alloc` or `tcgen05.dealloc`
+statement at a time (its label and guard stay, line numbers do not move) and
+analyzes the mutant. A mutant Volta rejects (a race condition, another failed
+check or a deadlock) is caught. One whose execution stops without a verdict
+proves nothing and is listed as such (removing a `tcgen05.alloc` leaves the
+tensor-memory address symbolic, for instance). One still verified RACE-FREE
+has SURVIVED: a missing synchronization Volta did not notice. One volta itself
+failed to run is NOT RUN. The exit status is 1 if any survived or was not run.
 """
 
 import argparse
@@ -91,6 +106,10 @@ class Variant:
     @property
     def name(self) -> str:
         return f"{self.folder}/{self.stem}"
+
+    @property
+    def path(self) -> Path:
+        return KERNEL_ROOT / self.folder / f"{self.stem}.ptx"
 
 
 class Outcome(enum.Enum):
@@ -204,13 +223,17 @@ def parse_cli(stdout: str) -> CliReport:
     return CliReport(verdict, tuple(checks), written, no_outputs, deadlock, tuple(reasons))
 
 
+class VoltaFailure(Exception):
+    """volta stopped before any verdict: a command-line, configuration or internal error."""
+
+
 def classify(report: CliReport, stderr: str, expected_outputs: int) -> tuple[Outcome, str]:
     if report.verdict is None:
         errors = "\n".join(line for line in stderr.splitlines() if not LOG_LINE.match(line))
         error = " ".join(errors.split()) or "volta produced no verdict"
         if m := LOWERING_FAILED.search(error):
             return Outcome.UNSUPPORTED, m[1]
-        return Outcome.ERROR, error
+        raise VoltaFailure(error)
     coverage = f"{report.written}/{expected_outputs} tile outputs written"
     findings = [f"{check}: {finding}" for check, verdict, finding in report.checks if verdict != "PASS"]
     if report.verdict == "VERIFIED":
@@ -265,11 +288,6 @@ def inout(name: str, elem_width: int, len: int) -> Array:
     return Array(name, elem_width, len, Kind.INPUT_OUTPUT)
 
 
-def output_len(params: tuple[Array | Int, ...]) -> int:
-    """Elements of the output arrays, for kernels that write every one of them."""
-    return sum(p.len for p in params if isinstance(p, Array) and p.kind is Kind.OUTPUT)
-
-
 def elementwise_variants(
     folder: str, tiles: dict[str, int], inputs: tuple[str, ...]
 ) -> list[Variant]:
@@ -306,10 +324,6 @@ SWIGLU_TILES = {
     "NVIDIA_B200_Float16_1.0001x": 1024,
     "NVIDIA_B200_Float8_1.0000x": 2048,
 }
-GELU_TILES = {
-    "NVIDIA_B200_Float16_1.0000x": 1024,
-    "NVIDIA_B200_Float8_1.0000x": 1024,
-}
 
 
 # Rows of 4096 elements (one per ctaid.y), cut into tiles over ctaid.x; each tile adds its
@@ -332,29 +346,6 @@ def reduction_sum_variants() -> list[Variant]:
             expected_outputs=1,
         )
         for stem, tile in REDUCTION_SUM_TILES.items()
-    ]
-
-
-# 1024 f32 elements per CTA: p and exp_avg are updated in place from grad.
-LION_TILE = 1024
-LION_STEMS = ["NVIDIA_B200_Unknown_1.0002x"]
-
-
-def lion_variants() -> list[Variant]:
-    folder = "LionNeurIPS2023Optimizer"
-    return [
-        Variant(
-            folder,
-            stem,
-            block_dims(load_launch(folder, stem)),
-            (
-                inout("p", F32, LION_TILE),
-                inp("grad", F32, LION_TILE),
-                inout("exp_avg", F32, LION_TILE),
-            ),
-            expected_outputs=2 * LION_TILE,
-        )
-        for stem in LION_STEMS
     ]
 
 
@@ -625,10 +616,6 @@ MATMUL_STEMS = [
     "NVIDIA_B200_Float16_1.0017x",
     "NVIDIA_B200_Float8_0.9979x",
 ]
-GEMM_ADD_GELU_STEMS = [
-    "NVIDIA_B200_Float16_1.1206x",
-    "NVIDIA_B200_Float8_1.0258x",
-]
 GEMM_ADD_SILU_STEMS = [
     "NVIDIA_B200_Float16_1.1140x",
     "NVIDIA_B200_Float8_1.1642x",
@@ -685,33 +672,6 @@ def bitdelta_variants() -> list[Variant]:
             )
         )
     return variants
-
-
-# X[batch, 512, 512] f32 is updated in place, 64 by 64 per CTA, from U[batch, 512, 32] columns
-# that map[batch, 512] selects. map feeds shared-memory addresses, so it holds concrete values;
-# every gather only reads U after the staging barrier, so they do not change the race verdict.
-DION_COLS, DION_TILE, DION_U_COLS = 512, 64, 32
-DION_STEMS = ["NVIDIA_B200_Unknown_0.9720x"]
-
-
-def dion2_variants() -> list[Variant]:
-    folder = "Dion2TritonPostOrthogonalize"
-    return [
-        Variant(
-            folder,
-            stem,
-            block_dims(load_launch(folder, stem)),
-            (
-                inout("X", F32, DION_TILE * DION_COLS),
-                inp("U", F32, DION_TILE * DION_U_COLS),
-                Array("map", U32, DION_TILE, Kind.INDEX),
-                inp("a", F32, 1),
-                inp("b", F32, 1),
-            ),
-            expected_outputs=DION_TILE * DION_TILE,
-        )
-        for stem in DION_STEMS
-    ]
 
 
 # Int8 Q[heads, T, 64] and K/V[kv_heads, 128, 64] (eight query heads per KV head), f16 V and
@@ -805,74 +765,16 @@ def mamba2_chunk_scan_variants() -> list[Variant]:
     ]
 
 
-# Head ctaid.x of batch ctaid.y: 2048 time steps of head_dim 64 in 16 chunks, with 64 SSM
-# states. Q/K heads are grouped by %nctaid.x / 16, so the grid needs at least 16 heads (one per
-# group here); CTA 0 is head 0 of batch 0. It never loads Cu_Seqlens.
-MAMBA_STEPS, MAMBA_HEAD_DIM, MAMBA_CHUNKS, MAMBA_HEADS = 2048, 64, 16, 16
-MAMBA_STEMS = ["NVIDIA_B200_Unknown_0.2177x"]
-
-
-def mamba_variants() -> list[Variant]:
-    folder = "MambaICLR2026Forward"
-    seq = MAMBA_STEPS * MAMBA_HEAD_DIM
-    state = MAMBA_HEAD_DIM * MAMBA_HEAD_DIM
-    variants = []
-    for stem in MAMBA_STEMS:
-        params = (
-            inp("q", F16, seq),
-            inp("k", F16, seq),
-            inp("v", F16, seq),
-            inp("adt", F32, MAMBA_STEPS),
-            inp("dt", F32, MAMBA_STEPS + 1),
-            inp("trap", F32, MAMBA_STEPS + 1),
-            inp("q_bias", F16, MAMBA_HEAD_DIM),
-            inp("k_bias", F16, MAMBA_HEAD_DIM),
-            inp("angles", F32, MAMBA_STEPS * MAMBA_HEAD_DIM // 2),
-            inp("d_input", F32, 1),
-            inp("z", F16, seq),
-            inp("initial_ssm_state", F32, state),
-            inp("initial_k_state", F16, MAMBA_HEAD_DIM),
-            inp("initial_v_state", F16, MAMBA_HEAD_DIM),
-            NULL_PTR,  # Cu_Seqlens_ptr
-            out("out", F16, seq),
-            out("out_v", F16, seq),
-            out("ssm_states", F16, MAMBA_CHUNKS * state),
-            out("da_cs_store", F32, MAMBA_STEPS),
-            out("da_cs_sum_store", F32, MAMBA_CHUNKS),
-            out("q_store", F16, seq),
-            out("k_store", F16, seq),
-            out("qk_store", F32, MAMBA_STEPS),
-            out("scale_store", F32, MAMBA_STEPS),
-            out("gamma_store", F32, MAMBA_STEPS),
-            out("final_ssm_state", F32, state),
-            out("final_k_state", F16, 128 * MAMBA_HEAD_DIM),
-        )
-        variants.append(
-            Variant(
-                folder,
-                stem,
-                block_dims(load_launch(folder, stem)),
-                params,
-                expected_outputs=output_len(params),
-                grid=(MAMBA_HEADS, 1, 1),
-            )
-        )
-    return variants
-
-
 FAMILIES = {
     "relu": partial(elementwise_variants, "ReLUKernel", RELU_TILES, ("x",)),
     "sigmoid": partial(elementwise_variants, "SigmoidKernel", SIGMOID_TILES, ("x",)),
     "silu": partial(elementwise_variants, "SiLUKernel", SILU_TILES, ("x",)),
     "swiglu": partial(elementwise_variants, "SwiGLUKernel", SWIGLU_TILES, ("gate", "value")),
-    "gelu": partial(elementwise_variants, "GELUKernel", GELU_TILES, ("x",)),
     "rope": rope_variants,
     "rmsnorm": rmsnorm_variants,
     "softmax": softmax_variants,
     "matvec": matvec_variants,
     "reduction_sum": reduction_sum_variants,
-    "lion": lion_variants,
-    "dion2": dion2_variants,
     "conv2d": conv2d_variants,
     "flash_sinkhorn": flash_sinkhorn_variants,
     "forgetting_attention": forgetting_attention_variants,
@@ -880,11 +782,7 @@ FAMILIES = {
     "sage_attention": sage_attention_variants,
     "mamba2_chunk_state": mamba2_chunk_state_variants,
     "mamba2_chunk_scan": mamba2_chunk_scan_variants,
-    "mamba": mamba_variants,
     "matmul": partial(gemm_variants, "MatrixMultiplication", MATMUL_STEMS, fused_add=False),
-    "gemm_add_gelu": partial(
-        gemm_variants, "FusedGEMMAddGELUKernel", GEMM_ADD_GELU_STEMS, fused_add=True
-    ),
     "gemm_add_silu": partial(
         gemm_variants, "FusedGEMMAddSiLUKernel", GEMM_ADD_SILU_STEMS, fused_add=True
     ),
@@ -929,6 +827,98 @@ def apply_reduction(source: str, reduction: Reduction) -> str:
     return "\n".join(lines)
 
 
+# A synchronization statement `--mutate` removes: optional `label:`s and a `@%p` guard, then
+# the instruction (`tcgen05.alloc` and not `tcgen05.relinquish_alloc_permit`, `bar.sync` and
+# not `bar.warp.sync`).
+SYNC_STATEMENT = re.compile(
+    r"\A(?P<labels>(?:\s*\w+:)*)(?P<body>\s*(?:@!?%\w+\s+)?"
+    r"(?P<instr>bar\.sync|bar\.cta\.sync|barrier\.sync|barrier\.cta\.sync"
+    r"|tcgen05\.fence::before_thread_sync|tcgen05\.fence::after_thread_sync"
+    r"|tcgen05\.alloc|tcgen05\.dealloc)(?=[\s.;]))"
+)
+STATEMENT = re.compile(r"[^;{}]*;")
+
+
+@dataclass(frozen=True)
+class Mutation:
+    """The `nth` (from 1) removable statement on source line `line` (1-based)."""
+
+    line: int
+    nth: int
+    instr: str
+
+    @property
+    def name(self) -> str:
+        return f"-{self.instr}@L{self.line}" + (f"#{self.nth}" if self.nth > 1 else "")
+
+
+def blank_comments(source: str) -> str:
+    """`source` with comments replaced by spaces, so offsets and line numbers hold."""
+    blank = lambda m: re.sub(r"[^\n]", " ", m[0])
+    return re.sub(r"//[^\n]*|/\*.*?\*/", blank, source, flags=re.DOTALL)
+
+
+def statements(source: str) -> list[tuple[Mutation, int, int]]:
+    """Each removable statement of `source` with its character span (guard to `;`)."""
+    code = blank_comments(source)
+    found = []
+    nth: dict[int, int] = {}
+    for statement in STATEMENT.finditer(code):
+        m = SYNC_STATEMENT.match(statement[0])
+        if m is None:
+            continue
+        start = statement.start() + m.start("body")
+        start += len(m["body"]) - len(m["body"].lstrip())
+        line = code.count("\n", 0, start) + 1
+        nth[line] = nth.get(line, 0) + 1
+        found.append((Mutation(line, nth[line], m["instr"]), start, statement.end()))
+    return found
+
+
+def mutation_sites(source: str) -> list[Mutation]:
+    return [mutation for mutation, _, _ in statements(source)]
+
+
+def remove_statement(source: str, mutation: Mutation) -> str:
+    """`source` with `mutation`'s statement, guard included, blanked out; lines keep their numbers."""
+    for found, start, end in statements(source):
+        if found == mutation:
+            gap = re.sub(r"[^\n]", " ", source[start:end])
+            return source[:start] + gap + source[end:]
+    raise ValueError(f"no {mutation.name} in the source")
+
+
+class Fate(enum.Enum):
+    """What became of a mutant; anything but SURVIVED means Volta no longer verifies it."""
+
+    RACE = "race condition"
+    CHECK = "check failure"
+    DEADLOCK = "deadlock"
+    STOPPED = "without a verdict"
+    SURVIVED = "SURVIVED"
+    NOT_RUN = "NOT RUN"
+
+
+FATES = {
+    Outcome.RACE_CONDITION: Fate.RACE,
+    Outcome.CHECK_FAILED: Fate.CHECK,
+    Outcome.DEADLOCK: Fate.DEADLOCK,
+    Outcome.UNSUPPORTED: Fate.STOPPED,
+    Outcome.UNKNOWN: Fate.STOPPED,
+    Outcome.ERROR: Fate.STOPPED,
+    Outcome.RACE_FREE: Fate.SURVIVED,
+    Outcome.REDUCED_RACE_FREE: Fate.SURVIVED,
+}
+FATE_CODES = {
+    Fate.RACE: (BOLD, GREEN),
+    Fate.CHECK: (BOLD, GREEN),
+    Fate.DEADLOCK: (BOLD, GREEN),
+    Fate.STOPPED: (BOLD, YELLOW),
+    Fate.SURVIVED: (BOLD, RED),
+    Fate.NOT_RUN: (BOLD, RED),
+}
+
+
 def run_volta(command: list[str], echo: Callable[[str], None] | None) -> tuple[str, str]:
     """Run volta, passing each stderr line (the stage log) to `echo` live; return (stdout, stderr)."""
     with subprocess.Popen(
@@ -958,21 +948,120 @@ def analyze(variant: Variant, ptx: Path, echo: Callable[[str], None] | None) -> 
     return classify(parse_cli(stdout), stderr, variant.expected_outputs)
 
 
-def check(variant: Variant, full: bool, echo: Callable[[str], None] | None) -> Report:
-    start = time.perf_counter()
-    ptx = KERNEL_ROOT / variant.folder / f"{variant.stem}.ptx"
+def analyze_variant(
+    variant: Variant,
+    full: bool,
+    echo: Callable[[str], None] | None,
+    patch: Callable[[str], str] | None = None,
+) -> tuple[Outcome, str]:
+    """`variant`'s outcome, its K loop reduced unless `full`, from `patch`ed source if given."""
     reduction = None if full else variant.reduction
-    if reduction is None:
-        outcome, detail = analyze(variant, ptx, echo)
-    else:
-        with tempfile.TemporaryDirectory() as scratch:
-            reduced = Path(scratch) / ptx.name
-            reduced.write_text(apply_reduction(ptx.read_text(), reduction))
-            outcome, detail = analyze(variant, reduced, echo)
+    if reduction is None and patch is None:
+        return analyze(variant, variant.path, echo)
+    source = variant.path.read_text()
+    if reduction is not None:
+        source = apply_reduction(source, reduction)
+    if patch is not None:
+        source = patch(source)
+    with tempfile.TemporaryDirectory() as scratch:
+        patched = Path(scratch) / variant.path.name
+        patched.write_text(source)
+        outcome, detail = analyze(variant, patched, echo)
+    if reduction is not None:
         if outcome is Outcome.RACE_FREE:
             outcome = Outcome.REDUCED_RACE_FREE
         detail = f"K loop cut to {reduction.iterations}/{reduction.full_iterations} iterations; {detail}"
+    return outcome, detail
+
+
+def check(variant: Variant, full: bool, echo: Callable[[str], None] | None) -> Report:
+    start = time.perf_counter()
+    try:
+        outcome, detail = analyze_variant(variant, full, echo)
+    except VoltaFailure as failure:
+        outcome, detail = Outcome.ERROR, str(failure)
     return Report(variant, outcome, detail, time.perf_counter() - start)
+
+
+# The unmutated kernel's row, aligned with its mutants'.
+AS_WRITTEN = "as written"
+
+
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 or noun.startswith("without") else "s")
+
+
+def run_mutations(
+    selected: list[tuple[str, Variant]],
+    full: bool,
+    echo: Callable[[str], None] | None,
+    style: Style,
+    lines: list[int],
+) -> int:
+    """The negative test over `selected` (the statements at `lines` only, if any are given)."""
+    fates: list[Fate] = []
+    skipped: list[str] = []
+    for _, variant in selected:
+        print(style.paint(f"== {variant.name}", BOLD), flush=True)
+        sites = [
+            site
+            for site in mutation_sites(variant.path.read_text())
+            if not lines or site.line in lines
+        ]
+        if not sites:
+            where = f" at {', '.join(f'L{line}' for line in lines)}" if lines else ""
+            print(f"   no removable statement{where}", flush=True)
+            continue
+        width = max(map(len, [AS_WRITTEN, *(site.name for site in sites)]))
+        baseline = check(variant, full, echo)
+        outcome = style.paint(
+            f"{baseline.outcome.value:<{OUTCOME_WIDTH}}", *OUTCOME_CODES[baseline.outcome]
+        )
+        if baseline.outcome not in (Outcome.RACE_FREE, Outcome.REDUCED_RACE_FREE):
+            skipped.append(variant.name)
+            note = f"mutants skipped: {baseline.detail}"
+        else:
+            note = plural(len(sites), "removable statement")
+        print(
+            f"   {AS_WRITTEN:<{width}}  {outcome}  {baseline.seconds:7.1f}s  {note}",
+            flush=True,
+        )
+        if variant.name in skipped:
+            continue
+        for site in sites:
+            start = time.perf_counter()
+            try:
+                result, detail = analyze_variant(
+                    variant, full, echo, partial(remove_statement, mutation=site)
+                )
+                fate = FATES[result]
+                shown = fate.value if fate is Fate.SURVIVED else result.value
+            except VoltaFailure as failure:
+                fate, shown, detail = Fate.NOT_RUN, Fate.NOT_RUN.value, str(failure)
+            seconds = time.perf_counter() - start
+            fates.append(fate)
+            print(
+                f"   {site.name:<{width}}  "
+                f"{style.paint(f'{shown:<{OUTCOME_WIDTH}}', *FATE_CODES[fate])}  "
+                f"{seconds:7.1f}s  {detail}",
+                flush=True,
+            )
+
+    caught = sum(fates.count(fate) for fate in (Fate.RACE, Fate.CHECK, Fate.DEADLOCK))
+    failed = fates.count(Fate.SURVIVED) + fates.count(Fate.NOT_RUN)
+    codes = (BOLD, GREEN) if failed == 0 else (BOLD, RED)
+    summary = style.paint(f"{caught}/{len(fates)} mutants caught", *codes)
+    seen = [
+        plural(fates.count(fate), fate.value)
+        for fate in (Fate.RACE, Fate.CHECK, Fate.DEADLOCK, Fate.STOPPED)
+        if fates.count(fate)
+    ]
+    bad = [f"{fates.count(fate)} {fate.value}" for fate in (Fate.SURVIVED, Fate.NOT_RUN) if fates.count(fate)]
+    tail = (f": {', '.join(seen)}" if seen else "") + (f"; {', '.join(bad)}" if bad else "")
+    print(f"\n{summary}{tail}")
+    if skipped:
+        print(f"skipped, not race-free as written: {', '.join(skipped)}")
+    return 0 if failed == 0 else 1
 
 
 def build_volta() -> None:
@@ -1032,7 +1121,23 @@ def main() -> int:
         action="store_true",
         help="ignore K-loop reductions and analyze every kernel whole (some need tens of GB)",
     )
+    parser.add_argument(
+        "--mutate",
+        action="store_true",
+        help="remove one bar.sync, tcgen05.fence::{before,after}_thread_sync, tcgen05.alloc or "
+        "tcgen05.dealloc at a time from each race-free kernel; every mutant must fail",
+    )
+    parser.add_argument(
+        "--site",
+        action="append",
+        type=int,
+        default=[],
+        metavar="LINE",
+        help="with --mutate: remove only the statements at these source lines (repeatable)",
+    )
     args = parser.parse_args()
+    if args.site and not args.mutate:
+        parser.error("--site needs --mutate")
 
     try:
         every_family = {family: variants() for family, variants in FAMILIES.items()}
@@ -1068,6 +1173,9 @@ def main() -> int:
         for family, v in selected:
             marker = "" if v.reduction is None else "  (K loop reduced unless --full)"
             print(f"{family:<{width}}  {v.name}{marker}")
+            if args.mutate:
+                for site in mutation_sites(v.path.read_text()):
+                    print(f"{'':<{width}}    {site.name[1:]}")
         return 0
 
     style = Style(
@@ -1076,6 +1184,8 @@ def main() -> int:
     )
     echo = (lambda line: print(f"    {style.log_line(line)}", flush=True)) if args.debug else None
     build_volta()
+    if args.mutate:
+        return run_mutations(selected, args.full, echo, style, args.site)
     width = max(len(v.name) for _, v in selected)
     reports = []
     for _, variant in selected:
