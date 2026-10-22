@@ -369,3 +369,44 @@ fn test_clusterlaunchcontrol_response_read_without_waiting_is_an_inflight_hazard
         w.earlier == Side::effect(0, Write, AsyncOpKind::ClcResponse) && w.later.thread == 32
     });
 }
+
+/// Two warps; thread 0 stages `scale[0]` in shared `meta`, which thread 32 reads.
+fn staged_meta_config() -> AnalysisConfig {
+    let mut config = AnalysisConfig::new((64, 1, 1));
+    let array = |name: &str, base, len, kind| ArrayDef {
+        name: name.to_string(),
+        base,
+        elem_width: 4,
+        len,
+        kind,
+    };
+    config.arrays = vec![
+        array("in", 0x10000, 4, ArrayKind::Input),
+        array("scale", 0x18000, 1, ArrayKind::Input),
+        array("out", 0x20000, 1, ArrayKind::Output),
+    ];
+    config.params = ["in", "scale", "out"]
+        .map(|a| ParamValue::ArrayPtr(a.to_string()))
+        .to_vec();
+    config
+}
+
+/// An async op's completion is ordered only with that op's own accesses, so a store the
+/// issuing thread made before issuing it is unordered with the waiter's read.
+fn assert_meta_races(name: &str, module: &Ptx) {
+    let ws = conflicts(module, staged_meta_config());
+    assert_any(&ws, &format!("{name}: thread 32's read of meta"), |w| {
+        w.kind == ConflictKind::WriteRead
+            && on_shared(w)
+            && w.earlier == Side::plain(0, Write)
+            && w.later == Side::plain(32, Read)
+    });
+}
+
+#[test]
+fn test_tma_complete_tx_does_not_release_the_issuers_earlier_store() {
+    assert_meta_races(
+        "TMA",
+        &ptx!(parse "execution_error/tma_complete_tx_does_not_release_the_issuers_earlier_store"),
+    );
+}

@@ -23,11 +23,17 @@
 //!   validates the phase association"); completions joined into a warp's wait collective or a
 //!   thread's `cp.async` wait-group are independently fixed by that warp's or thread's program
 //!   order.
+//!   `G0` is execution order: an async completion follows its operation's issue and
+//!   everything before it.
 //! * [`ValidatedGraph`] (`G_HB`, and Algorithm 5's `D`): `G0` plus the validated mbarrier
 //!   completion joins. Only the two barrier-epoch certificates and the mbarrier ordering
 //!   certificate construct it ("accept completion joins only after epoch separation and this
 //!   check pass"). With one CTA and
 //!   no memory scope narrower than it, the happens-before projection keeps every such edge.
+//!   It is memory order, which the PTX ISA's asynchronous operations restrict: their
+//!   completion is ordered "only with respect to the memory operations performed by the same
+//!   asynchronous instruction", not the issuer's earlier ones. So a completion carries only
+//!   its operation's effects (through their observers), and `D` has no edge into a completion.
 //!
 //! Transitive-closure queries (`(x, y) ∈ G+`) are answered by one vector-clock sweep in trace
 //! order, which is a topological order because every edge runs forward in the trace. A thread
@@ -45,21 +51,37 @@ use volta_graph::{
 use crate::barrier_epoch::{MbarrierEpochs, NamedBarrierEpochs};
 use crate::mbarrier_ordering::MbarrierOrdering;
 
+/// The order a projection stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Projection {
+    /// `G0`, execution order: a generation completes after every arrival it joins, and an
+    /// async completion after its operation's issue.
+    Independent,
+    /// `G_HB`, memory order: an async completion carries nothing of the issuing thread's
+    /// earlier accesses, only its operation's own effects (through their observers).
+    Validated,
+}
+
 /// Which synchronization edges a projection admits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Admission {
-    mbarrier_completions: bool,
+    projection: Projection,
     exited_threads: bool,
 }
 
 impl Admission {
-    fn of(graph: &EventGraph, mbarrier_completions: bool) -> Self {
+    fn of(graph: &EventGraph, projection: Projection) -> Self {
         Admission {
-            mbarrier_completions,
+            projection,
             exited_threads: graph
                 .provenance()
                 .assumes(volta_graph::Assumption::ExitedThreadsArrive),
         }
+    }
+
+    /// Whether an async completion's join also carries what precedes its operation's issue.
+    fn carries_issue(self) -> bool {
+        self.projection == Projection::Independent
     }
 
     /// Whether `kind`, a contribution to `generation`, joins it.
@@ -75,7 +97,7 @@ impl Admission {
             ContributionKind::Blocking | ContributionKind::Arrival { .. } => members_join,
             ContributionKind::Exited => self.exited_threads && members_join,
             ContributionKind::AsyncCompletion { .. } => {
-                self.mbarrier_completions
+                self.projection == Projection::Validated
                     || graph.generation(generation).kind != GenerationKind::MbarrierPhase
             }
             ContributionKind::CompleteTx { .. } | ContributionKind::ExpectTx { .. } => false,
@@ -96,7 +118,7 @@ impl<'g> IndependentGraph<'g> {
         graph.validate()?;
         Ok(IndependentGraph {
             graph,
-            admission: Admission::of(graph, false),
+            admission: Admission::of(graph, Projection::Independent),
         })
     }
 
@@ -132,7 +154,7 @@ impl<'g> ValidatedGraph<'g> {
         );
         ValidatedGraph {
             graph,
-            admission: Admission::of(graph, true),
+            admission: Admission::of(graph, Projection::Validated),
         }
     }
 
@@ -142,7 +164,7 @@ impl<'g> ValidatedGraph<'g> {
         graph.validate()?;
         Ok(ValidatedGraph {
             graph,
-            admission: Admission::of(graph, true),
+            admission: Admission::of(graph, Projection::Validated),
         })
     }
 
@@ -321,7 +343,9 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
                                 join(&mut acc, &clocks[t.0 as usize]);
                             }
                         }
-                        ContributionKind::AsyncCompletion { op, .. } => {
+                        ContributionKind::AsyncCompletion { op, .. }
+                            if admission.carries_issue() =>
+                        {
                             if let Some(ic) = issue_clock.get(&op) {
                                 join(&mut acc, ic);
                             }
@@ -386,15 +410,19 @@ fn successors(graph: &EventGraph, admission: Admission) -> Successors {
             effect_events.entry(op).or_default().push(id);
         }
     }
+    // Without the issue carried into a completion, no path may enter one: it would carry the
+    // issuer's earlier events to the completion's observers.
     for (op, a) in graph.async_ops().iter() {
         let effects = effect_events.get(&op).map_or(&[][..], Vec::as_slice);
         for &e in effects {
             succ[a.issue.0 as usize].push(e);
-            if let Some(done) = a.completion {
+            if let (Some(done), true) = (a.completion, admission.carries_issue()) {
                 succ[e.0 as usize].push(done);
             }
         }
-        if let (Some(done), true) = (a.completion, effects.is_empty()) {
+        if let (Some(done), true, true) =
+            (a.completion, effects.is_empty(), admission.carries_issue())
+        {
             succ[a.issue.0 as usize].push(done);
         }
     }

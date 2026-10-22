@@ -190,6 +190,27 @@ fn g0_keeps_the_completion_joins_of_a_warps_wait() {
     assert!(in_g0(&g, effect, after));
 }
 
+/// t0 arrives on a phase, stores, then issues a bulk copy the phase tracks; t1 waits on it.
+#[test]
+fn an_async_completion_carries_its_effects_not_its_issuers_earlier_stores() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.arrive_expect_tx(0, p0, 4);
+    let store = s.write(0, 0x40, 1);
+    let copy = s.bulk_copy(0, 0, p0, 4);
+    let effect = s.effect(copy);
+    s.complete(p0);
+    s.wait(1, m, Parity::Even, p0);
+    let after = s.read(1, 0x40);
+    let (g, _) = s.completed(2);
+    assert!(in_hb(&g, effect, after), "the copy's own write is observed");
+    assert!(
+        !in_hb(&g, store, after),
+        "the complete-tx releases nothing of t0's"
+    );
+}
+
 #[test]
 fn a_relaxed_complete_tx_orders_nothing() {
     let mut s = Scenario::new(2);
@@ -230,7 +251,10 @@ fn d_lists_program_order_causal_and_synchronization_successors() {
         [effect, arrival],
         "the effect (causal) and the next event (PO)"
     );
-    assert_eq!(d.of(effect), [completion]);
+    assert!(
+        d.of(effect).is_empty(),
+        "no edge into the completion, which would carry the issuer's earlier events"
+    );
     assert_eq!(d.of(completion), [done]);
     assert!(d.of(arrival).contains(&done));
     assert_eq!(d.of(done), [release]);

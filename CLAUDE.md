@@ -378,9 +378,13 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   mbarrier completion join) and
   `ValidatedGraph` (`G_HB` = Algorithm 5's `D`: `G0` plus the mbarrier
   completion joins), built only from both barrier-epoch certificates and the mbarrier ordering certificate
-  (`assuming_epochs` for isolated tests). Closure queries are a vector-clock
-  sweep in trace order (an async effect reaches what an observer of its
-  completion reaches); `successors()` gives `D` explicitly for Algorithm 6.
+  (`assuming_epochs` for isolated tests). `G0` is execution order, `G_HB`
+  memory order: in `G_HB` an async completion carries only its op's effects,
+  not what preceded the issue (the PTX ISA orders it only with its own
+  instruction's memory operations).
+  Closure queries are a vector-clock sweep in trace order (an async effect
+  reaches what an observer of its completion reaches); `successors()` gives
+  `D` explicitly for Algorithm 6, with no edge into a completion.
 - `pipeline.rs` - `E_pipeline` (graph-construction step 5), the PTX ISA 9.4
   implicitly pipelined pairs (9.7.18.6.2): same-thread `tcgen05.mma` chains on
   one accumulator (edges between accumulator effects only), and same-warp

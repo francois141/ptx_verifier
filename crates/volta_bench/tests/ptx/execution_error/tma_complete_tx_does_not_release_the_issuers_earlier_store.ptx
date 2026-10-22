@@ -1,0 +1,48 @@
+.version 8.0
+.target sm_90a
+.address_size 64
+
+// Thread 0 arrives on `full` (its release), then stores `meta`, then issues the TMA copy. The
+// copy's complete-tx "does not transitively establish ordering with respect to prior
+// instructions from the issuing thread" (PTX ISA): thread 32's read of `meta` races.
+.visible .entry k(.param .u64 pin, .param .u64 pscale, .param .u64 pout)
+{
+    .reg .pred %p<4>;
+    .reg .pred %pw;
+    .reg .b32 %r<10>;
+    .reg .b64 %rd<6>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 4 .b32 meta;
+    .shared .align 8 .b64 full;
+
+    ld.param.u64 %rd1, [pin];
+    ld.param.u64 %rd2, [pscale];
+    ld.param.u64 %rd3, [pout];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    cvta.to.global.u64 %rd3, %rd3;
+    mov.u32 %r4, full;
+    mov.u32 %r6, meta;
+    mov.u32 %r5, %tid.x;
+    setp.eq.s32 %p1, %r5, 0;
+    @%p1 mbarrier.init.shared.b64 [%r4], 1;
+    bar.sync 0;
+    @!%p1 bra CONSUMER;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
+    ld.global.u32 %r7, [%rd2];
+    st.shared.u32 [%r6], %r7;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r4];
+    bra.uni DONE;
+CONSUMER:
+    setp.ne.s32 %p2, %r5, 32;
+    @%p2 bra DONE;
+WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT;
+    ld.shared.u32 %r8, [%r6];
+    ld.shared.u32 %r9, [buf];
+    add.u32 %r8, %r8, %r9;
+    st.global.u32 [%rd3], %r8;
+DONE:
+    ret;
+}
