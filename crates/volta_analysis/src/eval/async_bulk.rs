@@ -204,6 +204,20 @@ impl<'p> Interpreter<'p> {
 
         let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();
         let op = self.record_async_issue(t, pc, AsyncOpKind::TensorCopy);
+        let descriptor = AccessOrigin::Async {
+            op,
+            proxy: Proxy::TensorMap,
+            role: OperandRole::TensorMap,
+        };
+        self.record_mem_access(
+            t,
+            pc,
+            tensormap_space,
+            tm_addr,
+            tensor_map_table::TENSOR_MAP_BYTES,
+            None,
+            descriptor,
+        );
         let (source, destination) = copy_origins(op);
         let mut idx = vec![0u32; real_rank];
         let mut global_idx = vec![0i64; real_rank];

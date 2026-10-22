@@ -423,6 +423,62 @@ fn test_tcgen05_alloc_does_not_publish_its_address_write() {
     );
 }
 
+/// Thread 32's TMA reads the tensor map thread 0 is still building: both fences are there, but
+/// nothing orders thread 0's release before thread 32's acquire.
+#[test]
+fn test_tma_uses_tensormap_built_by_other_thread_without_sync() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/tma_uses_tensormap_built_by_other_thread_without_sync"),
+        tma_config(64),
+    );
+    assert_any(
+        &ws,
+        "thread 0's replace unordered with thread 32's TMA",
+        |w| {
+            w.kind == ConflictKind::WriteRead
+                && w.location.space == Space::Global
+                && w.earlier == Side::plain(0, Write)
+                && w.later == Side::effect(32, Read, AsyncOpKind::TensorCopy)
+        },
+    );
+}
+
+/// Warp 0 publishes the tensor map with `tensormap.cp_fenceproxy`, whose release is there, and
+/// thread 32 acquires it, but nothing orders the copy before thread 32's TMA.
+#[test]
+fn test_tma_uses_another_warps_cp_fenceproxy_copy_without_sync() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/tma_uses_another_warps_cp_fenceproxy_copy_without_sync"),
+        tma_config(64),
+    );
+    assert_any(&ws, "warp 0's copy unordered with thread 32's TMA", |w| {
+        w.kind == ConflictKind::WriteRead
+            && w.location.space == Space::Global
+            && w.earlier == Side::plain(0, Write)
+            && w.later == Side::effect(32, Read, AsyncOpKind::TensorCopy)
+    });
+}
+
+/// The copy reads its tensor map asynchronously, until its completion is observed: rewriting
+/// the map before waiting races with that read.
+#[test]
+fn test_tensormap_replace_while_tma_in_flight() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/tensormap_replace_while_tma_in_flight"),
+        tma_config(32),
+    );
+    assert_any(
+        &ws,
+        "the TMA's read unordered with the later replace",
+        |w| {
+            w.kind == ConflictKind::ReadWrite
+                && w.location.space == Space::Global
+                && w.earlier == Side::effect(0, Read, AsyncOpKind::TensorCopy)
+                && w.later == Side::plain(0, Write)
+        },
+    );
+}
+
 /// A `try_cancel` response is an async write ordered only by a waiter observing its
 /// mbarrier: warp 1 reads it after `bar.sync` alone and conflicts with the write.
 #[test]

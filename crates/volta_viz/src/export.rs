@@ -537,6 +537,7 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
                 match a.proxy {
                     Proxy::Generic => "generic",
                     Proxy::Async => "async",
+                    Proxy::TensorMap => "tensormap",
                 }
                 .to_string(),
             ));

@@ -142,6 +142,8 @@ pub enum OrderingKind {
 pub enum Proxy {
     Generic,
     Async,
+    /// The tensor-map proxy, through which `cp.async.bulk.tensor` reads its tensor map.
+    TensorMap,
 }
 
 /// The canonical physical locations an effect touches.
@@ -208,6 +210,8 @@ pub enum OperandRole {
     Accumulator,
     /// The Tensor Memory cells of a `tcgen05.ld`/`.st`.
     TmemData,
+    /// The 128-byte tensor map a `cp.async.bulk.tensor` reads.
+    TensorMap,
 }
 
 /// A value stored by a write, as expressions of the producer's arena.

@@ -41,32 +41,6 @@ fn out_config(threads: u32, elem_width: u64, len: u64) -> AnalysisConfig {
     config
 }
 
-/// f16 `in` and `out` arrays, sized for the tensor-map kernels' 4x4 box over an 8x8 `in`.
-fn tma_config(threads: u32) -> AnalysisConfig {
-    let mut config = AnalysisConfig::new((threads, 1, 1));
-    config.arrays = vec![
-        ArrayDef {
-            name: "in".to_string(),
-            base: 0x10000,
-            elem_width: 2,
-            len: 64,
-            kind: ArrayKind::Input,
-        },
-        ArrayDef {
-            name: "out".to_string(),
-            base: 0x20000,
-            elem_width: 2,
-            len: 2,
-            kind: ArrayKind::Output,
-        },
-    ];
-    config.params = vec![
-        ParamValue::ArrayPtr("in".to_string()),
-        ParamValue::ArrayPtr("out".to_string()),
-    ];
-    config
-}
-
 /// Copy B, issued for phase 1 before phase 0 is observed, can land first and complete phase 0
 /// while copy A still writes `bufA`: the read of `bufA` after the parity-0 wait races.
 #[test]
@@ -84,15 +58,6 @@ fn test_inflight_complete_tx_lets_parity_wait_return_early() {
     assert_not_verified(
         &ptx!(parse "false_positive/inflight_complete_tx_lets_parity_wait_return_early"),
         in_out_config(2, 8),
-    );
-}
-
-/// Thread 32's TMA reads the tensor map thread 0 is still building; nothing orders them.
-#[test]
-fn test_tma_uses_tensormap_built_by_other_thread_without_sync() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tma_uses_tensormap_built_by_other_thread_without_sync"),
-        tma_config(64),
     );
 }
 

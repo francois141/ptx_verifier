@@ -192,6 +192,7 @@ impl EventGraph {
                         match a.proxy {
                             Proxy::Generic => "generic",
                             Proxy::Async => "async",
+                            Proxy::TensorMap => "tensormap",
                         },
                         space(a.space),
                         a.role,

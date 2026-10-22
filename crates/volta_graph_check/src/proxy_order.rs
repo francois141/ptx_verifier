@@ -184,6 +184,8 @@ pub fn check_proxy_order(
                     }
                 }
             }
+            // The graph records no tensor-map proxy fence yet, so these pairs go unchecked.
+            Proxy::TensorMap => {}
         }
     });
     match unproved {

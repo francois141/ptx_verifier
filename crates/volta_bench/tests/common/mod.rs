@@ -372,6 +372,32 @@ fn parse_from(file: Option<&'static str>, src: &str) -> Ptx {
     }
 }
 
+/// f16 `in` and `out` arrays, sized for the tensor-map kernels' 4x4 box over an 8x8 `in`.
+pub fn tma_config(threads: u32) -> AnalysisConfig {
+    let mut config = AnalysisConfig::new((threads, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    config
+}
+
 /// in/out f32 arrays at fixed bases.
 pub fn in_out_config(threads: u32, len: u64) -> AnalysisConfig {
     let mut config = AnalysisConfig::new((threads, 1, 1));

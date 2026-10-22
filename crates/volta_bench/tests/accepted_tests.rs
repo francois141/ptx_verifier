@@ -1348,6 +1348,38 @@ fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean() {
     );
 }
 
+/// The control for `tma_uses_tensormap_built_by_other_thread_without_sync`: `bar.sync` orders
+/// thread 0's release of the tensor map before thread 32's acquire.
+#[test]
+fn test_tma_tensormap_built_by_other_thread_ordered_by_bar_sync_is_accepted() {
+    analyze!(
+        "success/tma_tensormap_built_by_other_thread_ordered_by_bar_sync_is_accepted",
+        tma_config(64)
+    );
+}
+
+/// The control for `tma_uses_another_warps_cp_fenceproxy_copy_without_sync`: `bar.sync` orders
+/// warp 0's copy and release of the tensor map before thread 32's acquire, as the B200 matmul
+/// kernel does.
+#[test]
+fn test_tma_uses_another_warps_cp_fenceproxy_copy_ordered_by_bar_sync_is_accepted() {
+    analyze!(
+        "success/tma_uses_another_warps_cp_fenceproxy_copy_ordered_by_bar_sync_is_accepted",
+        tma_config(64)
+    );
+}
+
+/// The control for `tensormap_replace_while_tma_in_flight`, and the PTX ISA's own pattern for
+/// a tensor map modified in global memory: replace, release, acquire, copy, and the rewrite
+/// only once the copy's completion is observed.
+#[test]
+fn test_tensormap_replace_after_tma_completes_is_accepted() {
+    analyze!(
+        "success/tensormap_replace_after_tma_completes_is_accepted",
+        tma_config(32)
+    );
+}
+
 /// The control: a `bar.sync` *after* warp 0 observed the completion does
 /// order the copy before warp 1's read.
 #[test]
