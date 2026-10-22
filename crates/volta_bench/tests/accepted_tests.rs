@@ -1110,28 +1110,6 @@ fn test_tail_exit_warp_shfl_reduction() {
     );
 }
 
-/// Not a race: a lane reads shared and exits, then the survivor
-/// bar.warp.syncs the full mask and writes the byte; syncMem clears over all
-/// of I, the returned lane included.
-#[test]
-fn test_bar_warp_sync_clears_chi_for_exited_reader() {
-    analyze!(
-        "success/bar_warp_sync_clears_chi_for_exited_reader",
-        AnalysisConfig::new((2, 1, 1))
-    );
-}
-
-/// Mirrored variant: a lane writes shared memory and exits; the survivor
-/// syncs and reads the byte back. No race, and the exited lane's value is
-/// visible (syncMem clears ordering state, not memory).
-#[test]
-fn test_bar_warp_sync_clears_chi_for_exited_writer() {
-    analyze!(
-        "success/bar_warp_sync_clears_chi_for_exited_writer",
-        in_out_config(2, 1)
-    );
-}
-
 /// bar.warp.sync end-to-end (previously UnsupportedInstruction at
 /// lowering): the neighbor exchange synchronized by a warp barrier instead
 /// of a CTA barrier.

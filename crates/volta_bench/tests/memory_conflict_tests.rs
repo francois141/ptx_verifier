@@ -85,6 +85,53 @@ fn test_shared_exchange_without_barrier_races() {
     });
 }
 
+/// Warp 1 stores to shared memory and exits; warp 0 reads the stores after `bar.sync 0`. The
+/// exited warp counts as arrived for the barrier to fire (Sync'), but it does not participate,
+/// and PTX orders only participating threads' accesses.
+#[test]
+fn test_exited_writer_unordered_by_bar_sync() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/exited_writer_unordered_by_bar_sync"),
+        in_out_config(64, 32),
+    );
+    assert_any(&ws, "thread 0's read unordered with thread 32's write", |w| {
+        w.kind == ConflictKind::WriteRead
+            && on_shared(w)
+            && w.earlier == Side::plain(32, Write)
+            && w.later == Side::plain(0, Read)
+    });
+}
+
+/// The warp-collective form: lane 1 stores and exits, lane 0 reads after `bar.warp.sync 3`.
+#[test]
+fn test_exited_writer_unordered_by_bar_warp_sync() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/exited_writer_unordered_by_bar_warp_sync"),
+        in_out_config(2, 1),
+    );
+    assert_any(&ws, "lane 0's read unordered with lane 1's write", |w| {
+        w.kind == ConflictKind::WriteRead
+            && on_shared(w)
+            && w.earlier == Side::plain(1, Write)
+            && w.later == Side::plain(0, Read)
+    });
+}
+
+/// Mirrored: lane 1 reads and exits, lane 0 overwrites the word after `bar.warp.sync 3`.
+#[test]
+fn test_exited_reader_unordered_by_bar_warp_sync() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/exited_reader_unordered_by_bar_warp_sync"),
+        AnalysisConfig::new((2, 1, 1)),
+    );
+    assert_any(&ws, "lane 0's write unordered with lane 1's read", |w| {
+        w.kind == ConflictKind::ReadWrite
+            && on_shared(w)
+            && w.earlier == Side::plain(1, Read)
+            && w.later == Side::plain(0, Write)
+    });
+}
+
 /// Same write/read pair, but thread 1 reads without waiting: must race, so
 /// the sibling test's success comes from the mbarrier edge, not the kernel
 /// shape.

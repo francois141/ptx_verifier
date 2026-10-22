@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use common::*;
 use volta_graph::{
-    AccessMode, Assumption, AsyncOpKind, EventGraph, EventId, ExecContext, Footprint, MemAccess,
+    AccessMode, AsyncOpKind, EventGraph, EventId, ExecContext, Footprint, MemAccess,
     OperandRole, OrderingKind, Parity, Proxy, Space, SyncObjectKind,
 };
 use volta_graph_check::domain::{ByteLocation, ConflictKind};
@@ -258,22 +258,13 @@ fn atomic_effects_are_outside_the_contract() {
 }
 
 #[test]
-fn an_exited_writer_is_ordered_only_under_the_sync_prime_assumption() {
-    let build = |assume: bool| {
-        let mut p = provenance(2);
-        if !assume {
-            p.assumptions
-                .retain(|a| *a != Assumption::ExitedThreadsArrive);
-        }
-        let mut s = Scenario::with(p);
-        s.write(1, 0x10, 1);
-        s.exit(1);
-        s.barrier(&[0], &[1]);
-        s.read(0, 0x10);
-        s.completed(2).0
-    };
-    assert_eq!(check(&build(true)).verdict(), Verdict::Pass);
-    assert_eq!(check(&build(false)).verdict(), Verdict::Fail);
+fn an_exited_writer_is_unordered_by_the_barrier_that_fires_without_it() {
+    let mut s = Scenario::new(2);
+    s.write(1, 0x10, 1);
+    s.exit(1);
+    s.barrier(&[0], &[1]);
+    s.read(0, 0x10);
+    assert_eq!(check(&s.completed(2).0).verdict(), Verdict::Fail);
 }
 
 #[test]

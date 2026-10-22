@@ -73,7 +73,7 @@ fn a_full_barrier_orders_both_directions_in_both_projections() {
 }
 
 #[test]
-fn an_exited_thread_orders_only_under_the_sync_prime_assumption() {
+fn an_exited_thread_orders_execution_but_not_memory() {
     let build = |assume: bool| {
         let mut p = provenance(2);
         if !assume {
@@ -88,9 +88,9 @@ fn an_exited_thread_orders_only_under_the_sync_prime_assumption() {
         (s.completed(2).0, w1, r0)
     };
     let (g, w1, r0) = build(true);
-    assert!(in_hb(&g, w1, r0));
+    assert!(in_g0(&g, w1, r0) && !in_hb(&g, w1, r0));
     let (g, w1, r0) = build(false);
-    assert!(!in_hb(&g, w1, r0));
+    assert!(!in_g0(&g, w1, r0));
 }
 
 #[test]

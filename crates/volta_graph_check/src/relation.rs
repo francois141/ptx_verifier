@@ -23,8 +23,9 @@
 //!   validates the phase association"); completions joined into a warp's wait collective or a
 //!   thread's `cp.async` wait-group are independently fixed by that warp's or thread's program
 //!   order.
-//!   `G0` is execution order: an async arrive-on joins its phase, and an async completion
-//!   follows its operation's issue and everything before it.
+//!   `G0` is execution order: an async arrive-on joins its phase, an exited thread (under
+//!   Sync') the generations that fire without it, and an async completion follows its
+//!   operation's issue and everything before it.
 //! * [`ValidatedGraph`] (`G_HB`, and Algorithm 5's `D`): `G0` plus the validated mbarrier
 //!   completion joins. Only the two barrier-epoch certificates and the mbarrier ordering
 //!   certificate construct it ("accept completion joins only after epoch separation and this
@@ -35,6 +36,8 @@
 //!   performed by the same asynchronous instruction", not the issuer's earlier ones. So an
 //!   `ArrivalOrdering::AsyncTracked` arrival joins nothing, a completion carries only its
 //!   operation's effects (through their observers), and `D` has no edge into a completion.
+//!   Nor does an exited thread join: a barrier orders the accesses of the threads
+//!   "participating in the barrier", and Sync' counts an exit as arrived only for firing.
 //!
 //! Transitive-closure queries (`(x, y) ∈ G+`) are answered by one vector-clock sweep in trace
 //! order, which is a topological order because every edge runs forward in the trace. A thread
@@ -104,7 +107,9 @@ impl Admission {
                 ordering: ArrivalOrdering::AsyncTracked,
                 ..
             } => self.projection == Projection::Independent && members_join,
-            ContributionKind::Exited => self.exited_threads && members_join,
+            ContributionKind::Exited => {
+                self.exited_threads && self.projection == Projection::Independent && members_join
+            }
             ContributionKind::AsyncCompletion { .. } => {
                 self.projection == Projection::Validated
                     || graph.generation(generation).kind != GenerationKind::MbarrierPhase

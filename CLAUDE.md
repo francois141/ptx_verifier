@@ -386,7 +386,9 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   memory order: in `G_HB` an async arrive-on (`ArrivalOrdering::AsyncTracked`:
   `tcgen05.commit`, `cp.async.mbarrier.arrive`) joins nothing and an async
   completion carries only its op's effects, not what preceded the issue (the
-  PTX ISA orders them only with their own instruction's memory operations).
+  PTX ISA orders them only with their own instruction's memory operations);
+  nor does an exited thread join (Sync' counts it as arrived for firing only:
+  a barrier orders only its participating threads' accesses).
   Closure queries are a vector-clock sweep in trace order (an async effect
   reaches what an observer of its completion reaches); `successors()` gives
   `D` explicitly for Algorithm 6, with no edge into a completion.
