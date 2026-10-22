@@ -1,0 +1,29 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Warp 0 copies the shared tensor map to global while thread 32 replaces a field
+// of both the source and the destination, with nothing ordering them: the copy's
+// read and its write each race one of the replaces.
+.visible .entry k()
+{
+    .reg .b32 %tid;
+    .reg .pred %p<3>;
+    .shared .align 128 .b8 sd0[128];
+    .global .align 128 .b8 gbl[128];
+
+    mov.u32 %tid, %tid.x;
+    setp.ge.u32 %p1, %tid, 32;
+    @%p1 bra W1;
+    setp.eq.u32 %p2, %tid, 0;
+    @%p2 tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 1;
+    tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
+    ret;
+W1:
+    setp.eq.u32 %p2, %tid, 32;
+    @!%p2 bra END;
+    tensormap.replace.tile.rank.shared::cta.b1024.b32 [sd0], 2;
+    tensormap.replace.tile.rank.global.b1024.b32 [gbl], 2;
+END:
+    ret;
+}

@@ -444,3 +444,72 @@ fn test_tcgen05_commit_does_not_release_the_threads_earlier_store() {
         &ptx!(parse "execution_error/tcgen05_commit_does_not_release_the_threads_earlier_store"),
     );
 }
+
+/// `mbarrier.init` writes its object: thread 1's init of `word` is unordered with thread 0's
+/// store and load of it, so `out[0]` need not read back 42.
+#[test]
+fn test_mbarrier_init_write_races_plain_store_load() {
+    let mut config = AnalysisConfig::new((2, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 8,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let ws = conflicts(
+        &ptx!(parse "execution_error/mbarrier_init_write_races_plain_store_load"),
+        config,
+    );
+    assert_any(&ws, "thread 0's store, then thread 1's init", |w| {
+        w.kind == ConflictKind::WriteWrite
+            && on_shared(w)
+            && w.earlier == Side::plain(0, Write)
+            && w.later == Side::plain(1, Write)
+    });
+    assert_any(&ws, "thread 0's load, then thread 1's init", |w| {
+        w.kind == ConflictKind::ReadWrite
+            && on_shared(w)
+            && w.earlier == Side::plain(0, Read)
+            && w.later == Side::plain(1, Write)
+    });
+}
+
+/// `tensormap.replace` writes the whole opaque tensor-map object, so two threads replacing a
+/// field of one map with no synchronization race.
+#[test]
+fn test_tensormap_replace_write_write_race() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/tensormap_replace_write_write_race"),
+        AnalysisConfig::new((2, 1, 1)),
+    );
+    assert_any(&ws, "a write-write pair of threads 0 and 1", |w| {
+        w.kind == ConflictKind::WriteWrite
+            && on_shared(w)
+            && w.earlier == Side::plain(0, Write)
+            && w.later == Side::plain(1, Write)
+    });
+}
+
+/// `tensormap.cp_fenceproxy` reads its shared source and writes its global destination, once for
+/// the warp (thread 0): thread 32's unordered replaces of both, which run first, race the copy.
+#[test]
+fn test_cp_fenceproxy_races_another_warps_replace() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/cp_fenceproxy_races_another_warps_replace"),
+        AnalysisConfig::new((64, 1, 1)),
+    );
+    assert_any(&ws, "thread 32's replace, then the copy's read", |w| {
+        w.kind == ConflictKind::WriteRead
+            && on_shared(w)
+            && w.earlier == Side::plain(32, Write)
+            && w.later == Side::plain(0, Read)
+    });
+    assert_any(&ws, "thread 32's replace, then the copy's write", |w| {
+        w.kind == ConflictKind::WriteWrite
+            && w.location.space == Space::Global
+            && w.earlier == Side::plain(32, Write)
+            && w.later == Side::plain(0, Write)
+    });
+}

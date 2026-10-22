@@ -1734,13 +1734,9 @@ impl<'p> Interpreter<'p> {
                 count,
             } => {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
-                self.check_bounds(t, pc, MemSpace::Shared, addr, 8)?;
-                self.check_alignment(t, pc, MemSpace::Shared, addr, 8)?;
                 let count = self.non_negative_operand(t, pc, count, "mbarrier.init count")?;
                 let id = self.mbarriers.init(count);
-                self.shared
-                    .write(addr, 8, Value::Mbarrier(id))
-                    .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
+                self.mem_write(t, pc, MemSpace::Shared, addr, 8, Value::Mbarrier(id))?;
                 self.record_mbarrier_init(t, pc, id, addr, count);
             }
 

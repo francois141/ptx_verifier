@@ -4,13 +4,15 @@
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::interp::Interpreter;
+use crate::eval::tensor_map_table::TENSOR_MAP_BYTES;
 use crate::ir::tensor_map::TensormapFieldWrite;
 use crate::ir::{InstrId, MemSpace, Operand};
 
 impl<'p> Interpreter<'p> {
     /// `tensormap.replace`: write one field of the tensor map at `addr_base +
     /// addr_offset`. `new_val` must be concrete (see `eval::tensor_map_table`);
-    /// `.field3` enums were decoded at lowering.
+    /// `.field3` enums were decoded at lowering. The field's bytes are opaque, so
+    /// the event graph records a write of the whole object.
     pub(in crate::eval) fn exec_tensormap_replace(
         &mut self,
         t: ThreadId,
@@ -21,6 +23,8 @@ impl<'p> Interpreter<'p> {
         field: &TensormapFieldWrite,
     ) -> EvalResult<()> {
         let addr = self.effective_addr(t, pc, addr_base, addr_offset)?;
+        self.check_bounds(t, pc, space, addr, TENSOR_MAP_BYTES)?;
+        self.record_opaque_write(t, pc, space, addr, TENSOR_MAP_BYTES);
         match field {
             TensormapFieldWrite::GlobalAddress(v) => {
                 let val = self.concrete_operand(t, pc, v, "tensormap .global_address")?;

@@ -96,16 +96,6 @@ fn test_mbarrier_init_unordered_with_other_threads_arrive() {
     );
 }
 
-/// Thread 1's `mbarrier.init` of `word` is unordered with thread 0's store and load of it, so
-/// `out[0]` need not read back 42.
-#[test]
-fn test_mbarrier_init_write_races_plain_store_load() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/mbarrier_init_write_races_plain_store_load"),
-        out_config(2, 8, 1),
-    );
-}
-
 /// Thread 0 re-initializes the live `mbar` unordered with thread 1's arrive: an arrive that
 /// lands first is wiped and thread 0 waits forever.
 #[test]
@@ -113,16 +103,6 @@ fn test_mbarrier_reinit_of_live_object_races_arrive() {
     assert_not_verified(
         &ptx!(parse "false_positive/mbarrier_reinit_of_live_object_races_arrive"),
         in_out_config(2, 8),
-    );
-}
-
-/// Two threads `tensormap.replace` one tensor map with no synchronization; each replace writes
-/// the whole 1024-bit object.
-#[test]
-fn test_tensormap_replace_write_write_race() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tensormap_replace_write_write_race"),
-        AnalysisConfig::new((2, 1, 1)),
     );
 }
 

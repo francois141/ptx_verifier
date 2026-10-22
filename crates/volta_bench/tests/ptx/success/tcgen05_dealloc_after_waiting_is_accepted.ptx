@@ -4,6 +4,7 @@
 
 .visible .entry k()
 {
+    .reg .pred %p<2>;
     .reg .b32 %r<6>;
     .shared .align 4 .b32 taddr_slot;
     .shared .align 8 .b64 mbar;
@@ -12,7 +13,8 @@
     mov.u32 %r3, taddr_slot;
     mov.u32 %r4, mbar;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
-    mbarrier.init.shared::cta.b64 [%r4], 32;
+    setp.eq.u32 %p1, %r2, 0;
+    @%p1 mbarrier.init.shared::cta.b64 [%r4], 32;
     bar.sync 0;
     ld.shared.u32 %r1, [%r3];
     bar.sync 0;
