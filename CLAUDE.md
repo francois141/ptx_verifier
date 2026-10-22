@@ -223,9 +223,8 @@ crate-level docs in `lib.rs` are the contract.
   events), completion event, evidence.
   Collective instances have an `Entry` and an `Exit` generation around the
   op's effects; their `MemberOrdering` is `Synchronizing` only for
-  `bar.warp.sync` (and `tcgen05.alloc`, whose written address every lane
-  loads), else `ExecutionOnly`: the members' contributions join nothing,
-  only tracked async completions do. An mbarrier lifetime starts with an `MbarrierPreInit`
+  `bar.warp.sync`, else `ExecutionOnly` (`tcgen05.alloc` included): the
+  members' contributions join nothing, only tracked async completions do. An mbarrier lifetime starts with an `MbarrierPreInit`
   generation, completed at init with no contributions: an odd-parity wait on
   the fresh object (the ISA's "immediately preceding phase") resumes from it.
 - `AsyncOp`: issuer, issue event, effects, completion, tentative `tracking`

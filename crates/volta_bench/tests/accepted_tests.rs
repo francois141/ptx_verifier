@@ -307,6 +307,17 @@ fn test_tcgen05_alloc_sizes_ordered_by_bar_sync_is_accepted() {
     );
 }
 
+/// The control for `tcgen05_alloc_orders_lanes_plain_accesses`: `bar.warp.sync` after the
+/// alloc orders lane 1's store of `x` before lane 2's load, and the address write before every
+/// lane's load of it.
+#[test]
+fn test_tcgen05_alloc_lanes_ordered_by_bar_warp_sync_is_accepted() {
+    analyze!(
+        "success/tcgen05_alloc_lanes_ordered_by_bar_warp_sync_is_accepted",
+        warp_out_config(4, 1)
+    );
+}
+
 /// The control for `tcgen05_relinquish_unordered_with_other_warps_alloc`: `bar.sync 1` orders
 /// warp 0's allocation before warp 1's `relinquish_alloc_permit`.
 #[test]

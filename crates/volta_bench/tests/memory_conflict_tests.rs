@@ -371,6 +371,58 @@ fn test_shfl_sync_is_not_a_memory_barrier() {
     );
 }
 
+/// Lane 1's store and lane 2's load of `x` are separated only by `tcgen05.alloc`, a warp
+/// collective that waits for every lane but orders no memory access.
+#[test]
+fn test_tcgen05_alloc_orders_lanes_plain_accesses() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let ws = conflicts(
+        &ptx!(parse "execution_error/tcgen05_alloc_orders_lanes_plain_accesses"),
+        config,
+    );
+    assert_any(&ws, "lane 1's store unordered with lane 2's load", |w| {
+        w.kind == ConflictKind::WriteRead
+            && on_shared(w)
+            && w.earlier == Side::plain(1, Write)
+            && w.later == Side::plain(2, Read)
+    });
+}
+
+/// Every lane loads the Tensor Memory address right after `tcgen05.alloc`, relying on the alloc
+/// to synchronize the warp: lane 0 writes the address for the warp, and the alloc orders that
+/// write before no other lane's load.
+#[test]
+fn test_tcgen05_alloc_does_not_publish_its_address_write() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/tcgen05_alloc_address_read_without_bar_warp_sync"),
+        AnalysisConfig::new((32, 1, 1)),
+    );
+    let readers: Vec<u32> = ws
+        .iter()
+        .filter(|w| {
+            w.kind == ConflictKind::WriteRead
+                && on_shared(w)
+                && w.earlier == Side::plain(0, Write)
+                && w.later.mode == Read
+                && w.later.op.is_none()
+        })
+        .map(|w| w.later.thread)
+        .collect();
+    assert_eq!(
+        readers,
+        (1..32).collect::<Vec<u32>>(),
+        "lane 0's address write unordered with each other lane's load: {ws:#?}"
+    );
+}
+
 /// A `try_cancel` response is an async write ordered only by a waiter observing its
 /// mbarrier: warp 1 reads it after `bar.sync` alone and conflicts with the write.
 #[test]

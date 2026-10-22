@@ -106,16 +106,6 @@ fn test_tma_without_tensormap_acquire_fence() {
     );
 }
 
-/// Lane 1's store and lane 2's load of `x` are ordered only by `tcgen05.alloc`, which orders
-/// its own address write, not the lanes' other accesses.
-#[test]
-fn test_tcgen05_alloc_orders_lanes_plain_accesses() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tcgen05_alloc_orders_lanes_plain_accesses"),
-        out_config(32, 4, 256),
-    );
-}
-
 /// Lanes 0-15 and 16-31 reach the `.aligned` `bar.sync` on different loop iterations (UB).
 #[test]
 fn test_aligned_bar_sync_reached_on_different_iterations() {

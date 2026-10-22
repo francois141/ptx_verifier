@@ -286,10 +286,9 @@ pub enum CollectiveSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemberOrdering {
     /// `bar.warp.sync`, which "guarantee[s] memory ordering among threads participating in
-    /// barrier" (PTX ISA 9.7.15.2), and `tcgen05.alloc`, whose written address every lane may
-    /// load right after the op (its ISA example): each member's contribution joins.
+    /// barrier" (PTX ISA 9.7.15.2): each member's contribution joins.
     Synchronizing,
-    /// Every other collective (`shfl.sync`, `ldmatrix`, `wgmma.mma_async`, ...): the members
+    /// Every other collective (`shfl.sync`, `ldmatrix`, `tcgen05.alloc`, ...): the members
     /// only wait for each other, so their contributions join nothing.
     ExecutionOnly,
 }

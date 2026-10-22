@@ -14,6 +14,8 @@
     mov.u32 %r9, %tid.x;
     mov.u32 %r3, taddr_slot;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    // tcgen05.alloc orders nothing: publish its address write to every lane.
+    bar.warp.sync 0xffffffff;
     ld.shared.u32 %r1, [%r3];
 
     tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r9;

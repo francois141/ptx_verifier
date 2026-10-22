@@ -13,6 +13,8 @@
     setp.lt.u32 %p2, %r5, 32;
     @!%p2 bra RELINQUISH;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    // tcgen05.alloc orders nothing: publish its address write to every lane.
+    bar.warp.sync 0xffffffff;
     ld.shared.u32 %r1, [%r3];
     tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
     bra DONE;

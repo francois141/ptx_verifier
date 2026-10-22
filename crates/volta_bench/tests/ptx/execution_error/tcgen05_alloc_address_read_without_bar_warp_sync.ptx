@@ -1,0 +1,16 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r<4>;
+    .shared .align 4 .b32 taddr_slot;
+
+    mov.u32 %r3, taddr_slot;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    // Relies on tcgen05.alloc to publish its address write to the warp: it does not.
+    ld.shared.u32 %r1, [%r3];
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+    ret;
+}

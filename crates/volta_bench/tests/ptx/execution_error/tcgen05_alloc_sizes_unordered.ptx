@@ -14,6 +14,8 @@
     @!%p2 bra WARP1;
     mov.u32 %r3, slot0;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 64;
+    // tcgen05.alloc orders nothing: publish its address write to every lane.
+    bar.warp.sync 0xffffffff;
     ld.shared.u32 %r1, [%r3];
     tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 64;
     bra DONE;
@@ -21,6 +23,8 @@ WARP1:
     // Unordered with warp 0's alloc: either allocation can come first.
     mov.u32 %r3, slot1;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    // tcgen05.alloc orders nothing: publish its address write to every lane.
+    bar.warp.sync 0xffffffff;
     ld.shared.u32 %r1, [%r3];
     tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
 DONE:

@@ -384,12 +384,8 @@ impl Interpreter<'_> {
                 let index = collective.next;
                 collective.next += 1;
                 let object = collective.object;
-                // The ISA's tcgen05.alloc example has every lane load the written address right
-                // after the op, so its result write must reach all members.
                 let ordering = match self.program.instruction(pc) {
-                    Some(LoweredInstr::BarWarpSync { .. } | LoweredInstr::Tcgen05Alloc { .. }) => {
-                        MemberOrdering::Synchronizing
-                    }
+                    Some(LoweredInstr::BarWarpSync { .. }) => MemberOrdering::Synchronizing,
                     _ => MemberOrdering::ExecutionOnly,
                 };
                 let entry = self.graph.open_generation(

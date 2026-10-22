@@ -22,6 +22,8 @@
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
     // Lane 2 reads what lane 1 wrote before the warp-wide tcgen05 op.
     @%p2 ld.shared.u32 %r8, [%r4];
+    // Publishes the alloc's address write only, after lane 2's load of x.
+    bar.warp.sync 0xffffffff;
     ld.shared.u32 %r1, [%r3];
     tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
     @!%p2 bra DONE;
