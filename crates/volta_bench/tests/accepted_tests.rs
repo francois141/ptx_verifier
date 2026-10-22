@@ -122,6 +122,26 @@ fn test_bar_arrive_twice_with_a_handshake_between_generations() {
     );
 }
 
+/// The control for `failing/bar_sync_register_id_count_mismatch`: a register id naming the
+/// same count as the immediate one is accepted, and the barrier orders the exchange.
+#[test]
+fn test_bar_sync_register_id_count_matches() {
+    analyze!(
+        "success/bar_sync_register_id_count_matches",
+        in_out_config(64, 1)
+    );
+}
+
+/// Barrier 1 (count 32, through a register id, twice) and barrier 0 (count 64) each keep
+/// their own pinned count.
+#[test]
+fn test_bar_sync_register_ids_pin_one_count_per_id() {
+    analyze!(
+        "success/bar_sync_register_ids_pin_one_count_per_id",
+        AnalysisConfig::new((64, 1, 1))
+    );
+}
+
 /// `mbarrier.init` with `count = 2` needs both threads' `arrive` before
 /// `try_wait.parity` proceeds: the scheduler wakes a thread when a
 /// *different* thread's arrive completes the phase.

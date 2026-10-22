@@ -11,7 +11,7 @@ use volta_analysis::{
     ParamValue, ThreadId,
 };
 use volta_equivalence::check_output_equivalence;
-use volta_graph_check::Deadlock;
+use volta_graph_check::{Deadlock, GraphConclusion};
 
 use common::*;
 
@@ -134,6 +134,62 @@ fn test_bar_arrive_twice_before_the_barrier_fires() {
         ),
         "expected a barrier mismatch, got: {}",
         err
+    );
+}
+
+/// Assert running `module` on 64 threads aborts with a barrier mismatch whose reason contains
+/// `needle`, and that the graph branch concludes it inconclusive.
+fn expect_inconclusive_barrier_mismatch(module: &Ptx, needle: &str) {
+    match run_kernel(module, None, AnalysisConfig::new((64, 1, 1))) {
+        Err(AnalysisError::Eval(EvalError::BarrierMismatch { reason, .. })) => {
+            assert!(reason.contains(needle), "expected {needle:?} in: {reason}");
+            assert!(
+                reason.ends_with("so the result is inconclusive"),
+                "{reason}"
+            );
+        }
+        Err(other) => panic!("expected a barrier mismatch ({needle}), got: {other}"),
+        Ok(_) => panic!("expected a barrier mismatch ({needle}), got Ok"),
+    }
+    let conclusion = check(module, None, AnalysisConfig::new((64, 1, 1)))
+        .report
+        .conclusion();
+    assert!(
+        matches!(conclusion, GraphConclusion::Unknown { .. }),
+        "expected an inconclusive result, got: {conclusion:?}"
+    );
+}
+
+/// Barrier 0 is reached with count 32 through a register id and with count 64: lowering cannot
+/// compare a register id with an immediate one, so the run stops at warp 1's arrival.
+#[test]
+fn test_bar_sync_register_id_count_mismatch() {
+    expect_inconclusive_barrier_mismatch(
+        &ptx!(parse "failing/bar_sync_register_id_count_mismatch"),
+        "t32 arrives at barrier 0 expecting 64 threads, but an earlier arrival at it expected \
+         32 threads",
+    );
+}
+
+/// The same mismatch on a `bar.arrive`: warp 1 arrives through a register id with count 32 at
+/// the barrier warp 0 waits on for 64 threads.
+#[test]
+fn test_bar_arrive_register_id_count_mismatch() {
+    expect_inconclusive_barrier_mismatch(
+        &ptx!(parse "failing/bar_arrive_register_id_count_mismatch"),
+        "t32 arrives at barrier 1 expecting 32 threads, but an earlier arrival at it expected \
+         64 threads",
+    );
+}
+
+/// A barrier id's count is pinned for the whole run, not per phase: reusing barrier 0 with a
+/// new count after a completed phase is legal PTX, but Volta's result is inconclusive.
+#[test]
+fn test_bar_sync_register_id_count_changes_between_phases() {
+    expect_inconclusive_barrier_mismatch(
+        &ptx!(parse "failing/bar_sync_register_id_count_changes_between_phases"),
+        "t0 arrives at barrier 0 expecting 32 threads, but an earlier arrival at it expected \
+         64 threads",
     );
 }
 

@@ -143,8 +143,8 @@ impl<'p> Interpreter<'p> {
         // arrive at their own `bar.sync`), so they are grouped by id only.
         let mut waiters: [Vec<ThreadId>; NUM_BARRIERS] = std::array::from_fn(|_| Vec::new());
         // What each barrier fires on, seeded with what its `bar.arrive`
-        // arrivals named. Lowering pins one arrival count per barrier id
-        // (`check_barrier_arrivals`), so any one arrival gives the count.
+        // arrivals named. `barrier_operands` pins one arrival count per
+        // barrier id, so any one arrival gives the count.
         let mut arrivals: [Option<BarrierArrivals>; NUM_BARRIERS] =
             std::array::from_fn(|id| self.barriers[id].arrivals);
         let mut live_waiters = 0usize;
@@ -228,23 +228,42 @@ impl<'p> Interpreter<'p> {
                 reason: format!("barrier id {} is outside the CTA's 16 barriers (0-15)", id),
             });
         }
-        let Some(thread_count) = thread_count else {
-            return Ok((id as u32, BarrierArrivals::FullCta));
+        let arrivals = match thread_count {
+            None => BarrierArrivals::FullCta,
+            Some(thread_count) => {
+                let count = self.concrete_operand(t, pc, thread_count, "barrier thread count")?;
+                // PTX ISA 9.7.13.1: the count is a multiple of the warp size, and
+                // no barrier can wait for more threads than the CTA has.
+                if count <= 0
+                    || count % i64::from(WARP_SIZE) != 0
+                    || count > i64::from(self.n_threads)
+                {
+                    return Err(EvalError::BarrierMismatch {
+                        pc,
+                        reason: format!(
+                            "barrier {} arrival count {} must be a positive multiple of {} \
+                             no larger than the CTA's {} threads",
+                            id, count, WARP_SIZE, self.n_threads
+                        ),
+                    });
+                }
+                BarrierArrivals::Count(count as u32)
+            }
         };
-        let count = self.concrete_operand(t, pc, thread_count, "barrier thread count")?;
-        // PTX ISA 9.7.13.1: the count is a multiple of the warp size, and
-        // no barrier can wait for more threads than the CTA has.
-        if count <= 0 || count % i64::from(WARP_SIZE) != 0 || count > i64::from(self.n_threads) {
-            return Err(EvalError::BarrierMismatch {
+        // Stricter than the ISA, which only needs the arrivals of one phase to
+        // agree: which arrivals share a phase depends on the schedule.
+        match *self.barrier_counts[id as usize].get_or_insert(arrivals) {
+            pinned if pinned == arrivals => Ok((id as u32, arrivals)),
+            pinned => Err(EvalError::BarrierMismatch {
                 pc,
                 reason: format!(
-                    "barrier {} arrival count {} must be a positive multiple of {} \
-                     no larger than the CTA's {} threads",
-                    id, count, WARP_SIZE, self.n_threads
+                    "{} arrives at barrier {} expecting {}, but an earlier arrival at it \
+                     expected {}; Volta pins one count per barrier id for the whole run, \
+                     so the result is inconclusive",
+                    t, id, arrivals, pinned
                 ),
-            });
+            }),
         }
-        Ok((id as u32, BarrierArrivals::Count(count as u32)))
     }
 
     /// Unblock the members of a fired group of threads and advance their

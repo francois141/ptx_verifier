@@ -1,0 +1,20 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Warp 0 waits on barrier 1 for 64 threads; warp 1 arrives at it through a register id
+// with count 32, so the two warps disagree on the barrier's count.
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<8>;
+    mov.u32 %r1, %tid.x;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra PRODUCER;
+    bar.sync 1, 64;
+    ret;
+PRODUCER:
+    mov.u32 %r6, 1;
+    bar.arrive %r6, 32;
+    ret;
+}

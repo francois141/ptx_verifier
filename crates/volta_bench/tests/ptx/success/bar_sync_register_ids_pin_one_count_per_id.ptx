@@ -1,0 +1,22 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Each barrier id keeps its own count: warp 0 meets alone on barrier 1 (count 32, through a
+// register id) twice, around a CTA-wide meeting on barrier 0 (count 64).
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<8>;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r6, 1;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra W1;
+    bar.sync %r6, 32;
+    bar.sync 0, 64;
+    bar.sync %r6, 32;
+    ret;
+W1:
+    bar.sync 0, 64;
+    ret;
+}

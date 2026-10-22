@@ -164,16 +164,6 @@ fn test_tcgen05_relinquish_unordered_with_other_warps_alloc() {
     );
 }
 
-/// Barrier 0 is reached with count 32 through a register id and with count 64: warp 0 completes
-/// it alone, so warp 1's read of `s[0]` races the store (or warp 1 hangs).
-#[test]
-fn test_bar_sync_register_id_count_mismatch() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/bar_sync_register_id_count_mismatch"),
-        AnalysisConfig::new((64, 1, 1)),
-    );
-}
-
 /// Lanes 0-15 and 16-31 reach the `.aligned` `bar.sync` on different loop iterations (UB).
 #[test]
 fn test_aligned_bar_sync_reached_on_different_iterations() {

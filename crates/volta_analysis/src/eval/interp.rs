@@ -217,6 +217,8 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) mbarriers: MbarrierTable,
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
     pub(in crate::eval) barriers: [PendingArrivals; NUM_BARRIERS],
+    /// Each barrier id's arrival count, pinned by its first arrival of the run.
+    pub(in crate::eval) barrier_counts: [Option<BarrierArrivals>; NUM_BARRIERS],
     pub(in crate::eval) tensor_maps: TensorMapTable,
     /// The candidate execution's event graph under construction.
     pub(in crate::eval) graph: GraphBuilder,
@@ -418,6 +420,7 @@ impl<'p> Interpreter<'p> {
             regions,
             mbarriers: MbarrierTable::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
+            barrier_counts: [None; NUM_BARRIERS],
             tensor_maps: TensorMapTable::new(),
             graph: GraphBuilder::new(provenance),
             rec: Recording::default(),
