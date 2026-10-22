@@ -1,0 +1,24 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+.visible .entry k()
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<3>;
+    .shared .align 4 .b32 data;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, data;
+    setp.eq.u32 %p1, %r0, 0;
+    @%p1 st.shared.u32 [%r1], 42;
+    // lanes 0-15 and 16-31 of the one warp reach two different bar.sync 0
+    setp.lt.u32 %p2, %r0, 16;
+    @%p2 bra LOW;
+    bar.sync 0;
+    bra JOIN;
+LOW:
+    bar.sync 0;
+JOIN:
+    setp.eq.u32 %p3, %r0, 20;
+    @%p3 ld.shared.u32 %r2, [%r1];
+    ret;
+}

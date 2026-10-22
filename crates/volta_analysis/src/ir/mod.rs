@@ -164,6 +164,15 @@ pub enum UnaryOp {
     Tanh,
 }
 
+/// Whether a named-barrier instruction is `.aligned` (every `bar.*`, and `barrier.*.aligned`):
+/// a warp executes an aligned barrier as one collective, so its arriving lanes must all be at
+/// that one instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierAlignment {
+    Aligned,
+    Unaligned,
+}
+
 /// Memory space
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemSpace {
@@ -630,6 +639,7 @@ pub enum LoweredInstr {
     BarSync {
         barrier_id: Operand,
         thread_count: Option<Operand>,
+        alignment: BarrierAlignment,
     },
 
     /// Named barrier, non-blocking arrival: `bar.arrive a, b` - arrive at
@@ -638,6 +648,7 @@ pub enum LoweredInstr {
     BarArrive {
         barrier_id: Operand,
         thread_count: Operand,
+        alignment: BarrierAlignment,
     },
 
     /// Warp barrier: bar.warp.sync mask

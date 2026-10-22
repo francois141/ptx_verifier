@@ -4,7 +4,7 @@
 use id_collections::Id;
 use volta_frontend::ast::{self, BarMode, BraInstr, CallInstr, Operand as AstOperand};
 
-use crate::ir::{InstrId, LoweredInstr, MemSpace, Predicate};
+use crate::ir::{BarrierAlignment, InstrId, LoweredInstr, MemSpace, Predicate};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -132,6 +132,7 @@ pub(super) fn lower_branch(
 pub(super) fn lower_bar(
     ctx: &mut LoweringContext,
     mode: BarMode,
+    alignment: BarrierAlignment,
     operands: &[AstOperand],
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
@@ -159,6 +160,7 @@ pub(super) fn lower_bar(
         BarMode::Sync => LoweredInstr::BarSync {
             barrier_id,
             thread_count,
+            alignment,
         },
         // The thread count is mandatory for an arrival (PTX ISA 9.7.13.1):
         // a non-blocking arrive that does not say how many threads release
@@ -167,6 +169,7 @@ pub(super) fn lower_bar(
             Some(thread_count) => LoweredInstr::BarArrive {
                 barrier_id,
                 thread_count,
+                alignment,
             },
             None => {
                 return Err(unsupported(

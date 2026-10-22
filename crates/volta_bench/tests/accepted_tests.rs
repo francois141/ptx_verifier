@@ -1167,6 +1167,17 @@ fn test_barrier_sync_is_bar_sync() {
     }
 }
 
+/// Without `.aligned`, a warp may reach a barrier from two instructions: lanes 0-15 and 16-31 at
+/// two `barrier.sync 0` complete one barrier, which orders thread 0's store before thread 20's
+/// load.
+#[test]
+fn test_unaligned_barrier_sync_split_across_two_instructions_in_one_warp() {
+    analyze!(
+        "success/unaligned_barrier_sync_split_across_two_instructions_in_one_warp",
+        AnalysisConfig::new((32, 1, 1))
+    );
+}
+
 /// Aligned in-bounds accesses at region edges still pass: a shared array's
 /// last scalar element (adjacent array following) and an exact-fit v4 ending
 /// at the region end.

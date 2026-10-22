@@ -116,6 +116,33 @@ fn test_mismatched_barriers_deadlock() {
     assert!(!blocked.is_empty());
 }
 
+/// `bar.sync` is `.aligned`, so a warp executes it as one collective: lanes 0-15 and 16-31 of
+/// the one warp at two `bar.sync 0` instructions wait at two barriers, and neither fires.
+#[test]
+fn test_bar_sync_split_across_two_instructions_in_one_warp() {
+    let blocked = deadlock(
+        &ptx!(parse "failing/bar_sync_split_across_two_instructions_in_one_warp"),
+        32,
+    )
+    .blocked;
+    assert_eq!(blocked.len(), 32, "every lane stays blocked: {blocked:?}");
+}
+
+/// The same split between a `bar.arrive` and a `bar.sync`: barrier 1's 64 arrivals do not fire
+/// it, since warp 0's lanes arrive at two aligned instructions.
+#[test]
+fn test_bar_arrive_and_bar_sync_split_in_one_warp() {
+    let blocked: Vec<u32> = deadlock(
+        &ptx!(parse "failing/bar_arrive_and_bar_sync_split_in_one_warp"),
+        64,
+    )
+    .blocked
+    .iter()
+    .map(|b| b.thread.0)
+    .collect();
+    assert_eq!(blocked, (16..64).collect::<Vec<_>>());
+}
+
 /// Same shape, but only thread 0 arrives: `count = 2` is never satisfied, so
 /// its `try_wait.parity` blocks forever - a genuine deadlock of the whole
 /// CTA.

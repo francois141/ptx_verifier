@@ -2,11 +2,15 @@
 //! blocks or exits, then fire whatever group is complete (a warp rendezvous,
 //! an mbarrier phase, a named barrier).
 
+use std::collections::HashMap;
+
 use crate::eval::error::{EvalError, EvalResult};
-use crate::eval::interp::{BarrierArrivals, Interpreter, NUM_BARRIERS, PendingArrivals, Status};
+use crate::eval::interp::{
+    ArrivedThread, BarrierArrivals, Interpreter, NUM_BARRIERS, PendingArrivals, Status,
+};
 use crate::eval::value::{MbarrierId, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
-use crate::ir::{InstrId, LoweredInstr, Operand};
+use crate::ir::{BarrierAlignment, InstrId, LoweredInstr, Operand};
 use crate::logging::trace;
 
 impl<'p> Interpreter<'p> {
@@ -138,10 +142,10 @@ impl<'p> Interpreter<'p> {
     /// count is met (`bar.arrive` included), the full-CTA barrier once every
     /// live thread waits on its id. Returns whether one fired.
     fn try_fire_barrier(&mut self) -> EvalResult<bool> {
-        // Blocked arrivals, per barrier id. Threads at a counted barrier
-        // need not share a pc (warp-specialized producers and consumers
-        // arrive at their own `bar.sync`), so they are grouped by id only.
-        let mut waiters: [Vec<ThreadId>; NUM_BARRIERS] = std::array::from_fn(|_| Vec::new());
+        // Blocked arrivals, per barrier id. Warps at a counted barrier need not
+        // share a pc (warp-specialized producers and consumers arrive at their
+        // own `bar.sync`); `warps_converge` constrains the lanes of one warp.
+        let mut waiters: [Vec<ArrivedThread>; NUM_BARRIERS] = std::array::from_fn(|_| Vec::new());
         // What each barrier fires on, seeded with what its `bar.arrive`
         // arrivals named. `barrier_operands` pins one arrival count per
         // barrier id, so any one arrival gives the count.
@@ -152,9 +156,17 @@ impl<'p> Interpreter<'p> {
         for (t, state) in self.threads.iter() {
             match state.status {
                 Status::Exited => {}
-                Status::AtBarrier { id, arrivals: at } => {
+                Status::AtBarrier {
+                    id,
+                    arrivals: at,
+                    alignment,
+                } => {
                     arrivals[id as usize] = Some(at);
-                    waiters[id as usize].push(t);
+                    waiters[id as usize].push(ArrivedThread {
+                        thread: t,
+                        pc: state.pc,
+                        alignment,
+                    });
                     live_waiters += 1;
                 }
                 _ => every_live_thread_waits = false,
@@ -174,11 +186,14 @@ impl<'p> Interpreter<'p> {
                     // Every live thread must be waiting, and on this id -
                     // threads split across ids are waiting on different
                     // barriers, so none of them can fire.
-                    if !every_live_thread_waits || waiting.len() != live_waiters {
+                    if !every_live_thread_waits
+                        || waiting.len() != live_waiters
+                        || !warps_converge(waiting)
+                    {
                         continue;
                     }
                     trace!("fired bar.sync {} (full CTA)", id);
-                    let waiting = waiting.clone();
+                    let waiting: Vec<ThreadId> = waiting.iter().map(|w| w.thread).collect();
                     self.record_barrier_fire(id as u32, BarrierArrivals::FullCta, &waiting);
                     self.advance_thread_group(&waiting);
                     return Ok(true);
@@ -193,7 +208,7 @@ impl<'p> Interpreter<'p> {
             }
             if total > count as usize {
                 return Err(EvalError::BarrierMismatch {
-                    pc: self.threads[waiting.first().copied().unwrap_or(arrived[0])].pc,
+                    pc: waiting.first().unwrap_or(&arrived[0]).pc,
                     reason: format!(
                         "{} threads arrived at barrier {}, which fires on {} - which \
                          threads it releases would depend on the schedule",
@@ -201,9 +216,14 @@ impl<'p> Interpreter<'p> {
                     ),
                 });
             }
+            let mut participants = arrived.clone();
+            participants.extend_from_slice(waiting);
+            if !warps_converge(&participants) {
+                continue;
+            }
             self.barriers[id] = PendingArrivals::default();
             trace!("fired bar.sync {} ({} threads)", id, count);
-            let waiting = waiting.clone();
+            let waiting: Vec<ThreadId> = waiting.iter().map(|w| w.thread).collect();
             self.record_barrier_fire(id as u32, BarrierArrivals::Count(count), &waiting);
             self.advance_thread_group(&waiting);
             return Ok(true);
@@ -300,4 +320,23 @@ impl<'p> Interpreter<'p> {
         self.threads[t].status = Status::AtWarpOp { mask };
         Ok(())
     }
+}
+
+/// Whether each warp's arrivals at one barrier generation sit at one instruction wherever any is
+/// `.aligned`: a warp executes an aligned barrier as one collective, so its lanes at two aligned
+/// barrier instructions arrive at two barriers.
+fn warps_converge(arrivals: &[ArrivedThread]) -> bool {
+    let mut warps: HashMap<u32, Vec<&ArrivedThread>> = HashMap::new();
+    for arrival in arrivals {
+        warps
+            .entry(arrival.thread.0 / WARP_SIZE)
+            .or_default()
+            .push(arrival);
+    }
+    warps.values().all(|lanes| {
+        lanes
+            .iter()
+            .all(|a| a.alignment == BarrierAlignment::Unaligned)
+            || lanes.iter().all(|a| a.pc == lanes[0].pc)
+    })
 }

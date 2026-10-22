@@ -25,7 +25,7 @@ use volta_frontend::instr::InstrKind;
 use volta_frontend::instr_parse::parse_instruction;
 
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};
+use crate::ir::{BarrierAlignment, BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};
 
 use arith::{
     lower_abs, lower_add, lower_bfe, lower_bfi, lower_copysign, lower_cvt, lower_div, lower_ex2,
@@ -368,19 +368,28 @@ fn lower_parsed_instruction(
             uniform: _uniform,
         }) => ctx.emit(LoweredInstr::Ret, predicate),
         ParsedInstruction::Exit => ctx.emit(LoweredInstr::Exit, predicate),
-        ParsedInstruction::Bar(bar) => lower_bar(ctx, bar.mode, &bar.operands, predicate),
-        // `barrier{.cta}.sync{.aligned}` is `bar{.cta}.sync` per the ISA;
-        // dropping `.aligned` only drops the same-textual-barrier promise,
-        // which the evaluator never relied on (it matches by id and count).
+        ParsedInstruction::Bar(bar) => lower_bar(
+            ctx,
+            bar.mode,
+            BarrierAlignment::Aligned,
+            &bar.operands,
+            predicate,
+        ),
+        // `bar{.cta}.sync` is `barrier{.cta}.sync.aligned` per the ISA, and
+        // `.cta` is the default scope.
         ParsedInstruction::Barrier(ast::BarrierInstr {
-            // .cta is the default scope, and .aligned only adds the
-            // compile-time all-threads-reach-this-barrier promise (see
-            // above); neither changes the runtime semantics modeled here.
             cta: _cta,
-            aligned: _aligned,
+            aligned,
             mode,
             operands,
-        }) => lower_bar(ctx, *mode, operands, predicate),
+        }) => {
+            let alignment = if *aligned {
+                BarrierAlignment::Aligned
+            } else {
+                BarrierAlignment::Unaligned
+            };
+            lower_bar(ctx, *mode, alignment, operands, predicate)
+        }
         ParsedInstruction::BarWarpSync(bws) => lower_bar_warp_sync(ctx, bws, predicate),
         ParsedInstruction::Membar(ast::MembarInstr::Level(_)) => {
             ctx.emit(LoweredInstr::Membar, predicate)

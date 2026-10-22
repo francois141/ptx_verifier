@@ -24,8 +24,8 @@ use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
-    BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand,
-    Tcgen05FenceDirection,
+    BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
+    MemSpace, Operand, Tcgen05FenceDirection,
 };
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
@@ -72,12 +72,21 @@ impl fmt::Display for BarrierArrivals {
     }
 }
 
+/// A thread's arrival at a named barrier: the barrier instruction it arrived at and whether
+/// that instruction is `.aligned`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::eval) struct ArrivedThread {
+    pub(in crate::eval) thread: ThreadId,
+    pub(in crate::eval) pc: InstrId,
+    pub(in crate::eval) alignment: BarrierAlignment,
+}
+
 /// One named barrier's pending `bar.arrive` arrivals since it last fired, with
 /// their arrival count. Blocking `bar.sync` arrivals wait in
 /// `Status::AtBarrier` instead.
 #[derive(Debug, Default)]
 pub(in crate::eval) struct PendingArrivals {
-    pub(in crate::eval) threads: Vec<ThreadId>,
+    pub(in crate::eval) threads: Vec<ArrivedThread>,
     pub(in crate::eval) arrivals: Option<BarrierArrivals>,
 }
 
@@ -135,6 +144,7 @@ pub(in crate::eval) enum Status {
     AtBarrier {
         id: u32,
         arrivals: BarrierArrivals,
+        alignment: BarrierAlignment,
     },
     /// Blocked at a warp-cooperative instruction at the current pc.
     /// `mask` is the participating-lane mask within the thread's warp.
@@ -1461,25 +1471,35 @@ impl<'p> Interpreter<'p> {
             LoweredInstr::BarSync {
                 barrier_id,
                 thread_count,
+                alignment,
             } => {
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, thread_count.as_ref())?;
                 self.stats.block_syncs += 1;
                 self.record_barrier_arrival(t, pc, id, arrivals, true);
-                self.threads[t].status = Status::AtBarrier { id, arrivals };
+                self.threads[t].status = Status::AtBarrier {
+                    id,
+                    arrivals,
+                    alignment: *alignment,
+                };
                 return Ok(()); // pc advances when the barrier fires
             }
 
             LoweredInstr::BarArrive {
                 barrier_id,
                 thread_count,
+                alignment,
             } => {
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, Some(thread_count))?;
                 self.record_barrier_arrival(t, pc, id, arrivals, false);
                 let pending = &mut self.barriers[id as usize];
                 pending.arrivals = Some(arrivals);
-                pending.threads.push(t);
+                pending.threads.push(ArrivedThread {
+                    thread: t,
+                    pc,
+                    alignment: *alignment,
+                });
             }
 
             LoweredInstr::BarWarpSync { mask } => {

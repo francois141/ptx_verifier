@@ -1,0 +1,19 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<2>;
+    mov.u32 %r0, %tid.x;
+    // lanes 0-15 of warp 0 arrive at barrier 1 through bar.arrive, every other
+    // thread (warp 0's lanes 16-31 included) through one bar.sync
+    setp.lt.u32 %p1, %r0, 16;
+    @%p1 bra ARRIVE;
+    bar.sync 1, 64;
+    bra DONE;
+ARRIVE:
+    bar.arrive 1, 64;
+DONE:
+    ret;
+}

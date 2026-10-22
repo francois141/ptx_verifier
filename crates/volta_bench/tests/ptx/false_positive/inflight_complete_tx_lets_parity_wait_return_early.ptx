@@ -3,9 +3,10 @@
 .address_size 64
 
 // Phase 0 of `full` is an arrive.expect_tx(16) plus a bulk copy's complete_tx. Nobody waits
-// on phase 0. After a bar.sync, thread 1 waits parity 1 (meant: phase 1, thread 0's handoff
-// of `data`). If the copy has not landed yet, phase 0 is still the current phase (parity 0),
-// so the parity-1 wait returns at once through the pre-init phase and races thread 0's store.
+// on phase 0. After a barrier.sync (unaligned: the two threads of one warp reach it from two
+// instructions), thread 1 waits parity 1 (meant: phase 1, thread 0's handoff of `data`). If the
+// copy has not landed yet, phase 0 is still the current phase (parity 0), so the parity-1 wait
+// returns at once through the pre-init phase and races thread 0's store.
 .visible .entry k(
     .param .u64 k_param_0,
     .param .u64 k_param_1
@@ -30,13 +31,13 @@
     @!%p1 bra CONSUMER;
     mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
     cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r1];
-    bar.sync 0;
+    barrier.sync 0;
     mov.u32 %r4, 7;
     st.shared.u32 [%r3], %r4;
     mbarrier.arrive.shared::cta.b64 _, [%r1];
     ret;
 CONSUMER:
-    bar.sync 0;
+    barrier.sync 0;
 WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %pw, [%r1], 1;
     @!%pw bra WAIT;
