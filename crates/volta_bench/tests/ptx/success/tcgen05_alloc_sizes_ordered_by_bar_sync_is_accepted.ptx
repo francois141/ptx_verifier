@@ -1,0 +1,30 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .shared .align 4 .b32 slot0;
+    .shared .align 4 .b32 slot1;
+
+    mov.u32 %r5, %tid.x;
+    setp.lt.u32 %p2, %r5, 32;
+    @!%p2 bra WARP1;
+    mov.u32 %r3, slot0;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 64;
+    bar.sync 1, 64;
+    ld.shared.u32 %r1, [%r3];
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 64;
+    bra DONE;
+WARP1:
+    // Ordered after warp 0's alloc: the column count never increases.
+    bar.sync 1, 64;
+    mov.u32 %r3, slot1;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+    ld.shared.u32 %r1, [%r3];
+    tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+DONE:
+    ret;
+}

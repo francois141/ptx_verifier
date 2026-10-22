@@ -1,4 +1,4 @@
-//! The suite: the seven checks in order, their prerequisites and the trace generator's
+//! The suite: the checks in order, their prerequisites and the trace generator's
 //! terminal state; nothing else decides the conclusion.
 
 mod common;
@@ -15,7 +15,7 @@ fn verdicts(r: &GraphReport) -> Vec<(Property, Verdict)> {
 }
 
 #[test]
-fn exactly_the_seven_checks_of_the_design_in_its_order() {
+fn the_seven_checks_of_the_design_in_its_order_then_allocation_order() {
     let algorithms: Vec<&str> = Property::ALL.iter().map(|p| p.algorithm()).collect();
     assert_eq!(
         algorithms,
@@ -26,7 +26,8 @@ fn exactly_the_seven_checks_of_the_design_in_its_order() {
             "Algorithm 3",
             "Algorithm 4",
             "Algorithms 5 and 6",
-            "Algorithm 7"
+            "Algorithm 7",
+            "PTX ISA tcgen05.alloc"
         ]
     );
 }
@@ -128,7 +129,7 @@ fn a_barrier_epoch_violation_leaves_every_check_needing_g_hb_unchecked() {
 }
 
 #[test]
-fn asynchronous_operations_and_mbarriers_are_verified_by_the_seven_checks_alone() {
+fn asynchronous_operations_and_mbarriers_are_verified_by_the_graph_checks_alone() {
     let mut s = Scenario::new(2);
     let m = s.mbarrier(0, 1);
     s.barrier(&[0, 1], &[]);

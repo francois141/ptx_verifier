@@ -173,7 +173,7 @@ pub struct Checked {
     pub report: GraphReport,
 }
 
-/// Run the analysis stage and the seven graph checks; panics if the execution cannot start (no
+/// Run the analysis stage and the graph checks; panics if the execution cannot start (no
 /// kernel, a lowering or configuration error).
 pub fn check(ptx: &Ptx, kernel: Option<&str>, config: AnalysisConfig) -> Checked {
     let verified =

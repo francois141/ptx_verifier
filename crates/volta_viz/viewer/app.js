@@ -1612,7 +1612,7 @@
     showMessage(null);
     for (const body of document.querySelectorAll(".tab-body")) fill(body);
     fill(byId("tab-checks"),
-      h("div", { class: "empty-hint" }, h("strong", { text: "No run open" }), "Pick a test on the left to see its verdict, the seven checks and their findings."),
+      h("div", { class: "empty-hint" }, h("strong", { text: "No run open" }), "Pick a test on the left to see its verdict, the graph checks and their findings."),
     );
     updateBadges();
     if (!INDEX.length) {
@@ -1647,7 +1647,7 @@
           h("p", {
             text:
               "Each run is one candidate execution of a kernel, recorded by a test. Open one to see its event graph lane by lane, " +
-              "the verdict of the seven graph checks with their findings resolved to events, and the PTX source behind every event.",
+              "the verdict of the graph checks with their findings resolved to events, and the PTX source behind every event.",
           }),
         ),
         h(

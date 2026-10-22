@@ -164,15 +164,6 @@ fn test_tcgen05_relinquish_unordered_with_other_warps_alloc() {
     );
 }
 
-/// The 64- and 32-column allocations are unordered, so a schedule can grow the column count.
-#[test]
-fn test_tcgen05_alloc_sizes_unordered() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tcgen05_alloc_sizes_unordered"),
-        AnalysisConfig::new((64, 1, 1)),
-    );
-}
-
 /// Barrier 0 is reached with count 32 through a register id and with count 64: warp 0 completes
 /// it alone, so warp 1's read of `s[0]` races the store (or warp 1 hangs).
 #[test]

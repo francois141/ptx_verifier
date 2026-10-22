@@ -15,6 +15,7 @@ use volta_graph::{
     GenerationId, GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space,
     StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
+use volta_graph_check::allocation_order::AllocationOrderViolation;
 use volta_graph_check::barrier_epoch::EpochViolation;
 use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::pipeline::pipeline_edges;
@@ -30,7 +31,7 @@ const MAX_VALUE_BYTES: usize = 400;
 /// What the analysis produced for one run.
 pub enum Outcome<'a> {
     /// The execution ran (to completion or not) and recorded `graph`, whose stored values are
-    /// expressions of `arena`. `report` is the seven checks' result, when the run checked them.
+    /// expressions of `arena`. `report` is the graph checks' result, when the run checked them.
     Executed {
         graph: &'a EventGraph,
         arena: &'a ExprArena,
@@ -988,6 +989,27 @@ fn lifetime_violation(v: &LifetimeViolation) -> (String, Vec<EventId>) {
     }
 }
 
+fn allocation_order_violation(v: &AllocationOrderViolation) -> (String, Vec<EventId>) {
+    match *v {
+        AllocationOrderViolation::Unordered { earlier, later } => (
+            format!("allocations e{} and e{} are unordered", earlier.0, later.0),
+            vec![earlier, later],
+        ),
+        AllocationOrderViolation::IncreasingColumnCount {
+            earlier,
+            earlier_cols,
+            later,
+            later_cols,
+        } => (
+            format!(
+                "allocation e{} takes {} columns, more than the {} of e{} before it",
+                later.0, later_cols, earlier_cols, earlier.0
+            ),
+            vec![earlier, later],
+        ),
+    }
+}
+
 fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
     Json::Arr(
         Property::ALL
@@ -1062,6 +1084,9 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
                     }),
                     Property::ResourceLifetime => {
                         findings(&report.resource_lifetime, lifetime_violation)
+                    }
+                    Property::AllocationOrder => {
+                        findings(&report.allocation_order, allocation_order_violation)
                     }
                 };
                 Json::Obj(vec![

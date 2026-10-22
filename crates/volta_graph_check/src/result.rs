@@ -1,4 +1,4 @@
-//! The result shape every graph check returns, and the seven checks themselves.
+//! The result shape every graph check returns, and the checks themselves.
 
 use volta_graph::EventId;
 
@@ -97,7 +97,8 @@ impl<E, V> PropertyResult<E, V> {
     }
 }
 
-/// The seven checks of the Volta v2 design (§1.3), in the design's order.
+/// The seven checks of the Volta v2 design (§1.3), in the design's order, then the
+/// allocation-order check beyond it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Property {
     /// Algorithm 1 over named barriers (`bar.arrive`, `bar.sync`).
@@ -114,10 +115,12 @@ pub enum Property {
     TensorOrder,
     /// Algorithm 7.
     ResourceLifetime,
+    /// The PTX ISA's `tcgen05.alloc` column-count rule over a total order of the allocations.
+    AllocationOrder,
 }
 
 impl Property {
-    pub const ALL: [Property; 7] = [
+    pub const ALL: [Property; 8] = [
         Property::NamedBarrierEpoch,
         Property::MbarrierEpoch,
         Property::MbarrierOrdering,
@@ -125,6 +128,7 @@ impl Property {
         Property::ProxyOrder,
         Property::TensorOrder,
         Property::ResourceLifetime,
+        Property::AllocationOrder,
     ];
 
     /// The checks that must pass before this one can run: both barrier-epoch checks and the
@@ -135,7 +139,7 @@ impl Property {
         use Property::*;
         match self {
             NamedBarrierEpoch | MbarrierEpoch | MbarrierOrdering => &[],
-            MemoryConflict | TensorOrder | ResourceLifetime => {
+            MemoryConflict | TensorOrder | ResourceLifetime | AllocationOrder => {
                 &[NamedBarrierEpoch, MbarrierEpoch, MbarrierOrdering]
             }
             ProxyOrder => &[
@@ -156,10 +160,12 @@ impl Property {
             Property::ProxyOrder => "proxy ordering",
             Property::TensorOrder => "tensor-operation ordering",
             Property::ResourceLifetime => "resource lifetime",
+            Property::AllocationOrder => "allocation order",
         }
     }
 
-    /// The algorithm of the design that implements the check.
+    /// The algorithm of the design that implements the check, or for the check beyond the
+    /// design, the rule it enforces.
     pub fn algorithm(self) -> &'static str {
         match self {
             Property::NamedBarrierEpoch | Property::MbarrierEpoch => "Algorithm 1",
@@ -168,6 +174,7 @@ impl Property {
             Property::ProxyOrder => "Algorithm 4",
             Property::TensorOrder => "Algorithms 5 and 6",
             Property::ResourceLifetime => "Algorithm 7",
+            Property::AllocationOrder => "PTX ISA tcgen05.alloc",
         }
     }
 }

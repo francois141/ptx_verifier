@@ -1,4 +1,4 @@
-//! The seven checks over one graph, in the design's order, each receiving exactly the
+//! The checks over one graph, in [`Property::ALL`]'s order, each receiving exactly the
 //! certificates of its prerequisites ([`Property::prerequisites`]); the suite adds no reasoning
 //! of its own beyond reading the trace generator's terminal state.
 //!
@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use volta_graph::{BlockedThread, EventGraph, Terminal};
 
+use crate::allocation_order::{AllocationOrderResult, check_allocation_order};
 use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
 use crate::logging::info;
 use crate::mbarrier_ordering::{MbarrierOrderingResult, check_mbarrier_ordering};
@@ -31,6 +32,7 @@ pub struct GraphReport {
     pub proxy_order: ProxyOrderResult,
     pub tensor_order: TensorOrderResult,
     pub resource_lifetime: LifetimeResult,
+    pub allocation_order: AllocationOrderResult,
 }
 
 /// The trace generator's deadlock: no thread can proceed.
@@ -103,10 +105,11 @@ impl GraphReport {
             Property::ProxyOrder => summarize(property, &self.proxy_order),
             Property::TensorOrder => summarize(property, &self.tensor_order),
             Property::ResourceLifetime => summarize(property, &self.resource_lifetime),
+            Property::AllocationOrder => summarize(property, &self.allocation_order),
         }
     }
 
-    /// Every check's summary, in the design's order.
+    /// Every check's summary, in [`Property::ALL`]'s order.
     pub fn summaries(&self) -> Vec<PropertySummary> {
         Property::ALL.iter().map(|&p| self.summary(p)).collect()
     }
@@ -227,7 +230,7 @@ impl CheckLog {
     }
 }
 
-/// Run the seven checks on `graph`.
+/// Run every check on `graph`.
 pub fn check_graph(graph: &EventGraph) -> GraphReport {
     let log = CheckLog::start(Property::NamedBarrierEpoch);
     let (named_barrier_epoch, named) = check_named_barrier_epochs(graph);
@@ -268,6 +271,12 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         None => not_run(Property::ResourceLifetime),
     };
     log.finish(&resource_lifetime);
+    let log = CheckLog::start(Property::AllocationOrder);
+    let allocation_order = match &validated {
+        Some(h) => check_allocation_order(h),
+        None => not_run(Property::AllocationOrder),
+    };
+    log.finish(&allocation_order);
     GraphReport {
         terminal: graph.terminal().clone(),
         named_barrier_epoch,
@@ -277,5 +286,6 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         proxy_order,
         tensor_order,
         resource_lifetime,
+        allocation_order,
     }
 }
