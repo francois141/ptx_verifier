@@ -1,7 +1,7 @@
 //! End-to-end tests on ill-formed or unsupported kernels other than conflicts:
 //! invalid instructions and encodings, deadlocks (the trace generator's
-//! diagnostic, not a graph check), out-of-bounds or misaligned accesses, the
-//! wgmma register hazards, undefined outputs, and unmodeled forms.
+//! diagnostic, not a graph check), out-of-bounds or misaligned accesses,
+//! undefined outputs, and unmodeled forms.
 
 #[macro_use]
 mod common;
@@ -119,19 +119,6 @@ fn test_mbarrier_wait_never_satisfied_deadlocks() {
     assert!(!blocked.is_empty());
 }
 
-/// `wgmma.fence` is `.sync.aligned`: lane 0 skips it and blocks at
-/// `commit_group` while lanes 1-31 wait at the fence for it - a deadlock,
-/// not a per-thread no-op.
-#[test]
-fn test_wgmma_fence_skipped_by_one_lane_deadlocks() {
-    let blocked = deadlock(
-        &ptx!(parse "failing/wgmma_fence_skipped_by_one_lane_deadlocks"),
-        128,
-    )
-    .blocked;
-    assert!(!blocked.is_empty());
-}
-
 /// Warp 1 `bar.arrive`s twice while warp 0 waits in its first `bar.sync`:
 /// nothing keeps the second arrival out of the first generation, so which
 /// generation it completes depends on the schedule.
@@ -146,55 +133,6 @@ fn test_bar_arrive_twice_before_the_barrier_fires() {
                 if reason.contains("96 threads arrived at barrier 1")
         ),
         "expected a barrier mismatch, got: {}",
-        err
-    );
-}
-
-/// Hazard A (`WgmmaFenceHazard`): an ordinary register write between the two
-/// calls breaks the same-shape chain, and the second call's accumulator read
-/// has no `wgmma.fence`.
-#[test]
-fn test_wgmma_fence_hazard_ordinary_write_breaks_chain() {
-    let module = ptx!(parse "execution_error/wgmma_fence_hazard_ordinary_write_breaks_chain");
-    let err = run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
-    assert!(
-        matches!(err, AnalysisError::Eval(EvalError::WgmmaFenceHazard { .. })),
-        "expected a wgmma fence hazard, got: {}",
-        err
-    );
-}
-
-/// Hazard B (`WgmmaWaitGroupHazard`): a plain read of an accumulator
-/// register still pending a `wgmma.wait_group` release.
-#[test]
-fn test_wgmma_wait_group_hazard_plain_read_of_pending_accumulator() {
-    let module =
-        ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_read_of_pending_accumulator");
-    let err = run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })
-        ),
-        "expected a wgmma wait_group hazard, got: {}",
-        err
-    );
-}
-
-/// Likewise, an ordinary *write* to a pending accumulator register before
-/// `wgmma.wait_group` is a hazard (`write_reg`'s hazard-B check, not just
-/// `read_reg`'s).
-#[test]
-fn test_wgmma_wait_group_hazard_plain_write_of_pending_accumulator() {
-    let module =
-        ptx!(parse "execution_error/wgmma_wait_group_hazard_plain_write_of_pending_accumulator");
-    let err = run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            AnalysisError::Eval(EvalError::WgmmaWaitGroupHazard { .. })
-        ),
-        "expected a wgmma wait_group hazard, got: {}",
         err
     );
 }
@@ -663,6 +601,26 @@ fn test_activemask_is_not_implemented() {
             assert!(
                 reason.contains("activemask") && reason.contains("not implemented"),
                 "{reason}"
+            );
+        }
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+}
+
+/// Volta does not support wgmma at the moment: this kernel, whose `shf` overwrites a pending
+/// accumulator, is rejected at its first wgmma instruction.
+#[test]
+fn test_wgmma_is_not_supported() {
+    let module = parse(&ptx!("failing/wgmma_is_not_supported"));
+    match run_kernel(&module, None, AnalysisConfig::new((128, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction {
+            instruction,
+            reason,
+        })) => {
+            assert_eq!(instruction, "wgmma.fence");
+            assert_eq!(
+                reason.as_deref(),
+                Some("wgmma is not supported by Volta at the moment")
             );
         }
         other => panic!("expected unsupported, got {other:?}"),

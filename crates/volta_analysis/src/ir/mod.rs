@@ -730,6 +730,17 @@ pub enum LoweredInstr {
         trans: bool,
     },
 
+    /// `stmatrix...m8n8.shared.b16` (PTX ISA 9.7.14.5.17): `ldmatrix`'s
+    /// store-direction mirror, with the same row addressing
+    /// (`eval::warp::exec_stmatrix`) and `shared::cta`-only scope.
+    Stmatrix {
+        addr: Operand,
+        addr_offset: i64,
+        src: Vec<Operand>,
+        num: u32,
+        trans: bool,
+    },
+
     /// `mma.sync` matrix multiply-accumulate. `src_c` may be any operand:
     /// nvcc's first-tile idiom passes immediate-zero literals (`{0f00000000,
     /// ...}`) as the accumulator.
@@ -863,50 +874,6 @@ pub enum LoweredInstr {
     Tcgen05Commit {
         addr_base: Operand,
         addr_offset: i64,
-    },
-
-    // =========================================================================
-    // Asynchronous Warpgroup-Level Matrix Multiply-Accumulate (PTX ISA 9.7.17.5-7)
-    // =========================================================================
-    /// Shared-memory-`A` `wgmma.mma_async` (PTX ISA 9.7.17.5.2), `.f16.f16`
-    /// or FP8 into `.f32`: warpgroup-wide `D = A*B (+D)`, each thread owning
-    /// `n/2` `dst` registers. Register-`A` and negate are rejected.
-    WgmmaMmaAsync {
-        shape: crate::ir::mma::MmaShape,
-        dst: Vec<RegId>,
-        a_desc: Operand,
-        b_desc: Operand,
-        scale_d: Operand,
-        a_type: ScalarType,
-        b_type: ScalarType,
-        transpose_a: bool,
-        transpose_b: bool,
-    },
-
-    /// `wgmma.fence.sync.aligned` (PTX ISA 9.7.17.7.1): a warp rendezvous
-    /// that opens a new fence epoch in each lane's `ThreadState::wgmma`,
-    /// ordering prior register accesses before `wgmma.mma_async`.
-    WgmmaFence,
-
-    /// `wgmma.commit_group.sync.aligned` (PTX ISA 9.7.17.7.2): a warp
-    /// rendezvous that seals each lane's uncommitted `wgmma.mma_async`
-    /// accumulator writebacks into a wgmma-group.
-    WgmmaCommitGroup,
-
-    /// `wgmma.wait_group.sync.aligned N` (PTX ISA 9.7.17.7.3): a warp
-    /// rendezvous releasing all but each lane's `N` most recent wgmma-groups.
-    /// `N` is a lowering-validated constant.
-    WgmmaWaitGroup { n: u32 },
-
-    /// `stmatrix...m8n8.shared.b16` (PTX ISA 9.7.14.5.17): `ldmatrix`'s
-    /// store-direction mirror, with the same row addressing
-    /// (`eval::warp::exec_stmatrix`) and `shared::cta`-only scope.
-    Stmatrix {
-        addr: Operand,
-        addr_offset: i64,
-        src: Vec<Operand>,
-        num: u32,
-        trans: bool,
     },
 
     // =========================================================================
@@ -1150,10 +1117,6 @@ define_instr_kinds!(
     Tcgen05Mma,
     Tcgen05Fence,
     Tcgen05Commit,
-    WgmmaMmaAsync,
-    WgmmaFence,
-    WgmmaCommitGroup,
-    WgmmaWaitGroup,
     Stmatrix,
     TensormapReplace,
     TensormapCpFenceproxy,

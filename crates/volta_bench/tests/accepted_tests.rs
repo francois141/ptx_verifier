@@ -1270,62 +1270,6 @@ fn test_cp_async_bulk_every_reader_waiting_is_accepted() {
     );
 }
 
-/// `wgmma.fence` -> `mma_async.m64n8k16.f32.f16.f16` -> `commit_group` ->
-/// `wait_group 0`, unswizzled K-major (LBO 128): thread 0's `%d0` must be
-/// `sum(1..=16) = 136`.
-#[test]
-fn test_wgmma_mma_async_numeric_correctness() {
-    let mut config = AnalysisConfig::new((128, 1, 1));
-    config.arrays = vec![ArrayDef {
-        name: "out".to_string(),
-        base: 0x20000,
-        elem_width: 4,
-        len: 1,
-        kind: ArrayKind::Output,
-    }];
-    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    analyze!("success/wgmma_mma_async_numeric_correctness", config);
-}
-
-/// Two chained same-shape `wgmma.mma_async` calls with one fence before and
-/// one commit/wait after (the H100 GEMM pattern) must not be flagged (ISA
-/// fence exemption): `272`.
-#[test]
-fn test_wgmma_chained_same_shape_accumulator_needs_no_extra_fence() {
-    let mut config = AnalysisConfig::new((128, 1, 1));
-    config.arrays = vec![ArrayDef {
-        name: "out".to_string(),
-        base: 0x20000,
-        elem_width: 4,
-        len: 1,
-        kind: ArrayKind::Output,
-    }];
-    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    analyze!(
-        "success/wgmma_chained_same_shape_accumulator_needs_no_extra_fence",
-        config
-    );
-}
-
-/// The control for the in-flight wgmma operand hazard: overwriting `A` after
-/// `wait_group 0` released the op is fine, and `%d0` is still `136`.
-#[test]
-fn test_wgmma_operand_write_after_wait_group_is_accepted() {
-    let mut config = AnalysisConfig::new((128, 1, 1));
-    config.arrays = vec![ArrayDef {
-        name: "out".to_string(),
-        base: 0x20000,
-        elem_width: 4,
-        len: 1,
-        kind: ArrayKind::Output,
-    }];
-    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    analyze!(
-        "success/wgmma_operand_write_after_wait_group_is_accepted",
-        config
-    );
-}
-
 /// `stmatrix.x1.m8n8.shared.b16`: lane `l`'s value lands at `row_addr[l/4] +
 /// (l%4)*4`, a bijection onto the 128 bytes; lane 5's value is read back at
 /// `src+20`.

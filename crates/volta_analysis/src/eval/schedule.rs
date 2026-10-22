@@ -1,11 +1,11 @@
 //! The scheduler of the candidate execution: run one ready thread until it
-//! blocks or exits, then fire whatever group is complete (a warp or warpgroup
-//! rendezvous, an mbarrier phase, a named barrier).
+//! blocks or exits, then fire whatever group is complete (a warp rendezvous,
+//! an mbarrier phase, a named barrier).
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::interp::{BarrierArrivals, Interpreter, NUM_BARRIERS, PendingArrivals, Status};
 use crate::eval::value::{MbarrierId, Value};
-use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
+use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::{InstrId, LoweredInstr, Operand};
 use crate::logging::trace;
 
@@ -38,16 +38,6 @@ impl<'p> Interpreter<'p> {
                     members.len()
                 );
                 self.execute_warp_op(pc, mask, &members)?;
-                any = true;
-                continue;
-            }
-            if let Some((pc, members)) = self.find_ready_warpgroup_op()? {
-                trace!(
-                    "warpgroup op at pc {} fired ({} lanes)",
-                    pc.0,
-                    members.len()
-                );
-                self.execute_warpgroup_op(pc, &members)?;
                 any = true;
                 continue;
             }
@@ -140,43 +130,6 @@ impl<'p> Interpreter<'p> {
                 }
             }
             return Ok(Some((pc, mask, members)));
-        }
-        Ok(None)
-    }
-
-    /// Find a warpgroup whose live members all arrived at one pc, with
-    /// `find_ready_warp_group`'s rules but no mask: membership is always the
-    /// 128-thread range at `group_base`.
-    fn find_ready_warpgroup_op(&self) -> EvalResult<Option<(InstrId, Vec<ThreadId>)>> {
-        'candidates: for (leader, state) in self.threads.iter() {
-            if state.status != Status::AtWarpgroupOp {
-                continue;
-            }
-            let pc = state.pc;
-            let group_base = (leader.0 / WARPGROUP_SIZE) * WARPGROUP_SIZE;
-            if group_base + WARPGROUP_SIZE > self.n_threads {
-                return Err(EvalError::WarpMismatch {
-                    pc,
-                    reason: format!(
-                        "wgmma.mma_async warpgroup [{}, {}) exceeds the CTA's {} threads",
-                        group_base,
-                        group_base + WARPGROUP_SIZE,
-                        self.n_threads
-                    ),
-                });
-            }
-            let mut members = Vec::new();
-            for lane in 0..WARPGROUP_SIZE {
-                let tid = ThreadId(group_base + lane);
-                match self.threads[tid].status {
-                    Status::AtWarpgroupOp if self.threads[tid].pc == pc => {
-                        members.push(tid);
-                    }
-                    Status::Exited => {}
-                    _ => continue 'candidates,
-                }
-            }
-            return Ok(Some((pc, members)));
         }
         Ok(None)
     }
@@ -326,19 +279,6 @@ impl<'p> Interpreter<'p> {
         }
         self.record_warp_op_arrival(t, pc, mask);
         self.threads[t].status = Status::AtWarpOp { mask };
-        Ok(())
-    }
-
-    /// Block `t` at a warpgroup-cooperative instruction. Membership is
-    /// implicit; `find_ready_warpgroup_op` checks the warpgroup's range once
-    /// the whole group arrives.
-    pub(in crate::eval) fn block_at_warpgroup_op(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-    ) -> EvalResult<()> {
-        self.record_warpgroup_op_arrival(t, pc);
-        self.threads[t].status = Status::AtWarpgroupOp;
         Ok(())
     }
 }

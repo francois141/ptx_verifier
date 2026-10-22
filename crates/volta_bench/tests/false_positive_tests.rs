@@ -193,35 +193,6 @@ fn test_tcgen05_alloc_sizes_unordered() {
     );
 }
 
-/// `shf` writes accumulator `%d0` before `wgmma.wait_group`; the same write as a `mov` is
-/// caught.
-#[test]
-fn test_wgmma_pending_accumulator_written_by_shf() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/wgmma_pending_accumulator_written_by_shf"),
-        out_config(128, 4, 1),
-    );
-}
-
-/// `%d0` is read between two same-shape wgmmas with no `wgmma.fence` before the second.
-#[test]
-fn test_wgmma_accumulator_read_between_chained_wgmmas_without_fence() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/wgmma_accumulator_read_between_chained_wgmmas_without_fence"),
-        out_config(128, 4, 1),
-    );
-}
-
-/// An m64n16k16 wgmma reuses the accumulators of a pending m64n8k16 one: only same-shape chains
-/// are exempt from `wgmma.wait_group`.
-#[test]
-fn test_wgmma_different_shape_consumes_pending_accumulator() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/wgmma_different_shape_consumes_pending_accumulator"),
-        out_config(128, 4, 1),
-    );
-}
-
 /// Barrier 0 is reached with count 32 through a register id and with count 64: warp 0 completes
 /// it alone, so warp 1's read of `s[0]` races the store (or warp 1 hangs).
 #[test]

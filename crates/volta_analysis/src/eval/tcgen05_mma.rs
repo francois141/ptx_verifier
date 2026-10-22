@@ -184,9 +184,8 @@ impl std::fmt::Display for DescriptorError {
 }
 
 /// `matrix-descriptor-encode`'s inverse: the 14-bit field holds `(real >> 4)
-/// & 0x3FFF`. Shared with [`crate::eval::wgmma`], whose descriptor uses the
-/// same encoding in a different bit layout (PTX ISA 9.7.17.5.1.2.2).
-pub(crate) fn decode_encoded_offset(field: u64) -> u64 {
+/// & 0x3FFF`.
+fn decode_encoded_offset(field: u64) -> u64 {
     field << 4
 }
 

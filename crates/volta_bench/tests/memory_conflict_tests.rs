@@ -350,37 +350,6 @@ fn test_cp_async_bulk_read_after_bar_sync_is_an_inflight_hazard() {
     });
 }
 
-/// A `wgmma.mma_async` reads its shared `A`/`B` until every live member's
-/// `wgmma.wait_group` releases it: thread 0 overwriting `A` before waiting
-/// (`_before_wait_group`), or under a `wait_group 1` that keeps the group
-/// pending (`_after_wait_group_1`), conflicts with that read.
-#[test]
-fn test_wgmma_operand_write_while_in_flight_is_an_inflight_hazard() {
-    for (name, src) in [
-        ptx_case!("execution_error/wgmma_operand_write_before_wait_group_is_an_inflight_hazard"),
-        ptx_case!("execution_error/wgmma_operand_write_after_wait_group_1_is_an_inflight_hazard"),
-    ] {
-        let mut config = AnalysisConfig::new((128, 1, 1));
-        config.arrays = vec![ArrayDef {
-            name: "out".to_string(),
-            base: 0x20000,
-            elem_width: 4,
-            len: 1,
-            kind: ArrayKind::Output,
-        }];
-        config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-        let ws = conflicts(&parse(&src), config);
-        assert!(
-            ws.iter().any(|w| on_shared(w)
-                && w.earlier.thread == 0
-                && w.earlier.mode == Read
-                && matches!(w.earlier.op, Some(AsyncOpKind::WgmmaMma { .. }))
-                && w.later == Side::plain(0, Write)),
-            "{name}: expected thread 0's write after its wgmma's read, got: {ws:#?}"
-        );
-    }
-}
-
 /// A `shfl.sync` is a rendezvous, not a memory barrier: lane 0's staged store and the other
 /// lanes' loads after the shuffle stay unordered.
 #[test]

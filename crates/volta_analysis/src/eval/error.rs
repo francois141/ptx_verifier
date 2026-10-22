@@ -6,29 +6,7 @@ use std::fmt;
 use crate::eval::ThreadId;
 use crate::eval::memory::{GranuleKind, MemAccessError};
 use crate::eval::tensor_memory::TensorMemError;
-use crate::ir::mma::MmaShape;
-use crate::ir::symbols::RegId;
 use crate::ir::{InstrId, MemSpace};
-
-/// One side of a conflicting memory access pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AccessSite {
-    pub thread: ThreadId,
-    pub pc: InstrId,
-    pub is_write: bool,
-}
-
-impl fmt::Display for AccessSite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} by {} at {}",
-            if self.is_write { "write" } else { "read" },
-            self.thread,
-            self.pc
-        )
-    }
-}
 
 /// Why a `clusterlaunchcontrol` use is undefined behavior. Every response is
 /// declined under Volta's never-steal assumption.
@@ -49,25 +27,6 @@ pub enum ClcMisuse {
 /// errors here: they are graph check failures or the graph's stuck terminal state.
 #[derive(Debug)]
 pub enum EvalError {
-    /// A `wgmma.mma_async` accessed an accumulator register without an intervening
-    /// `wgmma.fence` (PTX ISA 9.7.17.7.1): no fence ever ran (`prior_write: None`), or an access
-    /// other than a same-shape `wgmma.mma_async` chain link touched it since the last fence.
-    WgmmaFenceHazard {
-        thread: ThreadId,
-        pc: InstrId,
-        reg: RegId,
-        shape: MmaShape,
-        prior_write: Option<AccessSite>,
-    },
-    /// An access other than the same chain's next same-shape seed-read or writeback reached
-    /// an in-flight `wgmma.mma_async` accumulator register before the writer's covering
-    /// `wgmma.wait_group` (PTX ISA 9.7.17.7.3).
-    WgmmaWaitGroupHazard {
-        thread: ThreadId,
-        pc: InstrId,
-        reg: RegId,
-        prior_write: AccessSite,
-    },
     /// Memory was read at an address that was never written/initialized.
     UninitializedMemory {
         thread: ThreadId,
@@ -263,46 +222,6 @@ pub enum EvalError {
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WgmmaFenceHazard {
-                thread,
-                pc,
-                reg,
-                shape,
-                prior_write: Some(prior),
-            } => write!(
-                f,
-                "missing wgmma.fence on {reg}: {thread} at {pc} accesses {reg} as a \
-                 wgmma.mma_async .{shape} accumulator, but it was last written by {prior} with \
-                 no intervening wgmma.fence (PTX ISA 9.7.17.7.1 requires a fence between a \
-                 register access and any wgmma.mma_async that accesses the same register, \
-                 except when both accesses are accumulator accesses of the same shape)"
-            ),
-            Self::WgmmaFenceHazard {
-                thread,
-                pc,
-                reg,
-                shape,
-                prior_write: None,
-            } => write!(
-                f,
-                "missing wgmma.fence on {reg}: {thread} at {pc} is this warpgroup's first \
-                 wgmma.mma_async access to {reg} (.{shape}), but no wgmma.fence has been \
-                 executed yet (PTX ISA 9.7.17.7.1 requires a wgmma.fence before the first \
-                 wgmma.mma_async operation in a warpgroup)"
-            ),
-            Self::WgmmaWaitGroupHazard {
-                thread,
-                pc,
-                reg,
-                prior_write,
-            } => write!(
-                f,
-                "missing wgmma.wait_group on {reg}: {thread} at {pc} accesses {reg}, which \
-                 {prior_write} wrote as a wgmma.mma_async accumulator not yet released by a \
-                 covering wgmma.wait_group (PTX ISA 9.7.17.7.3 makes this undefined behavior \
-                 unless the access is that same wgmma.mma_async chain's own next same-shape \
-                 accumulator seed-read or writeback)"
-            ),
             Self::UninitializedMemory {
                 thread,
                 pc,
@@ -551,9 +470,7 @@ impl EvalError {
     /// The thread and instruction the error arose at, where it names them.
     pub fn location(&self) -> (Option<ThreadId>, Option<InstrId>) {
         match self {
-            Self::WgmmaFenceHazard { thread, pc, .. }
-            | Self::WgmmaWaitGroupHazard { thread, pc, .. }
-            | Self::UninitializedMemory { thread, pc, .. }
+            Self::UninitializedMemory { thread, pc, .. }
             | Self::OutOfBounds { thread, pc, .. }
             | Self::Misaligned { thread, pc, .. }
             | Self::Reinterpretation { thread, pc, .. }

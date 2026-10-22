@@ -21,9 +21,6 @@ mod tensor_memory;
 mod tensormap_replace;
 mod value;
 mod warp;
-mod warpgroup;
-mod wgmma;
-mod wgmma_hazards;
 
 use id_collections::id_type;
 
@@ -40,10 +37,6 @@ impl std::fmt::Display for ThreadId {
 
 /// Number of threads in a warp.
 pub const WARP_SIZE: u32 = 32;
-
-/// Number of threads in a warpgroup (PTX ISA 9.7.17.1: "four contiguous
-/// warps such that the warp-rank of the first warp is a multiple of 4").
-pub const WARPGROUP_SIZE: u32 = WARP_SIZE * 4;
 
 pub use error::{ClcMisuse, EvalError};
 pub use interp::{Interpreter, OutputsUnavailable, RunArtifacts, Stats};

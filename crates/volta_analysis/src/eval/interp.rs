@@ -20,8 +20,6 @@ use crate::eval::record::{AccessOrigin, Recording, point, tix};
 use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
-use crate::eval::warpgroup::WgmmaOpId;
-use crate::eval::wgmma_hazards::WgmmaRegState;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::ir::types::{RegClass, ScalarTypeExt};
@@ -143,10 +141,6 @@ pub(in crate::eval) enum Status {
     AtWarpOp {
         mask: u32,
     },
-    /// Blocked at `wgmma.mma_async` at the current pc. No mask: `.aligned`
-    /// means the full 128-thread warpgroup always takes part (PTX ISA
-    /// 9.7.17.1); a parallel mechanism to `AtWarpOp`.
-    AtWarpgroupOp,
     /// Blocked at `mbarrier.test_wait.parity`/`try_wait.parity` for `id`'s
     /// phase parity. Not a rendezvous: any thread's `arrive`/`complete_tx` can
     /// satisfy it, so waiters are checked independently.
@@ -167,9 +161,6 @@ pub(in crate::eval) struct ThreadState {
     /// Committed async-copy groups, oldest first; `wait_group`/`wait_all`
     /// pop from the front.
     groups: VecDeque<Vec<PendingCopy>>,
-    /// `wgmma.mma_async` register-hazard tracking (PTX ISA 9.7.17.7.1/.2/.3), a
-    /// separate domain from `uncommitted`/`groups` above.
-    pub(in crate::eval) wgmma: WgmmaRegState,
     /// `tcgen05.mma.ws` collector buffers `b0`-`b3`: the `B` elements the
     /// last `::fill` loaded, until a `::lastuse`/`::discard` drops them.
     pub(in crate::eval) tcgen05_collectors: [Option<Vec<ExprId>>; 4],
@@ -220,7 +211,6 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) shared: Memory,
     locals: IdVec<ThreadId, Memory>,
     pub(in crate::eval) tensor: TensorMemory,
-    pub(in crate::eval) next_wgmma_op: WgmmaOpId,
     /// The first declined cluster-launch-control response decoded, if any.
     pub(in crate::eval) clc_observed_decline: Option<ObservedDecline>,
     regions: MemRegions,
@@ -406,7 +396,6 @@ impl<'p> Interpreter<'p> {
                     status: Status::Ready,
                     uncommitted: Vec::new(),
                     groups: VecDeque::new(),
-                    wgmma: WgmmaRegState::default(),
                     tcgen05_collectors: Default::default(),
                 })
                 .collect(),
@@ -425,7 +414,6 @@ impl<'p> Interpreter<'p> {
             shared: Memory::new(),
             locals,
             tensor: TensorMemory::new(),
-            next_wgmma_op: WgmmaOpId::default(),
             clc_observed_decline: None,
             regions,
             mbarriers: MbarrierTable::default(),
@@ -634,7 +622,7 @@ impl<'p> Interpreter<'p> {
 
         // Predicate guard: must be concrete (structured-CTA).
         if let Some(pred) = self.program.predicate(pc) {
-            let value = self.read_reg(t, pc, pred.reg)?;
+            let value = self.read_reg(t, pred.reg);
             let cond = self.as_concrete_bool(t, pc, value, "guard predicate")?;
             if cond == pred.negated {
                 self.threads[t].pc = InstrId(pc.0 + 1);
@@ -649,7 +637,7 @@ impl<'p> Interpreter<'p> {
             // accesses are rejected in `check_bounds`.
             LoweredInstr::LoadParam { dst, param_id } => {
                 let v = self.params[*param_id];
-                self.write_reg(t, pc, *dst, v)?;
+                self.write_reg(t, *dst, v);
             }
 
             LoweredInstr::Load {
@@ -662,7 +650,7 @@ impl<'p> Interpreter<'p> {
                 let addr = self.effective_addr(t, pc, base, *offset)?;
                 let v = self.mem_read(t, pc, *space, addr, ty.size_bytes() as u64)?;
                 let v = self.canon_loaded(t, pc, *ty, *dst, v)?;
-                self.write_reg(t, pc, *dst, v)?;
+                self.write_reg(t, *dst, v);
             }
 
             LoweredInstr::LoadVec {
@@ -682,7 +670,7 @@ impl<'p> Interpreter<'p> {
                 for (k, reg) in dst.iter().enumerate() {
                     let v = self.mem_read(t, pc, *space, addr + k as u64 * width, width)?;
                     let v = self.canon_loaded(t, pc, *ty, *reg, v)?;
-                    self.write_reg(t, pc, *reg, v)?;
+                    self.write_reg(t, *reg, v);
                 }
             }
 
@@ -835,7 +823,7 @@ impl<'p> Interpreter<'p> {
                         });
                     }
                 };
-                self.write_reg(t, pc, *dst, v)?;
+                self.write_reg(t, *dst, v);
             }
 
             // Only `cvta.to.global` reaches evaluation; global addresses are
@@ -843,7 +831,7 @@ impl<'p> Interpreter<'p> {
             // so this is the identity.
             LoweredInstr::Cvta { dst, src } => {
                 let v = self.operand_value(t, pc, src)?;
-                self.write_reg(t, pc, *dst, v)?;
+                self.write_reg(t, *dst, v);
             }
 
             LoweredInstr::Mapa { dst, src, rank } => {
@@ -856,7 +844,7 @@ impl<'p> Interpreter<'p> {
                     });
                 }
                 let v = self.operand_value(t, pc, src)?;
-                self.write_reg(t, pc, *dst, v)?;
+                self.write_reg(t, *dst, v);
             }
 
             LoweredInstr::Prmt {
@@ -920,7 +908,7 @@ impl<'p> Interpreter<'p> {
                 let b1 = select_byte(self, (selector >> 4) & 0xf)?;
                 let b2 = select_byte(self, (selector >> 8) & 0xf)?;
                 let b3 = select_byte(self, (selector >> 12) & 0xf)?;
-                self.write_reg(t, pc, *dst, Value::Quad(b0, b1, b2, b3))?;
+                self.write_reg(t, *dst, Value::Quad(b0, b1, b2, b3));
             }
 
             LoweredInstr::Lop3 {
@@ -949,7 +937,7 @@ impl<'p> Interpreter<'p> {
                     }
                 }
                 let result = self.lop3_expand(lut, sources, words, &symbolic[..symbolic_len]);
-                self.write_reg(t, pc, *dst, Value::Scalar(result))?;
+                self.write_reg(t, *dst, Value::Scalar(result));
             }
 
             LoweredInstr::BinOp {
@@ -967,17 +955,17 @@ impl<'p> Interpreter<'p> {
                     let hi = self.eval_binop(t, pc, *op, lane_ty, a_hi, b_hi)?;
                     let lo = self.apply_clamp(*clamp, lo);
                     let hi = self.apply_clamp(*clamp, hi);
-                    self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
+                    self.write_reg(t, *dst, Value::Pair(lo, hi));
                 } else if let Some(v) = self.pair_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
-                    self.write_reg(t, pc, *dst, v)?;
+                    self.write_reg(t, *dst, v);
                 } else if let Some(v) = self.quad_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
-                    self.write_reg(t, pc, *dst, v)?;
+                    self.write_reg(t, *dst, v);
                 } else {
                     let a = self.scalar_operand(t, pc, src_a)?;
                     let b = self.scalar_operand(t, pc, src_b)?;
                     let r = self.eval_binop(t, pc, *op, *ty, a, b)?;
                     let r = self.apply_clamp(*clamp, r);
-                    self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                    self.write_reg(t, *dst, Value::Scalar(r));
                 }
             }
 
@@ -986,11 +974,11 @@ impl<'p> Interpreter<'p> {
                     let (a_lo, a_hi) = self.pair_operand(t, pc, src, lane_ty)?;
                     let lo = self.eval_unop(pc, *op, lane_ty, a_lo)?;
                     let hi = self.eval_unop(pc, *op, lane_ty, a_hi)?;
-                    self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
+                    self.write_reg(t, *dst, Value::Pair(lo, hi));
                 } else {
                     let a = self.scalar_operand(t, pc, src)?;
                     let r = self.eval_unop(pc, *op, *ty, a)?;
-                    self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                    self.write_reg(t, *dst, Value::Scalar(r));
                 }
             }
 
@@ -1009,7 +997,7 @@ impl<'p> Interpreter<'p> {
                 let r = self
                     .arena
                     .select(non_negative, abs_magnitude, neg_abs_magnitude);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::Fma {
@@ -1029,14 +1017,14 @@ impl<'p> Interpreter<'p> {
                     let hi = self.arena.fma(a_hi, b_hi, c_hi);
                     let lo = self.apply_clamp(*clamp, lo);
                     let hi = self.apply_clamp(*clamp, hi);
-                    self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
+                    self.write_reg(t, *dst, Value::Pair(lo, hi));
                 } else {
                     let a = self.float_operand(t, pc, src_a, *mul_ty)?;
                     let b = self.float_operand(t, pc, src_b, *mul_ty)?;
                     let c = self.float_operand(t, pc, src_c, *ty)?;
                     let r = self.arena.fma(a, b, c);
                     let r = self.apply_clamp(*clamp, r);
-                    self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                    self.write_reg(t, *dst, Value::Scalar(r));
                 }
             }
 
@@ -1072,7 +1060,7 @@ impl<'p> Interpreter<'p> {
                     }
                     _ => self.arena.add(product, c),
                 };
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::MulWide {
@@ -1084,7 +1072,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let r = self.mul_wide(*src_ty, a, b);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::MulHi {
@@ -1102,7 +1090,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let r = self.mul_hi(*ty, a, b);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::Bfi {
@@ -1128,7 +1116,7 @@ impl<'p> Interpreter<'p> {
                     i += 1;
                 }
                 let r = self.arena.int(f as i64);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::Shf {
@@ -1177,7 +1165,7 @@ impl<'p> Interpreter<'p> {
                     d |= bit << i;
                 }
                 let r = self.arena.int(d as i64);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::Setp {
@@ -1190,7 +1178,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
                 let r = self.eval_cmp(pc, *cmp, *ty, a, b)?;
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::Selp {
@@ -1209,7 +1197,7 @@ impl<'p> Interpreter<'p> {
                 let b = self.canon_operand(pc, *ty, b)?;
                 let cond = self.scalar_operand(t, pc, pred)?;
                 let r = self.arena.select(cond, a, b);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
+                self.write_reg(t, *dst, Value::Scalar(r));
             }
 
             LoweredInstr::Cvt {
@@ -1269,7 +1257,7 @@ impl<'p> Interpreter<'p> {
                         }
                     }
                 };
-                self.write_reg(t, pc, *dst, result)?;
+                self.write_reg(t, *dst, result);
             }
 
             LoweredInstr::CvtE4m3x2ToF16x2 { dst, src, relu } => {
@@ -1325,7 +1313,7 @@ impl<'p> Interpreter<'p> {
                         });
                     }
                 };
-                self.write_reg(t, pc, *dst, result)?;
+                self.write_reg(t, *dst, result);
             }
 
             LoweredInstr::CvtPackHalves {
@@ -1342,7 +1330,7 @@ impl<'p> Interpreter<'p> {
                 let hi = self.eval_cvt(pc, *dst_half_ty, *src_ty, hi)?;
                 let lo = self.scalar_operand(t, pc, src_lo)?;
                 let lo = self.eval_cvt(pc, *dst_half_ty, *src_ty, lo)?;
-                self.write_reg(t, pc, *dst, Value::Pair(lo, hi))?;
+                self.write_reg(t, *dst, Value::Pair(lo, hi));
             }
 
             LoweredInstr::UnpackHalves { lo, hi, src, ty } => {
@@ -1352,10 +1340,10 @@ impl<'p> Interpreter<'p> {
                     // `eval/memory.rs`); distribute them directly.
                     Value::Pair(lo_e, hi_e) => {
                         if let Some(lo) = lo {
-                            self.write_reg(t, pc, *lo, Value::Scalar(lo_e))?;
+                            self.write_reg(t, *lo, Value::Scalar(lo_e));
                         }
                         if let Some(hi) = hi {
-                            self.write_reg(t, pc, *hi, Value::Scalar(hi_e))?;
+                            self.write_reg(t, *hi, Value::Scalar(hi_e));
                         }
                     }
                     // A genuine scalar bit pattern: split it the way this
@@ -1366,11 +1354,11 @@ impl<'p> Interpreter<'p> {
                         let shift = self.arena.int(elem_width as i64);
                         if let Some(lo) = lo {
                             let lo_v = self.eval_binop(t, pc, BinOp::And, *ty, e, mask)?;
-                            self.write_reg(t, pc, *lo, Value::Scalar(lo_v))?;
+                            self.write_reg(t, *lo, Value::Scalar(lo_v));
                         }
                         if let Some(hi) = hi {
                             let hi_v = self.eval_binop(t, pc, BinOp::Shr, *ty, e, shift)?;
-                            self.write_reg(t, pc, *hi, Value::Scalar(hi_v))?;
+                            self.write_reg(t, *hi, Value::Scalar(hi_v));
                         }
                     }
                     // A `Quad`: each half is two byte lanes, so it splits into
@@ -1378,10 +1366,10 @@ impl<'p> Interpreter<'p> {
                     // idiom before `cvt.rn.f16x2.e4m3x2` on fp8 arrays.
                     Value::Quad(b0, b1, b2, b3) => {
                         if let Some(lo) = lo {
-                            self.write_reg(t, pc, *lo, Value::Pair(b0, b1))?;
+                            self.write_reg(t, *lo, Value::Pair(b0, b1));
                         }
                         if let Some(hi) = hi {
-                            self.write_reg(t, pc, *hi, Value::Pair(b2, b3))?;
+                            self.write_reg(t, *hi, Value::Pair(b2, b3));
                         }
                     }
                     Value::Mbarrier(_) => {
@@ -1400,7 +1388,7 @@ impl<'p> Interpreter<'p> {
                 // scalar_operand rejects a half that is itself a pair.
                 let lo_v = self.scalar_operand(t, pc, lo)?;
                 let hi_v = self.scalar_operand(t, pc, hi)?;
-                self.write_reg(t, pc, *dst, Value::Pair(lo_v, hi_v))?;
+                self.write_reg(t, *dst, Value::Pair(lo_v, hi_v));
             }
 
             LoweredInstr::PackQuad { dst, elems } => {
@@ -1546,24 +1534,6 @@ impl<'p> Interpreter<'p> {
             | LoweredInstr::WmmaStore { .. }
             | LoweredInstr::WmmaMma { .. }
             | LoweredInstr::Stmatrix { .. } => {
-                self.block_at_warp_op(t, pc, u32::MAX)?;
-                return Ok(());
-            }
-
-            // wgmma.mma_async: warpgroup-cooperative (128 threads), not
-            // warp-cooperative - no membermask, always the full warpgroup
-            // (see `Status::AtWarpgroupOp`'s doc comment).
-            LoweredInstr::WgmmaMmaAsync { .. } => {
-                self.block_at_warpgroup_op(t, pc)?;
-                return Ok(());
-            }
-
-            // wgmma.fence/commit_group/wait_group (PTX ISA 9.7.17.7.{1,2,3})
-            // are `.sync.aligned`: each thread waits for its whole warp, like
-            // tcgen05.wait. Their hazard state stays per-thread.
-            LoweredInstr::WgmmaFence
-            | LoweredInstr::WgmmaCommitGroup
-            | LoweredInstr::WgmmaWaitGroup { .. } => {
                 self.block_at_warp_op(t, pc, u32::MAX)?;
                 return Ok(());
             }
@@ -1832,7 +1802,7 @@ impl<'p> Interpreter<'p> {
                     // supported, which never consume it, so `Undefined` is the
                     // honest value.
                     let token = self.arena.undefined();
-                    self.write_reg(t, pc, *dst, Value::Scalar(token))?;
+                    self.write_reg(t, *dst, Value::Scalar(token));
                 }
             }
 
@@ -1921,35 +1891,16 @@ impl<'p> Interpreter<'p> {
     // =====================================================================
 
     /// Read a register; a never-written one reads `Undefined` (nvcc's `selp`
-    /// accumulator-init idiom). Hazard B (PTX ISA 9.7.17.7.3): a still-pending
-    /// wgmma register is UB to read.
-    pub(in crate::eval) fn read_reg(
-        &self,
-        t: ThreadId,
-        pc: InstrId,
-        reg: RegId,
-    ) -> EvalResult<Value> {
-        self.check_wgmma_pending(t, pc, reg)?;
-        Ok(self.threads[t]
+    /// accumulator-init idiom).
+    pub(in crate::eval) fn read_reg(&self, t: ThreadId, reg: RegId) -> Value {
+        self.threads[t]
             .regs
             .read(reg)
-            .unwrap_or(Value::Scalar(self.undefined)))
+            .unwrap_or(Value::Scalar(self.undefined))
     }
 
-    /// Write a register - the one chokepoint for register writes. Applies
-    /// hazard B's pending check and hazard A's bookkeeping (any ordinary write
-    /// breaks a wgmma chain and dirties the fence gate).
-    pub(in crate::eval) fn write_reg(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-        reg: RegId,
-        value: Value,
-    ) -> EvalResult<()> {
-        self.check_wgmma_pending(t, pc, reg)?;
+    pub(in crate::eval) fn write_reg(&mut self, t: ThreadId, reg: RegId, value: Value) {
         self.threads[t].regs.write(reg, value);
-        self.threads[t].wgmma.record_write(reg, pc);
-        Ok(())
     }
 
     /// Resolve an operand to a runtime value.
@@ -1960,7 +1911,7 @@ impl<'p> Interpreter<'p> {
         op: &Operand,
     ) -> EvalResult<Value> {
         match op {
-            Operand::Reg(reg) => self.read_reg(t, pc, *reg),
+            Operand::Reg(reg) => Ok(self.read_reg(t, *reg)),
             Operand::SpecialReg(kind) => Ok(Value::Scalar(self.special_reg(t, pc, *kind)?)),
             Operand::ImmI64(v) => Ok(Value::Scalar(self.arena.int(*v))),
             Operand::ImmU64(v) => Ok(Value::Scalar(self.arena.int(*v as i64))),

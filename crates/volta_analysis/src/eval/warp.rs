@@ -1,11 +1,10 @@
-//! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`,
-//! `wgmma.fence`/`commit_group`/`wait_group`, the warp-scoped `tcgen05` ops): run once all
-//! lanes reach the same pc and mask, with each memory access attributed to its owning lane
-//! (`fragments` tables).
+//! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`, the
+//! warp-scoped `tcgen05` ops): run once all lanes reach the same pc and mask, with each memory
+//! access attributed to its owning lane (`fragments` tables).
 
 use volta_frontend::ast::ScalarType;
 
-use volta_graph::{AccessMode, AsyncOpKind, GenerationId, GroupFamily, OperandRole};
+use volta_graph::{AccessMode, AsyncOpKind, OperandRole};
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
@@ -101,7 +100,7 @@ impl Interpreter<'_> {
         match &instr {
             LoweredInstr::BarWarpSync { .. } => {}
             LoweredInstr::ElectSync { dst, dst_pred, .. } => {
-                self.exec_elect_sync(pc, members, *dst, *dst_pred)?;
+                self.exec_elect_sync(members, *dst, *dst_pred);
             }
             LoweredInstr::ShflSync {
                 mode,
@@ -190,11 +189,6 @@ impl Interpreter<'_> {
                     Tcgen05Wait::Ld
                 };
                 self.record_tcgen05_wait(members[0].0 / WARP_SIZE, wait, exit);
-            }
-            LoweredInstr::WgmmaFence
-            | LoweredInstr::WgmmaCommitGroup
-            | LoweredInstr::WgmmaWaitGroup { .. } => {
-                self.exec_wgmma_hazard_op(pc, members, &instr, exit)
             }
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
@@ -294,10 +288,6 @@ impl Interpreter<'_> {
             // The ISA states no exited-lane UB for `tcgen05.wait::ld`/`::st`
             // (unlike `.alloc`/`.ld`/...), so a partial warp is accepted.
             LoweredInstr::Tcgen05Wait { .. } => Ok(()),
-            // Likewise for the wgmma register-ordering ops: no exited-lane UB.
-            LoweredInstr::WgmmaFence
-            | LoweredInstr::WgmmaCommitGroup
-            | LoweredInstr::WgmmaWaitGroup { .. } => Ok(()),
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),
@@ -397,10 +387,10 @@ impl Interpreter<'_> {
         }
 
         for (m, pval, value) in results {
-            self.write_reg(m, pc, dst, value)?;
+            self.write_reg(m, dst, value);
             if let Some(p) = dst_pred {
                 let b = self.arena.bool_val(pval);
-                self.write_reg(m, pc, p, Value::Scalar(b))?;
+                self.write_reg(m, p, Value::Scalar(b));
             }
         }
         Ok(())
@@ -409,18 +399,12 @@ impl Interpreter<'_> {
     /// `elect.sync d|p, membermask`: the lowest-numbered live lane (`members[0]`,
     /// ascending) leads, deterministic per the ISA. Only the leader's `dst` is
     /// defined (its lane id); other live lanes get `Undefined`.
-    fn exec_elect_sync(
-        &mut self,
-        pc: InstrId,
-        members: &[ThreadId],
-        dst: Option<RegId>,
-        dst_pred: RegId,
-    ) -> EvalResult<()> {
+    fn exec_elect_sync(&mut self, members: &[ThreadId], dst: Option<RegId>, dst_pred: RegId) {
         let leader = members[0];
         for &m in members {
             let is_leader = m == leader;
             let p = self.arena.bool_val(is_leader);
-            self.write_reg(m, pc, dst_pred, Value::Scalar(p))?;
+            self.write_reg(m, dst_pred, Value::Scalar(p));
             if let Some(reg) = dst {
                 let lane = m.0 % WARP_SIZE;
                 let v = if is_leader {
@@ -428,10 +412,9 @@ impl Interpreter<'_> {
                 } else {
                     self.arena.undefined()
                 };
-                self.write_reg(m, pc, reg, Value::Scalar(v))?;
+                self.write_reg(m, reg, Value::Scalar(v));
             }
         }
-        Ok(())
     }
 
     /// `redux.sync.op.type d, a, membermask`: fold every mask lane's `a` through
@@ -469,7 +452,7 @@ impl Interpreter<'_> {
         }
         let result = acc.expect("execute_warp_op only fires for a nonempty mask");
         for &m in members {
-            self.write_reg(m, pc, dst, Value::Scalar(result))?;
+            self.write_reg(m, dst, Value::Scalar(result));
         }
         Ok(())
     }
@@ -578,7 +561,7 @@ impl Interpreter<'_> {
                     let byte = row_addr[i][(lane / 4) as usize] + (lane % 4) as u64 * 4;
                     self.mem_read(m, pc, MemSpace::Shared, byte, 4)?
                 };
-                self.write_reg(m, pc, *reg, v)?;
+                self.write_reg(m, *reg, v);
             }
         }
         Ok(())
@@ -835,7 +818,7 @@ impl Interpreter<'_> {
                                 what: "incomplete wmma fragment".to_string(),
                             });
                         };
-                        self.write_reg(m, pc, *reg, Value::Pair(l, h))?;
+                        self.write_reg(m, *reg, Value::Pair(l, h));
                     }
                 }
             }
@@ -900,7 +883,7 @@ impl Interpreter<'_> {
         for &m in members {
             let lane = m.0 % WARP_SIZE;
             for elem in m16n16k16_f16::matrix_cd_f32(lane) {
-                let v = self.read_reg(m, pc, src[elem.reg_idx])?;
+                let v = self.read_reg(m, src[elem.reg_idx]);
                 let off = elem_offset(*layout, elem.row, elem.col, stride);
                 let byte = base + off * 4;
                 self.mem_write(m, pc, *space, byte, 4, v)?;
@@ -1174,7 +1157,7 @@ impl Interpreter<'_> {
                     Some(v) => v,
                     None => Value::Scalar(self.arena.undefined()),
                 };
-                self.write_reg(m, pc, reg, v)?;
+                self.write_reg(m, reg, v);
             }
         }
         Ok(())
@@ -1225,34 +1208,6 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// A converged `wgmma.fence`/`commit_group`/`wait_group`: each live lane
-    /// updates its own wgmma-group state; a wait completes the shares it
-    /// releases into the op's `exit` generation.
-    fn exec_wgmma_hazard_op(
-        &mut self,
-        pc: InstrId,
-        members: &[ThreadId],
-        instr: &LoweredInstr,
-        exit: GenerationId,
-    ) {
-        for &t in members {
-            let wgmma = &mut self.threads[t].wgmma;
-            match instr {
-                LoweredInstr::WgmmaFence => wgmma.fence(),
-                LoweredInstr::WgmmaCommitGroup => {
-                    wgmma.commit_group();
-                    self.graph
-                        .group_commit(tix(t), point(pc), GroupFamily::Wgmma);
-                }
-                LoweredInstr::WgmmaWaitGroup { n } => {
-                    let released = wgmma.wait_group(*n);
-                    self.record_wgmma_released(t, &released, exit);
-                }
-                other => unreachable!("{:?} is not a wgmma hazard op", other),
-            }
-        }
-    }
-
     /// Place one lane's packed-f16 fragment registers into a matrix grid.
     fn gather_f16_fragment(
         &mut self,
@@ -1263,7 +1218,7 @@ impl Interpreter<'_> {
         grid: &mut Grid,
     ) -> EvalResult<()> {
         for elem in elems {
-            let v = self.read_reg(m, pc, regs[elem.reg_idx])?;
+            let v = self.read_reg(m, regs[elem.reg_idx]);
             let Value::Pair(lo, hi) = v else {
                 return Err(EvalError::ValueKindMismatch {
                     thread: m,
@@ -1289,7 +1244,7 @@ impl Interpreter<'_> {
         grid: &mut Grid,
     ) -> EvalResult<()> {
         for elem in elems {
-            let v = self.read_reg(m, pc, regs[elem.reg_idx])?;
+            let v = self.read_reg(m, regs[elem.reg_idx]);
             let Value::Quad(b0, b1, b2, b3) = v else {
                 return Err(EvalError::ValueKindMismatch {
                     thread: m,
@@ -1321,7 +1276,7 @@ impl Interpreter<'_> {
         grid: &mut Grid,
     ) -> EvalResult<()> {
         for elem in elems {
-            let v = self.read_reg(m, pc, regs[elem.reg_idx])?;
+            let v = self.read_reg(m, regs[elem.reg_idx]);
             let Value::Scalar(e) = v else {
                 return Err(EvalError::ValueKindMismatch {
                     thread: m,

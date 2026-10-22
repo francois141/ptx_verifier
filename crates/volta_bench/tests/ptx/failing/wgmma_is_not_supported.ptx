@@ -2,11 +2,16 @@
 .target sm_90a
 .address_size 64
 
-.visible .entry k()
+// `shf` writes accumulator %d0 of a pending wgmma.mma_async before the
+// wgmma.wait_group that releases it, undefined behavior that Volta used to
+// verify. Volta does not support wgmma at the moment, so it rejects the kernel.
+.visible .entry k(
+    .param .u64 k_param_0
+)
 {
     .reg .pred %p<3>;
-    .reg .b32 %r<2>;
-    .reg .b64 %rd<5>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<6>;
     .reg .f32 %f<2>;
     .reg .f32 %d<4>;
     .shared .align 16 .b8 a_row[256];
@@ -16,17 +21,17 @@
     setp.eq.u32 %p1, %r0, 0;
     mov.u64 %rd1, a_row;
     mov.u64 %rd2, b_col;
-    bar.sync 0;
-
     shr.u64 %rd3, %rd1, 4;
     shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd3, %rd3, 0x80000;
+    or.b64 %rd4, %rd4, 0x80000;
     setp.ne.u32 %p2, %r0, %r0;
-
+    ld.param.u64 %rd5, [k_param_0];
     wgmma.fence.sync.aligned;
     wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
     wgmma.commit_group.sync.aligned;
-    // No wait_group yet - %d0 is still pending when written below.
-    mov.f32 %f1, 0f00000000;
-    mov.f32 %d0, %f1;
+    shf.l.wrap.b32 %d0, %r0, %r0, 0;
+    wgmma.wait_group.sync.aligned 0;
+    @%p1 st.global.f32 [%rd5], %d1;
     ret;
 }

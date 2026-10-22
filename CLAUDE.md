@@ -278,7 +278,7 @@ instruction family, each file depending only on `context` and `error`:
   `control.rs` (`bra`, `call`, `bar`, `fence`), `warp.rs` (shfl/elect/redux,
   bar.warp.sync, ldmatrix/stmatrix, `mma.sync`, wmma),
   `mbarrier.rs`, `tma.rs` (tensormap objects, `cp.async.bulk{.tensor}`),
-  `tcgen05.rs`, `wgmma.rs`, `clc.rs`; tests in `lower/tests.rs`
+  `tcgen05.rs`, `clc.rs`; tests in `lower/tests.rs`
 - `LoweredProgram` - `IdVec<InstrId, LoweredInstr>` + `SymbolTable` + `SourceMap`
 - `LoweredInstr` variants: `LoadParam`, `Load`, `Store`, `Mov`, `BinOp`, `UnaryOp`, `Fma`, `Mad`, `MulWide`, `MulHi`, `Setp`, `Selp`, `Cvt`, `Bra`, `Ret`, `Exit`, `BarSync`, `BarWarpSync`, `ShflSync`, `Ldmatrix`, `Mma`, `WmmaLoad/Store/Mma`, `Trap`, etc.
 - `SymbolTable` - Register/param/label name → ID resolution; assigns addresses to shared/local/module-global variables
@@ -287,6 +287,7 @@ instruction family, each file depending only on `context` and `error`:
 - The mbarrier retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` collapses to one blocking `MbarrierWaitParity` (`match_mbarrier_wait_loop`; the scheduler can block a thread, not spin it); a wait outside that exact three-statement window is a lowering error
 - `mbarrier.inval` is unsupported for now (after its state-space check): mbarrier operations are not memory accesses of the event graph and no check orders an object's other operations before its invalidation, so a late `arrive` racing with the reuse of its bytes would go unnoticed
 - `activemask` is unsupported for now: the interpreter does not model warp divergence, so inside a divergent branch it would report the other side's lanes as active too and hide, e.g., two sides each electing a leader that stores to the same address
+- `wgmma` is unsupported for now: every form (`mma_async{.sp}`, `fence`, `commit_group`, `wait_group`) is a lowering error, though the frontend still parses it
 - `define_instr_kinds!` generates the profiling table from one variant
   list: `KIND_COUNT`, `KIND_NAMES`, `kind_index()` (dense index for the
   interpreter's fixed-size counters), `kind_name()`
@@ -304,20 +305,18 @@ false (an implicit 1x1x1 cluster).
 The interpreter from the paper (per-thread round-robin symbolic execution):
 
 - `eval/interp.rs` - `Interpreter`: its state, `new`/`run`/`finish`, single-instruction evaluation into the arena (`step`), operand/register and memory access, structured-CTA concreteness checks
-- `eval/schedule.rs` - the scheduler: run a ready thread until it blocks or exits, then fire a complete group (warp/warpgroup rendezvous, mbarrier phase, named barrier per the paper's Sync rule); when nothing can fire, `Interpreter::run` ends `Stuck` (deadlock). Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync' rule for *firing*: exited threads count as arrived; tensor-core ops are the one deliberate exception (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead). The interpreter runs one candidate schedule and performs **no** data-race or async-hazard checking (the former χ detector, `eval/race.rs`, was removed; graph-based verification replaces it)
+- `eval/schedule.rs` - the scheduler: run a ready thread until it blocks or exits, then fire a complete group (warp rendezvous, mbarrier phase, named barrier per the paper's Sync rule); when nothing can fire, `Interpreter::run` ends `Stuck` (deadlock). Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync' rule for *firing*: exited threads count as arrived; tensor-core ops are the one deliberate exception (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead). The interpreter runs one candidate schedule and performs **no** data-race or async-hazard checking (the former χ detector, `eval/race.rs`, was removed; graph-based verification replaces it)
 - `eval/arithm.rs` - arithmetic evaluation as a second `impl Interpreter`: binary/unary ops, comparisons, `cvt`, the `ex2`/`lg2` base-conversion folds, the packed-pair/quad bitwise ops and `shf`, and integer/width canonicalization of operands and of values crossing a register or memory width
 - `eval/cp_async.rs` - non-bulk `cp.async`: the pending copy and its landing at a completion point
 - `eval/tcgen05.rs` - `tcgen05.mma` evaluation over the descriptors `eval/tcgen05_mma.rs` decodes
-- `eval/wgmma_hazards.rs` - the per-thread `wgmma` register-hazard state (`WgmmaRegState`) and the register accesses that check it
 - `eval/tensormap_replace.rs` - `tensormap.replace` evaluation (fields kept in `eval/tensor_map_table.rs`)
 - `eval/async_bulk.rs` - `cp.async.bulk{.tensor}` evaluation as another `impl Interpreter`: the TMA tensor copy and the plain bulk copy (global to shared, mbarrier-completed); the data lands eagerly at issue and the copy's `complete_tx` is applied then
 - `eval/cluster_launch_control.rs` - `clusterlaunchcontrol.try_cancel`/`query_cancel` under the *never-steal* assumption: no cancel request ever succeeds, so every response is the declined one (encoded as 16 zero bytes, written like a `cp.async.bulk` destination - async proxy, 16-byte `complete_tx`); `is_canceled` always decodes `false`, any other value is rejected as unmodeled, and the ISA's UB cases (`get_first_ctaid` of a declined response, a new request after a decline was observed) are `EvalError::ClusterLaunchControlMisuse`; `.multicast::cluster::all` is rejected (it writes other CTAs' shared memory)
 - `mapa.shared::cluster` assumes every cluster holds exactly one CTA: rank 0 maps an address to itself, any other concrete rank is `EvalError::MapaRankOutsideCluster`, and the generic (spaceless) form is rejected at lowering
 - `eval/value.rs` - `Value::{Scalar, Pair}` (`Pair` = packed f16 halves in a 32-bit register) and per-thread `RegFile`
 - `eval/memory.rs` - byte-addressed granule memory; 4-byte reads combine two 2-byte granules into a `Pair`, 2-byte accesses split `Pair` granules; program writes are `dirty` (the output footprint)
-- `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the `.sync.aligned` `wgmma.fence`/`commit_group`/`wait_group`, whose register-hazard state stays per-thread): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `eval/fragments.rs` tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
-- `eval/warpgroup.rs` - `wgmma.mma_async`: a rendezvous of the full 128-thread warpgroup (exited threads count as arrived), computed eagerly at issue; each member's wgmma-groups record the op (`WgmmaOpId`) until its `wgmma.wait_group` releases it (a warp's wait covers the groups it committed itself). In the graph each member has a share (an async op); the warpgroup op completes as a whole, so a member warp's wait tracks every share of the instances it releases
-- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, the wgmma register hazards, etc.); data races and async hazards are not `EvalError`s but graph check failures, and a deadlock is the stuck terminal state the graph records
+- `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the warp-scoped `tcgen05` ops): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `eval/fragments.rs` tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
+- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.); data races and async hazards are not `EvalError`s but graph check failures, and a deadlock is the stuck terminal state the graph records
 
 Key semantics: input-array symbols materialize lazily on first read; reads of
 never-written registers/shared bytes yield `Undefined` (an error only if it
@@ -570,9 +569,8 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   `tensor_order_tests.rs` (Algorithm 5: the Tensor Memory cell and sides),
   `resource_lifetime_tests.rs` (Algorithm 7: the use freed while unordered, or
   the allocation never freed).
-- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors, the
-  wgmma register hazards) and deadlocks (the trace generator's diagnostic,
-  `GraphReport::deadlock`).
+- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors) and
+  deadlocks (the trace generator's diagnostic, `GraphReport::deadlock`).
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
   detail, each `Verified`, must not be proved equivalent.

@@ -15,7 +15,6 @@ mod tcgen05;
 mod tests;
 mod tma;
 mod warp;
-mod wgmma;
 
 use id_collections::{Id, IdVec};
 use volta_frontend::ast::{
@@ -64,9 +63,6 @@ use tma::{
 use warp::{
     lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_redux_sync,
     lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
-};
-use wgmma::{
-    lower_wgmma_commit_group, lower_wgmma_fence, lower_wgmma_mma_async, lower_wgmma_wait_group,
 };
 
 /// Lower a PTX function to a LoweredProgram
@@ -493,25 +489,17 @@ fn lower_parsed_instruction(
             operands,
         } => lower_tcgen05_commit(ctx, modifiers, operands, predicate),
         ParsedInstruction::Other {
-            kind: InstrKind::WgmmaMmaAsync,
-            modifiers,
-            operands,
-        } => lower_wgmma_mma_async(ctx, modifiers, operands, predicate),
-        ParsedInstruction::Other {
-            kind: InstrKind::WgmmaFence,
-            modifiers,
-            operands,
-        } => lower_wgmma_fence(ctx, modifiers, operands, predicate),
-        ParsedInstruction::Other {
-            kind: InstrKind::WgmmaCommitGroup,
-            modifiers,
-            operands,
-        } => lower_wgmma_commit_group(ctx, modifiers, operands, predicate),
-        ParsedInstruction::Other {
-            kind: InstrKind::WgmmaWaitGroup,
-            modifiers,
-            operands,
-        } => lower_wgmma_wait_group(ctx, modifiers, operands, predicate),
+            kind:
+                kind @ (InstrKind::WgmmaMmaAsync
+                | InstrKind::WgmmaMmaAsyncSp
+                | InstrKind::WgmmaFence
+                | InstrKind::WgmmaCommitGroup
+                | InstrKind::WgmmaWaitGroup),
+            ..
+        } => Err(unsupported(
+            kind.to_string(),
+            "wgmma is not supported by Volta at the moment",
+        )),
         ParsedInstruction::Other {
             kind: InstrKind::Stmatrix,
             modifiers,

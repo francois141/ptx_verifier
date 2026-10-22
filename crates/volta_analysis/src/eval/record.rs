@@ -14,8 +14,7 @@ use volta_graph::{
 
 use crate::eval::interp::{BarrierArrivals, Interpreter, Status};
 use crate::eval::value::{MbarrierId, Value};
-use crate::eval::warpgroup::WgmmaOpId;
-use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
+use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::{InstrId, LoweredInstr, MemSpace};
 
 /// Who performs a memory access.
@@ -49,7 +48,7 @@ struct MbarrierRecord {
     phases: Vec<GenerationId>,
 }
 
-/// One warp's (or warpgroup's) collective object and its next instance number.
+/// One warp's collective object and its next instance number.
 #[derive(Debug, Clone, Copy)]
 struct CollectiveObject {
     object: SyncObjectId,
@@ -73,16 +72,10 @@ pub(in crate::eval) struct Recording {
     forming_barriers: HashMap<u32, GenerationId>,
     warps: HashMap<u32, CollectiveObject>,
     forming_warp_ops: HashMap<(u32, InstrId, u32), FormingCollective>,
-    warpgroups: HashMap<u32, CollectiveObject>,
-    forming_warpgroup_ops: HashMap<(u32, InstrId), FormingCollective>,
     mbarriers: HashMap<MbarrierId, MbarrierRecord>,
     group_waits: HashMap<ThreadId, (SyncObjectId, u32)>,
     unobserved_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
     tcgen05_pending: HashMap<(u32, Tcgen05Wait), Vec<AsyncOpId>>,
-    wgmma_parts: HashMap<(WgmmaOpId, ThreadId), AsyncOpId>,
-    /// Every member share of each wgmma op, and the waits already tracking them.
-    wgmma_shares: HashMap<WgmmaOpId, (Vec<AsyncOpId>, Vec<GenerationId>)>,
-    next_wgmma_instance: u32,
 }
 
 pub(in crate::eval) fn tix(t: ThreadId) -> ThreadIx {
@@ -339,7 +332,7 @@ impl Interpreter<'_> {
     }
 
     // =====================================================================
-    // Warp and warpgroup collectives
+    // Warp collectives
     // =====================================================================
 
     /// `t` arrives at the warp op at `pc` over `mask`.
@@ -394,50 +387,6 @@ impl Interpreter<'_> {
             .contribute(tix(t), point(pc), forming.entry, ContributionKind::Blocking);
     }
 
-    /// `t` arrives at the warpgroup op at `pc`.
-    pub(in crate::eval) fn record_warpgroup_op_arrival(&mut self, t: ThreadId, pc: InstrId) {
-        let warpgroup = t.0 / WARPGROUP_SIZE;
-        let key = (warpgroup, pc);
-        let forming = match self.rec.forming_warpgroup_ops.get(&key) {
-            Some(&f) => f,
-            None => {
-                let collective =
-                    self.rec
-                        .warpgroups
-                        .entry(warpgroup)
-                        .or_insert_with(|| CollectiveObject {
-                            object: self
-                                .graph
-                                .sync_object(SyncObjectKind::WarpgroupCollective { warpgroup }),
-                            next: 0,
-                        });
-                let index = collective.next;
-                collective.next += 1;
-                let object = collective.object;
-                let entry = self.graph.open_generation(
-                    object,
-                    index,
-                    GenerationKind::Collective {
-                        pc: point(pc),
-                        mask: u32::MAX,
-                        side: CollectiveSide::Entry,
-                        ordering: MemberOrdering::ExecutionOnly,
-                    },
-                );
-                let f = FormingCollective {
-                    entry,
-                    index,
-                    object,
-                    ordering: MemberOrdering::ExecutionOnly,
-                };
-                self.rec.forming_warpgroup_ops.insert(key, f);
-                f
-            }
-        };
-        self.graph
-            .contribute(tix(t), point(pc), forming.entry, ContributionKind::Blocking);
-    }
-
     /// A collective fires: its entry completes (exited `lanes` counted), its live `members`
     /// resume into the op, and its exit generation opens for the op's completions.
     fn record_collective_entry(
@@ -484,27 +433,6 @@ impl Interpreter<'_> {
             .filter(move |lane| mask & (1 << lane) != 0)
             .map(move |lane| base + lane);
         self.record_collective_entry(forming, (pc, mask), members, lanes)
-    }
-
-    /// The warpgroup op at `pc` fires for its live `members`; returns its exit generation.
-    pub(in crate::eval) fn record_warpgroup_op_entry(
-        &mut self,
-        pc: InstrId,
-        members: &[ThreadId],
-    ) -> GenerationId {
-        let warpgroup = members[0].0 / WARPGROUP_SIZE;
-        let forming = self
-            .rec
-            .forming_warpgroup_ops
-            .remove(&(warpgroup, pc))
-            .expect("a firing warpgroup op was arrived at");
-        let base = warpgroup * WARPGROUP_SIZE;
-        self.record_collective_entry(
-            forming,
-            (pc, u32::MAX),
-            members,
-            base..base + WARPGROUP_SIZE,
-        )
     }
 
     /// The op's live `members` leave through its `exit` generation.
@@ -724,25 +652,6 @@ impl Interpreter<'_> {
                     missing,
                 }
             }
-            Status::AtWarpgroupOp => {
-                let warpgroup = t.0 / WARPGROUP_SIZE;
-                let forming = self.rec.forming_warpgroup_ops[&(warpgroup, state.pc)];
-                let base = warpgroup * WARPGROUP_SIZE;
-                let missing = (base..base + WARPGROUP_SIZE)
-                    .map(ThreadId)
-                    .filter(|&m| {
-                        (m.0 as usize) < self.threads.len()
-                            && !matches!(self.threads[m].status, Status::Exited)
-                            && !(self.threads[m].status == Status::AtWarpgroupOp
-                                && self.threads[m].pc == state.pc)
-                    })
-                    .map(tix)
-                    .collect();
-                BlockedOn::Collective {
-                    generation: forming.entry,
-                    missing,
-                }
-            }
             Status::AtMbarrier { id, phase_parity } => {
                 let (completed_phases, arrived, expected, pending_tx) =
                     self.mbarriers.forming_state(id);
@@ -841,43 +750,6 @@ impl Interpreter<'_> {
             .unwrap_or_default();
         for op in ops {
             self.graph.track(op, exit, 0);
-        }
-    }
-
-    pub(in crate::eval) fn next_wgmma_instance(&mut self) -> u32 {
-        let n = self.rec.next_wgmma_instance;
-        self.rec.next_wgmma_instance += 1;
-        n
-    }
-
-    /// Member `t`'s share of wgmma op `id` is graph op `op`.
-    pub(in crate::eval) fn record_wgmma_part(&mut self, id: WgmmaOpId, t: ThreadId, op: AsyncOpId) {
-        self.rec.wgmma_parts.insert((id, t), op);
-        self.rec.wgmma_shares.entry(id).or_default().0.push(op);
-    }
-
-    /// Member `t`'s `wgmma.wait_group` released `released` into `exit`. The warpgroup op
-    /// completes as a whole, so the wait observes every member's share of it.
-    pub(in crate::eval) fn record_wgmma_released(
-        &mut self,
-        t: ThreadId,
-        released: &[WgmmaOpId],
-        exit: GenerationId,
-    ) {
-        for id in released {
-            if self.rec.wgmma_parts.remove(&(*id, t)).is_none() {
-                continue;
-            }
-            let Some((shares, waits)) = self.rec.wgmma_shares.get_mut(id) else {
-                continue;
-            };
-            if waits.contains(&exit) {
-                continue;
-            }
-            waits.push(exit);
-            for &op in shares.iter() {
-                self.graph.track(op, exit, 0);
-            }
         }
     }
 

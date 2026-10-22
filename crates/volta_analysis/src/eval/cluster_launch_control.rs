@@ -79,7 +79,8 @@ impl<'p> Interpreter<'p> {
         self.clc_observed_decline
             .get_or_insert(ObservedDecline { thread: t, pc });
         let canceled = self.arena.bool_val(false);
-        self.write_reg(t, pc, dst, Value::Scalar(canceled))
+        self.write_reg(t, dst, Value::Scalar(canceled));
+        Ok(())
     }
 
     /// Every response is declined, and decoding a ctaid out of a declined
@@ -106,7 +107,7 @@ impl<'p> Interpreter<'p> {
         pc: InstrId,
         response: RegId,
     ) -> EvalResult<()> {
-        let value = self.read_reg(t, pc, response)?;
+        let value = self.read_reg(t, response);
         let declined = value.as_quad().is_some_and(|(w0, w1, w2, w3)| {
             [w0, w1, w2, w3]
                 .iter()

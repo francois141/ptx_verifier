@@ -515,6 +515,30 @@ fn test_clusterlaunchcontrol_query_cancel_forms() {
     );
 }
 
+#[test]
+fn test_wgmma_is_not_supported() {
+    for (mnemonic, body) in [
+        ("wgmma.fence", "wgmma.fence.sync.aligned;"),
+        ("wgmma.commit_group", "wgmma.commit_group.sync.aligned;"),
+        ("wgmma.wait_group", "wgmma.wait_group.sync.aligned 0;"),
+        (
+            "wgmma.mma_async",
+            "wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 \
+             {%f1, %f2, %f3, %f4}, %rd1, %rd2, 1, 1, 1, 0, 0;",
+        ),
+        (
+            "wgmma.mma_async.sp",
+            "wgmma.mma_async.sp.sync.aligned.m64n8k32.f32.f16.f16 \
+             {%f1, %f2, %f3, %f4}, %rd1, %rd2, %r1, 0, 1, 1, 1, 0, 0;",
+        ),
+    ] {
+        assert_rejected(
+            body,
+            &format!("{mnemonic} wgmma is not supported by Volta at the moment"),
+        );
+    }
+}
+
 /// Lower `body` (which must contain exactly one clamp-capable
 /// instruction - BinOp/Fma/Cvt) and return that instruction's clamp.
 fn lowered_clamp(body: &str) -> Option<Clamp> {
