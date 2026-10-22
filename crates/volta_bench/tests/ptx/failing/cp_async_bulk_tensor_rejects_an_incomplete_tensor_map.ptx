@@ -8,11 +8,19 @@
 {
     .reg .b32 %r<3>;
     .reg .b64 %rd<2>;
+    .reg .b32 %tid;
+    .reg .pred %pz;
 
     .shared .align 128 .b8 sd0[128];
     .global .align 128 .b8 gbl[128];
     .shared .align 8 .b8 full[8];
     .shared .align 16 .b8 sa[32];
+
+    // Thread 0 does everything but the copy, which the whole warp executes
+    // (`.sync.aligned`).
+    mov.u32 %tid, %tid.x;
+    setp.ne.u32 %pz, %tid, 0;
+    @%pz bra COPY;
 
     ld.param.u64 %rd1, [k_param_0];
 
@@ -32,11 +40,14 @@
     tensormap.replace.tile.swizzle_mode.shared::cta.b1024.b32 [sd0], 0;
     tensormap.replace.tile.swizzle_atomicity.shared::cta.b1024.b32 [sd0], 0;
 
+COPY:
     tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.release.gpu.sync.aligned [gbl], [sd0], 128;
+    @%pz bra END;
     fence.proxy.tensormap::generic.acquire.gpu [gbl], 128;
 
     mov.u32 %r1, 0;
     mov.u32 %r2, 0;
     cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [sa], [gbl, {%r1, %r2}], [full];
+END:
     ret;
 }

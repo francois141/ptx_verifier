@@ -1659,26 +1659,10 @@ impl<'p> Interpreter<'p> {
                 self.exec_tensormap_replace(t, pc, *space, addr_base, *addr_offset, field)?;
             }
 
-            LoweredInstr::TensormapCpFenceproxy {
-                dst_base,
-                dst_offset,
-                src_base,
-                src_offset,
-            } => {
-                let dst = self.effective_addr(t, pc, dst_base, *dst_offset)?;
-                let src = self.effective_addr(t, pc, src_base, *src_offset)?;
-                if self
-                    .tensor_maps
-                    .copy_entry(MemSpace::Global, dst, MemSpace::Shared, src)
-                    .is_none()
-                {
-                    return Err(EvalError::TensorMapNotFound {
-                        thread: t,
-                        pc,
-                        space: MemSpace::Shared,
-                        addr: src,
-                    });
-                }
+            // `.sync.aligned`: the warp copies the tensor map once all its lanes arrive.
+            LoweredInstr::TensormapCpFenceproxy { .. } => {
+                self.block_at_warp_op(t, pc, u32::MAX)?;
+                return Ok(());
             }
 
             LoweredInstr::FenceProxyTensormap => {}

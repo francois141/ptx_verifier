@@ -1,6 +1,6 @@
 //! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`, the
-//! warp-scoped `tcgen05` ops): run once all lanes reach the same pc and mask, with each memory
-//! access attributed to its owning lane (`fragments` tables).
+//! warp-scoped `tcgen05` ops, `tensormap.cp_fenceproxy`): run once all lanes reach the same pc
+//! and mask, with each memory access attributed to its owning lane (`fragments` tables).
 
 use volta_frontend::ast::ScalarType;
 
@@ -12,7 +12,8 @@ use crate::eval::fragments::{
     FragmentElement, m16n8k4_tf32, m16n8k8_tf32, m16n8k16_f16, m16n8k32_byte, m16n16k16_f16,
 };
 use crate::eval::interp::Interpreter;
-use crate::eval::record::{Tcgen05Wait, point, tix};
+use crate::eval::record::{AccessOrigin, Tcgen05Wait, point, tix};
+use crate::eval::tensor_map_table::TENSOR_MAP_BYTES;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
@@ -190,6 +191,19 @@ impl Interpreter<'_> {
                 };
                 self.record_tcgen05_wait(members[0].0 / WARP_SIZE, wait, exit);
             }
+            LoweredInstr::TensormapCpFenceproxy {
+                dst_base,
+                dst_offset,
+                src_base,
+                src_offset,
+            } => {
+                self.exec_tensormap_cp_fenceproxy(
+                    pc,
+                    members,
+                    (dst_base, *dst_offset),
+                    (src_base, *src_offset),
+                )?;
+            }
             other => unreachable!("{:?} passed warp-op preconditions", other),
         }
 
@@ -288,6 +302,19 @@ impl Interpreter<'_> {
             // The ISA states no exited-lane UB for `tcgen05.wait::ld`/`::st`
             // (unlike `.alloc`/`.ld`/...), so a partial warp is accepted.
             LoweredInstr::Tcgen05Wait { .. } => Ok(()),
+            // `.aligned`: every lane of the warp must execute this very instruction, so a lane
+            // that exited instead is UB.
+            LoweredInstr::TensormapCpFenceproxy { .. } if members.len() != WARP_SIZE as usize => {
+                Err(EvalError::WarpMismatch {
+                    pc,
+                    reason: format!(
+                        "tensormap.cp_fenceproxy is .aligned, so all 32 warp lanes must \
+                         execute it, but only {} are live",
+                        members.len()
+                    ),
+                })
+            }
+            LoweredInstr::TensormapCpFenceproxy { .. } => Ok(()),
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),
@@ -1071,6 +1098,47 @@ impl Interpreter<'_> {
             .tmem_alloc(tix(leader), point(pc), taddr as u16, num_cols as u16);
         let value = Value::Scalar(self.arena.int(taddr as i64));
         self.mem_write(leader, pc, MemSpace::Shared, dst_addr, 4, value)
+    }
+
+    /// `tensormap.cp_fenceproxy`: copy the tensor map at shared `src` to global `dst` once per
+    /// firing (warp-uniform operands), attributed to the leader lane.
+    fn exec_tensormap_cp_fenceproxy(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        (dst_base, dst_offset): (&Operand, i64),
+        (src_base, src_offset): (&Operand, i64),
+    ) -> EvalResult<()> {
+        let dst = self.uniform_concrete(pc, members, dst_base, "tensormap.cp_fenceproxy dst")?;
+        let src = self.uniform_concrete(pc, members, src_base, "tensormap.cp_fenceproxy src")?;
+        let dst = (dst as u64).wrapping_add(dst_offset as u64);
+        let src = (src as u64).wrapping_add(src_offset as u64);
+        let leader = members[0];
+        self.check_bounds(leader, pc, MemSpace::Shared, src, TENSOR_MAP_BYTES)?;
+        self.check_bounds(leader, pc, MemSpace::Global, dst, TENSOR_MAP_BYTES)?;
+        if self
+            .tensor_maps
+            .copy_entry(MemSpace::Global, dst, MemSpace::Shared, src)
+            .is_none()
+        {
+            return Err(EvalError::TensorMapNotFound {
+                thread: leader,
+                pc,
+                space: MemSpace::Shared,
+                addr: src,
+            });
+        }
+        self.record_mem_access(
+            leader,
+            pc,
+            MemSpace::Shared,
+            src,
+            TENSOR_MAP_BYTES,
+            None,
+            AccessOrigin::Thread,
+        );
+        self.record_opaque_write(leader, pc, MemSpace::Global, dst, TENSOR_MAP_BYTES);
+        Ok(())
     }
 
     /// `tcgen05.dealloc`: free the warp-uniform range at `taddr`.

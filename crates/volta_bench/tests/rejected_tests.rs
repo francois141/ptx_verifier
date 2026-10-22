@@ -312,13 +312,51 @@ fn test_tcgen05_st_rejects_wrong_quadrant_address() {
     }
 }
 
+/// `tensormap.cp_fenceproxy` is `.sync.aligned`: thread 0 executes it while lanes 1-31 of its
+/// warp exit, so the warp never executes it as one.
+#[test]
+fn test_cp_fenceproxy_by_one_lane_of_a_warp_is_rejected() {
+    let module = ptx!(parse "failing/cp_fenceproxy_by_one_lane_of_a_warp_is_rejected");
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    let err = run_kernel(&module, None, config).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::WarpMismatch { reason, .. })
+                if reason.contains("tensormap.cp_fenceproxy is .aligned")
+        ),
+        "expected a warp mismatch, got: {}",
+        err
+    );
+}
+
 /// `cp.async.bulk.tensor` on a tensor-map missing a field (`.fill_mode`) must
 /// error naming it: an incomplete map is a kernel bug, not a gap to fill with
 /// a default.
 #[test]
 fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
     let module = ptx!(parse "failing/cp_async_bulk_tensor_rejects_an_incomplete_tensor_map");
-    let mut config = AnalysisConfig::new((1, 1, 1));
+    let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "in".to_string(),
         base: 0x10000,

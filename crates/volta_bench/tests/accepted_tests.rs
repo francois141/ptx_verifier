@@ -269,7 +269,7 @@ fn test_cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds() {
         ptx_case!("success/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds"),
         ptx_case!("success/cp_async_bulk_tensor_cta_and_cluster_destinations_copy_in_bounds_cta"),
     ] {
-        let mut config = AnalysisConfig::new((1, 1, 1));
+        let mut config = AnalysisConfig::new((32, 1, 1));
         config.arrays = vec![
             ArrayDef {
                 name: "in".to_string(),
@@ -1223,7 +1223,7 @@ fn test_cp_async_cross_thread_pattern_without_fence_is_clean() {
 /// as the bulk-tensor test.
 #[test]
 fn test_cp_async_bulk_tensor_without_fence_proxy_async_is_clean() {
-    let mut config = AnalysisConfig::new((1, 1, 1));
+    let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![
         ArrayDef {
             name: "in".to_string(),

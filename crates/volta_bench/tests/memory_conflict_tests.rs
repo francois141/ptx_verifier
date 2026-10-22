@@ -287,7 +287,7 @@ fn test_cp_async_post_wait_cross_thread_read_without_sync_is_data_race() {
 #[test]
 fn test_cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard() {
     let module = ptx!(parse "execution_error/cp_async_bulk_tensor_read_without_waiting_is_an_inflight_hazard");
-    let mut config = AnalysisConfig::new((1, 1, 1));
+    let mut config = AnalysisConfig::new((32, 1, 1));
     config.arrays = vec![
         ArrayDef {
             name: "in".to_string(),

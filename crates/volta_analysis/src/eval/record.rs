@@ -124,11 +124,40 @@ impl Interpreter<'_> {
         value: Option<Value>,
         origin: AccessOrigin,
     ) {
+        let value = value.map(stored);
+        self.record_access(t, pc, space, addr, width, value, origin);
+    }
+
+    /// Record `t`'s write of an object Volta keeps outside the byte memory (a tensor map)
+    /// over its bytes `[addr, addr + width)`.
+    pub(in crate::eval) fn record_opaque_write(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+    ) {
+        let value = Some(StoredValue::Opaque);
+        self.record_access(t, pc, space, addr, width, value, AccessOrigin::Thread);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_access(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        space: MemSpace,
+        addr: u64,
+        width: u64,
+        value: Option<StoredValue>,
+        origin: AccessOrigin,
+    ) {
         let Some(space) = graph_space(space) else {
             return;
         };
         let (mode, value) = match value {
-            Some(v) => (AccessMode::Write, Some(self.graph.value(stored(v)))),
+            Some(v) => (AccessMode::Write, Some(self.graph.value(v))),
             None => (AccessMode::Read, None),
         };
         let (proxy, role) = match origin {

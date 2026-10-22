@@ -141,7 +141,7 @@ fn test_tma_uses_tensormap_built_by_other_thread_without_sync() {
 fn test_tma_without_tensormap_acquire_fence() {
     assert_not_verified(
         &ptx!(parse "false_positive/tma_without_tensormap_acquire_fence"),
-        tma_config(1),
+        tma_config(32),
     );
 }
 
@@ -209,15 +209,6 @@ fn test_aligned_bar_sync_reached_on_different_iterations() {
     assert_not_verified(
         &ptx!(parse "false_positive/aligned_bar_sync_reached_on_different_iterations"),
         out_config(32, 4, 1),
-    );
-}
-
-/// One lane of a full warp executes `tensormap.cp_fenceproxy ... .sync.aligned` (UB).
-#[test]
-fn test_cp_fenceproxy_sync_aligned_by_one_lane() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/cp_fenceproxy_sync_aligned_by_one_lane"),
-        tma_config(32),
     );
 }
 

@@ -10,6 +10,9 @@ use crate::ir::tensor_map::{
     TensorSwizzleMode,
 };
 
+/// The size of a tensor-map object (`.b1024`), the footprint of every access to it.
+pub(in crate::eval) const TENSOR_MAP_BYTES: u64 = 128;
+
 /// One tensor-map object's fields, as written by `tensormap.replace` (concrete, since they
 /// shape addresses). Per-dimension fields are sparse by `ord` since `.rank` may come later;
 /// completeness is checked only when a consumer (`cp.async.bulk.tensor`) uses the entry.

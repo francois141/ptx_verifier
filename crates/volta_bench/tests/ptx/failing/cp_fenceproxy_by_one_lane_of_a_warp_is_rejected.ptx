@@ -2,6 +2,9 @@
 .target sm_100a
 .address_size 64
 
+// Thread 0 alone executes the `.sync.aligned` tensormap.cp_fenceproxy while
+// lanes 1-31 of its warp exit: `.aligned` requires every lane of the warp to
+// execute that same instruction, so the kernel is undefined.
 .visible .entry k(
     .param .u64 k_param_0,
     .param .u64 k_param_1
