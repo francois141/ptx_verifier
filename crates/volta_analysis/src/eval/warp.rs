@@ -4,7 +4,7 @@
 
 use volta_frontend::ast::ScalarType;
 
-use volta_graph::{AccessMode, AsyncOpKind, OperandRole};
+use volta_graph::{AccessMode, AsyncOpKind, FenceKind, OperandRole};
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
@@ -1102,7 +1102,7 @@ impl Interpreter<'_> {
     }
 
     /// `tensormap.cp_fenceproxy`: copy the tensor map at shared `src` to global `dst` once per
-    /// firing (warp-uniform operands), attributed to the leader lane.
+    /// firing (warp-uniform operands), then release it, attributed to the leader lane.
     fn exec_tensormap_cp_fenceproxy(
         &mut self,
         pc: InstrId,
@@ -1139,6 +1139,8 @@ impl Interpreter<'_> {
             AccessOrigin::Thread,
         );
         self.record_opaque_write(leader, pc, MemSpace::Global, dst, TENSOR_MAP_BYTES);
+        self.graph
+            .fence(tix(leader), point(pc), FenceKind::TensormapRelease);
         Ok(())
     }
 

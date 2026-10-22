@@ -247,6 +247,12 @@ impl EventGraph {
                 EventKind::Fence(FenceKind::Tcgen05BeforeThreadSync) => {
                     writeln!(out, "fence tcgen05::before_thread_sync")?
                 }
+                EventKind::Fence(FenceKind::TensormapRelease) => {
+                    writeln!(out, "fence proxy.tensormap release")?
+                }
+                EventKind::Fence(FenceKind::TensormapAcquire { addr }) => {
+                    writeln!(out, "fence proxy.tensormap acquire {:#x}", addr)?
+                }
                 EventKind::Fence(FenceKind::Tcgen05AfterThreadSync) => {
                     writeln!(out, "fence tcgen05::after_thread_sync")?
                 }

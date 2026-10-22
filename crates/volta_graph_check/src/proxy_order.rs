@@ -17,20 +17,28 @@
 //!   overlapping pair with a write is ordered and `ORDEREDCONFLICTS` orients it by trace order.
 //! * `SAMEPROXY`: both effects use the same proxy. The check never consults the target: a
 //!   proxy is a property of the instruction alone. Virtual aliases are not modeled.
-//! * `ISPROXYFENCE`: an explicit `fence.proxy.async` (over one space, or every space), and,
+//! * `ISPROXYFENCE`: an explicit `fence.proxy.async` (over one space, or every space), a
+//!   tensor-map release (`fence.proxy.tensormap::generic.release`, or the one
+//!   `tensormap.cp_fenceproxy` ends with) or acquire (`...acquire [map], 128`), and,
 //!   implicitly, a validated completion observation: a release of a generation that joins an
 //!   async operation's completion, for that operation's effects.
-//! * `COVERS(f, a, b)`: an explicit fence covers either direction between the generic and the
-//!   async proxy in its space, when the thread of `a` or of `b` executes it; a completion
-//!   observation covers its operation's async-proxy effects before later generic accesses.
+//! * `COVERS(f, a, b)`: an explicit `fence.proxy.async` covers either direction between the
+//!   generic and the async proxy in its space, when the thread of `a` or of `b` executes it; a
+//!   completion observation covers its operation's effects before later generic accesses.
 //!   Every `R` path out of an async effect passes through such an observation, so an ordered
-//!   async-proxy -> generic pair is always covered; the search below runs for the generic ->
-//!   async-proxy pairs, where only an explicit fence can cover.
+//!   async-effect -> generic pair is always covered; the search below runs for the generic ->
+//!   async-proxy and generic -> tensor-map-proxy pairs, where only explicit fences can cover.
+//! * The tensor-map proxy fences are one-directional and come in pairs (PTX ISA 9.7.14.4):
+//!   a generic write `a` before a `cp.async.bulk.tensor`'s read `b` of its tensor map is
+//!   covered by a release on `a`'s thread that `a` reaches, ordered before an acquire of `b`'s
+//!   map on `b`'s issuing thread, which reaches `b`.
 //! * Search: for a later async-proxy effect `b`, it suffices to try, per actor (a thread, or one
 //!   async op) with conflicting generic effects on `b`'s bytes, its latest such effect `a`, and
 //!   on each candidate thread only its latest suitable fence `f` with `(f, b) ∈ R`: if that
 //!   pair is uncovered, so is the search, and if it is covered, program order (or the
 //!   operation's shared observers) covers the actor's earlier effects through the same `f`.
+//!   A tensor-map read tries the latest acquire of its map before it, then the writer's latest
+//!   release ordered before that acquire, the two whose clocks are the largest.
 //! * `Pass`: SUCCESS. `Fail`: the first UNPROVEDPROXYORDER(a, b). The design reports it as an
 //!   unproved obligation; Volta reports a race, since the memory model orders no cross-proxy
 //!   pair that no proxy fence covers.
@@ -53,14 +61,28 @@ pub struct ProxyEvidence {
     pub covered_pairs: u64,
 }
 
-/// UNPROVEDPROXYORDER(a, b): the generic-proxy effect `generic` and the later async-proxy
-/// effect `asynchronous` conflict at `location`, and no proxy fence covers the pair.
+/// UNPROVEDPROXYORDER(a, b): the generic-proxy effect `generic` and the later effect
+/// `asynchronous` of an async op, through the async or the tensor-map proxy, conflict at
+/// `location`, and no proxy fence covers the pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProxyOrderViolation {
     pub kind: ConflictKind,
     pub location: ByteLocation,
     pub generic: EventId,
     pub asynchronous: EventId,
+    pub missing: MissingFence,
+}
+
+/// The fence an uncovered pair lacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingFence {
+    /// A `fence.proxy.async` on the thread of either side, ordered between them.
+    ProxyAsync,
+    /// A tensor-map release on the writer's thread, after its write and ordered before the
+    /// acquire.
+    TensormapRelease,
+    /// A `fence.proxy.tensormap::generic.acquire` of the map on the copy's thread, before it.
+    TensormapAcquire,
 }
 
 pub type ProxyOrderResult = PropertyResult<ProxyEvidence, ProxyOrderViolation>;
@@ -79,13 +101,15 @@ struct Latest {
     write: Option<EventId>,
 }
 
-/// One explicit proxy fence and the clock it was visited with.
+/// One explicit proxy fence's program-order index and the clock it was visited with.
 #[derive(Debug, Clone)]
 struct Fence {
     index: u32,
-    space: Option<Space>,
     clock: Vec<u32>,
 }
+
+/// The bytes a tensor-map acquire covers, from its map's address.
+const TENSOR_MAP_BYTES: u64 = 128;
 
 pub fn check_proxy_order(
     h: &ValidatedGraph,
@@ -98,7 +122,9 @@ pub fn check_proxy_order(
     );
     let points = thread_points(graph);
     let written = written_bytes(graph);
-    let mut fences: HashMap<ThreadIx, Vec<Fence>> = HashMap::new();
+    let mut fences: HashMap<ThreadIx, Vec<(Option<Space>, Fence)>> = HashMap::new();
+    let mut releases: HashMap<ThreadIx, Vec<Fence>> = HashMap::new();
+    let mut acquires: HashMap<ThreadIx, Vec<(u64, Fence)>> = HashMap::new();
     let mut generic: HashMap<ByteLocation, BTreeMap<Actor, Latest>> = HashMap::new();
     let mut checked: HashSet<(EventId, EventId)> = HashSet::new();
     let mut covered_pairs = 0;
@@ -108,14 +134,21 @@ pub fn check_proxy_order(
             return;
         }
         let ev = graph.event(e);
-        if let (ExecContext::Thread(t), EventKind::Fence(FenceKind::ProxyAsync { space })) =
-            (ev.ctx, ev.kind)
-        {
-            fences.entry(t).or_default().push(Fence {
+        if let (ExecContext::Thread(t), EventKind::Fence(kind)) = (ev.ctx, ev.kind) {
+            let fence = Fence {
                 index: points[e.0 as usize].expect("a thread event").index,
-                space,
                 clock: view.clock().to_vec(),
-            });
+            };
+            match kind {
+                FenceKind::ProxyAsync { space } => {
+                    fences.entry(t).or_default().push((space, fence))
+                }
+                FenceKind::TensormapRelease => releases.entry(t).or_default().push(fence),
+                FenceKind::TensormapAcquire { addr } => {
+                    acquires.entry(t).or_default().push((addr, fence))
+                }
+                FenceKind::Tcgen05BeforeThreadSync | FenceKind::Tcgen05AfterThreadSync => {}
+            }
             return;
         }
         let EventKind::Access(acc) = ev.kind else {
@@ -178,14 +211,67 @@ pub fn check_proxy_order(
                                 location,
                                 generic: a,
                                 asynchronous: e,
+                                missing: MissingFence::ProxyAsync,
                             });
                             return;
                         }
                     }
                 }
             }
-            // The graph records no tensor-map proxy fence yet, so these pairs go unchecked.
-            Proxy::TensorMap => {}
+            Proxy::TensorMap => {
+                let reader = access.attributed;
+                for location in bytes(access) {
+                    let Some(actors) = generic.get(&location) else {
+                        continue;
+                    };
+                    let acquire = acquires.get(&reader).and_then(|fs| {
+                        fs.iter()
+                            .rev()
+                            .filter(|(_, f)| f.index <= view.clock()[reader.0 as usize])
+                            .find(|&&(map, _)| {
+                                location.space == Space::Global
+                                    && (map..map + TENSOR_MAP_BYTES).contains(&location.addr)
+                            })
+                            .map(|(_, f)| f)
+                    });
+                    for latest in actors.values() {
+                        let Some(a) = latest.write else {
+                            continue;
+                        };
+                        if !checked.insert((a, e)) {
+                            continue;
+                        }
+                        let missing = match acquire {
+                            None => Some(MissingFence::TensormapAcquire),
+                            Some(q) => {
+                                let writer = graph.acting_thread(a).expect("an access acts");
+                                let release = releases.get(&writer).and_then(|fs| {
+                                    fs.iter()
+                                        .rev()
+                                        .find(|r| r.index <= q.clock[writer.0 as usize])
+                                });
+                                match release {
+                                    Some(r) if reaches_fence(graph, &points, view, a, r) => None,
+                                    _ => Some(MissingFence::TensormapRelease),
+                                }
+                            }
+                        };
+                        match missing {
+                            None => covered_pairs += 1,
+                            Some(missing) => {
+                                unproved = Some(ProxyOrderViolation {
+                                    kind: ConflictKind::WriteRead,
+                                    location,
+                                    generic: a,
+                                    asynchronous: e,
+                                    missing,
+                                });
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
         }
     });
     match unproved {
@@ -197,7 +283,7 @@ pub fn check_proxy_order(
 /// The latest fence of `thread` over `space` with `(f, b) ∈ R`, i.e. within `known` of the
 /// thread's events.
 fn latest_fence(
-    fences: &HashMap<ThreadIx, Vec<Fence>>,
+    fences: &HashMap<ThreadIx, Vec<(Option<Space>, Fence)>>,
     thread: ThreadIx,
     space: Space,
     known: u32,
@@ -206,8 +292,9 @@ fn latest_fence(
         .get(&thread)?
         .iter()
         .rev()
-        .filter(|f| f.index <= known)
-        .find(|f| f.space.is_none_or(|s| s == space))
+        .filter(|(_, f)| f.index <= known)
+        .find(|(s, _)| s.is_none_or(|s| s == space))
+        .map(|(_, f)| f)
 }
 
 /// `(a, f) ∈ R`: `a`'s thread event, or one observer of its operation, is within `f`'s clock.

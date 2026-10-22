@@ -292,6 +292,19 @@ pub enum Tcgen05FenceDirection {
     AfterThreadSync,
 }
 
+/// Which side of the generic-to-tensor-map-proxy ordering a `fence.proxy.tensormap::generic`
+/// is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TensormapFence {
+    /// `.release.scope`: after the tensor map's generic-proxy writes.
+    Release,
+    /// `.acquire.scope [addr], 128`: before a tensor-map-proxy use of the map at `addr`.
+    Acquire {
+        addr_base: Operand,
+        addr_offset: i64,
+    },
+}
+
 /// Shuffle mode for warp shuffle operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShflMode {
@@ -902,7 +915,7 @@ pub enum LoweredInstr {
 
     /// `tensormap.cp_fenceproxy`: copy the tensor-map at `src`
     /// (`.shared::cta`) to `dst` (`.global`) for later `cp.async.bulk.tensor`
-    /// use; the release-proxy fence has no data effect to model.
+    /// use, then a `fence.proxy.tensormap::generic.release`.
     TensormapCpFenceproxy {
         dst_base: Operand,
         dst_offset: i64,
@@ -911,9 +924,8 @@ pub enum LoweredInstr {
     },
 
     /// `fence.proxy.tensormap::generic{.release.scope | .acquire.scope
-    /// [addr], 128}`: a pure proxy-ordering fence, no data effect to model -
-    /// the same treatment as `Tcgen05Fence`.
-    FenceProxyTensormap,
+    /// [addr], 128}`: a proxy-ordering fence with no data effect.
+    FenceProxyTensormap { fence: TensormapFence },
 
     /// `cp.async.bulk.tensor...tile.mbarrier::complete_tx::bytes`: TMA copy,
     /// global to the executing CTA's shared memory (no remote/multicast).

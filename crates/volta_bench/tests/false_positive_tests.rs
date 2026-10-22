@@ -61,16 +61,6 @@ fn test_inflight_complete_tx_lets_parity_wait_return_early() {
     );
 }
 
-/// A tensor map modified through the generic proxy is used by a TMA with no
-/// `fence.proxy.tensormap::generic.acquire`.
-#[test]
-fn test_tma_without_tensormap_acquire_fence() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tma_without_tensormap_acquire_fence"),
-        tma_config(32),
-    );
-}
-
 /// Lanes 0-15 and 16-31 reach the `.aligned` `bar.sync` on different loop iterations (UB).
 #[test]
 fn test_aligned_bar_sync_reached_on_different_iterations() {

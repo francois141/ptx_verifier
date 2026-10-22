@@ -20,6 +20,7 @@ use volta_graph_check::allocation_permit::AllocationPermitViolation;
 use volta_graph_check::barrier_epoch::EpochViolation;
 use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::pipeline::pipeline_edges;
+use volta_graph_check::proxy_order::MissingFence;
 use volta_graph_check::resource_lifetime::LifetimeViolation;
 use volta_graph_check::{GraphConclusion, GraphReport, Property, PropertyResult, Verdict};
 
@@ -633,6 +634,10 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
                     "tcgen05.fence::before_thread_sync".to_string()
                 }
                 FenceKind::Tcgen05AfterThreadSync => "tcgen05.fence::after_thread_sync".to_string(),
+                FenceKind::TensormapRelease => "fence.proxy.tensormap::generic.release".to_string(),
+                FenceKind::TensormapAcquire { addr } => {
+                    format!("fence.proxy.tensormap::generic.acquire [{addr:#x}]")
+                }
             },
         ),
         EventKind::ObjectInit(o) => ("lifetime", format!("init {}", object_name(graph, o))),
@@ -1013,6 +1018,14 @@ fn allocation_order_violation(v: &AllocationOrderViolation) -> (String, Vec<Even
     }
 }
 
+fn missing_fence(missing: MissingFence) -> &'static str {
+    match missing {
+        MissingFence::ProxyAsync => "missing fence.proxy.async",
+        MissingFence::TensormapRelease => "missing fence.proxy.tensormap::generic.release",
+        MissingFence::TensormapAcquire => "missing fence.proxy.tensormap::generic.acquire",
+    }
+}
+
 fn allocation_permit_violation(v: &AllocationPermitViolation) -> (String, Vec<EventId>) {
     (
         format!(
@@ -1071,12 +1084,13 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
                         (
                             format!(
                                 "{} conflict at {} {:#x}: no proxy fence orders generic e{} \
-                                 before async-proxy e{}",
+                                 before e{} ({})",
                                 conflict_kind(v.kind),
                                 space_name(v.location.space),
                                 v.location.addr,
                                 v.generic.0,
-                                v.asynchronous.0
+                                v.asynchronous.0,
+                                missing_fence(v.missing)
                             ),
                             vec![v.generic, v.asynchronous],
                         )

@@ -12,7 +12,7 @@ use crate::ir::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode, TensormapFieldWrite,
 };
-use crate::ir::{LoweredInstr, MemSpace, Predicate};
+use crate::ir::{LoweredInstr, MemSpace, Predicate, TensormapFence};
 
 use super::context::{LoweringContext, resolve_addr_operand, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -315,8 +315,7 @@ pub(super) fn lower_tensormap_cp_fenceproxy(
 }
 
 /// Lower `fence.proxy.tensormap::generic{.release.scope | .acquire.scope
-/// [addr], 128}` (PTX ISA 9.7.14.4): a pure ordering fence with no data effect,
-/// though the acquire form's operands are still validated.
+/// [addr], 128}` (PTX ISA 9.7.14.4): an ordering fence with no data effect.
 pub(super) fn lower_fence_proxy_tensormap(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -340,7 +339,7 @@ pub(super) fn lower_fence_proxy_tensormap(
         return Err(unsupported(NAME, "missing .scope"));
     }
 
-    if is_acquire {
+    let fence = if is_acquire {
         let [addr, size] = operands else {
             return Err(LowerError::InvalidOperand {
                 instruction: NAME.to_string(),
@@ -355,16 +354,22 @@ pub(super) fn lower_fence_proxy_tensormap(
                 format!("size {size_val} (only 128 is valid)"),
             ));
         }
-        resolve_addr_operand(ctx, addr)?;
-    } else if !operands.is_empty() {
+        let (addr_base, addr_offset) = resolve_addr_operand(ctx, addr)?;
+        TensormapFence::Acquire {
+            addr_base,
+            addr_offset,
+        }
+    } else if operands.is_empty() {
+        TensormapFence::Release
+    } else {
         return Err(LowerError::InvalidOperand {
             instruction: NAME.to_string(),
             operand: format!("{:?}", operands),
             reason: "expected no operands",
         });
-    }
+    };
 
-    ctx.emit(LoweredInstr::FenceProxyTensormap, predicate)?;
+    ctx.emit(LoweredInstr::FenceProxyTensormap { fence }, predicate)?;
     Ok(())
 }
 

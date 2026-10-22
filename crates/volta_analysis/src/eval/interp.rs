@@ -25,7 +25,7 @@ use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
     BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
-    MemSpace, Operand, Tcgen05FenceDirection,
+    MemSpace, Operand, Tcgen05FenceDirection, TensormapFence,
 };
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
@@ -1697,7 +1697,18 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::FenceProxyTensormap => {}
+            LoweredInstr::FenceProxyTensormap { fence } => {
+                let kind = match fence {
+                    TensormapFence::Release => FenceKind::TensormapRelease,
+                    TensormapFence::Acquire {
+                        addr_base,
+                        addr_offset,
+                    } => FenceKind::TensormapAcquire {
+                        addr: self.effective_addr(t, pc, addr_base, *addr_offset)?,
+                    },
+                };
+                self.graph.fence(tix(t), point(pc), kind);
+            }
 
             LoweredInstr::CpAsyncBulkTensorLoad {
                 dst_base,

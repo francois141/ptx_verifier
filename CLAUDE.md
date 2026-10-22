@@ -209,7 +209,8 @@ crate-level docs in `lib.rs` are the contract.
   completion). Kinds: `Access`, `Contribute`, `WaitStart`, `Resume`,
   `GenerationComplete`, `AsyncIssue`, `AsyncComplete`, `GroupCommit`, `Fence`
   (`fence.proxy.async` over a space, `tcgen05.fence::before_thread_sync`,
-  `::after_thread_sync`), `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`/`TmemRelinquish`,
+  `::after_thread_sync`, the tensor-map release and acquire of a map),
+  `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`/`TmemRelinquish`,
   `Exit`.
 - `MemAccess`: space (`Global`/`Shared`/`Tensor`; local memory is not
   recorded), mode, `OrderingKind` (only `Ordinary` produced), proxy, canonical
@@ -308,7 +309,7 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/arithm.rs` - arithmetic evaluation as a second `impl Interpreter`: binary/unary ops, comparisons, `cvt`, the `ex2`/`lg2` base-conversion folds, the packed-pair/quad bitwise ops and `shf`, and integer/width canonicalization of operands and of values crossing a register or memory width
 - `eval/cp_async.rs` - non-bulk `cp.async`: the pending copy and its landing at a completion point
 - `eval/tcgen05.rs` - `tcgen05.mma` evaluation over the descriptors `eval/tcgen05_mma.rs` decodes
-- `eval/tensormap_replace.rs` - `tensormap.replace` evaluation (fields kept in `eval/tensor_map_table.rs`); the graph records each replace as a write of the whole opaque 128-byte object
+- `eval/tensormap_replace.rs` - `tensormap.replace` evaluation (fields kept in `eval/tensor_map_table.rs`); the graph records each replace as a write of the whole opaque 128-byte object; `fence.proxy.tensormap::generic.release`/`.acquire [map]` and `tensormap.cp_fenceproxy`'s trailing release are graph fences
 - `eval/async_bulk.rs` - `cp.async.bulk{.tensor}` evaluation as another `impl Interpreter`: the TMA tensor copy and the plain bulk copy (global to shared, mbarrier-completed); the data lands eagerly at issue and the copy's `complete_tx` is applied then; the TMA copy also reads its 128-byte tensor map, an effect of the copy through the tensor-map proxy (`Proxy::TensorMap`)
 - `eval/cluster_launch_control.rs` - `clusterlaunchcontrol.try_cancel`/`query_cancel` under the *never-steal* assumption: no cancel request ever succeeds, so every response is the declined one (encoded as 16 zero bytes, written like a `cp.async.bulk` destination - async proxy, 16-byte `complete_tx`); `is_canceled` always decodes `false`, any other value is rejected as unmodeled, and the ISA's UB cases (`get_first_ctaid` of a declined response, a new request after a decline was observed) are `EvalError::ClusterLaunchControlMisuse`; `.multicast::cluster::all` is rejected (it writes other CTAs' shared memory)
 - `mapa.shared::cluster` assumes every cluster holds exactly one CTA: rank 0 maps an address to itself, any other concrete rank is `EvalError::MapaRankOutsideCluster`, and the generic (spaceless) form is rejected at lowering
@@ -434,9 +435,12 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   `MemoryConflictFree`.
 - `proxy_order.rs` - every ordered cross-proxy pair needs a covering fence:
   an explicit `fence.proxy.async` on either side's thread, or the implicit fence
-  of a validated completion observation (async -> generic). An uncovered pair
-  is a `Fail` (a cross-proxy race, typed `ProxyOrderViolation`), not the
-  design's `Unknown`.
+  of a validated completion observation (async -> generic). A generic write
+  before a TMA's tensor-map-proxy read of its map needs the PTX ISA's pair: a
+  release on the writer's thread after the write, ordered in `G_HB` before an
+  acquire of that map on the copy's thread before the copy. An uncovered pair
+  is a `Fail` (a cross-proxy race, typed `ProxyOrderViolation`, naming the
+  `MissingFence`), not the design's `Unknown`.
 - `tensor_order.rs` / `sync_search.rs` - conflicting TMEM pairs of distinct ops,
   oriented by issue: pipelined, or a `D` path to the target's issue through a
   source-thread `tcgen05.fence::before_thread_sync` (or tracking
@@ -587,6 +591,8 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   phase is ordered after, as the `Unknown`'s events, and the accepted twin),
   `memory_conflict_tests.rs` (Algorithm 3:
   conflict kind, byte, each side's thread, access mode and async op),
+  `proxy_order_tests.rs` (Algorithm 4: the uncovered generic write and
+  tensor-map read, and the missing fence),
   `tensor_order_tests.rs` (Algorithm 5: the Tensor Memory cell and sides),
   `resource_lifetime_tests.rs` (Algorithm 7: the use freed while unordered, or
   the allocation never freed), `allocation_order_tests.rs` (the unordered pair

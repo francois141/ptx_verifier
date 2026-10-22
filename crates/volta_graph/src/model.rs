@@ -108,6 +108,12 @@ pub enum FenceKind {
     /// `tcgen05.fence::after_thread_sync`: the thread's prior thread synchronization, before its
     /// later async `tcgen05` ops.
     Tcgen05AfterThreadSync,
+    /// `fence.proxy.tensormap::generic.release`, or the release `tensormap.cp_fenceproxy` ends
+    /// with: the thread's prior generic-proxy writes, before an acquire ordered after it.
+    TensormapRelease,
+    /// `fence.proxy.tensormap::generic.acquire [addr], 128`: a release ordered before it, before
+    /// the thread's later tensor-map-proxy reads of the tensor map at global `addr`.
+    TensormapAcquire { addr: u64 },
 }
 
 // =========================================================================

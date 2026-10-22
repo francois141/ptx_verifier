@@ -4,10 +4,13 @@
 mod common;
 
 use common::*;
-use volta_graph::{AccessMode, AsyncOpKind, EventGraph, OperandRole, Parity, Proxy, Space};
+use volta_graph::{
+    AccessMode, AsyncOpKind, EventGraph, FenceKind, Footprint, MemAccess, OperandRole,
+    OrderingKind, Parity, Proxy, Space, StoredValue,
+};
 use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::memory_conflict::MemoryConflictFree;
-use volta_graph_check::proxy_order::{ProxyOrderResult, check_proxy_order};
+use volta_graph_check::proxy_order::{MissingFence, ProxyOrderResult, check_proxy_order};
 use volta_graph_check::relation::ValidatedGraph;
 use volta_graph_check::{PropertyResult, Verdict};
 
@@ -247,4 +250,138 @@ fn the_declared_target_does_not_gate_the_check() {
     );
     let (g, _) = s.completed(2);
     assert_eq!(check(&g).verdict(), Verdict::Fail);
+}
+
+/// The global address of the tensor map in [`tensor_map_write_then_copy`].
+const MAP: u64 = 0x1000;
+
+/// Where t0's tensor-map release goes.
+#[derive(Clone, Copy, PartialEq)]
+enum ReleaseAt {
+    None,
+    AfterWrite,
+    BeforeWrite,
+    AfterBarrier,
+}
+
+/// Which acquire precedes t1's copy.
+#[derive(Clone, Copy, PartialEq)]
+enum AcquireAt {
+    None,
+    Map,
+    OtherMap,
+    Bystander,
+    ProxyAsync,
+}
+
+/// A 128-byte access of `thread` to the tensor map at `MAP`.
+fn map_access(s: &mut Scenario, thread: u32, mode: AccessMode, proxy: Proxy) -> MemAccess {
+    let (role, value) = match mode {
+        AccessMode::Write => (OperandRole::Plain, Some(s.b.value(StoredValue::Opaque))),
+        AccessMode::Read => (OperandRole::TensorMap, None),
+    };
+    MemAccess {
+        space: Space::Global,
+        mode,
+        ordering: OrderingKind::Ordinary,
+        proxy,
+        footprint: Footprint::Bytes {
+            addr: MAP,
+            width: 128,
+        },
+        role,
+        attributed: t(thread),
+        value,
+    }
+}
+
+/// t0 writes the tensor map generically; t1's `cp.async.bulk.tensor` reads it through the
+/// tensor-map proxy after a barrier of all three threads.
+fn tensor_map_write_then_copy(release: ReleaseAt, acquire: AcquireAt) -> EventGraph {
+    let mut s = Scenario::new(3);
+    if release == ReleaseAt::BeforeWrite {
+        s.b.fence(t(0), PC, FenceKind::TensormapRelease);
+    }
+    let write = map_access(&mut s, 0, AccessMode::Write, Proxy::Generic);
+    s.b.thread_access(t(0), PC, write);
+    if release == ReleaseAt::AfterWrite {
+        s.b.fence(t(0), PC, FenceKind::TensormapRelease);
+    }
+    s.barrier(&[0, 1, 2], &[]);
+    if release == ReleaseAt::AfterBarrier {
+        s.b.fence(t(0), PC, FenceKind::TensormapRelease);
+    }
+    match acquire {
+        AcquireAt::None => {}
+        AcquireAt::Map => {
+            s.b.fence(t(1), PC, FenceKind::TensormapAcquire { addr: MAP });
+        }
+        AcquireAt::OtherMap => {
+            s.b.fence(t(1), PC, FenceKind::TensormapAcquire { addr: MAP + 128 });
+        }
+        AcquireAt::Bystander => {
+            s.b.fence(t(2), PC, FenceKind::TensormapAcquire { addr: MAP });
+            s.barrier(&[0, 1, 2], &[]);
+        }
+        AcquireAt::ProxyAsync => {
+            s.proxy_fence(1, None);
+        }
+    }
+    let op = s.b.async_issue(t(1), PC, AsyncOpKind::TensorCopy);
+    let read = map_access(&mut s, 1, AccessMode::Read, Proxy::TensorMap);
+    s.b.async_effect(op, read);
+    s.completed(3).0
+}
+
+fn missing(release: ReleaseAt, acquire: AcquireAt) -> Option<MissingFence> {
+    let graph = tensor_map_write_then_copy(release, acquire);
+    match check(&graph) {
+        PropertyResult::Pass(_) => None,
+        PropertyResult::Fail(v) => {
+            let [v] = v.as_slice() else {
+                panic!("one violation: {v:?}");
+            };
+            assert_eq!(v.kind, ConflictKind::WriteRead);
+            assert_eq!(graph.acting_thread(v.generic), Some(t(0)));
+            assert_eq!(graph.acting_thread(v.asynchronous), Some(t(1)));
+            Some(v.missing)
+        }
+        unknown => panic!("{unknown:?}"),
+    }
+}
+
+/// The PTX ISA's pairing: the writer releases, a barrier orders the release before the
+/// reader's acquire of the map, and the acquire precedes the copy.
+#[test]
+fn a_release_ordered_before_the_readers_acquire_covers_a_tensor_map_read() {
+    let result = check(&tensor_map_write_then_copy(
+        ReleaseAt::AfterWrite,
+        AcquireAt::Map,
+    ));
+    assert!(
+        matches!(result, PropertyResult::Pass(ref e) if e.covered_pairs == 1),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_tensor_map_read_needs_an_acquire_on_the_copys_thread() {
+    use AcquireAt::*;
+    for acquire in [None, OtherMap, Bystander, ProxyAsync] {
+        assert_eq!(
+            missing(ReleaseAt::AfterWrite, acquire),
+            Some(MissingFence::TensormapAcquire)
+        );
+    }
+}
+
+#[test]
+fn a_tensor_map_read_needs_a_release_after_the_write_ordered_before_the_acquire() {
+    use ReleaseAt::*;
+    for release in [None, BeforeWrite, AfterBarrier] {
+        assert_eq!(
+            missing(release, AcquireAt::Map),
+            Some(MissingFence::TensormapRelease)
+        );
+    }
 }
