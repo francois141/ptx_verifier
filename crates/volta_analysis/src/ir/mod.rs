@@ -1039,9 +1039,6 @@ pub enum LoweredInstr {
     // =========================================================================
     // Special
     // =========================================================================
-    /// Query active lanes in the warp: dst = mask of active threads
-    Activemask { dst: RegId },
-
     /// Abort execution. Reaching this during evaluation is an analysis error.
     Trap,
 
@@ -1171,7 +1168,6 @@ define_instr_kinds!(
     MbarrierExpectTx,
     MbarrierCompleteTx,
     MbarrierWaitParity,
-    Activemask,
     Trap,
     Nop,
 );

@@ -62,9 +62,8 @@ use tma::{
     lower_tensormap_cp_fenceproxy, lower_tensormap_replace,
 };
 use warp::{
-    lower_activemask, lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma,
-    lower_redux_sync, lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma,
-    lower_wmma_store,
+    lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_redux_sync,
+    lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
 };
 use wgmma::{
     lower_wgmma_commit_group, lower_wgmma_fence, lower_wgmma_mma_async, lower_wgmma_wait_group,
@@ -399,7 +398,12 @@ fn lower_parsed_instruction(
         )),
         ParsedInstruction::Fence(fence) => lower_fence(ctx, fence, predicate),
         ParsedInstruction::Call(call) => lower_call(ctx, call, predicate),
-        ParsedInstruction::Activemask(am) => lower_activemask(ctx, am, predicate),
+        // The interpreter does not model warp divergence, so inside a divergent branch
+        // `activemask` would report the other side's lanes as active too.
+        ParsedInstruction::Activemask(_) => Err(unsupported(
+            "activemask",
+            "activemask is not implemented yet (warp divergence is not modeled)",
+        )),
         ParsedInstruction::Brkpt => ctx.emit(LoweredInstr::Nop, predicate),
         // Reaching a trap during evaluation is an analysis error
         ParsedInstruction::Trap => ctx.emit(LoweredInstr::Trap, predicate),

@@ -651,6 +651,24 @@ fn test_mbarrier_inval_is_not_implemented() {
     }
 }
 
+/// `activemask` is rejected until warp divergence is modeled: within each side of this kernel's
+/// divergent branch it holds only that side's lanes, so lanes 0 and 16 both elect themselves and
+/// store `s[0]`, a race that reporting every non-exited lane would hide.
+#[test]
+fn test_activemask_is_not_implemented() {
+    let module = parse(&ptx!("failing/activemask_is_not_implemented"));
+    match run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { reason, .. })) => {
+            let reason = reason.unwrap_or_default();
+            assert!(
+                reason.contains("activemask") && reason.contains("not implemented"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected unsupported, got {other:?}"),
+    }
+}
+
 /// `mbarrier.init`/`inval`/`test_wait`/`try_wait` take only `.shared{::cta}`
 /// (PTX ISA 9.7.15.16), so `.shared::cluster` is invalid; on `arrive` it is
 /// valid but unmodeled.

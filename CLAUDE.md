@@ -276,16 +276,17 @@ instruction family, each file depending only on `context` and `error`:
 - one file per family: `arith.rs` (arithmetic, logic/shift/bit-field ops,
   setp/selp, `cvt`), `memory.rs` (mov, ld/st, params, cvta/mapa, `cp.async`),
   `control.rs` (`bra`, `call`, `bar`, `fence`), `warp.rs` (shfl/elect/redux,
-  bar.warp.sync, activemask, ldmatrix/stmatrix, `mma.sync`, wmma),
+  bar.warp.sync, ldmatrix/stmatrix, `mma.sync`, wmma),
   `mbarrier.rs`, `tma.rs` (tensormap objects, `cp.async.bulk{.tensor}`),
   `tcgen05.rs`, `wgmma.rs`, `clc.rs`; tests in `lower/tests.rs`
 - `LoweredProgram` - `IdVec<InstrId, LoweredInstr>` + `SymbolTable` + `SourceMap`
-- `LoweredInstr` variants: `LoadParam`, `Load`, `Store`, `Mov`, `BinOp`, `UnaryOp`, `Fma`, `Mad`, `MulWide`, `MulHi`, `Setp`, `Selp`, `Cvt`, `Bra`, `Ret`, `Exit`, `BarSync`, `BarWarpSync`, `ShflSync`, `Ldmatrix`, `Mma`, `WmmaLoad/Store/Mma`, `Activemask`, `Trap`, etc.
+- `LoweredInstr` variants: `LoadParam`, `Load`, `Store`, `Mov`, `BinOp`, `UnaryOp`, `Fma`, `Mad`, `MulWide`, `MulHi`, `Setp`, `Selp`, `Cvt`, `Bra`, `Ret`, `Exit`, `BarSync`, `BarWarpSync`, `ShflSync`, `Ldmatrix`, `Mma`, `WmmaLoad/Store/Mma`, `Trap`, etc.
 - `SymbolTable` - Register/param/label name → ID resolution; assigns addresses to shared/local/module-global variables
 - `SourceMap` - Maps each lowered instruction back to its source span
 - The nvcc callseq idiom for `call __symexpf` (the paper's symbolic-exp hook) collapses to `UnaryOp::Exp` at lowering time
 - The mbarrier retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` collapses to one blocking `MbarrierWaitParity` (`match_mbarrier_wait_loop`; the scheduler can block a thread, not spin it); a wait outside that exact three-statement window is a lowering error
 - `mbarrier.inval` is unsupported for now (after its state-space check): mbarrier operations are not memory accesses of the event graph and no check orders an object's other operations before its invalidation, so a late `arrive` racing with the reuse of its bytes would go unnoticed
+- `activemask` is unsupported for now: the interpreter does not model warp divergence, so inside a divergent branch it would report the other side's lanes as active too and hide, e.g., two sides each electing a leader that stores to the same address
 - `define_instr_kinds!` generates the profiling table from one variant
   list: `KIND_COUNT`, `KIND_NAMES`, `kind_index()` (dense index for the
   interpreter's fixed-size counters), `kind_name()`

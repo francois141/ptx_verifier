@@ -232,16 +232,6 @@ fn test_bar_sync_register_id_count_mismatch() {
     );
 }
 
-/// Within each side of the divergent branch `activemask` holds only that side's lanes, so lanes
-/// 0 and 16 both elect themselves and store `s[0]`.
-#[test]
-fn test_activemask_ignores_divergence() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/activemask_ignores_divergence"),
-        AnalysisConfig::new((32, 1, 1)),
-    );
-}
-
 /// Lanes 0-15 and 16-31 reach the `.aligned` `bar.sync` on different loop iterations (UB).
 #[test]
 fn test_aligned_bar_sync_reached_on_different_iterations() {

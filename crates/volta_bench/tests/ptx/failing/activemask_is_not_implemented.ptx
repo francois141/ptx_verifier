@@ -4,8 +4,8 @@
 
 // Each side of a divergent branch elects the lowest lane of activemask as its
 // leader and stores. On hardware each side sees only its own lanes active, so
-// lane 0 and lane 16 both store to s[0]. Volta's activemask is "every non-exited
-// lane", so it elects lane 0 on both sides and sees a single store.
+// lane 0 and lane 16 both store to s[0]. Volta does not model divergence, so it
+// rejects activemask rather than electing lane 0 on both sides.
 .visible .entry k()
 {
     .reg .pred %p<4>;

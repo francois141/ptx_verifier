@@ -1,11 +1,11 @@
 //! Lowering of warp-level instructions: `shfl.sync`, `elect.sync`,
-//! `redux.sync`, `bar.warp.sync`, `activemask`, `ldmatrix`/`stmatrix`,
-//! `mma.sync` and `wmma`.
+//! `redux.sync`, `bar.warp.sync`, `ldmatrix`/`stmatrix`, `mma.sync` and
+//! `wmma`.
 
 use volta_frontend::ascii::AsciiSliceExt;
 use volta_frontend::ast::{
-    ActivemaskInstr, BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, RedOp,
-    ReduxSyncInstr, ScalarType, SharedStateSpaceQualifier, ShflSyncInstr,
+    BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, RedOp, ReduxSyncInstr,
+    ScalarType, SharedStateSpaceQualifier, ShflSyncInstr,
 };
 use volta_frontend::lex::DottedIdent;
 
@@ -155,16 +155,6 @@ pub(super) fn lower_bar_warp_sync(
     // form, required concrete at evaluation time.
     let mask = ctx.resolve_operand(&bws.membermask)?;
     ctx.emit(LoweredInstr::BarWarpSync { mask }, predicate)?;
-    Ok(())
-}
-
-pub(super) fn lower_activemask(
-    ctx: &mut LoweringContext,
-    am: &ActivemaskInstr,
-    predicate: Option<Predicate>,
-) -> LowerResult<()> {
-    let dst = ctx.resolve_dst(&am.dst)?;
-    ctx.emit(LoweredInstr::Activemask { dst }, predicate)?;
     Ok(())
 }
 

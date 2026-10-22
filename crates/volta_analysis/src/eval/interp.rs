@@ -1907,23 +1907,6 @@ impl<'p> Interpreter<'p> {
                 return Ok(()); // pc advances when the wait's condition is satisfied
             }
 
-            LoweredInstr::Activemask { dst } => {
-                // OR of `1 << lane` over existing, non-exited warp lanes (ISA
-                // 9.7.13.11). Exact when converged (divergence is unmodeled);
-                // exits depend on the schedule, as on hardware.
-                let warp_base = (t.0 / WARP_SIZE) * WARP_SIZE;
-                let mut mask: u32 = 0;
-                for lane in 0..WARP_SIZE {
-                    let tid = warp_base + lane;
-                    if tid < self.n_threads && self.threads[ThreadId(tid)].status != Status::Exited
-                    {
-                        mask |= 1 << lane;
-                    }
-                }
-                let r = self.arena.int(mask as i64);
-                self.write_reg(t, pc, *dst, Value::Scalar(r))?;
-            }
-
             LoweredInstr::Trap => {
                 return Err(EvalError::TrapReached { thread: t, pc });
             }

@@ -1137,37 +1137,6 @@ fn test_barrier_sync_is_bar_sync() {
     }
 }
 
-// activemask kernels: each thread records its mask; a CTA barrier after the
-// query means no thread has exited yet, making the all-alive answer
-// deterministic.
-
-/// All 32 lanes alive: every thread reads 0xFFFFFFFF. The barrier comes
-/// *after* activemask here, so each thread queries while all others are
-/// alive (blocked or not-yet-run, never exited).
-#[test]
-fn test_activemask_all_alive_full_warp() {
-    analyze!(
-        "success/activemask_all_alive_full_warp",
-        in_out_config(32, 32)
-    );
-}
-
-/// A 16-thread block: warp lanes 16..31 do not exist and contribute 0, so
-/// every thread reads 0xFFFF (again with the barrier after the query, so
-/// all queries happen before any exit).
-#[test]
-fn test_activemask_16_thread_block() {
-    analyze!("success/activemask_16_thread_block", in_out_config(16, 16));
-}
-
-/// Tail-exit: threads 16..31 exit before the barrier. Later survivors also see
-/// earlier survivors' exits, so the `.out` snapshot pins the round-robin exit
-/// order, which the model itself does not promise.
-#[test]
-fn test_activemask_after_tail_exit() {
-    analyze!("success/activemask_after_tail_exit", in_out_config(32, 32));
-}
-
 /// Aligned in-bounds accesses at region edges still pass: a shared array's
 /// last scalar element (adjacent array following) and an exact-fit v4 ending
 /// at the region end.
