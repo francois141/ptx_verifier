@@ -8,7 +8,9 @@
 //! * `E_sync`: each generation's joins: a thread contribution (`Blocking`, `Arrival`, and an
 //!   exit only under the Sync' assumption, `Assumption::ExitedThreadsArrive`) or a tracked
 //!   async completion before the generation completes, the completion before each release.
-//!   A relaxed `expect_tx` or `complete_tx` joins nothing.
+//!   A relaxed `expect_tx` or `complete_tx` joins nothing, and neither do the members of a
+//!   collective other than `bar.warp.sync` (`MemberOrdering::ExecutionOnly`): only its tracked
+//!   async completions join it.
 //! * `E_pipeline`: [`crate::pipeline`]. No projection here contains it.
 //!
 //! Projections:
@@ -37,7 +39,7 @@ use std::collections::HashMap;
 
 use volta_graph::{
     AsyncOpId, ContributionKind, EventGraph, EventId, EventKind, ExecContext, GenerationId,
-    GenerationKind, GraphDefect,
+    GenerationKind, GraphDefect, MemberOrdering,
 };
 
 use crate::barrier_epoch::{MbarrierEpochs, NamedBarrierEpochs};
@@ -62,9 +64,16 @@ impl Admission {
 
     /// Whether `kind`, a contribution to `generation`, joins it.
     fn joins(self, graph: &EventGraph, generation: GenerationId, kind: ContributionKind) -> bool {
+        let members_join = !matches!(
+            graph.generation(generation).kind,
+            GenerationKind::Collective {
+                ordering: MemberOrdering::ExecutionOnly,
+                ..
+            }
+        );
         match kind {
-            ContributionKind::Blocking | ContributionKind::Arrival { .. } => true,
-            ContributionKind::Exited => self.exited_threads,
+            ContributionKind::Blocking | ContributionKind::Arrival { .. } => members_join,
+            ContributionKind::Exited => self.exited_threads && members_join,
             ContributionKind::AsyncCompletion { .. } => {
                 self.mbarrier_completions
                     || graph.generation(generation).kind != GenerationKind::MbarrierPhase

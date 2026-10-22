@@ -220,7 +220,10 @@ crate-level docs in `lib.rs` are the contract.
   `Contribution`s (`Blocking`, `Arrival`, `Exited`, `AsyncCompletion`,
   `CompleteTx`, `ExpectTx`), releases (`Resume` events), completion event, evidence.
   Collective instances have an `Entry` and an `Exit` generation around the
-  op's effects. An mbarrier lifetime starts with an `MbarrierPreInit`
+  op's effects; their `MemberOrdering` is `Synchronizing` only for
+  `bar.warp.sync` (and `tcgen05.alloc`, whose written address every lane
+  loads), else `ExecutionOnly`: the members' contributions join nothing,
+  only tracked async completions do. An mbarrier lifetime starts with an `MbarrierPreInit`
   generation, completed at init with no contributions: an odd-parity wait on
   the fresh object (the ISA's "immediately preceding phase") resumes from it.
 - `AsyncOp`: issuer, issue event, effects, completion, tentative `tracking`
@@ -371,7 +374,8 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
 
 - `relation.rs` - the typed edges `E = E_PO ∪ E_causal ∪ E_pipeline ∪ E_sync`
   and their projections, never used untyped: `IndependentGraph` (`G0`: program
-  order, causal, every thread join, no mbarrier completion join) and
+  order, causal, every thread join except an `ExecutionOnly` collective's, no
+  mbarrier completion join) and
   `ValidatedGraph` (`G_HB` = Algorithm 5's `D`: `G0` plus the mbarrier
   completion joins), built only from both barrier-epoch certificates and the mbarrier ordering certificate
   (`assuming_epochs` for isolated tests). Closure queries are a vector-clock

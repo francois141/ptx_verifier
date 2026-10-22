@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 use volta_expr::ExprArena;
 use volta_graph::{
-    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, ContributionKind, EventGraph, EventId,
-    Footprint, GenerationEvidence, GenerationKind, GraphBuilder, InstructionInfo, MemAccess,
-    OperandRole, OrderingKind, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectKind,
-    Terminal, ThreadIx,
+    AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, CollectiveSide, ContributionKind,
+    EventGraph, EventId, Footprint, GenerationEvidence, GenerationKind, GraphBuilder,
+    InstructionInfo, MemAccess, MemberOrdering, OperandRole, OrderingKind, ProgramPoint,
+    Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal, ThreadIx,
 };
 use volta_graph_check::check_graph;
 use volta_viz::{Outcome, Run, RunId, write_page, write_run};
@@ -119,6 +119,32 @@ fn barrier_then_copy(arena: &mut ExprArena) -> (EventGraph, Events) {
     (graph, events)
 }
 
+/// Threads 0 and 1 of warp 0 meet at one collective with `ordering`, which has no effects.
+fn one_collective(ordering: MemberOrdering) -> EventGraph {
+    let mut b = GraphBuilder::new(provenance());
+    let warp = b.sync_object(SyncObjectKind::WarpCollective { warp: 0 });
+    for side in [CollectiveSide::Entry, CollectiveSide::Exit] {
+        let kind = GenerationKind::Collective {
+            pc: PC,
+            mask: 0b11,
+            side,
+            ordering,
+        };
+        let g = b.open_generation(warp, 0, kind);
+        for t in 0..2 {
+            b.contribute(ThreadIx(t), PC, g, ContributionKind::Blocking);
+        }
+        b.complete_generation(g, GenerationEvidence::default());
+        for t in 0..2 {
+            b.resume(ThreadIx(t), PC, g);
+        }
+    }
+    for t in 0..2 {
+        b.exit(ThreadIx(t), PC);
+    }
+    b.finish(Terminal::Completed)
+}
+
 fn id(test: &str, ordinal: u32) -> RunId {
     RunId {
         suite: "viewer_tests".to_string(),
@@ -129,6 +155,38 @@ fn id(test: &str, ordinal: u32) -> RunId {
 
 fn document(dir: &Path, key: &str) -> String {
     std::fs::read_to_string(dir.join(format!("{key}.json"))).unwrap()
+}
+
+/// A synchronizing collective's (`bar.warp.sync`) member edges are plain contribute and release
+/// edges; an execution-only one's (`shfl.sync`, `ldmatrix`, ...) are the dashed kinds alone.
+#[test]
+fn an_execution_only_collectives_edges_are_dashed_kinds() {
+    let dir = scratch("collectives");
+    let arena = ExprArena::new();
+    let orderings = [MemberOrdering::ExecutionOnly, MemberOrdering::Synchronizing];
+    for (ordinal, ordering) in (1..).zip(orderings) {
+        let graph = one_collective(ordering);
+        let run_id = id("one_collective", ordinal);
+        let run = Run {
+            id: &run_id,
+            ptx_file: None,
+            source: SOURCE,
+            outcome: Outcome::Executed {
+                graph: &graph,
+                arena: &arena,
+                report: None,
+            },
+        };
+        write_run(&dir, &run).unwrap();
+        let doc = document(&dir, &run_id.key());
+        let execution_only = ordering == MemberOrdering::ExecutionOnly;
+        for kind in ["contribute", "release"] {
+            let dashed = format!(r#""{kind}-execution-only":["#);
+            let plain = format!(r#""{kind}":["#);
+            assert_eq!(doc.contains(&dashed), execution_only, "{ordering:?}: {doc}");
+            assert_eq!(doc.contains(&plain), !execution_only, "{ordering:?}: {doc}");
+        }
+    }
 }
 
 #[test]

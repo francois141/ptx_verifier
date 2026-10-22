@@ -7,15 +7,15 @@ use std::collections::HashMap;
 use volta_graph::{
     AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals, BlockedOn, BlockedThread,
     CollectiveSide, ContributionKind, EventId, Footprint, GenerationEvidence, GenerationId,
-    GenerationKind, MbarrierState, MemAccess, OperandRole, OrderingKind, Parity, ProgramPoint,
-    Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
+    GenerationKind, MbarrierState, MemAccess, MemberOrdering, OperandRole, OrderingKind, Parity,
+    ProgramPoint, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
 };
 
 use crate::eval::interp::{BarrierArrivals, Interpreter, Status};
 use crate::eval::value::{MbarrierId, Value};
 use crate::eval::warpgroup::WgmmaOpId;
 use crate::eval::{ThreadId, WARP_SIZE, WARPGROUP_SIZE};
-use crate::ir::{InstrId, MemSpace};
+use crate::ir::{InstrId, LoweredInstr, MemSpace};
 
 /// Who performs a memory access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +61,7 @@ struct FormingCollective {
     entry: GenerationId,
     index: u32,
     object: SyncObjectId,
+    ordering: MemberOrdering,
 }
 
 /// Producer-side graph bookkeeping: the forming generation of every synchronization object and
@@ -359,6 +360,14 @@ impl Interpreter<'_> {
                 let index = collective.next;
                 collective.next += 1;
                 let object = collective.object;
+                // The ISA's tcgen05.alloc example has every lane load the written address right
+                // after the op, so its result write must reach all members.
+                let ordering = match self.program.instruction(pc) {
+                    Some(LoweredInstr::BarWarpSync { .. } | LoweredInstr::Tcgen05Alloc { .. }) => {
+                        MemberOrdering::Synchronizing
+                    }
+                    _ => MemberOrdering::ExecutionOnly,
+                };
                 let entry = self.graph.open_generation(
                     object,
                     index,
@@ -366,12 +375,14 @@ impl Interpreter<'_> {
                         pc: point(pc),
                         mask,
                         side: CollectiveSide::Entry,
+                        ordering,
                     },
                 );
                 let f = FormingCollective {
                     entry,
                     index,
                     object,
+                    ordering,
                 };
                 self.rec.forming_warp_ops.insert(key, f);
                 f
@@ -408,12 +419,14 @@ impl Interpreter<'_> {
                         pc: point(pc),
                         mask: u32::MAX,
                         side: CollectiveSide::Entry,
+                        ordering: MemberOrdering::ExecutionOnly,
                     },
                 );
                 let f = FormingCollective {
                     entry,
                     index,
                     object,
+                    ordering: MemberOrdering::ExecutionOnly,
                 };
                 self.rec.forming_warpgroup_ops.insert(key, f);
                 f
@@ -445,6 +458,7 @@ impl Interpreter<'_> {
                 pc: point(pc),
                 mask,
                 side: CollectiveSide::Exit,
+                ordering: forming.ordering,
             },
         )
     }

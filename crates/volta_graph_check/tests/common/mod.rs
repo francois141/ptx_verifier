@@ -6,9 +6,9 @@ use volta_expr::{ExprArena, ExprId};
 use volta_graph::{
     AbortCause, AccessMode, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals, CollectiveSide,
     ContributionKind, EventGraph, EventId, FenceKind, Footprint, GenerationEvidence, GenerationId,
-    GenerationKind, GraphBuilder, InstructionInfo, MemAccess, OperandRole, OrderingKind, Parity,
-    ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal,
-    ThreadIx,
+    GenerationKind, GraphBuilder, InstructionInfo, MemAccess, MemberOrdering, OperandRole,
+    OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space, StoredValue, SyncObjectId,
+    SyncObjectKind, Terminal, ThreadIx,
 };
 
 pub const PC: ProgramPoint = ProgramPoint(0);
@@ -440,7 +440,12 @@ impl Scenario {
             .count() as u32
             / 2;
         let mask = lanes.iter().fold(0u32, |m, &l| m | 1 << (l % 32));
-        let kind = |side| GenerationKind::Collective { pc: PC, mask, side };
+        let kind = |side| GenerationKind::Collective {
+            pc: PC,
+            mask,
+            side,
+            ordering: MemberOrdering::ExecutionOnly,
+        };
         let entry = self
             .b
             .open_generation(object, index, kind(CollectiveSide::Entry));

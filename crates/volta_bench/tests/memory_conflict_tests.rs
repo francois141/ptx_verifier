@@ -334,6 +334,27 @@ fn test_wgmma_operand_write_while_in_flight_is_an_inflight_hazard() {
     }
 }
 
+/// A `shfl.sync` is a rendezvous, not a memory barrier: lane 0's staged store and the other
+/// lanes' loads after the shuffle stay unordered.
+#[test]
+fn test_shfl_sync_is_not_a_memory_barrier() {
+    let ws = conflicts(
+        &ptx!(parse "execution_error/shfl_sync_is_not_a_memory_barrier"),
+        in_out_config(32, 32),
+    );
+    assert_any(
+        &ws,
+        "lane 0's store unordered with another lane's load",
+        |w| {
+            w.kind == ConflictKind::WriteRead
+                && on_shared(w)
+                && w.earlier == Side::plain(0, Write)
+                && w.later.thread != 0
+                && w.later.mode == Read
+        },
+    );
+}
+
 /// A `try_cancel` response is an async write ordered only by a waiter observing its
 /// mbarrier: warp 1 reads it after `bar.sync` alone and conflicts with the write.
 #[test]

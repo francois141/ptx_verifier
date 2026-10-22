@@ -9,7 +9,7 @@ use crate::graph::EventGraph;
 use crate::model::{
     AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, BlockedOn, CollectiveSide,
     ContributionKind, EventKind, ExecContext, FenceKind, Footprint, GenerationKind, GroupFamily,
-    OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
+    MemberOrdering, OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectKind, Terminal,
 };
 
 impl EventGraph {
@@ -72,14 +72,23 @@ impl EventGraph {
                 GenerationKind::MbarrierPreInit => {
                     write!(out, "pre-init parity={}", parity(Parity::Odd))?
                 }
-                GenerationKind::Collective { pc, mask, side } => write!(
+                GenerationKind::Collective {
+                    pc,
+                    mask,
+                    side,
+                    ordering,
+                } => write!(
                     out,
-                    "collective pc{} mask={:#010x} {}",
+                    "collective pc{} mask={:#010x} {} {}",
                     pc.0,
                     mask,
                     match side {
                         CollectiveSide::Entry => "entry",
                         CollectiveSide::Exit => "exit",
+                    },
+                    match ordering {
+                        MemberOrdering::Synchronizing => "synchronizing",
+                        MemberOrdering::ExecutionOnly => "execution-only",
                     }
                 )?,
                 GenerationKind::AsyncGroupWait { keep_pending } => {

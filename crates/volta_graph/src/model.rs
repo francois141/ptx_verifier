@@ -280,6 +280,18 @@ pub enum CollectiveSide {
     Exit,
 }
 
+/// Whether a collective orders its members' memory effects with each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemberOrdering {
+    /// `bar.warp.sync`, which "guarantee[s] memory ordering among threads participating in
+    /// barrier" (PTX ISA 9.7.15.2), and `tcgen05.alloc`, whose written address every lane may
+    /// load right after the op (its ISA example): each member's contribution joins.
+    Synchronizing,
+    /// Every other collective (`shfl.sync`, `ldmatrix`, `wgmma.mma_async`, ...): the members
+    /// only wait for each other, so their contributions join nothing.
+    ExecutionOnly,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerationKind {
     Barrier {
@@ -296,6 +308,7 @@ pub enum GenerationKind {
         pc: ProgramPoint,
         mask: u32,
         side: CollectiveSide,
+        ordering: MemberOrdering,
     },
     /// A `cp.async.wait_group n` (or `wait_all`, `n = 0`) completing the groups past `n`.
     AsyncGroupWait {

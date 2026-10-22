@@ -49,6 +49,8 @@
   const EDGES = {
     contribute: { color: "--e-contribute", dash: [], name: "Contribute" },
     release: { color: "--e-release", dash: [], name: "Release" },
+    "contribute-execution-only": { color: "--e-contribute", dash: [4, 4], name: "Contribute (execution only)" },
+    "release-execution-only": { color: "--e-release", dash: [4, 4], name: "Release (execution only)" },
     spawn: { color: "--e-async", dash: [5, 3], name: "Spawn" },
     complete: { color: "--e-async", dash: [], name: "Complete" },
     pipeline: { color: "--e-pipeline", dash: [2, 3], name: "Pipeline" },

@@ -1,0 +1,36 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+// Lane 0 stages in[0] in shared memory and every lane reads it back after a shfl.sync.
+// Only bar.warp.sync orders memory among a warp's lanes (PTX ISA 9.7.15.2); shfl.sync
+// only waits for the lanes to arrive, so lane 0's store races with the other lanes' loads.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<3>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<6>;
+    .shared .align 4 .b8 staged[4];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, staged;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra EXCHANGE;
+    ld.global.f32 %f1, [%rd1];
+    st.shared.f32 [%r2], %f1;
+EXCHANGE:
+    shfl.sync.idx.b32 %r3, %r1, 0, 31, -1;
+    ld.shared.f32 %f2, [%r2];
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd2, %rd3;
+    st.global.f32 [%rd4], %f2;
+    ret;
+}

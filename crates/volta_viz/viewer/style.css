@@ -1019,6 +1019,14 @@ kbd {
   border-top-color: var(--e-release);
 }
 
+.edge-swatch.contribute-execution-only {
+  border-top-style: dashed;
+}
+
+.edge-swatch.release-execution-only {
+  border-top: 2px dashed var(--e-release);
+}
+
 .edge-swatch.spawn {
   border-top: 2px dashed var(--e-async);
 }

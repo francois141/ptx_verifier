@@ -12,8 +12,8 @@ use volta_expr::ExprArena;
 use volta_graph::{
     AbortCause, AccessMode, AsyncOpId, BarrierArrivals, BlockedOn, CollectiveSide,
     ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind, Footprint,
-    GenerationId, GenerationKind, GroupFamily, OrderingKind, Parity, Proxy, Space, StoredValue,
-    SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    GenerationId, GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space,
+    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 use volta_graph_check::barrier_epoch::EpochViolation;
 use volta_graph_check::domain::ConflictKind;
@@ -435,7 +435,8 @@ impl Lanes {
 
 /// The typed edges besides program order (implicit in each thread lane's sequence) and the
 /// async ops' spawn and completion edges (see `async_ops`), as flat `[from, to, ...]` lists
-/// per kind.
+/// per kind. An execution-only collective's member edges get their own `-execution-only` kinds,
+/// drawn dashed: they order nothing, unlike its async completions and the releases observing them.
 fn edges(graph: &EventGraph) -> Json {
     let mut by_kind: BTreeMap<&'static str, Vec<Json>> = BTreeMap::new();
     let mut push = |kind, from: EventId, to: EventId| {
@@ -448,11 +449,30 @@ fn edges(graph: &EventGraph) -> Json {
         let Some(completion) = g.completion else {
             continue;
         };
+        let execution_only = matches!(
+            g.kind,
+            GenerationKind::Collective {
+                ordering: MemberOrdering::ExecutionOnly,
+                ..
+            }
+        );
+        let completes_op = |kind| matches!(kind, ContributionKind::AsyncCompletion { .. });
         for c in &g.contributions {
-            push("contribute", c.event, completion);
+            let kind = if execution_only && !completes_op(c.kind) {
+                "contribute-execution-only"
+            } else {
+                "contribute"
+            };
+            push(kind, c.event, completion);
         }
+        let observes = g.contributions.iter().any(|c| completes_op(c.kind));
+        let release = if execution_only && !observes {
+            "release-execution-only"
+        } else {
+            "release"
+        };
         for &r in &g.releases {
-            push("release", completion, r);
+            push(release, completion, r);
         }
     }
     for e in pipeline_edges(graph).edges(graph) {
@@ -693,13 +713,22 @@ fn generation_kind(kind: GenerationKind) -> String {
         } => format!("barrier of {n} threads"),
         GenerationKind::MbarrierPhase => "mbarrier phase".to_string(),
         GenerationKind::MbarrierPreInit => "mbarrier phase before init".to_string(),
-        GenerationKind::Collective { pc, mask, side } => format!(
-            "collective {} at pc {}, mask {mask:#010x}",
+        GenerationKind::Collective {
+            pc,
+            mask,
+            side,
+            ordering,
+        } => format!(
+            "collective {} at pc {}, mask {mask:#010x}{}",
             match side {
                 CollectiveSide::Entry => "entry",
                 CollectiveSide::Exit => "exit",
             },
-            pc.0
+            pc.0,
+            match ordering {
+                MemberOrdering::Synchronizing => "",
+                MemberOrdering::ExecutionOnly => ", execution only",
+            }
         ),
         GenerationKind::AsyncGroupWait { keep_pending } => {
             format!("cp.async.wait_group {keep_pending}")

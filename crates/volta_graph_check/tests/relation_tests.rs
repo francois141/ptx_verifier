@@ -6,8 +6,8 @@ mod common;
 use common::*;
 use volta_graph::{
     AccessMode, AsyncOpKind, BarrierArrivals, CollectiveSide, ContributionKind, EventGraph,
-    EventId, ExecContext, GenerationEvidence, GenerationKind, Parity, Proxy, SyncObjectKind,
-    ThreadIx,
+    EventId, ExecContext, GenerationEvidence, GenerationKind, MemberOrdering, Parity, Proxy,
+    SyncObjectKind, ThreadIx,
 };
 use volta_graph_check::relation::{HbView, IndependentGraph, ValidatedGraph, thread_points};
 
@@ -174,6 +174,7 @@ fn g0_keeps_the_completion_joins_of_a_warps_wait() {
         pc: PC,
         mask: 1,
         side,
+        ordering: MemberOrdering::ExecutionOnly,
     };
     let entry = s.b.open_generation(warp, 0, kind(CollectiveSide::Entry));
     s.b.contribute(t(0), PC, entry, ContributionKind::Blocking);
