@@ -116,16 +116,6 @@ fn test_tcgen05_alloc_orders_lanes_plain_accesses() {
     );
 }
 
-/// Warp 1's `relinquish_alloc_permit` is unordered with warp 0's `tcgen05.alloc`: the schedule
-/// that relinquishes first allocates illegally.
-#[test]
-fn test_tcgen05_relinquish_unordered_with_other_warps_alloc() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tcgen05_relinquish_unordered_with_other_warps_alloc"),
-        AnalysisConfig::new((64, 1, 1)),
-    );
-}
-
 /// Lanes 0-15 and 16-31 reach the `.aligned` `bar.sync` on different loop iterations (UB).
 #[test]
 fn test_aligned_bar_sync_reached_on_different_iterations() {

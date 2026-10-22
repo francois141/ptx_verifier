@@ -166,6 +166,7 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Tcgen05RelinquishAllocPermit => {
                 self.tensor.relinquish_alloc_permit();
+                self.graph.tmem_relinquish(tix(members[0]), point(pc));
             }
             LoweredInstr::Tcgen05Ld {
                 shape,

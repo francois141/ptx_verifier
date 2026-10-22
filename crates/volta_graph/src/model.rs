@@ -66,6 +66,8 @@ pub enum EventKind {
         start_col: u16,
         num_cols: u16,
     },
+    /// The CTA gives up its right to allocate Tensor Memory (`tcgen05.relinquish_alloc_permit`).
+    TmemRelinquish,
     /// The thread exits; nothing follows it in its program order.
     Exit,
 }

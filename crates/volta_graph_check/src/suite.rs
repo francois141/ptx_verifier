@@ -11,6 +11,7 @@ use std::time::Instant;
 use volta_graph::{BlockedThread, EventGraph, Terminal};
 
 use crate::allocation_order::{AllocationOrderResult, check_allocation_order};
+use crate::allocation_permit::{AllocationPermitResult, check_allocation_permit};
 use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
 use crate::logging::info;
 use crate::mbarrier_ordering::{MbarrierOrderingResult, check_mbarrier_ordering};
@@ -33,6 +34,7 @@ pub struct GraphReport {
     pub tensor_order: TensorOrderResult,
     pub resource_lifetime: LifetimeResult,
     pub allocation_order: AllocationOrderResult,
+    pub allocation_permit: AllocationPermitResult,
 }
 
 /// The trace generator's deadlock: no thread can proceed.
@@ -106,6 +108,7 @@ impl GraphReport {
             Property::TensorOrder => summarize(property, &self.tensor_order),
             Property::ResourceLifetime => summarize(property, &self.resource_lifetime),
             Property::AllocationOrder => summarize(property, &self.allocation_order),
+            Property::AllocationPermit => summarize(property, &self.allocation_permit),
         }
     }
 
@@ -277,6 +280,12 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         None => not_run(Property::AllocationOrder),
     };
     log.finish(&allocation_order);
+    let log = CheckLog::start(Property::AllocationPermit);
+    let allocation_permit = match &validated {
+        Some(h) => check_allocation_permit(h),
+        None => not_run(Property::AllocationPermit),
+    };
+    log.finish(&allocation_permit);
     GraphReport {
         terminal: graph.terminal().clone(),
         named_barrier_epoch,
@@ -287,5 +296,6 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         tensor_order,
         resource_lifetime,
         allocation_order,
+        allocation_permit,
     }
 }

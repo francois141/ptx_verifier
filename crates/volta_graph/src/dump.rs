@@ -259,6 +259,7 @@ impl EventGraph {
                     start_col,
                     num_cols,
                 } => writeln!(out, "tmem-dealloc cols[{},+{})", start_col, num_cols)?,
+                EventKind::TmemRelinquish => writeln!(out, "tmem-relinquish")?,
                 EventKind::Exit => writeln!(out, "exit")?,
             }
         }

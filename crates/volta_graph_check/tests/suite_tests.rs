@@ -15,7 +15,7 @@ fn verdicts(r: &GraphReport) -> Vec<(Property, Verdict)> {
 }
 
 #[test]
-fn the_seven_checks_of_the_design_in_its_order_then_allocation_order() {
+fn the_seven_checks_of_the_design_in_its_order_then_the_allocation_rules() {
     let algorithms: Vec<&str> = Property::ALL.iter().map(|p| p.algorithm()).collect();
     assert_eq!(
         algorithms,
@@ -27,7 +27,8 @@ fn the_seven_checks_of_the_design_in_its_order_then_allocation_order() {
             "Algorithm 4",
             "Algorithms 5 and 6",
             "Algorithm 7",
-            "PTX ISA tcgen05.alloc"
+            "PTX ISA tcgen05.alloc",
+            "PTX ISA tcgen05.relinquish_alloc_permit"
         ]
     );
 }

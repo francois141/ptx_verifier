@@ -25,7 +25,7 @@ crates/
 ├── volta_frontend/   # PTX lexer and parser
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
-├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order, and their suite
+├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, and their suite
 ├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
@@ -209,7 +209,7 @@ crate-level docs in `lib.rs` are the contract.
   completion). Kinds: `Access`, `Contribute`, `WaitStart`, `Resume`,
   `GenerationComplete`, `AsyncIssue`, `AsyncComplete`, `GroupCommit`, `Fence`
   (`fence.proxy.async` over a space, `tcgen05.fence::before_thread_sync`,
-  `::after_thread_sync`), `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`,
+  `::after_thread_sync`), `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`/`TmemRelinquish`,
   `Exit`.
 - `MemAccess`: space (`Global`/`Shared`/`Tensor`; local memory is not
   recorded), mode, `OrderingKind` (only `Ordinary` produced), proxy, canonical
@@ -356,7 +356,7 @@ barrier/warp-group fires (trace), deadlock (warn), launch config and
 completion stats (info) in `volta_analysis`; VC session recycles (info) and
 fraction-equality escalation (debug) in `volta_equivalence`; the stages at
 info, tagged `[analysis]`/`[graph]`/`[equivalence]`: graph extraction and
-the equivalence branch in `volta_pipeline`, each of the eight checks (start,
+the equivalence branch in `volta_pipeline`, each of the nine checks (start,
 verdict, duration) in `check_graph`. `cargo run -p volta_cli
 --features logging -- --log-level info analyze ...` narrates a run.
 
@@ -365,7 +365,8 @@ verdict, duration) in `check_graph`. `cargo run -p volta_cli
 **Path**: `crates/volta_graph_check/`
 
 The seven checks of the Volta v2 design's data-race freedom check (§1.3 of the
-design document), then one beyond it (allocation order, a PTX ISA rule), one
+design document), then two beyond it (allocation order and allocation permit,
+PTX ISA rules), one
 module each, each callable on an `EventGraph` in
 isolation with explicitly passed certificates, each with its algorithm and
 contract (PASS/FAIL/UNKNOWN meaning) in its module docs. Every check returns
@@ -382,6 +383,7 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
 | 6 | `TensorOrder`       | 5 (+ 6)   | `tensor_order.rs`, `sync_search.rs`   |
 | 7 | `ResourceLifetime`  | 7         | `resource_lifetime.rs`                |
 | 8 | `AllocationOrder`   | ISA rule  | `allocation_order.rs`                 |
+| 9 | `AllocationPermit`  | ISA rule  | `allocation_permit.rs`                |
 
 - `relation.rs` - the typed edges `E = E_PO ∪ E_causal ∪ E_pipeline ∪ E_sync`
   and their projections, never used untyped: `IndependentGraph` (`G0`: program
@@ -453,10 +455,15 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
   since the columns the trace assigns hold for its order only), and their column
   counts non-increasing along that order. The interpreter's allocator enforces
   the same bound on the one order it executes.
+- `allocation_permit.rs` - the PTX ISA's `tcgen05.relinquish_alloc_permit` rule
+  (no CTA may `tcgen05.alloc` after any of its warps relinquished the permit):
+  every allocation must reach every relinquish (`TmemRelinquish`, recorded once
+  per warp on its leader) in `G_HB`. The interpreter rejects an allocation after
+  a relinquish on the one order it executes (`Tcgen05AllocAfterRelinquish`).
 - `suite.rs` - `check_graph(graph) -> GraphReport` runs them in
   `Property::ALL` order (a topological order of `Property::prerequisites`; a
   check whose prerequisites failed is `Unknown`); `GraphReport::conclusion()`:
-  `Verified` (a completed trace and all eight checks passing; nothing else is
+  `Verified` (a completed trace and all nine checks passing; nothing else is
   consulted) / `Rejected { failed, deadlock }` / `Unknown`. A stuck trace is
   the trace generator's deadlock diagnostic, an aborted one is inconclusive.
 
@@ -465,7 +472,7 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
 **Path**: `crates/volta_pipeline/`
 
 The integration point: `verify_kernel(module, kernel, config)` (analysis stage
-+ the graph branch's eight checks),
++ the graph branch's nine checks),
 `check_equivalence` (the equivalence branch over symbolic outputs only; a
 claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
@@ -584,7 +591,8 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
   `tensor_order_tests.rs` (Algorithm 5: the Tensor Memory cell and sides),
   `resource_lifetime_tests.rs` (Algorithm 7: the use freed while unordered, or
   the allocation never freed), `allocation_order_tests.rs` (the unordered pair
-  of allocations, by thread).
+  of allocations, by thread), `allocation_permit_tests.rs` (the allocation not
+  ordered before a relinquish, and the relinquish, by thread).
 - `rejected_tests.rs` - execution errors (`EvalError`, lowering errors) and
   deadlocks (the trace generator's diagnostic, `GraphReport::deadlock`).
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
@@ -680,8 +688,8 @@ AnalysisResult ──► SymbolicOutputs (volta_expr) + EventGraph (volta_graph)
     ├──────────────────────────────┐
     ▼                              ▼
 volta_equivalence (canon/)     volta_graph_check (check_graph)
-  per-element VC checking        the eight checks (Algorithms 1-7,
-  (+ numeric.rs oracle)          allocation order), in order
+  per-element VC checking        the nine checks (Algorithms 1-7,
+  (+ numeric.rs oracle)          allocation order and permit), in order
     └──────────────┬───────────────┘
                    ▼
 volta_pipeline::decide ──► ACCEPT / REJECT / UNKNOWN (+ evidence, assumptions)
@@ -699,11 +707,11 @@ Memory addresses must be concrete (`u64`) for race detection. Thread indices are
 
 ### 3. Race Detection Is Not Part of the Evaluator
 
-The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream with the seven checks of the Volta v2 design and an allocation-order check (memory conflicts through the typed `G_HB` projection, never untyped reachability). A kernel is VERIFIED when its trace completed and all eight checks pass on it; no further schedule argument is consulted.
+The paper's χ-context detector (Section 4.2) used to run inside the interpreter. It was removed: the interpreter records a typed event graph of its one candidate schedule, and `volta_graph_check` verifies it downstream with the seven checks of the Volta v2 design and the allocation-order and allocation-permit checks (memory conflicts through the typed `G_HB` projection, never untyped reachability). A kernel is VERIFIED when its trace completed and all nine checks pass on it; no further schedule argument is consulted.
 
 ### 4. Round-Robin Scheduling
 
-Simple, deterministic interleaving: the candidate execution. The eight checks judge the event graph of this one execution (see 3).
+Simple, deterministic interleaving: the candidate execution. The nine checks judge the event graph of this one execution (see 3).
 
 ### 5. Strongly-Typed IDs
 

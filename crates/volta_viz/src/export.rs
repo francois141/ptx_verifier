@@ -16,6 +16,7 @@ use volta_graph::{
     StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 use volta_graph_check::allocation_order::AllocationOrderViolation;
+use volta_graph_check::allocation_permit::AllocationPermitViolation;
 use volta_graph_check::barrier_epoch::EpochViolation;
 use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::pipeline::pipeline_edges;
@@ -649,6 +650,7 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
             "tmem",
             format!("tcgen05.dealloc cols [{start_col}, +{num_cols})"),
         ),
+        EventKind::TmemRelinquish => ("tmem", "tcgen05.relinquish_alloc_permit".to_string()),
         EventKind::Exit => ("exit", "exit".to_string()),
     };
     (category, label, info)
@@ -1010,6 +1012,16 @@ fn allocation_order_violation(v: &AllocationOrderViolation) -> (String, Vec<Even
     }
 }
 
+fn allocation_permit_violation(v: &AllocationPermitViolation) -> (String, Vec<EventId>) {
+    (
+        format!(
+            "allocation e{} is not ordered before relinquish e{}",
+            v.allocation.0, v.relinquish.0
+        ),
+        vec![v.allocation, v.relinquish],
+    )
+}
+
 fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
     Json::Arr(
         Property::ALL
@@ -1087,6 +1099,9 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
                     }
                     Property::AllocationOrder => {
                         findings(&report.allocation_order, allocation_order_violation)
+                    }
+                    Property::AllocationPermit => {
+                        findings(&report.allocation_permit, allocation_permit_violation)
                     }
                 };
                 Json::Obj(vec![

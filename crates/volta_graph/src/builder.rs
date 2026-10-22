@@ -316,6 +316,14 @@ impl GraphBuilder {
         )
     }
 
+    pub fn tmem_relinquish(&mut self, thread: ThreadIx, pc: ProgramPoint) -> EventId {
+        self.push(
+            ExecContext::Thread(thread),
+            EventKind::TmemRelinquish,
+            Some(pc),
+        )
+    }
+
     pub fn exit(&mut self, thread: ThreadIx, pc: ProgramPoint) -> EventId {
         self.push(ExecContext::Thread(thread), EventKind::Exit, Some(pc))
     }
