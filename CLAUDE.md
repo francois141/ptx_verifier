@@ -316,12 +316,17 @@ The interpreter from the paper (per-thread round-robin symbolic execution):
 - `eval/value.rs` - `Value::{Scalar, Pair}` (`Pair` = packed f16 halves in a 32-bit register) and per-thread `RegFile`
 - `eval/memory.rs` - byte-addressed granule memory; 4-byte reads combine two 2-byte granules into a `Pair`, 2-byte accesses split `Pair` granules; program writes are `dirty` (the output footprint)
 - `eval/warp.rs` - warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma.*`, the warp-scoped `tcgen05` ops, `tensormap.cp_fenceproxy`, which copies the map once per warp as its leader and, being `.aligned`, rejects exited lanes): block until all *live* mask lanes converge at the pc (exited lanes count as arrived), execute via the `eval/fragments.rs` tables with exact per-lane access attribution; a shfl source lane that exited yields `Undefined` data, while the tensor-core ops reject exited lanes loudly (the ISA defines them as UB "if any thread in the warp has exited")
-- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UndefinedOutput`, `TrapReached`, etc.); data races and async hazards are not `EvalError`s but graph check failures, and a deadlock is the stuck terminal state the graph records
+- `eval/error.rs` - `EvalError`: the execution's own errors (`NotConcrete`, `OutOfBounds`, `UninitializedMemory`, `UndefinedOutput`, `TrapReached`, etc.); data races and async hazards are not `EvalError`s but graph check failures, and a deadlock is the stuck terminal state the graph records
 
-Key semantics: input-array symbols materialize lazily on first read; reads of
-never-written registers/shared bytes yield `Undefined` (an error only if it
-reaches an output or a concreteness point) - the paper's race example and
-nvcc's `selp` accumulator-init idiom both rely on this.
+Key semantics: input-array symbols materialize lazily on first read; a read of a
+never-written register yields `Undefined` (an error only if it reaches an output
+or a concreteness point) - nvcc's `selp` accumulator-init idiom relies on this. A
+read of never-written memory is an error: local memory aborts at the read, while
+shared and global bytes (outside the inputs) and Tensor Memory cells read
+`Undefined` and the run aborts with the first such read
+(`UninitializedMemory`/`Tcgen05UninitializedRead`) once every thread exited, so a
+read racing a later write (the paper's race example) keeps its race witness in
+the complete graph.
 
 ### Analysis stage (`analysis.rs`, `config.rs`)
 

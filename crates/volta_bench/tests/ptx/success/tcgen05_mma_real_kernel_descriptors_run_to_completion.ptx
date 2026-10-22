@@ -4,6 +4,8 @@
 
 .visible .entry k()
 {
+    .reg .pred %zp<2>;
+    .reg .b32 %zr<3>;
     .reg .pred %p<2>;
     .reg .b32 %r<6>;
     .reg .b64 %rd<5>;
@@ -16,6 +18,28 @@
 
     // tcgen05.alloc is warp-collective: every lane of this one-warp CTA
     // issues it unconditionally.
+    // Thread 0 zeroes the operand tiles so the MMA reads no never-written byte.
+    mov.u32 %zr0, %tid.x;
+    setp.eq.u32 %zp0, %zr0, 0;
+    @!%zp0 bra ZEROED;
+    mov.u32 %zr0, 0;
+    mov.u32 %zr1, a_buf;
+    add.u32 %zr2, %zr1, 16384;
+ZERO_A_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_A_BUF;
+    mov.u32 %zr1, b_buf;
+    add.u32 %zr2, %zr1, 32768;
+ZERO_B_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_B_BUF;
+ZEROED:
+    fence.proxy.async.shared::cta;
+
     mov.u32 %r3, taddr_slot;
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 256;
     ld.shared.u32 %r1, [%r3];

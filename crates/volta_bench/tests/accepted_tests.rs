@@ -400,11 +400,11 @@ fn test_tcgen05_mma_without_an_explicit_disable_output_lane_mask() {
 }
 
 /// `tcgen05.mma` decodes concrete operands from their bits: `A`/`B` hold raw f16 `0x3C00` (1.0,
-/// not 15360) and `D` is seeded with raw f32 1.0 via `tcgen05.st`, so `D[0][0] = 16 + 1 = 17`.
-/// The `tcgen05` fences around `bar.sync` order the seed before the MMA.
+/// not 15360) and each warp seeds its quadrant of `D` with raw f32 1.0 via `tcgen05.st`, so
+/// `D[0][0] = 16 + 1 = 17`. The `tcgen05` fences around `bar.sync` order the seeds before the MMA.
 #[test]
 fn test_tcgen05_mma_decodes_raw_operand_and_accumulator_bits() {
-    let mut config = AnalysisConfig::new((32, 1, 1));
+    let mut config = AnalysisConfig::new((128, 1, 1));
     config.arrays = vec![ArrayDef {
         name: "out".to_string(),
         base: 0x20000,

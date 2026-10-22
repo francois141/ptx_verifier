@@ -1217,11 +1217,7 @@ impl Interpreter<'_> {
             for (k, &reg) in dst.iter().enumerate() {
                 let (lane, col) = shape.cell(m.0 % WARP_SIZE, k as u32);
                 let (lane, col) = (lane_base + lane, base_col + col);
-                let v = match self
-                    .tensor
-                    .read(lane, col)
-                    .map_err(|e| EvalError::from_tensor_mem(m, pc, e))?
-                {
+                let v = match self.tmem_read(m, pc, lane, col)? {
                     Some(v) => v,
                     None => Value::Scalar(self.arena.undefined()),
                 };

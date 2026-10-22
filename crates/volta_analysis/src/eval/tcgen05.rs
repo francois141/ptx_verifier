@@ -247,11 +247,7 @@ impl<'p> Interpreter<'p> {
                     continue;
                 }
                 let mut acc = if enable_input_d {
-                    match self
-                        .tensor
-                        .read(lane, col)
-                        .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?
-                    {
+                    match self.tmem_read(t, pc, lane, col)? {
                         // A `tcgen05.st` of a `.b32` register leaves raw bits.
                         Some(Value::Scalar(e)) => {
                             float_bits::decode_float_bits(&mut self.arena, pc, ScalarType::F32, e)?
@@ -403,10 +399,7 @@ impl<'p> Interpreter<'p> {
         for lane in 0..rows {
             for c in 0..num_cols {
                 let col = start_col + c;
-                let cell = self
-                    .tensor
-                    .read(lane, col)
-                    .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
+                let cell = self.tmem_read(t, pc, lane, col)?;
                 let (lo, hi) = match cell {
                     Some(Value::Pair(lo, hi)) => (lo, hi),
                     Some(_) => {

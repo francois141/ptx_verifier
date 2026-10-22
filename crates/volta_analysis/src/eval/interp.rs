@@ -213,6 +213,9 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) tensor: TensorMemory,
     /// The first declined cluster-launch-control response decoded, if any.
     pub(in crate::eval) clc_observed_decline: Option<ObservedDecline>,
+    /// The first read of never-written memory, if any: the error the run ends with once
+    /// every thread exited.
+    pub(in crate::eval) uninitialized_read: Option<EvalError>,
     regions: MemRegions,
     pub(in crate::eval) mbarriers: MbarrierTable,
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
@@ -417,6 +420,7 @@ impl<'p> Interpreter<'p> {
             locals,
             tensor: TensorMemory::new(),
             clc_observed_decline: None,
+            uninitialized_read: None,
             regions,
             mbarriers: MbarrierTable::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
@@ -440,7 +444,12 @@ impl<'p> Interpreter<'p> {
                             "execution complete: {} instructions, {} block syncs, {} warp syncs",
                             self.stats.instructions, self.stats.block_syncs, self.stats.warp_syncs
                         );
-                        return Ok(RunEnd::Completed);
+                        // Deferred to here so the graph holds every access: a read that is
+                        // uninitialized only because it races a later write keeps its witness.
+                        return self
+                            .uninitialized_read
+                            .take()
+                            .map_or(Ok(RunEnd::Completed), Err);
                     }
                     if !self.try_fire()? {
                         return Ok(RunEnd::Stuck);
@@ -2224,8 +2233,8 @@ impl<'p> Interpreter<'p> {
         }
     }
 
-    /// Bounds-check and read memory. Never-written in-bounds bytes read
-    /// `Undefined` (the paper's motivating example relies on this).
+    /// Bounds-check and read memory. Never-written shared or global bytes (outside the input
+    /// arrays, which materialize lazily) read `Undefined` and abort the run once it completes.
     pub(in crate::eval) fn mem_read(
         &mut self,
         t: ThreadId,
@@ -2268,31 +2277,53 @@ impl<'p> Interpreter<'p> {
                 .memory_mut(space, t)
                 .read(addr, width)
                 .map_err(|e| EvalError::from_mem_access(t, pc, space, e)),
-            Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Global => {
-                // Reading an input array materializes its symbols on demand.
-                if self.materialize_input(addr, width) {
-                    self.global
-                        .read(addr, width)
-                        .map_err(|e| EvalError::from_mem_access(t, pc, space, e))
-                } else {
-                    Ok(Value::Scalar(self.arena.undefined()))
-                }
-            }
-            // A partially materialized input array: materialize just the absent
-            // elements and retry, so the combine rules compose the access. A
-            // genuine reinterpretation materializes nothing and stays an error.
-            Err(MemAccessError::Reinterpret { .. })
+            // Reading an input array materializes its absent elements on demand and retries, so
+            // the combine rules compose the access. A genuine reinterpretation materializes
+            // nothing and stays an error.
+            Err(MemAccessError::Uninitialized { .. } | MemAccessError::Reinterpret { .. })
                 if space == MemSpace::Global && self.materialize_input(addr, width) =>
             {
                 self.global
                     .read(addr, width)
                     .map_err(|e| EvalError::from_mem_access(t, pc, space, e))
             }
-            Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Shared => {
+            Err(MemAccessError::Uninitialized { addr }) if space != MemSpace::Local => {
+                self.uninitialized_read
+                    .get_or_insert(EvalError::UninitializedMemory {
+                        thread: t,
+                        pc,
+                        space,
+                        addr,
+                    });
                 Ok(Value::Scalar(self.arena.undefined()))
             }
             Err(e) => Err(EvalError::from_mem_access(t, pc, space, e)),
         }
+    }
+
+    /// Read Tensor Memory cell `(lane, col)` for `t` at `pc`: `None` for a never-written cell,
+    /// which aborts the run once it completes, as a never-written shared byte does.
+    pub(in crate::eval) fn tmem_read(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        lane: u32,
+        col: u32,
+    ) -> EvalResult<Option<Value>> {
+        let cell = self
+            .tensor
+            .read(lane, col)
+            .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
+        if cell.is_none() {
+            self.uninitialized_read
+                .get_or_insert(EvalError::Tcgen05UninitializedRead {
+                    thread: t,
+                    pc,
+                    lane,
+                    col,
+                });
+        }
+        Ok(cell)
     }
 
     /// Create the input-element symbols for every input-array element

@@ -4,8 +4,25 @@
 
 .visible .entry k()
 {
+    .reg .pred %zp<2>;
+    .reg .b32 %zr<3>;
     .reg .b32 %r<10>;
     .shared .align 16 .b8 sdata[1024];
+
+    // Thread 0 zeroes the tile so the ldmatrix reads no never-written byte.
+    mov.u32 %zr0, %tid.x;
+    setp.eq.u32 %zp0, %zr0, 0;
+    @!%zp0 bra ZEROED;
+    mov.u32 %zr0, 0;
+    mov.u32 %zr1, sdata;
+    add.u32 %zr2, %zr1, 1024;
+ZERO_SDATA:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_SDATA;
+ZEROED:
+    bar.sync 0;
 
     mov.u32 %r1, %tid.x;
     shl.b32 %r2, %r1, 4;

@@ -182,6 +182,13 @@ pub enum EvalError {
         lane: u32,
         col: u32,
     },
+    /// A `tcgen05` op read an allocated Tensor Memory cell that was never written.
+    Tcgen05UninitializedRead {
+        thread: ThreadId,
+        pc: InstrId,
+        lane: u32,
+        col: u32,
+    },
     /// A Tensor Memory access's column range is not inside one live
     /// allocation: it starts outside every allocation, or runs past the
     /// end of its own (possibly into an adjacent one).
@@ -419,6 +426,16 @@ impl fmt::Display for EvalError {
                 "{}: tcgen05.ld/.st at {} touched tensor-memory (lane={}, col={}) outside any live allocation",
                 thread, pc, lane, col
             ),
+            Self::Tcgen05UninitializedRead {
+                thread,
+                pc,
+                lane,
+                col,
+            } => write!(
+                f,
+                "{}: read of uninitialized tensor memory (lane={}, col={}) ({})",
+                thread, lane, col, pc
+            ),
             Self::Tcgen05AccessOutsideAllocation {
                 thread,
                 pc,
@@ -487,6 +504,7 @@ impl EvalError {
             | Self::Tcgen05AllocAfterRelinquish { thread, pc }
             | Self::Tcgen05DeallocMismatch { thread, pc, .. }
             | Self::Tcgen05NotAllocated { thread, pc, .. }
+            | Self::Tcgen05UninitializedRead { thread, pc, .. }
             | Self::Tcgen05AccessOutsideAllocation { thread, pc, .. }
             | Self::Tcgen05LaneRestrictionViolation { thread, pc, .. }
             | Self::TensorMapNotFound { thread, pc, .. }

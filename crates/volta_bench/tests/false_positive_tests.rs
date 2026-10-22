@@ -172,12 +172,3 @@ fn test_aligned_bar_sync_reached_on_different_iterations() {
         out_config(32, 4, 1),
     );
 }
-
-/// A never-written shared word reaches the output through an add: `out[0] = undefined + 1`.
-#[test]
-fn test_undefined_value_nested_in_output() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/undefined_value_nested_in_output"),
-        out_config(1, 4, 1),
-    );
-}

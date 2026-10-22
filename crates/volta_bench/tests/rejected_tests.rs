@@ -1,7 +1,7 @@
 //! End-to-end tests on ill-formed or unsupported kernels other than conflicts:
 //! invalid instructions and encodings, deadlocks (the trace generator's
 //! diagnostic, not a graph check), out-of-bounds or misaligned accesses,
-//! undefined outputs, and unmodeled forms.
+//! reads of uninitialized memory, undefined outputs, and unmodeled forms.
 
 #[macro_use]
 mod common;
@@ -43,19 +43,29 @@ fn expect_invalid_instruction(module: &Ptx, needle: &str) {
     }
 }
 
+/// Assert running `module` under `config` ends with its first read of never-written memory, at
+/// `addr`.
+fn expect_uninitialized_read(module: &Ptx, config: AnalysisConfig, addr: u64) {
+    match run_kernel(module, None, config) {
+        Err(AnalysisError::Eval(EvalError::UninitializedMemory { addr: read, .. })) => {
+            assert_eq!(read, addr, "the first uninitialized read");
+        }
+        Err(other) => panic!("expected an uninitialized read at {addr:#x}, got: {other}"),
+        Ok(_) => panic!("expected an uninitialized read at {addr:#x}, got Ok"),
+    }
+}
+
 /// A store through the `.extern .shared` window must not be visible through a
 /// static `.shared` variable (the dynamic segment follows all static ones),
-/// so the `lut` read surfaces as `UndefinedOutput`.
+/// so the `lut` read at shared address 0 reads never-written memory.
 #[test]
 fn test_extern_shared_store_invisible_through_static_shared() {
-    let module = ptx!(parse "failing/extern_shared_store_invisible_through_static_shared");
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
-    let err = run_kernel(&module, None, config).unwrap_err();
-    assert!(
-        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
-        "expected undefined output (buf and lut must not alias), got: {}",
-        err
+    expect_uninitialized_read(
+        &ptx!(parse "failing/extern_shared_store_invisible_through_static_shared"),
+        config,
+        0,
     );
 }
 
@@ -431,8 +441,8 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
 }
 
 /// Like `test_tcgen05_mma_numeric_correctness`, but `disable-output-lane`
-/// masks lane 0 (PTX ISA 9.7.17.10.9.1): `D[0][0]` is never written, so it
-/// reads back as `UndefinedOutput`, not `136`.
+/// masks lane 0 (PTX ISA 9.7.17.10.9.1): `D[0][0]` is never written, so the
+/// `tcgen05.ld` of it reads uninitialized Tensor Memory instead of `136`.
 #[test]
 fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     let module = ptx!(parse "failing/tcgen05_mma_disable_output_lane_skips_the_write");
@@ -447,8 +457,15 @@ fn test_tcgen05_mma_disable_output_lane_skips_the_write() {
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
     let err = run_kernel(&module, None, config).unwrap_err();
     assert!(
-        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
-        "expected UndefinedOutput (lane 0 must never be written), got: {}",
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05UninitializedRead {
+                lane: 0,
+                col: 0,
+                ..
+            })
+        ),
+        "expected an uninitialized read of D[0][0] (lane 0 must never be written), got: {}",
         err
     );
 }
@@ -800,16 +817,34 @@ fn test_redux_sync_sign_trick_never_fuses_nan() {
     );
 }
 
-/// An uninitialized shared read is tolerated during execution (the paper's
-/// race example depends on it), but an output computed from one is an error.
+/// A read of never-written shared memory aborts the run once its trace completes: the abort
+/// waits so that a read racing a later write (the paper's race example) keeps its race witness.
 #[test]
 fn test_uninitialized_shared_read_flows_to_output() {
-    let module = ptx!(parse "failing/uninitialized_shared_read_flows_to_output");
-    let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
-    assert!(
-        matches!(err, AnalysisError::Eval(EvalError::UndefinedOutput { .. })),
-        "expected undefined output, got: {}",
-        err
+    expect_uninitialized_read(
+        &ptx!(parse "failing/uninitialized_shared_read_flows_to_output"),
+        in_out_config(1, 1),
+        0,
+    );
+}
+
+/// The read aborts the run even when its value reaches the output only nested in an
+/// expression (`out[0] = undefined + 1`), which the output check alone does not catch.
+#[test]
+fn test_undefined_value_nested_in_output() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    expect_uninitialized_read(
+        &ptx!(parse "failing/undefined_value_nested_in_output"),
+        config,
+        0,
     );
 }
 

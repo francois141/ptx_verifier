@@ -17,6 +17,8 @@
     ld.shared.u32 %r1, [%r3];
     bar.sync 0;
 
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r2;
+    tcgen05.wait::st.sync.aligned;
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %r5, [%r1];
     bar.sync 0;
     tcgen05.wait::ld.sync.aligned;

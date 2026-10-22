@@ -106,9 +106,9 @@ fn test_tcgen05_dealloc_with_an_mma_in_flight_is_rejected() {
     );
 }
 
-/// A `tcgen05.wait::ld` after a `bar.sync` is no hazard by itself: the kernel's only Tensor
-/// Memory operation conflicts with nothing, so tensor ordering passes. The kernel is rejected
-/// because it never frees its 32 columns.
+/// A `tcgen05.wait::ld` after a `bar.sync` is no hazard by itself: the load conflicts only with
+/// the store its `tcgen05.wait::st` pipelines before it, so tensor ordering passes. The kernel
+/// is rejected because it never frees its 32 columns.
 #[test]
 fn test_tcgen05_wait_ld_after_bar_sync_is_rejected() {
     let allocs = never_freed(
