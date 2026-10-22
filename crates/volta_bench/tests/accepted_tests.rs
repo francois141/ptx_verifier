@@ -261,6 +261,39 @@ fn test_tcgen05_st_ld_respects_warp_quadrant_addressing() {
     );
 }
 
+/// Not a bug: a warp's `tcgen05.st` then `tcgen05.ld` of the same cells form an implicit
+/// tcgen05 pipeline (PTX ISA 9.7.18.6.2), so the load reads each lane's stored `%tid.x` without a
+/// `tcgen05.wait::st` in between.
+#[test]
+fn test_tcgen05_st_then_ld_is_implicitly_pipelined() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 256,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/tcgen05_st_then_ld_is_implicitly_pipelined", config);
+}
+
+/// Not a bug: reading a `tcgen05.ld` destination register before `tcgen05.wait::ld` is ordered
+/// after the load by the true register dependency (PTX ISA 9.7.18.6.4.5).
+#[test]
+fn test_tcgen05_ld_result_ordered_by_register_dependency() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 256,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/tcgen05_ld_result_ordered_by_register_dependency", config);
+}
+
 /// The control for `tcgen05_alloc_sizes_unordered`: `bar.sync 1` orders warp 0's 64-column
 /// allocation before warp 1's 32-column one.
 #[test]

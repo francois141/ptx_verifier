@@ -1,4 +1,4 @@
-.version 8.6
+.version 9.4
 .target sm_100a
 .address_size 64
 
@@ -19,7 +19,9 @@
     tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r9;
     tcgen05.wait::st.sync.aligned;
     tcgen05.ld.sync.aligned.32x32b.x1.b32 %r8, [%r1];
-    // The destination register is consumed before tcgen05.wait::ld.
+    // Not a bug: reading %r8 before tcgen05.wait::ld is ordered after the load by the true
+    // register dependency (PTX ISA 9.7.18.6.4.5). wait::ld is needed only before the dealloc,
+    // which must not free the cells while the load may still be reading them.
     cvt.rn.f32.u32 %f1, %r8;
     ld.param.u64 %rd1, [k_param_0];
     mul.wide.u32 %rd2, %r9, 4;

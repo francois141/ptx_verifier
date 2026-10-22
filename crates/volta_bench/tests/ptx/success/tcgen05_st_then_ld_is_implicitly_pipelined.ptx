@@ -1,4 +1,4 @@
-.version 8.6
+.version 9.4
 .target sm_100a
 .address_size 64
 
@@ -16,6 +16,10 @@
     tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
     ld.shared.u32 %r1, [%r3];
 
+    // Not a bug: this tcgen05.st and the warp's later tcgen05.ld of the same cells form an
+    // implicit tcgen05 pipeline (PTX ISA 9.7.18.6.2), so the load executes after the store and
+    // reads each lane's %tid.x without a tcgen05.wait::st in between. wait::ld completes the
+    // load before %r8 is read, and wait::st completes the store before the dealloc.
     tcgen05.st.sync.aligned.32x32b.x1.b32 [%r1], %r9;
     tcgen05.fence::before_thread_sync;
     tcgen05.fence::after_thread_sync;

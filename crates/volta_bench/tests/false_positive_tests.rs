@@ -125,25 +125,6 @@ fn test_tma_without_tensormap_acquire_fence() {
     );
 }
 
-/// The tcgen05 fences do not complete the `tcgen05.st`: the `tcgen05.ld` of its cells needs a
-/// `tcgen05.wait::st` in between.
-#[test]
-fn test_tcgen05_st_then_ld_without_wait_st() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tcgen05_st_then_ld_without_wait_st"),
-        out_config(32, 4, 256),
-    );
-}
-
-/// The `tcgen05.ld` destination register is read before `tcgen05.wait::ld`.
-#[test]
-fn test_tcgen05_ld_result_used_before_wait_ld() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/tcgen05_ld_result_used_before_wait_ld"),
-        out_config(32, 4, 256),
-    );
-}
-
 /// Lane 1's store and lane 2's load of `x` are ordered only by `tcgen05.alloc`, which orders
 /// its own address write, not the lanes' other accesses.
 #[test]
