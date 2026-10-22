@@ -1,0 +1,17 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Two threads replace the global_address field of one shared tensor map with
+// different values and no synchronization: a write-write race on the object.
+.visible .entry k()
+{
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<2>;
+    .shared .align 128 .b8 sd0[128];
+
+    mov.u32 %r1, %tid.x;
+    cvt.u64.u32 %rd1, %r1;
+    tensormap.replace.tile.global_address.shared::cta.b1024.b64 [sd0], %rd1;
+    ret;
+}

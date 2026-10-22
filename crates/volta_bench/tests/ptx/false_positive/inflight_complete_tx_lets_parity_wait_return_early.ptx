@@ -1,0 +1,46 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Phase 0 of `full` is an arrive.expect_tx(16) plus a bulk copy's complete_tx. Nobody waits
+// on phase 0. After a bar.sync, thread 1 waits parity 1 (meant: phase 1, thread 0's handoff
+// of `data`). If the copy has not landed yet, phase 0 is still the current phase (parity 0),
+// so the parity-1 wait returns at once through the pre-init phase and races thread 0's store.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<3>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<6>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 4 .b32 data;
+    .shared .align 8 .b64 full;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, full;
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, data;
+    setp.eq.s32 %p1, %r2, 0;
+    @%p1 mbarrier.init.shared::cta.b64 [%r1], 1;
+    bar.sync 0;
+    @!%p1 bra CONSUMER;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r1];
+    bar.sync 0;
+    mov.u32 %r4, 7;
+    st.shared.u32 [%r3], %r4;
+    mbarrier.arrive.shared::cta.b64 _, [%r1];
+    ret;
+CONSUMER:
+    bar.sync 0;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %pw, [%r1], 1;
+    @!%pw bra WAIT;
+    ld.shared.u32 %r5, [%r3];
+    st.global.u32 [%rd2], %r5;
+    ret;
+}

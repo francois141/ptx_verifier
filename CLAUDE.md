@@ -575,6 +575,9 @@ in `tests/` runs PTX kernels from `tests/ptx/` through
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
   detail, each `Verified`, must not be proved equivalent.
+- `false_positive_tests.rs` - kernels Volta still verifies although they race or
+  are undefined (`tests/ptx/false_positive/`); each fails until Volta stops
+  concluding `Verified` on it.
 
 Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
 `check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +

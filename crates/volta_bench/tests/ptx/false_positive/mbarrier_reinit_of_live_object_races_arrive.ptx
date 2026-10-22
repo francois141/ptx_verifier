@@ -1,0 +1,43 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Same shape as p03, but thread 0 re-initializes `mbar` (count 1) instead of storing to it,
+// then waits on the fresh object. If thread 1's arrive lands on the old object first, the
+// re-init discards it and thread 0 waits forever; nothing orders the two.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<3>;
+    .shared .align 8 .b64 mbar;
+    .shared .align 8 .b64 gate;
+    .shared .align 4 .b32 data;
+
+    ld.param.u64 %rd1, [k_param_1];
+    mov.u32 %r1, %tid.x;
+    setp.eq.s32 %p0, %r1, 0;
+    mov.u32 %r2, mbar;
+    mov.u32 %r3, gate;
+    mov.u32 %r4, data;
+    @%p0 mbarrier.init.shared::cta.b64 [%r2], 1;
+    @%p0 mbarrier.init.shared::cta.b64 [%r3], 1;
+    bar.sync 0;
+    @!%p0 bra OTHER;
+    mbarrier.init.shared::cta.b64 [%r2], 1;
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %pw, [%r2], 0;
+    @!%pw bra WAIT;
+    ld.shared.u32 %r6, [%r4];
+    st.global.u32 [%rd1], %r6;
+    ret;
+OTHER:
+    mov.u32 %r5, 42;
+    st.shared.u32 [%r4], %r5;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+    ret;
+}

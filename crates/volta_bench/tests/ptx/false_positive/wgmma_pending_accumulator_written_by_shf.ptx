@@ -1,0 +1,34 @@
+.version 8.0
+.target sm_90a
+.address_size 64
+
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<3>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<6>;
+    .reg .f32 %f<2>;
+    .reg .f32 %d<4>;
+    .shared .align 16 .b8 a_row[256];
+    .shared .align 16 .b8 b_col[256];
+
+    mov.u32 %r0, %tid.x;
+    setp.eq.u32 %p1, %r0, 0;
+    mov.u64 %rd1, a_row;
+    mov.u64 %rd2, b_col;
+    shr.u64 %rd3, %rd1, 4;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd3, %rd3, 0x80000;
+    or.b64 %rd4, %rd4, 0x80000;
+    setp.ne.u32 %p2, %r0, %r0;
+    ld.param.u64 %rd5, [k_param_0];
+    wgmma.fence.sync.aligned;
+    wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 {%d0, %d1, %d2, %d3}, %rd3, %rd4, %p2, 1, 1, 0, 0;
+    wgmma.commit_group.sync.aligned;
+    shf.l.wrap.b32 %d0, %r0, %r0, 0;
+    wgmma.wait_group.sync.aligned 0;
+    @%p1 st.global.f32 [%rd5], %d1;
+    ret;
+}

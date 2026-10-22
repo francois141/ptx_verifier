@@ -1,0 +1,29 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Thread 0 uses the word as scratch (store, load back, publish); thread 1
+// initializes an mbarrier over it with no ordering: thread 0 can read back the
+// mbarrier's state instead of 42.
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+    .shared .align 8 .b64 word;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 1;
+    @%p1 bra INIT;
+    mov.u64 %rd1, 42;
+    st.shared.u64 [word], %rd1;
+    ld.shared.u64 %rd1, [word];
+    ld.param.u64 %rd2, [k_param_0];
+    st.global.u64 [%rd2], %rd1;
+    ret;
+INIT:
+    mbarrier.init.shared::cta.b64 [word], 1;
+    ret;
+}

@@ -1,0 +1,39 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// One thread, one mbarrier (count 1). Copy B, meant for phase 1, is issued
+// before phase 0 is observed complete: B's complete_tx can complete phase 0
+// before copy A lands, so the read of bufA after the parity-0 wait races.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %pw;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<4>;
+    .shared .align 16 .b8 bufA[16];
+    .shared .align 16 .b8 bufB[16];
+    .shared .align 8 .b64 full;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r4, full;
+    mbarrier.init.shared.b64 [%r4], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [bufA], [%rd1], 16, [%r4];
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [bufB], [%rd1+16], 16, [%r4];
+WAIT0:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
+    @!%pw bra WAIT0;
+    ld.shared.u32 %r7, [bufA];
+    st.global.u32 [%rd2], %r7;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r4], 16;
+WAIT1:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 1;
+    @!%pw bra WAIT1;
+    ld.shared.u32 %r8, [bufB];
+    st.global.u32 [%rd2+4], %r8;
+    ret;
+}
