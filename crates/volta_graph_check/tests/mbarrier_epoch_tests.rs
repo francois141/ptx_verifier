@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use volta_graph::{
-    AccessMode, AsyncOpKind, ContributionKind, EventGraph, EventKind, Parity, Proxy,
+    AsyncOpId, ContributionKind, EventGraph, EventId, EventKind, GenerationId, Parity,
     SyncObjectKind, ThreadIx,
 };
 use volta_graph_check::Verdict;
@@ -187,26 +187,70 @@ fn a_complete_tx_is_a_barrier_operation() {
     assert_eq!(g.thread_of(v.synchronization), Some(ThreadIx(1)));
 }
 
-#[test]
-fn an_async_completion_is_no_barrier_operation() {
+/// t0 announces and copies 4 bytes for each of two phases of `m` (expected 1), waiting on
+/// each. Copy B, for phase 1, is issued before or after the phase-0 wait. Returns the graph,
+/// the phase-0 release, both phases and copy B.
+fn two_phase_copies(
+    b_after_wait: bool,
+) -> (EventGraph, EventId, (GenerationId, GenerationId), AsyncOpId) {
     let mut s = Scenario::new(1);
     let m = s.mbarrier(0, 1);
     let p0 = s.phase(m, 0);
-    s.arrive(0, p0);
+    s.arrive_expect_tx(0, p0, 4);
+    s.bulk_copy(0, 0x40, p0, 4);
     s.complete(p0);
     let p1 = s.phase(m, 1);
-    let op = s.async_op(
-        0,
-        AsyncOpKind::BulkCopy,
-        AccessMode::Write,
-        0x40,
-        Proxy::Async,
-    );
-    s.b.track(op, p1, 4);
-    s.arrive(0, p1);
+    let early = (!b_after_wait).then(|| s.bulk_copy(0, 0x44, p1, 4));
+    let released = s.wait(0, m, Parity::Even, p0);
+    s.arrive_expect_tx(0, p1, 4);
+    let b = early.unwrap_or_else(|| s.bulk_copy(0, 0x44, p1, 4));
     s.complete(p1);
+    s.wait(0, m, Parity::Odd, p1);
+    (s.completed(1).0, released, (p0, p1), b)
+}
+
+#[test]
+fn a_copy_issued_after_the_previous_phases_release_passes() {
+    let (g, ..) = two_phase_copies(true);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.is_some());
+}
+
+/// Copy B's `complete_tx` can land while phase 0 still waits for copy A's bytes, and
+/// complete it: the copy binds phase 1 only once issued after phase 0's release.
+#[test]
+fn a_copy_issued_before_the_previous_phases_release_is_a_violation() {
+    let (g, released, phases, b) = two_phase_copies(false);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    let [v] = result.violations() else {
+        panic!("{result:?}");
+    };
+    assert_eq!((v.generation, v.next), phases);
+    assert_eq!(v.synchronization, released);
+    assert_eq!(v.operation, g.async_op(b).issue);
+    assert!(certificate.is_none());
+}
+
+/// A commit tracks every MMA of its thread not yet observed, so MMA 1, issued before phase
+/// 0's commit, joins phase 1 too; the arrive-on is phase 1's operation, not the MMA.
+#[test]
+fn a_completion_an_arrive_on_tracks_is_no_barrier_operation() {
+    let mut s = Scenario::new(1);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    let (mma1, _) = s.mma(0, (0, 8));
+    s.commit(0, p0, &[mma1]);
+    s.complete(p0);
+    let p1 = s.phase(m, 1);
+    let (mma2, _) = s.mma(0, (8, 8));
+    s.commit(0, p1, &[mma1, mma2]);
+    s.complete(p1);
+    s.wait(0, m, Parity::Odd, p1);
     let (g, _) = s.completed(1);
-    assert_eq!(check_mbarrier_epochs(&g).0.verdict(), Verdict::Pass);
+    let (result, certificate) = check_mbarrier_epochs(&g);
+    assert_eq!(result.verdict(), Verdict::Pass, "{result:?}");
+    assert!(certificate.is_some());
 }
 
 #[test]

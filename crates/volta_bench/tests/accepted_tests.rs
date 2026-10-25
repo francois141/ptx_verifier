@@ -1400,6 +1400,16 @@ fn test_cp_async_bulk_every_reader_waiting_is_accepted() {
     );
 }
 
+/// The control for `bulk_copy_complete_tx_lands_in_earlier_phase`: the copy for
+/// phase 1 is issued after the parity-0 wait.
+#[test]
+fn test_bulk_copy_issued_after_the_previous_phase_completes() {
+    analyze!(
+        "success/bulk_copy_issued_after_the_previous_phase_completes",
+        in_out_config(1, 8)
+    );
+}
+
 /// `stmatrix.x1.m8n8.shared.b16`: lane `l`'s value lands at `row_addr[l/4] +
 /// (l%4)*4`, a bijection onto the 128 bytes; lane 5's value is read back at
 /// `src+20`.

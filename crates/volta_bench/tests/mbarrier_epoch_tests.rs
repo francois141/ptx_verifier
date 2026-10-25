@@ -5,7 +5,7 @@
 mod common;
 
 use volta_analysis::AnalysisConfig;
-use volta_graph::{EventKind, GenerationKind, ThreadIx};
+use volta_graph::{AsyncOpKind, EventKind, GenerationKind, ThreadIx};
 use volta_graph_check::barrier_epoch::EpochViolation;
 
 use common::*;
@@ -45,6 +45,28 @@ fn test_mbarrier_pre_init_wait_unseparated_from_the_first_arrival() {
     assert_eq!(g.thread_of(v.synchronization), Some(ThreadIx(0)));
     assert_eq!(g.event(v.operation).kind, EventKind::Contribute(v.next));
     assert_eq!(g.thread_of(v.operation), Some(ThreadIx(1)));
+}
+
+/// Copy B, issued for phase 1 before the parity-0 wait, can land first and complete phase 0
+/// while copy A still writes `bufA`: its issue does not follow phase 0's release.
+#[test]
+fn test_bulk_copy_complete_tx_lands_in_earlier_phase() {
+    let (checked, v) = violation(
+        &ptx!(parse "failing/bulk_copy_complete_tx_lands_in_earlier_phase"),
+        in_out_config(1, 8),
+    );
+    let g = &checked.analysis.graph;
+    assert_eq!(g.generation(v.generation).index, 0);
+    assert_eq!(g.generation(v.next).index, 1);
+    assert_eq!(
+        g.event(v.synchronization).kind,
+        EventKind::Resume(v.generation)
+    );
+    let EventKind::AsyncIssue(b) = g.event(v.operation).kind else {
+        panic!("expected a copy's issue, got {:?}", g.event(v.operation));
+    };
+    assert_eq!(g.async_op(b).kind, AsyncOpKind::BulkCopy);
+    assert_eq!(g.async_op(b).tracking, [v.next]);
 }
 
 /// Thread 1 arrives on `mbar` with nothing ordering thread 0's `mbarrier.init` first (in the

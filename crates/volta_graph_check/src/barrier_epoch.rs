@@ -24,17 +24,22 @@
 //!   without a valid object is undefined (PTX ISA 9.7.15.16.13).
 //! * A *barrier operation* is a thread's instruction instance bound to a generation: a
 //!   contribution (`bar.arrive`, `bar.sync`, `mbarrier.arrive`, `complete_tx`, `tcgen05.commit`,
-//!   `cp.async.mbarrier.arrive`) or an mbarrier wait. `SYNCHRONIZATIONS(b, k)` holds the event
-//!   through which each operation of generation `k` takes part in it (a contribution's
-//!   `Contribute`, a wait's release; for a pre-init phase, also the init), `RELEASES(b, k)` the
-//!   releases among them;
+//!   `cp.async.mbarrier.arrive`), an async copy's `complete_tx` (`cp.async.bulk{.tensor}`, a
+//!   `clusterlaunchcontrol.try_cancel` response) or an mbarrier wait. `SYNCHRONIZATIONS(b, k)`
+//!   holds the event through which each thread operation of generation `k` takes part in it (a
+//!   contribution's `Contribute`, a wait's release; for a pre-init phase, also the init),
+//!   `RELEASES(b, k)` the releases among them; a copy's completion is none, since `G0` orders
+//!   nothing after it.
 //!   `BARRIEROPERATIONS(b, k + 1)` the event each operation of generation `k + 1` begins with
-//!   (a contribution's `Contribute`, a wait's `WaitStart`), whose program predecessor `p` may
-//!   be on another thread than `s`. Exited threads and async completions are not thread
-//!   operations, and a `v` that begins its thread has no `p`.
+//!   (a contribution's `Contribute`, a copy's issue, a wait's `WaitStart`), whose program
+//!   predecessor `p` may be on another thread than `s`. Exited threads are not thread
+//!   operations, nor are the completions an arrive-on tracks (`tcgen05.commit`,
+//!   `cp.async.mbarrier.arrive`): the arrive-on is. A `v` that begins its thread has no `p`.
 //! * The separation rule binds a contribution of `k + 1` to its phase (it follows every
 //!   arrival of `k`) and keeps a wait of `k` from starting after phase `k + 1` completes (it
-//!   would then bind phase `k + 2`). A parity wait of `k + 1` instead needs phase `k`
+//!   would then bind phase `k + 2`). A copy's `complete_tx` lands at any time after its issue,
+//!   so the rule binds its issue: a copy issued before phase `k` is observed complete can
+//!   complete `k` with its bytes. A parity wait of `k + 1` instead needs phase `k`
 //!   complete when it starts, or it returns through phase `k - 1` (the ISA's "immediately
 //!   preceding phase" of the same parity). A completion reaches a thread only through the
 //!   phase's releases, so one release of `k` reaching `p` suffices, and the other waiters of
@@ -49,8 +54,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use volta_graph::{
-    EventGraph, EventId, EventKind, Generation, GenerationId, GenerationKind, SyncObjectId,
-    SyncObjectKind,
+    ContributionKind, EventGraph, EventId, EventKind, Generation, GenerationId, GenerationKind,
+    SyncObjectId, SyncObjectKind,
 };
 
 use crate::relation::{IndependentGraph, thread_points};
@@ -190,6 +195,7 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
             }
             let mut synchronizations: Vec<EventId> = operations(graph, w[0])
                 .into_iter()
+                .filter(|o| o.kind != OperationKind::CopyCompleteTx)
                 .map(|o| o.binds)
                 .collect();
             if graph.generation(w[0]).kind == GenerationKind::MbarrierPreInit {
@@ -314,23 +320,32 @@ struct Operation {
 enum OperationKind {
     /// A thread contribution, bound to its phase by the separation rule.
     Contribution,
+    /// An async copy's `complete_tx`: it begins at the copy's issue, bound there by the
+    /// separation rule, and takes part at the copy's completion, which is no synchronization.
+    CopyCompleteTx,
     /// An mbarrier wait, bound to its phase by the completion rule.
     Wait,
 }
 
-/// The thread operations of generation `g`, in trace order: its thread contributions, and
-/// the waits it releases (a release right after the thread's own blocking contribution is
-/// that contribution's).
+/// The barrier operations of generation `g`, in trace order: its thread contributions, the
+/// `complete_tx` of the copies it tracks, and the waits it releases (a release right after
+/// the thread's own blocking contribution is that contribution's).
 fn operations(graph: &EventGraph, g: GenerationId) -> Vec<Operation> {
     let generation = graph.generation(g);
     let mut ops: Vec<Operation> = generation
         .contributions
         .iter()
-        .filter(|c| graph.event(c.event).kind == EventKind::Contribute(g))
-        .map(|c| Operation {
-            begins: c.event,
-            binds: c.event,
-            kind: OperationKind::Contribution,
+        .filter_map(|c| match c.kind {
+            ContributionKind::AsyncCompletion { op, tx_bytes } if tx_bytes > 0 => Some(Operation {
+                begins: graph.async_op(op).issue,
+                binds: c.event,
+                kind: OperationKind::CopyCompleteTx,
+            }),
+            _ => (graph.event(c.event).kind == EventKind::Contribute(g)).then_some(Operation {
+                begins: c.event,
+                binds: c.event,
+                kind: OperationKind::Contribution,
+            }),
         })
         .collect();
     for &r in &generation.releases {

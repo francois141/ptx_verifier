@@ -41,16 +41,6 @@ fn out_config(threads: u32, elem_width: u64, len: u64) -> AnalysisConfig {
     config
 }
 
-/// Copy B, issued for phase 1 before phase 0 is observed, can land first and complete phase 0
-/// while copy A still writes `bufA`: the read of `bufA` after the parity-0 wait races.
-#[test]
-fn test_bulk_copy_complete_tx_lands_in_earlier_phase() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/bulk_copy_complete_tx_lands_in_earlier_phase"),
-        in_out_config(1, 8),
-    );
-}
-
 /// While phase 0's bulk copy is in flight, phase 0 is current and the parity-1 wait returns at
 /// once through the preceding phase, so thread 1's read of `data` races thread 0's store.
 #[test]
