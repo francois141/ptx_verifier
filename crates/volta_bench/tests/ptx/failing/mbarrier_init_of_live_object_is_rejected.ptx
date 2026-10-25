@@ -1,0 +1,21 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// One thread initializes `mbar` twice with no mbarrier.inval in between, then completes a
+// phase of the fresh object: an mbarrier.init of a live mbarrier object is undefined behavior.
+.visible .entry k()
+{
+    .reg .pred %pw;
+    .reg .b32 %r<2>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r1, mbar;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.arrive.shared::cta.b64 _, [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %pw, [%r1], 0;
+    @!%pw bra WAIT;
+    ret;
+}

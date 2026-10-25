@@ -727,6 +727,21 @@ fn test_mbarrier_inval_is_not_implemented() {
     }
 }
 
+/// A second `mbarrier.init` of a live object, with no `mbarrier.inval` between, is undefined
+/// behavior even when one thread issues both and the fresh object is then used correctly.
+#[test]
+fn test_mbarrier_init_of_live_object_is_rejected() {
+    let module = ptx!(parse "failing/mbarrier_init_of_live_object_is_rejected");
+    match run_kernel(&module, None, AnalysisConfig::new((1, 1, 1))) {
+        Err(AnalysisError::Eval(EvalError::MbarrierReinit {
+            thread: ThreadId(0),
+            addr: 0,
+            ..
+        })) => {}
+        other => panic!("expected MbarrierReinit, got {other:?}"),
+    }
+}
+
 /// `activemask` is rejected until warp divergence is modeled: within each side of this kernel's
 /// divergent branch it holds only that side's lanes, so lanes 0 and 16 both elect themselves and
 /// store `s[0]`, a race that reporting every non-exited lane would hide.

@@ -223,9 +223,9 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) tensor: TensorMemory,
     /// The first declined cluster-launch-control response decoded, if any.
     pub(in crate::eval) clc_observed_decline: Option<ObservedDecline>,
-    /// The first read of never-written memory, if any: the error the run ends with once
-    /// every thread exited.
-    pub(in crate::eval) uninitialized_read: Option<EvalError>,
+    /// The first read of never-written memory or `mbarrier.init` of a live object, if any: the
+    /// error the run ends with once every thread exited.
+    pub(in crate::eval) deferred_error: Option<EvalError>,
     regions: MemRegions,
     pub(in crate::eval) mbarriers: MbarrierTable,
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
@@ -430,7 +430,7 @@ impl<'p> Interpreter<'p> {
             locals,
             tensor: TensorMemory::new(),
             clc_observed_decline: None,
-            uninitialized_read: None,
+            deferred_error: None,
             regions,
             mbarriers: MbarrierTable::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
@@ -454,10 +454,11 @@ impl<'p> Interpreter<'p> {
                             "execution complete: {} instructions, {} block syncs, {} warp syncs",
                             self.stats.instructions, self.stats.block_syncs, self.stats.warp_syncs
                         );
-                        // Deferred to here so the graph holds every access: a read that is
-                        // uninitialized only because it races a later write keeps its witness.
+                        // Deferred to here so the graph holds every access: a read uninitialized
+                        // only because it races a later write, or a re-init racing another
+                        // thread's use of the object, keeps its witness.
                         return self
-                            .uninitialized_read
+                            .deferred_error
                             .take()
                             .map_or(Ok(RunEnd::Completed), Err);
                     }
@@ -1778,6 +1779,14 @@ impl<'p> Interpreter<'p> {
             } => {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
                 let count = self.non_negative_operand(t, pc, count, "mbarrier.init count")?;
+                if self.shared.read_mbarrier(addr).is_ok() {
+                    self.deferred_error
+                        .get_or_insert(EvalError::MbarrierReinit {
+                            thread: t,
+                            pc,
+                            addr,
+                        });
+                }
                 let id = self.mbarriers.init(count);
                 self.mem_write(t, pc, MemSpace::Shared, addr, 8, Value::Mbarrier(id))?;
                 self.record_mbarrier_init(t, pc, id, addr, count);
@@ -2319,7 +2328,7 @@ impl<'p> Interpreter<'p> {
                     .map_err(|e| EvalError::from_mem_access(t, pc, space, e))
             }
             Err(MemAccessError::Uninitialized { addr }) if space != MemSpace::Local => {
-                self.uninitialized_read
+                self.deferred_error
                     .get_or_insert(EvalError::UninitializedMemory {
                         thread: t,
                         pc,
@@ -2346,7 +2355,7 @@ impl<'p> Interpreter<'p> {
             .read(lane, col)
             .map_err(|e| EvalError::from_tensor_mem(t, pc, e))?;
         if cell.is_none() {
-            self.uninitialized_read
+            self.deferred_error
                 .get_or_insert(EvalError::Tcgen05UninitializedRead {
                     thread: t,
                     pc,

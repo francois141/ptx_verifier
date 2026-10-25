@@ -326,7 +326,9 @@ shared and global bytes (outside the inputs) and Tensor Memory cells read
 `Undefined` and the run aborts with the first such read
 (`UninitializedMemory`/`Tcgen05UninitializedRead`) once every thread exited, so a
 read racing a later write (the paper's race example) keeps its race witness in
-the complete graph.
+the complete graph. An `mbarrier.init` of a live object (UB without
+`mbarrier.inval`) ends the run the same way (`MbarrierReinit`), so a re-init
+racing another thread's use of the object keeps its witness.
 
 ### Analysis stage (`analysis.rs`, `config.rs`)
 

@@ -106,6 +106,13 @@ pub enum EvalError {
         space: MemSpace,
         addr: u64,
     },
+    /// An `mbarrier.init` targeted the shared address of a live `mbarrier`
+    /// object: undefined behavior without an intervening `mbarrier.inval`.
+    MbarrierReinit {
+        thread: ThreadId,
+        pc: InstrId,
+        addr: u64,
+    },
     /// An output array element is (or was computed from) an uninitialized
     /// read that was never resolved.
     UndefinedOutput { array: String, index: u64 },
@@ -330,6 +337,12 @@ impl fmt::Display for EvalError {
                  already invalidated, or holding ordinary data)",
                 thread, space, addr, pc
             ),
+            Self::MbarrierReinit { thread, pc, addr } => write!(
+                f,
+                "{}: mbarrier.init of the live mbarrier object at Shared[{:#x}] at {}; \
+                 mbarrier.inval must run first",
+                thread, addr, pc
+            ),
             Self::UndefinedOutput { array, index } => write!(
                 f,
                 "output element {}[{}] is undefined (uninitialized read)",
@@ -495,6 +508,7 @@ impl EvalError {
             | Self::ValueKindMismatch { thread, pc, .. }
             | Self::MbarrierOverwrite { thread, pc, .. }
             | Self::NoLiveMbarrier { thread, pc, .. }
+            | Self::MbarrierReinit { thread, pc, .. }
             | Self::TrapReached { thread, pc }
             | Self::ClusterLaunchControlMisuse { thread, pc, .. }
             | Self::MapaRankOutsideCluster { thread, pc, .. }
