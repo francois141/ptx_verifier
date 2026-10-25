@@ -19,6 +19,7 @@ use volta_graph_check::allocation_order::AllocationOrderViolation;
 use volta_graph_check::allocation_permit::AllocationPermitViolation;
 use volta_graph_check::barrier_epoch::EpochViolation;
 use volta_graph_check::domain::ConflictKind;
+use volta_graph_check::mbarrier_release_order::ReleaseOrderViolation;
 use volta_graph_check::pipeline::pipeline_edges;
 use volta_graph_check::proxy_order::MissingFence;
 use volta_graph_check::resource_lifetime::LifetimeViolation;
@@ -1036,6 +1037,42 @@ fn allocation_permit_violation(v: &AllocationPermitViolation) -> (String, Vec<Ev
     )
 }
 
+fn release_order_violation(
+    graph: &EventGraph,
+    v: &ReleaseOrderViolation,
+) -> (String, Vec<EventId>) {
+    match *v {
+        ReleaseOrderViolation::LateStart { phase, release } => (
+            format!(
+                "the first release e{} is of {}: phase 0 released no thread",
+                release.0,
+                generation_name(graph, phase)
+            ),
+            vec![release],
+        ),
+        ReleaseOrderViolation::SkippedPhase {
+            previous,
+            phase,
+            release,
+        } => (
+            format!(
+                "release e{} of {} follows {}: the phase between released no thread",
+                release.0,
+                generation_name(graph, phase),
+                generation_name(graph, previous)
+            ),
+            vec![release],
+        ),
+        ReleaseOrderViolation::Unordered { earlier, later } => (
+            format!(
+                "release e{} is not ordered before e{}, a release of the next phase",
+                earlier.0, later.0
+            ),
+            vec![earlier, later],
+        ),
+    }
+}
+
 fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
     Json::Arr(
         Property::ALL
@@ -1117,6 +1154,11 @@ fn checks(graph: &EventGraph, report: &GraphReport) -> Json {
                     }
                     Property::AllocationPermit => {
                         findings(&report.allocation_permit, allocation_permit_violation)
+                    }
+                    Property::MbarrierReleaseOrder => {
+                        findings(&report.mbarrier_release_order, |v| {
+                            release_order_violation(graph, v)
+                        })
                     }
                 };
                 Json::Obj(vec![

@@ -98,7 +98,7 @@ impl<E, V> PropertyResult<E, V> {
 }
 
 /// The seven checks of the Volta v2 design (§1.3), in the design's order, then the
-/// allocation-order and allocation-permit checks beyond it.
+/// allocation-order, allocation-permit and mbarrier release-order checks beyond it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Property {
     /// Algorithm 1 over named barriers (`bar.arrive`, `bar.sync`).
@@ -119,10 +119,12 @@ pub enum Property {
     AllocationOrder,
     /// The PTX ISA's rule that no `tcgen05.alloc` follows a `tcgen05.relinquish_alloc_permit`.
     AllocationPermit,
+    /// Each mbarrier lifetime's waits observe its phases one after another, from its first.
+    MbarrierReleaseOrder,
 }
 
 impl Property {
-    pub const ALL: [Property; 9] = [
+    pub const ALL: [Property; 10] = [
         Property::NamedBarrierEpoch,
         Property::MbarrierEpoch,
         Property::MbarrierOrdering,
@@ -132,6 +134,7 @@ impl Property {
         Property::ResourceLifetime,
         Property::AllocationOrder,
         Property::AllocationPermit,
+        Property::MbarrierReleaseOrder,
     ];
 
     /// The checks that must pass before this one can run: both barrier-epoch checks and the
@@ -141,7 +144,7 @@ impl Property {
     pub fn prerequisites(self) -> &'static [Property] {
         use Property::*;
         match self {
-            NamedBarrierEpoch | MbarrierEpoch | MbarrierOrdering => &[],
+            NamedBarrierEpoch | MbarrierEpoch | MbarrierOrdering | MbarrierReleaseOrder => &[],
             MemoryConflict | TensorOrder | ResourceLifetime | AllocationOrder
             | AllocationPermit => &[NamedBarrierEpoch, MbarrierEpoch, MbarrierOrdering],
             ProxyOrder => &[
@@ -164,6 +167,7 @@ impl Property {
             Property::ResourceLifetime => "resource lifetime",
             Property::AllocationOrder => "allocation order",
             Property::AllocationPermit => "allocation permit",
+            Property::MbarrierReleaseOrder => "mbarrier release order",
         }
     }
 
@@ -179,6 +183,7 @@ impl Property {
             Property::ResourceLifetime => "Algorithm 7",
             Property::AllocationOrder => "PTX ISA tcgen05.alloc",
             Property::AllocationPermit => "PTX ISA tcgen05.relinquish_alloc_permit",
+            Property::MbarrierReleaseOrder => "phase chain",
         }
     }
 }

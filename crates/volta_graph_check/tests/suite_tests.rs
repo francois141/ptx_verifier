@@ -15,7 +15,7 @@ fn verdicts(r: &GraphReport) -> Vec<(Property, Verdict)> {
 }
 
 #[test]
-fn the_seven_checks_of_the_design_in_its_order_then_the_allocation_rules() {
+fn the_seven_checks_of_the_design_in_its_order_then_the_three_beyond_it() {
     let algorithms: Vec<&str> = Property::ALL.iter().map(|p| p.algorithm()).collect();
     assert_eq!(
         algorithms,
@@ -28,7 +28,8 @@ fn the_seven_checks_of_the_design_in_its_order_then_the_allocation_rules() {
             "Algorithms 5 and 6",
             "Algorithm 7",
             "PTX ISA tcgen05.alloc",
-            "PTX ISA tcgen05.relinquish_alloc_permit"
+            "PTX ISA tcgen05.relinquish_alloc_permit",
+            "phase chain"
         ]
     );
 }
@@ -51,7 +52,9 @@ fn an_unprotected_announcement_leaves_the_validated_checks_unchecked() {
     let r = check_graph(&g);
     for (p, v) in verdicts(&r) {
         let expected = match p {
-            Property::NamedBarrierEpoch | Property::MbarrierEpoch => Verdict::Pass,
+            Property::NamedBarrierEpoch
+            | Property::MbarrierEpoch
+            | Property::MbarrierReleaseOrder => Verdict::Pass,
             _ => Verdict::Unknown,
         };
         assert_eq!(v, expected, "{p:?}");
@@ -121,7 +124,9 @@ fn a_barrier_epoch_violation_leaves_every_check_needing_g_hb_unchecked() {
     for (p, v) in verdicts(&r) {
         let expected = match p {
             Property::NamedBarrierEpoch => Verdict::Fail,
-            Property::MbarrierEpoch | Property::MbarrierOrdering => Verdict::Pass,
+            Property::MbarrierEpoch
+            | Property::MbarrierOrdering
+            | Property::MbarrierReleaseOrder => Verdict::Pass,
             _ => Verdict::Unknown,
         };
         assert_eq!(v, expected, "{p:?}");

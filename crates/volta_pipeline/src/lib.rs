@@ -3,7 +3,7 @@
 //! ```text
 //! analysis (candidate execution) -> AnalysisResult { symbolic outputs, event graph, provenance }
 //!   ├─ equivalence branch: symbolic outputs only              -> EquivalenceVerdict
-//!   └─ graph branch: the event graph only, nine checks          -> GraphReport (per check)
+//!   └─ graph branch: the event graph only, ten checks           -> GraphReport (per check)
 //!                                       aggregation (decide)  -> ACCEPT / REJECT / UNKNOWN
 //! ```
 //!

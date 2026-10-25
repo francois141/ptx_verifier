@@ -41,16 +41,6 @@ fn out_config(threads: u32, elem_width: u64, len: u64) -> AnalysisConfig {
     config
 }
 
-/// While phase 0's bulk copy is in flight, phase 0 is current and the parity-1 wait returns at
-/// once through the preceding phase, so thread 1's read of `data` races thread 0's store.
-#[test]
-fn test_inflight_complete_tx_lets_parity_wait_return_early() {
-    assert_not_verified(
-        &ptx!(parse "false_positive/inflight_complete_tx_lets_parity_wait_return_early"),
-        in_out_config(2, 8),
-    );
-}
-
 /// Lanes 0-15 and 16-31 reach the `.aligned` `bar.sync` on different loop iterations (UB).
 #[test]
 fn test_aligned_bar_sync_reached_on_different_iterations() {

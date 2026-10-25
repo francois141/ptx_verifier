@@ -1,0 +1,48 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// The accepted twin of inflight_complete_tx_lets_parity_wait_return_early: thread 1 observes
+// phase 0 (the arrive.expect_tx and the bulk copy) with a parity-0 wait before the
+// barrier.sync, so its parity-1 wait starts once phase 0 is complete and binds phase 1, thread
+// 0's handoff of `data`.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<3>;
+    .reg .pred %pw;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<6>;
+    .shared .align 16 .b8 buf[16];
+    .shared .align 4 .b32 data;
+    .shared .align 8 .b64 full;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, full;
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, data;
+    setp.eq.s32 %p1, %r2, 0;
+    @%p1 mbarrier.init.shared::cta.b64 [%r1], 1;
+    bar.sync 0;
+    @!%p1 bra WAIT0;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 16;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [buf], [%rd1], 16, [%r1];
+    barrier.sync 0;
+    mov.u32 %r4, 7;
+    st.shared.u32 [%r3], %r4;
+    mbarrier.arrive.shared::cta.b64 _, [%r1];
+    ret;
+WAIT0:
+    mbarrier.try_wait.parity.shared::cta.b64 %pw, [%r1], 0;
+    @!%pw bra WAIT0;
+    barrier.sync 0;
+WAIT1:
+    mbarrier.try_wait.parity.shared::cta.b64 %pw, [%r1], 1;
+    @!%pw bra WAIT1;
+    ld.shared.u32 %r5, [%r3];
+    st.global.u32 [%rd2], %r5;
+    ret;
+}

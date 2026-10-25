@@ -284,7 +284,7 @@ pub fn barrier_epochs(graph: &EventGraph, family: BarrierFamily) -> EpochResult 
     }
 }
 
-fn logical_index(generation: &Generation) -> i64 {
+pub(crate) fn logical_index(generation: &Generation) -> i64 {
     match generation.kind {
         GenerationKind::MbarrierPreInit => -1,
         _ => i64::from(generation.index),

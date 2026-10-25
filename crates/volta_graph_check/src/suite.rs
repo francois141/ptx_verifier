@@ -15,6 +15,7 @@ use crate::allocation_permit::{AllocationPermitResult, check_allocation_permit};
 use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
 use crate::logging::info;
 use crate::mbarrier_ordering::{MbarrierOrderingResult, check_mbarrier_ordering};
+use crate::mbarrier_release_order::{ReleaseOrderResult, check_mbarrier_release_order};
 use crate::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
 use crate::proxy_order::{ProxyOrderResult, check_proxy_order};
 use crate::relation::ValidatedGraph;
@@ -35,6 +36,7 @@ pub struct GraphReport {
     pub resource_lifetime: LifetimeResult,
     pub allocation_order: AllocationOrderResult,
     pub allocation_permit: AllocationPermitResult,
+    pub mbarrier_release_order: ReleaseOrderResult,
 }
 
 /// The trace generator's deadlock: no thread can proceed.
@@ -109,6 +111,7 @@ impl GraphReport {
             Property::ResourceLifetime => summarize(property, &self.resource_lifetime),
             Property::AllocationOrder => summarize(property, &self.allocation_order),
             Property::AllocationPermit => summarize(property, &self.allocation_permit),
+            Property::MbarrierReleaseOrder => summarize(property, &self.mbarrier_release_order),
         }
     }
 
@@ -286,6 +289,9 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         None => not_run(Property::AllocationPermit),
     };
     log.finish(&allocation_permit);
+    let log = CheckLog::start(Property::MbarrierReleaseOrder);
+    let mbarrier_release_order = check_mbarrier_release_order(graph);
+    log.finish(&mbarrier_release_order);
     GraphReport {
         terminal: graph.terminal().clone(),
         named_barrier_epoch,
@@ -297,5 +303,6 @@ pub fn check_graph(graph: &EventGraph) -> GraphReport {
         resource_lifetime,
         allocation_order,
         allocation_permit,
+        mbarrier_release_order,
     }
 }

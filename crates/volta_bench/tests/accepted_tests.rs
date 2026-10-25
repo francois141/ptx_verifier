@@ -186,6 +186,16 @@ fn test_mbarrier_producer_starts_through_the_pre_init_phase() {
     );
 }
 
+/// The control for `inflight_complete_tx_lets_parity_wait_return_early`:
+/// thread 1 observes the copy's phase 0 before its parity-1 wait.
+#[test]
+fn test_parity_1_wait_after_observing_the_copy_phase() {
+    analyze!(
+        "success/parity_1_wait_after_observing_the_copy_phase",
+        in_out_config(2, 8)
+    );
+}
+
 /// Two consumers wait on the same `full` phase and never synchronize with
 /// each other: a phase's waiters need no order among themselves, only its
 /// completion before their next wait, which each consumer's own release gives.
