@@ -1,14 +1,14 @@
 //! Lowering of data movement: `mov`, loads, stores, parameter accesses,
 //! `cvta`, `mapa` and `cp.async`.
 
-use volta_frontend::ascii::AsciiSliceExt;
-use volta_frontend::ast::{
+use crate::frontend::ascii::AsciiSliceExt;
+use crate::frontend::ast::{
     self, AddressBase, CpAsyncInstr, CpAsyncWaitGroupInstr, CvtaInstr, FromAscii, LdInstr,
     MapaInstr, MemSemantics, MovInstr, Operand as AstOperand, ScalarType,
     SharedStateSpaceQualifier, StInstr, StateSpace, VecWidth,
 };
-use volta_frontend::instr_parse::is_cache_perf_hint;
-use volta_frontend::lex::DottedIdent;
+use crate::frontend::instr_parse::is_cache_perf_hint;
+use crate::frontend::lex::DottedIdent;
 
 use crate::ir::symbols::RegId;
 use crate::ir::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};

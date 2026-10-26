@@ -12,14 +12,14 @@ use std::fmt::Write;
 use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use volta_analysis::frontend::ascii::AsAscii;
+use volta_analysis::frontend::ast::Module;
+use volta_analysis::frontend::parse::Parser;
 use volta_analysis::{
     AnalysisConfig, AnalysisError, AnalysisResult, ArrayDef, ArrayKind, OutputsUnavailable,
     ParamValue, Stats, analyze,
 };
 use volta_expr::SymbolicOutputs;
-use volta_frontend::ascii::AsAscii;
-use volta_frontend::ast::Module;
-use volta_frontend::parse::Parser;
 use volta_graph::{
     AbortCause, AccessMode, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext,
 };

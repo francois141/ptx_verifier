@@ -1,8 +1,8 @@
 //! Lowering of the 5th-generation tensor core instructions (`tcgen05.*`).
 
-use volta_frontend::ascii::AsciiSliceExt;
-use volta_frontend::ast::{FromAscii, Operand as AstOperand, SharedStateSpaceQualifier};
-use volta_frontend::lex::DottedIdent;
+use crate::frontend::ascii::AsciiSliceExt;
+use crate::frontend::ast::{FromAscii, Operand as AstOperand, SharedStateSpaceQualifier};
+use crate::frontend::lex::DottedIdent;
 
 use crate::ir::{
     LoweredInstr, Operand, Predicate, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection,

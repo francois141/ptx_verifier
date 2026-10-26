@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_expr::{ExprArena, SymbolicOutputs};
-use volta_frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance};
 
 use crate::config::AnalysisConfig;

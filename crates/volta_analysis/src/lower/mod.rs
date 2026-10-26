@@ -16,13 +16,13 @@ mod tests;
 mod tma;
 mod warp;
 
-use id_collections::{Id, IdVec};
-use volta_frontend::ast::{
+use crate::frontend::ast::{
     self, Function, FunctionBody, Instruction, InstructionOp, ParsedInstruction, StateSpace,
     Statement, VarDecl,
 };
-use volta_frontend::instr::InstrKind;
-use volta_frontend::instr_parse::parse_instruction;
+use crate::frontend::instr::InstrKind;
+use crate::frontend::instr_parse::parse_instruction;
+use id_collections::{Id, IdVec};
 
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BarrierAlignment, BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};

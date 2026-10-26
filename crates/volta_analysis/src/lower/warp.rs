@@ -2,12 +2,12 @@
 //! `redux.sync`, `bar.warp.sync`, `ldmatrix`/`stmatrix`, `mma.sync` and
 //! `wmma`.
 
-use volta_frontend::ascii::AsciiSliceExt;
-use volta_frontend::ast::{
+use crate::frontend::ascii::AsciiSliceExt;
+use crate::frontend::ast::{
     BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, RedOp, ReduxSyncInstr,
     ScalarType, SharedStateSpaceQualifier, ShflSyncInstr,
 };
-use volta_frontend::lex::DottedIdent;
+use crate::frontend::lex::DottedIdent;
 
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
 use crate::ir::{BinOp, LoweredInstr, MemSpace, Predicate};

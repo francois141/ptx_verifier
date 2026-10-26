@@ -2,8 +2,8 @@
 
 use std::time::Instant;
 
+use volta_analysis::frontend::ast::Module;
 use volta_analysis::{AnalysisConfig, AnalysisError, AnalysisResult, analyze};
-use volta_frontend::ast::Module;
 use volta_graph::Terminal;
 use volta_graph_check::{GraphReport, check_graph};
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
 
-use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
+use crate::frontend::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
 
 #[derive(Debug, Clone)]
 pub struct InstrTrie {
@@ -378,7 +378,7 @@ pub enum InstrKind {
 
 impl InstrKind {
     pub fn mnemonic(self) -> &'static [AsciiChar] {
-        use crate::ascii::ascii;
+        use crate::frontend::ascii::ascii;
         use InstrKind::*;
         match self {
             // Integer Arithmetic

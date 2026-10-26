@@ -2,9 +2,9 @@
 //!
 //! This module defines the AST types for representing parsed PTX programs.
 
-use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString};
-use crate::instr::InstrKind;
-use crate::lex::DottedIdent;
+use crate::frontend::ascii::{AsciiChar, AsciiSliceExt, AsciiString};
+use crate::frontend::instr::InstrKind;
+use crate::frontend::lex::DottedIdent;
 
 // Re-export Span from volta_common
 pub use volta_common::Span;
@@ -3279,5 +3279,5 @@ pub struct FileDirective {
 pub struct Directive {
     pub span: Span,
     pub name: AsciiString,
-    pub arguments: Vec<crate::lex::Token>,
+    pub arguments: Vec<crate::frontend::lex::Token>,
 }

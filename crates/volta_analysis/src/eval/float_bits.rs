@@ -2,7 +2,7 @@
 //! float/fp8 type is a raw `.bN` bit pattern, not a real. NaN encodings are
 //! rejected; every finite value here is dyadic, so f64 decoding is exact.
 
-use volta_frontend::ast::ScalarType;
+use crate::frontend::ast::ScalarType;
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::ir::InstrId;

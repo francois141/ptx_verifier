@@ -643,7 +643,6 @@ dependencies = [
  "log",
  "volta_common",
  "volta_expr",
- "volta_frontend",
  "volta_graph",
 ]
 
@@ -654,7 +653,6 @@ dependencies = [
  "volta_analysis",
  "volta_equivalence",
  "volta_expr",
- "volta_frontend",
  "volta_graph",
  "volta_graph_check",
  "volta_pipeline",
@@ -673,7 +671,6 @@ dependencies = [
  "volta_common",
  "volta_equivalence",
  "volta_expr",
- "volta_frontend",
  "volta_graph",
  "volta_graph_check",
  "volta_pipeline",
@@ -714,13 +711,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "volta_frontend"
-version = "0.1.0"
-dependencies = [
- "volta_common",
-]
-
-[[package]]
 name = "volta_graph"
 version = "0.1.0"
 dependencies = [
@@ -745,7 +735,6 @@ dependencies = [
  "volta_analysis",
  "volta_equivalence",
  "volta_expr",
- "volta_frontend",
  "volta_graph",
  "volta_graph_check",
 ]
@@ -759,7 +748,6 @@ dependencies = [
  "volta_common",
  "volta_equivalence",
  "volta_expr",
- "volta_frontend",
  "volta_graph_check",
  "volta_pipeline",
  "volta_spec",

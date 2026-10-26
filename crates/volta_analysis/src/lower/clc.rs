@@ -1,7 +1,7 @@
 //! Lowering of cluster launch control (PTX ISA 9.7.19).
 
-use volta_frontend::ast::Operand as AstOperand;
-use volta_frontend::lex::DottedIdent;
+use crate::frontend::ast::Operand as AstOperand;
+use crate::frontend::lex::DottedIdent;
 
 use crate::ir::types::RegClass;
 use crate::ir::{LoweredInstr, Predicate};

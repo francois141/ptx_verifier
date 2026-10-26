@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use volta_frontend::ast::ScalarType;
+use crate::frontend::ast::ScalarType;
 
 use crate::ir::symbols::SymbolKind;
 

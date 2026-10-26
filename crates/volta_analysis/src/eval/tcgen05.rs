@@ -8,11 +8,11 @@ use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma::{self, KSelect, Major, OperandFormat};
 use crate::eval::value::Value;
+use crate::frontend::ast::ScalarType;
 use crate::ir::{
     InstrId, MemSpace, Operand, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind,
 };
 use volta_expr::{ExprId, Real};
-use volta_frontend::ast::ScalarType;
 use volta_graph::{AccessMode, AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
 impl<'p> Interpreter<'p> {

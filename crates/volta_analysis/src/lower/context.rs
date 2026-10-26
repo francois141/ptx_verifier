@@ -5,13 +5,13 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use id_collections::Id;
-use volta_common::Span;
-use volta_frontend::ast::{
+use crate::frontend::ast::{
     self, Address, AddressBase, CmpOp as AstCmpOp, FromAscii, MulMode, Operand as AstOperand,
     ScalarType, ShflMode as AstShflMode, StateSpace,
 };
-use volta_frontend::lex::DottedIdent;
+use crate::frontend::lex::DottedIdent;
+use id_collections::Id;
+use volta_common::Span;
 
 use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};

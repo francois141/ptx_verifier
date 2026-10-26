@@ -2,11 +2,11 @@
 //! `tensormap.cp_fenceproxy`, `fence.proxy.tensormap`) and of the bulk copies
 //! (`cp.async.bulk{.tensor}`).
 
-use volta_frontend::ascii::AsciiSliceExt;
-use volta_frontend::ast::{
+use crate::frontend::ascii::AsciiSliceExt;
+use crate::frontend::ast::{
     FromAscii, Operand as AstOperand, ScalarType, SharedStateSpaceQualifier,
 };
-use volta_frontend::lex::DottedIdent;
+use crate::frontend::lex::DottedIdent;
 
 use crate::ir::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,

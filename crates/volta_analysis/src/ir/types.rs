@@ -1,7 +1,7 @@
 //! Type system for PTX lowering: register classes, type classification and
 //! compatibility checking.
 
-use volta_frontend::ast::ScalarType;
+use crate::frontend::ast::ScalarType;
 
 /// Register storage class (determines which register array a value lives in)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

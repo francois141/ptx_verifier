@@ -7,7 +7,7 @@ use std::fmt;
 
 use id_collections::IdVec;
 
-use volta_frontend::ast::ScalarType;
+use crate::frontend::ast::ScalarType;
 
 use crate::config::{AnalysisConfig, ParamValue};
 use crate::eval::cluster_launch_control::ObservedDecline;

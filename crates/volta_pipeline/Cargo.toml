@@ -12,6 +12,5 @@ log = { workspace = true, optional = true }
 volta_analysis.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true
-volta_frontend.workspace = true
 volta_graph.workspace = true
 volta_graph_check.workspace = true

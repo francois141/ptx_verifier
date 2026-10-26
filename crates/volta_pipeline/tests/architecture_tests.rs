@@ -1,5 +1,6 @@
 //! The pipeline's boundaries, checked on the sources and manifests: the analysis runs no
-//! checker and no equivalence, and the two branches never depend on each other.
+//! checker and no equivalence, its frontend knows nothing of the stages after it, and the
+//! two branches never depend on each other.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +62,37 @@ fn the_analysis_runs_no_checker_and_no_equivalence() {
             !deps.iter().any(|d| d == forbidden),
             "the analysis depends on {forbidden}"
         );
+    }
+}
+
+#[test]
+fn the_frontend_imports_nothing_of_the_analysis_after_it() {
+    let mut files = Vec::new();
+    rust_sources(
+        &crates_dir().join("volta_analysis/src/frontend"),
+        &mut files,
+    );
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let code: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        for forbidden in [
+            "crate::analysis",
+            "crate::config",
+            "crate::eval",
+            "crate::ir",
+            "crate::lower",
+            "volta_expr",
+            "volta_graph",
+        ] {
+            assert!(
+                !code.iter().any(|l| l.contains(forbidden)),
+                "{} (frontend) references {forbidden}",
+                file.display()
+            );
+        }
     }
 }
 

@@ -3,8 +3,8 @@
 
 use std::fmt;
 
-use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
-use crate::instr::{self, InstrKind};
+use crate::frontend::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
+use crate::frontend::instr::{self, InstrKind};
 
 // Per ptxas experiments: dotted qualifiers (`.foo::bar`) and known compound mnemonics
 // (`st.async`, longest match) are whitespace-free tokens, while `st .weak` may be spaced. Names
@@ -22,7 +22,7 @@ impl DottedIdent {
     pub fn to_ascii_string(&self) -> AsciiString {
         match self {
             DottedIdent::Simple(s) => s.clone(),
-            DottedIdent::Qualified(components) => crate::ascii::join(components, ascii("::")),
+            DottedIdent::Qualified(components) => crate::frontend::ascii::join(components, ascii("::")),
         }
     }
 }
@@ -1191,7 +1191,7 @@ impl<'a> Iterator for Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ascii::AsAscii;
+    use crate::frontend::ascii::AsAscii;
 
     fn lex(src: &str) -> Result<Vec<Token>, Error> {
         let ascii_src = src

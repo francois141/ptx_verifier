@@ -1,11 +1,11 @@
 //! Aggregation over real kernels: both branches run on the analysis stage's artifacts and only
 //! `decide` combines them.
 
+use volta_analysis::frontend::ascii::AsAscii;
+use volta_analysis::frontend::ast::Module;
+use volta_analysis::frontend::parse::Parser;
 use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_equivalence::check::EquivCheckOptions;
-use volta_frontend::ascii::AsAscii;
-use volta_frontend::ast::Module;
-use volta_frontend::parse::Parser;
 use volta_graph_check::{GraphConclusion, Property, Verdict as PropertyVerdict};
 use volta_pipeline::{
     Decision, EquivalenceVerdict, KernelEvidence, KernelVerification, Verdict, check_equivalence,

@@ -22,11 +22,10 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
 ```
 crates/
 ├── volta_common/     # Base utilities (spans, file caching, error reporting, run logs)
-├── volta_frontend/   # PTX lexer and parser
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
-├── volta_analysis/   # Abstract interpreter (PTX -> expressions + event graph)
+├── volta_analysis/   # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
 ├── volta_bench/      # End-to-end tests only (PTX kernels through the pipeline)
@@ -39,16 +38,15 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_frontend, volta_common
-volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_frontend
+volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_common
+volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr
 volta_viz         → volta_graph_check, volta_graph, volta_expr
-volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr, volta_frontend
+volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr
 volta_equivalence → volta_expr
-volta_analysis    → volta_graph, volta_expr, volta_frontend, volta_common
+volta_analysis    → volta_graph, volta_expr, volta_common
 volta_graph_check → volta_graph
 volta_graph       → volta_expr
 volta_expr        → (nothing)
-volta_frontend    → volta_common
 volta_common      → (nothing)
 ```
 
@@ -82,31 +80,6 @@ tests of internals.
 - `run_log::RunLog` - Per-invocation log file (`<unix-seconds>-<pid>-<command>.log` under `--log-dir`, default `volta-logs/`), written by the `volta` binary; `tee` mirrors an `env_logger` target into it under its `logging` feature
 
 The pattern is to create an error kind type, and then an alias for `Locate` of that error kind. `locate_span` can be used to tag a `Locate` with a span if it does not already have one. `locate_path` can be used to tag a `Locate` with a path if it does not already have one.
-
-## Crate: volta_frontend
-
-**Path**: `crates/volta_frontend/`
-
-### Lexer (`lex.rs`)
-
-Tokenizes PTX source. Key methods: `next()`, `peek()`, `expect(kind)`.
-
-### Parser (`parse.rs`)
-
-Pratt parser producing AST. Entry point: `parse_module()`.
-
-### AST (`ast.rs`)
-
-- `Module` - Top-level: version, target, address_size, directives
-- `Function` - Kernel/device function with params and body
-- `Instruction` - Generic instruction: the trie already resolves the mnemonic to a typed `InstrKind` at parse time (`InstructionOp::Unparsed { kind, modifiers, operands }`)
-- `ScalarType` - Pred, Signed/Unsigned/Float/Bits with width
-
-### Instruction Parsing (`instr.rs`, `instr_parse.rs`)
-
-- `InstrTrie` - O(n) lookup for PTX mnemonics → `InstrKind`
-- `ParsedInstruction` - Strongly-typed enum (~105 instruction variants, defined in `ast.rs`)
-- Converts generic `Instruction` to typed variants with validated modifiers
 
 ## Crate: volta_expr
 
@@ -236,11 +209,38 @@ crate-level docs in `lib.rs` are the contract.
 
 **Path**: `crates/volta_analysis/`
 
-Every module is private: `lib.rs` re-exports the whole API (`analyze`,
+Every module but `frontend` is private: `lib.rs` re-exports the whole API (`analyze`,
 `AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
 `AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
 `Stats`, `ThreadId`, `LowerError`), so rustc flags any code it does not
 reach. Other crates import from the root (`volta_analysis::AnalysisConfig`).
+
+### Frontend (`frontend/`)
+
+The one public module (`volta_analysis::frontend::{parse, ast, ...}`): PTX
+text to a typed AST. It imports nothing else of the crate, nor `volta_expr`
+or `volta_graph` (`architecture_tests.rs` enforces it).
+
+#### Lexer (`lex.rs`)
+
+Tokenizes PTX source. Key methods: `next()`, `peek()`, `expect(kind)`.
+
+#### Parser (`parse.rs`)
+
+Pratt parser producing AST. Entry point: `parse_module()`.
+
+#### AST (`ast.rs`)
+
+- `Module` - Top-level: version, target, address_size, directives
+- `Function` - Kernel/device function with params and body
+- `Instruction` - Generic instruction: the trie already resolves the mnemonic to a typed `InstrKind` at parse time (`InstructionOp::Unparsed { kind, modifiers, operands }`)
+- `ScalarType` - Pred, Signed/Unsigned/Float/Bits with width
+
+#### Instruction Parsing (`instr.rs`, `instr_parse.rs`)
+
+- `InstrTrie` - O(n) lookup for PTX mnemonics → `InstrKind`
+- `ParsedInstruction` - Strongly-typed enum (~105 instruction variants, defined in `ast.rs`)
+- Converts generic `Instruction` to typed variants with validated modifiers
 
 ### ID Types
 
@@ -680,13 +680,13 @@ Every run writes a `volta_common::run_log` file (`--log-dir`/
 PTX Source
     │
     ▼
-Lexer (lex.rs) ──► Tokenizes source
+Lexer (frontend/lex.rs) ──► Tokenizes source
     │
     ▼
-Parser (parse.rs) ──► Builds AST
+Parser (frontend/parse.rs) ──► Builds AST
     │
     ▼
-Instruction Parser (instr_parse.rs) ──► Strongly-typed ParsedInstruction
+Instruction Parser (frontend/instr_parse.rs) ──► Strongly-typed ParsedInstruction
     │
     ▼
 Lowering (lower/) ──► LoweredProgram (resolved RegIds, InstrIds)
@@ -743,9 +743,9 @@ Global, shared, local, param memories are separate `Memory` instances, matching 
 
 ## Adding a New Instruction
 
-1. **Frontend**: Add `InstrKind` variant in `instr.rs`, add to trie
+1. **Frontend**: Add `InstrKind` variant in `frontend/instr.rs`, add to trie
 2. **Instruction Parsing**: Add `ParsedInstruction` variant, parser function
-   in `instr_parse.rs` (use `expect_operands` for exact-arity operand lists)
+   in `frontend/instr_parse.rs` (use `expect_operands` for exact-arity operand lists)
 3. **Lowering**: Add `LoweredInstr` variant, a `lower_*` function in its
    family's `lower/` file, and its arm in `lower/mod.rs`'s dispatch
 4. **Evaluation**: Add evaluation case in `eval/interp.rs`

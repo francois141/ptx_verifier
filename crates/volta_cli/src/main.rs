@@ -9,21 +9,21 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
+use volta_analysis::frontend::ascii::{AsAscii, AsciiChar};
+use volta_analysis::frontend::ast::{Module, TopLevelItem};
+use volta_analysis::frontend::parse;
 use volta_analysis::{
     AnalysisConfig, AnalysisParts, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
     write_op_counts,
 };
+use volta_common::file_cache::FileCache;
+use volta_common::report::{Report, locate_path, report_error};
 use volta_common::run_log;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_equivalence::vc_dump::{VcDump, read_vc_dump, write_vc_dump};
 use volta_equivalence::{EquivCheckOptions, EquivOutcome};
 use volta_expr::SymbolicOutputs;
 use volta_expr::spec::unfold;
-use volta_frontend::ascii::{AsAscii, AsciiChar};
-use volta_frontend::ast::{Module, TopLevelItem};
-use volta_frontend::file_cache::FileCache;
-use volta_frontend::parse;
-use volta_frontend::report::{Report, locate_path, report_error};
 use volta_graph::EventGraph;
 use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::{

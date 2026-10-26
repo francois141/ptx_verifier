@@ -1,6 +1,6 @@
+use crate::frontend::ascii::AsciiString;
+use crate::frontend::ast::{self, Operand as AstOperand, ScalarType};
 use id_collections::Id;
-use volta_frontend::ascii::AsciiString;
-use volta_frontend::ast::{self, Operand as AstOperand, ScalarType};
 
 use crate::ir::symbols::SpecialRegKind;
 use crate::ir::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
@@ -323,8 +323,8 @@ fn test_hint_for_size_mismatch() {
 /// Parse `src` as a full module and lower its entry, passing module-level
 /// variable declarations through as the driver does.
 fn lower_module_src(src: &str) -> LoweredProgram {
-    use volta_frontend::ascii::AsAscii;
-    use volta_frontend::parse::Parser;
+    use crate::frontend::ascii::AsAscii;
+    use crate::frontend::parse::Parser;
 
     let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
     let module = Parser::new(ascii)
@@ -412,8 +412,8 @@ fn test_address_base_register_without_percent_prefix() {
 /// Parse and lower a kernel whose body is `body`, with a standard set of
 /// registers declared.
 fn lower_body(body: &str) -> LowerResult<LoweredProgram> {
-    use volta_frontend::ascii::AsAscii;
-    use volta_frontend::parse::Parser;
+    use crate::frontend::ascii::AsAscii;
+    use crate::frontend::parse::Parser;
 
     let src = format!(
         ".version 8.6\n.target sm_100a\n.address_size 64\n\n\

@@ -1,10 +1,10 @@
 //! Instruction parsing: converts unparsed instructions (raw modifier strings)
 //! into strongly-typed instruction structures.
 
-use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
-use crate::ast::*;
-use crate::instr::InstrKind;
-use crate::lex::DottedIdent;
+use crate::frontend::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
+use crate::frontend::ast::*;
+use crate::frontend::instr::InstrKind;
+use crate::frontend::lex::DottedIdent;
 
 /// Destructure the operand list into exactly `N` operands or return the arity
 /// error; `N` is inferred from the pattern (`let [dst, a, b] =
@@ -201,7 +201,7 @@ impl ModifierParser {
                             self.pos += 1;
                             Ok(Some(q))
                         }
-                        None => Err(InstrParseError::QualifiedModifier(crate::ascii::join(
+                        None => Err(InstrParseError::QualifiedModifier(crate::frontend::ascii::join(
                             parts,
                             ascii("::"),
                         ))),
@@ -256,7 +256,7 @@ impl ModifierParser {
     /// the access, so unmodeled semantics error loudly.
     pub fn reject_qualified(&self) -> Result<(), InstrParseError> {
         if let Some(DottedIdent::Qualified(parts)) = self.peek() {
-            return Err(InstrParseError::QualifiedModifier(crate::ascii::join(
+            return Err(InstrParseError::QualifiedModifier(crate::frontend::ascii::join(
                 parts,
                 ascii("::"),
             )));
@@ -284,7 +284,7 @@ impl ModifierParser {
                 DottedIdent::Simple(s) => s.clone(),
                 DottedIdent::Qualified(parts) => {
                     // Format as "a::b::c"
-                    crate::ascii::join(parts, ascii("::"))
+                    crate::frontend::ascii::join(parts, ascii("::"))
                 }
             };
             Err(InstrParseError::UnexpectedModifier(s))

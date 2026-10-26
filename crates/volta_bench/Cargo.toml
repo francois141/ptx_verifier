@@ -8,7 +8,6 @@ description = "End-to-end tests: PTX kernels through the Volta pipeline"
 volta_analysis.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true
-volta_frontend.workspace = true
 volta_graph.workspace = true
 volta_graph_check.workspace = true
 volta_pipeline.workspace = true

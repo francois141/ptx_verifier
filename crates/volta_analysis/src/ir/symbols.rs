@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::frontend::ast::ScalarType;
 use id_collections::{IdVec, id_type};
-use volta_frontend::ast::ScalarType;
 
 use crate::ir::InstrId;
 use crate::ir::types::{RegClass, RegCounts};

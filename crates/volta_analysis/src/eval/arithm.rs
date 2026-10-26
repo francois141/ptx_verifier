@@ -2,7 +2,7 @@
 //! the canonicalization of integer operands and of values crossing a
 //! register or memory width.
 
-use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
+use crate::frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};

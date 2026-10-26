@@ -2,7 +2,7 @@
 //! warp-scoped `tcgen05` ops, `tensormap.cp_fenceproxy`): run once all lanes reach the same pc
 //! and mask, with each memory access attributed to its owning lane (`fragments` tables).
 
-use volta_frontend::ast::ScalarType;
+use crate::frontend::ast::ScalarType;
 
 use volta_graph::{AccessMode, AsyncOpKind, FenceKind, OperandRole};
 

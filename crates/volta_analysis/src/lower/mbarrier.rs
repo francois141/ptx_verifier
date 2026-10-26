@@ -1,7 +1,7 @@
 //! Lowering of `mbarrier.*`: init, inval, arrive, expect_tx, complete_tx and
 //! the parity waits.
 
-use volta_frontend::ast::{
+use crate::frontend::ast::{
     self, MbarrierArriveInstr, MbarrierCompleteTxInstr, MbarrierExpectTxInstr, MbarrierInitInstr,
     MbarrierInvalInstr, MbarrierTestWaitInstr, MbarrierTryWaitInstr, MemSemantics,
     Operand as AstOperand, SharedStateSpaceQualifier, StateSpace,

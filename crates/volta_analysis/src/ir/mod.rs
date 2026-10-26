@@ -10,8 +10,8 @@ pub mod types;
 
 use std::fmt;
 
+use crate::frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 use id_collections::{IdVec, id_type};
-use volta_frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 
 use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};

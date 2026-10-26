@@ -1,14 +1,14 @@
 //! Multi-statement nvcc idioms matched before per-instruction lowering: the
 //! mbarrier retry loop and the warp max sign trick.
 
-use volta_common::Span;
-use volta_frontend::ast::{
+use crate::frontend::ast::{
     self, CmpOp as AstCmpOp, Instruction, InstructionOp, MbarrierTestWaitInstr,
     MbarrierTryWaitInstr, Operand as AstOperand, ParsedInstruction, RedOp, ScalarType, SetpInstr,
     Statement,
 };
-use volta_frontend::instr::InstrKind;
-use volta_frontend::instr_parse::parse_instruction;
+use crate::frontend::instr::InstrKind;
+use crate::frontend::instr_parse::parse_instruction;
+use volta_common::Span;
 
 use crate::ir::Operand;
 use crate::ir::symbols::RegId;

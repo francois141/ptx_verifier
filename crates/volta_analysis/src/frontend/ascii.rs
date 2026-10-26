@@ -523,7 +523,7 @@ impl AsciiChar {
     }
 
     /// Returns an iterator that produces an escaped version of a character, identical to
-    /// [`ascii::escape_default`](crate::ascii::escape_default).
+    /// [`ascii::escape_default`](crate::frontend::ascii::escape_default).
     #[must_use = "this returns the escaped character as an iterator, \
                   without modifying the original"]
     #[inline]
@@ -700,7 +700,7 @@ impl AsAscii for [u8] {
 ///
 /// Panics if the string contains non-ASCII characters.
 pub const fn ascii<'a>(s: &'a str) -> &'a [AsciiChar] {
-    crate::ascii::bytes_as_ascii(s.as_bytes()).unwrap()
+    crate::frontend::ascii::bytes_as_ascii(s.as_bytes()).unwrap()
 }
 
 /// An error in attempting to convert bytes to ASCII characters.

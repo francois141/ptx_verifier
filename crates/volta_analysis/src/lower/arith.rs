@@ -2,7 +2,7 @@
 //! comparison and selection, and of `cvt`, with the packed-type checks they
 //! share.
 
-use volta_frontend::ast::{
+use crate::frontend::ast::{
     self, AbsInstr, AddInstr, BfeInstr, BfiInstr, CopysignInstr, CvtInstr, CvtRounding, DivInstr,
     Ex2Instr, FmaInstr, FpRound, Lg2Instr, LogicInstr, Lop3Instr, MadInstr, MaxInstr, MinInstr,
     MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PrmtInstr, RcpInstr, RemInstr,

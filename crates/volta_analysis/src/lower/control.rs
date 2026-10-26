@@ -1,8 +1,8 @@
 //! Lowering of control flow (`bra`, `call`) and of CTA-level synchronization
 //! (`bar`, `fence`).
 
+use crate::frontend::ast::{self, BarMode, BraInstr, CallInstr, Operand as AstOperand};
 use id_collections::Id;
-use volta_frontend::ast::{self, BarMode, BraInstr, CallInstr, Operand as AstOperand};
 
 use crate::ir::{BarrierAlignment, InstrId, LoweredInstr, MemSpace, Predicate};
 

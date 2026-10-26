@@ -2,10 +2,10 @@
 //! https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html),
 //! extended to full modules.
 
-use crate::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
-use crate::ast::*;
-use crate::instr::InstrKind;
-use crate::lex::{DottedIdent, FloatLit, Ident, Lexer, Token};
+use crate::frontend::ascii::{AsciiChar, AsciiSliceExt, AsciiString, ascii};
+use crate::frontend::ast::*;
+use crate::frontend::instr::InstrKind;
+use crate::frontend::lex::{DottedIdent, FloatLit, Ident, Lexer, Token};
 use volta_common::report::Locate;
 
 // =============================================================================
@@ -49,7 +49,7 @@ pub enum ParseErrorKind {
     EmptyQualifiedIdent,
     InvalidTargetOption(AsciiString),
     ConflictingTexmode,
-    LexerError(crate::lex::Error),
+    LexerError(crate::frontend::lex::Error),
 }
 
 /// Parse error with location information (path and span).
@@ -337,7 +337,7 @@ fn split_double_colon(s: &[AsciiChar]) -> Vec<AsciiString> {
     }
 }
 
-type LexerError = crate::lex::Error;
+type LexerError = crate::frontend::lex::Error;
 
 impl From<LexerError> for ParseError {
     fn from(e: LexerError) -> Self {
@@ -1884,7 +1884,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ascii::AsAscii;
+    use crate::frontend::ascii::AsAscii;
 
     fn parse(src: &[u8]) -> Result<Expr, ParseError> {
         let ascii_src = src.as_ascii_slice().expect("test input must be ASCII");
@@ -3538,7 +3538,7 @@ DONE:
     // Strongly-typed instruction tests: each parses to the expected variant.
     // =========================================================================
 
-    use crate::instr_parse::{InstrParseError, parse_instruction};
+    use crate::frontend::instr_parse::{InstrParseError, parse_instruction};
 
     /// Helper to get the first instruction from a parsed module
     fn get_first_instruction(module: &Module) -> &Instruction {
@@ -4495,7 +4495,7 @@ DONE:
                     modifiers,
                     operands,
                 } => {
-                    let result = crate::instr_parse::parse_instruction(
+                    let result = crate::frontend::instr_parse::parse_instruction(
                         *kind,
                         modifiers.clone(),
                         operands.clone(),
@@ -4503,7 +4503,7 @@ DONE:
                     assert!(
                         matches!(
                             result,
-                            Err(crate::instr_parse::InstrParseError::InvalidModifierForType { .. })
+                            Err(crate::frontend::instr_parse::InstrParseError::InvalidModifierForType { .. })
                         ),
                         "expected {:?} to be rejected as InvalidModifierForType, got {:?}",
                         src_instr,
@@ -4561,7 +4561,7 @@ DONE:
                     modifiers,
                     operands,
                 } => {
-                    let result = crate::instr_parse::parse_instruction(
+                    let result = crate::frontend::instr_parse::parse_instruction(
                         *kind,
                         modifiers.clone(),
                         operands.clone(),
@@ -4569,7 +4569,7 @@ DONE:
                     assert!(
                         matches!(
                             result,
-                            Err(crate::instr_parse::InstrParseError::QualifiedModifier(_))
+                            Err(crate::frontend::instr_parse::InstrParseError::QualifiedModifier(_))
                         ),
                         "expected {:?} to be rejected as QualifiedModifier, got {:?}",
                         src_instr,
@@ -4693,7 +4693,7 @@ DONE:
                 modifiers,
                 operands,
             } => {
-                let result = crate::instr_parse::parse_instruction(
+                let result = crate::frontend::instr_parse::parse_instruction(
                     *kind,
                     modifiers.clone(),
                     operands.clone(),
@@ -4701,7 +4701,7 @@ DONE:
                 assert!(
                     matches!(
                         result,
-                        Err(crate::instr_parse::InstrParseError::QualifiedModifier(_))
+                        Err(crate::frontend::instr_parse::InstrParseError::QualifiedModifier(_))
                     ),
                     "expected shared::bogus to be rejected as QualifiedModifier, got {:?}",
                     result

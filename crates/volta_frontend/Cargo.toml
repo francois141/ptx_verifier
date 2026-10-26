@@ -1,7 +1,0 @@
-[package]
-name = "volta_frontend"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-volta_common.workspace = true
