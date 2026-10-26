@@ -25,6 +25,13 @@ pub enum EquivalenceVerdict {
     Unproven { elements: Vec<Element> },
     /// The branch did not decide anything.
     Failed { reason: String },
+    /// The checked side does not write the expected index set of `array`: `unwritten` are
+    /// expected indices it never writes, `unexpected` written indices outside the set.
+    IndexSetMismatch {
+        array: String,
+        unwritten: Vec<u64>,
+        unexpected: Vec<u64>,
+    },
 }
 
 /// Compare `reference` and `optimized` on `arrays` with the decision procedure, then confirm
@@ -96,6 +103,9 @@ fn describe_verdict(verdict: &EquivalenceVerdict) -> String {
             format!("UNPROVEN ({} elements)", elements.len())
         }
         EquivalenceVerdict::Failed { reason } => format!("FAILED: {reason}"),
+        EquivalenceVerdict::IndexSetMismatch { array, .. } => {
+            format!("INDEX SET MISMATCH on {array}")
+        }
     }
 }
 

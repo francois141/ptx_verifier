@@ -43,7 +43,8 @@ pub struct Decision {
 
 /// Combine the equivalence branch's verdict with each kernel's graph report. ACCEPT needs a
 /// complete equivalence proof and every kernel `Verified` (a completed trace, every check
-/// passed); any refutation, failed check or deadlock is a REJECT; anything else is UNKNOWN.
+/// passed); any refutation, index-set mismatch, failed check or deadlock is a REJECT;
+/// anything else is UNKNOWN.
 pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> Decision {
     let mut established = Vec::new();
     let mut rejected = Vec::new();
@@ -68,6 +69,18 @@ pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> D
         EquivalenceVerdict::Failed { reason } => {
             missing.push(format!("equivalence: not decided: {reason}"))
         }
+        EquivalenceVerdict::IndexSetMismatch {
+            array,
+            unwritten,
+            unexpected,
+        } => rejected.push(format!(
+            "equivalence: {array} does not have the same set of indices ({} never written{}, \
+             {} written outside it{})",
+            unwritten.len(),
+            first_index(array, unwritten),
+            unexpected.len(),
+            first_index(array, unexpected)
+        )),
     }
     for k in kernels {
         match k.graph.conclusion() {
@@ -120,4 +133,10 @@ fn first(elements: &[crate::Element]) -> String {
     elements.first().map_or(String::new(), |(array, index)| {
         format!(", first {array}[{index}]")
     })
+}
+
+fn first_index(array: &str, indices: &[u64]) -> String {
+    indices
+        .first()
+        .map_or(String::new(), |index| format!(", first {array}[{index}]"))
 }

@@ -1113,6 +1113,40 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         }
     };
 
+    // Before --sample truncates either side, so a sampled prefix cannot hide an element the
+    // kernel never writes: each spec output defines every flat index of its shape.
+    for name in &check_arrays {
+        let expected = specs
+            .iter()
+            .filter(|s| &s.array == name)
+            .map(|s| s.shape.size())
+            .max()
+            .unwrap_or(0);
+        let written: Vec<u64> = kernel_exprs
+            .outputs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or_else(Vec::new, |(_, elems)| {
+                elems.iter().map(|&(index, _)| index).collect()
+            });
+        let unwritten: Vec<u64> = (0..expected)
+            .filter(|index| written.binary_search(index).is_err())
+            .collect();
+        let unexpected: Vec<u64> = written.iter().copied().filter(|&i| i >= expected).collect();
+        if !unwritten.is_empty() || !unexpected.is_empty() {
+            let decision = decide(
+                &EquivalenceVerdict::IndexSetMismatch {
+                    array: name.clone(),
+                    unwritten,
+                    unexpected,
+                },
+                &[side.evidence()],
+            );
+            log.record(&format!("verify: {}", decision.verdict.name()));
+            return print_decision(&decision);
+        }
+    }
+
     // --sample also caps *generation* (a big kernel's footprint is impractical to unroll a
     // Sum-heavy spec over): truncate the kernel's elements to the same ascending prefix
     // `unfold` builds, so the two sides still pair up.

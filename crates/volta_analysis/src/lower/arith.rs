@@ -794,9 +794,9 @@ pub(super) fn lower_fma(
     fma: &FmaInstr,
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
-    // In every accepted arm the rounding mode (and ftz, where present) is
-    // ignorable: floats are reals here, so the fused multiply-add is exact.
-    // `.sat`/`.relu` are exact value clamps, threaded through as `Clamp`.
+    // The rounding mode (and ftz) is ignored, so `fma` equals `mul` then `add`: not a
+    // bug, it fits the assumption that floats are reals. `.sat`/`.relu` are exact value
+    // clamps, threaded through as `Clamp`.
     let (ty, src_ty, instr_name, clamp, dst, src_a, src_b, src_c) = match fma {
         FmaInstr::Float32 {
             rnd: _rnd,
