@@ -7,7 +7,7 @@ use crate::frontend::ast::{
     Operand as AstOperand, SharedStateSpaceQualifier, StateSpace,
 };
 
-use crate::ir::{LoweredInstr, MemSpace, Operand, Predicate};
+use crate::ir::{LoweredInstr, MBARRIER_COUNT_RANGE, MemSpace, Operand, Predicate};
 
 use super::context::{LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -89,6 +89,25 @@ fn check_mbarrier_sem(
     }
 }
 
+/// Reject an immediate arrival count outside [`MBARRIER_COUNT_RANGE`]; a
+/// register count is checked when it executes.
+fn check_mbarrier_count(instruction: &str, count: &Operand) -> LowerResult<()> {
+    let in_range = match count {
+        Operand::ImmI64(v) => u64::try_from(*v).is_ok_and(|v| MBARRIER_COUNT_RANGE.contains(&v)),
+        Operand::ImmU64(v) => MBARRIER_COUNT_RANGE.contains(v),
+        _ => true,
+    };
+    if in_range {
+        Ok(())
+    } else {
+        Err(LowerError::InvalidOperand {
+            instruction: instruction.to_string(),
+            operand: format!("{count:?}"),
+            reason: "the arrival count must lie in [1, 2^20 - 1]",
+        })
+    }
+}
+
 /// Lower `mbarrier.init{.shared{::cta}}.b64 [addr], count`.
 pub(super) fn lower_mbarrier_init(
     ctx: &mut LoweringContext,
@@ -104,6 +123,7 @@ pub(super) fn lower_mbarrier_init(
     )?;
     let (addr_base, addr_offset) = lower_mbarrier_addr(ctx, &init.addr)?;
     let count = ctx.resolve_operand(&init.count)?;
+    check_mbarrier_count(NAME, &count)?;
     ctx.emit(
         LoweredInstr::MbarrierInit {
             addr_base,
@@ -176,6 +196,9 @@ pub(super) fn lower_mbarrier_arrive(
             .as_ref()
             .map(|c| ctx.resolve_operand(c))
             .transpose()?;
+        if let Some(count) = &count {
+            check_mbarrier_count(NAME, count)?;
+        }
         (count, None)
     };
     ctx.emit(

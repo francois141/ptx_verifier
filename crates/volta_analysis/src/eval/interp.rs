@@ -25,7 +25,7 @@ use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
     BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
-    MemSpace, Operand, Tcgen05FenceDirection, TensormapFence,
+    MBARRIER_COUNT_RANGE, MemSpace, Operand, Tcgen05FenceDirection, TensormapFence,
 };
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
@@ -1778,7 +1778,7 @@ impl<'p> Interpreter<'p> {
                 count,
             } => {
                 let addr = self.effective_addr(t, pc, addr_base, *addr_offset)?;
-                let count = self.non_negative_operand(t, pc, count, "mbarrier.init count")?;
+                let count = self.mbarrier_count_operand(t, pc, count, "mbarrier.init count")?;
                 if self.shared.read_mbarrier(addr).is_ok() {
                     self.deferred_error
                         .get_or_insert(EvalError::MbarrierReinit {
@@ -1807,7 +1807,7 @@ impl<'p> Interpreter<'p> {
                     .read_mbarrier(addr)
                     .map_err(|e| EvalError::from_mem_access(t, pc, MemSpace::Shared, e))?;
                 let count = match count {
-                    Some(op) => self.non_negative_operand(t, pc, op, "mbarrier.arrive count")?,
+                    Some(op) => self.mbarrier_count_operand(t, pc, op, "mbarrier.arrive count")?,
                     None => 1,
                 };
                 let expect_tx = match expect_tx {
@@ -2100,6 +2100,28 @@ impl<'p> Interpreter<'p> {
             pc,
             what,
         })
+    }
+
+    /// Resolve an mbarrier arrival count: a concrete integer in
+    /// [`MBARRIER_COUNT_RANGE`] (lowering rejects an immediate outside it).
+    fn mbarrier_count_operand(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: &Operand,
+        what: &'static str,
+    ) -> EvalResult<u64> {
+        let count = self.non_negative_operand(t, pc, op, what)?;
+        if MBARRIER_COUNT_RANGE.contains(&count) {
+            Ok(count)
+        } else {
+            Err(EvalError::MbarrierCountOutOfRange {
+                thread: t,
+                pc,
+                what,
+                count,
+            })
+        }
     }
 
     /// Resolve an operand that must be a concrete, non-negative integer

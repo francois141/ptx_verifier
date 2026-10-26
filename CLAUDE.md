@@ -249,6 +249,7 @@ Unknown directive names are rejected with a located `InvalidDirective`.
 - `ParsedInstruction` - Strongly-typed enum (~105 instruction variants, defined in `ast.rs`)
 - Converts generic `Instruction` to typed variants with validated modifiers
 - `ret` and `ret.uni` require exactly zero operands.
+- `mbarrier.arrive` takes two or three operands.
 - `exit`, `brkpt`, and `trap` require zero operands and accept no modifiers.
 
 ### ID Types
@@ -287,6 +288,7 @@ instruction family, each file depending only on `context` and `error`:
 - `SourceMap` - Maps each lowered instruction back to its source span
 - The nvcc callseq idiom for `call __symexpf` (the paper's symbolic-exp hook) collapses to `UnaryOp::Exp` at lowering time
 - The mbarrier retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` collapses to one blocking `MbarrierWaitParity` (`match_mbarrier_wait_loop`; the scheduler can block a thread, not spin it); a wait outside that exact three-statement window is a lowering error
+- An immediate `mbarrier.init`/`mbarrier.arrive` count outside `ir::MBARRIER_COUNT_RANGE` (`[1, 2^20 - 1]`) is a lowering error; a register one aborts the run (`EvalError::MbarrierCountOutOfRange`)
 - `mbarrier.inval` is unsupported for now (after its state-space check): mbarrier operations other than `init` (a write of the 8-byte object) are not memory accesses of the event graph and no check orders an object's other operations before its invalidation, so a late `arrive` racing with the reuse of its bytes would go unnoticed
 - `activemask` is unsupported for now: the interpreter does not model warp divergence, so inside a divergent branch it would report the other side's lanes as active too and hide, e.g., two sides each electing a leader that stores to the same address
 - `wgmma` is unsupported for now: every form (`mma_async{.sp}`, `fence`, `commit_group`, `wait_group`) is a lowering error, though the frontend still parses it
@@ -544,6 +546,9 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
   The `brkpt` cases check the same errors and verify plain `brkpt;`.
   The `trap` cases require validation errors, while plain `trap;` reaches the
   expected `TrapReached` runtime abort.
+  The `mbarrier` count cases require an `init` count of 0 or `2^20` and an
+  `arrive` count of 0 to be rejected before any graph verdict, and the
+  trailing-operand case a lowering error for a four-operand `mbarrier.arrive`.
 
 Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
 `check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +

@@ -9,6 +9,7 @@ pub mod tensor_map;
 pub mod types;
 
 use std::fmt;
+use std::ops::RangeInclusive;
 
 use crate::frontend::ast::{ClampWrapMode, ScalarType, ShiftDir};
 use id_collections::{IdVec, id_type};
@@ -27,6 +28,10 @@ impl fmt::Display for InstrId {
         write!(f, "pc:{}", self.0)
     }
 }
+
+/// The PTX ISA's range for an `mbarrier.init` expected arrival count and an
+/// `mbarrier.arrive` count.
+pub const MBARRIER_COUNT_RANGE: RangeInclusive<u64> = 1..=(1 << 20) - 1;
 
 /// A resolved operand - either a register, immediate, or special register
 #[derive(Debug, Clone, Copy, PartialEq)]

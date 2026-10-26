@@ -1,0 +1,10 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .shared .align 8 .b64 mb;
+    mbarrier.init.shared::cta.b64 [mb], 0;
+    ret;
+}

@@ -52,6 +52,7 @@ PTX text ──lex.rs──► tokens ──parse.rs──► ast::Module ──
    (`expect_operands`) and operand shapes, so the later stages never parse
    strings. Both `ret` and `ret.uni` require exactly zero operands.
    `exit`, `brkpt`, and `trap` require zero operands and accept no modifiers.
+   `mbarrier.arrive` takes two or three operands.
 
 ### Key AST types (`ast.rs`)
 
@@ -93,7 +94,9 @@ and the dispatch is in `lower/mod.rs`. Multi-statement idioms collapse here
 (`idioms.rs`): the nvcc `__symexpf` call sequence becomes `UnaryOp::Exp`, and
 the `mbarrier.try_wait` retry loop becomes one blocking `MbarrierWaitParity`.
 Features Volta does not model (`wgmma`, `activemask`, `mbarrier.inval`, ...)
-are rejected as `LowerError`s.
+are rejected as `LowerError`s. An immediate `mbarrier.init` or `mbarrier.arrive`
+count outside `[1, 2^20 - 1]` is an invalid operand; a register count outside it
+aborts the run with `EvalError::MbarrierCountOutOfRange`.
 
 ### 2. Evaluation (`eval/`)
 

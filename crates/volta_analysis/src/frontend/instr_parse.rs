@@ -3770,9 +3770,9 @@ fn parse_mbarrier_arrive(
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
-    if operands.len() < 2 {
+    if !(2..=3).contains(&operands.len()) {
         return Err(InstrParseError::WrongOperandCount {
-            expected: 2,
+            expected: if operands.len() < 2 { 2 } else { 3 },
             got: operands.len(),
         });
     }

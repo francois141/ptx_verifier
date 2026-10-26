@@ -88,6 +88,9 @@ error for `exit.not_a_modifier;` and a zero-operand arity error for `exit 123;`.
 The corresponding `brkpt` regressions check the same errors and verify plain `brkpt;`.
 The `trap` regressions require those validation errors before execution and check
 that plain `trap;` still produces `TrapReached` at runtime.
+The `mbarrier` count regressions require an `init` count of 0 or `2^20` and an
+`arrive` count of 0 to be rejected before any graph verdict, and the trailing
+operand regression a lowering error for an `mbarrier.arrive` with four operands.
 
 ### Kernel layout (`tests/ptx/`)
 

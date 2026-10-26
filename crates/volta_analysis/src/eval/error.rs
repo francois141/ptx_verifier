@@ -113,6 +113,14 @@ pub enum EvalError {
         pc: InstrId,
         addr: u64,
     },
+    /// An `mbarrier.init` or `mbarrier.arrive` arrival count outside the
+    /// ISA's `[1, 2^20 - 1]`.
+    MbarrierCountOutOfRange {
+        thread: ThreadId,
+        pc: InstrId,
+        what: &'static str,
+        count: u64,
+    },
     /// An output array element is (or was computed from) an uninitialized
     /// read that was never resolved.
     UndefinedOutput { array: String, index: u64 },
@@ -343,6 +351,16 @@ impl fmt::Display for EvalError {
                  mbarrier.inval must run first",
                 thread, addr, pc
             ),
+            Self::MbarrierCountOutOfRange {
+                thread,
+                pc,
+                what,
+                count,
+            } => write!(
+                f,
+                "{}: {} {} at {} is outside [1, 2^20 - 1]",
+                thread, what, count, pc
+            ),
             Self::UndefinedOutput { array, index } => write!(
                 f,
                 "output element {}[{}] is undefined (uninitialized read)",
@@ -509,6 +527,7 @@ impl EvalError {
             | Self::MbarrierOverwrite { thread, pc, .. }
             | Self::NoLiveMbarrier { thread, pc, .. }
             | Self::MbarrierReinit { thread, pc, .. }
+            | Self::MbarrierCountOutOfRange { thread, pc, .. }
             | Self::TrapReached { thread, pc }
             | Self::ClusterLaunchControlMisuse { thread, pc, .. }
             | Self::MapaRankOutsideCluster { thread, pc, .. }
