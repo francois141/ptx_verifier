@@ -1,0 +1,9 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .this_is_not_a_ptx_directive arbitrary tokens;
+    ret;
+}

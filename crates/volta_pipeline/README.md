@@ -78,6 +78,17 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
 | `false_positive_tests.rs`          | kernels Volta wrongly verifies (`ptx/false_positive/`); each fails until fixed |
 | `soundness_tests.rs`               | soundness regressions (`ptx/soundness/`) |
 
+The unknown-directive regression requires a located `InvalidDirective` naming
+the offending directive and verifies controls with that statement removed or
+replaced by a known `.pragma`. The return regression rejects `ret 123;` and
+`ret.uni 123;` specifically for expecting zero operands, while verifying their
+operand-free forms.
+The exit regressions verify plain `exit;` and require an unexpected-modifier
+error for `exit.not_a_modifier;` and a zero-operand arity error for `exit 123;`.
+The corresponding `brkpt` regressions check the same errors and verify plain `brkpt;`.
+The `trap` regressions require those validation errors before execution and check
+that plain `trap;` still produces `TrapReached` at runtime.
+
 ### Kernel layout (`tests/ptx/`)
 
 `success/`, `failing/`, `execution_error/`, `negative_equivalence/`,

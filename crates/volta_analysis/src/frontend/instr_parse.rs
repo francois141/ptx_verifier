@@ -431,8 +431,8 @@ pub fn parse_instruction(
         InstrKind::Bra => parse_bra(&mut mp, operands),
         InstrKind::BrxIdx => parse_brx_idx(&mut mp, operands),
         InstrKind::Call => parse_call(&mut mp, operands),
-        InstrKind::Ret => parse_ret(&mut mp),
-        InstrKind::Exit => Ok(ParsedInstruction::Exit),
+        InstrKind::Ret => parse_ret(&mut mp, operands),
+        InstrKind::Exit => parse_exit(&mut mp, operands),
 
         // =====================================================================
         // Synchronization (Blocks 132-145)
@@ -477,10 +477,10 @@ pub fn parse_instruction(
         // =====================================================================
         // Miscellaneous (Blocks 194-198)
         // =====================================================================
-        InstrKind::Brkpt => Ok(ParsedInstruction::Brkpt),
+        InstrKind::Brkpt => parse_breakpoint(&mut mp, operands),
         InstrKind::Nanosleep => parse_nanosleep(&mut mp, operands),
         InstrKind::Pmevent => parse_pmevent(&mut mp, operands),
-        InstrKind::Trap => Ok(ParsedInstruction::Trap),
+        InstrKind::Trap => parse_trap(&mut mp, operands),
         InstrKind::Setmaxnreg => parse_setmaxnreg(&mut mp, operands),
 
         // =====================================================================
@@ -3193,10 +3193,23 @@ fn parse_call(
 }
 
 /// Parse ret instruction (Block 130)
-fn parse_ret(mp: &mut ModifierParser) -> Result<ParsedInstruction, InstrParseError> {
+fn parse_ret(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [] = expect_operands(operands)?;
     let uniform = mp.try_consume(ascii("uni"));
     mp.finish()?;
     Ok(ParsedInstruction::Ret(RetInstr { uniform }))
+}
+
+fn parse_exit(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [] = expect_operands(operands)?;
+    mp.finish()?;
+    Ok(ParsedInstruction::Exit)
 }
 
 // =============================================================================
@@ -3951,6 +3964,15 @@ fn parse_alloca(
     }))
 }
 
+fn parse_breakpoint(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [] = expect_operands(operands)?;
+    mp.finish()?;
+    Ok(ParsedInstruction::Brkpt)
+}
+
 /// Parse nanosleep instruction (Block 195)
 fn parse_nanosleep(
     mp: &mut ModifierParser,
@@ -3990,6 +4012,15 @@ fn parse_pmevent(
         mask,
         event: operands.into_iter().next().unwrap(),
     }))
+}
+
+fn parse_trap(
+    mp: &mut ModifierParser,
+    operands: Vec<Operand>,
+) -> Result<ParsedInstruction, InstrParseError> {
+    let [] = expect_operands(operands)?;
+    mp.finish()?;
+    Ok(ParsedInstruction::Trap)
 }
 
 /// Parse setmaxnreg instruction (Block 198)

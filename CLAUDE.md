@@ -234,6 +234,7 @@ Tokenizes PTX source. Key methods: `next()`, `peek()`, `expect(kind)`.
 #### Parser (`parse.rs`)
 
 Pratt parser producing AST. Entry point: `parse_module()`.
+Unknown directive names are rejected with a located `InvalidDirective`.
 
 #### AST (`ast.rs`)
 
@@ -247,6 +248,8 @@ Pratt parser producing AST. Entry point: `parse_module()`.
 - `InstrTrie` - O(n) lookup for PTX mnemonics → `InstrKind`
 - `ParsedInstruction` - Strongly-typed enum (~105 instruction variants, defined in `ast.rs`)
 - Converts generic `Instruction` to typed variants with validated modifiers
+- `ret` and `ret.uni` require exactly zero operands.
+- `exit`, `brkpt`, and `trap` require zero operands and accept no modifiers.
 
 ### ID Types
 
@@ -532,6 +535,15 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
 - `false_positive_tests.rs` - kernels Volta still verifies although they race or
   are undefined (`tests/ptx/false_positive/`); each fails until Volta stops
   concluding `Verified` on it.
+- `soundness_tests.rs` - soundness regressions; the unknown-directive case
+  requires a located `InvalidDirective` and verifies empty/known-pragma controls.
+  The return case requires a zero-operand arity error for `ret 123;` and
+  `ret.uni 123;`, and verifies their operand-free forms.
+  The exit cases verify plain `exit;` and require an unexpected-modifier error for
+  `exit.not_a_modifier;` and a zero-operand arity error for `exit 123;`.
+  The `brkpt` cases check the same errors and verify plain `brkpt;`.
+  The `trap` cases require validation errors, while plain `trap;` reaches the
+  expected `TrapReached` runtime abort.
 
 Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
 `check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +

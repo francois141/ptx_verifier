@@ -40,7 +40,8 @@ PTX text ──lex.rs──► tokens ──parse.rs──► ast::Module ──
 2. **Parser** (`parse.rs`): a Pratt parser producing `ast::Module`: version,
    target, address size, module-level variables, and functions (kernels and
    device functions) with their parameters and bodies. The entry point is
-   `parse_module()`.
+   `parse_module()`. Unknown directive names produce a located `InvalidDirective`
+   instead of being silently accepted as generic directives.
 3. **Mnemonic resolution** (`instr.rs`): `InstrTrie` maps a dotted mnemonic
    such as `cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier...` to an
    `InstrKind` in one pass over the characters. The parser stores each
@@ -49,7 +50,8 @@ PTX text ──lex.rs──► tokens ──parse.rs──► ast::Module ──
    instruction into a strongly typed `ParsedInstruction` (defined in `ast.rs`).
    It checks the modifiers allowed for that kind, operand arity
    (`expect_operands`) and operand shapes, so the later stages never parse
-   strings.
+   strings. Both `ret` and `ret.uni` require exactly zero operands.
+   `exit`, `brkpt`, and `trap` require zero operands and accept no modifiers.
 
 ### Key AST types (`ast.rs`)
 

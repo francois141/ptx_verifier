@@ -1687,19 +1687,8 @@ impl<'a> Parser<'a> {
 
     /// Parse a generic directive.
     fn parse_directive(&mut self) -> Result<Directive, ParseError> {
-        let (start, name) = match self.next()? {
-            Some((span, Token::DottedIdent(DottedIdent::Simple(s)))) => (span.0, s),
-            Some((span, Token::DottedIdent(DottedIdent::Qualified(parts)))) => {
-                // Join parts with "::"
-                let mut result = AsciiString::new();
-                for (i, part) in parts.iter().enumerate() {
-                    if i > 0 {
-                        result.push_slice(ascii("::"));
-                    }
-                    result.push_slice(part);
-                }
-                (span.0, result)
-            }
+        let (name_span, name) = match self.next()? {
+            Some((span, Token::DottedIdent(ident))) => (span, ident.to_ascii_string()),
             Some((span, other)) => {
                 return err_at(
                     span,
@@ -1708,6 +1697,21 @@ impl<'a> Parser<'a> {
             }
             None => return err(ParseErrorKind::UnexpectedEof),
         };
+
+        // Declarations, module headers, function attributes, and .loc have dedicated parsers.
+        // Only these remaining directives may use the generic semicolon-delimited form.
+        if !matches!(
+            name.as_bytes(),
+            b"alias"
+                | b"branchtargets"
+                | b"callprototype"
+                | b"calltargets"
+                | b"pragma"
+                | b"section"
+        ) {
+            return err_at(name_span, ParseErrorKind::InvalidDirective(name));
+        }
+        let start = name_span.0;
 
         // Collect arguments until semicolon
         let mut arguments = Vec::new();

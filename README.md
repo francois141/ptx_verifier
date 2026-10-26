@@ -1,5 +1,3 @@
-<h1 align="center">Volta Blackwell</h1>
-
 <p align="center">
   <img src="volta-logo.png" alt="Volta Blackwell logo" width="400">
 </p>
