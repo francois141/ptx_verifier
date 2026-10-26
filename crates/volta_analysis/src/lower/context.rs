@@ -604,7 +604,10 @@ impl LoweringContext {
                     ast::BinaryOp::Div => l.checked_div(r)?,
                     ast::BinaryOp::Shl => l.wrapping_shl(r as u32),
                     ast::BinaryOp::Shr => l.wrapping_shr(r as u32),
-                    _ => return None,
+                    ast::BinaryOp::BitAnd => l & r,
+                    ast::BinaryOp::BitXor => l ^ r,
+                    ast::BinaryOp::BitOr => l | r,
+                    _ => todo!("implement missing part"),
                 })
             }
             ast::Expr::Unary(op, inner) => {

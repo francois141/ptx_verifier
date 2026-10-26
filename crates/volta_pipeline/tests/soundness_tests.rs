@@ -1,13 +1,16 @@
 //! Regression tests for invalid PTX directives, ldmatrix modifiers and operands, mbarrier
-//! arrival counts and operands, and ret, exit, brkpt, and trap syntax.
+//! arrival counts and operands, ret, exit, brkpt, and trap syntax, and address offsets.
 
 #[macro_use]
 mod common;
 
 use volta_analysis::frontend::ascii::AsAscii;
 use volta_analysis::frontend::parse::{ParseErrorKind, Parser};
-use volta_analysis::{AnalysisConfig, AnalysisError, EvalError, LowerError, OutputsUnavailable};
-use volta_graph_check::GraphConclusion;
+use volta_analysis::{
+    AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, EvalError, LowerError, OutputsUnavailable,
+    ParamValue,
+};
+use volta_graph_check::{GraphConclusion, Property, Verdict};
 
 use common::{Ptx, parse_named, verify};
 
@@ -357,4 +360,36 @@ fn trap_must_reject_operands() {
         Err(other) => panic!("expected a trap operand-count error, got {other:?}"),
         Ok(_) => panic!("trap 123; must fail validation: trap takes no operands"),
     }
+}
+
+#[test]
+fn address_constant_expression_must_not_hide_a_write_write_race() {
+    let mut config = AnalysisConfig::new((2, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 2,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let verified = verify(
+        &ptx!(parse "soundness/address_constant_expression_race"),
+        Some("k"),
+        config,
+    )
+    .expect("the counterexample must execute");
+    assert_eq!(
+        verified.graph.verdict(Property::MemoryConflict),
+        Verdict::Fail,
+        "`[%ptr + (4 | 4)]` and `[%ptr + 4]` must conflict; report: {:#?}",
+        verified.graph
+    );
+    assert!(
+        matches!(
+            verified.graph.conclusion(),
+            GraphConclusion::Rejected { .. }
+        ),
+        "a memory conflict must reject the graph"
+    );
 }
