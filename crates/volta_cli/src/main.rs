@@ -23,12 +23,12 @@ use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_equivalence::vc_dump::{VcDump, read_vc_dump, write_vc_dump};
 use volta_equivalence::{EquivCheckOptions, EquivOutcome};
 use volta_expr::SymbolicOutputs;
-use volta_expr::spec::unfold;
 use volta_graph::EventGraph;
 use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::{
     Decision, EquivalenceVerdict, KernelEvidence, Verdict, check_equivalence, decide, verify_kernel,
 };
+use volta_spec::unfold;
 
 /// Log level for controlling output verbosity
 #[cfg(feature = "logging")]

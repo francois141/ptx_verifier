@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use volta_equivalence::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
-use volta_expr::spec::unfold;
 use volta_expr::{ExprArena, SymbolicOutputs};
+use volta_spec::unfold;
 
 const MATMUL_SPEC: &str = "
 dim M;

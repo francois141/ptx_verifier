@@ -24,7 +24,7 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
 .spec text ──lex.rs──► tokens ──parse.rs──► ParsedSpec ──instantiate.rs──► (SpecEnv, Vec<OutputSpec>)
                                             (named dims)  (dim values,        │
                                                            e.g. --dim N=128)  ▼
-                                                              volta_expr::spec::unfold ──► SymbolicOutputs
+                                                              spec.rs: unfold ──► SymbolicOutputs
 ```
 
 - **`lex.rs`**: ASCII-only tokenizer.
@@ -37,10 +37,16 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
   - `NAME[i, j, ...] = expr;`: an output equation. Bodies use `+ - * /`,
     unary `-`, builtins (`exp`, `log`, `sqrt`, `abs`, `sign`, `min`, `max`)
     and reductions `sum(k in 0..K, e)` / `max(k in 0..K, e)`. Bodies parse
-    directly into `volta_expr::spec::SpecExpr`.
+    directly into `SpecExpr` (`spec.rs`).
 - **`instantiate.rs`**: `instantiate(parsed, dims)` resolves every dim to a
   concrete value, producing the `SpecEnv` and `OutputSpec`s `unfold` takes.
   Parsing and instantiation are separate, so one parsed spec serves many sizes.
+- **`spec.rs`**: the mathematical form of a spec: `OutputSpec` (an output
+  array as a formula `SpecExpr` over other arrays, with `sum`/`max`
+  reductions), `Shape` and `SpecEnv`. `unfold` expands every output element
+  into a `volta_expr::SymbolicOutputs`, using the same arena constructors the
+  interpreter uses. The root re-exports these types and `unfold`
+  (`volta_spec::unfold`).
 
 Each spec output must be declared `out` or `inout` in the kernel's launch
 config. The unfolded spec then plays the role of the reference kernel in the

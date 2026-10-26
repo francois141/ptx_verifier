@@ -24,6 +24,7 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
 crates/
 ├── volta_common/     # Base utilities (spans, file caching, error reporting, run logs)
 ├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
+├── volta_spec/       # Specs (.spec language -> mathematical form -> SymbolicOutputs)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
 ├── volta_analysis/   # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
@@ -38,10 +39,11 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_common
+volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
 volta_viz         → volta_graph_check, volta_graph, volta_expr
 volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_viz)
-volta_equivalence → volta_expr
+volta_equivalence → volta_expr (+ dev: volta_spec)
+volta_spec        → volta_expr, volta_common
 volta_analysis    → volta_graph, volta_expr, volta_common
 volta_graph_check → volta_graph
 volta_graph       → volta_expr
@@ -84,7 +86,7 @@ The pattern is to create an error kind type, and then an alias for `Locate` of t
 
 **Path**: `crates/volta_expr/`
 
-The expression language shared by producers (the interpreter, specs) and
+The expression language shared by producers (the interpreter, `volta_spec`) and
 consumers (the decision procedure, the oracle). Depends on no other
 Volta crate. IDs: `ExprId`/`StringId`/`SymbolId` (`SymbolId::fresh()` draws
 from a process-global counter).
@@ -122,17 +124,9 @@ real zero alike - anything/0) build unfolded nodes.
 
 `SymbolicOutputs { arena, outputs }`: one run's written output elements as
 `(index, root ExprId)` per array, sorted by index - the hand-off type
-(`AnalysisResult::symbolic_outputs`, `spec::unfold`'s result, both sides of a
+(`AnalysisResult::symbolic_outputs`, `volta_spec::unfold`'s result, both sides of a
 `VcDump`, the checker's input). `validate()` bounds-checks every id;
 `element(array, index)` looks one up.
-
-### Specs (`spec.rs`)
-
-Mathematical specs: an output array as a formula over other arrays
-(`OutputSpec`, `SpecExpr`, `Shape`, `SpecEnv`), unfolded by `unfold` into a
-`SymbolicOutputs` with the arena's own constructors, so a kernel checks
-against a spec exactly like against a second kernel (`volta verify`). The
-`volta_spec` crate parses the textual `.spec` language into these types.
 
 ### Text format (`text.rs`, `.vexpr`)
 
@@ -158,6 +152,19 @@ the interpreter's address/predicate scratch nodes drop out and the file is
 deterministic. Reading rebuilds nodes exactly as written (no constant
 folding) and validates; the writer's `match` is exhaustive over `ExprNode`,
 so a new node kind cannot ship without a text form.
+
+## Crate: volta_spec
+
+**Path**: `crates/volta_spec/`
+
+The textual `.spec` language and the mathematical form it denotes:
+`parse_spec` (`lex.rs`, `parse.rs`) produces a `ParsedSpec` (`ast.rs`) with
+named dims; `instantiate` gives the dims values; `spec.rs` holds the result.
+
+Mathematical specs: an output array as a formula over other arrays
+(`OutputSpec`, `SpecExpr`, `Shape`, `SpecEnv`), unfolded by `unfold` into a
+`SymbolicOutputs` with the arena's own constructors, so a kernel checks
+against a spec exactly like against a second kernel (`volta verify`).
 
 ## Crate: volta_graph
 

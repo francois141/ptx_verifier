@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::outputs::SymbolicOutputs;
-use crate::symbolic::{ExprArena, ExprId, NanError, StringId};
+use volta_expr::SymbolicOutputs;
+use volta_expr::{ExprArena, ExprId, NanError, StringId};
 
 /// A row-major shape flattening a multi-dimensional index into the flat element index of
 /// `InputElement` and `SymbolicOutputs::outputs` - the convention a kernel's own address
@@ -785,7 +785,7 @@ mod tests {
     /// unfolded tree must land on the matching arena node.
     #[test]
     fn transcendental_ops_unfold_to_the_matching_arena_node() {
-        use crate::symbolic::ExprNode;
+        use volta_expr::ExprNode;
         let body = SpecExpr::index("A", vec![IndexExpr::var("i")])
             .exp()
             .log()
@@ -813,7 +813,7 @@ mod tests {
     /// the two rows must not share one.
     #[test]
     fn max_reduction_is_memoized_across_output_elements_that_share_its_bindings() {
-        use crate::symbolic::ExprNode;
+        use volta_expr::ExprNode;
 
         let body = SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("k")])
             - SpecExpr::max_reduce(

@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use volta_equivalence::check::Mismatch;
 use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
-use volta_expr::spec::unfold;
 use volta_expr::text::{read_text, to_text};
+use volta_spec::unfold;
 
 /// The source of `tests/specs/<name>.spec`.
 macro_rules! spec {

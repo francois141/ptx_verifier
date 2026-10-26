@@ -1,8 +1,8 @@
 # volta_expr
 
 The expression language every other part of Volta speaks. The interpreter
-builds expressions, specs unfold into them, and the equivalence checker
-consumes them. It depends on no other Volta crate, which is how
+builds expressions, `volta_spec` unfolds specs into them, and the equivalence
+checker consumes them. It depends on no other Volta crate, which is how
 `volta_analysis` (the producer) and `volta_equivalence` (the consumer) stay
 independent of each other.
 
@@ -37,14 +37,6 @@ array, the written elements as `(index, root ExprId)` pairs sorted by index.
 `validate()` bounds-checks every id, and `element(array, index)` looks one up.
 Both a kernel run and an unfolded spec produce this type, so a kernel can be
 checked against a spec exactly as against a second kernel.
-
-## Specs (`spec.rs`)
-
-The mathematical form of a spec: `OutputSpec` (an output array as a formula
-`SpecExpr` over other arrays, with `sum`/`max` reductions), `Shape` and
-`SpecEnv`. `unfold` expands every output element into the arena using the same
-constructors the interpreter uses. The textual `.spec` language is parsed by
-`volta_spec`.
 
 ## Text format (`text.rs`, `.vexpr`)
 

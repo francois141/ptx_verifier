@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_equivalence::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
-use volta_expr::spec::unfold;
+use volta_spec::unfold;
 
 use crate::analyze::{StatsPy, check_kernel, parse_module};
 use crate::config::ConfigPy;
