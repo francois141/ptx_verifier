@@ -1066,41 +1066,6 @@ fn test_shfl_sync_idx_exchange() {
     assert_eq!(output.stats.warp_syncs, 1);
 }
 
-/// `redux.sync.max.u32`/`.min.s32` fold every lane's value (0..31, and
-/// its `- 16` shift) across the full warp and broadcast the single result
-/// to every lane - one `redux.sync` fires per group.
-#[test]
-fn test_redux_sync_max_min_full_warp() {
-    let output = analyze!(
-        "success/redux_sync_max_min_full_warp",
-        warp_out_config(4, 64)
-    );
-    assert_eq!(output.stats.warp_syncs, 2);
-}
-
-/// `redux.sync.and`/`.or`/`.add` over the same 0..31 lane values (all
-/// `.b32`/`.u32`, no signedness distinction).
-#[test]
-fn test_redux_sync_and_or_add_full_warp() {
-    let output = analyze!(
-        "success/redux_sync_and_or_add_full_warp",
-        warp_out_config(4, 96)
-    );
-    assert_eq!(output.stats.warp_syncs, 3);
-}
-
-/// A predicated `redux.sync` fires only for lanes that take it: lanes 16..31
-/// skip the guarded `max.s32` and keep their sentinel; all lanes get the
-/// `min.s32` result.
-#[test]
-fn test_redux_sync_partial_mask_skips_unguarded_lanes() {
-    let output = analyze!(
-        "success/redux_sync_partial_mask_skips_unguarded_lanes",
-        warp_out_config(4, 64)
-    );
-    assert_eq!(output.stats.warp_syncs, 2);
-}
-
 /// Float `.sat` clamps the result to [0, 1]; concrete operands fold all
 /// the way to the clamped constant.
 #[test]
@@ -1728,21 +1693,6 @@ fn test_membar_valid_levels_lower() {
         ptx_case!("success/membar_levels_sys"),
     ] {
         analyze_case(name, &src, AnalysisConfig::new((1, 1, 1)));
-    }
-}
-
-/// `redux.sync` forms of PTX ISA 9.7.15.13: `.add/.min/.max` on `.u32/.s32`,
-/// `.and/.or/.xor` on `.b32`, `.min/.max` on `.f32`.
-#[test]
-fn test_redux_sync_valid_forms() {
-    for (name, src) in [
-        ptx_case!("success/redux_sync_add_u32"),
-        ptx_case!("success/redux_sync_max_s32"),
-        ptx_case!("success/redux_sync_xor_b32"),
-        ptx_case!("success/redux_sync_min_f32"),
-        ptx_case!("success/redux_sync_max_f32"),
-    ] {
-        analyze_case(name, &src, AnalysisConfig::new((32, 1, 1)));
     }
 }
 

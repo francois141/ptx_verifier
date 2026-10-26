@@ -728,26 +728,6 @@ pub enum LoweredInstr {
         membermask: Operand,
     },
 
-    /// `redux.sync.op.type d, a, membermask` (PTX ISA Block 143): fold every
-    /// live mask lane's `a` with `op` and broadcast the result; `Inc`/`Dec`
-    /// are not valid redux ops and are rejected at lowering.
-    ReduxSync {
-        op: BinOp,
-        ty: ScalarType,
-        dst: RegId,
-        src: Operand,
-        membermask: Operand,
-    },
-
-    /// nvcc's warp-max sign-trick idiom (`match_warp_max_sign_trick`),
-    /// lowered as a real `max` of the underlying value, exact for any sign,
-    /// so the fixup is elided; `dst` gets `Value::Pair(result, result)`.
-    ReduxSyncBroadcastMax {
-        dst: RegId,
-        src: Operand,
-        membermask: Operand,
-    },
-
     // =========================================================================
     // Tensor Core
     // =========================================================================
@@ -1132,8 +1112,6 @@ define_instr_kinds!(
     CpAsyncMbarrierArrive,
     ShflSync,
     ElectSync,
-    ReduxSync,
-    ReduxSyncBroadcastMax,
     Ldmatrix,
     Mma,
     WmmaLoad,

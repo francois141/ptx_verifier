@@ -1,0 +1,24 @@
+.version 8.0
+.target sm_80
+.address_size 64
+
+.visible .entry k(.param .u64 output)
+{
+    .reg .b64 %ptr;
+    .reg .b32 %tid, %pair, %result;
+    .reg .b16 %x;
+    .reg .pred %p, %q;
+
+    ld.param.u64 %ptr, [output];
+    mov.u32 %tid, %tid.x;
+    setp.eq.u32 %p, %tid, 99;
+    mov.b16 %x, 0xbc00;
+    mov.b32 %pair, {%x, %x};
+    redux.sync.max.s32 %result, %pair, 3;
+    setp.lt.s32 %p, %result, 0;
+    @%p redux.sync.min.s32 %result, %pair, 3;
+    setp.eq.u32 %q, %tid, 0;
+    or.pred %q, %q, %p;
+    @%q st.global.u32 [%ptr], 1;
+    ret;
+}

@@ -1,16 +1,15 @@
 //! Lowering of warp-level instructions: `shfl.sync`, `elect.sync`,
-//! `redux.sync`, `bar.warp.sync`, `ldmatrix`/`stmatrix`, `mma.sync` and
-//! `wmma`.
+//! `bar.warp.sync`, `ldmatrix`/`stmatrix`, `mma.sync` and `wmma`.
 
 use crate::frontend::ascii::AsciiSliceExt;
 use crate::frontend::ast::{
-    BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, RedOp, ReduxSyncInstr,
-    ScalarType, SharedStateSpaceQualifier, ShflSyncInstr,
+    BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, ScalarType,
+    SharedStateSpaceQualifier, ShflSyncInstr,
 };
 use crate::frontend::lex::DottedIdent;
 
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
-use crate::ir::{BinOp, LoweredInstr, MemSpace, Predicate};
+use crate::ir::{LoweredInstr, MemSpace, Predicate};
 
 use super::context::{LoweringContext, parse_scalar_type_modifier, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -77,68 +76,6 @@ pub(super) fn lower_elect_sync(
         LoweredInstr::ElectSync {
             dst,
             dst_pred,
-            membermask,
-        },
-        predicate,
-    )?;
-    Ok(())
-}
-
-/// Lower `redux.sync.op.type d, a, membermask` (PTX ISA Block 143). `inc`/`dec`
-/// (from the shared `RedOp`) are invalid here and rejected; `.NaN` is accepted
-/// as in `reject_minmax_modifiers`, `.abs` is unmodeled and rejected.
-pub(super) fn lower_redux_sync(
-    ctx: &mut LoweringContext,
-    redux: &ReduxSyncInstr,
-    predicate: Option<Predicate>,
-) -> LowerResult<()> {
-    const NAME: &str = "redux.sync";
-    let invalid = |reason: String| LowerError::InvalidInstruction {
-        instruction: NAME.to_string(),
-        reason,
-    };
-    // The three forms (PTX ISA 9.7.15.13): `.add`/`.min`/`.max` on
-    // `.u32`/`.s32`, `.and`/`.or`/`.xor` on `.b32`, and `.min`/`.max` on
-    // `.f32`, the only type `.abs`/`.NaN` apply to.
-    let op = match (redux.op, redux.ty) {
-        (RedOp::Add, ScalarType::U32 | ScalarType::S32) => BinOp::Add,
-        (RedOp::Min, ScalarType::U32 | ScalarType::S32 | ScalarType::F32) => BinOp::Min,
-        (RedOp::Max, ScalarType::U32 | ScalarType::S32 | ScalarType::F32) => BinOp::Max,
-        (RedOp::And, ScalarType::B32) => BinOp::And,
-        (RedOp::Or, ScalarType::B32) => BinOp::Or,
-        (RedOp::Xor, ScalarType::B32) => BinOp::Xor,
-        (op, ty) => {
-            return Err(invalid(format!(
-                "{op:?} on {ty:?} is not a redux.sync form (.add/.min/.max on .u32/.s32, \
-                 .and/.or/.xor on .b32, .min/.max on .f32)"
-            )));
-        }
-    };
-    if (redux.abs || redux.nan) && redux.ty != ScalarType::F32 {
-        return Err(invalid(format!(
-            ".abs/.NaN only apply to redux.sync.f32, not {:?}",
-            redux.ty
-        )));
-    }
-    if redux.abs {
-        return Err(unsupported(NAME, ".abs modifier"));
-    }
-    if redux.nan {
-        return Err(unsupported(NAME, ".NaN (NaN propagation is not modeled)"));
-    }
-
-    let dst_typed = ctx.resolve_dst_typed(&redux.dst)?;
-    let src_typed = ctx.resolve_operand_typed(&redux.src)?;
-    ctx.check_dst_type(&dst_typed, redux.ty, "redux.sync")?;
-    ctx.check_operand_type(&src_typed, redux.ty, "redux.sync")?;
-    let membermask = ctx.resolve_operand(&redux.membermask)?;
-
-    ctx.emit(
-        LoweredInstr::ReduxSync {
-            op,
-            ty: redux.ty,
-            dst: dst_typed.reg,
-            src: src_typed.operand,
             membermask,
         },
         predicate,

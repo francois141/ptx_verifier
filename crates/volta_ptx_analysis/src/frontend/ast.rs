@@ -893,7 +893,6 @@ pub enum ParsedInstruction {
     VoteSync(VoteSyncInstr),
     MatchSync(MatchSyncInstr),
     Activemask(ActivemaskInstr),
-    ReduxSync(ReduxSyncInstr),
     Griddepcontrol(GriddepcontrolInstr),
     ElectSync(ElectSyncInstr),
 
@@ -3043,18 +3042,6 @@ pub struct MatchSyncInstr {
 #[derive(Debug, Clone)]
 pub struct ActivemaskInstr {
     pub dst: Operand,
-}
-
-/// redux.sync: `redux.sync.op.type dst, src, membermask` (Block 143)
-#[derive(Debug, Clone)]
-pub struct ReduxSyncInstr {
-    pub op: RedOp,
-    pub ty: ScalarType,
-    pub abs: bool,
-    pub nan: bool,
-    pub dst: Operand,
-    pub src: Operand,
-    pub membermask: Operand,
 }
 
 /// Griddepcontrol action

@@ -1,6 +1,6 @@
 //! Regression tests for invalid PTX directives, ldmatrix modifiers and operands, mbarrier
-//! arrival counts, operands, semantics and scopes, ret, exit, brkpt, and trap syntax, and address
-//! offsets.
+//! arrival counts, operands, semantics and scopes, ret, exit, brkpt, and trap syntax, address
+//! offsets, and the unsupported redux.sync.
 
 #[macro_use]
 mod common;
@@ -14,6 +14,19 @@ use volta_ptx_analysis::{
 };
 
 use common::{Ptx, parse_named, verify};
+
+fn out_config(threads: u32, elem_width: u64) -> AnalysisConfig {
+    let mut config = AnalysisConfig::new((threads, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    config
+}
 
 /// Invalid PTX may be rejected by the source parser or by instruction lowering. It must not
 /// survive validation and reach execution. Keeping this distinction prevents a runtime trap or
@@ -479,4 +492,25 @@ fn mbarrier_tx_count_must_stay_in_the_isa_range() {
             }
         ))
     ));
+}
+
+/// The fused sign-trick idiom once dropped its `setp` predicate write and verified this race;
+/// `redux.sync` is now unsupported, so the kernel must not reach a verdict.
+#[test]
+fn redux_idiom_must_not_verify_its_predicate_side_effect_race() {
+    let module = ptx!(parse "soundness/redux_predicate_side_effect_race");
+    match verify(&module, Some("k"), out_config(2, 4)) {
+        Err(AnalysisError::Lower(LowerError::UnsupportedInstruction {
+            instruction,
+            reason: Some(reason),
+        })) => {
+            assert_eq!(instruction, "redux.sync");
+            assert!(reason.contains("not supported"), "{reason}");
+        }
+        Err(other) => panic!("expected redux.sync to be unsupported, got {other:?}"),
+        Ok(verified) => panic!(
+            "expected redux.sync to be unsupported, got {:?}",
+            verified.graph.conclusion()
+        ),
+    }
 }

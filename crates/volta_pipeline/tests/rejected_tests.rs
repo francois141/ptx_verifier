@@ -834,62 +834,6 @@ fn test_mbarrier_shared_cluster_validity() {
     }
 }
 
-/// `redux.sync` forms outside PTX ISA 9.7.15.13's set are invalid, as are
-/// `.abs`/`.NaN` outside `.f32`; on `.f32` they are unmodeled.
-#[test]
-fn test_redux_sync_forms() {
-    let analyze = |src: &str| run_kernel(&parse(src), None, AnalysisConfig::new((32, 1, 1)));
-    for src in [
-        ptx!("failing/redux_sync_add_f32"),
-        ptx!("failing/redux_sync_and_u32"),
-        ptx!("failing/redux_sync_min_b32"),
-        ptx!("failing/redux_sync_xor_s32"),
-    ] {
-        expect_invalid_instruction(&parse(&src), "not a redux.sync form");
-    }
-    for src in [
-        ptx!("failing/redux_sync_add_nan_u32"),
-        ptx!("failing/redux_sync_or_abs_b32"),
-    ] {
-        expect_invalid_instruction(&parse(&src), "only apply to redux.sync.f32");
-    }
-    for (form, src) in [
-        ("min.abs.f32", ptx!("failing/redux_sync_min_abs_f32")),
-        ("max.NaN.f32", ptx!("failing/redux_sync_max_nan_f32")),
-    ] {
-        match analyze(&src) {
-            Err(AnalysisError::Lower(LowerError::UnsupportedInstruction { .. })) => {}
-            other => panic!("{form}: expected unsupported, got {other:?}"),
-        }
-    }
-}
-
-/// nvcc's warp-max sign trick fuses into one `ReduxSyncBroadcastMax`, but
-/// never over a `.NaN` reduction: that is invalid on `.s32`, so the normal
-/// lowering must see (and reject) it.
-#[test]
-fn test_redux_sync_sign_trick_never_fuses_nan() {
-    let result = run_kernel(
-        &parse(&ptx!("failing/redux_sync_sign_trick_never_fuses_nan")),
-        None,
-        AnalysisConfig::new((32, 1, 1)),
-    );
-    assert!(
-        !matches!(
-            result,
-            Err(AnalysisError::Lower(LowerError::InvalidInstruction { .. }))
-        ),
-        "{:?}",
-        result.err()
-    );
-    expect_invalid_instruction(
-        &parse(&ptx!(
-            "failing/redux_sync_sign_trick_never_fuses_nan_max_nan"
-        )),
-        "only apply to redux.sync.f32",
-    );
-}
-
 /// A read of never-written shared memory aborts the run once its trace completes: the abort
 /// waits so that a read racing a later write (the paper's race example) keeps its race witness.
 #[test]

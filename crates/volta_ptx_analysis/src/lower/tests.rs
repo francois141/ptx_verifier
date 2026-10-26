@@ -539,6 +539,22 @@ fn test_wgmma_is_not_supported() {
     }
 }
 
+#[test]
+fn test_redux_sync_is_not_supported() {
+    for body in [
+        "redux.sync.add.u32 %r1, %r2, 0xffffffff;",
+        "mov.b32 %r2, {%rs1, %rs1};\n\
+         redux.sync.max.s32 %r1, %r2, 0xffffffff;\n\
+         setp.lt.s32 %p1, %r1, 0;\n\
+         @%p1 redux.sync.min.s32 %r1, %r2, 0xffffffff;",
+    ] {
+        assert_rejected(
+            body,
+            "redux.sync redux.sync is not supported by Volta at the moment",
+        );
+    }
+}
+
 /// Lower `body` (which must contain exactly one clamp-capable
 /// instruction - BinOp/Fma/Cvt) and return that instruction's clamp.
 fn lowered_clamp(body: &str) -> Option<Clamp> {

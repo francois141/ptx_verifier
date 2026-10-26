@@ -29,8 +29,7 @@ enum LaneHalf {
 
 impl<'p> Interpreter<'p> {
     /// Evaluate a binary op: exact width/signedness semantics on concrete
-    /// integers, real-valued nodes for symbolic values. Also the fold primitive
-    /// `eval::warp`'s `redux.sync` uses to combine lane values.
+    /// integers, real-valued nodes for symbolic values.
     pub(in crate::eval) fn eval_binop(
         &mut self,
         t: ThreadId,

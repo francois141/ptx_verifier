@@ -38,10 +38,7 @@ use context::{LocalParamSlot, LoweringContext, unsupported};
 use control::{lower_bar, lower_branch, lower_call, lower_fence};
 use error::MbarrierWaitKind;
 pub use error::{LowerError, LowerResult};
-use idioms::{
-    MBARRIER_WAIT_LOOP_LEN, MbarrierWaitLoop, WARP_MAX_SIGN_TRICK_LEN, match_mbarrier_wait_loop,
-    match_warp_max_sign_trick, statement_span,
-};
+use idioms::{MBARRIER_WAIT_LOOP_LEN, MbarrierWaitLoop, match_mbarrier_wait_loop, statement_span};
 use mbarrier::{
     lower_mbarrier_arrive, lower_mbarrier_complete_tx, lower_mbarrier_expect_tx,
     lower_mbarrier_init, lower_mbarrier_inval, lower_mbarrier_test_wait, lower_mbarrier_try_wait,
@@ -61,8 +58,8 @@ use tma::{
     lower_tensormap_cp_fenceproxy, lower_tensormap_replace,
 };
 use warp::{
-    lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_redux_sync,
-    lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
+    lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_shfl_sync,
+    lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
 };
 
 /// Lower a PTX function to a LoweredProgram
@@ -198,28 +195,11 @@ fn lower_body(ctx: &mut LoweringContext, body: &FunctionBody) -> LowerResult<()>
 }
 
 /// Lower a run of statements one at a time, except where a multi-statement
-/// idiom matches a window (see [`match_warp_max_sign_trick`] and
-/// [`match_mbarrier_wait_loop`]). Windows span only consecutive statements.
+/// idiom matches a window (see [`match_mbarrier_wait_loop`]). Windows span
+/// only consecutive statements.
 fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResult<()> {
     let mut i = 0;
     while i < stmts.len() {
-        if let Some(trick) = match_warp_max_sign_trick(ctx, &stmts[i..]) {
-            // The broadcast `mov` itself still lowers normally, keeping
-            // its destination defined for any other reader; only the
-            // reduction trio collapses.
-            lower_statement(ctx, &stmts[i])?;
-            ctx.current_span = trick.span;
-            ctx.emit(
-                LoweredInstr::ReduxSyncBroadcastMax {
-                    dst: trick.dst,
-                    src: trick.src,
-                    membermask: trick.membermask,
-                },
-                None,
-            )?;
-            i += WARP_MAX_SIGN_TRICK_LEN;
-            continue;
-        }
         if let Some(wait_loop) = match_mbarrier_wait_loop(ctx, &stmts[i..]) {
             // The label resolves to the blocking wait; the retry `bra` is
             // dropped, so waking falls through to the loop's exit.
@@ -361,7 +341,6 @@ fn lower_parsed_instruction(
         ParsedInstruction::Lop3(lop3) => lower_lop3(ctx, lop3, predicate),
         ParsedInstruction::ShflSync(shfl) => lower_shfl_sync(ctx, shfl, predicate),
         ParsedInstruction::ElectSync(elect) => lower_elect_sync(ctx, elect, predicate),
-        ParsedInstruction::ReduxSync(redux) => lower_redux_sync(ctx, redux, predicate),
         ParsedInstruction::Bra(bra) => lower_branch(ctx, bra, predicate),
         ParsedInstruction::Ret(ast::RetInstr {
             // .uni is a divergence hint; it does not change what ret does.
@@ -508,6 +487,13 @@ fn lower_parsed_instruction(
         } => Err(unsupported(
             kind.to_string(),
             "wgmma is not supported by Volta at the moment",
+        )),
+        ParsedInstruction::Other {
+            kind: InstrKind::ReduxSync,
+            ..
+        } => Err(unsupported(
+            "redux.sync",
+            "redux.sync is not supported by Volta at the moment",
         )),
         ParsedInstruction::Other {
             kind: InstrKind::Stmatrix,

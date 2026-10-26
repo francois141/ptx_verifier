@@ -1,17 +1,13 @@
 //! Multi-statement nvcc idioms matched before per-instruction lowering: the
-//! mbarrier retry loop and the warp max sign trick.
+//! mbarrier retry loop.
 
 use crate::frontend::ast::{
-    self, CmpOp as AstCmpOp, Instruction, InstructionOp, MbarrierTestWaitInstr,
-    MbarrierTryWaitInstr, Operand as AstOperand, ParsedInstruction, RedOp, ScalarType, SetpInstr,
-    Statement,
+    self, Instruction, InstructionOp, MbarrierTestWaitInstr, MbarrierTryWaitInstr,
+    Operand as AstOperand, ParsedInstruction, Statement,
 };
 use crate::frontend::instr::InstrKind;
 use crate::frontend::instr_parse::parse_instruction;
 use volta_common::Span;
-
-use crate::ir::Operand;
-use crate::ir::symbols::RegId;
 
 use super::context::LoweringContext;
 
@@ -103,133 +99,4 @@ pub(super) fn match_mbarrier_wait_loop(
         return None;
     }
     Some(wait_loop)
-}
-
-/// Source instructions spanned by the warp-max sign trick: the broadcast
-/// `mov`, the `redux.sync.max.s32`, the sign-check `setp`, and the
-/// predicated fixup `redux.sync.min.s32`.
-pub(super) const WARP_MAX_SIGN_TRICK_LEN: usize = 4;
-
-/// What a matched warp-max sign trick collapses to - the operands of the
-/// one [`LoweredInstr::ReduxSyncBroadcastMax`] that replaces its reduction
-/// trio.
-pub(super) struct WarpMaxSignTrick {
-    /// `%x` from the broadcast `mov.b32 %pair, {%x, %x}`: the real-valued
-    /// operand the reduction is *actually* over.
-    pub(super) src: Operand,
-    /// The register both reduxes write.
-    pub(super) dst: RegId,
-    pub(super) membermask: Operand,
-    /// Span of the `redux.sync.max.s32` the collapsed instruction stands in
-    /// for.
-    pub(super) span: Option<Span>,
-}
-
-/// Match nvcc's warp-max "sortable signed int" idiom (broadcast, s32 max redux,
-/// negative fixup) as one real max ([`LoweredInstr::ReduxSyncBroadcastMax`]),
-/// exact since reals are never bit-encoded; near-misses lower normally.
-pub(super) fn match_warp_max_sign_trick(
-    ctx: &LoweringContext,
-    stmts: &[Statement],
-) -> Option<WarpMaxSignTrick> {
-    let window = stmts.get(..WARP_MAX_SIGN_TRICK_LEN)?;
-
-    // Cheap pre-filter on mnemonics alone, so ordinary code pays a handful
-    // of comparisons rather than four speculative instruction parses.
-    let kinds = [
-        InstrKind::Mov,
-        InstrKind::ReduxSync,
-        InstrKind::Setp,
-        InstrKind::ReduxSync,
-    ];
-    if !window
-        .iter()
-        .zip(kinds)
-        .all(|(stmt, kind)| statement_kind(stmt) == Some(kind))
-    {
-        return None;
-    }
-
-    // 1. `mov.b32 %pair, {%x, %x}` - unpredicated, both lanes the same.
-    let (ParsedInstruction::Mov(mov), None) = parsed_instruction(&window[0])? else {
-        return None;
-    };
-    let AstOperand::Vector(lanes) = &mov.src else {
-        return None;
-    };
-    let [lo, hi] = lanes.as_slice() else {
-        return None;
-    };
-    let src = ctx.resolve_operand(lo).ok()?;
-    if mov.ty.bits() != 32 || src != ctx.resolve_operand(hi).ok()? {
-        return None;
-    }
-    let pair = Operand::Reg(ctx.resolve_dst(&mov.dst).ok()?);
-
-    // 2. `redux.sync.max.s32 %dst, %pair, MASK` - unpredicated.
-    let (ParsedInstruction::ReduxSync(max), None) = parsed_instruction(&window[1])? else {
-        return None;
-    };
-    if max.abs
-        || max.nan
-        || max.op != RedOp::Max
-        || max.ty != ScalarType::S32
-        || ctx.resolve_operand(&max.src).ok()? != pair
-    {
-        return None;
-    }
-    let dst = ctx.resolve_dst(&max.dst).ok()?;
-    let membermask = ctx.resolve_operand(&max.membermask).ok()?;
-
-    // 3. `setp.lt.s32 %p, %dst, 0` - unpredicated, single destination.
-    let (ParsedInstruction::Setp(setp), None) = parsed_instruction(&window[2])? else {
-        return None;
-    };
-    let SetpInstr::Simple {
-        cmp_op: AstCmpOp::Lt,
-        ty: ScalarType::S32,
-        dst_p,
-        dst_q: None,
-        src_a,
-        src_b,
-        ..
-    } = setp
-    else {
-        return None;
-    };
-    if ctx.resolve_operand(&src_a).ok()? != Operand::Reg(dst)
-        || !matches!(
-            ctx.resolve_operand(&src_b).ok()?,
-            Operand::ImmI64(0) | Operand::ImmU64(0)
-        )
-    {
-        return None;
-    }
-    let sign_check = ctx.resolve_dst(&dst_p).ok()?;
-
-    // 4. `@%p redux.sync.min.s32 %dst, %pair, MASK` - the fixup, guarded by
-    //    exactly that sign check, over exactly the same reduction.
-    let (ParsedInstruction::ReduxSync(min), Some(guard)) = parsed_instruction(&window[3])? else {
-        return None;
-    };
-    let guard = ctx.resolve_predicate(guard).ok()?;
-    if guard.negated
-        || guard.reg != sign_check
-        || min.abs
-        || min.nan
-        || min.op != RedOp::Min
-        || min.ty != ScalarType::S32
-        || ctx.resolve_operand(&min.src).ok()? != pair
-        || ctx.resolve_dst(&min.dst).ok()? != dst
-        || ctx.resolve_operand(&min.membermask).ok()? != membermask
-    {
-        return None;
-    }
-
-    Some(WarpMaxSignTrick {
-        src,
-        dst,
-        membermask,
-        span: statement_span(&window[1]),
-    })
 }

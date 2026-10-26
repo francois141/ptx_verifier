@@ -19,7 +19,7 @@ use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
 use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
+use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
 use volta_expr::ExprId;
 
 /// A dense matrix of expressions being assembled from lane fragments.
@@ -124,14 +124,6 @@ impl Interpreter<'_> {
                     clamp,
                 )?;
             }
-            LoweredInstr::ReduxSync {
-                op, ty, dst, src, ..
-            } => {
-                self.exec_redux_sync(pc, mask, members, *op, *ty, *dst, src)?;
-            }
-            LoweredInstr::ReduxSyncBroadcastMax { dst, src, .. } => {
-                self.exec_redux_broadcast_max(pc, mask, members, src, *dst)?;
-            }
             LoweredInstr::Ldmatrix {
                 dst,
                 addr,
@@ -223,13 +215,11 @@ impl Interpreter<'_> {
         members: &[ThreadId],
     ) -> EvalResult<()> {
         match instr {
-            // All four handle exited lanes per-op (Undefined data, arrived-at-sync),
+            // All three handle exited lanes per-op (Undefined data, arrived-at-sync),
             // and the ISA states no exited-lane UB for them, so a partial warp is fine.
             LoweredInstr::BarWarpSync { .. }
             | LoweredInstr::ShflSync { .. }
-            | LoweredInstr::ElectSync { .. }
-            | LoweredInstr::ReduxSync { .. }
-            | LoweredInstr::ReduxSyncBroadcastMax { .. } => Ok(()),
+            | LoweredInstr::ElectSync { .. } => Ok(()),
             LoweredInstr::Ldmatrix { dst, num, .. } => {
                 // In particular an exited address-supplying lane (`i*8 + r`) leaves
                 // row r's footprint unknowable.
@@ -443,83 +433,6 @@ impl Interpreter<'_> {
                 self.write_reg(m, reg, Value::Scalar(v));
             }
         }
-    }
-
-    /// `redux.sync.op.type d, a, membermask`: fold every mask lane's `a` through
-    /// `eval_binop` (every op is associative/commutative) and broadcast to all
-    /// live lanes; an exited mask lane contributes a lazy `Undefined`.
-    #[allow(clippy::too_many_arguments)]
-    fn exec_redux_sync(
-        &mut self,
-        pc: InstrId,
-        mask: u32,
-        members: &[ThreadId],
-        op: BinOp,
-        ty: ScalarType,
-        dst: RegId,
-        src: &Operand,
-    ) -> EvalResult<()> {
-        let mut live = members.iter();
-        let mut next_live = live.next();
-        let mut acc: Option<ExprId> = None;
-        for lane in 0..WARP_SIZE {
-            if mask & (1u32 << lane) == 0 {
-                continue;
-            }
-            let value = match next_live {
-                Some(&m) if m.0 % WARP_SIZE == lane => {
-                    next_live = live.next();
-                    self.scalar_operand(m, pc, src)?
-                }
-                _ => self.arena.undefined(),
-            };
-            acc = Some(match acc {
-                None => value,
-                Some(prev) => self.eval_binop(members[0], pc, op, ty, prev, value)?,
-            });
-        }
-        let result = acc.expect("execute_warp_op only fires for a nonempty mask");
-        for &m in members {
-            self.write_reg(m, dst, Value::Scalar(result));
-        }
-        Ok(())
-    }
-
-    /// `LoweredInstr::ReduxSyncBroadcastMax`: the warp-max sign-trick idiom as
-    /// the real `max` fold over `src` it computes, gathered like
-    /// `exec_redux_sync` but via the arena's `max` (`src` is never integer bits).
-    fn exec_redux_broadcast_max(
-        &mut self,
-        pc: InstrId,
-        mask: u32,
-        members: &[ThreadId],
-        src: &Operand,
-        dst: RegId,
-    ) -> EvalResult<()> {
-        let mut live = members.iter();
-        let mut next_live = live.next();
-        let mut acc: Option<ExprId> = None;
-        for lane in 0..WARP_SIZE {
-            if mask & (1u32 << lane) == 0 {
-                continue;
-            }
-            let value = match next_live {
-                Some(&m) if m.0 % WARP_SIZE == lane => {
-                    next_live = live.next();
-                    self.scalar_operand(m, pc, src)?
-                }
-                _ => self.arena.undefined(),
-            };
-            acc = Some(match acc {
-                None => value,
-                Some(prev) => self.arena.max(prev, value),
-            });
-        }
-        let result = acc.expect("execute_warp_op only fires for a nonempty mask");
-        for &m in members {
-            self.threads[m].regs.write(dst, Value::Pair(result, result));
-        }
-        Ok(())
     }
 
     /// `ldmatrix...xN.m8n8{.trans}.shared.b16`: lane `i*8 + r` supplies row `r` of

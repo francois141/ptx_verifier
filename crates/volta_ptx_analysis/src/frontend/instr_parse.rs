@@ -449,7 +449,6 @@ pub fn parse_instruction(
         InstrKind::VoteSync => parse_vote_sync(&mut mp, operands),
         InstrKind::MatchSync => parse_match_sync(&mut mp, operands),
         InstrKind::Activemask => parse_activemask(&mut mp, operands),
-        InstrKind::ReduxSync => parse_redux_sync(&mut mp, operands),
         InstrKind::Griddepcontrol => parse_griddepcontrol(&mut mp, operands),
         InstrKind::ElectSync => parse_elect_sync(&mut mp, operands),
 
@@ -3561,32 +3560,6 @@ fn parse_activemask(
     mp.finish()?;
     Ok(ParsedInstruction::Activemask(ActivemaskInstr {
         dst: operands.into_iter().next().unwrap(),
-    }))
-}
-
-/// Parse redux.sync instruction (Block 143)
-fn parse_redux_sync(
-    mp: &mut ModifierParser,
-    operands: Vec<Operand>,
-) -> Result<ParsedInstruction, InstrParseError> {
-    let op = mp
-        .try_parse::<RedOp>()
-        .ok_or(InstrParseError::MissingModifier(ascii("op")))?;
-    let abs = mp.try_consume(ascii("abs"));
-    let nan = mp.try_consume(ascii("NaN"));
-    let ty = mp.require_scalar_type()?;
-
-    let [dst, src, membermask] = expect_operands(operands)?;
-
-    mp.finish()?;
-    Ok(ParsedInstruction::ReduxSync(ReduxSyncInstr {
-        op,
-        ty,
-        abs,
-        nan,
-        dst,
-        src,
-        membermask,
     }))
 }
 
