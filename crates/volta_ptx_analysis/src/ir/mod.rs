@@ -33,6 +33,9 @@ impl fmt::Display for InstrId {
 /// `mbarrier.arrive` count.
 pub const MBARRIER_COUNT_RANGE: RangeInclusive<u64> = 1..=(1 << 20) - 1;
 
+/// The PTX ISA's range for an mbarrier phase's tx-count.
+pub const MBARRIER_TX_COUNT_RANGE: RangeInclusive<i64> = -((1 << 20) - 1)..=(1 << 20) - 1;
+
 /// A resolved operand - either a register, immediate, or special register
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operand {

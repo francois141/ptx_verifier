@@ -1,5 +1,6 @@
 //! Regression tests for invalid PTX directives, ldmatrix modifiers and operands, mbarrier
-//! arrival counts and operands, ret, exit, brkpt, and trap syntax, and address offsets.
+//! arrival counts, operands, semantics and scopes, ret, exit, brkpt, and trap syntax, and address
+//! offsets.
 
 #[macro_use]
 mod common;
@@ -392,4 +393,90 @@ fn address_constant_expression_must_not_hide_a_write_write_race() {
         ),
         "a memory conflict must reject the graph"
     );
+}
+
+#[test]
+fn mbarrier_expect_tx_must_reject_invalid_semantics() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_expect_tx_invalid_semantics",
+        &ptx!("soundness/mbarrier_expect_tx_invalid_semantics"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_expect_tx_must_reject_invalid_scope() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_expect_tx_invalid_scope",
+        &ptx!("soundness/mbarrier_expect_tx_invalid_scope"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_complete_tx_must_reject_invalid_semantics() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_complete_tx_invalid_semantics",
+        &ptx!("soundness/mbarrier_complete_tx_invalid_semantics"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_complete_tx_must_reject_invalid_scope() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_complete_tx_invalid_scope",
+        &ptx!("soundness/mbarrier_complete_tx_invalid_scope"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_try_wait_must_reject_invalid_scope() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_try_wait_invalid_scope",
+        &ptx!("soundness/mbarrier_try_wait_invalid_scope"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_test_wait_must_reject_an_extra_operand() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_test_wait_extra_operand",
+        &ptx!("soundness/mbarrier_test_wait_extra_operand"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_try_wait_must_reject_an_operand_after_the_suspend_hint() {
+    assert_rejected_during_validation(
+        "soundness/mbarrier_try_wait_extra_operand",
+        &ptx!("soundness/mbarrier_try_wait_extra_operand"),
+        AnalysisConfig::new((1, 1, 1)),
+    );
+}
+
+#[test]
+fn mbarrier_tx_count_must_stay_in_the_isa_range() {
+    let source = ptx!("soundness/mbarrier_tx_count_out_of_range");
+    let control = source.replace("1048575;", "1048574;");
+    let control = parse_named("soundness/mbarrier_tx_count_control", &control);
+    let verified = verify(&control, Some("k"), AnalysisConfig::new((1, 1, 1)))
+        .expect("a tx-count of 2^20 - 1 must execute");
+    assert_eq!(verified.graph.conclusion(), GraphConclusion::Verified);
+
+    let module = parse_named("soundness/mbarrier_tx_count_out_of_range", &source);
+    let verified = verify(&module, Some("k"), AnalysisConfig::new((1, 1, 1)))
+        .expect("a tx-count of 2^20 must pass validation");
+    assert!(matches!(
+        verified.analysis.symbolic_outputs(),
+        Err(OutputsUnavailable::Aborted(
+            EvalError::MbarrierTxCountOutOfRange {
+                tx_count: 1048576,
+                ..
+            }
+        ))
+    ));
 }

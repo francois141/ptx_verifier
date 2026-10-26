@@ -336,7 +336,7 @@ impl<'p> Interpreter<'p> {
         let before = self.mbarriers.completed_phases(id);
         self.mbarriers.complete_tx(id, bytes);
         self.record_mbarrier_progress(id, before);
-        Ok(())
+        self.check_mbarrier_tx_count(t, pc, id)
     }
 }
 

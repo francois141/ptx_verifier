@@ -1,0 +1,16 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    .reg .b32 %r;
+    .shared .align 8 .b64 mb;
+
+    mov.u32 %r, mb;
+    mbarrier.init.shared::cta.b64 [%r], 1;
+    mbarrier.expect_tx.relaxed.gpu.shared::cta.b64 [%r], 16;
+    mbarrier.arrive.shared::cta.b64 _, [%r];
+    mbarrier.complete_tx.relaxed.cta.shared::cta.b64 [%r], 16;
+    ret;
+}

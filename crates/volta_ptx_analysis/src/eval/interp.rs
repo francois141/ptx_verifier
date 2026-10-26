@@ -25,7 +25,8 @@ use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
     BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
-    MBARRIER_COUNT_RANGE, MemSpace, Operand, Tcgen05FenceDirection, TensormapFence,
+    MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, Tcgen05FenceDirection,
+    TensormapFence,
 };
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
@@ -1829,6 +1830,7 @@ impl<'p> Interpreter<'p> {
                 let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.arrive(id, count, expect_tx);
                 self.record_mbarrier_progress(id, before);
+                self.check_mbarrier_tx_count(t, pc, id)?;
                 if let Some(dst) = state {
                     // The opaque phase token: only `.parity` waits are
                     // supported, which never consume it, so `Undefined` is the
@@ -1854,6 +1856,7 @@ impl<'p> Interpreter<'p> {
                     self.non_negative_operand(t, pc, tx_count, "mbarrier.expect_tx txCount")?;
                 self.record_mbarrier_expect_tx(t, pc, id, tx_count);
                 self.mbarriers.expect_tx(id, tx_count);
+                self.check_mbarrier_tx_count(t, pc, id)?;
             }
 
             LoweredInstr::MbarrierCompleteTx {
@@ -1874,6 +1877,7 @@ impl<'p> Interpreter<'p> {
                 let before = self.mbarriers.completed_phases(id);
                 self.mbarriers.complete_tx(id, tx_count);
                 self.record_mbarrier_progress(id, before);
+                self.check_mbarrier_tx_count(t, pc, id)?;
             }
 
             LoweredInstr::MbarrierWaitParity {
@@ -2100,6 +2104,25 @@ impl<'p> Interpreter<'p> {
             pc,
             what,
         })
+    }
+
+    /// Reject `id`'s tx-count once an update left [`MBARRIER_TX_COUNT_RANGE`].
+    pub(in crate::eval) fn check_mbarrier_tx_count(
+        &self,
+        t: ThreadId,
+        pc: InstrId,
+        id: MbarrierId,
+    ) -> EvalResult<()> {
+        let tx_count = self.mbarriers.pending_tx(id);
+        if MBARRIER_TX_COUNT_RANGE.contains(&tx_count) {
+            Ok(())
+        } else {
+            Err(EvalError::MbarrierTxCountOutOfRange {
+                thread: t,
+                pc,
+                tx_count,
+            })
+        }
     }
 
     /// Resolve an mbarrier arrival count: a concrete integer in

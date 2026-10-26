@@ -121,6 +121,12 @@ pub enum EvalError {
         what: &'static str,
         count: u64,
     },
+    /// An mbarrier phase's tx-count left the ISA's `[-(2^20 - 1), 2^20 - 1]`.
+    MbarrierTxCountOutOfRange {
+        thread: ThreadId,
+        pc: InstrId,
+        tx_count: i64,
+    },
     /// An output array element is (or was computed from) an uninitialized
     /// read that was never resolved.
     UndefinedOutput { array: String, index: u64 },
@@ -361,6 +367,15 @@ impl fmt::Display for EvalError {
                 "{}: {} {} at {} is outside [1, 2^20 - 1]",
                 thread, what, count, pc
             ),
+            Self::MbarrierTxCountOutOfRange {
+                thread,
+                pc,
+                tx_count,
+            } => write!(
+                f,
+                "{}: mbarrier tx-count {} at {} is outside [-(2^20 - 1), 2^20 - 1]",
+                thread, tx_count, pc
+            ),
             Self::UndefinedOutput { array, index } => write!(
                 f,
                 "output element {}[{}] is undefined (uninitialized read)",
@@ -528,6 +543,7 @@ impl EvalError {
             | Self::NoLiveMbarrier { thread, pc, .. }
             | Self::MbarrierReinit { thread, pc, .. }
             | Self::MbarrierCountOutOfRange { thread, pc, .. }
+            | Self::MbarrierTxCountOutOfRange { thread, pc, .. }
             | Self::TrapReached { thread, pc }
             | Self::ClusterLaunchControlMisuse { thread, pc, .. }
             | Self::MapaRankOutsideCluster { thread, pc, .. }

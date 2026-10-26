@@ -3665,6 +3665,47 @@ fn parse_mbarrier_space(
     Ok((mp.try_parse::<StateSpace>(), None))
 }
 
+/// Parse mbarrier's optional `{.sem}{.scope}`: `.sem` must be one of `sems`
+/// (each instruction's ISA set) and `.scope` one of `.cta`/`.cluster`.
+fn parse_mbarrier_sem_scope(
+    mp: &mut ModifierParser,
+    sems: &[MemSemantics],
+) -> Result<(Option<MemSemantics>, Option<MemScope>), InstrParseError> {
+    let sem = parse_restricted(mp, sems)?;
+    let scope = parse_restricted(mp, &[MemScope::Cta, MemScope::Cluster])?;
+    Ok((sem, scope))
+}
+
+/// Like [`ModifierParser::try_parse`], but a parsed value outside `allowed`
+/// is an [`InstrParseError::InvalidModifier`] instead of a match.
+fn parse_restricted<T: FromAscii + PartialEq>(
+    mp: &mut ModifierParser,
+    allowed: &[T],
+) -> Result<Option<T>, InstrParseError> {
+    let Some(text) = mp.peek_simple().cloned() else {
+        return Ok(None);
+    };
+    match mp.try_parse::<T>() {
+        Some(value) if !allowed.contains(&value) => Err(InstrParseError::InvalidModifier(text)),
+        value => Ok(value),
+    }
+}
+
+/// Reject an operand list outside `min..=max`, naming the violated bound.
+fn expect_operand_range(
+    operands: &[Operand],
+    min: usize,
+    max: usize,
+) -> Result<(), InstrParseError> {
+    let got = operands.len();
+    let expected = if got < min { min } else { max };
+    if (min..=max).contains(&got) {
+        Ok(())
+    } else {
+        Err(InstrParseError::WrongOperandCount { expected, got })
+    }
+}
+
 /// Parse mbarrier.init instruction (Block 146)
 fn parse_mbarrier_init(
     mp: &mut ModifierParser,
@@ -3712,8 +3753,7 @@ fn parse_mbarrier_expect_tx(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let sem = mp.try_parse::<MemSemantics>();
-    let scope = mp.try_parse::<MemScope>();
+    let (sem, scope) = parse_mbarrier_sem_scope(mp, &[MemSemantics::Relaxed])?;
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
@@ -3735,8 +3775,7 @@ fn parse_mbarrier_complete_tx(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
-    let sem = mp.try_parse::<MemSemantics>();
-    let scope = mp.try_parse::<MemScope>();
+    let (sem, scope) = parse_mbarrier_sem_scope(mp, &[MemSemantics::Relaxed])?;
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
@@ -3765,17 +3804,12 @@ fn parse_mbarrier_arrive(
     // sequential cursor, not a reordering matcher.
     let expect_tx = mp.try_consume(ascii("expect_tx"));
     let no_complete = mp.try_consume(ascii("noComplete"));
-    let sem = mp.try_parse::<MemSemantics>();
-    let scope = mp.try_parse::<MemScope>();
+    let (sem, scope) =
+        parse_mbarrier_sem_scope(mp, &[MemSemantics::Release, MemSemantics::Relaxed])?;
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
-    if !(2..=3).contains(&operands.len()) {
-        return Err(InstrParseError::WrongOperandCount {
-            expected: if operands.len() < 2 { 2 } else { 3 },
-            got: operands.len(),
-        });
-    }
+    expect_operand_range(&operands, 2, 3)?;
 
     let mut ops = operands.into_iter();
     mp.finish()?;
@@ -3802,17 +3836,12 @@ fn parse_mbarrier_arrive_drop(
     // `.sem`/`.scope`/the state space.
     let expect_tx = mp.try_consume(ascii("expect_tx"));
     let no_complete = mp.try_consume(ascii("noComplete"));
-    let sem = mp.try_parse::<MemSemantics>();
-    let scope = mp.try_parse::<MemScope>();
+    let (sem, scope) =
+        parse_mbarrier_sem_scope(mp, &[MemSemantics::Release, MemSemantics::Relaxed])?;
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
-    if operands.len() < 2 {
-        return Err(InstrParseError::WrongOperandCount {
-            expected: 2,
-            got: operands.len(),
-        });
-    }
+    expect_operand_range(&operands, 2, 3)?;
 
     let mut ops = operands.into_iter();
     mp.finish()?;
@@ -3838,17 +3867,16 @@ fn parse_mbarrier_wait(
     kind: InstrKind,
 ) -> Result<ParsedInstruction, InstrParseError> {
     let parity = mp.try_consume(ascii("parity"));
-    let sem = mp.try_parse::<MemSemantics>();
-    let scope = mp.try_parse::<MemScope>();
+    let (sem, scope) =
+        parse_mbarrier_sem_scope(mp, &[MemSemantics::Acquire, MemSemantics::Relaxed])?;
     let (space, space_qualifier) = parse_mbarrier_space(mp)?;
     mp.try_consume_or_err(ascii("b64"))?;
 
-    if operands.len() < 3 {
-        return Err(InstrParseError::WrongOperandCount {
-            expected: 3,
-            got: operands.len(),
-        });
-    }
+    let max_operands = match kind {
+        InstrKind::MbarrierTryWait => 4,
+        _ => 3,
+    };
+    expect_operand_range(&operands, 3, max_operands)?;
 
     let mut ops = operands.into_iter();
 
