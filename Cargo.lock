@@ -636,17 +636,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
-name = "volta_analysis"
-version = "0.1.0"
-dependencies = [
- "id_collections",
- "log",
- "volta_common",
- "volta_expr",
- "volta_graph",
-]
-
-[[package]]
 name = "volta_cli"
 version = "0.1.0"
 dependencies = [
@@ -654,13 +643,13 @@ dependencies = [
  "clap",
  "env_logger",
  "log",
- "volta_analysis",
  "volta_common",
  "volta_equivalence",
  "volta_expr",
  "volta_graph",
  "volta_graph_check",
  "volta_pipeline",
+ "volta_ptx_analysis",
  "volta_spec",
  "volta_viz",
 ]
@@ -719,12 +708,23 @@ name = "volta_pipeline"
 version = "0.1.0"
 dependencies = [
  "log",
- "volta_analysis",
  "volta_equivalence",
  "volta_expr",
  "volta_graph",
  "volta_graph_check",
+ "volta_ptx_analysis",
  "volta_viz",
+]
+
+[[package]]
+name = "volta_ptx_analysis"
+version = "0.1.0"
+dependencies = [
+ "id_collections",
+ "log",
+ "volta_common",
+ "volta_expr",
+ "volta_graph",
 ]
 
 [[package]]
@@ -732,12 +732,12 @@ name = "volta_py"
 version = "0.1.0"
 dependencies = [
  "pyo3",
- "volta_analysis",
  "volta_common",
  "volta_equivalence",
  "volta_expr",
  "volta_graph_check",
  "volta_pipeline",
+ "volta_ptx_analysis",
  "volta_spec",
 ]
 

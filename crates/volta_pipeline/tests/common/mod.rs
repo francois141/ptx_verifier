@@ -12,19 +12,19 @@ use std::fmt::Write;
 use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use volta_analysis::frontend::ascii::AsAscii;
-use volta_analysis::frontend::ast::Module;
-use volta_analysis::frontend::parse::Parser;
-use volta_analysis::{
-    AnalysisConfig, AnalysisError, AnalysisResult, ArrayDef, ArrayKind, OutputsUnavailable,
-    ParamValue, Stats, analyze,
-};
 use volta_expr::SymbolicOutputs;
 use volta_graph::{
     AbortCause, AccessMode, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext,
 };
 use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::{KernelVerification, verify_kernel};
+use volta_ptx_analysis::frontend::ascii::AsAscii;
+use volta_ptx_analysis::frontend::ast::Module;
+use volta_ptx_analysis::frontend::parse::Parser;
+use volta_ptx_analysis::{
+    AnalysisConfig, AnalysisError, AnalysisResult, ArrayDef, ArrayKind, OutputsUnavailable,
+    ParamValue, Stats, analyze,
+};
 use volta_viz::{Outcome, Run, RunId, write_run};
 
 /// The PTX test kernel at `tests/ptx/<name>.ptx` as source text, or as a

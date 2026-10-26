@@ -9,11 +9,11 @@ name = "volta"
 crate-type = ["cdylib"]
 
 [dependencies]
-volta_analysis.workspace = true
 volta_common.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true
 volta_graph_check.workspace = true
 volta_pipeline.workspace = true
+volta_ptx_analysis.workspace = true
 volta_spec.workspace = true
 pyo3 = { version = "0.29", features = ["extension-module"] }

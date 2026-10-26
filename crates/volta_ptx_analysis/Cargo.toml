@@ -1,5 +1,5 @@
 [package]
-name = "volta_analysis"
+name = "volta_ptx_analysis"
 version.workspace = true
 edition.workspace = true
 

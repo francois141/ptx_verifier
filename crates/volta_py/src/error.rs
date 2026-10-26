@@ -6,10 +6,10 @@ use pyo3::PyErr;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 
-use volta_analysis::AnalysisError;
-use volta_analysis::frontend::parse::ParseError;
 use volta_common::Span;
 use volta_graph_check::{Deadlock, Property, PropertySummary};
+use volta_ptx_analysis::AnalysisError;
+use volta_ptx_analysis::frontend::parse::ParseError;
 
 create_exception!(
     volta,

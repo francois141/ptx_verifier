@@ -6,11 +6,11 @@
 #[allow(unused_macros)]
 mod common;
 
-use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_equivalence::{EquivOutcome, check_output_equivalence};
 use volta_expr::SymbolicOutputs;
 use volta_expr::text::{read_text, to_text};
 use volta_graph_check::GraphConclusion;
+use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 use common::{Ptx, parse_named, verify};
 

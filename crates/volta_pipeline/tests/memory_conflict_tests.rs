@@ -4,9 +4,9 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_graph::{AccessMode, AsyncOpKind, Space};
 use volta_graph_check::domain::{ByteLocation, ConflictKind};
+use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 use common::*;
 

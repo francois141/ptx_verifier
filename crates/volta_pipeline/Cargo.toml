@@ -9,11 +9,11 @@ logging = ["dep:log"]  # Full logging when enabled
 
 [dependencies]
 log = { workspace = true, optional = true }
-volta_analysis.workspace = true
 volta_equivalence.workspace = true
 volta_expr.workspace = true
 volta_graph.workspace = true
 volta_graph_check.workspace = true
+volta_ptx_analysis.workspace = true
 
 [dev-dependencies]
 volta_viz.workspace = true

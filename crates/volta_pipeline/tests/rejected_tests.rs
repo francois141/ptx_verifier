@@ -6,12 +6,12 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::{
+use volta_equivalence::check_output_equivalence;
+use volta_graph_check::{Deadlock, GraphConclusion};
+use volta_ptx_analysis::{
     AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, ClcMisuse, EvalError, LowerError,
     ParamValue, ThreadId,
 };
-use volta_equivalence::check_output_equivalence;
-use volta_graph_check::{Deadlock, GraphConclusion};
 
 use common::*;
 

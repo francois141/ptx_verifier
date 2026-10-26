@@ -4,7 +4,7 @@ The integration point. This is the only crate that composes the analysis stage
 with its two branches and combines their results into a verdict.
 
 ```
-analysis (volta_analysis::analyze) ──► AnalysisResult { symbolic outputs, event graph, provenance }
+analysis (volta_ptx_analysis::analyze) ──► AnalysisResult { symbolic outputs, event graph, provenance }
    ├─ equivalence branch: symbolic outputs only  ──► EquivalenceVerdict    (equivalence.rs)
    └─ graph branch: event graph only, ten checks ──► GraphReport           (kernel.rs)
                                     aggregation (decide) ──► ACCEPT / REJECT / UNKNOWN   (aggregate.rs)

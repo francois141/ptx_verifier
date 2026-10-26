@@ -4,13 +4,13 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::frontend::ascii::AsAscii;
-use volta_analysis::frontend::parse::{ParseErrorKind, Parser};
-use volta_analysis::{
+use volta_graph_check::{GraphConclusion, Property, Verdict};
+use volta_ptx_analysis::frontend::ascii::AsAscii;
+use volta_ptx_analysis::frontend::parse::{ParseErrorKind, Parser};
+use volta_ptx_analysis::{
     AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, EvalError, LowerError, OutputsUnavailable,
     ParamValue,
 };
-use volta_graph_check::{GraphConclusion, Property, Verdict};
 
 use common::{Ptx, parse_named, verify};
 

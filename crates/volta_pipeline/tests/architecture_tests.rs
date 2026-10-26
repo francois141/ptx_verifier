@@ -41,7 +41,7 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn the_analysis_runs_no_checker_and_no_equivalence() {
     let mut files = Vec::new();
-    rust_sources(&crates_dir().join("volta_analysis/src"), &mut files);
+    rust_sources(&crates_dir().join("volta_ptx_analysis/src"), &mut files);
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
         let code: Vec<&str> = text
@@ -56,7 +56,7 @@ fn the_analysis_runs_no_checker_and_no_equivalence() {
             );
         }
     }
-    let deps = dependencies("volta_analysis");
+    let deps = dependencies("volta_ptx_analysis");
     for forbidden in ["volta_graph_check", "volta_equivalence", "volta_pipeline"] {
         assert!(
             !deps.iter().any(|d| d == forbidden),
@@ -69,7 +69,7 @@ fn the_analysis_runs_no_checker_and_no_equivalence() {
 fn the_frontend_imports_nothing_of_the_analysis_after_it() {
     let mut files = Vec::new();
     rust_sources(
-        &crates_dir().join("volta_analysis/src/frontend"),
+        &crates_dir().join("volta_ptx_analysis/src/frontend"),
         &mut files,
     );
     for file in &files {
@@ -100,7 +100,7 @@ fn the_frontend_imports_nothing_of_the_analysis_after_it() {
 fn the_branches_never_depend_on_each_other_or_on_the_stage() {
     let graph_branch = dependencies("volta_graph_check");
     let equivalence_branch = dependencies("volta_equivalence");
-    for forbidden in ["volta_equivalence", "volta_analysis", "volta_pipeline"] {
+    for forbidden in ["volta_equivalence", "volta_ptx_analysis", "volta_pipeline"] {
         assert!(
             !graph_branch.iter().any(|d| d == forbidden),
             "the graph branch depends on {forbidden}"
@@ -109,7 +109,7 @@ fn the_branches_never_depend_on_each_other_or_on_the_stage() {
     for forbidden in [
         "volta_graph",
         "volta_graph_check",
-        "volta_analysis",
+        "volta_ptx_analysis",
         "volta_pipeline",
     ] {
         assert!(
@@ -118,7 +118,11 @@ fn the_branches_never_depend_on_each_other_or_on_the_stage() {
         );
     }
     let graph = dependencies("volta_graph");
-    for forbidden in ["volta_graph_check", "volta_equivalence", "volta_analysis"] {
+    for forbidden in [
+        "volta_graph_check",
+        "volta_equivalence",
+        "volta_ptx_analysis",
+    ] {
         assert!(
             !graph.iter().any(|d| d == forbidden),
             "the graph model depends on {forbidden}"

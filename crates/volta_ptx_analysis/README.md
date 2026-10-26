@@ -1,4 +1,4 @@
-# volta_analysis
+# volta_ptx_analysis
 
 The analysis stage: an abstract interpreter for PTX kernels. It takes a parsed
 module, a kernel name and a launch configuration, symbolically executes **one
@@ -14,7 +14,7 @@ pipeline sends the outputs to `volta_equivalence` and the graph to
 `volta_graph_check`.
 
 ```rust
-let result = volta_analysis::analyze(&module, Some("kernel"), config)?;
+let result = volta_ptx_analysis::analyze(&module, Some("kernel"), config)?;
 let graph = result.graph();                 // always present (partial on abort)
 let outputs = result.symbolic_outputs()?;   // only if the run completed
 ```
@@ -22,7 +22,7 @@ let outputs = result.symbolic_outputs()?;   // only if the run completed
 ## Frontend (`frontend/`)
 
 `frontend/` turns PTX source text into a typed AST. It is the one public module
-(`volta_analysis::frontend::{parse, ast, ...}`), and it imports nothing else of
+(`volta_ptx_analysis::frontend::{parse, ast, ...}`), and it imports nothing else of
 the crate.
 
 ```

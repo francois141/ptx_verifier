@@ -4,7 +4,7 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::AnalysisConfig;
+use volta_ptx_analysis::AnalysisConfig;
 
 use common::*;
 

@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use pyo3::exceptions::PyRuntimeWarning;
 use pyo3::prelude::*;
 
-use volta_analysis::frontend::ascii::{AsAscii, AsciiChar};
-use volta_analysis::frontend::ast::Module;
-use volta_analysis::frontend::parse as ptx_parse;
-use volta_analysis::{AnalysisConfig, Stats};
 use volta_expr::SymbolicOutputs;
 use volta_graph_check::GraphConclusion;
 use volta_pipeline::verify_kernel;
+use volta_ptx_analysis::frontend::ascii::{AsAscii, AsciiChar};
+use volta_ptx_analysis::frontend::ast::Module;
+use volta_ptx_analysis::frontend::parse as ptx_parse;
+use volta_ptx_analysis::{AnalysisConfig, Stats};
 
 use crate::config::ConfigPy;
 use crate::error::{VoltaError, analysis_error_to_py, graph_failure_to_py, parse_error_to_py};

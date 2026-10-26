@@ -1,16 +1,16 @@
 //! Aggregation over real kernels: both branches run on the analysis stage's artifacts and only
 //! `decide` combines them.
 
-use volta_analysis::frontend::ascii::AsAscii;
-use volta_analysis::frontend::ast::Module;
-use volta_analysis::frontend::parse::Parser;
-use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_equivalence::check::EquivCheckOptions;
 use volta_graph_check::{GraphConclusion, Property, Verdict as PropertyVerdict};
 use volta_pipeline::{
     Decision, EquivalenceVerdict, KernelEvidence, KernelVerification, Verdict, check_equivalence,
     decide, verify_kernel,
 };
+use volta_ptx_analysis::frontend::ascii::AsAscii;
+use volta_ptx_analysis::frontend::ast::Module;
+use volta_ptx_analysis::frontend::parse::Parser;
+use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 /// `out[tid] = in[tid] <op>` for 4 threads; `store_to_zero` makes every thread write `out[0]`.
 fn kernel(body: &str) -> String {

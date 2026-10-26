@@ -5,8 +5,10 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::{AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, EvalError, ParamValue};
 use volta_graph_check::GraphConclusion;
+use volta_ptx_analysis::{
+    AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, EvalError, ParamValue,
+};
 
 use common::*;
 

@@ -7,13 +7,13 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-volta_analysis = { path = "./crates/volta_analysis" }
 volta_common = { path = "./crates/volta_common" }
 volta_equivalence = { path = "./crates/volta_equivalence" }
 volta_expr = { path = "./crates/volta_expr" }
 volta_graph = { path = "./crates/volta_graph" }
 volta_graph_check = { path = "./crates/volta_graph_check" }
 volta_pipeline = { path = "./crates/volta_pipeline" }
+volta_ptx_analysis = { path = "./crates/volta_ptx_analysis" }
 volta_spec = { path = "./crates/volta_spec" }
 volta_viz = { path = "./crates/volta_viz" }
 

@@ -9,13 +9,6 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
-use volta_analysis::frontend::ascii::{AsAscii, AsciiChar};
-use volta_analysis::frontend::ast::{Module, TopLevelItem};
-use volta_analysis::frontend::parse;
-use volta_analysis::{
-    AnalysisConfig, AnalysisParts, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
-    write_op_counts,
-};
 use volta_common::file_cache::FileCache;
 use volta_common::report::{Report, locate_path, report_error};
 use volta_common::run_log;
@@ -27,6 +20,13 @@ use volta_graph::EventGraph;
 use volta_graph_check::{GraphConclusion, GraphReport};
 use volta_pipeline::{
     Decision, EquivalenceVerdict, KernelEvidence, Verdict, check_equivalence, decide, verify_kernel,
+};
+use volta_ptx_analysis::frontend::ascii::{AsAscii, AsciiChar};
+use volta_ptx_analysis::frontend::ast::{Module, TopLevelItem};
+use volta_ptx_analysis::frontend::parse;
+use volta_ptx_analysis::{
+    AnalysisConfig, AnalysisParts, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
+    write_op_counts,
 };
 use volta_spec::unfold;
 

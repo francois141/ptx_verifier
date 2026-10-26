@@ -7,7 +7,7 @@ the `volta` Python module. This is v0: `parse`, `analyze` and `verify`.
 ```python
 import volta
 
-config = volta.Config(block=(4, 1, 1))  # mirrors volta_analysis::AnalysisConfig
+config = volta.Config(block=(4, 1, 1))  # mirrors volta_ptx_analysis::AnalysisConfig
 config.add_array(volta.ArrayDef("in", 0x10000, 4, 4, volta.ArrayKind.Input))
 config.add_array(volta.ArrayDef("out", 0x20000, 4, 4, volta.ArrayKind.Output))
 config.add_param(volta.Param.array_ptr("in"))

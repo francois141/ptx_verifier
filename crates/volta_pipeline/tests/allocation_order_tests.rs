@@ -4,8 +4,8 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::AnalysisConfig;
 use volta_graph_check::allocation_order::AllocationOrderViolation;
+use volta_ptx_analysis::AnalysisConfig;
 
 use common::*;
 

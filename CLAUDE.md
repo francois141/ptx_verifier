@@ -27,7 +27,7 @@ crates/
 ├── volta_spec/       # Specs (.spec language -> mathematical form -> SymbolicOutputs)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
-├── volta_analysis/   # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
+├── volta_ptx_analysis/ # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN; every end-to-end PTX test
 ├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
@@ -39,19 +39,19 @@ crates/
 Direct dependencies of each crate:
 
 ```
-volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
-volta_viz         → volta_graph_check, volta_graph, volta_expr
-volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_viz)
-volta_equivalence → volta_expr (+ dev: volta_spec)
-volta_spec        → volta_expr, volta_common
-volta_analysis    → volta_graph, volta_expr, volta_common
-volta_graph_check → volta_graph
-volta_graph       → volta_expr
-volta_expr        → (nothing)
-volta_common      → (nothing)
+volta_cli          → volta_pipeline, volta_equivalence, volta_ptx_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
+volta_viz          → volta_graph_check, volta_graph, volta_expr
+volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_viz)
+volta_equivalence  → volta_expr (+ dev: volta_spec)
+volta_spec         → volta_expr, volta_common
+volta_ptx_analysis → volta_graph, volta_expr, volta_common
+volta_graph_check  → volta_graph
+volta_graph        → volta_expr
+volta_expr         → (nothing)
+volta_common       → (nothing)
 ```
 
-`volta_analysis` (the producer) and `volta_equivalence` (the consumer) share
+`volta_ptx_analysis` (the producer) and `volta_equivalence` (the consumer) share
 only the expression language; neither depends on the other. Likewise the
 event graph (`volta_graph`) is the analysis's only contract with graph
 verification (`volta_graph_check`). The analysis runs no checker and no
@@ -67,7 +67,7 @@ dev-dependency `volta_spec` only), while every PTX-driven test is end-to-end in
 property's typed witness, and every kernel run expected to complete must
 conclude `Verified` (not merely unrejected) before its symbolic outputs are
 compared with the kernel's `.out` file
-(`VOLTA_BLESS=1` rewrites them). `volta_analysis` keeps only its inline unit
+(`VOLTA_BLESS=1` rewrites them). `volta_ptx_analysis` keeps only its inline unit
 tests of internals.
 
 ## Crate: volta_common
@@ -211,19 +211,19 @@ crate-level docs in `lib.rs` are the contract.
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
   (`volta analyze --dump-graph FILE`).
 
-## Crate: volta_analysis
+## Crate: volta_ptx_analysis
 
-**Path**: `crates/volta_analysis/`
+**Path**: `crates/volta_ptx_analysis/`
 
 Every module but `frontend` is private: `lib.rs` re-exports the whole API (`analyze`,
 `AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
 `AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
 `Stats`, `ThreadId`, `LowerError`), so rustc flags any code it does not
-reach. Other crates import from the root (`volta_analysis::AnalysisConfig`).
+reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
 
 ### Frontend (`frontend/`)
 
-The one public module (`volta_analysis::frontend::{parse, ast, ...}`): PTX
+The one public module (`volta_ptx_analysis::frontend::{parse, ast, ...}`): PTX
 text to a typed AST. It imports nothing else of the crate, nor `volta_expr`
 or `volta_graph` (`architecture_tests.rs` enforces it).
 
@@ -355,11 +355,11 @@ racing another thread's use of the object keeps its witness.
 
 ### Logging (`logging.rs`)
 
-Gated by the `logging` feature (`volta_analysis`, `volta_equivalence`,
+Gated by the `logging` feature (`volta_ptx_analysis`, `volta_equivalence`,
 `volta_graph_check` and `volta_pipeline`, all passed through by `volta_cli`);
 without it the macros are no-op stubs. Wired at the decision points:
 barrier/warp-group fires (trace), deadlock (warn), launch config and
-completion stats (info) in `volta_analysis`; VC session recycles (info) and
+completion stats (info) in `volta_ptx_analysis`; VC session recycles (info) and
 fraction-equality escalation (debug) in `volta_equivalence`; the stages at
 info, tagged `[analysis]`/`[graph]`/`[equivalence]`: graph extraction and
 the equivalence branch in `volta_pipeline`, each of the ten checks (start,

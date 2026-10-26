@@ -844,7 +844,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse optional `.align N`, rejecting zero, non-power-of-two and
-    /// over-`u32` values loudly here: `align_up` in `volta_analysis` relies
+    /// over-`u32` values loudly here: `align_up` in `volta_ptx_analysis` relies
     /// on it with only a debug assert.
     fn parse_align(&mut self) -> Result<Option<u32>, ParseError> {
         if self.try_directive(ascii("align"))? {

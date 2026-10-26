@@ -2,10 +2,10 @@
 
 use std::time::Instant;
 
-use volta_analysis::frontend::ast::Module;
-use volta_analysis::{AnalysisConfig, AnalysisError, AnalysisResult, analyze};
 use volta_graph::Terminal;
 use volta_graph_check::{GraphReport, check_graph};
+use volta_ptx_analysis::frontend::ast::Module;
+use volta_ptx_analysis::{AnalysisConfig, AnalysisError, AnalysisResult, analyze};
 
 use crate::logging::info;
 

@@ -6,13 +6,13 @@
 #[allow(unused_macros)]
 mod common;
 
-use volta_analysis::{AnalysisConfig, AnalysisResult, OutputsUnavailable};
 use volta_equivalence::EquivOutcome;
 use volta_equivalence::check::check_output_equivalence;
 use volta_graph::{
     AccessMode, AsyncOpKind, BlockedOn, CollectiveSide, ContributionKind, EventGraph, EventKind,
     ExecContext, Footprint, GenerationKind, Space, SyncObjectKind, Terminal, ThreadIx,
 };
+use volta_ptx_analysis::{AnalysisConfig, AnalysisResult, OutputsUnavailable};
 
 use common::*;
 

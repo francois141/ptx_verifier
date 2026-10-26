@@ -5,7 +5,7 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 use common::*;
 

@@ -1,7 +1,7 @@
 # volta_graph
 
 The typed event graph of **one candidate execution** of a kernel. The analysis
-(`volta_analysis`) records it while it interprets the kernel; the graph checks
+(`volta_ptx_analysis`) records it while it interprets the kernel; the graph checks
 (`volta_graph_check`) and the viewer (`volta_viz`) read it. Neither side
 depends on the other: this crate (plus `volta_expr`, for stored values) is
 their whole contract.
@@ -157,7 +157,7 @@ trace, so **every edge automatically points forward** (from a smaller
 `AsyncOp::effects/completion/tracking`, `SyncObject::init/inval`) but decides
 nothing about the execution. The interpreter decides; the builder writes down.
 
-The producer is `volta_analysis/src/eval/record.rs`: the interpreter calls
+The producer is `volta_ptx_analysis/src/eval/record.rs`: the interpreter calls
 `record_*` hooks at each effect and sync point, and those translate to builder
 calls:
 

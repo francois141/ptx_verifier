@@ -4,9 +4,9 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::AnalysisConfig;
 use volta_graph::{GenerationKind, ThreadIx};
 use volta_graph_check::mbarrier_release_order::ReleaseOrderViolation;
+use volta_ptx_analysis::AnalysisConfig;
 
 use common::*;
 

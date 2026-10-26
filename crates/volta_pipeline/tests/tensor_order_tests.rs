@@ -6,9 +6,9 @@
 #[allow(unused_macros)]
 mod common;
 
-use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_graph::{AccessMode, AsyncOpKind};
 use volta_graph_check::domain::{ConflictKind, TmemCell};
+use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 use common::*;
 

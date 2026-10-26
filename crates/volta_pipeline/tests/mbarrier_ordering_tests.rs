@@ -5,9 +5,9 @@
 #[macro_use]
 mod common;
 
-use volta_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 use volta_graph::{ArrivalOrdering, ContributionKind, EventGraph, EventId, EventKind, ThreadIx};
 use volta_graph_check::{GraphConclusion, Property, Verdict};
+use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 
 use common::*;
 
