@@ -1,6 +1,6 @@
 //! The viewer's run store and page on a hand-built graph: what a document records (lanes,
 //! typed edges, async ops, interned event text, the checks' conclusion) and what the page
-//! embeds. No producer involved; PTX-driven runs are recorded by `volta_bench`.
+//! embeds. No producer involved; PTX-driven runs are recorded by `volta_pipeline`'s tests.
 
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};

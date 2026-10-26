@@ -105,7 +105,7 @@ enum Commands {
     Verify(VerifyArgs),
 
     /// Build the event-graph viewer: one self-contained HTML page over a store of recorded runs
-    /// (`just viz` records every volta_bench test into one, then builds the page)
+    /// (`just viz` records every volta_pipeline test into one, then builds the page)
     Viz(VizArgs),
 }
 

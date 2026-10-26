@@ -14,3 +14,6 @@ volta_equivalence.workspace = true
 volta_expr.workspace = true
 volta_graph.workspace = true
 volta_graph_check.workspace = true
+
+[dev-dependencies]
+volta_viz.workspace = true

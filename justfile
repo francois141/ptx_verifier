@@ -9,16 +9,16 @@ test: test-rust test-python
 test-rust:
     cargo test --release --workspace -- --test-threads 16 --color always
 
-# volta_bench's PTX-driven tests (kernels through the analysis stage and graph branch)
+# volta_pipeline's tests (PTX kernels through the analysis stage and graph branch)
 all:
-    cargo test --release -p volta_bench -- --test-threads 16 --color always
+    cargo test --release -p volta_pipeline -- --test-threads 16 --color always
 
-# Record the event graph of every volta_bench test run and build the viewer page
+# Record the event graph of every volta_pipeline test run and build the viewer page
 # (one self-contained .html file). Test failures do not stop the page: a failing
 # test still shows the runs it recorded.
 viz out="target/volta-viz/volta-graphs.html":
     rm -rf target/volta-viz/runs
-    -VOLTA_VIZ_DIR="{{justfile_directory()}}/target/volta-viz/runs" cargo test --release --no-fail-fast -p volta_bench -- --test-threads 16
+    -VOLTA_VIZ_DIR="{{justfile_directory()}}/target/volta-viz/runs" cargo test --release --no-fail-fast -p volta_pipeline -- --test-threads 16
     cargo run --release -q -p volta_cli -- --no-log-file viz target/volta-viz/runs -o "{{out}}"
 
 # Python bindings tests (rebuilding the extension, so they never test a stale build)

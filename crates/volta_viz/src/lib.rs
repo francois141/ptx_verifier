@@ -4,8 +4,8 @@
 //! synchronization-object lane, the typed edges between them, the graph checks' findings
 //! resolved to events, and the PTX source behind each program point.
 //!
-//! `just viz` records every `volta_bench` run (`VOLTA_VIZ_DIR=<dir> cargo test -p
-//! volta_bench`) and builds the page (`volta viz <dir> -o <page>.html`).
+//! `just viz` records every `volta_pipeline` test run (`VOLTA_VIZ_DIR=<dir> cargo test -p
+//! volta_pipeline`) and builds the page (`volta viz <dir> -o <page>.html`).
 
 mod export;
 mod json;

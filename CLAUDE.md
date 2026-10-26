@@ -27,8 +27,7 @@ crates/
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
 ├── volta_analysis/   # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
-├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN
-├── volta_bench/      # End-to-end tests only (PTX kernels through the pipeline)
+├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN; every end-to-end PTX test
 ├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
 └── volta_cli/        # Command-line interface
 ```
@@ -39,9 +38,8 @@ Direct dependencies of each crate:
 
 ```
 volta_cli         → volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr, volta_common
-volta_bench       → (dev only) volta_pipeline, volta_equivalence, volta_analysis, volta_graph_check, volta_graph, volta_viz, volta_expr
 volta_viz         → volta_graph_check, volta_graph, volta_expr
-volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr
+volta_pipeline    → volta_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_viz)
 volta_equivalence → volta_expr
 volta_analysis    → volta_graph, volta_expr, volta_common
 volta_graph_check → volta_graph
@@ -61,7 +59,7 @@ split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
 over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
 one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
 dev-dependency `volta_spec` only), while every PTX-driven test is end-to-end in
-`volta_bench/tests/` (kernels under `tests/ptx/`): `common::check` runs
+`volta_pipeline/tests/` (kernels under `tests/ptx/`): `common::check` runs
 `volta_pipeline::verify_kernel`, race and deadlock tests assert on the failed
 property's typed witness, and every kernel run expected to complete must
 conclude `Verified` (not merely unrejected) before its symbolic outputs are
@@ -492,6 +490,47 @@ anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches) and
 `architecture_tests.rs` (the stage/branch boundaries).
 
+### End-to-end tests (`tests/`)
+
+Every PTX-driven test of the workspace. Besides the two above, each suite runs
+PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
+`common::run_kernel`):
+
+- `accepted_tests.rs` - race-free kernels: the graph check must conclude
+  `Verified`, then the rendered
+  symbolic outputs must match the kernel's `.out` file exactly
+  (`VOLTA_BLESS=1` rewrites them).
+- one suite per check whose witnesses PTX kernels exercise, each asserting on
+  that check's typed witness only: `mbarrier_epoch_tests.rs` (Algorithm 1 over
+  mbarrier phases: the unseparated synchronization and operation),
+  `mbarrier_ordering_tests.rs` (Algorithm 2: the announcement no arrival of its
+  phase is ordered after, as the `Unknown`'s events, and the accepted twin),
+  `memory_conflict_tests.rs` (Algorithm 3:
+  conflict kind, byte, each side's thread, access mode and async op),
+  `proxy_order_tests.rs` (Algorithm 4: the uncovered generic write and
+  tensor-map read, and the missing fence),
+  `tensor_order_tests.rs` (Algorithm 5: the Tensor Memory cell and sides),
+  `resource_lifetime_tests.rs` (Algorithm 7: the use freed while unordered, or
+  the allocation never freed), `allocation_order_tests.rs` (the unordered pair
+  of allocations, by thread), `allocation_permit_tests.rs` (the allocation not
+  ordered before a relinquish, and the relinquish, by thread),
+  `mbarrier_release_order_tests.rs` (the first release after phase 0: its
+  phase and thread).
+- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors) and
+  deadlocks (the trace generator's diagnostic, `GraphReport::deadlock`).
+- `graph_tests.rs` - the event graph the analysis stage records, no checker.
+- `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
+  detail, each `Verified`, must not be proved equivalent.
+- `false_positive_tests.rs` - kernels Volta still verifies although they race or
+  are undefined (`tests/ptx/false_positive/`); each fails until Volta stops
+  concluding `Verified` on it.
+
+Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
+`check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +
+test file name). With `VOLTA_VIZ_DIR` set, each of them records the run into
+that `volta_viz` store, keyed `<suite>/<test>[~<n>]` (libtest names each test's
+thread after it; `n` counts the test's runs).
+
 ## Crate: volta_equivalence
 
 **Path**: `crates/volta_equivalence/`
@@ -576,49 +615,6 @@ The paper's canonicalizer, in Rust:
   `verify_verdict` confirms EQUIV/DIFF claims (`volta compare
   --verify-numeric`). Agreement at random points ⇒ equality almost surely
   for this fragment (the paper's own Schwartz-Zippel argument).
-
-## Crate: volta_bench
-
-**Path**: `crates/volta_bench/`
-
-Only end-to-end tests: no library, no binary, dev-dependencies only. Each suite
-in `tests/` runs PTX kernels from `tests/ptx/` through
-`volta_pipeline::verify_kernel` (`common::check` / `common::run_kernel`):
-
-- `accepted_tests.rs` - race-free kernels: the graph check must conclude
-  `Verified`, then the rendered
-  symbolic outputs must match the kernel's `.out` file exactly
-  (`VOLTA_BLESS=1` rewrites them).
-- one suite per check whose witnesses PTX kernels exercise, each asserting on
-  that check's typed witness only: `mbarrier_epoch_tests.rs` (Algorithm 1 over
-  mbarrier phases: the unseparated synchronization and operation),
-  `mbarrier_ordering_tests.rs` (Algorithm 2: the announcement no arrival of its
-  phase is ordered after, as the `Unknown`'s events, and the accepted twin),
-  `memory_conflict_tests.rs` (Algorithm 3:
-  conflict kind, byte, each side's thread, access mode and async op),
-  `proxy_order_tests.rs` (Algorithm 4: the uncovered generic write and
-  tensor-map read, and the missing fence),
-  `tensor_order_tests.rs` (Algorithm 5: the Tensor Memory cell and sides),
-  `resource_lifetime_tests.rs` (Algorithm 7: the use freed while unordered, or
-  the allocation never freed), `allocation_order_tests.rs` (the unordered pair
-  of allocations, by thread), `allocation_permit_tests.rs` (the allocation not
-  ordered before a relinquish, and the relinquish, by thread),
-  `mbarrier_release_order_tests.rs` (the first release after phase 0: its
-  phase and thread).
-- `rejected_tests.rs` - execution errors (`EvalError`, lowering errors) and
-  deadlocks (the trace generator's diagnostic, `GraphReport::deadlock`).
-- `graph_tests.rs` - the event graph the analysis stage records, no checker.
-- `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
-  detail, each `Verified`, must not be proved equivalent.
-- `false_positive_tests.rs` - kernels Volta still verifies although they race or
-  are undefined (`tests/ptx/false_positive/`); each fails until Volta stops
-  concluding `Verified` on it.
-
-Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
-`check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +
-test file name). With `VOLTA_VIZ_DIR` set, each of them records the run into
-that `volta_viz` store, keyed `<suite>/<test>[~<n>]` (libtest names each test's
-thread after it; `n` counts the test's runs).
 
 ## Crate: volta_viz
 
@@ -755,6 +751,6 @@ Global, shared, local, param memories are separate `Memory` instances, matching 
 ```sh
 just check # run linters
 just test  # run tests
-just viz   # record every volta_bench run, write target/volta-viz/volta-graphs.html
+just viz   # record every volta_pipeline test run, write target/volta-viz/volta-graphs.html
 just loc   # count the lines of code, per crate and per language
 ```

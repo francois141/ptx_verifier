@@ -1625,7 +1625,7 @@
             { class: "error-card" },
             h("span", { class: "error-icon" }, icon("alert")),
             h("h2", { text: "No runs were recorded" }),
-            h("p", { text: "Run `just viz` to record every volta_bench test and rebuild this page." }),
+            h("p", { text: "Run `just viz` to record every volta_pipeline test and rebuild this page." }),
           ),
         ),
       );

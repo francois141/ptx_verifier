@@ -647,19 +647,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "volta_bench"
-version = "0.1.0"
-dependencies = [
- "volta_analysis",
- "volta_equivalence",
- "volta_expr",
- "volta_graph",
- "volta_graph_check",
- "volta_pipeline",
- "volta_viz",
-]
-
-[[package]]
 name = "volta_cli"
 version = "0.1.0"
 dependencies = [
@@ -737,6 +724,7 @@ dependencies = [
  "volta_expr",
  "volta_graph",
  "volta_graph_check",
+ "volta_viz",
 ]
 
 [[package]]
