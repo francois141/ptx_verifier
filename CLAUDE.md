@@ -16,6 +16,7 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
   - Never narrate what the code does.
   - Only document non-obvious invariants, assumptions, or design decisions.
   - Do not split long comments into multiple blocks to bypass this limit.
+- READMEs: every crate has a `README.md` explaining it. A change to a crate's API, behavior, structure or tests updates that crate's README in the same commit, along with the crate's section of this file.
 
 ## Crate Structure
 
