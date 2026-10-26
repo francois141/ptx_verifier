@@ -1,5 +1,5 @@
-//! Regression tests for invalid PTX directives, mbarrier arrival counts and operands, and ret,
-//! exit, brkpt, and trap syntax.
+//! Regression tests for invalid PTX directives, ldmatrix modifiers and operands, mbarrier
+//! arrival counts and operands, and ret, exit, brkpt, and trap syntax.
 
 #[macro_use]
 mod common;
@@ -133,6 +133,24 @@ fn unknown_directives_must_be_rejected() {
         .expect("the diagnostic must locate the directive");
     assert_eq!(span.0, source.find(directive).unwrap());
     assert!(source[span.0..span.1].starts_with(directive));
+}
+
+#[test]
+fn ldmatrix_must_require_its_mandatory_modifiers() {
+    assert_rejected_during_validation(
+        "soundness/ldmatrix_missing_modifiers",
+        &ptx!("soundness/ldmatrix_missing_modifiers"),
+        AnalysisConfig::new((32, 1, 1)),
+    );
+}
+
+#[test]
+fn ldmatrix_must_reject_a_trailing_operand() {
+    assert_rejected_during_validation(
+        "soundness/ldmatrix_extra_operand",
+        &ptx!("soundness/ldmatrix_extra_operand"),
+        AnalysisConfig::new((32, 1, 1)),
+    );
 }
 
 #[test]

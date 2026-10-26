@@ -205,16 +205,26 @@ pub(super) fn lower_ldmatrix(
         }
     }
 
+    // `.trans` and `.shared` are optional, and `.num` is checked below.
+    for mandatory in ["sync", "aligned", "m8n8", "b16"] {
+        if !modifiers.iter().any(|m| m.to_string() == mandatory) {
+            return Err(LowerError::InvalidInstruction {
+                instruction: "ldmatrix".to_string(),
+                reason: format!("missing the mandatory .{mandatory} modifier"),
+            });
+        }
+    }
+
     let num = num.ok_or_else(|| LowerError::UnsupportedInstruction {
         instruction: "ldmatrix".to_string(),
         reason: Some("missing x1/x2/x4 modifier".to_string()),
     })?;
 
-    if operands.len() < 2 {
+    if operands.len() != 2 {
         return Err(LowerError::InvalidOperand {
             instruction: "ldmatrix".to_string(),
             operand: format!("{:?}", operands),
-            reason: "expected destination vector and address operands",
+            reason: "expected exactly a destination vector and an address operand",
         });
     }
 
