@@ -6,8 +6,6 @@ pub mod outputs;
 pub mod spec;
 pub mod symbolic;
 pub mod text;
-pub mod value_equality;
 
 pub use outputs::SymbolicOutputs;
 pub use symbolic::*;
-pub use value_equality::ValueEquality;

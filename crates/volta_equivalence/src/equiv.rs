@@ -5,7 +5,7 @@
 use crate::canon::{CanonError, Session};
 use crate::logging::info;
 
-use volta_expr::{ExprArena, ExprId, ValueEquality};
+use volta_expr::{ExprArena, ExprId};
 
 /// Errors from equivalence checking.
 #[derive(Debug)]
@@ -93,16 +93,6 @@ pub fn check_equivalent(
     e2: ExprId,
 ) -> EquivResult<bool> {
     EquivSession::new(arena1, arena2).check(e1, e2)
-}
-
-/// The [`ValueEquality`] query, decided by canon.
-/// A canon error (e.g. an undefined operand) counts as "not the same".
-pub struct CanonValueEquality;
-
-impl ValueEquality for CanonValueEquality {
-    fn same_value(&self, arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
-        check_equivalent(arena, a, arena, b).unwrap_or(false)
-    }
 }
 
 #[cfg(test)]

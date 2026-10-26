@@ -162,13 +162,6 @@ Mathematical specs: an output array as a formula over other arrays
 against a spec exactly like against a second kernel (`volta verify`). The
 `volta_spec` crate parses the textual `.spec` language into these types.
 
-### Value equality (`value_equality.rs`)
-
-`ValueEquality`: a same-value query over one arena;
-`volta_equivalence::CanonValueEquality` implements it. The graph branch no
-longer consumes it: the memory-conflict check (Algorithm 3) has no benign
-equal-store exception.
-
 ### Text format (`text.rs`, `.vexpr`)
 
 A producer-neutral exchange format: `write_text`/`to_text` and
@@ -506,8 +499,6 @@ anything else is UNKNOWN. Tests:
 Everything after VC extraction: takes two `SymbolicOutputs` and decides them
 element by element. Depends only on `volta_expr`, so it checks expressions
 from any producer - in memory, from a `.vcdump`, or from `.vexpr` text.
-`equiv::CanonValueEquality` implements the interpreter's `ValueEquality`
-hook.
 
 ### Output checking (`check.rs`)
 

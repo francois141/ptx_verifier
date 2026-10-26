@@ -14,5 +14,5 @@ pub use check::{
     EquivCheckError, EquivCheckOptions, EquivCheckReport, EquivOutcome, check_output_equivalence,
     check_output_equivalence_with,
 };
-pub use equiv::{CanonValueEquality, EquivSession};
+pub use equiv::EquivSession;
 pub use vc_dump::VcDump;
