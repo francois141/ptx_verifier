@@ -1,0 +1,9 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+.visible .entry k()
+{
+    bar 0;
+    ret;
+}

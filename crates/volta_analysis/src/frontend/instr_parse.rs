@@ -3203,22 +3203,27 @@ fn parse_ret(mp: &mut ModifierParser) -> Result<ParsedInstruction, InstrParseErr
 // Synchronization Parsers
 // =============================================================================
 
+/// The operation of `bar{.cta}` / `barrier{.cta}`. Only `.cta` and `.aligned` are optional in
+/// the ISA: a bare `bar 0` or `barrier 0` is invalid PTX, not an implicit `.sync`.
+fn parse_bar_mode(mp: &mut ModifierParser) -> Result<BarMode, InstrParseError> {
+    if mp.try_consume(ascii("sync")) {
+        Ok(BarMode::Sync)
+    } else if mp.try_consume(ascii("arrive")) {
+        Ok(BarMode::Arrive)
+    } else if mp.try_consume(ascii("red")) {
+        Ok(BarMode::Red)
+    } else {
+        Err(InstrParseError::MissingModifier(ascii("sync")))
+    }
+}
+
 /// Parse bar instruction (Block 132)
 fn parse_bar(
     mp: &mut ModifierParser,
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
     let _ = mp.try_consume(ascii("cta")); // bar{.cta} - cta is optional
-
-    let mode = if mp.try_consume(ascii("sync")) {
-        BarMode::Sync
-    } else if mp.try_consume(ascii("arrive")) {
-        BarMode::Arrive
-    } else if mp.try_consume(ascii("red")) {
-        BarMode::Red
-    } else {
-        BarMode::Sync
-    };
+    let mode = parse_bar_mode(mp)?;
 
     mp.finish()?;
     Ok(ParsedInstruction::Bar(BarInstr { mode, operands }))
@@ -3230,16 +3235,7 @@ fn parse_barrier(
     operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
     let cta = mp.try_consume(ascii("cta"));
-
-    let mode = if mp.try_consume(ascii("sync")) {
-        BarMode::Sync
-    } else if mp.try_consume(ascii("arrive")) {
-        BarMode::Arrive
-    } else if mp.try_consume(ascii("red")) {
-        BarMode::Red
-    } else {
-        BarMode::Sync
-    };
+    let mode = parse_bar_mode(mp)?;
 
     let aligned = mp.try_consume(ascii("aligned"));
 

@@ -299,6 +299,37 @@ fn test_tcgen05_rejects_missing_sync_aligned() {
     }
 }
 
+/// `bar` and `barrier` have no default operation (PTX ISA: only `.cta` and `.aligned` are
+/// optional), so a bare `bar 0` or `barrier 0` is invalid PTX, not an implicit `.sync`.
+#[test]
+fn test_bar_and_barrier_reject_a_missing_operation() {
+    for (expect, (form, src)) in [
+        (
+            "Bar",
+            ptx_case!("failing/bar_and_barrier_reject_a_missing_operation_bar"),
+        ),
+        (
+            "Barrier",
+            ptx_case!("failing/bar_and_barrier_reject_a_missing_operation_barrier"),
+        ),
+    ] {
+        let err = run_kernel(&parse(&src), None, AnalysisConfig::new((1, 1, 1))).unwrap_err();
+        match &err {
+            AnalysisError::Lower(LowerError::UnsupportedInstruction {
+                instruction,
+                reason,
+            }) => {
+                assert_eq!(instruction, expect, "wrong instruction name for {form}");
+                assert!(
+                    reason.as_deref().is_some_and(|r| r.contains("MissingModifier")),
+                    "expected a missing operation modifier for {form}, got: {reason:?}"
+                );
+            }
+            other => panic!("expected {form} rejected for its missing operation, got: {other}"),
+        }
+    }
+}
+
 /// `nCols` below the 32-column allocation unit is invalid even when it is
 /// a power of 2, and the column count must not increase between two
 /// allocations (PTX ISA 9.7.18.7.1).
