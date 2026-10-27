@@ -201,23 +201,34 @@ impl<'p> Interpreter<'p> {
                 BarrierArrivals::Count(count) => count,
             };
 
-            let arrived = &self.barriers[id].threads;
-            let total = arrived.len() + waiting.len();
+            let mut participants = self.barriers[id].threads.clone();
+            participants.extend_from_slice(waiting);
+            let (total, lanes) = self.warp_arrivals(&participants);
             if total < count as usize {
                 continue;
             }
+            let pc = participants[0].pc;
             if total > count as usize {
                 return Err(EvalError::BarrierMismatch {
-                    pc: waiting.first().unwrap_or(&arrived[0]).pc,
+                    pc,
                     reason: format!(
-                        "{} threads arrived at barrier {}, which fires on {} - which \
-                         threads it releases would depend on the schedule",
+                        "{} threads arrived at barrier {} (whole warps), which fires on {} - \
+                         which threads it releases would depend on the schedule",
                         total, id, count
                     ),
                 });
             }
-            let mut participants = arrived.clone();
-            participants.extend_from_slice(waiting);
+            if lanes == LaneArrivals::Partial {
+                return Err(EvalError::BarrierMismatch {
+                    pc,
+                    reason: format!(
+                        "whole warps arrived at barrier {} for its {} while some live lanes of \
+                         another warp have not - whether that warp joins this phase would \
+                         depend on the schedule",
+                        id, count
+                    ),
+                });
+            }
             if !warps_converge(&participants) {
                 continue;
             }
@@ -229,6 +240,38 @@ impl<'p> Interpreter<'p> {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// The threads the warps among `participants` count for at a counted barrier, which marks a
+    /// warp's arrival once all its non-exited threads arrive and counts it as the warp size
+    /// (PTX ISA 9.7.13.1), and whether some warp's lanes arrived only in part.
+    fn warp_arrivals(&self, participants: &[ArrivedThread]) -> (usize, LaneArrivals) {
+        let mut per_warp: HashMap<u32, HashMap<u32, usize>> = HashMap::new();
+        for p in participants {
+            *per_warp
+                .entry(p.thread.0 / WARP_SIZE)
+                .or_default()
+                .entry(p.thread.0)
+                .or_default() += 1;
+        }
+        let mut rounds = 0;
+        let mut lanes = LaneArrivals::Whole;
+        for (warp, arrivals) in &per_warp {
+            let base = warp * WARP_SIZE;
+            let counts: Vec<usize> = (base..(base + WARP_SIZE).min(self.n_threads))
+                .filter_map(|t| match arrivals.get(&t) {
+                    Some(&n) => Some(n),
+                    None if self.threads[ThreadId(t)].status == Status::Exited => None,
+                    None => Some(0),
+                })
+                .collect();
+            let whole = counts.iter().copied().min().unwrap_or(0);
+            if counts.iter().sum::<usize>() != whole * counts.len() {
+                lanes = LaneArrivals::Partial;
+            }
+            rounds += whole;
+        }
+        (rounds * WARP_SIZE as usize, lanes)
     }
 
     /// Resolve a named-barrier instruction's operands: the barrier id and
@@ -325,6 +368,13 @@ impl<'p> Interpreter<'p> {
 /// Whether each warp's arrivals at one barrier generation sit at one instruction wherever any is
 /// `.aligned`: a warp executes an aligned barrier as one collective, so its lanes at two aligned
 /// barrier instructions arrive at two barriers.
+/// Whether every warp at a counted barrier has all its live lanes there as often as each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneArrivals {
+    Whole,
+    Partial,
+}
+
 fn warps_converge(arrivals: &[ArrivedThread]) -> bool {
     let mut warps: HashMap<u32, Vec<&ArrivedThread>> = HashMap::new();
     for arrival in arrivals {

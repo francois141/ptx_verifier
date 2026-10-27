@@ -1,0 +1,30 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Lanes 1-31 exit at once; lane 0 alone then arrives at `bar.arrive 1, 32` three times. The
+// barrier counts the warp as 32 threads (PTX ISA 9.7.13.1), so each arrival completes its own
+// generation, and lane 0 computes out[0] = (in[0] + in[1]) * in[2] - in[0] between them.
+.visible .entry k(.param .u64 k_param_0, .param .u64 k_param_1)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<2>;
+    .reg .f32 %f<8>;
+    .reg .b64 %rd<3>;
+    mov.u32 %r0, %laneid;
+    setp.ne.u32 %p1, %r0, 0;
+    @%p1 ret;
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %f1, [%rd1];
+    ld.global.f32 %f2, [%rd1+4];
+    bar.arrive 1, 32;
+    ld.global.f32 %f3, [%rd1+8];
+    add.f32 %f4, %f1, %f2;
+    bar.arrive 1, 32;
+    mul.f32 %f5, %f4, %f3;
+    sub.f32 %f6, %f5, %f1;
+    bar.arrive 1, 32;
+    st.global.f32 [%rd2], %f6;
+    ret;
+}

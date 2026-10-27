@@ -174,6 +174,31 @@ fn test_bar_arrive_twice_before_the_barrier_fires() {
     );
 }
 
+/// The 16 live lanes of each of two warps arrive at `barrier.cta.sync 1, 32`: each warp counts as
+/// 32 threads (PTX ISA 9.7.13.1), so either completes the barrier alone, in an order the schedule
+/// decides, and thread 0's store is unordered with thread 32's load.
+#[test]
+fn test_half_warps_count_as_whole_warps_at_a_counted_barrier() {
+    let module = ptx!(parse "failing/half_warps_count_as_whole_warps_at_a_counted_barrier");
+    let mut config = AnalysisConfig::new((64, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    match run_kernel(&module, None, config) {
+        Err(AnalysisError::Eval(EvalError::BarrierMismatch { reason, .. })) => assert!(
+            reason.contains("64 threads arrived at barrier 1 (whole warps), which fires on 32"),
+            "{reason}"
+        ),
+        Err(other) => panic!("expected a barrier mismatch, got: {other}"),
+        Ok(_) => panic!("expected a barrier mismatch, got Ok"),
+    }
+}
+
 /// Assert running `module` on 64 threads aborts with a barrier mismatch whose reason contains
 /// `needle`, and that the graph branch concludes it inconclusive.
 fn expect_inconclusive_barrier_mismatch(module: &Ptx, needle: &str) {

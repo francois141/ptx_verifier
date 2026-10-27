@@ -122,6 +122,17 @@ fn test_bar_arrive_twice_with_a_handshake_between_generations() {
     );
 }
 
+/// Accepted: lane 0, the only lane of its warp that has not exited, arrives at
+/// `bar.arrive 1, 32` three times. A warp counts as 32 threads at a counted barrier, so each
+/// arrival completes its own generation, and the arithmetic between them is unaffected.
+#[test]
+fn test_lone_lane_bar_arrives_complete_whole_warp_generations() {
+    analyze!(
+        "success/lone_lane_bar_arrives_complete_whole_warp_generations",
+        in_out_config(32, 3)
+    );
+}
+
 /// The control for `failing/bar_sync_register_id_count_mismatch`: a register id naming the
 /// same count as the immediate one is accepted, and the barrier orders the exchange.
 #[test]

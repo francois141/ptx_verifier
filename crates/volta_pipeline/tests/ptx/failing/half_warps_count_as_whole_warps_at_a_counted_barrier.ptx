@@ -1,0 +1,28 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Lanes 16-31 of both warps exit at once; the 16 live lanes of each warp then arrive at
+// `barrier.cta.sync 1, 32`. The barrier counts whole warps (PTX ISA 9.7.13.1), so each warp
+// completes it alone and thread 0's store is unordered with thread 32's load: counting the 32
+// live threads instead would fire one generation joining both warps and hide the race.
+.visible .entry k(.param .u64 k_param_0)
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<3>;
+    .shared .align 4 .b32 buf;
+    mov.u32 %r0, %tid.x;
+    mov.u32 %r1, %laneid;
+    setp.ge.u32 %p1, %r1, 16;
+    @%p1 ret;
+    setp.eq.u32 %p2, %r0, 0;
+    setp.eq.u32 %p3, %r0, 32;
+    mov.u32 %r2, buf;
+    @%p2 st.shared.u32 [%r2], 42;
+    barrier.cta.sync 1, 32;
+    @%p3 ld.shared.u32 %r3, [%r2];
+    ld.param.u64 %rd1, [k_param_0];
+    @%p3 st.global.u32 [%rd1], %r3;
+    ret;
+}
