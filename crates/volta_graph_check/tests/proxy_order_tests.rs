@@ -175,6 +175,44 @@ fn an_async_write_read_generically_is_covered_by_its_observed_completion() {
     assert_eq!(check(&g).verdict(), Verdict::Pass);
 }
 
+/// t0's async op of `kind` writes 0x40 through the async proxy, tracked by an mbarrier phase t1
+/// waits on before reading 0x40 generically, with an optional fence by t1 after the wait.
+fn observed_async_write_then_generic_read(kind: AsyncOpKind, fenced: bool) -> EventGraph {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.arrive(0, p0);
+    let op = s.async_op(0, kind, AccessMode::Write, 0x40, Proxy::Async);
+    s.b.track(op, p0, 4);
+    s.complete(p0);
+    s.wait(1, m, Parity::Even, p0);
+    if fenced {
+        s.proxy_fence(1, Some(Space::Shared));
+    }
+    s.read(1, 0x40);
+    s.completed(2).0
+}
+
+#[test]
+fn only_a_bulk_copys_completion_fences_its_async_writes() {
+    let unfenced = check(&observed_async_write_then_generic_read(
+        AsyncOpKind::Tcgen05St,
+        false,
+    ));
+    let [v] = unfenced.violations() else {
+        panic!("{unfenced:?}");
+    };
+    assert_eq!(v.kind, ConflictKind::WriteRead);
+    assert_eq!(v.missing, MissingFence::ProxyAsync);
+    for (kind, fenced) in [
+        (AsyncOpKind::Tcgen05St, true),
+        (AsyncOpKind::BulkCopy, false),
+    ] {
+        let graph = observed_async_write_then_generic_read(kind, fenced);
+        assert_eq!(check(&graph).verdict(), Verdict::Pass, "{kind:?}");
+    }
+}
+
 #[test]
 fn same_proxy_pairs_need_no_fence() {
     let mut s = Scenario::new(1);

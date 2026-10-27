@@ -20,14 +20,18 @@
 //! * `ISPROXYFENCE`: an explicit `fence.proxy.async` (over one space, or every space), a
 //!   tensor-map release (`fence.proxy.tensormap::generic.release`, or the one
 //!   `tensormap.cp_fenceproxy` ends with) or acquire (`...acquire [map], 128`), and,
-//!   implicitly, a validated completion observation: a release of a generation that joins an
-//!   async operation's completion, for that operation's effects.
+//!   implicitly, a validated completion observation: a release of a generation that joins the
+//!   completion of a bulk copy, a TMA copy or a CLC response (PTX ISA 9.7.9.25.2), for that
+//!   operation's effects. Other async operations' completions imply no proxy fence.
 //! * `COVERS(f, a, b)`: an explicit `fence.proxy.async` covers either direction between the
 //!   generic and the async proxy in its space, when the thread of `a` or of `b` executes it; a
 //!   completion observation covers its operation's effects before later generic accesses.
 //!   Every `R` path out of an async effect passes through such an observation, so an ordered
-//!   async-effect -> generic pair is always covered; the search below runs for the generic ->
-//!   async-proxy and generic -> tensor-map-proxy pairs, where only explicit fences can cover.
+//!   async-effect -> generic pair of an implicitly fenced operation is always covered. The
+//!   search below runs for an async write of another operation before a generic access, and
+//!   for the generic -> async-proxy and generic -> tensor-map-proxy pairs, where only explicit
+//!   fences can cover. An async read before a generic write needs no fence once the read is
+//!   ordered before the write, so a `tcgen05.mma`'s operand reads never need one.
 //! * The tensor-map proxy fences are one-directional and come in pairs (PTX ISA 9.7.14.4):
 //!   a generic write `a` before a `cp.async.bulk.tensor`'s read `b` of its tensor map is
 //!   covered by a release on `a`'s thread that `a` reaches, ordered before an acquire of `b`'s
@@ -46,8 +50,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use volta_graph::{
-    AccessMode, AsyncOpId, EventGraph, EventId, EventKind, ExecContext, FenceKind, Proxy, Space,
-    ThreadIx,
+    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext, FenceKind,
+    Proxy, Space, ThreadIx,
 };
 
 use crate::domain::{ByteLocation, ConflictKind, bytes, in_m, written_bytes};
@@ -61,9 +65,9 @@ pub struct ProxyEvidence {
     pub covered_pairs: u64,
 }
 
-/// UNPROVEDPROXYORDER(a, b): the generic-proxy effect `generic` and the later effect
-/// `asynchronous` of an async op, through the async or the tensor-map proxy, conflict at
-/// `location`, and no proxy fence covers the pair.
+/// UNPROVEDPROXYORDER(a, b): the generic-proxy effect `generic` and the effect `asynchronous` of
+/// an async op, through the async or the tensor-map proxy, conflict at `location`, and no proxy
+/// fence covers the pair. `kind` orders the two sides by trace order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProxyOrderViolation {
     pub kind: ConflictKind,
@@ -101,6 +105,22 @@ struct Latest {
     write: Option<EventId>,
 }
 
+impl Latest {
+    /// The latest effect conflicting with a later access in `mode`, and its own mode.
+    fn conflicting(&self, mode: AccessMode) -> Option<(EventId, AccessMode)> {
+        let a = match mode {
+            AccessMode::Read => self.write,
+            AccessMode::Write => self.read.max(self.write),
+        }?;
+        let earlier = if self.write == Some(a) {
+            AccessMode::Write
+        } else {
+            AccessMode::Read
+        };
+        Some((a, earlier))
+    }
+}
+
 /// One explicit proxy fence's program-order index and the clock it was visited with.
 #[derive(Debug, Clone)]
 struct Fence {
@@ -126,6 +146,7 @@ pub fn check_proxy_order(
     let mut releases: HashMap<ThreadIx, Vec<Fence>> = HashMap::new();
     let mut acquires: HashMap<ThreadIx, Vec<(u64, Fence)>> = HashMap::new();
     let mut generic: HashMap<ByteLocation, BTreeMap<Actor, Latest>> = HashMap::new();
+    let mut unfenced: HashMap<ByteLocation, BTreeMap<AsyncOpId, EventId>> = HashMap::new();
     let mut checked: HashSet<(EventId, EventId)> = HashSet::new();
     let mut covered_pairs = 0;
     let mut unproved: Option<ProxyOrderViolation> = None;
@@ -165,6 +186,25 @@ pub fn check_proxy_order(
                     _ => Actor::Thread(access.attributed),
                 };
                 for location in bytes(access).filter(|l| written.contains(l)) {
+                    for &a in unfenced.get(&location).into_iter().flat_map(|w| w.values()) {
+                        if !checked.insert((a, e)) {
+                            continue;
+                        }
+                        let threads = [graph.acting_thread(a), graph.acting_thread(e)];
+                        if fence_covers(graph, &points, &fences, view, a, threads, location.space) {
+                            covered_pairs += 1;
+                        } else {
+                            unproved = Some(ProxyOrderViolation {
+                                kind: ConflictKind::of(AccessMode::Write, access.mode)
+                                    .expect("the async side writes"),
+                                location,
+                                generic: e,
+                                asynchronous: a,
+                                missing: MissingFence::ProxyAsync,
+                            });
+                            return;
+                        }
+                    }
                     let latest = generic
                         .entry(location)
                         .or_default()
@@ -177,32 +217,27 @@ pub fn check_proxy_order(
                 }
             }
             Proxy::Async => {
+                if let ExecContext::Async(op) = ev.ctx
+                    && access.mode == AccessMode::Write
+                    && !completion_implies_proxy_fence(graph.async_op(op).kind)
+                {
+                    for location in bytes(access) {
+                        unfenced.entry(location).or_default().insert(op, e);
+                    }
+                }
                 for location in bytes(access) {
                     let Some(actors) = generic.get(&location) else {
                         continue;
                     };
                     for latest in actors.values() {
-                        let a = match access.mode {
-                            AccessMode::Read => latest.write,
-                            AccessMode::Write => latest.read.max(latest.write),
-                        };
-                        let Some(a) = a else {
+                        let Some((a, earlier)) = latest.conflicting(access.mode) else {
                             continue;
-                        };
-                        let earlier = if latest.write == Some(a) {
-                            AccessMode::Write
-                        } else {
-                            AccessMode::Read
                         };
                         if !checked.insert((a, e)) {
                             continue;
                         }
-                        let candidates = [graph.acting_thread(a), Some(access.attributed)];
-                        let covered = candidates.into_iter().flatten().any(|t| {
-                            latest_fence(&fences, t, location.space, view.clock()[t.0 as usize])
-                                .is_some_and(|f| reaches_fence(graph, &points, view, a, f))
-                        });
-                        if covered {
+                        let threads = [graph.acting_thread(a), Some(access.attributed)];
+                        if fence_covers(graph, &points, &fences, view, a, threads, location.space) {
                             covered_pairs += 1;
                         } else {
                             unproved = Some(ProxyOrderViolation {
@@ -280,6 +315,19 @@ pub fn check_proxy_order(
     }
 }
 
+/// Whether observing the operation's completion orders its async-proxy writes before later
+/// generic accesses: the PTX ISA (9.7.9.25.2) states the implicit fence for bulk async copies.
+fn completion_implies_proxy_fence(kind: AsyncOpKind) -> bool {
+    match kind {
+        AsyncOpKind::BulkCopy | AsyncOpKind::TensorCopy | AsyncOpKind::ClcResponse => true,
+        AsyncOpKind::CpAsync
+        | AsyncOpKind::Tcgen05Mma
+        | AsyncOpKind::Tcgen05Ld
+        | AsyncOpKind::Tcgen05St
+        | AsyncOpKind::WgmmaMma { .. } => false,
+    }
+}
+
 /// The latest fence of `thread` over `space` with `(f, b) ∈ R`, i.e. within `known` of the
 /// thread's events.
 fn latest_fence(
@@ -295,6 +343,23 @@ fn latest_fence(
         .filter(|(_, f)| f.index <= known)
         .find(|(s, _)| s.is_none_or(|s| s == space))
         .map(|(_, f)| f)
+}
+
+/// Some `fence.proxy.async` over `space` on one of `threads` lies between `a` and the effect
+/// being visited: `(a, f) ∈ R` and `(f, b) ∈ R`.
+fn fence_covers(
+    graph: &EventGraph,
+    points: &[Option<ThreadPoint>],
+    fences: &HashMap<ThreadIx, Vec<(Option<Space>, Fence)>>,
+    view: &crate::relation::HbView,
+    a: EventId,
+    threads: [Option<ThreadIx>; 2],
+    space: Space,
+) -> bool {
+    threads.into_iter().flatten().any(|t| {
+        latest_fence(fences, t, space, view.clock()[t.0 as usize])
+            .is_some_and(|f| reaches_fence(graph, points, view, a, f))
+    })
 }
 
 /// `(a, f) ∈ R`: `a`'s thread event, or one observer of its operation, is within `f`'s clock.
