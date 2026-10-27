@@ -2221,9 +2221,9 @@ impl<'p> Interpreter<'p> {
             // A launch without cluster dimensions runs in implicit 1x1x1 clusters.
             SpecialRegKind::IsExplicitCluster => return Ok(self.arena.bool_val(false)),
             SpecialRegKind::LaneId => (t.0 % WARP_SIZE) as i64,
-            SpecialRegKind::WarpId => (t.0 / WARP_SIZE) as i64,
-            SpecialRegKind::NWarpId => self.n_threads.div_ceil(WARP_SIZE) as i64,
             SpecialRegKind::DynamicSmemSize => self.config.dynamic_shared_bytes as i64,
+            // `%warpid` and `%smid` name the current hardware location, which may change during
+            // execution (PTX ISA 10.4): two warps can read the same `%warpid`, so no value is sound.
             other => {
                 return Err(EvalError::Unsupported {
                     pc,
