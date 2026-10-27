@@ -14,6 +14,7 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
   - Maximum 3 lines of comments per code block.
   - Prefer zero comments when the code is self-explanatory.
   - Never narrate what the code does.
+  - Describe lasting roles and invariants, not temporary development status such as "scaffold", "empty", or "not implemented yet".
   - Only document non-obvious invariants, assumptions, or design decisions.
   - Do not split long comments into multiple blocks to bypass this limit.
 - READMEs: every crate has a `README.md` explaining it. A change to a crate's API, behavior, structure or tests updates that crate's README in the same commit, along with the crate's section of this file.
@@ -28,6 +29,7 @@ crates/
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
 ├── volta_ptx_analysis/ # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
+├── volta_amd_analysis/ # AMD assembly frontend and abstract interpreter
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN; every end-to-end PTX test
 ├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
@@ -365,6 +367,14 @@ info, tagged `[analysis]`/`[graph]`/`[equivalence]`: graph extraction and
 the equivalence branch in `volta_pipeline`, each of the ten checks (start,
 verdict, duration) in `check_graph`. `cargo run -p volta_cli
 --features logging -- --log-level info analyze ...` narrates a run.
+
+## Crate: volta_amd_analysis
+
+**Path**: `crates/volta_amd_analysis/`
+
+AMD assembly analysis, parallel to `volta_ptx_analysis`: parsing (`frontend`),
+lowering (`lower`, `ir`), and symbolic execution (`eval`). The frontend is public;
+the other stages are private. See its README for the module layout.
 
 ## Crate: volta_graph_check
 
