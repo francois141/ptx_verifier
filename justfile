@@ -7,7 +7,7 @@ test: test-rust test-python
 
 # Rust unit + integration tests
 test-rust:
-    cargo test --release --workspace -- --test-threads 16 --color always
+    cargo test --release --workspace --no-fail-fast -- --test-threads 16 --color always
 
 # volta_pipeline's tests (PTX kernels through the analysis stage and graph branch)
 all:
