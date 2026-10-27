@@ -47,6 +47,7 @@ volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check,
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
+volta_amd_analysis → (nothing)
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -374,7 +375,12 @@ verdict, duration) in `check_graph`. `cargo run -p volta_cli
 
 AMD assembly analysis, parallel to `volta_ptx_analysis`: parsing (`frontend`),
 lowering (`lower`, `ir`), and symbolic execution (`eval`). The frontend is public;
-the other stages are private. See its README for the module layout.
+the other stages are private.
+`frontend::parse::parse_kernel(source, name)` extracts one kernel from Clang's
+assembly: the target string, instructions as opcode and operand text, and the
+numeric `.amdhsa_*` descriptor settings. Comments are stripped; the body must be
+straight-line; errors are strings. Tests parse the compiled gfx950 copy kernel in
+`tests/fixtures/`; the crate README has the compile command.
 
 ## Crate: volta_graph_check
 
