@@ -1,0 +1,17 @@
+{
+  "description": "ThunderKittens educational B200 GEMM level 02: C = A @ B over 32x32 bf16 matrices, one 32x32 tile per CTA; bf16, guarded by row, col < N",
+  "kernel": "_Z6kernelP13__nv_bfloat16S0_S0_i",
+  "block": [32, 32, 1],
+  "grid": 1,
+  "arrays": [
+    {"name": "A", "kind": "in",  "dtype": "bf16", "shape": [32, 32]},
+    {"name": "B", "kind": "in",  "dtype": "bf16", "shape": [32, 32]},
+    {"name": "C", "kind": "out", "dtype": "bf16", "shape": [32, 32]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"},
+    {"name": "N", "int": 32}
+  ]
+}

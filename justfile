@@ -51,3 +51,7 @@ format-python:
 # Count the lines of code (Rust, Python, the viewer), per crate and per language
 loc *args:
     python3 scripts/loc.py {{args}}
+
+# Check the ThunderKittens kernels for data races
+kittens:
+    python3 external/races.py --framework thunderkittens

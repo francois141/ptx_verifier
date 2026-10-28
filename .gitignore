@@ -9,3 +9,9 @@
 
 # Configuration files
 .venv
+
+# External kernels: PTX and metadata from `just setup`, CSVs from `just external`; only launch files are tracked
+/external/**/*.ptx
+/external/**/*.json
+!/external/**/*.launch.json
+/external/output/

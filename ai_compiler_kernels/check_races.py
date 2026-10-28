@@ -130,8 +130,10 @@ OUTCOME_WIDTH = max(len(outcome.value) for outcome in Outcome)
 RACE_CHECKS = ("memory-conflict freedom", "proxy ordering", "tensor-operation ordering")
 # A construct Volta does not model, rejected at lowering or when the execution reaches it.
 LOWERING_FAILED = re.compile(r"\blowering failed: (.*)")
+# A directive or instruction form the frontend does not know (the parse report's last line).
+PARSE_FAILED = re.compile(r"\b(Invalid [a-z ]+: \S+)$")
 EXECUTION_UNSUPPORTED = re.compile(r"^the execution stopped: (unsupported at .*)")
-CHECK_LINE = re.compile(r"^  (\S.*?) \(Algorithms? [^)]*\)\s+(PASS|FAIL|UNKNOWN)$")
+CHECK_LINE = re.compile(r"^  (\S.*?) \((?:Algorithms? |PTX ISA |phase chain)[^)]*\)\s+(PASS|FAIL|UNKNOWN)$")
 VERDICT_LINE = re.compile(r"^GRAPH VERIFICATION: (VERIFIED|REJECTED|UNKNOWN)")
 WRITTEN_LINE = re.compile(r"^  output '[^']*': (\d+) element\(s\) written$")
 NO_OUTPUTS_LINE = re.compile(r"^  no outputs: (.*)$")
@@ -232,6 +234,8 @@ def classify(report: CliReport, stderr: str, expected_outputs: int) -> tuple[Out
         errors = "\n".join(line for line in stderr.splitlines() if not LOG_LINE.match(line))
         error = " ".join(errors.split()) or "volta produced no verdict"
         if m := LOWERING_FAILED.search(error):
+            return Outcome.UNSUPPORTED, m[1]
+        if m := PARSE_FAILED.search(error):
             return Outcome.UNSUPPORTED, m[1]
         raise VoltaFailure(error)
     coverage = f"{report.written}/{expected_outputs} tile outputs written"

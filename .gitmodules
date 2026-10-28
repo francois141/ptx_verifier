@@ -1,0 +1,3 @@
+[submodule "external/ThunderKittens"]
+	path = external/sources/ThunderKittens
+	url = https://github.com/HazyResearch/ThunderKittens.git

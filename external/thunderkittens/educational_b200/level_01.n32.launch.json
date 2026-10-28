@@ -1,0 +1,17 @@
+{
+  "description": "ThunderKittens educational B200 GEMM level 01: C = A @ B over 32x32 f32 matrices, one 32x32 tile per CTA; fp32, guarded by row, col < N",
+  "kernel": "_Z6kernelPfS_S_i",
+  "block": [32, 32, 1],
+  "grid": 1,
+  "arrays": [
+    {"name": "A", "kind": "in",  "dtype": "f32", "shape": [32, 32]},
+    {"name": "B", "kind": "in",  "dtype": "f32", "shape": [32, 32]},
+    {"name": "C", "kind": "out", "dtype": "f32", "shape": [32, 32]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"},
+    {"name": "N", "int": 32}
+  ]
+}
