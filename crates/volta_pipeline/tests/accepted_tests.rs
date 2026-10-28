@@ -5,7 +5,9 @@
 #[macro_use]
 mod common;
 
-use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_ptx_analysis::{
+    AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
+};
 
 use common::*;
 
@@ -665,6 +667,32 @@ fn array(name: &str, base: u64, elem_width: u64, len: u64, kind: ArrayKind) -> A
         len,
         kind,
     }
+}
+
+/// A by-value struct parameter (`.param .b8 args[32]`) read through its
+/// address: a `v2.u64` load of its two pointers, a `u32` load of the low half
+/// of its `u64` count, and a by-name `[args+8]`. Three of the four threads
+/// pass the `tid < n` guard, so `out[0..3] = in[i] + 3` and `out[3]` stays unwritten.
+#[test]
+fn test_struct_param_by_address() {
+    let mut config = AnalysisConfig::new((4, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 4, ArrayKind::Input),
+        array("out", 0x20000, 4, 4, ArrayKind::Output),
+    ];
+    let field = |offset, value| StructField { offset, value };
+    config.params = vec![ParamValue::Struct(vec![
+        field(0, FieldValue::ArrayPtr("in".to_string())),
+        field(8, FieldValue::ArrayPtr("out".to_string())),
+        field(
+            16,
+            FieldValue::Int {
+                value: 3,
+                width: IntWidth::W8,
+            },
+        ),
+    ])];
+    analyze!("success/struct_param_by_address", config);
 }
 
 /// `movmatrix.sync.aligned.m8n8.trans.b16` transposes the warp's 8x8 matrix:

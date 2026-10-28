@@ -24,6 +24,7 @@ use crate::frontend::instr::InstrKind;
 use crate::frontend::instr_parse::parse_instruction;
 use id_collections::{Id, IdVec};
 
+use crate::ir::symbols::ParamLayout;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BarrierAlignment, BinOp, InstrId, LoweredInstr, LoweredProgram, Predicate};
 
@@ -108,7 +109,17 @@ fn collect_declarations(
 ) -> LowerResult<()> {
     // Collect kernel parameters
     for param in params {
-        ctx.symbols.declare_param(&param.name.to_string())?;
+        let element =
+            param.ty.scalar.size_bytes() as u64 * param.ty.vec.map_or(1, |v| v.count() as u64);
+        let count = param.array_dims.iter().map(|&d| d as u64).product::<u64>();
+        let layout = if param.array_dims.is_empty() {
+            ParamLayout::Scalar
+        } else {
+            ParamLayout::Aggregate
+        };
+        let alignment = param.align.map_or(element, |a| a as u64);
+        ctx.symbols
+            .declare_param(&param.name.to_string(), element * count, alignment, layout)?;
     }
 
     // Collect declarations from body

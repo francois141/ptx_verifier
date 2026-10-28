@@ -1,0 +1,31 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// `args` is a by-value struct {u64 in; u64 out; u64 n; u64 unset}, read
+// through its address (`mov.b64`), by vector, by a narrower load of `n`, and
+// by name at an offset.
+.visible .entry k(
+    .param .align 8 .b8 args[32]
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<8>;
+
+    mov.b64 %rd1, args;
+    ld.param.v2.u64 {%rd2, %rd3}, [%rd1];
+    ld.param.u32 %r1, [%rd1+16];
+    ld.param.u64 %rd4, [args+8];
+    mov.u32 %r2, %tid.x;
+    setp.ge.u32 %p1, %r2, %r1;
+    @%p1 bra DONE;
+    mul.wide.u32 %rd5, %r2, 4;
+    add.s64 %rd6, %rd2, %rd5;
+    ld.global.u32 %r3, [%rd6];
+    add.u32 %r4, %r3, %r1;
+    add.s64 %rd7, %rd4, %rd5;
+    st.global.u32 [%rd7], %r4;
+DONE:
+    ret;
+}

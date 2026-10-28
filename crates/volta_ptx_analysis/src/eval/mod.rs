@@ -12,6 +12,7 @@ mod fragments;
 mod interp;
 mod mbarrier;
 mod memory;
+mod param_space;
 mod record;
 mod schedule;
 mod tcgen05;

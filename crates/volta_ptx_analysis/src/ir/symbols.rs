@@ -337,6 +337,23 @@ pub struct GlobalVarInfo {
     pub size_bytes: u64,
 }
 
+/// Where a kernel parameter lives in param space (`mov.b64 %rd, param` takes
+/// its address): offsets from 0 in declaration order, each aligned as declared.
+#[derive(Debug, Clone, Copy)]
+pub struct ParamSlot {
+    pub offset: u64,
+    pub size: u64,
+    pub layout: ParamLayout,
+}
+
+/// A scalar parameter is read by value (`LoadParam`); an aggregate
+/// (`.param .b8 name[N]`, a by-value struct) by byte address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamLayout {
+    Scalar,
+    Aggregate,
+}
+
 /// Where shared memory sits in the generic address space: `cvta.shared.u64`
 /// adds it and `cvta.to.shared.u64` subtracts it. Aligned far beyond any
 /// alignment rounding a kernel applies to a generic pointer, and above every
@@ -395,6 +412,8 @@ pub struct SymbolTable {
 
     /// Parameter name → id; ids are dense in declaration order.
     params: HashMap<String, ParamId>,
+    /// Each parameter's place in param space, indexed by `ParamId`.
+    param_slots: IdVec<ParamId, ParamSlot>,
 
     /// Label name → instruction PC, one inner map per label scope (see
     /// `LabelScopeId`).
@@ -442,6 +461,7 @@ impl SymbolTable {
             registers: HashMap::new(),
             reg_counts: [0; RegClass::COUNT],
             params: HashMap::new(),
+            param_slots: IdVec::new(),
             labels: HashMap::new(),
             label_scope_parents,
             shared_vars: HashMap::new(),
@@ -517,14 +537,44 @@ impl SymbolTable {
         Ok(RegId::new(class, base_index))
     }
 
-    /// Declare a kernel parameter
-    /// Returns the ParamId of the declared parameter.
-    pub fn declare_param(&mut self, name: &str) -> LowerResult<ParamId> {
+    /// Declare a kernel parameter of `size` bytes, placed after the previous
+    /// one at `alignment` (a power of two). Returns its ParamId.
+    pub fn declare_param(
+        &mut self,
+        name: &str,
+        size: u64,
+        alignment: u64,
+        layout: ParamLayout,
+    ) -> LowerResult<ParamId> {
         self.reserve_name(name, SymbolKind::Parameter)?;
 
-        let id = ParamId(self.params.len() as u32);
+        // Every declared slot's end was checked to fit in u64.
+        let end_of_previous = match self.param_slots.iter().last() {
+            Some((_, previous)) => previous.offset + previous.size,
+            None => 0,
+        };
+
+        let offset = match align_up(end_of_previous, alignment.max(1)) {
+            Some(offset) => offset,
+            None => return Err(size_overflow("parameter", name)),
+        };
+
+        if offset.checked_add(size).is_none() {
+            return Err(size_overflow("parameter", name));
+        }
+
+        let slot = ParamSlot {
+            offset,
+            size,
+            layout,
+        };
+        let id = self.param_slots.push(slot);
         self.params.insert(name.to_string(), id);
         Ok(id)
+    }
+
+    pub fn param_slot(&self, id: ParamId) -> ParamSlot {
+        self.param_slots[id]
     }
 
     /// Create a new label scope nested inside `parent` (one per `{}` block
@@ -1054,10 +1104,12 @@ mod tests {
     #[test]
     fn test_duplicate_param_error() {
         let mut symbols = SymbolTable::new();
-        symbols.declare_param("ptr").unwrap();
+        symbols
+            .declare_param("ptr", 8, 8, ParamLayout::Scalar)
+            .unwrap();
 
         // Try to declare same param again
-        let result = symbols.declare_param("ptr");
+        let result = symbols.declare_param("ptr", 8, 8, ParamLayout::Scalar);
         assert!(result.is_err());
     }
 
@@ -1299,7 +1351,9 @@ mod tests {
     fn test_label_conflicts_with_param() {
         use id_collections::Id;
         let mut symbols = SymbolTable::new();
-        symbols.declare_param("foo").unwrap();
+        symbols
+            .declare_param("foo", 8, 8, ParamLayout::Scalar)
+            .unwrap();
 
         // Label should conflict with param
         let result =
@@ -1339,14 +1393,16 @@ mod tests {
         symbols.declare_register("foo", ScalarType::U32, 1).unwrap();
 
         // Param should conflict with register
-        let result = symbols.declare_param("foo");
+        let result = symbols.declare_param("foo", 8, 8, ParamLayout::Scalar);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_shared_conflicts_with_param() {
         let mut symbols = SymbolTable::new();
-        symbols.declare_param("foo").unwrap();
+        symbols
+            .declare_param("foo", 8, 8, ParamLayout::Scalar)
+            .unwrap();
 
         // Shared should conflict with param
         let result = symbols.declare_shared("foo", ScalarType::U32, 256, false, 4);

@@ -10,7 +10,7 @@ use crate::frontend::ast::{
 use crate::frontend::instr_parse::is_cache_perf_hint;
 use crate::frontend::lex::DottedIdent;
 
-use crate::ir::symbols::{RegId, SHARED_GENERIC_BASE};
+use crate::ir::symbols::{ParamLayout, RegId, SHARED_GENERIC_BASE};
 use crate::ir::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
@@ -269,10 +269,10 @@ pub(super) fn lower_load(
         return Err(unsupported("ld", ".unified modifier"));
     }
 
-    // Param-space loads read either a kernel parameter or a block-scope
-    // `.param` slot (the callseq idiom); both are handled symbolically
-    // rather than as memory accesses.
-    if *space == Some(StateSpace::Param) {
+    // A block-scope `.param` slot (the callseq idiom) or a scalar kernel
+    // parameter read by name is a value binding; any other param-space load
+    // (an aggregate's bytes, or through a register) reads param memory.
+    if *space == Some(StateSpace::Param) && reads_param_by_value(ctx, addr) {
         return lower_param_load(ctx, ld, predicate);
     }
 
@@ -521,6 +521,22 @@ fn param_addr_symbol(ctx: &LoweringContext, addr: &AstOperand) -> LowerResult<(S
         instruction: "param-space access".to_string(),
         reason: Some("param accesses must use a symbol base address".to_string()),
     })
+}
+
+/// Whether `ld.param [addr]` names a callseq `.param` slot or a scalar kernel parameter.
+fn reads_param_by_value(ctx: &LoweringContext, addr: &AstOperand) -> bool {
+    let AstOperand::Address(address) = addr else {
+        return false;
+    };
+    let AddressBase::Symbol(name) = &address.base else {
+        return false;
+    };
+    let name = name.to_string();
+    ctx.local_params.contains_key(&name)
+        || ctx
+            .symbols
+            .get_param(&name)
+            .is_some_and(|id| ctx.symbols.param_slot(id).layout == ParamLayout::Scalar)
 }
 
 /// Lower `ld.param`: kernel parameters become `LoadParam`; block-scope

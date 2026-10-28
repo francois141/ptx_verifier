@@ -314,6 +314,9 @@ impl LoweringContext {
         if let Some(info) = self.symbols.get_global_var(name) {
             return Some(Operand::ImmU64(info.addr));
         }
+        if let Some(id) = self.symbols.get_param(name) {
+            return Some(Operand::ImmU64(self.symbols.param_slot(id).offset));
+        }
         None
     }
 

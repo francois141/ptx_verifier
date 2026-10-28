@@ -16,12 +16,13 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
+use crate::eval::param_space::{ParamBinding, struct_bytes};
 use crate::eval::record::{AccessOrigin, Recording, point, tix};
 use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
-use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, RegId, SpecialRegKind};
+use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, ParamLayout, RegId, SpecialRegKind};
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
     BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
@@ -216,7 +217,7 @@ pub struct Interpreter<'p> {
     /// Shared `Undefined` node returned for reads of never-written
     /// registers (see `read_reg`).
     pub(in crate::eval) undefined: ExprId,
-    params: IdVec<ParamId, Value>,
+    pub(in crate::eval) params: IdVec<ParamId, ParamBinding>,
     pub(in crate::eval) threads: IdVec<ThreadId, ThreadState>,
     pub(in crate::eval) global: Memory,
     pub(in crate::eval) shared: Memory,
@@ -275,9 +276,25 @@ impl<'p> Interpreter<'p> {
                 ),
             });
         }
-        let mut params: IdVec<ParamId, Value> = IdVec::new();
-        for value in &config.params {
+        let mut params: IdVec<ParamId, ParamBinding> = IdVec::new();
+        for (index, value) in config.params.iter().enumerate() {
+            let slot = program.symbols.param_slot(ParamId(index as u32));
             let v = match value {
+                ParamValue::Struct(fields) if slot.layout == ParamLayout::Aggregate => {
+                    let _ = params.push(ParamBinding::Bytes(struct_bytes(
+                        index, fields, slot, &config,
+                    )?));
+                    continue;
+                }
+                ParamValue::Struct(_) => {
+                    return Err(EvalError::Config {
+                        message: format!(
+                            "parameter {index} is a {}-byte scalar; a struct binds only a \
+                             `.param .b8 name[N]` aggregate",
+                            slot.size
+                        ),
+                    });
+                }
                 ParamValue::Int(v) => Value::Scalar(arena.int(*v)),
                 // Exact ingestion; NaN was rejected by `config.validate()`
                 // above, but the conversion stays fallible so a bypassing
@@ -294,14 +311,8 @@ impl<'p> Interpreter<'p> {
                     })?;
                     Value::Scalar(arena.int(array.base as i64))
                 }
-                ParamValue::Struct(_) => {
-                    return Err(EvalError::Config {
-                        message: "struct parameters are not supported by the interpreter"
-                            .to_string(),
-                    });
-                }
             };
-            let _ = params.push(v);
+            let _ = params.push(ParamBinding::Value(v));
         }
 
         // Every region must satisfy `base + size <= u64::MAX` (checked in
@@ -666,7 +677,9 @@ impl<'p> Interpreter<'p> {
             // so no alignment rule applies; byte-addressed `.param`/`.const`
             // accesses are rejected in `check_bounds`.
             LoweredInstr::LoadParam { dst, param_id } => {
-                let v = self.params[*param_id];
+                let ParamBinding::Value(v) = self.params[*param_id] else {
+                    unreachable!("lowering reads an aggregate's bytes, never its value");
+                };
                 self.write_reg(t, *dst, v);
             }
 
@@ -695,7 +708,11 @@ impl<'p> Interpreter<'p> {
                 // A vector load is one access of the total size (PTX ISA
                 // 6.4.1), so bounds and alignment are checked once for the
                 // whole footprint - else a v4 could straddle two arrays.
-                self.check_bounds(t, pc, *space, addr, dst.len() as u64 * width)?;
+                if *space == MemSpace::Param {
+                    self.param_at(t, pc, addr, dst.len() as u64 * width)?;
+                } else {
+                    self.check_bounds(t, pc, *space, addr, dst.len() as u64 * width)?;
+                }
                 self.check_alignment(t, pc, *space, addr, dst.len() as u64 * width)?;
                 for (k, reg) in dst.iter().enumerate() {
                     let v = self.mem_read(t, pc, *space, addr + k as u64 * width, width)?;
@@ -2340,10 +2357,14 @@ impl<'p> Interpreter<'p> {
         width: u64,
         origin: AccessOrigin,
     ) -> EvalResult<Value> {
-        self.check_bounds(t, pc, space, addr, width)?;
         // Every program access flows through here, so this is the one
-        // natural-alignment chokepoint. Param space never reaches it
-        // (`check_bounds` rejects it; `LoadParam` is not memory).
+        // natural-alignment chokepoint. Param space is no event-graph memory
+        // (`check_bounds` rejects it for every other access).
+        if space == MemSpace::Param {
+            self.check_alignment(t, pc, space, addr, width)?;
+            return self.param_read(t, pc, addr, width);
+        }
+        self.check_bounds(t, pc, space, addr, width)?;
         self.check_alignment(t, pc, space, addr, width)?;
         self.record_mem_access(t, pc, space, addr, width, None, origin);
         let memory = match space {
