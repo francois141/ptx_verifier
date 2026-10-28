@@ -1195,7 +1195,8 @@ fn test_mbarrier_wait_outside_the_retry_loop_is_rejected() {
         format!("WAIT:\n{wait}\n@!%p2 bra WAIT;"),
         format!("WAIT:\n{wait}\nbra WAIT;"),
         format!("OTHER:\nWAIT:\n{wait}\n@!%p1 bra OTHER;"),
-        format!("WAIT:\n{wait}\n@%p1 bra DONE;\nbra WAIT;\nDONE:"),
+        format!("WAIT:\n{wait}\n@!%p1 bra DONE;\nbra WAIT;\nDONE:"),
+        format!("WAIT:\n{wait}\n@%p1 bra DONE;\nbra WAIT;\nOTHER:"),
         format!("WAIT:\n{wait}\nadd.u32 %r1, %r1, 1;\n@!%p1 bra WAIT;"),
     ] {
         assert_rejected_wait(&body, MbarrierWaitKind::TryWait);
@@ -1204,4 +1205,26 @@ fn test_mbarrier_wait_outside_the_retry_loop_is_rejected() {
         "mbarrier.test_wait.parity.shared::cta.b64 %p1, [smem], 0;",
         MbarrierWaitKind::TestWait,
     );
+}
+
+/// ThunderKittens' retry loop leaves on the same condition as nvcc's
+/// (`@!p bra L`), through an exit label: it lowers to the one blocking wait.
+#[test]
+fn test_mbarrier_wait_loop_with_an_exit_label_lowers_to_a_blocking_wait() {
+    let program = lower_body(
+        "WAIT:\nmbarrier.try_wait.parity.shared::cta.b64 %p1, [smem], 0;\n\
+         @%p1 bra.uni DONE;\nbra.uni WAIT;\nDONE:\nret;",
+    )
+    .expect("the exit-label form lowers");
+    let waits = program
+        .instructions
+        .iter()
+        .filter(|(_, instr)| matches!(instr, LoweredInstr::MbarrierWaitParity { .. }))
+        .count();
+    let branches = program
+        .instructions
+        .iter()
+        .filter(|(_, instr)| matches!(instr, LoweredInstr::Bra { .. }))
+        .count();
+    assert_eq!((waits, branches), (1, 0));
 }

@@ -186,6 +186,16 @@ fn test_mbarrier_arrive_wait_establishes_happens_before() {
     );
 }
 
+/// ThunderKittens' wait loop (`@P1 bra.uni DONE; bra.uni LAB_WAIT; DONE:`,
+/// in a scoped inline-asm block) lowers to a blocking wait like nvcc's.
+#[test]
+fn test_mbarrier_wait_loop_with_an_exit_label() {
+    analyze!(
+        "success/mbarrier_wait_loop_with_an_exit_label",
+        in_out_config(1, 1)
+    );
+}
+
 /// A producer's first odd-parity wait on a fresh `empty` barrier returns
 /// through its pre-init phase (the ISA's "immediately preceding phase"),
 /// separated from the consumer's first arrival by the `full` handoff.

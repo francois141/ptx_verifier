@@ -182,11 +182,13 @@ impl fmt::Display for LowerError {
                 write!(
                     f,
                     "Unsupported instruction: {name}\n\
-                     Reason: Volta only models an mbarrier wait as the exact three-statement \
-                     retry loop `L: {name}.parity{{...}}.b64 %p, [addr], phaseParity; \
-                     @!%p bra L;` - a label, then an unpredicated wait, then a branch back to \
-                     that same label guarded by the negated waitComplete predicate - which \
-                     lowers to one blocking wait; this wait is not in that form"
+                     Reason: Volta only models an mbarrier wait as an exact retry loop, \
+                     `L: {name}.parity{{...}}.b64 %p, [addr], phaseParity; @!%p bra L;` \
+                     (a label, then an unpredicated wait, then a branch back to that same \
+                     label guarded by the negated waitComplete predicate) or `L: ...wait \
+                     %p, ...; @%p bra DONE; bra L; DONE:` (the same loop leaving through \
+                     the label right after it), which lowers to one blocking wait; this \
+                     wait is in neither form"
                 )
             }
 

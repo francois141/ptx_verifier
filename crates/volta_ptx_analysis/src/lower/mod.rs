@@ -38,7 +38,7 @@ use context::{LocalParamSlot, LoweringContext, unsupported};
 use control::{lower_bar, lower_branch, lower_call, lower_fence};
 use error::MbarrierWaitKind;
 pub use error::{LowerError, LowerResult};
-use idioms::{MBARRIER_WAIT_LOOP_LEN, MbarrierWaitLoop, match_mbarrier_wait_loop, statement_span};
+use idioms::{MbarrierWaitLoop, match_mbarrier_wait_loop, statement_span};
 use mbarrier::{
     lower_mbarrier_arrive, lower_mbarrier_complete_tx, lower_mbarrier_expect_tx,
     lower_mbarrier_init, lower_mbarrier_inval, lower_mbarrier_test_wait, lower_mbarrier_try_wait,
@@ -201,15 +201,18 @@ fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResu
     let mut i = 0;
     while i < stmts.len() {
         if let Some(wait_loop) = match_mbarrier_wait_loop(ctx, &stmts[i..]) {
-            // The label resolves to the blocking wait; the retry `bra` is
+            // The label resolves to the blocking wait; the loop's branches are
             // dropped, so waking falls through to the loop's exit.
             lower_statement(ctx, &stmts[i])?;
             ctx.current_span = statement_span(&stmts[i + 1]);
-            match &wait_loop {
+            match &wait_loop.wait {
                 MbarrierWaitLoop::Test(wait) => lower_mbarrier_test_wait(ctx, wait)?,
                 MbarrierWaitLoop::Try(wait) => lower_mbarrier_try_wait(ctx, wait)?,
             }
-            i += MBARRIER_WAIT_LOOP_LEN;
+            if let Some(exit) = wait_loop.exit_label {
+                lower_statement(ctx, exit)?;
+            }
+            i += wait_loop.len;
             continue;
         }
         lower_statement(ctx, &stmts[i])?;

@@ -1,0 +1,35 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// ThunderKittens' mbarrier wait, as its inline asm emits it: a scoped block
+// whose loop leaves through `@P1 bra.uni DONE`. One thread arrives on the
+// barrier, waits for the phase to complete, then copies in[0] to out[0].
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<2>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+    .shared .align 8 .b64 mbar;
+
+    mov.u32 %r1, mbar;
+    mov.u32 %r2, 0;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.arrive.shared::cta.b64 _, [%r1];
+    {
+.reg .pred                P1;
+LAB_WAIT:
+mbarrier.try_wait.parity.shared::cta.b64 P1, [%r1], %r2;
+@P1                       bra.uni DONE;
+bra.uni                   LAB_WAIT;
+DONE:
+    }
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %f1, [%rd1];
+    st.global.f32 [%rd2], %f1;
+    ret;
+}

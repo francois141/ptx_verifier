@@ -9,6 +9,8 @@ use crate::frontend::instr::InstrKind;
 use crate::frontend::instr_parse::parse_instruction;
 use volta_common::Span;
 
+use crate::ir::symbols::RegId;
+
 use super::context::LoweringContext;
 
 /// A statement's mnemonic, without parsing modifiers or operands. `None`
@@ -48,55 +50,109 @@ fn parsed_instruction(stmt: &Statement) -> Option<(ParsedInstruction, Option<&as
     Some((parsed, instr.predicate.as_ref()))
 }
 
-/// Source statements spanned by an mbarrier wait loop: the loop label, the
-/// wait, and the retry `bra`.
-pub(super) const MBARRIER_WAIT_LOOP_LEN: usize = 3;
-
 /// The wait instruction of a matched mbarrier wait loop.
 pub(super) enum MbarrierWaitLoop {
     Test(MbarrierTestWaitInstr),
     Try(MbarrierTryWaitInstr),
 }
 
-/// Match the retry loop `L: mbarrier.{try,test}_wait.parity p, [addr], ph;
-/// @!p bra L;` - the only form in which Volta models an mbarrier wait,
-/// since the scheduler can only block a thread, not spin it.
-pub(super) fn match_mbarrier_wait_loop(
+/// A matched wait loop: its wait, how many source statements it spans, and
+/// the loop's exit label when the loop names one (`DONE:` below).
+pub(super) struct MatchedWaitLoop<'s> {
+    pub wait: MbarrierWaitLoop,
+    pub len: usize,
+    pub exit_label: Option<&'s Statement>,
+}
+
+/// Match an mbarrier retry loop, the only form in which Volta models an
+/// mbarrier wait, since the scheduler can only block a thread, not spin it:
+/// `L: mbarrier.{try,test}_wait.parity p, [addr], ph; @!p bra L;` (nvcc), or
+/// `L: ...wait p, ...; @p bra DONE; bra L; DONE:` (ThunderKittens), which
+/// leaves the loop on the same condition.
+pub(super) fn match_mbarrier_wait_loop<'s>(
     ctx: &LoweringContext,
-    stmts: &[Statement],
-) -> Option<MbarrierWaitLoop> {
-    let [Statement::Label(label), wait, retry] = stmts.get(..MBARRIER_WAIT_LOOP_LEN)? else {
+    stmts: &'s [Statement],
+) -> Option<MatchedWaitLoop<'s>> {
+    if let [Statement::Label(label), wait, retry, ..] = stmts {
+        let (wait_loop, wait_complete) = loop_wait(ctx, wait)?;
+        if branch_to(ctx, retry, Some((wait_complete, Negated::Yes)), label) {
+            return Some(MatchedWaitLoop {
+                wait: wait_loop,
+                len: 3,
+                exit_label: None,
+            });
+        }
+    }
+    let [
+        Statement::Label(label),
+        wait,
+        exit,
+        retry,
+        done @ Statement::Label(done_label),
+        ..,
+    ] = stmts
+    else {
         return None;
     };
+    let (wait_loop, wait_complete) = loop_wait(ctx, wait)?;
+    (branch_to(ctx, exit, Some((wait_complete, Negated::No)), done_label)
+        && branch_to(ctx, retry, None, label))
+    .then_some(MatchedWaitLoop {
+        wait: wait_loop,
+        len: 5,
+        exit_label: Some(done),
+    })
+}
+
+#[derive(PartialEq)]
+enum Negated {
+    Yes,
+    No,
+}
+
+/// Whether `stmt` is a `bra` to `target`, guarded as `guard` says (`None`: unguarded).
+fn branch_to(
+    ctx: &LoweringContext,
+    stmt: &Statement,
+    guard: Option<(RegId, Negated)>,
+    target: &ast::Label,
+) -> bool {
+    if statement_kind(stmt) != Some(InstrKind::Bra) {
+        return false;
+    }
+    let Some((ParsedInstruction::Bra(bra), given)) = parsed_instruction(stmt) else {
+        return false;
+    };
+    let (AstOperand::Ident(name) | AstOperand::Symbol(name)) = &bra.target else {
+        return false;
+    };
+    let guard_matches = match (guard, given) {
+        (None, None) => true,
+        (Some((reg, negated)), Some(given)) => ctx
+            .resolve_predicate(given)
+            .is_ok_and(|g| g.reg == reg && g.negated == (negated == Negated::Yes)),
+        _ => false,
+    };
+    guard_matches && *name == target.name
+}
+
+/// The loop's unguarded wait and the predicate register it sets.
+fn loop_wait(ctx: &LoweringContext, wait: &Statement) -> Option<(MbarrierWaitLoop, RegId)> {
     if !matches!(
         statement_kind(wait),
         Some(InstrKind::MbarrierTestWait | InstrKind::MbarrierTryWait)
-    ) || statement_kind(retry) != Some(InstrKind::Bra)
-    {
+    ) {
         return None;
     }
-
-    let (wait_loop, wait_complete) = match parsed_instruction(wait)? {
+    match parsed_instruction(wait)? {
         (ParsedInstruction::MbarrierTestWait(w), None) => {
             let wait_complete = ctx.resolve_dst(&w.wait_complete).ok()?;
-            (MbarrierWaitLoop::Test(w), wait_complete)
+            Some((MbarrierWaitLoop::Test(w), wait_complete))
         }
         (ParsedInstruction::MbarrierTryWait(w), None) => {
             let wait_complete = ctx.resolve_dst(&w.wait_complete).ok()?;
-            (MbarrierWaitLoop::Try(w), wait_complete)
+            Some((MbarrierWaitLoop::Try(w), wait_complete))
         }
-        _ => return None,
-    };
-
-    let (ParsedInstruction::Bra(bra), Some(guard)) = parsed_instruction(retry)? else {
-        return None;
-    };
-    let guard = ctx.resolve_predicate(guard).ok()?;
-    let (AstOperand::Ident(target) | AstOperand::Symbol(target)) = &bra.target else {
-        return None;
-    };
-    if !guard.negated || guard.reg != wait_complete || *target != label.name {
-        return None;
+        _ => None,
     }
-    Some(wait_loop)
 }
