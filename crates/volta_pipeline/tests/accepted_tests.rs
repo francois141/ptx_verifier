@@ -7,6 +7,8 @@ mod common;
 
 use volta_ptx_analysis::{
     AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
+    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorMapValue, TensorSwizzleAtomicity,
+    TensorSwizzleMode,
 };
 
 use common::*;
@@ -717,6 +719,43 @@ fn test_movmatrix_transpose() {
 #[test]
 fn test_cvta_shared_round_trip() {
     analyze!("success/cvta_shared_round_trip", in_out_config(1, 4));
+}
+
+/// A host-encoded tensor map inside a struct parameter, reached through
+/// `cvta.param`: a TMA load of `in`'s rows 2-5, copied out by the thread.
+#[test]
+fn test_tma_param_tensor_map_load() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 64, ArrayKind::Input),
+        array("out", 0x20000, 4, 32, ArrayKind::Output),
+    ];
+
+    let map = TensorMapValue {
+        array: "in".to_string(),
+        elemtype: TensorElemType::F32,
+        dims: vec![8, 8],
+        strides: vec![32],
+        box_dims: vec![8, 4],
+        element_strides: vec![1, 1],
+        interleave: TensorInterleaveLayout::None,
+        swizzle: TensorSwizzleMode::None,
+        swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+        fill: TensorFillMode::Zero,
+    };
+
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: FieldValue::TensorMap(Box::new(map)),
+        },
+        StructField {
+            offset: 128,
+            value: FieldValue::ArrayPtr("out".to_string()),
+        },
+    ])];
+
+    analyze!("success/tma_param_tensor_map_load", config);
 }
 
 /// A concrete `mul.hi.u64` is the exact high half of the 128-bit product.

@@ -371,6 +371,10 @@ pub fn shared_operand_addr(addr: u64) -> u64 {
     }
 }
 
+/// Where kernel parameters sit in the generic address space (`cvta.param.u64`),
+/// below the shared window; a TMA tensor-map operand there names a parameter's map.
+pub const PARAM_GENERIC_BASE: u64 = 0x5000_0000_0000_0000;
+
 /// Base address for module-scope `.global` variables; `Interpreter::new` rejects
 /// configs whose arrays overlap `[MODULE_GLOBAL_BASE, + module_global_size())`.
 pub const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;

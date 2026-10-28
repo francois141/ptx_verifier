@@ -11,8 +11,21 @@ use crate::eval::record::AccessOrigin;
 use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table;
 use crate::eval::value::{MbarrierId, Value};
+use crate::ir::symbols::{PARAM_GENERIC_BASE, SHARED_GENERIC_BASE};
 use crate::ir::tensor_map::TensorFillMode;
 use crate::ir::{InstrId, MemSpace, Operand};
+
+/// Where a TMA's generic tensor-map address points: a kernel parameter's map in
+/// the param window (`cvta.param`), else a `.global` object (where
+/// `tensormap.cp_fenceproxy` puts one); `.const` maps are unmodeled.
+fn locate_tensor_map(addr: u64) -> (MemSpace, u64) {
+    let in_param_window = (PARAM_GENERIC_BASE..SHARED_GENERIC_BASE).contains(&addr);
+    if in_param_window {
+        (MemSpace::Param, addr - PARAM_GENERIC_BASE)
+    } else {
+        (MemSpace::Global, addr)
+    }
+}
 
 impl<'p> Interpreter<'p> {
     /// `.tile` TMA tensor copy, global to shared (ISA 9.7.9.26.5.2, 5.5.3):
@@ -25,7 +38,6 @@ impl<'p> Interpreter<'p> {
         pc: InstrId,
         dst_base: &Operand,
         dst_offset: i64,
-        tensormap_space: MemSpace,
         tensormap_base: &Operand,
         tensormap_offset: i64,
         coords: &[Operand],
@@ -34,6 +46,7 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<()> {
         let dst_addr = self.effective_addr(t, pc, dst_base, dst_offset)?;
         let tm_addr = self.effective_addr(t, pc, tensormap_base, tensormap_offset)?;
+        let (tensormap_space, tm_addr) = locate_tensor_map(tm_addr);
         let mbar_addr = self.effective_addr(t, pc, mbar_base, mbar_offset)?;
 
         let entry = self

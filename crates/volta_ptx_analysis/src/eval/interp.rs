@@ -16,7 +16,7 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits::{self, decode_packed_bits};
 use crate::eval::mbarrier::MbarrierTable;
 use crate::eval::memory::{GranuleKind, MemAccessError, Memory};
-use crate::eval::param_space::{ParamBinding, struct_bytes};
+use crate::eval::param_space::{ParamBinding, param_tensor_maps, struct_bytes};
 use crate::eval::record::{AccessOrigin, Recording, point, tix};
 use crate::eval::tensor_map_table::TensorMapTable;
 use crate::eval::tensor_memory::TensorMemory;
@@ -434,6 +434,7 @@ impl<'p> Interpreter<'p> {
                 .collect(),
         );
         let locals = IdVec::from_vec((0..n_threads).map(|_| Memory::new()).collect());
+        let tensor_maps = param_tensor_maps(&config, &program.symbols)?;
 
         Ok(Self {
             program,
@@ -453,7 +454,7 @@ impl<'p> Interpreter<'p> {
             mbarriers: MbarrierTable::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
             barrier_counts: [None; NUM_BARRIERS],
-            tensor_maps: TensorMapTable::new(),
+            tensor_maps,
             graph: GraphBuilder::new(provenance),
             rec: Recording::default(),
             stats: Stats::default(),
@@ -1731,7 +1732,6 @@ impl<'p> Interpreter<'p> {
             LoweredInstr::CpAsyncBulkTensorLoad {
                 dst_base,
                 dst_offset,
-                tensormap_space,
                 tensormap_base,
                 tensormap_offset,
                 coords,
@@ -1743,7 +1743,6 @@ impl<'p> Interpreter<'p> {
                     pc,
                     dst_base,
                     *dst_offset,
-                    *tensormap_space,
                     tensormap_base,
                     *tensormap_offset,
                     coords,

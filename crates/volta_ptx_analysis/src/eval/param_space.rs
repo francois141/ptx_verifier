@@ -3,8 +3,9 @@
 //! Like `LoadParam`, these reads are value lookups, not event-graph accesses:
 //! kernel parameters are read-only, so nothing can race with them.
 
-use crate::config::{AnalysisConfig, FieldValue, StructField};
-use crate::ir::symbols::ParamSlot;
+use crate::config::{AnalysisConfig, FieldValue, ParamValue, StructField, TensorMapValue};
+use crate::eval::tensor_map_table::{TensorMapEntry, TensorMapTable};
+use crate::ir::symbols::{ParamId, ParamSlot, SymbolTable};
 use crate::ir::{InstrId, MemSpace};
 
 use super::ThreadId;
@@ -26,24 +27,23 @@ pub(in crate::eval) fn struct_bytes(
     slot: ParamSlot,
     config: &AnalysisConfig,
 ) -> EvalResult<Vec<Option<u8>>> {
-    let config_error = |message: String| EvalError::Config {
-        message: format!("parameter {index}: {message}"),
-    };
-
     let mut bytes = vec![None; slot.size as usize];
     for field in fields {
         let width = field.value.width_bytes();
         // `validate()` established `offset + width` fits in u64.
         if field.offset + width > slot.size {
-            return Err(config_error(format!(
+            let message = format!(
                 "the field at byte {} ({width} bytes) is past the end of the {}-byte parameter",
                 field.offset, slot.size
-            )));
+            );
+            return Err(param_error(index, message));
         }
 
         let bits = match &field.value {
             FieldValue::Int { value, .. } => *value as u64,
-            FieldValue::ArrayPtr(name) => array_base(config, name).map_err(config_error)?,
+            FieldValue::ArrayPtr(name) => {
+                array_base(config, name).map_err(|message| param_error(index, message))?
+            }
             // Its bytes stay opaque: only a TMA copy reads it, by its fields.
             FieldValue::TensorMap(_) => continue,
         };
@@ -58,11 +58,72 @@ pub(in crate::eval) fn struct_bytes(
     Ok(bytes)
 }
 
+fn param_error(index: usize, message: String) -> EvalError {
+    EvalError::Config {
+        message: format!("parameter {index}: {message}"),
+    }
+}
+
 fn array_base(config: &AnalysisConfig, name: &str) -> Result<u64, String> {
     config
         .array(name)
         .map(|array| array.base)
         .ok_or_else(|| format!("a field references unknown array '{name}'"))
+}
+
+/// Every tensor map a struct parameter holds, keyed by its param-space address.
+pub(in crate::eval) fn param_tensor_maps(
+    config: &AnalysisConfig,
+    symbols: &SymbolTable,
+) -> EvalResult<TensorMapTable> {
+    let mut table = TensorMapTable::new();
+
+    for (index, value) in config.params.iter().enumerate() {
+        let ParamValue::Struct(fields) = value else {
+            continue;
+        };
+        let slot = symbols.param_slot(ParamId(index as u32));
+
+        for field in fields {
+            let FieldValue::TensorMap(map) = &field.value else {
+                continue;
+            };
+            let global_address =
+                array_base(config, &map.array).map_err(|message| param_error(index, message))?;
+
+            // `struct_bytes` checked that every field lies inside its slot.
+            let addr = slot.offset + field.offset;
+            *table.entry_mut(MemSpace::Param, addr) = tensor_map_entry(map, global_address);
+        }
+    }
+
+    Ok(table)
+}
+
+/// A host-encoded map as the fields `tensormap.replace` would have written.
+fn tensor_map_entry(map: &TensorMapValue, global_address: u64) -> TensorMapEntry {
+    let mut entry = TensorMapEntry {
+        global_address: Some(global_address),
+        rank: Some(map.dims.len() as u32 - 1),
+        elemtype: Some(map.elemtype),
+        interleave_layout: Some(map.interleave),
+        swizzle_mode: Some(map.swizzle),
+        swizzle_atomicity: Some(map.swizzle_atomicity),
+        fill_mode: Some(map.fill),
+        ..TensorMapEntry::default()
+    };
+
+    for (i, &size) in map.dims.iter().enumerate() {
+        let d = i as u32;
+        entry.global_dim.insert(d, size);
+        entry.box_dim.insert(d, map.box_dims[i]);
+        entry.element_stride.insert(d, map.element_strides[i]);
+    }
+    for (i, &stride) in map.strides.iter().enumerate() {
+        entry.global_stride.insert(i as u32, stride);
+    }
+
+    entry
 }
 
 impl Interpreter<'_> {

@@ -489,10 +489,6 @@ pub(super) fn lower_cp_async_bulk_tensor(
         LoweredInstr::CpAsyncBulkTensorLoad {
             dst_base,
             dst_offset,
-            // Generic addressing of `tensorMap` is not modeled: every corpus
-            // use goes through `tensormap.cp_fenceproxy`, which always puts
-            // the object in `.global` (`.param`/`.const` maps are unmodeled).
-            tensormap_space: MemSpace::Global,
             tensormap_base,
             tensormap_offset,
             coords: lowered_coords,

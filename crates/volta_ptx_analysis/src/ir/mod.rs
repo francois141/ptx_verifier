@@ -922,11 +922,9 @@ pub enum LoweredInstr {
 
     /// `cp.async.bulk.tensor...tile.mbarrier::complete_tx::bytes`: TMA copy,
     /// global to the executing CTA's shared memory (no remote/multicast).
-    /// `tensormap_space` must be `.global`.
     CpAsyncBulkTensorLoad {
         dst_base: Operand,
         dst_offset: i64,
-        tensormap_space: MemSpace,
         tensormap_base: Operand,
         tensormap_offset: i64,
         coords: Vec<Operand>,
