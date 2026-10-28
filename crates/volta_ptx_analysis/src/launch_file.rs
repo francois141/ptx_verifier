@@ -15,7 +15,11 @@
 //!   "params": [
 //!     {"ptr": "x"},
 //!     {"ptr": "out"},
-//!     {"name": "n_elements", "int": 16}
+//!     {"name": "n_elements", "int": 16},
+//!     {"name": "args", "struct": [
+//!       {"name": "x", "offset": 0, "ptr": "x"},
+//!       {"name": "n", "offset": 8, "u32": 16}
+//!     ]}
 //!   ],
 //!   "globals": {"NUM_ITERS": 4}
 //! }
@@ -28,16 +32,31 @@
 //! `len`. Arrays without a `base` (a number or a `"0x..."` string) are laid
 //! out in order from `0x10000`, each starting on the first 64 KiB
 //! boundary after the previous array. A parameter is exactly one of `int`,
-//! `float`, `sym` (a symbolic float) or `ptr` (an array's base), bound in
-//! declaration order; its optional `name` is a label for the reader, not
-//! checked against the PTX (whose names are often mangled). Unknown keys are
-//! errors, so a typo cannot silently fall back to a default.
+//! `float`, `sym` (a symbolic float), `ptr` (an array's base) or `struct` (a
+//! by-value struct, `.param .b8 name[N]`), bound in declaration order; its
+//! optional `name` is a label for the reader, not checked against the PTX
+//! (whose names are often mangled). A struct field is an `offset` in bytes and
+//! exactly one of `ptr`, an integer type (`u32`, `i64`, `b16`, ...) holding
+//! its value, or `tensor_map`: a host-encoded TMA descriptor (128 bytes), given
+//! by its fields since its encoding is opaque: `array`, `dtype`, `dims`
+//! (innermost first), `strides` (bytes, all dims but the innermost), `box`, and
+//! optionally `element_strides` (1s), `swizzle` (`none`, `32B`, `64B`, `128B`),
+//! `swizzle_atomicity` (`16B`), `interleave` (`none`) and `fill` (`zero`). Bytes
+//! no field gives read as undefined. Unknown keys are errors, so a typo cannot
+//! silently fall back to a default.
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use crate::config::{
+    AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
+    TensorMapValue,
+};
+use crate::ir::tensor_map::{
+    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
+    TensorSwizzleMode,
+};
 
 /// Where the first array without a `base` starts, and the alignment of every such array.
 const ARRAY_ALIGN: u64 = 0x10000;
@@ -234,19 +253,184 @@ struct RawParam {
     sym: Option<String>,
     #[serde(default)]
     ptr: Option<String>,
+    #[serde(default, rename = "struct")]
+    fields: Option<Vec<RawField>>,
 }
 
 impl RawParam {
     fn resolve(self, position: usize) -> Result<ParamValue, String> {
-        match (self.int, self.float, self.sym, self.ptr) {
-            (Some(v), None, None, None) => Ok(ParamValue::Int(v)),
-            (None, Some(v), None, None) => Ok(ParamValue::Float(v)),
-            (None, None, Some(name), None) => Ok(ParamValue::SymFloat(name)),
-            (None, None, None, Some(array)) => Ok(ParamValue::ArrayPtr(array)),
+        match (self.int, self.float, self.sym, self.ptr, self.fields) {
+            (Some(v), None, None, None, None) => Ok(ParamValue::Int(v)),
+            (None, Some(v), None, None, None) => Ok(ParamValue::Float(v)),
+            (None, None, Some(name), None, None) => Ok(ParamValue::SymFloat(name)),
+            (None, None, None, Some(array), None) => Ok(ParamValue::ArrayPtr(array)),
+            (None, None, None, None, Some(fields)) => fields
+                .into_iter()
+                .map(|field| field.resolve(position))
+                .collect::<Result<_, _>>()
+                .map(ParamValue::Struct),
             _ => Err(format!(
-                "parameter {position}: give exactly one of `int`, `float`, `sym` and `ptr`"
+                "parameter {position}: give exactly one of `int`, `float`, `sym`, `ptr` and `struct`"
             )),
         }
+    }
+}
+
+/// A struct field, `{"offset": N, "<type>": value}`: read by hand, since its value's key is its type.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct RawField(serde_json::Map<String, serde_json::Value>);
+
+impl RawField {
+    fn resolve(self, param: usize) -> Result<StructField, String> {
+        let context = |message: String| format!("parameter {param}: {message}");
+        let mut entries = self.0;
+        entries.remove("name");
+        let offset = entries
+            .remove("offset")
+            .and_then(|offset| offset.as_u64())
+            .ok_or_else(|| context("a struct field needs an `offset` in bytes".into()))?;
+        let mut entries = entries.into_iter();
+        let (Some((key, value)), None) = (entries.next(), entries.next()) else {
+            return Err(context(format!(
+                "the struct field at byte {offset} needs exactly one of `ptr` or an integer type \
+                 (`u32`, `i64`, ...) beside its `offset` and `name`"
+            )));
+        };
+        let value = if key == "ptr" {
+            let array = value.as_str().ok_or_else(|| {
+                context(format!("the `ptr` field at byte {offset} names no array"))
+            })?;
+            FieldValue::ArrayPtr(array.to_string())
+        } else if key == "tensor_map" {
+            let map: RawTensorMap = serde_json::from_value(value)
+                .map_err(|e| context(format!("the tensor map at byte {offset}: {e}")))?;
+            let map = map
+                .resolve()
+                .map_err(|e| context(format!("the tensor map at byte {offset}: {e}")))?;
+            FieldValue::TensorMap(Box::new(map))
+        } else {
+            let width = int_width(&key).ok_or_else(|| {
+                context(format!("unknown struct field key `{key}` at byte {offset}"))
+            })?;
+            // A u64 above i64::MAX is kept as its bits.
+            let bits = value
+                .as_i64()
+                .or_else(|| value.as_u64().map(|v| v as i64))
+                .ok_or_else(|| {
+                    context(format!("the `{key}` field at byte {offset} is no integer"))
+                })?;
+            FieldValue::Int { value: bits, width }
+        };
+        Ok(StructField { offset, value })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTensorMap {
+    array: String,
+    dtype: String,
+    dims: Vec<u64>,
+    strides: Vec<u64>,
+    #[serde(rename = "box")]
+    box_dims: Vec<u32>,
+    #[serde(default)]
+    element_strides: Option<Vec<u32>>,
+    #[serde(default)]
+    swizzle: Option<String>,
+    #[serde(default)]
+    swizzle_atomicity: Option<String>,
+    #[serde(default)]
+    interleave: Option<String>,
+    #[serde(default)]
+    fill: Option<String>,
+}
+
+impl RawTensorMap {
+    fn resolve(self) -> Result<TensorMapValue, String> {
+        let pick = |field: &str, given: Option<String>, default: &str, names: &[&str]| {
+            let given = given.unwrap_or_else(|| default.to_string());
+            names
+                .iter()
+                .position(|name| *name == given)
+                .ok_or_else(|| format!("`{field}` is one of {}, not `{given}`", names.join(", ")))
+        };
+        use TensorElemType as E;
+        let elemtype = match self.dtype.as_str() {
+            "u8" => E::U8,
+            "u16" => E::U16,
+            "u32" => E::U32,
+            "s32" | "i32" => E::S32,
+            "u64" => E::U64,
+            "s64" | "i64" => E::S64,
+            "f16" => E::F16,
+            "f32" => E::F32,
+            "f32_ftz" => E::F32Ftz,
+            "f64" => E::F64,
+            "bf16" => E::Bf16,
+            "tf32" => E::Tf32,
+            other => return Err(format!("unknown tensor-map dtype `{other}`")),
+        };
+        let swizzle = [
+            TensorSwizzleMode::None,
+            TensorSwizzleMode::Swizzle32B,
+            TensorSwizzleMode::Swizzle64B,
+            TensorSwizzleMode::Swizzle128B,
+            TensorSwizzleMode::Swizzle96B,
+        ][pick(
+            "swizzle",
+            self.swizzle,
+            "none",
+            &["none", "32B", "64B", "128B", "96B"],
+        )?];
+        let swizzle_atomicity = [
+            TensorSwizzleAtomicity::Atomicity16B,
+            TensorSwizzleAtomicity::Atomicity32B,
+            TensorSwizzleAtomicity::Atomicity32BWith8BFlip,
+            TensorSwizzleAtomicity::Atomicity64B,
+        ][pick(
+            "swizzle_atomicity",
+            self.swizzle_atomicity,
+            "16B",
+            &["16B", "32B", "32B_flip_8B", "64B"],
+        )?];
+        let interleave = [
+            TensorInterleaveLayout::None,
+            TensorInterleaveLayout::Interleave16B,
+            TensorInterleaveLayout::Interleave32B,
+        ][pick(
+            "interleave",
+            self.interleave,
+            "none",
+            &["none", "16B", "32B"],
+        )?];
+        let fill = [TensorFillMode::Zero, TensorFillMode::OobNan]
+            [pick("fill", self.fill, "zero", &["zero", "nan"])?];
+        let rank = self.dims.len();
+        Ok(TensorMapValue {
+            array: self.array,
+            elemtype,
+            dims: self.dims,
+            strides: self.strides,
+            box_dims: self.box_dims,
+            element_strides: self.element_strides.unwrap_or_else(|| vec![1; rank]),
+            interleave,
+            swizzle,
+            swizzle_atomicity,
+            fill,
+        })
+    }
+}
+
+/// The width of a PTX (`u32`, `b16`, `s8`) or Triton (`i64`) integer type name.
+fn int_width(dtype: &str) -> Option<IntWidth> {
+    match dtype {
+        "b8" | "s8" | "u8" | "i8" => Some(IntWidth::W1),
+        "b16" | "s16" | "u16" | "i16" => Some(IntWidth::W2),
+        "b32" | "s32" | "u32" | "i32" => Some(IntWidth::W4),
+        "b64" | "s64" | "u64" | "i64" => Some(IntWidth::W8),
+        _ => None,
     }
 }
 
@@ -301,6 +485,85 @@ mod tests {
             ]
         ));
         assert_eq!(config.global_values, [("G".to_string(), 3)]);
+    }
+
+    #[test]
+    fn reads_a_struct_parameter() {
+        let launch = LaunchFile::from_json(
+            r#"{"block": 1, "arrays": [{"name": "a", "kind": "in", "dtype": "f32", "len": 4}],
+                "params": [{"name": "g", "struct": [
+                    {"name": "a.ptr", "offset": 0, "ptr": "a"},
+                    {"offset": 8, "u64": 18446744073709551615},
+                    {"offset": 16, "i32": -4}
+                ]}]}"#,
+        )
+        .unwrap();
+        let ParamValue::Struct(fields) = &launch.config.params[0] else {
+            panic!("not a struct: {:?}", launch.config.params[0]);
+        };
+        assert!(matches!(&fields[0].value, FieldValue::ArrayPtr(a) if a == "a"));
+        assert!(matches!(
+            fields[1].value,
+            FieldValue::Int {
+                value: -1,
+                width: IntWidth::W8
+            }
+        ));
+        assert!(matches!(
+            fields[2].value,
+            FieldValue::Int {
+                value: -4,
+                width: IntWidth::W4
+            }
+        ));
+
+        let error = |text: &str| LaunchFile::from_json(text).unwrap_err();
+        assert!(
+            error(r#"{"block": 1, "params": [{"struct": [{"offset": 0, "u33": 1}]}]}"#)
+                .contains("unknown struct field key `u33`")
+        );
+        assert!(
+            error(r#"{"block": 1, "params": [{"struct": [{"offset": 0, "u8": 1, "u16": 1}]}]}"#)
+                .contains("needs exactly one of `ptr` or an integer type")
+        );
+        assert!(
+            error(r#"{"block": 1, "params": [{"struct": [{"offset": 0, "u8": 256}]}]}"#)
+                .contains("does not fit in 1 bytes")
+        );
+    }
+
+    #[test]
+    fn reads_a_tensor_map_field() {
+        let launch = LaunchFile::from_json(
+            r#"{"block": 1, "arrays": [{"name": "a", "kind": "in", "dtype": "bf16", "len": 4096}],
+                "params": [{"struct": [{"offset": 64, "tensor_map": {
+                    "array": "a", "dtype": "bf16", "dims": [64, 64], "strides": [128],
+                    "box": [64, 8], "swizzle": "128B"}}]}]}"#,
+        )
+        .unwrap();
+        let ParamValue::Struct(fields) = &launch.config.params[0] else {
+            panic!("not a struct");
+        };
+        let FieldValue::TensorMap(map) = &fields[0].value else {
+            panic!("not a tensor map: {:?}", fields[0].value);
+        };
+        assert_eq!(
+            (map.elemtype, map.swizzle),
+            (TensorElemType::Bf16, TensorSwizzleMode::Swizzle128B)
+        );
+        assert_eq!(map.element_strides, [1, 1]);
+        assert_eq!(map.fill, TensorFillMode::Zero);
+
+        let error = LaunchFile::from_json(
+            r#"{"block": 1, "params": [{"struct": [{"offset": 0, "tensor_map": {
+                "array": "a", "dtype": "bf16", "dims": [8], "strides": [], "box": [8],
+                "swizzle": "256B"}}]}]}"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("`swizzle` is one of none, 32B, 64B, 128B, 96B, not `256B`"),
+            "{error}"
+        );
     }
 
     #[test]
