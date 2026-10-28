@@ -1,0 +1,21 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// nvcc's division by 3 of a 64-bit value: the exact high half of the 128-bit
+// product, then a shift. out[0] = 10 / 3 = 3.
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<5>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u64 %rd2, 10;
+    mul.hi.u64 %rd3, %rd2, -6148914691236517205;
+    shr.u64 %rd4, %rd3, 1;
+    cvt.u32.u64 %r1, %rd4;
+    st.global.u32 [%rd1], %r1;
+    ret;
+}

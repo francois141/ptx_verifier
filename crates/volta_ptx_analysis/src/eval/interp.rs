@@ -1066,17 +1066,15 @@ impl<'p> Interpreter<'p> {
                 let product = match mode {
                     crate::ir::MulMode::Lo => self.eval_binop(t, pc, BinOp::Mul, *ty, a, b)?,
                     crate::ir::MulMode::Wide => self.mul_wide(*ty, a, b),
-                    crate::ir::MulMode::Hi => {
-                        // Same guard as MulHi: mul_hi composes `(a*b) >> bits`,
-                        // which cannot represent the high half above 32 bits.
-                        if ty.bits() > 32 {
-                            return Err(EvalError::Unsupported {
-                                pc,
-                                what: format!("mad.hi at width {}", ty.bits()),
-                            });
-                        }
-                        self.mul_hi(*ty, a, b)
-                    }
+                    // Same guard as MulHi: mul_hi composes `(a*b) >> bits`,
+                    // which cannot represent the high half above 32 bits.
+                    crate::ir::MulMode::Hi if ty.bits() > 32 => self
+                        .mul_hi_64(*ty, a, b)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            pc,
+                            what: format!("mad.hi at width {} on a symbolic operand", ty.bits()),
+                        })?,
+                    crate::ir::MulMode::Hi => self.mul_hi(*ty, a, b),
                 };
                 let r = match mode {
                     crate::ir::MulMode::Lo => {
@@ -1105,15 +1103,17 @@ impl<'p> Interpreter<'p> {
                 src_b,
                 ty,
             } => {
-                if ty.bits() > 32 {
-                    return Err(EvalError::Unsupported {
-                        pc,
-                        what: format!("mul.hi at width {}", ty.bits()),
-                    });
-                }
                 let a = self.scalar_operand(t, pc, src_a)?;
                 let b = self.scalar_operand(t, pc, src_b)?;
-                let r = self.mul_hi(*ty, a, b);
+                let r = if ty.bits() > 32 {
+                    self.mul_hi_64(*ty, a, b)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            pc,
+                            what: format!("mul.hi at width {} on a symbolic operand", ty.bits()),
+                        })?
+                } else {
+                    self.mul_hi(*ty, a, b)
+                };
                 self.write_reg(t, *dst, Value::Scalar(r));
             }
 

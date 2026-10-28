@@ -673,6 +673,12 @@ fn test_movmatrix_transpose() {
     analyze!("success/movmatrix_transpose", config);
 }
 
+/// A concrete `mul.hi.u64` is the exact high half of the 128-bit product.
+#[test]
+fn test_mul_hi_u64_concrete() {
+    analyze!("success/mul_hi_u64_concrete", out_only_config(4, 1));
+}
+
 /// `mma.sync...f32.bf16.bf16.f32` shares f16's m16n8k16 fragments.
 #[test]
 fn test_mma_bf16() {

@@ -633,6 +633,23 @@ impl<'p> Interpreter<'p> {
         }
     }
 
+    /// The high half of a 64-bit product: exact on concrete operands (in 128
+    /// bits), `None` on a symbolic one, whose high half no expression represents.
+    pub(in crate::eval) fn mul_hi_64(
+        &mut self,
+        ty: ScalarType,
+        a: ExprId,
+        b: ExprId,
+    ) -> Option<ExprId> {
+        let (a, b) = (self.arena.as_i64(a)?, self.arena.as_i64(b)?);
+        let hi = if ty.is_signed_int() {
+            ((a as i128 * b as i128) >> 64) as i64
+        } else {
+            ((a as u64 as u128 * b as u64 as u128) >> 64) as u64 as i64
+        };
+        Some(self.arena.int(hi))
+    }
+
     pub(in crate::eval) fn eval_cmp(
         &mut self,
         pc: InstrId,
