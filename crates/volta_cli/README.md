@@ -27,8 +27,10 @@ clap args ──► LaunchArgs (shared, flattened) ──► AnalysisConfig
   `LaunchArgs`): `-b/--block`, `-g/--grid`,
   `--array name:base:elem_width:len:in|out|inout|index`,
   `--param int:N|float:X|sym:name|ptr:array` (in declaration order), globals,
-  dynamic shared size. `compare` adds `--block2/--grid2` for the optimized
-  kernel.
+  dynamic shared size. `--config FILE` replaces them all with a JSON launch
+  file (`volta_ptx_analysis`'s `launch_file` format), whose `"kernel"` is the
+  default `--kernel` of `analyze`/`verify`. `compare` adds `--block2/--grid2`
+  for the optimized kernel.
 - **Equivalence flags**: `--sample N`, `--verify-numeric`,
   `--recycle-terms N`, `--iterations N`.
 - **Artifacts**: `analyze --emit-exprs FILE` (`.vexpr`) and `--dump-graph FILE`
@@ -43,6 +45,8 @@ clap args ──► LaunchArgs (shared, flattened) ──► AnalysisConfig
 cargo run --release -p volta_cli -- analyze relu.ptx -k relu -b 128 \
   --array x:0x10000:4:128:in --array out:0x20000:4:128:out \
   --param ptr:x --param ptr:out
+
+cargo run --release -p volta_cli -- analyze relu.ptx --config relu.json
 ```
 
 See the top-level `README.md` for the full flag reference.

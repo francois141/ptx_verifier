@@ -161,6 +161,13 @@ symbolic float, array pointer), `ArrayDef`s (`Input`, `Output`, `InputOutput`,
 rejects ambiguous configs. Symbol identity comes only from config names, never
 from PTX register names.
 
+`launch_file.rs`: `LaunchFile::from_json` reads a JSON launch file (`volta
+analyze --config`) into the kernel it names and a validated
+`AnalysisConfig`. Arrays take a `dtype` and a `shape` and are laid
+out on 64 KiB boundaries unless given a `base`; params are `{"int": N}`,
+`{"float": X}`, `{"sym": name}` or `{"ptr": array}` with an optional `name`
+label; unknown keys are errors. The module docs give the full format.
+
 ## Module layout
 
 Every module but `frontend` is private. `lib.rs` re-exports the public API (`analyze`,

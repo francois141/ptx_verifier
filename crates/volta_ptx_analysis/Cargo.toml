@@ -14,3 +14,5 @@ volta_expr.workspace = true
 volta_graph.workspace = true
 
 id_collections.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -337,6 +337,7 @@ racing another thread's use of the object keeps its witness.
 ### Analysis stage (`analysis.rs`, `config.rs`)
 
 - `config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
+- `launch_file.rs` - `LaunchFile::from_json`: the JSON launch file (`volta analyze --config FILE`) to the kernel it names + a validated `AnalysisConfig`; arrays by `dtype`/`shape`, auto-laid out on 64 KiB boundaries unless given a `base`; params `{"int"|"float"|"sym"|"ptr": ...}` with an optional reader-only `name`; unknown keys are errors
 - No behavior depends on the module's `.target` directive (recorded in the
   graph's `Provenance` only): every kernel is analyzed and checked as on
   Blackwell, so the proxy-order check always runs
@@ -673,7 +674,7 @@ or steps through one event kind, and keyboard navigation (`?` lists the keys).
 Commands:
 
 - `volta parse <file>` - Check syntax
-- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph check's verdict (with its algorithm), the trace's deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph
+- `volta analyze <file> -k <kernel> -b 32,4 -g 1,2 --array name:base:width:len:kind --param ptr:name ...` - Run the analysis stage and the graph branch: print output expressions (+ a per-instruction-kind profile; `--no-profile` to skip), every graph check's verdict (with its algorithm), the trace's deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED|REJECTED|UNKNOWN` (exit 0/1/2); `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph; `--config FILE` (any command taking launch flags) replaces the launch flags with a JSON launch file, whose `"kernel"` is the default `--kernel`
 - `volta compare <ref.ptx> <opt.ptx> --kernel1 .. --kernel2 .. --check-array out` - Two-kernel
   equivalence check (launch flags shared with `analyze` via a flattened
   `LaunchArgs`; `--block2`/`--grid2` override the optimized kernel's dims).

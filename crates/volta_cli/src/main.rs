@@ -25,8 +25,8 @@ use volta_ptx_analysis::frontend::ascii::{AsAscii, AsciiChar};
 use volta_ptx_analysis::frontend::ast::{Module, TopLevelItem};
 use volta_ptx_analysis::frontend::parse;
 use volta_ptx_analysis::{
-    AnalysisConfig, AnalysisParts, ArrayDef, ArrayKind, OutputsUnavailable, ParamValue, Stats,
-    write_op_counts,
+    AnalysisConfig, AnalysisParts, ArrayDef, ArrayKind, LaunchFile, OutputsUnavailable, ParamValue,
+    Stats, write_op_counts,
 };
 use volta_spec::unfold;
 
@@ -119,11 +119,20 @@ struct VizArgs {
     output: PathBuf,
 }
 
-/// Launch configuration shared by `analyze` and `compare` (flattened into both, so they cannot
-/// drift apart). For `compare` it describes the reference kernel; `--block2`/`--grid2` override
-/// the optimized kernel's dims.
+/// Launch configuration shared by `analyze`, `compare` and `verify` (flattened into each, so
+/// they cannot drift apart). For `compare` it describes the reference kernel; `--block2`/`--grid2`
+/// override the optimized kernel's dims.
 #[derive(Args)]
 struct LaunchArgs {
+    /// JSON launch file in place of the flags below: block, grid, arrays, params, globals and
+    /// the kernel to run (see `volta_ptx_analysis`'s `launch_file` docs for the format)
+    #[arg(
+        long,
+        value_name = "FILE",
+        conflicts_with_all = ["block", "grid", "arrays", "params", "globals", "dyn_shared"]
+    )]
+    config: Option<PathBuf>,
+
     /// Block dimensions, e.g. "128" or "32,4,1"
     #[arg(short, long, default_value = "1")]
     block: String,
@@ -403,50 +412,55 @@ fn parse_param(s: &str) -> Result<ParamValue, String> {
     }
 }
 
-/// Shared launch-config inputs, parsed into an `AnalysisConfig` by
-/// `build_config`. Used by both `analyze` and `compare` so the two
-/// commands' array/param/global flags behave identically.
-struct ConfigInput<'a> {
-    block: &'a str,
-    grid: &'a str,
-    arrays: &'a [String],
-    params: &'a [String],
-    globals: &'a [String],
-    dyn_shared: u64,
+/// The launch `--config` or the flags describe; only a launch file names a kernel.
+fn launch_config(launch: &LaunchArgs) -> Result<LaunchFile, String> {
+    let Some(path) = &launch.config else {
+        return build_config(launch).map(|config| LaunchFile {
+            kernel: None,
+            config,
+        });
+    };
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    LaunchFile::from_json(&text).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
-impl<'a> ConfigInput<'a> {
-    /// The reference-kernel launch config straight from the shared flags.
-    /// `compare` overrides `block`/`grid` afterwards for the optimized
-    /// kernel via `--block2`/`--grid2`.
-    fn from_launch(launch: &'a LaunchArgs) -> Self {
-        Self {
-            block: &launch.block,
-            grid: &launch.grid,
-            arrays: &launch.arrays,
-            params: &launch.params,
-            globals: &launch.globals,
-            dyn_shared: launch.dyn_shared,
-        }
+/// The reference and optimized kernels' configs: one launch, the optimized kernel's dims
+/// overridden by `--block2`/`--grid2`.
+fn compare_configs(args: &CompareArgs) -> Result<(AnalysisConfig, AnalysisConfig), String> {
+    let launch = launch_config(&args.launch)?;
+    if let Some(kernel) = launch.kernel {
+        return Err(format!(
+            "the launch file names kernel '{kernel}', but compare runs two: name them with \
+             --kernel1/--kernel2 and drop its \"kernel\""
+        ));
     }
+    let mut optimized = launch.config.clone();
+    if let Some(block) = &args.block2 {
+        optimized.block_dim = parse_dims(block).map_err(|e| format!("invalid --block2: {}", e))?;
+    }
+    if let Some(grid) = &args.grid2 {
+        optimized.grid_dim = parse_dims(grid).map_err(|e| format!("invalid --grid2: {}", e))?;
+    }
+    Ok((launch.config, optimized))
 }
 
-fn build_config(input: ConfigInput) -> Result<AnalysisConfig, String> {
-    let block_dim = parse_dims(input.block).map_err(|e| format!("invalid --block: {}", e))?;
+fn build_config(input: &LaunchArgs) -> Result<AnalysisConfig, String> {
+    let block_dim = parse_dims(&input.block).map_err(|e| format!("invalid --block: {}", e))?;
     let mut config = AnalysisConfig::new(block_dim);
-    config.grid_dim = parse_dims(input.grid).map_err(|e| format!("invalid --grid: {}", e))?;
+    config.grid_dim = parse_dims(&input.grid).map_err(|e| format!("invalid --grid: {}", e))?;
     config.dynamic_shared_bytes = input.dyn_shared;
-    for a in input.arrays {
+    for a in &input.arrays {
         config
             .arrays
             .push(parse_array(a).map_err(|e| format!("invalid --array: {}", e))?);
     }
-    for p in input.params {
+    for p in &input.params {
         config
             .params
             .push(parse_param(p).map_err(|e| format!("invalid --param: {}", e))?);
     }
-    for g in input.globals {
+    for g in &input.globals {
         let (name, value) = g
             .split_once('=')
             .ok_or_else(|| format!("invalid --global (expected NAME=value): {}", g))?;
@@ -576,16 +590,17 @@ fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitCode {
         Err(code) => return code,
     };
 
-    let config = match build_config(ConfigInput::from_launch(&args.launch)) {
-        Ok(c) => c,
+    let launch = match launch_config(&args.launch) {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("error: {}", e);
             return ExitCode::FAILURE;
         }
     };
+    let kernel = args.kernel.as_deref().or(launch.kernel.as_deref());
 
     let start = Instant::now();
-    let (run, side) = match run_kernel("kernel", &module, args.kernel.as_deref(), config) {
+    let (run, side) = match run_kernel("kernel", &module, kernel, launch.config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("analysis failed: {}", e);
@@ -750,19 +765,8 @@ fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitCode {
                 Err(code) => return code,
             };
 
-            let config1 = match build_config(ConfigInput::from_launch(&args.launch)) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("error: {}", e);
-                    return ExitCode::FAILURE;
-                }
-            };
-            let config2 = match build_config(ConfigInput {
-                block: args.block2.as_deref().unwrap_or(&args.launch.block),
-                grid: args.grid2.as_deref().unwrap_or(&args.launch.grid),
-                ..ConfigInput::from_launch(&args.launch)
-            }) {
-                Ok(c) => c,
+            let (config1, config2) = match compare_configs(&args) {
+                Ok(configs) => configs,
                 Err(e) => {
                     eprintln!("error: {}", e);
                     return ExitCode::FAILURE;
@@ -1056,13 +1060,17 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let config = match build_config(ConfigInput::from_launch(&args.launch)) {
-        Ok(c) => c,
+    let LaunchFile {
+        kernel: launch_kernel,
+        config,
+    } = match launch_config(&args.launch) {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("error: {}", e);
             return ExitCode::FAILURE;
         }
     };
+    let kernel = args.kernel.as_deref().or(launch_kernel.as_deref());
 
     // Fail fast, before symbolic execution: every array the spec checks
     // must be a declared output array of the kernel under this config.
@@ -1081,7 +1089,7 @@ fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCode {
     }
 
     let start = Instant::now();
-    let (run, side) = match run_kernel("kernel", &module, args.kernel.as_deref(), config) {
+    let (run, side) = match run_kernel("kernel", &module, kernel, config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {}", e);

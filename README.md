@@ -80,6 +80,38 @@ volta compare ref.ptx opt.ptx --kernel1 ref --kernel2 opt -b 128 \
 - `--dyn-shared N`: dynamic shared memory, in bytes
 - `--no-profile`: skip the per-instruction-kind profile
 
+### Launch files
+
+`--config FILE` replaces every launch flag above with one JSON file. The ReLU launch of the first example reads:
+
+```json
+{
+  "description": "relu over 128 fp32 elements",
+  "kernel": "relu",
+  "block": 128,
+  "arrays": [
+    {"name": "x",   "kind": "in",  "dtype": "f32", "shape": [128]},
+    {"name": "out", "kind": "out", "dtype": "f32", "shape": [128]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "out"}
+  ]
+}
+```
+
+```bash
+volta analyze relu.ptx --config relu.json
+```
+
+- `block` (required) and `grid`: a number or one to three numbers
+- `arrays`: `kind` is `in`, `out`, `inout` or `index`; the element size is a `dtype` (`f32`, `bf16`, `u8`, `e4m3`, ...) or an `elem_width` in bytes, the length a `shape` or a `len`. Arrays without a `base` (a number or `"0x..."`) are laid out in order from `0x10000`, each on a 64 KiB boundary.
+- `params`: exactly one of `{"int": N}`, `{"float": X}`, `{"sym": name}` or `{"ptr": array}` each, in declaration order. An optional `"name"` labels it for the reader and is not checked against the PTX.
+- `globals` (`{"NAME": value}`), `dynamic_shared_bytes`, `max_instructions`, and a free-text `description`
+- `kernel`: the default for `--kernel` (`analyze`, `verify`); `compare` names its two kernels with `--kernel1`/`--kernel2` instead
+
+Unknown keys are errors, so a typo never falls back to a default. `--config` cannot be combined with the launch flags.
+
 ### Syntax checks and logging
 
 `volta parse file.ptx` checks PTX syntax.
