@@ -683,6 +683,14 @@ fn test_movmatrix_transpose() {
     analyze!("success/movmatrix_transpose", config);
 }
 
+/// `cvta.shared.u64` and `cvta.to.shared.u64` round-trip through the generic
+/// shared window, and rounding the generic address up to 1024 bytes lands on
+/// shared offset 1024, as in ThunderKittens' shared allocator.
+#[test]
+fn test_cvta_shared_round_trip() {
+    analyze!("success/cvta_shared_round_trip", in_out_config(1, 4));
+}
+
 /// A concrete `mul.hi.u64` is the exact high half of the 128-bit product.
 #[test]
 fn test_mul_hi_u64_concrete() {

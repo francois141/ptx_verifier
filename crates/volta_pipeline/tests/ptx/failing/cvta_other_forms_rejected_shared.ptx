@@ -7,13 +7,13 @@
     .param .u64 k_param_1
 )
 {
-    .reg .b32 %r<2>;
+    .reg .b32 %r<3>;
     .reg .b64 %rd<4>;
     .shared .align 4 .b8 sdata[16];
 
     ld.param.u64 %rd1, [k_param_1];
     mov.u32 %r1, sdata;
     cvt.u64.u32 %rd2, %r1;
-    cvta.shared.u64 %rd3, %rd2;
+    cvta.shared.u32 %r2, %r1;
     ret;
 }

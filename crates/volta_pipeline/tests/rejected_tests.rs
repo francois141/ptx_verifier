@@ -1394,8 +1394,8 @@ fn test_hostile_shared_declaration_size_rejected() {
 }
 
 /// Other cvta forms are rejected by name: `cvta.global` is compatible but
-/// unused by the corpus, while shared/local forms would mint addresses in the
-/// wrong space.
+/// unused by the corpus, while the 32-bit shared forms (and any local one)
+/// have no generic window: only the 64-bit shared form is modeled.
 #[test]
 fn test_cvta_other_forms_rejected() {
     for (expect, reason_fragment, (form, src)) in [
@@ -1406,12 +1406,12 @@ fn test_cvta_other_forms_rejected() {
         ),
         (
             "cvta.shared",
-            "per-space windows",
+            "cvta{.to}.shared.u64",
             ptx_case!("failing/cvta_other_forms_rejected_shared"),
         ),
         (
             "cvta.to.shared",
-            "per-space windows",
+            "cvta{.to}.shared.u64",
             ptx_case!("failing/cvta_other_forms_rejected_to_shared"),
         ),
     ] {

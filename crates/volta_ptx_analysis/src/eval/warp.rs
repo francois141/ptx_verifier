@@ -17,7 +17,7 @@ use crate::eval::tensor_map_table::TENSOR_MAP_BYTES;
 use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
-use crate::ir::symbols::RegId;
+use crate::ir::symbols::{RegId, shared_operand_addr};
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
 use volta_expr::ExprId;
@@ -1052,7 +1052,7 @@ impl Interpreter<'_> {
         num_cols: u32,
     ) -> EvalResult<()> {
         let base = self.uniform_concrete(pc, members, dst_base, "tcgen05.alloc dst address")?;
-        let dst_addr = (base as u64).wrapping_add(dst_offset as u64);
+        let dst_addr = shared_operand_addr((base as u64).wrapping_add(dst_offset as u64));
         let leader = members[0];
         let taddr = self
             .tensor

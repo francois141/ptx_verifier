@@ -337,6 +337,23 @@ pub struct GlobalVarInfo {
     pub size_bytes: u64,
 }
 
+/// Where shared memory sits in the generic address space: `cvta.shared.u64`
+/// adds it and `cvta.to.shared.u64` subtracts it. Aligned far beyond any
+/// alignment rounding a kernel applies to a generic pointer, and above every
+/// global array, so generic shared and global addresses never coincide.
+pub const SHARED_GENERIC_BASE: u64 = 0x6000_0000_0000_0000;
+
+/// The shared address a `.shared` operand names: `.shared` addressing keeps
+/// only the low 32 bits, and the generic window sits on a 2^32 boundary, so a
+/// generic shared address (ThunderKittens passes `&smem` to `tcgen05.alloc`)
+/// names the byte at its offset; any other address is taken as given.
+pub fn shared_operand_addr(addr: u64) -> u64 {
+    match addr.checked_sub(SHARED_GENERIC_BASE) {
+        Some(offset) if offset < 1 << 32 => offset,
+        _ => addr,
+    }
+}
+
 /// Base address for module-scope `.global` variables; `Interpreter::new` rejects
 /// configs whose arrays overlap `[MODULE_GLOBAL_BASE, + module_global_size())`.
 pub const MODULE_GLOBAL_BASE: u64 = 0x7000_0000_0000_0000;

@@ -10,7 +10,7 @@ use crate::frontend::ast::{
 use crate::frontend::instr_parse::is_cache_perf_hint;
 use crate::frontend::lex::DottedIdent;
 
-use crate::ir::symbols::RegId;
+use crate::ir::symbols::{RegId, SHARED_GENERIC_BASE};
 use crate::ir::{BinOp, CpAsyncSrcSize, LoweredInstr, MemSpace, Operand, Predicate, UnaryOp};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
@@ -621,12 +621,30 @@ pub(super) fn lower_cvta(
     let ast::CvtaInstr {
         to_generic,
         space,
-        ty: _ty, // pointer width; the identity holds at either width
+        ty,
         dst,
         src,
     } = cvta;
-    // Only `cvta.to.global` is accepted, as the identity (global is
-    // identity-mapped in the generic window). Other forms would mint
+    // Generic loads and stores stay rejected, so a generic shared address is
+    // only arithmetic between conversions; its window keeps that exact.
+    if *space == StateSpace::Shared && *ty == ScalarType::U64 {
+        let dst = ctx.resolve_dst(dst)?;
+        let src = ctx.resolve_operand(src)?;
+        // Shared offsets fit in 32 bits and the window starts above them, shifted
+        // to `SHARED_GENERIC_BASE`: to generic adds the base, to shared subtracts it.
+        let op = if *to_generic { BinOp::Add } else { BinOp::Sub };
+        let instr = LoweredInstr::BinOp {
+            op,
+            dst,
+            src_a: src,
+            src_b: Operand::ImmU64(SHARED_GENERIC_BASE),
+            ty: ScalarType::U64,
+            clamp: None,
+        };
+        return ctx.emit(instr, predicate);
+    }
+    // Otherwise only `cvta.to.global` is accepted, as the identity (global
+    // is identity-mapped in the generic window). Other forms would mint
     // wrong-space or arbitrary addresses (or are unused), so reject.
     if *to_generic || *space != StateSpace::Global {
         let form = format!(
@@ -639,8 +657,8 @@ pub(super) fn lower_cvta(
             "cvta.global (global -> generic) would also be the identity, \
              but the corpus never uses it; only cvta.to.global is modeled"
         } else {
-            "only cvta.to.global is modeled (as the identity); generic \
-             addresses have no per-space windows in this model"
+            "only cvta.to.global (the identity) and cvta{.to}.shared.u64 \
+             (a generic window at `SHARED_GENERIC_BASE`) are modeled"
         };
         return Err(LowerError::UnsupportedInstruction {
             instruction: form,
