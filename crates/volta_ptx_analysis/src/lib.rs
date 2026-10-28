@@ -12,7 +12,14 @@ mod eval;
 mod ir;
 mod lower;
 
-pub use analysis::{AnalysisError, AnalysisParts, AnalysisResult, analyze, write_op_counts};
+pub use analysis::{
+    AnalysisError, AnalysisParts, AnalysisResult, analyze, analyze_lowered, write_op_counts,
+};
 pub use config::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
 pub use eval::{ClcMisuse, EvalError, OutputsUnavailable, Stats, ThreadId};
+pub use frontend::ast::ScalarType;
+pub use ir::source_map::SourceMap;
+pub use ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
+pub use ir::types::RegClass;
+pub use ir::{BinOp, InstrId, LoweredInstr, LoweredProgram, MemSpace, Operand, Predicate};
 pub use lower::LowerError;
