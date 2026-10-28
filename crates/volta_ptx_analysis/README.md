@@ -19,6 +19,14 @@ let graph = result.graph();                 // always present (partial on abort)
 let outputs = result.symbolic_outputs()?;   // only if the run completed
 ```
 
+`analyze_lowered(&program, config, provenance)` runs the same interpreter on a
+`LoweredProgram` supplied by a caller, returning `Result<AnalysisResult, EvalError>`.
+The caller must supply well-formed IR, establish that it preserves the source
+semantics, provide matching launch and instruction provenance, and call
+`SymbolTable::finalize_shared_layout` before running. This entry point uses the
+existing interpreter's semantics; it does not validate another frontend's
+translation. The interpreter itself remains private.
+
 ## Frontend (`frontend/`)
 
 `frontend/` turns PTX source text into a typed AST. It is the one public module
@@ -171,11 +179,14 @@ label; unknown keys are errors. The module docs give the full format.
 ## Module layout
 
 Every module but `frontend` is private. `lib.rs` re-exports the public API (`analyze`,
-`AnalysisResult`, `AnalysisConfig`, `EvalError`, `LowerError`, `Stats`,
-`write_op_counts`, ...), so dead code is flagged by rustc. Logging (barrier
+`analyze_lowered`, `AnalysisResult`, `AnalysisConfig`, `EvalError`, `LowerError`,
+`Stats`, `write_op_counts`, ...), along with the IR types for constructing lowered
+programs (`LoweredProgram`, `LoweredInstr`, `Operand`, `SymbolTable`, `SourceMap`,
+and supporting types), so dead code is flagged by rustc. Logging (barrier
 fires, deadlocks, launch stats) is behind the `logging` feature.
 
 ## Tests
 
 Only inline unit tests of internals (e.g. `lower/tests.rs`). Every PTX-driven
-test is end-to-end in `volta_pipeline/tests/`.
+test is end-to-end in `volta_pipeline/tests/`. Its `lowered_program_tests.rs`
+also exercises the public IR execution API without parsing PTX.
