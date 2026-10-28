@@ -219,10 +219,11 @@ crate-level docs in `lib.rs` are the contract.
 **Path**: `crates/volta_ptx_analysis/`
 
 Every module but `frontend` is private: `lib.rs` re-exports the whole API (`analyze`,
-`AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
-`AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
-`Stats`, `ThreadId`, `LowerError`), so rustc flags any code it does not
-reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
+`analyze_lowered`, `AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`,
+the `AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
+`Stats`, `ThreadId`, `LowerError`, and the IR types `LoweredProgram`, `LoweredInstr`,
+`Operand`, `SymbolTable`, `SourceMap`, and supporting types), so rustc flags any code
+it does not reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
 
 ### Frontend (`frontend/`)
 
@@ -345,7 +346,10 @@ racing another thread's use of the object keeps its witness.
   graph's `Provenance` only): every kernel is analyzed and checked as on
   Blackwell, so the proxy-order check always runs
 - `analyze(module, kernel_name, config) -> Result<AnalysisResult, AnalysisError>`:
-  lowering plus one candidate execution, no verdict. `AnalysisResult` holds
+  lowers PTX and calls `analyze_lowered(program, config, provenance)`, which runs
+  one candidate execution and returns `Result<AnalysisResult, EvalError>`, no
+  verdict. Direct callers supply well-formed IR that preserves the source
+  semantics and provenance matching the program and config. `AnalysisResult` holds
   the arena, the event graph (always; partial on abort), stats, op counts,
   and the symbolic outputs only when the execution completed and its outputs
   read back (`symbolic_outputs()` / `into_parts()`; else `OutputsUnavailable`:
@@ -529,6 +533,8 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
   `Verified`, then the rendered
   symbolic outputs must match the kernel's `.out` file exactly
   (`VOLTA_BLESS=1` rewrites them).
+- `lowered_program_tests.rs` - constructs IR through the public API, without
+  parsing PTX, and checks the resulting symbolic output and event graph.
 - one suite per check whose witnesses PTX kernels exercise, each asserting on
   that check's typed witness only: `mbarrier_epoch_tests.rs` (Algorithm 1 over
   mbarrier phases: the unseparated synchronization and operation),

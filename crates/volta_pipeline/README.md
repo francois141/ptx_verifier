@@ -40,6 +40,7 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
 
 - `aggregation_tests.rs`: real kernels through both branches and `decide`.
 - `architecture_tests.rs`: the stage/branch dependency boundaries.
+- `lowered_program_tests.rs`: public IR construction and execution, without PTX parsing.
 - the suites below, over `tests/common/`.
 
 ### How a test runs
