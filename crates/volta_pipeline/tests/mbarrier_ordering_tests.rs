@@ -92,7 +92,9 @@ fn test_announcements_unordered_before_another_threads_arrival_are_inconclusive(
     assert_eq!(report.verdict(Property::MbarrierEpoch), Verdict::Pass);
     assert_eq!(report.verdict(Property::MemoryConflict), Verdict::Unknown);
     assert!(
-        report.summary(Property::MemoryConflict).findings[0].contains("not checked"),
+        report.summary(Property::MemoryConflict).findings[0]
+            .text
+            .contains("not checked"),
         "{:?}",
         report.summary(Property::MemoryConflict)
     );

@@ -59,7 +59,11 @@ fn an_unprotected_announcement_leaves_the_validated_checks_unchecked() {
         };
         assert_eq!(v, expected, "{p:?}");
     }
-    assert!(r.summary(Property::MemoryConflict).findings[0].contains("not checked"));
+    assert!(
+        r.summary(Property::MemoryConflict).findings[0]
+            .text
+            .contains("not checked")
+    );
     assert!(matches!(r.conclusion(), GraphConclusion::Unknown { .. }));
 }
 
@@ -100,7 +104,11 @@ fn a_race_fails_memory_conflict_and_leaves_proxy_ordering_unchecked() {
         };
         assert_eq!(v, expected, "{p:?}");
     }
-    assert!(r.summary(Property::ProxyOrder).findings[0].contains("not checked"));
+    assert!(
+        r.summary(Property::ProxyOrder).findings[0]
+            .text
+            .contains("not checked")
+    );
     let GraphConclusion::Rejected { failed, deadlock } = r.conclusion() else {
         panic!("{:?}", r.conclusion());
     };

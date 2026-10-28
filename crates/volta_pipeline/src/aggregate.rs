@@ -100,7 +100,7 @@ pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> D
                         "{}: {} failed: {}",
                         k.label,
                         s.property.name(),
-                        s.findings.first().map_or("", String::as_str)
+                        s.findings.first().map_or("", |f| f.text.as_str())
                     ));
                 }
             }

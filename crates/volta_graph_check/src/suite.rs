@@ -8,20 +8,32 @@
 
 use std::time::Instant;
 
-use volta_graph::{BlockedThread, EventGraph, Terminal};
+use std::fmt;
 
-use crate::allocation_order::{AllocationOrderResult, check_allocation_order};
-use crate::allocation_permit::{AllocationPermitResult, check_allocation_permit};
-use crate::barrier_epoch::{EpochResult, check_mbarrier_epochs, check_named_barrier_epochs};
+use volta_graph::{BlockedThread, EventGraph, EventId, Terminal};
+
+use crate::allocation_order::{
+    AllocationOrderResult, AllocationOrderViolation, check_allocation_order,
+};
+use crate::allocation_permit::{
+    AllocationPermitResult, AllocationPermitViolation, check_allocation_permit,
+};
+use crate::barrier_epoch::{
+    EpochResult, EpochViolation, check_mbarrier_epochs, check_named_barrier_epochs,
+};
 use crate::logging::info;
-use crate::mbarrier_ordering::{MbarrierOrderingResult, check_mbarrier_ordering};
-use crate::mbarrier_release_order::{ReleaseOrderResult, check_mbarrier_release_order};
-use crate::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
-use crate::proxy_order::{ProxyOrderResult, check_proxy_order};
+use crate::mbarrier_ordering::{
+    MbarrierOrderingResult, PhaseBalanceViolation, check_mbarrier_ordering,
+};
+use crate::mbarrier_release_order::{
+    ReleaseOrderResult, ReleaseOrderViolation, check_mbarrier_release_order,
+};
+use crate::memory_conflict::{MemoryConflict, MemoryConflictResult, check_memory_conflicts};
+use crate::proxy_order::{ProxyOrderResult, ProxyOrderViolation, check_proxy_order};
 use crate::relation::ValidatedGraph;
-use crate::resource_lifetime::{LifetimeResult, check_resource_lifetimes};
+use crate::resource_lifetime::{LifetimeResult, LifetimeViolation, check_resource_lifetimes};
 use crate::result::{Property, PropertyResult, Unresolved, Verdict};
-use crate::tensor_order::{TensorOrderResult, check_tensor_order};
+use crate::tensor_order::{TensorConflict, TensorOrderResult, check_tensor_order};
 
 /// Every check's result for one graph, and how the trace ended.
 #[derive(Debug, Clone)]
@@ -64,21 +76,140 @@ pub enum GraphConclusion {
 pub struct PropertySummary {
     pub property: Property,
     pub verdict: Verdict,
-    /// The violations (`Fail`) or unresolved obligations (`Unknown`), rendered; empty on
-    /// `Pass`.
-    pub findings: Vec<String>,
+    /// The violations (`Fail`) or unresolved obligations (`Unknown`); empty on `Pass`.
+    pub findings: Vec<Finding>,
     /// The `Pass` evidence, rendered.
     pub evidence: Option<String>,
 }
 
-fn summarize<E: std::fmt::Debug, V: std::fmt::Debug>(
+/// One violation or unresolved obligation, rendered, with the events it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub text: String,
+    /// In the order the witness names them, without duplicates.
+    pub events: Vec<EventId>,
+}
+
+impl fmt::Display for Finding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+/// A check's violation type: the events its witness names.
+trait Witness: fmt::Debug {
+    fn events(&self) -> Vec<EventId>;
+}
+
+impl Witness for EpochViolation {
+    fn events(&self) -> Vec<EventId> {
+        [
+            Some(self.synchronization),
+            self.predecessor,
+            Some(self.operation),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+impl Witness for PhaseBalanceViolation {
+    fn events(&self) -> Vec<EventId> {
+        Vec::new()
+    }
+}
+
+impl Witness for MemoryConflict {
+    fn events(&self) -> Vec<EventId> {
+        vec![self.earlier, self.later]
+    }
+}
+
+impl Witness for ProxyOrderViolation {
+    fn events(&self) -> Vec<EventId> {
+        vec![self.generic, self.asynchronous]
+    }
+}
+
+impl Witness for TensorConflict {
+    fn events(&self) -> Vec<EventId> {
+        vec![self.earlier, self.later]
+    }
+}
+
+impl Witness for LifetimeViolation {
+    fn events(&self) -> Vec<EventId> {
+        match self {
+            LifetimeViolation::DoubleFree { alloc, deallocs } => std::iter::once(*alloc)
+                .chain(deallocs.iter().copied())
+                .collect(),
+            LifetimeViolation::NeverDeallocated { alloc } => vec![*alloc],
+            LifetimeViolation::UnmatchedDeallocation { dealloc } => vec![*dealloc],
+            LifetimeViolation::Uncovered { effect, alloc } => {
+                std::iter::once(*effect).chain(*alloc).collect()
+            }
+            LifetimeViolation::UseNotBeforeDeallocation {
+                effect,
+                alloc,
+                dealloc,
+            } => vec![*alloc, *effect, *dealloc],
+            LifetimeViolation::AllocationNotBeforeUse { effect, alloc } => vec![*alloc, *effect],
+        }
+    }
+}
+
+impl Witness for AllocationOrderViolation {
+    fn events(&self) -> Vec<EventId> {
+        match *self {
+            AllocationOrderViolation::Unordered { earlier, later }
+            | AllocationOrderViolation::IncreasingColumnCount { earlier, later, .. } => {
+                vec![earlier, later]
+            }
+        }
+    }
+}
+
+impl Witness for AllocationPermitViolation {
+    fn events(&self) -> Vec<EventId> {
+        vec![self.allocation, self.relinquish]
+    }
+}
+
+impl Witness for ReleaseOrderViolation {
+    fn events(&self) -> Vec<EventId> {
+        match *self {
+            ReleaseOrderViolation::LateStart { release, .. }
+            | ReleaseOrderViolation::SkippedPhase { release, .. } => vec![release],
+            ReleaseOrderViolation::Unordered { earlier, later } => vec![earlier, later],
+        }
+    }
+}
+
+fn finding(text: String, mut events: Vec<EventId>) -> Finding {
+    let mut seen = std::collections::HashSet::new();
+    events.retain(|e| seen.insert(*e));
+    Finding { text, events }
+}
+
+fn summarize<E: fmt::Debug, V: Witness>(
     property: Property,
     result: &PropertyResult<E, V>,
 ) -> PropertySummary {
     let (evidence, findings) = match result {
         PropertyResult::Pass(e) => (Some(format!("{e:?}")), Vec::new()),
-        PropertyResult::Fail(v) => (None, v.iter().map(|v| format!("{v:?}")).collect()),
-        PropertyResult::Unknown(u) => (None, u.iter().map(render_unresolved).collect()),
+        PropertyResult::Fail(v) => (
+            None,
+            v.iter()
+                .map(|v| finding(format!("{v:?}"), v.events()))
+                .collect(),
+        ),
+        PropertyResult::Unknown(u) => (
+            None,
+            u.iter()
+                .map(|u| finding(render_unresolved(u), u.events.clone()))
+                .collect(),
+        ),
     };
     PropertySummary {
         property,

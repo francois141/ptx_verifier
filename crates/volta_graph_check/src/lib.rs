@@ -38,4 +38,4 @@ pub mod sync_search;
 pub mod tensor_order;
 
 pub use result::{Property, PropertyResult, Unresolved, Verdict};
-pub use suite::{Deadlock, GraphConclusion, GraphReport, PropertySummary, check_graph};
+pub use suite::{Deadlock, Finding, GraphConclusion, GraphReport, PropertySummary, check_graph};
