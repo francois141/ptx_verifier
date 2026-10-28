@@ -673,6 +673,21 @@ fn test_movmatrix_transpose() {
     analyze!("success/movmatrix_transpose", config);
 }
 
+/// `mma.sync...f32.bf16.bf16.f32` shares f16's m16n8k16 fragments.
+#[test]
+fn test_mma_bf16() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        array("a", 0x10000, 2, 256, ArrayKind::Input),
+        array("b", 0x20000, 2, 128, ArrayKind::Input),
+        array("out", 0x30000, 4, 4, ArrayKind::Output),
+    ];
+    config.params = ["a", "b", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/mma_bf16", config);
+}
+
 /// `mma.sync`'s accumulator may be an immediate (nvcc's `{0f00000000, ...}`
 /// first-tile idiom): with all-zero packed A/B, `D = C`, so thread 0's
 /// registers get the literal `{1.0, 0, 0, 0}`.

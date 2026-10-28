@@ -272,7 +272,7 @@ pub(super) fn lower_mma(
     // Modeled fragments: f16 pairs (m16n8k16), tf32 (m16n8k8/k4), or packed
     // e4m3/s8 bytes (m16n8k32) into f32, s32 or packed f16; any other
     // combination would use the wrong layout.
-    const MODELED_TYPES: [[ScalarType; 4]; 5] = [
+    const MODELED_TYPES: [[ScalarType; 4]; 6] = [
         [
             ScalarType::F32,
             ScalarType::F16,
@@ -291,6 +291,12 @@ pub(super) fn lower_mma(
             ScalarType::F32,
             ScalarType::Tf32,
             ScalarType::Tf32,
+            ScalarType::F32,
+        ],
+        [
+            ScalarType::F32,
+            ScalarType::Bf16,
+            ScalarType::Bf16,
             ScalarType::F32,
         ],
         [
@@ -314,14 +320,14 @@ pub(super) fn lower_mma(
             "mma",
             format!(
                 "type combination {:?} (only .f32.f16.f16.f32, .f16.f16.f16.f16, \
-                 .f32.tf32.tf32.f32, .f32.e4m3.e4m3.f32 and .s32.s8.s8.s32 are \
-                 modeled)",
+                 .f32.bf16.bf16.f32, .f32.tf32.tf32.f32, .f32.e4m3.e4m3.f32 and \
+                 .s32.s8.s8.s32 are modeled)",
                 types
             ),
         ));
     }
     let shape_supported = match types[1] {
-        ScalarType::F16 => shape == MmaShape::new(16, 8, 16),
+        ScalarType::F16 | ScalarType::Bf16 => shape == MmaShape::new(16, 8, 16),
         ScalarType::E4m3 | ScalarType::S8 => shape == MmaShape::new(16, 8, 32),
         _ => shape == MmaShape::new(16, 8, 8) || shape == MmaShape::new(16, 8, 4),
     };
@@ -329,7 +335,7 @@ pub(super) fn lower_mma(
         return Err(unsupported(
             "mma",
             format!(
-                "shape {} with {:?} multiplicands (f16 needs m16n8k16; tf32 needs \
+                "shape {} with {:?} multiplicands (f16 and bf16 need m16n8k16; tf32 needs \
                  m16n8k8 or m16n8k4; e4m3 and s8 need m16n8k32)",
                 shape, types[1]
             ),

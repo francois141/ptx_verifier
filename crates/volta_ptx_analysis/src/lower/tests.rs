@@ -979,14 +979,16 @@ fn test_wmma_requires_space_and_f32_accumulators() {
 #[test]
 fn test_mma_type_combination_checked() {
     assert_rejected(
-        "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 \
+        "mma.sync.aligned.m16n8k16.row.col.f32.f16.bf16.f32 \
          {%f0, %f1, %f2, %f3}, {%r0, %r1, %r2, %r3}, {%r0, %r1}, {%f0, %f1, %f2, %f3};",
         "f32.f16.f16.f32",
     );
-    assert_lowers(
-        "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 \
-         {%f0, %f1, %f2, %f3}, {%r0, %r1, %r2, %r3}, {%r0, %r1}, {%f0, %f1, %f2, %f3};",
-    );
+    for types in ["f32.f16.f16.f32", "f32.bf16.bf16.f32"] {
+        assert_lowers(&format!(
+            "mma.sync.aligned.m16n8k16.row.col.{types} \
+             {{%f0, %f1, %f2, %f3}}, {{%r0, %r1, %r2, %r3}}, {{%r0, %r1}}, {{%f0, %f1, %f2, %f3}};"
+        ));
+    }
 }
 
 #[test]

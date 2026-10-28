@@ -263,7 +263,7 @@ impl Interpreter<'_> {
                 ..
             } => {
                 let supported = match a_type {
-                    ScalarType::F16 => *shape == MmaShape::new(16, 8, 16),
+                    ScalarType::F16 | ScalarType::Bf16 => *shape == MmaShape::new(16, 8, 16),
                     ScalarType::Tf32 => {
                         *shape == MmaShape::new(16, 8, 8) || *shape == MmaShape::new(16, 8, 4)
                     }
