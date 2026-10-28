@@ -1,6 +1,11 @@
 //! Analysis configuration: launch dimensions, parameter values, and the
 //! input/output arrays that define the kernel's memory interface.
 
+use crate::ir::tensor_map::{
+    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
+    TensorSwizzleMode,
+};
+
 /// Value bound to a kernel parameter, positional by `ParamId` order.
 #[derive(Debug, Clone)]
 pub enum ParamValue {
@@ -12,6 +17,84 @@ pub enum ParamValue {
     SymFloat(String),
     /// Pointer to a named array from `AnalysisConfig::arrays`
     ArrayPtr(String),
+    /// A by-value struct (a `.param .b8 name[N]` aggregate) as the concrete
+    /// bytes of its fields; the bytes no field covers read `Undefined`
+    Struct(Vec<StructField>),
+}
+
+/// One field of a struct parameter, at a byte offset inside it.
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub offset: u64,
+    pub value: FieldValue,
+}
+
+#[derive(Debug, Clone)]
+pub enum FieldValue {
+    /// A little-endian integer; `value` holds its two's-complement bits, so a
+    /// signed and an unsigned field of one width store alike
+    Int { value: i64, width: IntWidth },
+    /// The 8-byte base address of a named array from `AnalysisConfig::arrays`
+    ArrayPtr(String),
+    /// A 128-byte `CUtensorMap` (a TMA descriptor the host encoded), given
+    /// by its fields since its bytes are opaque (PTX ISA 5.5.8)
+    TensorMap(Box<TensorMapValue>),
+}
+
+/// The fields of a tensor map, as `tensormap.replace` names them (PTX ISA 9.7.9.27).
+#[derive(Debug, Clone)]
+pub struct TensorMapValue {
+    /// The array whose base is the map's global address
+    pub array: String,
+    pub elemtype: TensorElemType,
+    /// Each dimension's size in elements, innermost first
+    pub dims: Vec<u64>,
+    /// The byte stride of each dimension but the innermost
+    pub strides: Vec<u64>,
+    pub box_dims: Vec<u32>,
+    pub element_strides: Vec<u32>,
+    pub interleave: TensorInterleaveLayout,
+    pub swizzle: TensorSwizzleMode,
+    pub swizzle_atomicity: TensorSwizzleAtomicity,
+    pub fill: TensorFillMode,
+}
+
+/// The size of a tensor-map object (`.b1024`).
+pub const TENSOR_MAP_BYTES: u64 = 128;
+
+impl FieldValue {
+    pub fn width_bytes(&self) -> u64 {
+        match self {
+            FieldValue::Int { width, .. } => width.bytes(),
+            FieldValue::ArrayPtr(_) => 8,
+            FieldValue::TensorMap(_) => TENSOR_MAP_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntWidth {
+    W1,
+    W2,
+    W4,
+    W8,
+}
+
+impl IntWidth {
+    pub fn bytes(self) -> u64 {
+        match self {
+            IntWidth::W1 => 1,
+            IntWidth::W2 => 2,
+            IntWidth::W4 => 4,
+            IntWidth::W8 => 8,
+        }
+    }
+
+    /// Whether `value` is the bits of a signed or an unsigned integer of this width.
+    pub fn holds(self, value: i64) -> bool {
+        let bits = 8 * self.bytes();
+        bits == 64 || (-(1i64 << (bits - 1))..(1i64 << bits)).contains(&value)
+    }
 }
 
 /// Whether an array is a kernel input (pre-initialized with fresh symbols),
@@ -166,6 +249,9 @@ impl AnalysisConfig {
                     i
                 ));
             }
+            if let ParamValue::Struct(fields) = value {
+                validate_struct(i, fields)?;
+            }
             if let ParamValue::SymFloat(name) = value {
                 if name.is_empty() {
                     return Err("sym: parameter name is empty".to_string());
@@ -188,6 +274,65 @@ impl AnalysisConfig {
             }
         }
         Ok(())
+    }
+}
+
+/// A struct parameter's fields fit their widths and their byte ranges are disjoint.
+fn validate_struct(param: usize, fields: &[StructField]) -> Result<(), String> {
+    let mut ranges = Vec::new();
+    for field in fields {
+        if let FieldValue::Int { value, width } = field.value
+            && !width.holds(value)
+        {
+            return Err(format!(
+                "parameter {param}: the field at byte {} holds {value}, which does not fit in {} bytes",
+                field.offset,
+                width.bytes()
+            ));
+        }
+        if let FieldValue::TensorMap(map) = &field.value {
+            validate_tensor_map_field(param, field.offset, map)?;
+        }
+        let end = field
+            .offset
+            .checked_add(field.value.width_bytes())
+            .ok_or_else(|| {
+                format!(
+                    "parameter {param}: the field at byte {} overflows",
+                    field.offset
+                )
+            })?;
+        ranges.push((field.offset, end));
+    }
+    ranges.sort();
+    for pair in ranges.windows(2) {
+        if pair[1].0 < pair[0].1 {
+            return Err(format!(
+                "parameter {param}: the fields at bytes {} and {} overlap",
+                pair[0].0, pair[1].0
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_tensor_map_field(
+    param: usize,
+    offset: u64,
+    map: &TensorMapValue,
+) -> Result<(), String> {
+    let rank = map.dims.len();
+    let consistent = (1..=5).contains(&rank)
+        && map.strides.len() + 1 == rank
+        && map.box_dims.len() == rank
+        && map.element_strides.len() == rank;
+    if consistent {
+        Ok(())
+    } else {
+        Err(format!(
+            "parameter {param}: the tensor map at byte {offset} needs 1 to 5 dims, one stride \
+             fewer, and as many box dims and element strides"
+        ))
     }
 }
 
@@ -260,6 +405,25 @@ mod tests {
         let mut inf = AnalysisConfig::new((1, 1, 1));
         inf.params.push(ParamValue::Float(f64::NEG_INFINITY));
         assert_eq!(inf.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_overlapping_or_overflowing_struct_fields() {
+        let int = |offset, value, width| StructField {
+            offset,
+            value: FieldValue::Int { value, width },
+        };
+        let config = |fields| {
+            let mut config = AnalysisConfig::new((1, 1, 1));
+            config.params.push(ParamValue::Struct(fields));
+            config.validate()
+        };
+        assert_eq!(
+            config(vec![int(0, -1, IntWidth::W4), int(4, 255, IntWidth::W1)]),
+            Ok(())
+        );
+        assert!(config(vec![int(0, 1, IntWidth::W8), int(4, 1, IntWidth::W4)]).is_err());
+        assert!(config(vec![int(0, 256, IntWidth::W1)]).is_err());
     }
 
     /// A base that is not a multiple of the element width would make every

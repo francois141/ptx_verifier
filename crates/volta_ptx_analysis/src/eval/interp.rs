@@ -294,6 +294,12 @@ impl<'p> Interpreter<'p> {
                     })?;
                     Value::Scalar(arena.int(array.base as i64))
                 }
+                ParamValue::Struct(_) => {
+                    return Err(EvalError::Config {
+                        message: "struct parameters are not supported by the interpreter"
+                            .to_string(),
+                    });
+                }
             };
             let _ = params.push(v);
         }
