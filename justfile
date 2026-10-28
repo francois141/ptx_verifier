@@ -52,6 +52,18 @@ format-python:
 loc *args:
     python3 scripts/loc.py {{args}}
 
+external:
+    python3 external/races.py
+
 # Check the ThunderKittens kernels for data races
 kittens:
     python3 external/races.py --framework thunderkittens
+
+# Check the TritonBench kernels for data races
+tritonbench:
+    python3 external/races.py --framework tritonbench
+
+# Compile the external kernels to PTX again (in Docker on macOS)
+setup:
+    uv run external/extraction/tritonbench.py
+    uv run external/extraction/thunderkittens.py

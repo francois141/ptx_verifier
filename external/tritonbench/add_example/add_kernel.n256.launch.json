@@ -1,0 +1,20 @@
+{
+  "description": "TritonBench add_example.py: add_kernel on in_ptr0 float32[256], in_ptr1 float32[256], out_ptr float32[256]",
+  "kernel": "add_kernel",
+  "block": 128,
+  "grid": [64, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "in_ptr0", "kind": "inout", "dtype": "f32", "shape": [256]},
+    {"name": "in_ptr1", "kind": "inout", "dtype": "f32", "shape": [256]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [256]}
+  ],
+  "params": [
+    {"name": "in_ptr0", "ptr": "in_ptr0"},
+    {"name": "in_ptr1", "ptr": "in_ptr1"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "n_elements", "int": 256},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

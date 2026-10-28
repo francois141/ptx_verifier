@@ -1,3 +1,6 @@
+[submodule "external/TritonBench"]
+	path = external/sources/TritonBench
+	url = https://github.com/thunlp/TritonBench.git
 [submodule "external/ThunderKittens"]
 	path = external/sources/ThunderKittens
 	url = https://github.com/HazyResearch/ThunderKittens.git

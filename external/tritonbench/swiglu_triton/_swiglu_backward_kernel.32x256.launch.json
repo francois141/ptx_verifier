@@ -1,0 +1,20 @@
+{
+  "description": "TritonBench swiglu_triton.py: _swiglu_backward_kernel on dc_ptr float32[32, 256], a_ptr float32[32, 256], b_ptr float32[32, 256]",
+  "kernel": "_swiglu_backward_kernel",
+  "block": 128,
+  "grid": [32, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "dc_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 256]},
+    {"name": "a_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 256]},
+    {"name": "b_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 256]}
+  ],
+  "params": [
+    {"name": "dc_ptr", "ptr": "dc_ptr"},
+    {"name": "a_ptr", "ptr": "a_ptr"},
+    {"name": "b_ptr", "ptr": "b_ptr"},
+    {"name": "stride", "int": 256},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}
