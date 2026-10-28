@@ -1555,6 +1555,7 @@ impl<'p> Interpreter<'p> {
 
             // Tensor-core operations synchronize the full warp.
             LoweredInstr::Ldmatrix { .. }
+            | LoweredInstr::Movmatrix { .. }
             | LoweredInstr::Mma { .. }
             | LoweredInstr::WmmaLoad { .. }
             | LoweredInstr::WmmaStore { .. }

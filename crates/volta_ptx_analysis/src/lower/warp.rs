@@ -186,6 +186,35 @@ pub(super) fn lower_ldmatrix(
     Ok(())
 }
 
+/// Lower `movmatrix.sync.aligned.m8n8.trans.b16 d, a`, its one defined form.
+pub(super) fn lower_movmatrix(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let given: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    if given != ["sync", "aligned", "m8n8", "trans", "b16"] {
+        return Err(LowerError::InvalidInstruction {
+            instruction: "movmatrix".to_string(),
+            reason: format!(
+                "expected movmatrix.sync.aligned.m8n8.trans.b16, got movmatrix.{}",
+                given.join(".")
+            ),
+        });
+    }
+    let [dst, src] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: "movmatrix".to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected exactly a destination and a source register",
+        });
+    };
+    let dst = ctx.resolve_dst(dst)?;
+    let src = ctx.resolve_operand(src)?;
+    ctx.emit(LoweredInstr::Movmatrix { dst, src }, predicate)
+}
+
 /// Lower `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` and the tf32
 /// (`m16n8k8`/`m16n8k4`) and fp8 (`m16n8k32.f32.e4m3.e4m3.f32`) forms.
 pub(super) fn lower_mma(

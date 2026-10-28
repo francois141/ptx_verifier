@@ -742,6 +742,11 @@ pub enum LoweredInstr {
         trans: bool,
     },
 
+    /// `movmatrix.sync.aligned.m8n8.trans.b16` (PTX ISA 9.7.14.5.16): the
+    /// warp's 8x8 b16 matrix, in `ldmatrix`'s fragment layout, transposed
+    /// across lanes (`eval::warp::exec_movmatrix`).
+    Movmatrix { dst: RegId, src: Operand },
+
     /// `stmatrix...m8n8.shared.b16` (PTX ISA 9.7.14.5.17): `ldmatrix`'s
     /// store-direction mirror, with the same row addressing
     /// (`eval::warp::exec_stmatrix`) and `shared::cta`-only scope.
@@ -1113,6 +1118,7 @@ define_instr_kinds!(
     ShflSync,
     ElectSync,
     Ldmatrix,
+    Movmatrix,
     Mma,
     WmmaLoad,
     WmmaStore,

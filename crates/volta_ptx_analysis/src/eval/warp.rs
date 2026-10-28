@@ -56,6 +56,13 @@ fn elem_offset(layout: MmaLayout, row: u32, col: u32, stride: u64) -> u64 {
     }
 }
 
+/// The row and first column of the two adjacent `movmatrix` elements a lane
+/// holds (`ldmatrix`'s fragment layout, PTX ISA 9.7.14.5.16).
+fn movmatrix_position(t: ThreadId) -> (usize, usize) {
+    let lane = (t.0 % WARP_SIZE) as usize;
+    (lane / 4, 2 * (lane % 4))
+}
+
 /// `ldmatrix` row alignment: each 8x8 b16 row is one 16-byte access, so every
 /// lane-supplied row address must be 16-aligned (PTX ISA 9.7.14.5.15).
 const LDMATRIX_ROW_BYTES: u64 = 16;
@@ -142,6 +149,7 @@ impl Interpreter<'_> {
             } => {
                 self.exec_stmatrix(pc, members, addr, *addr_offset, src, *num, *trans)?;
             }
+            LoweredInstr::Movmatrix { dst, src } => self.exec_movmatrix(pc, members, *dst, src)?,
             LoweredInstr::Mma { .. } => self.exec_mma(pc, members, &instr)?,
             LoweredInstr::WmmaLoad { .. } => self.exec_wmma_load(pc, members, &instr)?,
             LoweredInstr::WmmaStore { .. } => self.exec_wmma_store(pc, members, &instr)?,
@@ -232,6 +240,8 @@ impl Interpreter<'_> {
                 }
                 Ok(())
             }
+            // `.aligned`: every lane supplies one register of the matrix.
+            LoweredInstr::Movmatrix { .. } => self.require_live_warp(pc, members, "movmatrix"),
             LoweredInstr::Stmatrix { src, num, .. } => {
                 // Same rationale as `Ldmatrix` above (its store-direction
                 // mirror): the address-supplying lanes' registers must be
@@ -506,6 +516,46 @@ impl Interpreter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `movmatrix.sync.aligned.m8n8.trans.b16`: the warp holds an 8x8 matrix,
+    /// two elements per lane, and each lane receives the elements at the same
+    /// position of the transposed matrix.
+    fn exec_movmatrix(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        dst: RegId,
+        src: &Operand,
+    ) -> EvalResult<()> {
+        let mut matrix = [[self.undefined; 8]; 8];
+        for &m in members {
+            let (row, col) = movmatrix_position(m);
+            let value = self.operand_value(m, pc, src)?;
+            let (lo, hi) = self.b16_halves(m, pc, value)?;
+            matrix[row][col] = lo;
+            matrix[row][col + 1] = hi;
+        }
+        for &m in members {
+            let (row, col) = movmatrix_position(m);
+            let transposed = Value::Pair(matrix[col][row], matrix[col + 1][row]);
+            self.write_reg(m, dst, transposed);
+        }
+        Ok(())
+    }
+
+    /// The two b16 elements packed in a 32-bit register. A plain scalar is
+    /// rejected: decoding its bits needs f16 or bf16, which `.b16` leaves open.
+    fn b16_halves(&self, t: ThreadId, pc: InstrId, v: Value) -> EvalResult<(ExprId, ExprId)> {
+        match v {
+            Value::Pair(lo, hi) => Ok((lo, hi)),
+            Value::Scalar(e) if e == self.undefined => Ok((e, e)),
+            _ => Err(EvalError::ValueKindMismatch {
+                thread: t,
+                pc,
+                what: "movmatrix source that is not a packed pair of b16 elements",
+            }),
+        }
     }
 
     /// `ldmatrix`'s store-direction mirror: same row-address computation, but

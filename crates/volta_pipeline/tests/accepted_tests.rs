@@ -647,6 +647,32 @@ fn test_ldmatrix_trans_mapping() {
     analyze!("success/ldmatrix_trans_mapping", config);
 }
 
+fn array(name: &str, base: u64, elem_width: u64, len: u64, kind: ArrayKind) -> ArrayDef {
+    ArrayDef {
+        name: name.to_string(),
+        base,
+        elem_width,
+        len,
+        kind,
+    }
+}
+
+/// `movmatrix.sync.aligned.m8n8.trans.b16` transposes the warp's 8x8 matrix:
+/// out[j] = in[8(j%8) + j/8].
+#[test]
+fn test_movmatrix_transpose() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 2, 64, ArrayKind::Input),
+        array("out", 0x20000, 2, 64, ArrayKind::Output),
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/movmatrix_transpose", config);
+}
+
 /// `mma.sync`'s accumulator may be an immediate (nvcc's `{0f00000000, ...}`
 /// first-tile idiom): with all-zero packed A/B, `D = C`, so thread 0's
 /// registers get the literal `{1.0, 0, 0, 0}`.

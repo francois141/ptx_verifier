@@ -58,8 +58,8 @@ use tma::{
     lower_tensormap_cp_fenceproxy, lower_tensormap_replace,
 };
 use warp::{
-    lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_shfl_sync,
-    lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
+    lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_movmatrix,
+    lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
 };
 
 /// Lower a PTX function to a LoweredProgram
@@ -401,6 +401,11 @@ fn lower_parsed_instruction(
             modifiers,
             operands,
         } => lower_ldmatrix(ctx, modifiers, operands, predicate),
+        ParsedInstruction::Other {
+            kind: InstrKind::Movmatrix,
+            modifiers,
+            operands,
+        } => lower_movmatrix(ctx, modifiers, operands, predicate),
         ParsedInstruction::Other {
             kind: InstrKind::Mma,
             modifiers,

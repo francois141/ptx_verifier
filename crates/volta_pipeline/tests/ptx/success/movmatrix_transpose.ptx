@@ -1,0 +1,25 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Each lane loads row l/4, columns 2(l%4) and +1 of a row-major 8x8 b16
+// matrix and stores the same elements of its transpose: out[j] = in[8(j%8) + j/8].
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<6>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.b32 %r2, [%rd4];
+    movmatrix.sync.aligned.m8n8.trans.b16 %r3, %r2;
+    add.s64 %rd5, %rd2, %rd3;
+    st.global.b32 [%rd5], %r3;
+    ret;
+}
