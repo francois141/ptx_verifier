@@ -121,7 +121,7 @@ impl<'p> Interpreter<'p> {
             OperandFormat::decode(kind, field).ok_or_else(|| {
                 unsupported(format!(
                     "tcgen05.mma {kind:?} {operand} type field {field} is not modeled \
-                     (bf16 and the 6/4-bit types are not; only f16 for .kind::f16 and \
+                     (the 6/4-bit types are not; only f16 and bf16 for .kind::f16 and \
                      e4m3/e5m2 for .kind::f8f6f4)"
                 ))
             })
@@ -319,6 +319,7 @@ impl<'p> Interpreter<'p> {
                 };
                 let ty = match format {
                     OperandFormat::F16 => ScalarType::F16,
+                    OperandFormat::Bf16 => ScalarType::Bf16,
                     OperandFormat::E4m3 => ScalarType::E4m3,
                     OperandFormat::E5m2 => ScalarType::E5m2,
                 };

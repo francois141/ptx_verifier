@@ -578,9 +578,9 @@ fn test_tcgen05_mma_rejects_unmodeled_kind() {
     }
 }
 
-/// A bf16 `idesc` operand type is rejected at eval with a message specific to
-/// that gap, proving validation reports the actual problem, not the
-/// descriptor-addressing error.
+/// An unmodeled `idesc` operand type (`.kind::f16` A type 2, neither f16 nor
+/// bf16) is rejected at eval with a message specific to that gap, proving
+/// validation reports the actual problem, not the descriptor-addressing error.
 #[test]
 fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
     let module = ptx!(parse "failing/tcgen05_mma_rejects_unmodeled_idesc_fields");
@@ -588,8 +588,8 @@ fn test_tcgen05_mma_rejects_unmodeled_idesc_fields() {
     match &err {
         AnalysisError::Eval(EvalError::Unsupported { what, .. }) => {
             assert!(
-                what.contains("bf16"),
-                "expected the bf16-operand error, got: {}",
+                what.contains("A type field 2 is not modeled"),
+                "expected the A-type error, got: {}",
                 what
             );
         }

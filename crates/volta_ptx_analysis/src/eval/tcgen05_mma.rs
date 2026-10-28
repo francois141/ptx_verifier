@@ -55,16 +55,18 @@ pub enum KSelect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperandFormat {
     F16,
+    Bf16,
     E4m3,
     E5m2,
 }
 
 impl OperandFormat {
-    /// The modeled formats; bf16 and the 6/4-bit `.kind::f8f6f4` types
-    /// (which the ISA pads inside shared memory) are `None`.
+    /// The modeled formats; the 6/4-bit `.kind::f8f6f4` types (which the ISA
+    /// pads inside shared memory) are `None`.
     pub fn decode(kind: Tcgen05MmaKind, type_field: u32) -> Option<Self> {
         match (kind, type_field) {
             (Tcgen05MmaKind::F16, 0) => Some(Self::F16),
+            (Tcgen05MmaKind::F16, 1) => Some(Self::Bf16),
             (Tcgen05MmaKind::F8f6f4, 0) => Some(Self::E4m3),
             (Tcgen05MmaKind::F8f6f4, 1) => Some(Self::E5m2),
             _ => None,
@@ -73,7 +75,7 @@ impl OperandFormat {
 
     pub fn bytes(self) -> u64 {
         match self {
-            Self::F16 => 2,
+            Self::F16 | Self::Bf16 => 2,
             Self::E4m3 | Self::E5m2 => 1,
         }
     }
@@ -392,6 +394,10 @@ mod tests {
         assert_eq!(
             OperandFormat::decode(Tcgen05MmaKind::F16, d.atype),
             Some(OperandFormat::F16)
+        );
+        assert_eq!(
+            OperandFormat::decode(Tcgen05MmaKind::F16, 1),
+            Some(OperandFormat::Bf16)
         );
         assert_eq!(k_dim(kind), 32);
     }
