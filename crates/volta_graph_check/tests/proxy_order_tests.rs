@@ -140,17 +140,16 @@ fn generic_read_then_async_overwrite(fenced: bool) -> EventGraph {
     s.completed(2).0
 }
 
+/// Only a read of bytes the other proxy wrote needs a fence: a generic read
+/// the synchronization orders before an async overwrite passes, fenced or not.
 #[test]
-fn a_generic_read_before_an_async_overwrite_needs_a_fence_too() {
-    let unfenced = check(&generic_read_then_async_overwrite(false));
-    let [v] = unfenced.violations() else {
-        panic!("{unfenced:?}");
-    };
-    assert_eq!(v.kind, ConflictKind::ReadWrite);
-    assert_eq!(
-        check(&generic_read_then_async_overwrite(true)).verdict(),
-        Verdict::Pass
-    );
+fn a_generic_read_before_an_async_overwrite_needs_no_fence() {
+    for fenced in [false, true] {
+        assert_eq!(
+            check(&generic_read_then_async_overwrite(fenced)).verdict(),
+            Verdict::Pass
+        );
+    }
 }
 
 #[test]

@@ -1,10 +1,10 @@
-//! **Proxy ordering verification** (§1.3, Algorithm 4): every ordered conflicting pair of `M`
+//! **Proxy ordering verification** (§1.3, Algorithm 4): every ordered write -> read pair of `M`
 //! whose effects use different proxies has a covering proxy fence ordered between them.
 //!
 //! ```text
 //! require: validated H; memory-conflict check passed
 //! R <- TRANSITIVECLOSURE(H);  F <- {f in V(H) | ISPROXYFENCE(f)}
-//! for all (a, b) in ORDEREDCONFLICTS(M, R):
+//! for all (a, b) in ORDEREDCONFLICTS(M, R) with a a write and b a read:
 //!     if SAMEPROXY(a, b) then continue
 //!     found <- false
 //!     for all f in F with (a, f) in R:
@@ -15,6 +15,9 @@
 //!
 //! * `H = G_HB` ([`ValidatedGraph`]); [`MemoryConflictFree`] is the prerequisite, so every
 //!   overlapping pair with a write is ordered and `ORDEREDCONFLICTS` orients it by trace order.
+//! * Only a read of bytes the other proxy wrote needs a fence: a read -> write or write -> write
+//!   pair across proxies is taken as ordered by the synchronization that orders it in `H`
+//!   (a TMA load refilling a buffer that `ldmatrix` read, or an async read before a generic write).
 //! * `SAMEPROXY`: both effects use the same proxy. The check never consults the target: a
 //!   proxy is a property of the instruction alone. Virtual aliases are not modeled.
 //! * `ISPROXYFENCE`: an explicit `fence.proxy.async` (over one space, or every space), a
@@ -27,17 +30,16 @@
 //!   generic and the async proxy in its space, when the thread of `a` or of `b` executes it; a
 //!   completion observation covers its operation's effects before later generic accesses.
 //!   Every `R` path out of an async effect passes through such an observation, so an ordered
-//!   async-effect -> generic pair of an implicitly fenced operation is always covered. The
-//!   search below runs for an async write of another operation before a generic access, and
-//!   for the generic -> async-proxy and generic -> tensor-map-proxy pairs, where only explicit
-//!   fences can cover. An async read before a generic write needs no fence once the read is
-//!   ordered before the write, so a `tcgen05.mma`'s operand reads never need one.
+//!   async-write -> generic-read pair of an implicitly fenced operation is always covered. The
+//!   search below runs for an async write of another operation before a generic read, and for
+//!   a generic write before an async-proxy or tensor-map-proxy read, where only explicit fences
+//!   can cover.
 //! * The tensor-map proxy fences are one-directional and come in pairs (PTX ISA 9.7.14.4):
 //!   a generic write `a` before a `cp.async.bulk.tensor`'s read `b` of its tensor map is
 //!   covered by a release on `a`'s thread that `a` reaches, ordered before an acquire of `b`'s
 //!   map on `b`'s issuing thread, which reaches `b`.
-//! * Search: for a later async-proxy effect `b`, it suffices to try, per actor (a thread, or one
-//!   async op) with conflicting generic effects on `b`'s bytes, its latest such effect `a`, and
+//! * Search: for a later async-proxy read `b`, it suffices to try, per actor (a thread, or one
+//!   async op) with generic writes to `b`'s bytes, its latest such write `a`, and
 //!   on each candidate thread only its latest suitable fence `f` with `(f, b) ∈ R`: if that
 //!   pair is uncovered, so is the search, and if it is covered, program order (or the
 //!   operation's shared observers) covers the actor's earlier effects through the same `f`.
@@ -61,7 +63,7 @@ use crate::result::PropertyResult;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyEvidence {
-    /// Generic -> async-proxy pairs found covered (one per actor and later effect).
+    /// Cross-proxy write -> read pairs found covered (one per actor and later read).
     pub covered_pairs: u64,
 }
 
@@ -98,29 +100,6 @@ enum Actor {
     Op(AsyncOpId),
 }
 
-/// An actor's latest generic-proxy effects on one byte.
-#[derive(Debug, Clone, Copy, Default)]
-struct Latest {
-    read: Option<EventId>,
-    write: Option<EventId>,
-}
-
-impl Latest {
-    /// The latest effect conflicting with a later access in `mode`, and its own mode.
-    fn conflicting(&self, mode: AccessMode) -> Option<(EventId, AccessMode)> {
-        let a = match mode {
-            AccessMode::Read => self.write,
-            AccessMode::Write => self.read.max(self.write),
-        }?;
-        let earlier = if self.write == Some(a) {
-            AccessMode::Write
-        } else {
-            AccessMode::Read
-        };
-        Some((a, earlier))
-    }
-}
-
 /// One explicit proxy fence's program-order index and the clock it was visited with.
 #[derive(Debug, Clone)]
 struct Fence {
@@ -145,7 +124,8 @@ pub fn check_proxy_order(
     let mut fences: HashMap<ThreadIx, Vec<(Option<Space>, Fence)>> = HashMap::new();
     let mut releases: HashMap<ThreadIx, Vec<Fence>> = HashMap::new();
     let mut acquires: HashMap<ThreadIx, Vec<(u64, Fence)>> = HashMap::new();
-    let mut generic: HashMap<ByteLocation, BTreeMap<Actor, Latest>> = HashMap::new();
+    // Each actor's latest generic write of each byte.
+    let mut generic: HashMap<ByteLocation, BTreeMap<Actor, EventId>> = HashMap::new();
     let mut unfenced: HashMap<ByteLocation, BTreeMap<AsyncOpId, EventId>> = HashMap::new();
     let mut checked: HashSet<(EventId, EventId)> = HashSet::new();
     let mut covered_pairs = 0;
@@ -186,6 +166,10 @@ pub fn check_proxy_order(
                     _ => Actor::Thread(access.attributed),
                 };
                 for location in bytes(access).filter(|l| written.contains(l)) {
+                    if access.mode == AccessMode::Write {
+                        generic.entry(location).or_default().insert(actor, e);
+                        continue;
+                    }
                     for &a in unfenced.get(&location).into_iter().flat_map(|w| w.values()) {
                         if !checked.insert((a, e)) {
                             continue;
@@ -195,8 +179,7 @@ pub fn check_proxy_order(
                             covered_pairs += 1;
                         } else {
                             unproved = Some(ProxyOrderViolation {
-                                kind: ConflictKind::of(AccessMode::Write, access.mode)
-                                    .expect("the async side writes"),
+                                kind: ConflictKind::WriteRead,
                                 location,
                                 generic: e,
                                 asynchronous: a,
@@ -204,15 +187,6 @@ pub fn check_proxy_order(
                             });
                             return;
                         }
-                    }
-                    let latest = generic
-                        .entry(location)
-                        .or_default()
-                        .entry(actor)
-                        .or_default();
-                    match access.mode {
-                        AccessMode::Read => latest.read = Some(e),
-                        AccessMode::Write => latest.write = Some(e),
                     }
                 }
             }
@@ -225,14 +199,14 @@ pub fn check_proxy_order(
                         unfenced.entry(location).or_default().insert(op, e);
                     }
                 }
+                if access.mode == AccessMode::Write {
+                    return;
+                }
                 for location in bytes(access) {
-                    let Some(actors) = generic.get(&location) else {
+                    let Some(writers) = generic.get(&location) else {
                         continue;
                     };
-                    for latest in actors.values() {
-                        let Some((a, earlier)) = latest.conflicting(access.mode) else {
-                            continue;
-                        };
+                    for &a in writers.values() {
                         if !checked.insert((a, e)) {
                             continue;
                         }
@@ -241,8 +215,7 @@ pub fn check_proxy_order(
                             covered_pairs += 1;
                         } else {
                             unproved = Some(ProxyOrderViolation {
-                                kind: ConflictKind::of(earlier, access.mode)
-                                    .expect("one side of the pair writes"),
+                                kind: ConflictKind::WriteRead,
                                 location,
                                 generic: a,
                                 asynchronous: e,
@@ -256,7 +229,7 @@ pub fn check_proxy_order(
             Proxy::TensorMap => {
                 let reader = access.attributed;
                 for location in bytes(access) {
-                    let Some(actors) = generic.get(&location) else {
+                    let Some(writers) = generic.get(&location) else {
                         continue;
                     };
                     let acquire = acquires.get(&reader).and_then(|fs| {
@@ -269,10 +242,7 @@ pub fn check_proxy_order(
                             })
                             .map(|(_, f)| f)
                     });
-                    for latest in actors.values() {
-                        let Some(a) = latest.write else {
-                            continue;
-                        };
+                    for &a in writers.values() {
                         if !checked.insert((a, e)) {
                             continue;
                         }
