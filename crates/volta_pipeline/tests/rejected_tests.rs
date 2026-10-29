@@ -1160,9 +1160,9 @@ fn test_e4m3x2_scalar_source_high_lane_is_undefined_not_fabricated() {
     );
 }
 
-/// Storing a packed f16x2 pair (a 32-bit value) at a sub-4-byte width would
-/// stuff both halves into one 2-byte granule: a loud error, not silent
-/// nonsense.
+/// Storing one byte of a packed f16x2 pair (a 32-bit value) would split its
+/// low half: a loud error, not silent nonsense. A 2-byte store keeps the low
+/// half whole and is modeled.
 #[test]
 fn test_pair_sub_width_store_rejected() {
     let module = ptx!(parse "failing/pair_sub_width_store_rejected");

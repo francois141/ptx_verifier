@@ -477,9 +477,14 @@ impl<'p> Interpreter<'p> {
         src_reg_bits: Option<u32>,
         v: Value,
     ) -> EvalResult<Value> {
-        // A pair's width is its source register's (fp8 pairs live in 16-bit
-        // registers, f16x2 in 32-bit), so gate on `src_reg_bits`: only a narrower
-        // store would need the half-extraction we don't model.
+        // PTX ISA 9.4.1: "When a source operand has a size that exceeds the instruction-type
+        // size, the source data is truncated (chopped) to the appropriate number of bits
+        // specified by the instruction type-size": a half-width store keeps a pair's low lane.
+        if let Value::Pair(lo, _) = v
+            && src_reg_bits == Some(2 * ty.bits())
+        {
+            return Ok(Value::Scalar(lo));
+        }
         if matches!(v, Value::Pair(..)) && src_reg_bits.is_none_or(|reg_bits| ty.bits() < reg_bits)
         {
             return Err(EvalError::Unsupported {
@@ -794,8 +799,9 @@ impl<'p> Interpreter<'p> {
     }
 
     /// 64-bit bitwise ops with a packed-pair operand, evaluated lane-wise with
-    /// exact bit semantics (the nvcc/Triton `f32x2` assembly idiom). `None` if
-    /// no operand is a pair; errors on inexact patterns.
+    /// exact bit semantics (the nvcc/Triton `f32x2` assembly idiom), and 32-bit
+    /// shifts of an `f16x2` pair by one half (Triton's split of a 4-byte load).
+    /// `None` if no operand is a pair; errors on inexact patterns.
     pub(in crate::eval) fn pair_bitwise_binop(
         &mut self,
         t: ThreadId,
@@ -805,7 +811,13 @@ impl<'p> Interpreter<'p> {
         src_a: &Operand,
         src_b: &Operand,
     ) -> EvalResult<Option<Value>> {
-        if ty.bits() != 64 || !matches!(op, BinOp::Shl | BinOp::Shr | BinOp::And | BinOp::Or) {
+        let shift = matches!(op, BinOp::Shl | BinOp::Shr);
+        let supported = match ty.bits() {
+            64 => shift || matches!(op, BinOp::And | BinOp::Or),
+            32 => shift,
+            _ => false,
+        };
+        if !supported {
             return Ok(None);
         }
         let a = self.operand_value(t, pc, src_a)?;
@@ -851,9 +863,10 @@ impl<'p> Interpreter<'p> {
                         "packed pair shifted by a packed pair".to_string(),
                     ));
                 };
-                if self.arena.as_int_const(amount) != Some(32) || ty.is_signed_int() {
+                let half_bits = i64::from(ty.bits() / 2);
+                if self.arena.as_int_const(amount) != Some(half_bits) || ty.is_signed_int() {
                     return Err(unsupported(format!(
-                        "packed pair shifted by other than a logical 32 ({:?} on {:?})",
+                        "packed pair shifted by other than a logical {half_bits} ({:?} on {:?})",
                         op, ty
                     )));
                 }

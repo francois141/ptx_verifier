@@ -1,0 +1,19 @@
+{
+  "description": "TritonBench matrix_transpose.py: kernel on M float16[32, 32], Out float16[32, 32]",
+  "kernel": "kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 2048,
+  "arrays": [
+    {"name": "M", "kind": "inout", "dtype": "f16", "shape": [32, 32]},
+    {"name": "Out", "kind": "inout", "dtype": "f16", "shape": [32, 32]}
+  ],
+  "params": [
+    {"name": "M", "ptr": "M"},
+    {"name": "Out", "ptr": "Out"},
+    {"name": "matrix_stridex", "int": 32},
+    {"name": "out_stridex", "int": 32},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

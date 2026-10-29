@@ -61,9 +61,10 @@ DEFAULT_OUT = EXTERNAL_ROOT / "tritonbench"
 DEFAULT_SUMMARY = EXTERNAL_ROOT / "output" / "tritonbench_extraction.csv"
 LAUNCH_FILES = 3
 # The files Volta checks: size label -> a call of the file's own wrapper, run in its namespace.
-# A constexpr size (swiglu's n_cols) compiles each size to its own PTX.
+# A constexpr size (transpose's matrix, swiglu's n_cols) compiles each size to its own PTX.
 SIZES = {
     "add_example.py": {f"n{n}": f"add_wrapper(torch.randn({n}), torch.randn({n}))" for n in (16, 64, 256)},
+    "matrix_transpose.py": {f"{m}x{d}": f"wrapper({m}, {d})" for m, d in ((16, 16), (32, 32), (32, 64), (64, 64))},
     "swiglu_triton.py": {
         f"{r}x{c}": f"swiglu_backward(torch.randn({r}, {c}), torch.randn({r}, {c}), torch.randn({r}, {c}))"
         for r, c in ((32, 256),)

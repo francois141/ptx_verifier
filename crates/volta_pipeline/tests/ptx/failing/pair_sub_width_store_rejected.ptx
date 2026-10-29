@@ -17,6 +17,6 @@
     st.global.u16 [%rd1], %rs1;
     st.global.u16 [%rd1+2], %rs2;
     ld.global.u32 %r1, [%rd1];
-    st.global.u16 [%rd1+4], %r1;
+    st.global.u8 [%rd1+4], %r1;
     ret;
 }
