@@ -1,8 +1,8 @@
-use crate::frontend::ast::{Counter, Operand, RegFile};
+use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::frontend::parse::parse_kernel;
 use crate::ir::{LoweredInstr, Sgpr, Vgpr};
 
-use super::{LowerError, lower_kernel};
+use super::{LowerError, lower_instruction, lower_kernel};
 
 const COPY: &str = include_str!("../../tests/fixtures/copy.s");
 
@@ -49,107 +49,154 @@ fn lowers_the_compiled_copy_kernel() {
     );
 }
 
+fn sgpr(first: u32, last: u32) -> Operand {
+    Operand::Reg {
+        file: RegFile::Scalar,
+        first,
+        last,
+    }
+}
+
+fn vgpr(index: u32) -> Operand {
+    Operand::Reg {
+        file: RegFile::Vector,
+        first: index,
+        last: index,
+    }
+}
+
+fn instr(opcode: &str, operands: &[Operand]) -> Instruction {
+    Instruction {
+        opcode: opcode.into(),
+        operands: operands.to_vec(),
+    }
+}
+
 #[test]
 fn preserves_shift_input_and_combined_wait_limits() {
-    let mut kernel = parse_kernel(COPY, "copy").unwrap();
-    // Reversed assembly operands must become source v7 and shift input 34.
-    kernel.instructions[1].operands[1] = Operand::Imm(34);
-    kernel.instructions[1].operands[2] = Operand::Reg {
-        file: RegFile::Vector,
-        first: 7,
-        last: 7,
-    };
-    kernel.instructions[2].operands = vec![
-        Operand::Wait {
-            counter: Counter::Vm,
-            value: 63,
-        },
-        Operand::Wait {
-            counter: Counter::Lgkm,
-            value: 15,
-        },
-    ];
-    let lowered = lower_kernel(&kernel).unwrap();
+    let shift = instr("v_lshlrev_b32_e32", &[vgpr(0), Operand::Imm(34), vgpr(7)]);
     assert_eq!(
-        lowered.instructions[1],
-        LoweredInstr::Shl32 {
+        lower_instruction(&shift),
+        Ok(LoweredInstr::Shl32 {
             dst: Vgpr(0),
             src: Vgpr(7),
             shift: 34,
-        }
+        })
+    );
+    let wait = instr(
+        "s_waitcnt",
+        &[
+            Operand::Wait {
+                counter: Counter::Vm,
+                value: 63,
+            },
+            Operand::Wait {
+                counter: Counter::Lgkm,
+                value: 15,
+            },
+        ],
     );
     assert_eq!(
-        lowered.instructions[2],
-        LoweredInstr::WaitCnt {
+        lower_instruction(&wait),
+        Ok(LoweredInstr::WaitCnt {
             vmcnt: Some(63),
             lgkmcnt: Some(15),
-        }
+        })
     );
 }
 
 #[test]
 fn rejects_unsupported_operand_forms() {
-    let register = |file, first, last| Operand::Reg { file, first, last };
+    use Operand::Imm;
+
     let cases = [
-        (0, 0, register(RegFile::Scalar, 0, 1)),
-        (0, 0, register(RegFile::Scalar, 1, 4)),
-        (0, 0, register(RegFile::Scalar, 100, 103)),
-        (0, 1, register(RegFile::Scalar, 1, 2)),
-        (0, 2, Operand::Imm(0x100000)),
-        (1, 0, register(RegFile::Scalar, 0, 0)),
-        (1, 1, Operand::Imm(1u64 << 32)),
-        (3, 1, register(RegFile::Vector, 0, 1)),
-        (3, 0, register(RegFile::Vector, 256, 256)),
-        (5, 2, register(RegFile::Scalar, 2, 4)),
-        (
-            2,
-            0,
-            Operand::Wait {
+        instr("s_load_dwordx4", &[sgpr(0, 1), sgpr(0, 1), Imm(0)]),
+        instr("s_load_dwordx4", &[sgpr(1, 4), sgpr(0, 1), Imm(0)]),
+        instr("s_load_dwordx4", &[sgpr(100, 103), sgpr(0, 1), Imm(0)]),
+        instr("s_load_dwordx4", &[sgpr(0, 3), sgpr(1, 2), Imm(0)]),
+        instr("s_load_dwordx4", &[sgpr(0, 3), sgpr(0, 1), Imm(0x100000)]),
+        instr("v_lshlrev_b32_e32", &[sgpr(0, 0), Imm(2), vgpr(0)]),
+        instr("v_lshlrev_b32_e32", &[vgpr(0), Imm(1u64 << 32), vgpr(0)]),
+        instr(
+            "global_load_dword",
+            &[
+                vgpr(1),
+                Operand::Reg {
+                    file: RegFile::Vector,
+                    first: 0,
+                    last: 1,
+                },
+                sgpr(0, 1),
+            ],
+        ),
+        instr("global_load_dword", &[vgpr(256), vgpr(0), sgpr(0, 1)]),
+        instr("global_store_dword", &[vgpr(0), vgpr(1), sgpr(2, 4)]),
+        instr(
+            "s_waitcnt",
+            &[Operand::Wait {
                 counter: Counter::Lgkm,
                 value: 16,
-            },
+            }],
         ),
-        (
-            4,
-            0,
-            Operand::Wait {
+        instr(
+            "s_waitcnt",
+            &[Operand::Wait {
                 counter: Counter::Vm,
                 value: 64,
-            },
+            }],
         ),
     ];
-    for (index, operand, replacement) in cases {
-        let mut kernel = parse_kernel(COPY, "copy").unwrap();
-        kernel.instructions[index].operands[operand] = replacement;
-        let error = lower_kernel(&kernel).unwrap_err();
-        assert!(matches!(error, LowerError::Instruction { index: at, .. } if at == index));
+    for instruction in cases {
+        assert!(lower_instruction(&instruction).is_err(), "{instruction:?}");
     }
 }
 
 #[test]
 fn rejects_unknown_opcodes_wrong_arity_and_duplicate_counters() {
-    for index in 0..7 {
-        let mut kernel = parse_kernel(COPY, "copy").unwrap();
-        kernel.instructions[index].operands.push(Operand::Imm(0));
-        assert!(matches!(
-            lower_kernel(&kernel),
-            Err(LowerError::Instruction { index: at, .. }) if at == index
-        ));
-    }
-    let mut kernel = parse_kernel(COPY, "copy").unwrap();
-    kernel.instructions[0].opcode = "s_load_dwordx2".into();
-    assert!(matches!(
-        lower_kernel(&kernel),
-        Err(LowerError::Instruction { index: 0, .. })
-    ));
+    use Operand::Imm;
 
-    let mut kernel = parse_kernel(COPY, "copy").unwrap();
-    let wait = kernel.instructions[2].operands[0].clone();
-    kernel.instructions[2].operands.push(wait);
-    assert!(matches!(
-        lower_kernel(&kernel),
-        Err(LowerError::Instruction { index: 2, .. })
-    ));
+    let wait = Operand::Wait {
+        counter: Counter::Lgkm,
+        value: 0,
+    };
+    let instructions = [
+        instr("s_load_dwordx4", &[sgpr(0, 3), sgpr(0, 1), Imm(0)]),
+        instr("v_lshlrev_b32_e32", &[vgpr(0), Imm(2), vgpr(0)]),
+        instr("s_waitcnt", std::slice::from_ref(&wait)),
+        instr("global_load_dword", &[vgpr(1), vgpr(0), sgpr(0, 1)]),
+        instr("global_store_dword", &[vgpr(0), vgpr(1), sgpr(2, 3)]),
+        instr("s_endpgm", &[]),
+    ];
+    for mut instruction in instructions {
+        instruction.operands.push(Imm(0));
+        assert!(lower_instruction(&instruction).is_err(), "{instruction:?}");
+    }
+    assert_eq!(
+        lower_instruction(&instr("s_load_dwordx2", &[sgpr(0, 1), sgpr(0, 1), Imm(0)])),
+        Err("unsupported instruction")
+    );
+    assert_eq!(
+        lower_instruction(&instr("s_waitcnt", &[wait.clone(), wait])),
+        Err("duplicate wait counter")
+    );
+}
+
+#[test]
+fn reports_instruction_error_location() {
+    let kernel = Kernel {
+        name: "test".into(),
+        target: "amdgcn-amd-amdhsa--gfx950".into(),
+        instructions: vec![instr("s_endpgm", &[]), instr("unknown", &[])],
+        descriptor: Default::default(),
+    };
+    assert_eq!(
+        lower_kernel(&kernel).unwrap_err(),
+        LowerError::Instruction {
+            index: 1,
+            opcode: "unknown".into(),
+            reason: "unsupported instruction",
+        }
+    );
 }
 
 #[test]

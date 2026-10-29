@@ -47,6 +47,7 @@ volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check,
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
+volta_amd_analysis → volta_expr
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -377,10 +378,14 @@ AMD kernel analysis. The module layout separates assembly syntax (`frontend`),
 lowering (`lower`), the instruction representation (`ir`), and symbolic execution (`eval`).
 The frontend is public; the root re-exports `lower_kernel`, `LowerError`, and the
 IR types. `frontend::parse::parse_kernel(source, name)` extracts the target,
-operand syntax, and numeric descriptor settings.
+operand syntax, and numeric descriptor settings, rejecting empty comma-separated
+operands and duplicate settings.
 `lower_kernel(&kernel)` validates supported gfx950 instruction forms and preserves
 physical register identities, explicit waits, and launch metadata. Unsupported
 targets, instructions, or operand forms produce `LowerError`.
+`WaveRegisters` stores one wave's register values as `volta_expr` expressions.
+The internal `execute_lane` evaluates an instruction for a caller-selected active lane, returning
+`EvalError` for unsupported instructions.
 See the crate README for ISA references, test commands, and fixture regeneration.
 
 ## Crate: volta_graph_check

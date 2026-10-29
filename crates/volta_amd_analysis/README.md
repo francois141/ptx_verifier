@@ -8,7 +8,9 @@ produces an AMD `LoweredKernel`. The lowering API and IR types are exported
 from the crate root.
 
 The IR represents AMD instructions for symbolic execution. It preserves
-physical register identities, explicit waits, and launch metadata.
+physical register identities, explicit waits, and launch metadata. The evaluator
+tracks symbolic register values and executes instructions for individual lanes,
+returning `EvalError` for unsupported instructions.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
 (§6.2, §12.6, §12.7) and LLVM 21.1.8's
@@ -17,7 +19,8 @@ and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/ll
 
 ## Tests
 
-Run the unit tests:
+Instruction-level tests exercise lowering directly; the compiled fixture checks
+parsing and lowering together. Run the unit tests:
 
 ```sh
 cargo test -p volta_amd_analysis --lib

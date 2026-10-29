@@ -85,6 +85,9 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
             return Err(format!("unsupported statement {line:?}"));
         }
         // Accept comma-separated operands and space-separated wait counters.
+        if rest.contains(',') && rest.split(',').any(|piece| piece.trim().is_empty()) {
+            return Err(format!("empty operand in {line:?}"));
+        }
         let operands = rest
             .split([',', ' ', '\t'])
             .filter(|piece| !piece.is_empty())
@@ -116,7 +119,9 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         let (head, value) = word(line);
         match (head.strip_prefix(".amdhsa_"), value.parse::<u64>()) {
             (Some(setting), Ok(value)) => {
-                descriptor.insert(setting.into(), value);
+                if descriptor.insert(setting.into(), value).is_some() {
+                    return Err(format!("duplicate descriptor setting {head:?}"));
+                }
             }
             _ => {
                 return Err(format!(
@@ -209,6 +214,70 @@ mod tests {
             parse_kernel(&source, "copy").unwrap_err(),
             format!("unsupported operand \"glc\" in \"{line} glc\"")
         );
+    }
+
+    fn kernel_source(body: &str, descriptor: &str) -> String {
+        format!(
+            ".amdgcn_target \"amdgcn-amd-amdhsa--gfx950\"\n\
+             test:\n{body}\n.Lfunc_end0:\n\
+             .amdhsa_kernel test\n{descriptor}\n.end_amdhsa_kernel\n"
+        )
+    }
+
+    // Test that commas with a missing operand cause an error,
+    // while extra spaces between valid operands are still accepted.
+    #[test]
+    fn rejects_empty_operands() {
+        for line in [
+            "global_load_dword ,v1, v0, s[0:1]",
+            "global_load_dword v1,, v0, s[0:1]",
+            "global_load_dword v1, , v0, s[0:1]",
+            "global_load_dword v1, v0, s[0:1],",
+            "s_waitcnt vmcnt(0),, lgkmcnt(0)",
+            "s_endpgm ,",
+        ] {
+            assert_eq!(
+                parse_kernel(&kernel_source(line, ""), "test").unwrap_err(),
+                format!("empty operand in {line:?}")
+            );
+        }
+        let body = "global_load_dword v1,  v0, s[0:1]\n\
+                    s_waitcnt vmcnt(0)  lgkmcnt(0)\n\
+                    s_endpgm";
+        let kernel = parse_kernel(&kernel_source(body, ""), "test").unwrap();
+        assert_eq!(
+            kernel.instructions,
+            [
+                instr("global_load_dword", &[vgpr(1, 1), vgpr(0, 0), sgpr(0, 1)]),
+                instr(
+                    "s_waitcnt",
+                    &[
+                        Wait {
+                            counter: Counter::Vm,
+                            value: 0,
+                        },
+                        Wait {
+                            counter: Counter::Lgkm,
+                            value: 0,
+                        },
+                    ],
+                ),
+                instr("s_endpgm", &[]),
+            ]
+        );
+    }
+
+    // Test that specifying the same descriptor setting twice causes an error,
+    // whether the two values agree or differ.
+    #[test]
+    fn rejects_duplicate_descriptor_settings() {
+        for value in [16, 32] {
+            let descriptor = format!(".amdhsa_kernarg_size 16\n.amdhsa_kernarg_size {value}");
+            assert_eq!(
+                parse_kernel(&kernel_source("s_endpgm", &descriptor), "test").unwrap_err(),
+                "duplicate descriptor setting \".amdhsa_kernarg_size\""
+            );
+        }
     }
 
     #[test]
