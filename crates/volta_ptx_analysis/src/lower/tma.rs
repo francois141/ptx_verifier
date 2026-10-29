@@ -12,7 +12,7 @@ use crate::ir::tensor_map::{
     TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode, TensormapFieldWrite,
 };
-use crate::ir::{LoweredInstr, MemSpace, Predicate, TensormapFence};
+use crate::ir::{BulkWaitScope, LoweredInstr, MemSpace, Predicate, TensormapFence};
 
 use super::context::{LoweringContext, resolve_addr_operand, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -383,6 +383,10 @@ pub(super) fn lower_cp_async_bulk_tensor(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "cp.async.bulk.tensor";
+    if modifiers.iter().any(|m| m.to_string() == "bulk_group") {
+        return lower_cp_async_bulk_tensor_store(ctx, modifiers, operands, predicate);
+    }
+
     let mut dim: Option<usize> = None;
     let mut saw_shared_destination = false;
     let mut saw_global = false;
@@ -427,6 +431,8 @@ pub(super) fn lower_cp_async_bulk_tensor(
         match modifier.to_string().as_str() {
             "2d" => dim = Some(2),
             "3d" => dim = Some(3),
+            "4d" => dim = Some(4),
+            "5d" => dim = Some(5),
             "global" => saw_global = true,
             // `.tile` is both the only modeled load mode and the ISA's own
             // default, so it is validated (nothing else is accepted) but
@@ -436,7 +442,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
         }
     }
 
-    let dim = dim.ok_or_else(|| unsupported(NAME, "missing .dim (only .2d/.3d modeled)"))?;
+    let dim = dim.ok_or_else(|| unsupported(NAME, "missing .dim (.2d to .5d are modeled)"))?;
     if !saw_shared_destination {
         return Err(unsupported(
             NAME,
@@ -500,6 +506,128 @@ pub(super) fn lower_cp_async_bulk_tensor(
     Ok(())
 }
 
+/// Lower `cp.async.bulk.tensor.Nd.global.shared::cta.tile.bulk_group
+/// [tensorMap, {coords}], [srcMem]`, the TMA store (PTX ISA 9.7.9.26.5.2).
+fn lower_cp_async_bulk_tensor_store(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "cp.async.bulk.tensor";
+
+    let given: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    let dim = match given.as_slice() {
+        [dim, global, shared, tile, group]
+            if global == "global"
+                && shared == "shared::cta"
+                && tile == "tile"
+                && group == "bulk_group" =>
+        {
+            match dim.as_str() {
+                "1d" => 1,
+                "2d" => 2,
+                "3d" => 3,
+                "4d" => 4,
+                "5d" => 5,
+                other => return Err(unsupported(NAME, format!("modifier .{other}"))),
+            }
+        }
+        _ => {
+            return Err(unsupported(
+                NAME,
+                format!(
+                    "store form .{} (only .Nd.global.shared::cta.tile.bulk_group is modeled)",
+                    given.join(".")
+                ),
+            ));
+        }
+    };
+
+    let [tm, src] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [tensorMap, {coords...}], [srcMem]",
+        });
+    };
+
+    let AstOperand::TensorCoordAddress { descriptor, coords } = tm else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", tm),
+            reason: "expected [tensorMap, {coords...}]",
+        });
+    };
+    if coords.len() != dim {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", coords),
+            reason: "tensorCoords length does not match .dim",
+        });
+    }
+
+    let tensormap_base = ctx.resolve_address(descriptor)?;
+    let tensormap_offset = ctx.get_address_offset(descriptor);
+    let coords = coords
+        .iter()
+        .map(|c| ctx.resolve_operand(c))
+        .collect::<LowerResult<Vec<_>>>()?;
+    let (src_base, src_offset) = resolve_addr_operand(ctx, src)?;
+
+    ctx.emit(
+        LoweredInstr::CpAsyncBulkTensorStore {
+            tensormap_base,
+            tensormap_offset,
+            coords,
+            src_base,
+            src_offset,
+        },
+        predicate,
+    )
+}
+
+/// Lower `cp.async.bulk.commit_group` and `cp.async.bulk.wait_group{.read} n`.
+fn lower_bulk_group(
+    ctx: &mut LoweringContext,
+    given: &[String],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let instr = match (given, operands) {
+        ([commit], []) if commit == "commit_group" => LoweredInstr::CpAsyncBulkCommitGroup,
+        ([wait, rest @ ..], [n]) if wait == "wait_group" => {
+            let scope = match rest {
+                [] => BulkWaitScope::Complete,
+                [read] if read == "read" => BulkWaitScope::SourceReads,
+                _ => {
+                    return Err(unsupported(
+                        "cp.async.bulk.wait_group",
+                        format!("modifier .{}", rest.join(".")),
+                    ));
+                }
+            };
+
+            let n = ctx.resolve_const_u32(
+                n,
+                "cp.async.bulk.wait_group",
+                "n must be a compile-time integer immediate",
+            )?;
+
+            LoweredInstr::CpAsyncBulkWaitGroup { n, scope }
+        }
+        _ => {
+            return Err(LowerError::InvalidOperand {
+                instruction: format!("cp.async.bulk.{}", given.join(".")),
+                operand: format!("{:?}", operands),
+                reason: "expected commit_group with no operand or wait_group{.read} n",
+            });
+        }
+    };
+
+    ctx.emit(instr, predicate)
+}
+
 /// Lower global -> shared `cp.async.bulk...mbarrier::complete_tx::bytes`
 /// (PTX ISA 9.7.9.25.4.1); both destination spellings hit the one modeled
 /// CTA's shared memory. Other directions and qualifiers are rejected loudly.
@@ -510,6 +638,14 @@ pub(super) fn lower_cp_async_bulk(
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
     const NAME: &str = "cp.async.bulk";
+    let given: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
+    if matches!(
+        given.first().map(String::as_str),
+        Some("commit_group" | "wait_group")
+    ) {
+        return lower_bulk_group(ctx, &given, operands, predicate);
+    }
+
     let mut saw_shared = false;
     let mut saw_global = false;
     let mut saw_completion = false;
