@@ -18,8 +18,9 @@ use crate::eval::value::Value;
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
 use crate::ir::symbols::{RegId, shared_operand_addr};
+use crate::ir::tcgen05::Tcgen05LdStShape;
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode, Tcgen05LdStShape};
+use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
 use volta_expr::ExprId;
 
 /// A dense matrix of expressions being assembled from lane fragments.

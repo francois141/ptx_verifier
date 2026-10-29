@@ -24,11 +24,11 @@ use crate::eval::tensor_memory::TensorMemory;
 use crate::eval::value::{MbarrierId, RegFile, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, ParamLayout, RegId, SpecialRegKind};
+use crate::ir::tcgen05::Tcgen05FenceDirection;
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
     BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
-    MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, Tcgen05FenceDirection,
-    TensormapFence,
+    MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, TensormapFence,
 };
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};

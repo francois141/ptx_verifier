@@ -4,10 +4,11 @@ use crate::frontend::ascii::AsciiSliceExt;
 use crate::frontend::ast::{FromAscii, Operand as AstOperand, SharedStateSpaceQualifier};
 use crate::frontend::lex::DottedIdent;
 
-use crate::ir::{
-    LoweredInstr, Operand, Predicate, Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection,
-    Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
+use crate::ir::tcgen05::{
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA,
+    Tcgen05MmaKind,
 };
+use crate::ir::{LoweredInstr, Operand, Predicate};
 
 use super::context::{LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};

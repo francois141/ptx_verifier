@@ -3,9 +3,8 @@ use crate::frontend::ast::{self, Operand as AstOperand, ScalarType};
 use id_collections::Id;
 
 use crate::ir::symbols::SpecialRegKind;
-use crate::ir::{
-    Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand, Tcgen05LdStShape,
-};
+use crate::ir::tcgen05::Tcgen05LdStShape;
+use crate::ir::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
 
 use super::context::LoweringContext;
 use super::error::{LowerError, LowerResult, MbarrierWaitKind};
