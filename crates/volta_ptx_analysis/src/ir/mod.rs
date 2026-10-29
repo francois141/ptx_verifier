@@ -213,13 +213,17 @@ pub enum Tcgen05LdStShape {
     /// `.16x256b`: half a quadrant (16 lanes) by 8 columns per `.x1`, so
     /// four registers per thread per unit.
     S16x256b,
+    /// `.16x32bx2`: two `.16x32b` accesses of the same 16 lanes, one column
+    /// per `.x1`: threads 0-15 at `taddr`, threads 16-31 at `taddr +
+    /// immHalfSplitoff` (`half_split_off` columns further).
+    S16x32bx2 { half_split_off: u32 },
 }
 
 impl Tcgen05LdStShape {
     /// Registers each thread supplies/receives per `.x1` unit.
     pub fn regs_per_unit(self) -> u32 {
         match self {
-            Self::S32x32b => 1,
+            Self::S32x32b | Self::S16x32bx2 { .. } => 1,
             Self::S16x256b => 4,
         }
     }
@@ -227,7 +231,7 @@ impl Tcgen05LdStShape {
     /// Tensor Memory columns one `.x1` unit spans.
     pub fn cols_per_unit(self) -> u32 {
         match self {
-            Self::S32x32b => 1,
+            Self::S32x32b | Self::S16x32bx2 { .. } => 1,
             Self::S16x256b => 8,
         }
     }
@@ -236,20 +240,25 @@ impl Tcgen05LdStShape {
     pub fn num_lanes(self) -> u32 {
         match self {
             Self::S32x32b => 32,
-            Self::S16x256b => 16,
+            Self::S16x256b | Self::S16x32bx2 { .. } => 16,
         }
     }
 
     /// Tensor Memory columns an access of `regs` registers per thread
     /// spans: one `.x1` unit per `regs_per_unit` registers, each unit
-    /// `cols_per_unit` columns wide.
+    /// `cols_per_unit` columns wide (`.16x32bx2`: the hull of both halves).
     pub fn num_cols(self, regs: usize) -> u32 {
-        (regs as u32 / self.regs_per_unit()) * self.cols_per_unit()
+        let unit_cols = (regs as u32 / self.regs_per_unit()) * self.cols_per_unit();
+        match self {
+            Self::S16x32bx2 { half_split_off } => half_split_off + unit_cols,
+            Self::S32x32b | Self::S16x256b => unit_cols,
+        }
     }
 
     /// `(lane, column)` offsets from taddr of register `reg` of thread `t =
     /// lane_in_warp`: identity for `.32x32b`; for `.16x256b`, lane `t / 4 + 8
-    /// * (reg / 2)` and column `2 * (t % 4) + reg % 2`.
+    /// * (reg / 2)` and column `2 * (t % 4) + reg % 2`; for `.16x32bx2`, lane
+    /// `t % 16` and column `reg`, plus `half_split_off` for `t >= 16`.
     pub fn cell(self, lane_in_warp: u32, reg: u32) -> (u32, u32) {
         match self {
             Self::S32x32b => (lane_in_warp, reg),
@@ -258,6 +267,13 @@ impl Tcgen05LdStShape {
                 let lane = lane_in_warp / 4 + 8 * (within / 2);
                 let col = unit * 8 + 2 * (lane_in_warp % 4) + within % 2;
                 (lane, col)
+            }
+            Self::S16x32bx2 { half_split_off } => {
+                if lane_in_warp < 16 {
+                    (lane_in_warp, reg)
+                } else {
+                    (lane_in_warp - 16, half_split_off + reg)
+                }
             }
         }
     }

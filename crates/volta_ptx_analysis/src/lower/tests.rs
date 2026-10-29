@@ -3,7 +3,9 @@ use crate::frontend::ast::{self, Operand as AstOperand, ScalarType};
 use id_collections::Id;
 
 use crate::ir::symbols::SpecialRegKind;
-use crate::ir::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
+use crate::ir::{
+    Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand, Tcgen05LdStShape,
+};
 
 use super::context::LoweringContext;
 use super::error::{LowerError, LowerResult, MbarrierWaitKind};
@@ -1252,6 +1254,52 @@ fn test_mbarrier_wait_loop_with_an_exit_label_lowers_to_a_blocking_wait() {
         .filter(|(_, instr)| matches!(instr, LoweredInstr::Bra { .. }))
         .count();
     assert_eq!((waits, branches), (1, 0));
+}
+
+/// `.16x32bx2` takes its `immHalfSplitoff` operand (after the destination
+/// vector of `tcgen05.ld`, before the source vector of `tcgen05.st`), and
+/// only that shape takes one.
+#[test]
+fn test_tcgen05_16x32bx2_takes_a_half_split_offset() {
+    let shape = |body: &str| {
+        let program = lower_body(body).unwrap_or_else(|e| panic!("{body}: {e:?}"));
+        match program.instructions.values().next() {
+            Some(LoweredInstr::Tcgen05Ld { shape, .. } | LoweredInstr::Tcgen05St { shape, .. }) => {
+                *shape
+            }
+            other => panic!("{body}: {other:?}"),
+        }
+    };
+    let half_split = Tcgen05LdStShape::S16x32bx2 { half_split_off: 32 };
+
+    assert_eq!(
+        shape("tcgen05.ld.sync.aligned.16x32bx2.x2.b32 {%r1, %r2}, [%r3], 32;"),
+        half_split
+    );
+    assert_eq!(
+        shape("tcgen05.st.sync.aligned.16x32bx2.x2.b32 [%r3], 32, {%r1, %r2};"),
+        half_split
+    );
+
+    for body in [
+        "tcgen05.ld.sync.aligned.16x32bx2.x2.b32 {%r1, %r2}, [%r3];",
+        "tcgen05.ld.sync.aligned.32x32b.x2.b32 {%r1, %r2}, [%r3], 32;",
+    ] {
+        assert!(
+            matches!(lower_body(body), Err(LowerError::InvalidOperand { .. })),
+            "{body}"
+        );
+    }
+}
+
+/// Threads 0-15 take the first `.16x32b` half, threads 16-31 the same lanes
+/// `immHalfSplitoff` columns further (PTX ISA Figure 190).
+#[test]
+fn test_tcgen05_16x32bx2_cells() {
+    let shape = Tcgen05LdStShape::S16x32bx2 { half_split_off: 32 };
+    assert_eq!(shape.cell(5, 3), (5, 3));
+    assert_eq!(shape.cell(21, 3), (5, 35));
+    assert_eq!((shape.num_lanes(), shape.num_cols(32)), (16, 64));
 }
 
 /// `.tile` is the TMA store's default load mode, so it may be omitted.

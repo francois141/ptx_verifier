@@ -224,15 +224,46 @@ fn parse_tcgen05_num(modifier: &str) -> Option<u32> {
     })
 }
 
-/// Parse the `.32x32b`/`.16x256b` shape shared by `tcgen05.ld`/`.st` (PTX ISA
-/// 9.7.17.8, Tables 52/53), or `None`. Other shapes are absent: their mappings
-/// are unestablished (see [`Tcgen05LdStShape::cell`]).
-fn parse_tcgen05_shape(modifier: &str) -> Option<Tcgen05LdStShape> {
+/// A `tcgen05.ld`/`.st` shape qualifier; `.16x32bx2` is completed by its
+/// `immHalfSplitoff` operand.
+#[derive(Clone, Copy)]
+enum Tcgen05ShapeQualifier {
+    Whole(Tcgen05LdStShape),
+    HalfSplit,
+}
+
+/// Parse the `.32x32b`/`.16x256b`/`.16x32bx2` shape shared by `tcgen05.ld`/`.st`
+/// (PTX ISA 9.7.17.8, Tables 52/53), or `None`. Other shapes are absent: their
+/// mappings are unestablished (see [`Tcgen05LdStShape::cell`]).
+fn parse_tcgen05_shape(modifier: &str) -> Option<Tcgen05ShapeQualifier> {
     Some(match modifier {
-        "32x32b" => Tcgen05LdStShape::S32x32b,
-        "16x256b" => Tcgen05LdStShape::S16x256b,
+        "32x32b" => Tcgen05ShapeQualifier::Whole(Tcgen05LdStShape::S32x32b),
+        "16x256b" => Tcgen05ShapeQualifier::Whole(Tcgen05LdStShape::S16x256b),
+        "16x32bx2" => Tcgen05ShapeQualifier::HalfSplit,
         _ => return None,
     })
+}
+
+/// The access shape: `immHalfSplitoff` is an operand exactly when the shape is `.16x32bx2`.
+fn resolve_tcgen05_shape(
+    ctx: &LoweringContext,
+    name: &str,
+    shape: Tcgen05ShapeQualifier,
+    half_split_off: Option<&AstOperand>,
+) -> LowerResult<Tcgen05LdStShape> {
+    match (shape, half_split_off) {
+        (Tcgen05ShapeQualifier::Whole(shape), None) => Ok(shape),
+        (Tcgen05ShapeQualifier::HalfSplit, Some(off)) => {
+            let half_split_off =
+                ctx.resolve_const_u32(off, name, "immHalfSplitoff must be an integer immediate")?;
+            Ok(Tcgen05LdStShape::S16x32bx2 { half_split_off })
+        }
+        (_, off) => Err(LowerError::InvalidOperand {
+            instruction: name.to_string(),
+            operand: format!("{off:?}"),
+            reason: "immHalfSplitoff is given exactly when .shape is .16x32bx2",
+        }),
+    }
 }
 
 /// The register count `.shape` + `.num` implies per thread, checked
@@ -255,7 +286,7 @@ fn tcgen05_vector_len(
     Ok(())
 }
 
-/// Lower `tcgen05.ld.sync.aligned.shape.num.b32 r, [taddr]`. Shapes are
+/// Lower `tcgen05.ld.sync.aligned.shape.num.b32 r, [taddr]{, immHalfSplitoff}`. Shapes are
 /// limited to those `parse_tcgen05_shape` models; `.red`/`.pack::16b` are
 /// rejected loudly rather than half-modeled.
 pub(super) fn lower_tcgen05_ld(
@@ -267,7 +298,7 @@ pub(super) fn lower_tcgen05_ld(
     const NAME: &str = "tcgen05.ld";
     require_sync_aligned(modifiers, NAME)?;
     let mut num: Option<u32> = None;
-    let mut shape: Option<Tcgen05LdStShape> = None;
+    let mut shape: Option<Tcgen05ShapeQualifier> = None;
 
     for modifier in modifiers {
         let s = modifier.to_string();
@@ -287,13 +318,18 @@ pub(super) fn lower_tcgen05_ld(
     let num = num.ok_or_else(|| unsupported(NAME, "missing .x1/.x2/.../.x128 modifier"))?;
     let shape = shape.ok_or_else(|| unsupported(NAME, "missing or unmodeled .shape"))?;
 
-    let [dst, taddr] = operands else {
-        return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
-            operand: format!("{:?}", operands),
-            reason: "expected destination vector and address operands",
-        });
+    let (dst, taddr, half_split_off) = match operands {
+        [dst, taddr] => (dst, taddr, None),
+        [dst, taddr, off] => (dst, taddr, Some(off)),
+        _ => {
+            return Err(LowerError::InvalidOperand {
+                instruction: NAME.to_string(),
+                operand: format!("{:?}", operands),
+                reason: "expected destination vector, address and, for .16x32bx2, immHalfSplitoff operands",
+            });
+        }
     };
+    let shape = resolve_tcgen05_shape(ctx, NAME, shape, half_split_off)?;
     let dst = ctx.resolve_dst_vector(dst)?;
     tcgen05_vector_len(NAME, shape, num, dst.len())?;
     let (taddr_base, taddr_offset) = match taddr {
@@ -313,7 +349,7 @@ pub(super) fn lower_tcgen05_ld(
     Ok(())
 }
 
-/// Lower `tcgen05.st.sync.aligned.shape.num.b32 [taddr], r`. Same shape
+/// Lower `tcgen05.st.sync.aligned.shape.num.b32 [taddr], {immHalfSplitoff,} r`. Same shape
 /// restriction as `lower_tcgen05_ld`.
 pub(super) fn lower_tcgen05_st(
     ctx: &mut LoweringContext,
@@ -324,7 +360,7 @@ pub(super) fn lower_tcgen05_st(
     const NAME: &str = "tcgen05.st";
     require_sync_aligned(modifiers, NAME)?;
     let mut num: Option<u32> = None;
-    let mut shape: Option<Tcgen05LdStShape> = None;
+    let mut shape: Option<Tcgen05ShapeQualifier> = None;
 
     for modifier in modifiers {
         let s = modifier.to_string();
@@ -344,13 +380,18 @@ pub(super) fn lower_tcgen05_st(
     let num = num.ok_or_else(|| unsupported(NAME, "missing .x1/.x2/.../.x128 modifier"))?;
     let shape = shape.ok_or_else(|| unsupported(NAME, "missing or unmodeled .shape"))?;
 
-    let [taddr, src] = operands else {
-        return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
-            operand: format!("{:?}", operands),
-            reason: "expected address and source vector operands",
-        });
+    let (taddr, half_split_off, src) = match operands {
+        [taddr, src] => (taddr, None, src),
+        [taddr, off, src] => (taddr, Some(off), src),
+        _ => {
+            return Err(LowerError::InvalidOperand {
+                instruction: NAME.to_string(),
+                operand: format!("{:?}", operands),
+                reason: "expected address, for .16x32bx2 immHalfSplitoff, and source vector operands",
+            });
+        }
     };
+    let shape = resolve_tcgen05_shape(ctx, NAME, shape, half_split_off)?;
     let (taddr_base, taddr_offset) = match taddr {
         AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
         other => (ctx.resolve_operand(other)?, 0),
