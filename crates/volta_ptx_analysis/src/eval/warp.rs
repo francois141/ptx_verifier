@@ -1,6 +1,7 @@
 //! Warp-cooperative ops (`bar.warp.sync`, `shfl.sync`, `ldmatrix`, `mma.sync`, `wmma`, the
-//! warp-scoped `tcgen05` ops, `tensormap.cp_fenceproxy`): run once all lanes reach the same pc
-//! and mask, with each memory access attributed to its owning lane (`fragments` tables).
+//! warp-scoped `tcgen05` ops, `tensormap.cp_fenceproxy`, `setmaxnreg`): run once all lanes
+//! reach the same pc and mask, with each memory access attributed to its owning lane
+//! (`fragments` tables).
 
 use crate::frontend::ast::ScalarType;
 
@@ -169,6 +170,7 @@ impl Interpreter<'_> {
                 self.tensor.relinquish_alloc_permit();
                 self.graph.tmem_relinquish(tix(members[0]), point(pc));
             }
+            LoweredInstr::Setmaxnreg => {}
             LoweredInstr::Tcgen05Ld {
                 shape,
                 dst,
@@ -317,6 +319,18 @@ impl Interpreter<'_> {
                 })
             }
             LoweredInstr::TensormapCpFenceproxy { .. } => Ok(()),
+            // `.aligned`: every thread of the warpgroup must execute the same `setmaxnreg`.
+            LoweredInstr::Setmaxnreg if members.len() != WARP_SIZE as usize => {
+                Err(EvalError::WarpMismatch {
+                    pc,
+                    reason: format!(
+                        "setmaxnreg is .aligned, so all 32 warp lanes must execute it, but only \
+                         {} are live",
+                        members.len()
+                    ),
+                })
+            }
+            LoweredInstr::Setmaxnreg => Ok(()),
             other => Err(EvalError::Unsupported {
                 pc,
                 what: format!("warp-op dispatch for {:?}", other),

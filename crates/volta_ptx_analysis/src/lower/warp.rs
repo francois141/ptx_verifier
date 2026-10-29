@@ -1,10 +1,10 @@
 //! Lowering of warp-level instructions: `shfl.sync`, `elect.sync`,
-//! `bar.warp.sync`, `ldmatrix`/`stmatrix`, `mma.sync` and `wmma`.
+//! `bar.warp.sync`, `setmaxnreg`, `ldmatrix`/`stmatrix`, `mma.sync` and `wmma`.
 
 use crate::frontend::ascii::AsciiSliceExt;
 use crate::frontend::ast::{
     BarWarpSyncInstr, ElectSyncInstr, FromAscii, Operand as AstOperand, ScalarType,
-    SharedStateSpaceQualifier, ShflSyncInstr,
+    SetmaxnregInstr, SharedStateSpaceQualifier, ShflSyncInstr,
 };
 use crate::frontend::lex::DottedIdent;
 
@@ -93,6 +93,30 @@ pub(super) fn lower_bar_warp_sync(
     let mask = ctx.resolve_operand(&bws.membermask)?;
     ctx.emit(LoweredInstr::BarWarpSync { mask }, predicate)?;
     Ok(())
+}
+
+/// Lower `setmaxnreg.{inc,dec}.sync.aligned.u32 count` (PTX ISA 9.7.21.5) to a
+/// warp rendezvous; the count is only validated: an integer constant in
+/// [24, 256], a multiple of 8.
+pub(super) fn lower_setmaxnreg(
+    ctx: &mut LoweringContext,
+    setmaxnreg: &SetmaxnregInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "setmaxnreg";
+    const REASON: &str = "the register count must be an integer constant in [24, 256], a \
+                          multiple of 8";
+
+    let count = ctx.resolve_const_u32(&setmaxnreg.reg_count, NAME, REASON)?;
+    if !(24..=256).contains(&count) || !count.is_multiple_of(8) {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", setmaxnreg.reg_count),
+            reason: REASON,
+        });
+    }
+
+    ctx.emit(LoweredInstr::Setmaxnreg, predicate)
 }
 
 /// Lower `ldmatrix.sync.aligned[.trans].x{1,2,4}.m8n8.shared.b16`

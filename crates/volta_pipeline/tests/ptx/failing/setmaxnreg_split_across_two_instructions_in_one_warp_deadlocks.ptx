@@ -1,0 +1,20 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// `setmaxnreg` is `.sync`: a warp's lanes converge at one instruction. Lanes 0-15 and 16-31
+// of the one warp reach two different `setmaxnreg`s, so each half waits for the other.
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<2>;
+
+    mov.u32 %r1, %tid.x;
+    setp.lt.u32 %p1, %r1, 16;
+    @%p1 bra LOW;
+    setmaxnreg.dec.sync.aligned.u32 24;
+    ret;
+LOW:
+    setmaxnreg.dec.sync.aligned.u32 24;
+    ret;
+}

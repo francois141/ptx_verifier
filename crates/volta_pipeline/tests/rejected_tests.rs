@@ -1574,3 +1574,27 @@ fn test_mapa_generic_is_rejected() {
         other => panic!("expected UnsupportedInstruction, got {other:?}"),
     }
 }
+
+/// `setmaxnreg` is `.sync`: lanes 0-15 and 16-31 of the one warp at two `setmaxnreg`s wait for
+/// each other forever.
+#[test]
+fn test_setmaxnreg_split_across_two_instructions_in_one_warp_deadlocks() {
+    let blocked = deadlock(
+        &ptx!(parse "failing/setmaxnreg_split_across_two_instructions_in_one_warp_deadlocks"),
+        32,
+    )
+    .blocked;
+    assert_eq!(blocked.len(), 32, "every lane stays blocked: {blocked:?}");
+}
+
+/// `setmaxnreg` is `.aligned`: a warp whose lane 31 exited before it is undefined behavior.
+#[test]
+fn test_setmaxnreg_with_an_exited_lane_is_rejected() {
+    let module = ptx!(parse "failing/setmaxnreg_with_an_exited_lane_is_rejected");
+    match run_kernel(&module, None, AnalysisConfig::new((32, 1, 1))) {
+        Err(AnalysisError::Eval(EvalError::WarpMismatch { reason, .. })) => {
+            assert!(reason.contains("setmaxnreg is .aligned"), "{reason}");
+        }
+        other => panic!("expected a WarpMismatch, got {other:?}"),
+    }
+}

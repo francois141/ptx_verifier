@@ -1324,3 +1324,19 @@ fn test_tma_store_without_tile_lowers() {
         "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r1, %r2}], [smem];",
     );
 }
+
+/// `setmaxnreg`'s count is an integer constant in [24, 256], a multiple of 8 (PTX ISA
+/// 9.7.21.5).
+#[test]
+fn test_setmaxnreg_count_must_be_a_valid_immediate() {
+    for count in ["24", "232", "256"] {
+        assert_lowers(&format!("setmaxnreg.inc.sync.aligned.u32 {count};"));
+    }
+    for count in ["16", "100", "264", "%r1"] {
+        let body = format!("setmaxnreg.dec.sync.aligned.u32 {count};");
+        assert!(
+            matches!(lower_body(&body), Err(LowerError::InvalidOperand { .. })),
+            "{body:?} must be rejected"
+        );
+    }
+}

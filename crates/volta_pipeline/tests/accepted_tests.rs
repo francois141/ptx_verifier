@@ -2092,3 +2092,16 @@ fn test_cluster_special_registers_describe_a_single_cta_cluster() {
         config
     );
 }
+
+/// `setmaxnreg` is a full-warp rendezvous whose effect on the register count is not modeled:
+/// warp 0's `.inc` beyond `.maxnreg` proceeds with no registers released, and each warp
+/// converges at its own `setmaxnreg`.
+#[test]
+fn test_setmaxnreg_converges_its_warp_and_has_no_effect() {
+    let mut config = out_only_config(4, 64);
+    config.block_dim = (64, 1, 1);
+    analyze!(
+        "success/setmaxnreg_converges_its_warp_and_has_no_effect",
+        config
+    );
+}

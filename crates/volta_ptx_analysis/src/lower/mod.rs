@@ -60,7 +60,8 @@ use tma::{
 };
 use warp::{
     lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_movmatrix,
-    lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma, lower_wmma_store,
+    lower_setmaxnreg, lower_shfl_sync, lower_stmatrix, lower_wmma_load, lower_wmma_mma,
+    lower_wmma_store,
 };
 
 /// Lower a PTX function to a LoweredProgram
@@ -390,6 +391,7 @@ fn lower_parsed_instruction(
             lower_bar(ctx, *mode, alignment, operands, predicate)
         }
         ParsedInstruction::BarWarpSync(bws) => lower_bar_warp_sync(ctx, bws, predicate),
+        ParsedInstruction::Setmaxnreg(setmaxnreg) => lower_setmaxnreg(ctx, setmaxnreg, predicate),
         ParsedInstruction::Membar(ast::MembarInstr::Level(_)) => {
             ctx.emit(LoweredInstr::Membar, predicate)
         }

@@ -1,0 +1,17 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// `setmaxnreg` is `.aligned`: every thread of the warp must execute it, so lane 31 exiting
+// before the other 31 lanes run it is undefined behavior.
+.visible .entry k()
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<2>;
+
+    mov.u32 %r1, %tid.x;
+    setp.eq.u32 %p1, %r1, 31;
+    @%p1 ret;
+    setmaxnreg.dec.sync.aligned.u32 24;
+    ret;
+}

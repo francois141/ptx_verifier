@@ -1631,6 +1631,12 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
+            // `.sync`: the warp's threads all execute it before any resumes.
+            LoweredInstr::Setmaxnreg => {
+                self.block_at_warp_op(t, pc, u32::MAX)?;
+                return Ok(());
+            }
+
             // tcgen05.mma: `.cta_group::1` is issued by a single thread (PTX
             // ISA 9.7.17.5), unlike `mma.sync`/`wmma`, so it is evaluated
             // directly, not through `execute_warp_op`.

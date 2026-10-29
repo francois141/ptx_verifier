@@ -571,6 +571,10 @@ pub enum LoweredInstr {
     /// Warp barrier: bar.warp.sync mask
     BarWarpSync { mask: Operand },
 
+    /// `setmaxnreg.{inc,dec}.sync.aligned.u32 count`: a full-warp rendezvous.
+    /// Its effect on the warp's register count is not modeled.
+    Setmaxnreg,
+
     /// Memory fence
     Membar,
 
@@ -1022,6 +1026,7 @@ define_instr_kinds!(
     BarSync,
     BarArrive,
     BarWarpSync,
+    Setmaxnreg,
     Membar,
     Fence,
     FenceProxyAsync,
