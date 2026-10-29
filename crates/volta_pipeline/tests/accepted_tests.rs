@@ -878,6 +878,34 @@ fn test_tma_5d_load_and_store_stride_every_dimension() {
     );
 }
 
+/// The Gluon tutorial's GPU-checked multi-image im2col load: the 16-pixel column from
+/// pixel (n, h, w) = (0, 1, 2) of a box spanning [-1, 2] reads image pixels 6, -, 8, 9,
+/// 10, -, -, -, -, -, 16, 17, 18, -, 20, 21 (`-` zero-filled), as the tutorial's 7, 0, 9, ...
+#[test]
+fn test_tma_im2col_walk_wraps_into_the_next_image() {
+    let config = im2col_config([4, 4, 4, 2], [1; 4], [-1, -1], [-1, -1], 16);
+    analyze!("success/tma_im2col_walk_wraps_into_the_next_image", config);
+}
+
+/// Im2col offsets {w: 0, h: 1} shift every pixel read one row down from the walked filter
+/// base: output pixel `p` reads image row `p / 4`, column `p % 4 - 1` (zero-filled at -1).
+#[test]
+fn test_tma_im2col_offsets_shift_the_pixel_read() {
+    let config = im2col_config([4, 4, 4, 1], [1; 4], [-1, -1], [-1, -1], 16);
+    analyze!("success/tma_im2col_offsets_shift_the_pixel_read", config);
+}
+
+/// Traversal stride 2 in W and H over a box spanning W in [0, 2], H in [0, 1]: the column
+/// reads image pixels 0, 2, 16, 18 and zero-fills the two pixels past the last image.
+#[test]
+fn test_tma_im2col_strided_walk_runs_past_the_last_image() {
+    let config = im2col_config([4, 4, 4, 2], [1, 2, 2, 1], [0, 0], [-1, -2], 6);
+    analyze!(
+        "success/tma_im2col_strided_walk_runs_past_the_last_image",
+        config
+    );
+}
+
 /// A concrete `mul.hi.u64` is the exact high half of the 128-bit product.
 #[test]
 fn test_mul_hi_u64_concrete() {

@@ -10,7 +10,7 @@ use volta_equivalence::check_output_equivalence;
 use volta_graph_check::{Deadlock, GraphConclusion};
 use volta_ptx_analysis::{
     AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, ClcMisuse, EvalError, LowerError,
-    ParamValue, ThreadId,
+    ParamValue, ThreadId, TmaMisuse,
 };
 
 use common::*;
@@ -523,20 +523,54 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
     }
 }
 
-/// The `.im2col` load mode is unsupported: the run aborts at the load instead of copying a
-/// pixel column.
-#[test]
-fn test_tma_im2col_load_is_unsupported() {
-    let module = ptx!(parse "failing/tma_im2col_load_is_unsupported");
+/// Run a one-load kernel from `tests/ptx/failing/tma_*` through the im2col map of a
+/// 4x4-pixel image whose bounding box spans H, W in [-1, 2], and return how it misused it.
+fn tma_misuse(module: &Ptx) -> TmaMisuse {
     let config = im2col_config([4, 4, 4, 1], [1; 4], [-1, -1], [-1, -1], 16);
 
-    match run_kernel(&module, None, config) {
-        Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
-            assert!(what.contains(".im2col load mode"), "got: {what}");
-        }
-        Err(other) => panic!("expected EvalError::Unsupported, got: {other}"),
-        Ok(_) => panic!("expected EvalError::Unsupported, got Ok"),
+    match run_kernel(module, None, config) {
+        Err(AnalysisError::Eval(EvalError::TmaMisuse { misuse, .. })) => misuse,
+        Err(other) => panic!("expected TmaMisuse, got: {other}"),
+        Ok(_) => panic!("expected TmaMisuse, got Ok"),
     }
+}
+
+/// The ISA requires an im2col load's filter base inside the bounding box.
+#[test]
+fn test_tma_im2col_filter_base_outside_the_bounding_box_is_rejected() {
+    let module = ptx!(parse "failing/tma_im2col_filter_base_outside_the_bounding_box_is_rejected");
+
+    assert_eq!(
+        tma_misuse(&module),
+        TmaMisuse::FilterBaseOutsideBoundingBox {
+            dim: 1,
+            coord: 3,
+            lower: -1,
+            upper: 2
+        }
+    );
+}
+
+/// An im2col map has no box, so a `.tile` copy through it is undefined.
+#[test]
+fn test_tma_tile_copy_through_an_im2col_map_is_rejected() {
+    let module = ptx!(parse "failing/tma_tile_copy_through_an_im2col_map_is_rejected");
+
+    assert_eq!(tma_misuse(&module), TmaMisuse::TileCopyOfIm2colMap);
+}
+
+/// A 4-D tensor's im2col offsets lie in [0, 255].
+#[test]
+fn test_tma_im2col_offset_out_of_range_is_rejected() {
+    let module = ptx!(parse "failing/tma_im2col_offset_out_of_range_is_rejected");
+
+    assert_eq!(
+        tma_misuse(&module),
+        TmaMisuse::Im2colOffsetOutOfRange {
+            offset: 256,
+            max: 255
+        }
+    );
 }
 
 /// Like `test_tcgen05_mma_numeric_correctness`, but `disable-output-lane`

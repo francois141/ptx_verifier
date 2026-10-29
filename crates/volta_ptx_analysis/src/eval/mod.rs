@@ -9,6 +9,7 @@ mod cp_async;
 mod error;
 mod float_bits;
 mod fragments;
+mod im2col;
 mod interp;
 mod mbarrier;
 mod memory;
@@ -39,5 +40,5 @@ impl std::fmt::Display for ThreadId {
 /// Number of threads in a warp.
 pub const WARP_SIZE: u32 = 32;
 
-pub use error::{ClcMisuse, EvalError};
+pub use error::{ClcMisuse, EvalError, TmaMisuse};
 pub use interp::{Interpreter, OutputsUnavailable, RunArtifacts, Stats};

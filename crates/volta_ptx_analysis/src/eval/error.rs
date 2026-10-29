@@ -248,6 +248,31 @@ pub enum EvalError {
         pc: InstrId,
         field: String,
     },
+    /// A `cp.async.bulk.tensor` the ISA leaves undefined for its tensor map.
+    TmaMisuse {
+        thread: ThreadId,
+        pc: InstrId,
+        misuse: TmaMisuse,
+    },
+}
+
+/// Why a `cp.async.bulk.tensor` is undefined for its tensor map (PTX ISA 5.5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmaMisuse {
+    /// A `.tile` copy through a map encoded for im2col.
+    TileCopyOfIm2colMap,
+    /// An `.im2col` copy through a map encoded tiled.
+    Im2colCopyOfTiledMap,
+    /// The filter base lies outside the bounding box `[lower, upper]` of tensor dimension
+    /// `dim` (5.5.4.1: "The filter corner location must be within the bounding box").
+    FilterBaseOutsideBoundingBox {
+        dim: usize,
+        coord: i64,
+        lower: i64,
+        upper: i64,
+    },
+    /// An im2col offset above the largest its tensor rank allows (5.5.4.1).
+    Im2colOffsetOutOfRange { offset: u64, max: u64 },
 }
 
 impl fmt::Display for EvalError {
@@ -530,6 +555,37 @@ impl fmt::Display for EvalError {
                 "{}: {} uses a tensor-map object missing its `.{}` field",
                 thread, pc, field
             ),
+            Self::TmaMisuse { thread, pc, misuse } => match misuse {
+                TmaMisuse::TileCopyOfIm2colMap => write!(
+                    f,
+                    "{}: cp.async.bulk.tensor at {} copies in .tile mode through an im2col \
+                     tensor map",
+                    thread, pc
+                ),
+                TmaMisuse::Im2colCopyOfTiledMap => write!(
+                    f,
+                    "{}: cp.async.bulk.tensor at {} copies in .im2col mode through a tiled \
+                     tensor map",
+                    thread, pc
+                ),
+                TmaMisuse::FilterBaseOutsideBoundingBox {
+                    dim,
+                    coord,
+                    lower,
+                    upper,
+                } => write!(
+                    f,
+                    "{}: cp.async.bulk.tensor.im2col at {} places the filter base at {} in \
+                     tensor dimension {}, outside the bounding box [{}, {}]",
+                    thread, pc, coord, dim, lower, upper
+                ),
+                TmaMisuse::Im2colOffsetOutOfRange { offset, max } => write!(
+                    f,
+                    "{}: cp.async.bulk.tensor.im2col at {} has im2col offset {}, above the \
+                     tensor rank's largest, {}",
+                    thread, pc, offset, max
+                ),
+            },
         }
     }
 }
@@ -567,7 +623,8 @@ impl EvalError {
             | Self::Tcgen05AccessOutsideAllocation { thread, pc, .. }
             | Self::Tcgen05LaneRestrictionViolation { thread, pc, .. }
             | Self::TensorMapNotFound { thread, pc, .. }
-            | Self::TensorMapFieldMissing { thread, pc, .. } => (Some(*thread), Some(*pc)),
+            | Self::TensorMapFieldMissing { thread, pc, .. }
+            | Self::TmaMisuse { thread, pc, .. } => (Some(*thread), Some(*pc)),
             Self::WmmaStrideTooSmall { pc, .. }
             | Self::WarpMismatch { pc, .. }
             | Self::BarrierMismatch { pc, .. }

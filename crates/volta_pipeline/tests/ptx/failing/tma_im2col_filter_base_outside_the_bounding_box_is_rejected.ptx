@@ -2,15 +2,15 @@
 .target sm_100a
 .address_size 64
 
-// An `.im2col` load of the first pixels of a 4x4 image, through the im2col map
-// at byte 0 of `maps`: a load mode Volta does not model.
+// An im2col load whose filter base w = 3 lies outside the bounding box's
+// W in [-1, 2]: the PTX ISA requires the filter corner to lie within it.
 .visible .entry k(
     .param .align 64 .b8 maps[256]
 )
 {
     .reg .pred %p<2>;
     .reg .b16 %rs<2>;
-    .reg .b32 %r<3>;
+    .reg .b32 %r<4>;
     .reg .b64 %rd<3>;
     .shared .align 8 .b64 mbar;
     .shared .align 128 .b8 tile[256];
@@ -21,8 +21,9 @@
     mov.u32 %r2, tile;
     mbarrier.init.shared::cta.b64 [%r1], 1;
     mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 256;
+    mov.b32 %r3, 3;
     mov.b16 %rs1, 0;
-    cp.async.bulk.tensor.4d.shared::cta.global.im2col.mbarrier::complete_tx::bytes [%r2], [%rd2, {0, 0, 0, 0}], [%r1], {%rs1, %rs1};
+    cp.async.bulk.tensor.4d.shared::cta.global.im2col.mbarrier::complete_tx::bytes [%r2], [%rd2, {0, %r3, 0, 0}], [%r1], {%rs1, %rs1};
 WAIT:
     mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r1], 0;
     @!%p1 bra WAIT;
