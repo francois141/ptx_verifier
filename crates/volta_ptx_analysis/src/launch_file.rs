@@ -39,8 +39,11 @@
 //! exactly one of `ptr`, an integer type (`u32`, `i64`, `b16`, ...) holding
 //! its value, or `tensor_map`: a host-encoded TMA descriptor (128 bytes), given
 //! by its fields since its encoding is opaque: `array`, `dtype`, `dims`
-//! (innermost first), `strides` (bytes, all dims but the innermost), `box`, and
-//! optionally `element_strides` (1s), `swizzle` (`none`, `32B`, `64B`, `128B`),
+//! (innermost first), `strides` (bytes, all dims but the innermost), exactly
+//! one of `box` (a tiled map) and `im2col` (an im2col map: `lower_corner` and
+//! `upper_corner`, one offset per spatial dim innermost first, then
+//! `channels_per_pixel` and `pixels_per_column`), and optionally
+//! `element_strides` (1s), `swizzle` (`none`, `32B`, `64B`, `128B`),
 //! `swizzle_atomicity` (`16B`), `interleave` (`none`) and `fill` (`zero`). Bytes
 //! no field gives read as undefined. Unknown keys are errors, so a typo cannot
 //! silently fall back to a default.
@@ -51,10 +54,10 @@ use serde::Deserialize;
 
 use crate::config::{
     AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
-    TensorMapValue,
+    TensorMapMode, TensorMapValue,
 };
 use crate::ir::tensor_map::{
-    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
+    Im2colBox, TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode,
 };
 
@@ -333,8 +336,10 @@ struct RawTensorMap {
     dtype: String,
     dims: Vec<u64>,
     strides: Vec<u64>,
-    #[serde(rename = "box")]
-    box_dims: Vec<u32>,
+    #[serde(rename = "box", default)]
+    box_dims: Option<Vec<u32>>,
+    #[serde(default)]
+    im2col: Option<RawIm2col>,
     #[serde(default)]
     element_strides: Option<Vec<u32>>,
     #[serde(default)]
@@ -345,6 +350,15 @@ struct RawTensorMap {
     interleave: Option<String>,
     #[serde(default)]
     fill: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIm2col {
+    lower_corner: Vec<i32>,
+    upper_corner: Vec<i32>,
+    channels_per_pixel: u32,
+    pixels_per_column: u32,
 }
 
 impl RawTensorMap {
@@ -407,13 +421,23 @@ impl RawTensorMap {
         )?];
         let fill = [TensorFillMode::Zero, TensorFillMode::OobNan]
             [pick("fill", self.fill, "zero", &["zero", "nan"])?];
+        let mode = match (self.box_dims, self.im2col) {
+            (Some(box_dims), None) => TensorMapMode::Tiled { box_dims },
+            (None, Some(im2col)) => TensorMapMode::Im2col(Im2colBox {
+                lower_corner: im2col.lower_corner,
+                upper_corner: im2col.upper_corner,
+                channels_per_pixel: im2col.channels_per_pixel,
+                pixels_per_column: im2col.pixels_per_column,
+            }),
+            _ => return Err("give exactly one of `box` and `im2col`".into()),
+        };
         let rank = self.dims.len();
         Ok(TensorMapValue {
             array: self.array,
             elemtype,
             dims: self.dims,
             strides: self.strides,
-            box_dims: self.box_dims,
+            mode,
             element_strides: self.element_strides.unwrap_or_else(|| vec![1; rank]),
             interleave,
             swizzle,
@@ -590,5 +614,49 @@ mod tests {
             {"name": "b", "kind": "out", "dtype": "f32", "len": 64, "base": 65600}
         ]}"#;
         assert!(LaunchFile::from_json(overlapping).is_err());
+    }
+
+    #[test]
+    fn reads_an_im2col_tensor_map_field() {
+        let map = |shape: &str| {
+            format!(
+                r#"{{"block": 1, "arrays": [{{"name": "a", "kind": "in", "dtype": "f32", "len": 512}}],
+                    "params": [{{"struct": [{{"offset": 0, "tensor_map": {{
+                        "array": "a", "dtype": "f32", "dims": [32, 4, 4, 1],
+                        "strides": [128, 512, 2048], {shape}}}}}]}}]}}"#
+            )
+        };
+        let im2col = r#""im2col": {"lower_corner": [-1, 0], "upper_corner": [-1, -2],
+                        "channels_per_pixel": 32, "pixels_per_column": 16}"#;
+
+        let launch = LaunchFile::from_json(&map(im2col)).unwrap();
+
+        let ParamValue::Struct(fields) = &launch.config.params[0] else {
+            panic!("not a struct");
+        };
+
+        let FieldValue::TensorMap(tensor_map) = &fields[0].value else {
+            panic!("not a tensor map: {:?}", fields[0].value);
+        };
+
+        assert_eq!(
+            tensor_map.mode,
+            TensorMapMode::Im2col(Im2colBox {
+                lower_corner: vec![-1, 0],
+                upper_corner: vec![-1, -2],
+                channels_per_pixel: 32,
+                pixels_per_column: 16,
+            })
+        );
+
+        let error = |shape: &str| LaunchFile::from_json(&map(shape)).unwrap_err();
+
+        let both = format!(r#""box": [32, 16], {im2col}"#);
+        assert!(error(&both).contains("give exactly one of `box` and `im2col`"));
+
+        assert!(error(r#""swizzle": "none""#).contains("give exactly one of `box` and `im2col`"));
+
+        let far_corner = im2col.replace("[-1, -2]", "[-1, -200]");
+        assert!(error(&far_corner).contains("corner offsets in -128..=127 for 4 dims, not -200"));
     }
 }

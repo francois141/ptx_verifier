@@ -14,7 +14,7 @@ use crate::eval::tcgen05_mma;
 use crate::eval::tensor_map_table;
 use crate::eval::value::{MbarrierId, Value};
 use crate::ir::symbols::{PARAM_GENERIC_BASE, SHARED_GENERIC_BASE};
-use crate::ir::tensor_map::TensorFillMode;
+use crate::ir::tensor_map::{TensorFillMode, TensorLoadMode};
 use crate::ir::{BulkWaitScope, InstrId, MemSpace, Operand};
 
 /// Where a TMA's generic tensor-map address points: a kernel parameter's map in
@@ -83,8 +83,8 @@ pub(in crate::eval) fn complete_bulk_groups(
 
 impl<'p> Interpreter<'p> {
     /// `.tile` TMA tensor copy, global to shared (ISA 9.7.9.26.5.2, 5.5.3):
-    /// out-of-bounds indices zero-fill and the box is swizzled per 5.5.7; a
-    /// box wider than one atom is rejected.
+    /// out-of-bounds indices zero-fill and the box is swizzled per 5.5.7. A box
+    /// wider than one atom and the `.im2col` load mode (5.5.4) are unsupported.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::eval) fn exec_cp_async_bulk_tensor_load(
         &mut self,
@@ -95,9 +95,17 @@ impl<'p> Interpreter<'p> {
         tensormap_base: &Operand,
         tensormap_offset: i64,
         coords: &[Operand],
+        mode: &TensorLoadMode,
         mbar_base: &Operand,
         mbar_offset: i64,
     ) -> EvalResult<()> {
+        if let TensorLoadMode::Im2col { .. } = mode {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "cp.async.bulk.tensor: the .im2col load mode is not modeled".to_string(),
+            });
+        }
+
         let dst_addr = self.effective_addr(t, pc, dst_base, dst_offset)?;
         let tm_addr = self.effective_addr(t, pc, tensormap_base, tensormap_offset)?;
         let (tensormap_space, tm_addr) = locate_tensor_map(tm_addr);
@@ -239,6 +247,13 @@ impl<'p> Interpreter<'p> {
                 space: tensormap_space,
                 addr: tm_addr,
             })?;
+        if entry.im2col.is_some() {
+            return Err(EvalError::Unsupported {
+                pc,
+                what: "cp.async.bulk.tensor: a copy through an im2col tensor map is not modeled"
+                    .to_string(),
+            });
+        }
 
         let missing = |field: &str| EvalError::TensorMapFieldMissing {
             thread: t,

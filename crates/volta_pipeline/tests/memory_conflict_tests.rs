@@ -8,7 +8,7 @@ use volta_graph::{AccessMode, AsyncOpKind, Space};
 use volta_graph_check::domain::{ByteLocation, ConflictKind};
 use volta_ptx_analysis::{
     AnalysisConfig, ArrayDef, ArrayKind, FieldValue, ParamValue, StructField, TensorElemType,
-    TensorFillMode, TensorInterleaveLayout, TensorMapValue, TensorSwizzleAtomicity,
+    TensorFillMode, TensorInterleaveLayout, TensorMapMode, TensorMapValue, TensorSwizzleAtomicity,
     TensorSwizzleMode,
 };
 
@@ -654,7 +654,9 @@ fn tma_param_tensor_maps_config() -> AnalysisConfig {
             elemtype: TensorElemType::F32,
             dims: vec![8, 8],
             strides: vec![32],
-            box_dims: vec![8, 4],
+            mode: TensorMapMode::Tiled {
+                box_dims: vec![8, 4],
+            },
             element_strides: vec![1, 1],
             interleave: TensorInterleaveLayout::None,
             swizzle: TensorSwizzleMode::None,

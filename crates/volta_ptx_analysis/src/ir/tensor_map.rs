@@ -1,6 +1,6 @@
-//! Tensor-map field types (PTX ISA 9.7.9.27 `tensormap.replace`, Table 33).
-//! The 128-byte object is opaque (5.5.8), so it is modeled as named fields;
-//! enum `.field3` values must be immediates, so they are validated at lowering.
+//! Tensor-map types: the fields `tensormap.replace` writes (PTX ISA 9.7.9.27, Table 33),
+//! named since the 128-byte object is opaque (5.5.8), and how `cp.async.bulk.tensor`
+//! copies through a map (its `.load_mode`, an im2col map's box).
 
 use crate::ir::Operand;
 
@@ -140,6 +140,27 @@ impl TensorFillMode {
             other => return Err(other),
         })
     }
+}
+
+/// A `cp.async.bulk.tensor` load's `.load_mode` (PTX ISA 5.5.3, 5.5.4).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TensorLoadMode {
+    /// `.tile`, the ISA's default: a box of the tensor
+    Tile,
+    /// `.im2col`: a pixel column; `offsets` (16-bit) shift the filter base's spatial
+    /// coordinates, innermost (W) first like the tensor coordinates
+    Im2col { offsets: Vec<Operand> },
+}
+
+/// What one copy through an im2col tensor map moves (PTX ISA 5.5.4, `cuTensorMapEncodeIm2col`):
+/// the bounding box's corners, one per spatial dimension innermost (W) first, as offsets from
+/// the tensor's first and last pixel, and the pixel column's size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Im2colBox {
+    pub lower_corner: Vec<i32>,
+    pub upper_corner: Vec<i32>,
+    pub channels_per_pixel: u32,
+    pub pixels_per_column: u32,
 }
 
 /// One `tensormap.replace` field write, already decoded/validated at

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::ir::MemSpace;
 use crate::ir::tensor_map::{
-    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
+    Im2colBox, TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode,
 };
 
@@ -31,6 +31,9 @@ pub struct TensorMapEntry {
     pub swizzle_mode: Option<TensorSwizzleMode>,
     pub swizzle_atomicity: Option<TensorSwizzleAtomicity>,
     pub fill_mode: Option<TensorFillMode>,
+    /// The pixel column of a host-encoded im2col map, which has no `box_dim`; `None` for a
+    /// tiled map, the only kind `tensormap.replace` writes (its `.tile` mode).
+    pub im2col: Option<Im2colBox>,
 }
 
 /// Every live tensor-map object in one kernel run.

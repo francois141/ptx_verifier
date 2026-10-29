@@ -20,7 +20,7 @@ use crate::ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
 use crate::ir::tcgen05::{
     Tcgen05Collector, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
 };
-use crate::ir::tensor_map::TensormapFieldWrite;
+use crate::ir::tensor_map::{TensorLoadMode, TensormapFieldWrite};
 use crate::ir::types::RegCounts;
 pub use volta_graph::BulkWaitScope;
 
@@ -820,14 +820,15 @@ pub enum LoweredInstr {
     /// [addr], 128}`: a proxy-ordering fence with no data effect.
     FenceProxyTensormap { fence: TensormapFence },
 
-    /// `cp.async.bulk.tensor...tile.mbarrier::complete_tx::bytes`: TMA copy,
-    /// global to the executing CTA's shared memory (no remote/multicast).
+    /// `cp.async.bulk.tensor...{.tile,.im2col}.mbarrier::complete_tx::bytes`: TMA
+    /// copy, global to the executing CTA's shared memory (no remote/multicast).
     CpAsyncBulkTensorLoad {
         dst_base: Operand,
         dst_offset: i64,
         tensormap_base: Operand,
         tensormap_offset: i64,
         coords: Vec<Operand>,
+        mode: TensorLoadMode,
         mbar_base: Operand,
         mbar_offset: i64,
     },

@@ -22,8 +22,10 @@ use volta_ptx_analysis::frontend::ascii::AsAscii;
 use volta_ptx_analysis::frontend::ast::Module;
 use volta_ptx_analysis::frontend::parse::Parser;
 use volta_ptx_analysis::{
-    AnalysisConfig, AnalysisError, AnalysisResult, ArrayDef, ArrayKind, OutputsUnavailable,
-    ParamValue, Stats, analyze,
+    AnalysisConfig, AnalysisError, AnalysisResult, ArrayDef, ArrayKind, FieldValue, Im2colBox,
+    OutputsUnavailable, ParamValue, Stats, StructField, TensorElemType, TensorFillMode,
+    TensorInterleaveLayout, TensorMapMode, TensorMapValue, TensorSwizzleAtomicity,
+    TensorSwizzleMode, analyze,
 };
 use volta_viz::{Outcome, Run, RunId, write_run};
 
@@ -395,6 +397,89 @@ pub fn tma_config(threads: u32) -> AnalysisConfig {
         ParamValue::ArrayPtr("in".to_string()),
         ParamValue::ArrayPtr("out".to_string()),
     ];
+    config
+}
+
+/// One thread, an f32 NHWC tensor `in` of 4-channel pixels (`dims` = `[4, W, H, N]`, innermost
+/// first) behind an im2col map whose column holds `pixels` pixels, and an `out` of that column's
+/// rows behind a tiled map: the `maps` struct parameter's bytes 0 and 128.
+pub fn im2col_config(
+    dims: [u64; 4],
+    element_strides: [u32; 4],
+    lower_corner: [i32; 2],
+    upper_corner: [i32; 2],
+    pixels: u32,
+) -> AnalysisConfig {
+    const CHANNELS: u32 = 4;
+    const ELEM_BYTES: u64 = 4;
+
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: ELEM_BYTES,
+            len: dims.iter().product(),
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: ELEM_BYTES,
+            len: (CHANNELS * pixels) as u64,
+            kind: ArrayKind::Output,
+        },
+    ];
+
+    let pixel_bytes = CHANNELS as u64 * ELEM_BYTES;
+    let image = TensorMapValue {
+        array: "in".to_string(),
+        elemtype: TensorElemType::F32,
+        dims: dims.to_vec(),
+        strides: vec![
+            pixel_bytes,
+            pixel_bytes * dims[1],
+            pixel_bytes * dims[1] * dims[2],
+        ],
+        mode: TensorMapMode::Im2col(Im2colBox {
+            lower_corner: lower_corner.to_vec(),
+            upper_corner: upper_corner.to_vec(),
+            channels_per_pixel: CHANNELS,
+            pixels_per_column: pixels,
+        }),
+        element_strides: element_strides.to_vec(),
+        interleave: TensorInterleaveLayout::None,
+        swizzle: TensorSwizzleMode::None,
+        swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+        fill: TensorFillMode::Zero,
+    };
+
+    let column = TensorMapValue {
+        array: "out".to_string(),
+        elemtype: TensorElemType::F32,
+        dims: vec![CHANNELS as u64, pixels as u64],
+        strides: vec![pixel_bytes],
+        mode: TensorMapMode::Tiled {
+            box_dims: vec![CHANNELS, pixels],
+        },
+        element_strides: vec![1, 1],
+        interleave: TensorInterleaveLayout::None,
+        swizzle: TensorSwizzleMode::None,
+        swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+        fill: TensorFillMode::Zero,
+    };
+
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: FieldValue::TensorMap(Box::new(image)),
+        },
+        StructField {
+            offset: 128,
+            value: FieldValue::TensorMap(Box::new(column)),
+        },
+    ])];
+
     config
 }
 

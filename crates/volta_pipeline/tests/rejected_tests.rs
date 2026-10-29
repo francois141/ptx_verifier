@@ -523,6 +523,22 @@ fn test_cp_async_bulk_tensor_rejects_an_incomplete_tensor_map() {
     }
 }
 
+/// The `.im2col` load mode is unsupported: the run aborts at the load instead of copying a
+/// pixel column.
+#[test]
+fn test_tma_im2col_load_is_unsupported() {
+    let module = ptx!(parse "failing/tma_im2col_load_is_unsupported");
+    let config = im2col_config([4, 4, 4, 1], [1; 4], [-1, -1], [-1, -1], 16);
+
+    match run_kernel(&module, None, config) {
+        Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
+            assert!(what.contains(".im2col load mode"), "got: {what}");
+        }
+        Err(other) => panic!("expected EvalError::Unsupported, got: {other}"),
+        Ok(_) => panic!("expected EvalError::Unsupported, got Ok"),
+    }
+}
+
 /// Like `test_tcgen05_mma_numeric_correctness`, but `disable-output-lane`
 /// masks lane 0 (PTX ISA 9.7.17.10.9.1): `D[0][0]` is never written, so the
 /// `tcgen05.ld` of it reads uninitialized Tensor Memory instead of `136`.

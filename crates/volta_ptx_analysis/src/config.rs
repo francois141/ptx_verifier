@@ -2,7 +2,7 @@
 //! input/output arrays that define the kernel's memory interface.
 
 use crate::ir::tensor_map::{
-    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
+    Im2colBox, TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode,
 };
 
@@ -51,12 +51,21 @@ pub struct TensorMapValue {
     pub dims: Vec<u64>,
     /// The byte stride of each dimension but the innermost
     pub strides: Vec<u64>,
-    pub box_dims: Vec<u32>,
+    pub mode: TensorMapMode,
     pub element_strides: Vec<u32>,
     pub interleave: TensorInterleaveLayout,
     pub swizzle: TensorSwizzleMode,
     pub swizzle_atomicity: TensorSwizzleAtomicity,
     pub fill: TensorFillMode,
+}
+
+/// What one copy through a tensor map moves, fixed by the host function that encoded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TensorMapMode {
+    /// `cuTensorMapEncodeTiled`: a box of `box_dims` elements, innermost first
+    Tiled { box_dims: Vec<u32> },
+    /// `cuTensorMapEncodeIm2col`
+    Im2col(Im2colBox),
 }
 
 /// The size of a tensor-map object (`.b1024`).
@@ -324,16 +333,62 @@ fn validate_tensor_map_field(
     let rank = map.dims.len();
     let consistent = (1..=5).contains(&rank)
         && map.strides.len() + 1 == rank
-        && map.box_dims.len() == rank
         && map.element_strides.len() == rank;
-    if consistent {
-        Ok(())
-    } else {
-        Err(format!(
+    if !consistent {
+        return Err(format!(
             "parameter {param}: the tensor map at byte {offset} needs 1 to 5 dims, one stride \
-             fewer, and as many box dims and element strides"
-        ))
+             fewer, and as many element strides"
+        ));
     }
+
+    let mode = match &map.mode {
+        TensorMapMode::Tiled { box_dims } if box_dims.len() == rank => Ok(()),
+        TensorMapMode::Tiled { .. } => Err("as many box dims as dims".to_string()),
+        TensorMapMode::Im2col(im2col) => validate_im2col(rank, im2col),
+    };
+
+    mode.map_err(|e| format!("parameter {param}: the tensor map at byte {offset} needs {e}"))
+}
+
+/// The ranges `cuTensorMapEncodeIm2col` accepts for an im2col map of `rank` dims.
+fn validate_im2col(rank: usize, im2col: &Im2colBox) -> Result<(), String> {
+    let corner_range = match rank {
+        3 => -32768..=32767,
+        4 => -128..=127,
+        5 => -16..=15,
+        _ => return Err(format!("3 to 5 dims to be an im2col map, not {rank}")),
+    };
+
+    let spatial = rank - 2;
+    if im2col.lower_corner.len() != spatial || im2col.upper_corner.len() != spatial {
+        return Err(format!(
+            "{spatial} lower and {spatial} upper corner offsets, one per spatial dim"
+        ));
+    }
+
+    for corner in im2col.lower_corner.iter().chain(&im2col.upper_corner) {
+        if !corner_range.contains(corner) {
+            return Err(format!(
+                "corner offsets in {corner_range:?} for {rank} dims, not {corner}"
+            ));
+        }
+    }
+
+    if !(1..=256).contains(&im2col.channels_per_pixel) {
+        return Err(format!(
+            "1 to 256 channels per pixel, not {}",
+            im2col.channels_per_pixel
+        ));
+    }
+
+    if !(1..=1024).contains(&im2col.pixels_per_column) {
+        return Err(format!(
+            "1 to 1024 pixels per column, not {}",
+            im2col.pixels_per_column
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -156,19 +156,24 @@ def describe_descriptor(desc, meta: dict | None, storages: dict[int, int]) -> di
     from triton.backends.nvidia.driver import TMA_DTYPE_DEVICE_TO_HOST, TMA_TF32
 
     elem_type = TMA_TF32 if desc.round_f32_to_tf32 else TMA_DTYPE_DEVICE_TO_HOST[meta["elem_type"]]
-    return described | {
-        "tma": {
-            "shape": list(desc.shape),
-            "strides": list(desc.strides),
-            "box": list(meta["block_size"]),
-            "elem_type": elem_type,
-            "elem_size": meta["elem_size"],
-            "swizzle": meta["swizzle"],
-            "padding": desc.padding,
-            "fp4_padded": meta["fp4_padded"],
-            "im2col": bool(meta.get("is_im2col", False)),
-        }
+    tma = {
+        "shape": list(desc.shape),
+        "strides": list(desc.strides),
+        "box": list(meta["block_size"]),
+        "elem_type": elem_type,
+        "elem_size": meta["elem_size"],
+        "swizzle": meta["swizzle"],
+        "padding": desc.padding,
+        "fp4_padded": meta["fp4_padded"],
+        "im2col": bool(meta.get("is_im2col", False)),
     }
+    if tma["im2col"]:
+        tma |= {
+            "element_strides": list(desc.element_strides or [1] * len(desc.shape)),
+            "pixel_box_lower_corner": list(desc.pixel_box_lower_corner),
+            "pixel_box_upper_corner": list(desc.pixel_box_upper_corner),
+        }
+    return described | {"tma": tma}
 
 
 def describe_args(bound_args: dict, constexprs: dict, tensordesc_meta: list | None) -> dict:
@@ -206,8 +211,8 @@ def ptx_block_threads(ptx: str) -> int | None:
 
 
 def tensor_map(name: str, array: str, tma: dict) -> dict:
-    """A descriptor's TMA map as `cuTensorMapEncodeTiled` gets it from Triton's driver: innermost dimension first."""
-    if tma["im2col"] or tma["fp4_padded"] or tma["elem_type"] not in TMA_DTYPES:
+    """A descriptor's TMA map as `cuTensorMapEncodeTiled` or `cuTensorMapEncodeIm2col` gets it from Triton's driver: innermost dimension first."""
+    if tma["fp4_padded"] or tma["elem_type"] not in TMA_DTYPES:
         raise Unlaunchable(f"{name}'s tensor map")
     swizzle, atomicity = TMA_SWIZZLES[tma["swizzle"]]
     encoded = {
@@ -215,9 +220,21 @@ def tensor_map(name: str, array: str, tma: dict) -> dict:
         "dtype": TMA_DTYPES[tma["elem_type"]],
         "dims": tma["shape"][::-1],
         "strides": [tma["elem_size"] * s for s in tma["strides"][:-1]][::-1],
-        "box": tma["box"][::-1],
-        "swizzle": swizzle,
     }
+    if tma["im2col"]:
+        # Triton's im2col block is [pixelsPerColumn, channelsPerPixel].
+        pixels, channels = tma["box"]
+        encoded["im2col"] = {
+            "lower_corner": tma["pixel_box_lower_corner"][::-1],
+            "upper_corner": tma["pixel_box_upper_corner"][::-1],
+            "channels_per_pixel": channels,
+            "pixels_per_column": pixels,
+        }
+        if any(stride != 1 for stride in tma["element_strides"]):
+            encoded["element_strides"] = tma["element_strides"][::-1]
+    else:
+        encoded["box"] = tma["box"][::-1]
+    encoded["swizzle"] = swizzle
     if atomicity != "16B":
         encoded["swizzle_atomicity"] = atomicity
     if tma["padding"] == "nan":

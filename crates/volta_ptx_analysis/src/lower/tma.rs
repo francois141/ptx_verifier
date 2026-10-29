@@ -9,10 +9,10 @@ use crate::frontend::ast::{
 use crate::frontend::lex::DottedIdent;
 
 use crate::ir::tensor_map::{
-    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
+    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorLoadMode, TensorSwizzleAtomicity,
     TensorSwizzleMode, TensormapFieldWrite,
 };
-use crate::ir::{BulkWaitScope, LoweredInstr, MemSpace, Predicate, TensormapFence};
+use crate::ir::{BulkWaitScope, LoweredInstr, MemSpace, Operand, Predicate, TensormapFence};
 
 use super::context::{LoweringContext, resolve_addr_operand, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -386,9 +386,20 @@ fn tensor_rank(modifier: &str) -> Option<usize> {
     }
 }
 
-/// Lower `.1d` to `.5d` `.tile` global-to-shared `cp.async.bulk.tensor` with
-/// mbarrier completion (PTX ISA 9.7.9.26.5.2); both destinations hit the one
-/// modeled CTA's shared memory. Every other form is rejected loudly.
+/// The rank range of an `.im2col` copy: an N, a C and one to three spatial
+/// dimensions (PTX ISA 5.5.4).
+const IM2COL_RANKS: std::ops::RangeInclusive<usize> = 3..=5;
+
+/// The `.load_mode` a TMA load spells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadModeQualifier {
+    Tile,
+    Im2col,
+}
+
+/// Lower `.1d` to `.5d` `.tile` and `.3d` to `.5d` `.im2col` global-to-shared
+/// `cp.async.bulk.tensor` with mbarrier completion (PTX ISA 9.7.9.26.5.2); both
+/// destinations hit the one modeled CTA's shared memory. Every other form is rejected loudly.
 pub(super) fn lower_cp_async_bulk_tensor(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -401,6 +412,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
     }
 
     let mut dim: Option<usize> = None;
+    let mut load_mode: Option<LoadModeQualifier> = None;
     let mut saw_shared_destination = false;
     let mut saw_global = false;
     let mut saw_completion = false;
@@ -435,7 +447,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
                         format!(
                             "modifier {modifier} (only .mbarrier::complete_tx::bytes completion \
                              is modeled - .bulk_group, .multicast::cluster, .cta_group::N, \
-                             .L2::cache_hint, .tile::gather4/scatter4, .im2col* are not)"
+                             .L2::cache_hint, .tile::gather4/scatter4, .im2col::w{{::128}} are not)"
                         ),
                     ));
                 }
@@ -443,10 +455,11 @@ pub(super) fn lower_cp_async_bulk_tensor(
         }
         match modifier.to_string().as_str() {
             "global" => saw_global = true,
-            // `.tile` is both the only modeled load mode and the ISA's own
-            // default, so it is validated (nothing else is accepted) but
-            // has nothing further to record.
-            "tile" => {}
+            "tile" | "im2col" if load_mode.is_some() => {
+                return Err(unsupported(NAME, "more than one .load_mode"));
+            }
+            "tile" => load_mode = Some(LoadModeQualifier::Tile),
+            "im2col" => load_mode = Some(LoadModeQualifier::Im2col),
             other => match tensor_rank(other) {
                 Some(rank) => dim = Some(rank),
                 None => return Err(unsupported(NAME, format!("modifier .{other}"))),
@@ -455,6 +468,13 @@ pub(super) fn lower_cp_async_bulk_tensor(
     }
 
     let dim = dim.ok_or_else(|| unsupported(NAME, "missing .dim (.1d to .5d are modeled)"))?;
+    let load_mode = load_mode.unwrap_or(LoadModeQualifier::Tile);
+    if load_mode == LoadModeQualifier::Im2col && !IM2COL_RANKS.contains(&dim) {
+        return Err(unsupported(
+            NAME,
+            format!(".im2col of a .{dim}d tensor (the im2col mode needs .3d to .5d)"),
+        ));
+    }
     if !saw_shared_destination {
         return Err(unsupported(
             NAME,
@@ -471,12 +491,22 @@ pub(super) fn lower_cp_async_bulk_tensor(
         ));
     }
 
-    let [dst, tm, mbar] = operands else {
-        return Err(LowerError::InvalidOperand {
-            instruction: NAME.to_string(),
-            operand: format!("{:?}", operands),
-            reason: "expected [dstMem], [tensorMap, {coords}], [mbar]",
-        });
+    let (dst, tm, mbar, offsets) = match (load_mode, operands) {
+        (LoadModeQualifier::Tile, [dst, tm, mbar]) => (dst, tm, mbar, None),
+        (LoadModeQualifier::Im2col, [dst, tm, mbar, offsets]) => (dst, tm, mbar, Some(offsets)),
+        _ => {
+            let reason = match load_mode {
+                LoadModeQualifier::Tile => "expected [dstMem], [tensorMap, {coords}], [mbar]",
+                LoadModeQualifier::Im2col => {
+                    "expected [dstMem], [tensorMap, {coords}], [mbar], {im2colOffsets}"
+                }
+            };
+            return Err(LowerError::InvalidOperand {
+                instruction: NAME.to_string(),
+                operand: format!("{:?}", operands),
+                reason,
+            });
+        }
     };
     let (dst_base, dst_offset) = resolve_addr_operand(ctx, dst)?;
 
@@ -501,6 +531,13 @@ pub(super) fn lower_cp_async_bulk_tensor(
         lowered_coords.push(ctx.resolve_operand(c)?);
     }
 
+    let mode = match offsets {
+        None => TensorLoadMode::Tile,
+        Some(offsets) => TensorLoadMode::Im2col {
+            offsets: lower_im2col_offsets(ctx, offsets, dim)?,
+        },
+    };
+
     let (mbar_base, mbar_offset) = resolve_addr_operand(ctx, mbar)?;
 
     ctx.emit(
@@ -510,12 +547,46 @@ pub(super) fn lower_cp_async_bulk_tensor(
             tensormap_base,
             tensormap_offset,
             coords: lowered_coords,
+            mode,
             mbar_base,
             mbar_offset,
         },
         predicate,
     )?;
     Ok(())
+}
+
+/// An `.im2col` load's `{im2colOffsets}`: one 16-bit offset per spatial dimension, `dim - 2`.
+fn lower_im2col_offsets(
+    ctx: &LoweringContext,
+    operand: &AstOperand,
+    dim: usize,
+) -> LowerResult<Vec<Operand>> {
+    const NAME: &str = "cp.async.bulk.tensor";
+
+    let AstOperand::Vector(offsets) = operand else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operand),
+            reason: "expected {im2colOffsets}",
+        });
+    };
+    if offsets.len() != dim - 2 {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", offsets),
+            reason: "im2colOffsets needs one offset per spatial dimension (.dim - 2)",
+        });
+    }
+
+    let mut lowered = Vec::with_capacity(offsets.len());
+    for offset in offsets {
+        let typed = ctx.resolve_operand_typed(offset)?;
+        ctx.check_operand_type(&typed, ScalarType::B16, NAME)?;
+        lowered.push(typed.operand);
+    }
+
+    Ok(lowered)
 }
 
 /// Lower `cp.async.bulk.tensor.Nd.global.shared::cta{.tile}.bulk_group

@@ -1,5 +1,5 @@
 {
-  "description": "Gluon tutorial 13-conv-im2col.py: conv2d_im2col_kernel on in_desc float16[1, 16, 16, 64], weight_desc float16[64, 64], out_desc float16[256, 64]. in_desc's im2col tensor map is not expressible, so its bytes are left undefined",
+  "description": "Gluon tutorial 13-conv-im2col.py: conv2d_im2col_kernel on in_desc float16[1, 16, 16, 64], weight_desc float16[64, 64], out_desc float16[256, 64]",
   "kernel": "conv2d_im2col_kernel",
   "block": 128,
   "grid": [4, 1, 1],
@@ -10,7 +10,7 @@
     {"name": "out_desc", "kind": "inout", "dtype": "f16", "shape": [256, 64]}
   ],
   "params": [
-    {"name": "in_desc", "struct": []},
+    {"name": "in_desc", "struct": [{"name": "in_desc tensor map", "offset": 0, "tensor_map": {"array": "in_desc", "dtype": "f16", "dims": [64, 16, 16, 1], "strides": [128, 2048, 32768], "im2col": {"lower_corner": [0, 0], "upper_corner": [0, 0], "channels_per_pixel": 64, "pixels_per_column": 64}, "swizzle": "128B"}}]},
     {"name": "in_desc.shape[0]", "int": 1},
     {"name": "in_desc.shape[1]", "int": 16},
     {"name": "in_desc.shape[2]", "int": 16},

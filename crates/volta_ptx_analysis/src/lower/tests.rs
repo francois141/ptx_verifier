@@ -4,6 +4,7 @@ use id_collections::Id;
 
 use crate::ir::symbols::SpecialRegKind;
 use crate::ir::tcgen05::Tcgen05LdStShape;
+use crate::ir::tensor_map::TensorLoadMode;
 use crate::ir::{Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram, Operand};
 
 use super::context::LoweringContext;
@@ -1323,6 +1324,60 @@ fn test_tma_store_without_tile_lowers() {
     assert_lowers(
         "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r1, %r2}], [smem];",
     );
+}
+
+/// An `.im2col` load lowers for the ISA's 3-D to 5-D tensors with one 16-bit offset per
+/// spatial dimension, innermost first; other ranks, offset lists and the W-only modes do not.
+#[test]
+fn test_tma_im2col_load_forms() {
+    let load = |mode: &str, dim: usize, offsets: &str| {
+        let coords = vec!["%r1"; dim].join(", ");
+        format!(
+            "cp.async.bulk.tensor.{dim}d.shared::cta.global.{mode}.mbarrier::complete_tx::bytes \
+             [smem], [%rd1, {{{coords}}}], [smem]{offsets};"
+        )
+    };
+
+    assert_lowers(&load("im2col", 3, ", {%rs1}"));
+    assert_lowers(&load("im2col", 5, ", {%rs1, %rs2, 7}"));
+
+    let prog = lower_body(&load("im2col", 4, ", {%rs1, 3}")).unwrap();
+    let modes: Vec<_> = prog
+        .instructions
+        .values()
+        .filter_map(|instr| match instr {
+            LoweredInstr::CpAsyncBulkTensorLoad { mode, .. } => Some(mode.clone()),
+            _ => None,
+        })
+        .collect();
+    let [TensorLoadMode::Im2col { offsets }] = &modes[..] else {
+        panic!("expected one im2col load, got {modes:?}");
+    };
+    assert_eq!(offsets.len(), 2);
+
+    assert_rejected(&load("im2col", 2, ", {%rs1}"), ".im2col of a .2d tensor");
+    assert_rejected(
+        &load("tile.im2col", 4, ", {%rs1, %rs2}"),
+        "more than one .load_mode",
+    );
+    assert_rejected(&load("im2col::w", 4, ", {%rs1, %rs2}"), "im2col::w");
+
+    for (offsets, why) in [
+        ("", "no im2colOffsets"),
+        (", {%rs1}", "one offset for two spatial dims"),
+        (", %rs1", "not a vector"),
+    ] {
+        let body = load("im2col", 4, offsets);
+        assert!(
+            matches!(lower_body(&body), Err(LowerError::InvalidOperand { .. })),
+            "{why}: {body:?} must be rejected"
+        );
+    }
+
+    assert!(matches!(
+        lower_body(&load("im2col", 4, ", {%r1, %r2}")),
+        Err(LowerError::TypeMismatch { .. })
+    ));
 }
 
 /// `setmaxnreg`'s count is an integer constant in [24, 256], a multiple of 8 (PTX ISA

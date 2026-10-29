@@ -1770,6 +1770,7 @@ impl<'p> Interpreter<'p> {
                 tensormap_base,
                 tensormap_offset,
                 coords,
+                mode,
                 mbar_base,
                 mbar_offset,
             } => {
@@ -1781,6 +1782,7 @@ impl<'p> Interpreter<'p> {
                     tensormap_base,
                     *tensormap_offset,
                     coords,
+                    mode,
                     mbar_base,
                     *mbar_offset,
                 )?;

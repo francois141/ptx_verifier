@@ -3,7 +3,9 @@
 //! Like `LoadParam`, these reads are value lookups, not event-graph accesses:
 //! kernel parameters are read-only, so nothing can race with them.
 
-use crate::config::{AnalysisConfig, FieldValue, ParamValue, StructField, TensorMapValue};
+use crate::config::{
+    AnalysisConfig, FieldValue, ParamValue, StructField, TensorMapMode, TensorMapValue,
+};
 use crate::eval::tensor_map_table::{TensorMapEntry, TensorMapTable};
 use crate::ir::symbols::{ParamId, ParamSlot, SymbolTable};
 use crate::ir::{InstrId, MemSpace};
@@ -116,11 +118,19 @@ fn tensor_map_entry(map: &TensorMapValue, global_address: u64) -> TensorMapEntry
     for (i, &size) in map.dims.iter().enumerate() {
         let d = i as u32;
         entry.global_dim.insert(d, size);
-        entry.box_dim.insert(d, map.box_dims[i]);
         entry.element_stride.insert(d, map.element_strides[i]);
     }
     for (i, &stride) in map.strides.iter().enumerate() {
         entry.global_stride.insert(i as u32, stride);
+    }
+
+    match &map.mode {
+        TensorMapMode::Tiled { box_dims } => {
+            for (i, &size) in box_dims.iter().enumerate() {
+                entry.box_dim.insert(i as u32, size);
+            }
+        }
+        TensorMapMode::Im2col(im2col) => entry.im2col = Some(im2col.clone()),
     }
 
     entry

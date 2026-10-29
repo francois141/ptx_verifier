@@ -7,8 +7,8 @@ mod common;
 
 use volta_ptx_analysis::{
     AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
-    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorMapValue, TensorSwizzleAtomicity,
-    TensorSwizzleMode,
+    TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorMapMode, TensorMapValue,
+    TensorSwizzleAtomicity, TensorSwizzleMode,
 };
 
 use common::*;
@@ -736,7 +736,9 @@ fn test_tma_param_tensor_map_load() {
         elemtype: TensorElemType::F32,
         dims: vec![8, 8],
         strides: vec![32],
-        box_dims: vec![8, 4],
+        mode: TensorMapMode::Tiled {
+            box_dims: vec![8, 4],
+        },
         element_strides: vec![1, 1],
         interleave: TensorInterleaveLayout::None,
         swizzle: TensorSwizzleMode::None,
@@ -774,7 +776,9 @@ fn test_tma_param_tensor_maps() {
             elemtype: TensorElemType::F32,
             dims: vec![8, 8],
             strides: vec![32],
-            box_dims: vec![8, 4],
+            mode: TensorMapMode::Tiled {
+                box_dims: vec![8, 4],
+            },
             element_strides: vec![1, 1],
             interleave: TensorInterleaveLayout::None,
             swizzle: TensorSwizzleMode::None,
@@ -811,7 +815,7 @@ fn test_tma_1d_load_zero_fills_past_the_tensor_end() {
             elemtype: TensorElemType::F32,
             dims: vec![len],
             strides: vec![],
-            box_dims: vec![16],
+            mode: TensorMapMode::Tiled { box_dims: vec![16] },
             element_strides: vec![1],
             interleave: TensorInterleaveLayout::None,
             swizzle: TensorSwizzleMode::None,
@@ -848,7 +852,9 @@ fn test_tma_5d_load_and_store_stride_every_dimension() {
             elemtype: TensorElemType::F32,
             dims: vec![4, 2, 2, 2, 2],
             strides: vec![16, 32, 64, 128],
-            box_dims: vec![4, 1, 2, 1, 2],
+            mode: TensorMapMode::Tiled {
+                box_dims: vec![4, 1, 2, 1, 2],
+            },
             element_strides: vec![1; 5],
             interleave: TensorInterleaveLayout::None,
             swizzle: TensorSwizzleMode::None,
