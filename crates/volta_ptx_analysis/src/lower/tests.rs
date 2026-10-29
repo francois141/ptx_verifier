@@ -1228,3 +1228,11 @@ fn test_mbarrier_wait_loop_with_an_exit_label_lowers_to_a_blocking_wait() {
         .count();
     assert_eq!((waits, branches), (1, 0));
 }
+
+/// `.tile` is the TMA store's default load mode, so it may be omitted.
+#[test]
+fn test_tma_store_without_tile_lowers() {
+    assert_lowers(
+        "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%rd1, {%r1, %r2}], [smem];",
+    );
+}

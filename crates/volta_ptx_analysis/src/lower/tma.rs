@@ -506,7 +506,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
     Ok(())
 }
 
-/// Lower `cp.async.bulk.tensor.Nd.global.shared::cta.tile.bulk_group
+/// Lower `cp.async.bulk.tensor.Nd.global.shared::cta{.tile}.bulk_group
 /// [tensorMap, {coords}], [srcMem]`, the TMA store (PTX ISA 9.7.9.26.5.2).
 fn lower_cp_async_bulk_tensor_store(
     ctx: &mut LoweringContext,
@@ -517,12 +517,17 @@ fn lower_cp_async_bulk_tensor_store(
     const NAME: &str = "cp.async.bulk.tensor";
 
     let given: Vec<String> = modifiers.iter().map(|m| m.to_string()).collect();
-    let dim = match given.as_slice() {
-        [dim, global, shared, tile, group]
-            if global == "global"
-                && shared == "shared::cta"
-                && tile == "tile"
-                && group == "bulk_group" =>
+
+    // `.tile` is the ISA's default load mode, so it may be omitted.
+    let form = match given.as_slice() {
+        [dim, global, shared, tile, group] if tile == "tile" => Some((dim, global, shared, group)),
+        [dim, global, shared, group] => Some((dim, global, shared, group)),
+        _ => None,
+    };
+
+    let dim = match form {
+        Some((dim, global, shared, group))
+            if global == "global" && shared == "shared::cta" && group == "bulk_group" =>
         {
             match dim.as_str() {
                 "1d" => 1,
@@ -537,7 +542,7 @@ fn lower_cp_async_bulk_tensor_store(
             return Err(unsupported(
                 NAME,
                 format!(
-                    "store form .{} (only .Nd.global.shared::cta.tile.bulk_group is modeled)",
+                    "store form .{} (only .Nd.global.shared::cta{{.tile}}.bulk_group is modeled)",
                     given.join(".")
                 ),
             ));
