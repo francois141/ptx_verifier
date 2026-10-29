@@ -1,21 +1,29 @@
 # volta_amd_analysis
 
-Experimental AMD frontend. This is not a supported verifier backend; the
-notes below are for development.
+Experimental AMD kernel analysis for Volta.
 
-The module layout parallels `volta_ptx_analysis`: parsing (`frontend`), lowering
-(`lower`, `ir`), and symbolic execution (`eval`). The frontend is public; the
-other stages are private.
+`frontend::parse::parse_kernel(source, name)` parses Clang assembly;
+`lower_kernel(&kernel)` validates the supported gfx950 instruction forms and
+produces an AMD `LoweredKernel`. The lowering API and IR types are exported
+from the crate root.
 
-`frontend::parse::parse_kernel(source, name)` extracts a kernel's target,
-instructions, and numeric launch settings from Clang assembly. Instructions
-keep their opcode names and represent operands as `ast::Operand`: registers or
-ranges (`v0`, `s[0:3]`), unsigned decimal or hex literals, and wait counters
-(`vmcnt(0)`, `lgkmcnt(0)`). Other operand forms are rejected; opcode validity
-and instruction-specific operand constraints are not checked.
+The IR represents AMD instructions for symbolic execution. It preserves
+physical register identities, explicit waits, and launch metadata.
 
-The parser strips `;` comments and accepts straight-line bodies. Unsupported
-body labels or directives and incomplete descriptors produce string errors.
+Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
+(§6.2, §12.6, §12.7) and LLVM 21.1.8's
+[operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
+and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
+
+## Tests
+
+Run the unit tests:
+
+```sh
+cargo test -p volta_amd_analysis --lib
+```
+
+### Regenerating the copy fixture
 
 `tests/fixtures/copy.cl` is `out[i] = in[i]`, one element per workitem, and
 `copy.s` is the assembly Homebrew clang 21.1.8 produced for it for gfx950
@@ -26,10 +34,4 @@ body labels or directives and incomplete descriptors produce string errors.
 clang -x cl -cl-std=CL1.2 --target=amdgcn-amd-amdhsa -mcpu=gfx950 -nogpulib \
   -O2 -g0 -fno-verbose-asm -Xclang -target-feature -Xclang -xnack \
   -S copy.cl -o copy.s
-```
-
-The tests parse the checked-in `copy.s` and need no compiler or GPU:
-
-```sh
-cargo test -p volta_amd_analysis --lib
 ```

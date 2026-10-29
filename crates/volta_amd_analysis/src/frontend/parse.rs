@@ -1,5 +1,5 @@
 //! Parse Clang AMD kernels into opcodes, typed operands, and launch settings.
-//! Opcode validity and instruction-specific operand constraints are not checked.
+//! Lowering validates opcodes and instruction-specific operand constraints.
 
 use std::collections::BTreeMap;
 

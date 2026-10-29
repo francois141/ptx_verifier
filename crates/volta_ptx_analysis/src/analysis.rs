@@ -167,18 +167,7 @@ pub fn analyze(
         kernel, config.block_dim, config.grid_dim
     );
     let provenance = provenance(module, func, &config, &program);
-    analyze_lowered(&program, config, provenance).map_err(AnalysisError::from)
-}
-
-/// Run one candidate execution of an already-lowered program. The caller supplies
-/// well-formed IR that preserves the source semantics, a `provenance` describing this
-/// program and `config`, and a symbol table whose `finalize_shared_layout` has run.
-pub fn analyze_lowered(
-    program: &LoweredProgram,
-    config: AnalysisConfig,
-    provenance: Provenance,
-) -> Result<AnalysisResult, EvalError> {
-    let mut interp = Interpreter::new(program, config, provenance)?;
+    let mut interp = Interpreter::new(&program, config, provenance)?;
     let end = interp.run();
     Ok(AnalysisResult::from_run(interp.finish(end)))
 }
