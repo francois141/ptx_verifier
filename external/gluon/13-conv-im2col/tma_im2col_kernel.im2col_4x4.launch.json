@@ -1,0 +1,33 @@
+{
+  "description": "Gluon tutorial 13-conv-im2col.py: tma_im2col_kernel on in_desc float32[1, 4, 4, 32], out_desc float32[16, 32]. in_desc's im2col tensor map is not expressible, so its bytes are left undefined",
+  "kernel": "tma_im2col_kernel",
+  "block": 32,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 2056,
+  "arrays": [
+    {"name": "in_desc", "kind": "inout", "dtype": "f32", "shape": [1, 4, 4, 32]},
+    {"name": "out_desc", "kind": "inout", "dtype": "f32", "shape": [16, 32]}
+  ],
+  "params": [
+    {"name": "in_desc", "struct": []},
+    {"name": "in_desc.shape[0]", "int": 1},
+    {"name": "in_desc.shape[1]", "int": 4},
+    {"name": "in_desc.shape[2]", "int": 4},
+    {"name": "in_desc.shape[3]", "int": 32},
+    {"name": "in_desc.strides[0]", "int": 512},
+    {"name": "in_desc.strides[1]", "int": 128},
+    {"name": "in_desc.strides[2]", "int": 32},
+    {"name": "in_desc.strides[3]", "int": 1},
+    {"name": "out_desc", "struct": [{"name": "out_desc tensor map", "offset": 0, "tensor_map": {"array": "out_desc", "dtype": "f32", "dims": [32, 16], "strides": [128], "box": [32, 16], "swizzle": "128B"}}]},
+    {"name": "out_desc.shape[0]", "int": 16},
+    {"name": "out_desc.shape[1]", "int": 32},
+    {"name": "out_desc.strides[0]", "int": 32},
+    {"name": "out_desc.strides[1]", "int": 1},
+    {"name": "coord_n", "int": 0},
+    {"name": "coord_h", "int": 0},
+    {"name": "coord_w", "int": 0},
+    {"name": "coord_c", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

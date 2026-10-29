@@ -15,3 +15,5 @@
 /external/**/*.json
 !/external/**/*.launch.json
 /external/output/
+# The Gluon tutorials, downloaded by `external/extraction/gluon.py`
+/external/sources/gluon/

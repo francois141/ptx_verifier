@@ -1,0 +1,35 @@
+{
+  "description": "Gluon tutorial 10-tcgen05-copy.py: matmul_accumulate_kernel on a_desc float16[128, 128], b_desc float16[128, 128], c_desc float32[128, 128], d_ptr float32[128, 128]",
+  "kernel": "matmul_accumulate_kernel",
+  "block": 256,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 229500,
+  "arrays": [
+    {"name": "a_desc", "kind": "inout", "dtype": "f16", "shape": [128, 128]},
+    {"name": "b_desc", "kind": "inout", "dtype": "f16", "shape": [128, 128]},
+    {"name": "c_desc", "kind": "inout", "dtype": "f32", "shape": [128, 128]},
+    {"name": "d_ptr", "kind": "inout", "dtype": "f32", "shape": [128, 128]}
+  ],
+  "params": [
+    {"name": "a_desc", "struct": [{"name": "a_desc tensor map", "offset": 0, "tensor_map": {"array": "a_desc", "dtype": "f16", "dims": [128, 128], "strides": [256], "box": [64, 128], "swizzle": "128B"}}]},
+    {"name": "a_desc.shape[0]", "int": 128},
+    {"name": "a_desc.shape[1]", "int": 128},
+    {"name": "a_desc.strides[0]", "int": 128},
+    {"name": "a_desc.strides[1]", "int": 1},
+    {"name": "b_desc", "struct": [{"name": "b_desc tensor map", "offset": 0, "tensor_map": {"array": "b_desc", "dtype": "f16", "dims": [128, 128], "strides": [256], "box": [64, 64], "swizzle": "128B"}}]},
+    {"name": "b_desc.shape[0]", "int": 128},
+    {"name": "b_desc.shape[1]", "int": 128},
+    {"name": "b_desc.strides[0]", "int": 128},
+    {"name": "b_desc.strides[1]", "int": 1},
+    {"name": "c_desc", "struct": [{"name": "c_desc tensor map", "offset": 0, "tensor_map": {"array": "c_desc", "dtype": "f32", "dims": [128, 128], "strides": [512], "box": [32, 128], "swizzle": "128B"}}]},
+    {"name": "c_desc.shape[0]", "int": 128},
+    {"name": "c_desc.shape[1]", "int": 128},
+    {"name": "c_desc.strides[0]", "int": 128},
+    {"name": "c_desc.strides[1]", "int": 1},
+    {"name": "d_ptr", "ptr": "d_ptr"},
+    {"name": "d_stride_m", "int": 128},
+    {"name": "d_stride_n", "int": 1},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

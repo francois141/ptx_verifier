@@ -1,0 +1,40 @@
+{
+  "description": "Gluon tutorial 13-conv-im2col.py: conv2d_im2col_kernel on in_desc float16[1, 16, 16, 64], weight_desc float16[64, 64], out_desc float16[256, 64]. in_desc's im2col tensor map is not expressible, so its bytes are left undefined",
+  "kernel": "conv2d_im2col_kernel",
+  "block": 128,
+  "grid": [4, 1, 1],
+  "dynamic_shared_bytes": 16408,
+  "arrays": [
+    {"name": "in_desc", "kind": "inout", "dtype": "f16", "shape": [1, 16, 16, 64]},
+    {"name": "weight_desc", "kind": "inout", "dtype": "f16", "shape": [64, 64]},
+    {"name": "out_desc", "kind": "inout", "dtype": "f16", "shape": [256, 64]}
+  ],
+  "params": [
+    {"name": "in_desc", "struct": []},
+    {"name": "in_desc.shape[0]", "int": 1},
+    {"name": "in_desc.shape[1]", "int": 16},
+    {"name": "in_desc.shape[2]", "int": 16},
+    {"name": "in_desc.shape[3]", "int": 64},
+    {"name": "in_desc.strides[0]", "int": 16384},
+    {"name": "in_desc.strides[1]", "int": 1024},
+    {"name": "in_desc.strides[2]", "int": 64},
+    {"name": "in_desc.strides[3]", "int": 1},
+    {"name": "weight_desc", "struct": [{"name": "weight_desc tensor map", "offset": 0, "tensor_map": {"array": "weight_desc", "dtype": "f16", "dims": [64, 64], "strides": [128], "box": [64, 64], "swizzle": "128B"}}]},
+    {"name": "weight_desc.shape[0]", "int": 64},
+    {"name": "weight_desc.shape[1]", "int": 64},
+    {"name": "weight_desc.strides[0]", "int": 64},
+    {"name": "weight_desc.strides[1]", "int": 1},
+    {"name": "out_desc", "struct": [{"name": "out_desc tensor map", "offset": 0, "tensor_map": {"array": "out_desc", "dtype": "f16", "dims": [64, 256], "strides": [128], "box": [64, 64], "swizzle": "128B"}}]},
+    {"name": "out_desc.shape[0]", "int": 256},
+    {"name": "out_desc.shape[1]", "int": 64},
+    {"name": "out_desc.strides[0]", "int": 64},
+    {"name": "out_desc.strides[1]", "int": 1},
+    {"name": "Ci", "int": 64},
+    {"name": "out_h", "int": 16},
+    {"name": "out_w", "int": 16},
+    {"name": "pad_h", "int": 0},
+    {"name": "pad_w", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

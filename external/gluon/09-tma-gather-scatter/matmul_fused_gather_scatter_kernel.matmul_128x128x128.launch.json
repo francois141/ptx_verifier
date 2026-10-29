@@ -1,0 +1,35 @@
+{
+  "description": "Gluon tutorial 09-tma-gather-scatter.py: matmul_fused_gather_scatter_kernel on X_desc bfloat16[128, 128], W_desc bfloat16[128, 128], out_desc bfloat16[128, 128], X_gather_indx_ptr int32[128], out_scatter_indx_ptr int32[128]",
+  "kernel": "matmul_fused_gather_scatter_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 131112,
+  "arrays": [
+    {"name": "X_desc", "kind": "inout", "dtype": "bf16", "shape": [128, 128]},
+    {"name": "W_desc", "kind": "inout", "dtype": "bf16", "shape": [128, 128]},
+    {"name": "out_desc", "kind": "inout", "dtype": "bf16", "shape": [128, 128]},
+    {"name": "X_gather_indx_ptr", "kind": "index", "dtype": "i32", "shape": [128]},
+    {"name": "out_scatter_indx_ptr", "kind": "index", "dtype": "i32", "shape": [128]}
+  ],
+  "params": [
+    {"name": "X_desc", "struct": [{"name": "X_desc tensor map", "offset": 0, "tensor_map": {"array": "X_desc", "dtype": "bf16", "dims": [128, 128], "strides": [256], "box": [64, 1], "swizzle": "128B"}}]},
+    {"name": "X_desc.shape[0]", "int": 128},
+    {"name": "X_desc.shape[1]", "int": 128},
+    {"name": "X_desc.strides[0]", "int": 128},
+    {"name": "X_desc.strides[1]", "int": 1},
+    {"name": "W_desc", "struct": [{"name": "W_desc tensor map", "offset": 0, "tensor_map": {"array": "W_desc", "dtype": "bf16", "dims": [128, 128], "strides": [256], "box": [64, 64], "swizzle": "128B"}}]},
+    {"name": "W_desc.shape[0]", "int": 128},
+    {"name": "W_desc.shape[1]", "int": 128},
+    {"name": "W_desc.strides[0]", "int": 128},
+    {"name": "W_desc.strides[1]", "int": 1},
+    {"name": "out_desc", "struct": [{"name": "out_desc tensor map", "offset": 0, "tensor_map": {"array": "out_desc", "dtype": "bf16", "dims": [128, 128], "strides": [256], "box": [64, 1], "swizzle": "128B"}}]},
+    {"name": "out_desc.shape[0]", "int": 128},
+    {"name": "out_desc.shape[1]", "int": 128},
+    {"name": "out_desc.strides[0]", "int": 128},
+    {"name": "out_desc.strides[1]", "int": 1},
+    {"name": "X_gather_indx_ptr", "ptr": "X_gather_indx_ptr"},
+    {"name": "out_scatter_indx_ptr", "ptr": "out_scatter_indx_ptr"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

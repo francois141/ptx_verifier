@@ -1,0 +1,24 @@
+{
+  "description": "Gluon tutorial 03-async-copy.py: elementwise_add_cpasync_kernel on a_ptr float32[32, 32], b_ptr float32[32, 32], c_ptr float32[32, 32]",
+  "kernel": "elementwise_add_cpasync_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 8192,
+  "arrays": [
+    {"name": "a_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 32]},
+    {"name": "b_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 32]},
+    {"name": "c_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 32]}
+  ],
+  "params": [
+    {"name": "a_ptr", "ptr": "a_ptr"},
+    {"name": "b_ptr", "ptr": "b_ptr"},
+    {"name": "c_ptr", "ptr": "c_ptr"},
+    {"name": "xnumel", "int": 32},
+    {"name": "ynumel", "int": 32},
+    {"name": "xstride_a", "int": 32},
+    {"name": "xstride_b", "int": 32},
+    {"name": "xstride_c", "int": 32},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

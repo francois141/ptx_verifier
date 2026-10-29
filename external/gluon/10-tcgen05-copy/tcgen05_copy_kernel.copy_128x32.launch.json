@@ -1,0 +1,19 @@
+{
+  "description": "Gluon tutorial 10-tcgen05-copy.py: tcgen05_copy_kernel on in_ptr float32[128, 32], out_ptr float32[128, 32]",
+  "kernel": "tcgen05_copy_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 16392,
+  "arrays": [
+    {"name": "in_ptr", "kind": "inout", "dtype": "f32", "shape": [128, 32]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [128, 32]}
+  ],
+  "params": [
+    {"name": "in_ptr", "ptr": "in_ptr"},
+    {"name": "in_stride0", "int": 32},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "out_stride0", "int": 32},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

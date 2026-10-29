@@ -1,0 +1,21 @@
+{
+  "description": "Gluon tutorial 04-tma.py: tma_message_passing_kernel on message_desc int32[16], ready int32[1], output int32[16]",
+  "kernel": "tma_message_passing_kernel",
+  "block": 32,
+  "grid": [2, 1, 1],
+  "dynamic_shared_bytes": 72,
+  "arrays": [
+    {"name": "message_desc", "kind": "inout", "dtype": "i32", "shape": [16]},
+    {"name": "ready", "kind": "inout", "dtype": "i32", "shape": [1]},
+    {"name": "output", "kind": "inout", "dtype": "i32", "shape": [16]}
+  ],
+  "params": [
+    {"name": "message_desc", "struct": [{"name": "message_desc tensor map", "offset": 0, "tensor_map": {"array": "message_desc", "dtype": "s32", "dims": [16], "strides": [], "box": [16], "swizzle": "none"}}]},
+    {"name": "message_desc.shape[0]", "int": 16},
+    {"name": "message_desc.strides[0]", "int": 1},
+    {"name": "ready", "ptr": "ready"},
+    {"name": "output", "ptr": "output"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

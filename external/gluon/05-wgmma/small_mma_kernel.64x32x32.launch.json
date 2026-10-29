@@ -1,0 +1,37 @@
+{
+  "description": "Gluon tutorial 05-wgmma.py: small_mma_kernel on a_desc float16[64, 32], b_desc float16[32, 32], c_desc float32[64, 32], d_desc float32[64, 32]",
+  "kernel": "small_mma_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 14344,
+  "arrays": [
+    {"name": "a_desc", "kind": "inout", "dtype": "f16", "shape": [64, 32]},
+    {"name": "b_desc", "kind": "inout", "dtype": "f16", "shape": [32, 32]},
+    {"name": "c_desc", "kind": "inout", "dtype": "f32", "shape": [64, 32]},
+    {"name": "d_desc", "kind": "inout", "dtype": "f32", "shape": [64, 32]}
+  ],
+  "params": [
+    {"name": "a_desc", "struct": [{"name": "a_desc tensor map", "offset": 0, "tensor_map": {"array": "a_desc", "dtype": "f16", "dims": [32, 64], "strides": [64], "box": [32, 64], "swizzle": "64B"}}]},
+    {"name": "a_desc.shape[0]", "int": 64},
+    {"name": "a_desc.shape[1]", "int": 32},
+    {"name": "a_desc.strides[0]", "int": 32},
+    {"name": "a_desc.strides[1]", "int": 1},
+    {"name": "b_desc", "struct": [{"name": "b_desc tensor map", "offset": 0, "tensor_map": {"array": "b_desc", "dtype": "f16", "dims": [32, 32], "strides": [64], "box": [32, 32], "swizzle": "64B"}}]},
+    {"name": "b_desc.shape[0]", "int": 32},
+    {"name": "b_desc.shape[1]", "int": 32},
+    {"name": "b_desc.strides[0]", "int": 32},
+    {"name": "b_desc.strides[1]", "int": 1},
+    {"name": "c_desc", "struct": [{"name": "c_desc tensor map", "offset": 0, "tensor_map": {"array": "c_desc", "dtype": "f32", "dims": [32, 64], "strides": [128], "box": [32, 64], "swizzle": "128B"}}]},
+    {"name": "c_desc.shape[0]", "int": 64},
+    {"name": "c_desc.shape[1]", "int": 32},
+    {"name": "c_desc.strides[0]", "int": 32},
+    {"name": "c_desc.strides[1]", "int": 1},
+    {"name": "d_desc", "struct": [{"name": "d_desc tensor map", "offset": 0, "tensor_map": {"array": "d_desc", "dtype": "f32", "dims": [32, 64], "strides": [128], "box": [32, 64], "swizzle": "128B"}}]},
+    {"name": "d_desc.shape[0]", "int": 64},
+    {"name": "d_desc.shape[1]", "int": 32},
+    {"name": "d_desc.strides[0]", "int": 32},
+    {"name": "d_desc.strides[1]", "int": 1},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

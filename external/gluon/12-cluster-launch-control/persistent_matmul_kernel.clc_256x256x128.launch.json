@@ -1,0 +1,31 @@
+{
+  "description": "Gluon tutorial 12-cluster-launch-control.py: persistent_matmul_kernel on a_desc float16[256, 128], b_desc float16[128, 256], c_desc float16[256, 256]",
+  "kernel": "persistent_matmul_kernel",
+  "block": 128,
+  "grid": [2, 1, 1],
+  "dynamic_shared_bytes": 147528,
+  "arrays": [
+    {"name": "a_desc", "kind": "inout", "dtype": "f16", "shape": [256, 128]},
+    {"name": "b_desc", "kind": "inout", "dtype": "f16", "shape": [128, 256]},
+    {"name": "c_desc", "kind": "inout", "dtype": "f16", "shape": [256, 256]}
+  ],
+  "params": [
+    {"name": "a_desc", "struct": [{"name": "a_desc tensor map", "offset": 0, "tensor_map": {"array": "a_desc", "dtype": "f16", "dims": [128, 256], "strides": [256], "box": [64, 128], "swizzle": "128B"}}]},
+    {"name": "a_desc.shape[0]", "int": 256},
+    {"name": "a_desc.shape[1]", "int": 128},
+    {"name": "a_desc.strides[0]", "int": 128},
+    {"name": "a_desc.strides[1]", "int": 1},
+    {"name": "b_desc", "struct": [{"name": "b_desc tensor map", "offset": 0, "tensor_map": {"array": "b_desc", "dtype": "f16", "dims": [256, 128], "strides": [512], "box": [64, 64], "swizzle": "128B"}}]},
+    {"name": "b_desc.shape[0]", "int": 128},
+    {"name": "b_desc.shape[1]", "int": 256},
+    {"name": "b_desc.strides[0]", "int": 256},
+    {"name": "b_desc.strides[1]", "int": 1},
+    {"name": "c_desc", "struct": [{"name": "c_desc tensor map", "offset": 0, "tensor_map": {"array": "c_desc", "dtype": "f16", "dims": [256, 256], "strides": [512], "box": [64, 128], "swizzle": "128B"}}]},
+    {"name": "c_desc.shape[0]", "int": 256},
+    {"name": "c_desc.shape[1]", "int": 256},
+    {"name": "c_desc.strides[0]", "int": 256},
+    {"name": "c_desc.strides[1]", "int": 1},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Gluon tutorial 06-tcgen05.py: tmem_example_kernel on in_ptr float32[64, 64], out_ptr float32[64, 64]",
+  "kernel": "tmem_example_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 16384,
+  "arrays": [
+    {"name": "in_ptr", "kind": "inout", "dtype": "f32", "shape": [64, 64]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [64, 64]}
+  ],
+  "params": [
+    {"name": "in_ptr", "ptr": "in_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

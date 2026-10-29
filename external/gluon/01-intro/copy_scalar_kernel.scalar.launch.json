@@ -1,0 +1,17 @@
+{
+  "description": "Gluon tutorial 01-intro.py: copy_scalar_kernel on in_ptr float32[1], out_ptr float32[1]",
+  "kernel": "copy_scalar_kernel",
+  "block": 32,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "in_ptr", "kind": "inout", "dtype": "f32", "shape": [1]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [1]}
+  ],
+  "params": [
+    {"name": "in_ptr", "ptr": "in_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

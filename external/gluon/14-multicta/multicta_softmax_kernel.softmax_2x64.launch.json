@@ -1,0 +1,19 @@
+{
+  "description": "Gluon tutorial 14-multicta.py: multicta_softmax_kernel on x_ptr float32[2, 64], out_ptr float32[2, 64]",
+  "kernel": "multicta_softmax_kernel",
+  "block": 32,
+  "grid": [2, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "x_ptr", "kind": "inout", "dtype": "f32", "shape": [2, 64]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [2, 64]}
+  ],
+  "params": [
+    {"name": "x_ptr", "ptr": "x_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "x_row_stride", "int": 64},
+    {"name": "out_row_stride", "int": 64},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

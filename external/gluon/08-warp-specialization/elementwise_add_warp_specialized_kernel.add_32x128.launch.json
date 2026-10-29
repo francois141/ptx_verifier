@@ -1,0 +1,33 @@
+{
+  "description": "Gluon tutorial 08-warp-specialization.py: elementwise_add_warp_specialized_kernel on a_desc float32[32, 128], b_desc float32[32, 128], c_desc float32[32, 128]",
+  "kernel": "elementwise_add_warp_specialized_kernel",
+  "block": 256,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 24796,
+  "arrays": [
+    {"name": "a_desc", "kind": "inout", "dtype": "f32", "shape": [32, 128]},
+    {"name": "b_desc", "kind": "inout", "dtype": "f32", "shape": [32, 128]},
+    {"name": "c_desc", "kind": "inout", "dtype": "f32", "shape": [32, 128]}
+  ],
+  "params": [
+    {"name": "a_desc", "struct": [{"name": "a_desc tensor map", "offset": 0, "tensor_map": {"array": "a_desc", "dtype": "f32", "dims": [128, 32], "strides": [512], "box": [32, 32], "swizzle": "128B"}}]},
+    {"name": "a_desc.shape[0]", "int": 32},
+    {"name": "a_desc.shape[1]", "int": 128},
+    {"name": "a_desc.strides[0]", "int": 128},
+    {"name": "a_desc.strides[1]", "int": 1},
+    {"name": "b_desc", "struct": [{"name": "b_desc tensor map", "offset": 0, "tensor_map": {"array": "b_desc", "dtype": "f32", "dims": [128, 32], "strides": [512], "box": [32, 32], "swizzle": "128B"}}]},
+    {"name": "b_desc.shape[0]", "int": 32},
+    {"name": "b_desc.shape[1]", "int": 128},
+    {"name": "b_desc.strides[0]", "int": 128},
+    {"name": "b_desc.strides[1]", "int": 1},
+    {"name": "c_desc", "struct": [{"name": "c_desc tensor map", "offset": 0, "tensor_map": {"array": "c_desc", "dtype": "f32", "dims": [128, 32], "strides": [512], "box": [32, 32], "swizzle": "128B"}}]},
+    {"name": "c_desc.shape[0]", "int": 32},
+    {"name": "c_desc.shape[1]", "int": 128},
+    {"name": "c_desc.strides[0]", "int": 128},
+    {"name": "c_desc.strides[1]", "int": 1},
+    {"name": "xnumel", "int": 32},
+    {"name": "ynumel", "int": 128},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

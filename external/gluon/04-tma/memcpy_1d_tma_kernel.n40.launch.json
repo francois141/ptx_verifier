@@ -1,0 +1,21 @@
+{
+  "description": "Gluon tutorial 04-tma.py: memcpy_1d_tma_kernel on in_desc float32[40], out_desc float32[40]",
+  "kernel": "memcpy_1d_tma_kernel",
+  "block": 32,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 264,
+  "arrays": [
+    {"name": "in_desc", "kind": "inout", "dtype": "f32", "shape": [40]},
+    {"name": "out_desc", "kind": "inout", "dtype": "f32", "shape": [40]}
+  ],
+  "params": [
+    {"name": "in_desc", "struct": [{"name": "in_desc tensor map", "offset": 0, "tensor_map": {"array": "in_desc", "dtype": "f32", "dims": [40], "strides": [], "box": [64], "swizzle": "none"}}]},
+    {"name": "in_desc.shape[0]", "int": 40},
+    {"name": "in_desc.strides[0]", "int": 1},
+    {"name": "out_desc", "struct": [{"name": "out_desc tensor map", "offset": 0, "tensor_map": {"array": "out_desc", "dtype": "f32", "dims": [40], "strides": [], "box": [64], "swizzle": "none"}}]},
+    {"name": "out_desc.shape[0]", "int": 40},
+    {"name": "out_desc.strides[0]", "int": 1},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

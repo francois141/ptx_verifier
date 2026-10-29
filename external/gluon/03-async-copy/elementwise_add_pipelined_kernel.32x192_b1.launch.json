@@ -1,0 +1,24 @@
+{
+  "description": "Gluon tutorial 03-async-copy.py: elementwise_add_pipelined_kernel on a_ptr float32[32, 192], b_ptr float32[32, 192], c_ptr float32[32, 192]",
+  "kernel": "elementwise_add_pipelined_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 16384,
+  "arrays": [
+    {"name": "a_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 192]},
+    {"name": "b_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 192]},
+    {"name": "c_ptr", "kind": "inout", "dtype": "f32", "shape": [32, 192]}
+  ],
+  "params": [
+    {"name": "a_ptr", "ptr": "a_ptr"},
+    {"name": "b_ptr", "ptr": "b_ptr"},
+    {"name": "c_ptr", "ptr": "c_ptr"},
+    {"name": "xnumel", "int": 32},
+    {"name": "ynumel", "int": 192},
+    {"name": "xstride_a", "int": 192},
+    {"name": "xstride_b", "int": 192},
+    {"name": "xstride_c", "int": 192},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

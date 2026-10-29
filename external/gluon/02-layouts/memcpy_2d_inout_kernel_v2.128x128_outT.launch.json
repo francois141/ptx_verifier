@@ -1,0 +1,21 @@
+{
+  "description": "Gluon tutorial 02-layouts.py: memcpy_2d_inout_kernel on in_ptr float32[128, 128], out_ptr float32[128, 128]",
+  "kernel": "memcpy_2d_inout_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 65536,
+  "arrays": [
+    {"name": "in_ptr", "kind": "inout", "dtype": "f32", "shape": [128, 128]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [128, 128]}
+  ],
+  "params": [
+    {"name": "in_ptr", "ptr": "in_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "xnumel", "int": 128},
+    {"name": "ynumel", "int": 128},
+    {"name": "xstride_in", "int": 128},
+    {"name": "ystride_out", "int": 128},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

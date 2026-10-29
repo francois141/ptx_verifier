@@ -1,0 +1,18 @@
+{
+  "description": "Gluon tutorial 02-layouts.py: memcpy_1d_kernel on in_ptr float32[200], out_ptr float32[200]",
+  "kernel": "memcpy_1d_kernel",
+  "block": 128,
+  "grid": [2, 1, 1],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "in_ptr", "kind": "inout", "dtype": "f32", "shape": [200]},
+    {"name": "out_ptr", "kind": "inout", "dtype": "f32", "shape": [200]}
+  ],
+  "params": [
+    {"name": "in_ptr", "ptr": "in_ptr"},
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "xnumel", "int": 200},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "Gluon tutorial 09-tma-gather-scatter.py: async_gather_kernel on out_ptr bfloat16[8, 16], tensor_desc bfloat16[64, 64], x_offsets_ptr int32[8]",
+  "kernel": "async_gather_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 264,
+  "arrays": [
+    {"name": "out_ptr", "kind": "inout", "dtype": "bf16", "shape": [8, 16]},
+    {"name": "tensor_desc", "kind": "inout", "dtype": "bf16", "shape": [64, 64]},
+    {"name": "x_offsets_ptr", "kind": "index", "dtype": "i32", "shape": [8]}
+  ],
+  "params": [
+    {"name": "out_ptr", "ptr": "out_ptr"},
+    {"name": "out_stride_x", "int": 16},
+    {"name": "tensor_desc", "struct": [{"name": "tensor_desc tensor map", "offset": 0, "tensor_map": {"array": "tensor_desc", "dtype": "bf16", "dims": [64, 64], "strides": [128], "box": [16, 1], "swizzle": "32B"}}]},
+    {"name": "tensor_desc.shape[0]", "int": 64},
+    {"name": "tensor_desc.shape[1]", "int": 64},
+    {"name": "tensor_desc.strides[0]", "int": 64},
+    {"name": "tensor_desc.strides[1]", "int": 1},
+    {"name": "x_offsets_ptr", "ptr": "x_offsets_ptr"},
+    {"name": "y_offset", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

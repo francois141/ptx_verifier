@@ -1,0 +1,37 @@
+{
+  "description": "Gluon tutorial 11-tcgen05-mma-scaled.py: simple_mma_scaled_kernel on a_desc float8_e4m3fn[128, 128], b_desc float8_e4m3fn[128, 128], c_desc float16[128, 128], a_scale_ptr uint8[128, 4], b_scale_ptr uint8[128, 4]",
+  "kernel": "simple_mma_scaled_kernel",
+  "block": 128,
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 33304,
+  "arrays": [
+    {"name": "a_desc", "kind": "inout", "dtype": "e4m3", "shape": [128, 128]},
+    {"name": "b_desc", "kind": "inout", "dtype": "e4m3", "shape": [128, 128]},
+    {"name": "c_desc", "kind": "inout", "dtype": "f16", "shape": [128, 128]},
+    {"name": "a_scale_ptr", "kind": "inout", "dtype": "u8", "shape": [128, 4]},
+    {"name": "b_scale_ptr", "kind": "inout", "dtype": "u8", "shape": [128, 4]}
+  ],
+  "params": [
+    {"name": "a_desc", "struct": [{"name": "a_desc tensor map", "offset": 0, "tensor_map": {"array": "a_desc", "dtype": "u8", "dims": [128, 128], "strides": [128], "box": [128, 128], "swizzle": "128B"}}]},
+    {"name": "a_desc.shape[0]", "int": 128},
+    {"name": "a_desc.shape[1]", "int": 128},
+    {"name": "a_desc.strides[0]", "int": 128},
+    {"name": "a_desc.strides[1]", "int": 1},
+    {"name": "b_desc", "struct": [{"name": "b_desc tensor map", "offset": 0, "tensor_map": {"array": "b_desc", "dtype": "u8", "dims": [128, 128], "strides": [128], "box": [128, 128], "swizzle": "128B"}}]},
+    {"name": "b_desc.shape[0]", "int": 128},
+    {"name": "b_desc.shape[1]", "int": 128},
+    {"name": "b_desc.strides[0]", "int": 128},
+    {"name": "b_desc.strides[1]", "int": 1},
+    {"name": "c_desc", "struct": [{"name": "c_desc tensor map", "offset": 0, "tensor_map": {"array": "c_desc", "dtype": "f16", "dims": [128, 128], "strides": [256], "box": [64, 128], "swizzle": "128B"}}]},
+    {"name": "c_desc.shape[0]", "int": 128},
+    {"name": "c_desc.shape[1]", "int": 128},
+    {"name": "c_desc.strides[0]", "int": 128},
+    {"name": "c_desc.strides[1]", "int": 1},
+    {"name": "a_scale_ptr", "ptr": "a_scale_ptr"},
+    {"name": "a_scale_stride_m", "int": 4},
+    {"name": "b_scale_ptr", "ptr": "b_scale_ptr"},
+    {"name": "b_scale_stride_n", "int": 4},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

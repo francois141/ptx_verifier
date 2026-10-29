@@ -67,3 +67,4 @@ tritonbench:
 setup:
     uv run external/extraction/tritonbench.py
     uv run external/extraction/thunderkittens.py
+    uv run external/extraction/gluon.py
