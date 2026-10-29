@@ -323,16 +323,48 @@ pub fn operand_element_addr(
     }
 }
 
-/// Lanes of Tensor Memory one `.cta_group::1` operation's `D` always
-/// spans, whatever its `M` (PTX ISA 9.7.17.1).
-const D_LANES: u32 = 128;
+/// Tensor Memory lanes, all of which a full-datapath `D` spans (PTX ISA 9.7.17.1).
+const TMEM_LANES: u32 = 128;
 
-/// Where element `(m, n)` of an `M x N` `D` lands in Tensor Memory, as `(lane,
-/// column offset)`. `M < 128` stacks `128 / M` row-groups of `M` lanes, each a
-/// column slice; callers admit only the checked `M` = 128 and 32.
-pub fn d_cell(m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
-    let cols_per_group = n_dim / (D_LANES / m_dim);
-    (m + m_dim * (n / cols_per_group), n % cols_per_group)
+/// How a `.cta_group::1` operation's `M x N` `D` sits in Tensor Memory from
+/// lane 0 (PTX ISA 9.7.18.10.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DLayout {
+    /// Layouts D (M = 128) and G (M = 32, `.ws`): `128 / M` row-groups of `M`
+    /// lanes, each a slice of `N / (128 / M)` columns.
+    Stacked,
+    /// Layout F (M = 64, not `.ws`, half the datapath): rows `16w..16w + 15`
+    /// in lanes `32w..32w + 15`, each row all `N` columns.
+    HalfDatapath,
+}
+
+impl DLayout {
+    /// `(lane, column offset)` of element `(m, n)`.
+    pub fn cell(self, m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
+        match self {
+            Self::Stacked => {
+                let cols_per_group = self.cols((m_dim, n_dim));
+                (m + m_dim * (n / cols_per_group), n % cols_per_group)
+            }
+            Self::HalfDatapath => (32 * (m / 16) + m % 16, n),
+        }
+    }
+
+    /// Columns `D` spans.
+    pub fn cols(self, (m_dim, n_dim): (u32, u32)) -> u32 {
+        match self {
+            Self::Stacked => n_dim / (TMEM_LANES / m_dim),
+            Self::HalfDatapath => n_dim,
+        }
+    }
+
+    /// Whether `D` occupies `lane`.
+    pub fn holds_lane(self, lane: u32) -> bool {
+        match self {
+            Self::Stacked => lane < TMEM_LANES,
+            Self::HalfDatapath => lane < TMEM_LANES && lane % 32 < 16,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -730,5 +762,17 @@ mod tests {
                 assert_eq!(got, want, "row={row} k={k}");
             }
         }
+    }
+
+    /// Layout F (M = 64, not `.ws`): rows `16w..16w + 15` in lanes `32w..32w +
+    /// 15`, every row all `N` columns; lanes `16..31` of each quadrant stay empty.
+    #[test]
+    fn test_half_datapath_d_layout() {
+        let layout = DLayout::HalfDatapath;
+        assert_eq!(layout.cell(0, 7, (64, 64)), (0, 7));
+        assert_eq!(layout.cell(17, 63, (64, 64)), (33, 63));
+        assert_eq!(layout.cell(63, 0, (64, 64)), (111, 0));
+        assert_eq!(layout.cols((64, 64)), 64);
+        assert!(layout.holds_lane(15) && !layout.holds_lane(16) && layout.holds_lane(32));
     }
 }

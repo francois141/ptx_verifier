@@ -6,7 +6,7 @@ use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits::{self};
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
-use crate::eval::tcgen05_mma::{self, KSelect, Major, OperandFormat};
+use crate::eval::tcgen05_mma::{self, DLayout, KSelect, Major, OperandFormat};
 use crate::eval::value::Value;
 use crate::frontend::ast::ScalarType;
 use crate::ir::{
@@ -133,27 +133,31 @@ impl<'p> Interpreter<'p> {
                 "tcgen05.mma's Negate A/B Matrix is not modeled".to_string(),
             ));
         }
-        // `M = 64` would fall out of `tcgen05_mma::d_cell`'s formula too,
-        // but nothing has pinned its Layout D down, and a silently wrong
-        // placement is worse here than a loud refusal.
-        if !matches!(id.m, 32 | 128) {
-            return Err(unsupported(format!(
-                "tcgen05.mma with M = {} is not modeled (only M = 32 and 128)",
-                id.m
-            )));
-        }
-        // An M < 128 result is folded across Tensor Memory's 128 lanes in
-        // `128 / M` row-groups, so `N` must split evenly between them for
-        // `tcgen05_mma::d_cell` to place it.
+        // `.ws` M = 64 is Layout E (2x2), whose placement nothing has pinned
+        // down; a silently wrong placement is worse than a loud refusal.
+        let d_layout = match (id.m, ws) {
+            (32 | 128, _) => DLayout::Stacked,
+            (64, false) => DLayout::HalfDatapath,
+            _ => {
+                return Err(unsupported(format!(
+                    "tcgen05.mma{} with M = {} is not modeled (only M = 32 and 128, \
+                     and M = 64 without .ws)",
+                    if ws { ".ws" } else { "" },
+                    id.m
+                )));
+            }
+        };
+        // A stacked M < 128 result is folded across Tensor Memory's 128 lanes
+        // in `128 / M` row-groups, so `N` must split evenly between them.
         let d_groups = 128 / id.m;
-        if !id.n.is_multiple_of(d_groups) {
+        if d_layout == DLayout::Stacked && !id.n.is_multiple_of(d_groups) {
             return Err(unsupported(format!(
                 "tcgen05.mma with M = {} and N = {} is not modeled (N must be a \
                  multiple of {d_groups} to fold across the 128 Tensor Memory lanes)",
                 id.m, id.n
             )));
         }
-        let d_num_cols = id.n / d_groups;
+        let d_num_cols = d_layout.cols((id.m, id.n));
 
         let k_dim = tcgen05_mma::k_dim(kind) as usize;
         let major = |transpose: bool| if transpose { Major::Mn } else { Major::K };
@@ -170,6 +174,13 @@ impl<'p> Interpreter<'p> {
                 self.read_mma_operand(t, pc, (op, OperandRole::MmaA), a_operand, id.m, k_dim)?
             }
             Tcgen05MmaA::Tmem { base, offset } => {
+                if d_layout == DLayout::HalfDatapath {
+                    return Err(unsupported(
+                        "tcgen05.mma [a-tmem] with M = 64 is not modeled (A would follow \
+                         Layout F's half-datapath lanes)"
+                            .to_string(),
+                    ));
+                }
                 if a_format != OperandFormat::F16 {
                     return Err(unsupported(format!(
                         "tcgen05.mma [a-tmem] with {a_format:?} elements is not modeled \
@@ -209,7 +220,7 @@ impl<'p> Interpreter<'p> {
         let enable_input_d =
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
         let d_tmem = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
-        // `D` spans all 128 lanes from lane 0 (`tcgen05_mma::d_cell`); any
+        // `D` is placed from lane 0 (`DLayout::cell`); any
         // other lane would shift its rows, and read as part of the column it
         // would be misreported as an access outside the allocation.
         if d_tmem >> 16 != 0 {
@@ -231,7 +242,9 @@ impl<'p> Interpreter<'p> {
             *slot = self.concrete_operand(t, pc, op, "tcgen05.mma disable-output-lane")? as u32;
         }
         let lane_enabled = |lane: u32| (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 == 0;
-        let d_lanes: Vec<u32> = (0..128).filter(|&lane| lane_enabled(lane)).collect();
+        let d_lanes: Vec<u32> = (0..128)
+            .filter(|&lane| d_layout.holds_lane(lane) && lane_enabled(lane))
+            .collect();
         let d_cols = (d_col_base, d_num_cols);
         let accumulator = |mode| (mode, OperandRole::Accumulator);
         if enable_input_d {
@@ -241,7 +254,7 @@ impl<'p> Interpreter<'p> {
 
         for m in 0..id.m {
             for n in 0..id.n {
-                let (lane, col) = tcgen05_mma::d_cell(m, n, (id.m, id.n));
+                let (lane, col) = d_layout.cell(m, n, (id.m, id.n));
                 let col = d_col_base + col;
                 if !lane_enabled(lane) {
                     continue;
