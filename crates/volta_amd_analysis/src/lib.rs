@@ -1,8 +1,10 @@
-//! AMD assembly analysis: parsing (`frontend`), lowering (`lower`, `ir`),
-//! and symbolic execution (`eval`).
+//! AMD kernel analysis for Volta.
 
 pub mod frontend;
 
 mod eval;
 mod ir;
 mod lower;
+
+pub use ir::{LoweredInstr, LoweredKernel, Sgpr, Vgpr};
+pub use lower::{LowerError, lower_kernel};

@@ -29,7 +29,7 @@ crates/
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
 ├── volta_ptx_analysis/ # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
-├── volta_amd_analysis/ # AMD assembly frontend and abstract interpreter
+├── volta_amd_analysis/ # AMD kernel analysis
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN; every end-to-end PTX test
 ├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
@@ -47,7 +47,6 @@ volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check,
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
-volta_amd_analysis → (nothing)
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -219,11 +218,10 @@ crate-level docs in `lib.rs` are the contract.
 **Path**: `crates/volta_ptx_analysis/`
 
 Every module but `frontend` is private: `lib.rs` re-exports the whole API (`analyze`,
-`analyze_lowered`, `AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`,
-the `AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
-`Stats`, `ThreadId`, `LowerError`, and the IR types `LoweredProgram`, `LoweredInstr`,
-`Operand`, `SymbolTable`, `SourceMap`, and supporting types), so rustc flags any code
-it does not reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
+`AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
+`AnalysisConfig` types, `EvalError`, `ClcMisuse`, `OutputsUnavailable`,
+`Stats`, `ThreadId`, `LowerError`), so rustc flags any code it does not
+reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
 
 ### Frontend (`frontend/`)
 
@@ -346,10 +344,7 @@ racing another thread's use of the object keeps its witness.
   graph's `Provenance` only): every kernel is analyzed and checked as on
   Blackwell, so the proxy-order check always runs
 - `analyze(module, kernel_name, config) -> Result<AnalysisResult, AnalysisError>`:
-  lowers PTX and calls `analyze_lowered(program, config, provenance)`, which runs
-  one candidate execution and returns `Result<AnalysisResult, EvalError>`, no
-  verdict. Direct callers supply well-formed IR that preserves the source
-  semantics and provenance matching the program and config. `AnalysisResult` holds
+  lowering plus one candidate execution, no verdict. `AnalysisResult` holds
   the arena, the event graph (always; partial on abort), stats, op counts,
   and the symbolic outputs only when the execution completed and its outputs
   read back (`symbolic_outputs()` / `into_parts()`; else `OutputsUnavailable`:
@@ -378,13 +373,15 @@ verdict, duration) in `check_graph`. `cargo run -p volta_cli
 
 **Path**: `crates/volta_amd_analysis/`
 
-AMD assembly analysis, parallel to `volta_ptx_analysis`: parsing (`frontend`),
-lowering (`lower`, `ir`), and symbolic execution (`eval`). The frontend is public;
-the other stages are private.
-`frontend::parse::parse_kernel(source, name)` extracts a kernel's target,
-instructions with typed operands, and numeric launch settings. It parses operand
-syntax without validating instruction semantics. Tests use the compiled gfx950
-copy kernel; see the crate README for supported forms and build commands.
+AMD kernel analysis. The module layout separates assembly syntax (`frontend`),
+lowering (`lower`), the instruction representation (`ir`), and symbolic execution (`eval`).
+The frontend is public; the root re-exports `lower_kernel`, `LowerError`, and the
+IR types. `frontend::parse::parse_kernel(source, name)` extracts the target,
+operand syntax, and numeric descriptor settings.
+`lower_kernel(&kernel)` validates supported gfx950 instruction forms and preserves
+physical register identities, explicit waits, and launch metadata. Unsupported
+targets, instructions, or operand forms produce `LowerError`.
+See the crate README for ISA references, test commands, and fixture regeneration.
 
 ## Crate: volta_graph_check
 
@@ -533,8 +530,6 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
   `Verified`, then the rendered
   symbolic outputs must match the kernel's `.out` file exactly
   (`VOLTA_BLESS=1` rewrites them).
-- `lowered_program_tests.rs` - constructs IR through the public API, without
-  parsing PTX, and checks the resulting symbolic output and event graph.
 - one suite per check whose witnesses PTX kernels exercise, each asserting on
   that check's typed witness only: `mbarrier_epoch_tests.rs` (Algorithm 1 over
   mbarrier phases: the unseparated synchronization and operation),
