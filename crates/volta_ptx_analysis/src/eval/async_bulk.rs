@@ -1,6 +1,8 @@
-//! `cp.async.bulk{.tensor}` evaluation (TMA tensor and plain bulk copies,
-//! global to shared, mbarrier-completed). The data lands eagerly at issue; an
-//! observed mbarrier phase is the copy's only completion signal (9.7.9.25.2).
+//! `cp.async.bulk{.tensor}` evaluation: TMA loads and bulk copies (global to shared,
+//! completed on an mbarrier) and TMA stores (shared to global, completed by bulk
+//! async-group waits). The data lands eagerly at issue; the graph orders it (9.7.9.25.2).
+
+use std::collections::VecDeque;
 
 use volta_graph::{AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
@@ -13,7 +15,7 @@ use crate::eval::tensor_map_table;
 use crate::eval::value::{MbarrierId, Value};
 use crate::ir::symbols::{PARAM_GENERIC_BASE, SHARED_GENERIC_BASE};
 use crate::ir::tensor_map::TensorFillMode;
-use crate::ir::{InstrId, MemSpace, Operand};
+use crate::ir::{BulkWaitScope, InstrId, MemSpace, Operand};
 
 /// Where a TMA's generic tensor-map address points: a kernel parameter's map in
 /// the param window (`cvta.param`), else a `.global` object (where
@@ -25,6 +27,58 @@ fn locate_tensor_map(addr: u64) -> (MemSpace, u64) {
     } else {
         (MemSpace::Global, addr)
     }
+}
+
+/// A TMA load's or store's box: each element's global byte address (`None` when
+/// out of bounds) and its swizzled shared address, in box order (dimension 0
+/// fastest); `float_elements` picks the zero a load fills out-of-bounds ones with.
+struct TmaBox {
+    elem_bytes: u64,
+    float_elements: bool,
+    elements: Vec<(Option<u64>, u64)>,
+}
+
+/// One TMA store's two async ops, each `None` once a bulk wait completed it.
+#[derive(Debug)]
+pub(in crate::eval) struct BulkStore {
+    pub reads: Option<AsyncOpId>,
+    pub writes: Option<AsyncOpId>,
+}
+
+impl BulkStore {
+    fn is_complete(&self) -> bool {
+        self.reads.is_none() && self.writes.is_none()
+    }
+}
+
+/// Complete every bulk group but the newest `keep`: its stores' reads, and with
+/// `Complete` their writes too. Dropping the complete groups at the front never
+/// changes which groups a later wait completes.
+pub(in crate::eval) fn complete_bulk_groups(
+    groups: &mut VecDeque<Vec<BulkStore>>,
+    keep: u32,
+    scope: BulkWaitScope,
+) -> Vec<AsyncOpId> {
+    let older = groups.len().saturating_sub(keep as usize);
+
+    let mut ops = Vec::new();
+    for group in groups.iter_mut().take(older) {
+        for store in group {
+            ops.extend(store.reads.take());
+            if scope == BulkWaitScope::Complete {
+                ops.extend(store.writes.take());
+            }
+        }
+    }
+
+    while let Some(group) = groups.front() {
+        if !group.iter().all(BulkStore::is_complete) {
+            break;
+        }
+        groups.pop_front();
+    }
+
+    ops
 }
 
 impl<'p> Interpreter<'p> {
@@ -48,7 +102,133 @@ impl<'p> Interpreter<'p> {
         let tm_addr = self.effective_addr(t, pc, tensormap_base, tensormap_offset)?;
         let (tensormap_space, tm_addr) = locate_tensor_map(tm_addr);
         let mbar_addr = self.effective_addr(t, pc, mbar_base, mbar_offset)?;
+        let tma = self.tma_box(t, pc, tensormap_space, tm_addr, dst_addr, coords)?;
 
+        let op = self.record_async_issue(t, pc, AsyncOpKind::TensorCopy);
+        self.record_tensor_map_read(t, pc, op, tensormap_space, tm_addr);
+        let (source, destination) = copy_origins(op);
+
+        for &(global, shared) in &tma.elements {
+            // Out of bounds: the zero fill (the only modeled OOB fill mode), a real
+            // or an integer zero like the tensor's in-bounds elements.
+            let value = match global {
+                Some(addr) => {
+                    self.mem_read_from(t, pc, MemSpace::Global, addr, tma.elem_bytes, source)?
+                }
+                None if tma.float_elements => Value::Scalar(
+                    self.arena
+                        .float_from_f64(0.0)
+                        .expect("0.0 is always representable"),
+                ),
+                None => Value::Scalar(self.arena.int(0)),
+            };
+
+            self.mem_write_from(
+                t,
+                pc,
+                MemSpace::Shared,
+                shared,
+                tma.elem_bytes,
+                value,
+                destination,
+            )?;
+        }
+
+        // The transaction count covers the whole box, zero-filled elements included.
+        let bytes = tma.elements.len() as u64 * tma.elem_bytes;
+        self.mbarrier_complete_tx(t, pc, mbar_addr, bytes, op)
+    }
+
+    /// `.tile` TMA tensor store, shared to global (ISA 9.7.9.26.5.2): the
+    /// load's box read back from shared memory; out-of-bounds elements are not
+    /// written. Its reads and its writes are separate async ops, since a
+    /// `cp.async.bulk.wait_group.read` completes only the former.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::eval) fn exec_cp_async_bulk_tensor_store(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        tensormap_base: &Operand,
+        tensormap_offset: i64,
+        coords: &[Operand],
+        src_base: &Operand,
+        src_offset: i64,
+    ) -> EvalResult<BulkStore> {
+        let src_addr = self.effective_addr(t, pc, src_base, src_offset)?;
+        let tm_addr = self.effective_addr(t, pc, tensormap_base, tensormap_offset)?;
+        let (tensormap_space, tm_addr) = locate_tensor_map(tm_addr);
+        let tma = self.tma_box(t, pc, tensormap_space, tm_addr, src_addr, coords)?;
+
+        let reads = self.record_async_issue(t, pc, AsyncOpKind::TensorStoreRead);
+        let writes = self.record_async_issue(t, pc, AsyncOpKind::TensorStoreWrite);
+
+        // The tensor-map read belongs to the reads, so a `.read` wait completes it.
+        self.record_tensor_map_read(t, pc, reads, tensormap_space, tm_addr);
+        let (source, _) = copy_origins(reads);
+        let (_, destination) = copy_origins(writes);
+
+        for &(global, shared) in &tma.elements {
+            // A store never fills: an out-of-bounds element is not written at all.
+            let Some(global) = global else {
+                continue;
+            };
+
+            let value =
+                self.mem_read_from(t, pc, MemSpace::Shared, shared, tma.elem_bytes, source)?;
+            self.mem_write_from(
+                t,
+                pc,
+                MemSpace::Global,
+                global,
+                tma.elem_bytes,
+                value,
+                destination,
+            )?;
+        }
+
+        Ok(BulkStore {
+            reads: Some(reads),
+            writes: Some(writes),
+        })
+    }
+
+    /// The copy's read of its 128-byte tensor map through the tensor-map proxy.
+    fn record_tensor_map_read(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: AsyncOpId,
+        space: MemSpace,
+        addr: u64,
+    ) {
+        let descriptor = AccessOrigin::Async {
+            op,
+            proxy: Proxy::TensorMap,
+            role: OperandRole::TensorMap,
+        };
+        self.record_mem_access(
+            t,
+            pc,
+            space,
+            addr,
+            tensor_map_table::TENSOR_MAP_BYTES,
+            None,
+            descriptor,
+        );
+    }
+
+    /// The box of a TMA load (global to shared) or store (shared to global):
+    /// each element's global address and its address in the swizzled tile at
+    /// `smem_addr`, per the tensor map at `(tensormap_space, tm_addr)` and `coords`.
+    fn tma_box(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        tensormap_space: MemSpace,
+        tm_addr: u64,
+        smem_addr: u64,
+        coords: &[Operand],
+    ) -> EvalResult<TmaBox> {
         let entry = self
             .tensor_maps
             .get(tensormap_space, tm_addr)
@@ -182,13 +362,13 @@ impl<'p> Interpreter<'p> {
                     });
                 }
             };
-            if !dst_addr.is_multiple_of(atom_bytes) {
+            if !smem_addr.is_multiple_of(atom_bytes) {
                 return Err(EvalError::Unsupported {
                     pc,
                     what: format!(
-                        "cp.async.bulk.tensor: destination {:#x} is not aligned to the {:?} \
+                        "cp.async.bulk.tensor: shared address {:#x} is not aligned to the {:?} \
                          swizzle pattern's {}-byte boundary (nonzero swizzle base offset not modeled)",
-                        dst_addr, mma_swizzle, atom_bytes
+                        smem_addr, mma_swizzle, atom_bytes
                     ),
                 });
             }
@@ -196,7 +376,7 @@ impl<'p> Interpreter<'p> {
         };
 
         let desc = tcgen05_mma::MatrixDescriptor {
-            start_addr: dst_addr,
+            start_addr: smem_addr,
             leading_dim_byte_offset: 0,
             stride_dim_byte_offset,
             base_offset: 0,
@@ -216,22 +396,7 @@ impl<'p> Interpreter<'p> {
         }
 
         let total_elems: u64 = box_dims.iter().map(|&d| d as u64).product();
-        let op = self.record_async_issue(t, pc, AsyncOpKind::TensorCopy);
-        let descriptor = AccessOrigin::Async {
-            op,
-            proxy: Proxy::TensorMap,
-            role: OperandRole::TensorMap,
-        };
-        self.record_mem_access(
-            t,
-            pc,
-            tensormap_space,
-            tm_addr,
-            tensor_map_table::TENSOR_MAP_BYTES,
-            None,
-            descriptor,
-        );
-        let (source, destination) = copy_origins(op);
+        let mut elements = Vec::with_capacity(total_elems as usize);
         let mut idx = vec![0u32; real_rank];
         let mut global_idx = vec![0i64; real_rank];
         for linear in 0..total_elems {
@@ -241,6 +406,8 @@ impl<'p> Interpreter<'p> {
                 rem /= box_dims[d] as u64;
             }
 
+            // TMA coordinates are signed: a box may start before the tensor or
+            // run past its end, in any dimension.
             let mut in_bounds = true;
             for d in 0..real_rank {
                 let gi = coord_vals[d] + idx[d] as i64 * element_strides[d] as i64;
@@ -250,21 +417,13 @@ impl<'p> Interpreter<'p> {
                 }
             }
 
-            let value = if in_bounds {
+            let global = in_bounds.then(|| {
                 let mut byte_addr = global_address + global_idx[0] as u64 * elem_bytes;
                 for d in 1..real_rank {
                     byte_addr += global_idx[d] as u64 * global_strides[d - 1];
                 }
-                self.mem_read_from(t, pc, MemSpace::Global, byte_addr, elem_bytes, source)?
-            } else if elemtype.is_float() {
-                Value::Scalar(
-                    self.arena
-                        .float_from_f64(0.0)
-                        .expect("0.0 is always representable"),
-                )
-            } else {
-                Value::Scalar(self.arena.int(0))
-            };
+                byte_addr
+            });
 
             let mut stride_idx = 0u64;
             let mut mult = 1u64;
@@ -273,20 +432,17 @@ impl<'p> Interpreter<'p> {
                 mult *= box_dims[d] as u64;
             }
             let leading_idx = idx[0] as u64;
-            let dst_elem_addr =
+            let shared =
                 tcgen05_mma::swizzled_element_addr(&desc, stride_idx, leading_idx, elem_bytes);
-            self.mem_write_from(
-                t,
-                pc,
-                MemSpace::Shared,
-                dst_elem_addr,
-                elem_bytes,
-                value,
-                destination,
-            )?;
+
+            elements.push((global, shared));
         }
 
-        self.mbarrier_complete_tx(t, pc, mbar_addr, total_elems * elem_bytes, op)
+        Ok(TmaBox {
+            elem_bytes,
+            float_elements: elemtype.is_float(),
+            elements,
+        })
     }
 
     /// `cp.async.bulk` global -> shared of `size` bytes, completing `size`

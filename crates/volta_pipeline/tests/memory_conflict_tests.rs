@@ -6,7 +6,11 @@ mod common;
 
 use volta_graph::{AccessMode, AsyncOpKind, Space};
 use volta_graph_check::domain::{ByteLocation, ConflictKind};
-use volta_ptx_analysis::{AnalysisConfig, ArrayDef, ArrayKind, ParamValue};
+use volta_ptx_analysis::{
+    AnalysisConfig, ArrayDef, ArrayKind, FieldValue, ParamValue, StructField, TensorElemType,
+    TensorFillMode, TensorInterleaveLayout, TensorMapValue, TensorSwizzleAtomicity,
+    TensorSwizzleMode,
+};
 
 use common::*;
 
@@ -620,4 +624,64 @@ fn test_cp_fenceproxy_races_another_warps_replace() {
             && w.earlier == Side::plain(32, Write)
             && w.later == Side::plain(0, Write)
     });
+}
+
+/// `tma_param_tensor_maps`'s launch: an 8x8 f32 `in` and `out`, their tensor
+/// maps (8x4 boxes) at bytes 0 and 128 of the struct parameter.
+fn tma_param_tensor_maps_config() -> AnalysisConfig {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 4,
+            len: 64,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 4,
+            len: 64,
+            kind: ArrayKind::Output,
+        },
+    ];
+
+    let map = |offset: u64, name: &str| StructField {
+        offset,
+        value: FieldValue::TensorMap(Box::new(TensorMapValue {
+            array: name.to_string(),
+            elemtype: TensorElemType::F32,
+            dims: vec![8, 8],
+            strides: vec![32],
+            box_dims: vec![8, 4],
+            element_strides: vec![1, 1],
+            interleave: TensorInterleaveLayout::None,
+            swizzle: TensorSwizzleMode::None,
+            swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+            fill: TensorFillMode::Zero,
+        })),
+    };
+    config.params = vec![ParamValue::Struct(vec![map(0, "in"), map(128, "out")])];
+    config
+}
+
+/// Thread 0 stores to the tile its TMA store reads, without having waited for
+/// that read: no `commit_group`, no `wait_group`, or a `wait_group.read 1`
+/// that leaves the store's group pending.
+#[test]
+fn test_tma_store_tile_reuse_before_its_read_completes_races() {
+    for module in [
+        ptx!(parse "execution_error/tma_store_tile_reuse_without_commit_group_races"),
+        ptx!(parse "execution_error/tma_store_tile_reuse_without_wait_group_races"),
+        ptx!(parse "execution_error/tma_store_tile_reuse_after_wait_group_1_races"),
+    ] {
+        let ws = conflicts(&module, tma_param_tensor_maps_config());
+        assert_any(&ws, "the TMA store's read and thread 0's tile store", |w| {
+            w.kind == ConflictKind::ReadWrite
+                && on_shared(w)
+                && w.earlier == Side::effect(0, Read, AsyncOpKind::TensorStoreRead)
+                && w.later == Side::plain(0, Write)
+        });
+    }
 }

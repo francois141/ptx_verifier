@@ -289,7 +289,13 @@ pub fn check_proxy_order(
 /// generic accesses: the PTX ISA (9.7.9.25.2) states the implicit fence for bulk async copies.
 fn completion_implies_proxy_fence(kind: AsyncOpKind) -> bool {
     match kind {
-        AsyncOpKind::BulkCopy | AsyncOpKind::TensorCopy | AsyncOpKind::ClcResponse => true,
+        // A bulk async-group wait completes a TMA store's reads (or its writes)
+        // for the waiting thread like the mbarrier completion of the loads.
+        AsyncOpKind::BulkCopy
+        | AsyncOpKind::TensorCopy
+        | AsyncOpKind::TensorStoreRead
+        | AsyncOpKind::TensorStoreWrite
+        | AsyncOpKind::ClcResponse => true,
         AsyncOpKind::CpAsync
         | AsyncOpKind::Tcgen05Mma
         | AsyncOpKind::Tcgen05Ld

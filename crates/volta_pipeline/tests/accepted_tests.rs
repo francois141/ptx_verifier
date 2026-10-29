@@ -758,6 +758,43 @@ fn test_tma_param_tensor_map_load() {
     analyze!("success/tma_param_tensor_map_load", config);
 }
 
+/// Host-encoded tensor maps inside a struct parameter, reached through
+/// `cvta.param`: a TMA load of `in`'s rows 2-5, then a TMA store of the tile to
+/// `out`'s rows 0-3 in a bulk async-group whose source reads are waited for.
+#[test]
+fn test_tma_param_tensor_maps() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 64, ArrayKind::Input),
+        array("out", 0x20000, 4, 64, ArrayKind::Output),
+    ];
+    let map = |name: &str| {
+        FieldValue::TensorMap(Box::new(TensorMapValue {
+            array: name.to_string(),
+            elemtype: TensorElemType::F32,
+            dims: vec![8, 8],
+            strides: vec![32],
+            box_dims: vec![8, 4],
+            element_strides: vec![1, 1],
+            interleave: TensorInterleaveLayout::None,
+            swizzle: TensorSwizzleMode::None,
+            swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+            fill: TensorFillMode::Zero,
+        }))
+    };
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: map("in"),
+        },
+        StructField {
+            offset: 128,
+            value: map("out"),
+        },
+    ])];
+    analyze!("success/tma_param_tensor_maps", config);
+}
+
 /// A concrete `mul.hi.u64` is the exact high half of the 128-bit product.
 #[test]
 fn test_mul_hi_u64_concrete() {

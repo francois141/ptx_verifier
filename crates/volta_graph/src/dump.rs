@@ -8,9 +8,9 @@ use id_collections::Id;
 use crate::graph::EventGraph;
 use crate::model::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOpKind, BarrierArrivals, BlockedOn,
-    CollectiveSide, ContributionKind, EventKind, ExecContext, FenceKind, Footprint, GenerationKind,
-    GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space, StoredValue, SyncObjectKind,
-    Terminal,
+    BulkWaitScope, CollectiveSide, ContributionKind, EventKind, ExecContext, FenceKind, Footprint,
+    GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space, StoredValue,
+    SyncObjectKind, Terminal,
 };
 
 impl EventGraph {
@@ -47,6 +47,9 @@ impl EventGraph {
                 }
                 SyncObjectKind::AsyncGroupWait { thread } => {
                     write!(out, "cp-async-groups t{}", thread.0)?
+                }
+                SyncObjectKind::BulkGroupWait { thread } => {
+                    write!(out, "bulk-groups t{}", thread.0)?
                 }
             }
             writeln!(
@@ -95,6 +98,18 @@ impl EventGraph {
                 GenerationKind::AsyncGroupWait { keep_pending } => {
                     write!(out, "wait-group keep={}", keep_pending)?
                 }
+                GenerationKind::BulkGroupWait {
+                    keep_pending,
+                    scope,
+                } => write!(
+                    out,
+                    "bulk-wait-group keep={} {}",
+                    keep_pending,
+                    match scope {
+                        BulkWaitScope::SourceReads => "reads",
+                        BulkWaitScope::Complete => "complete",
+                    }
+                )?,
             }
             writeln!(
                 out,
@@ -144,6 +159,8 @@ impl EventGraph {
                 AsyncOpKind::CpAsync => "cp-async".to_string(),
                 AsyncOpKind::BulkCopy => "bulk-copy".to_string(),
                 AsyncOpKind::TensorCopy => "tensor-copy".to_string(),
+                AsyncOpKind::TensorStoreRead => "tensor-store-read".to_string(),
+                AsyncOpKind::TensorStoreWrite => "tensor-store-write".to_string(),
                 AsyncOpKind::ClcResponse => "clc-response".to_string(),
                 AsyncOpKind::Tcgen05Mma => "tcgen05-mma".to_string(),
                 AsyncOpKind::Tcgen05Ld => "tcgen05-ld".to_string(),
@@ -240,6 +257,7 @@ impl EventGraph {
                     writeln!(out, "commit-group cp.async")?
                 }
                 EventKind::GroupCommit(GroupFamily::Wgmma) => writeln!(out, "commit-group wgmma")?,
+                EventKind::GroupCommit(GroupFamily::Bulk) => writeln!(out, "commit-group bulk")?,
                 EventKind::Fence(FenceKind::ProxyAsync { space: s }) => match s {
                     Some(s) => writeln!(out, "fence proxy.async {}", space(s))?,
                     None => writeln!(out, "fence proxy.async")?,

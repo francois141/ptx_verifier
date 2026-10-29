@@ -79,6 +79,8 @@ pub enum GroupFamily {
     CpAsync,
     /// `wgmma.commit_group`, waited on by `wgmma.wait_group`.
     Wgmma,
+    /// `cp.async.bulk.commit_group`, waited on by `cp.async.bulk.wait_group`.
+    Bulk,
 }
 
 /// An mbarrier phase parity.
@@ -265,6 +267,8 @@ pub enum SyncObjectKind {
     WarpgroupCollective { warpgroup: u32 },
     /// One thread's `cp.async.wait_group` completions.
     AsyncGroupWait { thread: ThreadIx },
+    /// One thread's `cp.async.bulk.wait_group` completions.
+    BulkGroupWait { thread: ThreadIx },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +329,19 @@ pub enum GenerationKind {
     AsyncGroupWait {
         keep_pending: u32,
     },
+    /// A `cp.async.bulk.wait_group{.read} n` completing the bulk groups past `n`.
+    BulkGroupWait {
+        keep_pending: u32,
+        scope: BulkWaitScope,
+    },
+}
+
+/// What a `cp.async.bulk.wait_group` waits for: with `.read`, only that the
+/// groups' source reads are done (PTX ISA 9.7.9.25.4.3), not their writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BulkWaitScope {
+    SourceReads,
+    Complete,
 }
 
 /// How a contribution takes part in its generation.
@@ -404,6 +421,12 @@ pub enum AsyncOpKind {
     BulkCopy,
     /// `cp.async.bulk.tensor` (TMA), completed on an mbarrier.
     TensorCopy,
+    /// A TMA store's (`cp.async.bulk.tensor` shared to global) shared-memory
+    /// reads, completed by any `cp.async.bulk.wait_group` of its bulk group.
+    TensorStoreRead,
+    /// The same TMA store's global writes, completed only by a
+    /// `cp.async.bulk.wait_group` without `.read`.
+    TensorStoreWrite,
     /// A `clusterlaunchcontrol.try_cancel` response write, completed on an mbarrier.
     ClcResponse,
     /// `tcgen05.mma`, tracked by later `tcgen05.commit`s of its issuer.
@@ -422,6 +445,8 @@ impl AsyncOpKind {
             AsyncOpKind::CpAsync => "cp.async",
             AsyncOpKind::BulkCopy => "cp.async.bulk",
             AsyncOpKind::TensorCopy => "cp.async.bulk.tensor",
+            AsyncOpKind::TensorStoreRead => "cp.async.bulk.tensor (store, shared reads)",
+            AsyncOpKind::TensorStoreWrite => "cp.async.bulk.tensor (store, global writes)",
             AsyncOpKind::ClcResponse => "clusterlaunchcontrol.try_cancel",
             AsyncOpKind::Tcgen05Mma => "tcgen05.mma",
             AsyncOpKind::Tcgen05Ld => "tcgen05.ld",

@@ -6,10 +6,10 @@ use std::collections::HashMap;
 
 use volta_graph::{
     AccessMode, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals,
-    BlockedOn, BlockedThread, CollectiveSide, ContributionKind, EventId, Footprint,
-    GenerationEvidence, GenerationId, GenerationKind, MbarrierState, MemAccess, MemberOrdering,
-    OperandRole, OrderingKind, Parity, ProgramPoint, Proxy, Space, StoredValue, SyncObjectId,
-    SyncObjectKind, ThreadIx,
+    BlockedOn, BlockedThread, BulkWaitScope, CollectiveSide, ContributionKind, EventId, Footprint,
+    GenerationEvidence, GenerationId, GenerationKind, GroupFamily, MbarrierState, MemAccess,
+    MemberOrdering, OperandRole, OrderingKind, Parity, ProgramPoint, Proxy, Space, StoredValue,
+    SyncObjectId, SyncObjectKind, ThreadIx,
 };
 
 use crate::eval::interp::{BarrierArrivals, Interpreter, Status};
@@ -73,7 +73,7 @@ pub(in crate::eval) struct Recording {
     warps: HashMap<u32, CollectiveObject>,
     forming_warp_ops: HashMap<(u32, InstrId, u32), FormingCollective>,
     mbarriers: HashMap<MbarrierId, MbarrierRecord>,
-    group_waits: HashMap<ThreadId, (SyncObjectId, u32)>,
+    group_waits: HashMap<(ThreadId, GroupFamily), (SyncObjectId, u32)>,
     unobserved_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
     tcgen05_pending: HashMap<(u32, Tcgen05Wait), Vec<AsyncOpId>>,
 }
@@ -786,23 +786,55 @@ impl Interpreter<'_> {
         keep_pending: u32,
         ops: &[AsyncOpId],
     ) {
+        let kind = GenerationKind::AsyncGroupWait { keep_pending };
+        self.record_wait_generation(t, pc, GroupFamily::CpAsync, kind, ops);
+    }
+
+    /// `t`'s `cp.async.bulk.wait_group{.read}` keeping `keep_pending` groups completed `ops`.
+    pub(in crate::eval) fn record_bulk_group_wait(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        keep_pending: u32,
+        scope: BulkWaitScope,
+        ops: &[AsyncOpId],
+    ) {
+        let kind = GenerationKind::BulkGroupWait {
+            keep_pending,
+            scope,
+        };
+        self.record_wait_generation(t, pc, GroupFamily::Bulk, kind, ops);
+    }
+
+    /// One generation of `t`'s waits on its `family` groups, completing `ops` and releasing `t`.
+    fn record_wait_generation(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        family: GroupFamily,
+        kind: GenerationKind,
+        ops: &[AsyncOpId],
+    ) {
         if ops.is_empty() {
             return;
         }
-        let (object, index) = match self.rec.group_waits.get(&t) {
+        let (object, index) = match self.rec.group_waits.get(&(t, family)) {
             Some(&known) => known,
-            None => (
-                self.graph
-                    .sync_object(SyncObjectKind::AsyncGroupWait { thread: tix(t) }),
-                0,
-            ),
+            None => {
+                let thread = tix(t);
+                let object = match family {
+                    GroupFamily::Bulk => SyncObjectKind::BulkGroupWait { thread },
+                    GroupFamily::CpAsync | GroupFamily::Wgmma => {
+                        SyncObjectKind::AsyncGroupWait { thread }
+                    }
+                };
+                (self.graph.sync_object(object), 0)
+            }
         };
-        self.rec.group_waits.insert(t, (object, index + 1));
-        let generation = self.graph.open_generation(
-            object,
-            index,
-            GenerationKind::AsyncGroupWait { keep_pending },
-        );
+        self.rec
+            .group_waits
+            .insert((t, family), (object, index + 1));
+        let generation = self.graph.open_generation(object, index, kind);
         for &op in ops {
             self.graph.track(op, generation, 0);
         }

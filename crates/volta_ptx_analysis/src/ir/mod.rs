@@ -18,6 +18,7 @@ use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
 use crate::ir::tensor_map::TensormapFieldWrite;
 use crate::ir::types::RegCounts;
+pub use volta_graph::BulkWaitScope;
 
 /// Instruction index (program counter)
 #[id_type]
@@ -932,6 +933,25 @@ pub enum LoweredInstr {
         mbar_offset: i64,
     },
 
+    /// `cp.async.bulk.tensor...global.shared::cta.tile.bulk_group`: TMA
+    /// store from the executing CTA's shared memory to global, tracked by the
+    /// issuer's bulk async-groups.
+    CpAsyncBulkTensorStore {
+        tensormap_base: Operand,
+        tensormap_offset: i64,
+        coords: Vec<Operand>,
+        src_base: Operand,
+        src_offset: i64,
+    },
+
+    /// `cp.async.bulk.commit_group`: seal the thread's TMA stores since the
+    /// last commit into a bulk async-group.
+    CpAsyncBulkCommitGroup,
+
+    /// `cp.async.bulk.wait_group{.read} n`: complete the thread's bulk
+    /// groups but the newest `n` (with `.read`, only their source reads).
+    CpAsyncBulkWaitGroup { n: u32, scope: BulkWaitScope },
+
     /// `cp.async.bulk...mbarrier::complete_tx::bytes`: non-tensor copy of
     /// `size` contiguous bytes, global to shared, completing `size` tx-bytes
     /// on `mbar` (`lower::tma::lower_cp_async_bulk`).
@@ -1135,6 +1155,9 @@ define_instr_kinds!(
     TensormapCpFenceproxy,
     FenceProxyTensormap,
     CpAsyncBulkTensorLoad,
+    CpAsyncBulkTensorStore,
+    CpAsyncBulkCommitGroup,
+    CpAsyncBulkWaitGroup,
     CpAsyncBulkLoad,
     ClcTryCancel,
     ClcQueryIsCanceled,

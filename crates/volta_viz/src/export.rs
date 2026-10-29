@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use volta_expr::ExprArena;
 use volta_graph::{
-    AbortCause, AccessMode, ArrivalOrdering, AsyncOpId, BarrierArrivals, BlockedOn, CollectiveSide,
-    ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind, Footprint,
-    GenerationId, GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space,
-    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    AbortCause, AccessMode, ArrivalOrdering, AsyncOpId, BarrierArrivals, BlockedOn, BulkWaitScope,
+    CollectiveSide, ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind,
+    Footprint, GenerationId, GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity,
+    Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
 };
 use volta_graph_check::allocation_order::AllocationOrderViolation;
 use volta_graph_check::allocation_permit::AllocationPermitViolation;
@@ -621,6 +621,7 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
             match family {
                 GroupFamily::CpAsync => "cp.async.commit_group",
                 GroupFamily::Wgmma => "wgmma.commit_group",
+                GroupFamily::Bulk => "cp.async.bulk.commit_group",
             }
             .to_string(),
         ),
@@ -702,6 +703,7 @@ fn object_name(graph: &EventGraph, object: SyncObjectId) -> String {
             format!("warpgroup {warpgroup} collectives")
         }
         SyncObjectKind::AsyncGroupWait { thread } => format!("cp.async groups t{}", thread.0),
+        SyncObjectKind::BulkGroupWait { thread } => format!("bulk groups t{}", thread.0),
     }
 }
 
@@ -743,6 +745,13 @@ fn generation_kind(kind: GenerationKind) -> String {
         GenerationKind::AsyncGroupWait { keep_pending } => {
             format!("cp.async.wait_group {keep_pending}")
         }
+        GenerationKind::BulkGroupWait {
+            keep_pending,
+            scope,
+        } => match scope {
+            BulkWaitScope::SourceReads => format!("cp.async.bulk.wait_group.read {keep_pending}"),
+            BulkWaitScope::Complete => format!("cp.async.bulk.wait_group {keep_pending}"),
+        },
     }
 }
 

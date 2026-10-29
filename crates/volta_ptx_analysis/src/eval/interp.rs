@@ -10,6 +10,7 @@ use id_collections::IdVec;
 use crate::frontend::ast::ScalarType;
 
 use crate::config::{AnalysisConfig, ParamValue};
+use crate::eval::async_bulk::{BulkStore, complete_bulk_groups};
 use crate::eval::cluster_launch_control::ObservedDecline;
 use crate::eval::cp_async::PendingCopy;
 use crate::eval::error::{EvalError, EvalResult};
@@ -173,6 +174,10 @@ pub(in crate::eval) struct ThreadState {
     /// Committed async-copy groups, oldest first; `wait_group`/`wait_all`
     /// pop from the front.
     groups: VecDeque<Vec<PendingCopy>>,
+    /// TMA stores issued since the last `cp.async.bulk.commit_group`.
+    bulk_uncommitted: Vec<BulkStore>,
+    /// Committed bulk async-groups, oldest first (`complete_bulk_groups`).
+    bulk_groups: VecDeque<Vec<BulkStore>>,
     /// `tcgen05.mma.ws` collector buffers `b0`-`b3`: the `B` elements the
     /// last `::fill` loaded, until a `::lastuse`/`::discard` drops them.
     pub(in crate::eval) tcgen05_collectors: [Option<Vec<ExprId>>; 4],
@@ -429,6 +434,8 @@ impl<'p> Interpreter<'p> {
                     status: Status::Ready,
                     uncommitted: Vec::new(),
                     groups: VecDeque::new(),
+                    bulk_uncommitted: Vec::new(),
+                    bulk_groups: VecDeque::new(),
                     tcgen05_collectors: Default::default(),
                 })
                 .collect(),
@@ -1771,6 +1778,37 @@ impl<'p> Interpreter<'p> {
                     mbar_base,
                     *mbar_offset,
                 )?;
+            }
+
+            LoweredInstr::CpAsyncBulkTensorStore {
+                tensormap_base,
+                tensormap_offset,
+                coords,
+                src_base,
+                src_offset,
+            } => {
+                let store = self.exec_cp_async_bulk_tensor_store(
+                    t,
+                    pc,
+                    tensormap_base,
+                    *tensormap_offset,
+                    coords,
+                    src_base,
+                    *src_offset,
+                )?;
+                self.threads[t].bulk_uncommitted.push(store);
+            }
+
+            LoweredInstr::CpAsyncBulkCommitGroup => {
+                let uncommitted = std::mem::take(&mut self.threads[t].bulk_uncommitted);
+                self.threads[t].bulk_groups.push_back(uncommitted);
+                self.graph
+                    .group_commit(tix(t), point(pc), GroupFamily::Bulk);
+            }
+
+            LoweredInstr::CpAsyncBulkWaitGroup { n, scope } => {
+                let ops = complete_bulk_groups(&mut self.threads[t].bulk_groups, *n, *scope);
+                self.record_bulk_group_wait(t, pc, *n, *scope, &ops);
             }
 
             LoweredInstr::CpAsyncBulkLoad {
