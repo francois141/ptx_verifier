@@ -1,0 +1,21 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Triton's interleave of two 4-byte fp16 loads: prmt 0x5410 joins their low halves.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.b32 %r1, [%rd1];
+    ld.global.b32 %r2, [%rd1+4];
+    prmt.b32 %r3, %r1, %r2, 0x5410U;
+    st.global.b32 [%rd2], %r3;
+    ret;
+}

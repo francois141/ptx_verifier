@@ -902,61 +902,83 @@ impl<'p> Interpreter<'p> {
                 selector,
             } => {
                 let selector = self.concrete_operand(t, pc, selector, "prmt selector")? as u16;
-                let fp8_sign_xor = |this: &mut Self, value: ExprId| {
-                    let ExprNode::BitXor(left, right) = this.arena.node(value).clone() else {
-                        return value;
-                    };
-                    let magnitude = if this.arena.as_int_const(left) == Some(128) {
-                        Some(right)
-                    } else if this.arena.as_int_const(right) == Some(128) {
-                        Some(left)
-                    } else {
-                        None
-                    };
-                    magnitude.map_or(value, |value| this.arena.neg(value))
-                };
-                // An FP8 scalar byte already denotes its real value, and a
-                // vector-loaded word is a Quad of such values; keep the lanes
-                // split while applying the byte selector.
-                let lanes = |this: &mut Self, value: Value| match value {
-                    Value::Scalar(value) => Ok([Some(fp8_sign_xor(this, value)), None, None, None]),
-                    Value::Quad(b0, b1, b2, b3) => Ok([Some(b0), Some(b1), Some(b2), Some(b3)]),
-                    Value::Pair(..) => Err(EvalError::ValueKindMismatch {
-                        thread: t,
-                        pc,
-                        what: "packed pair used as a prmt source",
-                    }),
-                    Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
-                        thread: t,
-                        pc,
-                        what: "mbarrier handle used as a prmt source",
-                    }),
-                };
                 let src_a = self.operand_value(t, pc, src_a)?;
                 let src_b = self.operand_value(t, pc, src_b)?;
-                let a = lanes(self, src_a)?;
-                let b = lanes(self, src_b)?;
-                let select_byte = |this: &mut Self, nibble: u16| -> EvalResult<ExprId> {
-                    let source = if nibble & 7 < 4 { &a } else { &b };
-                    let byte = source[(nibble & 3) as usize].ok_or(EvalError::Unsupported {
-                        pc,
-                        what: format!(
-                            "prmt selector {selector:#06x}: byte {} is unavailable from a scalar \
-                             FP8 input",
-                            nibble & 7
-                        ),
-                    })?;
-                    Ok(if nibble & 8 == 0 {
-                        byte
-                    } else {
-                        this.arena.neg(byte)
-                    })
-                };
-                let b0 = select_byte(self, selector & 0xf)?;
-                let b1 = select_byte(self, (selector >> 4) & 0xf)?;
-                let b2 = select_byte(self, (selector >> 8) & 0xf)?;
-                let b3 = select_byte(self, (selector >> 12) & 0xf)?;
-                self.write_reg(t, *dst, Value::Quad(b0, b1, b2, b3));
+
+                if let (Value::Pair(a_lo, a_hi), Value::Pair(b_lo, b_hi)) = (src_a, src_b) {
+                    // Exact only when each result half takes one source half whole
+                    // (Triton's `0x5410`/`0x7632` f16 interleave).
+                    let select = |byte_pair: u16| match byte_pair {
+                        0x10 => Ok(a_lo),
+                        0x32 => Ok(a_hi),
+                        0x54 => Ok(b_lo),
+                        0x76 => Ok(b_hi),
+                        _ => Err(EvalError::Unsupported {
+                            pc,
+                            what: format!(
+                                "prmt selector {selector:#06x} splits a packed pair's 16-bit half"
+                            ),
+                        }),
+                    };
+                    let pair = Value::Pair(select(selector & 0xff)?, select(selector >> 8)?);
+                    self.write_reg(t, *dst, pair);
+                } else {
+                    let fp8_sign_xor = |this: &mut Self, value: ExprId| {
+                        let ExprNode::BitXor(left, right) = this.arena.node(value).clone() else {
+                            return value;
+                        };
+                        let magnitude = if this.arena.as_int_const(left) == Some(128) {
+                            Some(right)
+                        } else if this.arena.as_int_const(right) == Some(128) {
+                            Some(left)
+                        } else {
+                            None
+                        };
+                        magnitude.map_or(value, |value| this.arena.neg(value))
+                    };
+                    // An FP8 scalar byte already denotes its real value, and a
+                    // vector-loaded word is a Quad of such values; keep the lanes
+                    // split while applying the byte selector.
+                    let lanes = |this: &mut Self, value: Value| match value {
+                        Value::Scalar(value) => {
+                            Ok([Some(fp8_sign_xor(this, value)), None, None, None])
+                        }
+                        Value::Quad(b0, b1, b2, b3) => Ok([Some(b0), Some(b1), Some(b2), Some(b3)]),
+                        Value::Pair(..) => Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "packed pair used as a prmt source",
+                        }),
+                        Value::Mbarrier(_) => Err(EvalError::ValueKindMismatch {
+                            thread: t,
+                            pc,
+                            what: "mbarrier handle used as a prmt source",
+                        }),
+                    };
+                    let a = lanes(self, src_a)?;
+                    let b = lanes(self, src_b)?;
+                    let select_byte = |this: &mut Self, nibble: u16| -> EvalResult<ExprId> {
+                        let source = if nibble & 7 < 4 { &a } else { &b };
+                        let byte = source[(nibble & 3) as usize].ok_or(EvalError::Unsupported {
+                            pc,
+                            what: format!(
+                                "prmt selector {selector:#06x}: byte {} is unavailable from a scalar \
+                                 FP8 input",
+                                nibble & 7
+                            ),
+                        })?;
+                        Ok(if nibble & 8 == 0 {
+                            byte
+                        } else {
+                            this.arena.neg(byte)
+                        })
+                    };
+                    let b0 = select_byte(self, selector & 0xf)?;
+                    let b1 = select_byte(self, (selector >> 4) & 0xf)?;
+                    let b2 = select_byte(self, (selector >> 8) & 0xf)?;
+                    let b3 = select_byte(self, (selector >> 12) & 0xf)?;
+                    self.write_reg(t, *dst, Value::Quad(b0, b1, b2, b3));
+                }
             }
 
             LoweredInstr::Lop3 {

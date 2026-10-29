@@ -1064,6 +1064,33 @@ fn test_mov_pack_b32_always_builds_pair() {
     analyze!("success/mov_pack_b32_always_builds_pair", config);
 }
 
+/// `prmt.b32 0x5410` of two f16x2 pairs takes each pair's low half whole.
+#[test]
+fn test_f16x2_pair_halves_interleaved_by_prmt() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        ArrayDef {
+            name: "in".to_string(),
+            base: 0x10000,
+            elem_width: 2,
+            len: 4,
+            kind: ArrayKind::Input,
+        },
+        ArrayDef {
+            name: "out".to_string(),
+            base: 0x20000,
+            elem_width: 2,
+            len: 2,
+            kind: ArrayKind::Output,
+        },
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/f16x2_pair_halves_interleaved_by_prmt", config);
+}
+
 /// `mov.b64 dst, {lo, hi}` with concrete 32-bit integer halves yields the
 /// exact 64-bit integer: the `Value::Pair` is recombined when consumed as a
 /// scalar (here, the u64 output).
