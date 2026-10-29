@@ -151,6 +151,9 @@ pub enum EvalError {
         pc: InstrId,
         misuse: ClcMisuse,
     },
+    /// `query_cancel` decoded a value other than the declined `try_cancel`
+    /// response: a successful cancel, which the never-steal assumption excludes.
+    ClusterLaunchControlUndeclinedResponse { thread: ThreadId, pc: InstrId },
     /// `mapa` named a CTA rank other than 0: clusters are assumed to hold
     /// exactly one CTA, so any other rank is outside the cluster.
     MapaRankOutsideCluster {
@@ -407,6 +410,12 @@ impl fmt::Display for EvalError {
                     thread, pc, observer, observed_at
                 ),
             },
+            Self::ClusterLaunchControlUndeclinedResponse { thread, pc } => write!(
+                f,
+                "{}: clusterlaunchcontrol.query_cancel at {} decodes a value that is not a \
+                 declined try_cancel response, but Volta assumes no cancel request ever succeeds",
+                thread, pc
+            ),
             Self::InstructionLimit { limit } => {
                 write!(f, "instruction limit exceeded ({} instructions)", limit)
             }
@@ -546,6 +555,7 @@ impl EvalError {
             | Self::MbarrierTxCountOutOfRange { thread, pc, .. }
             | Self::TrapReached { thread, pc }
             | Self::ClusterLaunchControlMisuse { thread, pc, .. }
+            | Self::ClusterLaunchControlUndeclinedResponse { thread, pc }
             | Self::MapaRankOutsideCluster { thread, pc, .. }
             | Self::Tcgen05InvalidColumnCount { thread, pc, .. }
             | Self::Tcgen05IncreasingColumnCount { thread, pc, .. }

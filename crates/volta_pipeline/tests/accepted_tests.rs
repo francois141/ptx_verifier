@@ -2060,6 +2060,16 @@ fn test_clusterlaunchcontrol_declined_cancel_ends_the_persistent_loop() {
     );
 }
 
+/// Gluon reads the response as two 64-bit halves packed by `mov.b128`; the
+/// 16 zero bytes are still the declined response.
+#[test]
+fn test_clusterlaunchcontrol_declined_response_read_as_two_halves_ends_the_loop() {
+    analyze!(
+        "success/clusterlaunchcontrol_declined_response_read_as_two_halves_ends_the_loop",
+        in_out_config(64, 64)
+    );
+}
+
 /// Clusters are assumed to hold a single CTA, so `mapa` into rank 0 returns
 /// each thread's own shared address unchanged.
 #[test]

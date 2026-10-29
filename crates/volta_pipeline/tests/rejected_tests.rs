@@ -1485,6 +1485,20 @@ fn test_clusterlaunchcontrol_unguarded_get_first_ctaid_is_rejected() {
     }
 }
 
+/// The persistent loop reading the response as two 64-bit halves, with
+/// `get_first_ctaid` run before branching on `is_canceled`, as Gluon does.
+#[test]
+fn test_clusterlaunchcontrol_unguarded_get_first_ctaid_of_two_halves_is_rejected() {
+    let module =
+        ptx!(parse "failing/clusterlaunchcontrol_unguarded_get_first_ctaid_of_two_halves_is_rejected");
+    match run_kernel(&module, None, in_out_config(64, 64)) {
+        Err(AnalysisError::Eval(EvalError::ClusterLaunchControlMisuse { misuse, .. })) => {
+            assert_eq!(misuse, ClcMisuse::CtaidOfDeclinedResponse);
+        }
+        other => panic!("expected ClusterLaunchControlMisuse, got {other:?}"),
+    }
+}
+
 /// A second `try_cancel` after `is_canceled` observed the first one declined
 /// is undefined behavior.
 #[test]
@@ -1515,13 +1529,11 @@ fn test_clusterlaunchcontrol_query_of_a_fabricated_response_is_rejected() {
     let module =
         ptx!(parse "failing/clusterlaunchcontrol_query_of_a_fabricated_response_is_rejected");
     match analyze_one_thread(&module) {
-        Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
-            assert!(
-                what.contains("not a declined try_cancel response"),
-                "{what}"
-            );
-        }
-        other => panic!("expected Unsupported, got {other:?}"),
+        Err(AnalysisError::Eval(EvalError::ClusterLaunchControlUndeclinedResponse {
+            thread: ThreadId(0),
+            ..
+        })) => {}
+        other => panic!("expected ClusterLaunchControlUndeclinedResponse, got {other:?}"),
     }
 }
 

@@ -31,17 +31,6 @@ pub enum Value {
     Mbarrier(MbarrierId),
 }
 
-impl Value {
-    /// The four packed lanes, if this is a quad.
-    pub fn as_quad(self) -> Option<(ExprId, ExprId, ExprId, ExprId)> {
-        match self {
-            Self::Quad(b0, b1, b2, b3) => Some((b0, b1, b2, b3)),
-            Self::Scalar(_) | Self::Pair(_, _) => None,
-            Self::Mbarrier(_) => None,
-        }
-    }
-}
-
 /// A per-thread register file, indexed by (class, index). Registers start
 /// uninitialized; reading one first is an analysis error surfaced by the
 /// interpreter.

@@ -99,29 +99,30 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// Anything but the declined encoding is a canceled response (outside the
-    /// never-steal model) or not a response at all.
+    /// The declined response is 16 zero bytes, however the register packs them
+    /// (`ld.shared.b128` gives four words, Gluon's `ld.shared.v2.b64` then
+    /// `mov.b128 {lo, hi}` two halves); anything else is a canceled response.
     fn check_declined_response(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         response: RegId,
     ) -> EvalResult<()> {
-        let value = self.read_reg(t, response);
-        let declined = value.as_quad().is_some_and(|(w0, w1, w2, w3)| {
-            [w0, w1, w2, w3]
+        let lanes = match self.read_reg(t, response) {
+            Value::Scalar(e) => vec![e],
+            Value::Pair(lo, hi) => vec![lo, hi],
+            Value::Quad(w0, w1, w2, w3) => vec![w0, w1, w2, w3],
+            Value::Mbarrier(_) => Vec::new(),
+        };
+
+        let declined = !lanes.is_empty()
+            && lanes
                 .iter()
-                .all(|&w| self.arena.as_int_const(w) == Some(0))
-        });
+                .all(|&lane| self.arena.as_int_const(lane) == Some(0));
         if declined {
             return Ok(());
         }
-        Err(EvalError::Unsupported {
-            pc,
-            what: format!(
-                "clusterlaunchcontrol.query_cancel by {t} of a value that is not a declined \
-                 try_cancel response (Volta assumes no cancel request ever succeeds)"
-            ),
-        })
+
+        Err(EvalError::ClusterLaunchControlUndeclinedResponse { thread: t, pc })
     }
 }
