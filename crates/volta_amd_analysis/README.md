@@ -9,6 +9,8 @@ from the crate root.
 
 The IR represents AMD instructions for symbolic execution. It preserves
 physical register identities, explicit waits, and launch metadata.
+Repeated `.amdhsa_*` settings within the selected kernel descriptor are errors,
+including repetitions of the same value; settings are never silently overwritten.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
 (§6.2, §12.6, §12.7) and LLVM 21.1.8's

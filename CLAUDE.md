@@ -378,6 +378,8 @@ lowering (`lower`), the instruction representation (`ir`), and symbolic executio
 The frontend is public; the root re-exports `lower_kernel`, `LowerError`, and the
 IR types. `frontend::parse::parse_kernel(source, name)` extracts the target,
 operand syntax, and numeric descriptor settings.
+Repeated settings in the selected kernel descriptor are errors, even when the
+values agree.
 `lower_kernel(&kernel)` validates supported gfx950 instruction forms and preserves
 physical register identities, explicit waits, and launch metadata. Unsupported
 targets, instructions, or operand forms produce `LowerError`.

@@ -116,7 +116,9 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         let (head, value) = word(line);
         match (head.strip_prefix(".amdhsa_"), value.parse::<u64>()) {
             (Some(setting), Ok(value)) => {
-                descriptor.insert(setting.into(), value);
+                if descriptor.insert(setting.into(), value).is_some() {
+                    return Err(format!("duplicate descriptor setting {head:?}"));
+                }
             }
             _ => {
                 return Err(format!(
@@ -218,6 +220,25 @@ mod tests {
         let plain = parse_kernel(COPY, "copy").unwrap();
         let kernel = parse_kernel(&verbose, "copy").unwrap();
         assert_eq!(kernel.instructions, plain.instructions);
+    }
+
+    #[test]
+    fn rejects_repeated_descriptor_settings_instead_of_overwriting_them() {
+        for (setting, value) in [("kernarg_size", 16), ("next_free_vgpr", 2)] {
+            let directive = format!(".amdhsa_{setting} {value}");
+            for repeated in [value, value + 1] {
+                let source = COPY.replacen(
+                    &directive,
+                    &format!("{directive}\n.amdhsa_{setting} {repeated}"),
+                    1,
+                );
+                assert_ne!(source, COPY);
+                assert_eq!(
+                    parse_kernel(&source, "copy").unwrap_err(),
+                    format!("duplicate descriptor setting \".amdhsa_{setting}\"")
+                );
+            }
+        }
     }
 
     #[test]
