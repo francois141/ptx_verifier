@@ -795,6 +795,83 @@ fn test_tma_param_tensor_maps() {
     analyze!("success/tma_param_tensor_maps", config);
 }
 
+/// A 1-D TMA load of `in`'s 16 elements at element 32, the last 8 past its end
+/// (zero-filled, yet counted by `complete_tx`), then a 1-D TMA store of the box:
+/// out[0..7] = in[32..39], out[8..15] = 0.
+#[test]
+fn test_tma_1d_load_zero_fills_past_the_tensor_end() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 40, ArrayKind::Input),
+        array("out", 0x20000, 4, 16, ArrayKind::Output),
+    ];
+    let map = |name: &str, len: u64| {
+        FieldValue::TensorMap(Box::new(TensorMapValue {
+            array: name.to_string(),
+            elemtype: TensorElemType::F32,
+            dims: vec![len],
+            strides: vec![],
+            box_dims: vec![16],
+            element_strides: vec![1],
+            interleave: TensorInterleaveLayout::None,
+            swizzle: TensorSwizzleMode::None,
+            swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+            fill: TensorFillMode::Zero,
+        }))
+    };
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: map("in", 40),
+        },
+        StructField {
+            offset: 128,
+            value: map("out", 16),
+        },
+    ])];
+    analyze!("success/tma_1d_load_zero_fills_past_the_tensor_end", config);
+}
+
+/// A 5-D TMA load of a 4x1x2x1x2 box of a 4x2x2x2x2 `in` at {0, 1, 0, 1, 0},
+/// offset or iterated in every dimension, then a 5-D TMA store of it to `out`
+/// at the same coordinates: out[i] = in[i] for i in 20-23, 28-31, 52-55, 60-63.
+#[test]
+fn test_tma_5d_load_and_store_stride_every_dimension() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 64, ArrayKind::Input),
+        array("out", 0x20000, 4, 64, ArrayKind::Output),
+    ];
+    let map = |name: &str| {
+        FieldValue::TensorMap(Box::new(TensorMapValue {
+            array: name.to_string(),
+            elemtype: TensorElemType::F32,
+            dims: vec![4, 2, 2, 2, 2],
+            strides: vec![16, 32, 64, 128],
+            box_dims: vec![4, 1, 2, 1, 2],
+            element_strides: vec![1; 5],
+            interleave: TensorInterleaveLayout::None,
+            swizzle: TensorSwizzleMode::None,
+            swizzle_atomicity: TensorSwizzleAtomicity::Atomicity16B,
+            fill: TensorFillMode::Zero,
+        }))
+    };
+    config.params = vec![ParamValue::Struct(vec![
+        StructField {
+            offset: 0,
+            value: map("in"),
+        },
+        StructField {
+            offset: 128,
+            value: map("out"),
+        },
+    ])];
+    analyze!(
+        "success/tma_5d_load_and_store_stride_every_dimension",
+        config
+    );
+}
+
 /// A concrete `mul.hi.u64` is the exact high half of the 128-bit product.
 #[test]
 fn test_mul_hi_u64_concrete() {

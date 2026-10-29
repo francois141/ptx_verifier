@@ -1,0 +1,37 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// A by-value struct `maps` holds two host-encoded 1-D tensor maps (a 40-element
+// f32 `in` at byte 0, a 16-element f32 `out` at byte 128), reached through
+// `cvta.param`. One thread TMA-loads the 16-element box of `in` at element 32,
+// whose last 8 elements lie past the tensor's end and are zero-filled, then
+// TMA-stores the box to `out`: out[0..7] = in[32..39], out[8..15] = 0.
+.visible .entry k(
+    .param .align 64 .b8 maps[256]
+)
+{
+    .reg .pred %p<2>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<5>;
+    .shared .align 8 .b64 mbar;
+    .shared .align 128 .b8 tile[64];
+
+    mov.b64 %rd1, maps;
+    add.s64 %rd2, %rd1, 128;
+    cvta.param.u64 %rd3, %rd1;
+    cvta.param.u64 %rd4, %rd2;
+    mov.u32 %r1, mbar;
+    mov.u32 %r2, tile;
+    mbarrier.init.shared::cta.b64 [%r1], 1;
+    mbarrier.arrive.expect_tx.shared::cta.b64 _, [%r1], 64;
+    mov.b32 %r3, 32;
+    cp.async.bulk.tensor.1d.shared::cta.global.mbarrier::complete_tx::bytes [%r2], [%rd3, {%r3}], [%r1];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p1, [%r1], 0;
+    @!%p1 bra WAIT;
+    cp.async.bulk.tensor.1d.global.shared::cta.bulk_group [%rd4, {0}], [%r2];
+    cp.async.bulk.commit_group;
+    cp.async.bulk.wait_group.read 0;
+    ret;
+}

@@ -373,7 +373,20 @@ pub(super) fn lower_fence_proxy_tensormap(
     Ok(())
 }
 
-/// Lower `.2d`/`.3d` `.tile` global-to-shared `cp.async.bulk.tensor` with
+/// The tensor rank a `cp.async.bulk.tensor` `.dim` modifier names: every
+/// rank the ISA has, `.1d` to `.5d`, for loads and stores alike.
+fn tensor_rank(modifier: &str) -> Option<usize> {
+    match modifier {
+        "1d" => Some(1),
+        "2d" => Some(2),
+        "3d" => Some(3),
+        "4d" => Some(4),
+        "5d" => Some(5),
+        _ => None,
+    }
+}
+
+/// Lower `.1d` to `.5d` `.tile` global-to-shared `cp.async.bulk.tensor` with
 /// mbarrier completion (PTX ISA 9.7.9.26.5.2); both destinations hit the one
 /// modeled CTA's shared memory. Every other form is rejected loudly.
 pub(super) fn lower_cp_async_bulk_tensor(
@@ -429,20 +442,19 @@ pub(super) fn lower_cp_async_bulk_tensor(
             }
         }
         match modifier.to_string().as_str() {
-            "2d" => dim = Some(2),
-            "3d" => dim = Some(3),
-            "4d" => dim = Some(4),
-            "5d" => dim = Some(5),
             "global" => saw_global = true,
             // `.tile` is both the only modeled load mode and the ISA's own
             // default, so it is validated (nothing else is accepted) but
             // has nothing further to record.
             "tile" => {}
-            other => return Err(unsupported(NAME, format!("modifier .{other}"))),
+            other => match tensor_rank(other) {
+                Some(rank) => dim = Some(rank),
+                None => return Err(unsupported(NAME, format!("modifier .{other}"))),
+            },
         }
     }
 
-    let dim = dim.ok_or_else(|| unsupported(NAME, "missing .dim (.2d to .5d are modeled)"))?;
+    let dim = dim.ok_or_else(|| unsupported(NAME, "missing .dim (.1d to .5d are modeled)"))?;
     if !saw_shared_destination {
         return Err(unsupported(
             NAME,
@@ -529,14 +541,7 @@ fn lower_cp_async_bulk_tensor_store(
         Some((dim, global, shared, group))
             if global == "global" && shared == "shared::cta" && group == "bulk_group" =>
         {
-            match dim.as_str() {
-                "1d" => 1,
-                "2d" => 2,
-                "3d" => 3,
-                "4d" => 4,
-                "5d" => 5,
-                other => return Err(unsupported(NAME, format!("modifier .{other}"))),
-            }
+            tensor_rank(dim).ok_or_else(|| unsupported(NAME, format!("modifier .{dim}")))?
         }
         _ => {
             return Err(unsupported(

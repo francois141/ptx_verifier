@@ -1301,6 +1301,22 @@ fn test_tcgen05_16x32bx2_cells() {
     assert_eq!((shape.num_lanes(), shape.num_cols(32)), (16, 64));
 }
 
+/// TMA loads and stores share one `.dim` parser: every rank of the ISA lowers
+/// in both directions.
+#[test]
+fn test_tma_every_rank_lowers_as_load_and_store() {
+    for rank in 1..=5 {
+        let coords = vec!["%r1"; rank].join(", ");
+        assert_lowers(&format!(
+            "cp.async.bulk.tensor.{rank}d.shared::cta.global.mbarrier::complete_tx::bytes \
+             [smem], [%rd1, {{{coords}}}], [smem];"
+        ));
+        assert_lowers(&format!(
+            "cp.async.bulk.tensor.{rank}d.global.shared::cta.bulk_group [%rd1, {{{coords}}}], [smem];"
+        ));
+    }
+}
+
 /// `.tile` is the TMA store's default load mode, so it may be omitted.
 #[test]
 fn test_tma_store_without_tile_lowers() {
