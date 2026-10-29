@@ -1207,6 +1207,31 @@ fn test_mbarrier_wait_outside_the_retry_loop_is_rejected() {
     );
 }
 
+/// Triton interleaves `.loc` directives with the retry loop; they lower to
+/// nothing, so they do not split the loop's window.
+#[test]
+fn test_mbarrier_wait_loop_lowers_across_loc_directives() {
+    let program = lower_body(
+        "
+        .loc 1 332 9
+        WAIT:
+        .loc 1 333 9
+        mbarrier.try_wait.parity.shared::cta.b64 %p1, [smem], 0;
+        .loc 1 333 9
+        @!%p1 bra.uni WAIT;
+        ",
+    )
+    .expect("the loop lowers across .loc directives");
+    assert!(
+        matches!(
+            program.instructions.values().collect::<Vec<_>>().as_slice(),
+            [LoweredInstr::MbarrierWaitParity { .. }, LoweredInstr::Ret]
+        ),
+        "{:?}",
+        program.instructions
+    );
+}
+
 /// ThunderKittens' retry loop leaves on the same condition as nvcc's
 /// (`@!p bra L`), through an exit label: it lowers to the one blocking wait.
 #[test]

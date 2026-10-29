@@ -209,6 +209,12 @@ fn lower_body(ctx: &mut LoweringContext, body: &FunctionBody) -> LowerResult<()>
 /// idiom matches a window (see [`match_mbarrier_wait_loop`]). Windows span
 /// only consecutive statements.
 fn lower_statements(ctx: &mut LoweringContext, stmts: &[Statement]) -> LowerResult<()> {
+    // Directives such as `.loc` lower to nothing, so they can be ignored.
+    let stmts: Vec<Statement> = stmts
+        .iter()
+        .filter(|stmt| !matches!(stmt, Statement::Directive(_)))
+        .cloned()
+        .collect();
     let mut i = 0;
     while i < stmts.len() {
         if let Some(wait_loop) = match_mbarrier_wait_loop(ctx, &stmts[i..]) {
