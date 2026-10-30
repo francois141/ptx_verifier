@@ -4573,7 +4573,9 @@ DONE:
                     assert!(
                         matches!(
                             result,
-                            Err(crate::frontend::instr_parse::InstrParseError::QualifiedModifier(_))
+                            Err(
+                                crate::frontend::instr_parse::InstrParseError::QualifiedModifier(_)
+                            )
                         ),
                         "expected {:?} to be rejected as QualifiedModifier, got {:?}",
                         src_instr,

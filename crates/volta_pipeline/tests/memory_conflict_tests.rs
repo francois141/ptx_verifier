@@ -98,12 +98,16 @@ fn test_exited_writer_unordered_by_bar_sync() {
         &ptx!(parse "execution_error/exited_writer_unordered_by_bar_sync"),
         in_out_config(64, 32),
     );
-    assert_any(&ws, "thread 0's read unordered with thread 32's write", |w| {
-        w.kind == ConflictKind::WriteRead
-            && on_shared(w)
-            && w.earlier == Side::plain(32, Write)
-            && w.later == Side::plain(0, Read)
-    });
+    assert_any(
+        &ws,
+        "thread 0's read unordered with thread 32's write",
+        |w| {
+            w.kind == ConflictKind::WriteRead
+                && on_shared(w)
+                && w.earlier == Side::plain(32, Write)
+                && w.later == Side::plain(0, Read)
+        },
+    );
 }
 
 /// The warp-collective form: lane 1 stores and exits, lane 0 reads after `bar.warp.sync 3`.

@@ -201,10 +201,9 @@ impl ModifierParser {
                             self.pos += 1;
                             Ok(Some(q))
                         }
-                        None => Err(InstrParseError::QualifiedModifier(crate::frontend::ascii::join(
-                            parts,
-                            ascii("::"),
-                        ))),
+                        None => Err(InstrParseError::QualifiedModifier(
+                            crate::frontend::ascii::join(parts, ascii("::")),
+                        )),
                     }
                 }
                 _ => Ok(None),
@@ -256,10 +255,9 @@ impl ModifierParser {
     /// the access, so unmodeled semantics error loudly.
     pub fn reject_qualified(&self) -> Result<(), InstrParseError> {
         if let Some(DottedIdent::Qualified(parts)) = self.peek() {
-            return Err(InstrParseError::QualifiedModifier(crate::frontend::ascii::join(
-                parts,
-                ascii("::"),
-            )));
+            return Err(InstrParseError::QualifiedModifier(
+                crate::frontend::ascii::join(parts, ascii("::")),
+            ));
         }
         Ok(())
     }

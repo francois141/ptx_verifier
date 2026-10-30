@@ -22,7 +22,9 @@ impl DottedIdent {
     pub fn to_ascii_string(&self) -> AsciiString {
         match self {
             DottedIdent::Simple(s) => s.clone(),
-            DottedIdent::Qualified(components) => crate::frontend::ascii::join(components, ascii("::")),
+            DottedIdent::Qualified(components) => {
+                crate::frontend::ascii::join(components, ascii("::"))
+            }
         }
     }
 }

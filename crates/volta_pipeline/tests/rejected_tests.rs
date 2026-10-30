@@ -357,7 +357,9 @@ fn test_bar_and_barrier_reject_a_missing_operation() {
             }) => {
                 assert_eq!(instruction, expect, "wrong instruction name for {form}");
                 assert!(
-                    reason.as_deref().is_some_and(|r| r.contains("MissingModifier")),
+                    reason
+                        .as_deref()
+                        .is_some_and(|r| r.contains("MissingModifier")),
                     "expected a missing operation modifier for {form}, got: {reason:?}"
                 );
             }
@@ -1577,8 +1579,7 @@ fn test_clusterlaunchcontrol_unguarded_get_first_ctaid_is_rejected() {
 /// `get_first_ctaid` run before branching on `is_canceled`, as Gluon does.
 #[test]
 fn test_clusterlaunchcontrol_unguarded_get_first_ctaid_of_two_halves_is_rejected() {
-    let module =
-        ptx!(parse "failing/clusterlaunchcontrol_unguarded_get_first_ctaid_of_two_halves_is_rejected");
+    let module = ptx!(parse "failing/clusterlaunchcontrol_unguarded_get_first_ctaid_of_two_halves_is_rejected");
     match run_kernel(&module, None, in_out_config(64, 64)) {
         Err(AnalysisError::Eval(EvalError::ClusterLaunchControlMisuse { misuse, .. })) => {
             assert_eq!(misuse, ClcMisuse::CtaidOfDeclinedResponse);

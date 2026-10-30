@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use common::*;
 use volta_graph::{
-    AccessMode, AsyncOpKind, EventGraph, EventId, ExecContext, Footprint, MemAccess,
-    OperandRole, OrderingKind, Parity, Proxy, Space, SyncObjectKind,
+    AccessMode, AsyncOpKind, EventGraph, EventId, ExecContext, Footprint, MemAccess, OperandRole,
+    OrderingKind, Parity, Proxy, Space, SyncObjectKind,
 };
 use volta_graph_check::domain::{ByteLocation, ConflictKind};
 use volta_graph_check::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
