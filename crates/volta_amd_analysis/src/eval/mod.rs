@@ -1,6 +1,7 @@
 //! Symbolic execution of AMD instructions.
 
 mod launch;
+mod scalar;
 #[cfg(test)]
 mod tests;
 mod value;
@@ -19,6 +20,10 @@ pub(crate) enum EvalError {
     InvalidLane(usize),
     UninitializedSgpr(Sgpr),
     UninitializedVgpr { lane: usize, reg: Vgpr },
+    PendingSgpr(Sgpr),
+    InvalidAddressRegister(Sgpr),
+    AddressOverflow,
+    KernargRead { address: u64 },
     UnsupportedInstruction,
     Launch { message: String },
 }
@@ -33,7 +38,22 @@ impl fmt::Display for EvalError {
             Self::UninitializedVgpr { lane, reg } => {
                 write!(f, "uninitialized vector register v{} in lane {lane}", reg.0)
             }
-            Self::UnsupportedInstruction => write!(f, "unsupported instruction for lane execution"),
+            Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
+            Self::InvalidAddressRegister(reg) => {
+                write!(
+                    f,
+                    "address register s{} must contain a concrete 32-bit word",
+                    reg.0
+                )
+            }
+            Self::AddressOverflow => write!(f, "scalar load address overflows 64 bits"),
+            Self::KernargRead { address } => {
+                write!(
+                    f,
+                    "16-byte read at {address:#x} is outside the kernel argument buffer"
+                )
+            }
+            Self::UnsupportedInstruction => write!(f, "unsupported instruction"),
             Self::Launch { message } => write!(f, "invalid launch: {message}"),
         }
     }

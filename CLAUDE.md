@@ -387,8 +387,11 @@ targets, instructions, or operand forms produce `LowerError`.
 The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
 to initial registers. It accepts full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
-and rejects unsupported launch layouts. `execute_lane` evaluates an instruction for
-a caller-selected active lane, returning `EvalError` for unsupported instructions.
+and rejects unsupported launch layouts. `execute_scalar` handles wave-wide argument
+loads and zero LGKM waits for XNACK-disabled execution. `KernargBuffer` holds read-only
+argument bytes; pending scalar destinations reject reads and writes until the wait.
+`execute_lane` evaluates an instruction for a caller-selected active lane.
+Unsupported instructions return `EvalError`.
 See the crate README for ISA references, test commands, and fixture regeneration.
 
 ## Crate: volta_graph_check
