@@ -17,6 +17,7 @@ mod param_space;
 mod record;
 mod schedule;
 mod tcgen05;
+mod tcgen05_block_scale;
 mod tcgen05_mma;
 mod tensor_map_table;
 mod tensor_memory;

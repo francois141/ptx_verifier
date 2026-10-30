@@ -1424,3 +1424,38 @@ fn test_setmaxnreg_count_must_be_a_valid_immediate() {
         );
     }
 }
+
+/// `.kind::mxf8f6f4` lowers only with `.block_scale` (and `.block32`, `.scale_vec::1X` or no
+/// size), its `[scale-A-tmem], [scale-B-tmem]` where other kinds have `disable-output-lane`.
+#[test]
+fn test_tcgen05_mma_block_scale_forms() {
+    let mma = |qualifiers: &str, operands: &str| {
+        format!("tcgen05.mma.cta_group::1.{qualifiers} [%r1], %rd1, %rd2, %r2, {operands};")
+    };
+    let scales = "[%r3], [%r4], %p1";
+    for qualifiers in [
+        "kind::mxf8f6f4.block_scale.block32",
+        "kind::mxf8f6f4.block_scale.scale_vec::1X",
+        "kind::mxf8f6f4.block_scale",
+    ] {
+        assert_lowers(&mma(qualifiers, scales));
+    }
+
+    let invalid = |body: String| {
+        matches!(
+            lower_body(&body),
+            Err(LowerError::InvalidInstruction { .. })
+        )
+    };
+    assert!(invalid(mma("kind::mxf8f6f4", "%p1")));
+    assert!(invalid(mma("kind::f8f6f4.block_scale", scales)));
+    assert!(invalid(mma("kind::f16.block32", "%p1")));
+    let block16 = mma("kind::mxf8f6f4.block_scale.block16", scales);
+    assert_rejected(&block16, ".block16");
+    let masked = format!("{{0, 0, 0, 0}}, {scales}");
+    let masked = mma("kind::mxf8f6f4.block_scale", &masked);
+    assert!(matches!(
+        lower_body(&masked),
+        Err(LowerError::InvalidOperand { .. })
+    ));
+}

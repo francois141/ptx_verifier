@@ -1,0 +1,125 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// A `.kind::mxf8f6f4.block_scale.block32` MMA, M = 128, N = 40, K = 32: rows 0 and 33 of A
+// (e4m3 1..=16 twice) and columns 0 and 33 of B (e5m2 1.0 then 2.0) each give an unscaled
+// dot product of 408. Every warp stores the same UE8M0 scale words into its 32-lane
+// partition: row m's factor sits at lane m % 32, column m / 32, byte SFA_ID = 1 (row 0:
+// 2.0, row 33: 4.0); column n's at byte SFB_ID = 2 (column 0: 0.25, column 33: 8.0). Every
+// other byte is 1.0, so only the right lane, column and byte give
+// out = {D[0][0], D[0][33], D[33][0], D[33][33]} = {204, 6528, 408, 13056}.
+.visible .entry k(
+    .param .u64 out
+)
+{
+    .reg .pred %zp<2>;
+    .reg .b32 %zr<3>;
+    .reg .pred %p<5>;
+    .reg .b32 %r<20>;
+    .reg .b64 %rd<5>;
+    .reg .f32 %f<3>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[1280];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
+
+    // Thread 0 zeroes the operand tiles so the MMA reads no never-written byte.
+    mov.u32 %zr0, %tid.x;
+    setp.eq.u32 %zp0, %zr0, 0;
+    @!%zp0 bra ZEROED;
+    mov.u32 %zr0, 0;
+    mov.u32 %zr1, a_buf;
+    add.u32 %zr2, %zr1, 4096;
+ZERO_A_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_A_BUF;
+    mov.u32 %zr1, b_buf;
+    add.u32 %zr2, %zr1, 1280;
+ZERO_B_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_B_BUF;
+ZEROED:
+
+    mov.u32 %r10, %tid.x;
+    setp.eq.u32 %p1, %r10, 0;
+    setp.lt.u32 %p2, %r10, 32;
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %rbar, mma_bar;
+    @!%p2 bra ALLOCATED;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 128;
+ALLOCATED:
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+
+    // Rows 0 and 33 of A and of B: in the no-swizzle K-major layout, row r starts at
+    // (r / 8) * SBO + (r % 8) * 16, its second 16 elements LBO = 128 bytes further.
+    mov.u64 %rd1, a_buf;
+    mov.u64 %rd2, b_buf;
+    @%p1 st.shared.v4.b32 [%rd1+0], {0x48444038, 0x504e4c4a, 0x54535251, 0x58575655};
+    @%p1 st.shared.v4.b32 [%rd1+128], {0x48444038, 0x504e4c4a, 0x54535251, 0x58575655};
+    @%p1 st.shared.v4.b32 [%rd1+1040], {0x48444038, 0x504e4c4a, 0x54535251, 0x58575655};
+    @%p1 st.shared.v4.b32 [%rd1+1168], {0x48444038, 0x504e4c4a, 0x54535251, 0x58575655};
+    @%p1 st.shared.v4.b32 [%rd2+0], {0x3c3c3c3c, 0x3c3c3c3c, 0x3c3c3c3c, 0x3c3c3c3c};
+    @%p1 st.shared.v4.b32 [%rd2+128], {0x40404040, 0x40404040, 0x40404040, 0x40404040};
+    @%p1 st.shared.v4.b32 [%rd2+1040], {0x3c3c3c3c, 0x3c3c3c3c, 0x3c3c3c3c, 0x3c3c3c3c};
+    @%p1 st.shared.v4.b32 [%rd2+1168], {0x40404040, 0x40404040, 0x40404040, 0x40404040};
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+
+    // The scale words of this thread's lane: A in columns 64-67, B in columns 72-73.
+    and.b32 %r11, %r10, 31;
+    setp.eq.u32 %p3, %r11, 0;
+    setp.eq.u32 %p4, %r11, 1;
+    selp.b32 %r12, 0x7F7F807F, 0x7F7F7F7F, %p3;
+    selp.b32 %r13, 0x7F7F817F, 0x7F7F7F7F, %p4;
+    mov.b32 %r14, 0x7F7F7F7F;
+    selp.b32 %r15, 0x7F7D7F7F, 0x7F7F7F7F, %p3;
+    selp.b32 %r16, 0x7F827F7F, 0x7F7F7F7F, %p4;
+    shr.u32 %r17, %r10, 5;
+    shl.b32 %r17, %r17, 21;
+    add.u32 %r18, %r1, %r17;
+    tcgen05.st.sync.aligned.32x32b.x4.b32 [%r18+64], {%r12, %r13, %r14, %r14};
+    tcgen05.st.sync.aligned.32x32b.x2.b32 [%r18+72], {%r15, %r16};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+
+    // SwizzleMode::None, LBO = 128, SBO = 256, descriptor version 1.
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 70437464178688;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 70437464178688;
+    // dense, A = e4m3, B = e5m2, M = 128, N = 40, UE8M0, SFA_ID = 1, SFB_ID = 2.
+    mov.u32 %r2, 680133664;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.block32 [%r1+0], %rd3, %rd4, %r2, [%r1+64], [%r1+72], %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::after_thread_sync;
+
+    // Each warp reads columns 0 and 33 of its own partition's lanes.
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f1, [%r18];
+    tcgen05.ld.sync.aligned.32x32b.x1.b32 %f2, [%r18+33];
+    tcgen05.wait::ld.sync.aligned;
+    // Thread 0 stores D[0][*] at out[0..2], thread 33 D[33][*] at out[2..4].
+    ld.param.u64 %rd1, [out];
+    setp.eq.u32 %p3, %r10, 33;
+    @%p3 add.u64 %rd1, %rd1, 8;
+    or.pred %p0, %p1, %p3;
+    @%p0 st.global.v2.f32 [%rd1], {%f1, %f2};
+    // Warp 0 frees the columns once every warp's wait::ld is behind the barrier.
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    @%p2 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 128;
+    ret;
+}

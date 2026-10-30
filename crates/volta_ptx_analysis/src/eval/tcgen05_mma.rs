@@ -67,8 +67,8 @@ impl OperandFormat {
         match (kind, type_field) {
             (Tcgen05MmaKind::F16, 0) => Some(Self::F16),
             (Tcgen05MmaKind::F16, 1) => Some(Self::Bf16),
-            (Tcgen05MmaKind::F8f6f4, 0) => Some(Self::E4m3),
-            (Tcgen05MmaKind::F8f6f4, 1) => Some(Self::E5m2),
+            (Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4, 0) => Some(Self::E4m3),
+            (Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4, 1) => Some(Self::E5m2),
             _ => None,
         }
     }
@@ -82,16 +82,15 @@ impl OperandFormat {
 }
 
 /// `K` of one dense `.cta_group::1` operation (PTX ISA Table 42): 32 bytes
-/// of each operand row for both modeled kinds - the `KSelect::Base` value,
-/// the only one either kind defines.
+/// of each operand row for every modeled kind - the `KSelect::Base` value.
 pub fn k_dim(kind: Tcgen05MmaKind) -> u64 {
     match kind {
         Tcgen05MmaKind::F16 => 16,
-        Tcgen05MmaKind::F8f6f4 => 32,
+        Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4 => 32,
     }
 }
 
-fn bits(x: u32, lo: u32, width: u32) -> u32 {
+pub(in crate::eval) fn bits(x: u32, lo: u32, width: u32) -> u32 {
     (x >> lo) & ((1 << width) - 1)
 }
 

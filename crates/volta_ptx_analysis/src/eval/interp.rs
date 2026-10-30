@@ -1663,6 +1663,7 @@ impl<'p> Interpreter<'p> {
             LoweredInstr::Tcgen05Mma {
                 kind,
                 collector,
+                scales,
                 d_tmem_base,
                 d_tmem_offset,
                 a,
@@ -1674,7 +1675,7 @@ impl<'p> Interpreter<'p> {
                 self.exec_tcgen05_mma(
                     t,
                     pc,
-                    (*kind, *collector),
+                    (*kind, *collector, *scales),
                     d_tmem_base,
                     *d_tmem_offset,
                     a,

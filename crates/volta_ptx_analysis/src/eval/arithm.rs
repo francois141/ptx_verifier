@@ -286,6 +286,17 @@ impl<'p> Interpreter<'p> {
         })
     }
 
+    /// `2^a` as Volta models PTX `ex2`: `exp(a * ln 2)`, or `exp(v)` for the
+    /// `ex2(v * log2(e))` idiom.
+    pub(in crate::eval) fn ex2(&mut self, pc: InstrId, a: ExprId) -> EvalResult<ExprId> {
+        if let Some(folded) = self.fold_exp_idiom(a) {
+            return Ok(folded);
+        }
+        let ln2 = self.ln2_constant(pc)?;
+        let scaled = self.arena.mul(a, ln2);
+        Ok(self.arena.exp(scaled))
+    }
+
     /// Folds the PTX `exp(v)` idiom `ex2(v * c)`, `c` within float32 rounding of
     /// ±log2(e) (possibly spread per term over an `Fma`/`Add` chain, see
     /// [`Self::factor_log2e`]), to an exact `exp(...)`; `None` if `a` doesn't factor.
@@ -405,15 +416,7 @@ impl<'p> Interpreter<'p> {
             // 2^x = e^(x*ln2) keeps this in the exp fragment. The `ex2(v * log2e)`
             // exp idiom (a float32 log2e, so exp(v * 0.99999999...) over the
             // reals) is first folded to an exact exp(v), like ex2.approx as 2^x.
-            UnaryOp::Ex2 => {
-                if let Some(folded) = self.fold_exp_idiom(a) {
-                    folded
-                } else {
-                    let ln2 = self.ln2_constant(pc)?;
-                    let scaled = self.arena.mul(a, ln2);
-                    self.arena.exp(scaled)
-                }
-            }
+            UnaryOp::Ex2 => self.ex2(pc, a)?,
             // tanh(x) = (e^2x - 1) / (e^2x + 1), so this too stays in the
             // interpreted exp fragment rather than becoming an opaque atom
             // (same approach as `Ex2` above).

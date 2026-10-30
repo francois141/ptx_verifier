@@ -216,6 +216,10 @@ pub enum OperandRole {
     MmaB,
     /// A matrix-multiply accumulator (`D`) read or write in Tensor Memory.
     Accumulator,
+    /// A block-scaled matrix multiply's `scale_A` read in Tensor Memory.
+    MmaScaleA,
+    /// A block-scaled matrix multiply's `scale_B` read in Tensor Memory.
+    MmaScaleB,
     /// The Tensor Memory cells of a `tcgen05.ld`/`.st`.
     TmemData,
     /// The 128-byte tensor map a `cp.async.bulk.tensor` reads.

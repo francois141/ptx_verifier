@@ -1686,3 +1686,57 @@ fn test_setmaxnreg_with_an_exited_lane_is_rejected() {
         other => panic!("expected a WarpMismatch, got {other:?}"),
     }
 }
+
+/// Run the `.kind::mxf8f6f4` kernel whose `scale_A` copies differ between Tensor Memory's
+/// 32-lane partitions, with its `idesc` replaced by `idesc`.
+fn run_block_scaled_mma(idesc: Option<u32>) -> Result<Completed, AnalysisError> {
+    let name = "failing/tcgen05_mma_kind_mxf8f6f4_scale_copies_differ";
+    let src = std::fs::read_to_string(ptx_path(name)).expect("the test kernel exists");
+    let src = match idesc {
+        Some(idesc) => src.replace("mov.u32 %r2, 142737408;", &format!("mov.u32 %r2, {idesc};")),
+        None => src,
+    };
+    run_kernel(&parse(&src), None, AnalysisConfig::new((128, 1, 1)))
+}
+
+/// Assert `result` is an `Unsupported` whose message contains `needle`.
+fn expect_unsupported(result: Result<Completed, AnalysisError>, needle: &str) {
+    match result {
+        Err(AnalysisError::Eval(EvalError::Unsupported { what, .. })) => {
+            assert!(what.contains(needle), "expected {needle:?} in: {what}");
+        }
+        Err(other) => panic!("expected Unsupported ({needle}), got: {other}"),
+        Ok(_) => panic!("expected Unsupported ({needle}), got Ok"),
+    }
+}
+
+/// Every 32-lane partition of Tensor Memory must hold a copy of the `.kind::mxf8f6f4` scale
+/// factors, and which copy the hardware reads is unspecified: warp 1's differing copy of
+/// row 0's `scale_A` factor is rejected.
+#[test]
+fn test_tcgen05_mma_kind_mxf8f6f4_scale_copies_differ() {
+    expect_unsupported(
+        run_block_scaled_mma(None),
+        "MmaScaleA factor 0 differs between Tensor Memory's four 32-lane partitions",
+    );
+}
+
+/// `.kind::mxf8f6f4` has its own `idesc` layout (PTX ISA Table 54): a clear UE8M0 bit (23), M
+/// = 256 (`.cta_group::2` only) and reserved bit 24 are invalid; the `sm_107f` 128-lane
+/// `scale_A` layout (bit 26) and K = 64 (bit 31) are not modeled.
+#[test]
+fn test_tcgen05_mma_kind_mxf8f6f4_rejects_idesc_fields() {
+    for (idesc, needle) in [
+        (134348800, "Scale Matrix Type bit (23)"),
+        (276955136, "M = 256, N = 8 is not a valid .cta_group::1"),
+        (159514624, "reserved bit 24"),
+    ] {
+        expect_invalid_encoding(run_block_scaled_mma(Some(idesc)), needle);
+    }
+    for (idesc, needle) in [
+        (209846272, "128-lane scale_A layout"),
+        (2290221056, "K Dimension bit (31)"),
+    ] {
+        expect_unsupported(run_block_scaled_mma(Some(idesc)), needle);
+    }
+}

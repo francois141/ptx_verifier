@@ -8,7 +8,7 @@ use crate::frontend::lex::DottedIdent;
 
 use crate::ir::tcgen05::{
     Tcgen05Collector, Tcgen05CollectorOp, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA,
-    Tcgen05MmaKind,
+    Tcgen05MmaKind, Tcgen05MmaScales,
 };
 use crate::ir::{LoweredInstr, Operand, Predicate};
 
@@ -467,8 +467,9 @@ pub(super) fn lower_tcgen05_wait(
 }
 
 /// Lower dense `.cta_group::1` `tcgen05.mma.kind::{f16,f8f6f4}` (PTX ISA
-/// 9.7.17.10.9.1) or, if `weight_stationary`, `.ws` (9.7.17.10.10.3). `A` is a
-/// descriptor or `[a-tmem]`; descriptors are decoded at eval (`tcgen05_mma`).
+/// 9.7.17.10.9.1), `.kind::mxf8f6f4.block_scale` or, if `weight_stationary`,
+/// `.ws` (9.7.17.10.10.3). `A` is a descriptor or `[a-tmem]`; descriptors are
+/// decoded at eval (`tcgen05_mma`).
 pub(super) fn lower_tcgen05_mma(
     ctx: &mut LoweringContext,
     modifiers: &[DottedIdent],
@@ -483,6 +484,8 @@ pub(super) fn lower_tcgen05_mma(
     };
     let mut saw_cta_group = false;
     let mut kind = None;
+    let mut block_scale = false;
+    let mut saw_scale_vector_size = false;
     let mut collector = weight_stationary.then_some(Tcgen05Collector {
         buffer: 0,
         op: Tcgen05CollectorOp::Discard,
@@ -501,17 +504,41 @@ pub(super) fn lower_tcgen05_mma(
             kind = Some(match sub.as_slice().as_bytes() {
                 b"f16" => Tcgen05MmaKind::F16,
                 b"f8f6f4" => Tcgen05MmaKind::F8f6f4,
+                b"mxf8f6f4" => Tcgen05MmaKind::Mxf8f6f4,
                 other => {
                     return Err(unsupported(
                         name,
                         format!(
-                            "kind::{} (only .kind::f16 and .kind::f8f6f4 are modeled)",
+                            "kind::{} (only .kind::f16, .kind::f8f6f4 and .kind::mxf8f6f4 are \
+                             modeled)",
                             String::from_utf8_lossy(other)
                         ),
                     ));
                 }
             });
             continue;
+        }
+        // `.kind::mxf8f6f4`'s one scale vector size, `.scale_vec::1X`, which
+        // `.block32` aliases (PTX ISA Table 70).
+        match modifier.to_string().as_str() {
+            "block_scale" => {
+                block_scale = true;
+                continue;
+            }
+            "block32" | "scale_vec::1X" => {
+                saw_scale_vector_size = true;
+                continue;
+            }
+            "block16" | "scale_vec::2X" | "scale_vec::4X" => {
+                return Err(unsupported(
+                    name,
+                    format!(
+                        ".{modifier} (only .kind::mxf8f6f4's .block32 / .scale_vec::1X is \
+                         modeled)"
+                    ),
+                ));
+            }
+            _ => {}
         }
         if let Some(collector) = collector.as_mut()
             && let DottedIdent::Qualified(parts) = modifier
@@ -542,6 +569,24 @@ pub(super) fn lower_tcgen05_mma(
     let Some(kind) = kind else {
         return Err(unsupported(name, "missing .kind modifier"));
     };
+    let invalid = |reason: &str| LowerError::InvalidInstruction {
+        instruction: name.to_string(),
+        reason: reason.to_string(),
+    };
+    if block_scale != (kind == Tcgen05MmaKind::Mxf8f6f4) {
+        return Err(invalid(
+            "`.block_scale` goes with a block-scaled `.kind` (`.kind::mxf8f6f4`) and only there",
+        ));
+    }
+    if saw_scale_vector_size && !block_scale {
+        return Err(invalid("a scale vector size needs `.block_scale`"));
+    }
+    if block_scale && weight_stationary {
+        return Err(unsupported(
+            name,
+            "`.block_scale` with `.ws` is not modeled",
+        ));
+    }
 
     // `disable-output-lane` is optional in practice (LLVM's NVPTX emits the
     // 5-operand form), so tell it apart by operand type: a `Vector` in its
@@ -568,8 +613,37 @@ pub(super) fn lower_tcgen05_mma(
     let b_desc = ctx.resolve_operand(b_desc)?;
     let idesc = ctx.resolve_operand(idesc)?;
 
+    // `.block_scale` puts `[scale-A-tmem], [scale-B-tmem]` where the other
+    // forms have `disable-output-lane`, which it lacks.
+    let (scales, rest) = match rest {
+        [
+            AstOperand::Address(scale_a),
+            AstOperand::Address(scale_b),
+            rest @ ..,
+        ] if block_scale => {
+            let a = (
+                ctx.resolve_address(scale_a)?,
+                ctx.get_address_offset(scale_a),
+            );
+            let b = (
+                ctx.resolve_address(scale_b)?,
+                ctx.get_address_offset(scale_b),
+            );
+            (Some(Tcgen05MmaScales { a, b }), rest)
+        }
+        _ if block_scale => {
+            return Err(LowerError::InvalidOperand {
+                instruction: name.to_string(),
+                operand: format!("{:?}", operands),
+                reason: "expected [d-tmem], a-desc|[a-tmem], b-desc, idesc, [scale-A-tmem], \
+                         [scale-B-tmem], enable-input-d",
+            });
+        }
+        rest => (None, rest),
+    };
+
     let (mask_elems, rest): (Option<&[AstOperand]>, &[AstOperand]) = match rest {
-        [AstOperand::Vector(v), rest @ ..] if !weight_stationary => (Some(v), rest),
+        [AstOperand::Vector(v), rest @ ..] if !weight_stationary && !block_scale => (Some(v), rest),
         rest => (None, rest),
     };
     // `.cta_group::1` masks have exactly 4 elements (one bit per lane 0-127);
@@ -610,6 +684,7 @@ pub(super) fn lower_tcgen05_mma(
         LoweredInstr::Tcgen05Mma {
             kind,
             collector,
+            scales,
             d_tmem_base,
             d_tmem_offset,
             a,

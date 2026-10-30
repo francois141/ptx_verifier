@@ -19,6 +19,7 @@ use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{ParamId, RegId, SpecialRegKind, SymbolTable};
 use crate::ir::tcgen05::{
     Tcgen05Collector, Tcgen05FenceDirection, Tcgen05LdStShape, Tcgen05MmaA, Tcgen05MmaKind,
+    Tcgen05MmaScales,
 };
 use crate::ir::tensor_map::{TensorLoadMode, TensormapFieldWrite};
 use crate::ir::types::RegCounts;
@@ -762,12 +763,14 @@ pub enum LoweredInstr {
     // =========================================================================
     // TensorCore 5th Generation - Matrix Multiply and Accumulate (PTX ISA 9.7.17.10)
     // =========================================================================
-    /// Single-thread `tcgen05.mma` (dense `.kind::{f16,f8f6f4}`): `D = A*B
-    /// (+D)` into Tensor Memory, skipping `disable_output_lane` lanes
-    /// (9.7.17.10.9.1); `collector` is `Some` iff `.ws`.
+    /// Single-thread `tcgen05.mma` (dense `.kind::{f16,f8f6f4,mxf8f6f4}`): `D =
+    /// A*B (+D)` into Tensor Memory, skipping `disable_output_lane` lanes
+    /// (9.7.17.10.9.1); `collector` is `Some` iff `.ws`, `scales` iff
+    /// `.kind::mxf8f6f4`.
     Tcgen05Mma {
         kind: Tcgen05MmaKind,
         collector: Option<Tcgen05Collector>,
+        scales: Option<Tcgen05MmaScales>,
         d_tmem_base: Operand,
         d_tmem_offset: i64,
         a: Tcgen05MmaA,

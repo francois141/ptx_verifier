@@ -2217,3 +2217,32 @@ fn test_setmaxnreg_converges_its_warp_and_has_no_effect() {
         config
     );
 }
+
+/// `.kind::mxf8f6f4.block_scale.block32`: every warp stores the same UE8M0 scale words in its
+/// 32-lane partition, and the MMA scales row m of A by byte SFA_ID of the word at lane m % 32,
+/// column m / 32 (column n of B likewise, byte SFB_ID): out = {204, 6528, 408, 13056}.
+#[test]
+fn test_tcgen05_mma_kind_mxf8f6f4_block_scale_numeric_correctness() {
+    let mut config = out_only_config(4, 4);
+    config.block_dim = (128, 1, 1);
+    analyze!(
+        "success/tcgen05_mma_kind_mxf8f6f4_block_scale_numeric_correctness",
+        config
+    );
+}
+
+/// `.kind::mxf8f6f4` scales that are kernel inputs, loaded as packed words like Gluon's:
+/// D[0][0] = 2^(sa[1] - 127) * 2^(sb[2] - 127), each factor Volta's `ex2`.
+#[test]
+fn test_tcgen05_mma_kind_mxf8f6f4_symbolic_scales() {
+    let mut config = AnalysisConfig::new((128, 1, 1));
+    config.arrays = vec![
+        array("sa", 0x10000, 1, 512, ArrayKind::Input),
+        array("sb", 0x11000, 1, 512, ArrayKind::Input),
+        array("out", 0x20000, 4, 1, ArrayKind::Output),
+    ];
+    config.params = ["sa", "sb", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/tcgen05_mma_kind_mxf8f6f4_symbolic_scales", config);
+}

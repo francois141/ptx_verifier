@@ -1,0 +1,90 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// A `.kind::mxf8f6f4.block_scale` MMA (M = 128, N = 8, SFA_ID = SFB_ID = 0) over zero
+// operands whose scale_A copies disagree: every warp stores 0x7F7F7F7F (1.0) in each word
+// of its 32-lane partition, but warp 1 stores 0x7F7F7F7E for row 0. The ISA requires the
+// partitions to hold copies, and which one the hardware reads for row 0 is unspecified.
+.visible .entry k()
+{
+    .reg .pred %zp<2>;
+    .reg .b32 %zr<3>;
+    .reg .pred %p<4>;
+    .reg .b32 %r<16>;
+    .reg .b64 %rd<5>;
+    .shared .align 1024 .b8 a_buf[4096];
+    .shared .align 1024 .b8 b_buf[256];
+    .shared .align 4 .b32 taddr_slot;
+    .shared .align 8 .b64 mma_bar;
+    .reg .pred %pw;
+    .reg .b32 %rbar;
+
+    // Thread 0 zeroes the operand tiles so the MMA reads no never-written byte.
+    mov.u32 %zr0, %tid.x;
+    setp.eq.u32 %zp0, %zr0, 0;
+    @!%zp0 bra ZEROED;
+    mov.u32 %zr0, 0;
+    mov.u32 %zr1, a_buf;
+    add.u32 %zr2, %zr1, 4096;
+ZERO_A_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_A_BUF;
+    mov.u32 %zr1, b_buf;
+    add.u32 %zr2, %zr1, 256;
+ZERO_B_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_B_BUF;
+ZEROED:
+
+    mov.u32 %r10, %tid.x;
+    setp.eq.u32 %p1, %r10, 0;
+    setp.lt.u32 %p2, %r10, 32;
+    mov.u32 %r3, taddr_slot;
+    mov.u32 %rbar, mma_bar;
+    @!%p2 bra ALLOCATED;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r3], 32;
+ALLOCATED:
+    @%p1 mbarrier.init.shared.b64 [%rbar], 1;
+    fence.proxy.async.shared::cta;
+    bar.sync 0;
+    ld.shared.u32 %r1, [%r3];
+
+    // A's scales in columns 8-11, B's in column 16.
+    setp.eq.u32 %p3, %r10, 32;
+    selp.b32 %r12, 0x7F7F7F7E, 0x7F7F7F7F, %p3;
+    mov.b32 %r13, 0x7F7F7F7F;
+    shr.u32 %r4, %r10, 5;
+    shl.b32 %r4, %r4, 21;
+    add.u32 %r5, %r1, %r4;
+    tcgen05.st.sync.aligned.32x32b.x4.b32 [%r5+8], {%r12, %r13, %r13, %r13};
+    tcgen05.st.sync.aligned.32x32b.x1.b32 [%r5+16], {%r13};
+    tcgen05.wait::st.sync.aligned;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    tcgen05.fence::after_thread_sync;
+
+    // SwizzleMode::None, LBO = 128, SBO = 256, descriptor version 1.
+    mov.u64 %rd1, a_buf;
+    shr.u64 %rd3, %rd1, 4;
+    or.b64 %rd3, %rd3, 70437464178688;
+    mov.u64 %rd2, b_buf;
+    shr.u64 %rd4, %rd2, 4;
+    or.b64 %rd4, %rd4, 70437464178688;
+    // dense, A = B = e4m3, M = 128, N = 8, UE8M0, SFA_ID = SFB_ID = 0.
+    mov.u32 %r2, 142737408;
+    mov.pred %p0, 0;
+    @%p1 tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale.block32 [%r1+0], %rd3, %rd4, %r2, [%r1+8], [%r1+16], %p0;
+    @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%rbar];
+MMA_WAIT:
+    mbarrier.try_wait.parity.shared.b64 %pw, [%rbar], 0;
+    @!%pw bra MMA_WAIT;
+    tcgen05.fence::before_thread_sync;
+    bar.sync 0;
+    @%p2 tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, 32;
+    ret;
+}

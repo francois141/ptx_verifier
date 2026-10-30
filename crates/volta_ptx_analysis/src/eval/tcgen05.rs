@@ -1,29 +1,40 @@
 //! `tcgen05.mma` evaluation: operands read through the descriptors
-//! `tcgen05_mma` decodes (or from Tensor Memory), D computed at issue.
+//! `tcgen05_mma` decodes (or from Tensor Memory), block-scaled by factors read
+//! from Tensor Memory for `.kind::mxf8f6f4`, D computed at issue.
 
 use crate::eval::ThreadId;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits::{self};
 use crate::eval::interp::Interpreter;
 use crate::eval::record::AccessOrigin;
+use crate::eval::tcgen05_block_scale::{
+    check_block_scaled_descriptor, decode_block_scaled_descriptor,
+};
 use crate::eval::tcgen05_mma::{self, DLayout, KSelect, Major, OperandFormat};
 use crate::eval::value::Value;
 use crate::frontend::ast::ScalarType;
-use crate::ir::tcgen05::{Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind};
+use crate::ir::tcgen05::{
+    Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, Tcgen05MmaScales,
+};
 use crate::ir::{InstrId, MemSpace, Operand};
 use volta_expr::{ExprId, Real};
 use volta_graph::{AccessMode, AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
 impl<'p> Interpreter<'p> {
-    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4}`: `D = A*B (+D)`, A/B via
-    /// smem descriptors (or A from TMEM), D into TMEM. Computed at issue, in
-    /// flight until a waiter observes a later commit.
+    /// `tcgen05.mma.cta_group::1.kind::{f16,f8f6f4,mxf8f6f4}`: `D = A*B (+D)`,
+    /// A/B via smem descriptors (or A from TMEM), each block-scaled by `scales`
+    /// if given, D into TMEM. Computed at issue, in flight until a waiter
+    /// observes a later commit.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::eval) fn exec_tcgen05_mma(
         &mut self,
         t: ThreadId,
         pc: InstrId,
-        (kind, collector): (Tcgen05MmaKind, Option<Tcgen05Collector>),
+        (kind, collector, scales): (
+            Tcgen05MmaKind,
+            Option<Tcgen05Collector>,
+            Option<Tcgen05MmaScales>,
+        ),
         d_tmem_base: &Operand,
         d_tmem_offset: i64,
         a: &Tcgen05MmaA,
@@ -34,15 +45,29 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<()> {
         let unsupported = |what: String| EvalError::Unsupported { pc, what };
         let idesc_val = self.concrete_operand(t, pc, idesc, "tcgen05.mma idesc")? as u32;
-        let id = tcgen05_mma::decode_instruction_descriptor(idesc_val).map_err(|bit| {
-            EvalError::InvalidEncoding {
-                pc,
-                what: format!(
-                    "tcgen05.mma idesc {idesc_val:#x} has reserved bit {} set (must be 0)",
-                    bit.0
-                ),
+        let reserved = |bit: tcgen05_mma::ReservedIdescBit| EvalError::InvalidEncoding {
+            pc,
+            what: format!(
+                "tcgen05.mma idesc {idesc_val:#x} has reserved bit {} set (must be 0)",
+                bit.0
+            ),
+        };
+        // `.kind::mxf8f6f4` lays its descriptor out differently (Table 54).
+        let (id, block_scale, k_bit) = match scales {
+            Some(addresses) => {
+                let bs = decode_block_scaled_descriptor(idesc_val).map_err(reserved)?;
+                check_block_scaled_descriptor(pc, idesc_val, &bs)?;
+                (
+                    bs.common,
+                    Some((addresses, bs.scale_a_id, bs.scale_b_id)),
+                    31,
+                )
             }
-        })?;
+            None => {
+                let id = tcgen05_mma::decode_instruction_descriptor(idesc_val).map_err(reserved)?;
+                (id, None, 29)
+            }
+        };
 
         if id.sparse {
             return Err(unsupported(
@@ -53,8 +78,8 @@ impl<'p> Interpreter<'p> {
         // bit must not silently run at it.
         if id.k_select != KSelect::Base {
             return Err(unsupported(format!(
-                "tcgen05.mma {kind:?} with idesc's K Dimension bit (29) set is not \
-                 modeled (only K = {}; .kind::f16/.kind::f8f6f4 define no other)",
+                "tcgen05.mma {kind:?} with idesc's K Dimension bit ({k_bit}) set is not \
+                 modeled (only K = {})",
                 tcgen05_mma::k_dim(kind)
             )));
         }
@@ -81,32 +106,37 @@ impl<'p> Interpreter<'p> {
                 id.dtype
             )));
         }
-        // PTX ISA Table 48, `.cta_group::1` dense shapes: M = 64/128 with N
-        // a multiple of 8 up to 256, or under `.ws` M = 32/64/128 with N =
-        // 64/128/256 (N's field already encodes it in steps of 8).
-        let valid_shape = if ws {
-            matches!(id.m, 32 | 64 | 128) && matches!(id.n, 64 | 128 | 256)
-        } else {
-            matches!(id.m, 64 | 128) && (8..=256).contains(&id.n)
+        // PTX ISA Table 50, `.cta_group::1` dense shapes: M = 64/128 (128 for
+        // `.kind::mxf8f6f4`) with N a multiple of 8 up to 256, or under `.ws` M
+        // = 32/64/128 with N = 64/128/256 (N's field encodes it in steps of 8).
+        let (valid_shape, valid_shapes) = match (ws, kind) {
+            (true, _) => (
+                matches!(id.m, 32 | 64 | 128) && matches!(id.n, 64 | 128 | 256),
+                "M in {32, 64, 128}, N in {64, 128, 256}",
+            ),
+            (false, Tcgen05MmaKind::Mxf8f6f4) => (
+                id.m == 128 && (8..=256).contains(&id.n),
+                "M = 128, N in 8..=256 in steps of 8",
+            ),
+            (false, _) => (
+                matches!(id.m, 64 | 128) && (8..=256).contains(&id.n),
+                "M in {64, 128}, N in 8..=256 in steps of 8",
+            ),
         };
         if !valid_shape {
             return Err(invalid(format!(
-                "tcgen05.mma{} M = {}, N = {} is not a valid .cta_group::1 dense shape \
-                 ({})",
+                "tcgen05.mma{} {kind:?} M = {}, N = {} is not a valid .cta_group::1 dense \
+                 shape ({valid_shapes})",
                 if ws { ".ws" } else { "" },
                 id.m,
                 id.n,
-                if ws {
-                    "M in {32, 64, 128}, N in {64, 128, 256}"
-                } else {
-                    "M in {64, 128}, N in 8..=256 in steps of 8"
-                }
             )));
         }
-        // Table 63: an 8-bit transposed B needs N in steps of 16.
-        if kind == Tcgen05MmaKind::F8f6f4 && id.transpose_b && !id.n.is_multiple_of(16) {
+        // Table 65: an 8-bit transposed B needs N in steps of 16.
+        let eight_bit = matches!(kind, Tcgen05MmaKind::F8f6f4 | Tcgen05MmaKind::Mxf8f6f4);
+        if eight_bit && id.transpose_b && !id.n.is_multiple_of(16) {
             return Err(invalid(format!(
-                "tcgen05.mma .kind::f8f6f4 with a transposed B needs N in steps of 16, \
+                "tcgen05.mma {kind:?} with a transposed 8-bit B needs N in steps of 16, \
                  got N = {}",
                 id.n
             )));
@@ -165,7 +195,7 @@ impl<'p> Interpreter<'p> {
         let b_md = self.mma_matrix_descriptor(t, pc, b_desc, "tcgen05.mma b-desc")?;
         check_mma_operand_layout(pc, &b_md, id.transpose_b, "B")?;
         let op = self.record_async_issue(t, pc, AsyncOpKind::Tcgen05Mma);
-        let a = match a {
+        let mut a = match a {
             Tcgen05MmaA::Desc(desc) => {
                 let a_md = self.mma_matrix_descriptor(t, pc, desc, "tcgen05.mma a-desc")?;
                 check_mma_operand_layout(pc, &a_md, id.transpose_a, "A")?;
@@ -197,7 +227,8 @@ impl<'p> Interpreter<'p> {
             }
         };
         let b_operand = (&b_md, major(id.transpose_b), b_format);
-        let b = self.read_mma_operand(t, pc, (op, OperandRole::MmaB), b_operand, id.n, k_dim)?;
+        let mut b =
+            self.read_mma_operand(t, pc, (op, OperandRole::MmaB), b_operand, id.n, k_dim)?;
         if let Some(Tcgen05Collector { buffer, op }) = collector {
             let slot = &mut self.threads[t].tcgen05_collectors[buffer as usize];
             if matches!(op, Tcgen05CollectorOp::Use | Tcgen05CollectorOp::LastUse)
@@ -214,6 +245,14 @@ impl<'p> Interpreter<'p> {
                 Tcgen05CollectorOp::Use => {}
                 Tcgen05CollectorOp::LastUse | Tcgen05CollectorOp::Discard => *slot = None,
             }
+        }
+        if let Some((addresses, a_id, b_id)) = block_scale {
+            let scale_a = (OperandRole::MmaScaleA, a_id);
+            let scale_a = self.read_mma_scales(t, pc, op, addresses.a, scale_a, id.m)?;
+            let scale_b = (OperandRole::MmaScaleB, b_id);
+            let scale_b = self.read_mma_scales(t, pc, op, addresses.b, scale_b, id.n)?;
+            self.scale_rows(&mut a, &scale_a, k_dim);
+            self.scale_rows(&mut b, &scale_b, k_dim);
         }
 
         let enable_input_d =

@@ -13,6 +13,18 @@ pub enum Tcgen05MmaKind {
     F16,
     /// `.kind::f8f6f4`: 8/6/4-bit float operands, `K = 32`.
     F8f6f4,
+    /// `.kind::mxf8f6f4` (`.block_scale`): `.kind::f8f6f4`'s operands, each
+    /// 32-element block of an `A` row and a `B` column scaled by a UE8M0
+    /// factor read from Tensor Memory, `K = 32`.
+    Mxf8f6f4,
+}
+
+/// The Tensor Memory addresses of a `.block_scale` `tcgen05.mma`'s
+/// `scale_A` and `scale_B` matrices (`[scale-A-tmem]`, `[scale-B-tmem]`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tcgen05MmaScales {
+    pub a: (Operand, i64),
+    pub b: (Operand, i64),
 }
 
 /// `tcgen05.ld`/`.st`'s shape qualifier (PTX ISA 9.7.17.8, Tables 52/53):
