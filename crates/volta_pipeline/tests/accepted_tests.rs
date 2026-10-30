@@ -363,6 +363,15 @@ fn test_tcgen05_alloc_lanes_ordered_by_bar_warp_sync_is_accepted() {
     );
 }
 
+/// The same allocation with nCols in a register, as TileLang passes it.
+#[test]
+fn test_tcgen05_alloc_register_column_count_is_accepted() {
+    analyze!(
+        "success/tcgen05_alloc_register_column_count_is_accepted",
+        warp_out_config(4, 1)
+    );
+}
+
 /// The control for `tcgen05_relinquish_unordered_with_other_warps_alloc`: `bar.sync 1` orders
 /// warp 0's allocation before warp 1's `relinquish_alloc_permit`.
 #[test]

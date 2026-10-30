@@ -1258,6 +1258,33 @@ fn test_mbarrier_wait_loop_with_an_exit_label_lowers_to_a_blocking_wait() {
     assert_eq!((waits, branches), (1, 0));
 }
 
+/// `tcgen05.alloc`/`.dealloc`'s `nCols` is a 32-bit integer immediate or register (its value
+/// is checked at eval); a float, a negative or 64-bit value, a float register and an address are
+/// rejected.
+#[test]
+fn test_tcgen05_alloc_column_count_is_a_32_bit_integer() {
+    let forms = [
+        "tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%r1], NCOLS;",
+        "tcgen05.dealloc.cta_group::1.sync.aligned.b32 %r1, NCOLS;",
+    ];
+    for form in forms {
+        for num_cols in ["32", "%r2"] {
+            assert_lowers(&form.replace("NCOLS", num_cols));
+        }
+
+        for num_cols in ["32.0", "-32", "4294967328", "%f1", "%rd1", "[%r2]"] {
+            let body = form.replace("NCOLS", num_cols);
+            assert!(
+                matches!(
+                    lower_body(&body),
+                    Err(LowerError::InvalidOperand { .. } | LowerError::TypeMismatch { .. })
+                ),
+                "{body:?} must be rejected"
+            );
+        }
+    }
+}
+
 /// `.16x32bx2` takes its `immHalfSplitoff` operand (after the destination
 /// vector of `tcgen05.ld`, before the source vector of `tcgen05.st`), and
 /// only that shape takes one.

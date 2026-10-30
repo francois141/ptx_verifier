@@ -721,12 +721,12 @@ pub enum LoweredInstr {
     Tcgen05Alloc {
         dst_base: Operand,
         dst_offset: i64,
-        num_cols: u32,
+        num_cols: Operand,
     },
 
     /// `tcgen05.dealloc.cta_group::1...taddr, nCols`: deallocate the Tensor
     /// Memory range starting at `taddr`.
-    Tcgen05Dealloc { taddr: Operand, num_cols: u32 },
+    Tcgen05Dealloc { taddr: Operand, num_cols: Operand },
 
     /// `tcgen05.relinquish_alloc_permit.cta_group::1...`: this CTA gives up
     /// the right to allocate any further Tensor Memory.

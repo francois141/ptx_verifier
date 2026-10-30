@@ -161,10 +161,10 @@ impl Interpreter<'_> {
                 dst_offset,
                 num_cols,
             } => {
-                self.exec_tcgen05_alloc(pc, members, dst_base, *dst_offset, *num_cols)?;
+                self.exec_tcgen05_alloc(pc, members, dst_base, *dst_offset, num_cols)?;
             }
             LoweredInstr::Tcgen05Dealloc { taddr, num_cols } => {
-                self.exec_tcgen05_dealloc(pc, members, taddr, *num_cols)?;
+                self.exec_tcgen05_dealloc(pc, members, taddr, num_cols)?;
             }
             LoweredInstr::Tcgen05RelinquishAllocPermit => {
                 self.tensor.relinquish_alloc_permit();
@@ -1064,9 +1064,10 @@ impl Interpreter<'_> {
         members: &[ThreadId],
         dst_base: &Operand,
         dst_offset: i64,
-        num_cols: u32,
+        num_cols: &Operand,
     ) -> EvalResult<()> {
         let base = self.uniform_concrete(pc, members, dst_base, "tcgen05.alloc dst address")?;
+        let num_cols = self.uniform_concrete(pc, members, num_cols, "tcgen05.alloc nCols")? as u32;
         let dst_addr = shared_operand_addr((base as u64).wrapping_add(dst_offset as u64));
         let leader = members[0];
         let taddr = self
@@ -1128,9 +1129,11 @@ impl Interpreter<'_> {
         pc: InstrId,
         members: &[ThreadId],
         taddr: &Operand,
-        num_cols: u32,
+        num_cols: &Operand,
     ) -> EvalResult<()> {
         let taddr = self.uniform_concrete(pc, members, taddr, "tcgen05.dealloc taddr")? as u32;
+        let num_cols =
+            self.uniform_concrete(pc, members, num_cols, "tcgen05.dealloc nCols")? as u32;
         self.tensor
             .dealloc(taddr, num_cols)
             .map_err(|e| EvalError::from_tensor_mem(members[0], pc, e))?;

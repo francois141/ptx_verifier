@@ -366,6 +366,33 @@ fn test_bar_and_barrier_reject_a_missing_operation() {
     }
 }
 
+/// A register `nCols` is checked like an immediate one.
+#[test]
+fn test_tcgen05_alloc_rejects_an_invalid_register_size() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 1,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let err = run_kernel(
+        &parse(&ptx!("failing/tcgen05_alloc_register_column_count_48")),
+        None,
+        config,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            AnalysisError::Eval(EvalError::Tcgen05InvalidColumnCount { num_cols: 48, .. })
+        ),
+        "{err}"
+    );
+}
+
 /// `nCols` below the 32-column allocation unit is invalid even when it is
 /// a power of 2, and the column count must not increase between two
 /// allocations (PTX ISA 9.7.18.7.1).

@@ -1,7 +1,9 @@
 //! Lowering of the 5th-generation tensor core instructions (`tcgen05.*`).
 
 use crate::frontend::ascii::AsciiSliceExt;
-use crate::frontend::ast::{FromAscii, Operand as AstOperand, SharedStateSpaceQualifier};
+use crate::frontend::ast::{
+    FromAscii, Operand as AstOperand, ScalarType, SharedStateSpaceQualifier,
+};
 use crate::frontend::lex::DottedIdent;
 
 use crate::ir::tcgen05::{
@@ -109,11 +111,7 @@ pub(super) fn lower_tcgen05_alloc(
         AstOperand::Address(a) => (ctx.resolve_address(a)?, ctx.get_address_offset(a)),
         other => (ctx.resolve_operand(other)?, 0),
     };
-    let num_cols = ctx.resolve_const_u32(
-        num_cols,
-        NAME,
-        "nCols must be a compile-time integer immediate",
-    )?;
+    let num_cols = resolve_num_cols(ctx, num_cols, NAME)?;
 
     ctx.emit(
         LoweredInstr::Tcgen05Alloc {
@@ -161,14 +159,38 @@ pub(super) fn lower_tcgen05_dealloc(
         });
     };
     let taddr = ctx.resolve_operand(taddr)?;
-    let num_cols = ctx.resolve_const_u32(
-        num_cols,
-        NAME,
-        "nCols must be a compile-time integer immediate",
-    )?;
+    let num_cols = resolve_num_cols(ctx, num_cols, NAME)?;
 
     ctx.emit(LoweredInstr::Tcgen05Dealloc { taddr, num_cols }, predicate)?;
     Ok(())
+}
+
+/// Resolve `tcgen05.alloc`/`.dealloc`'s `nCols`: a 32-bit integer immediate, or a
+/// 32-bit integer register whose value the evaluator checks like an immediate.
+fn resolve_num_cols(
+    ctx: &LoweringContext,
+    num_cols: &AstOperand,
+    name: &str,
+) -> LowerResult<Operand> {
+    const REASON: &str = "nCols must be a 32-bit integer immediate or register";
+
+    match num_cols {
+        AstOperand::ImmInt(_) | AstOperand::ImmUInt(_) => {
+            let n = ctx.resolve_const_u32(num_cols, name, REASON)?;
+            Ok(Operand::ImmU64(u64::from(n)))
+        }
+        AstOperand::Ident(_) | AstOperand::VectorElement(..) => {
+            // `U32`, not the instruction's `.b32`: a `.b32` operand also takes `.f32` registers.
+            let resolved = ctx.resolve_operand_typed(num_cols)?;
+            ctx.check_operand_type(&resolved, ScalarType::U32, name)?;
+            Ok(resolved.operand)
+        }
+        _ => Err(LowerError::InvalidOperand {
+            instruction: name.to_string(),
+            operand: format!("{num_cols:?}"),
+            reason: REASON,
+        }),
+    }
 }
 
 /// Lower `tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned`.
