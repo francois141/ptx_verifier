@@ -65,10 +65,16 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
     let target = lines
         .iter()
         .find_map(|line| match word(line) {
-            (".amdgcn_target", rest) => Some(rest.trim_matches('"').to_string()),
+            (".amdgcn_target", rest) => Some(rest),
             _ => None,
         })
         .ok_or("missing .amdgcn_target")?;
+    let target = target
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .filter(|value| !value.contains('"'))
+        .ok_or("expected one quoted string after .amdgcn_target")?
+        .to_string();
 
     // The instruction body ends at a section switch or function-end label.
     let entry = lines
@@ -287,6 +293,28 @@ mod tests {
         let plain = parse_kernel(COPY, "copy").unwrap();
         let kernel = parse_kernel(&verbose, "copy").unwrap();
         assert_eq!(kernel.instructions, plain.instructions);
+    }
+
+    #[test]
+    fn requires_one_quoted_target_string() {
+        let target = "amdgcn-amd-amdhsa--gfx950:xnack-";
+        let quoted = format!("\"{target}\"");
+        for malformed in [
+            target.to_owned(),
+            format!("\"{target}"),
+            format!("{target}\""),
+            format!("\"\"{target}\"\""),
+            format!("{quoted} \"extra\""),
+        ] {
+            let source = COPY.replacen(&quoted, &malformed, 1);
+            assert_ne!(source, COPY);
+            assert_eq!(
+                parse_kernel(&source, "copy").unwrap_err(),
+                "expected one quoted string after .amdgcn_target"
+            );
+        }
+        let source = COPY.replacen(&quoted, &format!("{quoted} ; target comment"), 1);
+        assert_eq!(parse_kernel(&source, "copy").unwrap().target, target);
     }
 
     #[test]

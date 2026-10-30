@@ -27,6 +27,9 @@ also follow LLVM 21.1.8's
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
 
+The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
+unbalanced and extra-quoted arguments are rejected.
+
 ## Tests
 
 Unit tests cover instruction lowering and execution, launch-register placement,
