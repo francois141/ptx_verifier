@@ -258,13 +258,13 @@ impl<'p> Interpreter<'p> {
         let enable_input_d =
             self.concrete_operand(t, pc, enable_input_d, "tcgen05.mma enable-input-d")? != 0;
         let d_tmem = self.effective_addr(t, pc, d_tmem_base, d_tmem_offset)? as u32;
-        // `D` is placed from lane 0 (`DLayout::cell`); any
-        // other lane would shift its rows, and read as part of the column it
-        // would be misreported as an access outside the allocation.
-        if d_tmem >> 16 != 0 {
+        // Any other first lane would shift `D`'s rows past the lanes its layout
+        // fills, or past lane 127.
+        let d_lane = d_tmem >> 16;
+        if !d_layout.may_start_at(d_lane) {
             return Err(unsupported(format!(
-                "tcgen05.mma [d-tmem] at lane {} is not modeled (D must start at lane 0)",
-                d_tmem >> 16
+                "tcgen05.mma [d-tmem] at lane {d_lane} is not modeled (D must start at lane 0, \
+                 or 16 for M = 64)"
             )));
         }
         let d_col_base = d_tmem & 0xFFFF;
@@ -281,7 +281,9 @@ impl<'p> Interpreter<'p> {
         }
         let lane_enabled = |lane: u32| (disable_mask[(lane / 32) as usize] >> (lane % 32)) & 1 == 0;
         let d_lanes: Vec<u32> = (0..128)
-            .filter(|&lane| d_layout.holds_lane(lane) && lane_enabled(lane))
+            .filter(|&lane| d_layout.holds_lane(lane))
+            .map(|lane| d_lane + lane)
+            .filter(|&lane| lane_enabled(lane))
             .collect();
         let d_cols = (d_col_base, d_num_cols);
         let accumulator = |mode| (mode, OperandRole::Accumulator);
@@ -293,7 +295,7 @@ impl<'p> Interpreter<'p> {
         for m in 0..id.m {
             for n in 0..id.n {
                 let (lane, col) = d_layout.cell(m, n, (id.m, id.n));
-                let col = d_col_base + col;
+                let (lane, col) = (d_lane + lane, d_col_base + col);
                 if !lane_enabled(lane) {
                     continue;
                 }

@@ -326,7 +326,7 @@ pub fn operand_element_addr(
 const TMEM_LANES: u32 = 128;
 
 /// How a `.cta_group::1` operation's `M x N` `D` sits in Tensor Memory from
-/// lane 0 (PTX ISA 9.7.18.10.5).
+/// its first lane (PTX ISA 9.7.18.10.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DLayout {
     /// Layouts D (M = 128) and G (M = 32, `.ws`): `128 / M` row-groups of `M`
@@ -338,7 +338,16 @@ pub enum DLayout {
 }
 
 impl DLayout {
-    /// `(lane, column offset)` of element `(m, n)`.
+    /// Whether `D` may start at lane `lane`. Layout F fills lanes 0-15 of each
+    /// quadrant, so a second `D` may start at lane 16 and fill the other half.
+    pub fn may_start_at(self, lane: u32) -> bool {
+        match self {
+            Self::Stacked => lane == 0,
+            Self::HalfDatapath => lane == 0 || lane == 16,
+        }
+    }
+
+    /// `(lane, column offset)` of element `(m, n)`, from `D`'s first lane.
     pub fn cell(self, m: u32, n: u32, (m_dim, n_dim): (u32, u32)) -> (u32, u32) {
         match self {
             Self::Stacked => {
@@ -357,7 +366,7 @@ impl DLayout {
         }
     }
 
-    /// Whether `D` occupies `lane`.
+    /// Whether `D` occupies `lane`, counted from its first lane.
     pub fn holds_lane(self, lane: u32) -> bool {
         match self {
             Self::Stacked => lane < TMEM_LANES,
@@ -773,5 +782,14 @@ mod tests {
         assert_eq!(layout.cell(63, 0, (64, 64)), (111, 0));
         assert_eq!(layout.cols((64, 64)), 64);
         assert!(layout.holds_lane(15) && !layout.holds_lane(16) && layout.holds_lane(32));
+    }
+
+    /// A Layout F `D` may start at lane 0 or 16 (two of them share the
+    /// quadrants), a stacked one only at lane 0.
+    #[test]
+    fn test_d_layout_first_lanes() {
+        let half = DLayout::HalfDatapath;
+        assert!(half.may_start_at(0) && half.may_start_at(16) && !half.may_start_at(32));
+        assert!(DLayout::Stacked.may_start_at(0) && !DLayout::Stacked.may_start_at(16));
     }
 }
