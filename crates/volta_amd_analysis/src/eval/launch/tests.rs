@@ -30,7 +30,6 @@ fn kernel() -> LoweredKernel {
 fn launch() -> WaveLaunch {
     WaveLaunch {
         kernarg_address: 0x0000_1234_abcd_0000,
-        workgroup_id: (7, 11, 13),
         workgroup_size: (128, 1, 1),
         wave_index: 0,
     }
@@ -44,8 +43,8 @@ fn initializes_compiled_kernel_launch_registers() {
     let mut arena = ExprArena::new();
     let registers = initialize_wave(&kernel, &launch(), &mut arena).unwrap();
 
-    // Check the argument-pointer words in s0/s1 and the workgroup X ID in s2.
-    for (reg, expected) in [(0, 0xabcd_0000), (1, 0x1234), (2, 7)] {
+    // Check the argument-pointer words in s0/s1 and workgroup 0's X ID in s2.
+    for (reg, expected) in [(0, 0xabcd_0000), (1, 0x1234), (2, 0)] {
         let value = registers.read_sgpr(Sgpr(reg)).unwrap();
         assert_eq!(arena.as_int_const(value), Some(expected));
     }
@@ -68,21 +67,19 @@ fn initializes_compiled_kernel_launch_registers() {
     );
 }
 
-// Test that disabled workgroup coordinates do not leave unused register slots.
+// Test that each enabled workgroup ID reads 0 and that disabled ones leave no unused register slots.
 #[test]
-fn initializes_enabled_workgroup_coordinates_in_order() {
-    // Each case lists enabled X/Y/Z inputs and the expected register values in order.
-    let cases: [((u64, u64, u64), &[i64]); 6] = [
-        ((1, 1, 1), &[7, 11, 13]),
-        ((0, 1, 1), &[11, 13]),
-        ((1, 0, 1), &[7, 13]),
-        ((0, 0, 1), &[13]),
-        ((1, 0, 0), &[7]),
-        ((0, 0, 0), &[]),
-    ];
+fn initializes_enabled_workgroup_ids_to_zero() {
     // Test both absent and present argument pointers.
     for user_sgprs in [0, 2] {
-        for (enabled, expected) in cases {
+        for enabled in [
+            (1, 1, 1),
+            (0, 1, 1),
+            (1, 0, 1),
+            (0, 0, 1),
+            (1, 0, 0),
+            (0, 0, 0),
+        ] {
             let mut kernel = kernel();
             for (name, value) in [
                 ("user_sgpr_count", user_sgprs),
@@ -96,13 +93,13 @@ fn initializes_enabled_workgroup_coordinates_in_order() {
             let mut arena = ExprArena::new();
             let registers = initialize_wave(&kernel, &launch(), &mut arena).unwrap();
 
-            // Check enabled coordinates appear consecutively after any user registers.
-            for (index, value) in expected.iter().enumerate() {
-                let reg = Sgpr(user_sgprs as u8 + index as u8);
-                let actual = registers.read_sgpr(reg).unwrap();
-                assert_eq!(arena.as_int_const(actual), Some(*value));
+            // Check enabled IDs appear consecutively after any user registers.
+            let ids = enabled.0 + enabled.1 + enabled.2;
+            for reg in user_sgprs..user_sgprs + ids {
+                let actual = registers.read_sgpr(Sgpr(reg as u8)).unwrap();
+                assert_eq!(arena.as_int_const(actual), Some(0));
             }
-            let next = Sgpr(user_sgprs as u8 + expected.len() as u8);
+            let next = Sgpr((user_sgprs + ids) as u8);
             assert_eq!(
                 registers.read_sgpr(next),
                 Err(EvalError::UninitializedSgpr(next))

@@ -9,13 +9,11 @@ use crate::ir::{LoweredKernel, Sgpr, Vgpr};
 
 use super::{EvalError, WaveRegisters};
 
-/// Launch inputs for one full wave; coordinate tuples are ordered (X, Y, Z).
+/// Launch inputs for one full wave of workgroup 0, the workgroup Volta analyzes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WaveLaunch {
     /// Address of the buffer containing the kernel's arguments.
     pub kernarg_address: u64,
-    /// Coordinates of this workgroup within the grid.
-    pub workgroup_id: (u32, u32, u32),
     /// Number of work-items along X, Y, and Z in this workgroup.
     pub workgroup_size: (u32, u32, u32),
     /// Wave number within this workgroup, starting at zero.
@@ -39,6 +37,7 @@ pub(crate) fn initialize_wave(
     let workitems = size_x
         .checked_mul(size_y)
         .and_then(|xy| xy.checked_mul(size_z));
+
     let Some(workitems) =
         workitems.filter(|count| (64..=1024).contains(count) && count.is_multiple_of(64))
     else {
@@ -46,6 +45,7 @@ pub(crate) fn initialize_wave(
             message: "expected a workgroup totaling 64 to 1024 work-items in full waves".into(),
         });
     };
+
     if launch.wave_index >= workitems / 64 {
         return Err(EvalError::Launch {
             message: "wave index is outside the workgroup".into(),
@@ -80,6 +80,7 @@ pub(crate) fn initialize_wave(
             });
         }
     }
+
     // Read a required setting and check its supported range.
     let setting = |name: &str, max: u64| -> Result<u64, EvalError> {
         match kernel.descriptor.get(name).copied() {
@@ -93,24 +94,17 @@ pub(crate) fn initialize_wave(
             }),
         }
     };
+
     // Read which launch inputs and register counts the descriptor requests.
     let kernarg_enabled = setting("user_sgpr_kernarg_segment_ptr", 1)? != 0;
-    let workgroup_ids = [
-        (
-            setting("system_sgpr_workgroup_id_x", 1)? != 0,
-            launch.workgroup_id.0,
-        ),
-        (
-            setting("system_sgpr_workgroup_id_y", 1)? != 0,
-            launch.workgroup_id.1,
-        ),
-        (
-            setting("system_sgpr_workgroup_id_z", 1)? != 0,
-            launch.workgroup_id.2,
-        ),
-    ];
+    let workgroup_ids = ["x", "y", "z"]
+        .into_iter()
+        .map(|axis| setting(&format!("system_sgpr_workgroup_id_{axis}"), 1))
+        .sum::<Result<u64, _>>()?;
+
     let user_sgprs = setting("user_sgpr_count", 2)?;
     let workitem_id_mode = setting("system_vgpr_workitem_id", 2)?;
+
     // The argument pointer needs two user SGPRs when enabled, otherwise none.
     if user_sgprs != if kernarg_enabled { 2 } else { 0 } {
         return Err(EvalError::Launch {
@@ -133,18 +127,15 @@ pub(crate) fn initialize_wave(
         registers.write_sgpr(Sgpr(0), low)?;
         registers.write_sgpr(Sgpr(1), high)?;
     }
-    let mut next_sgpr = user_sgprs as u8;
-    // Place workgroup coordinates after the user registers.
-    for (enabled, coordinate) in workgroup_ids {
-        // Disabled axes consume no register slots.
-        if enabled {
-            let id = arena.int(i64::from(coordinate));
-            registers.write_sgpr(Sgpr(next_sgpr), id)?;
-            next_sgpr += 1;
-        }
+
+    // Each enabled workgroup ID follows the user registers; disabled axes take no register.
+    for reg in user_sgprs..user_sgprs + workgroup_ids {
+        let id = arena.int(0);
+        registers.write_sgpr(Sgpr(reg as u8), id)?;
     }
 
     let first_workitem = launch.wave_index * 64;
+
     // Initialize each lane's work-item coordinates in v0.
     for lane in 0..64 {
         // Convert the workgroup-local index to coordinates, with X advancing fastest.
