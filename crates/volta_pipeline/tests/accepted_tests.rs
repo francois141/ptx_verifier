@@ -855,6 +855,12 @@ fn test_tma_1d_load_zero_fills_past_the_tensor_end() {
     );
 }
 
+/// `prefetch.tensormap` of both maps before the copies changes nothing.
+#[test]
+fn test_tma_load_after_prefetch_tensormap() {
+    analyze!("success/tma_load_after_prefetch_tensormap", tma_1d_config());
+}
+
 /// A TMA load's `.L2::cache_hint` policy operand changes nothing.
 #[test]
 fn test_tma_load_with_l2_cache_hint() {

@@ -56,7 +56,7 @@ use tcgen05::{
 };
 use tma::{
     lower_cp_async_bulk, lower_cp_async_bulk_tensor, lower_fence_proxy_tensormap,
-    lower_tensormap_cp_fenceproxy, lower_tensormap_replace,
+    lower_prefetch_tensormap, lower_tensormap_cp_fenceproxy, lower_tensormap_replace,
 };
 use warp::{
     lower_bar_warp_sync, lower_elect_sync, lower_ldmatrix, lower_mma, lower_movmatrix,
@@ -542,6 +542,11 @@ fn lower_parsed_instruction(
             modifiers,
             operands,
         } => lower_fence_proxy_tensormap(ctx, modifiers, operands, predicate),
+        ParsedInstruction::Other {
+            kind: InstrKind::Prefetch,
+            modifiers,
+            operands,
+        } => lower_prefetch_tensormap(ctx, modifiers, operands, predicate),
         ParsedInstruction::Other {
             kind: InstrKind::CpAsyncBulkTensor,
             modifiers,

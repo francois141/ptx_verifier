@@ -373,6 +373,41 @@ pub(super) fn lower_fence_proxy_tensormap(
     Ok(())
 }
 
+/// Lower `prefetch{.const,.param}.tensormap [a]` to a no-op: it only brings
+/// the map into the cache, so it reads nothing the analysis models and orders
+/// nothing. Other `prefetch` forms stay unsupported.
+pub(super) fn lower_prefetch_tensormap(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    const NAME: &str = "prefetch";
+    let mut saw_tensormap = false;
+
+    for modifier in modifiers {
+        match modifier.to_string().as_str() {
+            "tensormap" => saw_tensormap = true,
+            "const" | "param" => {}
+            other => return Err(unsupported(NAME, format!("modifier .{other}"))),
+        }
+    }
+    if !saw_tensormap {
+        return Err(unsupported(NAME, "only prefetch.tensormap is implemented"));
+    }
+
+    let [addr] = operands else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: "expected [a]",
+        });
+    };
+    resolve_addr_operand(ctx, addr)?;
+
+    ctx.emit(LoweredInstr::Nop, predicate)
+}
+
 /// The tensor rank a `cp.async.bulk.tensor` `.dim` modifier names: every
 /// rank the ISA has, `.1d` to `.5d`, for loads and stores alike.
 fn tensor_rank(modifier: &str) -> Option<usize> {
