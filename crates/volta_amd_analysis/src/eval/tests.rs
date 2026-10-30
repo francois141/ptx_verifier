@@ -5,7 +5,8 @@ use volta_expr::{ExprArena, ExprNode};
 
 use crate::ir::{LoweredInstr, Sgpr, Vgpr};
 
-use super::{EvalError, WaveRegisters, execute_lane};
+use super::interp::execute_lane;
+use super::{EvalError, WaveRegisters};
 
 // Test that a scalar tuple reads the respective component registers, which means
 // if one component is directly changed, the tuple should reflect that change.
