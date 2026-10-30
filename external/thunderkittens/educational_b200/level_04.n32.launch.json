@@ -1,7 +1,26 @@
 {
-  "description": "ThunderKittens educational B200 GEMM level 04: C = A @ B over 32x32 bf16 matrices, one 32x32 tile per CTA. Its gl struct parameters (pointers and, from level 05 on, host-encoded TMA tensor maps) are byte arrays Volta cannot be given, so it runs with none and reports why it stops",
+  "description": "ThunderKittens educational B200 GEMM level 04: C = A @ B over 32x32 bf16 matrices, one 32x32 tile per CTA, launched as its host code does. The kernel takes one by-value matmul_globals struct: three 256-byte gl<bf16, 1, 1, -1, -1, st_bf<32, 32>> (raw_ptr at 0, rows and cols at 16 and 24, an unused TMA descriptor at 64 left unset) and the int N at 768",
   "kernel": "_Z6kernel14matmul_globals",
   "block": 32,
-  "grid": 1,
-  "dynamic_shared_bytes": 232448
+  "grid": [1, 1, 1],
+  "dynamic_shared_bytes": 100000,
+  "arrays": [
+    {"name": "A", "kind": "in",  "dtype": "bf16", "shape": [32, 32]},
+    {"name": "B", "kind": "in",  "dtype": "bf16", "shape": [32, 32]},
+    {"name": "C", "kind": "out", "dtype": "bf16", "shape": [32, 32]}
+  ],
+  "params": [
+    {"name": "g", "struct": [
+      {"name": "A.raw_ptr", "offset": 0,   "ptr": "A"},
+      {"name": "A.rows",    "offset": 16,  "u64": 32},
+      {"name": "A.cols",    "offset": 24,  "u64": 32},
+      {"name": "B.raw_ptr", "offset": 256, "ptr": "B"},
+      {"name": "B.rows",    "offset": 272, "u64": 32},
+      {"name": "B.cols",    "offset": 280, "u64": 32},
+      {"name": "C.raw_ptr", "offset": 512, "ptr": "C"},
+      {"name": "C.rows",    "offset": 528, "u64": 32},
+      {"name": "C.cols",    "offset": 536, "u64": 32},
+      {"name": "N",         "offset": 768, "i32": 32}
+    ]}
+  ]
 }

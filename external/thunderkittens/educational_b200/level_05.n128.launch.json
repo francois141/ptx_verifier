@@ -1,0 +1,33 @@
+{
+  "description": "ThunderKittens educational B200 GEMM level 05: D = A @ B over 128x128 bf16 matrices, one 64x64 tile per CTA, TMA loads and a TMA store, launched as its host code does. Each gl<bf16, 1, 1, -1, -1, st_bf<...>> is 256 bytes: raw_ptr at 0, rows and cols at 16 and 24, the tile's CUtensorMap at 64 (ThunderKittens create_tensor_map: 5-D, a swizzle-wide innermost dim, swizzle 64B for the 64x32 A tile and 128B for the B and D tiles)",
+  "kernel": "_Z13matmul_kernelN7kittens2glI13__nv_bfloat16Li1ELi1ELin1ELin1EJNS_2stIS1_Li64ELi32ELb1ELi0EEEEEENS0_IS1_Li1ELi1ELin1ELin1EJNS2_IS1_Li32ELi64ELb1ELi0EEEEEENS0_IS1_Li1ELi1ELin1ELin1EJNS2_IS1_Li64ELi64ELb1ELi0EEEEEEi",
+  "block": 32,
+  "grid": [2, 2, 1],
+  "dynamic_shared_bytes": 231424,
+  "arrays": [
+    {"name": "A", "kind": "in",  "dtype": "bf16", "shape": [128, 128]},
+    {"name": "B", "kind": "in",  "dtype": "bf16", "shape": [128, 128]},
+    {"name": "D", "kind": "out", "dtype": "bf16", "shape": [128, 128]}
+  ],
+  "params": [
+    {"name": "A_layout", "struct": [
+      {"name": "A.raw_ptr", "offset": 0, "ptr": "A"},
+      {"name": "A.rows", "offset": 16, "u64": 128},
+      {"name": "A.cols", "offset": 24, "u64": 128},
+      {"name": "A.tma", "offset": 64, "tensor_map": {"array": "A", "dtype": "bf16", "dims": [32, 128, 4, 1, 1], "strides": [256, 64, 32768, 32768], "box": [32, 64, 1, 1, 1], "swizzle": "64B"}}
+    ]},
+    {"name": "B_layout", "struct": [
+      {"name": "B.raw_ptr", "offset": 0, "ptr": "B"},
+      {"name": "B.rows", "offset": 16, "u64": 128},
+      {"name": "B.cols", "offset": 24, "u64": 128},
+      {"name": "B.tma", "offset": 64, "tensor_map": {"array": "B", "dtype": "bf16", "dims": [64, 128, 2, 1, 1], "strides": [256, 128, 32768, 32768], "box": [64, 32, 1, 1, 1], "swizzle": "128B"}}
+    ]},
+    {"name": "D_layout", "struct": [
+      {"name": "D.raw_ptr", "offset": 0, "ptr": "D"},
+      {"name": "D.rows", "offset": 16, "u64": 128},
+      {"name": "D.cols", "offset": 24, "u64": 128},
+      {"name": "D.tma", "offset": 64, "tensor_map": {"array": "D", "dtype": "bf16", "dims": [64, 128, 2, 1, 1], "strides": [256, 128, 32768, 32768], "box": [64, 64, 1, 1, 1], "swizzle": "128B"}}
+    ]},
+    {"name": "N", "int": 128}
+  ]
+}
