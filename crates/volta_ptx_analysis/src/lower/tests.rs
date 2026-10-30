@@ -866,7 +866,9 @@ fn test_bar_rejections() {
         "bar.sync %r1, 64;\n    bar.sync %r2, 128;",
         "too restrictive",
     );
-    assert_rejected("bar.sync 0, %r1;", "register thread count");
+    // A register count is only known at eval, which pins it there.
+    assert_lowers("bar.sync 0, %r1;");
+    assert_lowers("bar.sync 0, 64;\n    bar.sync 0, %r1;\n    bar.arrive %r2, %r3;");
 }
 
 #[test]

@@ -1,0 +1,41 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Like `success/bar_sync_register_id_count_matches`, but warp 0 also names the
+// count through a register (TileLang's inline-asm `bar.sync %r, %r`): both warps
+// reach barrier 0 with count 64, so it orders thread 0's store before thread
+// 32's load.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<4>;
+    .reg .f32 %f<3>;
+    .reg .b32 %r<8>;
+    .reg .b64 %rd<3>;
+    .shared .align 4 .b32 s[1];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, s;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra W1;
+    setp.eq.u32 %p2, %r1, 0;
+    @%p2 ld.global.f32 %f1, [%rd1];
+    @%p2 st.shared.f32 [%r2], %f1;
+    mov.u32 %r6, 0;
+    mov.u32 %r7, 64;
+    bar.sync %r6, %r7;
+    ret;
+W1:
+    bar.sync 0, 64;
+    setp.eq.u32 %p3, %r1, 32;
+    @%p3 ld.shared.f32 %f2, [%r2];
+    @%p3 st.global.f32 [%rd2], %f2;
+    ret;
+}

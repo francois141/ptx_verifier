@@ -1,0 +1,27 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Barrier 0 is reached with count 32 by warp 0 (through a register count) and
+// with count 64 by warp 1: lowering cannot compare a register count, so the
+// evaluator's pinned count catches the disagreement at warp 1's arrival.
+.visible .entry k()
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<8>;
+    .shared .align 4 .b32 s[1];
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, s;
+    setp.ge.u32 %p1, %r1, 32;
+    @%p1 bra W1;
+    setp.eq.u32 %p2, %r1, 0;
+    @%p2 st.shared.u32 [%r2], 7;
+    mov.u32 %r7, 32;
+    bar.sync 0, %r7;
+    ret;
+W1:
+    bar.sync 0, 64;
+    setp.eq.u32 %p3, %r1, 32;
+    @%p3 ld.shared.u32 %r5, [%r2];
+    ret;
+}

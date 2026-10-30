@@ -233,6 +233,17 @@ fn test_bar_sync_register_id_count_mismatch() {
     );
 }
 
+/// Barrier 0 is reached with a register count of 32 and with count 64: the evaluator pins the
+/// first, so the run stops at warp 1's arrival.
+#[test]
+fn test_bar_sync_register_count_mismatch() {
+    expect_inconclusive_barrier_mismatch(
+        &ptx!(parse "failing/bar_sync_register_count_mismatch"),
+        "t32 arrives at barrier 0 expecting 64 threads, but an earlier arrival at it expected \
+         32 threads",
+    );
+}
+
 /// The same mismatch on a `bar.arrive`: warp 1 arrives through a register id with count 32 at
 /// the barrier warp 0 waits on for 64 threads.
 #[test]

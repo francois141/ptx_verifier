@@ -127,8 +127,8 @@ pub(super) fn lower_branch(
 }
 
 /// Lower a named-barrier arrival (`bar.sync a{, b}` / `bar.arrive a, b` and
-/// the `barrier.*` spellings). The id may be a register (range-checked at
-/// eval); the count may not, since `check_barrier_arrivals` pins one count.
+/// the `barrier.*` spellings). The id and the count may be registers, both
+/// checked at eval (the id's range, the count's value and its pinning).
 pub(super) fn lower_bar(
     ctx: &mut LoweringContext,
     mode: BarMode,

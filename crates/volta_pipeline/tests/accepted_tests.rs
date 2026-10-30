@@ -147,6 +147,16 @@ fn test_bar_sync_register_id_count_matches() {
     );
 }
 
+/// A register thread count is resolved at eval: naming the same count as the immediate one,
+/// the barrier orders the exchange.
+#[test]
+fn test_bar_sync_register_count_matches() {
+    analyze!(
+        "success/bar_sync_register_count_matches",
+        in_out_config(64, 1)
+    );
+}
+
 /// Barrier 1 (count 32, through a register id, twice) and barrier 0 (count 64) each keep
 /// their own pinned count.
 #[test]
