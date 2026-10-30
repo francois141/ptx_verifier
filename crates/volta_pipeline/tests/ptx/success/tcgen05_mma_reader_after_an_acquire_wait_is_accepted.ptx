@@ -4,6 +4,8 @@
 
 .visible .entry k()
 {
+    .reg .pred %zp<2>;
+    .reg .b32 %zr<3>;
     .reg .pred %p<4>;
     .reg .pred %pw;
     .reg .b32 %r<8>;
@@ -13,6 +15,28 @@
     .shared .align 4 .b32 taddr_slot;
     .shared .align 8 .b64 mma_bar;
     .shared .align 8 .b64 gate;
+
+    // Thread 0 zeroes the operand tiles so the MMA reads no never-written byte.
+    mov.u32 %zr0, %tid.x;
+    setp.eq.u32 %zp0, %zr0, 0;
+    @!%zp0 bra ZEROED;
+    mov.u32 %zr0, 0;
+    mov.u32 %zr1, a_buf;
+    add.u32 %zr2, %zr1, 4096;
+ZERO_A_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_A_BUF;
+    mov.u32 %zr1, b_buf;
+    add.u32 %zr2, %zr1, 1024;
+ZERO_B_BUF:
+    st.shared.v4.b32 [%zr1], {%zr0, %zr0, %zr0, %zr0};
+    add.u32 %zr1, %zr1, 16;
+    setp.lt.u32 %zp1, %zr1, %zr2;
+    @%zp1 bra ZERO_B_BUF;
+ZEROED:
+    fence.proxy.async.shared::cta;
 
     mov.u32 %r3, taddr_slot;
     mov.u32 %r4, mma_bar;
@@ -40,6 +64,8 @@ ALLOCATED:
     @%p1 tcgen05.commit.cta_group::1.mbarrier::arrive::one.b64 [%r4];
 
     bar.sync 0;
+    // The default `.acquire` wait pairs with the commit's release arrival, so warp 1
+    // reads D with no `tcgen05.fence::after_thread_sync`.
 WAIT:
     mbarrier.try_wait.parity.shared.b64 %pw, [%r4], 0;
     @!%pw bra WAIT;

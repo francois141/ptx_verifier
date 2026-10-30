@@ -116,13 +116,11 @@ fn a_tracking_commit_supplies_the_before_role() {
     assert_eq!(evidence(&check(&commit_then_load(true))), (1, 0, 1));
 }
 
+/// t1's wait on the commit's phase is an acquire (the ISA's default `.sem`): it pairs with the
+/// commit's release and supplies the after role without the fence.
 #[test]
-fn a_waiter_without_the_after_fence_is_unproved() {
-    let result = check(&commit_then_load(false));
-    let [c] = result.violations() else {
-        panic!("{result:?}");
-    };
-    assert_eq!(c.kind, ConflictKind::WriteRead);
+fn a_waiters_acquire_supplies_the_after_role() {
+    assert_eq!(evidence(&check(&commit_then_load(false))), (1, 0, 1));
 }
 
 /// t0's MMA committed to a phase, then a barrier with t1 and t1's fenced load of the
@@ -162,8 +160,10 @@ fn a_barrier_before_the_mmas_completion_is_observed_orders_no_load() {
     );
 }
 
+/// t0 observes the MMA's completion and a barrier carries it to t1, whose after fence comes
+/// before that barrier: it orders nothing, and a `bar.sync` is no acquire.
 #[test]
-fn an_after_fence_before_the_completion_wait_does_not_count() {
+fn an_after_fence_before_the_synchronization_does_not_count() {
     let mut s = Scenario::new(2);
     let m = s.mbarrier(0, 1);
     s.barrier(&[0, 1], &[]);
@@ -171,8 +171,33 @@ fn an_after_fence_before_the_completion_wait_does_not_count() {
     let (mma, _) = s.mma(0, (0, 8));
     s.commit(0, p0, &[mma]);
     s.complete(p0);
+    s.wait(0, m, Parity::Even, p0);
     s.tcgen05_after(1);
-    s.wait(1, m, Parity::Even, p0);
+    s.barrier(&[0, 1], &[]);
+    s.tmem_ld(1, 0, (0, 8));
+    let (g, _) = s.completed(2);
+    assert_eq!(check(&g).verdict(), Verdict::Fail);
+}
+
+/// A barrier carries the MMA's completion to t1, which then waits on a phase t0 completed
+/// before observing the MMA: that acquire pairs with no release after the MMA, so the
+/// barrier's order still needs the after fence.
+#[test]
+fn an_acquire_of_a_phase_the_mma_does_not_reach_does_not_count() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let other = s.mbarrier(0, 1);
+    s.barrier(&[0, 1], &[]);
+    let p0 = s.phase(m, 0);
+    let q0 = s.phase(other, 0);
+    let (mma, _) = s.mma(0, (0, 8));
+    s.commit(0, p0, &[mma]);
+    s.arrive(0, q0);
+    s.complete(q0);
+    s.complete(p0);
+    s.wait(0, m, Parity::Even, p0);
+    s.barrier(&[0, 1], &[]);
+    s.wait(1, other, Parity::Even, q0);
     s.tmem_ld(1, 0, (0, 8));
     let (g, _) = s.completed(2);
     assert_eq!(check(&g).verdict(), Verdict::Fail);

@@ -568,6 +568,17 @@ fn test_tcgen05_mma_every_reader_waiting_is_accepted() {
     );
 }
 
+/// The same kernel without `tcgen05.fence::after_thread_sync`: warp 1's default `.acquire` wait
+/// on `mma_bar` pairs with the commit's release, which orders the MMA before its read
+/// (<https://github.com/NVIDIA/cutlass/issues/2974>).
+#[test]
+fn test_tcgen05_mma_reader_after_an_acquire_wait_is_accepted() {
+    analyze!(
+        "success/tcgen05_mma_reader_after_an_acquire_wait_is_accepted",
+        AnalysisConfig::new((64, 1, 1))
+    );
+}
+
 /// The control: deallocating after waiting on `mma_bar` is accepted.
 #[test]
 fn test_tcgen05_dealloc_after_the_mma_completed_is_accepted() {

@@ -140,32 +140,10 @@ fn test_tcgen05_mma_bar_sync_between_issue_and_commit_orders_nothing() {
     });
 }
 
-/// Warp 1 waits on `mma_bar` and then reads `D` without `tcgen05.fence::after_thread_sync`: the
-/// commit supplies the before role, nothing the after role. With the fence, the same kernel is
-/// accepted (`test_tcgen05_mma_every_reader_waiting_is_accepted`).
-#[test]
-fn test_tcgen05_mma_reader_without_fence_after_thread_sync_is_rejected() {
-    let ws = unproved(
-        &parse(&ptx!(
-            "execution_error/tcgen05_mma_reader_without_fence_after_thread_sync_is_rejected"
-        )),
-        AnalysisConfig::new((64, 1, 1)),
-    );
-    assert_any(
-        &ws,
-        "warp 1's read of D at lane 32 after the MMA's write",
-        |w| {
-            w.kind == ConflictKind::WriteRead
-                && w.cell.lane == 32
-                && w.earlier == Side::effect(0, Write, AsyncOpKind::Tcgen05Mma)
-                && w.later == Side::effect(32, Read, AsyncOpKind::Tcgen05Ld)
-        },
-    );
-}
-
 /// Warp 1 skips the wait: warp 0's `bar.sync` after the completion carries the order to it, but
-/// it reads `D` without `tcgen05.fence::after_thread_sync`. With the fence, the same kernel is
-/// accepted (`test_tcgen05_mma_bar_sync_after_completion_orders_the_read`).
+/// it reads `D` without `tcgen05.fence::after_thread_sync`, and a `bar.sync` is no mbarrier
+/// acquire. With the fence, the same kernel is accepted
+/// (`test_tcgen05_mma_bar_sync_after_completion_orders_the_read`).
 #[test]
 fn test_tcgen05_mma_bar_sync_reader_without_fence_after_thread_sync_is_rejected() {
     let ws = unproved(

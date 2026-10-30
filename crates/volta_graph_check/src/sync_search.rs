@@ -13,7 +13,7 @@
 //! ```
 //!
 //! ```text
-//! 0 --source-thread before fence--> 1 --destination-thread after fence--> 2
+//! 0 --source-thread before fence--> 1 --destination-thread after fence or mbarrier acquire--> 2
 //! ```
 //!
 //! * `D` is [`ValidatedGraph`]'s explicit successor lists; `τ` is trace order, a topological
@@ -23,6 +23,11 @@
 //!   arrival of that thread, after the issue, on an mbarrier phase that tracks the operation
 //!   (`tcgen05.commit`). `AFTERONTARGETTHREAD(v, b)`: `v`, on the thread that issued `b`'s
 //!   operation, is a `tcgen05.fence::after_thread_sync`. Every other vertex keeps the state.
+//! * The path may instead step from an mbarrier phase's completion to that thread's release
+//!   from it: the wait is an acquire, as lowering rejects `.relaxed`, and a release-acquire
+//!   pair orders `tcgen05` ops without the after fence, which the PTX ISA's canonical pattern
+//!   places only after a `.relaxed` wait (<https://github.com/NVIDIA/cutlass/issues/2974>). A
+//!   release by any other synchronization (`bar.sync`) still needs the fence.
 //! * The search accepts only at `t` in state 2. It checks the fence protocol along a path of
 //!   `D`; synchronization and completion validation are the other passes' (§1.3).
 //! * [`Origin`]: the design always starts at `Issue(Op(a))` in state 0, which only orders the
@@ -46,7 +51,7 @@ pub enum SearchState {
     Unfenced,
     /// 1: the source thread fenced (or committed) before synchronizing.
     SourceFenced,
-    /// 2: the destination thread fenced after synchronizing.
+    /// 2: the destination thread fenced, or acquired an mbarrier phase, after synchronizing.
     TargetFenced,
 }
 
@@ -95,6 +100,26 @@ pub fn before_on_source_thread(graph: &EventGraph, v: EventId, source: AsyncOpId
 pub fn after_on_target_thread(graph: &EventGraph, v: EventId, target: AsyncOpId) -> bool {
     graph.thread_of(v) == Some(graph.async_op(target).issuer)
         && graph.event(v).kind == EventKind::Fence(FenceKind::Tcgen05AfterThreadSync)
+}
+
+/// The edge `v -> w` releases `target`'s issuer from the mbarrier phase `v` completes: an acquire
+/// wait (lowering rejects `.relaxed`), whose release-acquire pair orders `tcgen05` ops without an
+/// after fence (<https://github.com/NVIDIA/cutlass/issues/2974>).
+pub fn acquired_on_target_thread(
+    graph: &EventGraph,
+    v: EventId,
+    w: EventId,
+    target: AsyncOpId,
+) -> bool {
+    let (EventKind::GenerationComplete(phase), EventKind::Resume(released_by)) =
+        (graph.event(v).kind, graph.event(w).kind)
+    else {
+        return false;
+    };
+
+    phase == released_by
+        && graph.generation(phase).kind == GenerationKind::MbarrierPhase
+        && graph.thread_of(w) == Some(graph.async_op(target).issuer)
 }
 
 /// Where a witness path out of the source operation starts.
@@ -149,9 +174,18 @@ pub fn search(d: &SearchGraph, source: AsyncOpId, target: AsyncOpId, origin: Ori
             continue;
         }
         for &w in d.successors.of(v) {
-            if w <= t {
-                stack.push((w, s));
+            if w > t {
+                continue;
             }
+
+            let s = if s == SearchState::SourceFenced
+                && acquired_on_target_thread(graph, v, w, target)
+            {
+                SearchState::TargetFenced
+            } else {
+                s
+            };
+            stack.push((w, s));
         }
     }
     false
