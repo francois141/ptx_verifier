@@ -1,5 +1,6 @@
 //! Symbolic execution of AMD instructions.
 
+mod launch;
 #[cfg(test)]
 mod tests;
 mod value;
@@ -19,6 +20,7 @@ pub(crate) enum EvalError {
     UninitializedSgpr(Sgpr),
     UninitializedVgpr { lane: usize, reg: Vgpr },
     UnsupportedInstruction,
+    Launch { message: String },
 }
 
 // Stringify evaluation error types.
@@ -32,6 +34,7 @@ impl fmt::Display for EvalError {
                 write!(f, "uninitialized vector register v{} in lane {lane}", reg.0)
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction for lane execution"),
+            Self::Launch { message } => write!(f, "invalid launch: {message}"),
         }
     }
 }

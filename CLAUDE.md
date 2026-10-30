@@ -384,8 +384,11 @@ operands and duplicate settings.
 physical register identities, explicit waits, and launch metadata. Unsupported
 targets, instructions, or operand forms produce `LowerError`.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
-The internal `execute_lane` evaluates an instruction for a caller-selected active lane, returning
-`EvalError` for unsupported instructions.
+The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
+to initial registers. It accepts full waves in 1D, 2D, and 3D workgroups, matching
+[AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
+and rejects unsupported launch layouts. `execute_lane` evaluates an instruction for
+a caller-selected active lane, returning `EvalError` for unsupported instructions.
 See the crate README for ISA references, test commands, and fixture regeneration.
 
 ## Crate: volta_graph_check
