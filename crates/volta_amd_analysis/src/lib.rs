@@ -2,6 +2,7 @@
 
 pub mod frontend;
 
+mod error;
 mod eval;
 mod ir;
 mod lower;

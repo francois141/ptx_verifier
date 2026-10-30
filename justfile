@@ -52,6 +52,10 @@ format-python:
 loc *args:
     python3 scripts/loc.py {{args}}
 
+# Print the IR the AMD copy kernel lowers to, or the error that stops it
+amd:
+    cargo test -q -p volta_amd_analysis --test copy -- --nocapture
+
 external:
     python3 external/races.py
 
