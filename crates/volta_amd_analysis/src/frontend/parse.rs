@@ -85,7 +85,12 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
             return Err(format!("unsupported statement {line:?}"));
         }
         // Accept comma-separated operands and space-separated wait counters.
-        if rest.contains(',') && rest.split(',').any(|piece| piece.trim().is_empty()) {
+        let operand_list = if opcode == "s_waitcnt" {
+            rest
+        } else {
+            rest.strip_suffix(',').unwrap_or(rest)
+        };
+        if rest.contains(',') && operand_list.split(',').any(|piece| piece.trim().is_empty()) {
             return Err(format!("empty operand in {line:?}"));
         }
         let operands = rest
@@ -232,9 +237,14 @@ mod tests {
             "global_load_dword ,v1, v0, s[0:1]",
             "global_load_dword v1,, v0, s[0:1]",
             "global_load_dword v1, , v0, s[0:1]",
-            "global_load_dword v1, v0, s[0:1],",
+            "global_load_dword v1, v0, s[0:1],,",
+            "global_load_dword v1, v0, s[0:1], ,",
             "s_waitcnt vmcnt(0),, lgkmcnt(0)",
+            "s_waitcnt vmcnt(0),",
+            "s_waitcnt vmcnt(0), lgkmcnt(0),",
+            "s_waitcnt vmcnt(0) lgkmcnt(0),",
             "s_endpgm ,",
+            "s_waitcnt ,",
         ] {
             assert_eq!(
                 parse_kernel(&kernel_source(line, ""), "test").unwrap_err(),
@@ -265,6 +275,44 @@ mod tests {
                 instr("s_endpgm", &[]),
             ]
         );
+    }
+
+    #[test]
+    fn accepts_one_trailing_comma_without_changing_instructions() {
+        for line in [
+            "v_lshlrev_b32_e32 v0, 2, v0",
+            "s_load_dwordx4 s[0:3], s[4:5], 0",
+            "global_load_dword v1, v0, s[0:1]",
+            "global_store_dword v0, v1, s[2:3]",
+        ] {
+            let plain = parse_kernel(&kernel_source(line, ""), "test").unwrap();
+            let lowered = crate::lower_kernel(&plain).unwrap();
+            for suffix in [",", ",  ", ", ; trailing comment"] {
+                let source = kernel_source(&format!("{line}{suffix}"), "");
+                let parsed = parse_kernel(&source, "test").unwrap();
+                assert_eq!(parsed.instructions, plain.instructions, "{line}{suffix}");
+                assert_eq!(
+                    crate::lower_kernel(&parsed).unwrap().instructions,
+                    lowered.instructions,
+                    "{line}{suffix}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_comma_preserves_invalid_operands_for_lowering() {
+        for line in [
+            "s_endpgm 0",
+            "v_lshlrev_b32_e32 v0, 2",
+            "global_load_dword v1, v0",
+        ] {
+            let plain = parse_kernel(&kernel_source(line, ""), "test").unwrap();
+            let parsed = parse_kernel(&kernel_source(&format!("{line},"), ""), "test").unwrap();
+            assert_eq!(parsed.instructions, plain.instructions, "{line}");
+            assert!(crate::lower_kernel(&plain).is_err(), "{line}");
+            assert!(crate::lower_kernel(&parsed).is_err(), "{line},");
+        }
     }
 
     // Test that specifying the same descriptor setting twice causes an error,

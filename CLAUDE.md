@@ -383,6 +383,8 @@ operands and duplicate settings.
 `lower_kernel(&kernel)` validates supported gfx950 instruction forms and preserves
 physical register identities, explicit waits, and launch metadata. Unsupported
 targets, instructions, or operand forms produce `LowerError`.
+A single trailing comma after nonempty ordinary operands preserves the operand
+list; named wait-counter lists and other empty comma-separated operands reject it.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
 The internal `execute_lane` evaluates an instruction for a caller-selected active lane, returning
 `EvalError` for unsupported instructions.

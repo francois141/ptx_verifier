@@ -17,6 +17,10 @@ Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/a
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
 
+Ordinary operand lists accept one trailing comma after nonempty operands.
+Named wait-counter lists reject a trailing comma. Leading, interior and repeated
+trailing empty operands remain errors; lowering still checks instruction arity.
+
 ## Tests
 
 Instruction-level tests exercise lowering directly; the compiled fixture checks
