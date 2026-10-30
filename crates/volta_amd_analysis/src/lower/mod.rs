@@ -41,7 +41,7 @@ impl std::error::Error for LowerError {}
 /// Lower a parsed kernel into typed instructions, preserving order and launch metadata.
 /// Return `LowerError` for unsupported targets, instructions, or operand forms.
 pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
-    if kernel.target.split(':').next() != Some("amdgcn-amd-amdhsa--gfx950") {
+    if !supported_target(&kernel.target) {
         return Err(LowerError::UnsupportedTarget {
             target: kernel.target.clone(),
         });
@@ -64,6 +64,25 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         instructions,
         descriptor: kernel.descriptor.clone(),
     })
+}
+
+fn supported_target(target: &str) -> bool {
+    let mut parts = target.split(':');
+    if parts.next() != Some("amdgcn-amd-amdhsa--gfx950") {
+        return false;
+    }
+    let (mut xnack, mut sramecc) = (false, false);
+    for feature in parts {
+        let present = match feature {
+            "xnack+" | "xnack-" => &mut xnack,
+            "sramecc+" | "sramecc-" => &mut sramecc,
+            _ => return false,
+        };
+        if std::mem::replace(present, true) {
+            return false;
+        }
+    }
+    true
 }
 
 fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static str> {

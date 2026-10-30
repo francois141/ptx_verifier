@@ -17,6 +17,10 @@ Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/a
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
 
+Target strings may include `xnack` and `sramecc` selections once each, in either
+order. Unknown, repeated, conflicting or empty feature fields are rejected.
+This validates the target string, not execution support for every feature mode.
+
 ## Tests
 
 Instruction-level tests exercise lowering directly; the compiled fixture checks

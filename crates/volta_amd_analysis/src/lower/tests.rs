@@ -208,3 +208,47 @@ fn rejects_other_targets() {
         Err(LowerError::UnsupportedTarget { .. })
     ));
 }
+
+#[test]
+fn validates_target_features_without_discarding_them() {
+    for suffix in [
+        "",
+        ":xnack+",
+        ":xnack-",
+        ":sramecc+",
+        ":sramecc-",
+        ":xnack+:sramecc+",
+        ":xnack+:sramecc-",
+        ":xnack-:sramecc+",
+        ":xnack-:sramecc-",
+        ":sramecc+:xnack+",
+        ":sramecc+:xnack-",
+        ":sramecc-:xnack+",
+        ":sramecc-:xnack-",
+    ] {
+        let mut kernel = parse_kernel(COPY, "copy").unwrap();
+        kernel.target = format!("amdgcn-amd-amdhsa--gfx950{suffix}");
+        assert_eq!(lower_kernel(&kernel).unwrap().target, kernel.target);
+    }
+    for suffix in [
+        ":",
+        "::xnack-",
+        ":banana",
+        ":xnack",
+        ":sramecc",
+        ":xnack+:xnack-",
+        ":xnack-:xnack-",
+        ":sramecc+:sramecc-",
+        ":sramecc+:sramecc+",
+        ":xnack-:",
+    ] {
+        let mut kernel = parse_kernel(COPY, "copy").unwrap();
+        kernel.target = format!("amdgcn-amd-amdhsa--gfx950{suffix}");
+        assert_eq!(
+            lower_kernel(&kernel).unwrap_err(),
+            LowerError::UnsupportedTarget {
+                target: kernel.target.clone()
+            }
+        );
+    }
+}
