@@ -17,6 +17,9 @@ Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/a
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
 
+The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
+unbalanced and extra-quoted arguments are rejected.
+
 ## Tests
 
 Instruction-level tests exercise lowering directly; the compiled fixture checks
