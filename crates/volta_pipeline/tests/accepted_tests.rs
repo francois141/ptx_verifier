@@ -809,11 +809,9 @@ fn test_tma_param_tensor_maps() {
     analyze!("success/tma_param_tensor_maps", config);
 }
 
-/// A 1-D TMA load of `in`'s 16 elements at element 32, the last 8 past its end
-/// (zero-filled, yet counted by `complete_tx`), then a 1-D TMA store of the box:
-/// out[0..7] = in[32..39], out[8..15] = 0.
-#[test]
-fn test_tma_1d_load_zero_fills_past_the_tensor_end() {
+/// One thread over a 40-element f32 `in` and a 16-element f32 `out`, both
+/// reached through 1-D tensor maps of 16-element boxes in one by-value struct.
+fn tma_1d_config() -> AnalysisConfig {
     let mut config = AnalysisConfig::new((1, 1, 1));
     config.arrays = vec![
         array("in", 0x10000, 4, 40, ArrayKind::Input),
@@ -843,7 +841,24 @@ fn test_tma_1d_load_zero_fills_past_the_tensor_end() {
             value: map("out", 16),
         },
     ])];
-    analyze!("success/tma_1d_load_zero_fills_past_the_tensor_end", config);
+    config
+}
+
+/// A 1-D TMA load of `in`'s 16 elements at element 32, the last 8 past its end
+/// (zero-filled, yet counted by `complete_tx`), then a 1-D TMA store of the box:
+/// out[0..7] = in[32..39], out[8..15] = 0.
+#[test]
+fn test_tma_1d_load_zero_fills_past_the_tensor_end() {
+    analyze!(
+        "success/tma_1d_load_zero_fills_past_the_tensor_end",
+        tma_1d_config()
+    );
+}
+
+/// A TMA load's `.L2::cache_hint` policy operand changes nothing.
+#[test]
+fn test_tma_load_with_l2_cache_hint() {
+    analyze!("success/tma_load_with_l2_cache_hint", tma_1d_config());
 }
 
 /// A 5-D TMA load of a 4x1x2x1x2 box of a 4x2x2x2x2 `in` at {0, 1, 0, 1, 0},

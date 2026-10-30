@@ -1,0 +1,16 @@
+out[0] = in[32]
+out[1] = in[33]
+out[2] = in[34]
+out[3] = in[35]
+out[4] = in[36]
+out[5] = in[37]
+out[6] = in[38]
+out[7] = in[39]
+out[8] = 0
+out[9] = 0
+out[10] = 0
+out[11] = 0
+out[12] = 0
+out[13] = 0
+out[14] = 0
+out[15] = 0

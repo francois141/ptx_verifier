@@ -416,10 +416,18 @@ pub(super) fn lower_cp_async_bulk_tensor(
     let mut saw_shared_destination = false;
     let mut saw_global = false;
     let mut saw_completion = false;
+    let mut cache_hint = CacheHint::Absent;
 
     for modifier in modifiers {
         if let DottedIdent::Qualified(parts) = modifier {
             match parts.as_slice() {
+                [level, hint]
+                    if level.as_slice().as_bytes() == b"L2"
+                        && hint.as_slice().as_bytes() == b"cache_hint" =>
+                {
+                    cache_hint = CacheHint::Present;
+                    continue;
+                }
                 [base, sub] if base.as_slice().as_bytes() == b"shared" => {
                     match SharedStateSpaceQualifier::from_ascii(sub.as_slice()) {
                         Some(SharedStateSpaceQualifier::Cluster) => {
@@ -447,7 +455,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
                         format!(
                             "modifier {modifier} (only .mbarrier::complete_tx::bytes completion \
                              is modeled - .bulk_group, .multicast::cluster, .cta_group::N, \
-                             .L2::cache_hint, .tile::gather4/scatter4, .im2col::w{{::128}} are not)"
+                             .tile::gather4/scatter4, .im2col::w{{::128}} are not)"
                         ),
                     ));
                 }
@@ -491,6 +499,7 @@ pub(super) fn lower_cp_async_bulk_tensor(
         ));
     }
 
+    let operands = strip_cache_policy(ctx, operands, cache_hint)?;
     let (dst, tm, mbar, offsets) = match (load_mode, operands) {
         (LoadModeQualifier::Tile, [dst, tm, mbar]) => (dst, tm, mbar, None),
         (LoadModeQualifier::Im2col, [dst, tm, mbar, offsets]) => (dst, tm, mbar, Some(offsets)),
@@ -554,6 +563,38 @@ pub(super) fn lower_cp_async_bulk_tensor(
         predicate,
     )?;
     Ok(())
+}
+
+/// Whether a TMA load carries `.L2::cache_hint` and so a trailing cache-policy operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheHint {
+    Absent,
+    Present,
+}
+
+/// The operands without `.L2::cache_hint`'s trailing 64-bit cache policy: it only
+/// sets the L2 eviction priority, so it changes neither the data nor any order.
+fn strip_cache_policy<'a>(
+    ctx: &LoweringContext,
+    operands: &'a [AstOperand],
+    cache_hint: CacheHint,
+) -> LowerResult<&'a [AstOperand]> {
+    const NAME: &str = "cp.async.bulk.tensor";
+
+    if cache_hint == CacheHint::Absent {
+        return Ok(operands);
+    }
+    let Some((policy, rest)) = operands.split_last() else {
+        return Err(LowerError::InvalidOperand {
+            instruction: NAME.to_string(),
+            operand: format!("{:?}", operands),
+            reason: ".L2::cache_hint needs a trailing cache-policy operand",
+        });
+    };
+    let typed = ctx.resolve_operand_typed(policy)?;
+    ctx.check_operand_type(&typed, ScalarType::B64, NAME)?;
+
+    Ok(rest)
 }
 
 /// An `.im2col` load's `{im2colOffsets}`: one 16-bit offset per spatial dimension, `dim - 2`.
