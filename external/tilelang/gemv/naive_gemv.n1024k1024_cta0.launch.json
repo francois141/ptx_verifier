@@ -1,0 +1,17 @@
+{
+  "description": "TileLang GEMV example naive_gemv (N = K = 1024, BLOCK_N = 128, BLOCK_K = 128): C = B @ A over an f16 matrix B [N, K] and vector A [K] with f32 accumulation, each of 128 threads one row, looping over K in 128-element steps, each step's A and B staged through shared memory; one CTA of 128 threads, the block-0 one, computing C's first 128 elements; compiled by extraction/tilelang_kernels.py",
+  "kernel": "naive_gemv_kernel",
+  "block": 128,
+  "grid": 1,
+  "dynamic_shared_bytes": 33024,
+  "arrays": [
+    {"name": "A", "kind": "in", "dtype": "f16", "shape": [1024]},
+    {"name": "B", "kind": "in", "dtype": "f16", "shape": [1024, 1024]},
+    {"name": "C", "kind": "out", "dtype": "f16", "shape": [128]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"}
+  ]
+}

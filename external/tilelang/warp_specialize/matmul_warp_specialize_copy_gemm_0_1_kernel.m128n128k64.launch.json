@@ -1,0 +1,16 @@
+{
+  "description": "TileLang warp-specialized GEMM example_warp_specialize_gemm_copy_gemm_0_1 (M = N = 128, K = 64): C = A @ B over row-major f16 matrices with f32 accumulation, in one CTA of two warpgroups that each own 64 of C's 128 columns; the launch of sentryward's examples/tilelang-ws-gemm-copy-gemm-0-1/input.json",
+  "kernel": "matmul_warp_specialize_copy_gemm_0_1_kernel",
+  "block": 256,
+  "grid": 1,
+  "arrays": [
+    {"name": "A", "kind": "in",  "dtype": "f16", "shape": [128, 64]},
+    {"name": "B", "kind": "in",  "dtype": "f16", "shape": [64, 128]},
+    {"name": "C", "kind": "out", "dtype": "f16", "shape": [128, 128]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"}
+  ]
+}

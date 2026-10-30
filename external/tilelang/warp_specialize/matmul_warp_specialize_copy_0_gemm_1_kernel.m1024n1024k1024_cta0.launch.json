@@ -1,0 +1,17 @@
+{
+  "description": "TileLang warp-specialized GEMM example_warp_specialize_gemm_copy_0_gemm_1 (M = N = K = 1024): C = A @ B over row-major f16 matrices with f32 accumulation, TMA loads of A in [64, 128] and B in [64, 64] boxes (128B swizzle); one CTA, the (0, 0) one, computing C's first 128 x 128 tile at C's full 1024-element row pitch; the launch of sentryward's examples/tilelang-ws-gemm-copy-0-gemm-1/input.json",
+  "kernel": "matmul_warp_specialize_copy_0_gemm_1_kernel",
+  "block": 256,
+  "grid": 1,
+  "dynamic_shared_bytes": 32768,
+  "arrays": [
+    {"name": "A", "kind": "in", "dtype": "f16", "shape": [1024, 1024]},
+    {"name": "B", "kind": "in", "dtype": "f16", "shape": [1024, 1024]},
+    {"name": "C", "kind": "out", "dtype": "f16", "shape": [128, 1024]}
+  ],
+  "params": [
+    {"name": "A tensor map", "struct": [{"name": "A tensor map", "offset": 0, "tensor_map": {"array": "A", "dtype": "f16", "dims": [1024, 1024], "strides": [2048], "box": [64, 128], "swizzle": "128B"}}]},
+    {"name": "B tensor map", "struct": [{"name": "B tensor map", "offset": 0, "tensor_map": {"array": "B", "dtype": "f16", "dims": [1024, 1024], "strides": [2048], "box": [64, 64], "swizzle": "128B"}}]},
+    {"ptr": "C"}
+  ]
+}

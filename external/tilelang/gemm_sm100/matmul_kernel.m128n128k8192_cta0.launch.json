@@ -1,0 +1,17 @@
+{
+  "description": "TileLang tcgen05 GEMM gemm_tcgen5mma (trans_B, K = 8192): C = A @ B^T over row-major bf16 A[M, K] and B[N, K] with f32 Tensor Memory accumulation, 128 x 128 x 128 blocks, 2 pipeline stages, cp.async loads; one CTA, the (0, 0) one, computing C's first 128 x 128 tile at C's 8192-element row pitch; the launch of sentryward's examples/tilelang-gemm-sm100-tcgen5mma/input.json",
+  "kernel": "matmul_kernel",
+  "block": 256,
+  "grid": 1,
+  "dynamic_shared_bytes": 131072,
+  "arrays": [
+    {"name": "A", "kind": "in", "dtype": "bf16", "shape": [128, 8192]},
+    {"name": "B", "kind": "in", "dtype": "bf16", "shape": [128, 8192]},
+    {"name": "C", "kind": "out", "dtype": "bf16", "shape": [128, 8192]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"}
+  ]
+}

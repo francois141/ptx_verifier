@@ -1,0 +1,15 @@
+{
+  "description": "TileLang online_softmax (BLOCK_M = 1, BLOCK_N = 8192): Y = softmax(X, dim=1) over f16 rows of 8192 elements, as exp2(x * log2(e) - lse) with lse accumulated online in f32; one CTA of 128 threads, the row-0 one; the launch of sentryward's examples/tilelang-online-softmax/input.json",
+  "kernel": "softmax_kernel_kernel",
+  "block": 128,
+  "grid": 1,
+  "dynamic_shared_bytes": 512,
+  "arrays": [
+    {"name": "X", "kind": "in", "dtype": "f16", "shape": [1, 8192]},
+    {"name": "Y", "kind": "out", "dtype": "f16", "shape": [1, 8192]}
+  ],
+  "params": [
+    {"ptr": "X"},
+    {"ptr": "Y"}
+  ]
+}

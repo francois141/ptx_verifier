@@ -1,0 +1,17 @@
+{
+  "description": "TileLang GEMV example gemv_alloc_reducer (N = K = 1024, block_M = 128, block_N = 128) (its autotuned num_stages and threads at their defaults, 2 and 256): o = a @ x over an f16 matrix a [1024, 1024] and vector x [1024] with f32 accumulation, 256 threads over a 128 x 128 tile of a per K step (a two-stage pipeline through shared memory), accumulating into a replicated reducer finalized across the threads; one CTA of 256 threads, the block-0 one, computing o's first 128 elements; compiled by extraction/tilelang_kernels.py",
+  "kernel": "gemv_alloc_reducer_kernel",
+  "block": 256,
+  "grid": 1,
+  "dynamic_shared_bytes": 65536,
+  "arrays": [
+    {"name": "a", "kind": "in", "dtype": "f16", "shape": [1024, 1024]},
+    {"name": "o", "kind": "out", "dtype": "f16", "shape": [128]},
+    {"name": "x", "kind": "in", "dtype": "f16", "shape": [1024]}
+  ],
+  "params": [
+    {"ptr": "a"},
+    {"ptr": "o"},
+    {"ptr": "x"}
+  ]
+}

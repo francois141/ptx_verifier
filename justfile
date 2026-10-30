@@ -63,8 +63,21 @@ kittens:
 tritonbench:
     python3 external/races.py --framework tritonbench
 
-# Compile the external kernels to PTX again (in Docker on macOS)
+# Check the Gluon tutorials' kernels for data races
+gluon:
+    python3 external/races.py --framework gluon
+
+# Check the TileLang examples' kernels for data races
+tilelang:
+    python3 external/races.py --framework tilelang
+
+# Analyze TileLang's warp-specialized copy-GEMM kernel, printing volta's full report
+tilelang-ws-gemm *args:
+    cargo run --release -q -p volta_cli -- analyze external/tilelang/warp_specialize/matmul_warp_specialize_copy_gemm_0_1_kernel.ptx --config external/tilelang/warp_specialize/matmul_warp_specialize_copy_gemm_0_1_kernel.m128n128k64.launch.json --no-profile {{args}}
+
+# Compile the external kernels to PTX again (in Docker on macOS); most TileLang ones are downloaded
 setup:
     uv run external/extraction/tritonbench.py
     uv run external/extraction/thunderkittens.py
     uv run external/extraction/gluon.py
+    uv run external/extraction/tilelang_kernels.py

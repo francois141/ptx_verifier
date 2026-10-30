@@ -28,8 +28,9 @@ sys.path.insert(0, str(EXTERNAL_ROOT.parent / "ai_compiler_kernels"))
 import check_races  # noqa: E402
 from check_races import BOLD, GREEN, OUTCOME_CODES, OUTCOME_WIDTH, RED, Outcome, Style  # noqa: E402
 
-# TritonBench-G (`extraction/tritonbench.py`) and ThunderKittens' educational GEMMs (`extraction/thunderkittens.py`).
-FRAMEWORKS = ("tritonbench", "thunderkittens")
+# TritonBench-G (`extraction/tritonbench.py`), ThunderKittens' educational GEMMs (`extraction/thunderkittens.py`),
+# Triton's Gluon tutorials (`extraction/gluon.py`) and TileLang's examples (`extraction/tilelang_kernels.py`).
+FRAMEWORKS = ("tritonbench", "thunderkittens", "gluon", "tilelang")
 FAILURES = {Outcome.RACE_CONDITION, Outcome.CHECK_FAILED, Outcome.DEADLOCK, Outcome.ERROR}
 
 

@@ -1,0 +1,17 @@
+{
+  "description": "TileLang GEMV example splitk_gemv_vectorized_tvm (N = K = 1024, BLOCK_N = 2, reduce_threads = 32): C = B @ A over an f16 matrix B [N, K] and vector A [K] with f32 accumulation, a 2 x 32 thread block: thread (n, k) loads 8 f16 of row n per 256-element K step as one 128-bit vector, the 32 partial sums combined by TVM's thread all-reduce; one CTA of 2 x 32 threads, the block-0 one, computing C's first 2 elements; compiled by extraction/tilelang_kernels.py",
+  "kernel": "splitk_gemv_vectorized_tvm_kernel",
+  "block": [2, 32],
+  "grid": 1,
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {"name": "A", "kind": "in", "dtype": "f16", "shape": [1024]},
+    {"name": "B", "kind": "in", "dtype": "f16", "shape": [1024, 1024]},
+    {"name": "C", "kind": "out", "dtype": "f16", "shape": [2]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"}
+  ]
+}

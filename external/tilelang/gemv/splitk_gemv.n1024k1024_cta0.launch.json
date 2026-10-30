@@ -1,0 +1,17 @@
+{
+  "description": "TileLang GEMV example splitk_gemv (N = K = 1024, BLOCK_N = 32, BLOCK_K = 32, reduce_threads = 32): C = B @ A over an f16 matrix B [N, K] and vector A [K] with f32 accumulation, a 32 x 32 thread block: thread (n, k) sums a one-element slice of each 32-element K step of row n, the 32 partial sums combined by atomic adds to a shared f32 accumulator; one CTA of 32 x 32 threads, the block-0 one, computing C's first 32 elements; compiled by extraction/tilelang_kernels.py",
+  "kernel": "splitk_gemv_kernel",
+  "block": [32, 32],
+  "grid": 1,
+  "dynamic_shared_bytes": 128,
+  "arrays": [
+    {"name": "A", "kind": "in", "dtype": "f16", "shape": [1024]},
+    {"name": "B", "kind": "in", "dtype": "f16", "shape": [1024, 1024]},
+    {"name": "C", "kind": "out", "dtype": "f16", "shape": [32]}
+  ],
+  "params": [
+    {"ptr": "A"},
+    {"ptr": "B"},
+    {"ptr": "C"}
+  ]
+}
