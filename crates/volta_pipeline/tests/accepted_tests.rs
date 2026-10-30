@@ -876,6 +876,33 @@ fn test_tma_load_with_l2_cache_hint() {
     analyze!("success/tma_load_with_l2_cache_hint", tma_1d_config());
 }
 
+/// The four f16 lanes of a `.b64` register, unpacked by shifts and truncations
+/// or split into f16x2 words and repacked: out = in[3, 2, 1, 0, 6, 7, 4, 5].
+#[test]
+fn test_f16_lanes_of_a_vectorized_u64_load() {
+    let mut config = AnalysisConfig::new((1, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 2, 8, ArrayKind::Input),
+        array("out", 0x20000, 2, 8, ArrayKind::Output),
+    ];
+    config.params = vec![
+        ParamValue::ArrayPtr("in".to_string()),
+        ParamValue::ArrayPtr("out".to_string()),
+    ];
+    analyze!("success/f16_lanes_of_a_vectorized_u64_load", config);
+}
+
+/// Four integer-constant 16-bit lanes of a `.b64`, loaded or packed, combine into one number
+/// that arithmetic reads and a 2-byte load splits again: out = 0x0004000300020001 + {16, 32},
+/// then lane 2 of the packed number, 3.
+#[test]
+fn test_f16_constant_lanes_of_a_b64_are_a_number() {
+    analyze!(
+        "success/f16_constant_lanes_of_a_b64_are_a_number",
+        out_only_config(8, 3)
+    );
+}
+
 /// A 5-D TMA load of a 4x1x2x1x2 box of a 4x2x2x2x2 `in` at {0, 1, 0, 1, 0},
 /// offset or iterated in every dimension, then a 5-D TMA store of it to `out`
 /// at the same coordinates: out[i] = in[i] for i in 20-23, 28-31, 52-55, 60-63.

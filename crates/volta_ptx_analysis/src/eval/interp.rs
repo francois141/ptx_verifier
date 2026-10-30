@@ -1037,6 +1037,8 @@ impl<'p> Interpreter<'p> {
                     self.write_reg(t, *dst, v);
                 } else if let Some(v) = self.quad_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
                     self.write_reg(t, *dst, v);
+                } else if let Some(v) = self.quad_shift_binop(t, pc, *op, *ty, src_a, src_b)? {
+                    self.write_reg(t, *dst, v);
                 } else {
                     let a = self.scalar_operand(t, pc, src_a)?;
                     let b = self.scalar_operand(t, pc, src_b)?;
@@ -1290,11 +1292,20 @@ impl<'p> Interpreter<'p> {
                 // before `cvt.e4m3x2`): a `Quad` has no bits to truncate, so
                 // keep its low `Pair`, as `truncates_pair` does.
                 let truncates_quad = int_to_int && src_ty.bits() == 32 && dst_ty.bits() == 16;
+                // `cvt.u16.u64` of a 4x16 quad (TileLang's lane extraction after a
+                // vectorized f16 load) keeps its lowest lane, `cvt.u32.u64` its low two.
+                let truncates_wide_quad = int_to_int && src_ty.bits() == 64;
                 let result = match self.operand_value(t, pc, src)? {
                     // `cvt.u32.u64`-style truncation of a packed pair keeps
                     // its low lane, exactly.
                     Value::Pair(lo, _) if truncates_pair => Value::Scalar(lo),
                     Value::Quad(b0, b1, _, _) if truncates_quad => Value::Pair(b0, b1),
+                    Value::Quad(l0, _, _, _) if truncates_wide_quad && dst_ty.bits() == 16 => {
+                        Value::Scalar(l0)
+                    }
+                    Value::Quad(l0, l1, _, _) if truncates_wide_quad && dst_ty.bits() == 32 => {
+                        Value::Pair(l0, l1)
+                    }
                     value => {
                         let a = match value {
                             Value::Pair(_, _) => self.scalar_operand(t, pc, src)?,
@@ -1460,12 +1471,21 @@ impl<'p> Interpreter<'p> {
             }
 
             LoweredInstr::PackHalves { dst, lo, hi } => {
-                // Always a Value::Pair. lo/hi are half-width operands:
-                // 16-bit-class for a b32 pack, 32-bit-class for b64, where
-                // scalar_operand rejects a half that is itself a pair.
-                let lo_v = self.scalar_operand(t, pc, lo)?;
-                let hi_v = self.scalar_operand(t, pc, hi)?;
-                self.write_reg(t, *dst, Value::Pair(lo_v, hi_v));
+                // lo/hi are half-width operands: 16-bit-class for a b32 pack, 32-bit-class
+                // for b64. Two f16x2 pairs are the four 16-bit lanes of a `.b64`
+                // (`mov.b64 %rd, {%r, %r}`); any other half must have a scalar reading.
+                let lo_half = self.operand_value(t, pc, lo)?;
+                let hi_half = self.operand_value(t, pc, hi)?;
+
+                let packed = if let (Value::Pair(l0, l1), Value::Pair(l2, l3)) = (lo_half, hi_half)
+                {
+                    self.pack_b64_lanes([l0, l1, l2, l3])
+                } else {
+                    let lo_scalar = self.scalar_operand(t, pc, lo)?;
+                    let hi_scalar = self.scalar_operand(t, pc, hi)?;
+                    Value::Pair(lo_scalar, hi_scalar)
+                };
+                self.write_reg(t, *dst, packed);
             }
 
             LoweredInstr::PackQuad { dst, elems } => {
@@ -2119,6 +2139,23 @@ impl<'p> Interpreter<'p> {
     fn recombine_pair_halves(arena: &mut ExprArena, lo: i64, hi: i64, half_bits: u32) -> ExprId {
         let mask = (1i64 << half_bits) - 1;
         arena.int(((hi & mask) << half_bits) | (lo & mask))
+    }
+
+    /// Four 16-bit lanes of a `.b64`, lane 0 lowest. Integer-constant lanes combine
+    /// into the one 64-bit number of their bits; only lanes that cannot be combined,
+    /// some symbolic one among them, stay a 4x16 quad.
+    pub(in crate::eval) fn pack_b64_lanes(&mut self, lanes: [ExprId; 4]) -> Value {
+        let [l0, l1, l2, l3] = lanes;
+        let constants = lanes.map(|lane| self.arena.as_int_const(lane));
+        let [Some(c0), Some(c1), Some(c2), Some(c3)] = constants else {
+            return Value::Quad(l0, l1, l2, l3);
+        };
+
+        let mut bits = 0i64;
+        for lane in [c3, c2, c1, c0] {
+            bits = (bits << 16) | (lane & 0xffff);
+        }
+        Value::Scalar(self.arena.int(bits))
     }
 
     /// Resolve a packed-pair operand (`.f16x2`/`.bf16x2`). A concrete scalar is

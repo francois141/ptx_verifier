@@ -187,6 +187,15 @@ impl Memory {
             return Ok(Value::Quad(*w0, *w1, *w2, *w3));
         }
 
+        // 8-byte read of two adjacent 4-byte halves that each hold two 16-bit
+        // lanes (two 2-byte scalars or one `Pair`): the 4x16 `Quad` of a `.b64`.
+        if width == 8
+            && let (Ok(Value::Pair(l0, l1)), Ok(Value::Pair(l2, l3))) =
+                (self.read(addr, 4), self.read(addr + 4, 4))
+        {
+            return Ok(Value::Quad(l0, l1, l2, l3));
+        }
+
         // Half-width read (1, 2, or 4 bytes) of one half of a pair granule.
         if matches!(width, 1 | 2 | 4) {
             let pair_width = width * 2;
@@ -316,6 +325,15 @@ impl Memory {
         value: Value,
         dirty: bool,
     ) -> Result<(), MemAccessError> {
+        // A 4x16 `Quad` is stored as its two 4-byte `Pair` halves, the granules
+        // its lanes are read back from.
+        if width == 8
+            && let Value::Quad(l0, l1, l2, l3) = value
+        {
+            self.put(addr, 4, Value::Pair(l0, l1), dirty)?;
+            return self.put(addr + 4, 4, Value::Pair(l2, l3), dirty);
+        }
+
         let end = addr + width;
         loop {
             let mut covered: Vec<u64> = Vec::new();
@@ -703,6 +721,25 @@ mod tests {
             mem.read(0x10, 16),
             Err(MemAccessError::Reinterpret { .. })
         ));
+    }
+
+    #[test]
+    fn test_f16_lanes_round_trip_through_a_b64_quad() {
+        let mut arena = ExprArena::new();
+        let lanes: Vec<_> = (0..4).map(|k| arena.int(k)).collect();
+        let mut mem = Memory::new();
+        for (k, &lane) in lanes.iter().enumerate() {
+            mem.write(0x10 + 2 * k as u64, 2, Value::Scalar(lane))
+                .unwrap();
+        }
+        let quad = Value::Quad(lanes[0], lanes[1], lanes[2], lanes[3]);
+        assert_eq!(mem.read(0x10, 8), Ok(quad));
+
+        mem.write(0x20, 8, quad).unwrap();
+        assert_eq!(mem.read(0x20, 8), Ok(quad));
+        for (k, &lane) in lanes.iter().enumerate() {
+            assert_eq!(mem.read(0x20 + 2 * k as u64, 2), Ok(Value::Scalar(lane)));
+        }
     }
 
     #[test]

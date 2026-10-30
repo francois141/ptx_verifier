@@ -21,9 +21,9 @@ pub enum Value {
     /// Two packed halves (lo, hi) in one register/word: 2x16 in a `.b32`
     /// (nvcc's f16 form, through `ldmatrix`/`mma`), 2x32 in a `.b64`.
     Pair(ExprId, ExprId),
-    /// Four packed lanes, byte0 lowest: 4x8 in a `.b32` (fp8; built only by
-    /// combining granules on read, split by `mov.b32 {h0,h1}` or `ld.u8`) or
-    /// 4x32 in a `.b128` (`LoweredInstr::PackQuad`).
+    /// Four packed lanes, lane 0 lowest: 4x8 in a `.b32` (fp8; built only by
+    /// combining granules on read, split by `mov.b32 {h0,h1}` or `ld.u8`), 4x16
+    /// in a `.b64` (f16, a vectorized `ld.u64`) or 4x32 in a `.b128` (`PackQuad`).
     Quad(ExprId, ExprId, ExprId, ExprId),
     /// An `mbarrier` object's state, by handle. Not program data: it has no
     /// `ExprId` and lives only at an mbarrier's address; any other context must

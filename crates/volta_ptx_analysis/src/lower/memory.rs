@@ -160,9 +160,9 @@ pub(super) fn lower_mov(
             let hi = ctx.resolve_operand(&elements[1])?;
 
             if matches!(mov.ty.bits(), 32 | 64) {
-                // Always a Value::Pair, exact for real and integer
-                // halves (see PackHalves): b32 packs f16x2/bf16x2,
-                // b64 packs f32x2 or two 32-bit integer halves.
+                // Exact for real and integer halves (see PackHalves): b32
+                // packs f16x2/bf16x2, b64 packs f32x2, two 32-bit integer
+                // halves or two f16x2 words.
                 ctx.emit(LoweredInstr::PackHalves { dst, lo, hi }, predicate)?;
             } else {
                 // Any other width: plain bitwise pack.

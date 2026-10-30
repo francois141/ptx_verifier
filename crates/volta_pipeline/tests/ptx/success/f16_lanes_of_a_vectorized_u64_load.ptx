@@ -1,0 +1,36 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// TileLang's vectorized f16 access: one `ld.global.v2.u64` holds eight f16
+// elements, four per 64-bit register. The lanes of the first come out by
+// `shr.u64` and `cvt.u16.u64` and are stored reversed; the second is split into
+// two f16x2 words, swapped and repacked: out = in[3, 2, 1, 0, 6, 7, 4, 5].
+.visible .entry k(
+    .param .u64 k_in,
+    .param .u64 k_out
+)
+{
+    .reg .b16 %rs<4>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<9>;
+
+    ld.param.u64 %rd1, [k_in];
+    ld.param.u64 %rd2, [k_out];
+    ld.global.v2.u64 {%rd3, %rd4}, [%rd1];
+    cvt.u16.u64 %rs0, %rd3;
+    shr.u64 %rd5, %rd3, 16;
+    cvt.u16.u64 %rs1, %rd5;
+    shr.u64 %rd6, %rd3, 32;
+    cvt.u16.u64 %rs2, %rd6;
+    shr.u64 %rd7, %rd3, 48;
+    cvt.u16.u64 %rs3, %rd7;
+    st.global.b16 [%rd2], %rs3;
+    st.global.b16 [%rd2+2], %rs2;
+    st.global.b16 [%rd2+4], %rs1;
+    st.global.b16 [%rd2+6], %rs0;
+    mov.b64 {%r1, %r2}, %rd4;
+    mov.b64 %rd8, {%r2, %r1};
+    st.global.u64 [%rd2+8], %rd8;
+    ret;
+}

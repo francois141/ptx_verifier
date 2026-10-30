@@ -1,0 +1,48 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Four constant 16-bit lanes (1, 2, 3, 4) in a `.b64` are one number,
+// 0x0004000300020001, whether an `ld.u64` reads them back from four `u16`
+// stores or a `mov.b64` packs them from two f16x2 words: both sums are exact,
+// and the packed number stored back splits into its lanes again (lane 2 is 3).
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<6>;
+    .reg .b32 %r<4>;
+    .reg .b64 %rd<8>;
+    .shared .align 8 .b8 lanes[8];
+    .shared .align 8 .b8 packed[8];
+
+    mov.b16 %rs1, 1;
+    mov.b16 %rs2, 2;
+    mov.b16 %rs3, 3;
+    mov.b16 %rs4, 4;
+
+    mov.u32 %r1, lanes;
+    st.shared.u16 [%r1], %rs1;
+    st.shared.u16 [%r1+2], %rs2;
+    st.shared.u16 [%r1+4], %rs3;
+    st.shared.u16 [%r1+6], %rs4;
+    ld.shared.u64 %rd1, [%r1];
+    add.s64 %rd2, %rd1, 16;
+
+    mov.b32 %r2, {%rs1, %rs2};
+    mov.b32 %r3, {%rs3, %rs4};
+    mov.b64 %rd3, {%r2, %r3};
+    add.s64 %rd4, %rd3, 32;
+
+    mov.u32 %r1, packed;
+    st.shared.u64 [%r1], %rd3;
+    ld.shared.u16 %rs5, [%r1+4];
+    cvt.u64.u16 %rd6, %rs5;
+
+    ld.param.u64 %rd5, [k_param_0];
+    cvta.to.global.u64 %rd5, %rd5;
+    st.global.u64 [%rd5], %rd2;
+    st.global.u64 [%rd5+8], %rd4;
+    st.global.u64 [%rd5+16], %rd6;
+    ret;
+}

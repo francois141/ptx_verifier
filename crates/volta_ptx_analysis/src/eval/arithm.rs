@@ -581,6 +581,12 @@ impl<'p> Interpreter<'p> {
         if ty.is_float() || ty.is_predicate() {
             return Ok(v);
         }
+        // A 64-bit load's quad is the 4x16 one `Memory::read` builds from two f16x2 words.
+        if let Value::Quad(l0, l1, l2, l3) = v
+            && ty.bits() == 64
+        {
+            return Ok(self.pack_b64_lanes([l0, l1, l2, l3]));
+        }
         let Value::Scalar(e) = v else {
             return Ok(v); // packed f16 pairs
         };
@@ -1098,6 +1104,50 @@ impl<'p> Interpreter<'p> {
         let b2 = apply(self, lanes.2, (mask >> 16) & 0xff)?;
         let b3 = apply(self, lanes.3, (mask >> 24) & 0xff)?;
         Ok(Some(Value::Quad(b0, b1, b2, b3)))
+    }
+
+    /// A logical `shr.b64`/`shl.b64` of a 4x16 quad by whole lanes moves the
+    /// lanes, zero-filling the vacated ones (TileLang's `shr.u64 %rd, %rd, 16`
+    /// before `cvt.u16.u64`). `None` unless the shifted operand is a quad.
+    pub(in crate::eval) fn quad_shift_binop(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        op: BinOp,
+        ty: ScalarType,
+        src_a: &Operand,
+        src_b: &Operand,
+    ) -> EvalResult<Option<Value>> {
+        if ty.bits() != 64 || !matches!(op, BinOp::Shl | BinOp::Shr) {
+            return Ok(None);
+        }
+        let Value::Quad(l0, l1, l2, l3) = self.operand_value(t, pc, src_a)? else {
+            return Ok(None);
+        };
+
+        let amount = self.concrete_operand(t, pc, src_b, "packed quad shift amount")?;
+        let unsupported = || EvalError::Unsupported {
+            pc,
+            what: format!(
+                "packed quad shifted by other than a logical 16, 32 or 48 ({op:?} by {amount} on {ty:?})"
+            ),
+        };
+        if ty.is_signed_int() {
+            return Err(unsupported());
+        }
+
+        // Lane 0 is the lowest: a right shift moves the lanes down, a left shift up.
+        let zero = self.arena.int(0);
+        let shifted = match (op, amount) {
+            (BinOp::Shr, 16) => Value::Quad(l1, l2, l3, zero),
+            (BinOp::Shr, 32) => Value::Quad(l2, l3, zero, zero),
+            (BinOp::Shr, 48) => Value::Quad(l3, zero, zero, zero),
+            (BinOp::Shl, 16) => Value::Quad(zero, l0, l1, l2),
+            (BinOp::Shl, 32) => Value::Quad(zero, zero, l0, l1),
+            (BinOp::Shl, 48) => Value::Quad(zero, zero, zero, l0),
+            _ => return Err(unsupported()),
+        };
+        Ok(Some(shifted))
     }
 }
 

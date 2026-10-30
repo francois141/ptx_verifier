@@ -493,9 +493,9 @@ pub enum LoweredInstr {
         ty: ScalarType,
     },
 
-    /// `mov.b32`/`mov.b64 dst, {lo, hi}`: always a `Value::Pair`, since bit
-    /// ops on real halves build nonsense. Concrete integer halves recombine
-    /// on demand; symbolic ones used as a scalar fail.
+    /// `mov.b32`/`mov.b64 dst, {lo, hi}`: a `Value::Pair`, since bit ops on real
+    /// halves build nonsense (concrete integer halves recombine on demand); two f16x2
+    /// halves of a `.b64` are its four 16-bit lanes (see `pack_b64_lanes`).
     PackHalves {
         dst: RegId,
         lo: Operand,
