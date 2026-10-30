@@ -71,10 +71,16 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         .ok_or("missing .amdgcn_target")?;
 
     // The instruction body ends at a section switch or function-end label.
-    let entry = lines
+    let mut entries = lines
         .iter()
-        .position(|line| line.strip_suffix(':') == Some(name))
+        .enumerate()
+        .filter(|(_, line)| line.strip_suffix(':') == Some(name));
+    let (entry, _) = entries
+        .next()
         .ok_or_else(|| format!("kernel {name:?} not found"))?;
+    if entries.next().is_some() {
+        return Err(format!("multiple entry labels for kernel {name:?}"));
+    }
     let mut instructions = Vec::new();
     for line in &lines[entry + 1..] {
         let (opcode, rest) = word(line);
@@ -102,10 +108,18 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
     }
 
     // Read launch settings from the kernel's separate descriptor block.
-    let start = lines
+    let mut descriptors = lines
         .iter()
-        .position(|line| word(line) == (".amdhsa_kernel", name))
+        .enumerate()
+        .filter(|(_, line)| word(line) == (".amdhsa_kernel", name));
+    let (start, _) = descriptors
+        .next()
         .ok_or_else(|| format!("missing .amdhsa_kernel {name}"))?;
+    if descriptors.next().is_some() {
+        return Err(format!(
+            "multiple .amdhsa_kernel blocks for kernel {name:?}"
+        ));
+    }
     let mut descriptor = BTreeMap::new();
     for line in &lines[start + 1..] {
         if *line == ".end_amdhsa_kernel" {
@@ -287,6 +301,42 @@ mod tests {
         let plain = parse_kernel(COPY, "copy").unwrap();
         let kernel = parse_kernel(&verbose, "copy").unwrap();
         assert_eq!(kernel.instructions, plain.instructions);
+    }
+
+    #[test]
+    fn rejects_multiple_selected_kernel_entry_labels() {
+        let duplicate_entry = format!("{COPY}\n.text\ncopy:\ns_endpgm\n.section .rodata\n");
+        assert_eq!(
+            parse_kernel(&duplicate_entry, "copy").unwrap_err(),
+            "multiple entry labels for kernel \"copy\""
+        );
+    }
+
+    #[test]
+    fn rejects_multiple_selected_kernel_descriptors() {
+        let start = COPY.find(".amdhsa_kernel copy\n").unwrap();
+        let end =
+            COPY[start..].find(".end_amdhsa_kernel").unwrap() + start + ".end_amdhsa_kernel".len();
+        let duplicate_descriptor = format!("{COPY}\n{}\n", &COPY[start..end]);
+        assert_eq!(
+            parse_kernel(&duplicate_descriptor, "copy").unwrap_err(),
+            "multiple .amdhsa_kernel blocks for kernel \"copy\""
+        );
+    }
+
+    #[test]
+    fn unrelated_function_and_descriptor_names_do_not_make_selection_ambiguous() {
+        let source = format!(
+            "{COPY}\n.text\ncopy_extra:\ns_endpgm\n.section .rodata\n.amdhsa_kernel copy_extra\n.amdhsa_kernarg_size 0\n.end_amdhsa_kernel\n"
+        );
+        assert_eq!(parse_kernel(&source, "copy").unwrap().instructions.len(), 7);
+        assert_eq!(
+            parse_kernel(&source, "copy_extra")
+                .unwrap()
+                .instructions
+                .len(),
+            1
+        );
     }
 
     #[test]
