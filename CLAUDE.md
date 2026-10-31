@@ -385,6 +385,8 @@ operands and duplicate settings.
 `lower_kernel(&kernel)` validates supported gfx950 instruction forms and preserves
 physical register identities, explicit waits, and launch metadata. Unsupported
 targets, instructions, or operand forms produce `LowerError`.
+Kernel selection rejects repeated matching entry labels or descriptor blocks;
+distinct kernel names remain selectable.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
 The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
 to initial registers. It accepts full waves in 1D, 2D, and 3D workgroups, matching
