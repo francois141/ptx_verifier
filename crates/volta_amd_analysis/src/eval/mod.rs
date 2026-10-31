@@ -9,7 +9,7 @@ mod tests;
 mod wave;
 
 pub use crate::error::EvalError;
-pub use global::InputArray;
+pub use global::{ArrayDef, ArrayKind};
 pub(crate) use interp::Interpreter;
 pub use interp::Terminal;
 pub use launch::WorkgroupLaunch;

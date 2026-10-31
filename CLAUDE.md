@@ -391,6 +391,9 @@ and rejects unsupported launch layouts. `execute_scalar` handles wave-wide argum
 loads and zero LGKM waits for XNACK-disabled execution. `KernargBuffer` holds read-only
 argument bytes; pending scalar destinations reject reads and writes until the wait.
 `execute_lane` evaluates an instruction for a caller-selected active lane.
+`ArrayDef` marks each global-memory array `Input` or `Output`; inputs are read-only
+and outputs cannot be loaded. `analyze` returns a completed run's written output
+elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`.
 See the crate README for ISA references, test commands, and fixture regeneration.
 

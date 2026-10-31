@@ -6,7 +6,7 @@ use volta_expr::{ExprArena, ExprNode};
 
 use crate::ir::{LoweredInstr, Sgpr, Vgpr};
 
-use super::global::GlobalMemory;
+use super::global::{ArrayDef, ArrayKind, GlobalMemory};
 use super::scalar::KernargBuffer;
 use super::wave::{WaveId, WaveRegisters, WaveState};
 use super::{EvalError, Interpreter};
@@ -241,4 +241,67 @@ fn rejects_uninitialized_shift_sources_and_unsupported_instructions() {
         Ok(original)
     );
     assert_eq!(interp.arena.node_count(), node_count);
+}
+
+// Test that a store rejects unfinished loads and invalid destinations, and records
+// only the element written successfully.
+#[test]
+fn stores_ready_values_within_output_bounds() {
+    // Put a one-element output at s[0:1] + v0, and give v1 a load that has not finished.
+    let mut interp = interpreter();
+    let output = ArrayDef {
+        name: "out".into(),
+        base: 0x2000,
+        len: 1,
+        kind: ArrayKind::Output,
+    };
+    interp.global = GlobalMemory::new(&[output], &interp.kernarg, &mut interp.arena).unwrap();
+    let value = interp.arena.symbol();
+    let registers = &mut interp.waves[WAVE].registers;
+    registers.write_sgpr(Sgpr(0), interp.arena.int(0x2000)).unwrap();
+    registers.write_sgpr(Sgpr(1), interp.arena.int(0)).unwrap();
+    registers.write_vgpr(0, Vgpr(0), interp.arena.int(0)).unwrap();
+    registers.start_vector_load(0, Vgpr(1), value).unwrap();
+    let store = LoweredInstr::GlobalStoreDword {
+        vaddr: Vgpr(0),
+        src: Vgpr(1),
+        saddr: [Sgpr(0), Sgpr(1)],
+    };
+
+    // The load must finish before the store can consume its value.
+    assert_eq!(
+        interp.execute_lane(WAVE, 0, &store),
+        Err(EvalError::PendingVgpr {
+            lane: 0,
+            reg: Vgpr(1),
+        })
+    );
+    interp
+        .execute_scalar(
+            WAVE,
+            &LoweredInstr::WaitCnt {
+                vmcnt: Some(0),
+                lgkmcnt: None,
+            },
+        )
+        .unwrap();
+    interp.execute_lane(WAVE, 0, &store).unwrap();
+
+    // An unaligned offset and the next element both lie outside the one-element output.
+    for offset in [1, 4] {
+        interp.waves[WAVE]
+            .registers
+            .write_vgpr(0, Vgpr(0), interp.arena.int(offset))
+            .unwrap();
+        assert_eq!(
+            interp.execute_lane(WAVE, 0, &store),
+            Err(EvalError::GlobalWrite {
+                address: 0x2000 + offset as u64,
+            })
+        );
+    }
+
+    // Only the successful store appears, as element 0 of the output array.
+    let outputs = interp.into_outputs();
+    assert_eq!(outputs.outputs, vec![("out".into(), vec![(0, value)])]);
 }

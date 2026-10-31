@@ -17,6 +17,7 @@ pub enum EvalError {
     AddressOverflow,
     KernargRead { address: u64 },
     GlobalRead { address: u64 },
+    GlobalWrite { address: u64 },
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
@@ -54,7 +55,7 @@ impl fmt::Display for EvalError {
                     reg.0
                 )
             }
-            Self::AddressOverflow => write!(f, "load address overflows 64 bits"),
+            Self::AddressOverflow => write!(f, "memory address overflows 64 bits"),
             Self::KernargRead { address } => {
                 write!(
                     f,
@@ -65,6 +66,12 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "4-byte read at {address:#x} is not an element of an input array"
+                )
+            }
+            Self::GlobalWrite { address } => {
+                write!(
+                    f,
+                    "4-byte write at {address:#x} is not an element of an output array"
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),

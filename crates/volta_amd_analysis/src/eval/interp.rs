@@ -2,15 +2,15 @@
 //! instructions in one lane of a wave.
 
 use id_collections::IdVec;
-use volta_expr::ExprArena;
+use volta_expr::{ExprArena, SymbolicOutputs};
 
-use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
+use crate::ir::{InstrId, LoweredInstr, LoweredKernel, Sgpr, Vgpr};
 
 use super::EvalError;
-use super::global::{GlobalMemory, InputArray};
+use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::scalar::KernargBuffer;
-use super::wave::{Status, WaveId, WaveState};
+use super::wave::{Status, WaveId, WaveRegisters, WaveState};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`.
@@ -36,12 +36,12 @@ pub enum Terminal {
 
 impl<'a> Interpreter<'a> {
     /// Launch workgroup 0 with `kernarg` as the argument buffer at `launch.kernarg_address`
-    /// and `inputs` in global memory.
+    /// and `arrays` in global memory.
     pub(crate) fn new(
         kernel: &LoweredKernel,
         launch: &WorkgroupLaunch,
         kernarg: &'a [u8],
-        inputs: &[InputArray],
+        arrays: &[ArrayDef],
     ) -> Result<Self, EvalError> {
         let mut arena = ExprArena::new();
         let waves = initialize_waves(kernel, launch, &mut arena)?;
@@ -49,7 +49,7 @@ impl<'a> Interpreter<'a> {
             address: launch.kernarg_address,
             bytes: kernarg,
         };
-        let global = GlobalMemory::new(inputs, &kernarg, &mut arena)?;
+        let global = GlobalMemory::new(arrays, &kernarg, &mut arena)?;
         Ok(Self {
             arena,
             kernarg,
@@ -134,22 +134,42 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::GlobalLoadDword { dst, vaddr, saddr } => {
-                // An SGPR-pair base plus a 32-bit VGPR offset (CDNA4 §10.4), zero-extended as in
-                // LLVM 21.1.8's `SelectGlobalSAddr`.
-                let base = registers.read_address(&self.arena, *saddr)?;
-                let offset = registers.read_vgpr(lane, *vaddr)?;
-                let offset = self
-                    .arena
-                    .as_int_const(offset)
-                    .and_then(|offset| u32::try_from(offset).ok())
-                    .ok_or(EvalError::InvalidAddressVgpr { lane, reg: *vaddr })?;
-                let address = base
-                    .checked_add(u64::from(offset))
-                    .ok_or(EvalError::AddressOverflow)?;
+                let address = global_address(registers, &self.arena, lane, *vaddr, *saddr)?;
                 let value = self.global.load_dword(address, &mut self.arena)?;
                 registers.start_vector_load(lane, *dst, value)
+            }
+            LoweredInstr::GlobalStoreDword { vaddr, src, saddr } => {
+                let address = global_address(registers, &self.arena, lane, *vaddr, *saddr)?;
+                let value = registers.read_vgpr(lane, *src)?;
+                self.global.store_dword(address, value)
             }
             _ => Err(EvalError::UnsupportedInstruction),
         }
     }
+
+    /// The written output elements, together with the arena that holds their expressions.
+    pub(crate) fn into_outputs(self) -> SymbolicOutputs {
+        self.global.into_outputs(self.arena)
+    }
+}
+
+/// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
+/// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`.
+fn global_address(
+    registers: &WaveRegisters,
+    arena: &ExprArena,
+    lane: usize,
+    vaddr: Vgpr,
+    saddr: [Sgpr; 2],
+) -> Result<u64, EvalError> {
+    let base = registers.read_address(arena, saddr)?;
+    let offset = registers.read_vgpr(lane, vaddr)?;
+    let offset = arena
+        .as_int_const(offset)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or(EvalError::InvalidAddressVgpr { lane, reg: vaddr })?;
+    let address = base
+        .checked_add(u64::from(offset))
+        .ok_or(EvalError::AddressOverflow)?;
+    Ok(address)
 }

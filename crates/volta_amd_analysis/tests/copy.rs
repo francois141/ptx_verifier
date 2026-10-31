@@ -2,7 +2,8 @@
 //! parsing or launch.
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{InputArray, Terminal, WorkgroupLaunch, analyze};
+use volta_amd_analysis::{ArrayDef, ArrayKind, Terminal, WorkgroupLaunch, analyze};
+use volta_expr::SymbolicOutputs;
 
 const KERNARG_ADDRESS: u64 = 0x1000;
 const IN: u64 = 0x10000;
@@ -25,19 +26,25 @@ fn prints_the_copy_kernel_run() {
         kernarg_address: KERNARG_ADDRESS,
         workgroup_size: (64, 1, 1),
     };
-    let input = InputArray {
+    let input = ArrayDef {
         name: "in".into(),
         base: IN,
         len: LEN,
+        kind: ArrayKind::Input,
+    };
+    let output = ArrayDef {
+        name: "out".into(),
+        base: OUT,
+        len: LEN,
+        kind: ArrayKind::Output,
     };
     print_input_buffer(&input);
-    println!(
-        "output buffer: {LEN} words at {OUT:#x}, not an input array; the analysis records no \
-         global stores, so it holds no contents for it"
-    );
-    match analyze(&parsed, &launch, &kernarg, &[input]) {
+    match analyze(&parsed, &launch, &kernarg, &[input, output]) {
         Ok(result) => match result.terminal {
-            Terminal::Completed => println!("{}: completed", parsed.name),
+            Terminal::Completed => {
+                println!("{}: completed", parsed.name);
+                print_outputs(&result.symbolic_outputs.unwrap());
+            }
             Terminal::Aborted { wave, pc, error } => println!(
                 "{}: wave {} aborted at instruction {} ({}): {error}",
                 parsed.name, wave.0, pc.0, parsed.instructions[pc.0 as usize].opcode
@@ -48,7 +55,7 @@ fn prints_the_copy_kernel_run() {
 }
 
 // Each word of an input array holds the symbol of its element, one row of words per line.
-fn print_input_buffer(array: &InputArray) {
+fn print_input_buffer(array: &ArrayDef) {
     println!(
         "input buffer {:?}: {} words at {:#x}",
         array.name, array.len, array.base
@@ -58,5 +65,14 @@ fn print_input_buffer(array: &InputArray) {
             .map(|index| format!("{}[{index}]", array.name))
             .collect();
         println!("  {:#x}: {}", array.base + 4 * row, words.join(" "));
+    }
+}
+
+// Each written output element and the expression stored in it, one element per line.
+fn print_outputs(outputs: &SymbolicOutputs) {
+    for (name, elements) in &outputs.outputs {
+        for &(index, value) in elements {
+            println!("  {name}[{index}] = {}", outputs.arena.display_expr(value));
+        }
     }
 }

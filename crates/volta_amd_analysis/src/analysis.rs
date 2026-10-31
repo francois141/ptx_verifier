@@ -2,7 +2,9 @@
 
 use std::fmt;
 
-use crate::eval::{EvalError, InputArray, Interpreter, Terminal, WorkgroupLaunch};
+use volta_expr::SymbolicOutputs;
+
+use crate::eval::{ArrayDef, EvalError, Interpreter, Terminal, WorkgroupLaunch};
 use crate::frontend::ast::Kernel;
 use crate::lower::{LowerError, lower_kernel};
 
@@ -40,19 +42,24 @@ impl From<EvalError> for AnalysisError {
 #[derive(Debug)]
 pub struct AnalysisResult {
     pub terminal: Terminal,
+    /// Written output values; absent if execution aborted.
+    pub symbolic_outputs: Option<SymbolicOutputs>,
 }
 
 /// Lower `kernel` and run workgroup 0 under `launch`, with `kernarg` as the argument buffer at
-/// `launch.kernarg_address` and `inputs` in global memory.
+/// `launch.kernarg_address` and `arrays` in global memory.
 pub fn analyze(
     kernel: &Kernel,
     launch: &WorkgroupLaunch,
     kernarg: &[u8],
-    inputs: &[InputArray],
+    arrays: &[ArrayDef],
 ) -> Result<AnalysisResult, AnalysisError> {
     let lowered = lower_kernel(kernel)?;
-    let mut interp = Interpreter::new(&lowered, launch, kernarg, inputs)?;
+    let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays)?;
+    let terminal = interp.run(&lowered);
+    let symbolic_outputs = (terminal == Terminal::Completed).then(|| interp.into_outputs());
     Ok(AnalysisResult {
-        terminal: interp.run(&lowered),
+        terminal,
+        symbolic_outputs,
     })
 }

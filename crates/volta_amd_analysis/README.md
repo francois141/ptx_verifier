@@ -21,6 +21,11 @@ with X advancing first, then Y, then Z, following
 [AMD's execution model](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html#hierarchical-thread-model).
 Unsupported instructions and launch layouts return `EvalError`.
 
+`ArrayDef` marks each global-memory array `Input` or `Output`. Global stores write
+output elements, which the kernel cannot load. On completion,
+`AnalysisResult.symbolic_outputs` holds the output elements that execution wrote; an
+aborted run has none.
+
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
 (§6.2, §12.6, §12.7); scalar addressing and completion follow §8.2–8.3. Operand checks
 also follow LLVM 21.1.8's
@@ -30,7 +35,7 @@ and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/ll
 ## Tests
 
 Unit tests cover instruction lowering and execution, launch-register placement,
-work-item coordinate packing, and scalar load dependencies. Launch and scalar-load
+work-item coordinate packing, scalar load dependencies, and global stores. Launch and scalar-load
 tests also use a compiled fixture after parsing and lowering. Run the unit tests:
 
 ```sh
