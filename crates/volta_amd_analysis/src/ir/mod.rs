@@ -37,6 +37,11 @@ pub enum LoweredInstr {
         src: Vgpr,
         shift: u32,
     },
+    AddF32 {
+        dst: Vgpr,
+        src0: Vgpr,
+        src1: Vgpr,
+    },
     GlobalLoadDword {
         dst: Vgpr,
         vaddr: Vgpr,

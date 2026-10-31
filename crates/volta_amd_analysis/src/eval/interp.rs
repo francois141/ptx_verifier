@@ -4,13 +4,13 @@
 use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
-use crate::ir::{InstrId, LoweredInstr, LoweredKernel, Sgpr, Vgpr};
+use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
 
 use super::EvalError;
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::scalar::KernargBuffer;
-use super::wave::{Status, WaveId, WaveRegisters, WaveState};
+use super::wave::{Status, WaveId, WaveState};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`.
@@ -94,6 +94,7 @@ impl<'a> Interpreter<'a> {
             }
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::Shl32 { .. }
+            | LoweredInstr::AddF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
             | LoweredInstr::GlobalStoreDword { .. } => {
                 for lane in 0..64 {
@@ -133,13 +134,19 @@ impl<'a> Interpreter<'a> {
                 };
                 registers.write_vgpr(lane, *dst, result)
             }
+            LoweredInstr::AddF32 { dst, src0, src1 } => {
+                let a = registers.read_f32(&mut self.arena, lane, *src0)?;
+                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
+                let sum = self.arena.add(a, b);
+                registers.write_vgpr(lane, *dst, sum)
+            }
             LoweredInstr::GlobalLoadDword { dst, vaddr, saddr } => {
-                let address = global_address(registers, &self.arena, lane, *vaddr, *saddr)?;
+                let address = registers.global_address(&self.arena, lane, *vaddr, *saddr)?;
                 let value = self.global.load_dword(address, &mut self.arena)?;
                 registers.start_vector_load(lane, *dst, value)
             }
             LoweredInstr::GlobalStoreDword { vaddr, src, saddr } => {
-                let address = global_address(registers, &self.arena, lane, *vaddr, *saddr)?;
+                let address = registers.global_address(&self.arena, lane, *vaddr, *saddr)?;
                 let value = registers.read_vgpr(lane, *src)?;
                 self.global.store_dword(address, value)
             }
@@ -151,25 +158,4 @@ impl<'a> Interpreter<'a> {
     pub(crate) fn into_outputs(self) -> SymbolicOutputs {
         self.global.into_outputs(self.arena)
     }
-}
-
-/// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
-/// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`.
-fn global_address(
-    registers: &WaveRegisters,
-    arena: &ExprArena,
-    lane: usize,
-    vaddr: Vgpr,
-    saddr: [Sgpr; 2],
-) -> Result<u64, EvalError> {
-    let base = registers.read_address(arena, saddr)?;
-    let offset = registers.read_vgpr(lane, vaddr)?;
-    let offset = arena
-        .as_int_const(offset)
-        .and_then(|offset| u32::try_from(offset).ok())
-        .ok_or(EvalError::InvalidAddressVgpr { lane, reg: vaddr })?;
-    let address = base
-        .checked_add(u64::from(offset))
-        .ok_or(EvalError::AddressOverflow)?;
-    Ok(address)
 }

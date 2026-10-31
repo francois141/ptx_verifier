@@ -14,6 +14,7 @@ pub enum EvalError {
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
     InvalidAddressVgpr { lane: usize, reg: Vgpr },
+    InvalidFloatVgpr { lane: usize, reg: Vgpr },
     AddressOverflow,
     KernargRead { address: u64 },
     GlobalRead { address: u64 },
@@ -52,6 +53,13 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "address register v{} in lane {lane} must contain a concrete 32-bit word",
+                    reg.0
+                )
+            }
+            Self::InvalidFloatVgpr { lane, reg } => {
+                write!(
+                    f,
+                    "f32 operand v{} in lane {lane} must not be a NaN or wider than 32 bits",
                     reg.0
                 )
             }

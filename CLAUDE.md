@@ -395,6 +395,11 @@ argument bytes; pending scalar destinations reject reads and writes until the wa
 and outputs cannot be loaded. `analyze` returns a completed run's written output
 elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`.
+Tests are end-to-end only: each `tests/<name>.rs` runs the assembly fixture
+`tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compares
+its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
+Do not add any other test (no unit tests, no `tests.rs` modules): cover new behavior
+with such a fixture comparison instead.
 See the crate README for ISA references, test commands, and fixture regeneration.
 
 ## Crate: volta_graph_check

@@ -138,6 +138,45 @@ impl WaveRegisters {
         }
     }
 
+    /// `lane`'s `reg` as an f32 operand: a concrete word is the float its bits encode, and a
+    /// symbolic value is a real, as floats are exact reals in Volta.
+    pub fn read_f32(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        reg: Vgpr,
+    ) -> Result<ExprId, EvalError> {
+        let value = self.read_vgpr(lane, reg)?;
+        let Some(word) = arena.as_int_const(value) else {
+            return Ok(value);
+        };
+        u32::try_from(word)
+            .ok()
+            .and_then(|bits| arena.float_from_f64(f64::from(f32::from_bits(bits))).ok())
+            .ok_or(EvalError::InvalidFloatVgpr { lane, reg })
+    }
+
+    /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
+    /// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`.
+    pub fn global_address(
+        &self,
+        arena: &ExprArena,
+        lane: usize,
+        vaddr: Vgpr,
+        saddr: [Sgpr; 2],
+    ) -> Result<u64, EvalError> {
+        let base = self.read_address(arena, saddr)?;
+        let offset = self.read_vgpr(lane, vaddr)?;
+        let offset = arena
+            .as_int_const(offset)
+            .and_then(|offset| u32::try_from(offset).ok())
+            .ok_or(EvalError::InvalidAddressVgpr { lane, reg: vaddr })?;
+        let address = base
+            .checked_add(u64::from(offset))
+            .ok_or(EvalError::AddressOverflow)?;
+        Ok(address)
+    }
+
     /// Write a vector register in one lane unless the lane is invalid or a load is still writing
     /// to the register.
     pub fn write_vgpr(&mut self, lane: usize, reg: Vgpr, value: ExprId) -> Result<(), EvalError> {

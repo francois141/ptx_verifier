@@ -80,6 +80,12 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src: vgpr(src).ok_or("expected one source VGPR")?,
             shift: immediate(shift, u32::MAX).ok_or("expected a 32-bit immediate shift input")?,
         }),
+        // VOP2 also accepts an SGPR or a constant as src0; only VGPR sources are supported.
+        ("v_add_f32_e32", [dst, src0, src1]) => Ok(AddF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        }),
         ("global_load_dword", [dst, vaddr, saddr]) => Ok(GlobalLoadDword {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
@@ -93,8 +99,8 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_endpgm", []) => Ok(EndPgm),
         (
-            "s_load_dwordx4" | "v_lshlrev_b32_e32" | "global_load_dword" | "global_store_dword"
-            | "s_endpgm",
+            "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_add_f32_e32" | "global_load_dword"
+            | "global_store_dword" | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
