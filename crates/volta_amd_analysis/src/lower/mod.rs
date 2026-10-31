@@ -1,8 +1,5 @@
 //! Lowering parsed AMD assembly into typed instructions for symbolic execution.
 
-#[cfg(test)]
-mod tests;
-
 use std::fmt;
 
 use id_collections::IdVec;

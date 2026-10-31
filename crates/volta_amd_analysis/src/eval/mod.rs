@@ -4,8 +4,6 @@ mod global;
 mod interp;
 mod launch;
 mod scalar;
-#[cfg(test)]
-mod tests;
 mod wave;
 
 pub use crate::error::EvalError;

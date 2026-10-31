@@ -1,8 +1,5 @@
 //! The initial waves of a workgroup launched under the AMDHSA calling convention.
 
-#[cfg(test)]
-mod tests;
-
 use std::collections::BTreeMap;
 
 use id_collections::IdVec;

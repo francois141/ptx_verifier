@@ -1,8 +1,5 @@
 //! Scalar memory instructions and waits for a wave, as another `impl Interpreter`.
 
-#[cfg(test)]
-mod tests;
-
 use crate::ir::LoweredInstr;
 
 use super::wave::WaveId;
