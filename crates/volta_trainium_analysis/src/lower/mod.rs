@@ -88,9 +88,7 @@ fn lower_instruction(
                 scope.shaped(data2, "data2")?,
             ];
             for tile in [&dst, &lhs, &rhs] {
-                if tile.memory == Memory::Hbm {
-                    return Err(StatementError::OffChip(tile.name.clone()));
-                }
+                tile_extents(tile)?;
             }
             same_shape(&lhs, &rhs)?;
             same_shape(&dst, &lhs)?;
@@ -102,18 +100,41 @@ fn lower_instruction(
             })
         }
 
+        "tensor_copy" => {
+            let [dst, src] = operands(instruction, &["dst", "src"])?;
+            let [dst, src] = [scope.shaped(dst, "dst")?, scope.shaped(src, "src")?];
+            for tile in [&dst, &src] {
+                tile_extents(tile)?;
+            }
+            same_shape(&dst, &src)?;
+            Ok(LoweredInstr::Mov {
+                dst: dst.id,
+                src: src.id,
+            })
+        }
+
         "activation" => {
             let [dst, op, data] = operands(instruction, &["dst", "op", "data"])?;
             let func = activation_func(op)?;
             let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
             for tile in [&dst, &data] {
-                if tile.memory == Memory::Hbm {
-                    return Err(StatementError::OffChip(tile.name.clone()));
-                }
+                tile_extents(tile)?;
             }
             same_shape(&dst, &data)?;
             Ok(LoweredInstr::Activation {
                 func,
+                dst: dst.id,
+                data: data.id,
+            })
+        }
+
+        "nc_transpose" => {
+            let [dst, data] = operands(instruction, &["dst", "data"])?;
+            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
+            tile_extents(&dst)?;
+            let [partitions, free] = tile_extents(&data)?;
+            result_shape(&dst, Shape(vec![free, partitions]))?;
+            Ok(LoweredInstr::Transpose {
                 dst: dst.id,
                 data: data.id,
             })
@@ -162,6 +183,26 @@ fn activation_func(operand: &Operand) -> Result<ActivationFunc, StatementError> 
         .into_iter()
         .find(|func| Some(func.name()) == name)
         .ok_or_else(|| StatementError::UnsupportedActivation(operand.clone()))
+}
+
+/// `operand`'s `[partitions, free]` extents; every SBUF and PSUM tensor is a two-dimensional tile.
+fn tile_extents(operand: &Shaped) -> Result<[u64; 2], StatementError> {
+    match (operand.memory, &operand.shape.0[..]) {
+        (Memory::Sbuf | Memory::Psum, &[partitions, free]) => Ok([partitions, free]),
+        _ => Err(StatementError::OffChip(operand.name.clone())),
+    }
+}
+
+/// Check that `dst` has the shape `expected` of the instruction's result.
+fn result_shape(dst: &Shaped, expected: Shape) -> Result<(), StatementError> {
+    if *dst.shape == expected {
+        return Ok(());
+    }
+    Err(StatementError::ResultShape {
+        tensor: dst.name.clone(),
+        shape: dst.shape.clone(),
+        expected,
+    })
 }
 
 fn same_shape(left: &Shaped, right: &Shaped) -> Result<(), StatementError> {

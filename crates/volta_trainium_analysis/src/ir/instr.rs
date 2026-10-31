@@ -25,4 +25,6 @@ pub enum LoweredInstr {
         dst: TensorId,
         data: TensorId,
     },
+    /// `dst[f, p] = data[p, f]` over on-chip tiles.
+    Transpose { dst: TensorId, data: TensorId },
 }

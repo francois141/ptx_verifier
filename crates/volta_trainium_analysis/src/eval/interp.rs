@@ -1,5 +1,5 @@
-//! The interpreter: a lowered kernel's instructions in order, each elementwise over
-//! the indices of its operands' one shape, with values as expressions of an `ExprArena`.
+//! The interpreter: a lowered kernel's instructions in order, each over the indices
+//! of its operands, with values as expressions of an `ExprArena`.
 //! Arguments are laid out row-major in HBM, so their symbols and outputs use offsets.
 
 use id_collections::IdVec;
@@ -39,7 +39,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Lowering gives an instruction's operands one shape, so `dst`'s indices index them all.
+    /// An elementwise instruction's operands have one shape, so `dst`'s indices index them all.
     fn step(&mut self, instr: InstrId, instruction: &LoweredInstr) -> Result<(), EvalError> {
         match *instruction {
             LoweredInstr::Mov { dst, src } => {
@@ -62,6 +62,17 @@ impl<'a> Interpreter<'a> {
                 for index in self.tensors[dst].indices(instr)? {
                     let x = self.tensors[data].read(&mut self.arena, instr, &index)?;
                     let value = self.activation(func, x);
+                    self.tensors[dst].write(index, value);
+                }
+            }
+            LoweredInstr::Transpose { dst, data } => {
+                // Every element is read before any is written: `dst` may be `data` itself.
+                let mut values = Vec::new();
+                for index in self.tensors[data].indices(instr)? {
+                    let value = self.tensors[data].read(&mut self.arena, instr, &index)?;
+                    values.push((index.transposed(), value));
+                }
+                for (index, value) in values {
                     self.tensors[dst].write(index, value);
                 }
             }

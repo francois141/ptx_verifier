@@ -1,0 +1,10 @@
+kernel kernel(a, out)
+  assert a.shape == [2, 3]
+  assert out.shape == [3, 2]
+  x: sbuf[2, 3] of a.dtype
+  t: psum[3, 2] of a.dtype
+  y: sbuf[3, 2] of a.dtype
+  dma_copy(dst=x, src=a)
+  nc_transpose(data=x, dst=t)
+  tensor_copy(dst=y, src=t)
+  dma_copy(dst=out, src=y)

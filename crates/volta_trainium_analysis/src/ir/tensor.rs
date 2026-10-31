@@ -82,6 +82,14 @@ impl Shape {
     }
 }
 
+impl Index {
+    /// The index with its coordinates reversed: a tile's `[partition, free]` becomes
+    /// `[free, partition]`.
+    pub fn transposed(&self) -> Index {
+        Index(self.0.iter().rev().copied().collect())
+    }
+}
+
 impl fmt::Display for Shape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_list(f, &self.0)

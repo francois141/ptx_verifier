@@ -1,0 +1,10 @@
+kernel kernel(a, out)
+  a: hbm[2, 3]
+  out: hbm[3, 2]
+  x: sbuf[2, 3]
+  t: psum[3, 2]
+  y: sbuf[3, 2]
+  x = mov(a)
+  t = transpose(x)
+  y = mov(t)
+  out = mov(y)

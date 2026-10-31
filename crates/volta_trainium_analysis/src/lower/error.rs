@@ -39,6 +39,13 @@ pub enum StatementError {
     /// Two operands that must have one shape.
     ShapeMismatch([(TensorName, Shape); 2]),
 
+    /// A destination whose shape is not the instruction's result's.
+    ResultShape {
+        tensor: TensorName,
+        shape: Shape,
+        expected: Shape,
+    },
+
     // =========================================================================
     // Instruction Errors
     // =========================================================================
@@ -93,6 +100,14 @@ impl fmt::Display for StatementError {
             Self::ShapeMismatch([(left, left_shape), (right, right_shape)]) => write!(
                 f,
                 "`{left}` has shape {left_shape} but `{right}` has shape {right_shape}"
+            ),
+            Self::ResultShape {
+                tensor,
+                shape,
+                expected,
+            } => write!(
+                f,
+                "`{tensor}` has shape {shape}, not the result's {expected}"
             ),
             Self::UnsupportedInstruction(opcode) => {
                 write!(f, "unsupported instruction `nki.isa.{opcode}`")
