@@ -1,0 +1,6 @@
+[package]
+name = "volta_trainium_analysis"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

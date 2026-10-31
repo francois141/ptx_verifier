@@ -30,6 +30,7 @@ crates/
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
 ├── volta_ptx_analysis/ # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
 ├── volta_amd_analysis/ # AMD kernel analysis
+├── volta_trainium_analysis/ # Trainium (NKI) kernel analysis
 ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN; every end-to-end PTX test
 ├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
@@ -48,6 +49,7 @@ volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
 volta_amd_analysis → volta_expr
+volta_trainium_analysis → (nothing)
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -401,6 +403,16 @@ its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites 
 Do not add any other test (no unit tests, no `tests.rs` modules): cover new behavior
 with such a fixture comparison instead.
 See the crate README for ISA references, test commands, and fixture regeneration.
+
+## Crate: volta_trainium_analysis
+
+**Path**: `crates/volta_trainium_analysis/`
+
+AWS Trainium kernel analysis. Its input is an NKI kernel (a `@nki.jit` Python
+function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
+parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
+(`eval`). `tests/fixtures/add.py` adds two 128 x 128 HBM tensors through SBUF
+tiles (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
 
 ## Crate: volta_graph_check
 
