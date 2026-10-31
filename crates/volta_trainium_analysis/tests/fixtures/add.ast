@@ -1,0 +1,11 @@
+kernel kernel(a, b, out)
+  assert a.shape == [128, 128]
+  assert b.shape == [128, 128]
+  assert out.shape == [128, 128]
+  x: sbuf[128, 128] of a.dtype
+  y: sbuf[128, 128] of b.dtype
+  z: sbuf[128, 128] of a.dtype
+  dma_copy(dst=x, src=a)
+  dma_copy(dst=y, src=b)
+  tensor_tensor(data1=x, data2=y, dst=z, op=nki.language.add)
+  dma_copy(dst=out, src=z)
