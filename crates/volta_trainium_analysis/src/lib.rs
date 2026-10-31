@@ -6,3 +6,6 @@ pub mod frontend;
 mod eval;
 mod ir;
 mod lower;
+
+pub use ir::{ArithOp, InstrId, LoweredInstr, LoweredKernel, Memory, Shape, Tensor, TensorId};
+pub use lower::{LowerError, StatementError, lower_kernel};

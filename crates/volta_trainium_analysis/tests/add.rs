@@ -1,8 +1,9 @@
-//! The add fixture's parsed kernel, compared with `fixtures/add.ast`.
+//! The add fixture's parsed and lowered kernels, compared with `fixtures/add.ast`
+//! and `fixtures/add.ir`.
 
 mod common;
 
 #[test]
-fn the_add_kernel_parses_into_its_expected_ast() {
-    common::check_parse("add", "kernel");
+fn the_add_kernel_parses_and_lowers_into_its_expected_ast_and_ir() {
+    common::check("add", "kernel");
 }

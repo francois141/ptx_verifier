@@ -1,41 +1,47 @@
-//! A fixture's parse, checked against its expected kernel: `tests/fixtures/<name>.ast`
-//! beside `<name>.py`, the parsed kernel as its `Display` renders it.
-//! `VOLTA_BLESS=1` rewrites the file instead.
+//! A fixture's kernel, checked against its expected renderings beside
+//! `tests/fixtures/<name>.py`: `<name>.ast` the parsed kernel and `<name>.ir`
+//! the lowered one, each as its `Display` renders it. `VOLTA_BLESS=1` rewrites them.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use volta_trainium_analysis::frontend::parse::parse_kernel;
+use volta_trainium_analysis::lower_kernel;
 
-/// Parse kernel `kernel` of `tests/fixtures/<name>.py` and compare it with `<name>.ast`.
-pub fn check_parse(name: &str, kernel: &str) {
+/// Parse kernel `kernel` of `tests/fixtures/<name>.py`, compare it with `<name>.ast`,
+/// then lower it and compare the result with `<name>.ir`.
+pub fn check(name: &str, kernel: &str) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
     let source = std::fs::read_to_string(fixture.with_extension("py")).unwrap();
-    let actual = parse_kernel(&source, kernel)
-        .unwrap_or_else(|e| panic!("{name}: {e}"))
-        .to_string();
 
+    let parsed = parse_kernel(&source, kernel).unwrap_or_else(|e| panic!("{name}: {e}"));
+    compare(fixture.with_extension("ast"), parsed.to_string());
+
+    let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
+    compare(fixture.with_extension("ir"), lowered.to_string());
+}
+
+fn compare(expected_path: PathBuf, actual: String) {
     print!("{actual}");
 
-    let ast_path = fixture.with_extension("ast");
     if std::env::var_os("VOLTA_BLESS").is_some_and(|v| v == "1") {
-        std::fs::write(&ast_path, &actual)
-            .unwrap_or_else(|e| panic!("write {}: {e}", ast_path.display()));
+        std::fs::write(&expected_path, &actual)
+            .unwrap_or_else(|e| panic!("write {}: {e}", expected_path.display()));
         return;
     }
 
-    let expected = std::fs::read_to_string(&ast_path).unwrap_or_else(|e| {
+    let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|e| {
         panic!(
             "read {}: {e} (rerun with VOLTA_BLESS=1 to create it)",
-            ast_path.display()
+            expected_path.display()
         )
     });
 
     assert!(
         actual == expected,
-        "parsed kernel differs from {} (rerun with VOLTA_BLESS=1 to accept)\n\
+        "kernel differs from {} (rerun with VOLTA_BLESS=1 to accept)\n\
          --- expected\n{expected}--- actual\n{actual}",
-        ast_path.display()
+        expected_path.display()
     );
 }

@@ -783,6 +783,9 @@ dependencies = [
 [[package]]
 name = "volta_trainium_analysis"
 version = "0.1.0"
+dependencies = [
+ "id_collections",
+]
 
 [[package]]
 name = "volta_viz"
