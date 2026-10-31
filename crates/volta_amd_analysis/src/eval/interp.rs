@@ -1,14 +1,15 @@
-//! The interpreter of workgroup 0 and its execution of vector instructions in one lane of a wave.
+//! The interpreter of workgroup 0: its run over every wave, and its execution of vector
+//! instructions in one lane of a wave.
 
 use id_collections::IdVec;
 use volta_expr::ExprArena;
 
-use crate::ir::{LoweredInstr, LoweredKernel};
+use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
 
 use super::EvalError;
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::scalar::KernargBuffer;
-use super::wave::{WaveId, WaveState};
+use super::wave::{Status, WaveId, WaveState};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`.
@@ -16,6 +17,19 @@ pub(crate) struct Interpreter<'a> {
     pub(super) arena: ExprArena,
     pub(super) kernarg: KernargBuffer<'a>,
     pub(super) waves: IdVec<WaveId, WaveState>,
+}
+
+/// How the execution of workgroup 0 ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Terminal {
+    /// Every wave executed `s_endpgm`.
+    Completed,
+    /// `wave` could not execute the instruction at `pc`, which ended the run.
+    Aborted {
+        wave: WaveId,
+        pc: InstrId,
+        error: EvalError,
+    },
 }
 
 impl<'a> Interpreter<'a> {
@@ -35,6 +49,53 @@ impl<'a> Interpreter<'a> {
             },
             waves,
         })
+    }
+
+    /// Run each ready wave until it exits, stopping at the first instruction a wave cannot
+    /// execute. `kernel` must be the kernel `new` launched.
+    pub(crate) fn run(&mut self, kernel: &LoweredKernel) -> Terminal {
+        while let Some(wave) = self.next_ready() {
+            let pc = self.waves[wave].pc;
+            if let Err(error) = self.step(wave, kernel) {
+                return Terminal::Aborted { wave, pc, error };
+            }
+        }
+        Terminal::Completed
+    }
+
+    fn next_ready(&self) -> Option<WaveId> {
+        self.waves
+            .iter()
+            .find(|(_, state)| state.status == Status::Ready)
+            .map(|(wave, _)| wave)
+    }
+
+    /// Execute the instruction at `wave`'s pc and move past it.
+    fn step(&mut self, wave: WaveId, kernel: &LoweredKernel) -> Result<(), EvalError> {
+        let pc = self.waves[wave].pc;
+        let instruction = kernel
+            .instructions
+            .get(pc)
+            .ok_or(EvalError::MissingEndPgm)?;
+        match instruction {
+            LoweredInstr::EndPgm => {
+                self.waves[wave].status = Status::Exited;
+                return Ok(());
+            }
+            LoweredInstr::ScalarLoadDwordx4 { .. } | LoweredInstr::WaitCnt { .. } => {
+                self.execute_scalar(wave, instruction)?;
+            }
+            // EXEC holds every lane: launches are full waves and no supported instruction writes it.
+            LoweredInstr::Shl32 { .. }
+            | LoweredInstr::GlobalLoadDword { .. }
+            | LoweredInstr::GlobalStoreDword { .. } => {
+                for lane in 0..64 {
+                    self.execute_lane(wave, lane, instruction)?;
+                }
+            }
+        }
+        self.waves[wave].pc = InstrId(pc.0 + 1);
+        Ok(())
     }
 
     /// Execute one instruction for an active lane of `wave` selected by the caller.

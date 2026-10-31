@@ -7,5 +7,8 @@ mod scalar;
 mod tests;
 mod wave;
 
-pub(crate) use crate::error::EvalError;
+pub use crate::error::EvalError;
 pub(crate) use interp::Interpreter;
+pub use interp::Terminal;
+pub use launch::WorkgroupLaunch;
+pub use wave::WaveId;

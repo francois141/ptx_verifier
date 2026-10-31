@@ -5,7 +5,7 @@ use std::fmt;
 use crate::ir::{Sgpr, Vgpr};
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum EvalError {
+pub enum EvalError {
     InvalidSgpr(Sgpr),
     InvalidLane(usize),
     UninitializedSgpr(Sgpr),
@@ -15,6 +15,7 @@ pub(crate) enum EvalError {
     AddressOverflow,
     KernargRead { address: u64 },
     UnsupportedInstruction,
+    MissingEndPgm,
     Launch { message: String },
 }
 
@@ -44,6 +45,12 @@ impl fmt::Display for EvalError {
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),
+            Self::MissingEndPgm => {
+                write!(
+                    f,
+                    "execution ran past the last instruction without s_endpgm"
+                )
+            }
             Self::Launch { message } => write!(f, "invalid launch: {message}"),
         }
     }

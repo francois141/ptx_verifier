@@ -9,7 +9,7 @@ use super::EvalError;
 
 /// A wave of workgroup 0, identified by its index: wave `w` holds work-items `64w` to `64w + 63`.
 #[id_type]
-pub(crate) struct WaveId(pub u32);
+pub struct WaveId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {

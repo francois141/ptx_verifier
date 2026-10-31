@@ -15,7 +15,7 @@ use super::wave::{WaveId, WaveRegisters, WaveState};
 
 /// Launch inputs of workgroup 0, the workgroup Volta analyzes.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct WorkgroupLaunch {
+pub struct WorkgroupLaunch {
     /// Address of the buffer containing the kernel's arguments.
     pub kernarg_address: u64,
     /// Number of work-items along X, Y, and Z in this workgroup.
