@@ -90,10 +90,10 @@ impl WaveRegisters {
     }
 
     /// Keep loaded values unreadable until a wait establishes their completion.
-    pub(super) fn start_scalar_load(
+    pub(super) fn start_scalar_load<const N: usize>(
         &mut self,
-        dst: [Sgpr; 4],
-        values: [ExprId; 4],
+        dst: [Sgpr; N],
+        values: [ExprId; N],
     ) -> Result<(), EvalError> {
         // Check every destination before changing any register.
         for reg in dst {

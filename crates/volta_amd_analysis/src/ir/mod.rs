@@ -26,6 +26,11 @@ pub struct Vgpr(pub u8);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
+    ScalarLoadDwordx2 {
+        dst: [Sgpr; 2],
+        base: [Sgpr; 2],
+        offset: u32,
+    },
     ScalarLoadDwordx4 {
         dst: [Sgpr; 4],
         base: [Sgpr; 2],

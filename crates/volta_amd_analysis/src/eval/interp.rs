@@ -89,7 +89,9 @@ impl<'a> Interpreter<'a> {
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
             }
-            LoweredInstr::ScalarLoadDwordx4 { .. } | LoweredInstr::WaitCnt { .. } => {
+            LoweredInstr::ScalarLoadDwordx2 { .. }
+            | LoweredInstr::ScalarLoadDwordx4 { .. }
+            | LoweredInstr::WaitCnt { .. } => {
                 self.execute_scalar(wave, instruction)?;
             }
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.

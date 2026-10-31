@@ -69,6 +69,12 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
     use LoweredInstr::*;
 
     match (instruction.opcode.as_str(), instruction.operands.as_slice()) {
+        ("s_load_dwordx2", [dst, base, offset]) => Ok(ScalarLoadDwordx2 {
+            dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
+            base: sgprs(base).ok_or("expected an aligned SGPR base pair")?,
+            offset: immediate(offset, 0xfffff)
+                .ok_or("expected a nonnegative 20-bit byte offset")?,
+        }),
         ("s_load_dwordx4", [dst, base, offset]) => Ok(ScalarLoadDwordx4 {
             dst: sgprs(dst).ok_or("expected an aligned four-SGPR destination")?,
             base: sgprs(base).ok_or("expected an aligned SGPR base pair")?,
@@ -99,8 +105,8 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_endpgm", []) => Ok(EndPgm),
         (
-            "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_add_f32_e32" | "global_load_dword"
-            | "global_store_dword" | "s_endpgm",
+            "s_load_dwordx2" | "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_add_f32_e32"
+            | "global_load_dword" | "global_store_dword" | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
