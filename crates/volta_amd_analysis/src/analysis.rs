@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::eval::{EvalError, Interpreter, Terminal, WorkgroupLaunch};
+use crate::eval::{EvalError, InputArray, Interpreter, Terminal, WorkgroupLaunch};
 use crate::frontend::ast::Kernel;
 use crate::lower::{LowerError, lower_kernel};
 
@@ -43,14 +43,15 @@ pub struct AnalysisResult {
 }
 
 /// Lower `kernel` and run workgroup 0 under `launch`, with `kernarg` as the argument buffer at
-/// `launch.kernarg_address`.
+/// `launch.kernarg_address` and `inputs` in global memory.
 pub fn analyze(
     kernel: &Kernel,
     launch: &WorkgroupLaunch,
     kernarg: &[u8],
+    inputs: &[InputArray],
 ) -> Result<AnalysisResult, AnalysisError> {
     let lowered = lower_kernel(kernel)?;
-    let mut interp = Interpreter::new(&lowered, launch, kernarg)?;
+    let mut interp = Interpreter::new(&lowered, launch, kernarg, inputs)?;
     Ok(AnalysisResult {
         terminal: interp.run(&lowered),
     })

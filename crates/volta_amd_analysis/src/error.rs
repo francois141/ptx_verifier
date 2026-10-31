@@ -11,9 +11,12 @@ pub enum EvalError {
     UninitializedSgpr(Sgpr),
     UninitializedVgpr { lane: usize, reg: Vgpr },
     PendingSgpr(Sgpr),
+    PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
+    InvalidAddressVgpr { lane: usize, reg: Vgpr },
     AddressOverflow,
     KernargRead { address: u64 },
+    GlobalRead { address: u64 },
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
@@ -30,6 +33,13 @@ impl fmt::Display for EvalError {
                 write!(f, "uninitialized vector register v{} in lane {lane}", reg.0)
             }
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
+            Self::PendingVgpr { lane, reg } => {
+                write!(
+                    f,
+                    "vector register v{} in lane {lane} has a pending load",
+                    reg.0
+                )
+            }
             Self::InvalidAddressRegister(reg) => {
                 write!(
                     f,
@@ -37,11 +47,24 @@ impl fmt::Display for EvalError {
                     reg.0
                 )
             }
-            Self::AddressOverflow => write!(f, "scalar load address overflows 64 bits"),
+            Self::InvalidAddressVgpr { lane, reg } => {
+                write!(
+                    f,
+                    "address register v{} in lane {lane} must contain a concrete 32-bit word",
+                    reg.0
+                )
+            }
+            Self::AddressOverflow => write!(f, "load address overflows 64 bits"),
             Self::KernargRead { address } => {
                 write!(
                     f,
                     "16-byte read at {address:#x} is outside the kernel argument buffer"
+                )
+            }
+            Self::GlobalRead { address } => {
+                write!(
+                    f,
+                    "4-byte read at {address:#x} is not an element of an input array"
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),

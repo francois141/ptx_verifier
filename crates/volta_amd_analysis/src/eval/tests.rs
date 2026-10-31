@@ -6,6 +6,7 @@ use volta_expr::{ExprArena, ExprNode};
 
 use crate::ir::{LoweredInstr, Sgpr, Vgpr};
 
+use super::global::GlobalMemory;
 use super::scalar::KernargBuffer;
 use super::wave::{WaveId, WaveRegisters, WaveState};
 use super::{EvalError, Interpreter};
@@ -20,6 +21,7 @@ fn interpreter() -> Interpreter<'static> {
             address: 0,
             bytes: &[],
         },
+        global: GlobalMemory::default(),
         waves: IdVec::from_vec(vec![WaveState::new(WaveRegisters::default())]),
     }
 }

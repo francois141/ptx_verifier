@@ -48,16 +48,7 @@ impl Interpreter<'_> {
         match instruction {
             LoweredInstr::ScalarLoadDwordx4 { dst, base, offset } => {
                 // Read both address words before marking any overlapping destinations pending.
-                let mut words = [0u32; 2];
-                for (word, reg) in words.iter_mut().zip(base) {
-                    let value = registers.read_sgpr(*reg)?;
-                    *word = self
-                        .arena
-                        .as_int_const(value)
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or(EvalError::InvalidAddressRegister(*reg))?;
-                }
-                let base_address = u64::from(words[0]) | (u64::from(words[1]) << 32);
+                let base_address = registers.read_address(&self.arena, *base)?;
                 // Scalar loads ignore the low two bits of each address component (CDNA4 §8.2.1.1).
                 let address = (base_address & !3)
                     .checked_add(u64::from(offset & !3))
@@ -68,12 +59,21 @@ impl Interpreter<'_> {
                     .map(|word| self.arena.int(i64::from(word)));
                 registers.start_scalar_load(*dst, values)
             }
-            LoweredInstr::WaitCnt {
-                vmcnt: None,
-                lgkmcnt: Some(0),
-            } => {
-                // Scalar loads can finish out of order; only a zero count ensures all are ready.
-                registers.finish_scalar_loads();
+            LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
+                // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
+                // Vector loads return in issue order, but only vmcnt(0) is modeled.
+                if [vmcnt, lgkmcnt]
+                    .iter()
+                    .any(|count| count.is_some_and(|n| n != 0))
+                {
+                    return Err(EvalError::UnsupportedInstruction);
+                }
+                if vmcnt.is_some() {
+                    registers.finish_vector_loads();
+                }
+                if lgkmcnt.is_some() {
+                    registers.finish_scalar_loads();
+                }
                 Ok(())
             }
             _ => Err(EvalError::UnsupportedInstruction),

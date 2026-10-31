@@ -9,6 +9,7 @@ use crate::frontend::parse::parse_kernel;
 use crate::ir::{InstrId, LoweredInstr, Sgpr};
 use crate::lower_kernel;
 
+use super::super::global::GlobalMemory;
 use super::super::launch::WorkgroupLaunch;
 use super::super::wave::{WaveId, WaveRegisters, WaveState};
 use super::{EvalError, Interpreter, KernargBuffer};
@@ -36,6 +37,7 @@ fn interpreter(base: u64, bytes: &[u8]) -> Interpreter<'_> {
             address: ADDRESS,
             bytes,
         },
+        global: GlobalMemory::default(),
         waves: IdVec::from_vec(vec![WaveState::new(registers)]),
     }
 }
@@ -64,7 +66,7 @@ fn loads_compiled_kernel_arguments_after_wait() {
         kernarg_address: ADDRESS,
         workgroup_size: (64, 1, 1),
     };
-    let mut interp = Interpreter::new(&kernel, &launch, &bytes).unwrap();
+    let mut interp = Interpreter::new(&kernel, &launch, &bytes, &[]).unwrap();
 
     // The load reads s0/s1 before marking all four destinations pending.
     // The fixture uses xnack-; §8.2.1.1 explains the source-overwrite restriction for replay.
@@ -98,22 +100,25 @@ fn waits_for_all_scalar_loads() {
         interp.execute_scalar(WAVE, &load(dst, offset)).unwrap();
     }
 
-    // A different counter or a positive threshold cannot establish which scalar loads finished.
-    // Rejecting these wait forms is an evaluator restriction.
-    for wait in [
-        LoweredInstr::WaitCnt {
-            vmcnt: Some(0),
-            lgkmcnt: None,
-        },
-        LoweredInstr::WaitCnt {
-            vmcnt: None,
-            lgkmcnt: Some(1),
-        },
+    // vmcnt(0) waits only for vector memory, and a positive lgkmcnt cannot establish which
+    // scalar loads finished. Rejecting the latter is an evaluator restriction.
+    for (wait, expected) in [
+        (
+            LoweredInstr::WaitCnt {
+                vmcnt: Some(0),
+                lgkmcnt: None,
+            },
+            Ok(()),
+        ),
+        (
+            LoweredInstr::WaitCnt {
+                vmcnt: None,
+                lgkmcnt: Some(1),
+            },
+            Err(EvalError::UnsupportedInstruction),
+        ),
     ] {
-        assert_eq!(
-            interp.execute_scalar(WAVE, &wait),
-            Err(EvalError::UnsupportedInstruction)
-        );
+        assert_eq!(interp.execute_scalar(WAVE, &wait), expected);
         for reg in 4..12 {
             assert_eq!(
                 sgpr(&interp, Sgpr(reg)),
