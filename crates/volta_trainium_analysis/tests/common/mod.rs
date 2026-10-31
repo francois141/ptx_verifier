@@ -1,14 +1,15 @@
-//! A fixture's kernel, checked against its expected renderings beside
-//! `tests/fixtures/<name>.py`: `<name>.ast` the parsed kernel and `<name>.ir`
-//! the lowered one, each as its `Display` renders it. `VOLTA_BLESS=1` rewrites them.
+//! A fixture's kernel, checked against its expected renderings beside `tests/fixtures/<name>.py`:
+//! `<name>.ast` and `<name>.ir` the parsed and lowered kernel as `Display` renders them, and
+//! `<name>.out` its run's written elements. `VOLTA_BLESS=1` rewrites them.
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use volta_trainium_analysis::frontend::parse::parse_kernel;
-use volta_trainium_analysis::lower_kernel;
+use volta_trainium_analysis::{evaluate, lower_kernel};
 
-/// Parse kernel `kernel` of `tests/fixtures/<name>.py`, compare it with `<name>.ast`,
-/// then lower it and compare the result with `<name>.ir`.
+/// Parse, lower and run kernel `kernel` of `tests/fixtures/<name>.py`, comparing each stage's
+/// result with its file; `.out` holds one `array[index] = expr` line per written element.
 pub fn check(name: &str, kernel: &str) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -20,6 +21,16 @@ pub fn check(name: &str, kernel: &str) {
 
     let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
     compare(fixture.with_extension("ir"), lowered.to_string());
+
+    let outputs = evaluate(&lowered).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut rendered = String::new();
+    for (array, elements) in &outputs.outputs {
+        for &(index, value) in elements {
+            let expr = outputs.arena.display_expr(value);
+            writeln!(rendered, "{array}[{index}] = {expr}").unwrap();
+        }
+    }
+    compare(fixture.with_extension("out"), rendered);
 }
 
 fn compare(expected_path: PathBuf, actual: String) {
@@ -40,7 +51,7 @@ fn compare(expected_path: PathBuf, actual: String) {
 
     assert!(
         actual == expected,
-        "kernel differs from {} (rerun with VOLTA_BLESS=1 to accept)\n\
+        "rendering differs from {} (rerun with VOLTA_BLESS=1 to accept)\n\
          --- expected\n{expected}--- actual\n{actual}",
         expected_path.display()
     );

@@ -1,10 +1,10 @@
 kernel kernel(a, b, out)
-  a: hbm[128, 128]
-  b: hbm[128, 128]
-  out: hbm[128, 128]
-  x: sbuf[128, 128]
-  y: sbuf[128, 128]
-  z: sbuf[128, 128]
+  a: hbm[16, 16]
+  b: hbm[16, 16]
+  out: hbm[16, 16]
+  x: sbuf[16, 16]
+  y: sbuf[16, 16]
+  z: sbuf[16, 16]
   x = mov(a)
   y = mov(b)
   z = add(x, y)

@@ -56,9 +56,9 @@ loc *args:
 amd:
     cargo test -q -p volta_amd_analysis --test copy --test add -- --nocapture
 
-# Check the Trainium kernels' parsed and lowered forms against their .ast and .ir files (VOLTA_BLESS=1 rewrites them)
+# Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them)
 trainium:
-    cargo test -q -p volta_trainium_analysis -- --nocapture
+    cargo test -q -p volta_trainium_analysis
 
 external:
     python3 external/races.py

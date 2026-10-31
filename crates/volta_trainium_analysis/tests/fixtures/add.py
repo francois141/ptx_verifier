@@ -4,13 +4,13 @@ import nki.isa as nisa
 
 @nki.jit
 def kernel(a, b, out):
-    assert a.shape == (128, 128)
-    assert b.shape == (128, 128)
-    assert out.shape == (128, 128)
+    assert a.shape == (16, 16)
+    assert b.shape == (16, 16)
+    assert out.shape == (16, 16)
 
-    x = nl.ndarray((128, 128), dtype=a.dtype, buffer=nl.sbuf)
-    y = nl.ndarray((128, 128), dtype=b.dtype, buffer=nl.sbuf)
-    z = nl.ndarray((128, 128), dtype=a.dtype, buffer=nl.sbuf)
+    x = nl.ndarray((16, 16), dtype=a.dtype, buffer=nl.sbuf)
+    y = nl.ndarray((16, 16), dtype=b.dtype, buffer=nl.sbuf)
+    z = nl.ndarray((16, 16), dtype=a.dtype, buffer=nl.sbuf)
 
     nisa.dma_copy(dst=x, src=a)
     nisa.dma_copy(dst=y, src=b)

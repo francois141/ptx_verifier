@@ -9,4 +9,4 @@ mod tensor;
 pub use arith::ArithOp;
 pub use instr::{InstrId, LoweredInstr};
 pub use kernel::LoweredKernel;
-pub use tensor::{Memory, Shape, Tensor, TensorId};
+pub use tensor::{Index, Memory, Shape, Tensor, TensorId};

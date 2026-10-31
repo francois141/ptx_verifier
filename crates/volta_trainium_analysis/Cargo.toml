@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 id_collections.workspace = true
+volta_expr.workspace = true
