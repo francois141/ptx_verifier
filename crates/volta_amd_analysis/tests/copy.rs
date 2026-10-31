@@ -19,7 +19,7 @@ fn prints_the_copy_kernel_ir() {
             for (index, (instruction, lowered)) in parsed
                 .instructions
                 .iter()
-                .zip(&kernel.instructions)
+                .zip(kernel.instructions.values())
                 .enumerate()
             {
                 println!("  {index:3}  {:<20} {lowered:?}", instruction.opcode);

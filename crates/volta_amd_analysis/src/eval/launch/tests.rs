@@ -2,20 +2,22 @@
 
 use std::collections::BTreeMap;
 
+use id_collections::IdVec;
 use volta_expr::ExprArena;
 
 use crate::frontend::parse::parse_kernel;
-use crate::ir::{LoweredKernel, Sgpr, Vgpr};
+use crate::ir::{InstrId, LoweredKernel, Sgpr, Vgpr};
 use crate::lower_kernel;
 
 use super::super::EvalError;
-use super::{WaveLaunch, initialize_wave};
+use super::super::wave::{Status, WaveId};
+use super::{WorkgroupLaunch, initialize_waves};
 
 fn kernel() -> LoweredKernel {
     LoweredKernel {
         name: "launch_test".into(),
         target: "amdgcn-amd-amdhsa--gfx950".into(),
-        instructions: Vec::new(),
+        instructions: IdVec::new(),
         descriptor: BTreeMap::from([
             ("user_sgpr_kernarg_segment_ptr".into(), 1),
             ("user_sgpr_count".into(), 2),
@@ -27,44 +29,52 @@ fn kernel() -> LoweredKernel {
     }
 }
 
-fn launch() -> WaveLaunch {
-    WaveLaunch {
+fn launch() -> WorkgroupLaunch {
+    WorkgroupLaunch {
         kernarg_address: 0x0000_1234_abcd_0000,
         workgroup_size: (128, 1, 1),
-        wave_index: 0,
     }
 }
 
-// Test that a compiled kernel initializes the registers its descriptor requests.
+// Test that each wave of a compiled kernel starts at its first instruction with the registers
+// its descriptor requests; a 128-work-item workgroup has two waves.
 #[test]
 fn initializes_compiled_kernel_launch_registers() {
     let source = include_str!("../../../tests/fixtures/copy.s");
     let kernel = lower_kernel(&parse_kernel(source, "copy").unwrap()).unwrap();
     let mut arena = ExprArena::new();
-    let registers = initialize_wave(&kernel, &launch(), &mut arena).unwrap();
+    let waves = initialize_waves(&kernel, &launch(), &mut arena).unwrap();
+    assert_eq!(waves.len(), 2);
 
-    // Check the argument-pointer words in s0/s1 and workgroup 0's X ID in s2.
-    for (reg, expected) in [(0, 0xabcd_0000), (1, 0x1234), (2, 0)] {
-        let value = registers.read_sgpr(Sgpr(reg)).unwrap();
-        assert_eq!(arena.as_int_const(value), Some(expected));
-    }
-    for lane in [0, 63] {
-        let value = registers.read_vgpr(lane, Vgpr(0)).unwrap();
-        assert_eq!(arena.as_int_const(value), Some(lane as i64));
-    }
+    for (wave, state) in &waves {
+        assert_eq!((state.pc, state.status), (InstrId(0), Status::Ready));
+        let registers = &state.registers;
 
-    // Registers not assigned by the launch must still report uninitialized reads.
-    assert_eq!(
-        registers.read_sgpr(Sgpr(3)),
-        Err(EvalError::UninitializedSgpr(Sgpr(3)))
-    );
-    assert_eq!(
-        registers.read_vgpr(0, Vgpr(1)),
-        Err(EvalError::UninitializedVgpr {
-            lane: 0,
-            reg: Vgpr(1)
-        })
-    );
+        // Check the argument-pointer words in s0/s1 and workgroup 0's X ID in s2.
+        for (reg, expected) in [(0, 0xabcd_0000), (1, 0x1234), (2, 0)] {
+            let value = registers.read_sgpr(Sgpr(reg)).unwrap();
+            assert_eq!(arena.as_int_const(value), Some(expected));
+        }
+        // Wave w's lanes hold work-items 64w to 64w + 63.
+        for lane in [0, 63] {
+            let value = registers.read_vgpr(lane, Vgpr(0)).unwrap();
+            let workitem = wave.0 as usize * 64 + lane;
+            assert_eq!(arena.as_int_const(value), Some(workitem as i64));
+        }
+
+        // Registers not assigned by the launch must still report uninitialized reads.
+        assert_eq!(
+            registers.read_sgpr(Sgpr(3)),
+            Err(EvalError::UninitializedSgpr(Sgpr(3)))
+        );
+        assert_eq!(
+            registers.read_vgpr(0, Vgpr(1)),
+            Err(EvalError::UninitializedVgpr {
+                lane: 0,
+                reg: Vgpr(1)
+            })
+        );
+    }
 }
 
 // Test that each enabled workgroup ID reads 0 and that disabled ones leave no unused register slots.
@@ -91,7 +101,8 @@ fn initializes_enabled_workgroup_ids_to_zero() {
                 kernel.descriptor.insert(name.into(), value);
             }
             let mut arena = ExprArena::new();
-            let registers = initialize_wave(&kernel, &launch(), &mut arena).unwrap();
+            let waves = initialize_waves(&kernel, &launch(), &mut arena).unwrap();
+            let registers = &waves[WaveId(0)].registers;
 
             // Check enabled IDs appear consecutively after any user registers.
             let ids = enabled.0 + enabled.1 + enabled.2;
@@ -127,21 +138,23 @@ fn packs_requested_workitem_coordinates() {
     ];
     // Check each descriptor mode: X only, X/Y, and X/Y/Z.
     for mode in 0..=2 {
-        for (workgroup_size, wave_index, lane, (x, y, z)) in cases {
+        for (workgroup_size, wave, lane, (x, y, z)) in cases {
             let mut kernel = kernel();
             kernel
                 .descriptor
                 .insert("system_vgpr_workitem_id".into(), mode);
             let mut arena = ExprArena::new();
-            let launch = WaveLaunch {
+            let launch = WorkgroupLaunch {
                 workgroup_size,
-                wave_index,
                 ..launch()
             };
-            let registers = initialize_wave(&kernel, &launch, &mut arena).unwrap();
+            let waves = initialize_waves(&kernel, &launch, &mut arena).unwrap();
 
             // Extract the ten-bit coordinate fields from v0.
-            let id = registers.read_vgpr(lane, Vgpr(0)).unwrap();
+            let id = waves[WaveId(wave)]
+                .registers
+                .read_vgpr(lane, Vgpr(0))
+                .unwrap();
             let packed = arena.as_int_const(id).unwrap();
             assert_eq!(packed & 0x3ff, x);
             // Unrequested Y/Z fields must be zero even when those coordinates are nonzero.
@@ -172,7 +185,7 @@ fn rejects_unsupported_descriptor_layouts() {
         let mut kernel = kernel();
         kernel.descriptor.insert(name.into(), value);
         let mut arena = ExprArena::new();
-        let error = initialize_wave(&kernel, &launch(), &mut arena).unwrap_err();
+        let error = initialize_waves(&kernel, &launch(), &mut arena).unwrap_err();
         assert!(error.to_string().contains(name), "{error}");
     }
 
@@ -181,7 +194,7 @@ fn rejects_unsupported_descriptor_layouts() {
         let mut kernel = kernel();
         kernel.descriptor.remove(name);
         let mut arena = ExprArena::new();
-        let error = initialize_wave(&kernel, &launch(), &mut arena).unwrap_err();
+        let error = initialize_waves(&kernel, &launch(), &mut arena).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -195,29 +208,26 @@ fn rejects_unsupported_descriptor_layouts() {
 #[test]
 fn rejects_unsupported_launches() {
     let kernel = kernel();
-    for (workgroup_size, wave_index) in [
-        ((0, 1, 1), 0),
-        ((64, 0, 1), 0),
-        ((64, 1, 0), 0),
+    for workgroup_size in [
+        (0, 1, 1),
+        (64, 0, 1),
+        (64, 1, 0),
         // Only full 64-thread waves are supported.
-        ((63, 1, 1), 0),
-        ((5, 13, 1), 0),
+        (63, 1, 1),
+        (5, 13, 1),
         // Reject totals above 1024 and dimensions whose product would overflow.
-        ((64, 2, 9), 0),
-        ((u32::MAX, u32::MAX, 1), 0),
-        ((64, 1, u32::MAX), 0),
-        ((8, 8, 1), 1),
-        ((4, 8, 4), u32::MAX),
+        (64, 2, 9),
+        (u32::MAX, u32::MAX, 1),
+        (64, 1, u32::MAX),
     ] {
-        let launch = WaveLaunch {
+        let launch = WorkgroupLaunch {
             workgroup_size,
-            wave_index,
             ..launch()
         };
         let mut arena = ExprArena::new();
         let nodes = arena.node_count();
         assert!(matches!(
-            initialize_wave(&kernel, &launch, &mut arena),
+            initialize_waves(&kernel, &launch, &mut arena),
             Err(EvalError::Launch { .. })
         ));
         assert_eq!(arena.node_count(), nodes);
@@ -227,7 +237,7 @@ fn rejects_unsupported_launches() {
     other_target.target = "amdgcn-amd-amdhsa--gfx942".into();
     let mut arena = ExprArena::new();
     assert!(matches!(
-        initialize_wave(&other_target, &launch(), &mut arena),
+        initialize_waves(&other_target, &launch(), &mut arena),
         Err(EvalError::Launch { .. })
     ));
 }
@@ -235,13 +245,13 @@ fn rejects_unsupported_launches() {
 // Test that a misaligned kernel argument buffer is rejected.
 #[test]
 fn rejects_misaligned_kernarg_address() {
-    let launch = WaveLaunch {
+    let launch = WorkgroupLaunch {
         kernarg_address: launch().kernarg_address + 8,
         ..launch()
     };
     let mut arena = ExprArena::new();
     assert_eq!(
-        initialize_wave(&kernel(), &launch, &mut arena).unwrap_err(),
+        initialize_waves(&kernel(), &launch, &mut arena).unwrap_err(),
         EvalError::Launch {
             message: "kernarg address must be 16-byte aligned".into()
         }

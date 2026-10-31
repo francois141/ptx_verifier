@@ -5,7 +5,7 @@ mod launch;
 mod scalar;
 #[cfg(test)]
 mod tests;
-mod value;
+mod wave;
 
 pub(crate) use crate::error::EvalError;
-pub(crate) use value::WaveRegisters;
+pub(crate) use interp::Interpreter;

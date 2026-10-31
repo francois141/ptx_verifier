@@ -1,10 +1,41 @@
-//! Register storage for one CDNA4 wave.
+//! The execution state of one wave of workgroup 0.
 
+use id_collections::id_type;
 use volta_expr::ExprId;
 
-use crate::ir::{Sgpr, Vgpr};
+use crate::ir::{InstrId, Sgpr, Vgpr};
 
 use super::EvalError;
+
+/// A wave of workgroup 0, identified by its index: wave `w` holds work-items `64w` to `64w + 63`.
+#[id_type]
+pub(crate) struct WaveId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Status {
+    Ready,
+    /// Executed `s_endpgm`.
+    Exited,
+}
+
+/// A wave's state; its `WaveId` is its index in the wave table, so the state does not store it.
+#[derive(Debug)]
+pub(crate) struct WaveState {
+    pub pc: InstrId,
+    pub registers: WaveRegisters,
+    pub status: Status,
+}
+
+impl WaveState {
+    /// A ready wave at the kernel's first instruction.
+    pub fn new(registers: WaveRegisters) -> Self {
+        Self {
+            pc: InstrId(0),
+            registers,
+            status: Status::Ready,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum ScalarValue {
@@ -13,6 +44,7 @@ enum ScalarValue {
     Pending(ExprId),
 }
 
+/// Register storage for one CDNA4 wave.
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
     scalar: [ScalarValue; 102], // Scalar registers are shared by the wave.

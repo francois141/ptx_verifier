@@ -1,12 +1,28 @@
 //! Tests for register reads and writes and for executing AMD instructions.
 //! Values are kept in an expression arena, which stores numbers and symbolic formulas.
 
+use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprNode};
 
 use crate::ir::{LoweredInstr, Sgpr, Vgpr};
 
-use super::interp::execute_lane;
-use super::{EvalError, WaveRegisters};
+use super::scalar::KernargBuffer;
+use super::wave::{WaveId, WaveRegisters, WaveState};
+use super::{EvalError, Interpreter};
+
+const WAVE: WaveId = WaveId(0);
+
+// One wave with every register unwritten and an empty argument buffer.
+fn interpreter() -> Interpreter<'static> {
+    Interpreter {
+        arena: ExprArena::new(),
+        kernarg: KernargBuffer {
+            address: 0,
+            bytes: &[],
+        },
+        waves: IdVec::from_vec(vec![WaveState::new(WaveRegisters::default())]),
+    }
+}
 
 // Test that a scalar tuple reads the respective component registers, which means
 // if one component is directly changed, the tuple should reflect that change.
@@ -102,34 +118,37 @@ fn rejects_uninitialized_and_out_of_bounds_registers() {
 // The register with the same number in another lane should remain unchanged.
 #[test]
 fn shifts_in_place_with_amd_count_and_width_rules() {
-    let mut arena = ExprArena::new();
-    let mut registers = WaveRegisters::default();
+    let mut interp = interpreter();
 
     // Counts use only five bits: 34 becomes 2, and 32 becomes 0.
     // The middle case checks overflow: 0x80000001 << 1 keeps the low 32 bits, giving 2.
     for (input, shift, expected) in [(3, 34, 12), (0x80000001, 1, 2), (7, 32, 7)] {
         // Give v0 the same starting value in both lanes; only lane 0 will execute the shift.
-        let value = arena.int(input);
+        let value = interp.arena.int(input);
+        let registers = &mut interp.waves[WAVE].registers;
         registers.write_vgpr(0, Vgpr(0), value).unwrap();
         registers.write_vgpr(1, Vgpr(0), value).unwrap();
 
         // Execute only lane 0, with v0 as both source and destination.
         // The evaluator must read the old value before overwriting that register.
-        execute_lane(
-            &LoweredInstr::Shl32 {
-                dst: Vgpr(0),
-                src: Vgpr(0),
-                shift,
-            },
-            0,
-            &mut registers,
-            &mut arena,
-        )
-        .unwrap();
+        interp
+            .execute_lane(
+                WAVE,
+                0,
+                &LoweredInstr::Shl32 {
+                    dst: Vgpr(0),
+                    src: Vgpr(0),
+                    shift,
+                },
+            )
+            .unwrap();
 
         // Check that lane 0 contains the expected number and lane 1 still contains its input.
+        let registers = &interp.waves[WAVE].registers;
         let result = registers.read_vgpr(0, Vgpr(0)).unwrap();
-        assert!(matches!(arena.node(result), ExprNode::IntConst(value) if *value == expected));
+        assert!(
+            matches!(interp.arena.node(result), ExprNode::IntConst(value) if *value == expected)
+        );
         assert_eq!(registers.read_vgpr(1, Vgpr(0)), Ok(value));
     }
 }
@@ -139,29 +158,32 @@ fn shifts_in_place_with_amd_count_and_width_rules() {
 #[test]
 fn shifts_symbolic_values_with_distinct_source_and_destination() {
     // Put an unknown value in v7. It is initialized, even though its number is not known.
-    let mut arena = ExprArena::new();
-    let mut registers = WaveRegisters::default();
-    let value = arena.symbol();
-    registers.write_vgpr(0, Vgpr(7), value).unwrap();
+    let mut interp = interpreter();
+    let value = interp.arena.symbol();
+    interp.waves[WAVE]
+        .registers
+        .write_vgpr(0, Vgpr(7), value)
+        .unwrap();
 
     // Write the result into v0 so we can separately check that v7 was not changed.
-    execute_lane(
-        &LoweredInstr::Shl32 {
-            dst: Vgpr(0),
-            src: Vgpr(7),
-            shift: 34,
-        },
-        0,
-        &mut registers,
-        &mut arena,
-    )
-    .unwrap();
+    interp
+        .execute_lane(
+            WAVE,
+            0,
+            &LoweredInstr::Shl32 {
+                dst: Vgpr(0),
+                src: Vgpr(7),
+                shift: 34,
+            },
+        )
+        .unwrap();
 
     // Check that v0 contains a shift of the original symbol by 2, because 34 wraps to 2.
+    let registers = &interp.waves[WAVE].registers;
     let result = registers.read_vgpr(0, Vgpr(0)).unwrap();
     assert_eq!(
-        arena.display_expr(result),
-        format!("({} << 2)", arena.display_expr(value))
+        interp.arena.display_expr(result),
+        format!("({} << 2)", interp.arena.display_expr(value))
     );
 
     // Check that v7 still contains the original symbol.
@@ -173,23 +195,24 @@ fn shifts_symbolic_values_with_distinct_source_and_destination() {
 #[test]
 fn rejects_uninitialized_shift_sources_and_unsupported_instructions() {
     // Give v1 an initial value and save the expression count for the checks after failure.
-    let mut arena = ExprArena::new();
-    let mut registers = WaveRegisters::default();
-    let original = arena.int(99);
-    registers.write_vgpr(0, Vgpr(1), original).unwrap();
-    let node_count = arena.node_count();
+    let mut interp = interpreter();
+    let original = interp.arena.int(99);
+    interp.waves[WAVE]
+        .registers
+        .write_vgpr(0, Vgpr(1), original)
+        .unwrap();
+    let node_count = interp.arena.node_count();
 
     // v0 has never been written, so the shift must fail before changing v1.
     assert_eq!(
-        execute_lane(
+        interp.execute_lane(
+            WAVE,
+            0,
             &LoweredInstr::Shl32 {
                 dst: Vgpr(1),
                 src: Vgpr(0),
                 shift: 1,
             },
-            0,
-            &mut registers,
-            &mut arena,
         ),
         Err(EvalError::UninitializedVgpr {
             lane: 0,
@@ -199,19 +222,21 @@ fn rejects_uninitialized_shift_sources_and_unsupported_instructions() {
 
     // This wait is unsupported by the lane executor, so check that it returns an error.
     assert_eq!(
-        execute_lane(
+        interp.execute_lane(
+            WAVE,
+            0,
             &LoweredInstr::WaitCnt {
                 vmcnt: Some(0),
                 lgkmcnt: None,
             },
-            0,
-            &mut registers,
-            &mut arena,
         ),
         Err(EvalError::UnsupportedInstruction)
     );
 
     // Check that v1 still holds its original value and no new expressions were created.
-    assert_eq!(registers.read_vgpr(0, Vgpr(1)), Ok(original));
-    assert_eq!(arena.node_count(), node_count);
+    assert_eq!(
+        interp.waves[WAVE].registers.read_vgpr(0, Vgpr(1)),
+        Ok(original)
+    );
+    assert_eq!(interp.arena.node_count(), node_count);
 }

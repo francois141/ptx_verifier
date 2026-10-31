@@ -2,11 +2,17 @@
 
 use std::collections::BTreeMap;
 
+use id_collections::{IdVec, id_type};
+
+/// An instruction's position in its kernel body.
+#[id_type]
+pub struct InstrId(pub u32);
+
 #[derive(Debug, Clone)]
 pub struct LoweredKernel {
     pub name: String,
     pub target: String,
-    pub instructions: Vec<LoweredInstr>,
+    pub instructions: IdVec<InstrId, LoweredInstr>,
     pub descriptor: BTreeMap<String, u64>,
 }
 

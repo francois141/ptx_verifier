@@ -5,6 +5,8 @@ mod tests;
 
 use std::fmt;
 
+use id_collections::IdVec;
+
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{LoweredInstr, LoweredKernel, Sgpr, Vgpr};
 
@@ -61,7 +63,7 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
     Ok(LoweredKernel {
         name: kernel.name.clone(),
         target: kernel.target.clone(),
-        instructions,
+        instructions: IdVec::from_vec(instructions),
         descriptor: kernel.descriptor.clone(),
     })
 }

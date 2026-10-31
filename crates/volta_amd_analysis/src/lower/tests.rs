@@ -14,7 +14,7 @@ fn lowers_the_compiled_copy_kernel() {
     assert_eq!(lowered.target, parsed.target);
     assert_eq!(lowered.descriptor, parsed.descriptor);
     assert_eq!(
-        lowered.instructions,
+        lowered.instructions.as_slice(),
         [
             LoweredInstr::ScalarLoadDwordx4 {
                 dst: [Sgpr(0), Sgpr(1), Sgpr(2), Sgpr(3)],
