@@ -2,7 +2,7 @@
 
 use id_collections::id_type;
 
-use super::{ArithOp, TensorId};
+use super::{ActivationFunc, ArithOp, TensorId};
 
 /// An instruction's position in its kernel body.
 #[id_type]
@@ -18,5 +18,11 @@ pub enum LoweredInstr {
         dst: TensorId,
         lhs: TensorId,
         rhs: TensorId,
+    },
+    /// `dst = func(data)` elementwise, both on-chip tiles of one shape.
+    Activation {
+        func: ActivationFunc,
+        dst: TensorId,
+        data: TensorId,
     },
 }

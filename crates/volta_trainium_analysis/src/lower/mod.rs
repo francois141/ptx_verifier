@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Statement, TensorName};
-use crate::ir::{ArithOp, LoweredInstr, LoweredKernel, Memory, Shape, Tensor, TensorId};
+use crate::ir::{
+    ActivationFunc, ArithOp, LoweredInstr, LoweredKernel, Memory, Shape, Tensor, TensorId,
+};
 
 pub use error::{LowerError, StatementError};
 
@@ -100,6 +102,23 @@ fn lower_instruction(
             })
         }
 
+        "activation" => {
+            let [dst, op, data] = operands(instruction, &["dst", "op", "data"])?;
+            let func = activation_func(op)?;
+            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
+            for tile in [&dst, &data] {
+                if tile.memory == Memory::Hbm {
+                    return Err(StatementError::OffChip(tile.name.clone()));
+                }
+            }
+            same_shape(&dst, &data)?;
+            Ok(LoweredInstr::Activation {
+                func,
+                dst: dst.id,
+                data: data.id,
+            })
+        }
+
         opcode => Err(StatementError::UnsupportedInstruction(opcode.into())),
     }
 }
@@ -119,18 +138,30 @@ fn operands<'a, const N: usize>(
     Ok(keywords.map(|keyword| &given[keyword]))
 }
 
+/// The name of a `nki.language` member, e.g. `add` for `nl.add`.
+fn language_member(operand: &Operand) -> Option<&str> {
+    let Operand::Member(member) = operand else {
+        return None;
+    };
+    member.strip_prefix(NKI_LANGUAGE)?.strip_prefix('.')
+}
+
 /// A `nki.language` arithmetic function, e.g. `nl.add`.
 fn arith_op(operand: &Operand) -> Result<ArithOp, StatementError> {
-    let name = match operand {
-        Operand::Member(member) => member
-            .strip_prefix(NKI_LANGUAGE)
-            .and_then(|name| name.strip_prefix('.')),
-        Operand::Tensor(_) => None,
-    };
+    let name = language_member(operand);
     ArithOp::ALL
         .into_iter()
         .find(|op| Some(op.name()) == name)
         .ok_or_else(|| StatementError::UnsupportedArithOp(operand.clone()))
+}
+
+/// A `nki.language` activation function, e.g. `nl.sigmoid`.
+fn activation_func(operand: &Operand) -> Result<ActivationFunc, StatementError> {
+    let name = language_member(operand);
+    ActivationFunc::ALL
+        .into_iter()
+        .find(|func| Some(func.name()) == name)
+        .ok_or_else(|| StatementError::UnsupportedActivation(operand.clone()))
 }
 
 fn same_shape(left: &Shaped, right: &Shaped) -> Result<(), StatementError> {

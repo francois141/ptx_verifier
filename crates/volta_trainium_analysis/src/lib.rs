@@ -9,6 +9,7 @@ mod lower;
 
 pub use eval::{EvalError, evaluate};
 pub use ir::{
-    ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Memory, Shape, Tensor, TensorId,
+    ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Memory, Shape, Tensor,
+    TensorId,
 };
 pub use lower::{LowerError, StatementError, lower_kernel};

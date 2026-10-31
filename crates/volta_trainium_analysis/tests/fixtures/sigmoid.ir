@@ -1,0 +1,8 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[2, 4]
+  x: sbuf[2, 4]
+  y: sbuf[2, 4]
+  x = mov(a)
+  y = sigmoid(x)
+  out = mov(y)

@@ -52,6 +52,8 @@ pub enum StatementError {
 
     UnsupportedArithOp(Operand),
 
+    UnsupportedActivation(Operand),
+
     // =========================================================================
     // Operand Errors
     // =========================================================================
@@ -99,6 +101,9 @@ impl fmt::Display for StatementError {
                 write!(f, "`{opcode}` takes the operands {}", keywords.join(", "))
             }
             Self::UnsupportedArithOp(op) => write!(f, "unsupported arithmetic op `{op}`"),
+            Self::UnsupportedActivation(op) => {
+                write!(f, "unsupported activation function `{op}`")
+            }
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")

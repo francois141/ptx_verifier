@@ -3,9 +3,9 @@
 //! Arguments are laid out row-major in HBM, so their symbols and outputs use offsets.
 
 use id_collections::IdVec;
-use volta_expr::{ExprArena, SymbolicOutputs};
+use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
 
-use crate::ir::{ArithOp, InstrId, LoweredInstr, LoweredKernel, TensorId};
+use crate::ir::{ActivationFunc, ArithOp, InstrId, LoweredInstr, LoweredKernel, TensorId};
 
 use super::EvalError;
 use super::tensor::TensorState;
@@ -58,8 +58,27 @@ impl<'a> Interpreter<'a> {
                     self.tensors[dst].write(index, value);
                 }
             }
+            LoweredInstr::Activation { func, dst, data } => {
+                for index in self.tensors[dst].indices(instr)? {
+                    let x = self.tensors[data].read(&mut self.arena, instr, &index)?;
+                    let value = self.activation(func, x);
+                    self.tensors[dst].write(index, value);
+                }
+            }
         }
         Ok(())
+    }
+
+    fn activation(&mut self, func: ActivationFunc, x: ExprId) -> ExprId {
+        match func {
+            ActivationFunc::Sigmoid => {
+                let one = self.arena.real(Real::one());
+                let negated = self.arena.neg(x);
+                let exp = self.arena.exp(negated);
+                let denominator = self.arena.add(one, exp);
+                self.arena.rcp(denominator)
+            }
+        }
     }
 
     fn into_outputs(self, params: &[TensorId]) -> SymbolicOutputs {
