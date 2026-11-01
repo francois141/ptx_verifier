@@ -45,4 +45,6 @@ pub enum Operand {
     Imm(u64),
     /// `vmcnt(n)` or `lgkmcnt(n)`.
     Wait { counter: Counter, value: u64 },
+    /// A memory instruction's `offset:n` byte offset, which may be negative.
+    Offset(i64),
 }

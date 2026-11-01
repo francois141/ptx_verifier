@@ -41,6 +41,15 @@ pub enum Src0 {
     Const(u32),
 }
 
+/// A global instruction's address in each lane: the SGPR-pair base, plus the lane's VGPR as a
+/// 32-bit unsigned offset, plus a signed 13-bit immediate byte offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalAddress {
+    pub vaddr: Vgpr,
+    pub saddr: [Sgpr; 2],
+    pub offset: i16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
     ScalarLoadDwordx2 {
@@ -94,13 +103,11 @@ pub enum LoweredInstr {
     },
     GlobalLoadDword {
         dst: Vgpr,
-        vaddr: Vgpr,
-        saddr: [Sgpr; 2],
+        address: GlobalAddress,
     },
     GlobalStoreDword {
-        vaddr: Vgpr,
         src: Vgpr,
-        saddr: [Sgpr; 2],
+        address: GlobalAddress,
     },
     /// An omitted counter is unconstrained, not an implicit wait for zero.
     WaitCnt {

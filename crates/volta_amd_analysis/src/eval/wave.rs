@@ -3,7 +3,7 @@
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
-use crate::ir::{InstrId, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{GlobalAddress, InstrId, Sgpr, Src0, Vgpr, Vop3Src};
 
 use super::EvalError;
 
@@ -195,24 +195,26 @@ impl WaveRegisters {
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
-    /// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`.
+    /// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`, plus
+    /// the instruction's immediate offset.
     pub fn global_address(
         &self,
         arena: &ExprArena,
         lane: usize,
-        vaddr: Vgpr,
-        saddr: [Sgpr; 2],
+        address: GlobalAddress,
     ) -> Result<u64, EvalError> {
-        let base = self.read_address(arena, saddr)?;
-        let offset = self.read_vgpr(lane, vaddr)?;
+        let base = self.read_address(arena, address.saddr)?;
+        let offset = self.read_vgpr(lane, address.vaddr)?;
         let offset = arena
             .as_int_const(offset)
             .and_then(|offset| u32::try_from(offset).ok())
-            .ok_or(EvalError::InvalidAddressVgpr { lane, reg: vaddr })?;
-        let address = base
-            .checked_add(u64::from(offset))
-            .ok_or(EvalError::AddressOverflow)?;
-        Ok(address)
+            .ok_or(EvalError::InvalidAddressVgpr {
+                lane,
+                reg: address.vaddr,
+            })?;
+        base.checked_add(u64::from(offset))
+            .and_then(|sum| sum.checked_add_signed(i64::from(address.offset)))
+            .ok_or(EvalError::AddressOverflow)
     }
 
     /// Write a vector register in one lane unless the lane is invalid or a load is still writing

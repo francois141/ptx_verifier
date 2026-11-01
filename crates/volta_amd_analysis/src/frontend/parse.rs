@@ -19,10 +19,17 @@ fn integer(text: &str) -> Option<u64> {
     }
 }
 
-/// Parse a register, register range, integer, or wait counter.
+/// Parse a register, register range, integer, wait counter, or memory offset.
 fn operand(text: &str) -> Option<Operand> {
     if let Some(value) = integer(text) {
         return Some(Operand::Imm(value));
+    }
+    if let Some(offset) = text.strip_prefix("offset:") {
+        let value = match offset.strip_prefix('-') {
+            Some(magnitude) => -i64::try_from(integer(magnitude)?).ok()?,
+            None => i64::try_from(integer(offset)?).ok()?,
+        };
+        return Some(Operand::Offset(value));
     }
     if let Some((name, rest)) = text.split_once('(') {
         let counter = match name {

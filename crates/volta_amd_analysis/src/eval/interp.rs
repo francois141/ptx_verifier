@@ -184,13 +184,13 @@ impl<'a> Interpreter<'a> {
                 let result = self.arena.fma(a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::GlobalLoadDword { dst, vaddr, saddr } => {
-                let address = registers.global_address(&self.arena, lane, *vaddr, *saddr)?;
+            LoweredInstr::GlobalLoadDword { dst, address } => {
+                let address = registers.global_address(&self.arena, lane, *address)?;
                 let value = self.global.load_dword(address, &mut self.arena)?;
                 registers.start_vector_load(lane, *dst, value)
             }
-            LoweredInstr::GlobalStoreDword { vaddr, src, saddr } => {
-                let address = registers.global_address(&self.arena, lane, *vaddr, *saddr)?;
+            LoweredInstr::GlobalStoreDword { src, address } => {
+                let address = registers.global_address(&self.arena, lane, *address)?;
                 let value = registers.read_vgpr(lane, *src)?;
                 self.global.store_dword(address, value)
             }

@@ -5,7 +5,7 @@ use std::fmt;
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
-use crate::ir::{LoweredInstr, LoweredKernel, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{GlobalAddress, LoweredInstr, LoweredKernel, Sgpr, Src0, Vgpr, Vop3Src};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LowerError {
@@ -119,15 +119,13 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src0: vgpr(src0).ok_or("expected one VGPR first source")?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
-        ("global_load_dword", [dst, vaddr, saddr]) => Ok(GlobalLoadDword {
+        ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDword {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
-            saddr: sgprs(saddr).ok_or("expected an aligned SGPR base pair")?,
+            address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_store_dword", [vaddr, src, saddr]) => Ok(GlobalStoreDword {
-            vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
+        ("global_store_dword", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDword {
             src: vgpr(src).ok_or("expected one source VGPR")?,
-            saddr: sgprs(saddr).ok_or("expected an aligned SGPR base pair")?,
+            address: global_address(vaddr, saddr, offset)?,
         }),
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_endpgm", []) => Ok(EndPgm),
@@ -191,6 +189,27 @@ fn first_source(operand: &Operand) -> Result<Src0, &'static str> {
     sgpr(operand)
         .map(Src0::Sgpr)
         .ok_or("expected a VGPR, an SGPR or a 32-bit constant first source")
+}
+
+/// Global offsets are signed 13-bit before GFX10 (LLVM 21.1.8's `validateFlatOffset`).
+fn global_address(
+    vaddr: &Operand,
+    saddr: &Operand,
+    offset: &[Operand],
+) -> Result<GlobalAddress, &'static str> {
+    let offset = match offset {
+        [] => 0,
+        [Operand::Offset(offset)] => i16::try_from(*offset)
+            .ok()
+            .filter(|offset| (-4096..=4095).contains(offset))
+            .ok_or("expected a signed 13-bit byte offset")?,
+        _ => return Err("unsupported operand count"),
+    };
+    Ok(GlobalAddress {
+        vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
+        saddr: sgprs(saddr).ok_or("expected an aligned SGPR base pair")?,
+        offset,
+    })
 }
 
 fn immediate(operand: &Operand, max: u32) -> Option<u32> {
