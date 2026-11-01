@@ -113,6 +113,17 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src: Src0,
     },
+    /// Sets each lane's VCC bit to `src0 < src1`.
+    CmpLtF32 {
+        src0: Src0,
+        src1: Vgpr,
+    },
+    /// `dst = VCC ? src1 : src0` in each lane.
+    CndMask32 {
+        dst: Vgpr,
+        src0: Src0,
+        src1: Vgpr,
+    },
     /// `dst = src0 * src1 + src2`.
     FmaF32 {
         dst: Vgpr,

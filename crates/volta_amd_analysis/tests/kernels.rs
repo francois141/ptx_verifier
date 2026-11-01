@@ -39,6 +39,17 @@ fn the_relu_kernel_writes_its_expected_outputs() {
     );
 }
 
+#[test]
+fn the_sigmoid_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "sigmoid",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("out", 0x20000, ArrayKind::Output),
+        ],
+    );
+}
+
 /// The elements of each 8 x 8 matrix; work-item `i` computes element `i` of the product.
 const MATMUL_ELEMENTS: u32 = 8 * 8;
 

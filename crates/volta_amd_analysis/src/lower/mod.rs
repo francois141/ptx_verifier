@@ -123,6 +123,21 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src: first_source(src)?,
         }),
+        ("v_cmp_lt_f32_e32", [vcc, src0, src1]) => {
+            expect_vcc(vcc)?;
+            Ok(CmpLtF32 {
+                src0: first_source(src0)?,
+                src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+            })
+        }
+        ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
+            expect_vcc(vcc)?;
+            Ok(CndMask32 {
+                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+                src0: first_source(src0)?,
+                src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+            })
+        }
         ("v_fma_f32", [dst, src0, src1, src2]) => Ok(FmaF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
@@ -169,6 +184,8 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "v_max_f32_e32"
             | "v_exp_f32_e32"
             | "v_rcp_f32_e32"
+            | "v_cmp_lt_f32_e32"
+            | "v_cndmask_b32_e32"
             | "v_fma_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
@@ -259,6 +276,14 @@ fn scalar_source(operand: &Operand) -> Option<ScalarSrc> {
     constant(operand)
         .map(ScalarSrc::Const)
         .or_else(|| sgpr(operand).map(ScalarSrc::Sgpr))
+}
+
+/// An e32 comparison writes, and `v_cndmask_b32_e32` reads, VCC implicitly; Clang still prints it.
+fn expect_vcc(operand: &Operand) -> Result<(), &'static str> {
+    match operand {
+        Operand::Vcc => Ok(()),
+        _ => Err("expected vcc"),
+    }
 }
 
 /// Global offsets are signed 13-bit before GFX10 (LLVM 21.1.8's `validateFlatOffset`).

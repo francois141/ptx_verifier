@@ -45,6 +45,8 @@ pub enum Operand {
     Imm(u64),
     /// One of the inline float constants ±0.5, ±1.0, ±2.0 and ±4.0, as its f32 bits.
     InlineFloat(u32),
+    /// The vector condition code, one bit per lane.
+    Vcc,
     /// `vmcnt(n)` or `lgkmcnt(n)`.
     Wait { counter: Counter, value: u64 },
     /// A memory instruction's `offset:n` byte offset, which may be negative.

@@ -27,6 +27,9 @@ fn operand(text: &str) -> Option<Operand> {
     if let Some(value) = integer(text) {
         return Some(Operand::Imm(value));
     }
+    if text == "vcc" {
+        return Some(Operand::Vcc);
+    }
     if text.contains('.') {
         let value = text.parse::<f32>().ok()?;
         return INLINE_FLOATS

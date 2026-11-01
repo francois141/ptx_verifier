@@ -56,11 +56,12 @@ pub(crate) struct WaveRegisters {
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
 }
 
-/// One lane's vector registers, and the destinations of each of its loads still pending,
-/// oldest first.
+/// One lane's vector registers, its VCC bit as a boolean expression, and the destinations of
+/// each of its loads still pending, oldest first.
 #[derive(Debug, Clone)]
 struct LaneRegisters {
     values: [RegValue; 256],
+    vcc: Option<ExprId>,
     pending_loads: VecDeque<Vec<Vgpr>>,
 }
 
@@ -69,6 +70,7 @@ impl Default for WaveRegisters {
     fn default() -> Self {
         let lane = LaneRegisters {
             values: [RegValue::Uninitialized; 256],
+            vcc: None,
             pending_loads: VecDeque::new(),
         };
         Self {
@@ -230,6 +232,21 @@ impl WaveRegisters {
         base.checked_add(u64::from(offset))
             .and_then(|sum| sum.checked_add_signed(i64::from(address.offset)))
             .ok_or(EvalError::AddressOverflow)
+    }
+
+    /// `lane`'s VCC bit, which must have been written by a comparison.
+    pub fn read_vcc(&self, lane: usize) -> Result<ExprId, EvalError> {
+        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+        registers.vcc.ok_or(EvalError::UninitializedVcc { lane })
+    }
+
+    pub fn write_vcc(&mut self, lane: usize, condition: ExprId) -> Result<(), EvalError> {
+        let registers = self
+            .vector
+            .get_mut(lane)
+            .ok_or(EvalError::InvalidLane(lane))?;
+        registers.vcc = Some(condition);
+        Ok(())
     }
 
     /// Write a vector register in one lane unless the lane is invalid or a load is still writing

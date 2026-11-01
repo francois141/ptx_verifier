@@ -105,6 +105,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::MaxF32 { .. }
             | LoweredInstr::Exp2F32 { .. }
             | LoweredInstr::RcpF32 { .. }
+            | LoweredInstr::CmpLtF32 { .. }
+            | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
@@ -186,6 +188,19 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::RcpF32 { dst, src } => {
                 let a = registers.read_f32_src0(&mut self.arena, lane, *src)?;
                 let result = self.arena.rcp(a);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::CmpLtF32 { src0, src1 } => {
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
+                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
+                let less = self.arena.lt(a, b);
+                registers.write_vcc(lane, less)
+            }
+            LoweredInstr::CndMask32 { dst, src0, src1 } => {
+                let a = registers.read_src0(&mut self.arena, lane, *src0)?;
+                let b = registers.read_vgpr(lane, *src1)?;
+                let condition = registers.read_vcc(lane)?;
+                let result = self.arena.select(condition, b, a);
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::FmaF32 {
