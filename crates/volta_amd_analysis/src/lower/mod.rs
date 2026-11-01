@@ -5,7 +5,7 @@ use std::fmt;
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
-use crate::ir::{LoweredInstr, LoweredKernel, Sgpr, Src0, Vgpr};
+use crate::ir::{LoweredInstr, LoweredKernel, Sgpr, Src0, Vgpr, Vop3Src};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LowerError {
@@ -86,6 +86,16 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src: vgpr(src).ok_or("expected one source VGPR")?,
             shift: immediate(shift, u32::MAX).ok_or("expected a 32-bit immediate shift input")?,
         }),
+        ("v_and_b32_e32", [dst, src0, src1]) => Ok(And32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: first_source(src0)?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        }),
+        ("v_or_b32_e32", [dst, src0, src1]) => Ok(Or32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: first_source(src0)?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        }),
         // VOP2 also accepts an SGPR or a constant as src0; only VGPR sources are supported.
         ("v_add_f32_e32", [dst, src0, src1]) => Ok(AddF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
@@ -95,6 +105,18 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("v_max_f32_e32", [dst, src0, src1]) => Ok(MaxF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: first_source(src0)?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        }),
+        ("v_fma_f32", [dst, src0, src1, src2]) => Ok(FmaF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
+            src1: vop3_src(src1).ok_or("expected a VGPR or an inline constant second source")?,
+            src2: vop3_src(src2).ok_or("expected a VGPR or an inline constant third source")?,
+        }),
+        // VOP2 also accepts an SGPR or a constant as src0; only VGPR sources are supported.
+        ("v_fmac_f32_e32", [dst, src0, src1]) => Ok(FmacF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
         ("global_load_dword", [dst, vaddr, saddr]) => Ok(GlobalLoadDword {
@@ -110,8 +132,9 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_endpgm", []) => Ok(EndPgm),
         (
-            "s_load_dwordx2" | "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_add_f32_e32"
-            | "v_max_f32_e32" | "global_load_dword" | "global_store_dword" | "s_endpgm",
+            "s_load_dwordx2" | "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_and_b32_e32"
+            | "v_or_b32_e32" | "v_add_f32_e32" | "v_max_f32_e32" | "v_fma_f32" | "v_fmac_f32_e32"
+            | "global_load_dword" | "global_store_dword" | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
@@ -145,6 +168,15 @@ fn vgpr(operand: &Operand) -> Option<Vgpr> {
             last,
         } if first == last => u8::try_from(*first).ok().map(Vgpr),
         _ => None,
+    }
+}
+
+/// Before GFX10, VOP3 takes no literal, only inline constants (LLVM 21.1.8's
+/// `validateVOPLiteral`), of which the frontend reads the integers 0 to 64.
+fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
+    match operand {
+        Operand::Imm(value) if *value <= 64 => Some(Vop3Src::Inline(*value as u32)),
+        _ => vgpr(operand).map(Vop3Src::Vgpr),
     }
 }
 

@@ -24,6 +24,14 @@ pub struct Sgpr(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vgpr(pub u8);
 
+/// A VOP3 source: a VGPR, or an inline integer constant whose 32 bits are the operand, so in
+/// an f32 slot `1` is a denormal (LLVM 21.1.8's `printImmediate32`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vop3Src {
+    Vgpr(Vgpr),
+    Inline(u32),
+}
+
 /// The first source of a VOP2 instruction: a VGPR, an SGPR, or a constant (inline
 /// or literal) whose 32 bits are the operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +59,16 @@ pub enum LoweredInstr {
         src: Vgpr,
         shift: u32,
     },
+    And32 {
+        dst: Vgpr,
+        src0: Src0,
+        src1: Vgpr,
+    },
+    Or32 {
+        dst: Vgpr,
+        src0: Src0,
+        src1: Vgpr,
+    },
     AddF32 {
         dst: Vgpr,
         src0: Vgpr,
@@ -59,6 +77,19 @@ pub enum LoweredInstr {
     MaxF32 {
         dst: Vgpr,
         src0: Src0,
+        src1: Vgpr,
+    },
+    /// `dst = src0 * src1 + src2`.
+    FmaF32 {
+        dst: Vgpr,
+        src0: Vop3Src,
+        src1: Vop3Src,
+        src2: Vop3Src,
+    },
+    /// `dst = src0 * src1 + dst`.
+    FmacF32 {
+        dst: Vgpr,
+        src0: Vgpr,
         src1: Vgpr,
     },
     GlobalLoadDword {

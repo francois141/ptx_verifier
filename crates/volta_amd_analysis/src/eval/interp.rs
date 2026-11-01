@@ -96,8 +96,12 @@ impl<'a> Interpreter<'a> {
             }
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::Shl32 { .. }
+            | LoweredInstr::And32 { .. }
+            | LoweredInstr::Or32 { .. }
             | LoweredInstr::AddF32 { .. }
             | LoweredInstr::MaxF32 { .. }
+            | LoweredInstr::FmaF32 { .. }
+            | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
             | LoweredInstr::GlobalStoreDword { .. } => {
                 for lane in 0..64 {
@@ -137,6 +141,18 @@ impl<'a> Interpreter<'a> {
                 };
                 registers.write_vgpr(lane, *dst, result)
             }
+            LoweredInstr::And32 { dst, src0, src1 } => {
+                let a = registers.read_src0(&mut self.arena, lane, *src0)?;
+                let b = registers.read_vgpr(lane, *src1)?;
+                let result = self.arena.bit_and(a, b);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::Or32 { dst, src0, src1 } => {
+                let a = registers.read_src0(&mut self.arena, lane, *src0)?;
+                let b = registers.read_vgpr(lane, *src1)?;
+                let result = self.arena.bit_or(a, b);
+                registers.write_vgpr(lane, *dst, result)
+            }
             LoweredInstr::AddF32 { dst, src0, src1 } => {
                 let a = registers.read_f32(&mut self.arena, lane, *src0)?;
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
@@ -148,6 +164,25 @@ impl<'a> Interpreter<'a> {
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
                 let max = self.arena.max(a, b);
                 registers.write_vgpr(lane, *dst, max)
+            }
+            LoweredInstr::FmaF32 {
+                dst,
+                src0,
+                src1,
+                src2,
+            } => {
+                let a = registers.read_f32_src(&mut self.arena, lane, *src0)?;
+                let b = registers.read_f32_src(&mut self.arena, lane, *src1)?;
+                let c = registers.read_f32_src(&mut self.arena, lane, *src2)?;
+                let result = self.arena.fma(a, b, c);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::FmacF32 { dst, src0, src1 } => {
+                let a = registers.read_f32(&mut self.arena, lane, *src0)?;
+                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
+                let c = registers.read_f32(&mut self.arena, lane, *dst)?;
+                let result = self.arena.fma(a, b, c);
+                registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::GlobalLoadDword { dst, vaddr, saddr } => {
                 let address = registers.global_address(&self.arena, lane, *vaddr, *saddr)?;

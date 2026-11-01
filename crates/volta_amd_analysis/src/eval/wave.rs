@@ -3,7 +3,7 @@
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
-use crate::ir::{InstrId, Sgpr, Src0, Vgpr};
+use crate::ir::{InstrId, Sgpr, Src0, Vgpr, Vop3Src};
 
 use super::EvalError;
 
@@ -177,6 +177,21 @@ impl WaveRegisters {
             Src0::Sgpr(reg) => EvalError::InvalidFloatSgpr(reg),
             Src0::Const(bits) => EvalError::InvalidFloatConstant(bits),
         })
+    }
+
+    /// `lane`'s value of a VOP3 f32 source; a constant is the float its bits encode.
+    pub fn read_f32_src(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: Vop3Src,
+    ) -> Result<ExprId, EvalError> {
+        match src {
+            Vop3Src::Vgpr(reg) => self.read_f32(arena, lane, reg),
+            Vop3Src::Inline(bits) => {
+                f32_from_bits(arena, bits).ok_or(EvalError::InvalidFloatConstant(bits))
+            }
+        }
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
