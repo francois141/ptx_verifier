@@ -1,0 +1,13 @@
+kernel kernel(a_t, b, out)
+  a_t: hbm[4, 2]
+  b: hbm[4, 3]
+  out: hbm[2, 3]
+  x: sbuf[4, 2]
+  y: sbuf[4, 3]
+  acc: psum[2, 3]
+  z: sbuf[2, 3]
+  x = mov(a_t)
+  y = mov(b)
+  acc = matmul(x, y)
+  z = mov(acc)
+  out = mov(z)

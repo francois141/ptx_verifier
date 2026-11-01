@@ -10,8 +10,15 @@ pub struct InstrId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
+    // =========================================================================
+    // Data Movement
+    // =========================================================================
     /// `dst = src` elementwise, both of one shape.
     Mov { dst: TensorId, src: TensorId },
+
+    // =========================================================================
+    // Elementwise
+    // =========================================================================
     /// `dst = op(lhs, rhs)` elementwise, all three on-chip tiles of one shape.
     Arith {
         op: ArithOp,
@@ -24,6 +31,17 @@ pub enum LoweredInstr {
         func: ActivationFunc,
         dst: TensorId,
         data: TensorId,
+    },
+
+    // =========================================================================
+    // Tensor Engine
+    // =========================================================================
+    /// `dst = stationary.T @ moving` from SBUF tiles into a PSUM tile, contracting their
+    /// partitions; a `dst` element written before accumulates the product instead.
+    Matmul {
+        dst: TensorId,
+        stationary: TensorId,
+        moving: TensorId,
     },
     /// `dst[f, p] = data[p, f]` over on-chip tiles.
     Transpose { dst: TensorId, data: TensorId },

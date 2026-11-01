@@ -4,7 +4,7 @@
 use std::fmt;
 
 use crate::frontend::ast::{Operand, TensorName};
-use crate::ir::Shape;
+use crate::ir::{Memory, Shape};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LowerError {
@@ -39,6 +39,9 @@ pub enum StatementError {
     /// Two operands that must have one shape.
     ShapeMismatch([(TensorName, Shape); 2]),
 
+    /// A matmul's `stationary` and `moving` tiles, whose partitions (the contraction) differ.
+    ContractionMismatch([(TensorName, Shape); 2]),
+
     /// A destination whose shape is not the instruction's result's.
     ResultShape {
         tensor: TensorName,
@@ -70,6 +73,12 @@ pub enum StatementError {
 
     /// An HBM tensor where an instruction takes on-chip tiles only.
     OffChip(TensorName),
+
+    /// A tensor outside the one memory its operand must be in, e.g. a matmul's PSUM destination.
+    WrongMemory {
+        tensor: TensorName,
+        expected: Memory,
+    },
 }
 
 impl fmt::Display for LowerError {
@@ -101,6 +110,11 @@ impl fmt::Display for StatementError {
                 f,
                 "`{left}` has shape {left_shape} but `{right}` has shape {right_shape}"
             ),
+            Self::ContractionMismatch([(left, left_shape), (right, right_shape)]) => write!(
+                f,
+                "`{left}` has shape {left_shape} but `{right}` has shape {right_shape}: \
+                 their partitions must match"
+            ),
             Self::ResultShape {
                 tensor,
                 shape,
@@ -122,6 +136,9 @@ impl fmt::Display for StatementError {
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")
+            }
+            Self::WrongMemory { tensor, expected } => {
+                write!(f, "`{tensor}` must be in {}", expected.name())
             }
         }
     }

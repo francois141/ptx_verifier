@@ -5,7 +5,7 @@
 use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
 
-use crate::ir::{ActivationFunc, ArithOp, InstrId, LoweredInstr, LoweredKernel, TensorId};
+use crate::ir::{ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, TensorId};
 
 use super::EvalError;
 use super::tensor::TensorState;
@@ -65,6 +65,11 @@ impl<'a> Interpreter<'a> {
                     self.tensors[dst].write(index, value);
                 }
             }
+            LoweredInstr::Matmul {
+                dst,
+                stationary,
+                moving,
+            } => self.matmul(instr, dst, [stationary, moving])?,
             LoweredInstr::Transpose { dst, data } => {
                 // Every element is read before any is written: `dst` may be `data` itself.
                 let mut values = Vec::new();
@@ -90,6 +95,44 @@ impl<'a> Interpreter<'a> {
                 self.arena.rcp(denominator)
             }
         }
+    }
+
+    /// Each `dst[row, column]` as the sum over `k` of `stationary[k, row] * moving[k, column]`.
+    /// With `nc_matmul`'s default `accumulate=None`, a PSUM element's first write overwrites
+    /// it and later ones accumulate. `dst` is in PSUM and the operands in SBUF, so none alias.
+    fn matmul(
+        &mut self,
+        instr: InstrId,
+        dst: TensorId,
+        [stationary, moving]: [TensorId; 2],
+    ) -> Result<(), EvalError> {
+        let [contraction, rows] = self.tensors[stationary].tile_shape();
+        let [_, columns] = self.tensors[moving].tile_shape();
+        for row in 0..rows {
+            for column in 0..columns {
+                let index = Index(vec![row, column]);
+                let mut sum = match self.tensors[dst].written(&index) {
+                    Some(earlier) => earlier,
+                    None => self.arena.int(0),
+                };
+                for k in 0..contraction {
+                    let a = self.tensors[stationary].read(
+                        &mut self.arena,
+                        instr,
+                        &Index(vec![k, row]),
+                    )?;
+                    let b = self.tensors[moving].read(
+                        &mut self.arena,
+                        instr,
+                        &Index(vec![k, column]),
+                    )?;
+                    let product = self.arena.mul(a, b);
+                    sum = self.arena.add(sum, product);
+                }
+                self.tensors[dst].write(index, sum);
+            }
+        }
+        Ok(())
     }
 
     fn into_outputs(self, params: &[TensorId]) -> SymbolicOutputs {

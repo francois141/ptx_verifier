@@ -1,0 +1,13 @@
+kernel kernel(a_t, b, out)
+  assert a_t.shape == [4, 2]
+  assert b.shape == [4, 3]
+  assert out.shape == [2, 3]
+  x: sbuf[4, 2] of a_t.dtype
+  y: sbuf[4, 3] of b.dtype
+  acc: psum[2, 3] of float32
+  z: sbuf[2, 3] of float32
+  dma_copy(dst=x, src=a_t)
+  dma_copy(dst=y, src=b)
+  nc_matmul(dst=acc, moving=y, stationary=x)
+  tensor_copy(dst=z, src=acc)
+  dma_copy(dst=out, src=z)

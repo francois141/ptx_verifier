@@ -44,6 +44,17 @@ impl fmt::Display for LoweredKernel {
                 LoweredInstr::Activation { func, dst, data } => {
                     writeln!(f, "  {} = {}({})", name(dst), func.name(), name(data))?
                 }
+                LoweredInstr::Matmul {
+                    dst,
+                    stationary,
+                    moving,
+                } => writeln!(
+                    f,
+                    "  {} = matmul({}, {})",
+                    name(dst),
+                    name(stationary),
+                    name(moving)
+                )?,
                 LoweredInstr::Transpose { dst, data } => {
                     writeln!(f, "  {} = transpose({})", name(dst), name(data))?
                 }

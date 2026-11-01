@@ -69,6 +69,9 @@ fn lower_instruction(
     scope: &Scope,
 ) -> Result<LoweredInstr, StatementError> {
     match instruction.opcode.as_str() {
+        // =====================================================================
+        // Data Movement
+        // =====================================================================
         "dma_copy" => {
             let [dst, src] = operands(instruction, &["dst", "src"])?;
             let [dst, src] = [scope.shaped(dst, "dst")?, scope.shaped(src, "src")?];
@@ -79,6 +82,22 @@ fn lower_instruction(
             })
         }
 
+        "tensor_copy" => {
+            let [dst, src] = operands(instruction, &["dst", "src"])?;
+            let [dst, src] = [scope.shaped(dst, "dst")?, scope.shaped(src, "src")?];
+            for tile in [&dst, &src] {
+                tile_extents(tile)?;
+            }
+            same_shape(&dst, &src)?;
+            Ok(LoweredInstr::Mov {
+                dst: dst.id,
+                src: src.id,
+            })
+        }
+
+        // =====================================================================
+        // Elementwise
+        // =====================================================================
         "tensor_tensor" => {
             let [dst, data1, data2, op] = operands(instruction, &["dst", "data1", "data2", "op"])?;
             let op = arith_op(op)?;
@@ -100,19 +119,6 @@ fn lower_instruction(
             })
         }
 
-        "tensor_copy" => {
-            let [dst, src] = operands(instruction, &["dst", "src"])?;
-            let [dst, src] = [scope.shaped(dst, "dst")?, scope.shaped(src, "src")?];
-            for tile in [&dst, &src] {
-                tile_extents(tile)?;
-            }
-            same_shape(&dst, &src)?;
-            Ok(LoweredInstr::Mov {
-                dst: dst.id,
-                src: src.id,
-            })
-        }
-
         "activation" => {
             let [dst, op, data] = operands(instruction, &["dst", "op", "data"])?;
             let func = activation_func(op)?;
@@ -125,6 +131,36 @@ fn lower_instruction(
                 func,
                 dst: dst.id,
                 data: data.id,
+            })
+        }
+
+        // =====================================================================
+        // Tensor Engine
+        // =====================================================================
+        "nc_matmul" => {
+            let [dst, stationary, moving] =
+                operands(instruction, &["dst", "stationary", "moving"])?;
+            let [dst, stationary, moving] = [
+                scope.shaped(dst, "dst")?,
+                scope.shaped(stationary, "stationary")?,
+                scope.shaped(moving, "moving")?,
+            ];
+            in_memory(&stationary, Memory::Sbuf)?;
+            in_memory(&moving, Memory::Sbuf)?;
+            in_memory(&dst, Memory::Psum)?;
+            let [[contraction, rows], [moving_contraction, columns]] =
+                [tile_extents(&stationary)?, tile_extents(&moving)?];
+            if contraction != moving_contraction {
+                return Err(StatementError::ContractionMismatch([
+                    (stationary.name.clone(), stationary.shape.clone()),
+                    (moving.name.clone(), moving.shape.clone()),
+                ]));
+            }
+            result_shape(&dst, Shape(vec![rows, columns]))?;
+            Ok(LoweredInstr::Matmul {
+                dst: dst.id,
+                stationary: stationary.id,
+                moving: moving.id,
             })
         }
 
@@ -143,6 +179,10 @@ fn lower_instruction(
         opcode => Err(StatementError::UnsupportedInstruction(opcode.into())),
     }
 }
+
+// =============================================================================
+// Operands
+// =============================================================================
 
 /// The operands of `instruction` in the order of `keywords`, exactly its operand keywords.
 fn operands<'a, const N: usize>(
@@ -185,12 +225,26 @@ fn activation_func(operand: &Operand) -> Result<ActivationFunc, StatementError> 
         .ok_or_else(|| StatementError::UnsupportedActivation(operand.clone()))
 }
 
+// =============================================================================
+// Operand Checks
+// =============================================================================
+
 /// `operand`'s `[partitions, free]` extents; every SBUF and PSUM tensor is a two-dimensional tile.
 fn tile_extents(operand: &Shaped) -> Result<[u64; 2], StatementError> {
     match (operand.memory, &operand.shape.0[..]) {
         (Memory::Sbuf | Memory::Psum, &[partitions, free]) => Ok([partitions, free]),
         _ => Err(StatementError::OffChip(operand.name.clone())),
     }
+}
+
+fn in_memory(operand: &Shaped, expected: Memory) -> Result<(), StatementError> {
+    if operand.memory == expected {
+        return Ok(());
+    }
+    Err(StatementError::WrongMemory {
+        tensor: operand.name.clone(),
+        expected,
+    })
 }
 
 /// Check that `dst` has the shape `expected` of the instruction's result.
@@ -214,6 +268,10 @@ fn same_shape(left: &Shaped, right: &Shaped) -> Result<(), StatementError> {
         (right.name.clone(), right.shape.clone()),
     ]))
 }
+
+// =============================================================================
+// Scope
+// =============================================================================
 
 /// A tensor as lowering sees it: a parameter has no shape until one is asserted.
 struct Entry {

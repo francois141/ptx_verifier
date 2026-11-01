@@ -29,6 +29,15 @@ impl<'a> TensorState<'a> {
         &self.tensor.name
     }
 
+    /// Its `[partitions, free]` shape, for an operand lowering requires to be an on-chip
+    /// tile, which always has two dimensions.
+    pub(super) fn tile_shape(&self) -> [u64; 2] {
+        let [partitions, free] = self.tensor.shape.0[..] else {
+            unreachable!("`{}` is not a two-dimensional tile", self.tensor.name);
+        };
+        [partitions, free]
+    }
+
     /// The tensor's indices, whose offsets must fit in a `u64`.
     pub(super) fn indices(
         &self,
@@ -65,6 +74,11 @@ impl<'a> TensorState<'a> {
                 index: index.clone(),
             }),
         }
+    }
+
+    /// The value last written at `index`, if any.
+    pub(super) fn written(&self, index: &Index) -> Option<ExprId> {
+        self.written.get(index).copied()
     }
 
     pub(super) fn write(&mut self, index: Index, value: ExprId) {
