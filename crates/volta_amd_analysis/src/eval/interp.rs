@@ -103,6 +103,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
+            | LoweredInstr::GlobalLoadDwordx3 { .. }
+            | LoweredInstr::GlobalLoadDwordx4 { .. }
             | LoweredInstr::GlobalStoreDword { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
@@ -154,7 +156,7 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::AddF32 { dst, src0, src1 } => {
-                let a = registers.read_f32(&mut self.arena, lane, *src0)?;
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
                 let sum = self.arena.add(a, b);
                 registers.write_vgpr(lane, *dst, sum)
@@ -185,9 +187,13 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::GlobalLoadDword { dst, address } => {
-                let address = registers.global_address(&self.arena, lane, *address)?;
-                let value = self.global.load_dword(address, &mut self.arena)?;
-                registers.start_vector_load(lane, *dst, value)
+                registers.global_load(&mut self.arena, &self.global, lane, &[*dst], *address)
+            }
+            LoweredInstr::GlobalLoadDwordx3 { dst, address } => {
+                registers.global_load(&mut self.arena, &self.global, lane, dst, *address)
+            }
+            LoweredInstr::GlobalLoadDwordx4 { dst, address } => {
+                registers.global_load(&mut self.arena, &self.global, lane, dst, *address)
             }
             LoweredInstr::GlobalStoreDword { src, address } => {
                 let address = registers.global_address(&self.arena, lane, *address)?;

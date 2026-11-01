@@ -1,11 +1,14 @@
 //! The execution state of one wave of workgroup 0.
 
+use std::collections::VecDeque;
+
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
 use crate::ir::{GlobalAddress, InstrId, Sgpr, Src0, Vgpr, Vop3Src};
 
 use super::EvalError;
+use super::global::GlobalMemory;
 
 /// A wave of workgroup 0, identified by its index: wave `w` holds work-items `64w` to `64w + 63`.
 #[id_type]
@@ -49,16 +52,28 @@ enum RegValue {
 /// Register storage for one CDNA4 wave.
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
-    scalar: [RegValue; 102],      // Scalar registers are shared by the wave.
-    vector: Vec<[RegValue; 256]>, // Vector registers have a value per lane.
+    scalar: [RegValue; 102],    // Scalar registers are shared by the wave.
+    vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
+}
+
+/// One lane's vector registers, and the destinations of each of its loads still pending,
+/// oldest first.
+#[derive(Debug, Clone)]
+struct LaneRegisters {
+    values: [RegValue; 256],
+    pending_loads: VecDeque<Vec<Vgpr>>,
 }
 
 // Initialize the wave with all registers unwritten.
 impl Default for WaveRegisters {
     fn default() -> Self {
+        let lane = LaneRegisters {
+            values: [RegValue::Uninitialized; 256],
+            pending_loads: VecDeque::new(),
+        };
         Self {
             scalar: [RegValue::Uninitialized; 102],
-            vector: vec![[RegValue::Uninitialized; 256]; 64],
+            vector: vec![lane; 64],
         }
     }
 }
@@ -131,7 +146,7 @@ impl WaveRegisters {
     /// pending load's destination.
     pub fn read_vgpr(&self, lane: usize, reg: Vgpr) -> Result<ExprId, EvalError> {
         let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
-        match registers[usize::from(reg.0)] {
+        match registers.values[usize::from(reg.0)] {
             RegValue::Ready(value) => Ok(value),
             RegValue::Pending(_) => Err(EvalError::PendingVgpr { lane, reg }),
             RegValue::Uninitialized => Err(EvalError::UninitializedVgpr { lane, reg }),
@@ -224,14 +239,33 @@ impl WaveRegisters {
         Ok(())
     }
 
-    /// Keep a vector load's result unreadable until a wait establishes its completion.
-    pub(super) fn start_vector_load(
+    /// Load one input word per register of `dst` from consecutive addresses, keeping the results
+    /// unreadable until a wait establishes the load's completion.
+    pub(super) fn global_load(
         &mut self,
+        arena: &mut ExprArena,
+        global: &GlobalMemory,
         lane: usize,
-        reg: Vgpr,
-        value: ExprId,
+        dst: &[Vgpr],
+        address: GlobalAddress,
     ) -> Result<(), EvalError> {
-        *self.vector_destination(lane, reg)? = RegValue::Pending(value);
+        let start = self.global_address(arena, lane, address)?;
+        let mut values = Vec::with_capacity(dst.len());
+        for i in 0..dst.len() as u64 {
+            let word_address = start.checked_add(4 * i).ok_or(EvalError::AddressOverflow)?;
+            values.push(global.load_dword(word_address, arena)?);
+        }
+
+        // Check every destination before changing any register.
+        for &reg in dst {
+            self.vector_destination(lane, reg)?;
+        }
+
+        let registers = &mut self.vector[lane];
+        for (&reg, value) in dst.iter().zip(values) {
+            registers.values[usize::from(reg.0)] = RegValue::Pending(value);
+        }
+        registers.pending_loads.push_back(dst.to_vec());
         Ok(())
     }
 
@@ -240,18 +274,27 @@ impl WaveRegisters {
             .vector
             .get_mut(lane)
             .ok_or(EvalError::InvalidLane(lane))?;
-        let slot = &mut registers[usize::from(reg.0)];
+        let slot = &mut registers.values[usize::from(reg.0)];
         match slot {
             RegValue::Pending(_) => Err(EvalError::PendingVgpr { lane, reg }),
             _ => Ok(slot),
         }
     }
 
-    /// Make every lane's pending vector loads readable after vmcnt(0).
-    pub(super) fn finish_vector_loads(&mut self) {
-        for slot in self.vector.iter_mut().flatten() {
-            if let RegValue::Pending(value) = *slot {
-                *slot = RegValue::Ready(value);
+    /// Wait until at most `outstanding` loads per lane are in flight. Loads return in issue order,
+    /// so only the most recent ones stay pending; stores are assumed to have completed.
+    pub(super) fn finish_vector_loads(&mut self, outstanding: usize) {
+        for registers in &mut self.vector {
+            let completed = registers.pending_loads.len().saturating_sub(outstanding);
+
+            for load in registers.pending_loads.drain(..completed) {
+                for reg in load {
+                    let slot = &mut registers.values[usize::from(reg.0)];
+
+                    if let RegValue::Pending(value) = *slot {
+                        *slot = RegValue::Ready(value);
+                    }
+                }
             }
         }
     }

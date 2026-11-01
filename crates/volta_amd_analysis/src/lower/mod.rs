@@ -96,10 +96,9 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
-        // VOP2 also accepts an SGPR or a constant as src0; only VGPR sources are supported.
         ("v_add_f32_e32", [dst, src0, src1]) => Ok(AddF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
+            src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
         ("v_max_f32_e32", [dst, src0, src1]) => Ok(MaxF32 {
@@ -123,6 +122,14 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             address: global_address(vaddr, saddr, offset)?,
         }),
+        ("global_load_dwordx3", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDwordx3 {
+            dst: vgprs(dst).ok_or("expected an even-aligned three-VGPR destination")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
+        ("global_load_dwordx4", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDwordx4 {
+            dst: vgprs(dst).ok_or("expected an even-aligned four-VGPR destination")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
         ("global_store_dword", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDword {
             src: vgpr(src).ok_or("expected one source VGPR")?,
             address: global_address(vaddr, saddr, offset)?,
@@ -130,9 +137,20 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_endpgm", []) => Ok(EndPgm),
         (
-            "s_load_dwordx2" | "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_and_b32_e32"
-            | "v_or_b32_e32" | "v_add_f32_e32" | "v_max_f32_e32" | "v_fma_f32" | "v_fmac_f32_e32"
-            | "global_load_dword" | "global_store_dword" | "s_endpgm",
+            "s_load_dwordx2"
+            | "s_load_dwordx4"
+            | "v_lshlrev_b32_e32"
+            | "v_and_b32_e32"
+            | "v_or_b32_e32"
+            | "v_add_f32_e32"
+            | "v_max_f32_e32"
+            | "v_fma_f32"
+            | "v_fmac_f32_e32"
+            | "global_load_dword"
+            | "global_load_dwordx3"
+            | "global_load_dwordx4"
+            | "global_store_dword"
+            | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
@@ -167,6 +185,25 @@ fn vgpr(operand: &Operand) -> Option<Vgpr> {
         } if first == last => u8::try_from(*first).ok().map(Vgpr),
         _ => None,
     }
+}
+
+/// gfx950 requires VGPR tuples to start at an even register (LLVM 21.1.8's `validateVGPRAlign`).
+fn vgprs<const N: usize>(operand: &Operand) -> Option<[Vgpr; N]> {
+    let Operand::Reg {
+        file: RegFile::Vector,
+        first,
+        last,
+    } = *operand
+    else {
+        return None;
+    };
+    let first = u8::try_from(first).ok()?;
+    let last = u8::try_from(last).ok()?;
+    let count = usize::from(last.checked_sub(first)?) + 1;
+    if count != N || first % 2 != 0 {
+        return None;
+    }
+    Some(std::array::from_fn(|i| Vgpr(first + i as u8)))
 }
 
 /// Before GFX10, VOP3 takes no literal, only inline constants (LLVM 21.1.8's

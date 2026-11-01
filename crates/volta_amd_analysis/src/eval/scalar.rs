@@ -53,15 +53,11 @@ impl Interpreter<'_> {
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
                 let registers = &mut self.waves[wave].registers;
                 // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
-                // Vector loads return in issue order, but only vmcnt(0) is modeled.
-                if [vmcnt, lgkmcnt]
-                    .iter()
-                    .any(|count| count.is_some_and(|n| n != 0))
-                {
+                if lgkmcnt.is_some_and(|n| n != 0) {
                     return Err(EvalError::UnsupportedInstruction);
                 }
-                if vmcnt.is_some() {
-                    registers.finish_vector_loads();
+                if let Some(outstanding) = vmcnt {
+                    registers.finish_vector_loads(usize::from(*outstanding));
                 }
                 if lgkmcnt.is_some() {
                     registers.finish_scalar_loads();

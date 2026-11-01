@@ -80,7 +80,7 @@ pub enum LoweredInstr {
     },
     AddF32 {
         dst: Vgpr,
-        src0: Vgpr,
+        src0: Src0,
         src1: Vgpr,
     },
     MaxF32 {
@@ -103,6 +103,14 @@ pub enum LoweredInstr {
     },
     GlobalLoadDword {
         dst: Vgpr,
+        address: GlobalAddress,
+    },
+    GlobalLoadDwordx3 {
+        dst: [Vgpr; 3],
+        address: GlobalAddress,
+    },
+    GlobalLoadDwordx4 {
+        dst: [Vgpr; 4],
         address: GlobalAddress,
     },
     GlobalStoreDword {
