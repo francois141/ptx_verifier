@@ -101,9 +101,10 @@ impl GlobalMemory {
     /// Output elements cannot be loaded, so no wave observes the store, and the time the
     /// hardware makes it visible is not modeled.
     pub fn store_dword(&mut self, address: u64, value: ExprId) -> Result<(), EvalError> {
-        let is_output = self.regions.iter().any(|region| {
-            region.kind == ArrayKind::Output && region.element_at(address).is_some()
-        });
+        let is_output = self
+            .regions
+            .iter()
+            .any(|region| region.kind == ArrayKind::Output && region.element_at(address).is_some());
         if !is_output {
             return Err(EvalError::GlobalWrite { address });
         }
