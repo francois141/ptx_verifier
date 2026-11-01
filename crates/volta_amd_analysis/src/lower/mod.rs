@@ -106,6 +106,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
+        ("v_exp_f32_e32", [dst, src]) => Ok(Exp2F32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: first_source(src)?,
+        }),
         ("v_fma_f32", [dst, src0, src1, src2]) => Ok(FmaF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
@@ -144,6 +148,7 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "v_or_b32_e32"
             | "v_add_f32_e32"
             | "v_max_f32_e32"
+            | "v_exp_f32_e32"
             | "v_fma_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"

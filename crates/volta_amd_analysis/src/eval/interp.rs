@@ -100,6 +100,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Or32 { .. }
             | LoweredInstr::AddF32 { .. }
             | LoweredInstr::MaxF32 { .. }
+            | LoweredInstr::Exp2F32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
@@ -166,6 +167,11 @@ impl<'a> Interpreter<'a> {
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
                 let max = self.arena.max(a, b);
                 registers.write_vgpr(lane, *dst, max)
+            }
+            LoweredInstr::Exp2F32 { dst, src } => {
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src)?;
+                let result = self.arena.exp2(a);
+                registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::FmaF32 {
                 dst,

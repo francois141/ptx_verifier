@@ -215,7 +215,7 @@ impl<'p> Interpreter<'p> {
         let Some(bits) = self.arena.as_int_const(e) else {
             let bias = self.arena.int(127);
             let exponent = self.arena.sub(e, bias);
-            return self.ex2(pc, exponent);
+            return Ok(self.arena.exp2(exponent));
         };
         if bits == 0xFF {
             return Err(unsupported(

@@ -88,6 +88,11 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
+    /// `dst = 2^src`.
+    Exp2F32 {
+        dst: Vgpr,
+        src: Src0,
+    },
     /// `dst = src0 * src1 + src2`.
     FmaF32 {
         dst: Vgpr,

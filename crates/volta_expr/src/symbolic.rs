@@ -873,6 +873,75 @@ impl ExprArena {
         self.push(ExprNode::Log(a))
     }
 
+    /// `2^a` over the reals: `exp(a * ln 2)`, or `exp(v)` for the compilers' `exp(v)` idiom
+    /// `2^(v * log2(e))`, which kernels spell with a float32 `log2(e)` (an `exp(v * 0.99999...)`
+    /// over the reals) and is folded to the exact `exp(v)` it approximates.
+    pub fn exp2(&mut self, a: ExprId) -> ExprId {
+        if let Some(argument) = self.factor_log2e(a) {
+            return self.exp(argument);
+        }
+        let ln2 = self.ln2_f32();
+        let scaled = self.mul(a, ln2);
+        self.exp(scaled)
+    }
+
+    /// `log2(a)` over the reals, as `log(a) / ln 2`, the mirror of [`Self::exp2`].
+    pub fn log2(&mut self, a: ExprId) -> ExprId {
+        let log = self.log(a);
+        let ln2 = self.ln2_f32();
+        self.div(log, ln2)
+    }
+
+    /// `ln 2` as the exact reciprocal of float32's `log2(e)`: scaled exponentials then
+    /// canonicalize exactly to a spec's `exp` form and `exp2(log2(x))` cancels, where an f64
+    /// `ln 2` would leave ~1e-8 error.
+    fn ln2_f32(&mut self) -> ExprId {
+        let log2e = Real::from_f64(f64::from(std::f64::consts::LOG2_E as f32))
+            .expect("log2(e) is not NaN");
+        self.real(log2e.try_recip().expect("log2(e) is nonzero"))
+    }
+
+    /// Pulls a `log2(e)`-ish constant (within float32 rounding) out of a `Mul`/`Fma`/`Add`
+    /// chain, folding in each term's sign, so that `a == log2e * factor_log2e(a)`; `None` when
+    /// no such factor exists.
+    fn factor_log2e(&mut self, a: ExprId) -> Option<ExprId> {
+        let log2e = std::f64::consts::LOG2_E;
+        let is_log2e_like = |value: f64| (value.abs() - log2e).abs() <= log2e * 1e-6;
+        match self.node(a).clone() {
+            ExprNode::Mul(l, r) => {
+                for (constant, other) in [(l, r), (r, l)] {
+                    let value = match self.node(constant) {
+                        ExprNode::RealConst(real) => real.to_f64(),
+                        _ => continue,
+                    };
+                    if !is_log2e_like(value) {
+                        continue;
+                    }
+                    return Some(if value < 0.0 { self.neg(other) } else { other });
+                }
+                None
+            }
+            ExprNode::Fma(x, c, rest) => {
+                let value = match self.node(c) {
+                    ExprNode::RealConst(real) => real.to_f64(),
+                    _ => return None,
+                };
+                if !is_log2e_like(value) {
+                    return None;
+                }
+                let x_signed = if value < 0.0 { self.neg(x) } else { x };
+                let rest_factored = self.factor_log2e(rest)?;
+                Some(self.add(x_signed, rest_factored))
+            }
+            ExprNode::Add(l, r) => {
+                let l_factored = self.factor_log2e(l)?;
+                let r_factored = self.factor_log2e(r)?;
+                Some(self.add(l_factored, r_factored))
+            }
+            _ => None,
+        }
+    }
+
     /// Square root: sqrt(a)
     pub fn sqrt(&mut self, a: ExprId) -> ExprId {
         self.push(ExprNode::Sqrt(a))

@@ -13,12 +13,7 @@ use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
 use crate::logging::warn;
-use volta_expr::{ExprId, ExprNode, Real};
-
-/// `log2(e)` rounded to float32 - the constant PTX kernels actually
-/// multiply by before `ex2`, and the one Volta's base conversion is
-/// anchored to (see [`Interpreter::ln2_constant`]).
-const LOG2_E_F32: f64 = std::f64::consts::LOG2_E as f32 as f64;
+use volta_expr::{ExprId, Real};
 
 /// Which 16-bit half of a `.b32` funnel-shift operand to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,83 +281,6 @@ impl<'p> Interpreter<'p> {
         })
     }
 
-    /// `2^a` as Volta models PTX `ex2`: `exp(a * ln 2)`, or `exp(v)` for the
-    /// `ex2(v * log2(e))` idiom.
-    pub(in crate::eval) fn ex2(&mut self, pc: InstrId, a: ExprId) -> EvalResult<ExprId> {
-        if let Some(folded) = self.fold_exp_idiom(a) {
-            return Ok(folded);
-        }
-        let ln2 = self.ln2_constant(pc)?;
-        let scaled = self.arena.mul(a, ln2);
-        Ok(self.arena.exp(scaled))
-    }
-
-    /// Folds the PTX `exp(v)` idiom `ex2(v * c)`, `c` within float32 rounding of
-    /// ±log2(e) (possibly spread per term over an `Fma`/`Add` chain, see
-    /// [`Self::factor_log2e`]), to an exact `exp(...)`; `None` if `a` doesn't factor.
-    fn fold_exp_idiom(&mut self, a: ExprId) -> Option<ExprId> {
-        let argument = self.factor_log2e(a)?;
-        Some(self.arena.exp(argument))
-    }
-
-    /// `ln 2` as the exact reciprocal of float32's `log2(e)`, read by `ex2` and
-    /// `lg2`: scaled exponentials then canonicalize exactly to a spec's `exp` form
-    /// and `ex2(lg2(x))` cancels, where an f64 `ln 2` would leave ~1e-8 error.
-    fn ln2_constant(&mut self, pc: InstrId) -> EvalResult<ExprId> {
-        let unsupported = |what: String| EvalError::Unsupported { pc, what };
-        let log2e = Real::from_f64(LOG2_E_F32)
-            .map_err(|e| unsupported(format!("ex2/lg2 log2(e) constant: {e}")))?;
-        let ln2 = log2e
-            .try_recip()
-            .ok_or_else(|| unsupported("ex2/lg2 log2(e) constant is zero".to_string()))?;
-        Ok(self.arena.real(ln2))
-    }
-
-    /// Pulls a `log2(e)`-ish constant (within float32 rounding) out of a
-    /// `Mul`/`Fma`/`Add` chain, folding in each term's sign, so that
-    /// `a == log2e * factor_log2e(a)`; `None` when no such factor exists.
-    fn factor_log2e(&mut self, a: ExprId) -> Option<ExprId> {
-        let log2e = std::f64::consts::LOG2_E;
-        let is_log2e_like = |value: f64| (value.abs() - log2e).abs() <= log2e * 1e-6;
-        match self.arena.node(a).clone() {
-            ExprNode::Mul(l, r) => {
-                for (constant, other) in [(l, r), (r, l)] {
-                    let value = match self.arena.node(constant) {
-                        ExprNode::RealConst(real) => real.to_f64(),
-                        _ => continue,
-                    };
-                    if !is_log2e_like(value) {
-                        continue;
-                    }
-                    return Some(if value < 0.0 {
-                        self.arena.neg(other)
-                    } else {
-                        other
-                    });
-                }
-                None
-            }
-            ExprNode::Fma(x, c, rest) => {
-                let value = match self.arena.node(c) {
-                    ExprNode::RealConst(real) => real.to_f64(),
-                    _ => return None,
-                };
-                if !is_log2e_like(value) {
-                    return None;
-                }
-                let x_signed = if value < 0.0 { self.arena.neg(x) } else { x };
-                let rest_factored = self.factor_log2e(rest)?;
-                Some(self.arena.add(x_signed, rest_factored))
-            }
-            ExprNode::Add(l, r) => {
-                let l_factored = self.factor_log2e(l)?;
-                let r_factored = self.factor_log2e(r)?;
-                Some(self.arena.add(l_factored, r_factored))
-            }
-            _ => None,
-        }
-    }
-
     pub(in crate::eval) fn eval_unop(
         &mut self,
         pc: InstrId,
@@ -413,10 +331,8 @@ impl<'p> Interpreter<'p> {
                 self.arena.rcp(s)
             }
             UnaryOp::Exp => self.arena.exp(a),
-            // 2^x = e^(x*ln2) keeps this in the exp fragment. The `ex2(v * log2e)`
-            // exp idiom (a float32 log2e, so exp(v * 0.99999999...) over the
-            // reals) is first folded to an exact exp(v), like ex2.approx as 2^x.
-            UnaryOp::Ex2 => self.ex2(pc, a)?,
+            // 2^x = e^(x*ln2) keeps this in the exp fragment.
+            UnaryOp::Ex2 => self.arena.exp2(a),
             // tanh(x) = (e^2x - 1) / (e^2x + 1), so this too stays in the
             // interpreted exp fragment rather than becoming an opaque atom
             // (same approach as `Ex2` above).
@@ -432,11 +348,7 @@ impl<'p> Interpreter<'p> {
             // PTX has no natural log: `lg2.approx` is how one is spelled,
             // so it is read as an exact log(a) / ln2 rather than an opaque
             // atom - the mirror of `Ex2` above.
-            UnaryOp::Lg2 => {
-                let log = self.arena.log(a);
-                let ln2 = self.ln2_constant(pc)?;
-                self.arena.div(log, ln2)
-            }
+            UnaryOp::Lg2 => self.arena.log2(a),
         })
     }
 
