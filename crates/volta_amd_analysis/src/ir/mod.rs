@@ -41,6 +41,13 @@ pub enum Src0 {
     Const(u32),
 }
 
+/// The source of a scalar ALU instruction: an SGPR or a constant whose 32 bits are the operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarSrc {
+    Sgpr(Sgpr),
+    Const(u32),
+}
+
 /// A global instruction's address in each lane: the SGPR-pair base, plus the lane's VGPR as a
 /// 32-bit unsigned offset, plus a signed 13-bit immediate byte offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +68,10 @@ pub enum LoweredInstr {
         dst: [Sgpr; 4],
         base: [Sgpr; 2],
         offset: u32,
+    },
+    MovScalar32 {
+        dst: Sgpr,
+        src: ScalarSrc,
     },
     /// The shift input is preserved; AMD uses its low five bits.
     Shl32 {
@@ -83,6 +94,11 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
+    MulF32 {
+        dst: Vgpr,
+        src0: Src0,
+        src1: Vgpr,
+    },
     MaxF32 {
         dst: Vgpr,
         src0: Src0,
@@ -90,6 +106,10 @@ pub enum LoweredInstr {
     },
     /// `dst = 2^src`.
     Exp2F32 {
+        dst: Vgpr,
+        src: Src0,
+    },
+    RcpF32 {
         dst: Vgpr,
         src: Src0,
     },
@@ -127,5 +147,7 @@ pub enum LoweredInstr {
         vmcnt: Option<u8>,
         lgkmcnt: Option<u8>,
     },
+    /// Waits out a hazard, which execution does not model.
+    Nop,
     EndPgm,
 }

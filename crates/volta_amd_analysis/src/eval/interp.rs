@@ -91,7 +91,9 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::ScalarLoadDwordx2 { .. }
             | LoweredInstr::ScalarLoadDwordx4 { .. }
-            | LoweredInstr::WaitCnt { .. } => {
+            | LoweredInstr::MovScalar32 { .. }
+            | LoweredInstr::WaitCnt { .. }
+            | LoweredInstr::Nop => {
                 self.execute_scalar(wave, instruction)?;
             }
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
@@ -99,8 +101,10 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::And32 { .. }
             | LoweredInstr::Or32 { .. }
             | LoweredInstr::AddF32 { .. }
+            | LoweredInstr::MulF32 { .. }
             | LoweredInstr::MaxF32 { .. }
             | LoweredInstr::Exp2F32 { .. }
+            | LoweredInstr::RcpF32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
@@ -162,6 +166,12 @@ impl<'a> Interpreter<'a> {
                 let sum = self.arena.add(a, b);
                 registers.write_vgpr(lane, *dst, sum)
             }
+            LoweredInstr::MulF32 { dst, src0, src1 } => {
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
+                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
+                let product = self.arena.mul(a, b);
+                registers.write_vgpr(lane, *dst, product)
+            }
             LoweredInstr::MaxF32 { dst, src0, src1 } => {
                 let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
@@ -171,6 +181,11 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::Exp2F32 { dst, src } => {
                 let a = registers.read_f32_src0(&mut self.arena, lane, *src)?;
                 let result = self.arena.exp2(a);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::RcpF32 { dst, src } => {
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src)?;
+                let result = self.arena.rcp(a);
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::FmaF32 {

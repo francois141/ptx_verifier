@@ -5,7 +5,7 @@ use std::fmt;
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
-use crate::ir::{GlobalAddress, LoweredInstr, LoweredKernel, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{GlobalAddress, LoweredInstr, LoweredKernel, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LowerError {
@@ -81,6 +81,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             offset: immediate(offset, 0xfffff)
                 .ok_or("expected a nonnegative 20-bit byte offset")?,
         }),
+        ("s_mov_b32", [dst, src]) => Ok(MovScalar32 {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
+        }),
         ("v_lshlrev_b32_e32", [dst, shift, src]) => Ok(Shl32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -101,12 +105,21 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
+        ("v_mul_f32_e32", [dst, src0, src1]) => Ok(MulF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: first_source(src0)?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        }),
         ("v_max_f32_e32", [dst, src0, src1]) => Ok(MaxF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
         ("v_exp_f32_e32", [dst, src]) => Ok(Exp2F32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: first_source(src)?,
+        }),
+        ("v_rcp_f32_e32", [dst, src]) => Ok(RcpF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src: first_source(src)?,
         }),
@@ -139,22 +152,30 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("s_waitcnt", operands) => lower_wait(operands),
+        ("s_nop", [wait_states]) => {
+            immediate(wait_states, 15).ok_or("expected a wait count from 0 to 15")?;
+            Ok(Nop)
+        }
         ("s_endpgm", []) => Ok(EndPgm),
         (
             "s_load_dwordx2"
             | "s_load_dwordx4"
+            | "s_mov_b32"
             | "v_lshlrev_b32_e32"
             | "v_and_b32_e32"
             | "v_or_b32_e32"
             | "v_add_f32_e32"
+            | "v_mul_f32_e32"
             | "v_max_f32_e32"
             | "v_exp_f32_e32"
+            | "v_rcp_f32_e32"
             | "v_fma_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
             | "global_load_dwordx3"
             | "global_load_dwordx4"
             | "global_store_dword"
+            | "s_nop"
             | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
@@ -212,17 +233,18 @@ fn vgprs<const N: usize>(operand: &Operand) -> Option<[Vgpr; N]> {
 }
 
 /// Before GFX10, VOP3 takes no literal, only inline constants (LLVM 21.1.8's
-/// `validateVOPLiteral`), of which the frontend reads the integers 0 to 64.
+/// `validateVOPLiteral`), of which the frontend reads the integers 0 to 64 and the floats.
 fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
     match operand {
         Operand::Imm(value) if *value <= 64 => Some(Vop3Src::Inline(*value as u32)),
+        Operand::InlineFloat(bits) => Some(Vop3Src::Inline(*bits)),
         _ => vgpr(operand).map(Vop3Src::Vgpr),
     }
 }
 
 /// Only src0 of a VOP2 encoding can name an SGPR or a 32-bit literal; src1 is a VGPR.
 fn first_source(operand: &Operand) -> Result<Src0, &'static str> {
-    if let Some(bits) = immediate(operand, u32::MAX) {
+    if let Some(bits) = constant(operand) {
         return Ok(Src0::Const(bits));
     }
     if let Some(reg) = vgpr(operand) {
@@ -231,6 +253,12 @@ fn first_source(operand: &Operand) -> Result<Src0, &'static str> {
     sgpr(operand)
         .map(Src0::Sgpr)
         .ok_or("expected a VGPR, an SGPR or a 32-bit constant first source")
+}
+
+fn scalar_source(operand: &Operand) -> Option<ScalarSrc> {
+    constant(operand)
+        .map(ScalarSrc::Const)
+        .or_else(|| sgpr(operand).map(ScalarSrc::Sgpr))
 }
 
 /// Global offsets are signed 13-bit before GFX10 (LLVM 21.1.8's `validateFlatOffset`).
@@ -252,6 +280,14 @@ fn global_address(
         saddr: sgprs(saddr).ok_or("expected an aligned SGPR base pair")?,
         offset,
     })
+}
+
+/// A 32-bit literal or an inline float, as the 32 bits of the operand.
+fn constant(operand: &Operand) -> Option<u32> {
+    match operand {
+        Operand::InlineFloat(bits) => Some(*bits),
+        _ => immediate(operand, u32::MAX),
+    }
 }
 
 fn immediate(operand: &Operand, max: u32) -> Option<u32> {

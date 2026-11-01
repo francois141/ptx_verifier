@@ -1,6 +1,7 @@
-//! Scalar memory instructions and waits for a wave, as another `impl Interpreter`.
+//! Scalar instructions (memory, moves, no-ops and waits) for a wave, as another
+//! `impl Interpreter`.
 
-use crate::ir::{LoweredInstr, Sgpr};
+use crate::ir::{LoweredInstr, ScalarSrc, Sgpr};
 
 use super::wave::WaveId;
 use super::{EvalError, Interpreter};
@@ -50,6 +51,15 @@ impl Interpreter<'_> {
             LoweredInstr::ScalarLoadDwordx4 { dst, base, offset } => {
                 self.scalar_load(wave, *dst, *base, *offset)
             }
+            LoweredInstr::MovScalar32 { dst, src } => {
+                let registers = &mut self.waves[wave].registers;
+                let value = match *src {
+                    ScalarSrc::Sgpr(reg) => registers.read_sgpr(reg)?,
+                    ScalarSrc::Const(bits) => self.arena.int(i64::from(bits)),
+                };
+                registers.write_sgpr(*dst, value)
+            }
+            LoweredInstr::Nop => Ok(()),
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
                 let registers = &mut self.waves[wave].registers;
                 // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
