@@ -54,7 +54,7 @@ loc *args:
 
 # Check the AMD copy and add kernels' symbolic outputs against their .out files (VOLTA_BLESS=1 rewrites them)
 amd:
-    cargo test -q -p volta_amd_analysis --test copy --test add -- --nocapture
+    cargo test -q -p volta_amd_analysis --test copy --test add --test relu -- --nocapture
 
 # Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them)
 trainium:

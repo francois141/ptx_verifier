@@ -5,7 +5,7 @@ use std::fmt;
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
-use crate::ir::{LoweredInstr, LoweredKernel, Sgpr, Vgpr};
+use crate::ir::{LoweredInstr, LoweredKernel, Sgpr, Src0, Vgpr};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LowerError {
@@ -92,6 +92,11 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src0: vgpr(src0).ok_or("expected one VGPR first source")?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
+        ("v_max_f32_e32", [dst, src0, src1]) => Ok(MaxF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: first_source(src0)?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        }),
         ("global_load_dword", [dst, vaddr, saddr]) => Ok(GlobalLoadDword {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
@@ -106,7 +111,7 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_endpgm", []) => Ok(EndPgm),
         (
             "s_load_dwordx2" | "s_load_dwordx4" | "v_lshlrev_b32_e32" | "v_add_f32_e32"
-            | "global_load_dword" | "global_store_dword" | "s_endpgm",
+            | "v_max_f32_e32" | "global_load_dword" | "global_store_dword" | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
@@ -128,6 +133,10 @@ fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {
     Some(std::array::from_fn(|i| Sgpr((*first + i as u32) as u8)))
 }
 
+fn sgpr(operand: &Operand) -> Option<Sgpr> {
+    sgprs(operand).map(|[reg]| reg)
+}
+
 fn vgpr(operand: &Operand) -> Option<Vgpr> {
     match operand {
         Operand::Reg {
@@ -137,6 +146,19 @@ fn vgpr(operand: &Operand) -> Option<Vgpr> {
         } if first == last => u8::try_from(*first).ok().map(Vgpr),
         _ => None,
     }
+}
+
+/// Only src0 of a VOP2 encoding can name an SGPR or a 32-bit literal; src1 is a VGPR.
+fn first_source(operand: &Operand) -> Result<Src0, &'static str> {
+    if let Some(bits) = immediate(operand, u32::MAX) {
+        return Ok(Src0::Const(bits));
+    }
+    if let Some(reg) = vgpr(operand) {
+        return Ok(Src0::Vgpr(reg));
+    }
+    sgpr(operand)
+        .map(Src0::Sgpr)
+        .ok_or("expected a VGPR, an SGPR or a 32-bit constant first source")
 }
 
 fn immediate(operand: &Operand, max: u32) -> Option<u32> {

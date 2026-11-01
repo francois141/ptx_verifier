@@ -24,6 +24,15 @@ pub struct Sgpr(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vgpr(pub u8);
 
+/// The first source of a VOP2 instruction: a VGPR, an SGPR, or a constant (inline
+/// or literal) whose 32 bits are the operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Src0 {
+    Vgpr(Vgpr),
+    Sgpr(Sgpr),
+    Const(u32),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
     ScalarLoadDwordx2 {
@@ -45,6 +54,11 @@ pub enum LoweredInstr {
     AddF32 {
         dst: Vgpr,
         src0: Vgpr,
+        src1: Vgpr,
+    },
+    MaxF32 {
+        dst: Vgpr,
+        src0: Src0,
         src1: Vgpr,
     },
     GlobalLoadDword {

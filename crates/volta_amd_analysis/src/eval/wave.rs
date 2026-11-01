@@ -3,7 +3,7 @@
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
-use crate::ir::{InstrId, Sgpr, Vgpr};
+use crate::ir::{InstrId, Sgpr, Src0, Vgpr};
 
 use super::EvalError;
 
@@ -147,13 +147,36 @@ impl WaveRegisters {
         reg: Vgpr,
     ) -> Result<ExprId, EvalError> {
         let value = self.read_vgpr(lane, reg)?;
-        let Some(word) = arena.as_int_const(value) else {
-            return Ok(value);
-        };
-        u32::try_from(word)
-            .ok()
-            .and_then(|bits| arena.float_from_f64(f64::from(f32::from_bits(bits))).ok())
-            .ok_or(EvalError::InvalidFloatVgpr { lane, reg })
+        as_f32(arena, value).ok_or(EvalError::InvalidFloatVgpr { lane, reg })
+    }
+
+    /// `lane`'s value of a first source, as its 32 bits.
+    pub fn read_src0(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: Src0,
+    ) -> Result<ExprId, EvalError> {
+        match src {
+            Src0::Vgpr(reg) => self.read_vgpr(lane, reg),
+            Src0::Sgpr(reg) => self.read_sgpr(reg),
+            Src0::Const(bits) => Ok(arena.int(i64::from(bits))),
+        }
+    }
+
+    /// `lane`'s value of a first source as an f32 operand, read as `read_f32` reads a VGPR.
+    pub fn read_f32_src0(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: Src0,
+    ) -> Result<ExprId, EvalError> {
+        let value = self.read_src0(arena, lane, src)?;
+        as_f32(arena, value).ok_or(match src {
+            Src0::Vgpr(reg) => EvalError::InvalidFloatVgpr { lane, reg },
+            Src0::Sgpr(reg) => EvalError::InvalidFloatSgpr(reg),
+            Src0::Const(bits) => EvalError::InvalidFloatConstant(bits),
+        })
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
@@ -215,4 +238,20 @@ impl WaveRegisters {
             }
         }
     }
+}
+
+/// `value` as an f32 operand: a concrete word is the float its bits encode, and a symbolic value
+/// is a real; `None` for a NaN or a concrete value wider than 32 bits.
+fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
+    match arena.as_int_const(value) {
+        Some(word) => u32::try_from(word)
+            .ok()
+            .and_then(|bits| f32_from_bits(arena, bits)),
+        None => Some(value),
+    }
+}
+
+/// The f32 that `bits` encode, as an exact real; `None` for a NaN.
+fn f32_from_bits(arena: &mut ExprArena, bits: u32) -> Option<ExprId> {
+    arena.float_from_f64(f64::from(f32::from_bits(bits))).ok()
 }

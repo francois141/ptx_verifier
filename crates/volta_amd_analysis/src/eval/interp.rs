@@ -97,6 +97,7 @@ impl<'a> Interpreter<'a> {
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::Shl32 { .. }
             | LoweredInstr::AddF32 { .. }
+            | LoweredInstr::MaxF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
             | LoweredInstr::GlobalStoreDword { .. } => {
                 for lane in 0..64 {
@@ -141,6 +142,12 @@ impl<'a> Interpreter<'a> {
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
                 let sum = self.arena.add(a, b);
                 registers.write_vgpr(lane, *dst, sum)
+            }
+            LoweredInstr::MaxF32 { dst, src0, src1 } => {
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
+                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
+                let max = self.arena.max(a, b);
+                registers.write_vgpr(lane, *dst, max)
             }
             LoweredInstr::GlobalLoadDword { dst, vaddr, saddr } => {
                 let address = registers.global_address(&self.arena, lane, *vaddr, *saddr)?;
