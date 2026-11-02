@@ -270,6 +270,18 @@ impl WaveRegisters {
         Ok(())
     }
 
+    pub fn write_lane_reg(
+        &mut self,
+        lane: usize,
+        reg: LaneReg,
+        value: ExprId,
+    ) -> Result<(), EvalError> {
+        match reg {
+            LaneReg::Vgpr(reg) => self.write_vgpr(lane, reg, value),
+            LaneReg::Agpr(reg) => self.write_agpr(lane, reg, value),
+        }
+    }
+
     /// AGPRs are never a load's destination, so a write needs no pending check.
     pub fn write_agpr(&mut self, lane: usize, reg: Agpr, value: ExprId) -> Result<(), EvalError> {
         let registers = self
@@ -360,7 +372,7 @@ impl WaveRegisters {
 
 /// `value` as an f32 operand: a concrete word is the float its bits encode, and a symbolic value
 /// is a real; `None` for a NaN or a concrete value wider than 32 bits.
-fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
+pub(super) fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
     match arena.as_int_const(value) {
         Some(word) => u32::try_from(word)
             .ok()
@@ -370,6 +382,6 @@ fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
 }
 
 /// The f32 that `bits` encode, as an exact real; `None` for a NaN.
-fn f32_from_bits(arena: &mut ExprArena, bits: u32) -> Option<ExprId> {
+pub(super) fn f32_from_bits(arena: &mut ExprArena, bits: u32) -> Option<ExprId> {
     arena.float_from_f64(f64::from(f32::from_bits(bits))).ok()
 }

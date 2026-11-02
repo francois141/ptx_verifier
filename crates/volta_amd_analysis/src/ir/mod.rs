@@ -52,6 +52,14 @@ impl<const N: usize> LaneRegs<N> {
     }
 }
 
+/// An MFMA's accumulator input: registers of the destination's file that coincide with the
+/// destination or do not overlap it, or an inline constant for every element, as a `Vop3Src`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MfmaSrcC {
+    Regs(LaneRegs<4>),
+    Inline(u32),
+}
+
 /// A VOP3 source: a VGPR, or an inline integer constant whose 32 bits are the operand, so in
 /// an f32 slot `1` is a denormal (LLVM 21.1.8's `printImmediate32`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +213,15 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src0: Vgpr,
         src1: Vgpr,
+    },
+    /// The wave's `D = A * B + C` over f32, for a 16 x 4 `A`, a 4 x 16 `B` and 16 x 16 `C` and
+    /// `D`: lane `l` holds `A[l % 16][l / 16]` and `B[l / 16][l % 16]`, and its `r`th
+    /// accumulator register `C[4 * (l / 16) + r][l % 16]`.
+    Mfma16x16x4F32 {
+        dst: LaneRegs<4>,
+        src_a: LaneReg,
+        src_b: LaneReg,
+        src_c: MfmaSrcC,
     },
     GlobalLoadDword {
         dst: Vgpr,

@@ -10,6 +10,7 @@ use super::EvalError;
 use super::arithm::{evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_unary_op};
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
+use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
 use super::wave::{Status, WaveId, WaveState};
 
@@ -97,6 +98,19 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Nop => {
                 self.execute_scalar(wave, instruction)?;
             }
+            LoweredInstr::Mfma16x16x4F32 {
+                dst,
+                src_a,
+                src_b,
+                src_c,
+            } => execute_mfma_16x16x4_f32(
+                &mut self.arena,
+                &mut self.waves[wave].registers,
+                *dst,
+                *src_a,
+                *src_b,
+                *src_c,
+            )?,
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::Shl32 { .. }
             | LoweredInstr::LShr32 { .. }

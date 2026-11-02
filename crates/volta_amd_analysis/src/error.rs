@@ -17,6 +17,7 @@ pub enum EvalError {
     InvalidAddressRegister(Sgpr),
     InvalidAddressVgpr { lane: usize, reg: Vgpr },
     InvalidFloatVgpr { lane: usize, reg: Vgpr },
+    InvalidFloatAgpr { lane: usize, reg: Agpr },
     InvalidFloatSgpr(Sgpr),
     InvalidFloatConstant(u32),
     AddressOverflow,
@@ -72,6 +73,13 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "f32 operand v{} in lane {lane} must not be a NaN or wider than 32 bits",
+                    reg.0
+                )
+            }
+            Self::InvalidFloatAgpr { lane, reg } => {
+                write!(
+                    f,
+                    "f32 operand a{} in lane {lane} must not be a NaN or wider than 32 bits",
                     reg.0
                 )
             }

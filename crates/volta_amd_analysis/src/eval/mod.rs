@@ -4,6 +4,7 @@ mod arithm;
 mod global;
 mod interp;
 mod launch;
+mod mfma;
 mod scalar;
 mod wave;
 

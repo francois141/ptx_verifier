@@ -6,8 +6,8 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
-    self, Agpr, GlobalAddress, LaneReg, LaneRegs, LoweredInstr, LoweredKernel, ScalarSrc, Sgpr,
-    Src0, Vgpr, Vop3Src,
+    self, Agpr, GlobalAddress, LaneReg, LaneRegs, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarSrc,
+    Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -151,6 +151,17 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src0: vgpr(src0).ok_or("expected one VGPR first source")?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
+        // A nonzero cbsz, abid or blgp modifier is an unsupported operand of the frontend.
+        ("v_mfma_f32_16x16x4_f32", [dst, src_a, src_b, src_c]) => {
+            let dst =
+                lane_regs(dst).ok_or("expected an aligned four-VGPR or four-AGPR destination")?;
+            Ok(Mfma16x16x4F32 {
+                dst,
+                src_a: lane_reg(src_a).ok_or("expected one VGPR or AGPR A source")?,
+                src_b: lane_reg(src_b).ok_or("expected one VGPR or AGPR B source")?,
+                src_c: mfma_src_c(dst, src_c)?,
+            })
+        }
         ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDword {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             address: global_address(vaddr, saddr, offset)?,
@@ -192,6 +203,7 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "v_lshlrev_b32_e32"
             | "v_lshrrev_b32_e32"
             | "v_add_lshl_u32"
+            | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"
             | "v_accvgpr_read_b32"
@@ -309,6 +321,24 @@ fn vector_tuple<const N: usize>(operand: &Operand, file: RegFile) -> Option<[u8;
         return None;
     }
     Some(std::array::from_fn(|i| first + i as u8))
+}
+
+/// A partial overlap with `dst` is rejected, as the result of reading it is not established.
+fn mfma_src_c(dst: LaneRegs<4>, operand: &Operand) -> Result<MfmaSrcC, &'static str> {
+    if let Some(Vop3Src::Inline(bits)) = vop3_src(operand) {
+        return Ok(MfmaSrcC::Inline(bits));
+    }
+    let src = lane_regs::<4>(operand)
+        .ok_or("expected an inline constant or an aligned four-register accumulator")?;
+    let (dst_first, src_first) = match (dst, src) {
+        (LaneRegs::Vgprs(dst), LaneRegs::Vgprs(src)) => (dst[0].0, src[0].0),
+        (LaneRegs::Agprs(dst), LaneRegs::Agprs(src)) => (dst[0].0, src[0].0),
+        _ => return Err("expected the accumulator in the destination's register file"),
+    };
+    if dst_first != src_first && dst_first.abs_diff(src_first) < 4 {
+        return Err("expected the accumulator to coincide with the destination or not overlap it");
+    }
+    Ok(MfmaSrcC::Regs(src))
 }
 
 /// Before GFX10, VOP3 takes no literal, only inline constants (LLVM 21.1.8's
