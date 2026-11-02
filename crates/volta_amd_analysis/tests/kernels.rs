@@ -66,3 +66,15 @@ fn the_matmul_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+// Test that each element of an 8 x 8 matrix is written to its transposed position.
+#[test]
+fn the_transpose_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "transpose",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("out", 0x20000, ArrayKind::Output),
+        ],
+    );
+}

@@ -79,6 +79,19 @@ pub enum LoweredInstr {
         src: Vgpr,
         shift: u32,
     },
+    /// Logical right shift using the shift count's low five bits.
+    LShr32 {
+        dst: Vgpr,
+        src: Vgpr,
+        shift: u32,
+    },
+    /// Add two words, then shift the sum left using the shift count's low five bits.
+    AddShl32 {
+        dst: Vgpr,
+        src0: Vgpr,
+        src1: Vgpr,
+        shift: u32,
+    },
     And32 {
         dst: Vgpr,
         src0: Src0,

@@ -27,7 +27,7 @@ output elements, which the kernel cannot load. On completion,
 aborted run has none.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
-(§6.2, §12.6, §12.7); scalar addressing and completion follow §8.2–8.3. Operand checks
+(§6.2, §12.6, §12.7, §12.11); scalar addressing and completion follow §8.2–8.3. Operand checks
 also follow LLVM 21.1.8's
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
@@ -37,12 +37,12 @@ unbalanced and extra-quoted arguments are rejected.
 
 ## Tests
 
-Unit tests cover instruction lowering and execution, launch-register placement,
-work-item coordinate packing, scalar load dependencies, and global stores. Launch and scalar-load
-tests also use a compiled fixture after parsing and lowering. Run the unit tests:
+Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
+fixtures, then compare their symbolic outputs with the corresponding `.out` files.
+Run the kernel tests from the repository root:
 
 ```sh
-cargo test -p volta_amd_analysis --lib
+just amd
 ```
 
 ### Regenerating the copy fixture

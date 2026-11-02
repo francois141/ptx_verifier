@@ -90,6 +90,18 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src: vgpr(src).ok_or("expected one source VGPR")?,
             shift: immediate(shift, u32::MAX).ok_or("expected a 32-bit immediate shift input")?,
         }),
+        ("v_lshrrev_b32_e32", [dst, shift, src]) => Ok(LShr32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+            shift: immediate(shift, u32::MAX).ok_or("expected a 32-bit immediate shift input")?,
+        }),
+        ("v_add_lshl_u32", [dst, src0, src1, shift]) => Ok(AddShl32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
+            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+            // Before GFX10, VOP3 takes no literal (see `vop3_src`).
+            shift: immediate(shift, 64).ok_or("expected an inline integer shift input")?,
+        }),
         ("v_and_b32_e32", [dst, src0, src1]) => Ok(And32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: first_source(src0)?,
@@ -177,6 +189,8 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "s_load_dwordx4"
             | "s_mov_b32"
             | "v_lshlrev_b32_e32"
+            | "v_lshrrev_b32_e32"
+            | "v_add_lshl_u32"
             | "v_and_b32_e32"
             | "v_or_b32_e32"
             | "v_add_f32_e32"

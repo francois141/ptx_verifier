@@ -98,6 +98,8 @@ impl<'a> Interpreter<'a> {
             }
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::Shl32 { .. }
+            | LoweredInstr::LShr32 { .. }
+            | LoweredInstr::AddShl32 { .. }
             | LoweredInstr::And32 { .. }
             | LoweredInstr::Or32 { .. }
             | LoweredInstr::AddF32 { .. }
@@ -143,6 +145,32 @@ impl<'a> Interpreter<'a> {
                 // For symbolic values, follow PTX's model and keep the shift expression without truncation.
                 // TODO: Should this be handled differently?
                 let result = if self.arena.as_int_const(value).is_some() {
+                    let mask = self.arena.int(i64::from(u32::MAX));
+                    self.arena.bit_and(shifted, mask)
+                } else {
+                    shifted
+                };
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::LShr32 { dst, src, shift } => {
+                let value = registers.read_vgpr(lane, *src)?;
+                let amount = self.arena.int(i64::from(shift & 31));
+                let result = self.arena.lshr(value, amount);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::AddShl32 {
+                dst,
+                src0,
+                src1,
+                shift,
+            } => {
+                let a = registers.read_vgpr(lane, *src0)?;
+                let b = registers.read_vgpr(lane, *src1)?;
+                let sum = self.arena.add(a, b);
+                let amount = self.arena.int(i64::from(shift & 31));
+                let shifted = self.arena.shl(sum, amount);
+                // Keep concrete results to 32 bits, as for Shl32.
+                let result = if self.arena.as_int_const(sum).is_some() {
                     let mask = self.arena.int(i64::from(u32::MAX));
                     self.arena.bit_and(shifted, mask)
                 } else {
