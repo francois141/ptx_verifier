@@ -7,7 +7,9 @@ use volta_expr::{ExprArena, SymbolicOutputs};
 use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
 
 use super::EvalError;
-use super::arithm::{evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_unary_op, shl32};
+use super::arithm::{
+    evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_ternary_op, evaluate_unary_op,
+};
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::mfma::execute_mfma_16x16x4_f32;
@@ -112,13 +114,8 @@ impl<'a> Interpreter<'a> {
                 *src_c,
             )?,
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
-            LoweredInstr::Shl32 { .. }
-            | LoweredInstr::LShr32 { .. }
-            | LoweredInstr::AddShl32 { .. }
-            | LoweredInstr::Bfe32 { .. }
-            | LoweredInstr::ShlOr32 { .. }
-            | LoweredInstr::Or3_32 { .. }
-            | LoweredInstr::BinOp { .. }
+            LoweredInstr::BinOp { .. }
+            | LoweredInstr::TernaryOp { .. }
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
@@ -151,61 +148,6 @@ impl<'a> Interpreter<'a> {
     ) -> Result<(), EvalError> {
         let registers = &mut self.waves[wave].registers;
         match instruction {
-            LoweredInstr::Shl32 { dst, src, shift } => {
-                // Read before writing because the source and destination may be the same register.
-                let value = registers.read_vgpr(lane, *src)?;
-                let result = shl32(&mut self.arena, value, *shift);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::LShr32 { dst, src, shift } => {
-                let value = registers.read_vgpr(lane, *src)?;
-                let amount = self.arena.int(i64::from(shift & 31));
-                let result = self.arena.lshr(value, amount);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::AddShl32 {
-                dst,
-                src0,
-                src1,
-                shift,
-            } => {
-                let a = registers.read_vgpr(lane, *src0)?;
-                let b = registers.read_vgpr(lane, *src1)?;
-                let sum = self.arena.add(a, b);
-                let result = shl32(&mut self.arena, sum, *shift);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::Bfe32 {
-                dst,
-                src,
-                offset,
-                width,
-            } => {
-                let value = registers.read_vgpr(lane, *src)?;
-                let amount = self.arena.int(i64::from(offset & 31));
-                let shifted = self.arena.lshr(value, amount);
-                let mask = self.arena.int((1i64 << (width & 31)) - 1);
-                let result = self.arena.bit_and(shifted, mask);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::ShlOr32 {
-                dst,
-                src0,
-                shift,
-                src2,
-            } => {
-                let value = registers.read_vgpr(lane, *src0)?;
-                let other = registers.read_vgpr(lane, *src2)?;
-                let shifted = shl32(&mut self.arena, value, *shift);
-                let result = self.arena.bit_or(shifted, other);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::Or3_32 { dst, srcs } => {
-                let [a, b, c] = srcs.map(|src| registers.read_vgpr(lane, src));
-                let ab = self.arena.bit_or(a?, b?);
-                let result = self.arena.bit_or(ab, c?);
-                registers.write_vgpr(lane, *dst, result)
-            }
             LoweredInstr::BinOp {
                 op,
                 dst,
@@ -213,6 +155,10 @@ impl<'a> Interpreter<'a> {
                 src1,
             } => {
                 let result = evaluate_bin_op(&mut self.arena, registers, lane, *op, *src0, *src1)?;
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::TernaryOp { op, dst, srcs } => {
+                let result = evaluate_ternary_op(&mut self.arena, registers, lane, *op, *srcs)?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::UnaryOp { op, dst, src } => {

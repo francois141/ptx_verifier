@@ -88,52 +88,63 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
         }),
-        ("v_lshlrev_b32_e32", [dst, shift, src]) => Ok(Shl32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src: vgpr(src).ok_or("expected one source VGPR")?,
-            shift: immediate(shift, u32::MAX).ok_or("expected a 32-bit immediate shift input")?,
-        }),
-        ("v_lshrrev_b32_e32", [dst, shift, src]) => Ok(LShr32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src: vgpr(src).ok_or("expected one source VGPR")?,
-            shift: immediate(shift, u32::MAX).ok_or("expected a 32-bit immediate shift input")?,
-        }),
-        ("v_add_lshl_u32", [dst, src0, src1, shift]) => Ok(AddShl32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
-            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-            // Before GFX10, VOP3 takes no literal (see `vop3_src`).
-            shift: immediate(shift, 64).ok_or("expected an inline integer shift input")?,
-        }),
-        ("v_bfe_u32", [dst, src, offset, width]) => Ok(Bfe32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src: vgpr(src).ok_or("expected one source VGPR")?,
-            offset: immediate(offset, 64).ok_or("expected an inline integer bit offset")?,
-            width: immediate(width, 64).ok_or("expected an inline integer field width")?,
-        }),
-        ("v_lshl_or_b32", [dst, src0, shift, src2]) => Ok(ShlOr32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
-            shift: immediate(shift, 64).ok_or("expected an inline integer shift input")?,
-            src2: vgpr(src2).ok_or("expected one VGPR third source")?,
-        }),
-        ("v_or3_b32", [dst, src0, src1, src2]) => {
-            let [Some(src0), Some(src1), Some(src2)] = [src0, src1, src2].map(vgpr) else {
-                return Err("expected three VGPR sources");
-            };
-            Ok(Or3_32 {
-                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-                srcs: [src0, src1, src2],
-            })
-        }
         ("v_and_b32_e32", operands) => lower_bin_op(ir::BinOp::And32, operands),
         ("v_or_b32_e32", operands) => lower_bin_op(ir::BinOp::Or32, operands),
         ("v_xor_b32_e32", operands) => lower_bin_op(ir::BinOp::Xor32, operands),
+        ("v_lshlrev_b32_e32", operands) => lower_bin_op(ir::BinOp::LShlRev32, operands),
+        ("v_lshrrev_b32_e32", operands) => lower_bin_op(ir::BinOp::LShrRev32, operands),
+        ("v_add_u32_e32", operands) => lower_bin_op(ir::BinOp::AddU32, operands),
+        ("v_sub_u32_e32", operands) => lower_bin_op(ir::BinOp::SubU32, operands),
+        ("v_subrev_u32_e32", operands) => lower_bin_op(ir::BinOp::SubRevU32, operands),
+        ("v_ashrrev_i32_e32", operands) => lower_bin_op(ir::BinOp::AShrRevI32, operands),
+        ("v_xnor_b32_e32", operands) => lower_bin_op(ir::BinOp::Xnor32, operands),
+        ("v_min_i32_e32", operands) => lower_bin_op(ir::BinOp::MinI32, operands),
+        ("v_max_i32_e32", operands) => lower_bin_op(ir::BinOp::MaxI32, operands),
+        ("v_min_u32_e32", operands) => lower_bin_op(ir::BinOp::MinU32, operands),
+        ("v_max_u32_e32", operands) => lower_bin_op(ir::BinOp::MaxU32, operands),
+        ("v_mul_u32_u24_e32", operands) => lower_bin_op(ir::BinOp::MulU32U24, operands),
+        ("v_mul_hi_u32_u24_e32", operands) => lower_bin_op(ir::BinOp::MulHiU32U24, operands),
+        ("v_mul_i32_i24_e32", operands) => lower_bin_op(ir::BinOp::MulI32I24, operands),
+        ("v_mul_hi_i32_i24_e32", operands) => lower_bin_op(ir::BinOp::MulHiI32I24, operands),
         ("v_add_f32_e32", operands) => lower_bin_op(ir::BinOp::AddF32, operands),
         ("v_sub_f32_e32", operands) => lower_bin_op(ir::BinOp::SubF32, operands),
+        ("v_subrev_f32_e32", operands) => lower_bin_op(ir::BinOp::SubRevF32, operands),
         ("v_mul_f32_e32", operands) => lower_bin_op(ir::BinOp::MulF32, operands),
         ("v_min_f32_e32", operands) => lower_bin_op(ir::BinOp::MinF32, operands),
         ("v_max_f32_e32", operands) => lower_bin_op(ir::BinOp::MaxF32, operands),
+        ("v_add_lshl_u32", operands) => lower_ternary_op(ir::TernaryOp::AddLShl32, operands),
+        ("v_bfe_u32", operands) => lower_ternary_op(ir::TernaryOp::Bfe32, operands),
+        ("v_lshl_or_b32", operands) => lower_ternary_op(ir::TernaryOp::LShlOr32, operands),
+        ("v_or3_b32", operands) => lower_ternary_op(ir::TernaryOp::Or3_32, operands),
+        ("v_lshl_add_u32", operands) => lower_ternary_op(ir::TernaryOp::LShlAdd32, operands),
+        ("v_add3_u32", operands) => lower_ternary_op(ir::TernaryOp::Add3_32, operands),
+        ("v_and_or_b32", operands) => lower_ternary_op(ir::TernaryOp::AndOr32, operands),
+        ("v_xad_u32", operands) => lower_ternary_op(ir::TernaryOp::Xad32, operands),
+        ("v_bfi_b32", operands) => lower_ternary_op(ir::TernaryOp::Bfi32, operands),
+        ("v_bfe_i32", operands) => lower_ternary_op(ir::TernaryOp::BfeI32, operands),
+        ("v_alignbit_b32", operands) => lower_ternary_op(ir::TernaryOp::AlignBit32, operands),
+        ("v_alignbyte_b32", operands) => lower_ternary_op(ir::TernaryOp::AlignByte32, operands),
+        ("v_mad_u32_u24", operands) => lower_ternary_op(ir::TernaryOp::MadU32U24, operands),
+        ("v_mad_i32_i24", operands) => lower_ternary_op(ir::TernaryOp::MadI32I24, operands),
+        ("v_min3_i32", operands) => lower_ternary_op(ir::TernaryOp::Min3I32, operands),
+        ("v_min3_u32", operands) => lower_ternary_op(ir::TernaryOp::Min3U32, operands),
+        ("v_max3_i32", operands) => lower_ternary_op(ir::TernaryOp::Max3I32, operands),
+        ("v_max3_u32", operands) => lower_ternary_op(ir::TernaryOp::Max3U32, operands),
+        ("v_med3_i32", operands) => lower_ternary_op(ir::TernaryOp::Med3I32, operands),
+        ("v_med3_u32", operands) => lower_ternary_op(ir::TernaryOp::Med3U32, operands),
+        ("v_sad_u32", operands) => lower_ternary_op(ir::TernaryOp::SadU32, operands),
+        // The IEEE 754-2019 `minimum3`/`maximum3` differ from `min3`/`max3` only on NaN and
+        // signed zeros, neither of which Volta's reals have.
+        ("v_min3_f32" | "v_minimum3_f32", operands) => {
+            lower_ternary_op(ir::TernaryOp::Min3F32, operands)
+        }
+        ("v_max3_f32" | "v_maximum3_f32", operands) => {
+            lower_ternary_op(ir::TernaryOp::Max3F32, operands)
+        }
+        ("v_med3_f32", operands) => lower_ternary_op(ir::TernaryOp::Med3F32, operands),
+        ("v_bitop3_b32", [operands @ .., Operand::BitOp3(table)]) => {
+            lower_ternary_op(ir::TernaryOp::BitOp3(*table), operands)
+        }
         ("v_exp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Exp2F32, operands),
         ("v_log_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Log2F32, operands),
         ("v_rcp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpF32, operands),
@@ -221,12 +232,6 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             "s_load_dwordx2"
             | "s_load_dwordx4"
             | "s_mov_b32"
-            | "v_lshlrev_b32_e32"
-            | "v_lshrrev_b32_e32"
-            | "v_add_lshl_u32"
-            | "v_bfe_u32"
-            | "v_lshl_or_b32"
-            | "v_or3_b32"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"
@@ -257,6 +262,21 @@ fn lower_bin_op(op: ir::BinOp, operands: &[Operand]) -> Result<LoweredInstr, &'s
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
         src0: first_source(src0)?,
         src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+    })
+}
+
+fn lower_ternary_op(op: ir::TernaryOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1, src2] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::TernaryOp {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        srcs: [
+            vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
+            vop3_src(src1).ok_or("expected a VGPR or an inline constant second source")?,
+            vop3_src(src2).ok_or("expected a VGPR or an inline constant third source")?,
+        ],
     })
 }
 

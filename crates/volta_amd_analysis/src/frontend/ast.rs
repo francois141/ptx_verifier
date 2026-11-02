@@ -48,6 +48,8 @@ pub enum Operand {
     InlineFloat(u32),
     /// The vector condition code, one bit per lane.
     Vcc,
+    /// The truth table of `v_bitop3_b32`.
+    BitOp3(u8),
     /// `vmcnt(n)` or `lgkmcnt(n)`.
     Wait { counter: Counter, value: u64 },
     /// A memory instruction's `offset:n` byte offset, which may be negative.

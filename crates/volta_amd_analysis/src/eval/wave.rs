@@ -210,6 +210,19 @@ impl WaveRegisters {
         })
     }
 
+    /// `lane`'s value of a VOP3 source, as its 32 bits.
+    pub fn read_src(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: Vop3Src,
+    ) -> Result<ExprId, EvalError> {
+        match src {
+            Vop3Src::Vgpr(reg) => self.read_vgpr(lane, reg),
+            Vop3Src::Inline(bits) => Ok(arena.int(i64::from(bits))),
+        }
+    }
+
     /// `lane`'s value of a VOP3 f32 source; a constant is the float its bits encode.
     pub fn read_f32_src(
         &self,
@@ -368,6 +381,13 @@ impl WaveRegisters {
             }
         }
     }
+}
+
+/// A concrete value as the 32-bit word it is; `None` for a symbolic or wider value.
+pub(super) fn concrete_word(arena: &ExprArena, value: ExprId) -> Option<u32> {
+    arena
+        .as_int_const(value)
+        .and_then(|value| u32::try_from(value).ok())
 }
 
 /// `value` as an f32 operand: a concrete word is the float its bits encode, and a symbolic value

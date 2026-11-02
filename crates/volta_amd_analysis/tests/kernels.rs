@@ -121,3 +121,18 @@ fn the_mfma_matmul_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+/// Each work-item writes one result per word or f32 operation to its own row of 64 words.
+const BIT_OPS_ROW: u64 = 64;
+
+#[test]
+fn the_bit_ops_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "bit_ops",
+        &[
+            array_of("a", 0x10000, 2 * 64, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array_of("out", 0x30000, 64 * BIT_OPS_ROW, ArrayKind::Output),
+        ],
+    );
+}

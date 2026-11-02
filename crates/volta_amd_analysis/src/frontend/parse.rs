@@ -30,6 +30,11 @@ fn operand(text: &str) -> Option<Operand> {
     if text == "vcc" {
         return Some(Operand::Vcc);
     }
+    if let Some(table) = text.strip_prefix("bitop3:") {
+        return integer(table)
+            .and_then(|table| u8::try_from(table).ok())
+            .map(Operand::BitOp3);
+    }
     if text.contains('.') {
         let value = text.parse::<f32>().ok()?;
         return INLINE_FLOATS

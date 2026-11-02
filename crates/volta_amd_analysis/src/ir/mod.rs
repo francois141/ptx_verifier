@@ -94,18 +94,95 @@ pub struct GlobalAddress {
 }
 
 /// A VOP2 operation of two sources: the 32-bit ops read their operands as words, the f32 ops
-/// as floats.
+/// as floats. Shifts use the count's low five bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     And32,
     Or32,
     Xor32,
+    /// `src1 << src0`.
+    LShlRev32,
+    /// The logical `src1 >> src0`.
+    LShrRev32,
+    /// The low word of `src0 + src1`.
+    AddU32,
+    /// The low word of `src0 - src1`.
+    SubU32,
+    /// The low word of `src1 - src0`.
+    SubRevU32,
+    /// The arithmetic `src1 >> src0`.
+    AShrRevI32,
+    /// `!(src0 ^ src1)`.
+    Xnor32,
+    MinI32,
+    MaxI32,
+    MinU32,
+    MaxU32,
+    /// The low word of the product of the sources' low 24 bits, zero-extended.
+    MulU32U24,
+    /// The high word of that product.
+    MulHiU32U24,
+    /// The low word of the product of the sources' low 24 bits, sign-extended.
+    MulI32I24,
+    /// The high word of that product.
+    MulHiI32I24,
     AddF32,
     /// `src0 - src1`.
     SubF32,
+    /// `src1 - src0`.
+    SubRevF32,
     MulF32,
     MinF32,
     MaxF32,
+}
+
+/// A VOP3 operation of three sources: the f32 ops read them as floats, the others as words.
+/// Shift counts and the field offset and width use their low five bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TernaryOp {
+    /// `(src0 + src1) << src2`.
+    AddLShl32,
+    /// Bit-field extract: `(src0 >> src1) & ((1 << src2) - 1)`.
+    Bfe32,
+    /// `(src0 << src1) | src2`.
+    LShlOr32,
+    /// `src0 | src1 | src2`.
+    Or3_32,
+    /// The low word of `(src0 << src1) + src2`.
+    LShlAdd32,
+    /// The low word of `src0 + src1 + src2`.
+    Add3_32,
+    /// `(src0 & src1) | src2`.
+    AndOr32,
+    /// The low word of `(src0 ^ src1) + src2`.
+    Xad32,
+    /// Bit-field insert: `(src0 & src1) | (!src0 & src2)`.
+    Bfi32,
+    /// `Bfe32`'s field, sign-extended from its top bit.
+    BfeI32,
+    /// The low word of the 64-bit `src0:src1` shifted right by `src2`.
+    AlignBit32,
+    /// The low word of the 64-bit `src0:src1` shifted right by `src2 & 3` bytes.
+    AlignByte32,
+    /// The low word of `MulU32U24`'s product plus `src2`.
+    MadU32U24,
+    /// The low word of `MulI32I24`'s product plus `src2`.
+    MadI32I24,
+    Min3I32,
+    Min3U32,
+    Max3I32,
+    Max3U32,
+    /// The median of the three sources.
+    Med3I32,
+    Med3U32,
+    /// The low word of `|src0 - src1| + src2`, unsigned.
+    SadU32,
+    Min3F32,
+    Max3F32,
+    Med3F32,
+    /// Each result bit is bit `4 * a + 2 * b + c` of the table, for the sources' bits `a`, `b`
+    /// and `c`.
+    BitOp3(u8),
 }
 
 /// A VOP1 operation of one source, read as an f32.
@@ -147,49 +224,18 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: ScalarSrc,
     },
-    /// The shift input is preserved; AMD uses its low five bits.
-    Shl32 {
-        dst: Vgpr,
-        src: Vgpr,
-        shift: u32,
-    },
-    /// Logical right shift using the shift count's low five bits.
-    LShr32 {
-        dst: Vgpr,
-        src: Vgpr,
-        shift: u32,
-    },
-    /// Add two words, then shift the sum left using the shift count's low five bits.
-    AddShl32 {
-        dst: Vgpr,
-        src0: Vgpr,
-        src1: Vgpr,
-        shift: u32,
-    },
-    /// Bit-field extract: `(src >> (offset & 31)) & ((1 << (width & 31)) - 1)`.
-    Bfe32 {
-        dst: Vgpr,
-        src: Vgpr,
-        offset: u32,
-        width: u32,
-    },
-    /// Shift `src0` left using the shift count's low five bits, then or in `src2`.
-    ShlOr32 {
-        dst: Vgpr,
-        src0: Vgpr,
-        shift: u32,
-        src2: Vgpr,
-    },
-    Or3_32 {
-        dst: Vgpr,
-        srcs: [Vgpr; 3],
-    },
     /// `dst = src0 op src1` in each lane.
     BinOp {
         op: BinOp,
         dst: Vgpr,
         src0: Src0,
         src1: Vgpr,
+    },
+    /// `dst = op(src0, src1, src2)` in each lane.
+    TernaryOp {
+        op: TernaryOp,
+        dst: Vgpr,
+        srcs: [Vop3Src; 3],
     },
     /// `dst = op src` in each lane.
     UnaryOp {

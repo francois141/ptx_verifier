@@ -24,6 +24,7 @@ pub enum EvalError {
     KernargRead { address: u64 },
     GlobalRead { address: u64 },
     GlobalWrite { address: u64 },
+    SymbolicWord { lane: usize },
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
@@ -110,6 +111,12 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "4-byte write at {address:#x} is not an element of an output array"
+                )
+            }
+            Self::SymbolicWord { lane } => {
+                write!(
+                    f,
+                    "integer operand in lane {lane} must be a concrete 32-bit word"
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),
