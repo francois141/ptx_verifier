@@ -11,7 +11,7 @@ mod lower;
 pub use analysis::{AnalysisError, AnalysisResult, analyze};
 pub use eval::{ArrayDef, ArrayKind, EvalError, Terminal, WaveId, WorkgroupLaunch};
 pub use ir::{
-    BinOp, CmpOp, GlobalAddress, InstrId, LoweredInstr, LoweredKernel, Sgpr, Src0, UnaryOp, Vgpr,
-    Vop3Src,
+    Agpr, BinOp, CmpOp, GlobalAddress, InstrId, LaneReg, LaneRegs, LoweredInstr, LoweredKernel,
+    Sgpr, Src0, UnaryOp, Vgpr, Vop3Src,
 };
 pub use lower::{LowerError, lower_kernel};

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::ir::{Sgpr, Vgpr};
+use crate::ir::{Agpr, Sgpr, Vgpr};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EvalError {
@@ -10,6 +10,7 @@ pub enum EvalError {
     InvalidLane(usize),
     UninitializedSgpr(Sgpr),
     UninitializedVgpr { lane: usize, reg: Vgpr },
+    UninitializedAgpr { lane: usize, reg: Agpr },
     UninitializedVcc { lane: usize },
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
@@ -36,6 +37,13 @@ impl fmt::Display for EvalError {
             Self::UninitializedSgpr(reg) => write!(f, "uninitialized scalar register s{}", reg.0),
             Self::UninitializedVgpr { lane, reg } => {
                 write!(f, "uninitialized vector register v{} in lane {lane}", reg.0)
+            }
+            Self::UninitializedAgpr { lane, reg } => {
+                write!(
+                    f,
+                    "uninitialized accumulation register a{} in lane {lane}",
+                    reg.0
+                )
             }
             Self::UninitializedVcc { lane } => write!(f, "uninitialized VCC bit in lane {lane}"),
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),

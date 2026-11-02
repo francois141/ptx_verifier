@@ -24,6 +24,7 @@ pub struct Instruction {
 pub enum RegFile {
     Scalar,
     Vector,
+    Accumulator,
 }
 
 /// An `s_waitcnt` counter supported by this frontend.

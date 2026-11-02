@@ -24,6 +24,34 @@ pub struct Sgpr(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vgpr(pub u8);
 
+/// A physical 32-bit accumulation register, with a separate value in each lane. The matrix core
+/// reads and writes AGPRs like VGPRs, and memory instructions store them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Agpr(pub u8);
+
+/// A register with a separate value in each lane: a VGPR or an AGPR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneReg {
+    Vgpr(Vgpr),
+    Agpr(Agpr),
+}
+
+/// `N` consecutive registers of one per-lane file, as a tuple operand names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneRegs<const N: usize> {
+    Vgprs([Vgpr; N]),
+    Agprs([Agpr; N]),
+}
+
+impl<const N: usize> LaneRegs<N> {
+    pub fn regs(self) -> [LaneReg; N] {
+        match self {
+            Self::Vgprs(regs) => regs.map(LaneReg::Vgpr),
+            Self::Agprs(regs) => regs.map(LaneReg::Agpr),
+        }
+    }
+}
+
 /// A VOP3 source: a VGPR, or an inline integer constant whose 32 bits are the operand, so in
 /// an f32 slot `1` is a denormal (LLVM 21.1.8's `printImmediate32`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +183,16 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
+    /// Copy a VGPR's word into an AGPR.
+    AccvgprWrite32 {
+        dst: Agpr,
+        src: Vgpr,
+    },
+    /// Copy an AGPR's word into a VGPR.
+    AccvgprRead32 {
+        dst: Vgpr,
+        src: Agpr,
+    },
     /// `dst = src0 * src1 + src2`.
     FmaF32 {
         dst: Vgpr,
@@ -181,19 +219,19 @@ pub enum LoweredInstr {
         address: GlobalAddress,
     },
     GlobalStoreDword {
-        src: Vgpr,
+        src: LaneReg,
         address: GlobalAddress,
     },
     GlobalStoreDwordx2 {
-        src: [Vgpr; 2],
+        src: LaneRegs<2>,
         address: GlobalAddress,
     },
     GlobalStoreDwordx3 {
-        src: [Vgpr; 3],
+        src: LaneRegs<3>,
         address: GlobalAddress,
     },
     GlobalStoreDwordx4 {
-        src: [Vgpr; 4],
+        src: LaneRegs<4>,
         address: GlobalAddress,
     },
     /// An omitted counter is unconstrained, not an implicit wait for zero.

@@ -105,6 +105,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
+            | LoweredInstr::AccvgprWrite32 { .. }
+            | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
@@ -198,6 +200,14 @@ impl<'a> Interpreter<'a> {
                 let result = evaluate_cndmask(&mut self.arena, registers, lane, *src0, *src1)?;
                 registers.write_vgpr(lane, *dst, result)
             }
+            LoweredInstr::AccvgprWrite32 { dst, src } => {
+                let value = registers.read_vgpr(lane, *src)?;
+                registers.write_agpr(lane, *dst, value)
+            }
+            LoweredInstr::AccvgprRead32 { dst, src } => {
+                let value = registers.read_agpr(lane, *src)?;
+                registers.write_vgpr(lane, *dst, value)
+            }
             LoweredInstr::FmaF32 {
                 dst,
                 src0,
@@ -230,13 +240,13 @@ impl<'a> Interpreter<'a> {
                 registers.global_store(&self.arena, &mut self.global, lane, &[*src], *address)
             }
             LoweredInstr::GlobalStoreDwordx2 { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, src, *address)
+                registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
             }
             LoweredInstr::GlobalStoreDwordx3 { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, src, *address)
+                registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
             }
             LoweredInstr::GlobalStoreDwordx4 { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, src, *address)
+                registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
             }
             _ => Err(EvalError::UnsupportedInstruction),
         }

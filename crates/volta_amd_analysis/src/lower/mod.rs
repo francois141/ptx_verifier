@@ -6,7 +6,8 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
-    self, GlobalAddress, LoweredInstr, LoweredKernel, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src,
+    self, Agpr, GlobalAddress, LaneReg, LaneRegs, LoweredInstr, LoweredKernel, ScalarSrc, Sgpr,
+    Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -129,6 +130,15 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
                 src1: vgpr(src1).ok_or("expected one VGPR second source")?,
             })
         }
+        // gfx950 also accepts an SGPR or an inline constant source; only a VGPR is supported.
+        ("v_accvgpr_write_b32", [dst, src]) => Ok(AccvgprWrite32 {
+            dst: agpr(dst).ok_or("expected one destination AGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+        }),
+        ("v_accvgpr_read_b32", [dst, src]) => Ok(AccvgprRead32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: agpr(src).ok_or("expected one source AGPR")?,
+        }),
         ("v_fma_f32", [dst, src0, src1, src2]) => Ok(FmaF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
@@ -154,19 +164,19 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("global_store_dword", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDword {
-            src: vgpr(src).ok_or("expected one source VGPR")?,
+            src: lane_reg(src).ok_or("expected one source VGPR or AGPR")?,
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("global_store_dwordx2", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx2 {
-            src: vgprs(src).ok_or("expected an even-aligned VGPR source pair")?,
+            src: lane_regs(src).ok_or("expected an even-aligned VGPR or AGPR source pair")?,
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("global_store_dwordx3", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx3 {
-            src: vgprs(src).ok_or("expected an even-aligned three-VGPR source")?,
+            src: lane_regs(src).ok_or("expected an even-aligned three-VGPR or AGPR source")?,
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("global_store_dwordx4", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx4 {
-            src: vgprs(src).ok_or("expected an even-aligned four-VGPR source")?,
+            src: lane_regs(src).ok_or("expected an even-aligned four-VGPR or AGPR source")?,
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("s_waitcnt", operands) => lower_wait(operands),
@@ -183,6 +193,8 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "v_lshrrev_b32_e32"
             | "v_add_lshl_u32"
             | "v_cndmask_b32_e32"
+            | "v_accvgpr_write_b32"
+            | "v_accvgpr_read_b32"
             | "v_fma_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
@@ -255,20 +267,35 @@ fn sgpr(operand: &Operand) -> Option<Sgpr> {
 }
 
 fn vgpr(operand: &Operand) -> Option<Vgpr> {
-    match operand {
-        Operand::Reg {
-            file: RegFile::Vector,
-            first,
-            last,
-        } if first == last => u8::try_from(*first).ok().map(Vgpr),
-        _ => None,
-    }
+    vector_tuple(operand, RegFile::Vector).map(|[reg]| Vgpr(reg))
 }
 
-/// gfx950 requires VGPR tuples to start at an even register (LLVM 21.1.8's `validateVGPRAlign`).
+fn agpr(operand: &Operand) -> Option<Agpr> {
+    vector_tuple(operand, RegFile::Accumulator).map(|[reg]| Agpr(reg))
+}
+
 fn vgprs<const N: usize>(operand: &Operand) -> Option<[Vgpr; N]> {
+    vector_tuple(operand, RegFile::Vector).map(|regs| regs.map(Vgpr))
+}
+
+fn lane_reg(operand: &Operand) -> Option<LaneReg> {
+    lane_regs(operand).map(|regs| {
+        let [reg] = regs.regs();
+        reg
+    })
+}
+
+fn lane_regs<const N: usize>(operand: &Operand) -> Option<LaneRegs<N>> {
+    vgprs(operand).map(LaneRegs::Vgprs).or_else(|| {
+        vector_tuple(operand, RegFile::Accumulator).map(|regs| LaneRegs::Agprs(regs.map(Agpr)))
+    })
+}
+
+/// The indices of an `N`-register operand of `file`. gfx950 requires VGPR and AGPR tuples to
+/// start at an even register (LLVM 21.1.8's `validateVGPRAlign`).
+fn vector_tuple<const N: usize>(operand: &Operand, file: RegFile) -> Option<[u8; N]> {
     let Operand::Reg {
-        file: RegFile::Vector,
+        file: operand_file,
         first,
         last,
     } = *operand
@@ -278,10 +305,10 @@ fn vgprs<const N: usize>(operand: &Operand) -> Option<[Vgpr; N]> {
     let first = u8::try_from(first).ok()?;
     let last = u8::try_from(last).ok()?;
     let count = usize::from(last.checked_sub(first)?) + 1;
-    if count != N || first % 2 != 0 {
+    if operand_file != file || count != N || (N > 1 && first % 2 != 0) {
         return None;
     }
-    Some(std::array::from_fn(|i| Vgpr(first + i as u8)))
+    Some(std::array::from_fn(|i| first + i as u8))
 }
 
 /// Before GFX10, VOP3 takes no literal, only inline constants (LLVM 21.1.8's

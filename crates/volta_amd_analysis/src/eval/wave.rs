@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
-use crate::ir::{GlobalAddress, InstrId, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{Agpr, GlobalAddress, InstrId, LaneReg, Sgpr, Src0, Vgpr, Vop3Src};
 
 use super::EvalError;
 use super::global::GlobalMemory;
@@ -56,11 +56,12 @@ pub(crate) struct WaveRegisters {
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
 }
 
-/// One lane's vector registers, its VCC bit as a boolean expression, and the destinations of
-/// each of its loads still pending, oldest first.
+/// One lane's vector and accumulation registers, its VCC bit as a boolean expression, and the
+/// destinations of each of its loads still pending, oldest first; only VGPRs are loaded.
 #[derive(Debug, Clone)]
 struct LaneRegisters {
     values: [RegValue; 256],
+    accumulators: [Option<ExprId>; 256],
     vcc: Option<ExprId>,
     pending_loads: VecDeque<Vec<Vgpr>>,
 }
@@ -70,6 +71,7 @@ impl Default for WaveRegisters {
     fn default() -> Self {
         let lane = LaneRegisters {
             values: [RegValue::Uninitialized; 256],
+            accumulators: [None; 256],
             vcc: None,
             pending_loads: VecDeque::new(),
         };
@@ -167,6 +169,18 @@ impl WaveRegisters {
         as_f32(arena, value).ok_or(EvalError::InvalidFloatVgpr { lane, reg })
     }
 
+    pub fn read_agpr(&self, lane: usize, reg: Agpr) -> Result<ExprId, EvalError> {
+        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+        registers.accumulators[usize::from(reg.0)].ok_or(EvalError::UninitializedAgpr { lane, reg })
+    }
+
+    pub fn read_lane_reg(&self, lane: usize, reg: LaneReg) -> Result<ExprId, EvalError> {
+        match reg {
+            LaneReg::Vgpr(reg) => self.read_vgpr(lane, reg),
+            LaneReg::Agpr(reg) => self.read_agpr(lane, reg),
+        }
+    }
+
     /// `lane`'s value of a first source, as its 32 bits.
     pub fn read_src0(
         &self,
@@ -256,6 +270,16 @@ impl WaveRegisters {
         Ok(())
     }
 
+    /// AGPRs are never a load's destination, so a write needs no pending check.
+    pub fn write_agpr(&mut self, lane: usize, reg: Agpr, value: ExprId) -> Result<(), EvalError> {
+        let registers = self
+            .vector
+            .get_mut(lane)
+            .ok_or(EvalError::InvalidLane(lane))?;
+        registers.accumulators[usize::from(reg.0)] = Some(value);
+        Ok(())
+    }
+
     /// Load one input word per register of `dst` from consecutive addresses, keeping the results
     /// unreadable until a wait establishes the load's completion.
     pub(super) fn global_load(
@@ -292,13 +316,13 @@ impl WaveRegisters {
         arena: &ExprArena,
         global: &mut GlobalMemory,
         lane: usize,
-        src: &[Vgpr],
+        src: &[LaneReg],
         address: GlobalAddress,
     ) -> Result<(), EvalError> {
         let start = self.global_address(arena, lane, address)?;
         for (i, &reg) in (0u64..).zip(src) {
             let word_address = start.checked_add(4 * i).ok_or(EvalError::AddressOverflow)?;
-            global.store_dword(word_address, self.read_vgpr(lane, reg)?)?;
+            global.store_dword(word_address, self.read_lane_reg(lane, reg)?)?;
         }
         Ok(())
     }

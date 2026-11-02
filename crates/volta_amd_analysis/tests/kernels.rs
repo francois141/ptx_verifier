@@ -93,3 +93,15 @@ fn the_float_ops_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+#[test]
+fn the_accvgpr_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "accvgpr",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("out", 0x20000, ArrayKind::Output),
+            array("back", 0x30000, ArrayKind::Output),
+        ],
+    );
+}

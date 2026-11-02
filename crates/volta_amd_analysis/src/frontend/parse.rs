@@ -52,13 +52,13 @@ fn operand(text: &str) -> Option<Operand> {
         let value = integer(rest.strip_suffix(')')?)?;
         return Some(Operand::Wait { counter, value });
     }
-    let (file, rest) = if let Some(rest) = text.strip_prefix('s') {
-        (RegFile::Scalar, rest)
-    } else if let Some(rest) = text.strip_prefix('v') {
-        (RegFile::Vector, rest)
-    } else {
-        return None;
+    let file = match text.chars().next()? {
+        's' => RegFile::Scalar,
+        'v' => RegFile::Vector,
+        'a' => RegFile::Accumulator,
+        _ => return None,
     };
+    let rest = &text[1..];
     let (first, last): (u32, u32) = match rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
         Some(range) => {
             let (first, last) = range.split_once(':')?;
