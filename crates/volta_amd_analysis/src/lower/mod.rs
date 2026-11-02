@@ -105,6 +105,27 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             // Before GFX10, VOP3 takes no literal (see `vop3_src`).
             shift: immediate(shift, 64).ok_or("expected an inline integer shift input")?,
         }),
+        ("v_bfe_u32", [dst, src, offset, width]) => Ok(Bfe32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+            offset: immediate(offset, 64).ok_or("expected an inline integer bit offset")?,
+            width: immediate(width, 64).ok_or("expected an inline integer field width")?,
+        }),
+        ("v_lshl_or_b32", [dst, src0, shift, src2]) => Ok(ShlOr32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
+            shift: immediate(shift, 64).ok_or("expected an inline integer shift input")?,
+            src2: vgpr(src2).ok_or("expected one VGPR third source")?,
+        }),
+        ("v_or3_b32", [dst, src0, src1, src2]) => {
+            let [Some(src0), Some(src1), Some(src2)] = [src0, src1, src2].map(vgpr) else {
+                return Err("expected three VGPR sources");
+            };
+            Ok(Or3_32 {
+                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+                srcs: [src0, src1, src2],
+            })
+        }
         ("v_and_b32_e32", operands) => lower_bin_op(ir::BinOp::And32, operands),
         ("v_or_b32_e32", operands) => lower_bin_op(ir::BinOp::Or32, operands),
         ("v_xor_b32_e32", operands) => lower_bin_op(ir::BinOp::Xor32, operands),
@@ -203,6 +224,9 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "v_lshlrev_b32_e32"
             | "v_lshrrev_b32_e32"
             | "v_add_lshl_u32"
+            | "v_bfe_u32"
+            | "v_lshl_or_b32"
+            | "v_or3_b32"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"

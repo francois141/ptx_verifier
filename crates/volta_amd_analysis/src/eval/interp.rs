@@ -7,7 +7,7 @@ use volta_expr::{ExprArena, SymbolicOutputs};
 use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
 
 use super::EvalError;
-use super::arithm::{evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_unary_op};
+use super::arithm::{evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_unary_op, shl32};
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::mfma::execute_mfma_16x16x4_f32;
@@ -115,6 +115,9 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::Shl32 { .. }
             | LoweredInstr::LShr32 { .. }
             | LoweredInstr::AddShl32 { .. }
+            | LoweredInstr::Bfe32 { .. }
+            | LoweredInstr::ShlOr32 { .. }
+            | LoweredInstr::Or3_32 { .. }
             | LoweredInstr::BinOp { .. }
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::Cmp { .. }
@@ -151,20 +154,7 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::Shl32 { dst, src, shift } => {
                 // Read before writing because the source and destination may be the same register.
                 let value = registers.read_vgpr(lane, *src)?;
-
-                // AMD uses only the low five bits of the shift count: 34 becomes 2, and 32 becomes 0.
-                let amount = self.arena.int(i64::from(shift & 31));
-                let shifted = self.arena.shl(value, amount);
-
-                // For a known numeric value, keep only the low 32 bits of the result.
-                // For symbolic values, follow PTX's model and keep the shift expression without truncation.
-                // TODO: Should this be handled differently?
-                let result = if self.arena.as_int_const(value).is_some() {
-                    let mask = self.arena.int(i64::from(u32::MAX));
-                    self.arena.bit_and(shifted, mask)
-                } else {
-                    shifted
-                };
+                let result = shl32(&mut self.arena, value, *shift);
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::LShr32 { dst, src, shift } => {
@@ -182,15 +172,38 @@ impl<'a> Interpreter<'a> {
                 let a = registers.read_vgpr(lane, *src0)?;
                 let b = registers.read_vgpr(lane, *src1)?;
                 let sum = self.arena.add(a, b);
-                let amount = self.arena.int(i64::from(shift & 31));
-                let shifted = self.arena.shl(sum, amount);
-                // Keep concrete results to 32 bits, as for Shl32.
-                let result = if self.arena.as_int_const(sum).is_some() {
-                    let mask = self.arena.int(i64::from(u32::MAX));
-                    self.arena.bit_and(shifted, mask)
-                } else {
-                    shifted
-                };
+                let result = shl32(&mut self.arena, sum, *shift);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::Bfe32 {
+                dst,
+                src,
+                offset,
+                width,
+            } => {
+                let value = registers.read_vgpr(lane, *src)?;
+                let amount = self.arena.int(i64::from(offset & 31));
+                let shifted = self.arena.lshr(value, amount);
+                let mask = self.arena.int((1i64 << (width & 31)) - 1);
+                let result = self.arena.bit_and(shifted, mask);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::ShlOr32 {
+                dst,
+                src0,
+                shift,
+                src2,
+            } => {
+                let value = registers.read_vgpr(lane, *src0)?;
+                let other = registers.read_vgpr(lane, *src2)?;
+                let shifted = shl32(&mut self.arena, value, *shift);
+                let result = self.arena.bit_or(shifted, other);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::Or3_32 { dst, srcs } => {
+                let [a, b, c] = srcs.map(|src| registers.read_vgpr(lane, src));
+                let ab = self.arena.bit_or(a?, b?);
+                let result = self.arena.bit_or(ab, c?);
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::BinOp {

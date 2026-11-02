@@ -166,6 +166,24 @@ pub enum LoweredInstr {
         src1: Vgpr,
         shift: u32,
     },
+    /// Bit-field extract: `(src >> (offset & 31)) & ((1 << (width & 31)) - 1)`.
+    Bfe32 {
+        dst: Vgpr,
+        src: Vgpr,
+        offset: u32,
+        width: u32,
+    },
+    /// Shift `src0` left using the shift count's low five bits, then or in `src2`.
+    ShlOr32 {
+        dst: Vgpr,
+        src0: Vgpr,
+        shift: u32,
+        src2: Vgpr,
+    },
+    Or3_32 {
+        dst: Vgpr,
+        srcs: [Vgpr; 3],
+    },
     /// `dst = src0 op src1` in each lane.
     BinOp {
         op: BinOp,

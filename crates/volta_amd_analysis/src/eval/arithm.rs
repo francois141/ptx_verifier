@@ -135,3 +135,17 @@ pub(super) fn evaluate_cmp(
         CmpOp::LgF32 => arena.ne(a, b),
     })
 }
+
+/// `value << (shift & 31)`: AMD uses only the low five bits of the shift count, so 34 becomes 2
+/// and 32 becomes 0. A concrete result keeps its low 32 bits; a symbolic one follows PTX's model
+/// and keeps the shift expression without truncation. TODO: Should this be handled differently?
+pub(super) fn shl32(arena: &mut ExprArena, value: ExprId, shift: u32) -> ExprId {
+    let amount = arena.int(i64::from(shift & 31));
+    let shifted = arena.shl(value, amount);
+    if arena.as_int_const(value).is_some() {
+        let mask = arena.int(i64::from(u32::MAX));
+        arena.bit_and(shifted, mask)
+    } else {
+        shifted
+    }
+}

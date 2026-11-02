@@ -105,3 +105,19 @@ fn the_accvgpr_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+/// The four waves of a 32 x 32 product with an inner dimension of 8, each one 16 x 16 tile.
+const MFMA_MATMUL_WORKITEMS: u32 = 4 * 64;
+
+#[test]
+fn the_mfma_matmul_kernel_writes_its_expected_outputs() {
+    common::check_run_on(
+        "mfma_matmul",
+        MFMA_MATMUL_WORKITEMS,
+        &[
+            array_of("a", 0x10000, 32 * 8, ArrayKind::Input),
+            array_of("b", 0x20000, 8 * 32, ArrayKind::Input),
+            array_of("c", 0x30000, 32 * 32, ArrayKind::Output),
+        ],
+    );
+}
