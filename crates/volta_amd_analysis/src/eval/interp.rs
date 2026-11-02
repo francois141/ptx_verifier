@@ -7,6 +7,7 @@ use volta_expr::{ExprArena, SymbolicOutputs};
 use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
 
 use super::EvalError;
+use super::arithm::{evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_unary_op};
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::scalar::KernargBuffer;
@@ -100,21 +101,19 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::Shl32 { .. }
             | LoweredInstr::LShr32 { .. }
             | LoweredInstr::AddShl32 { .. }
-            | LoweredInstr::And32 { .. }
-            | LoweredInstr::Or32 { .. }
-            | LoweredInstr::AddF32 { .. }
-            | LoweredInstr::MulF32 { .. }
-            | LoweredInstr::MaxF32 { .. }
-            | LoweredInstr::Exp2F32 { .. }
-            | LoweredInstr::RcpF32 { .. }
-            | LoweredInstr::CmpLtF32 { .. }
+            | LoweredInstr::BinOp { .. }
+            | LoweredInstr::UnaryOp { .. }
+            | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoadDword { .. }
             | LoweredInstr::GlobalLoadDwordx3 { .. }
             | LoweredInstr::GlobalLoadDwordx4 { .. }
-            | LoweredInstr::GlobalStoreDword { .. } => {
+            | LoweredInstr::GlobalStoreDword { .. }
+            | LoweredInstr::GlobalStoreDwordx2 { .. }
+            | LoweredInstr::GlobalStoreDwordx3 { .. }
+            | LoweredInstr::GlobalStoreDwordx4 { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
                 }
@@ -178,57 +177,25 @@ impl<'a> Interpreter<'a> {
                 };
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::And32 { dst, src0, src1 } => {
-                let a = registers.read_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_vgpr(lane, *src1)?;
-                let result = self.arena.bit_and(a, b);
+            LoweredInstr::BinOp {
+                op,
+                dst,
+                src0,
+                src1,
+            } => {
+                let result = evaluate_bin_op(&mut self.arena, registers, lane, *op, *src0, *src1)?;
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::Or32 { dst, src0, src1 } => {
-                let a = registers.read_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_vgpr(lane, *src1)?;
-                let result = self.arena.bit_or(a, b);
+            LoweredInstr::UnaryOp { op, dst, src } => {
+                let result = evaluate_unary_op(&mut self.arena, registers, lane, *op, *src)?;
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::AddF32 { dst, src0, src1 } => {
-                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
-                let sum = self.arena.add(a, b);
-                registers.write_vgpr(lane, *dst, sum)
-            }
-            LoweredInstr::MulF32 { dst, src0, src1 } => {
-                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
-                let product = self.arena.mul(a, b);
-                registers.write_vgpr(lane, *dst, product)
-            }
-            LoweredInstr::MaxF32 { dst, src0, src1 } => {
-                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
-                let max = self.arena.max(a, b);
-                registers.write_vgpr(lane, *dst, max)
-            }
-            LoweredInstr::Exp2F32 { dst, src } => {
-                let a = registers.read_f32_src0(&mut self.arena, lane, *src)?;
-                let result = self.arena.exp2(a);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::RcpF32 { dst, src } => {
-                let a = registers.read_f32_src0(&mut self.arena, lane, *src)?;
-                let result = self.arena.rcp(a);
-                registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::CmpLtF32 { src0, src1 } => {
-                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_f32(&mut self.arena, lane, *src1)?;
-                let less = self.arena.lt(a, b);
-                registers.write_vcc(lane, less)
+            LoweredInstr::Cmp { op, src0, src1 } => {
+                let condition = evaluate_cmp(&mut self.arena, registers, lane, *op, *src0, *src1)?;
+                registers.write_vcc(lane, condition)
             }
             LoweredInstr::CndMask32 { dst, src0, src1 } => {
-                let a = registers.read_src0(&mut self.arena, lane, *src0)?;
-                let b = registers.read_vgpr(lane, *src1)?;
-                let condition = registers.read_vcc(lane)?;
-                let result = self.arena.select(condition, b, a);
+                let result = evaluate_cndmask(&mut self.arena, registers, lane, *src0, *src1)?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::FmaF32 {
@@ -260,9 +227,16 @@ impl<'a> Interpreter<'a> {
                 registers.global_load(&mut self.arena, &self.global, lane, dst, *address)
             }
             LoweredInstr::GlobalStoreDword { src, address } => {
-                let address = registers.global_address(&self.arena, lane, *address)?;
-                let value = registers.read_vgpr(lane, *src)?;
-                self.global.store_dword(address, value)
+                registers.global_store(&self.arena, &mut self.global, lane, &[*src], *address)
+            }
+            LoweredInstr::GlobalStoreDwordx2 { src, address } => {
+                registers.global_store(&self.arena, &mut self.global, lane, src, *address)
+            }
+            LoweredInstr::GlobalStoreDwordx3 { src, address } => {
+                registers.global_store(&self.arena, &mut self.global, lane, src, *address)
+            }
+            LoweredInstr::GlobalStoreDwordx4 { src, address } => {
+                registers.global_store(&self.arena, &mut self.global, lane, src, *address)
             }
             _ => Err(EvalError::UnsupportedInstruction),
         }

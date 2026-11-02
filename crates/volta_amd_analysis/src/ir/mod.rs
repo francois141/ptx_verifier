@@ -57,6 +57,44 @@ pub struct GlobalAddress {
     pub offset: i16,
 }
 
+/// A VOP2 operation of two sources: the 32-bit ops read their operands as words, the f32 ops
+/// as floats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    And32,
+    Or32,
+    Xor32,
+    AddF32,
+    /// `src0 - src1`.
+    SubF32,
+    MulF32,
+    MinF32,
+    MaxF32,
+}
+
+/// A VOP1 operation of one source, read as an f32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// `2^src`.
+    Exp2F32,
+    /// `log2(src)`.
+    Log2F32,
+    RcpF32,
+    SqrtF32,
+    /// `1 / sqrt(src)`.
+    RsqF32,
+}
+
+/// A VOPC comparison of two f32 sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    LtF32,
+    LeF32,
+    EqF32,
+    /// Less or greater: an ordered not-equal, which is `!=` for Volta's NaN-free reals.
+    LgF32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
     ScalarLoadDwordx2 {
@@ -92,42 +130,22 @@ pub enum LoweredInstr {
         src1: Vgpr,
         shift: u32,
     },
-    And32 {
+    /// `dst = src0 op src1` in each lane.
+    BinOp {
+        op: BinOp,
         dst: Vgpr,
         src0: Src0,
         src1: Vgpr,
     },
-    Or32 {
-        dst: Vgpr,
-        src0: Src0,
-        src1: Vgpr,
-    },
-    AddF32 {
-        dst: Vgpr,
-        src0: Src0,
-        src1: Vgpr,
-    },
-    MulF32 {
-        dst: Vgpr,
-        src0: Src0,
-        src1: Vgpr,
-    },
-    MaxF32 {
-        dst: Vgpr,
-        src0: Src0,
-        src1: Vgpr,
-    },
-    /// `dst = 2^src`.
-    Exp2F32 {
+    /// `dst = op src` in each lane.
+    UnaryOp {
+        op: UnaryOp,
         dst: Vgpr,
         src: Src0,
     },
-    RcpF32 {
-        dst: Vgpr,
-        src: Src0,
-    },
-    /// Sets each lane's VCC bit to `src0 < src1`.
-    CmpLtF32 {
+    /// Sets each lane's VCC bit to `src0 op src1`.
+    Cmp {
+        op: CmpOp,
         src0: Src0,
         src1: Vgpr,
     },
@@ -164,6 +182,18 @@ pub enum LoweredInstr {
     },
     GlobalStoreDword {
         src: Vgpr,
+        address: GlobalAddress,
+    },
+    GlobalStoreDwordx2 {
+        src: [Vgpr; 2],
+        address: GlobalAddress,
+    },
+    GlobalStoreDwordx3 {
+        src: [Vgpr; 3],
+        address: GlobalAddress,
+    },
+    GlobalStoreDwordx4 {
+        src: [Vgpr; 4],
         address: GlobalAddress,
     },
     /// An omitted counter is unconstrained, not an implicit wait for zero.

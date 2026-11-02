@@ -5,7 +5,9 @@ use std::fmt;
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
-use crate::ir::{GlobalAddress, LoweredInstr, LoweredKernel, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{
+    self, GlobalAddress, LoweredInstr, LoweredKernel, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LowerError {
@@ -102,46 +104,23 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             // Before GFX10, VOP3 takes no literal (see `vop3_src`).
             shift: immediate(shift, 64).ok_or("expected an inline integer shift input")?,
         }),
-        ("v_and_b32_e32", [dst, src0, src1]) => Ok(And32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: first_source(src0)?,
-            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-        }),
-        ("v_or_b32_e32", [dst, src0, src1]) => Ok(Or32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: first_source(src0)?,
-            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-        }),
-        ("v_add_f32_e32", [dst, src0, src1]) => Ok(AddF32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: first_source(src0)?,
-            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-        }),
-        ("v_mul_f32_e32", [dst, src0, src1]) => Ok(MulF32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: first_source(src0)?,
-            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-        }),
-        ("v_max_f32_e32", [dst, src0, src1]) => Ok(MaxF32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: first_source(src0)?,
-            src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-        }),
-        ("v_exp_f32_e32", [dst, src]) => Ok(Exp2F32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src: first_source(src)?,
-        }),
-        ("v_rcp_f32_e32", [dst, src]) => Ok(RcpF32 {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src: first_source(src)?,
-        }),
-        ("v_cmp_lt_f32_e32", [vcc, src0, src1]) => {
-            expect_vcc(vcc)?;
-            Ok(CmpLtF32 {
-                src0: first_source(src0)?,
-                src1: vgpr(src1).ok_or("expected one VGPR second source")?,
-            })
-        }
+        ("v_and_b32_e32", operands) => lower_bin_op(ir::BinOp::And32, operands),
+        ("v_or_b32_e32", operands) => lower_bin_op(ir::BinOp::Or32, operands),
+        ("v_xor_b32_e32", operands) => lower_bin_op(ir::BinOp::Xor32, operands),
+        ("v_add_f32_e32", operands) => lower_bin_op(ir::BinOp::AddF32, operands),
+        ("v_sub_f32_e32", operands) => lower_bin_op(ir::BinOp::SubF32, operands),
+        ("v_mul_f32_e32", operands) => lower_bin_op(ir::BinOp::MulF32, operands),
+        ("v_min_f32_e32", operands) => lower_bin_op(ir::BinOp::MinF32, operands),
+        ("v_max_f32_e32", operands) => lower_bin_op(ir::BinOp::MaxF32, operands),
+        ("v_exp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Exp2F32, operands),
+        ("v_log_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Log2F32, operands),
+        ("v_rcp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpF32, operands),
+        ("v_sqrt_f32_e32", operands) => lower_unary_op(ir::UnaryOp::SqrtF32, operands),
+        ("v_rsq_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RsqF32, operands),
+        ("v_cmp_lt_f32_e32", operands) => lower_cmp(ir::CmpOp::LtF32, operands),
+        ("v_cmp_le_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
+        ("v_cmp_eq_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
+        ("v_cmp_lg_f32_e32", operands) => lower_cmp(ir::CmpOp::LgF32, operands),
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;
             Ok(CndMask32 {
@@ -178,6 +157,18 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             src: vgpr(src).ok_or("expected one source VGPR")?,
             address: global_address(vaddr, saddr, offset)?,
         }),
+        ("global_store_dwordx2", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx2 {
+            src: vgprs(src).ok_or("expected an even-aligned VGPR source pair")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
+        ("global_store_dwordx3", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx3 {
+            src: vgprs(src).ok_or("expected an even-aligned three-VGPR source")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
+        ("global_store_dwordx4", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx4 {
+            src: vgprs(src).ok_or("expected an even-aligned four-VGPR source")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_nop", [wait_states]) => {
             immediate(wait_states, 15).ok_or("expected a wait count from 0 to 15")?;
@@ -191,14 +182,6 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "v_lshlrev_b32_e32"
             | "v_lshrrev_b32_e32"
             | "v_add_lshl_u32"
-            | "v_and_b32_e32"
-            | "v_or_b32_e32"
-            | "v_add_f32_e32"
-            | "v_mul_f32_e32"
-            | "v_max_f32_e32"
-            | "v_exp_f32_e32"
-            | "v_rcp_f32_e32"
-            | "v_cmp_lt_f32_e32"
             | "v_cndmask_b32_e32"
             | "v_fma_f32"
             | "v_fmac_f32_e32"
@@ -206,12 +189,50 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "global_load_dwordx3"
             | "global_load_dwordx4"
             | "global_store_dword"
+            | "global_store_dwordx2"
+            | "global_store_dwordx3"
+            | "global_store_dwordx4"
             | "s_nop"
             | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
     }
+}
+
+fn lower_bin_op(op: ir::BinOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::BinOp {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        src0: first_source(src0)?,
+        src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+    })
+}
+
+fn lower_unary_op(op: ir::UnaryOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, src] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::UnaryOp {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        src: first_source(src)?,
+    })
+}
+
+fn lower_cmp(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [vcc, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    expect_vcc(vcc)?;
+    Ok(LoweredInstr::Cmp {
+        op,
+        src0: first_source(src0)?,
+        src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+    })
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {

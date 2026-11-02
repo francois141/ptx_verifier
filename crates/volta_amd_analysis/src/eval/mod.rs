@@ -1,5 +1,6 @@
 //! Symbolic execution of AMD instructions.
 
+mod arithm;
 mod global;
 mod interp;
 mod launch;
