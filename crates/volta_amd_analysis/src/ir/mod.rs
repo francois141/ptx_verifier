@@ -336,9 +336,22 @@ pub enum UnaryOp {
     RsqF32,
 }
 
-/// A VOPC comparison of two f32 sources.
+/// A VOPC comparison of two sources, read as f32s or, for the integer ops, as words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
+    /// The integer comparisons read their words as signed (`I32`) or unsigned (`U32`).
+    LtI32,
+    EqI32,
+    LeI32,
+    GtI32,
+    NeI32,
+    GeI32,
+    LtU32,
+    EqU32,
+    LeU32,
+    GtU32,
+    NeU32,
+    GeU32,
     LtF32,
     LeF32,
     EqF32,

@@ -239,6 +239,18 @@ fn lower_instruction(
         ("v_cmp_le_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
         ("v_cmp_eq_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
         ("v_cmp_lg_f32_e32", operands) => lower_cmp(ir::CmpOp::LgF32, operands),
+        ("v_cmp_lt_i32_e32", operands) => lower_cmp(ir::CmpOp::LtI32, operands),
+        ("v_cmp_eq_i32_e32", operands) => lower_cmp(ir::CmpOp::EqI32, operands),
+        ("v_cmp_le_i32_e32", operands) => lower_cmp(ir::CmpOp::LeI32, operands),
+        ("v_cmp_gt_i32_e32", operands) => lower_cmp(ir::CmpOp::GtI32, operands),
+        ("v_cmp_ne_i32_e32", operands) => lower_cmp(ir::CmpOp::NeI32, operands),
+        ("v_cmp_ge_i32_e32", operands) => lower_cmp(ir::CmpOp::GeI32, operands),
+        ("v_cmp_lt_u32_e32", operands) => lower_cmp(ir::CmpOp::LtU32, operands),
+        ("v_cmp_eq_u32_e32", operands) => lower_cmp(ir::CmpOp::EqU32, operands),
+        ("v_cmp_le_u32_e32", operands) => lower_cmp(ir::CmpOp::LeU32, operands),
+        ("v_cmp_gt_u32_e32", operands) => lower_cmp(ir::CmpOp::GtU32, operands),
+        ("v_cmp_ne_u32_e32", operands) => lower_cmp(ir::CmpOp::NeU32, operands),
+        ("v_cmp_ge_u32_e32", operands) => lower_cmp(ir::CmpOp::GeU32, operands),
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;
             Ok(CndMask32 {

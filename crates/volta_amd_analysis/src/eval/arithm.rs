@@ -401,7 +401,25 @@ fn unary_operand_type(op: UnaryOp) -> OperandType {
     }
 }
 
-/// The boolean `src0 op src1` in `lane`, each source read as an f32.
+fn cmp_operand_type(op: CmpOp) -> OperandType {
+    match op {
+        CmpOp::LtI32
+        | CmpOp::EqI32
+        | CmpOp::LeI32
+        | CmpOp::GtI32
+        | CmpOp::NeI32
+        | CmpOp::GeI32
+        | CmpOp::LtU32
+        | CmpOp::EqU32
+        | CmpOp::LeU32
+        | CmpOp::GtU32
+        | CmpOp::NeU32
+        | CmpOp::GeU32 => OperandType::Word,
+        CmpOp::LtF32 | CmpOp::LeF32 | CmpOp::EqF32 | CmpOp::LgF32 => OperandType::F32,
+    }
+}
+
+/// The boolean `src0 op src1` in `lane`, each source read as `op`'s operand type.
 pub(super) fn evaluate_cmp(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
@@ -410,9 +428,47 @@ pub(super) fn evaluate_cmp(
     src0: Src0,
     src1: Vgpr,
 ) -> Result<ExprId, EvalError> {
-    let a = registers.read_f32_src0(arena, lane, src0)?;
-    let b = registers.read_f32(arena, lane, src1)?;
+    let (a, b) = match cmp_operand_type(op) {
+        OperandType::Word => (
+            registers.read_src0(arena, lane, src0)?,
+            registers.read_vgpr(lane, src1)?,
+        ),
+        OperandType::F32 => (
+            registers.read_f32_src0(arena, lane, src0)?,
+            registers.read_f32(arena, lane, src1)?,
+        ),
+    };
+    compare(arena, lane, op, a, b)
+}
+
+/// An integer comparison needs concrete words, which it reinterprets as `op`'s signedness.
+fn compare(
+    arena: &mut ExprArena,
+    lane: usize,
+    op: CmpOp,
+    a: ExprId,
+    b: ExprId,
+) -> Result<ExprId, EvalError> {
+    let words = |arena: &ExprArena| match (concrete_word(arena, a), concrete_word(arena, b)) {
+        (Some(a), Some(b)) => Ok((a, b)),
+        _ => Err(EvalError::SymbolicWord { lane }),
+    };
+    let signed = |arena: &ExprArena| words(arena).map(|(a, b)| (a as i32).cmp(&(b as i32)));
+    let unsigned = |arena: &ExprArena| words(arena).map(|(a, b)| a.cmp(&b));
+
     Ok(match op {
+        CmpOp::LtI32 => arena.bool_val(signed(arena)?.is_lt()),
+        CmpOp::EqI32 => arena.bool_val(signed(arena)?.is_eq()),
+        CmpOp::LeI32 => arena.bool_val(signed(arena)?.is_le()),
+        CmpOp::GtI32 => arena.bool_val(signed(arena)?.is_gt()),
+        CmpOp::NeI32 => arena.bool_val(signed(arena)?.is_ne()),
+        CmpOp::GeI32 => arena.bool_val(signed(arena)?.is_ge()),
+        CmpOp::LtU32 => arena.bool_val(unsigned(arena)?.is_lt()),
+        CmpOp::EqU32 => arena.bool_val(unsigned(arena)?.is_eq()),
+        CmpOp::LeU32 => arena.bool_val(unsigned(arena)?.is_le()),
+        CmpOp::GtU32 => arena.bool_val(unsigned(arena)?.is_gt()),
+        CmpOp::NeU32 => arena.bool_val(unsigned(arena)?.is_ne()),
+        CmpOp::GeU32 => arena.bool_val(unsigned(arena)?.is_ge()),
         CmpOp::LtF32 => arena.lt(a, b),
         CmpOp::LeF32 => arena.le(a, b),
         CmpOp::EqF32 => arena.eq(a, b),
