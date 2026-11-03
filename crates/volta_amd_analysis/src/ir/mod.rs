@@ -386,6 +386,8 @@ pub enum LoweredInstr {
         condition: BranchCondition,
         target: InstrId,
     },
+    /// Waits until every wave of the workgroup that has not exited reaches a barrier.
+    Barrier,
     /// Copy the first active lane's value, lane 0's, into an SGPR.
     ReadFirstLane {
         dst: Sgpr,

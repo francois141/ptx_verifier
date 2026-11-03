@@ -62,16 +62,41 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    /// Run each ready wave until it exits, stopping at the first instruction a wave cannot
+    /// Run each ready wave until it exits or reaches a barrier, releasing the barrier once
+    /// every wave that has not exited waits there; stop at the first instruction a wave cannot
     /// execute. `kernel` must be the kernel `new` launched.
     pub(crate) fn run(&mut self, kernel: &LoweredKernel) -> Terminal {
-        while let Some(wave) = self.next_ready() {
-            let pc = self.waves[wave].pc;
-            if let Err(error) = self.step(wave, kernel) {
-                return Terminal::Aborted { wave, pc, error };
+        loop {
+            if let Some(wave) = self.next_ready() {
+                let pc = self.waves[wave].pc;
+                if let Err(error) = self.step(wave, kernel) {
+                    return Terminal::Aborted { wave, pc, error };
+                }
+            } else if !self.release_barrier() {
+                return Terminal::Completed;
             }
         }
-        Terminal::Completed
+    }
+
+    /// Once every wave that has not exited waits at the barrier, make them ready; whether any
+    /// wave was released.
+    fn release_barrier(&mut self) -> bool {
+        let at_barrier = |state: &WaveState| state.status == Status::AtBarrier;
+        let exited = |state: &WaveState| state.status == Status::Exited;
+        let arrived = |state: &WaveState| at_barrier(state) || exited(state);
+
+        let all_arrived = self.waves.values().all(arrived);
+        let any_waiting = self.waves.values().any(at_barrier);
+        if !all_arrived || !any_waiting {
+            return false;
+        }
+
+        for state in self.waves.values_mut() {
+            if at_barrier(state) {
+                state.status = Status::Ready;
+            }
+        }
+        true
     }
 
     fn next_ready(&self) -> Option<WaveId> {
@@ -94,6 +119,7 @@ impl<'a> Interpreter<'a> {
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
             }
+            LoweredInstr::Barrier => self.waves[wave].status = Status::AtBarrier,
             LoweredInstr::Branch { target } => next = *target,
             LoweredInstr::CondBranch { condition, target } => {
                 if self.branch_taken(wave, *condition)? {

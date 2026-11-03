@@ -17,6 +17,8 @@ pub struct WaveId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {
     Ready,
+    /// Executed `s_barrier` and waits for the workgroup's other waves.
+    AtBarrier,
     /// Executed `s_endpgm`.
     Exited,
 }

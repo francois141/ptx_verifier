@@ -131,6 +131,7 @@ fn lower_instruction(
             condition: BranchCondition::ExecZ,
             target: branch_target(target, labels)?,
         }),
+        ("s_barrier", []) => Ok(Barrier),
         ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -330,6 +331,7 @@ fn lower_instruction(
             | "s_cbranch_scc1"
             | "s_cbranch_vccnz"
             | "s_cbranch_execz"
+            | "s_barrier"
             | "v_readfirstlane_b32"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
