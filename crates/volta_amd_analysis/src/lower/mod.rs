@@ -225,6 +225,11 @@ fn lower_instruction(
         ("v_bitop3_b32", [operands @ .., Operand::BitOp3(table)]) => {
             lower_ternary_op(ir::TernaryOp::BitOp3(*table), operands)
         }
+        ("v_mov_b32_e32", operands) => lower_unary_op(ir::UnaryOp::Mov32, operands),
+        ("v_bfrev_b32_e32", operands) => lower_unary_op(ir::UnaryOp::BfRev32, operands),
+        ("v_cvt_f32_u32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32U32, operands),
+        ("v_cvt_u32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtU32F32, operands),
+        ("v_rcp_iflag_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpIflagF32, operands),
         ("v_exp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Exp2F32, operands),
         ("v_log_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Log2F32, operands),
         ("v_rcp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpF32, operands),

@@ -313,9 +313,19 @@ pub enum TernaryOp {
     BitOp3(u8),
 }
 
-/// A VOP1 operation of one source, read as an f32.
+/// A VOP1 operation of one source: the f32 ops and the conversion to u32 read it as an f32,
+/// the others as a word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
+    Mov32,
+    /// The source's 32 bits in reverse order.
+    BfRev32,
+    /// The u32 source as an f32.
+    CvtF32U32,
+    /// The f32 source truncated toward zero and clamped to the u32 range.
+    CvtU32F32,
+    /// `1 / src`, the reciprocal integer division expansions use.
+    RcpIflagF32,
     /// `2^src`.
     Exp2F32,
     /// `log2(src)`.

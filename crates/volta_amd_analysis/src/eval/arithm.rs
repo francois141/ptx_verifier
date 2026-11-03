@@ -1,7 +1,7 @@
 //! Vector ALU arithmetic: the value of a unary, binary, ternary or comparison operation in one
 //! lane.
 
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 use crate::ir::{BinOp, CmpOp, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
 
@@ -347,7 +347,7 @@ fn not32(arena: &mut ExprArena, value: ExprId) -> ExprId {
     arena.bit_xor(value, mask)
 }
 
-/// `op src` in `lane`, the source read as an f32.
+/// `op src` in `lane`, the source read as `op`'s operand type.
 pub(super) fn evaluate_unary_op(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
@@ -355,17 +355,50 @@ pub(super) fn evaluate_unary_op(
     op: UnaryOp,
     src: Src0,
 ) -> Result<ExprId, EvalError> {
-    let a = registers.read_f32_src0(arena, lane, src)?;
+    let a = match unary_operand_type(op) {
+        OperandType::Word => registers.read_src0(arena, lane, src)?,
+        OperandType::F32 => registers.read_f32_src0(arena, lane, src)?,
+    };
+
+    let non_symbolic_word =
+        |arena: &ExprArena| concrete_word(arena, a).ok_or(EvalError::SymbolicWord { lane });
+
     Ok(match op {
+        UnaryOp::Mov32 => a,
+        UnaryOp::BfRev32 => {
+            let reversed = non_symbolic_word(arena)?.reverse_bits();
+            arena.int(i64::from(reversed))
+        }
+        UnaryOp::CvtF32U32 => {
+            let value = Real::from_i64(i64::from(non_symbolic_word(arena)?));
+            arena.real(value)
+        }
+        UnaryOp::CvtU32F32 => {
+            let truncated = truncate_to_u32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
+            arena.int(i64::from(truncated))
+        }
+        UnaryOp::RcpIflagF32 | UnaryOp::RcpF32 => arena.rcp(a),
         UnaryOp::Exp2F32 => arena.exp2(a),
         UnaryOp::Log2F32 => arena.log2(a),
-        UnaryOp::RcpF32 => arena.rcp(a),
         UnaryOp::SqrtF32 => arena.sqrt(a),
         UnaryOp::RsqF32 => {
             let root = arena.sqrt(a);
             arena.rcp(root)
         }
     })
+}
+
+fn unary_operand_type(op: UnaryOp) -> OperandType {
+    match op {
+        UnaryOp::Mov32 | UnaryOp::BfRev32 | UnaryOp::CvtF32U32 => OperandType::Word,
+        UnaryOp::CvtU32F32
+        | UnaryOp::RcpIflagF32
+        | UnaryOp::Exp2F32
+        | UnaryOp::Log2F32
+        | UnaryOp::RcpF32
+        | UnaryOp::SqrtF32
+        | UnaryOp::RsqF32 => OperandType::F32,
+    }
 }
 
 /// The boolean `src0 op src1` in `lane`, each source read as an f32.
@@ -384,6 +417,26 @@ pub(super) fn evaluate_cmp(
         CmpOp::LeF32 => arena.le(a, b),
         CmpOp::EqF32 => arena.eq(a, b),
         CmpOp::LgF32 => arena.ne(a, b),
+    })
+}
+
+/// A concrete real truncated toward zero and clamped to the u32 range; `None` when symbolic.
+fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
+    let ExprNode::RealConst(real) = arena.node(value) else {
+        return None;
+    };
+    Some(match real.repr() {
+        RealRepr::NegInf => 0,
+        RealRepr::PosInf => u32::MAX,
+        RealRepr::Rational(rational) => {
+            let integer = rational.clone().trunc();
+            let integer = integer.numer();
+            match integer.to_u32() {
+                Some(word) => word,
+                None if integer.is_negative() => 0,
+                None => u32::MAX,
+            }
+        }
     })
 }
 
