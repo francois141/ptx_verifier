@@ -7,3 +7,7 @@ edition.workspace = true
 id_collections.workspace = true
 volta_expr.workspace = true
 volta_graph.workspace = true
+
+[dev-dependencies]
+rug.workspace = true
+volta_spec.workspace = true

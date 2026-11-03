@@ -48,6 +48,10 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
   interpreter uses. The root re-exports these types and `unfold`
   (`volta_spec::unfold`).
 
+`extract_expressions_from_spec(source, dims)` runs the whole pipeline: spec text
+and dim values in, `SymbolicOutputs` out (every element, no sampling). Its
+`ExtractError` says which stage failed (`Parse`, `Instantiate`, `Unfold`).
+
 Each spec output must be declared `out` or `inout` in the kernel's launch
 config. The unfolded spec then plays the role of the reference kernel in the
 equivalence check.

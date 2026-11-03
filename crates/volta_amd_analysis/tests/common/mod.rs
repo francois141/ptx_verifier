@@ -1,16 +1,19 @@
 //! A fixture's run, checked against its expected symbolic outputs: `tests/fixtures/<name>.out`
 //! beside `<name>.s`, one `array[index] = expr` line per written element as in the PTX tests'
-//! `.out` files. `VOLTA_BLESS=1` rewrites the file instead.
+//! `.out` files. `VOLTA_BLESS=1` rewrites the expected file instead.
+
+#![allow(dead_code)]
 
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{ArrayDef, ArrayKind, Terminal, WorkgroupLaunch, analyze};
+use volta_expr::SymbolicOutputs;
 
 const KERNARG_ADDRESS: u64 = 0x1000;
-const WORKITEMS: u32 = 64;
+pub const WORKITEMS: u32 = 64;
 
 /// An array of one word per work-item of `check_run`'s wave.
 pub fn array(name: &str, base: u64, kind: ArrayKind) -> ArrayDef {
@@ -36,8 +39,16 @@ pub fn check_run(name: &str, arrays: &[ArrayDef]) {
 
 /// `check_run` on a workgroup of `workitems` work-items along X.
 pub fn check_run_on(name: &str, workitems: u32, arrays: &[ArrayDef]) {
-    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
-    check_run_kernel(name, name, workitems, &kernarg, arrays);
+    check_run_kernel(name, name, workitems, &kernarg(arrays), arrays);
+}
+
+/// The symbolic outputs `check_run` compares, of kernel `name` on one wave.
+pub fn outputs(name: &str, arrays: &[ArrayDef]) -> Result<SymbolicOutputs, String> {
+    run_outputs(name, name, WORKITEMS, &kernarg(arrays), arrays)
+}
+
+fn kernarg(arrays: &[ArrayDef]) -> Vec<u8> {
+    arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect()
 }
 
 /// Run kernel `kernel` of `tests/fixtures/<fixture>.s` on a workgroup of `workitems` work-items
@@ -72,6 +83,13 @@ fn report(name: &str, passed: bool) {
     stderr.write_all(line.as_bytes()).unwrap();
 }
 
+/// `tests/fixtures/<name>`, without an extension.
+pub fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
 fn run(
     name: &str,
     kernel: &str,
@@ -79,10 +97,26 @@ fn run(
     kernarg: &[u8],
     arrays: &[ArrayDef],
 ) -> Result<(), String> {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name);
-    let source = std::fs::read_to_string(fixture.with_extension("s")).map_err(|e| e.to_string())?;
+    let outputs = run_outputs(name, kernel, workitems, kernarg, arrays)?;
+    let mut actual = String::new();
+    for (array, elements) in &outputs.outputs {
+        for &(index, value) in elements {
+            let expr = outputs.arena.display_expr(value);
+            writeln!(actual, "{array}[{index}] = {expr}").unwrap();
+        }
+    }
+    expect_file(&fixture(name).with_extension("out"), &actual)
+}
+
+fn run_outputs(
+    name: &str,
+    kernel: &str,
+    workitems: u32,
+    kernarg: &[u8],
+    arrays: &[ArrayDef],
+) -> Result<SymbolicOutputs, String> {
+    let source =
+        std::fs::read_to_string(fixture(name).with_extension("s")).map_err(|e| e.to_string())?;
     let kernel = parse_kernel(&source, kernel).map_err(|e| e.to_string())?;
 
     let launch = WorkgroupLaunch {
@@ -97,33 +131,26 @@ fn run(
             wave.0, pc.0, kernel.instructions[pc.0 as usize].opcode
         ));
     }
+    result.symbolic_outputs.ok_or("no symbolic outputs".into())
+}
 
-    let outputs = result.symbolic_outputs.ok_or("no symbolic outputs")?;
-    let mut actual = String::new();
-    for (array, elements) in &outputs.outputs {
-        for &(index, value) in elements {
-            let expr = outputs.arena.display_expr(value);
-            writeln!(actual, "{array}[{index}] = {expr}").unwrap();
-        }
-    }
-
-    let out_path = fixture.with_extension("out");
+/// Compare `actual` with the file at `path`, or rewrite the file under `VOLTA_BLESS=1`.
+fn expect_file(path: &Path, actual: &str) -> Result<(), String> {
     if std::env::var_os("VOLTA_BLESS").is_some_and(|v| v == "1") {
-        return std::fs::write(&out_path, &actual)
-            .map_err(|e| format!("write {}: {e}", out_path.display()));
+        return std::fs::write(path, actual).map_err(|e| format!("write {}: {e}", path.display()));
     }
 
-    let expected = std::fs::read_to_string(&out_path).map_err(|e| {
+    let expected = std::fs::read_to_string(path).map_err(|e| {
         format!(
             "read {}: {e} (rerun with VOLTA_BLESS=1 to create it)",
-            out_path.display()
+            path.display()
         )
     })?;
 
     if actual != expected {
         return Err(format!(
             "outputs differ from {} (rerun with VOLTA_BLESS=1 to accept)",
-            out_path.display()
+            path.display()
         ));
     }
     Ok(())

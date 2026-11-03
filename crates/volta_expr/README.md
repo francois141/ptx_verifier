@@ -56,3 +56,28 @@ Reading rebuilds nodes exactly as written (no folding) and validates them.
 The writer matches exhaustively over `ExprNode`, so a new node kind cannot be
 added without a text form. `volta analyze --emit-exprs` writes this format and
 `volta compare --exprs` reads it.
+
+## Lean challenges (`lean.rs`)
+
+`to_lean(candidate, baseline, arrays, claim, namespace)` writes a Lean 4 / Mathlib
+module with one `def <array>_<index> : Prop` per element both sides write of the
+named arrays. Each one states the candidate's value against the baseline's, either
+`Claim::Equal` (`c = b`) or `Claim::Within(tol)` (`|c - b| ≤ tol`, with `tol` an exact
+rational). A prover, such as an LLM, proves `theorem out_0 : NS.out_0` in a module of its
+own. Because the statement is a definition the prover does not write, it cannot weaken
+the claim; checking a solution means building it and confirming `#print axioms` shows
+no `sorryAx`.
+
+- Values are `ℝ`. An input element `a[i]` is the real variable `a_i`, a parameter
+  or machine symbol is an `ℝ` variable, and every variable is universally quantified
+  (two inputs that would share a Lean name are a `DuplicateName` error).
+  Comparisons and boolean ops become `Prop`s and `select` becomes `if … then … else`.
+- Every literal is ascribed `ℝ` and exact: an integer, a short decimal, `p / 2 ^ k` or `p / q`.
+- A non-leaf real node used twice within an element becomes a `let`, so the statement's size
+  stays linear in the DAG.
+- Bitwise ops, `rem`, infinities, symbolic reads and undefined values have no real-number
+  form and are errors, as is mixing truth values with numbers.
+- Lean's total conventions (`x / 0 = 0`, `log`, `sqrt` of negatives) apply where Volta's
+  arithmetic is undefined.
+
+`just extract-lean` writes the AMD sigmoid one to `target/lean/sigmoid.lean`.

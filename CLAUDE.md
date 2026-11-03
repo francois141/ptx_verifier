@@ -48,7 +48,7 @@ volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check,
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
-volta_amd_analysis → volta_expr
+volta_amd_analysis → volta_expr (+ dev: volta_spec)
 volta_trainium_analysis → (nothing)
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
@@ -158,6 +158,18 @@ deterministic. Reading rebuilds nodes exactly as written (no constant
 folding) and validates; the writer's `match` is exhaustive over `ExprNode`,
 so a new node kind cannot ship without a text form.
 
+### Lean challenges (`lean.rs`)
+
+`to_lean(candidate, baseline, arrays, claim, namespace)`: a Lean 4 / Mathlib module
+of one `def <array>_<index> : Prop` per paired element, `Claim::Equal` (`c = b`) or
+`Claim::Within(tol)` (`|c - b| ≤ tol`, exact). A prover proves the definitions in
+its own module, so it never writes a statement. Values are `ℝ` (input element `a[i]`
+is the variable `a_i`; params and machine symbols are `ℝ` variables too, all universally
+quantified; two inputs with one Lean name are an error), comparisons are
+`Prop`s, literals are exact and ascribed `ℝ`, and non-leaf real nodes used twice are
+`let`-bound. Bitwise ops, `rem`, infinities, symbolic reads and undefined values are
+errors (`LeanError`).
+
 ## Crate: volta_spec
 
 **Path**: `crates/volta_spec/`
@@ -170,6 +182,8 @@ Mathematical specs: an output array as a formula over other arrays
 (`OutputSpec`, `SpecExpr`, `Shape`, `SpecEnv`), unfolded by `unfold` into a
 `SymbolicOutputs` with the arena's own constructors, so a kernel checks
 against a spec exactly like against a second kernel (`volta verify`).
+`extract_expressions_from_spec(source, dims)` runs parse, instantiate and unfold
+in one call (every element; `ExtractError` names the failed stage).
 
 ## Crate: volta_graph
 
@@ -405,6 +419,11 @@ Unsupported instructions return `EvalError`.
 Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
+`tests/lean_tests.rs` writes the sigmoid fixture's outputs against
+`tests/fixtures/sigmoid.spec` (dev-dependency `volta_spec`) as the Lean challenge
+`target/lean/sigmoid.lean` (`just extract-lean`): within `1/1000`, since the
+kernel's large-input branch rescales by f32(e^-64), and over the reals the exact equality
+is false there.
 Do not add any other test (no unit tests, no `tests.rs` modules): cover new behavior
 with such a fixture comparison instead.
 See the crate README for ISA references, test commands, and fixture regeneration.
@@ -834,4 +853,5 @@ just check # run linters
 just test  # run tests
 just viz   # record every volta_pipeline test run, write target/volta-viz/volta-graphs.html
 just loc   # count the lines of code, per crate and per language
+just extract-lean # write the AMD sigmoid Lean challenge, target/lean/sigmoid.lean
 ```

@@ -48,6 +48,12 @@ Run both suites from the repository root:
 just amd
 ```
 
+`tests/lean_tests.rs` states the sigmoid fixture's outputs against
+`tests/fixtures/sigmoid.spec` (`1 / (1 + exp(-a[i]))`) as a Lean challenge and writes it to
+`target/lean/sigmoid.lean` (`just extract-lean`). Each element is claimed within
+`1/1000`, not equal: above `a > 87.34` the kernel rescales by the f32 constant nearest
+`e^-64`, so over the reals the exact equality is false there.
+
 The cooperative `softmax` fixture uses lane exchanges for row maxima and sums,
 as in CK's [FMHA reductions](https://github.com/ROCm/composable_kernel/blob/d80f11f70b1ab154a56b4bb7b4e28062007ccc65/include/ck_tile/ops/fmha/pipeline/block_fmha_pipeline_qr_ks_vs.hpp).
 Its XOR reduction follows CK's [block reduction](https://github.com/ROCm/composable_kernel/blob/d80f11f70b1ab154a56b4bb7b4e28062007ccc65/include/ck_tile/ops/reduce/block/block_reduce.hpp),
