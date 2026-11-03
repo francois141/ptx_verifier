@@ -42,8 +42,8 @@ pub enum Operand {
         first: u32,
         last: u32,
     },
-    /// An unsigned integer literal.
-    Imm(u64),
+    /// An integer literal; the negative inline constants -1 to -16 are written signed.
+    Imm(i64),
     /// One of the inline float constants ±0.5, ±1.0, ±2.0 and ±4.0, as its f32 bits.
     InlineFloat(u32),
     /// The vector condition code, one bit per lane.

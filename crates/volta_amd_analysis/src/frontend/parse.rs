@@ -22,9 +22,17 @@ fn integer(text: &str) -> Option<u64> {
 /// The inline float constants CDNA4 encodes without a literal (§6.2), as Clang prints them.
 const INLINE_FLOATS: [f32; 8] = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0, -4.0];
 
+/// Parse a signed decimal or hexadecimal integer.
+fn signed_integer(text: &str) -> Option<i64> {
+    match text.strip_prefix('-') {
+        Some(magnitude) => i64::try_from(integer(magnitude)?).ok()?.checked_neg(),
+        None => i64::try_from(integer(text)?).ok(),
+    }
+}
+
 /// Parse a register, register range, integer, inline float, wait counter, or memory offset.
 fn operand(text: &str) -> Option<Operand> {
-    if let Some(value) = integer(text) {
+    if let Some(value) = signed_integer(text) {
         return Some(Operand::Imm(value));
     }
     if text == "vcc" {
@@ -42,11 +50,7 @@ fn operand(text: &str) -> Option<Operand> {
             .then_some(Operand::InlineFloat(value.to_bits()));
     }
     if let Some(offset) = text.strip_prefix("offset:") {
-        let value = match offset.strip_prefix('-') {
-            Some(magnitude) => -i64::try_from(integer(magnitude)?).ok()?,
-            None => i64::try_from(integer(offset)?).ok()?,
-        };
-        return Some(Operand::Offset(value));
+        return signed_integer(offset).map(Operand::Offset);
     }
     if let Some((name, rest)) = text.split_once('(') {
         let counter = match name {
@@ -240,7 +244,16 @@ mod tests {
             value: 3,
         };
         assert_eq!(operand("vmcnt(3)"), Some(vm3));
-        for bad in ["s[3:0]", "s[0]", "x0", "glc", "expcnt(0)", "vmcnt(x)", "-1"] {
+        assert_eq!(operand("-1"), Some(Imm(-1)));
+        for bad in [
+            "s[3:0]",
+            "s[0]",
+            "x0",
+            "glc",
+            "expcnt(0)",
+            "vmcnt(x)",
+            "--1",
+        ] {
             assert_eq!(operand(bad), None, "{bad}");
         }
 

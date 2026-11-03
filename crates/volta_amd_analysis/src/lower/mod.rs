@@ -432,10 +432,10 @@ fn mfma_src_c(dst: LaneRegs<4>, operand: &Operand) -> Result<MfmaSrcC, &'static 
 }
 
 /// Before GFX10, VOP3 takes no literal, only inline constants (LLVM 21.1.8's
-/// `validateVOPLiteral`), of which the frontend reads the integers 0 to 64 and the floats.
+/// `validateVOPLiteral`): the integers -16 to 64 and the floats.
 fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
     match operand {
-        Operand::Imm(value) if *value <= 64 => Some(Vop3Src::Inline(*value as u32)),
+        Operand::Imm(value) if (-16..=64).contains(value) => Some(Vop3Src::Inline(*value as u32)),
         Operand::InlineFloat(bits) => Some(Vop3Src::Inline(*bits)),
         _ => vgpr(operand).map(Vop3Src::Vgpr),
     }
@@ -489,17 +489,27 @@ fn global_address(
     })
 }
 
-/// A 32-bit literal or an inline float, as the 32 bits of the operand.
+/// A 32-bit literal or an inline constant, as the 32 bits of the operand.
 fn constant(operand: &Operand) -> Option<u32> {
     match operand {
         Operand::InlineFloat(bits) => Some(*bits),
-        _ => immediate(operand, u32::MAX),
+        _ => word(operand),
+    }
+}
+
+/// A 32-bit literal is its bits; a negative one is an inline constant in two's complement.
+fn word(operand: &Operand) -> Option<u32> {
+    match operand {
+        Operand::Imm(value) if (i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(value) => {
+            Some(*value as u32)
+        }
+        _ => None,
     }
 }
 
 fn immediate(operand: &Operand, max: u32) -> Option<u32> {
     match operand {
-        Operand::Imm(value) if *value <= u64::from(max) => Some(*value as u32),
+        Operand::Imm(value) if (0..=i64::from(max)).contains(value) => Some(*value as u32),
         _ => None,
     }
 }
