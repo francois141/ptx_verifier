@@ -94,6 +94,34 @@ pub enum ScalarSrc {
     Const(u32),
 }
 
+/// A 32-bit scalar ALU operation of two sources over words, with its effect on SCC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarOp32 {
+    /// SCC is the carry out.
+    AddU32,
+    /// `src0 + src1 + SCC`; SCC is the carry out.
+    AddcU32,
+    /// SCC is the signed overflow.
+    AddI32,
+    /// SCC is the signed overflow.
+    SubI32,
+    /// The low word of the product; SCC is unchanged.
+    MulI32,
+    /// The high word of the unsigned product; SCC is unchanged.
+    MulHiU32,
+    /// SCC is whether the result is nonzero, as for every op below.
+    AndB32,
+    XorB32,
+    /// `src0 << src1`, using the count's low five bits.
+    LShlB32,
+    /// The logical `src0 >> src1`.
+    LShrB32,
+    /// The arithmetic `src0 >> src1`.
+    AShrI32,
+    /// `SCC ? src0 : src1`; SCC is unchanged.
+    CSelectB32,
+}
+
 /// The VGPRs a global load writes, one per dword: a single VGPR, or an even-aligned tuple of
 /// three or four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +296,12 @@ pub enum LoweredInstr {
     MovScalar32 {
         dst: Sgpr,
         src: ScalarSrc,
+    },
+    ScalarOp32 {
+        op: ScalarOp32,
+        dst: Sgpr,
+        src0: ScalarSrc,
+        src1: ScalarSrc,
     },
     /// Copy the first active lane's value, lane 0's, into an SGPR.
     ReadFirstLane {

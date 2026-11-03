@@ -53,6 +53,7 @@ enum RegValue {
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
     scalar: [RegValue; 102],    // Scalar registers are shared by the wave.
+    scc: Option<bool>,          // The scalar condition code, once an instruction writes it.
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
 }
 
@@ -77,6 +78,7 @@ impl Default for WaveRegisters {
         };
         Self {
             scalar: [RegValue::Uninitialized; 102],
+            scc: None,
             vector: vec![lane; 64],
         }
     }
@@ -131,6 +133,20 @@ impl WaveRegisters {
                 *slot = RegValue::Ready(value);
             }
         }
+    }
+
+    /// A scalar register's concrete 32-bit word.
+    pub fn read_sgpr_word(&self, arena: &ExprArena, reg: Sgpr) -> Result<u32, EvalError> {
+        let value = self.read_sgpr(reg)?;
+        concrete_word(arena, value).ok_or(EvalError::SymbolicSgpr(reg))
+    }
+
+    pub fn read_scc(&self) -> Result<bool, EvalError> {
+        self.scc.ok_or(EvalError::UninitializedScc)
+    }
+
+    pub fn write_scc(&mut self, scc: bool) {
+        self.scc = Some(scc);
     }
 
     /// Read the 64-bit address an SGPR pair holds as two concrete words, low word first.

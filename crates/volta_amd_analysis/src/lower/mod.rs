@@ -72,6 +72,22 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
     use LoweredInstr::*;
 
     match (instruction.opcode.as_str(), instruction.operands.as_slice()) {
+        ("s_movk_i32", [dst, src]) => Ok(MovScalar32 {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
+        }),
+        ("s_add_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddU32, operands),
+        ("s_addc_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddcU32, operands),
+        ("s_add_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AddI32, operands),
+        ("s_sub_i32", operands) => lower_scalar_op32(ir::ScalarOp32::SubI32, operands),
+        ("s_mul_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MulI32, operands),
+        ("s_mul_hi_u32", operands) => lower_scalar_op32(ir::ScalarOp32::MulHiU32, operands),
+        ("s_and_b32", operands) => lower_scalar_op32(ir::ScalarOp32::AndB32, operands),
+        ("s_xor_b32", operands) => lower_scalar_op32(ir::ScalarOp32::XorB32, operands),
+        ("s_lshl_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlB32, operands),
+        ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
+        ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
+        ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
         ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -263,6 +279,7 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "s_load_dwordx2"
             | "s_load_dwordx4"
             | "s_load_dwordx8"
+            | "s_movk_i32"
             | "v_readfirstlane_b32"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
@@ -346,6 +363,42 @@ fn lower_cmp(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'stat
         src0: first_source(src0)?,
         src1: vgpr(src1).ok_or("expected one VGPR second source")?,
     })
+}
+
+fn lower_scalar_op32(
+    op: ir::ScalarOp32,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    let (src0, src1) = scalar_sources(src0, src1)?;
+    Ok(LoweredInstr::ScalarOp32 {
+        op,
+        dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+        src0,
+        src1,
+    })
+}
+
+/// A SOP2 or SOPC encoding holds at most one 32-bit literal.
+fn scalar_sources(src0: &Operand, src1: &Operand) -> Result<(ScalarSrc, ScalarSrc), &'static str> {
+    let src0 = scalar_source(src0).ok_or("expected an SGPR or a 32-bit constant first source")?;
+    let src1 = scalar_source(src1).ok_or("expected an SGPR or a 32-bit constant second source")?;
+    let literal = |src: ScalarSrc| matches!(src, ScalarSrc::Const(bits) if !is_inline(bits));
+    if literal(src0) && literal(src1) && src0 != src1 {
+        return Err("expected at most one 32-bit literal");
+    }
+    Ok((src0, src1))
+}
+
+/// Whether a 32-bit operand is one of CDNA4's inline integer or float constants (§6.2).
+fn is_inline(bits: u32) -> bool {
+    let integer = bits as i32;
+    (-16..=64).contains(&integer)
+        || [0.5f32, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0, -4.0]
+            .iter()
+            .any(|value| value.to_bits() == bits)
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {
@@ -510,6 +563,16 @@ fn word(operand: &Operand) -> Option<u32> {
 fn immediate(operand: &Operand, max: u32) -> Option<u32> {
     match operand {
         Operand::Imm(value) if (0..=i64::from(max)).contains(value) => Some(*value as u32),
+        _ => None,
+    }
+}
+
+/// `s_movk_i32`'s 16-bit immediate, sign-extended to 32 bits; the assembly may print it unsigned.
+fn simm16(operand: &Operand) -> Option<u32> {
+    match operand {
+        Operand::Imm(value) if (-0x8000..=0xffff).contains(value) => {
+            Some(i32::from(*value as u16 as i16) as u32)
+        }
         _ => None,
     }
 }

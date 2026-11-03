@@ -12,6 +12,8 @@ pub enum EvalError {
     UninitializedVgpr { lane: usize, reg: Vgpr },
     UninitializedAgpr { lane: usize, reg: Agpr },
     UninitializedVcc { lane: usize },
+    UninitializedScc,
+    SymbolicSgpr(Sgpr),
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
@@ -48,6 +50,14 @@ impl fmt::Display for EvalError {
                 )
             }
             Self::UninitializedVcc { lane } => write!(f, "uninitialized VCC bit in lane {lane}"),
+            Self::UninitializedScc => write!(f, "uninitialized SCC"),
+            Self::SymbolicSgpr(reg) => {
+                write!(
+                    f,
+                    "scalar register s{} must contain a concrete 32-bit word",
+                    reg.0
+                )
+            }
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
             Self::PendingVgpr { lane, reg } => {
                 write!(
