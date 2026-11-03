@@ -136,3 +136,56 @@ fn the_bit_ops_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+/// The `ck::kernel_gemm_xdl_cshuffle_v3` instance `ck_gemm.hip` compiles: two waves, each
+/// accumulating a 32 x 64 slice of a 64 x 64 tile with `v_mfma_f32_16x16x4_f32`.
+const CK_GEMM_KERNEL: &str = concat!(
+    "_ZN2ck27kernel_gemm_xdl_cshuffle_v3INS_28GridwiseGemm_xdl_cshuffle_v3INS_13tensor_layout4",
+    "gemm8RowMajorENS3_11ColumnMajorES4_fffffNS_16tensor_operation12element_wise11PassThrough",
+    "ES8_S8_LNS6_6device18GemmSpecializationE7ELi128ELi64ELi64ELi64ELi4ELi4ELi16ELi16ELi2ELi4",
+    "ENS_8SequenceIJLi4ELi32ELi1EEEENSB_IJLi1ELi0ELi2EEEESD_Li2ELi2ELi2ELb0ELi0ESC_SD_SD_Li2ELi2",
+    "ELi2ELb0ELi0ELi1ELi2ENSB_IJLi1ELi32ELi1ELi4EEEELi2ELNS_26BlockGemmPipelineSchedulerE0ELNS_",
+    "24BlockGemmPipelineVersionE2EffLb0ELb0ELb0EEELb0ELNS_25InMemoryDataOperationEnumE0ELi1ELNS_",
+    "10TailNumberE10EEEvNT_8ArgumentE",
+);
+
+/// The kernel's `GridwiseGemm::Argument` for an 8 x 8 x 8 problem, as CK's host constructor
+/// lays it out: a vtable pointer and a workspace pointer, the `Problem`'s fifteen `index_t`s
+/// padded to the 64 x 64 x 64 block tile, the three empty element ops, then the pointers.
+fn ck_gemm_kernarg(a: u64, b: u64, c: u64) -> Vec<u8> {
+    let (m, n, k) = (8, 8, 8);
+    let problem: [i32; 15] = [
+        m, n, k, // M, N, K
+        k, k, n, // StrideA (row-major A), StrideB (column-major B), StrideC (row-major C)
+        1, // KBatch
+        64, 64, // MPadded, NPadded
+        8,  // KRead
+        64, // KPadded
+        16, 16, // AK0, BK0: KPadded / K1
+        1, 1, // MBlock, NBlock
+    ];
+    let mut bytes = vec![0u8; 16];
+    bytes.extend(problem.iter().flat_map(|field| field.to_le_bytes()));
+    bytes.resize(80, 0);
+    for pointer in [a, b, c] {
+        bytes.extend(pointer.to_le_bytes());
+    }
+    bytes.resize(112, 0); // is_reduce = false, then padding.
+    bytes
+}
+
+#[test]
+fn the_ck_gemm_kernel_writes_its_expected_outputs() {
+    let (a, b, c) = (0x10000, 0x20000, 0x30000);
+    common::check_run_kernel(
+        "ck_gemm",
+        CK_GEMM_KERNEL,
+        128,
+        &ck_gemm_kernarg(a, b, c),
+        &[
+            array_of("a", a, 8 * 8, ArrayKind::Input),
+            array_of("b", b, 8 * 8, ArrayKind::Input),
+            array_of("c", c, 8 * 8, ArrayKind::Output),
+        ],
+    );
+}

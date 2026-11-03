@@ -36,10 +36,23 @@ pub fn check_run(name: &str, arrays: &[ArrayDef]) {
 
 /// `check_run` on a workgroup of `workitems` work-items along X.
 pub fn check_run_on(name: &str, workitems: u32, arrays: &[ArrayDef]) {
-    let result = run(name, workitems, arrays);
-    report(name, result.is_ok());
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    check_run_kernel(name, name, workitems, &kernarg, arrays);
+}
+
+/// Run kernel `kernel` of `tests/fixtures/<fixture>.s` on a workgroup of `workitems` work-items
+/// along X, with `kernarg` as its argument buffer, and compare its outputs with `<fixture>.out`.
+pub fn check_run_kernel(
+    fixture: &str,
+    kernel: &str,
+    workitems: u32,
+    kernarg: &[u8],
+    arrays: &[ArrayDef],
+) {
+    let result = run(fixture, kernel, workitems, kernarg, arrays);
+    report(fixture, result.is_ok());
     if let Err(error) = result {
-        panic!("{name}: {error}");
+        panic!("{fixture}: {error}");
     }
 }
 
@@ -59,19 +72,24 @@ fn report(name: &str, passed: bool) {
     stderr.write_all(line.as_bytes()).unwrap();
 }
 
-fn run(name: &str, workitems: u32, arrays: &[ArrayDef]) -> Result<(), String> {
+fn run(
+    name: &str,
+    kernel: &str,
+    workitems: u32,
+    kernarg: &[u8],
+    arrays: &[ArrayDef],
+) -> Result<(), String> {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
     let source = std::fs::read_to_string(fixture.with_extension("s")).map_err(|e| e.to_string())?;
-    let kernel = parse_kernel(&source, name).map_err(|e| e.to_string())?;
+    let kernel = parse_kernel(&source, kernel).map_err(|e| e.to_string())?;
 
-    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
     let launch = WorkgroupLaunch {
         kernarg_address: KERNARG_ADDRESS,
         workgroup_size: (workitems, 1, 1),
     };
-    let result = analyze(&kernel, &launch, &kernarg, arrays).map_err(|e| e.to_string())?;
+    let result = analyze(&kernel, &launch, kernarg, arrays).map_err(|e| e.to_string())?;
 
     if let Terminal::Aborted { wave, pc, error } = &result.terminal {
         return Err(format!(

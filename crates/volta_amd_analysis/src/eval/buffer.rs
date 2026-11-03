@@ -1,7 +1,5 @@
-//! Raw buffer loads and stores in one lane, as another `impl Interpreter`: global memory
-//! accessed through a buffer resource, which bounds it.
-
-use volta_expr::ExprId;
+//! Raw buffer loads and stores for a single lane.
+//! A buffer resource defines the base address and bounds of each access to global memory.
 
 use crate::ir::{BufferAddress, LaneReg, Sgpr, Vgpr};
 
@@ -27,52 +25,56 @@ impl Interpreter<'_> {
     /// whose addressing this model does not cover.
     fn buffer_resource(&self, wave: WaveId, rsrc: [Sgpr; 4]) -> Result<BufferResource, EvalError> {
         let registers = &self.waves[wave].registers;
-        let [base_low, word1, num_records, word3] =
-            rsrc.map(|reg| registers.read_sgpr_word(&self.arena, reg));
-        let (base_low, word1, num_records, word3) = (base_low?, word1?, num_records?, word3?);
+        let base_low = registers.read_sgpr_word(&self.arena, rsrc[0])?;
+        let word1 = registers.read_sgpr_word(&self.arena, rsrc[1])?;
+        let num_records = registers.read_sgpr_word(&self.arena, rsrc[2])?;
+        let word3 = registers.read_sgpr_word(&self.arena, rsrc[3])?;
 
-        if (word1 >> 16) & 0x3fff != 0 {
+        // Word 1 contains the upper address bits, stride, and swizzle flag.
+        let base_high = word1 & 0xffff;
+        let stride = (word1 >> 16) & 0x3fff;
+        let swizzle_enabled = (word1 >> 31) != 0;
+        let add_tid_enabled = ((word3 >> 23) & 1) != 0;
+
+        if stride != 0 {
             return Err(EvalError::UnsupportedBufferResource {
                 reason: "a nonzero stride",
             });
         }
-
-        if word1 >> 31 != 0 {
+        if swizzle_enabled {
             return Err(EvalError::UnsupportedBufferResource {
                 reason: "swizzling enabled",
             });
         }
-
-        if (word3 >> 23) & 1 != 0 {
+        if add_tid_enabled {
             return Err(EvalError::UnsupportedBufferResource {
                 reason: "ADD_TID_ENABLE set",
             });
         }
 
         Ok(BufferResource {
-            base: u64::from(base_low) | (u64::from(word1 & 0xffff) << 32),
+            base: u64::from(base_low) | (u64::from(base_high) << 32),
             size: u64::from(num_records),
         })
     }
 
-    /// Where `lane`'s `words`-word access lies. A partial overlap is an error: hardware checks
+    /// Locate an access of `word_count` words for `lane`. A partial overlap is an error: hardware checks
     /// it per access or per word depending on the generation, which this model avoids relying on.
     fn buffer_range(
         &self,
         wave: WaveId,
         lane: usize,
         address: BufferAddress,
-        words: u64,
+        word_count: u64,
     ) -> Result<BufferRange, EvalError> {
         let resource = self.buffer_resource(wave, address.rsrc)?;
-
-        let vgpr_offset =
-            self.waves[wave]
-                .registers
-                .read_address_vgpr(&self.arena, lane, address.vgpr_offset)?;
+        let registers = &self.waves[wave].registers;
+        let vgpr_offset = registers.read_address_vgpr(&self.arena, lane, address.vgpr_offset)?;
         let buffer_offset = u64::from(vgpr_offset) + address.imm_offset.bytes();
+        let access_size = 4 * word_count;
+        let buffer_end = buffer_offset + access_size;
 
-        if buffer_offset + 4 * words <= resource.size {
+        if buffer_end <= resource.size {
             let start = resource
                 .base
                 .checked_add(buffer_offset)
@@ -94,19 +96,26 @@ impl Interpreter<'_> {
         address: BufferAddress,
         dst: &[Vgpr],
     ) -> Result<(), EvalError> {
-        let values: Vec<ExprId> = match self.buffer_range(wave, lane, address, dst.len() as u64)? {
-            BufferRange::Inside(start) => (0..dst.len() as u64)
-                .map(|i| self.global.load_dword(start + 4 * i, &mut self.arena))
-                .collect::<Result<_, _>>()?,
+        let word_count = dst.len() as u64;
+        let range = self.buffer_range(wave, lane, address, word_count)?;
+        let values = match range {
+            BufferRange::Inside(start) => {
+                let mut values = Vec::with_capacity(dst.len());
+                for word_index in 0..word_count {
+                    let word_address = start + 4 * word_index;
+                    let value = self.global.load_dword(word_address, &mut self.arena)?;
+                    values.push(value);
+                }
+                values
+            }
             BufferRange::Outside => vec![self.arena.int(0); dst.len()],
         };
-
         self.waves[wave]
             .registers
             .start_vector_load(lane, dst, &values, LoadCounter::Vm)
     }
 
-    /// Store the word of each register of `src`, dropped outside the buffer.
+    /// Store the word of each register of `src`; a store outside the buffer is dropped.
     pub(super) fn buffer_store(
         &mut self,
         wave: WaveId,
@@ -114,16 +123,18 @@ impl Interpreter<'_> {
         address: BufferAddress,
         src: &[LaneReg],
     ) -> Result<(), EvalError> {
-        let start = match self.buffer_range(wave, lane, address, src.len() as u64)? {
+        let word_count = src.len() as u64;
+        let range = self.buffer_range(wave, lane, address, word_count)?;
+        let start = match range {
             BufferRange::Inside(start) => start,
             BufferRange::Outside => return Ok(()),
         };
 
-        for (i, &reg) in (0..).zip(src) {
+        for (word_index, &reg) in src.iter().enumerate() {
+            let word_address = start + 4 * word_index as u64;
             let value = self.waves[wave].registers.read_lane_reg(lane, reg)?;
-            self.global.store_dword(start + 4 * i, value)?;
+            self.global.store_dword(word_address, value)?;
         }
-
         Ok(())
     }
 }

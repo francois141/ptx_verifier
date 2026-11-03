@@ -47,8 +47,7 @@ pub(super) fn execute_mfma_16x16x4_f32(
             .collect::<Result<Vec<_>, _>>()?,
 
         MfmaSrcC::Inline(bits) => {
-            let value = f32_from_bits(arena, bits)
-                .ok_or(EvalError::InvalidFloatConstant(bits))?;
+            let value = f32_from_bits(arena, bits).ok_or(EvalError::InvalidFloatConstant(bits))?;
             vec![vec![value; LANES]; K]
         }
     };
@@ -62,11 +61,7 @@ pub(super) fn execute_mfma_16x16x4_f32(
             let mut sum = c[reg][lane];
 
             for k in 0..K {
-                sum = arena.fma(
-                    a[operand_lane(i, k)],
-                    b[operand_lane(j, k)],
-                    sum,
-                );
+                sum = arena.fma(a[operand_lane(i, k)], b[operand_lane(j, k)], sum);
             }
 
             d[i][j] = sum;
@@ -101,8 +96,7 @@ fn read_wave(
             LaneReg::Vgpr(reg) => registers.read_f32(arena, lane, reg)?,
             LaneReg::Agpr(reg) => {
                 let value = registers.read_agpr(lane, reg)?;
-                as_f32(arena, value)
-                    .ok_or(EvalError::InvalidFloatAgpr { lane, reg })?
+                as_f32(arena, value).ok_or(EvalError::InvalidFloatAgpr { lane, reg })?
             }
         };
 
