@@ -16,11 +16,14 @@ pub(super) struct KernargBuffer<'a> {
 }
 
 impl KernargBuffer<'_> {
+    fn contains(&self, address: u64) -> bool {
+        address
+            .checked_sub(self.address)
+            .is_some_and(|offset| offset < self.bytes.len() as u64)
+    }
+
     fn load_dwords<const N: usize>(&self, address: u64) -> Result<[u32; N], EvalError> {
         // Require the entire read to lie inside the argument buffer.
-        address
-            .checked_add(4 * N as u64 - 1)
-            .ok_or(EvalError::AddressOverflow)?;
         let bytes = address
             .checked_sub(self.address)
             .and_then(|offset| usize::try_from(offset).ok())
@@ -53,6 +56,7 @@ impl Interpreter<'_> {
                 ScalarLoadDst::Dwordx2(regs) => self.scalar_load(wave, regs, *base, *offset),
                 ScalarLoadDst::Dwordx4(regs) => self.scalar_load(wave, regs, *base, *offset),
                 ScalarLoadDst::Dwordx8(regs) => self.scalar_load(wave, regs, *base, *offset),
+                ScalarLoadDst::Dwordx16(regs) => self.scalar_load(wave, regs, *base, *offset),
             },
             LoweredInstr::MovScalar32 { dst, src } => {
                 let registers = &mut self.waves[wave].registers;
@@ -151,7 +155,7 @@ impl Interpreter<'_> {
         }
     }
 
-    /// Load `N` argument words at `base` plus `offset` into `dst`, pending until a wait.
+    /// Load `N` words from kernel arguments or global inputs into `dst`, pending until a wait.
     fn scalar_load<const N: usize>(
         &mut self,
         wave: WaveId,
@@ -166,10 +170,25 @@ impl Interpreter<'_> {
         let address = (base_address & !3)
             .checked_add(u64::from(offset & !3))
             .ok_or(EvalError::AddressOverflow)?;
-        let values = self
-            .kernarg
-            .load_dwords::<N>(address)?
-            .map(|word| self.arena.int(i64::from(word)));
+        address
+            .checked_add(4 * N as u64 - 1)
+            .ok_or(EvalError::AddressOverflow)?;
+
+        // Argument words are concrete; global inputs keep their symbolic array identities.
+        let values = if self.kernarg.contains(address) {
+            self.kernarg
+                .load_dwords::<N>(address)?
+                .map(|word| self.arena.int(i64::from(word)))
+        } else {
+            let first = self.global.load_dword(address, &mut self.arena)?;
+            let mut values = [first; N];
+            for (i, value) in values.iter_mut().enumerate().skip(1) {
+                *value = self
+                    .global
+                    .load_dword(address + 4 * i as u64, &mut self.arena)?;
+            }
+            values
+        };
         registers.start_scalar_load(dst, values)
     }
 }

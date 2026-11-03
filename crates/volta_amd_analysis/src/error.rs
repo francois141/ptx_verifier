@@ -143,7 +143,7 @@ impl fmt::Display for EvalError {
             Self::KernargRead { address } => {
                 write!(
                     f,
-                    "16-byte read at {address:#x} is outside the kernel argument buffer"
+                    "scalar read at {address:#x} is outside the kernel argument buffer"
                 )
             }
             Self::GlobalRead { address } => {

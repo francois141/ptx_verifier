@@ -165,6 +165,13 @@ fn lower_instruction(
             base,
             offset,
         ),
+        ("s_load_dwordx16", [dst, base, offset]) => lower_scalar_load(
+            sgprs(dst)
+                .map(ScalarLoadDst::Dwordx16)
+                .ok_or("expected an aligned sixteen-SGPR destination")?,
+            base,
+            offset,
+        ),
         ("s_mov_b32", [dst, src]) => Ok(MovScalar32 {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
@@ -307,10 +314,9 @@ fn lower_instruction(
             src2: vop3_src(src2)
                 .ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         }),
-        // VOP2 also accepts an SGPR or a constant as src0; only VGPR sources are supported.
         ("v_fmac_f32_e32", [dst, src0, src1]) => Ok(FmacF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vgpr(src0).ok_or("expected one VGPR first source")?,
+            src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
         // A nonzero cbsz, abid or blgp modifier is an unsupported operand of the frontend.
@@ -418,6 +424,7 @@ fn lower_instruction(
             | "s_load_dwordx2"
             | "s_load_dwordx4"
             | "s_load_dwordx8"
+            | "s_load_dwordx16"
             | "s_movk_i32"
             | "s_mov_b64"
             | "s_abs_i32"

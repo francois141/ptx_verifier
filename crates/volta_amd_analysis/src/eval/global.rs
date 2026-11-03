@@ -1,5 +1,5 @@
-//! Global memory: the launch's input arrays, which vector loads read, and output arrays,
-//! which vector stores write.
+//! Global memory: the launch's input arrays, which scalar and vector loads read, and output
+//! arrays, which vector stores write.
 
 use std::collections::BTreeMap;
 

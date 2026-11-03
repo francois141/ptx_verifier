@@ -79,13 +79,14 @@ pub enum Src0 {
 }
 
 /// The SGPRs a scalar load writes, one per dword: a single SGPR, or an aligned tuple of two,
-/// four or eight.
+/// four, eight or sixteen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarLoadDst {
     Dword(Sgpr),
     Dwordx2([Sgpr; 2]),
     Dwordx4([Sgpr; 4]),
     Dwordx8([Sgpr; 8]),
+    Dwordx16([Sgpr; 16]),
 }
 
 /// The source of a scalar ALU instruction: an SGPR or a constant whose 32 bits are the operand.
@@ -629,7 +630,7 @@ pub enum LoweredInstr {
     /// `dst = src0 * src1 + dst`.
     FmacF32 {
         dst: Vgpr,
-        src0: Vgpr,
+        src0: Src0,
         src1: Vgpr,
     },
     /// The wave's `D = A * B + C` over f32, for a 16 x 4 `A`, a 4 x 16 `B` and 16 x 16 `C` and

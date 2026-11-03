@@ -391,9 +391,10 @@ or extra quotes and extra string arguments.
 The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
 to initial registers. It accepts full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
-and rejects unsupported launch layouts. `execute_scalar` handles wave-wide argument
-loads and zero LGKM waits for XNACK-disabled execution. `KernargBuffer` holds read-only
-argument bytes; pending scalar destinations reject reads and writes until the wait.
+and rejects unsupported launch layouts. `execute_scalar` handles wave-wide loads from
+kernel arguments or global inputs, up to sixteen words, for XNACK-disabled execution.
+`KernargBuffer` holds read-only argument bytes; global inputs retain their symbolic
+values. Pending scalar destinations reject reads and writes until a zero LGKM wait.
 `execute_lane` evaluates an instruction for a caller-selected active lane.
 `ArrayDef` marks each global-memory array `Input` or `Output`; inputs are read-only
 and outputs cannot be loaded. `analyze` returns a completed run's written output

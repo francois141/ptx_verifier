@@ -348,7 +348,7 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::FmacF32 { dst, src0, src1 } => {
-                let a = registers.read_f32(&mut self.arena, lane, *src0)?;
+                let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
                 let c = registers.read_f32(&mut self.arena, lane, *dst)?;
                 let result = self.arena.fma(a, b, c);

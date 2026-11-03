@@ -189,3 +189,16 @@ fn the_ck_gemm_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+// Test that each output sums 25 adjacent input values weighted by the shared filter.
+#[test]
+fn the_convolution_1d_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "convolution_1d",
+        &[
+            array_of("input", 0x10000, 64 + 25 - 1, ArrayKind::Input),
+            array_of("filter", 0x20000, 25, ArrayKind::Input),
+            array("output", 0x30000, ArrayKind::Output),
+        ],
+    );
+}

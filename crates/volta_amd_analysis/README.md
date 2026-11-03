@@ -11,9 +11,10 @@ The IR represents AMD instructions for symbolic execution. It preserves
 physical register identities, explicit waits, and launch metadata. The evaluator
 initializes registers from the descriptor and launch inputs, tracks symbolic
 register values, and executes scalar instructions once per wave and vector instructions
-for individual lanes. Scalar loads read a concrete kernel argument buffer and keep their
-destinations unavailable until `s_waitcnt lgkmcnt(0)`. Scalar execution requires XNACK
-to be disabled; other wait forms and reads outside the argument buffer are rejected.
+for individual lanes. Scalar loads read the concrete kernel argument buffer or symbolic
+global inputs and keep their destinations unavailable until `s_waitcnt lgkmcnt(0)`.
+Scalar execution requires XNACK to be disabled; partial LGKM waits with pending scalar
+loads are rejected.
 Launch initialization supports full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
 with an optional kernarg pointer and enabled workgroup IDs. Work-items are ordered
