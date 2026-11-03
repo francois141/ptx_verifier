@@ -7,7 +7,7 @@ use id_collections::IdVec;
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
     self, Agpr, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, LaneReg, LaneRegs, LoweredInstr,
-    LoweredKernel, MfmaSrcC, ScalarLoadDst, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src,
+    LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarLoadDst, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,6 +76,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
         }),
+        ("s_abs_i32", [dst, src]) => Ok(AbsScalar32 {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
+        }),
         ("s_add_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddU32, operands),
         ("s_addc_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddcU32, operands),
         ("s_add_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AddI32, operands),
@@ -88,6 +92,11 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
         ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
+        ("s_cmp_gt_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtI32, operands),
+        ("s_cmp_ge_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeI32, operands),
+        ("s_cmp_lt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtU32, operands),
+        ("s_cmp_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
+        ("s_bitcmp1_b32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::BitCmp1B32, operands),
         ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -280,6 +289,7 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "s_load_dwordx4"
             | "s_load_dwordx8"
             | "s_movk_i32"
+            | "s_abs_i32"
             | "v_readfirstlane_b32"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
@@ -379,6 +389,14 @@ fn lower_scalar_op32(
         src0,
         src1,
     })
+}
+
+fn lower_scalar_cmp(op: ScalarCmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    let (src0, src1) = scalar_sources(src0, src1)?;
+    Ok(LoweredInstr::ScalarCmp { op, src0, src1 })
 }
 
 /// A SOP2 or SOPC encoding holds at most one 32-bit literal.

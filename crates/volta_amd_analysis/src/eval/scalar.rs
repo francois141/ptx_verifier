@@ -1,7 +1,7 @@
-//! Scalar instructions (memory, moves, ALU operations, no-ops and waits) for a wave, as another
-//! `impl Interpreter`. The ALU operates on concrete words.
+//! Scalar instructions (memory, moves, ALU operations, comparisons, no-ops and waits) for a
+//! wave, as another `impl Interpreter`. The ALU operates on concrete words.
 
-use crate::ir::{LoweredInstr, ScalarLoadDst, ScalarOp32, ScalarSrc, Sgpr};
+use crate::ir::{LoweredInstr, ScalarCmpOp, ScalarLoadDst, ScalarOp32, ScalarSrc, Sgpr};
 
 use super::wave::{WaveId, WaveRegisters};
 use super::{EvalError, Interpreter};
@@ -59,6 +59,10 @@ impl Interpreter<'_> {
                 };
                 registers.write_sgpr(*dst, value)
             }
+            LoweredInstr::AbsScalar32 { dst, src } => {
+                let value = (self.read_scalar_word(wave, *src)? as i32).unsigned_abs();
+                self.write_scalar_word(wave, *dst, value, Some(value != 0))
+            }
             LoweredInstr::ScalarOp32 {
                 op,
                 dst,
@@ -69,6 +73,19 @@ impl Interpreter<'_> {
                 let b = self.read_scalar_word(wave, *src1)?;
                 let (value, scc) = scalar_op32(&self.waves[wave].registers, *op, a, b)?;
                 self.write_scalar_word(wave, *dst, value, scc)
+            }
+            LoweredInstr::ScalarCmp { op, src0, src1 } => {
+                let a = self.read_scalar_word(wave, *src0)?;
+                let b = self.read_scalar_word(wave, *src1)?;
+                let scc = match op {
+                    ScalarCmpOp::GtI32 => (a as i32) > (b as i32),
+                    ScalarCmpOp::GeI32 => (a as i32) >= (b as i32),
+                    ScalarCmpOp::LtU32 => a < b,
+                    ScalarCmpOp::GeU32 => a >= b,
+                    ScalarCmpOp::BitCmp1B32 => (a >> (b & 31)) & 1 == 1,
+                };
+                self.waves[wave].registers.write_scc(scc);
+                Ok(())
             }
             LoweredInstr::ReadFirstLane { dst, src } => {
                 let registers = &mut self.waves[wave].registers;

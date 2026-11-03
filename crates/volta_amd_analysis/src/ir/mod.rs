@@ -122,6 +122,17 @@ pub enum ScalarOp32 {
     CSelectB32,
 }
 
+/// A scalar comparison of two words, which writes SCC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarCmpOp {
+    GtI32,
+    GeI32,
+    LtU32,
+    GeU32,
+    /// Whether bit `src1 & 31` of `src0` is set.
+    BitCmp1B32,
+}
+
 /// The VGPRs a global load writes, one per dword: a single VGPR, or an even-aligned tuple of
 /// three or four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,9 +308,19 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: ScalarSrc,
     },
+    /// `dst = |src|`, signed; SCC is whether the result is nonzero.
+    AbsScalar32 {
+        dst: Sgpr,
+        src: ScalarSrc,
+    },
     ScalarOp32 {
         op: ScalarOp32,
         dst: Sgpr,
+        src0: ScalarSrc,
+        src1: ScalarSrc,
+    },
+    ScalarCmp {
+        op: ScalarCmpOp,
         src0: ScalarSrc,
         src1: ScalarSrc,
     },
