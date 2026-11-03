@@ -30,7 +30,8 @@ fn signed_integer(text: &str) -> Option<i64> {
     }
 }
 
-/// Parse a register, register range, integer, inline float, wait counter, or memory offset.
+/// Parse a register, register range, integer, inline float, wait counter, memory offset, or
+/// branch target.
 fn operand(text: &str) -> Option<Operand> {
     if let Some(value) = signed_integer(text) {
         return Some(Operand::Imm(value));
@@ -39,6 +40,9 @@ fn operand(text: &str) -> Option<Operand> {
         "vcc" => return Some(Operand::Vcc),
         "exec" => return Some(Operand::Exec),
         _ => {}
+    }
+    if text.starts_with(".L") {
+        return Some(Operand::Label(text.into()));
     }
     if let Some(table) = text.strip_prefix("bitop3:") {
         return integer(table)
@@ -122,10 +126,23 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         .position(|line| line.strip_suffix(':') == Some(name))
         .ok_or_else(|| format!("kernel {name:?} not found"))?;
     let mut instructions = Vec::new();
+    let mut labels = BTreeMap::new();
     for line in &lines[entry + 1..] {
         let (opcode, rest) = word(line);
         if opcode == ".section" || opcode.starts_with(".Lfunc_end") {
             break;
+        }
+        if let Some(label) = line
+            .strip_suffix(':')
+            .filter(|label| label.starts_with(".L"))
+        {
+            if labels
+                .insert(label.to_owned(), instructions.len())
+                .is_some()
+            {
+                return Err(format!("duplicate label {label:?}"));
+            }
+            continue;
         }
         if opcode.starts_with('.') || line.ends_with(':') {
             return Err(format!("unsupported statement {line:?}"));
@@ -157,6 +174,7 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
                 name: name.into(),
                 target,
                 instructions,
+                labels,
                 descriptor,
             });
         }
@@ -376,11 +394,12 @@ mod tests {
     #[test]
     fn rejects_what_it_cannot_represent() {
         assert!(parse_kernel(COPY, "other").is_err());
-        let with_label = COPY.replacen("\ncopy:\n", "\ncopy:\n.LBB0_1:\n", 1);
+        // Only Clang's local `.L` labels can mark a branch target.
+        let with_label = COPY.replacen("\ncopy:\n", "\ncopy:\nloop:\n", 1);
         assert_ne!(with_label, COPY, "the copy: label was not found");
         assert_eq!(
             parse_kernel(&with_label, "copy").unwrap_err(),
-            "unsupported statement \".LBB0_1:\""
+            "unsupported statement \"loop:\""
         );
 
         // A descriptor cut off before its end marker.

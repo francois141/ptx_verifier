@@ -10,6 +10,8 @@ pub struct Kernel {
     pub target: String,
     /// The kernel body in order.
     pub instructions: Vec<Instruction>,
+    /// Each label of the body and the index of the instruction it precedes.
+    pub labels: BTreeMap<String, usize>,
     /// The numeric `.amdhsa_*` settings of the kernel descriptor, keyed without the prefix.
     pub descriptor: BTreeMap<String, u64>,
 }
@@ -50,6 +52,8 @@ pub enum Operand {
     Vcc,
     /// The mask of the wave's active lanes.
     Exec,
+    /// A branch target.
+    Label(String),
     /// The truth table of `v_bitop3_b32`.
     BitOp3(u8),
     /// `vmcnt(n)` or `lgkmcnt(n)`.
