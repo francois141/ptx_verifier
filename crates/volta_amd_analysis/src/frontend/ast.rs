@@ -56,10 +56,16 @@ pub enum Operand {
     Label(String),
     /// A buffer instruction's `offen` flag: its address VGPR is a byte offset.
     Offen,
+    /// The `offset0:n` and `offset1:n` of a two-address LDS instruction, in units of its size.
+    Offset0(u64),
+    Offset1(u64),
     /// The truth table of `v_bitop3_b32`.
     BitOp3(u8),
     /// `vmcnt(n)` or `lgkmcnt(n)`.
-    Wait { counter: Counter, value: u64 },
+    Wait {
+        counter: Counter,
+        value: u64,
+    },
     /// A memory instruction's `offset:n` byte offset, which may be negative.
     Offset(i64),
 }

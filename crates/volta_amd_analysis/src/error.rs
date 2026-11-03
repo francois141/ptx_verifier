@@ -18,6 +18,8 @@ pub enum EvalError {
     SymbolicWord { lane: usize },
     UnsupportedBufferResource { reason: &'static str },
     PartialBufferAccess { buffer_offset: u64 },
+    LdsAccess { address: u64, size: u32 },
+    UninitializedLds { address: u32 },
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
@@ -81,6 +83,15 @@ impl fmt::Display for EvalError {
                     f,
                     "buffer access at byte offset {buffer_offset:#x} is partially out of range"
                 )
+            }
+            Self::LdsAccess { address, size } => {
+                write!(
+                    f,
+                    "LDS access at {address:#x} is misaligned or outside the {size}-byte allocation"
+                )
+            }
+            Self::UninitializedLds { address } => {
+                write!(f, "LDS read at {address:#x} of a word no wave has written")
             }
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
             Self::PendingVgpr { lane, reg } => {

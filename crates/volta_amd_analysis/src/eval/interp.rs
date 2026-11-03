@@ -5,7 +5,8 @@ use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
 use crate::ir::{
-    BranchCondition, CmpOp, InstrId, LoweredInstr, LoweredKernel, Sgpr, Vgpr, Vop3Src,
+    BranchCondition, CmpOp, DsReadDst, DsWriteData, InstrId, LdsAccesses, LoweredInstr,
+    LoweredKernel, Sgpr, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -15,16 +16,19 @@ use super::arithm::{
 };
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
+use super::lds::Lds;
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
-use super::wave::{Status, WaveId, WaveState, concrete_word};
+use super::wave::{LoadCounter, Status, WaveId, WaveState, concrete_word};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
-/// wave's scalar and vector registers, whose values are expressions of `arena`.
+/// wave's scalar and vector registers, whose values are expressions of `arena`, and the
+/// workgroup's LDS.
 pub(crate) struct Interpreter<'a> {
     pub(super) arena: ExprArena,
     pub(super) kernarg: KernargBuffer<'a>,
     pub(super) global: GlobalMemory,
+    pub(super) lds: Lds,
     pub(super) waves: IdVec<WaveId, WaveState>,
 }
 
@@ -57,10 +61,19 @@ impl<'a> Interpreter<'a> {
             bytes: kernarg,
         };
         let global = GlobalMemory::new(arrays, &kernarg, &mut arena)?;
+        let lds_size = kernel
+            .descriptor
+            .get("group_segment_fixed_size")
+            .and_then(|&size| u32::try_from(size).ok())
+            .filter(|&size| size <= 65536)
+            .ok_or_else(|| EvalError::Launch {
+                message: "expected .amdhsa_group_segment_fixed_size of at most 64 KiB".into(),
+            })?;
         Ok(Self {
             arena,
             kernarg,
             global,
+            lds: Lds::new(lds_size),
             waves,
         })
     }
@@ -182,7 +195,9 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
-            | LoweredInstr::BufferStore { .. } => {
+            | LoweredInstr::BufferStore { .. }
+            | LoweredInstr::DsWrite { .. }
+            | LoweredInstr::DsRead { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
                 }
@@ -351,8 +366,73 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::BufferStore { src, address } => {
                 self.buffer_store(wave, lane, *address, &src.regs())
             }
+            LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, lane, *addr, *accesses),
+            LoweredInstr::DsRead { addr, accesses } => self.ds_read(wave, lane, *addr, *accesses),
             _ => Err(EvalError::UnsupportedInstruction),
         }
+    }
+
+    /// `lane`'s byte address: its address VGPR plus `offset`.
+    fn lds_address(
+        &self,
+        wave: WaveId,
+        lane: usize,
+        address_reg: Vgpr,
+        offset: u32,
+    ) -> Result<u64, EvalError> {
+        let registers = &self.waves[wave].registers;
+        let base = registers.read_address_vgpr(&self.arena, lane, address_reg)?;
+        Ok(u64::from(base) + u64::from(offset))
+    }
+
+    /// Store each access's registers, one access after the other.
+    pub(super) fn ds_write(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        address_reg: Vgpr,
+        accesses: LdsAccesses<DsWriteData>,
+    ) -> Result<(), EvalError> {
+        for (offset, data) in accesses.accesses() {
+            let start_address = self.lds_address(wave, lane, address_reg, offset)?;
+            let registers = &self.waves[wave].registers;
+            let mut values = Vec::new();
+            for source_reg in data.regs() {
+                let value = registers.read_lane_reg(lane, source_reg)?;
+                values.push(value);
+            }
+            self.lds.write(start_address, &values)?;
+        }
+        Ok(())
+    }
+
+    /// Load every access's words, pending until `lgkmcnt` establishes the read's completion.
+    pub(super) fn ds_read(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        address_reg: Vgpr,
+        accesses: LdsAccesses<DsReadDst>,
+    ) -> Result<(), EvalError> {
+        let mut destinations = Vec::new();
+        let mut values = Vec::new();
+
+        for (offset, destination) in accesses.accesses() {
+            let start_address = self.lds_address(wave, lane, address_reg, offset)?;
+            let destination_regs = destination.regs();
+            let word_count = destination_regs.len() as u32;
+            let loaded_values = self.lds.read(start_address, word_count)?;
+
+            destinations.extend_from_slice(destination_regs);
+            values.extend(loaded_values);
+        }
+
+        self.waves[wave].registers.start_vector_load(
+            lane,
+            &destinations,
+            &values,
+            LoadCounter::Lgkm,
+        )
     }
 
     /// The written output elements, together with the arena that holds their expressions.

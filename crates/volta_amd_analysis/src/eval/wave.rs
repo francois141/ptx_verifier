@@ -60,14 +60,24 @@ pub(crate) struct WaveRegisters {
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
 }
 
+/// The counter whose wait completes a vector register load: `vmcnt` for global and buffer
+/// loads, `lgkmcnt` for LDS reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LoadCounter {
+    Vm,
+    Lgkm,
+}
+
 /// One lane's vector and accumulation registers, its VCC bit as a boolean expression, and the
-/// destinations of each of its loads still pending, oldest first; only VGPRs are loaded.
+/// destinations of each of its loads still pending per counter, oldest first; only VGPRs are
+/// loaded.
 #[derive(Debug, Clone)]
 struct LaneRegisters {
     values: [RegValue; 256],
     accumulators: [Option<ExprId>; 256],
     vcc: Option<ExprId>,
     pending_loads: VecDeque<Vec<Vgpr>>,
+    pending_lds_reads: VecDeque<Vec<Vgpr>>,
 }
 
 // Initialize the wave with all registers unwritten.
@@ -78,6 +88,7 @@ impl Default for WaveRegisters {
             accumulators: [None; 256],
             vcc: None,
             pending_loads: VecDeque::new(),
+            pending_lds_reads: VecDeque::new(),
         };
         Self {
             scalar: [RegValue::Uninitialized; 102],
@@ -127,6 +138,12 @@ impl WaveRegisters {
             self.scalar[usize::from(reg.0)] = RegValue::Pending(value);
         }
         Ok(())
+    }
+
+    pub(super) fn has_pending_scalar_loads(&self) -> bool {
+        self.scalar
+            .iter()
+            .any(|slot| matches!(slot, RegValue::Pending(_)))
     }
 
     /// Make all pending scalar loads readable after lgkmcnt(0).
@@ -410,16 +427,17 @@ impl WaveRegisters {
             let word_address = start.checked_add(4 * i).ok_or(EvalError::AddressOverflow)?;
             values.push(global.load_dword(word_address, arena)?);
         }
-        self.start_vector_load(lane, dst, &values)
+        self.start_vector_load(lane, dst, &values, LoadCounter::Vm)
     }
 
-    /// Give each register of `dst` its loaded value, unreadable until a `vmcnt` wait
+    /// Give each register of `dst` its loaded value, unreadable until a wait on `counter`
     /// establishes the load's completion.
     pub(super) fn start_vector_load(
         &mut self,
         lane: usize,
         dst: &[Vgpr],
         values: &[ExprId],
+        counter: LoadCounter,
     ) -> Result<(), EvalError> {
         // Check every destination before changing any register.
         for &reg in dst {
@@ -430,7 +448,10 @@ impl WaveRegisters {
         for (&reg, &value) in dst.iter().zip(values) {
             registers.values[usize::from(reg.0)] = RegValue::Pending(value);
         }
-        registers.pending_loads.push_back(dst.to_vec());
+        match counter {
+            LoadCounter::Vm => registers.pending_loads.push_back(dst.to_vec()),
+            LoadCounter::Lgkm => registers.pending_lds_reads.push_back(dst.to_vec()),
+        }
         Ok(())
     }
 
@@ -463,13 +484,18 @@ impl WaveRegisters {
         }
     }
 
-    /// Wait until at most `outstanding` loads per lane are in flight. Loads return in issue order,
-    /// so only the most recent ones stay pending; stores are assumed to have completed.
-    pub(super) fn finish_vector_loads(&mut self, outstanding: usize) {
+    /// Wait until at most `outstanding` loads counted by `counter` are in flight per lane. Loads
+    /// return in issue order, so the most recent stay pending; counting no stores or LDS writes
+    /// keeps more loads pending than the hardware does.
+    pub(super) fn finish_vector_loads(&mut self, counter: LoadCounter, outstanding: usize) {
         for registers in &mut self.vector {
-            let completed = registers.pending_loads.len().saturating_sub(outstanding);
+            let pending = match counter {
+                LoadCounter::Vm => &mut registers.pending_loads,
+                LoadCounter::Lgkm => &mut registers.pending_lds_reads,
+            };
+            let completed = pending.len().saturating_sub(outstanding);
 
-            for load in registers.pending_loads.drain(..completed) {
+            for load in pending.drain(..completed) {
                 for reg in load {
                     let slot = &mut registers.values[usize::from(reg.0)];
 

@@ -45,6 +45,12 @@ fn operand(text: &str) -> Option<Operand> {
     if text.starts_with(".L") {
         return Some(Operand::Label(text.into()));
     }
+    if let Some(offset) = text.strip_prefix("offset0:") {
+        return integer(offset).map(Operand::Offset0);
+    }
+    if let Some(offset) = text.strip_prefix("offset1:") {
+        return integer(offset).map(Operand::Offset1);
+    }
     if let Some(table) = text.strip_prefix("bitop3:") {
         return integer(table)
             .and_then(|table| u8::try_from(table).ok())

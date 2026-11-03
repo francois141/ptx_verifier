@@ -5,6 +5,7 @@ mod buffer;
 mod global;
 mod interp;
 mod launch;
+mod lds;
 mod mfma;
 mod scalar;
 mod wave;

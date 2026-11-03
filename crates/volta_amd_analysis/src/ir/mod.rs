@@ -209,6 +209,66 @@ impl BufferImmOffset {
     }
 }
 
+/// A DS instruction's accesses in each lane, at its address VGPR plus each byte offset: the one
+/// of `ds_{read,write}_b*`, or the two of `ds_{read,write}2{,st64}_b*`, whose offsets lowering
+/// has scaled by the element size (and by 64 for `st64`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LdsAccesses<T> {
+    One { offset: u16, regs: T },
+    Two { offsets: [u32; 2], regs: [T; 2] },
+}
+
+impl<T: Copy> LdsAccesses<T> {
+    pub fn accesses(self) -> Vec<(u32, T)> {
+        match self {
+            Self::One { offset, regs } => vec![(u32::from(offset), regs)],
+            Self::Two { offsets, regs } => offsets.into_iter().zip(regs).collect(),
+        }
+    }
+}
+
+/// The registers a DS write stores at one address, one per dword: a single VGPR or AGPR, or an
+/// even-aligned tuple of two, three or four of one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsWriteData {
+    B32(LaneReg),
+    B64(LaneRegs<2>),
+    B96(LaneRegs<3>),
+    B128(LaneRegs<4>),
+}
+
+impl DsWriteData {
+    pub fn regs(self) -> Vec<LaneReg> {
+        match self {
+            Self::B32(reg) => vec![reg],
+            Self::B64(regs) => regs.regs().to_vec(),
+            Self::B96(regs) => regs.regs().to_vec(),
+            Self::B128(regs) => regs.regs().to_vec(),
+        }
+    }
+}
+
+/// The VGPRs a DS read loads from one address, one per dword: a single VGPR, or consecutive
+/// VGPRs of an even-aligned tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsReadDst {
+    B32(Vgpr),
+    B64([Vgpr; 2]),
+    B96([Vgpr; 3]),
+    B128([Vgpr; 4]),
+}
+
+impl DsReadDst {
+    pub fn regs(&self) -> &[Vgpr] {
+        match self {
+            Self::B32(reg) => std::slice::from_ref(reg),
+            Self::B64(regs) => regs,
+            Self::B96(regs) => regs,
+            Self::B128(regs) => regs,
+        }
+    }
+}
+
 /// The VGPRs a global load writes, one per dword: a single VGPR, or an even-aligned tuple of
 /// three or four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -598,6 +658,16 @@ pub enum LoweredInstr {
     BufferStore {
         src: BufferStoreSrc,
         address: BufferAddress,
+    },
+    /// The accesses write in order, so the second of two overlapping ones wins.
+    DsWrite {
+        addr: Vgpr,
+        accesses: LdsAccesses<DsWriteData>,
+    },
+    /// The accesses' words load as one pending load for `lgkmcnt`.
+    DsRead {
+        addr: Vgpr,
+        accesses: LdsAccesses<DsReadDst>,
     },
     /// An omitted counter is unconstrained, not an implicit wait for zero.
     WaitCnt {

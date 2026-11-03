@@ -6,7 +6,7 @@ use crate::ir::{
     ScalarSrc64, Sgpr,
 };
 
-use super::wave::{WaveId, WaveRegisters};
+use super::wave::{LoadCounter, WaveId, WaveRegisters};
 use super::{EvalError, Interpreter};
 
 /// Read-only kernel argument bytes at a concrete device address.
@@ -135,13 +135,14 @@ impl Interpreter<'_> {
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
                 let registers = &mut self.waves[wave].registers;
                 // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
-                if lgkmcnt.is_some_and(|n| n != 0) {
+                if lgkmcnt.is_some_and(|n| n != 0) && registers.has_pending_scalar_loads() {
                     return Err(EvalError::UnsupportedInstruction);
                 }
                 if let Some(outstanding) = vmcnt {
-                    registers.finish_vector_loads(usize::from(*outstanding));
+                    registers.finish_vector_loads(LoadCounter::Vm, usize::from(*outstanding));
                 }
-                if lgkmcnt.is_some() {
+                if let Some(outstanding) = lgkmcnt {
+                    registers.finish_vector_loads(LoadCounter::Lgkm, usize::from(*outstanding));
                     registers.finish_scalar_loads();
                 }
                 Ok(())

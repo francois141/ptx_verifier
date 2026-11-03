@@ -8,9 +8,9 @@ use id_collections::IdVec;
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
     self, Agpr, BranchCondition, BufferAddress, BufferImmOffset, BufferLoadDst, BufferStoreSrc,
-    GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask, LaneReg, LaneRegs,
-    LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc,
-    ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
+    DsReadDst, DsWriteData, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask,
+    LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp,
+    ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -406,6 +406,7 @@ fn lower_instruction(
             ),
             address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
         }),
+        (mnemonic, operands) if mnemonic.starts_with("ds_") => lower_ds(mnemonic, operands),
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_nop", [wait_states]) => {
             immediate(wait_states, 15).ok_or("expected a wait count from 0 to 15")?;
@@ -661,6 +662,173 @@ fn buffer_address(
         rsrc: sgprs(rsrc).ok_or("expected an aligned four-SGPR buffer resource")?,
         imm_offset,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DsDirection {
+    Read,
+    Write,
+}
+
+/// One access, or two whose `offset0` and `offset1` count elements of `stride` times the width.
+#[derive(Debug, Clone, Copy)]
+enum DsAccessCount {
+    One,
+    Two { stride: u32 },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DsWidth {
+    B32,
+    B64,
+    B96,
+    B128,
+}
+
+impl DsWidth {
+    fn bytes(self) -> u32 {
+        match self {
+            Self::B32 => 4,
+            Self::B64 => 8,
+            Self::B96 => 12,
+            Self::B128 => 16,
+        }
+    }
+}
+
+/// `ds_{read,write}{,2,2st64}_b{32,64,96,128}`, whose two-access forms exist only for 32 and
+/// 64 bits.
+fn ds_opcode(mnemonic: &str) -> Option<(DsDirection, DsAccessCount, DsWidth)> {
+    let rest = mnemonic.strip_prefix("ds_")?;
+    let (direction, rest) = match rest.strip_prefix("read") {
+        Some(rest) => (DsDirection::Read, rest),
+        None => (DsDirection::Write, rest.strip_prefix("write")?),
+    };
+    let (count, width) = rest.split_once("_b")?;
+    let width = match width {
+        "32" => DsWidth::B32,
+        "64" => DsWidth::B64,
+        "96" => DsWidth::B96,
+        "128" => DsWidth::B128,
+        _ => return None,
+    };
+    let count = match (count, width) {
+        ("", _) => DsAccessCount::One,
+        ("2", DsWidth::B32 | DsWidth::B64) => DsAccessCount::Two { stride: 1 },
+        ("2st64", DsWidth::B32 | DsWidth::B64) => DsAccessCount::Two { stride: 64 },
+        _ => return None,
+    };
+    Some((direction, count, width))
+}
+
+fn lower_ds(mnemonic: &str, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let (direction, count, width) = ds_opcode(mnemonic).ok_or("unsupported instruction")?;
+    let addr = |operand| vgpr(operand).ok_or("expected one address VGPR");
+    match (direction, count, operands) {
+        (DsDirection::Write, DsAccessCount::One, [address, data, modifiers @ ..]) => {
+            Ok(LoweredInstr::DsWrite {
+                addr: addr(address)?,
+                accesses: LdsAccesses::One {
+                    offset: lds_offset(modifiers)?,
+                    regs: ds_write_data(width, data)?,
+                },
+            })
+        }
+        (
+            DsDirection::Write,
+            DsAccessCount::Two { stride },
+            [address, data0, data1, modifiers @ ..],
+        ) => Ok(LoweredInstr::DsWrite {
+            addr: addr(address)?,
+            accesses: LdsAccesses::Two {
+                offsets: lds_offset_pair(width, stride, modifiers)?,
+                regs: [ds_write_data(width, data0)?, ds_write_data(width, data1)?],
+            },
+        }),
+        (DsDirection::Read, DsAccessCount::One, [dst, address, modifiers @ ..]) => {
+            Ok(LoweredInstr::DsRead {
+                addr: addr(address)?,
+                accesses: LdsAccesses::One {
+                    offset: lds_offset(modifiers)?,
+                    regs: ds_read_dst(width, dst)?,
+                },
+            })
+        }
+        (DsDirection::Read, DsAccessCount::Two { stride }, [dst, address, modifiers @ ..]) => {
+            Ok(LoweredInstr::DsRead {
+                addr: addr(address)?,
+                accesses: LdsAccesses::Two {
+                    offsets: lds_offset_pair(width, stride, modifiers)?,
+                    regs: ds_read2_dst(width, dst)?,
+                },
+            })
+        }
+        _ => Err("unsupported operand count"),
+    }
+}
+
+fn ds_write_data(width: DsWidth, operand: &Operand) -> Result<DsWriteData, &'static str> {
+    match width {
+        DsWidth::B32 => lane_reg(operand).map(DsWriteData::B32),
+        DsWidth::B64 => lane_regs(operand).map(DsWriteData::B64),
+        DsWidth::B96 => lane_regs(operand).map(DsWriteData::B96),
+        DsWidth::B128 => lane_regs(operand).map(DsWriteData::B128),
+    }
+    .ok_or("expected VGPR or AGPR data of the access width, an even-aligned tuple if wider")
+}
+
+fn ds_read_dst(width: DsWidth, operand: &Operand) -> Result<DsReadDst, &'static str> {
+    match width {
+        DsWidth::B32 => vgpr(operand).map(DsReadDst::B32),
+        DsWidth::B64 => vgprs(operand).map(DsReadDst::B64),
+        DsWidth::B96 => vgprs(operand).map(DsReadDst::B96),
+        DsWidth::B128 => vgprs(operand).map(DsReadDst::B128),
+    }
+    .ok_or("expected a VGPR destination of the access width, an even-aligned tuple if wider")
+}
+
+/// A `read2` destination is one tuple, whose halves the two accesses load.
+fn ds_read2_dst(width: DsWidth, operand: &Operand) -> Result<[DsReadDst; 2], &'static str> {
+    match width {
+        DsWidth::B32 => {
+            vgprs(operand).map(|[low, high]| [DsReadDst::B32(low), DsReadDst::B32(high)])
+        }
+        DsWidth::B64 => vgprs(operand)
+            .map(|[r0, r1, r2, r3]| [DsReadDst::B64([r0, r1]), DsReadDst::B64([r2, r3])]),
+        DsWidth::B96 | DsWidth::B128 => None,
+    }
+    .ok_or("expected an even-aligned VGPR destination of twice the access width")
+}
+
+fn lds_offset(modifiers: &[Operand]) -> Result<u16, &'static str> {
+    match modifiers {
+        [] => Ok(0),
+        [Operand::Offset(offset)] => {
+            u16::try_from(*offset).map_err(|_| "expected an unsigned 16-bit byte offset")
+        }
+        _ => Err("unsupported operand count"),
+    }
+}
+
+/// The two accesses' byte offsets. Clang omits a zero `offset0` or `offset1`.
+fn lds_offset_pair(
+    width: DsWidth,
+    stride: u32,
+    modifiers: &[Operand],
+) -> Result<[u32; 2], &'static str> {
+    let (mut offset0, mut offset1) = (None, None);
+    for modifier in modifiers {
+        let (slot, value) = match modifier {
+            Operand::Offset0(value) => (&mut offset0, *value),
+            Operand::Offset1(value) => (&mut offset1, *value),
+            _ => return Err("expected offset0 and offset1 modifiers"),
+        };
+        let value = u8::try_from(value).map_err(|_| "expected an 8-bit offset")?;
+        if slot.replace(value).is_some() {
+            return Err("duplicate offset modifier");
+        }
+    }
+    Ok([offset0, offset1].map(|offset| u32::from(offset.unwrap_or(0)) * stride * width.bytes()))
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {

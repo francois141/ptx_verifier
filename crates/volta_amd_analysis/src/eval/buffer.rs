@@ -5,7 +5,7 @@ use volta_expr::ExprId;
 
 use crate::ir::{BufferAddress, LaneReg, Sgpr, Vgpr};
 
-use super::wave::WaveId;
+use super::wave::{LoadCounter, WaveId};
 use super::{EvalError, Interpreter};
 
 /// The fields of a buffer resource that an untyped raw access uses: the 48-bit base address
@@ -103,7 +103,7 @@ impl Interpreter<'_> {
 
         self.waves[wave]
             .registers
-            .start_vector_load(lane, dst, &values)
+            .start_vector_load(lane, dst, &values, LoadCounter::Vm)
     }
 
     /// Store the word of each register of `src`, dropped outside the buffer.
