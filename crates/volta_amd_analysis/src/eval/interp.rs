@@ -93,8 +93,7 @@ impl<'a> Interpreter<'a> {
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
             }
-            LoweredInstr::ScalarLoadDwordx2 { .. }
-            | LoweredInstr::ScalarLoadDwordx4 { .. }
+            LoweredInstr::ScalarLoad { .. }
             | LoweredInstr::MovScalar32 { .. }
             | LoweredInstr::WaitCnt { .. }
             | LoweredInstr::Nop => {
@@ -123,13 +122,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
-            | LoweredInstr::GlobalLoadDword { .. }
-            | LoweredInstr::GlobalLoadDwordx3 { .. }
-            | LoweredInstr::GlobalLoadDwordx4 { .. }
-            | LoweredInstr::GlobalStoreDword { .. }
-            | LoweredInstr::GlobalStoreDwordx2 { .. }
-            | LoweredInstr::GlobalStoreDwordx3 { .. }
-            | LoweredInstr::GlobalStoreDwordx4 { .. } => {
+            | LoweredInstr::GlobalLoad { .. }
+            | LoweredInstr::GlobalStore { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
                 }
@@ -200,25 +194,10 @@ impl<'a> Interpreter<'a> {
                 let result = self.arena.fma(a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::GlobalLoadDword { dst, address } => {
-                registers.global_load(&mut self.arena, &self.global, lane, &[*dst], *address)
+            LoweredInstr::GlobalLoad { dst, address } => {
+                registers.global_load(&mut self.arena, &self.global, lane, dst.regs(), *address)
             }
-            LoweredInstr::GlobalLoadDwordx3 { dst, address } => {
-                registers.global_load(&mut self.arena, &self.global, lane, dst, *address)
-            }
-            LoweredInstr::GlobalLoadDwordx4 { dst, address } => {
-                registers.global_load(&mut self.arena, &self.global, lane, dst, *address)
-            }
-            LoweredInstr::GlobalStoreDword { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, &[*src], *address)
-            }
-            LoweredInstr::GlobalStoreDwordx2 { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
-            }
-            LoweredInstr::GlobalStoreDwordx3 { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
-            }
-            LoweredInstr::GlobalStoreDwordx4 { src, address } => {
+            LoweredInstr::GlobalStore { src, address } => {
                 registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
             }
             _ => Err(EvalError::UnsupportedInstruction),

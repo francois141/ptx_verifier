@@ -77,11 +77,61 @@ pub enum Src0 {
     Const(u32),
 }
 
+/// The SGPRs a scalar load writes, one per dword: a single SGPR, or an aligned tuple of two,
+/// four or eight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarLoadDst {
+    Dword(Sgpr),
+    Dwordx2([Sgpr; 2]),
+    Dwordx4([Sgpr; 4]),
+    Dwordx8([Sgpr; 8]),
+}
+
 /// The source of a scalar ALU instruction: an SGPR or a constant whose 32 bits are the operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarSrc {
     Sgpr(Sgpr),
     Const(u32),
+}
+
+/// The VGPRs a global load writes, one per dword: a single VGPR, or an even-aligned tuple of
+/// three or four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalLoadDst {
+    Dword(Vgpr),
+    Dwordx3([Vgpr; 3]),
+    Dwordx4([Vgpr; 4]),
+}
+
+impl GlobalLoadDst {
+    pub fn regs(&self) -> &[Vgpr] {
+        match self {
+            Self::Dword(reg) => std::slice::from_ref(reg),
+            Self::Dwordx3(regs) => regs,
+            Self::Dwordx4(regs) => regs,
+        }
+    }
+}
+
+/// The registers a global store reads, one per dword: a single VGPR or AGPR, or an
+/// even-aligned tuple of two, three or four of one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalStoreSrc {
+    Dword(LaneReg),
+    Dwordx2(LaneRegs<2>),
+    Dwordx3(LaneRegs<3>),
+    Dwordx4(LaneRegs<4>),
+}
+
+impl GlobalStoreSrc {
+    pub fn regs(self) -> Vec<LaneReg> {
+        match self {
+            Self::Dword(reg) => vec![reg],
+            Self::Dwordx2(regs) => regs.regs().to_vec(),
+            Self::Dwordx3(regs) => regs.regs().to_vec(),
+            Self::Dwordx4(regs) => regs.regs().to_vec(),
+        }
+    }
 }
 
 /// A global instruction's address in each lane: the SGPR-pair base, plus the lane's VGPR as a
@@ -210,13 +260,8 @@ pub enum CmpOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
-    ScalarLoadDwordx2 {
-        dst: [Sgpr; 2],
-        base: [Sgpr; 2],
-        offset: u32,
-    },
-    ScalarLoadDwordx4 {
-        dst: [Sgpr; 4],
+    ScalarLoad {
+        dst: ScalarLoadDst,
         base: [Sgpr; 2],
         offset: u32,
     },
@@ -287,32 +332,12 @@ pub enum LoweredInstr {
         src_b: LaneReg,
         src_c: MfmaSrcC,
     },
-    GlobalLoadDword {
-        dst: Vgpr,
+    GlobalLoad {
+        dst: GlobalLoadDst,
         address: GlobalAddress,
     },
-    GlobalLoadDwordx3 {
-        dst: [Vgpr; 3],
-        address: GlobalAddress,
-    },
-    GlobalLoadDwordx4 {
-        dst: [Vgpr; 4],
-        address: GlobalAddress,
-    },
-    GlobalStoreDword {
-        src: LaneReg,
-        address: GlobalAddress,
-    },
-    GlobalStoreDwordx2 {
-        src: LaneRegs<2>,
-        address: GlobalAddress,
-    },
-    GlobalStoreDwordx3 {
-        src: LaneRegs<3>,
-        address: GlobalAddress,
-    },
-    GlobalStoreDwordx4 {
-        src: LaneRegs<4>,
+    GlobalStore {
+        src: GlobalStoreSrc,
         address: GlobalAddress,
     },
     /// An omitted counter is unconstrained, not an implicit wait for zero.

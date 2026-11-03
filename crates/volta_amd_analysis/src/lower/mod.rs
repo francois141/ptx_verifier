@@ -6,8 +6,8 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
-    self, Agpr, GlobalAddress, LaneReg, LaneRegs, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarSrc,
-    Sgpr, Src0, Vgpr, Vop3Src,
+    self, Agpr, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, LaneReg, LaneRegs, LoweredInstr,
+    LoweredKernel, MfmaSrcC, ScalarLoadDst, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,18 +72,34 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
     use LoweredInstr::*;
 
     match (instruction.opcode.as_str(), instruction.operands.as_slice()) {
-        ("s_load_dwordx2", [dst, base, offset]) => Ok(ScalarLoadDwordx2 {
-            dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
-            base: sgprs(base).ok_or("expected an aligned SGPR base pair")?,
-            offset: immediate(offset, 0xfffff)
-                .ok_or("expected a nonnegative 20-bit byte offset")?,
-        }),
-        ("s_load_dwordx4", [dst, base, offset]) => Ok(ScalarLoadDwordx4 {
-            dst: sgprs(dst).ok_or("expected an aligned four-SGPR destination")?,
-            base: sgprs(base).ok_or("expected an aligned SGPR base pair")?,
-            offset: immediate(offset, 0xfffff)
-                .ok_or("expected a nonnegative 20-bit byte offset")?,
-        }),
+        ("s_load_dword", [dst, base, offset]) => lower_scalar_load(
+            sgpr(dst)
+                .map(ScalarLoadDst::Dword)
+                .ok_or("expected one destination SGPR")?,
+            base,
+            offset,
+        ),
+        ("s_load_dwordx2", [dst, base, offset]) => lower_scalar_load(
+            sgprs(dst)
+                .map(ScalarLoadDst::Dwordx2)
+                .ok_or("expected an aligned SGPR destination pair")?,
+            base,
+            offset,
+        ),
+        ("s_load_dwordx4", [dst, base, offset]) => lower_scalar_load(
+            sgprs(dst)
+                .map(ScalarLoadDst::Dwordx4)
+                .ok_or("expected an aligned four-SGPR destination")?,
+            base,
+            offset,
+        ),
+        ("s_load_dwordx8", [dst, base, offset]) => lower_scalar_load(
+            sgprs(dst)
+                .map(ScalarLoadDst::Dwordx8)
+                .ok_or("expected an aligned eight-SGPR destination")?,
+            base,
+            offset,
+        ),
         ("s_mov_b32", [dst, src]) => Ok(MovScalar32 {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
@@ -194,32 +210,42 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
                 src_c: mfma_src_c(dst, src_c)?,
             })
         }
-        ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDword {
-            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
+            dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_load_dwordx3", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDwordx3 {
-            dst: vgprs(dst).ok_or("expected an even-aligned three-VGPR destination")?,
+        ("global_load_dwordx3", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
+            dst: GlobalLoadDst::Dwordx3(
+                vgprs(dst).ok_or("expected an even-aligned three-VGPR destination")?,
+            ),
             address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_load_dwordx4", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadDwordx4 {
-            dst: vgprs(dst).ok_or("expected an even-aligned four-VGPR destination")?,
+        ("global_load_dwordx4", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
+            dst: GlobalLoadDst::Dwordx4(
+                vgprs(dst).ok_or("expected an even-aligned four-VGPR destination")?,
+            ),
             address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_store_dword", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDword {
-            src: lane_reg(src).ok_or("expected one source VGPR or AGPR")?,
+        ("global_store_dword", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStore {
+            src: GlobalStoreSrc::Dword(lane_reg(src).ok_or("expected one source VGPR or AGPR")?),
             address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_store_dwordx2", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx2 {
-            src: lane_regs(src).ok_or("expected an even-aligned VGPR or AGPR source pair")?,
+        ("global_store_dwordx2", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStore {
+            src: GlobalStoreSrc::Dwordx2(
+                lane_regs(src).ok_or("expected an even-aligned VGPR or AGPR source pair")?,
+            ),
             address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_store_dwordx3", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx3 {
-            src: lane_regs(src).ok_or("expected an even-aligned three-VGPR or AGPR source")?,
+        ("global_store_dwordx3", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStore {
+            src: GlobalStoreSrc::Dwordx3(
+                lane_regs(src).ok_or("expected an even-aligned three-VGPR or AGPR source")?,
+            ),
             address: global_address(vaddr, saddr, offset)?,
         }),
-        ("global_store_dwordx4", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreDwordx4 {
-            src: lane_regs(src).ok_or("expected an even-aligned four-VGPR or AGPR source")?,
+        ("global_store_dwordx4", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStore {
+            src: GlobalStoreSrc::Dwordx4(
+                lane_regs(src).ok_or("expected an even-aligned four-VGPR or AGPR source")?,
+            ),
             address: global_address(vaddr, saddr, offset)?,
         }),
         ("s_waitcnt", operands) => lower_wait(operands),
@@ -229,8 +255,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         }
         ("s_endpgm", []) => Ok(EndPgm),
         (
-            "s_load_dwordx2"
+            "s_load_dword"
+            | "s_load_dwordx2"
             | "s_load_dwordx4"
+            | "s_load_dwordx8"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
@@ -251,6 +279,18 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ) => Err("unsupported operand count"),
         _ => Err("unsupported instruction"),
     }
+}
+
+fn lower_scalar_load(
+    dst: ScalarLoadDst,
+    base: &Operand,
+    offset: &Operand,
+) -> Result<LoweredInstr, &'static str> {
+    Ok(LoweredInstr::ScalarLoad {
+        dst,
+        base: sgprs(base).ok_or("expected an aligned SGPR base pair")?,
+        offset: immediate(offset, 0xfffff).ok_or("expected a nonnegative 20-bit byte offset")?,
+    })
 }
 
 fn lower_bin_op(op: ir::BinOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
@@ -312,7 +352,8 @@ fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {
     else {
         return None;
     };
-    if last.checked_sub(*first)? != N as u32 - 1 || *first % N as u32 != 0 || *last > 101 {
+    let alignment = N.min(4) as u32;
+    if last.checked_sub(*first)? != N as u32 - 1 || *first % alignment != 0 || *last > 101 {
         return None;
     }
     Some(std::array::from_fn(|i| Sgpr((*first + i as u32) as u8)))

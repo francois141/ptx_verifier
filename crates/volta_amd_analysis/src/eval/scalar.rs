@@ -1,7 +1,7 @@
 //! Scalar instructions (memory, moves, no-ops and waits) for a wave, as another
 //! `impl Interpreter`.
 
-use crate::ir::{LoweredInstr, ScalarSrc, Sgpr};
+use crate::ir::{LoweredInstr, ScalarLoadDst, ScalarSrc, Sgpr};
 
 use super::wave::WaveId;
 use super::{EvalError, Interpreter};
@@ -45,12 +45,12 @@ impl Interpreter<'_> {
         instruction: &LoweredInstr,
     ) -> Result<(), EvalError> {
         match instruction {
-            LoweredInstr::ScalarLoadDwordx2 { dst, base, offset } => {
-                self.scalar_load(wave, *dst, *base, *offset)
-            }
-            LoweredInstr::ScalarLoadDwordx4 { dst, base, offset } => {
-                self.scalar_load(wave, *dst, *base, *offset)
-            }
+            LoweredInstr::ScalarLoad { dst, base, offset } => match *dst {
+                ScalarLoadDst::Dword(reg) => self.scalar_load(wave, [reg], *base, *offset),
+                ScalarLoadDst::Dwordx2(regs) => self.scalar_load(wave, regs, *base, *offset),
+                ScalarLoadDst::Dwordx4(regs) => self.scalar_load(wave, regs, *base, *offset),
+                ScalarLoadDst::Dwordx8(regs) => self.scalar_load(wave, regs, *base, *offset),
+            },
             LoweredInstr::MovScalar32 { dst, src } => {
                 let registers = &mut self.waves[wave].registers;
                 let value = match *src {
