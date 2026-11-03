@@ -95,6 +95,7 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::ScalarLoad { .. }
             | LoweredInstr::MovScalar32 { .. }
+            | LoweredInstr::ReadFirstLane { .. }
             | LoweredInstr::WaitCnt { .. }
             | LoweredInstr::Nop => {
                 self.execute_scalar(wave, instruction)?;

@@ -59,6 +59,11 @@ impl Interpreter<'_> {
                 };
                 registers.write_sgpr(*dst, value)
             }
+            LoweredInstr::ReadFirstLane { dst, src } => {
+                let registers = &mut self.waves[wave].registers;
+                let value = registers.read_vgpr(0, *src)?;
+                registers.write_sgpr(*dst, value)
+            }
             LoweredInstr::Nop => Ok(()),
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
                 let registers = &mut self.waves[wave].registers;

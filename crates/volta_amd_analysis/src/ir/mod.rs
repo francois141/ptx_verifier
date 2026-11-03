@@ -269,6 +269,11 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: ScalarSrc,
     },
+    /// Copy the first active lane's value, lane 0's, into an SGPR.
+    ReadFirstLane {
+        dst: Sgpr,
+        src: Vgpr,
+    },
     /// `dst = src0 op src1` in each lane.
     BinOp {
         op: BinOp,

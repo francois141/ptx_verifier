@@ -72,6 +72,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
     use LoweredInstr::*;
 
     match (instruction.opcode.as_str(), instruction.operands.as_slice()) {
+        ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+        }),
         ("s_load_dword", [dst, base, offset]) => lower_scalar_load(
             sgpr(dst)
                 .map(ScalarLoadDst::Dword)
@@ -259,6 +263,7 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "s_load_dwordx2"
             | "s_load_dwordx4"
             | "s_load_dwordx8"
+            | "v_readfirstlane_b32"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
