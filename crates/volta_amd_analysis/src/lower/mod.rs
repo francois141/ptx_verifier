@@ -1,14 +1,15 @@
 //! Lowering parsed AMD assembly into typed instructions for symbolic execution.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
-    self, Agpr, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, LaneReg, LaneRegs, LoweredInstr,
-    LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr,
-    Src0, Vgpr, Vop3Src,
+    self, Agpr, BranchCondition, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneReg,
+    LaneRegs, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64, ScalarLoadDst,
+    ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,10 +55,12 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         .iter()
         .enumerate()
         .map(|(index, instruction)| {
-            lower_instruction(instruction).map_err(|reason| LowerError::Instruction {
-                index,
-                opcode: instruction.opcode.clone(),
-                reason,
+            lower_instruction(instruction, &kernel.labels).map_err(|reason| {
+                LowerError::Instruction {
+                    index,
+                    opcode: instruction.opcode.clone(),
+                    reason,
+                }
             })
         })
         .collect::<Result<_, _>>()?;
@@ -69,7 +72,10 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
     })
 }
 
-fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static str> {
+fn lower_instruction(
+    instruction: &Instruction,
+    labels: &BTreeMap<String, usize>,
+) -> Result<LoweredInstr, &'static str> {
     use LoweredInstr::*;
 
     match (instruction.opcode.as_str(), instruction.operands.as_slice()) {
@@ -110,6 +116,21 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_cmp_lt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtU32, operands),
         ("s_cmp_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
         ("s_bitcmp1_b32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::BitCmp1B32, operands),
+        ("s_branch", [target]) => Ok(Branch {
+            target: branch_target(target, labels)?,
+        }),
+        ("s_cbranch_scc1", [target]) => Ok(CondBranch {
+            condition: BranchCondition::Scc1,
+            target: branch_target(target, labels)?,
+        }),
+        ("s_cbranch_vccnz", [target]) => Ok(CondBranch {
+            condition: BranchCondition::VccNz,
+            target: branch_target(target, labels)?,
+        }),
+        ("s_cbranch_execz", [target]) => Ok(CondBranch {
+            condition: BranchCondition::ExecZ,
+            target: branch_target(target, labels)?,
+        }),
         ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -305,6 +326,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "s_mov_b64"
             | "s_abs_i32"
             | "s_lshl_b64"
+            | "s_branch"
+            | "s_cbranch_scc1"
+            | "s_cbranch_vccnz"
+            | "s_cbranch_execz"
             | "v_readfirstlane_b32"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
@@ -469,6 +494,19 @@ fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
             .map(ScalarDst64::Sgprs)
             .ok_or("expected an aligned SGPR pair or vcc destination"),
     }
+}
+
+fn branch_target(
+    operand: &Operand,
+    labels: &BTreeMap<String, usize>,
+) -> Result<InstrId, &'static str> {
+    let Operand::Label(label) = operand else {
+        return Err("expected a label");
+    };
+    let index = labels.get(label).ok_or("undefined label")?;
+    Ok(InstrId(
+        u32::try_from(*index).map_err(|_| "label beyond 2^32 instructions")?,
+    ))
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {

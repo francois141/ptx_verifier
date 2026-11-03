@@ -161,6 +161,17 @@ pub enum ScalarCmpOp {
     BitCmp1B32,
 }
 
+/// The condition of a conditional branch, which is uniform across the wave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchCondition {
+    /// SCC is set.
+    Scc1,
+    /// Some lane's VCC bit is set.
+    VccNz,
+    /// No lane is active.
+    ExecZ,
+}
+
 /// The VGPRs a global load writes, one per dword: a single VGPR, or an even-aligned tuple of
 /// three or four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,6 +378,13 @@ pub enum LoweredInstr {
         op: ScalarCmpOp,
         src0: ScalarSrc,
         src1: ScalarSrc,
+    },
+    Branch {
+        target: InstrId,
+    },
+    CondBranch {
+        condition: BranchCondition,
+        target: InstrId,
     },
     /// Copy the first active lane's value, lane 0's, into an SGPR.
     ReadFirstLane {

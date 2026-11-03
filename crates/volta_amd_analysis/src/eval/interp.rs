@@ -4,7 +4,7 @@
 use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
-use crate::ir::{InstrId, LoweredInstr, LoweredKernel};
+use crate::ir::{BranchCondition, InstrId, LoweredInstr, LoweredKernel};
 
 use super::EvalError;
 use super::arithm::{
@@ -81,17 +81,24 @@ impl<'a> Interpreter<'a> {
             .map(|(wave, _)| wave)
     }
 
-    /// Execute the instruction at `wave`'s pc and move past it.
+    /// Execute the instruction at `wave`'s pc and move past it, or to a taken branch's target.
     pub(super) fn step(&mut self, wave: WaveId, kernel: &LoweredKernel) -> Result<(), EvalError> {
         let pc = self.waves[wave].pc;
         let instruction = kernel
             .instructions
             .get(pc)
             .ok_or(EvalError::MissingEndPgm)?;
+        let mut next = InstrId(pc.0 + 1);
         match instruction {
             LoweredInstr::EndPgm => {
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
+            }
+            LoweredInstr::Branch { target } => next = *target,
+            LoweredInstr::CondBranch { condition, target } => {
+                if self.branch_taken(wave, *condition)? {
+                    next = *target;
+                }
             }
             LoweredInstr::ScalarLoad { .. }
             | LoweredInstr::MovScalar32 { .. }
@@ -136,8 +143,18 @@ impl<'a> Interpreter<'a> {
                 }
             }
         }
-        self.waves[wave].pc = InstrId(pc.0 + 1);
+        self.waves[wave].pc = next;
         Ok(())
+    }
+
+    /// Every lane is active, so EXEC is never zero.
+    fn branch_taken(&self, wave: WaveId, condition: BranchCondition) -> Result<bool, EvalError> {
+        let registers = &self.waves[wave].registers;
+        match condition {
+            BranchCondition::Scc1 => registers.read_scc(),
+            BranchCondition::VccNz => Ok(registers.read_vcc_mask(&self.arena)? != 0),
+            BranchCondition::ExecZ => Ok(false),
+        }
     }
 
     /// Execute one instruction for an active lane of `wave` selected by the caller.
