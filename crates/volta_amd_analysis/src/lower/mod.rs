@@ -79,7 +79,13 @@ fn lower_instruction(
 ) -> Result<LoweredInstr, &'static str> {
     use LoweredInstr::*;
 
-    match (instruction.opcode.as_str(), instruction.operands.as_slice()) {
+    // These instructions change which lanes execute; this interpreter keeps full waves active.
+    let opcode = instruction.opcode.as_str();
+    if opcode.starts_with("v_cmpx_") || (opcode.starts_with("s_") && opcode.contains("saveexec")) {
+        return Err("EXEC changes are unsupported: intra-wave divergence is not modeled");
+    }
+
+    match (opcode, instruction.operands.as_slice()) {
         ("s_movk_i32", [dst, src]) => Ok(MovScalar32 {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
@@ -625,6 +631,7 @@ fn scalar_source64(operand: &Operand) -> Result<ScalarSrc64, &'static str> {
 /// EXEC is never a destination, so every lane of a full wave stays active.
 fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
     match operand {
+        Operand::Exec => Err("EXEC changes are unsupported: intra-wave divergence is not modeled"),
         Operand::Vcc => Ok(ScalarDst64::Vcc),
         _ => sgprs(operand)
             .map(ScalarDst64::Sgprs)

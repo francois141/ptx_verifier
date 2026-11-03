@@ -52,7 +52,7 @@ format-python:
 loc *args:
     python3 scripts/loc.py {{args}}
 
-# Check AMD kernel snapshots and functional equivalence against specifications
+# Check AMD kernel outputs, expected rejections, and functional equivalence
 amd:
     @cargo test -q -p volta_amd_analysis --test kernels -- --test-threads=1 >/dev/null
     @cargo test -q -p volta_pipeline --test amd_equivalence_tests -- --test-threads=1

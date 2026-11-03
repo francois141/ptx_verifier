@@ -415,17 +415,22 @@ of its destinations; results use the existing LGKM completion tracking.
 `ArrayDef` marks each global-memory array `Input` or `Output`; inputs are read-only
 and outputs cannot be loaded. `analyze` returns a completed run's written output
 elements as `SymbolicOutputs` and none for an aborted run.
-Unsupported instructions return `EvalError`.
+Unsupported instructions return `EvalError`. All lanes stay active; EXEC-changing
+instructions are rejected. Bitwise operations require concrete words because symbolic
+values do not represent bit patterns. Sign-mask tricks on symbolic values are rejected;
+symbolic arithmetic and transfers, including lane exchanges, remain supported.
 Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
+Rejection fixtures assert the specific lowering or execution error instead of
+comparing outputs.
 `tests/lean_tests.rs` writes the sigmoid fixture's outputs against
 `tests/fixtures/sigmoid.spec` (dev-dependency `volta_spec`) as the Lean challenge
 `target/lean/sigmoid.lean` (`just extract-lean`): within `1/1000`, since the
 kernel's large-input branch rescales by f32(e^-64), and over the reals the exact equality
 is false there.
-Do not add any other test (no unit tests, no `tests.rs` modules): cover new behavior
-with such a fixture comparison instead.
+Do not add unit tests or `tests.rs` modules: cover execution behavior
+through compiled fixtures in `tests/kernels.rs`.
 See the crate README for ISA references, test commands, and fixture regeneration.
 
 ## Crate: volta_trainium_analysis

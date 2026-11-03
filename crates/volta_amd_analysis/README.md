@@ -23,6 +23,11 @@ with X advancing first, then Y, then Z, following
 [AMD's execution model](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html#hierarchical-thread-model).
 Unsupported instructions and launch layouts return `EvalError`.
 
+All lanes of a wave stay active; instructions that change EXEC are rejected.
+Bitwise operations require concrete words: symbolic values represent the math, not
+bit patterns. This also rejects sign-mask tricks for negation and absolute value;
+symbolic arithmetic and transfers, including lane exchanges, remain supported.
+
 `ArrayDef` marks each global-memory array `Input` or `Output`. Global stores write
 output elements, which the kernel cannot load. On completion,
 `AnalysisResult.symbolic_outputs` holds the output elements that execution wrote; an
@@ -41,6 +46,7 @@ unbalanced and extra-quoted arguments are rejected.
 
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
 fixtures, then compare their symbolic outputs with the corresponding `.out` files.
+Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:
 

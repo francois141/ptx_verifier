@@ -9,7 +9,9 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{ArrayDef, ArrayKind, Terminal, WorkgroupLaunch, analyze};
+use volta_amd_analysis::{
+    AnalysisError, AnalysisResult, ArrayDef, ArrayKind, Terminal, WorkgroupLaunch, analyze,
+};
 use volta_expr::SymbolicOutputs;
 
 const KERNARG_ADDRESS: u64 = 0x1000;
@@ -65,6 +67,29 @@ pub fn check_run_kernel(
     if let Err(error) = result {
         panic!("{fixture}: {error}");
     }
+}
+
+/// Require a fixture kernel to fail in the specified way, using one wave and array pointers.
+pub fn check_rejected_kernel(
+    fixture: &str,
+    kernel: &str,
+    arrays: &[ArrayDef],
+    expected: impl FnOnce(&Result<AnalysisResult, AnalysisError>) -> bool,
+) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(format!("{fixture}.s"));
+    let source = std::fs::read_to_string(path).unwrap();
+    let parsed = parse_kernel(&source, kernel).unwrap();
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    let launch = WorkgroupLaunch {
+        kernarg_address: KERNARG_ADDRESS,
+        workgroup_size: (WORKITEMS, 1, 1),
+    };
+    let result = analyze(&parsed, &launch, &kernarg, arrays);
+    let passed = expected(&result);
+    report(&format!("{kernel} (rejected)"), passed);
+    assert!(passed, "{kernel}: unexpected outcome: {result:?}");
 }
 
 /// Written to stderr directly, past the test harness's output capture.

@@ -3,7 +3,9 @@
 mod common;
 
 use common::{array, array_of};
-use volta_amd_analysis::ArrayKind;
+use volta_amd_analysis::{
+    AnalysisError, AnalysisResult, ArrayKind, EvalError, LowerError, Terminal,
+};
 
 #[test]
 fn the_copy_kernel_writes_its_expected_outputs() {
@@ -228,4 +230,56 @@ fn the_convolution_2d_kernel_writes_its_expected_outputs() {
             array("output", 0x30000, ArrayKind::Output),
         ],
     );
+}
+
+// Test that shifts and sign-bit tricks reject symbolic input values.
+#[test]
+fn bitwise_operations_on_symbolic_values_are_rejected() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output),
+    ];
+    for kernel in ["symbolic_shift", "symbolic_negation"] {
+        common::check_rejected_kernel("unsupported", kernel, &arrays, |result| {
+            matches!(
+                result,
+                Ok(AnalysisResult {
+                    terminal: Terminal::Aborted {
+                        error: EvalError::SymbolicWord { lane: 0 },
+                        ..
+                    },
+                    symbolic_outputs: None,
+                    ..
+                })
+            )
+        });
+    }
+}
+
+// Test that adding to a symbolic input still produces an arithmetic expression.
+#[test]
+fn symbolic_addition_produces_its_expected_outputs() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output),
+    ];
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    common::check_run_kernel("unsupported", "symbolic_add", 64, &kernarg, &arrays);
+}
+
+// Test that a store executed by only the odd lanes is rejected for changing EXEC.
+#[test]
+fn intra_wave_divergence_is_rejected() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output),
+    ];
+    common::check_rejected_kernel("unsupported", "divergent_store", &arrays, |result| {
+        matches!(
+            result,
+            Err(AnalysisError::Lower(LowerError::Instruction { opcode, reason, .. }))
+                if opcode == "s_and_saveexec_b64"
+                    && *reason == "EXEC changes are unsupported: intra-wave divergence is not modeled"
+        )
+    });
 }

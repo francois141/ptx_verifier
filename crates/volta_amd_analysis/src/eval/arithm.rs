@@ -68,8 +68,17 @@ pub(super) fn evaluate_bin_op(
             registers.read_f32(arena, lane, src1)?,
         ),
     };
-    if let Some(result) = sign_bit_op(arena, op, a, b) {
-        return Ok(result);
+    // Bitwise operations need concrete bits, which symbolic values do not satisfy.
+    if matches!(
+        op,
+        BinOp::And32
+            | BinOp::Or32
+            | BinOp::Xor32
+            | BinOp::Xnor32
+            | BinOp::LShlRev32
+            | BinOp::LShrRev32
+    ) {
+        concrete_words(arena, lane, [a, b])?;
     }
     Ok(match op {
         BinOp::And32 => arena.bit_and(a, b),
@@ -123,27 +132,6 @@ pub(super) fn evaluate_bin_op(
         BinOp::MinF32 => arena.min(a, b),
         BinOp::MaxF32 => arena.max(a, b),
     })
-}
-
-const SIGN_BIT: i64 = 0x8000_0000;
-
-/// A word op of a symbolic value with an f32 sign-bit mask, as the sign operation it is on the
-/// real an f32 register holds (`WaveRegisters::read_f32`); `None` for any other operands.
-fn sign_bit_op(arena: &mut ExprArena, op: BinOp, a: ExprId, b: ExprId) -> Option<ExprId> {
-    let (mask, value) = match (arena.as_int_const(a), arena.as_int_const(b)) {
-        (Some(mask), None) => (mask, b),
-        (None, Some(mask)) => (mask, a),
-        _ => return None,
-    };
-    match (op, mask) {
-        (BinOp::Xor32, SIGN_BIT) => Some(arena.neg(value)),
-        (BinOp::And32, 0x7FFF_FFFF) => Some(arena.abs(value)),
-        (BinOp::Or32, SIGN_BIT) => {
-            let magnitude = arena.abs(value);
-            Some(arena.neg(magnitude))
-        }
-        _ => None,
-    }
 }
 
 /// `VCC ? src1 : src0` in `lane`. A word selected against a real is the f32 its bits encode,
@@ -201,9 +189,27 @@ pub(super) fn evaluate_ternary_op(
         OperandType::F32 => registers.read_f32_src(arena, lane, src),
     });
     let (a, b, c) = (a?, b?, c?);
+    // Require concrete bits only for operands used by the bitwise part of the instruction.
+    match op {
+        TernaryOp::Bfe32
+        | TernaryOp::LShlOr32
+        | TernaryOp::Or3_32
+        | TernaryOp::AndOr32
+        | TernaryOp::Bfi32
+        | TernaryOp::AlignBit32
+        | TernaryOp::AlignByte32 => {
+            concrete_words(arena, lane, [a, b, c])?;
+        }
+        TernaryOp::LShlAdd32 | TernaryOp::Xad32 => {
+            concrete_words(arena, lane, [a, b])?;
+        }
+        _ => {}
+    }
     Ok(match op {
         TernaryOp::AddLShl32 => {
             let sum = arena.add(a, b);
+            let sum = low_word(arena, sum);
+            concrete_words(arena, lane, [sum, c])?;
             shl32(arena, sum, c)
         }
         TernaryOp::Bfe32 => {
@@ -317,17 +323,27 @@ fn bitop3(table: u8, a: u32, b: u32, c: u32) -> u32 {
         .fold(0, |result, bit| result | 1 << bit)
 }
 
-/// `op` over concrete words: a symbolic word holds no signed or 24-bit reading of itself.
+/// Read concrete words, rejecting operands whose bit patterns are unknown.
+fn concrete_words<const N: usize>(
+    arena: &ExprArena,
+    lane: usize,
+    values: [ExprId; N],
+) -> Result<[u32; N], EvalError> {
+    let mut words = [0; N];
+    for (word, value) in words.iter_mut().zip(values) {
+        *word = concrete_word(arena, value).ok_or(EvalError::SymbolicWord { lane })?;
+    }
+    Ok(words)
+}
+
+/// Evaluate `op` on concrete words and store the result in the expression arena.
 fn fold_concrete_words<const N: usize>(
     arena: &mut ExprArena,
     lane: usize,
     values: [ExprId; N],
     op: impl FnOnce([u32; N]) -> u32,
 ) -> Result<ExprId, EvalError> {
-    let mut words = [0; N];
-    for (word, value) in words.iter_mut().zip(values) {
-        *word = concrete_word(arena, value).ok_or(EvalError::SymbolicWord { lane })?;
-    }
+    let words = concrete_words(arena, lane, values)?;
     Ok(arena.int(i64::from(op(words))))
 }
 
@@ -540,7 +556,7 @@ fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
     })
 }
 
-/// A concrete value's low 32 bits; a symbolic value is kept, as `shl32` keeps it.
+/// Keep a concrete result's low 32 bits; preserve symbolic arithmetic.
 fn low_word(arena: &mut ExprArena, value: ExprId) -> ExprId {
     if arena.as_int_const(value).is_some() {
         let mask = arena.int(i64::from(u32::MAX));
@@ -557,18 +573,11 @@ fn low_five_bits(arena: &mut ExprArena, count: ExprId) -> ExprId {
     arena.bit_and(count, mask)
 }
 
-/// `value << (shift & 31)`. A concrete result keeps its low 32 bits; a symbolic one follows
-/// PTX's model and keeps the shift expression without truncation. TODO: Should this be handled
-/// differently?
+/// `value << (shift & 31)`, keeping the low 32 bits.
 fn shl32(arena: &mut ExprArena, value: ExprId, shift: ExprId) -> ExprId {
     let amount = low_five_bits(arena, shift);
     let shifted = arena.shl(value, amount);
-    if arena.as_int_const(shifted).is_some() {
-        let mask = arena.int(i64::from(u32::MAX));
-        arena.bit_and(shifted, mask)
-    } else {
-        shifted
-    }
+    low_word(arena, shifted)
 }
 
 /// The logical `value >> (shift & 31)`.

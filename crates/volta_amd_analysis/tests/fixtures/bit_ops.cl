@@ -4,9 +4,12 @@
 __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
                       __global unsigned *out) {
     unsigned i = __builtin_amdgcn_workitem_id_x();
-    unsigned x = a[i], y = b[i], z = a[i + 64];
-    float u = as_float(x), v = as_float(y), w = as_float(z);
     unsigned base = (unsigned)(ulong)b;
+    // Integer operations use concrete words; floating-point operations use symbolic inputs.
+    unsigned x = ((i << 20) | i) ^ base, y = x ^ 0x5a5a5a, z = x + 0x123456;
+    float u = as_float(a[i]), v = as_float(b[i]), w = as_float(a[i + 64]);
+    // CDNA4 S_WAITCNT: vmcnt(0), with EXP and LGKM unconstrained. Stores are not counted.
+    __builtin_amdgcn_s_waitcnt(0x0f70);
     // The signed, 24-bit and three-input logic ops take concrete words: `t` mixes `i` with
     // `base` so that Clang cannot bound it, and `p`, `q` and `r` are its 24-bit sign extensions.
     unsigned t = ((i << 20) | i) ^ base;
@@ -16,8 +19,8 @@ __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
     row[0] = x & y;
     row[1] = x | y;
     row[2] = x ^ y;
-    row[3] = x << y;
-    row[4] = x >> y;
+    row[3] = x << (y & 31);
+    row[4] = x >> (y & 31);
     row[5] = (x + y) << 3;
     row[6] = (x >> 5) & 0xff;
     row[7] = (x << 4) | y;
