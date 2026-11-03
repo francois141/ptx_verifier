@@ -180,7 +180,9 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
-            | LoweredInstr::GlobalStore { .. } => {
+            | LoweredInstr::GlobalStore { .. }
+            | LoweredInstr::BufferLoad { .. }
+            | LoweredInstr::BufferStore { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
                 }
@@ -342,6 +344,12 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::GlobalStore { src, address } => {
                 registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
+            }
+            LoweredInstr::BufferLoad { dst, address } => {
+                self.buffer_load(wave, lane, *address, dst.regs())
+            }
+            LoweredInstr::BufferStore { src, address } => {
+                self.buffer_store(wave, lane, *address, &src.regs())
             }
             _ => Err(EvalError::UnsupportedInstruction),
         }

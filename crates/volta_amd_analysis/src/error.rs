@@ -15,6 +15,9 @@ pub enum EvalError {
     UninitializedScc,
     SymbolicSgpr(Sgpr),
     SymbolicVcc { lane: usize },
+    SymbolicWord { lane: usize },
+    UnsupportedBufferResource { reason: &'static str },
+    PartialBufferAccess { buffer_offset: u64 },
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
@@ -27,7 +30,6 @@ pub enum EvalError {
     KernargRead { address: u64 },
     GlobalRead { address: u64 },
     GlobalWrite { address: u64 },
-    SymbolicWord { lane: usize },
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
@@ -63,6 +65,21 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "VCC bit in lane {lane} must be concrete to form a lane mask"
+                )
+            }
+            Self::SymbolicWord { lane } => {
+                write!(
+                    f,
+                    "integer operand in lane {lane} must be a concrete 32-bit word"
+                )
+            }
+            Self::UnsupportedBufferResource { reason } => {
+                write!(f, "unsupported buffer resource: {reason}")
+            }
+            Self::PartialBufferAccess { buffer_offset } => {
+                write!(
+                    f,
+                    "buffer access at byte offset {buffer_offset:#x} is partially out of range"
                 )
             }
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
@@ -128,12 +145,6 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "4-byte write at {address:#x} is not an element of an output array"
-                )
-            }
-            Self::SymbolicWord { lane } => {
-                write!(
-                    f,
-                    "integer operand in lane {lane} must be a concrete 32-bit word"
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),

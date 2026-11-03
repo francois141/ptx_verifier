@@ -180,6 +180,35 @@ pub enum BranchCondition {
     ExecZ,
 }
 
+/// A raw buffer instruction's address in each lane: the byte offset in the lane's VGPR plus
+/// the instruction's immediate byte offset, within the buffer the four-SGPR resource
+/// describes. The SGPR offset is the inline constant 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferAddress {
+    pub vgpr_offset: Vgpr,
+    pub rsrc: [Sgpr; 4],
+    pub imm_offset: BufferImmOffset,
+}
+
+/// A MUBUF instruction's unsigned 12-bit immediate byte offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferImmOffset(u16);
+
+impl BufferImmOffset {
+    pub const ZERO: Self = Self(0);
+
+    pub fn new(bytes: i64) -> Option<Self> {
+        u16::try_from(bytes)
+            .ok()
+            .filter(|bytes| *bytes <= 0xfff)
+            .map(Self)
+    }
+
+    pub fn bytes(self) -> u64 {
+        u64::from(self.0)
+    }
+}
+
 /// The VGPRs a global load writes, one per dword: a single VGPR, or an even-aligned tuple of
 /// three or four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +239,48 @@ pub enum GlobalStoreSrc {
 }
 
 impl GlobalStoreSrc {
+    pub fn regs(self) -> Vec<LaneReg> {
+        match self {
+            Self::Dword(reg) => vec![reg],
+            Self::Dwordx2(regs) => regs.regs().to_vec(),
+            Self::Dwordx3(regs) => regs.regs().to_vec(),
+            Self::Dwordx4(regs) => regs.regs().to_vec(),
+        }
+    }
+}
+
+/// The VGPRs a buffer load writes, one per dword: a single VGPR, or an even-aligned tuple of
+/// two, three or four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferLoadDst {
+    Dword(Vgpr),
+    Dwordx2([Vgpr; 2]),
+    Dwordx3([Vgpr; 3]),
+    Dwordx4([Vgpr; 4]),
+}
+
+impl BufferLoadDst {
+    pub fn regs(&self) -> &[Vgpr] {
+        match self {
+            Self::Dword(reg) => std::slice::from_ref(reg),
+            Self::Dwordx2(regs) => regs,
+            Self::Dwordx3(regs) => regs,
+            Self::Dwordx4(regs) => regs,
+        }
+    }
+}
+
+/// The registers a buffer store reads, one per dword: a single VGPR or AGPR, or an
+/// even-aligned tuple of two, three or four of one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferStoreSrc {
+    Dword(LaneReg),
+    Dwordx2(LaneRegs<2>),
+    Dwordx3(LaneRegs<3>),
+    Dwordx4(LaneRegs<4>),
+}
+
+impl BufferStoreSrc {
     pub fn regs(self) -> Vec<LaneReg> {
         match self {
             Self::Dword(reg) => vec![reg],
@@ -517,6 +588,16 @@ pub enum LoweredInstr {
     GlobalStore {
         src: GlobalStoreSrc,
         address: GlobalAddress,
+    },
+    /// Words out of the buffer's range read as zero.
+    BufferLoad {
+        dst: BufferLoadDst,
+        address: BufferAddress,
+    },
+    /// Words out of the buffer's range are dropped.
+    BufferStore {
+        src: BufferStoreSrc,
+        address: BufferAddress,
     },
     /// An omitted counter is unconstrained, not an implicit wait for zero.
     WaitCnt {

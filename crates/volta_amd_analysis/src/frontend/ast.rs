@@ -54,6 +54,8 @@ pub enum Operand {
     Exec,
     /// A branch target.
     Label(String),
+    /// A buffer instruction's `offen` flag: its address VGPR is a byte offset.
+    Offen,
     /// The truth table of `v_bitop3_b32`.
     BitOp3(u8),
     /// `vmcnt(n)` or `lgkmcnt(n)`.

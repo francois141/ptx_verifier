@@ -30,8 +30,8 @@ fn signed_integer(text: &str) -> Option<i64> {
     }
 }
 
-/// Parse a register, register range, integer, inline float, wait counter, memory offset, or
-/// branch target.
+/// Parse a register, register range, integer, inline float, wait counter, memory offset,
+/// modifier, or branch target.
 fn operand(text: &str) -> Option<Operand> {
     if let Some(value) = signed_integer(text) {
         return Some(Operand::Imm(value));
@@ -39,6 +39,7 @@ fn operand(text: &str) -> Option<Operand> {
     match text {
         "vcc" => return Some(Operand::Vcc),
         "exec" => return Some(Operand::Exec),
+        "offen" => return Some(Operand::Offen),
         _ => {}
     }
     if text.starts_with(".L") {

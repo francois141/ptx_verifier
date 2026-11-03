@@ -7,9 +7,10 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
-    self, Agpr, BranchCondition, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask,
-    LaneReg, LaneRegs, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64,
-    ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
+    self, Agpr, BranchCondition, BufferAddress, BufferImmOffset, BufferLoadDst, BufferStoreSrc,
+    GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask, LaneReg, LaneRegs,
+    LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc,
+    ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -361,6 +362,50 @@ fn lower_instruction(
             ),
             address: global_address(vaddr, saddr, offset)?,
         }),
+        ("buffer_load_dword", [dst, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferLoad {
+            dst: BufferLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_load_dwordx2", [dst, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferLoad {
+            dst: BufferLoadDst::Dwordx2(
+                vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            ),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_load_dwordx3", [dst, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferLoad {
+            dst: BufferLoadDst::Dwordx3(
+                vgprs(dst).ok_or("expected an even-aligned three-VGPR destination")?,
+            ),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_load_dwordx4", [dst, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferLoad {
+            dst: BufferLoadDst::Dwordx4(
+                vgprs(dst).ok_or("expected an even-aligned four-VGPR destination")?,
+            ),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_store_dword", [src, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferStore {
+            src: BufferStoreSrc::Dword(lane_reg(src).ok_or("expected one source VGPR or AGPR")?),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_store_dwordx2", [src, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferStore {
+            src: BufferStoreSrc::Dwordx2(
+                lane_regs(src).ok_or("expected an even-aligned VGPR or AGPR source pair")?,
+            ),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_store_dwordx3", [src, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferStore {
+            src: BufferStoreSrc::Dwordx3(
+                lane_regs(src).ok_or("expected an even-aligned three-VGPR or AGPR source")?,
+            ),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_store_dwordx4", [src, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferStore {
+            src: BufferStoreSrc::Dwordx4(
+                lane_regs(src).ok_or("expected an even-aligned four-VGPR or AGPR source")?,
+            ),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_nop", [wait_states]) => {
             immediate(wait_states, 15).ok_or("expected a wait count from 0 to 15")?;
@@ -382,6 +427,14 @@ fn lower_instruction(
             | "s_cbranch_execz"
             | "s_barrier"
             | "v_readfirstlane_b32"
+            | "buffer_load_dword"
+            | "buffer_load_dwordx2"
+            | "buffer_load_dwordx3"
+            | "buffer_load_dwordx4"
+            | "buffer_store_dword"
+            | "buffer_store_dwordx2"
+            | "buffer_store_dwordx3"
+            | "buffer_store_dwordx4"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
@@ -581,6 +634,33 @@ fn branch_target(
     Ok(InstrId(
         u32::try_from(*index).map_err(|_| "label beyond 2^32 instructions")?,
     ))
+}
+
+/// Only the offset-enabled raw form is supported: `offen`, an SGPR offset of the inline
+/// constant 0, and an optional 12-bit immediate (LLVM 21.1.8's `isLegalMUBUFImmOffset`).
+fn buffer_address(
+    vaddr: &Operand,
+    rsrc: &Operand,
+    soffset: &Operand,
+    modifiers: &[Operand],
+) -> Result<BufferAddress, &'static str> {
+    if *soffset != Operand::Imm(0) {
+        return Err("expected an SGPR offset of 0");
+    }
+
+    let imm_offset = match modifiers {
+        [Operand::Offen] => BufferImmOffset::ZERO,
+        [Operand::Offen, Operand::Offset(offset)] => {
+            BufferImmOffset::new(*offset).ok_or("expected an unsigned 12-bit byte offset")?
+        }
+        _ => return Err("expected offen and an optional byte offset"),
+    };
+
+    Ok(BufferAddress {
+        vgpr_offset: vgpr(vaddr).ok_or("expected one offset VGPR")?,
+        rsrc: sgprs(rsrc).ok_or("expected an aligned four-SGPR buffer resource")?,
+        imm_offset,
+    })
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {

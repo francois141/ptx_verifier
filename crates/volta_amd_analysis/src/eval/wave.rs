@@ -333,17 +333,21 @@ impl WaveRegisters {
         address: GlobalAddress,
     ) -> Result<u64, EvalError> {
         let base = self.read_address(arena, address.saddr)?;
-        let offset = self.read_vgpr(lane, address.vaddr)?;
-        let offset = arena
-            .as_int_const(offset)
-            .and_then(|offset| u32::try_from(offset).ok())
-            .ok_or(EvalError::InvalidAddressVgpr {
-                lane,
-                reg: address.vaddr,
-            })?;
+        let offset = self.read_address_vgpr(arena, lane, address.vaddr)?;
         base.checked_add(u64::from(offset))
             .and_then(|sum| sum.checked_add_signed(i64::from(address.offset)))
             .ok_or(EvalError::AddressOverflow)
+    }
+
+    /// `lane`'s concrete 32-bit word in an address VGPR.
+    pub fn read_address_vgpr(
+        &self,
+        arena: &ExprArena,
+        lane: usize,
+        reg: Vgpr,
+    ) -> Result<u32, EvalError> {
+        let value = self.read_vgpr(lane, reg)?;
+        concrete_word(arena, value).ok_or(EvalError::InvalidAddressVgpr { lane, reg })
     }
 
     /// `lane`'s VCC bit, which must have been written by a comparison.
@@ -406,14 +410,24 @@ impl WaveRegisters {
             let word_address = start.checked_add(4 * i).ok_or(EvalError::AddressOverflow)?;
             values.push(global.load_dword(word_address, arena)?);
         }
+        self.start_vector_load(lane, dst, &values)
+    }
 
+    /// Give each register of `dst` its loaded value, unreadable until a `vmcnt` wait
+    /// establishes the load's completion.
+    pub(super) fn start_vector_load(
+        &mut self,
+        lane: usize,
+        dst: &[Vgpr],
+        values: &[ExprId],
+    ) -> Result<(), EvalError> {
         // Check every destination before changing any register.
         for &reg in dst {
             self.vector_destination(lane, reg)?;
         }
 
         let registers = &mut self.vector[lane];
-        for (&reg, value) in dst.iter().zip(values) {
+        for (&reg, &value) in dst.iter().zip(values) {
             registers.values[usize::from(reg.0)] = RegValue::Pending(value);
         }
         registers.pending_loads.push_back(dst.to_vec());
