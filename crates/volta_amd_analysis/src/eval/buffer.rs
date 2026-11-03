@@ -69,7 +69,8 @@ impl Interpreter<'_> {
     ) -> Result<BufferRange, EvalError> {
         let resource = self.buffer_resource(wave, address.rsrc)?;
         let registers = &self.waves[wave].registers;
-        let vgpr_offset = registers.read_address_vgpr(&self.arena, lane, address.vgpr_offset)?;
+        let vgpr_offset =
+            registers.read_concrete_address_vgpr(&self.arena, lane, address.vgpr_offset)?;
         let buffer_offset = u64::from(vgpr_offset) + address.imm_offset.bytes();
         let access_size = 4 * word_count;
         let buffer_end = buffer_offset + access_size;

@@ -392,7 +392,7 @@ impl<'a> Interpreter<'a> {
 
         // Read every source before changing destinations, which may overlap `addr` or `src`.
         for lane in 0..64 {
-            let address = registers.read_address_vgpr(&self.arena, lane, addr)?;
+            let address = registers.read_concrete_address_vgpr(&self.arena, lane, addr)?;
             // CDNA4 §12.12: bits [7:2] select the source lane; no LDS memory is accessed.
             let source_lane = ((address.wrapping_add(u32::from(offset)) >> 2) & 63) as usize;
             values.push(registers.read_vgpr(source_lane, src)?);
@@ -413,7 +413,7 @@ impl<'a> Interpreter<'a> {
         offset: u32,
     ) -> Result<u64, EvalError> {
         let registers = &self.waves[wave].registers;
-        let base = registers.read_address_vgpr(&self.arena, lane, address_reg)?;
+        let base = registers.read_concrete_address_vgpr(&self.arena, lane, address_reg)?;
         Ok(u64::from(base) + u64::from(offset))
     }
 

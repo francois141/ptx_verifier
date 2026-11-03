@@ -165,7 +165,7 @@ impl Interpreter<'_> {
     ) -> Result<(), EvalError> {
         let registers = &mut self.waves[wave].registers;
         // Read both address words before marking any overlapping destinations pending.
-        let base_address = registers.read_address(&self.arena, base)?;
+        let base_address = registers.read_concrete_address(&self.arena, base)?;
         // Scalar loads ignore the low two bits of each address component (CDNA4 §8.2.1.1).
         let address = (base_address & !3)
             .checked_add(u64::from(offset & !3))

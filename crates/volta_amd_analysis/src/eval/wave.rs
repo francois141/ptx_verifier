@@ -231,7 +231,11 @@ impl WaveRegisters {
     }
 
     /// Read the 64-bit address an SGPR pair holds as two concrete words, low word first.
-    pub fn read_address(&self, arena: &ExprArena, base: [Sgpr; 2]) -> Result<u64, EvalError> {
+    pub fn read_concrete_address(
+        &self,
+        arena: &ExprArena,
+        base: [Sgpr; 2],
+    ) -> Result<u64, EvalError> {
         let mut words = [0u32; 2];
         for (word, reg) in words.iter_mut().zip(base) {
             let value = self.read_sgpr(reg)?;
@@ -349,15 +353,15 @@ impl WaveRegisters {
         lane: usize,
         address: GlobalAddress,
     ) -> Result<u64, EvalError> {
-        let base = self.read_address(arena, address.saddr)?;
-        let offset = self.read_address_vgpr(arena, lane, address.vaddr)?;
+        let base = self.read_concrete_address(arena, address.saddr)?;
+        let offset = self.read_concrete_address_vgpr(arena, lane, address.vaddr)?;
         base.checked_add(u64::from(offset))
             .and_then(|sum| sum.checked_add_signed(i64::from(address.offset)))
             .ok_or(EvalError::AddressOverflow)
     }
 
     /// `lane`'s concrete 32-bit word in an address VGPR.
-    pub fn read_address_vgpr(
+    pub fn read_concrete_address_vgpr(
         &self,
         arena: &ExprArena,
         lane: usize,
