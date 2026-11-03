@@ -94,6 +94,20 @@ pub enum ScalarSrc {
     Const(u32),
 }
 
+/// A 64-bit scalar ALU source: an aligned SGPR pair or a constant, which a 32-bit inline
+/// constant gives sign-extended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarSrc64 {
+    Sgprs([Sgpr; 2]),
+    Const(u64),
+}
+
+/// A 64-bit scalar ALU destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarDst64 {
+    Sgprs([Sgpr; 2]),
+}
+
 /// A 32-bit scalar ALU operation of two sources over words, with its effect on SCC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarOp32 {
@@ -120,6 +134,17 @@ pub enum ScalarOp32 {
     AShrI32,
     /// `SCC ? src0 : src1`; SCC is unchanged.
     CSelectB32,
+}
+
+/// A 64-bit scalar ALU operation of two sources over lane masks or words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarOp64 {
+    /// SCC is whether the result is nonzero, as for `AndN2B64`.
+    AndB64,
+    /// `src0 & !src1`.
+    AndN2B64,
+    /// `SCC ? src0 : src1`; SCC is unchanged.
+    CSelectB64,
 }
 
 /// A scalar comparison of two words, which writes SCC.
@@ -308,6 +333,10 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: ScalarSrc,
     },
+    MovScalar64 {
+        dst: ScalarDst64,
+        src: ScalarSrc64,
+    },
     /// `dst = |src|`, signed; SCC is whether the result is nonzero.
     AbsScalar32 {
         dst: Sgpr,
@@ -318,6 +347,18 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src0: ScalarSrc,
         src1: ScalarSrc,
+    },
+    ScalarOp64 {
+        op: ScalarOp64,
+        dst: ScalarDst64,
+        src0: ScalarSrc64,
+        src1: ScalarSrc64,
+    },
+    /// `dst = src << (shift & 63)`; SCC is whether the result is nonzero.
+    LShlScalar64 {
+        dst: [Sgpr; 2],
+        src: ScalarSrc64,
+        shift: ScalarSrc,
     },
     ScalarCmp {
         op: ScalarCmpOp,

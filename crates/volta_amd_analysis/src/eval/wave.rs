@@ -141,6 +141,29 @@ impl WaveRegisters {
         concrete_word(arena, value).ok_or(EvalError::SymbolicSgpr(reg))
     }
 
+    /// The concrete 64-bit word an aligned SGPR pair holds, low word first.
+    pub fn read_sgpr_pair(&self, arena: &ExprArena, pair: [Sgpr; 2]) -> Result<u64, EvalError> {
+        let low = self.read_sgpr_word(arena, pair[0])?;
+        let high = self.read_sgpr_word(arena, pair[1])?;
+        Ok(u64::from(low) | (u64::from(high) << 32))
+    }
+
+    pub fn write_sgpr_pair(
+        &mut self,
+        arena: &mut ExprArena,
+        pair: [Sgpr; 2],
+        value: u64,
+    ) -> Result<(), EvalError> {
+        // Check both destinations before changing either register.
+        for reg in pair {
+            self.check_scalar_destination(reg)?;
+        }
+        let low = arena.int(i64::from(value as u32));
+        let high = arena.int(i64::from((value >> 32) as u32));
+        self.write_sgpr(pair[0], low)?;
+        self.write_sgpr(pair[1], high)
+    }
+
     pub fn read_scc(&self) -> Result<bool, EvalError> {
         self.scc.ok_or(EvalError::UninitializedScc)
     }

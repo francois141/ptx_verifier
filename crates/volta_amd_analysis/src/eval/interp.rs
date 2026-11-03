@@ -95,8 +95,11 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::ScalarLoad { .. }
             | LoweredInstr::MovScalar32 { .. }
+            | LoweredInstr::MovScalar64 { .. }
             | LoweredInstr::AbsScalar32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
+            | LoweredInstr::ScalarOp64 { .. }
+            | LoweredInstr::LShlScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
             | LoweredInstr::ReadFirstLane { .. }
             | LoweredInstr::WaitCnt { .. }

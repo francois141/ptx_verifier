@@ -1,7 +1,10 @@
 //! Scalar instructions (memory, moves, ALU operations, comparisons, no-ops and waits) for a
 //! wave, as another `impl Interpreter`. The ALU operates on concrete words.
 
-use crate::ir::{LoweredInstr, ScalarCmpOp, ScalarLoadDst, ScalarOp32, ScalarSrc, Sgpr};
+use crate::ir::{
+    LoweredInstr, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarOp32, ScalarOp64, ScalarSrc,
+    ScalarSrc64, Sgpr,
+};
 
 use super::wave::{WaveId, WaveRegisters};
 use super::{EvalError, Interpreter};
@@ -59,6 +62,10 @@ impl Interpreter<'_> {
                 };
                 registers.write_sgpr(*dst, value)
             }
+            LoweredInstr::MovScalar64 { dst, src } => {
+                let value = self.read_scalar64(wave, *src)?;
+                self.write_scalar64(wave, *dst, value)
+            }
             LoweredInstr::AbsScalar32 { dst, src } => {
                 let value = (self.read_scalar_word(wave, *src)? as i32).unsigned_abs();
                 self.write_scalar_word(wave, *dst, value, Some(value != 0))
@@ -73,6 +80,38 @@ impl Interpreter<'_> {
                 let b = self.read_scalar_word(wave, *src1)?;
                 let (value, scc) = scalar_op32(&self.waves[wave].registers, *op, a, b)?;
                 self.write_scalar_word(wave, *dst, value, scc)
+            }
+            LoweredInstr::ScalarOp64 {
+                op,
+                dst,
+                src0,
+                src1,
+            } => {
+                let a = self.read_scalar64(wave, *src0)?;
+                let b = self.read_scalar64(wave, *src1)?;
+                let registers = &mut self.waves[wave].registers;
+                let value = match op {
+                    ScalarOp64::AndB64 => a & b,
+                    ScalarOp64::AndN2B64 => a & !b,
+                    ScalarOp64::CSelectB64 => {
+                        if registers.read_scc()? {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                };
+                if *op != ScalarOp64::CSelectB64 {
+                    registers.write_scc(value != 0);
+                }
+                self.write_scalar64(wave, *dst, value)
+            }
+            LoweredInstr::LShlScalar64 { dst, src, shift } => {
+                let value =
+                    self.read_scalar64(wave, *src)? << (self.read_scalar_word(wave, *shift)? & 63);
+                let registers = &mut self.waves[wave].registers;
+                registers.write_scc(value != 0);
+                registers.write_sgpr_pair(&mut self.arena, *dst, value)
             }
             LoweredInstr::ScalarCmp { op, src0, src1 } => {
                 let a = self.read_scalar_word(wave, *src0)?;
@@ -157,6 +196,26 @@ impl Interpreter<'_> {
             registers.write_scc(scc);
         }
         Ok(())
+    }
+
+    fn read_scalar64(&self, wave: WaveId, src: ScalarSrc64) -> Result<u64, EvalError> {
+        let registers = &self.waves[wave].registers;
+        match src {
+            ScalarSrc64::Sgprs(pair) => registers.read_sgpr_pair(&self.arena, pair),
+            ScalarSrc64::Const(value) => Ok(value),
+        }
+    }
+
+    fn write_scalar64(
+        &mut self,
+        wave: WaveId,
+        dst: ScalarDst64,
+        value: u64,
+    ) -> Result<(), EvalError> {
+        let registers = &mut self.waves[wave].registers;
+        match dst {
+            ScalarDst64::Sgprs(pair) => registers.write_sgpr_pair(&mut self.arena, pair, value),
+        }
     }
 }
 

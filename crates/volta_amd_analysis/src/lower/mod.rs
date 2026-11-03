@@ -7,7 +7,8 @@ use id_collections::IdVec;
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
     self, Agpr, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, LaneReg, LaneRegs, LoweredInstr,
-    LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarLoadDst, ScalarSrc, Sgpr, Src0, Vgpr, Vop3Src,
+    LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr,
+    Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,6 +77,10 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
         }),
+        ("s_mov_b64", [dst, src]) => Ok(MovScalar64 {
+            dst: scalar_dst64(dst)?,
+            src: scalar_source64(src)?,
+        }),
         ("s_abs_i32", [dst, src]) => Ok(AbsScalar32 {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
@@ -92,6 +97,14 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
         ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
         ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
+        ("s_and_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndB64, operands),
+        ("s_andn2_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndN2B64, operands),
+        ("s_cselect_b64", operands) => lower_scalar_op64(ir::ScalarOp64::CSelectB64, operands),
+        ("s_lshl_b64", [dst, src, shift]) => Ok(LShlScalar64 {
+            dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
+            src: scalar_source64(src)?,
+            shift: scalar_source(shift).ok_or("expected an SGPR or a 32-bit constant count")?,
+        }),
         ("s_cmp_gt_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtI32, operands),
         ("s_cmp_ge_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeI32, operands),
         ("s_cmp_lt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtU32, operands),
@@ -289,7 +302,9 @@ fn lower_instruction(instruction: &Instruction) -> Result<LoweredInstr, &'static
             | "s_load_dwordx4"
             | "s_load_dwordx8"
             | "s_movk_i32"
+            | "s_mov_b64"
             | "s_abs_i32"
+            | "s_lshl_b64"
             | "v_readfirstlane_b32"
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
@@ -391,6 +406,21 @@ fn lower_scalar_op32(
     })
 }
 
+fn lower_scalar_op64(
+    op: ir::ScalarOp64,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::ScalarOp64 {
+        op,
+        dst: scalar_dst64(dst)?,
+        src0: scalar_source64(src0)?,
+        src1: scalar_source64(src1)?,
+    })
+}
+
 fn lower_scalar_cmp(op: ScalarCmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
     let [src0, src1] = operands else {
         return Err("unsupported operand count");
@@ -417,6 +447,22 @@ fn is_inline(bits: u32) -> bool {
         || [0.5f32, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0, -4.0]
             .iter()
             .any(|value| value.to_bits() == bits)
+}
+
+/// 64-bit operations take only inline constants before GFX12, sign-extended to 64 bits.
+fn scalar_source64(operand: &Operand) -> Result<ScalarSrc64, &'static str> {
+    match operand {
+        Operand::Imm(value) if (-16..=64).contains(value) => Ok(ScalarSrc64::Const(*value as u64)),
+        _ => sgprs(operand)
+            .map(ScalarSrc64::Sgprs)
+            .ok_or("expected an aligned SGPR pair or an inline integer constant"),
+    }
+}
+
+fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
+    sgprs(operand)
+        .map(ScalarDst64::Sgprs)
+        .ok_or("expected an aligned SGPR destination pair")
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {
