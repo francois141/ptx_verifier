@@ -202,3 +202,17 @@ fn the_convolution_1d_kernel_writes_its_expected_outputs() {
         ],
     );
 }
+
+// Test that each output of the 8 x 8 image sums its 3 x 3 window of the 10 x 10 input,
+// weighted by the shared filter.
+#[test]
+fn the_convolution_2d_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "convolution_2d",
+        &[
+            array_of("input", 0x10000, 10 * 10, ArrayKind::Input),
+            array_of("filter", 0x20000, 3 * 3, ArrayKind::Input),
+            array("output", 0x30000, ArrayKind::Output),
+        ],
+    );
+}
