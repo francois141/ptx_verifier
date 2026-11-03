@@ -1,6 +1,7 @@
 //! A fixture's kernel, checked against its expected renderings beside `tests/fixtures/<name>.py`:
 //! `<name>.ast` and `<name>.ir` the parsed and lowered kernel as `Display` renders them, and
-//! `<name>.out` its run's written elements. `VOLTA_BLESS=1` rewrites them.
+//! `<name>.out` its run's written elements. `VOLTA_BLESS=1` rewrites them, never `<name>.expected`:
+//! the written elements derived from the kernel's math, not from a run.
 
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,20 @@ pub fn check(name: &str, kernel: &str) {
             writeln!(rendered, "{array}[{index}] = {expr}").unwrap();
         }
     }
-    compare(fixture.with_extension("out"), rendered);
+    compare(fixture.with_extension("out"), rendered.clone());
+    compare_with_expected(fixture.with_extension("expected"), &rendered);
+}
+
+fn compare_with_expected(expected_path: PathBuf, actual: &str) {
+    let expected = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
+
+    assert!(
+        actual == expected,
+        "outputs differ from {}, which VOLTA_BLESS does not rewrite\n\
+         --- expected\n{expected}--- actual\n{actual}",
+        expected_path.display()
+    );
 }
 
 fn compare(expected_path: PathBuf, actual: String) {

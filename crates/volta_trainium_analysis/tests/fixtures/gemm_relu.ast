@@ -1,0 +1,13 @@
+kernel kernel(a_t, b, out)
+  assert a_t.shape == [8, 4]
+  assert b.shape == [8, 4]
+  assert out.shape == [4, 4]
+  x: sbuf[8, 4] of a_t.dtype
+  y: sbuf[8, 4] of b.dtype
+  acc: psum[4, 4] of float32
+  z: sbuf[4, 4] of float32
+  dma_copy(dst=x, src=a_t)
+  dma_copy(dst=y, src=b)
+  nc_matmul(dst=acc, moving=y, stationary=x)
+  activation(data=acc, dst=z, op=nki.language.relu)
+  dma_copy(dst=out, src=z)
