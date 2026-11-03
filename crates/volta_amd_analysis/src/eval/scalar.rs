@@ -198,10 +198,13 @@ impl Interpreter<'_> {
         Ok(())
     }
 
+    /// EXEC holds every lane of the wave.
     fn read_scalar64(&self, wave: WaveId, src: ScalarSrc64) -> Result<u64, EvalError> {
         let registers = &self.waves[wave].registers;
         match src {
             ScalarSrc64::Sgprs(pair) => registers.read_sgpr_pair(&self.arena, pair),
+            ScalarSrc64::Vcc => registers.read_vcc_mask(&self.arena),
+            ScalarSrc64::Exec => Ok(u64::MAX),
             ScalarSrc64::Const(value) => Ok(value),
         }
     }
@@ -215,6 +218,7 @@ impl Interpreter<'_> {
         let registers = &mut self.waves[wave].registers;
         match dst {
             ScalarDst64::Sgprs(pair) => registers.write_sgpr_pair(&mut self.arena, pair, value),
+            ScalarDst64::Vcc => registers.write_vcc_mask(&mut self.arena, value),
         }
     }
 }

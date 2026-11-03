@@ -452,17 +452,23 @@ fn is_inline(bits: u32) -> bool {
 /// 64-bit operations take only inline constants before GFX12, sign-extended to 64 bits.
 fn scalar_source64(operand: &Operand) -> Result<ScalarSrc64, &'static str> {
     match operand {
+        Operand::Vcc => Ok(ScalarSrc64::Vcc),
+        Operand::Exec => Ok(ScalarSrc64::Exec),
         Operand::Imm(value) if (-16..=64).contains(value) => Ok(ScalarSrc64::Const(*value as u64)),
         _ => sgprs(operand)
             .map(ScalarSrc64::Sgprs)
-            .ok_or("expected an aligned SGPR pair or an inline integer constant"),
+            .ok_or("expected an aligned SGPR pair, vcc, exec or an inline integer constant"),
     }
 }
 
+/// EXEC is never a destination, so every lane of a full wave stays active.
 fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
-    sgprs(operand)
-        .map(ScalarDst64::Sgprs)
-        .ok_or("expected an aligned SGPR destination pair")
+    match operand {
+        Operand::Vcc => Ok(ScalarDst64::Vcc),
+        _ => sgprs(operand)
+            .map(ScalarDst64::Sgprs)
+            .ok_or("expected an aligned SGPR pair or vcc destination"),
+    }
 }
 
 fn sgprs<const N: usize>(operand: &Operand) -> Option<[Sgpr; N]> {

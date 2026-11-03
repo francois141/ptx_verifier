@@ -35,8 +35,10 @@ fn operand(text: &str) -> Option<Operand> {
     if let Some(value) = signed_integer(text) {
         return Some(Operand::Imm(value));
     }
-    if text == "vcc" {
-        return Some(Operand::Vcc);
+    match text {
+        "vcc" => return Some(Operand::Vcc),
+        "exec" => return Some(Operand::Exec),
+        _ => {}
     }
     if let Some(table) = text.strip_prefix("bitop3:") {
         return integer(table)

@@ -49,7 +49,8 @@ enum RegValue {
     Pending(ExprId),
 }
 
-/// Register storage for one CDNA4 wave.
+/// Register storage for one CDNA4 wave. EXEC is not stored: no supported instruction writes
+/// it, so every lane of the full waves Volta launches stays active.
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
     scalar: [RegValue; 102],    // Scalar registers are shared by the wave.
@@ -170,6 +171,28 @@ impl WaveRegisters {
 
     pub fn write_scc(&mut self, scc: bool) {
         self.scc = Some(scc);
+    }
+
+    /// VCC as a 64-bit lane mask; every lane's bit must be a concrete boolean.
+    pub fn read_vcc_mask(&self, arena: &ExprArena) -> Result<u64, EvalError> {
+        let mut mask = 0;
+        for lane in 0..self.vector.len() {
+            let bit = self.read_vcc(lane)?;
+            match arena.as_bool(bit) {
+                Some(true) => mask |= 1 << lane,
+                Some(false) => {}
+                None => return Err(EvalError::SymbolicVcc { lane }),
+            }
+        }
+        Ok(mask)
+    }
+
+    pub fn write_vcc_mask(&mut self, arena: &mut ExprArena, mask: u64) -> Result<(), EvalError> {
+        for lane in 0..self.vector.len() {
+            let bit = arena.bool_val(lane_bit(mask, lane));
+            self.write_vcc(lane, bit)?;
+        }
+        Ok(())
     }
 
     /// Read the 64-bit address an SGPR pair holds as two concrete words, low word first.
@@ -443,4 +466,9 @@ pub(super) fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
 /// The f32 that `bits` encode, as an exact real; `None` for a NaN.
 pub(super) fn f32_from_bits(arena: &mut ExprArena, bits: u32) -> Option<ExprId> {
     arena.float_from_f64(f64::from(f32::from_bits(bits))).ok()
+}
+
+/// Whether `lane`'s bit of a 64-bit lane mask is set.
+pub(super) fn lane_bit(mask: u64, lane: usize) -> bool {
+    (mask >> lane) & 1 == 1
 }

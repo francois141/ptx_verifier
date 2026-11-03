@@ -94,18 +94,21 @@ pub enum ScalarSrc {
     Const(u32),
 }
 
-/// A 64-bit scalar ALU source: an aligned SGPR pair or a constant, which a 32-bit inline
-/// constant gives sign-extended.
+/// A 64-bit scalar ALU source: an aligned SGPR pair, VCC or EXEC as lane masks, or a
+/// constant, which a 32-bit inline constant gives sign-extended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarSrc64 {
     Sgprs([Sgpr; 2]),
+    Vcc,
+    Exec,
     Const(u64),
 }
 
-/// A 64-bit scalar ALU destination.
+/// A 64-bit scalar ALU destination. EXEC is never written, so every lane stays active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarDst64 {
     Sgprs([Sgpr; 2]),
+    Vcc,
 }
 
 /// A 32-bit scalar ALU operation of two sources over words, with its effect on SCC.

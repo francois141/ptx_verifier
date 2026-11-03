@@ -48,6 +48,8 @@ pub enum Operand {
     InlineFloat(u32),
     /// The vector condition code, one bit per lane.
     Vcc,
+    /// The mask of the wave's active lanes.
+    Exec,
     /// The truth table of `v_bitop3_b32`.
     BitOp3(u8),
     /// `vmcnt(n)` or `lgkmcnt(n)`.

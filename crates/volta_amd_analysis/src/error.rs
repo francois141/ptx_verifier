@@ -14,6 +14,7 @@ pub enum EvalError {
     UninitializedVcc { lane: usize },
     UninitializedScc,
     SymbolicSgpr(Sgpr),
+    SymbolicVcc { lane: usize },
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
@@ -56,6 +57,12 @@ impl fmt::Display for EvalError {
                     f,
                     "scalar register s{} must contain a concrete 32-bit word",
                     reg.0
+                )
+            }
+            Self::SymbolicVcc { lane } => {
+                write!(
+                    f,
+                    "VCC bit in lane {lane} must be concrete to form a lane mask"
                 )
             }
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
