@@ -283,6 +283,7 @@ impl WaveRegisters {
     ) -> Result<ExprId, EvalError> {
         match src {
             Vop3Src::Vgpr(reg) => self.read_vgpr(lane, reg),
+            Vop3Src::Sgpr(reg) => self.read_sgpr(reg),
             Vop3Src::Inline(bits) => Ok(arena.int(i64::from(bits))),
         }
     }
@@ -296,6 +297,10 @@ impl WaveRegisters {
     ) -> Result<ExprId, EvalError> {
         match src {
             Vop3Src::Vgpr(reg) => self.read_f32(arena, lane, reg),
+            Vop3Src::Sgpr(reg) => {
+                let value = self.read_sgpr(reg)?;
+                as_f32(arena, value).ok_or(EvalError::InvalidFloatSgpr(reg))
+            }
             Vop3Src::Inline(bits) => {
                 f32_from_bits(arena, bits).ok_or(EvalError::InvalidFloatConstant(bits))
             }

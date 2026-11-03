@@ -60,11 +60,12 @@ pub enum MfmaSrcC {
     Inline(u32),
 }
 
-/// A VOP3 source: a VGPR, or an inline integer constant whose 32 bits are the operand, so in
-/// an f32 slot `1` is a denormal (LLVM 21.1.8's `printImmediate32`).
+/// A VOP3 source: a VGPR, an SGPR, or an inline integer constant whose 32 bits are the
+/// operand, so in an f32 slot `1` is a denormal (LLVM 21.1.8's `printImmediate32`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vop3Src {
     Vgpr(Vgpr),
+    Sgpr(Sgpr),
     Inline(u32),
 }
 
@@ -440,6 +441,13 @@ pub enum LoweredInstr {
         op: CmpOp,
         src0: Src0,
         src1: Vgpr,
+    },
+    /// Sets each lane's bit of an SGPR-pair lane mask to `src0 op src1`.
+    CmpE64 {
+        op: CmpOp,
+        dst: [Sgpr; 2],
+        src0: Vop3Src,
+        src1: Vop3Src,
     },
     /// `dst = VCC ? src1 : src0` in each lane.
     CndMask32 {

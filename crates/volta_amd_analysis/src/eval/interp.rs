@@ -4,11 +4,12 @@
 use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
-use crate::ir::{BranchCondition, InstrId, LoweredInstr, LoweredKernel};
+use crate::ir::{BranchCondition, CmpOp, InstrId, LoweredInstr, LoweredKernel, Sgpr, Vop3Src};
 
 use super::EvalError;
 use super::arithm::{
-    evaluate_bin_op, evaluate_cmp, evaluate_cndmask, evaluate_ternary_op, evaluate_unary_op,
+    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cndmask, evaluate_ternary_op,
+    evaluate_unary_op,
 };
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
@@ -139,6 +140,12 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Nop => {
                 self.execute_scalar(wave, instruction)?;
             }
+            LoweredInstr::CmpE64 {
+                op,
+                dst,
+                src0,
+                src1,
+            } => self.execute_cmp_e64(wave, *op, *dst, *src0, *src1)?,
             LoweredInstr::Mfma16x16x4F32 {
                 dst,
                 src_a,
@@ -181,6 +188,28 @@ impl<'a> Interpreter<'a> {
             BranchCondition::VccNz => Ok(registers.read_vcc_mask(&self.arena)? != 0),
             BranchCondition::ExecZ => Ok(false),
         }
+    }
+
+    /// Every lane's comparison is evaluated before `dst` is written, as a source may be `dst`.
+    fn execute_cmp_e64(
+        &mut self,
+        wave: WaveId,
+        op: CmpOp,
+        dst: [Sgpr; 2],
+        src0: Vop3Src,
+        src1: Vop3Src,
+    ) -> Result<(), EvalError> {
+        let registers = &mut self.waves[wave].registers;
+        let mut mask = 0u64;
+        for lane in 0..64 {
+            let condition = evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1)?;
+            match self.arena.as_bool(condition) {
+                Some(true) => mask |= 1 << lane,
+                Some(false) => {}
+                None => return Err(EvalError::SymbolicWord { lane }),
+            }
+        }
+        registers.write_sgpr_pair(&mut self.arena, dst, mask)
     }
 
     /// Execute one instruction for an active lane of `wave` selected by the caller.

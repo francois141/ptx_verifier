@@ -441,6 +441,28 @@ pub(super) fn evaluate_cmp(
     compare(arena, lane, op, a, b)
 }
 
+/// `evaluate_cmp` over VOP3 sources.
+pub(super) fn evaluate_cmp_e64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CmpOp,
+    src0: Vop3Src,
+    src1: Vop3Src,
+) -> Result<ExprId, EvalError> {
+    let (a, b) = match cmp_operand_type(op) {
+        OperandType::Word => (
+            registers.read_src(arena, lane, src0)?,
+            registers.read_src(arena, lane, src1)?,
+        ),
+        OperandType::F32 => (
+            registers.read_f32_src(arena, lane, src0)?,
+            registers.read_f32_src(arena, lane, src1)?,
+        ),
+    };
+    compare(arena, lane, op, a, b)
+}
+
 /// An integer comparison needs concrete words, which it reinterprets as `op`'s signedness.
 fn compare(
     arena: &mut ExprArena,

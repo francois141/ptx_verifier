@@ -251,6 +251,18 @@ fn lower_instruction(
         ("v_cmp_gt_u32_e32", operands) => lower_cmp(ir::CmpOp::GtU32, operands),
         ("v_cmp_ne_u32_e32", operands) => lower_cmp(ir::CmpOp::NeU32, operands),
         ("v_cmp_ge_u32_e32", operands) => lower_cmp(ir::CmpOp::GeU32, operands),
+        ("v_cmp_lt_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtI32, operands),
+        ("v_cmp_eq_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::EqI32, operands),
+        ("v_cmp_le_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeI32, operands),
+        ("v_cmp_gt_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::GtI32, operands),
+        ("v_cmp_ne_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::NeI32, operands),
+        ("v_cmp_ge_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeI32, operands),
+        ("v_cmp_lt_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtU32, operands),
+        ("v_cmp_eq_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::EqU32, operands),
+        ("v_cmp_le_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeU32, operands),
+        ("v_cmp_gt_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GtU32, operands),
+        ("v_cmp_ne_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::NeU32, operands),
+        ("v_cmp_ge_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeU32, operands),
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;
             Ok(CndMask32 {
@@ -270,9 +282,12 @@ fn lower_instruction(
         }),
         ("v_fma_f32", [dst, src0, src1, src2]) => Ok(FmaF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
-            src1: vop3_src(src1).ok_or("expected a VGPR or an inline constant second source")?,
-            src2: vop3_src(src2).ok_or("expected a VGPR or an inline constant third source")?,
+            src0: vop3_src(src0)
+                .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+            src1: vop3_src(src1)
+                .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+            src2: vop3_src(src2)
+                .ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         }),
         // VOP2 also accepts an SGPR or a constant as src0; only VGPR sources are supported.
         ("v_fmac_f32_e32", [dst, src0, src1]) => Ok(FmacF32 {
@@ -404,9 +419,9 @@ fn lower_ternary_op(op: ir::TernaryOp, operands: &[Operand]) -> Result<LoweredIn
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
         srcs: [
-            vop3_src(src0).ok_or("expected a VGPR or an inline constant first source")?,
-            vop3_src(src1).ok_or("expected a VGPR or an inline constant second source")?,
-            vop3_src(src2).ok_or("expected a VGPR or an inline constant third source")?,
+            vop3_src(src0).ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+            vop3_src(src1).ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+            vop3_src(src2).ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         ],
     })
 }
@@ -431,6 +446,20 @@ fn lower_cmp(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'stat
         op,
         src0: first_source(src0)?,
         src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+    })
+}
+
+fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::CmpE64 {
+        op,
+        dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
+        src0: vop3_src(src0)
+            .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+        src1: vop3_src(src1)
+            .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
     })
 }
 
@@ -617,7 +646,9 @@ fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
     match operand {
         Operand::Imm(value) if (-16..=64).contains(value) => Some(Vop3Src::Inline(*value as u32)),
         Operand::InlineFloat(bits) => Some(Vop3Src::Inline(*bits)),
-        _ => vgpr(operand).map(Vop3Src::Vgpr),
+        _ => vgpr(operand)
+            .map(Vop3Src::Vgpr)
+            .or_else(|| sgpr(operand).map(Vop3Src::Sgpr)),
     }
 }
 
