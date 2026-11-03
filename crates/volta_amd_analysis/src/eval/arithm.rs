@@ -127,7 +127,7 @@ pub(super) fn evaluate_bin_op(
 }
 
 /// `VCC ? src1 : src0` in `lane`. A word selected against a real is the f32 its bits encode,
-/// read as `WaveRegisters::read_f32` reads it; two words are selected as words.
+/// read as `WaveRegisters::read_f32` reads it; two words are selected by `select_words`.
 pub(super) fn evaluate_cndmask(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
@@ -138,6 +138,9 @@ pub(super) fn evaluate_cndmask(
     let condition = registers.read_vcc(lane)?;
     let a = registers.read_src0(arena, lane, src0)?;
     let b = registers.read_vgpr(lane, src1)?;
+    if let Some(word) = select_words(arena, lane, condition, a, b)? {
+        return Ok(word);
+    }
     let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
         (Some(_), None) => (registers.read_f32_src0(arena, lane, src0)?, b),
         (None, Some(_)) => (a, registers.read_f32(arena, lane, src1)?),
@@ -158,14 +161,39 @@ pub(super) fn evaluate_cndmask_e64(
     let condition = registers.read_lane_condition(arena, lane, mask)?;
     let a = registers.read_src(arena, lane, src0)?;
     let b = registers.read_src(arena, lane, src1)?;
+    if let Some(word) = select_words(arena, lane, condition, a, b)? {
+        return Ok(word);
+    }
     // A symbolic source is a real, so a concrete word selected against it must be the f32 its
-    // bits encode, or the select would mix raw bits with reals; two words stay bits.
+    // bits encode, or the select would mix raw bits with reals.
     let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
         (Some(_), None) => (registers.read_f32_src(arena, lane, src0)?, b),
         (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1)?),
         _ => (a, b),
     };
     Ok(arena.select(condition, b, a))
+}
+
+/// `condition ? b : a` for two concrete words: the word when both agree, else the chosen word
+/// under a concrete condition. A symbolic condition would yield a value that is neither a
+/// concrete integer nor a known float, so it is rejected. `None` unless both are words.
+fn select_words(
+    arena: &mut ExprArena,
+    lane: usize,
+    condition: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Result<Option<ExprId>, EvalError> {
+    let (Some(x), Some(y)) = (arena.as_int_const(a), arena.as_int_const(b)) else {
+        return Ok(None);
+    };
+    if x == y {
+        return Ok(Some(a));
+    }
+    match arena.as_bool(condition) {
+        Some(_) => Ok(Some(arena.select(condition, b, a))),
+        None => Err(EvalError::AmbiguousSelect { lane }),
+    }
 }
 
 /// `op(srcs)` in `lane`, each source read as `op`'s operand type.

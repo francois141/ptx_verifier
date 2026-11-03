@@ -257,6 +257,29 @@ fn integer_operations_on_symbolic_values_are_rejected() {
     }
 }
 
+// Test that a float comparison choosing between two constants is rejected, because the
+// chosen words could encode floats or integers.
+#[test]
+fn selecting_between_constants_under_a_symbolic_condition_is_rejected() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output),
+    ];
+    common::check_rejected_kernel("unsupported", "symbolic_select", &arrays, |result| {
+        matches!(
+            result,
+            Ok(AnalysisResult {
+                terminal: Terminal::Aborted {
+                    error: EvalError::AmbiguousSelect { lane: 0 },
+                    ..
+                },
+                symbolic_outputs: None,
+                ..
+            })
+        )
+    });
+}
+
 // Test that a store executed by only the odd lanes is rejected for changing EXEC.
 #[test]
 fn intra_wave_divergence_is_rejected() {

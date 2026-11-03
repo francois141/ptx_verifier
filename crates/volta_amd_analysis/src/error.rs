@@ -16,6 +16,7 @@ pub enum EvalError {
     SymbolicSgpr(Sgpr),
     SymbolicVcc { lane: usize },
     SymbolicWord { lane: usize },
+    AmbiguousSelect { lane: usize },
     UnsupportedBufferResource { reason: &'static str },
     PartialBufferAccess { buffer_offset: u64 },
     LdsAccess { address: u64, size: u32 },
@@ -73,6 +74,13 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "integer operand in lane {lane} must be a concrete 32-bit word"
+                )
+            }
+            Self::AmbiguousSelect { lane } => {
+                write!(
+                    f,
+                    "lane {lane} selects between two constant words under a symbolic condition, \
+                     which may encode floats or integers"
                 )
             }
             Self::UnsupportedBufferResource { reason } => {

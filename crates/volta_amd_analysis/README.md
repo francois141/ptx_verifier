@@ -27,7 +27,8 @@ All lanes of a wave stay active; instructions that change EXEC are rejected.
 Integer and bitwise operations require concrete words: symbolic values are floats and
 represent the math, not bit patterns. This rejects integer arithmetic on symbolic values and
 sign-mask tricks for negation and absolute value; floating-point arithmetic and transfers,
-including lane exchanges, remain supported.
+including lane exchanges, remain supported. A select between two different constant words
+under a symbolic condition is rejected, since the words could encode floats or integers.
 
 `ArrayDef` marks each global-memory array `Input` or `Output`. Global stores write
 output elements, which the kernel cannot load. On completion,
