@@ -52,9 +52,10 @@ format-python:
 loc *args:
     python3 scripts/loc.py {{args}}
 
-# Check each AMD kernel's symbolic outputs against its .out file, one PASS or FAIL line per kernel (VOLTA_BLESS=1 rewrites them)
+# Check AMD kernel snapshots and functional equivalence against specifications
 amd:
     @cargo test -q -p volta_amd_analysis --test kernels -- --test-threads=1 >/dev/null
+    @cargo test -q -p volta_pipeline --test amd_equivalence_tests -- --test-threads=1
 
 # Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them)
 trainium:

@@ -41,7 +41,8 @@ unbalanced and extra-quoted arguments are rejected.
 
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
 fixtures, then compare their symbolic outputs with the corresponding `.out` files.
-Run the kernel tests from the repository root:
+Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
+Run both suites from the repository root:
 
 ```sh
 just amd

@@ -40,6 +40,10 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
 
 - `aggregation_tests.rs`: real kernels through both branches and `decide`.
 - `architecture_tests.rs`: the stage/branch dependency boundaries.
+- `amd_equivalence_tests.rs`: compiled AMD matmul against `matmul.spec`, including
+  a swapped-input negative test. It reuses the AMD analysis crate's assembly fixture
+  and the equivalence crate's specification. These tests check functional equivalence
+  under Volta's arithmetic model; they do not check AMD races. `just amd` runs them.
 - the suites below, over `tests/common/`.
 
 ### How a test runs

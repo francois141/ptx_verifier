@@ -44,7 +44,7 @@ Direct dependencies of each crate:
 ```
 volta_cli          → volta_pipeline, volta_equivalence, volta_ptx_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
 volta_viz          → volta_graph_check, volta_graph, volta_expr
-volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_viz)
+volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_amd_analysis, volta_spec, volta_viz)
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
@@ -553,8 +553,11 @@ else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
 and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
 anything else is UNKNOWN. Tests:
-`aggregation_tests.rs` (real kernels through both branches) and
-`architecture_tests.rs` (the stage/branch boundaries).
+`aggregation_tests.rs` (real kernels through both branches),
+`architecture_tests.rs` (the stage/branch boundaries), and
+`amd_equivalence_tests.rs` (compiled AMD matmul against `matmul.spec`, including
+a swapped-input negative test; functional equivalence only). `just amd` runs the
+AMD specification comparisons alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
 
