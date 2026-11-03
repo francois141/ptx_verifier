@@ -1,33 +1,139 @@
 <p align="center">
-  <img src="volta-logo.png" alt="Volta Blackwell logo" width="400">
+  <img src="volta-logo.png" alt="Volta architecture: NVIDIA PTX, AMD Assembly, and AWS Trainium NKI frontends feed a shared Race Detector &amp; Extractor, which branches to independent Fast Canonical Solver and Powerful Lean Solver backends." width="1200">
 </p>
 
-Volta Blackwell checks NVIDIA PTX kernels for data races and deadlocks, and checks a kernel for equivalence to a reference kernel or a math spec (floats are modeled as reals). This is an experimental fork of [Volta](https://github.com/willtunnels/volta).
+<h1 align="center">Prove race freedom. Extract Lean expressions.</h1>
 
-> [!CAUTION]
-> **This project is not intended to be a sound verifier, and we do not claim that it is a formal verifier. It is a best-effort verifier for catching bugs in generated kernels; a successful check does not guarantee correctness.**
->
-> **We are aware of similar efforts, that claims to be a formal verifier but suffers from soundness issues in its handling of the Blackwell ISA. We recommend treating the output with care and using independent testing and validation as it seems there are no trusted blackwell verifiers yet. The latest up to date formal verifier is [Volta](https://github.com/willtunnels/volta).**
+<p align="center">
+  <strong>Multi-ISA · Multi-Solver · Assembly to Lean</strong><br>
+  Analyze accelerator kernels automatically. Choose the Fast Canonical Solver or the Powerful Lean Solver.
+</p>
 
-Kernels must have statically known sizes, and their addresses and branches must resolve from thread indices and concrete parameters, not from input values. Only CTA 0 is executed; it stands for every CTA of the grid.
+<p align="center">
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust-2024-f97316?style=flat-square" alt="Rust edition 2024"></a>
+  <a href="#powerful-lean-solver"><img src="https://img.shields.io/badge/Lean-4-2563eb?style=flat-square" alt="Lean 4"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-65a30d?style=flat-square" alt="MIT license"></a>
+</p>
 
-## Build
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#fast-canonical-solver">Fast Canonical Solver</a> ·
+  <a href="#powerful-lean-solver">Powerful Lean Solver</a> ·
+  <a href="#frontends">Frontends</a> ·
+  <a href="#python">Python</a> ·
+  <a href="#cli-reference">CLI reference</a>
+</p>
+
+---
+
+> [!WARNING]
+> **Under active development.** We are actively building Volta, and not everything is ready yet. Some features, instruction support, and solver workflows are still being implemented and may change.
+
+**Volta is a multi-ISA, multi-solver framework for automatically proving race freedom and extracting Lean expressions from assembly kernels.** It supports NVIDIA PTX, AMD assembly, and AWS Trainium NKI kernels. The PTX backend analyzes memory accesses and synchronization to check for data races and deadlocks; the frontends recover symbolic output expressions for equivalence checking and Lean export.
+
+The architecture brings three frontends into a shared race-detection and extraction stage, then branches into two independent solver backends. The **Fast Canonical Solver** automatically checks symbolic equivalence against a reference kernel or a mathematical specification. The **Powerful Lean Solver** exports expressions as Lean 4 proof goals for proving equality or a chosen error bound with Mathlib. Both paths use the extracted expressions directly.
+
+Writing a fused kernel, reviewing an AI-generated implementation, or porting an operation to another accelerator? Volta connects the implementation to the formula it is meant to compute.
+
+| Capability | What you get |
+| --- | --- |
+| **Multi-ISA extraction** | Symbolic output expressions from NVIDIA PTX, AMD assembly, and AWS Trainium NKI kernels. |
+| **Automatic race checks** | Event-graph checks for data races, deadlocks, and synchronization in PTX kernels. |
+| **Fast Canonical Solver** | Automated equivalence checks against a reference kernel or spec using algebraic canonicalization. |
+| **Powerful Lean Solver** | Extracted Lean expressions and equality or error-bound statements to prove in Lean 4 / Mathlib. |
+
+## Quick start
+
+From the repository root, with Rust and `just` installed:
 
 ```bash
-cargo build --release   # the binary is target/release/volta
-just test               # Rust and Python tests
+cargo build --release -p volta_cli
+just extract-lean
 ```
 
-`cargo run --release -p volta_cli -- <command> ...` builds and runs in one step.
+```text
+Wrote target/lean/sigmoid.lean
+```
 
-## CLI
+Your first extraction: **64 Lean propositions** comparing an AMD sigmoid kernel with `1 / (1 + exp(-x))`, each with an absolute error tolerance of `0.001`.
 
-### Check a kernel for races and deadlocks
+The example uses the checked-in [kernel](crates/volta_amd_analysis/tests/fixtures/sigmoid.s) and [specification](crates/volta_amd_analysis/tests/fixtures/sigmoid.spec). Follow the [extraction code](crates/volta_amd_analysis/tests/lean_tests.rs) to adapt it to your own kernels. No accelerator is needed to run this example.
+
+## Fast Canonical Solver
+
+The automatic equivalence path in Volta's multi-solver framework. The Fast Canonical Solver rewrites symbolic expressions into canonical forms and compares each output element against a reference kernel or specification, sharing work across expressions.
+
+Try the included PTX kernel, which fuses a ReLU clamp with an `f32`-to-`f16` conversion:
+
+```bash
+relu=crates/volta_pipeline/tests/ptx/success/relu_epilogue_vs_explicit_max_fused.ptx
+
+./target/release/volta verify "$relu" \
+  'dim N; array x[N]; array out[N]; out[i] = max(x[i], 0);' \
+  -k k -b 128 --dim N=128 \
+  --array x:0x10000:4:128:in --array out:0x20000:2:128:out \
+  --param ptr:x --param ptr:out
+```
+
+```text
+EQUIVALENT (matches spec)
+VERDICT: ACCEPT
+```
+
+Floating-point values are modeled as real numbers. PTX runs also check for data races and deadlocks. Use `compare` to check two kernels, or save `.vexpr` outputs to repeat comparisons without rerunning extraction. The [CLI reference](#cli-reference) covers these workflows.
+
+## Powerful Lean Solver
+
+The Lean proof path in Volta's multi-solver framework. Extract expressions from the kernel and turn them into explicit proof goals: the Lean exporter writes one proposition per output element, with universally quantified real inputs and exact constants.
+
+| Claim | Generated statement |
+| --- | --- |
+| `Claim::Equal` | Candidate output equals the reference output. |
+| `Claim::Within(tolerance)` | The absolute difference is at most the chosen tolerance. |
+
+Use [`volta_expr::lean::to_lean`](crates/volta_expr/src/lean.rs) with your candidate and reference symbolic outputs:
+
+```rust
+use volta_expr::lean::{Claim, to_lean};
+
+let statements = to_lean(
+    &candidate,
+    &reference,
+    &["out".to_string()],
+    &Claim::Equal,
+    "VoltaChallenge",
+)?;
+```
+
+Import the generated file into a separate Lean module and prove its propositions with Lean tactics or a prover of your choice. Volta supplies the statements; your proof module supplies the proofs. See the [Lean export API](crates/volta_expr/README.md#lean-challenges-leanrs) and the [complete example](crates/volta_amd_analysis/tests/lean_tests.rs).
+
+## Frontends
+
+Different instruction sets, a shared symbolic expression format.
+
+| Target | Kernel input | Entry point |
+| --- | --- | --- |
+| **NVIDIA** | PTX | CLI, Python, and [Rust API](crates/volta_ptx_analysis) |
+| **AMD** | gfx950 assembly | [Rust API](crates/volta_amd_analysis) |
+| **AWS Trainium** | NKI Python kernels using `nki.isa` | [Rust API](crates/volta_trainium_analysis) |
+
+Frontends produce the shared expressions used by the Fast Canonical Solver and Powerful Lean Solver backends. Each frontend documents its supported instructions and launch configurations.
+
+## CLI reference
+
+The commands below use `volta` as shorthand for `./target/release/volta`. You can also run `cargo run --release -p volta_cli -- <command> ...` to build and run in one step. Examples here assume your own `relu.ptx`, reference kernels, and launch files; the [Fast Canonical Solver example](#fast-canonical-solver) above runs directly from this checkout.
+
+<details>
+<summary><strong>Extract outputs, check a specification, or compare two kernels</strong></summary>
+
+The PTX CLI extracts symbolic outputs and provides race, deadlock, and equivalence checks. Kernels must have statically known sizes, and their addresses and branches must resolve from thread indices and concrete parameters, not from input values. Only CTA 0 is executed; it stands for every CTA of the grid.
+
+### Extract a kernel's symbolic outputs
 
 ```bash
 volta analyze relu.ptx -k relu -b 128 \
   --array x:0x10000:4:128:in --array out:0x20000:4:128:out \
-  --param ptr:x --param ptr:out
+  --param ptr:x --param ptr:out --emit-exprs relu.vexpr
 ```
 
 Prints the symbolic outputs (`--print-outputs N`, default 8 per array), the verdict of each graph check, and `GRAPH VERIFICATION: VERIFIED | REJECTED | UNKNOWN` (exit 0/1/2). `--emit-exprs FILE` writes the outputs as `.vexpr` text, `--dump-graph FILE` the event graph.
@@ -68,6 +174,11 @@ volta compare ref.ptx opt.ptx --kernel1 ref --kernel2 opt -b 128 \
 - `--iterations N`: re-run the solve N times (timing and determinism check)
 
 `compare` can skip symbolic execution: `--exprs a.vexpr b.vexpr` (from `analyze --emit-exprs`), or `--dump-vcs pair.vcdump` once and then `--from-dump pair.vcdump`.
+
+</details>
+
+<details>
+<summary><strong>Launch flags and JSON configuration</strong></summary>
 
 ### Launch flags
 
@@ -112,13 +223,23 @@ volta analyze relu.ptx --config relu.json
 
 Unknown keys are errors, so a typo never falls back to a default. `--config` cannot be combined with the launch flags.
 
-### Syntax checks and logging
+</details>
+
+<details>
+<summary><strong>Syntax checks and logging</strong></summary>
 
 `volta parse file.ptx` checks PTX syntax.
 
 Every run writes a log under `volta-logs/` (`--log-dir DIR`, `--no-log-file`). Build with `--features logging` and pass `--log-level info` for a trace of the run.
 
+</details>
+
 ## Python
+
+Work with PTX kernels from your own scripts: extract outputs, inspect execution statistics, and compare a kernel with a mathematical specification.
+
+<details>
+<summary><strong>Install the bindings and analyze a kernel</strong></summary>
 
 Add the bindings to your project's `pyproject.toml`, then run `uv sync`:
 
@@ -156,29 +277,26 @@ check.equivalent, check.mismatches, check.elements_checked
 
 `ArrayKind` is `Input`, `Output`, `InputOutput` or `IndexInput`. A race raises `volta.DataRaceError`, a deadlock `volta.DeadlockError`, and any other failure `volta.VoltaError` (the base class of both). An inconclusive graph check emits a `RuntimeWarning` and sets `race_verified` to `False`. `compare` is CLI-only for now.
 
-## Event-graph visualization
+</details>
 
-`just viz` records the event graph of every test kernel and builds a single HTML
-page at `target/volta-viz/volta-graphs.html`. Open it in a browser to inspect the
-events, graph checks, and PTX source.
+## Build with us
 
-```bash
-just viz
-```
-
-To build a viewer from an existing run store:
+New instruction support, kernel fixtures, solver improvements, and Lean proofs are all useful contributions. Start with a kernel you care about and its expected mathematical behavior.
 
 ```bash
-volta viz <run-store> -o page.html
+just test           # Rust and Python tests
+just amd           # AMD kernel and equivalence tests
+just trainium      # Trainium frontend and symbolic execution tests
+just check         # Rust checks, Clippy, and Python lint
 ```
 
-<p align="center">
-  <img src="volta-viz.png" alt="The Volta Blackwell event-graph viewer showing warp 1's reads racing a bulk async copy">
-  <br>
-  <sub>Warp 1's reads race a <code>cp.async.bulk</code> copy that a <code>bar.sync</code> does not order.</sub>
-</p>
+Found an interesting kernel or a missing instruction? [Open an issue](https://github.com/francois141/ptx_verifier/issues). If Volta is useful for your work, [give it a star](https://github.com/francois141/ptx_verifier) to help others find it.
 
-## Citation
+## Research & credits
+
+Built on [Volta](https://github.com/willtunnels/volta), with multi-ISA extraction and the Fast Canonical Solver and Powerful Lean Solver workflows. If you use this project in your research, please cite the relevant work below.
+
+### Citation · BibTeX
 
 ```bibtex
 @misc{costa2026aicompilercompilingtriton,
@@ -206,6 +324,9 @@ volta viz <run-store> -o page.html
 }
 ```
 
-## License
+---
 
-MIT — see [LICENSE](LICENSE).
+<p align="center">
+  <strong>Volta</strong> · Multi-ISA · Multi-Solver · Assembly to Lean<br>
+  <a href="LICENSE">MIT licensed</a>
+</p>
