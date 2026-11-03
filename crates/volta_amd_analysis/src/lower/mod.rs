@@ -271,6 +271,15 @@ fn lower_instruction(
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             mask: lane_mask(mask).ok_or("expected vcc or an aligned SGPR pair as the mask")?,
         }),
+        ("v_mad_u64_u32", [dst, carry, src0, src1, src2]) => Ok(MadU64U32 {
+            dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            carry: sgprs(carry).ok_or("expected an aligned SGPR carry pair")?,
+            src0: vop3_src(src0)
+                .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+            src1: vop3_src(src1)
+                .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+            src2: vgprs(src2).ok_or("expected an even-aligned VGPR addend pair")?,
+        }),
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;
             Ok(CndMask32 {
@@ -377,6 +386,7 @@ fn lower_instruction(
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
             | "v_cndmask_b32_e64"
+            | "v_mad_u64_u32"
             | "v_accvgpr_write_b32"
             | "v_accvgpr_read_b32"
             | "v_fma_f32"

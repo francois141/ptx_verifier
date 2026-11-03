@@ -469,6 +469,15 @@ pub enum LoweredInstr {
         src1: Vop3Src,
         mask: LaneMask,
     },
+    /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
+    /// carry out of 64 bits in each lane's bit of `carry`.
+    MadU64U32 {
+        dst: [Vgpr; 2],
+        carry: [Sgpr; 2],
+        src0: Vop3Src,
+        src1: Vop3Src,
+        src2: [Vgpr; 2],
+    },
     /// Copy a VGPR's word into an AGPR.
     AccvgprWrite32 {
         dst: Agpr,

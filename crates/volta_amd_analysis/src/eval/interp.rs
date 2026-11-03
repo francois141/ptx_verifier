@@ -4,7 +4,9 @@
 use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
-use crate::ir::{BranchCondition, CmpOp, InstrId, LoweredInstr, LoweredKernel, Sgpr, Vop3Src};
+use crate::ir::{
+    BranchCondition, CmpOp, InstrId, LoweredInstr, LoweredKernel, Sgpr, Vgpr, Vop3Src,
+};
 
 use super::EvalError;
 use super::arithm::{
@@ -15,7 +17,7 @@ use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
-use super::wave::{Status, WaveId, WaveState};
+use super::wave::{Status, WaveId, WaveState, concrete_word};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`.
@@ -146,6 +148,13 @@ impl<'a> Interpreter<'a> {
                 src0,
                 src1,
             } => self.execute_cmp_e64(wave, *op, *dst, *src0, *src1)?,
+            LoweredInstr::MadU64U32 {
+                dst,
+                carry,
+                src0,
+                src1,
+                src2,
+            } => self.execute_mad_u64_u32(wave, *dst, *carry, *src0, *src1, *src2)?,
             LoweredInstr::Mfma16x16x4F32 {
                 dst,
                 src_a,
@@ -211,6 +220,50 @@ impl<'a> Interpreter<'a> {
             }
         }
         registers.write_sgpr_pair(&mut self.arena, dst, mask)
+    }
+
+    /// Every lane's result is computed before `dst` and `carry` are written, as either may
+    /// overlap a source.
+    fn execute_mad_u64_u32(
+        &mut self,
+        wave: WaveId,
+        dst: [Vgpr; 2],
+        carry: [Sgpr; 2],
+        src0: Vop3Src,
+        src1: Vop3Src,
+        src2: [Vgpr; 2],
+    ) -> Result<(), EvalError> {
+        let registers = &mut self.waves[wave].registers;
+
+        let mut results = Vec::with_capacity(64);
+        let mut carries = 0u64;
+        for lane in 0..64 {
+            let a = registers.read_src(&mut self.arena, lane, src0)?;
+            let b = registers.read_src(&mut self.arena, lane, src1)?;
+            let addend_low = registers.read_vgpr(lane, src2[0])?;
+            let addend_high = registers.read_vgpr(lane, src2[1])?;
+
+            let non_symbolic_word =
+                |value| concrete_word(&self.arena, value).ok_or(EvalError::SymbolicWord { lane });
+            let a = u128::from(non_symbolic_word(a)?);
+            let b = u128::from(non_symbolic_word(b)?);
+            let addend = u128::from(non_symbolic_word(addend_low)?)
+                | (u128::from(non_symbolic_word(addend_high)?) << 32);
+
+            let result = a * b + addend;
+            if result >> 64 != 0 {
+                carries |= 1 << lane;
+            }
+            results.push(result as u64);
+        }
+
+        for (lane, result) in results.into_iter().enumerate() {
+            let low = self.arena.int(i64::from(result as u32));
+            let high = self.arena.int(i64::from((result >> 32) as u32));
+            registers.write_vgpr(lane, dst[0], low)?;
+            registers.write_vgpr(lane, dst[1], high)?;
+        }
+        registers.write_sgpr_pair(&mut self.arena, carry, carries)
     }
 
     /// Execute one instruction for an active lane of `wave` selected by the caller.
