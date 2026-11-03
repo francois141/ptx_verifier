@@ -112,6 +112,13 @@ pub enum ScalarDst64 {
     Vcc,
 }
 
+/// A lane mask that selects or receives one bit per lane: VCC or an aligned SGPR pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneMask {
+    Vcc,
+    Sgprs([Sgpr; 2]),
+}
+
 /// A 32-bit scalar ALU operation of two sources over words, with its effect on SCC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarOp32 {
@@ -454,6 +461,13 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src0: Src0,
         src1: Vgpr,
+    },
+    /// `dst = mask ? src1 : src0` in each lane.
+    CndMask32E64 {
+        dst: Vgpr,
+        src0: Vop3Src,
+        src1: Vop3Src,
+        mask: LaneMask,
     },
     /// Copy a VGPR's word into an AGPR.
     AccvgprWrite32 {

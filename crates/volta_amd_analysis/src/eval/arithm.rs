@@ -3,7 +3,7 @@
 
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
-use crate::ir::{BinOp, CmpOp, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
+use crate::ir::{BinOp, CmpOp, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
 
 use super::EvalError;
 use super::wave::{WaveRegisters, concrete_word};
@@ -161,6 +161,28 @@ pub(super) fn evaluate_cndmask(
     let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
         (Some(_), None) => (registers.read_f32_src0(arena, lane, src0)?, b),
         (None, Some(_)) => (a, registers.read_f32(arena, lane, src1)?),
+        _ => (a, b),
+    };
+    Ok(arena.select(condition, b, a))
+}
+
+/// `mask ? src1 : src0` in `lane`, each source mixed with the other as `evaluate_cndmask` does.
+pub(super) fn evaluate_cndmask_e64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src0: Vop3Src,
+    src1: Vop3Src,
+    mask: LaneMask,
+) -> Result<ExprId, EvalError> {
+    let condition = registers.read_lane_condition(arena, lane, mask)?;
+    let a = registers.read_src(arena, lane, src0)?;
+    let b = registers.read_src(arena, lane, src1)?;
+    // A symbolic source is a real, so a concrete word selected against it must be the f32 its
+    // bits encode, or the select would mix raw bits with reals; two words stay bits.
+    let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
+        (Some(_), None) => (registers.read_f32_src(arena, lane, src0)?, b),
+        (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1)?),
         _ => (a, b),
     };
     Ok(arena.select(condition, b, a))

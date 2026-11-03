@@ -8,8 +8,8 @@ use crate::ir::{BranchCondition, CmpOp, InstrId, LoweredInstr, LoweredKernel, Sg
 
 use super::EvalError;
 use super::arithm::{
-    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cndmask, evaluate_ternary_op,
-    evaluate_unary_op,
+    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cndmask, evaluate_cndmask_e64,
+    evaluate_ternary_op, evaluate_unary_op,
 };
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
@@ -165,6 +165,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
+            | LoweredInstr::CndMask32E64 { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
@@ -244,6 +245,16 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::CndMask32 { dst, src0, src1 } => {
                 let result = evaluate_cndmask(&mut self.arena, registers, lane, *src0, *src1)?;
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::CndMask32E64 {
+                dst,
+                src0,
+                src1,
+                mask,
+            } => {
+                let result =
+                    evaluate_cndmask_e64(&mut self.arena, registers, lane, *src0, *src1, *mask)?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::AccvgprWrite32 { dst, src } => {

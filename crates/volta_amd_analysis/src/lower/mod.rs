@@ -7,9 +7,9 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
-    self, Agpr, BranchCondition, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneReg,
-    LaneRegs, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64, ScalarLoadDst,
-    ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
+    self, Agpr, BranchCondition, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask,
+    LaneReg, LaneRegs, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp, ScalarDst64,
+    ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -263,6 +263,14 @@ fn lower_instruction(
         ("v_cmp_gt_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GtU32, operands),
         ("v_cmp_ne_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::NeU32, operands),
         ("v_cmp_ge_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeU32, operands),
+        ("v_cndmask_b32_e64", [dst, src0, src1, mask]) => Ok(CndMask32E64 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: vop3_src(src0)
+                .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+            src1: vop3_src(src1)
+                .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+            mask: lane_mask(mask).ok_or("expected vcc or an aligned SGPR pair as the mask")?,
+        }),
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;
             Ok(CndMask32 {
@@ -368,6 +376,7 @@ fn lower_instruction(
             | "s_mov_b32"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
+            | "v_cndmask_b32_e64"
             | "v_accvgpr_write_b32"
             | "v_accvgpr_read_b32"
             | "v_fma_f32"
@@ -541,6 +550,13 @@ fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
         _ => sgprs(operand)
             .map(ScalarDst64::Sgprs)
             .ok_or("expected an aligned SGPR pair or vcc destination"),
+    }
+}
+
+fn lane_mask(operand: &Operand) -> Option<LaneMask> {
+    match operand {
+        Operand::Vcc => Some(LaneMask::Vcc),
+        _ => sgprs(operand).map(LaneMask::Sgprs),
     }
 }
 

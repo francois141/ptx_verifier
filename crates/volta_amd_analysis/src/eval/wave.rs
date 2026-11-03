@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
-use crate::ir::{Agpr, GlobalAddress, InstrId, LaneReg, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{Agpr, GlobalAddress, InstrId, LaneMask, LaneReg, Sgpr, Src0, Vgpr, Vop3Src};
 
 use super::EvalError;
 use super::global::GlobalMemory;
@@ -195,6 +195,22 @@ impl WaveRegisters {
             self.write_vcc(lane, bit)?;
         }
         Ok(())
+    }
+
+    /// `lane`'s bit of `mask` as a boolean expression; a VCC bit may be symbolic.
+    pub fn read_lane_condition(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        mask: LaneMask,
+    ) -> Result<ExprId, EvalError> {
+        match mask {
+            LaneMask::Vcc => self.read_vcc(lane),
+            LaneMask::Sgprs(pair) => {
+                let mask = self.read_sgpr_pair(arena, pair)?;
+                Ok(arena.bool_val(lane_bit(mask, lane)))
+            }
+        }
     }
 
     /// Read the 64-bit address an SGPR pair holds as two concrete words, low word first.
