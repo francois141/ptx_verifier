@@ -412,6 +412,13 @@ fn lower_instruction(
             ),
             address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
         }),
+        ("ds_bpermute_b32", [dst, addr, src, modifiers @ ..]) => Ok(DsBPermute {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            addr: vgpr(addr).ok_or("expected one address VGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+            offset: lds_offset(modifiers)?,
+        }),
+        ("ds_bpermute_b32", _) => Err("unsupported operand count"),
         (mnemonic, operands) if mnemonic.starts_with("ds_") => lower_ds(mnemonic, operands),
         ("s_waitcnt", operands) => lower_wait(operands),
         ("s_nop", [wait_states]) => {

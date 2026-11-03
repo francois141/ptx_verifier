@@ -50,6 +50,19 @@ fn the_sigmoid_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test eight independent 16-element softmax rows across two waves.
+#[test]
+fn the_softmax_kernel_writes_its_expected_outputs() {
+    common::check_run_on(
+        "softmax",
+        128,
+        &[
+            array_of("input", 0x10000, 128, ArrayKind::Input),
+            array_of("output", 0x20000, 128, ArrayKind::Output),
+        ],
+    );
+}
+
 /// The elements of each 8 x 8 matrix; work-item `i` computes element `i` of the product.
 const MATMUL_ELEMENTS: u32 = 8 * 8;
 

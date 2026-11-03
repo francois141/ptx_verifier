@@ -670,6 +670,13 @@ pub enum LoweredInstr {
         addr: Vgpr,
         accesses: LdsAccesses<DsReadDst>,
     },
+    /// Each lane reads `src` from the lane selected by its byte address plus `offset`.
+    DsBPermute {
+        dst: Vgpr,
+        addr: Vgpr,
+        src: Vgpr,
+        offset: u16,
+    },
     /// An omitted counter is unconstrained, not an implicit wait for zero.
     WaitCnt {
         vmcnt: Option<u8>,

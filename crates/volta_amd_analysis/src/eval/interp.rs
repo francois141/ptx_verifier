@@ -181,6 +181,12 @@ impl<'a> Interpreter<'a> {
                 *src_b,
                 *src_c,
             )?,
+            LoweredInstr::DsBPermute {
+                dst,
+                addr,
+                src,
+                offset,
+            } => self.execute_ds_bpermute(wave, *dst, *addr, *src, *offset)?,
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
@@ -370,6 +376,32 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::DsRead { addr, accesses } => self.ds_read(wave, lane, *addr, *accesses),
             _ => Err(EvalError::UnsupportedInstruction),
         }
+    }
+
+    /// Gather register values across the wave, pending until an LGKM wait completes the exchange.
+    fn execute_ds_bpermute(
+        &mut self,
+        wave: WaveId,
+        dst: Vgpr,
+        addr: Vgpr,
+        src: Vgpr,
+        offset: u16,
+    ) -> Result<(), EvalError> {
+        let registers = &mut self.waves[wave].registers;
+        let mut values = Vec::with_capacity(64);
+
+        // Read every source before changing destinations, which may overlap `addr` or `src`.
+        for lane in 0..64 {
+            let address = registers.read_address_vgpr(&self.arena, lane, addr)?;
+            // CDNA4 §12.12: bits [7:2] select the source lane; no LDS memory is accessed.
+            let source_lane = ((address.wrapping_add(u32::from(offset)) >> 2) & 63) as usize;
+            values.push(registers.read_vgpr(source_lane, src)?);
+        }
+
+        for (lane, value) in values.into_iter().enumerate() {
+            registers.start_vector_load(lane, &[dst], &[value], LoadCounter::Lgkm)?;
+        }
+        Ok(())
     }
 
     /// `lane`'s byte address: its address VGPR plus `offset`.

@@ -14,7 +14,8 @@ register values, and executes scalar instructions once per wave and vector instr
 for individual lanes. Scalar loads read the concrete kernel argument buffer or symbolic
 global inputs and keep their destinations unavailable until `s_waitcnt lgkmcnt(0)`.
 Scalar execution requires XNACK to be disabled; partial LGKM waits with pending scalar
-loads are rejected.
+loads are rejected. `ds_bpermute_b32` exchanges register values across a wave without
+accessing LDS memory; its results remain pending until an LGKM wait completes them.
 Launch initialization supports full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
 with an optional kernarg pointer and enabled workgroup IDs. Work-items are ordered
@@ -28,7 +29,7 @@ output elements, which the kernel cannot load. On completion,
 aborted run has none.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
-(§6.2, §12.6, §12.7, §12.11); scalar addressing and completion follow §8.2–8.3. Operand checks
+(§6.2, §12.6, §12.7, §12.11, §12.12); scalar addressing and completion follow §8.2–8.3. Operand checks
 also follow LLVM 21.1.8's
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
@@ -45,6 +46,11 @@ Run the kernel tests from the repository root:
 ```sh
 just amd
 ```
+
+The cooperative `softmax` fixture uses lane exchanges for row maxima and sums,
+as in CK's [FMHA reductions](https://github.com/ROCm/composable_kernel/blob/d80f11f70b1ab154a56b4bb7b4e28062007ccc65/include/ck_tile/ops/fmha/pipeline/block_fmha_pipeline_qr_ks_vs.hpp).
+Its XOR reduction follows CK's [block reduction](https://github.com/ROCm/composable_kernel/blob/d80f11f70b1ab154a56b4bb7b4e28062007ccc65/include/ck_tile/ops/reduce/block/block_reduce.hpp),
+using the same `ds_bpermute` [shuffle builtin](https://github.com/ROCm/composable_kernel/blob/d80f11f70b1ab154a56b4bb7b4e28062007ccc65/include/ck_tile/core/arch/utility.hpp).
 
 ### Regenerating the copy fixture
 

@@ -61,7 +61,7 @@ pub(crate) struct WaveRegisters {
 }
 
 /// The counter whose wait completes a vector register load: `vmcnt` for global and buffer
-/// loads, `lgkmcnt` for LDS reads.
+/// loads, `lgkmcnt` for LDS reads and lane exchanges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LoadCounter {
     Vm,
