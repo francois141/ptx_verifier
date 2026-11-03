@@ -24,9 +24,10 @@ with X advancing first, then Y, then Z, following
 Unsupported instructions and launch layouts return `EvalError`.
 
 All lanes of a wave stay active; instructions that change EXEC are rejected.
-Bitwise operations require concrete words: symbolic values represent the math, not
-bit patterns. This also rejects sign-mask tricks for negation and absolute value;
-symbolic arithmetic and transfers, including lane exchanges, remain supported.
+Integer and bitwise operations require concrete words: symbolic values are floats and
+represent the math, not bit patterns. This rejects integer arithmetic on symbolic values and
+sign-mask tricks for negation and absolute value; floating-point arithmetic and transfers,
+including lane exchanges, remain supported.
 
 `ArrayDef` marks each global-memory array `Input` or `Output`. Global stores write
 output elements, which the kernel cannot load. On completion,

@@ -1,4 +1,4 @@
-// Test unsupported bitwise operations and divergence, with symbolic addition as a control.
+// Test unsupported integer operations on symbolic values, and divergence.
 
 __kernel void symbolic_shift(__global const float *input, __global unsigned *output) {
     unsigned i = __builtin_amdgcn_workitem_id_x();

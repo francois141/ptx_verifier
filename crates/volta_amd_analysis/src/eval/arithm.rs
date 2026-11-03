@@ -68,16 +68,8 @@ pub(super) fn evaluate_bin_op(
             registers.read_f32(arena, lane, src1)?,
         ),
     };
-    // Bitwise operations need concrete bits, which symbolic values do not satisfy.
-    if matches!(
-        op,
-        BinOp::And32
-            | BinOp::Or32
-            | BinOp::Xor32
-            | BinOp::Xnor32
-            | BinOp::LShlRev32
-            | BinOp::LShrRev32
-    ) {
+    // Integer operations need concrete words: a symbolic value is a float, without known bits.
+    if matches!(operand_type(op), OperandType::Word) {
         concrete_words(arena, lane, [a, b])?;
     }
     Ok(match op {
@@ -189,27 +181,14 @@ pub(super) fn evaluate_ternary_op(
         OperandType::F32 => registers.read_f32_src(arena, lane, src),
     });
     let (a, b, c) = (a?, b?, c?);
-    // Require concrete bits only for operands used by the bitwise part of the instruction.
-    match op {
-        TernaryOp::Bfe32
-        | TernaryOp::LShlOr32
-        | TernaryOp::Or3_32
-        | TernaryOp::AndOr32
-        | TernaryOp::Bfi32
-        | TernaryOp::AlignBit32
-        | TernaryOp::AlignByte32 => {
-            concrete_words(arena, lane, [a, b, c])?;
-        }
-        TernaryOp::LShlAdd32 | TernaryOp::Xad32 => {
-            concrete_words(arena, lane, [a, b])?;
-        }
-        _ => {}
+    // Integer operations need concrete words: a symbolic value is a float, without known bits.
+    if matches!(ternary_operand_type(op), OperandType::Word) {
+        concrete_words(arena, lane, [a, b, c])?;
     }
     Ok(match op {
         TernaryOp::AddLShl32 => {
             let sum = arena.add(a, b);
             let sum = low_word(arena, sum);
-            concrete_words(arena, lane, [sum, c])?;
             shl32(arena, sum, c)
         }
         TernaryOp::Bfe32 => {
@@ -556,14 +535,10 @@ fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
     })
 }
 
-/// Keep a concrete result's low 32 bits; preserve symbolic arithmetic.
+/// The low 32 bits of a concrete integer result.
 fn low_word(arena: &mut ExprArena, value: ExprId) -> ExprId {
-    if arena.as_int_const(value).is_some() {
-        let mask = arena.int(i64::from(u32::MAX));
-        arena.bit_and(value, mask)
-    } else {
-        value
-    }
+    let mask = arena.int(i64::from(u32::MAX));
+    arena.bit_and(value, mask)
 }
 
 /// `count & 31`: AMD uses only the low five bits of a shift count, so 34 becomes 2 and 32

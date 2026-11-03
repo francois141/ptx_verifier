@@ -416,9 +416,10 @@ of its destinations; results use the existing LGKM completion tracking.
 and outputs cannot be loaded. `analyze` returns a completed run's written output
 elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`. All lanes stay active; EXEC-changing
-instructions are rejected. Bitwise operations require concrete words because symbolic
-values do not represent bit patterns. Sign-mask tricks on symbolic values are rejected;
-symbolic arithmetic and transfers, including lane exchanges, remain supported.
+instructions are rejected. Integer and bitwise operations require concrete words because
+symbolic values are floats and do not represent bit patterns, so integer arithmetic and
+sign-mask tricks on symbolic values are rejected; floating-point arithmetic and transfers,
+including lane exchanges, remain supported.
 Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).

@@ -232,14 +232,15 @@ fn the_convolution_2d_kernel_writes_its_expected_outputs() {
     );
 }
 
-// Test that shifts and sign-bit tricks reject symbolic input values.
+// Test that a shift, a sign-bit trick and an integer addition each reject a symbolic input,
+// because symbolic values are floats without known bits.
 #[test]
-fn bitwise_operations_on_symbolic_values_are_rejected() {
+fn integer_operations_on_symbolic_values_are_rejected() {
     let arrays = [
         array("input", 0x10000, ArrayKind::Input),
         array("output", 0x20000, ArrayKind::Output),
     ];
-    for kernel in ["symbolic_shift", "symbolic_negation"] {
+    for kernel in ["symbolic_shift", "symbolic_negation", "symbolic_add"] {
         common::check_rejected_kernel("unsupported", kernel, &arrays, |result| {
             matches!(
                 result,
@@ -254,17 +255,6 @@ fn bitwise_operations_on_symbolic_values_are_rejected() {
             )
         });
     }
-}
-
-// Test that adding to a symbolic input still produces an arithmetic expression.
-#[test]
-fn symbolic_addition_produces_its_expected_outputs() {
-    let arrays = [
-        array("input", 0x10000, ArrayKind::Input),
-        array("output", 0x20000, ArrayKind::Output),
-    ];
-    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
-    common::check_run_kernel("unsupported", "symbolic_add", 64, &kernarg, &arrays);
 }
 
 // Test that a store executed by only the odd lanes is rejected for changing EXEC.
