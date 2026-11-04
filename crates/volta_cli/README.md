@@ -1,8 +1,14 @@
 # volta_cli
 
-The `volta` binary (`src/main.rs`). It parses command-line flags into an
-`AnalysisConfig`, drives `volta_pipeline`, and prints results with exit codes.
-It holds no verification logic of its own.
+The `volta` binary parses command-line flags into an `AnalysisConfig`, drives
+`volta_pipeline`, and prints results with exit codes. It holds no verification
+logic of its own.
+
+`src/main.rs` handles startup, logging, and dispatch. `src/cli.rs` defines the
+command tree and global options, while `src/commands/` groups each command's
+arguments and handler. Shared helpers live in `config.rs` (launch
+configuration), `ptx.rs` (PTX loading and analysis), `spec.rs` (specification
+loading), and `output.rs` (reports, exit codes, and expression output).
 
 | command | does | exit |
 |---------|------|------|
