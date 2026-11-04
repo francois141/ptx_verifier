@@ -157,8 +157,17 @@ pub(super) fn evaluate_cndmask_e64(
     src0: Vop3Src,
     src1: Vop3Src,
     mask: LaneMask,
+    negate: [bool; 2],
 ) -> Result<ExprId, EvalError> {
     let condition = registers.read_lane_condition(arena, lane, mask)?;
+    // Source modifiers give the select float semantics (V_CNDMASK_B32).
+    if negate.contains(&true) {
+        let a = registers.read_f32_src(arena, lane, src0)?;
+        let b = registers.read_f32_src(arena, lane, src1)?;
+        let a = if negate[0] { arena.neg(a) } else { a };
+        let b = if negate[1] { arena.neg(b) } else { b };
+        return Ok(arena.select(condition, b, a));
+    }
     let a = registers.read_src(arena, lane, src0)?;
     let b = registers.read_src(arena, lane, src1)?;
     if let Some(word) = select_words(arena, lane, condition, a, b)? {

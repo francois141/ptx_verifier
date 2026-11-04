@@ -199,6 +199,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
+            | LoweredInstr::PackedAddF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
@@ -235,16 +236,11 @@ impl<'a> Interpreter<'a> {
         src1: Vop3Src,
     ) -> Result<(), EvalError> {
         let registers = &mut self.waves[wave].registers;
-        let mut mask = 0u64;
-        for lane in 0..64 {
-            let condition = evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1)?;
-            match self.arena.as_bool(condition) {
-                Some(true) => mask |= 1 << lane,
-                Some(false) => {}
-                None => return Err(EvalError::SymbolicWord { lane }),
-            }
-        }
-        registers.write_sgpr_pair(&mut self.arena, dst, mask)
+        // Read every lane before writing the mask, which may overlap a scalar source.
+        let conditions = (0..64)
+            .map(|lane| evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1))
+            .collect::<Result<Vec<_>, _>>()?;
+        registers.write_lane_mask(&mut self.arena, dst, &conditions)
     }
 
     /// Every lane's result is computed before `dst` and `carry` are written, as either may
@@ -330,9 +326,17 @@ impl<'a> Interpreter<'a> {
                 src0,
                 src1,
                 mask,
+                negate,
             } => {
-                let result =
-                    evaluate_cndmask_e64(&mut self.arena, registers, lane, *src0, *src1, *mask)?;
+                let result = evaluate_cndmask_e64(
+                    &mut self.arena,
+                    registers,
+                    lane,
+                    *src0,
+                    *src1,
+                    *mask,
+                    *negate,
+                )?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::AccvgprWrite32 { dst, src } => {
@@ -361,6 +365,17 @@ impl<'a> Interpreter<'a> {
                 let c = registers.read_f32(&mut self.arena, lane, *dst)?;
                 let result = self.arena.fma(a, b, c);
                 registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::PackedAddF32 { dst, src0, src1 } => {
+                // Read both components before writing a destination that may also be a source.
+                let a = registers.read_f32_src(&mut self.arena, lane, src0[0])?;
+                let b = registers.read_f32_src(&mut self.arena, lane, src1[0])?;
+                let low = self.arena.add(a, b);
+                let a = registers.read_f32_src(&mut self.arena, lane, src0[1])?;
+                let b = registers.read_f32_src(&mut self.arena, lane, src1[1])?;
+                let high = self.arena.add(a, b);
+                registers.write_vgpr(lane, dst[0], low)?;
+                registers.write_vgpr(lane, dst[1], high)
             }
             LoweredInstr::GlobalLoad { dst, address } => {
                 registers.global_load(&mut self.arena, &self.global, lane, dst.regs(), *address)

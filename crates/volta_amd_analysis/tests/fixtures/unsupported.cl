@@ -27,3 +27,14 @@ __kernel void divergent_store(__global const float *input, __global float *outpu
     if (i & 1)
         output[i] = input[i];
 }
+
+// Keep the symbolic comparison in SGPRs so the scalar AND must reject its unknown bits.
+__kernel void symbolic_mask(__global const float *input, __global unsigned *output) {
+    unsigned i = __builtin_amdgcn_workitem_id_x();
+    ulong mask;
+    __asm__ volatile(
+        "v_cmp_lt_f32_e64 %0, %1, 1.0\n\t"
+        "s_and_b64 %0, %0, -1"
+        : "=&s"(mask) : "v"(input[i]) : "scc");
+    output[i] = (unsigned)mask;
+}

@@ -423,6 +423,9 @@ symbolic values are floats and do not represent bit patterns, so integer arithme
 sign-mask tricks on symbolic values are rejected; floating-point arithmetic and transfers,
 including lane exchanges, remain supported. A select between two different constant words
 under a symbolic condition is rejected (`AmbiguousSelect`).
+Negated select sources use floating-point semantics, so they are not ambiguous.
+Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
+scalar instructions reject symbolic masks (`SymbolicSgpr`).
 Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).

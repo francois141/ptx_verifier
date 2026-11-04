@@ -29,6 +29,9 @@ represent the math, not bit patterns. This rejects integer arithmetic on symboli
 sign-mask tricks for negation and absolute value; floating-point arithmetic and transfers,
 including lane exchanges, remain supported. A select between two different constant words
 under a symbolic condition is rejected, since the words could encode floats or integers.
+Negated select sources use floating-point semantics, so they are not ambiguous.
+Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
+scalar instructions reject symbolic masks.
 
 `ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Output
 stores decode `F32` constants into mathematical reals and preserve existing real
@@ -37,7 +40,7 @@ the store. Outputs cannot be loaded. On completion, `AnalysisResult.symbolic_out
 holds the interpreted values that execution wrote; an aborted run has none.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
-(§6.2, §12.6, §12.7, §12.11, §12.12); scalar addressing and completion follow §8.2–8.3. Operand checks
+(§6.2, §12.6, §12.7, §12.10, §12.11, §12.12); scalar addressing and completion follow §8.2–8.3. Operand checks
 also follow LLVM 21.1.8's
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).

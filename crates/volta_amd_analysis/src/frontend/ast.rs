@@ -48,6 +48,8 @@ pub enum Operand {
     Imm(i64),
     /// One of the inline float constants ±0.5, ±1.0, ±2.0 and ±4.0, as its f32 bits.
     InlineFloat(u32),
+    /// A floating-point source with its sign negated.
+    Neg(Box<Operand>),
     /// The vector condition code, one bit per lane.
     Vcc,
     /// The mask of the wave's active lanes.
@@ -61,6 +63,8 @@ pub enum Operand {
     Offset1(u64),
     /// The truth table of `v_bitop3_b32`.
     BitOp3(u8),
+    /// Source-word selectors for the high result of a packed instruction.
+    OpSelHi([bool; 2]),
     /// `vmcnt(n)` or `lgkmcnt(n)`.
     Wait {
         counter: Counter,

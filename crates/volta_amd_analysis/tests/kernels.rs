@@ -469,6 +469,28 @@ fn integer_operations_on_symbolic_values_are_rejected() {
     }
 }
 
+// Test that a scalar AND rejects the symbolic lane mask produced by a float comparison.
+#[test]
+fn scalar_operations_on_symbolic_masks_are_rejected() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output(U32)),
+    ];
+    common::check_rejected_kernel("unsupported", "symbolic_mask", &arrays, |result| {
+        matches!(
+            result,
+            Ok(AnalysisResult {
+                terminal: Terminal::Aborted {
+                    error: EvalError::SymbolicSgpr(_),
+                    ..
+                },
+                symbolic_outputs: None,
+                ..
+            })
+        )
+    });
+}
+
 // Test that a float comparison choosing between two constants is rejected, because the
 // chosen words could encode floats or integers.
 #[test]

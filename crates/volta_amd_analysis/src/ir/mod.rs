@@ -608,11 +608,13 @@ pub enum LoweredInstr {
         src1: Vgpr,
     },
     /// `dst = mask ? src1 : src0` in each lane.
+    /// `negate[i]` negates `src_i`; any negation reads both sources as f32s.
     CndMask32E64 {
         dst: Vgpr,
         src0: Vop3Src,
         src1: Vop3Src,
         mask: LaneMask,
+        negate: [bool; 2],
     },
     /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
     /// carry out of 64 bits in each lane's bit of `carry`.
@@ -645,6 +647,12 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src0: Src0,
         src1: Vgpr,
+    },
+    /// Add two f32 components; lowering resolves each source's word selectors.
+    PackedAddF32 {
+        dst: [Vgpr; 2],
+        src0: [Vop3Src; 2],
+        src1: [Vop3Src; 2],
     },
     /// The wave's `D = A * B + C` over f32, for a 16 x 4 `A`, a 4 x 16 `B` and 16 x 16 `C` and
     /// `D`: lane `l` holds `A[l % 16][l / 16]` and `B[l / 16][l % 16]`, and its `r`th

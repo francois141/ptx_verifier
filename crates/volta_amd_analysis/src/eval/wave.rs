@@ -51,11 +51,22 @@ enum RegValue {
     Pending(ExprId),
 }
 
+/// ScalarValue distinguishes one stored value from 32 separate lane predicates.
+/// For a single value, the inner RegValue tracks whether it can be read.
+/// Storing each mask half in its own SGPR makes overwrites replace the affected predicates.
+#[derive(Debug)]
+enum ScalarValue {
+    /// One value, with RegValue tracking whether it is ready, pending or unwritten.
+    /// The wrapper leaves the value unchanged; it may be concrete or symbolic.
+    Word(RegValue),
+    LaneMask(Box<[ExprId]>),
+}
+
 /// Register storage for one CDNA4 wave. EXEC is not stored: no supported instruction writes
 /// it, so every lane of the full waves Volta launches stays active.
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
-    scalar: [RegValue; 102],    // Scalar registers are shared by the wave.
+    scalar: [ScalarValue; 102], // Scalar registers are shared by the wave.
     scc: Option<bool>,          // The scalar condition code, once an instruction writes it.
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
 }
@@ -91,7 +102,7 @@ impl Default for WaveRegisters {
             pending_lds_reads: VecDeque::new(),
         };
         Self {
-            scalar: [RegValue::Uninitialized; 102],
+            scalar: std::array::from_fn(|_| ScalarValue::Word(RegValue::Uninitialized)),
             scc: None,
             vector: vec![lane; 64],
         }
@@ -99,12 +110,17 @@ impl Default for WaveRegisters {
 }
 
 impl WaveRegisters {
-    /// Read a scalar register, rejecting reads before it is initialized or its pending load finishes.
+    /// Read an initialized scalar value whose load has completed.
+    /// Reject symbolic lane masks, which must be read as individual lane predicates,
+    /// because their comparison results are not yet known.
     pub fn read_sgpr(&self, reg: Sgpr) -> Result<ExprId, EvalError> {
         match self.scalar.get(usize::from(reg.0)) {
-            Some(RegValue::Ready(value)) => Ok(*value),
-            Some(RegValue::Pending(_)) => Err(EvalError::PendingSgpr(reg)),
-            Some(RegValue::Uninitialized) => Err(EvalError::UninitializedSgpr(reg)),
+            Some(ScalarValue::Word(RegValue::Ready(value))) => Ok(*value),
+            Some(ScalarValue::Word(RegValue::Pending(_))) => Err(EvalError::PendingSgpr(reg)),
+            Some(ScalarValue::Word(RegValue::Uninitialized)) => {
+                Err(EvalError::UninitializedSgpr(reg))
+            }
+            Some(ScalarValue::LaneMask(_)) => Err(EvalError::SymbolicSgpr(reg)),
             None => Err(EvalError::InvalidSgpr(reg)),
         }
     }
@@ -112,13 +128,15 @@ impl WaveRegisters {
     /// Write a scalar register unless a load is still writing to it.
     pub fn write_sgpr(&mut self, reg: Sgpr, value: ExprId) -> Result<(), EvalError> {
         self.check_scalar_destination(reg)?;
-        self.scalar[usize::from(reg.0)] = RegValue::Ready(value);
+        // Writing a value replaces any comparison predicates previously held here.
+        self.scalar[usize::from(reg.0)] = ScalarValue::Word(RegValue::Ready(value));
         Ok(())
     }
 
+    /// Allow a write to replace a value or mask, but not an unfinished load.
     fn check_scalar_destination(&self, reg: Sgpr) -> Result<(), EvalError> {
         match self.scalar.get(usize::from(reg.0)) {
-            Some(RegValue::Pending(_)) => Err(EvalError::PendingSgpr(reg)),
+            Some(ScalarValue::Word(RegValue::Pending(_))) => Err(EvalError::PendingSgpr(reg)),
             Some(_) => Ok(()),
             None => Err(EvalError::InvalidSgpr(reg)),
         }
@@ -134,8 +152,9 @@ impl WaveRegisters {
         for reg in dst {
             self.check_scalar_destination(reg)?;
         }
+        // Store each load result, but block reads and overwrites until a wait completes it.
         for (reg, value) in dst.into_iter().zip(values) {
-            self.scalar[usize::from(reg.0)] = RegValue::Pending(value);
+            self.scalar[usize::from(reg.0)] = ScalarValue::Word(RegValue::Pending(value));
         }
         Ok(())
     }
@@ -143,14 +162,15 @@ impl WaveRegisters {
     pub(super) fn has_pending_scalar_loads(&self) -> bool {
         self.scalar
             .iter()
-            .any(|slot| matches!(slot, RegValue::Pending(_)))
+            .any(|slot| matches!(slot, ScalarValue::Word(RegValue::Pending(_))))
     }
 
     /// Make all pending scalar loads readable after lgkmcnt(0).
+    /// The stored expression stays the same; only its readiness changes.
     pub(super) fn finish_scalar_loads(&mut self) {
         for slot in &mut self.scalar {
-            if let RegValue::Pending(value) = *slot {
-                *slot = RegValue::Ready(value);
+            if let ScalarValue::Word(RegValue::Pending(value)) = slot {
+                *slot = ScalarValue::Word(RegValue::Ready(*value));
             }
         }
     }
@@ -214,7 +234,31 @@ impl WaveRegisters {
         Ok(())
     }
 
-    /// `lane`'s bit of `mask` as a boolean expression; a VCC bit may be symbolic.
+    /// Store comparison predicates in an SGPR pair, retaining concrete halves as ordinary words.
+    pub fn write_lane_mask(
+        &mut self,
+        arena: &mut ExprArena,
+        pair: [Sgpr; 2],
+        conditions: &[ExprId],
+    ) -> Result<(), EvalError> {
+        for reg in pair {
+            self.check_scalar_destination(reg)?;
+        }
+        // The first SGPR holds lanes 0–31; the second holds lanes 32–63.
+        for (reg, bits) in pair.into_iter().zip(conditions.chunks_exact(32)) {
+            // Pack known comparison results into a word; keep predicates if any bit is unknown.
+            let word = bits.iter().enumerate().try_fold(0u32, |word, (i, &bit)| {
+                arena.as_bool(bit).map(|bit| word | (u32::from(bit) << i))
+            });
+            self.scalar[usize::from(reg.0)] = match word {
+                Some(word) => ScalarValue::Word(RegValue::Ready(arena.int(i64::from(word)))),
+                None => ScalarValue::LaneMask(bits.into()),
+            };
+        }
+        Ok(())
+    }
+
+    /// Read a lane's predicate from VCC or an SGPR pair; either may hold symbolic comparisons.
     pub fn read_lane_condition(
         &self,
         arena: &mut ExprArena,
@@ -224,8 +268,13 @@ impl WaveRegisters {
         match mask {
             LaneMask::Vcc => self.read_vcc(lane),
             LaneMask::Sgprs(pair) => {
-                let mask = self.read_sgpr_pair(arena, pair)?;
-                Ok(arena.bool_val(lane_bit(mask, lane)))
+                // Select the SGPR for this lane, then read its predicate or extract its known bit.
+                let reg = *pair.get(lane / 32).ok_or(EvalError::InvalidLane(lane))?;
+                if let Some(ScalarValue::LaneMask(bits)) = self.scalar.get(usize::from(reg.0)) {
+                    return Ok(bits[lane % 32]);
+                }
+                let word = self.read_sgpr_word(arena, reg)?;
+                Ok(arena.bool_val(lane_bit(u64::from(word), lane % 32)))
             }
         }
     }

@@ -277,6 +277,7 @@ fn lower_instruction(
         ("v_cmp_gt_u32_e32", operands) => lower_cmp(ir::CmpOp::GtU32, operands),
         ("v_cmp_ne_u32_e32", operands) => lower_cmp(ir::CmpOp::NeU32, operands),
         ("v_cmp_ge_u32_e32", operands) => lower_cmp(ir::CmpOp::GeU32, operands),
+        ("v_cmp_lt_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtF32, operands),
         ("v_cmp_lt_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtI32, operands),
         ("v_cmp_eq_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::EqI32, operands),
         ("v_cmp_le_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeI32, operands),
@@ -291,11 +292,12 @@ fn lower_instruction(
         ("v_cmp_ge_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeU32, operands),
         ("v_cndmask_b32_e64", [dst, src0, src1, mask]) => Ok(CndMask32E64 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vop3_src(src0)
+            src0: vop3_src(without_neg(src0))
                 .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-            src1: vop3_src(src1)
+            src1: vop3_src(without_neg(src1))
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             mask: lane_mask(mask).ok_or("expected vcc or an aligned SGPR pair as the mask")?,
+            negate: [src0, src1].map(|source| matches!(source, Operand::Neg(_))),
         }),
         ("v_mad_u64_u32", [dst, carry, src0, src1, src2]) => Ok(MadU64U32 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
@@ -337,6 +339,7 @@ fn lower_instruction(
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
+        ("v_pk_add_f32", operands) => lower_packed_add(operands),
         // A nonzero cbsz, abid or blgp modifier is an unsupported operand of the frontend.
         ("v_mfma_f32_16x16x4_f32", [dst, src_a, src_b, src_c]) => {
             let dst =
@@ -568,6 +571,28 @@ fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'
             .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
         src1: vop3_src(src1)
             .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+    })
+}
+
+/// Packed f32 sources occupy two aligned dwords (CDNA4 §6.7). The low result uses
+/// each source's first word; op_sel_hi selects the word for the high result.
+fn lower_packed_add(operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1, Operand::OpSelHi(high)] = operands else {
+        return Err("expected a destination pair, two sources and explicit op_sel_hi");
+    };
+    let source = |operand: &Operand, high: bool| {
+        if let Some(regs) = vgprs::<2>(operand) {
+            return Ok([regs[0], regs[usize::from(high)]].map(Vop3Src::Vgpr));
+        }
+        match vop3_src(operand) {
+            Some(src @ Vop3Src::Inline(_)) if !high => Ok([src; 2]),
+            _ => Err("expected an even-aligned VGPR pair or a low-word inline constant"),
+        }
+    };
+    Ok(LoweredInstr::PackedAddF32 {
+        dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+        src0: source(src0, high[0])?,
+        src1: source(src1, high[1])?,
     })
 }
 
@@ -960,6 +985,14 @@ fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
         _ => vgpr(operand)
             .map(Vop3Src::Vgpr)
             .or_else(|| sgpr(operand).map(Vop3Src::Sgpr)),
+    }
+}
+
+/// A source without its negation.
+fn without_neg(operand: &Operand) -> &Operand {
+    match operand {
+        Operand::Neg(source) => source.as_ref(),
+        _ => operand,
     }
 }
 

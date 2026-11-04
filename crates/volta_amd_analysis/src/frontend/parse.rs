@@ -56,6 +56,21 @@ fn operand(text: &str) -> Option<Operand> {
             .and_then(|table| u8::try_from(table).ok())
             .map(Operand::BitOp3);
     }
+    if let Some(selectors) = text
+        .strip_prefix("op_sel_hi:[")
+        .and_then(|s| s.strip_suffix(']'))
+    {
+        let (a, b) = selectors.split_once(',')?;
+        let bit = |s: &str| match s {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        };
+        return Some(Operand::OpSelHi([bit(a)?, bit(b)?]));
+    }
+    if let Some(source @ Operand::Reg { .. }) = text.strip_prefix('-').and_then(operand) {
+        return Some(Operand::Neg(Box::new(source)));
+    }
     if text.contains('.') {
         let value = text.parse::<f32>().ok()?;
         return INLINE_FLOATS
@@ -158,8 +173,17 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         if rest.contains(',') && rest.split(',').any(|piece| piece.trim().is_empty()) {
             return Err(format!("empty operand in {line:?}"));
         }
+        // Keep selector lists such as op_sel_hi:[1,0] in one operand.
+        let mut in_brackets = false;
         let operands = rest
-            .split([',', ' ', '\t'])
+            .split(|ch: char| {
+                match ch {
+                    '[' => in_brackets = true,
+                    ']' => in_brackets = false,
+                    _ => {}
+                }
+                !in_brackets && matches!(ch, ',' | ' ' | '\t')
+            })
             .filter(|piece| !piece.is_empty())
             .map(|piece| operand(piece).ok_or_else(|| unsupported_operand(piece, line)))
             .collect::<Result<_, _>>()?;
@@ -272,7 +296,23 @@ mod tests {
         };
         assert_eq!(operand("vmcnt(3)"), Some(vm3));
         assert_eq!(operand("-1"), Some(Imm(-1)));
+        // Negation wraps register operands; negative float constants keep their encoded bits.
+        assert_eq!(operand("-v7"), Some(Operand::Neg(Box::new(vgpr(7, 7)))));
+        assert_eq!(operand("-s9"), Some(Operand::Neg(Box::new(sgpr(9, 9)))));
+        assert_eq!(
+            operand("-1.0"),
+            Some(Operand::InlineFloat((-1.0f32).to_bits()))
+        );
+        assert_eq!(
+            operand("op_sel_hi:[1,0]"),
+            Some(Operand::OpSelHi([true, false]))
+        );
         for bad in [
+            "-vcc",
+            "-vmcnt(3)",
+            "op_sel_hi:[1]",
+            "op_sel_hi:[1,0,1]",
+            "op_sel_hi:[2,0]",
             "s[3:0]",
             "s[0]",
             "x0",
