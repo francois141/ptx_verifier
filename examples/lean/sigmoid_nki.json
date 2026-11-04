@@ -1,0 +1,7 @@
+{
+  "description": "sigmoid over a 2 x 4 tile; NKI kernels take their shapes from their asserts",
+  "kernel": "kernel",
+  "block": 1,
+  "spec": "sigmoid.spec",
+  "dims": {"N": 8}
+}
