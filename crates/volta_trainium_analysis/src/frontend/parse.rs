@@ -154,6 +154,9 @@ impl Scope<'_> {
                 }
                 Ok(Value::Tuple(values))
             }
+            Expr::Binary { .. } | Expr::Subscript { .. } | Expr::Slice { .. } => {
+                bail!(line, "unsupported expression")
+            }
         }
     }
 
@@ -185,6 +188,7 @@ fn statement(stmt: Stmt, scope: &mut Scope) -> Result<Statement, ParseError> {
     match stmt {
         Stmt::Call { line, target, call } => call_statement(target, call, scope, line),
         Stmt::AssertEq { line, left, right } => shape_assertion(left, right, scope, line),
+        Stmt::For { line, .. } => bail!(line, "unsupported `for` loop"),
     }
 }
 
