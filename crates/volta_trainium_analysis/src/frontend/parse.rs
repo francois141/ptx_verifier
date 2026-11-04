@@ -10,7 +10,7 @@ use super::ast::{
     TileDecl, TileShape,
 };
 use super::error::{ParseError, bail};
-use super::python::{self, Call, Dotted, Expr, Function, Item, Stmt};
+use super::python::{self, BinOp, Call, Dotted, Expr, Function, Item, Stmt};
 
 const NKI: &str = "nki";
 const NKI_LANGUAGE: &str = "nki.language";
@@ -73,6 +73,8 @@ fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
     let mut scope = Scope {
         imports,
         tensors: BTreeSet::new(),
+        integers: BTreeMap::new(),
+        iterations: Vec::new(),
     };
 
     let decorator = scope.resolve(&function.decorator, line)?;
@@ -87,7 +89,7 @@ fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
 
     let mut body = Vec::new();
     for stmt in function.body {
-        body.push(statement(stmt, &mut scope)?);
+        statement(stmt, &mut scope, &mut body)?;
     }
 
     Ok(Kernel {
@@ -126,6 +128,10 @@ impl Value {
 struct Scope<'a> {
     imports: &'a Imports,
     tensors: BTreeSet<TensorName>,
+    /// Unrolled loop variables, each bound to its current index.
+    integers: BTreeMap<String, u64>,
+    /// The index of each enclosing unrolled iteration, outermost first.
+    iterations: Vec<u64>,
 }
 
 impl Scope<'_> {
@@ -135,7 +141,7 @@ impl Scope<'_> {
             bail!(line, "`{name}` shadows an import");
         }
 
-        let tensor = TensorName(name);
+        let tensor = TensorName(self.qualified(&name));
         if !self.tensors.insert(tensor.clone()) {
             bail!(line, "tensor `{tensor}` is already defined");
         }
@@ -154,7 +160,22 @@ impl Scope<'_> {
                 }
                 Ok(Value::Tuple(values))
             }
-            Expr::Binary { .. } | Expr::Subscript { .. } | Expr::Slice { .. } => {
+            Expr::Binary { op, lhs, rhs } => {
+                let lhs = self.evaluate(*lhs, line)?;
+                let rhs = self.evaluate(*rhs, line)?;
+                let (Value::Int(lhs), Value::Int(rhs)) = (lhs, rhs) else {
+                    bail!(line, "arithmetic needs integer operands");
+                };
+                let value = match op {
+                    BinOp::Mul => lhs.checked_mul(rhs),
+                    BinOp::Add => lhs.checked_add(rhs),
+                };
+                let Some(value) = value else {
+                    bail!(line, "integer arithmetic overflows");
+                };
+                Ok(Value::Int(value))
+            }
+            Expr::Subscript { .. } | Expr::Slice { .. } => {
                 bail!(line, "unsupported expression")
             }
         }
@@ -170,10 +191,16 @@ impl Scope<'_> {
             return Ok(Value::Member(member));
         }
 
-        let tensor = TensorName(name.head.clone());
-        if !self.tensors.contains(&tensor) {
-            bail!(line, "unknown name `{tensor}`");
+        if let Some(&value) = self.integers.get(&name.head) {
+            if !name.attributes.is_empty() {
+                bail!(line, "unsupported attribute on `{}`", name.head);
+            }
+            return Ok(Value::Int(value));
         }
+
+        let Some(tensor) = self.lookup(&name.head) else {
+            bail!(line, "unknown name `{}`", name.head);
+        };
 
         match name.attributes.as_slice() {
             [] => Ok(Value::Tensor(tensor)),
@@ -182,14 +209,97 @@ impl Scope<'_> {
             _ => bail!(line, "unsupported tensor attribute `{name}`"),
         }
     }
+
+    /// `name` with the enclosing iteration indices appended, so each unrolled
+    /// iteration declares its own tiles: `x` becomes `x.0` in iteration 0.
+    fn qualified(&self, name: &str) -> String {
+        let mut qualified = name.to_string();
+        for index in &self.iterations {
+            qualified.push('.');
+            qualified.push_str(&index.to_string());
+        }
+        qualified
+    }
+
+    /// The tensor `name` refers to: the innermost enclosing iteration's, else an outer one's.                                                                                                                                                                        
+    fn lookup(&self, name: &str) -> Option<TensorName> {
+        for depth in (0..=self.iterations.len()).rev() {
+            let mut candidate = name.to_string();
+            for index in &self.iterations[..depth] {
+                candidate.push('.');
+                candidate.push_str(&index.to_string());
+            }
+            let candidate = TensorName(candidate);
+            if self.tensors.contains(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
 }
 
-fn statement(stmt: Stmt, scope: &mut Scope) -> Result<Statement, ParseError> {
+fn statement(stmt: Stmt, scope: &mut Scope, out: &mut Vec<Statement>) -> Result<(), ParseError> {
     match stmt {
-        Stmt::Call { line, target, call } => call_statement(target, call, scope, line),
-        Stmt::AssertEq { line, left, right } => shape_assertion(left, right, scope, line),
-        Stmt::For { line, .. } => bail!(line, "unsupported `for` loop"),
+        Stmt::Call { line, target, call } => {
+            out.push(call_statement(target, call, scope, line)?);
+            Ok(())
+        }
+        Stmt::AssertEq { line, left, right } => {
+            out.push(shape_assertion(left, right, scope, line)?);
+            Ok(())
+        }
+        Stmt::For {
+            line,
+            var,
+            iterable,
+            body,
+        } => unroll(var, iterable, body, scope, out, line),
     }
+}
+
+/// `for var in nl.affine_range(count):` as its body once per index, each
+/// iteration declaring its own tiles.
+fn unroll(
+    var: String,
+    iterable: Call,
+    body: Vec<Stmt>,
+    scope: &mut Scope,
+    out: &mut Vec<Statement>,
+    line: usize,
+) -> Result<(), ParseError> {
+    let count = affine_range(iterable, scope, line)?;
+    if scope.imports.contains_key(&var) {
+        bail!(line, "`{var}` shadows an import");
+    }
+
+    for index in 0..count {
+        scope.integers.insert(var.clone(), index);
+        scope.iterations.push(index);
+        for stmt in body.clone() {
+            statement(stmt, scope, out)?;
+        }
+        scope.iterations.pop();
+        scope.integers.remove(&var);
+    }
+    Ok(())
+}
+
+/// The trip count of `nl.affine_range(count)`: only a concrete count unrolls.
+fn affine_range(call: Call, scope: &Scope, line: usize) -> Result<u64, ParseError> {
+    let callee = scope.resolve(&call.callee, line)?;
+    if callee.member_of(NKI_LANGUAGE) != Some("affine_range") {
+        bail!(line, "unsupported loop iterable `{}`", call.callee);
+    }
+    if !call.kwargs.is_empty() {
+        bail!(line, "`affine_range` takes no keyword arguments");
+    }
+    let [count] = &call.args[..] else {
+        bail!(line, "`affine_range` takes one argument");
+    };
+    let Value::Int(count) = scope.evaluate(count.clone(), line)? else {
+        bail!(line, "`affine_range`'s count must be an integer");
+    };
+    Ok(count)
 }
 
 /// `x = nl.ndarray(...)` declares the tile `x`; `nisa.<opcode>(...)` is an instruction.
