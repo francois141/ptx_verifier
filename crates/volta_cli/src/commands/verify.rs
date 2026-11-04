@@ -12,10 +12,10 @@ use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
 use volta_pipeline::{EquivalenceVerdict, check_against_spec, decide};
 use volta_ptx_analysis::{LaunchFile, write_op_counts};
 
-use crate::config::{LaunchArgs, launch_config};
+use crate::config::{LaunchArgs, launch_config_without_spec};
 use crate::output::{print_decision, print_graph_report, print_spec_check};
 use crate::ptx::{load_module, run_kernel};
-use crate::spec::{dim_values, load_spec};
+use crate::spec::{SpecSource, dim_values, load_spec};
 
 #[derive(Args)]
 pub(crate) struct VerifyArgs {
@@ -66,7 +66,9 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
         Ok(m) => m,
         Err(code) => return code,
     };
-    let spec = match dim_values(&args.dims).and_then(|dims| load_spec(&args.spec, &dims)) {
+    let spec = match dim_values(&args.dims)
+        .and_then(|dims| load_spec(SpecSource::Argument(&args.spec), &dims))
+    {
         Ok(spec) => spec,
         Err(code) => return code,
     };
@@ -74,7 +76,8 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
     let LaunchFile {
         kernel: launch_kernel,
         config,
-    } = match launch_config(&args.launch) {
+        ..
+    } = match launch_config_without_spec(&args.launch, "verify") {
         Ok(l) => l,
         Err(e) => {
             eprintln!("error: {}", e);

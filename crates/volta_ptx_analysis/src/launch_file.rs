@@ -21,7 +21,9 @@
 //!       {"name": "n", "offset": 8, "u32": 16}
 //!     ]}
 //!   ],
-//!   "globals": {"NUM_ITERS": 4}
+//!   "globals": {"NUM_ITERS": 4},
+//!   "spec": "add.spec",
+//!   "dims": {"N": 16}
 //! }
 //! ```
 //!
@@ -45,10 +47,13 @@
 //! `channels_per_pixel` and `pixels_per_column`), and optionally
 //! `element_strides` (1s), `swizzle` (`none`, `32B`, `64B`, `128B`),
 //! `swizzle_atomicity` (`16B`), `interleave` (`none`) and `fill` (`zero`). Bytes
-//! no field gives read as undefined. Unknown keys are errors, so a typo cannot
+//! no field gives read as undefined. `spec` is a `.spec` file the kernel's
+//! outputs are checked against (`volta solve`), relative to the launch file,
+//! and `dims` the values of its dims. Unknown keys are errors, so a typo cannot
 //! silently fall back to a default.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -65,11 +70,20 @@ use crate::ir::tensor_map::{
 /// Where the first array without a `base` starts, and the alignment of every such array.
 const ARRAY_ALIGN: u64 = 0x10000;
 
-/// A parsed launch file: the kernel it names (if any) and its configuration.
+/// A parsed launch file: the kernel and spec it names (if any) and its configuration.
 #[derive(Debug, Clone)]
 pub struct LaunchFile {
     pub kernel: Option<String>,
+    pub spec: Option<SpecFile>,
     pub config: AnalysisConfig,
+}
+
+/// A spec the kernel's outputs are checked against, at the values of its dims.
+#[derive(Debug, Clone)]
+pub struct SpecFile {
+    /// As the launch file wrote it: relative to the launch file's directory.
+    pub path: PathBuf,
+    pub dims: BTreeMap<String, u64>,
 }
 
 impl LaunchFile {
@@ -103,8 +117,15 @@ impl LaunchFile {
 
         config.validate()?;
 
+        let spec = match (raw.spec, raw.dims) {
+            (Some(path), dims) => Some(SpecFile { path, dims }),
+            (None, dims) if dims.is_empty() => None,
+            (None, _) => return Err("`dims` needs a `spec`".into()),
+        };
+
         Ok(LaunchFile {
             kernel: raw.kernel,
+            spec,
             config,
         })
     }
@@ -153,6 +174,9 @@ struct RawLaunch {
     params: Vec<RawParam>,
     #[serde(default)]
     globals: BTreeMap<String, i64>,
+    spec: Option<PathBuf>,
+    #[serde(default)]
+    dims: BTreeMap<String, u64>,
 }
 
 #[derive(Deserialize)]

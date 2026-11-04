@@ -1,7 +1,7 @@
 //! Specification sources and dimension values.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use volta_common::file_cache::FileCache;
@@ -41,17 +41,34 @@ pub(crate) fn dim_values(dims: &[String]) -> Result<HashMap<String, u64>, ExitCo
         .collect()
 }
 
-/// The spec `arg` names (a `.spec` path, or inline spec source if no such file exists) at the
-/// values `dims`; a failure is reported here, located in the spec source when it is a parse
-/// error.
-pub(crate) fn load_spec(arg: &str, dims: &HashMap<String, u64>) -> Result<Spec, ExitCode> {
+/// Where a spec's source comes from.
+#[derive(Clone, Copy)]
+pub(crate) enum SpecSource<'a> {
+    /// A command-line argument: a `.spec` path, or inline spec source if no such file exists.
+    Argument(&'a str),
+    /// A launch file's `spec`: a path only.
+    File(&'a Path),
+}
+
+/// The spec `source` at the values `dims`; a failure is reported here, located in the spec
+/// source when it is a parse error.
+pub(crate) fn load_spec(source: SpecSource, dims: &HashMap<String, u64>) -> Result<Spec, ExitCode> {
     let mut spec_files = FileCache::new();
-    let (spec_src, spec_path) = load_spec_source(&mut spec_files, arg).map_err(|e| {
+    let loaded = match source {
+        SpecSource::Argument(arg) => load_spec_source(&mut spec_files, arg),
+        SpecSource::File(path) => spec_files
+            .read(path)
+            .map(|contents| (contents.to_string(), Some(path.to_path_buf())))
+            .map_err(|e| format!("failed to read spec file '{}': {}", path.display(), e)),
+    };
+    let (spec_src, spec_path) = loaded.map_err(|e| {
         eprintln!("error: {}", e);
         ExitCode::FAILURE
     })?;
     let parsed_spec = volta_spec::parse_spec(&spec_src).map_err(|e| {
-        if spec_path.is_none() {
+        if let SpecSource::Argument(arg) = source
+            && spec_path.is_none()
+        {
             eprintln!(
                 "note: '{}' is not an existing file, so it was parsed as inline spec text",
                 arg

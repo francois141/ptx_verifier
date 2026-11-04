@@ -20,7 +20,7 @@ use crate::output::{
     exit_code, print_decision, print_graph_conclusion, print_graph_report, print_outputs,
     print_spec_check, write_exprs,
 };
-use crate::spec::{dim_values, load_spec};
+use crate::spec::{SpecSource, dim_values, load_spec};
 
 #[derive(Args)]
 struct KernelArgs {
@@ -35,7 +35,8 @@ struct KernelArgs {
     launch: LaunchArgs,
 
     /// Spec to check the outputs against: a .spec path, or inline spec source if no such file
-    /// exists. Without one, the kernel is only run (and, for PTX, race checked).
+    /// exists (or the launch file's "spec"). Without one, the kernel is only run (and, for PTX,
+    /// race checked).
     #[arg(long)]
     spec: Option<String>,
 
@@ -92,6 +93,7 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
     };
     let LaunchFile {
         kernel: launch_kernel,
+        spec: launch_spec,
         config,
     } = match launch_config(&args.launch) {
         Ok(l) => l,
@@ -101,12 +103,26 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
         }
     };
     let kernel = args.kernel.as_deref().or(launch_kernel.as_deref());
-    let spec = match &args.spec {
-        Some(arg) => match dim_values(&args.dims).and_then(|dims| load_spec(arg, &dims)) {
-            Ok(spec) => Some(spec),
-            Err(code) => return code,
-        },
-        None => None,
+    let spec = match (&args.spec, &launch_spec) {
+        (Some(_), Some(file)) => {
+            eprintln!(
+                "error: two specs: --spec and the launch file's \"spec\" ({}); give one",
+                file.path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        (Some(arg), None) => dim_values(&args.dims)
+            .and_then(|dims| load_spec(SpecSource::Argument(arg), &dims))
+            .map(Some),
+        (None, Some(file)) => {
+            let dims = file.dims.clone().into_iter().collect();
+            load_spec(SpecSource::File(&file.path), &dims).map(Some)
+        }
+        (None, None) => Ok(None),
+    };
+    let spec = match spec {
+        Ok(spec) => spec,
+        Err(code) => return code,
     };
     let mut files = FileCache::new();
     let source = match files.read(file) {

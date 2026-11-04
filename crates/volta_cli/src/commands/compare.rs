@@ -14,7 +14,7 @@ use volta_expr::SymbolicOutputs;
 use volta_pipeline::{EquivalenceVerdict, check_equivalence, decide};
 use volta_ptx_analysis::{AnalysisConfig, write_op_counts};
 
-use crate::config::{LaunchArgs, launch_config, parse_dims};
+use crate::config::{LaunchArgs, launch_config_without_spec, parse_dims};
 use crate::output::{print_decision, print_graph_report};
 use crate::ptx::{KernelSide, load_module, run_kernel};
 
@@ -91,7 +91,7 @@ pub(crate) struct CompareArgs {
 /// The reference and optimized kernels' configs: one launch, the optimized kernel's dims
 /// overridden by `--block2`/`--grid2`.
 fn compare_configs(args: &CompareArgs) -> Result<(AnalysisConfig, AnalysisConfig), String> {
-    let launch = launch_config(&args.launch)?;
+    let launch = launch_config_without_spec(&args.launch, "compare")?;
     if let Some(kernel) = launch.kernel {
         return Err(format!(
             "the launch file names kernel '{kernel}', but compare runs two: name them with \

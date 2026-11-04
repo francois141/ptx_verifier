@@ -119,17 +119,40 @@ fn parse_param(s: &str) -> Result<ParamValue, String> {
     }
 }
 
-/// The launch `--config` or the flags describe; only a launch file names a kernel.
+/// The launch `--config` or the flags describe; only a launch file names a kernel or a spec,
+/// whose path is resolved here against the launch file's directory.
 pub(crate) fn launch_config(launch: &LaunchArgs) -> Result<LaunchFile, String> {
     let Some(path) = &launch.config else {
         return build_config(launch).map(|config| LaunchFile {
             kernel: None,
+            spec: None,
             config,
         });
     };
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    LaunchFile::from_json(&text).map_err(|e| format!("{}: {}", path.display(), e))
+    let mut file =
+        LaunchFile::from_json(&text).map_err(|e| format!("{}: {}", path.display(), e))?;
+    if let (Some(spec), Some(dir)) = (&mut file.spec, path.parent()) {
+        spec.path = dir.join(&spec.path);
+    }
+    Ok(file)
+}
+
+/// `launch_config` for `command`, which never reads a spec from the launch file.
+pub(crate) fn launch_config_without_spec(
+    launch: &LaunchArgs,
+    command: &str,
+) -> Result<LaunchFile, String> {
+    let file = launch_config(launch)?;
+    match &file.spec {
+        Some(spec) => Err(format!(
+            "the launch file names spec {}, which `volta {command}` does not read: check it with \
+             `volta solve`, or drop its \"spec\" and \"dims\"",
+            spec.path.display()
+        )),
+        None => Ok(file),
+    }
 }
 
 fn build_config(input: &LaunchArgs) -> Result<AnalysisConfig, String> {

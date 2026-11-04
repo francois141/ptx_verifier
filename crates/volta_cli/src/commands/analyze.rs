@@ -8,7 +8,7 @@ use clap::Args;
 use volta_common::run_log;
 use volta_ptx_analysis::write_op_counts;
 
-use crate::config::{LaunchArgs, launch_config};
+use crate::config::{LaunchArgs, launch_config_without_spec};
 use crate::output::{
     exit_code, print_graph_conclusion, print_graph_report, print_outputs, write_exprs,
 };
@@ -52,7 +52,7 @@ pub(crate) fn cmd_analyze(args: AnalyzeArgs, log: &mut run_log::RunLog) -> ExitC
         Err(code) => return code,
     };
 
-    let launch = match launch_config(&args.launch) {
+    let launch = match launch_config_without_spec(&args.launch, "analyze") {
         Ok(l) => l,
         Err(e) => {
             eprintln!("error: {}", e);
