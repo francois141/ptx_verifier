@@ -1,0 +1,15 @@
+kernel kernel(a, out)
+  assert a.shape == [4, 8]
+  assert out.shape == [4, 8]
+  x: sbuf[4, 8] of a.dtype
+  squares: sbuf[4, 8] of float32
+  sum_sq: sbuf[4, 1] of float32
+  mean_sq: sbuf[4, 1] of float32
+  rstd: sbuf[4, 1] of float32
+  y: sbuf[4, 8] of a.dtype
+  dma_copy(dst=x, src=a)
+  activation_reduce(data=x, dst=squares, op=nki.language.square, reduce_op=nki.language.add, reduce_res=sum_sq)
+  tensor_scalar(data=sum_sq, dst=mean_sq, op0=nki.language.multiply, op1=nki.language.add, operand0=0.125, operand1=0.000001)
+  activation(data=mean_sq, dst=rstd, op=nki.language.rsqrt)
+  tensor_scalar(data=x, dst=y, op0=nki.language.multiply, operand0=rstd)
+  dma_copy(dst=out, src=y)

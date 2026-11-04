@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Buffer, Dtype, Instruction, Kernel, Operand, Partitions, Statement, TensorName, TileDecl,
-    TileShape,
+    Buffer, Dtype, Instruction, Kernel, Operand, Partitions, Scalar, Statement, TensorName,
+    TileDecl, TileShape,
 };
 use super::error::{ParseError, bail};
 use super::python::{self, Call, Dotted, Expr, Function, Item, Stmt};
@@ -100,6 +100,7 @@ fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
 /// What an expression denotes.
 enum Value {
     Int(u64),
+    Float(Scalar),
     Tuple(Vec<Value>),
     Tensor(TensorName),
     /// `t.dtype`: the element type of tensor `t`.
@@ -144,6 +145,7 @@ impl Scope<'_> {
     fn evaluate(&self, expr: Expr, line: usize) -> Result<Value, ParseError> {
         match expr {
             Expr::Int(value) => Ok(Value::Int(value)),
+            Expr::Float(value) => Ok(Value::Float(value)),
             Expr::Name(name) => self.resolve(&name, line),
             Expr::Tuple(items) => {
                 let mut values = Vec::new();
@@ -386,14 +388,15 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
     Ok(buffer)
 }
 
-/// A tensor or a module member, e.g. `x` or `nl.add`.
+/// A tensor, a scalar, or a module member, e.g. `x`, `0.125`, or `nl.add`.
 fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, ParseError> {
     match value {
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),
         Value::Member(member) => Ok(Operand::Member(member)),
+        Value::Float(value) => Ok(Operand::Scalar(value)),
         _ => bail!(
             line,
-            "operand `{keyword}` must be a tensor or a module member"
+            "operand `{keyword}` must be a tensor, a scalar, or a module member"
         ),
     }
 }
