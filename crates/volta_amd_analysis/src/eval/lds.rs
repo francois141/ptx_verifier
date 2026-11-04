@@ -2,10 +2,43 @@
 //! DS instructions read and write this memory one lane at a time.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use volta_expr::ExprId;
 
+use crate::ir::InstrId;
+
 use super::EvalError;
+use super::wave::WaveId;
+
+/// One lane's access of an LDS word: the wave and lane that issued it, at instruction `pc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LdsLaneAccess {
+    pub wave: WaveId,
+    pub lane: usize,
+    pub pc: InstrId,
+}
+
+/// Two lanes of one wave writing the LDS word at byte `address` in one instruction, whose
+/// stores land in no specified order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LdsRace {
+    pub address: u32,
+    pub earlier: LdsLaneAccess,
+    pub later: LdsLaneAccess,
+}
+
+impl fmt::Display for LdsRace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (earlier, later) = (self.earlier, self.later);
+        write!(
+            f,
+            "LDS race at {:#x}: wave {} lanes {} and {} both write it at instruction {}, in no \
+             specified order",
+            self.address, earlier.wave.0, earlier.lane, later.lane, later.pc.0
+        )
+    }
+}
 
 /// The workgroup's `size` bytes of LDS as 32-bit words keyed by byte address. A write takes
 /// effect at once, so a wave that reads after a barrier observes every write before it.
@@ -24,7 +57,11 @@ impl Lds {
     }
 
     /// Check alignment and bounds, then return the byte address of each 32-bit word.
-    fn word_addresses(&self, address: u64, word_count: u32) -> Result<Vec<u32>, EvalError> {
+    pub(super) fn word_addresses(
+        &self,
+        address: u64,
+        word_count: u32,
+    ) -> Result<Vec<u32>, EvalError> {
         let access_size = 4 * u64::from(word_count);
         let end_address = address + access_size;
         let is_aligned = address.is_multiple_of(4);

@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::eval::LdsRace;
 use crate::ir::{Agpr, Sgpr, Vgpr};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub enum EvalError {
     PartialBufferAccess { buffer_offset: u64 },
     LdsAccess { address: u64, size: u32 },
     UninitializedLds { address: u32 },
+    LdsRace(LdsRace),
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
@@ -103,6 +105,7 @@ impl fmt::Display for EvalError {
             Self::UninitializedLds { address } => {
                 write!(f, "LDS read at {address:#x} of a word no wave has written")
             }
+            Self::LdsRace(race) => write!(f, "{race}"),
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
             Self::PendingVgpr { lane, reg } => {
                 write!(

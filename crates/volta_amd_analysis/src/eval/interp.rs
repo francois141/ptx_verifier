@@ -1,6 +1,8 @@
 //! The interpreter of workgroup 0: its run over every wave, and its execution of vector
 //! instructions in one lane of a wave.
 
+use std::collections::BTreeMap;
+
 use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
@@ -16,7 +18,7 @@ use super::arithm::{
 };
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
-use super::lds::Lds;
+use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
 use super::wave::{LoadCounter, Status, WaveId, WaveState, concrete_word};
@@ -188,6 +190,7 @@ impl<'a> Interpreter<'a> {
                 src,
                 offset,
             } => self.execute_ds_bpermute(wave, *dst, *addr, *src, *offset)?,
+            LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses)?,
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
@@ -204,7 +207,6 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
             | LoweredInstr::BufferStore { .. }
-            | LoweredInstr::DsWrite { .. }
             | LoweredInstr::DsRead { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
@@ -393,7 +395,6 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::BufferStore { src, address } => {
                 self.buffer_store(wave, lane, *address, &src.regs())
             }
-            LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, lane, *addr, *accesses),
             LoweredInstr::DsRead { addr, accesses } => self.ds_read(wave, lane, *addr, *accesses),
             _ => Err(EvalError::UnsupportedInstruction),
         }
@@ -438,23 +439,43 @@ impl<'a> Interpreter<'a> {
         Ok(u64::from(base) + u64::from(offset))
     }
 
-    /// Store each access's registers, one access after the other.
+    /// Store every lane's accesses, lane after lane and each lane's in order. Two lanes storing
+    /// one word in one instruction land in no specified order, so that is a race.
     pub(super) fn ds_write(
         &mut self,
         wave: WaveId,
-        lane: usize,
         address_reg: Vgpr,
         accesses: LdsAccesses<DsWriteData>,
     ) -> Result<(), EvalError> {
-        for (offset, data) in accesses.accesses() {
-            let start_address = self.lds_address(wave, lane, address_reg, offset)?;
-            let registers = &self.waves[wave].registers;
-            let mut values = Vec::new();
-            for source_reg in data.regs() {
-                let value = registers.read_lane_reg(lane, source_reg)?;
-                values.push(value);
+        let pc = self.waves[wave].pc;
+        let mut writers: BTreeMap<u32, LdsLaneAccess> = BTreeMap::new();
+        for lane in 0..64 {
+            let access = LdsLaneAccess { wave, lane, pc };
+            for (offset, data) in accesses.accesses() {
+                let start_address = self.lds_address(wave, lane, address_reg, offset)?;
+                let registers = &self.waves[wave].registers;
+                let mut values = Vec::new();
+                for source_reg in data.regs() {
+                    let value = registers.read_lane_reg(lane, source_reg)?;
+                    values.push(value);
+                }
+                for address in self
+                    .lds
+                    .word_addresses(start_address, values.len() as u32)?
+                {
+                    if let Some(earlier) = writers.insert(address, access)
+                        && earlier.lane != lane
+                    {
+                        let race = LdsRace {
+                            address,
+                            earlier,
+                            later: access,
+                        };
+                        return Err(EvalError::LdsRace(race));
+                    }
+                }
+                self.lds.write(start_address, &values)?;
             }
-            self.lds.write(start_address, &values)?;
         }
         Ok(())
     }

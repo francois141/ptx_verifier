@@ -15,4 +15,5 @@ pub use global::{ArrayDef, ArrayKind, OutputType};
 pub(crate) use interp::Interpreter;
 pub use interp::Terminal;
 pub use launch::WorkgroupLaunch;
+pub use lds::{LdsLaneAccess, LdsRace};
 pub use wave::WaveId;

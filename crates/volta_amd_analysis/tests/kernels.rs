@@ -7,8 +7,8 @@ use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::ast::{Kernel, Operand};
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    AnalysisError, AnalysisResult, ArrayKind, EvalError, LowerError, Terminal, WorkgroupLaunch,
-    analyze,
+    AnalysisError, AnalysisResult, ArrayKind, EvalError, InstrId, LdsLaneAccess, LdsRace,
+    LowerError, Terminal, WaveId, WorkgroupLaunch, analyze,
 };
 
 #[test]
@@ -528,5 +528,31 @@ fn intra_wave_divergence_is_rejected() {
                 if opcode == "s_and_saveexec_b64"
                     && *reason == "EXEC changes are unsupported: intra-wave divergence is not modeled"
         )
+    });
+}
+
+// Test that lanes 0 and 32 writing word 0 in one ds_write_b32 (instruction 7) is rejected.
+#[test]
+fn two_lds_writes_in_the_same_wave_are_rejected() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output(F32)),
+    ];
+    let ds_write_lane = |lane| LdsLaneAccess {
+        wave: WaveId(0),
+        lane,
+        pc: InstrId(7),
+    };
+    let expected = Terminal::Aborted {
+        wave: WaveId(0),
+        pc: InstrId(7),
+        error: EvalError::LdsRace(LdsRace {
+            address: 0,
+            earlier: ds_write_lane(0),
+            later: ds_write_lane(32),
+        }),
+    };
+    common::check_rejected_kernel("lds_race", "write_write_race", &arrays, |result| {
+        result.as_ref().is_ok_and(|run| run.terminal == expected)
     });
 }
