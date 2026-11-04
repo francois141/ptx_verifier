@@ -80,7 +80,7 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
 | `rejected_tests.rs`                | execution errors (`EvalError`, lowering errors) and deadlocks |
 | `graph_tests.rs`                   | the recorded event graph itself, no checker |
 | `negative_equivalence_tests.rs`    | kernel pairs differing in one detail must not be proved equivalent |
-| `false_positive_tests.rs`          | kernels Volta wrongly verifies (`ptx/false_positive/`); each fails until fixed |
+| `false_positive_tests.rs`          | aligned named-barrier regression (`ptx/false_positive/`), branch/loop-context, refusal and unaligned controls |
 | `soundness_tests.rs`               | soundness regressions (`ptx/soundness/`) |
 
 The unknown-directive regression requires a located `InvalidDirective` naming

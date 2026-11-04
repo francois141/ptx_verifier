@@ -109,7 +109,12 @@ constants fold eagerly.
 - **Scheduling** (`schedule.rs`): run one ready thread until it blocks or
   exits, then fire whatever group is complete (a warp rendezvous, an mbarrier
   phase, a named barrier) and wake its waiters. If nothing can run or fire, the
-  run ends **stuck** (deadlock). Exited threads count as arrived (Sync').
+  run ends **stuck** (deadlock). Exited threads count as arrived (Sync'). Aligned
+  named-barrier arrivals use a conservative warp-local matching profile: the same
+  PC and exact enclosing-loop iteration context, including branches around the
+  instruction. `barrier_flow.rs` derives a reducible natural-loop forest, resets
+  inner contexts on re-entry, and refuses ambiguous or irreducible control flow as
+  unsupported. Unaligned barriers retain their thread-count semantics.
 - **Concreteness**: addresses, branch conditions and sync parameters must be
   concrete, i.e. depend only on thread ids and concrete parameters. Otherwise the
   run fails with `NotConcrete`. Only CTA 0 runs; it stands for the grid.

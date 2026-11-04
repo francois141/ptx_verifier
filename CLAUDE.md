@@ -328,7 +328,8 @@ false (an implicit 1x1x1 cluster).
 The interpreter from the paper (per-thread round-robin symbolic execution):
 
 - `eval/interp.rs` - `Interpreter`: its state, `new`/`run`/`finish`, single-instruction evaluation into the arena (`step`), operand/register and memory access, structured-CTA concreteness checks
-- `eval/schedule.rs` - the scheduler: run a ready thread until it blocks or exits, then fire a complete group (warp rendezvous, mbarrier phase, named barrier per the paper's Sync rule); when nothing can fire, `Interpreter::run` ends `Stuck` (deadlock). A named barrier id's first arrival pins its count for the whole run (register ids included); a later arrival naming another count aborts it with `EvalError::BarrierMismatch`, so the result is inconclusive. A warp executes an `.aligned` barrier (every `bar.*`, and `barrier.*.aligned`) as one collective: its lanes arriving at two such instructions wait at two barriers, so the generation cannot fire (a deadlock); different warps may arrive from their own instructions, and an unaligned `barrier.*` from any. Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync' rule for *firing*: exited threads count as arrived; tensor-core ops are the one deliberate exception (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead). The interpreter runs one candidate schedule and performs **no** data-race or async-hazard checking (the former χ detector, `eval/race.rs`, was removed; graph-based verification replaces it)
+- `eval/schedule.rs` - the scheduler: run a ready thread until it blocks or exits, then fire a complete group (warp rendezvous, mbarrier phase, named barrier per the paper's Sync rule); when nothing can fire, `Interpreter::run` ends `Stuck` (deadlock). A named barrier id's first arrival pins its count for the whole run (register ids included); a later arrival naming another count aborts it with `EvalError::BarrierMismatch`, so the result is inconclusive. A warp executes an `.aligned` barrier (every `bar.*`, and `barrier.*.aligned`) as one collective: its lanes must agree on both the instruction PC and its exact enclosing-loop iteration context (including branches around the instruction), or the generation cannot fire (a deadlock); different warps may arrive from their own instructions, and an unaligned `barrier.*` from any. Every sync (CTA barrier and warp group alike) deliberately uses the paper's Sync' rule for *firing*: exited threads count as arrived; tensor-core ops are the one deliberate exception (it would fire with returned threads, but the ISA makes exited-lane tensor ops whole-op UB, so Volta rejects them loudly instead). The interpreter runs one candidate schedule and performs **no** data-race or async-hazard checking (the former χ detector, `eval/race.rs`, was removed; graph-based verification replaces it)
+- `eval/barrier_flow.rs` - exact aligned-barrier contexts from reachable reducible natural loops; backedges advance iterations, loop exits discard inner state, and re-entry resets it. Irreducible/ambiguous contexts are unsupported, not deadlocks.
 - `eval/arithm.rs` - arithmetic evaluation as a second `impl Interpreter`: binary/unary ops, comparisons, `cvt`, the `ex2`/`lg2` base-conversion folds, the packed-pair/quad bitwise ops and `shf`, and integer/width canonicalization of operands and of values crossing a register or memory width
 - `eval/cp_async.rs` - non-bulk `cp.async`: the pending copy and its landing at a completion point
 - `eval/tcgen05.rs` - `tcgen05.mma` evaluation over the descriptors `eval/tcgen05_mma.rs` decodes
@@ -622,9 +623,10 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
   detail, each `Verified`, must not be proved equivalent.
-- `false_positive_tests.rs` - kernels Volta still verifies although they race or
-  are undefined (`tests/ptx/false_positive/`); each fails until Volta stops
-  concluding `Verified` on it.
+- `false_positive_tests.rs` - the original aligned named-barrier regression
+  (`tests/ptx/false_positive/`) rejects arrivals from different predicated loop
+  visits or branches around the instruction; uniform/nested/reactivated loops,
+  counted arrivals and unaligned controls remain verified.
 - `soundness_tests.rs` - soundness regressions; the unknown-directive case
   requires a located `InvalidDirective` and verifies empty/known-pragma controls.
   The return case requires a zero-operand arity error for `ret 123;` and

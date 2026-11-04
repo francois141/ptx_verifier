@@ -160,12 +160,14 @@ impl<'p> Interpreter<'p> {
                     id,
                     arrivals: at,
                     alignment,
+                    visit,
                 } => {
                     arrivals[id as usize] = Some(at);
                     waiters[id as usize].push(ArrivedThread {
                         thread: t,
                         pc: state.pc,
                         alignment,
+                        visit,
                     });
                     live_waiters += 1;
                 }
@@ -365,9 +367,6 @@ impl<'p> Interpreter<'p> {
     }
 }
 
-/// Whether each warp's arrivals at one barrier generation sit at one instruction wherever any is
-/// `.aligned`: a warp executes an aligned barrier as one collective, so its lanes at two aligned
-/// barrier instructions arrive at two barriers.
 /// Whether every warp at a counted barrier has all its live lanes there as often as each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaneArrivals {
@@ -375,6 +374,8 @@ enum LaneArrivals {
     Partial,
 }
 
+/// This evaluator matches aligned arrivals warp-locally by PC and exact loop context.
+/// Different warps may arrive from their own producer/consumer instructions.
 fn warps_converge(arrivals: &[ArrivedThread]) -> bool {
     let mut warps: HashMap<u32, Vec<&ArrivedThread>> = HashMap::new();
     for arrival in arrivals {
@@ -387,6 +388,8 @@ fn warps_converge(arrivals: &[ArrivedThread]) -> bool {
         lanes
             .iter()
             .all(|a| a.alignment == BarrierAlignment::Unaligned)
-            || lanes.iter().all(|a| a.pc == lanes[0].pc)
+            || lanes
+                .iter()
+                .all(|a| (a.pc, a.visit) == (lanes[0].pc, lanes[0].visit))
     })
 }

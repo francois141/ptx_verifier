@@ -1,0 +1,24 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+.visible .entry k()
+{
+    .reg .pred %p<4>;
+    .reg .b32 %r<3>;
+    mov.u32 %r0, %tid.x;
+    setp.ge.u32 %p1, %r0, 32;
+    @%p1 bra CONSUMER;
+    // Warp 0's low/high half arrives on iteration 0/1 of the same instruction.
+    shr.u32 %r1, %r0, 4;
+    mov.u32 %r2, 0;
+LOOP:
+    setp.eq.u32 %p2, %r2, %r1;
+    @%p2 bar.arrive 0, 64;
+    add.u32 %r2, %r2, 1;
+    setp.lt.u32 %p3, %r2, 2;
+    @%p3 bra LOOP;
+    ret;
+CONSUMER:
+    bar.sync 0, 64;
+    ret;
+}

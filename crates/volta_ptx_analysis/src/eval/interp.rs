@@ -11,6 +11,7 @@ use crate::frontend::ast::ScalarType;
 
 use crate::config::{AnalysisConfig, ParamValue};
 use crate::eval::async_bulk::{BulkStore, complete_bulk_groups};
+use crate::eval::barrier_flow::{BarrierContext, BarrierFlow, BarrierVisit};
 use crate::eval::cluster_launch_control::ObservedDecline;
 use crate::eval::cp_async::PendingCopy;
 use crate::eval::error::{EvalError, EvalResult};
@@ -75,13 +76,14 @@ impl fmt::Display for BarrierArrivals {
     }
 }
 
-/// A thread's arrival at a named barrier: the barrier instruction it arrived at and whether
-/// that instruction is `.aligned`.
+/// A thread's arrival at a named barrier, with its exact enclosing-loop iteration identity.
+/// Both predication and branches around the barrier preserve that identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::eval) struct ArrivedThread {
     pub(in crate::eval) thread: ThreadId,
     pub(in crate::eval) pc: InstrId,
     pub(in crate::eval) alignment: BarrierAlignment,
+    pub(in crate::eval) visit: Option<BarrierVisit>,
 }
 
 /// One named barrier's pending `bar.arrive` arrivals since it last fired, with
@@ -148,6 +150,7 @@ pub(in crate::eval) enum Status {
         id: u32,
         arrivals: BarrierArrivals,
         alignment: BarrierAlignment,
+        visit: Option<BarrierVisit>,
     },
     /// Blocked at a warp-cooperative instruction at the current pc.
     /// `mask` is the participating-lane mask within the thread's warp.
@@ -169,6 +172,7 @@ pub(in crate::eval) struct ThreadState {
     pub pc: InstrId,
     pub regs: RegFile,
     pub status: Status,
+    barrier_context: BarrierContext,
     /// `cp.async` copies issued since the last `commit_group`.
     uncommitted: Vec<PendingCopy>,
     /// Committed async-copy groups, oldest first; `wait_group`/`wait_all`
@@ -218,6 +222,7 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) program: &'p LoweredProgram,
     pub(in crate::eval) arena: ExprArena,
     config: AnalysisConfig,
+    barrier_flow: BarrierFlow,
     pub(in crate::eval) n_threads: u32,
     /// Shared `Undefined` node returned for reads of never-written
     /// registers (see `read_reg`).
@@ -267,6 +272,7 @@ impl<'p> Interpreter<'p> {
             .validate()
             .map_err(|message| EvalError::Config { message })?;
 
+        let barrier_flow = BarrierFlow::new(program)?;
         let mut arena = ExprArena::new();
         let undefined = arena.undefined();
 
@@ -432,6 +438,7 @@ impl<'p> Interpreter<'p> {
                     pc: program.entry_pc,
                     regs: RegFile::new(&counts),
                     status: Status::Ready,
+                    barrier_context: BarrierContext::default(),
                     uncommitted: Vec::new(),
                     groups: VecDeque::new(),
                     bulk_uncommitted: Vec::new(),
@@ -447,6 +454,7 @@ impl<'p> Interpreter<'p> {
             program,
             arena,
             config,
+            barrier_flow,
             n_threads,
             undefined,
             params,
@@ -668,6 +676,20 @@ impl<'p> Interpreter<'p> {
                 limit: self.config.max_instructions,
             });
         }
+
+        self.barrier_flow
+            .advance(&mut self.threads[t].barrier_context, pc)?;
+        let barrier_visit = match &instr {
+            LoweredInstr::BarSync {
+                alignment: BarrierAlignment::Aligned,
+                ..
+            }
+            | LoweredInstr::BarArrive {
+                alignment: BarrierAlignment::Aligned,
+                ..
+            } => Some(self.barrier_flow.visit(&self.threads[t].barrier_context)),
+            _ => None,
+        };
 
         // Predicate guard: must be concrete (structured-CTA).
         if let Some(pred) = self.program.predicate(pc) {
@@ -1556,6 +1578,7 @@ impl<'p> Interpreter<'p> {
                     id,
                     arrivals,
                     alignment: *alignment,
+                    visit: barrier_visit,
                 };
                 return Ok(()); // pc advances when the barrier fires
             }
@@ -1574,6 +1597,7 @@ impl<'p> Interpreter<'p> {
                     thread: t,
                     pc,
                     alignment: *alignment,
+                    visit: barrier_visit,
                 });
             }
 
