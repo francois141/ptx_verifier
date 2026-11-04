@@ -180,3 +180,71 @@ fn amd_ck_gemm_matches_its_specification() {
         }
     );
 }
+
+fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
+    // Run the compiled kernel, which normalizes groups of sixteen, at this workgroup size.
+    let arrays = [
+        ("input", A_BASE, ArrayKind::Input),
+        ("output", B_BASE, ArrayKind::Output(F32)),
+    ]
+    .map(|(name, base, kind)| ArrayDef {
+        name: name.into(),
+        base,
+        len: u64::from(workitems),
+        kind,
+    });
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (workitems, 1, 1),
+    };
+    let kernarg = [A_BASE, B_BASE].map(u64::to_le_bytes).concat();
+    let source = include_str!("../../volta_amd_analysis/tests/fixtures/softmax.s");
+    let kernel = parse_kernel(source, "softmax").unwrap();
+    let result = analyze(&kernel, &launch, &kernarg, &arrays).unwrap();
+    assert!(
+        matches!(&result.terminal, Terminal::Completed),
+        "softmax did not complete: {:?}",
+        result.terminal
+    );
+    let actual = result.symbolic_outputs.expect("completed softmax outputs");
+
+    // The reference defines each row's maximum and sum independently of the lane exchanges.
+    let [rows, columns] = dims;
+    let dims = HashMap::from([("R".into(), rows), ("C".into(), columns)]);
+    let spec = include_str!("../../volta_equivalence/tests/specs/row_softmax.spec");
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    check_equivalence(
+        &reference,
+        &actual,
+        &["output".into()],
+        &EquivCheckOptions::default(),
+    )
+    .0
+}
+
+// Test that every softmax row agrees with the formula across one, two, and four waves.
+#[test]
+fn amd_softmax_matches_its_specification() {
+    for rows in [4, 8, 16] {
+        let workitems = rows * 16;
+        let outputs = u64::from(workitems);
+        assert_eq!(
+            check_softmax(workitems, [u64::from(rows), 16]),
+            EquivalenceVerdict::Equivalent {
+                checked: outputs,
+                total: outputs,
+            },
+            "{rows} softmax rows"
+        );
+    }
+}
+
+// Test that normalizing groups of eight instead of sixteen is refuted for the same 128 outputs.
+#[test]
+fn amd_softmax_with_wrong_row_width_is_refuted() {
+    let verdict = check_softmax(128, [16, 8]);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
