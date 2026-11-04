@@ -80,3 +80,32 @@ clang -x cl -cl-std=CL1.2 --target=amdgcn-amd-amdhsa -mcpu=gfx950 -nogpulib \
   -O2 -g0 -fno-verbose-asm -Xclang -target-feature -Xclang -xnack \
   -S copy.cl -o copy.s
 ```
+
+### Compiling the CK attention fixture
+
+`tests/fixtures/ck_fmha.hip` instantiates CK Tile's fp32 forward-attention device entry at
+revision [`fc2862d712`](https://github.com/ROCm/composable_kernel/blob/fc2862d712/example/ck_tile/01_fmha/codegen/ops/fmha_fwd.py):
+a 64 x 64 query/key tile, head dimension 64, row-major V and 256 work-items,
+without masking, padding, bias, dropout or auxiliary outputs.
+Sequence lengths and the attention scale are kernel arguments.
+
+Use Clang 21.1.8, that CK checkout (`CK_ROOT`), and the [HIP 7.0.2 headers](https://repo.radeon.com/rocm/apt/7.0.2/pool/main/h/hip-dev/hip-dev_7.0.51831.70002-56~24.04_amd64.deb) (`HIP_ROOT`,
+containing `include/` and `share/hip/version`). On macOS, change the host-only
+`std::min(rotating_count, max_rotating_count)` in CK's `host/rotating_buffers.hpp`
+to `std::min<uint64_t>(rotating_count, max_rotating_count)` to reconcile Darwin's integer types.
+Compile from the repository root:
+
+```sh
+clang++ -x hip -std=c++20 -fbracket-depth=1024 \
+  --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
+  --hip-path="$HIP_ROOT" -DNDEBUG -Wno-unknown-warning-option \
+  -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
+  -fno-hip-fp32-correctly-rounded-divide-sqrt \
+  -I "$CK_ROOT/include" -I "$CK_ROOT/example/ck_tile/01_fmha" \
+  -S crates/volta_amd_analysis/tests/fixtures/ck_fmha.hip \
+  -o crates/volta_amd_analysis/tests/fixtures/ck_fmha.s
+```
+
+The source supplies OCKL helpers as in `ck_gemm.hip`; `NDEBUG` matches CK's Release build.
+Fast exp2 and the denormal flag follow CK's [forward-attention build](https://github.com/ROCm/composable_kernel/blob/fc2862d712/example/ck_tile/01_fmha/CMakeLists.txt);
+the division flag permits reciprocal-based normalization.

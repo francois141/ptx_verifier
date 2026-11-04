@@ -435,7 +435,8 @@ kernel's large-input branch rescales by f32(e^-64), and over the reals the exact
 is false there.
 Do not add unit tests or `tests.rs` modules: cover execution behavior
 through compiled fixtures in `tests/kernels.rs`.
-See the crate README for ISA references, test commands, and fixture regeneration.
+See the crate README for ISA references, test commands, and fixture regeneration,
+including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
 
 ## Crate: volta_trainium_analysis
 
