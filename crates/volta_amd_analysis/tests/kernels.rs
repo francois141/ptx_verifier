@@ -113,6 +113,20 @@ fn the_float_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that each f32 comparison keeps its symbolic predicate per lane in an SGPR mask,
+// so a select on that mask reads as `(a op b) ? b : a`.
+#[test]
+fn the_compare_ops_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "compare_ops",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array_of("out", 0x30000, 64 * 12, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 #[test]
 fn the_accvgpr_kernel_writes_its_expected_outputs() {
     common::check_run(

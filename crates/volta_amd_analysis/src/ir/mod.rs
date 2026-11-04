@@ -502,6 +502,8 @@ pub enum CmpOp {
     GeU32,
     LtF32,
     LeF32,
+    GtF32,
+    GeF32,
     EqF32,
     /// Less or greater: an ordered not-equal, which is `!=` for Volta's NaN-free reals.
     LgF32,

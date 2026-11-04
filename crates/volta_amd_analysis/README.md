@@ -32,6 +32,7 @@ under a symbolic condition is rejected, since the words could encode floats or i
 Negated select sources use floating-point semantics, so they are not ambiguous.
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks.
+Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
 
 `ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Output
 stores decode `F32` constants into mathematical reals and preserve existing real

@@ -469,7 +469,9 @@ fn cmp_operand_type(op: CmpOp) -> OperandType {
         | CmpOp::GtU32
         | CmpOp::NeU32
         | CmpOp::GeU32 => OperandType::Word,
-        CmpOp::LtF32 | CmpOp::LeF32 | CmpOp::EqF32 | CmpOp::LgF32 => OperandType::F32,
+        CmpOp::LtF32 | CmpOp::LeF32 | CmpOp::GtF32 | CmpOp::GeF32 | CmpOp::EqF32 | CmpOp::LgF32 => {
+            OperandType::F32
+        }
     }
 }
 
@@ -547,6 +549,8 @@ fn compare(
         CmpOp::GeU32 => arena.bool_val(unsigned(arena)?.is_ge()),
         CmpOp::LtF32 => arena.lt(a, b),
         CmpOp::LeF32 => arena.le(a, b),
+        CmpOp::GtF32 => arena.gt(a, b),
+        CmpOp::GeF32 => arena.ge(a, b),
         CmpOp::EqF32 => arena.eq(a, b),
         CmpOp::LgF32 => arena.ne(a, b),
     })

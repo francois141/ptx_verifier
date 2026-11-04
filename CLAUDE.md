@@ -426,6 +426,7 @@ under a symbolic condition is rejected (`AmbiguousSelect`).
 Negated select sources use floating-point semantics, so they are not ambiguous.
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks (`SymbolicSgpr`).
+Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
 Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
