@@ -2,7 +2,7 @@
 
 use id_collections::id_type;
 
-use super::{ActivationFunc, ArithOp, TensorId};
+use super::{ActivationFunc, ArithOp, ScalarStep, TensorId};
 
 /// An instruction's position in its kernel body.
 #[id_type]
@@ -31,6 +31,15 @@ pub enum LoweredInstr {
         func: ActivationFunc,
         dst: TensorId,
         data: TensorId,
+    },
+    /// `dst = data` with each step applied in turn (`acc = op(acc, operand)`),
+    /// elementwise over on-chip tiles of one shape; a `[partitions, 1]` operand
+    /// broadcasts its single free element across the free axis.
+    TensorScalar {
+        dst: TensorId,
+        data: TensorId,
+        first: ScalarStep,
+        second: Option<ScalarStep>,
     },
 
     // =========================================================================

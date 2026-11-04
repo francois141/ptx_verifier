@@ -10,7 +10,8 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Statement, TensorName};
 use crate::ir::{
-    ActivationFunc, ArithOp, LoweredInstr, LoweredKernel, Memory, Shape, Tensor, TensorId,
+    ActivationFunc, ArithOp, LoweredInstr, LoweredKernel, Memory, ScalarOperand, ScalarStep, Shape,
+    Tensor, TensorId,
 };
 
 pub use error::{LowerError, StatementError};
@@ -134,6 +135,40 @@ fn lower_instruction(
             })
         }
 
+        "tensor_scalar" => {
+            let ([dst, data, op0, operand0], [op1, operand1]) = operands_with_optional(
+                instruction,
+                &["dst", "data", "op0", "operand0"],
+                &["op1", "operand1"],
+            )?;
+
+            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
+            let [partitions, _] = tile_extents(&dst)?;
+            tile_extents(&data)?;
+            same_shape(&dst, &data)?;
+
+            let first = scalar_step(op0, operand0, "operand0", partitions, scope)?;
+            let second = match (op1, operand1) {
+                (Some(op), Some(operand)) => {
+                    Some(scalar_step(op, operand, "operand1", partitions, scope)?)
+                }
+                (None, None) => None,
+                _ => {
+                    return Err(StatementError::UnpairedOperands {
+                        opcode: instruction.opcode.clone(),
+                        keywords: ["op1", "operand1"],
+                    });
+                }
+            };
+
+            Ok(LoweredInstr::TensorScalar {
+                dst: dst.id,
+                data: data.id,
+                first,
+                second,
+            })
+        }
+
         // =====================================================================
         // Tensor Engine
         // =====================================================================
@@ -199,6 +234,29 @@ fn operands<'a, const N: usize>(
     Ok(keywords.map(|keyword| &given[keyword]))
 }
 
+/// The operands of `instruction`: every `required` keyword, and each `optional`
+/// one if present. Any other keyword is an error.
+fn operands_with_optional<'a, const R: usize, const O: usize>(
+    instruction: &'a Instruction,
+    required: &'static [&'static str; R],
+    optional: &'static [&'static str; O],
+) -> Result<([&'a Operand; R], [Option<&'a Operand>; O]), StatementError> {
+    let given = &instruction.operands;
+    let known = |keyword: &String| {
+        required.contains(&keyword.as_str()) || optional.contains(&keyword.as_str())
+    };
+    if !required.iter().all(|keyword| given.contains_key(*keyword)) || !given.keys().all(known) {
+        return Err(StatementError::Operands {
+            opcode: instruction.opcode.clone(),
+            keywords: required,
+        });
+    }
+    Ok((
+        required.map(|keyword| &given[keyword]),
+        optional.map(|keyword| given.get(keyword)),
+    ))
+}
+
 /// The name of a `nki.language` member, e.g. `add` for `nl.add`.
 fn language_member(operand: &Operand) -> Option<&str> {
     let Operand::Member(member) = operand else {
@@ -223,6 +281,34 @@ fn activation_func(operand: &Operand) -> Result<ActivationFunc, StatementError> 
         .into_iter()
         .find(|func| Some(func.name()) == name)
         .ok_or_else(|| StatementError::UnsupportedActivation(operand.clone()))
+}
+
+/// A `tensor_scalar` step: its `nki.language` op, and an operand that is a literal
+/// or a tile of one free element per partition of the destination.
+fn scalar_step(
+    op: &Operand,
+    operand: &Operand,
+    keyword: &'static str,
+    partitions: u64,
+    scope: &Scope,
+) -> Result<ScalarStep, StatementError> {
+    let op = arith_op(op)?;
+    let operand = match operand {
+        Operand::Scalar(value) => ScalarOperand::Constant(*value),
+        _ => {
+            let tile = scope.shaped(operand, keyword)?;
+            let expected = Shape(vec![partitions, 1]);
+            if tile_extents(&tile)? != [partitions, 1] {
+                return Err(StatementError::NotBroadcastable {
+                    tensor: tile.name.clone(),
+                    shape: tile.shape.clone(),
+                    expected,
+                });
+            }
+            ScalarOperand::Broadcast(tile.id)
+        }
+    };
+    Ok(ScalarStep { op, operand })
 }
 
 // =============================================================================

@@ -60,6 +60,12 @@ pub enum StatementError {
         keywords: &'static [&'static str],
     },
 
+    /// An instruction's paired optional operands given only in part.
+    UnpairedOperands {
+        opcode: String,
+        keywords: [&'static str; 2],
+    },
+
     UnsupportedArithOp(Operand),
 
     UnsupportedActivation(Operand),
@@ -78,6 +84,13 @@ pub enum StatementError {
     WrongMemory {
         tensor: TensorName,
         expected: Memory,
+    },
+
+    /// A scalar operand that is not a one-free-element tile of its destination's partitions.
+    NotBroadcastable {
+        tensor: TensorName,
+        shape: Shape,
+        expected: Shape,
     },
 }
 
@@ -129,6 +142,11 @@ impl fmt::Display for StatementError {
             Self::Operands { opcode, keywords } => {
                 write!(f, "`{opcode}` takes the operands {}", keywords.join(", "))
             }
+            Self::UnpairedOperands { opcode, keywords } => write!(
+                f,
+                "`{opcode}` takes the operands {} together or not at all",
+                keywords.join(", ")
+            ),
             Self::UnsupportedArithOp(op) => write!(f, "unsupported arithmetic op `{op}`"),
             Self::UnsupportedActivation(op) => {
                 write!(f, "unsupported activation function `{op}`")
@@ -140,6 +158,14 @@ impl fmt::Display for StatementError {
             Self::WrongMemory { tensor, expected } => {
                 write!(f, "`{tensor}` must be in {}", expected.name())
             }
+            Self::NotBroadcastable {
+                tensor,
+                shape,
+                expected,
+            } => write!(
+                f,
+                "scalar operand `{tensor}` has shape {shape}, not the broadcast {expected}"
+            ),
         }
     }
 }

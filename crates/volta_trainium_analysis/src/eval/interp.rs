@@ -5,7 +5,9 @@
 use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
 
-use crate::ir::{ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, TensorId};
+use crate::ir::{
+    ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, ScalarOperand, TensorId,
+};
 
 use super::EvalError;
 use super::tensor::TensorState;
@@ -52,10 +54,7 @@ impl<'a> Interpreter<'a> {
                 for index in self.tensors[dst].indices(instr)? {
                     let a = self.tensors[lhs].read(&mut self.arena, instr, &index)?;
                     let b = self.tensors[rhs].read(&mut self.arena, instr, &index)?;
-                    let value = match op {
-                        ArithOp::Add => self.arena.add(a, b),
-                        ArithOp::Multiply => self.arena.mul(a, b),
-                    };
+                    let value = self.arith(op, a, b);
                     self.tensors[dst].write(index, value);
                 }
             }
@@ -63,6 +62,21 @@ impl<'a> Interpreter<'a> {
                 for index in self.tensors[dst].indices(instr)? {
                     let x = self.tensors[data].read(&mut self.arena, instr, &index)?;
                     let value = self.activation(func, x);
+                    self.tensors[dst].write(index, value);
+                }
+            }
+            LoweredInstr::TensorScalar {
+                dst,
+                data,
+                first,
+                second,
+            } => {
+                for index in self.tensors[dst].indices(instr)? {
+                    let mut value = self.tensors[data].read(&mut self.arena, instr, &index)?;
+                    for step in [Some(first), second].into_iter().flatten() {
+                        let operand = self.scalar(instr, step.operand, &index)?;
+                        value = self.arith(step.op, value, operand);
+                    }
                     self.tensors[dst].write(index, value);
                 }
             }
@@ -103,6 +117,33 @@ impl<'a> Interpreter<'a> {
             ActivationFunc::Rsqrt => {
                 let root = self.arena.sqrt(x);
                 self.arena.rcp(root)
+            }
+        }
+    }
+
+    fn arith(&mut self, op: ArithOp, a: ExprId, b: ExprId) -> ExprId {
+        match op {
+            ArithOp::Add => self.arena.add(a, b),
+            ArithOp::Multiply => self.arena.mul(a, b),
+        }
+    }
+
+    /// The value a scalar operand contributes at `index`: a literal, or the operand
+    /// tile's single free element in `index`'s partition.
+    fn scalar(
+        &mut self,
+        instr: InstrId,
+        operand: ScalarOperand,
+        index: &Index,
+    ) -> Result<ExprId, EvalError> {
+        match operand {
+            ScalarOperand::Constant(value) => Ok(self
+                .arena
+                .float_from_f64(value.get())
+                .expect("a Scalar is finite")),
+            ScalarOperand::Broadcast(tensor) => {
+                let partition = index.0[0];
+                self.tensors[tensor].read(&mut self.arena, instr, &Index(vec![partition, 0]))
             }
         }
     }
