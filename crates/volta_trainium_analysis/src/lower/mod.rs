@@ -135,6 +135,32 @@ fn lower_instruction(
             })
         }
 
+        "activation_reduce" => {
+            let [dst, op, data, reduce_op, reduce_res] = operands(
+                instruction,
+                &["dst", "op", "data", "reduce_op", "reduce_res"],
+            )?;
+            let func = activation_func(op)?;
+            let reduce_op = arith_op(reduce_op)?;
+            let [dst, data, reduce_res] = [
+                scope.shaped(dst, "dst")?,
+                scope.shaped(data, "data")?,
+                scope.shaped(reduce_res, "reduce_res")?,
+            ];
+            let [partitions, _] = tile_extents(&dst)?;
+            tile_extents(&data)?;
+            tile_extents(&reduce_res)?;
+            same_shape(&dst, &data)?;
+            result_shape(&reduce_res, Shape(vec![partitions, 1]))?;
+            Ok(LoweredInstr::ActivationReduce {
+                func,
+                dst: dst.id,
+                data: data.id,
+                reduce_op,
+                reduce_res: reduce_res.id,
+            })
+        }
+
         "tensor_scalar" => {
             let ([dst, data, op0, operand0], [op1, operand1]) = operands_with_optional(
                 instruction,

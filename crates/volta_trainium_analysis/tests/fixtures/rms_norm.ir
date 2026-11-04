@@ -1,0 +1,15 @@
+kernel kernel(a, out)
+  a: hbm[4, 8]
+  out: hbm[4, 8]
+  x: sbuf[4, 8]
+  squares: sbuf[4, 8]
+  sum_sq: sbuf[4, 1]
+  mean_sq: sbuf[4, 1]
+  rstd: sbuf[4, 1]
+  y: sbuf[4, 8]
+  x = mov(a)
+  squares, sum_sq = square(x) reduce add
+  mean_sq = add(multiply(sum_sq, 0.125), 0.000001)
+  rstd = rsqrt(mean_sq)
+  y = multiply(x, rstd)
+  out = mov(y)

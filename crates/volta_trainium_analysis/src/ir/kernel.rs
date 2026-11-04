@@ -48,6 +48,21 @@ impl fmt::Display for LoweredKernel {
                 LoweredInstr::Activation { func, dst, data } => {
                     writeln!(f, "  {} = {}({})", name(dst), func.name(), name(data))?
                 }
+                LoweredInstr::ActivationReduce {
+                    func,
+                    dst,
+                    data,
+                    reduce_op,
+                    reduce_res,
+                } => writeln!(
+                    f,
+                    "  {}, {} = {}({}) reduce {}",
+                    name(dst),
+                    name(reduce_res),
+                    func.name(),
+                    name(data),
+                    reduce_op.name()
+                )?,
                 LoweredInstr::TensorScalar {
                     dst,
                     data,
