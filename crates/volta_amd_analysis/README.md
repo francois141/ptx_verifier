@@ -50,7 +50,9 @@ unbalanced and extra-quoted arguments are rejected.
 
 Target strings may include `xnack` and `sramecc` selections once each, in either
 order. Unknown, repeated, conflicting or empty feature fields are rejected.
-This validates target syntax; execution support for a feature mode is checked separately.
+This validates target-ID syntax and preserves the accepted string. Execution
+retains the interpreter's existing feature-mode assumptions, including
+XNACK-disabled scalar memory.
 
 ## Tests
 
