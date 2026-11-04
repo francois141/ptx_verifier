@@ -10,8 +10,8 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Statement, TensorName};
 use crate::ir::{
-    ActivationFunc, ArithOp, LoweredInstr, LoweredKernel, Memory, ScalarOperand, ScalarStep, Shape,
-    Tensor, TensorId,
+    ActivationFunc, ArithOp, Index, LoweredInstr, LoweredKernel, Memory, ScalarOperand, ScalarStep,
+    Shape, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, StatementError};
@@ -75,25 +75,21 @@ fn lower_instruction(
         // =====================================================================
         "dma_copy" => {
             let [dst, src] = operands(instruction, &["dst", "src"])?;
-            let [dst, src] = [scope.shaped(dst, "dst")?, scope.shaped(src, "src")?];
-            same_shape(&dst, &src)?;
-            Ok(LoweredInstr::Mov {
-                dst: dst.id,
-                src: src.id,
-            })
+            let (dst_tensor, dst) = region(dst, "dst", scope)?;
+            let (src_tensor, src) = region(src, "src", scope)?;
+            same_region(&dst_tensor, &dst, &src_tensor, &src)?;
+            Ok(LoweredInstr::Mov { dst, src })
         }
 
         "tensor_copy" => {
             let [dst, src] = operands(instruction, &["dst", "src"])?;
-            let [dst, src] = [scope.shaped(dst, "dst")?, scope.shaped(src, "src")?];
-            for tile in [&dst, &src] {
+            let (dst_tensor, dst) = region(dst, "dst", scope)?;
+            let (src_tensor, src) = region(src, "src", scope)?;
+            for tile in [&dst_tensor, &src_tensor] {
                 tile_extents(tile)?;
             }
-            same_shape(&dst, &src)?;
-            Ok(LoweredInstr::Mov {
-                dst: dst.id,
-                src: src.id,
-            })
+            same_region(&dst_tensor, &dst, &src_tensor, &src)?;
+            Ok(LoweredInstr::Mov { dst, src })
         }
 
         // =====================================================================
@@ -349,6 +345,79 @@ fn tile_extents(operand: &Shaped) -> Result<[u64; 2], StatementError> {
     }
 }
 
+/// `operand` as a region of its tensor, with the tensor itself: the whole
+/// tensor, or the subscript's slices resolved against its shape.
+fn region<'s>(
+    operand: &Operand,
+    keyword: &'static str,
+    scope: &'s Scope,
+) -> Result<(Shaped<'s>, TensorRegion), StatementError> {
+    let (name, dims) = match operand {
+        Operand::Tensor(name) => (name, [].as_slice()),
+        Operand::Region { tensor, dims } => (tensor, dims.as_slice()),
+        _ => return Err(StatementError::NotATensor { keyword }),
+    };
+
+    let tensor = scope.named(name)?;
+    let extents = tensor.shape.0.as_slice();
+
+    if dims.is_empty() {
+        let region = TensorRegion {
+            tensor: tensor.id,
+            start: Index(vec![0; extents.len()]),
+            shape: tensor.shape.clone(),
+        };
+        return Ok((tensor, region));
+    }
+
+    if dims.len() != extents.len() {
+        return Err(StatementError::RegionRank {
+            tensor: name.clone(),
+            shape: tensor.shape.clone(),
+            slices: dims.len(),
+        });
+    }
+
+    let mut start = Vec::new();
+    let mut shape = Vec::new();
+    for (dimension, (bounds, &extent)) in dims.iter().zip(extents).enumerate() {
+        let low = bounds.start.unwrap_or(0);
+        let high = bounds.stop.unwrap_or(extent);
+        if low > high || high > extent {
+            return Err(StatementError::RegionBounds {
+                tensor: name.clone(),
+                dimension,
+                extent,
+            });
+        }
+        start.push(low);
+        shape.push(high - low);
+    }
+
+    let region = TensorRegion {
+        tensor: tensor.id,
+        start: Index(start),
+        shape: Shape(shape),
+    };
+    Ok((tensor, region))
+}
+
+/// Both sides of a copy must name rectangles of one shape.
+fn same_region(
+    dst: &Shaped,
+    dst_region: &TensorRegion,
+    src: &Shaped,
+    src_region: &TensorRegion,
+) -> Result<(), StatementError> {
+    if dst_region.shape == src_region.shape {
+        return Ok(());
+    }
+    Err(StatementError::ShapeMismatch([
+        (dst.name.clone(), dst_region.shape.clone()),
+        (src.name.clone(), src_region.shape.clone()),
+    ]))
+}
+
 fn in_memory(operand: &Shaped, expected: Memory) -> Result<(), StatementError> {
     if operand.memory == expected {
         return Ok(());
@@ -445,6 +514,11 @@ impl Scope {
         let Operand::Tensor(name) = operand else {
             return Err(StatementError::NotATensor { keyword });
         };
+        self.named(name)
+    }
+
+    /// The tensor `name`, whose shape an `assert` must already have bound.
+    fn named(&self, name: &TensorName) -> Result<Shaped<'_>, StatementError> {
         let id = self.ids[name];
         let entry = &self.entries[id];
         let Some(shape) = &entry.shape else {

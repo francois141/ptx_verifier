@@ -5,7 +5,7 @@ use std::fmt;
 
 use id_collections::IdVec;
 
-use super::{InstrId, LoweredInstr, ScalarOperand, Tensor, TensorId};
+use super::{InstrId, LoweredInstr, ScalarOperand, Tensor, TensorId, TensorRegion};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredKernel {
@@ -23,6 +23,21 @@ impl fmt::Display for LoweredKernel {
             ScalarOperand::Constant(value) => value.to_string(),
             ScalarOperand::Broadcast(tensor) => name(tensor).to_string(),
         };
+        let region = |region: &TensorRegion| {
+            let whole = region.start.0.iter().all(|&start| start == 0)
+                && region.shape == self.tensors[region.tensor].shape;
+            if whole {
+                return name(region.tensor).to_string();
+            }
+            let dims: Vec<String> = region
+                .start
+                .0
+                .iter()
+                .zip(&region.shape.0)
+                .map(|(start, extent)| format!("{start}:{}", start + extent))
+                .collect();
+            format!("{}[{}]", name(region.tensor), dims.join(", "))
+        };
 
         let params: Vec<&str> = self.params.iter().map(|&param| name(param)).collect();
         writeln!(f, "kernel {}({})", self.name, params.join(", "))?;
@@ -33,9 +48,9 @@ impl fmt::Display for LoweredKernel {
         }
 
         for instruction in self.instructions.values() {
-            match *instruction {
+            match instruction.clone() {
                 LoweredInstr::Mov { dst, src } => {
-                    writeln!(f, "  {} = mov({})", name(dst), name(src))?
+                    writeln!(f, "  {} = mov({})", region(&dst), region(&src))?
                 }
                 LoweredInstr::Arith { op, dst, lhs, rhs } => writeln!(
                     f,

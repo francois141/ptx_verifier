@@ -49,7 +49,7 @@ volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
 volta_amd_analysis → volta_expr (+ dev: volta_spec)
-volta_trainium_analysis → (nothing)
+volta_trainium_analysis → volta_expr
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -491,13 +491,30 @@ is an `ast::Scalar`, a newtype whose constructor rejects non-finite values, so
 it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
 rational, since only f64-round-tripping reals print as decimals.
 
+A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
+lowered: the interpreter has no program counter, and the integer-expression
+machinery is `parse.rs`'s. It binds the loop variable to each index, folds the
+body's arithmetic and emits the body once per index; the tiles an iteration
+declares take its index as a suffix (`x` becomes `x.0`, a name Python cannot
+write), so each iteration owns its own. A count that is not a literal is an
+error, since nothing else unrolls.
+
+A subscript is a rectangular region, one slice per dimension, and only slices:
+an integer index would drop its dimension. `lower/` resolves each bound against
+the tensor's shape - an omitted bound is that edge - keeping shapes its own
+concern. `dma_copy` and `tensor_copy` therefore take `TensorRegion` operands; a
+whole tensor is a zero `start` with the tensor's own shape, which `.ir` renders
+as the bare name, so only a true sub-rectangle prints bounds.
+
 `tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
 (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
 `tests/fixtures/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`
 reading the `nc_matmul`'s PSUM tile directly. `tests/fixtures/rms_norm.py`
 normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
 `activation_reduce` and two `tensor_scalar`s, the second broadcasting a
-`[4, 1]` tile.
+`[4, 1]` tile. `tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor
+through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
+`nl.affine_range(2)`.
 
 ## Crate: volta_graph_check
 

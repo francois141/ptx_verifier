@@ -27,6 +27,17 @@ Each activation is built from `volta_expr`'s primitives rather than an opaque
 node, so the decision procedure can reason through it: `nl.rsqrt` becomes
 `rcp(sqrt(x))` and `nl.relu` becomes `max(x, 0)`.
 
+## Loops and regions
+
+A `for` over `nl.affine_range(count)` is unrolled while the kernel is resolved,
+since execution has no control flow; each iteration's tiles are named after its
+index (`x.0`, `x.1`), so they stay distinct. The count must be a literal.
+
+A subscript such as `a[0:4, :]` names a rectangular region, one slice per
+dimension; `nisa.dma_copy` and `nisa.tensor_copy` copy between regions, and an
+omitted bound means the tensor's own edge. An integer index is rejected, since
+it would drop its dimension.
+
 ## Fixtures
 
 `tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
@@ -43,3 +54,8 @@ instead of a separate `tensor_copy`.
 each partition into a `(4, 1)` tile, `nisa.tensor_scalar` scales and biases it,
 `nisa.activation` takes its reciprocal square root, and a second
 `nisa.tensor_scalar` broadcasts that `(4, 1)` tile back across the free axis.
+
+`tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor through SBUF one `(4, 4)`
+tile of rows at a time: `nl.affine_range(2)` unrolls into two iterations, each
+with its own SBUF tile, copying `a[i * 4:(i + 1) * 4, :]` in and back out to the
+matching rows of `out`.

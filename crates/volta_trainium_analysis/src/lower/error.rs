@@ -92,6 +92,20 @@ pub enum StatementError {
         shape: Shape,
         expected: Shape,
     },
+
+    /// A region whose slice count differs from its tensor's rank.
+    RegionRank {
+        tensor: TensorName,
+        shape: Shape,
+        slices: usize,
+    },
+
+    /// A slice reaching outside its tensor, or whose bounds run backwards.
+    RegionBounds {
+        tensor: TensorName,
+        dimension: usize,
+        extent: u64,
+    },
 }
 
 impl fmt::Display for LowerError {
@@ -165,6 +179,23 @@ impl fmt::Display for StatementError {
             } => write!(
                 f,
                 "scalar operand `{tensor}` has shape {shape}, not the broadcast {expected}"
+            ),
+            Self::RegionRank {
+                tensor,
+                shape,
+                slices,
+            } => write!(
+                f,
+                "a region of `{tensor}{shape}` needs {} slices, not {slices}",
+                shape.0.len()
+            ),
+            Self::RegionBounds {
+                tensor,
+                dimension,
+                extent,
+            } => write!(
+                f,
+                "`{tensor}`'s slice in dimension {dimension} is outside its extent {extent}"
             ),
         }
     }
