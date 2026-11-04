@@ -48,6 +48,9 @@ and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/ll
 The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
 unbalanced and extra-quoted arguments are rejected.
 
+Kernel selection requires one matching entry label and one matching descriptor
+block. Repeated definitions are rejected; distinct kernel names remain selectable.
+
 ## Tests
 
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly

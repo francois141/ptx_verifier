@@ -143,10 +143,16 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         .to_string();
 
     // The instruction body ends at a section switch or function-end label.
-    let entry = lines
+    let mut entries = lines
         .iter()
-        .position(|line| line.strip_suffix(':') == Some(name))
+        .enumerate()
+        .filter(|(_, line)| line.strip_suffix(':') == Some(name));
+    let (entry, _) = entries
+        .next()
         .ok_or_else(|| format!("kernel {name:?} not found"))?;
+    if entries.next().is_some() {
+        return Err(format!("multiple entry labels for kernel {name:?}"));
+    }
     let mut instructions = Vec::new();
     let mut labels = BTreeMap::new();
     for line in &lines[entry + 1..] {
@@ -194,10 +200,18 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
     }
 
     // Read launch settings from the kernel's separate descriptor block.
-    let start = lines
+    let mut descriptors = lines
         .iter()
-        .position(|line| word(line) == (".amdhsa_kernel", name))
+        .enumerate()
+        .filter(|(_, line)| word(line) == (".amdhsa_kernel", name));
+    let (start, _) = descriptors
+        .next()
         .ok_or_else(|| format!("missing .amdhsa_kernel {name}"))?;
+    if descriptors.next().is_some() {
+        return Err(format!(
+            "multiple .amdhsa_kernel blocks for kernel {name:?}"
+        ));
+    }
     let mut descriptor = BTreeMap::new();
     for line in &lines[start + 1..] {
         if *line == ".end_amdhsa_kernel" {
