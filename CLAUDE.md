@@ -583,9 +583,10 @@ and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
 anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches),
 `architecture_tests.rs` (the stage/branch boundaries), and
-`amd_equivalence_tests.rs` (compiled AMD matmul against `matmul.spec`, including
-a swapped-input negative test; functional equivalence only). `just amd` runs the
-AMD specification comparisons alongside the analysis crate's snapshot tests.
+`amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, and CK GEMM against
+matrix-product specifications, accounting for CK's column-major B; includes a
+swapped-input negative test). These check functional equivalence only. `just amd`
+runs them alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
 
