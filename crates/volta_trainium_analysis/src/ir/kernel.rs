@@ -5,7 +5,7 @@ use std::fmt;
 
 use id_collections::IdVec;
 
-use super::{InstrId, LoweredInstr, Tensor, TensorId};
+use super::{InstrId, LoweredInstr, ScalarOperand, Tensor, TensorId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredKernel {
@@ -19,6 +19,10 @@ pub struct LoweredKernel {
 impl fmt::Display for LoweredKernel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = |tensor: TensorId| self.tensors[tensor].name.as_str();
+        let scalar = |operand: ScalarOperand| match operand {
+            ScalarOperand::Constant(value) => value.to_string(),
+            ScalarOperand::Broadcast(tensor) => name(tensor).to_string(),
+        };
 
         let params: Vec<&str> = self.params.iter().map(|&param| name(param)).collect();
         writeln!(f, "kernel {}({})", self.name, params.join(", "))?;
@@ -43,6 +47,23 @@ impl fmt::Display for LoweredKernel {
                 )?,
                 LoweredInstr::Activation { func, dst, data } => {
                     writeln!(f, "  {} = {}({})", name(dst), func.name(), name(data))?
+                }
+                LoweredInstr::TensorScalar {
+                    dst,
+                    data,
+                    first,
+                    second,
+                } => {
+                    let mut expr = format!(
+                        "{}({}, {})",
+                        first.op.name(),
+                        name(data),
+                        scalar(first.operand)
+                    );
+                    if let Some(step) = second {
+                        expr = format!("{}({}, {})", step.op.name(), expr, scalar(step.operand));
+                    }
+                    writeln!(f, "  {} = {expr}", name(dst))?
                 }
                 LoweredInstr::Matmul {
                     dst,
