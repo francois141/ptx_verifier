@@ -21,6 +21,58 @@ use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
 use super::wave::{LoadCounter, Status, WaveId, WaveState, concrete_word};
 
+#[cfg(test)]
+mod packed_tests {
+    use super::*;
+    use crate::frontend::parse::parse_kernel;
+    use crate::lower::lower_kernel;
+
+    #[test]
+    fn packed_add_broadcasts_to_asymmetric_halves_with_and_without_aliasing() {
+        for destination in ["v[2:3]", "v[4:5]"] {
+            let source = format!(
+                ".amdgcn_target \"amdgcn-amd-amdhsa--gfx950\"\n\
+                 test:\n\
+                 v_mov_b32_e32 v2, 2.0\n\
+                 v_mov_b32_e32 v3, 0x40a00000\n\
+                 v_pk_add_f32 {destination}, v[2:3], 1.0 op_sel_hi:[1,0]\n\
+                 s_endpgm\n.Lfunc_end0:\n\
+                 .amdhsa_kernel test\n\
+                 .amdhsa_user_sgpr_count 0\n\
+                 .amdhsa_user_sgpr_kernarg_segment_ptr 0\n\
+                 .amdhsa_system_sgpr_workgroup_id_x 0\n\
+                 .amdhsa_system_sgpr_workgroup_id_y 0\n\
+                 .amdhsa_system_sgpr_workgroup_id_z 0\n\
+                 .amdhsa_system_vgpr_workitem_id 0\n\
+                 .amdhsa_group_segment_fixed_size 0\n\
+                 .end_amdhsa_kernel\n"
+            );
+            let kernel = lower_kernel(&parse_kernel(&source, "test").unwrap()).unwrap();
+            let launch = WorkgroupLaunch {
+                kernarg_address: 0,
+                workgroup_size: (64, 1, 1),
+            };
+            let mut interp = Interpreter::new(&kernel, &launch, &[], &[]).unwrap();
+            assert_eq!(interp.run(&kernel), Terminal::Completed);
+            let first = if destination == "v[2:3]" { 2 } else { 4 };
+            let expected = [3.0, 6.0];
+            for lane in 0..64 {
+                for (i, expected) in expected.iter().enumerate() {
+                    let actual = interp.waves[WaveId(0)]
+                        .registers
+                        .read_f32(&mut interp.arena, lane, Vgpr(first + i as u8))
+                        .unwrap();
+                    assert_eq!(
+                        interp.arena.as_f64(actual),
+                        Some(*expected),
+                        "{destination}, lane{lane}, half{i}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`, and the
 /// workgroup's LDS.
@@ -195,6 +247,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
+            | LoweredInstr::PackedAddF32 { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
@@ -235,16 +288,11 @@ impl<'a> Interpreter<'a> {
         src1: Vop3Src,
     ) -> Result<(), EvalError> {
         let registers = &mut self.waves[wave].registers;
-        let mut mask = 0u64;
-        for lane in 0..64 {
-            let condition = evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1)?;
-            match self.arena.as_bool(condition) {
-                Some(true) => mask |= 1 << lane,
-                Some(false) => {}
-                None => return Err(EvalError::SymbolicWord { lane }),
-            }
+        let mut conditions = [self.arena.bool_val(false); 64];
+        for (lane, condition) in conditions.iter_mut().enumerate() {
+            *condition = evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1)?;
         }
-        registers.write_sgpr_pair(&mut self.arena, dst, mask)
+        registers.write_lane_mask(&mut self.arena, dst, conditions)
     }
 
     /// Every lane's result is computed before `dst` and `carry` are written, as either may
@@ -334,6 +382,14 @@ impl<'a> Interpreter<'a> {
                 let result =
                     evaluate_cndmask_e64(&mut self.arena, registers, lane, *src0, *src1, *mask)?;
                 registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::PackedAddF32 { dst, src, rhs } => {
+                let rhs = registers.read_f32_src(&mut self.arena, lane, Vop3Src::Inline(*rhs))?;
+                let a = registers.read_f32(&mut self.arena, lane, src[0])?;
+                let b = registers.read_f32(&mut self.arena, lane, src[1])?;
+                let a = self.arena.add(a, rhs);
+                let b = self.arena.add(b, rhs);
+                registers.write_vgpr_pair(lane, *dst, [a, b])
             }
             LoweredInstr::AccvgprWrite32 { dst, src } => {
                 let value = registers.read_vgpr(lane, *src)?;

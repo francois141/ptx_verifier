@@ -44,6 +44,13 @@ pub enum Operand {
         first: u32,
         last: u32,
     },
+    /// A single register with a floating-point NEG source modifier.
+    NegatedReg {
+        file: RegFile,
+        index: u32,
+    },
+    /// The high-output source selectors of a two-source packed instruction.
+    OpSelHi([bool; 2]),
     /// An integer literal; the negative inline constants -1 to -16 are written signed.
     Imm(i64),
     /// One of the inline float constants ±0.5, ±1.0, ±2.0 and ±4.0, as its f32 bits.

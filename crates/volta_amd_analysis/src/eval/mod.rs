@@ -10,6 +10,9 @@ mod mfma;
 mod scalar;
 mod wave;
 
+#[cfg(test)]
+mod tests;
+
 pub use crate::error::EvalError;
 pub use global::{ArrayDef, ArrayKind, OutputType};
 pub(crate) use interp::Interpreter;

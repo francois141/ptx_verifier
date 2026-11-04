@@ -69,6 +69,14 @@ pub enum Vop3Src {
     Inline(u32),
 }
 
+/// An e64 conditional-select source. NEG flips the f32 sign bit of a concrete word,
+/// or negates a symbolic real (CDNA4 §12.7, V_CNDMASK_B32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CndMaskSrc {
+    pub value: Vop3Src,
+    pub negate: bool,
+}
+
 /// The first source of a VOP2 instruction: a VGPR, an SGPR, or a constant (inline
 /// or literal) whose 32 bits are the operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,9 +618,16 @@ pub enum LoweredInstr {
     /// `dst = mask ? src1 : src0` in each lane.
     CndMask32E64 {
         dst: Vgpr,
-        src0: Vop3Src,
-        src1: Vop3Src,
+        src0: CndMaskSrc,
+        src1: CndMaskSrc,
         mask: LaneMask,
+    },
+    /// Two f32 additions with a broadcast inline constant. The supported selector
+    /// profile is default op_sel:[0,0], op_sel_hi:[1,0], without other modifiers.
+    PackedAddF32 {
+        dst: [Vgpr; 2],
+        src: [Vgpr; 2],
+        rhs: u32,
     },
     /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
     /// carry out of 64 bits in each lane's bit of `carry`.

@@ -277,6 +277,7 @@ fn lower_instruction(
         ("v_cmp_gt_u32_e32", operands) => lower_cmp(ir::CmpOp::GtU32, operands),
         ("v_cmp_ne_u32_e32", operands) => lower_cmp(ir::CmpOp::NeU32, operands),
         ("v_cmp_ge_u32_e32", operands) => lower_cmp(ir::CmpOp::GeU32, operands),
+        ("v_cmp_lt_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtF32, operands),
         ("v_cmp_lt_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtI32, operands),
         ("v_cmp_eq_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::EqI32, operands),
         ("v_cmp_le_i32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeI32, operands),
@@ -291,12 +292,23 @@ fn lower_instruction(
         ("v_cmp_ge_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeU32, operands),
         ("v_cndmask_b32_e64", [dst, src0, src1, mask]) => Ok(CndMask32E64 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vop3_src(src0)
+            src0: cndmask_src(src0)
                 .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-            src1: vop3_src(src1)
+            src1: cndmask_src(src1)
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             mask: lane_mask(mask).ok_or("expected vcc or an aligned SGPR pair as the mask")?,
         }),
+        ("v_pk_add_f32", [dst, src, rhs, Operand::OpSelHi([true, false])]) => {
+            let Some(Vop3Src::Inline(rhs)) = vop3_src(rhs) else {
+                return Err("expected a broadcast inline constant second source");
+            };
+            Ok(PackedAddF32 {
+                dst: vgprs(dst).ok_or("expected an even-aligned destination VGPR pair")?,
+                src: vgprs(src).ok_or("expected an even-aligned source VGPR pair")?,
+                rhs,
+            })
+        }
+        ("v_pk_add_f32", _) => Err("expected VGPR pairs, an inline constant and op_sel_hi:[1,0]"),
         ("v_mad_u64_u32", [dst, carry, src0, src1, src2]) => Ok(MadU64U32 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
             carry: sgprs(carry).ok_or("expected an aligned SGPR carry pair")?,
@@ -961,6 +973,21 @@ fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
             .map(Vop3Src::Vgpr)
             .or_else(|| sgpr(operand).map(Vop3Src::Sgpr)),
     }
+}
+
+fn cndmask_src(operand: &Operand) -> Option<ir::CndMaskSrc> {
+    let (value, negate) = match *operand {
+        Operand::NegatedReg { file, index } => (
+            vop3_src(&Operand::Reg {
+                file,
+                first: index,
+                last: index,
+            })?,
+            true,
+        ),
+        _ => (vop3_src(operand)?, false),
+    };
+    Some(ir::CndMaskSrc { value, negate })
 }
 
 /// Only src0 of a VOP2 encoding can name an SGPR or a 32-bit literal; src1 is a VGPR.

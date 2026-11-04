@@ -3,7 +3,7 @@
 
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
-use crate::ir::{BinOp, CmpOp, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
+use crate::ir::{BinOp, CmpOp, CndMaskSrc, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
 
 use super::EvalError;
 use super::wave::{WaveRegisters, concrete_word};
@@ -154,24 +154,52 @@ pub(super) fn evaluate_cndmask_e64(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
     lane: usize,
-    src0: Vop3Src,
-    src1: Vop3Src,
+    src0: CndMaskSrc,
+    src1: CndMaskSrc,
     mask: LaneMask,
 ) -> Result<ExprId, EvalError> {
     let condition = registers.read_lane_condition(arena, lane, mask)?;
-    let a = registers.read_src(arena, lane, src0)?;
-    let b = registers.read_src(arena, lane, src1)?;
+    let a = read_cndmask_src(arena, registers, lane, src0)?;
+    let b = read_cndmask_src(arena, registers, lane, src1)?;
     if let Some(word) = select_words(arena, lane, condition, a, b)? {
         return Ok(word);
     }
     // A symbolic source is a real, so a concrete word selected against it must be the f32 its
     // bits encode, or the select would mix raw bits with reals.
     let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
-        (Some(_), None) => (registers.read_f32_src(arena, lane, src0)?, b),
-        (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1)?),
+        (Some(_), None) => (read_cndmask_f32(arena, registers, lane, src0)?, b),
+        (None, Some(_)) => (a, read_cndmask_f32(arena, registers, lane, src1)?),
         _ => (a, b),
     };
     Ok(arena.select(condition, b, a))
+}
+
+fn read_cndmask_src(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src: CndMaskSrc,
+) -> Result<ExprId, EvalError> {
+    let value = registers.read_src(arena, lane, src.value)?;
+    Ok(if !src.negate {
+        value
+    } else if arena.as_int_const(value).is_some() {
+        // Preserve raw words, including signed zero and NaN payloads, until a float is needed.
+        let bits = concrete_word(arena, value).ok_or(EvalError::SymbolicWord { lane })?;
+        arena.int(i64::from(bits ^ 0x8000_0000))
+    } else {
+        arena.neg(value)
+    })
+}
+
+fn read_cndmask_f32(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src: CndMaskSrc,
+) -> Result<ExprId, EvalError> {
+    let value = registers.read_f32_src(arena, lane, src.value)?;
+    Ok(if src.negate { arena.neg(value) } else { value })
 }
 
 /// `condition ? b : a` for two concrete words: the word when both agree, else the chosen word

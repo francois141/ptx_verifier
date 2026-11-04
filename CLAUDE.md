@@ -412,6 +412,11 @@ values. Pending scalar destinations reject reads and writes until a zero LGKM wa
 `execute_lane` evaluates an instruction for a caller-selected active lane.
 `ds_bpermute_b32` gathers source register values across the wave before changing any
 of its destinations; results use the existing LGKM completion tracking.
+`v_cmp_lt_f32_e64` retains symbolic comparison bits per SGPR word; ordinary writes
+and loads replace those bits, and raw integer/address reads reject symbolic masks.
+`CndMaskSrc` carries the e64 select's NEG modifier; concrete words flip their f32
+sign bit and symbolic reals are negated. `PackedAddF32` supports aligned VGPR pairs
+with a broadcast inline constant and `op_sel_hi:[1,0]`, preflighting both destinations.
 `ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Inputs
 are read-only and outputs cannot be loaded. Global and buffer stores interpret
 `F32` outputs as mathematical reals and require concrete words for `U32` outputs;
@@ -434,8 +439,10 @@ comparing outputs.
 `target/lean/sigmoid.lean` (`just extract-lean`): within `1/1000`, since the
 kernel's large-input branch rescales by f32(e^-64), and over the reals the exact equality
 is false there.
-Do not add unit tests or `tests.rs` modules: cover execution behavior
-through compiled fixtures in `tests/kernels.rs`.
+Keep complete-kernel execution coverage in the compiled fixtures in `tests/kernels.rs`.
+The fused CK GEMM Sigmoid retains its whole kernel and all 64 output equations.
+Focused unit and public-lowering controls additionally cover raw sign bits, symbolic
+mask replacement/readiness, malformed operand profiles and atomic paired writes.
 See the crate README for ISA references, test commands, and fixture regeneration,
 including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
 
