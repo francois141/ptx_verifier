@@ -16,6 +16,7 @@ loading), and `output.rs` (reports, exit codes, and expression output).
 | `volta analyze <file> -k K ...` | analysis + the ten graph checks: prints the symbolic outputs, a per-instruction-kind profile (`--no-profile`), each check's verdict, any deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED \| REJECTED \| UNKNOWN` | 0 / 1 / 2 |
 | `volta compare <ref> <opt> --kernel1 .. --kernel2 .. --check-array A` | both kernels through both branches, then `decide`: `VERDICT: ACCEPT \| REJECT \| UNKNOWN` | 0 / 1 / 2 |
 | `volta verify <file> <spec> -k K --dim N=..` | one kernel against a `.spec` (file or inline string), through both branches and `decide` | 0 / 1 / 2 |
+| `volta solve <file> --spec SPEC --dim N=..` | PTX, AMD or Trainium kernel checked by the canonical solver | 0 / 1 / 2 |
 | `volta viz <store> -o page.html` | the `volta_viz` page over a run store | |
 
 ## Flow of a command

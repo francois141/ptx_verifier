@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{AnalyzeArgs, CompareArgs, VerifyArgs, VizArgs};
+use crate::commands::{AnalyzeArgs, CompareArgs, SolveArgs, VerifyArgs, VizArgs};
 
 /// Log level for controlling output verbosity
 #[cfg(feature = "logging")]
@@ -79,6 +79,11 @@ pub(crate) enum Commands {
     /// inline spec source if no such file exists; every array with a spec output equation must be a
     /// declared output array of the kernel.
     Verify(VerifyArgs),
+
+    /// Run a kernel through the interpreter its extension names (`.ptx` NVIDIA PTX, `.s` AMD
+    /// gfx950 assembly, `.py` Trainium NKI) and, given a spec, check its outputs against it with
+    /// the canonical solver.
+    Solve(SolveArgs),
 
     /// Build the event-graph viewer: one self-contained HTML page over a store of recorded runs
     /// (`just viz` records every volta_pipeline test into one, then builds the page)
