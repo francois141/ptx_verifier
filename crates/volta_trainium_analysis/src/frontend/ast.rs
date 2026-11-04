@@ -116,12 +116,25 @@ pub struct Instruction {
     pub operands: BTreeMap<String, Operand>,
 }
 
+/// One dimension of a tensor region: the slice bounds as written, an omitted
+/// bound meaning the tensor's own edge. Lowering resolves those against its shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    pub start: Option<u64>,
+    pub stop: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operand {
     Tensor(TensorName),
     /// A member of an imported module, its alias expanded, e.g. `nki.language.add`.
     Member(String),
     Scalar(Scalar),
+    /// A rectangular region of a tensor, one slice per subscript index.
+    Region {
+        tensor: TensorName,
+        dims: Vec<Bounds>,
+    },
 }
 
 impl fmt::Display for Kernel {
@@ -189,7 +202,24 @@ impl fmt::Display for Operand {
             Self::Tensor(tensor) => write!(f, "{tensor}"),
             Self::Member(member) => f.write_str(member),
             Self::Scalar(value) => write!(f, "{value}"),
+            Self::Region { tensor, dims } => {
+                let dims: Vec<String> = dims.iter().map(Bounds::to_string).collect();
+                write!(f, "{tensor}[{}]", dims.join(", "))
+            }
         }
+    }
+}
+
+impl fmt::Display for Bounds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(start) = self.start {
+            write!(f, "{start}")?;
+        }
+        f.write_str(":")?;
+        if let Some(stop) = self.stop {
+            write!(f, "{stop}")?;
+        }
+        Ok(())
     }
 }
 

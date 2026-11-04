@@ -267,7 +267,7 @@ impl Parser {
         Ok(lhs)
     }
 
-    /// A product of primaries.                                                                                                                                                                                                                                         
+    /// A product of primaries.
     fn term(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
         while self.eat(&TokenKind::Star) {
