@@ -94,6 +94,10 @@ impl<'a> Interpreter<'a> {
                 let denominator = self.arena.add(one, exp);
                 self.arena.rcp(denominator)
             }
+            ActivationFunc::Relu => {
+                let zero = self.arena.int(0);
+                self.arena.max(x, zero)
+            }
         }
     }
 

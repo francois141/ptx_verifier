@@ -471,8 +471,10 @@ including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
 AWS Trainium kernel analysis. Its input is an NKI kernel (a `@nki.jit` Python
 function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
-(`eval`). `tests/fixtures/add.py` adds two 128 x 128 HBM tensors through SBUF
+(`eval`). `tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF
 tiles (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
+`tests/fixtures/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`
+reading the `nc_matmul`'s PSUM tile directly.
 
 ## Crate: volta_graph_check
 
