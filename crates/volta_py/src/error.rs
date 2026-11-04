@@ -8,6 +8,7 @@ use pyo3::exceptions::PyException;
 
 use volta_common::Span;
 use volta_graph_check::{Deadlock, Property, PropertySummary};
+use volta_pipeline::FrontendError;
 use volta_ptx_analysis::AnalysisError;
 use volta_ptx_analysis::frontend::parse::ParseError;
 
@@ -119,6 +120,18 @@ pub fn graph_failure_to_py(failed: &[PropertySummary], deadlock: Option<&Deadloc
         DeadlockError::new_err(message)
     } else {
         VoltaError::new_err(message)
+    }
+}
+
+/// A frontend's failure to run a kernel; a located parse error shows its source line.
+pub fn frontend_error_to_py(source: &str, err: &FrontendError) -> PyErr {
+    match err {
+        FrontendError::Parse {
+            title,
+            message,
+            span,
+        } => VoltaError::new_err(format_located(source, title, message.as_deref(), *span)),
+        other => VoltaError::new_err(other.to_string()),
     }
 }
 
