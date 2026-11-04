@@ -1,0 +1,21 @@
+{
+  "description": "AI compiler sm_100a/RoPEFloat8Kernel/kernel, 1.0000x Triton: PTX Gym's problem, input e4m3[256, 64, 256, 128], cos e4m3[256, 128], sin e4m3[256, 128], output f16[256, 64, 256, 128]",
+  "kernel": "kernel",
+  "block": [128, 1, 1],
+  "grid": [4194304, 1, 1],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "input", "kind": "in", "dtype": "e4m3", "shape": [256, 64, 256, 128]},
+    {"name": "cos", "kind": "in", "dtype": "e4m3", "shape": [256, 128]},
+    {"name": "sin", "kind": "in", "dtype": "e4m3", "shape": [256, 128]},
+    {"name": "output", "kind": "out", "dtype": "f16", "shape": [256, 64, 256, 128]}
+  ],
+  "params": [
+    {"name": "input_ptr", "ptr": "input"},
+    {"name": "cos_ptr", "ptr": "cos"},
+    {"name": "sin_ptr", "ptr": "sin"},
+    {"name": "output_ptr", "ptr": "output"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

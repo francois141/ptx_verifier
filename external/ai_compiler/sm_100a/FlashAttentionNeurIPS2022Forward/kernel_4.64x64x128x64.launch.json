@@ -1,0 +1,27 @@
+{
+  "description": "AI compiler sm_100a/FlashAttentionNeurIPS2022Forward/kernel_4, 1.2633x Triton: PTX Gym's problem, Q f16[64, 64, 128, 64], K f16[64, 64, 128, 64], V f16[64, 64, 128, 64], Bias f16[1], Out f16[64, 64, 128, 64], Lse f32[64, 64, 128], TMP f32[524288]",
+  "kernel": "kernel",
+  "block": [128, 1, 1],
+  "grid": [2, 4096, 1],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "Q", "kind": "in", "dtype": "f16", "shape": [64, 64, 128, 64]},
+    {"name": "K", "kind": "in", "dtype": "f16", "shape": [64, 64, 128, 64]},
+    {"name": "V", "kind": "in", "dtype": "f16", "shape": [64, 64, 128, 64]},
+    {"name": "Bias", "kind": "in", "dtype": "f16", "shape": [1]},
+    {"name": "Out", "kind": "out", "dtype": "f16", "shape": [64, 64, 128, 64]},
+    {"name": "Lse", "kind": "out", "dtype": "f32", "shape": [64, 64, 128]},
+    {"name": "TMP", "kind": "out", "dtype": "f32", "shape": [524288]}
+  ],
+  "params": [
+    {"name": "Q_ptr", "ptr": "Q"},
+    {"name": "K_ptr", "ptr": "K"},
+    {"name": "V_ptr", "ptr": "V"},
+    {"name": "Bias_ptr", "ptr": "Bias"},
+    {"name": "Out_ptr", "ptr": "Out"},
+    {"name": "Lse_ptr", "ptr": "Lse"},
+    {"name": "TMP_ptr", "ptr": "TMP"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

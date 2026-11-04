@@ -1,0 +1,19 @@
+{
+  "description": "AI compiler sm_100a/BitDeltaNeurIPS2024Matmul/kernel, 3.3438x Triton: PTX Gym's problem, a f16[4096, 4096], b i32[128, 4096], c f16[4096, 4096]",
+  "kernel": "kernel",
+  "block": [128, 1, 1],
+  "grid": [2048, 1, 1],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "a", "kind": "in", "dtype": "f16", "shape": [4096, 4096]},
+    {"name": "b", "kind": "in", "dtype": "i32", "shape": [128, 4096]},
+    {"name": "c", "kind": "out", "dtype": "f16", "shape": [4096, 4096]}
+  ],
+  "params": [
+    {"name": "a_ptr", "ptr": "a"},
+    {"name": "b_ptr", "ptr": "b"},
+    {"name": "c_ptr", "ptr": "c"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -4,17 +4,22 @@
     python3 external/races.py --framework thunderkittens    # one of `FRAMEWORKS`
     python3 external/races.py --framework tritonbench -k add_example --timeout 300
 
-Each launch file `<framework>/**/<stem>.<case>.launch.json` is analyzed, in name
-order, with `volta analyze <stem>.ptx --config <launch file>` (the `<stem>.ptx`
-beside it). Outcomes, colors and the output's parsing are
-`ai_compiler_kernels/check_races.py`'s; a run with no verdict within `--timeout`
-is UNKNOWN. Each framework's outcomes go to `output/<framework>.csv`; the exit
-status is 1 if any run is a RACE-CONDITION, CHECK-FAILED, DEADLOCK or ERROR.
+Builds the release `volta` CLI, then analyzes each launch file
+`<framework>/**/<stem>.<case>.launch.json`, in name order, with
+`volta analyze <stem>.ptx --config <launch file>` (the `<stem>.ptx` beside
+it). A run is RACE-FREE when the graph checks verify it, a RACE-CONDITION
+when a memory-conflict, proxy-order or tensor-order check fails, CHECK-FAILED
+or DEADLOCK when another check fails, UNSUPPORTED when it reaches a construct
+Volta does not model, and UNKNOWN when it has no verdict within `--timeout`.
+Each framework's outcomes go to `output/<framework>.csv`; the exit status is 1
+if any run is a RACE-CONDITION, CHECK-FAILED, DEADLOCK or ERROR.
 """
 
 import argparse
 import csv
+import enum
 import os
+import re
 import subprocess
 import sys
 import time
@@ -22,16 +27,146 @@ from dataclasses import dataclass
 from pathlib import Path
 
 EXTERNAL_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = EXTERNAL_ROOT.parent
 OUTPUT_DIR = EXTERNAL_ROOT / "output"
-sys.path.insert(0, str(EXTERNAL_ROOT.parent / "ai_compiler_kernels"))
-
-import check_races  # noqa: E402
-from check_races import BOLD, GREEN, OUTCOME_CODES, OUTCOME_WIDTH, RED, Outcome, Style  # noqa: E402
+VOLTA = REPO_ROOT / "target" / "release" / "volta"
 
 # TritonBench-G (`extraction/tritonbench.py`), ThunderKittens' educational GEMMs (`extraction/thunderkittens.py`),
-# Triton's Gluon tutorials (`extraction/gluon.py`) and TileLang's examples (`extraction/tilelang_kernels.py`).
-FRAMEWORKS = ("tritonbench", "thunderkittens", "gluon", "tilelang")
+# Triton's Gluon tutorials (`extraction/gluon.py`), TileLang's examples (`extraction/tilelang_kernels.py`) and
+# the AI compiler's PTX for PTX Gym's operators (`extraction/ai_compiler.py`).
+FRAMEWORKS = ("tritonbench", "thunderkittens", "gluon", "tilelang", "ai_compiler")
+
+
+class Outcome(enum.Enum):
+    RACE_FREE = "RACE-FREE"
+    RACE_CONDITION = "RACE-CONDITION"
+    CHECK_FAILED = "CHECK-FAILED"
+    DEADLOCK = "DEADLOCK"
+    UNSUPPORTED = "UNSUPPORTED"
+    UNKNOWN = "UNKNOWN"
+    ERROR = "ERROR"
+
+
 FAILURES = {Outcome.RACE_CONDITION, Outcome.CHECK_FAILED, Outcome.DEADLOCK, Outcome.ERROR}
+OUTCOME_WIDTH = max(len(outcome.value) for outcome in Outcome)
+# `Property::name`s of the checks whose failure is a race condition: an unordered conflicting
+# access (global/shared or Tensor Memory) or a cross-proxy pair no proxy fence orders.
+RACE_CHECKS = ("memory-conflict freedom", "proxy ordering", "tensor-operation ordering")
+# A construct Volta does not model, rejected at lowering or when the execution reaches it.
+LOWERING_FAILED = re.compile(r"\blowering failed: (.*)")
+# A directive or instruction form the frontend does not know (the parse report's last line).
+PARSE_FAILED = re.compile(r"\b(Invalid [a-z ]+: \S+)$")
+EXECUTION_UNSUPPORTED = re.compile(r"^the execution stopped: (unsupported at .*)")
+CHECK_LINE = re.compile(r"^  (\S.*?) \((?:Algorithms? |PTX ISA |phase chain)[^)]*\)\s+(PASS|FAIL|UNKNOWN)$")
+VERDICT_LINE = re.compile(r"^GRAPH VERIFICATION: (VERIFIED|REJECTED|UNKNOWN)")
+WRITTEN_LINE = re.compile(r"^  output '[^']*': (\d+) element\(s\) written$")
+NO_OUTPUTS_LINE = re.compile(r"^  no outputs: (.*)$")
+DEADLOCK_LINE = re.compile(r"^  trace: deadlock")
+LOG_LINE = re.compile(r"^\[(ERROR|WARN|INFO|DEBUG|TRACE) *\] ")
+
+# ANSI SGR codes.
+BOLD, RED, GREEN, YELLOW = "1", "31", "32", "33"
+OUTCOME_CODES = {
+    Outcome.RACE_FREE: (BOLD, GREEN),
+    Outcome.RACE_CONDITION: (BOLD, RED),
+    Outcome.CHECK_FAILED: (BOLD, RED),
+    Outcome.DEADLOCK: (BOLD, RED),
+    Outcome.UNSUPPORTED: (BOLD, YELLOW),
+    Outcome.UNKNOWN: (BOLD, YELLOW),
+    Outcome.ERROR: (BOLD, RED),
+}
+
+
+@dataclass(frozen=True)
+class Style:
+    """ANSI colors when `enabled`, plain text otherwise."""
+
+    enabled: bool
+
+    def paint(self, text: str, *codes: str) -> str:
+        return f"\033[{';'.join(codes)}m{text}\033[0m" if self.enabled else text
+
+
+@dataclass(frozen=True)
+class CliReport:
+    """What `volta analyze` printed; `verdict` is None when it stopped before one."""
+
+    verdict: str | None
+    checks: tuple[tuple[str, str, str], ...]  # (check, PASS|FAIL|UNKNOWN, first finding)
+    written: int
+    no_outputs: str | None
+    deadlock: bool
+    reasons: tuple[str, ...]
+
+
+def parse_cli(stdout: str) -> CliReport:
+    verdict, checks, written, no_outputs, deadlock, reasons = None, [], 0, None, False, []
+    for line in stdout.splitlines():
+        if checks and checks[-1][2] == "" and line.startswith("      "):
+            checks[-1] = (*checks[-1][:2], line.strip())
+        elif m := CHECK_LINE.match(line):
+            checks.append((m[1], m[2], ""))
+        elif m := VERDICT_LINE.match(line):
+            verdict = m[1]
+        elif verdict and line.startswith("  "):
+            reasons.append(line.strip())
+        elif m := WRITTEN_LINE.match(line):
+            written += int(m[1])
+        elif m := NO_OUTPUTS_LINE.match(line):
+            no_outputs = m[1]
+        elif DEADLOCK_LINE.match(line):
+            deadlock = True
+    return CliReport(verdict, tuple(checks), written, no_outputs, deadlock, tuple(reasons))
+
+
+class VoltaFailure(Exception):
+    """volta stopped before any verdict: a command-line, configuration or internal error."""
+
+
+def classify(report: CliReport, stderr: str) -> tuple[Outcome, str]:
+    if report.verdict is None:
+        errors = "\n".join(line for line in stderr.splitlines() if not LOG_LINE.match(line))
+        error = " ".join(errors.split()) or "volta produced no verdict"
+        if m := LOWERING_FAILED.search(error):
+            return Outcome.UNSUPPORTED, m[1]
+        if m := PARSE_FAILED.search(error):
+            return Outcome.UNSUPPORTED, m[1]
+        raise VoltaFailure(error)
+    coverage = f"{report.written} outputs written"
+    if report.verdict == "VERIFIED":
+        return Outcome.RACE_FREE, coverage
+    if report.verdict == "REJECTED":
+        failed = [(check, finding) for check, verdict, finding in report.checks if verdict == "FAIL"]
+        if any(check in RACE_CHECKS for check, _ in failed):
+            outcome = Outcome.RACE_CONDITION
+        else:
+            outcome = Outcome.DEADLOCK if report.deadlock else Outcome.CHECK_FAILED
+        return outcome, "; ".join([f"{check}: {finding}" for check, finding in failed] or report.reasons)
+    if report.no_outputs is not None:
+        if m := EXECUTION_UNSUPPORTED.match(report.no_outputs):
+            return Outcome.UNSUPPORTED, m[1]
+        return Outcome.ERROR, report.no_outputs
+    findings = [f"{check}: {finding}" for check, verdict, finding in report.checks if verdict != "PASS"]
+    return Outcome.UNKNOWN, "; ".join([coverage, *(findings or report.reasons)])
+
+
+def build_volta() -> None:
+    build = subprocess.run(
+        ["cargo", "build", "--release", "--quiet", "-p", "volta_cli", "--features", "logging"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if build.returncode == 0:
+        return
+    if not VOLTA.exists():
+        sys.exit(f"cargo build failed and {VOLTA} does not exist:\n{build.stderr}")
+    reason = next(iter(build.stderr.strip().splitlines()), f"exit status {build.returncode}")
+    built = time.strftime("%Y-%m-%d %H:%M", time.localtime(VOLTA.stat().st_mtime))
+    print(
+        f"warning: cargo build failed ({reason}); using the existing {VOLTA.relative_to(REPO_ROOT)} built {built}",
+        file=sys.stderr,
+    )
 
 
 @dataclass(frozen=True)
@@ -45,8 +180,9 @@ class Run:
 def check(launch: Path, root: Path, timeout: float) -> Run:
     name = str(launch.relative_to(root)).removesuffix(".launch.json")
     ptx = launch.with_name(launch.name.split(".")[0] + ".ptx")
+    # Rendering outputs can cost GBs (shared subterms print as trees); counts suffice.
     command = [
-        str(check_races.VOLTA), "--no-log-file", "analyze", str(ptx), "--config", str(launch),
+        str(VOLTA), "--no-log-file", "analyze", str(ptx), "--config", str(launch),
         "--print-outputs", "0", "--no-profile",
     ]
     start = time.perf_counter()
@@ -54,10 +190,9 @@ def check(launch: Path, root: Path, timeout: float) -> Run:
         done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return Run(name, Outcome.UNKNOWN, timeout, f"no verdict within {timeout:.0f}s")
-    report = check_races.parse_cli(done.stdout)
     try:
-        outcome, detail = check_races.classify(report, done.stderr, report.written)
-    except check_races.VoltaFailure as failure:
+        outcome, detail = classify(parse_cli(done.stdout), done.stderr)
+    except VoltaFailure as failure:
         outcome, detail = Outcome.ERROR, str(failure)
     return Run(name, outcome, time.perf_counter() - start, detail)
 
@@ -96,7 +231,7 @@ def main() -> int:
     args = parser.parse_args()
 
     style = Style(sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
-    check_races.build_volta()
+    build_volta()
     frameworks = (args.framework,) if args.framework else FRAMEWORKS
     failed = [check_framework(f, args.match, args.timeout, style) for f in frameworks]
     return 1 if any(failed) else 0

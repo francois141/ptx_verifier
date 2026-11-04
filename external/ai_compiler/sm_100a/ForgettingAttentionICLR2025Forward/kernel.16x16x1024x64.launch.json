@@ -1,0 +1,25 @@
+{
+  "description": "AI compiler sm_100a/ForgettingAttentionICLR2025Forward/kernel, 1.0139x Triton: PTX Gym's problem, q f16[16, 16, 1024, 64], k f16[16, 16, 1024, 64], v f16[16, 16, 1024, 64], log_lambda f32[16, 16, 1024], l f32[16, 16, 1024], o f16[16, 16, 1024, 64]",
+  "kernel": "kernel",
+  "block": [256, 1, 1],
+  "grid": [8, 16, 16],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "q", "kind": "in", "dtype": "f16", "shape": [16, 16, 1024, 64]},
+    {"name": "k", "kind": "in", "dtype": "f16", "shape": [16, 16, 1024, 64]},
+    {"name": "v", "kind": "in", "dtype": "f16", "shape": [16, 16, 1024, 64]},
+    {"name": "log_lambda", "kind": "in", "dtype": "f32", "shape": [16, 16, 1024]},
+    {"name": "l", "kind": "out", "dtype": "f32", "shape": [16, 16, 1024]},
+    {"name": "o", "kind": "out", "dtype": "f16", "shape": [16, 16, 1024, 64]}
+  ],
+  "params": [
+    {"name": "q_ptr", "ptr": "q"},
+    {"name": "k_ptr", "ptr": "k"},
+    {"name": "v_ptr", "ptr": "v"},
+    {"name": "log_lambda_ptr", "ptr": "log_lambda"},
+    {"name": "l_ptr", "ptr": "l"},
+    {"name": "o_ptr", "ptr": "o"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

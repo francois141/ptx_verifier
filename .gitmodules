@@ -4,3 +4,6 @@
 [submodule "external/ThunderKittens"]
 	path = external/sources/ThunderKittens
 	url = https://github.com/HazyResearch/ThunderKittens.git
+[submodule "external/sources/triton_ai_compiler"]
+	path = external/sources/triton_ai_compiler
+	url = https://github.com/francois141/triton_ai_compiler.git

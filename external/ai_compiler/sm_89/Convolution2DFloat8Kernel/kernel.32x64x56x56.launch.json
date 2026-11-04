@@ -1,0 +1,19 @@
+{
+  "description": "AI compiler sm_89/Convolution2DFloat8Kernel/kernel, 1.1722x Triton: PTX Gym's problem, x e4m3[32, 64, 56, 56], weight e4m3[128, 64, 3, 3], output f16[32, 128, 54, 54]",
+  "kernel": "kernel",
+  "block": [128, 1, 1],
+  "grid": [729, 1, 1],
+  "dynamic_shared_bytes": 101376,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "e4m3", "shape": [32, 64, 56, 56]},
+    {"name": "weight", "kind": "in", "dtype": "e4m3", "shape": [128, 64, 3, 3]},
+    {"name": "output", "kind": "out", "dtype": "f16", "shape": [32, 128, 54, 54]}
+  ],
+  "params": [
+    {"name": "x_ptr", "ptr": "x"},
+    {"name": "weight_ptr", "ptr": "weight"},
+    {"name": "output_ptr", "ptr": "output"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

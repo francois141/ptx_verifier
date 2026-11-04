@@ -13,8 +13,8 @@ once, runs itself in a container and copies the PTX out (`--backend`); running
 third-party code there also isolates it.
 
 Each distinct PTX of a file lands in `<out>/<file stem>/<kernel>[_vN].ptx`,
-beside a `.json` with its launch configuration (in the format of
-`ai_compiler_kernels/`) and every launch that produced it: grid, and each
+beside a `.json` with its launch configuration (`num_threads_*`, `num_warps`,
+shared memory) and every launch that produced it: grid, and each
 argument's dtype, shape and storage or value. A file of the suite's `sizes`
 records only the launches of its sizes, each a call run in the file's namespace
 (after its test code ran, for a suite run as `__main__`), and each becomes a
