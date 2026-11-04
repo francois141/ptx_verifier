@@ -471,10 +471,33 @@ including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
 AWS Trainium kernel analysis. Its input is an NKI kernel (a `@nki.jit` Python
 function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
-(`eval`). `tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF
-tiles (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
+(`eval`).
+
+Lowering accepts eight `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+`tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`, `nc_matmul`
+and `nc_transpose` - and resolves their `nki.language` operands by searching
+`ArithOp::ALL` (`nl.add`, `nl.multiply`) and `ActivationFunc::ALL`
+(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`) for a variant whose `name()`
+matches, so a new function reaches lowering by joining that array and needs no
+arm of its own; any other member is a lowering error.
+
+A `tensor_scalar` operand is a float literal or a `[partitions, 1]` tile whose
+single free element broadcasts across the destination's free axis; its second
+`(op, operand)` pair is optional and both keywords must appear together.
+`activation_reduce` folds `reduce_op` over each partition of its activated
+result into `reduce_res[p, 0]`, seeded with the partition's first element rather
+than an identity, so a non-additive `reduce_op` is correct too. A float literal
+is an `ast::Scalar`, a newtype whose constructor rejects non-finite values, so
+it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
+rational, since only f64-round-tripping reals print as decimals.
+
+`tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
+(`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
 `tests/fixtures/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`
-reading the `nc_matmul`'s PSUM tile directly.
+reading the `nc_matmul`'s PSUM tile directly. `tests/fixtures/rms_norm.py`
+normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
+`activation_reduce` and two `tensor_scalar`s, the second broadcasting a
+`[4, 1]` tile.
 
 ## Crate: volta_graph_check
 

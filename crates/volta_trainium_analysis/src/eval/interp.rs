@@ -65,6 +65,31 @@ impl<'a> Interpreter<'a> {
                     self.tensors[dst].write(index, value);
                 }
             }
+            LoweredInstr::ActivationReduce {
+                func,
+                dst,
+                data,
+                reduce_op,
+                reduce_res,
+            } => {
+                let [partitions, free] = self.tensors[dst].tile_shape();
+                for partition in 0..partitions {
+                    let mut reduced = None;
+                    for element in 0..free {
+                        let index = Index(vec![partition, element]);
+                        let x = self.tensors[data].read(&mut self.arena, instr, &index)?;
+                        let value = self.activation(func, x);
+                        self.tensors[dst].write(index, value);
+                        reduced = Some(match reduced {
+                            Some(accumulated) => self.arith(reduce_op, accumulated, value),
+                            None => value,
+                        });
+                    }
+                    if let Some(reduced) = reduced {
+                        self.tensors[reduce_res].write(Index(vec![partition, 0]), reduced);
+                    }
+                }
+            }
             LoweredInstr::TensorScalar {
                 dst,
                 data,
