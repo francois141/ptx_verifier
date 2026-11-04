@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use volta_common::file_cache::FileCache;
 use volta_common::report::{Report, report_error};
-use volta_spec::ParsedSpec;
+use volta_pipeline::Spec;
 
 use crate::config::parse_u64_value;
 
@@ -41,15 +41,16 @@ pub(crate) fn dim_values(dims: &[String]) -> Result<HashMap<String, u64>, ExitCo
         .collect()
 }
 
-/// The spec `arg` names: a `.spec` path, or inline spec source if no such file exists. A
-/// failure is reported here, located in the spec source when it is a parse error.
-pub(crate) fn load_spec(arg: &str) -> Result<ParsedSpec, ExitCode> {
+/// The spec `arg` names (a `.spec` path, or inline spec source if no such file exists) at the
+/// values `dims`; a failure is reported here, located in the spec source when it is a parse
+/// error.
+pub(crate) fn load_spec(arg: &str, dims: &HashMap<String, u64>) -> Result<Spec, ExitCode> {
     let mut spec_files = FileCache::new();
     let (spec_src, spec_path) = load_spec_source(&mut spec_files, arg).map_err(|e| {
         eprintln!("error: {}", e);
         ExitCode::FAILURE
     })?;
-    volta_spec::parse_spec(&spec_src).map_err(|e| {
+    let parsed_spec = volta_spec::parse_spec(&spec_src).map_err(|e| {
         if spec_path.is_none() {
             eprintln!(
                 "note: '{}' is not an existing file, so it was parsed as inline spec text",
@@ -66,6 +67,10 @@ pub(crate) fn load_spec(arg: &str) -> Result<ParsedSpec, ExitCode> {
                 message: Some(&e.error.to_string()),
             },
         );
+        ExitCode::FAILURE
+    })?;
+    Spec::new(&parsed_spec, dims).map_err(|e| {
+        eprintln!("error: {}", e);
         ExitCode::FAILURE
     })
 }

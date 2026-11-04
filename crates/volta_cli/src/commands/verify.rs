@@ -9,9 +9,8 @@ use clap::Args;
 use volta_common::run_log;
 use volta_equivalence::EquivCheckOptions;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
-use volta_pipeline::{EquivalenceVerdict, check_equivalence, decide};
+use volta_pipeline::{EquivalenceVerdict, check_against_spec, decide};
 use volta_ptx_analysis::{LaunchFile, write_op_counts};
-use volta_spec::unfold;
 
 use crate::config::{LaunchArgs, launch_config};
 use crate::output::{print_decision, print_graph_report, print_spec_check};
@@ -67,34 +66,10 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
         Ok(m) => m,
         Err(code) => return code,
     };
-    let parsed_spec = match load_spec(&args.spec) {
+    let spec = match dim_values(&args.dims).and_then(|dims| load_spec(&args.spec, &dims)) {
         Ok(spec) => spec,
         Err(code) => return code,
     };
-    let dim_values = match dim_values(&args.dims) {
-        Ok(dims) => dims,
-        Err(code) => return code,
-    };
-    let (env, specs) = match volta_spec::instantiate(&parsed_spec, &dim_values) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: {}", e);
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // The arrays to check: every array the spec defines an output
-    // equation for, in declaration order.
-    let mut check_arrays: Vec<String> = Vec::new();
-    for o in &parsed_spec.outputs {
-        if !check_arrays.contains(&o.array) {
-            check_arrays.push(o.array.clone());
-        }
-    }
-    if check_arrays.is_empty() {
-        eprintln!("error: spec declares no output equations to check");
-        return ExitCode::FAILURE;
-    }
 
     let LaunchFile {
         kernel: launch_kernel,
@@ -110,7 +85,7 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
 
     // Fail fast, before symbolic execution: every array the spec checks
     // must be a declared output array of the kernel under this config.
-    for name in &check_arrays {
+    for name in spec.arrays() {
         if !config
             .arrays
             .iter()
@@ -157,65 +132,6 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
         }
     };
 
-    // Before --sample truncates either side, so a sampled prefix cannot hide an element the
-    // kernel never writes: each spec output defines every flat index of its shape.
-    for name in &check_arrays {
-        let expected = specs
-            .iter()
-            .filter(|s| &s.array == name)
-            .map(|s| s.shape.size())
-            .max()
-            .unwrap_or(0);
-        let written: Vec<u64> = kernel_exprs
-            .outputs
-            .iter()
-            .find(|(n, _)| n == name)
-            .map_or_else(Vec::new, |(_, elems)| {
-                elems.iter().map(|&(index, _)| index).collect()
-            });
-        let unwritten: Vec<u64> = (0..expected)
-            .filter(|index| written.binary_search(index).is_err())
-            .collect();
-        let unexpected: Vec<u64> = written.iter().copied().filter(|&i| i >= expected).collect();
-        if !unwritten.is_empty() || !unexpected.is_empty() {
-            let decision = decide(
-                &EquivalenceVerdict::IndexSetMismatch {
-                    array: name.clone(),
-                    unwritten,
-                    unexpected,
-                },
-                &[side.evidence()],
-            );
-            log.record(&format!("verify: {}", decision.verdict.name()));
-            return print_decision(&decision);
-        }
-    }
-
-    // --sample also caps *generation* (a big kernel's footprint is impractical to unroll a
-    // Sum-heavy spec over): truncate the kernel's elements to the same ascending prefix
-    // `unfold` builds, so the two sides still pair up.
-    let untruncated: u64 = kernel_exprs
-        .outputs
-        .iter()
-        .filter(|(n, _)| check_arrays.contains(n))
-        .map(|(_, elems)| elems.len() as u64)
-        .sum();
-    if args.sample > 0 {
-        for name in &check_arrays {
-            if let Some((_, elems)) = kernel_exprs.outputs.iter_mut().find(|(n, _)| n == name) {
-                elems.truncate(args.sample as usize);
-            }
-        }
-    }
-
-    let spec_output = match unfold(&specs, &env, args.sample) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("error: building spec: {}", e);
-            return ExitCode::FAILURE;
-        }
-    };
-
     let options = EquivCheckOptions {
         sample: args.sample,
         verify_numeric: args.verify_numeric,
@@ -223,15 +139,14 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
         iterations: args.iterations,
     };
     let vc_start = Instant::now();
-    let (mut equivalence, report) =
-        check_equivalence(&kernel_exprs, &spec_output, &check_arrays, &options);
-    let vc_secs = vc_start.elapsed().as_secs_f64();
-    if let EquivalenceVerdict::Equivalent { checked, total } = &mut equivalence {
-        *total = (*total).max(untruncated);
-        if *checked > *total {
-            *checked = *total;
+    let (equivalence, report) = match check_against_spec(&mut kernel_exprs, &spec, &options) {
+        Ok(checked) => checked,
+        Err(e) => {
+            eprintln!("error: building spec: {}", e);
+            return ExitCode::FAILURE;
         }
-    }
+    };
+    let vc_secs = vc_start.elapsed().as_secs_f64();
     print_spec_check(
         "verify",
         &equivalence,
