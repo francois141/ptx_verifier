@@ -739,12 +739,14 @@ version = "0.1.0"
 dependencies = [
  "log",
  "volta_amd_analysis",
+ "volta_common",
  "volta_equivalence",
  "volta_expr",
  "volta_graph",
  "volta_graph_check",
  "volta_ptx_analysis",
  "volta_spec",
+ "volta_trainium_analysis",
  "volta_viz",
 ]
 

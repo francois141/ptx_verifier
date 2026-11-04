@@ -1,5 +1,6 @@
-//! A kernel's outputs against a spec: the kernel must write exactly the spec's elements, then
-//! the canonical decision procedure decides each one.
+//! A kernel's outputs against a spec, by the caller's solver. The solver first requires the
+//! kernel to write exactly the spec's elements; the canonical decision procedure then decides
+//! each element.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -9,6 +10,14 @@ use volta_expr::SymbolicOutputs;
 use volta_spec::{InstantiateErrorKind, OutputSpec, ParsedSpec, SpecEnv, SpecError};
 
 use crate::equivalence::{EquivalenceVerdict, check_equivalence};
+
+/// How a kernel's outputs are checked against a spec.
+#[derive(Debug, Clone)]
+pub enum Solver {
+    /// The canonicalizing decision procedure of `volta_equivalence`, each claimed difference
+    /// confirmed by the numeric oracle.
+    Canonical(EquivCheckOptions),
+}
 
 /// A spec at concrete dims: for each array it defines, the value of every element.
 #[derive(Debug)]
@@ -131,4 +140,51 @@ pub fn check_against_spec(
         *checked = (*checked).min(*total);
     }
     Ok((verdict, report))
+}
+
+/// What a solver made of a kernel's outputs against a spec.
+#[derive(Debug)]
+pub enum Solution {
+    /// The canonical solver's verdict, with its report when it ran.
+    Canonical {
+        verdict: EquivalenceVerdict,
+        report: Option<EquivCheckReport>,
+    },
+}
+
+impl Solution {
+    /// The equivalence branch's verdict as `decide` weighs it.
+    pub fn verdict(&self) -> EquivalenceVerdict {
+        match self {
+            Solution::Canonical { verdict, .. } => verdict.clone(),
+        }
+    }
+}
+
+/// `outputs`, or why the kernel has none, against `spec` by `solver`.
+pub(crate) fn solve(
+    outputs: Result<&mut SymbolicOutputs, &str>,
+    spec: &Spec,
+    solver: &Solver,
+) -> Result<Solution, SpecError> {
+    let kernel = match outputs {
+        Ok(kernel) => kernel,
+        Err(why) => {
+            let verdict = EquivalenceVerdict::Failed {
+                reason: format!("kernel: {why}"),
+            };
+            return Ok(match solver {
+                Solver::Canonical(_) => Solution::Canonical {
+                    verdict,
+                    report: None,
+                },
+            });
+        }
+    };
+    match solver {
+        Solver::Canonical(options) => {
+            let (verdict, report) = check_against_spec(kernel, spec, options)?;
+            Ok(Solution::Canonical { verdict, report })
+        }
+    }
 }
