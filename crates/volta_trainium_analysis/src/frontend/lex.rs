@@ -1,4 +1,4 @@
-//! Python tokens of the NKI subset: names, keywords, integers and punctuation,
+//! Python tokens of the NKI subset: names, keywords, numbers and punctuation,
 //! with Python's NEWLINE/INDENT/DEDENT structure. Strings are not tokens, so
 //! every `#` starts a comment.
 
@@ -13,6 +13,8 @@ pub enum Keyword {
     As,
     Def,
     Assert,
+    For,
+    In,
 }
 
 impl Keyword {
@@ -22,6 +24,8 @@ impl Keyword {
             "as" => Some(Self::As),
             "def" => Some(Self::Def),
             "assert" => Some(Self::Assert),
+            "for" => Some(Self::For),
+            "in" => Some(Self::In),
             _ => None,
         }
     }
@@ -32,15 +36,17 @@ impl Keyword {
             Self::As => "as",
             Self::Def => "def",
             Self::Assert => "assert",
+            Self::For => "for",
+            Self::In => "in",
         }
     }
 }
 
 /// Python's other keywords, rejected rather than read as names.
-const UNSUPPORTED_KEYWORDS: [&str; 31] = [
+const UNSUPPORTED_KEYWORDS: [&str; 29] = [
     "False", "None", "True", "and", "async", "await", "break", "class", "continue", "del", "elif",
-    "else", "except", "finally", "for", "from", "global", "if", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    "else", "except", "finally", "from", "global", "if", "is", "lambda", "nonlocal", "not", "or",
+    "pass", "raise", "return", "try", "while", "with", "yield",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,12 +57,16 @@ pub enum TokenKind {
     Float(Scalar),
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Comma,
     Equals,
     EqualsEquals,
     Dot,
     Colon,
     At,
+    Star,
+    Plus,
     /// The end of a logical line.
     Newline,
     Indent,
@@ -86,12 +96,16 @@ impl fmt::Display for TokenKind {
             Self::Float(value) => write!(f, "`{value}`"),
             Self::LParen => f.write_str("`(`"),
             Self::RParen => f.write_str("`)`"),
+            Self::LBracket => f.write_str("`[`"),
+            Self::RBracket => f.write_str("`]`"),
             Self::Comma => f.write_str("`,`"),
             Self::Equals => f.write_str("`=`"),
             Self::EqualsEquals => f.write_str("`==`"),
             Self::Dot => f.write_str("`.`"),
             Self::Colon => f.write_str("`:`"),
             Self::At => f.write_str("`@`"),
+            Self::Star => f.write_str("`*`"),
+            Self::Plus => f.write_str("`+`"),
             Self::Newline => f.write_str("end of line"),
             Self::Indent => f.write_str("an indented block"),
             Self::Dedent => f.write_str("end of block"),
@@ -183,12 +197,16 @@ fn scan(code: &str, line: usize) -> Result<Vec<TokenKind>, ParseError> {
         let (kind, len) = match c {
             '(' => (TokenKind::LParen, 1),
             ')' => (TokenKind::RParen, 1),
+            '[' => (TokenKind::LBracket, 1),
+            ']' => (TokenKind::RBracket, 1),
             ',' => (TokenKind::Comma, 1),
             '=' if rest.starts_with("==") => (TokenKind::EqualsEquals, 2),
             '=' => (TokenKind::Equals, 1),
             '.' => (TokenKind::Dot, 1),
             ':' => (TokenKind::Colon, 1),
             '@' => (TokenKind::At, 1),
+            '*' => (TokenKind::Star, 1),
+            '+' => (TokenKind::Plus, 1),
             _ if c == '_' || c.is_ascii_alphabetic() => {
                 let len = run(rest, |c| c == '_' || c.is_ascii_alphanumeric());
                 (word(&rest[..len], line)?, len)
