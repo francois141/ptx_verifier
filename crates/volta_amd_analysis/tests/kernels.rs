@@ -315,12 +315,30 @@ fn ck_gemm_kernarg(a: u64, b: u64, c: u64) -> Vec<u8> {
     bytes
 }
 
-#[test]
-fn the_ck_gemm_kernel_writes_its_expected_outputs() {
+/// `CK_GEMM_KERNEL` with the C element op `$op`, mangled, in place of the third `PassThrough`,
+/// which shifts every later substitution index by one.
+macro_rules! ck_gemm_kernel_with_c_op {
+    ($op:literal) => {
+        concat!(
+            "_ZN2ck27kernel_gemm_xdl_cshuffle_v3INS_28GridwiseGemm_xdl_cshuffle_v3INS_13tensor_layout4",
+            "gemm8RowMajorENS3_11ColumnMajorES4_fffffNS_16tensor_operation12element_wise11PassThrough",
+            "ES8_",
+            $op,
+            "LNS6_6device18GemmSpecializationE7ELi128ELi64ELi64ELi64ELi4ELi4ELi16ELi16ELi2ELi4ENS_8",
+            "SequenceIJLi4ELi32ELi1EEEENSC_IJLi1ELi0ELi2EEEESE_Li2ELi2ELi2ELb0ELi0ESD_SE_SE_Li2ELi2",
+            "ELi2ELb0ELi0ELi1ELi2ENSC_IJLi1ELi32ELi1ELi4EEEELi2ELNS_26BlockGemmPipelineSchedulerE0ELNS_",
+            "24BlockGemmPipelineVersionE2EffLb0ELb0ELb0EEELb0ELNS_25InMemoryDataOperationEnumE0ELi1ELNS_",
+            "10TailNumberE10EEEvNT_8ArgumentE",
+        )
+    };
+}
+
+/// Run a `ck_gemm.hip`-style instance on the 8 x 8 x 8 problem of `ck_gemm_kernarg`.
+fn check_ck_gemm(fixture: &str, kernel: &str) {
     let (a, b, c) = (0x10000, 0x20000, 0x30000);
     common::check_run_kernel(
-        "ck_gemm",
-        CK_GEMM_KERNEL,
+        fixture,
+        kernel,
         128,
         &ck_gemm_kernarg(a, b, c),
         &[
@@ -328,6 +346,21 @@ fn the_ck_gemm_kernel_writes_its_expected_outputs() {
             array_of("b", b, 8 * 8, ArrayKind::Input),
             array_of("c", c, 8 * 8, ArrayKind::Output(F32)),
         ],
+    );
+}
+
+#[test]
+fn the_ck_gemm_kernel_writes_its_expected_outputs() {
+    check_ck_gemm("ck_gemm", CK_GEMM_KERNEL);
+}
+
+// Test the fused sigmoid epilogue: its exp's underflow guard compares symbolic accumulators into
+// SGPR lane masks and selects a negated source on them.
+#[test]
+fn the_ck_gemm_sigmoid_kernel_writes_its_expected_outputs() {
+    check_ck_gemm(
+        "ck_gemm_sigmoid",
+        ck_gemm_kernel_with_c_op!("NS7_7SigmoidE"),
     );
 }
 
