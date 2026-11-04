@@ -45,6 +45,7 @@ pub struct Function {
     pub body: Vec<Stmt>,
 }
 
+#[derive(Clone)]
 pub enum Stmt {
     /// `[target =] call`.
     Call {
@@ -67,6 +68,7 @@ pub enum Stmt {
     },
 }
 
+#[derive(Clone)]
 pub struct Call {
     pub callee: Dotted,
     pub args: Vec<Expr>,
@@ -74,6 +76,7 @@ pub struct Call {
     pub kwargs: Vec<(String, Expr)>,
 }
 
+#[derive(Clone)]
 pub enum Expr {
     Int(u64),
     Float(Scalar),
@@ -264,7 +267,7 @@ impl Parser {
         Ok(lhs)
     }
 
-    /// A product of primaries.                                                                                                                                                                                                                                               
+    /// A product of primaries.                                                                                                                                                                                                                                         
     fn term(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
         while self.eat(&TokenKind::Star) {
