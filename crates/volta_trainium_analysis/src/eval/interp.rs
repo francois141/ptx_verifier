@@ -43,11 +43,12 @@ impl<'a> Interpreter<'a> {
 
     /// An elementwise instruction's operands have one shape, so `dst`'s indices index them all.
     fn step(&mut self, instr: InstrId, instruction: &LoweredInstr) -> Result<(), EvalError> {
-        match *instruction {
+        match instruction.clone() {
             LoweredInstr::Mov { dst, src } => {
-                for index in self.tensors[dst].indices(instr)? {
-                    let value = self.tensors[src].read(&mut self.arena, instr, &index)?;
-                    self.tensors[dst].write(index, value);
+                for offset in dst.shape.indices() {
+                    let source = src.start.shifted(&offset);
+                    let value = self.tensors[src.tensor].read(&mut self.arena, instr, &source)?;
+                    self.tensors[dst.tensor].write(dst.start.shifted(&offset), value);
                 }
             }
             LoweredInstr::Arith { op, dst, lhs, rhs } => {

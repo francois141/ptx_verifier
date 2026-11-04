@@ -43,6 +43,15 @@ pub struct Shape(pub Vec<u64>);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(pub Vec<u64>);
 
+/// A rectangular region of a tensor: `shape` elements from `start`, per dimension.
+/// A whole tensor is a zero `start` with the tensor's own shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TensorRegion {
+    pub tensor: TensorId,
+    pub start: Index,
+    pub shape: Shape,
+}
+
 impl Shape {
     /// The number of elements, if it fits in a `u64`.
     pub fn element_count(&self) -> Option<u64> {
@@ -87,6 +96,12 @@ impl Index {
     /// `[free, partition]`.
     pub fn transposed(&self) -> Index {
         Index(self.0.iter().rev().copied().collect())
+    }
+
+    /// This index advanced by `by`, component-wise: the tensor index of a
+    /// region's `by`th element.
+    pub fn shifted(&self, by: &Index) -> Index {
+        Index(self.0.iter().zip(&by.0).map(|(a, b)| a + b).collect())
     }
 }
 

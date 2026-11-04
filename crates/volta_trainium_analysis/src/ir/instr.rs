@@ -2,7 +2,7 @@
 
 use id_collections::id_type;
 
-use super::{ActivationFunc, ArithOp, ScalarStep, TensorId};
+use super::{ActivationFunc, ArithOp, ScalarStep, TensorId, TensorRegion};
 
 /// An instruction's position in its kernel body.
 #[id_type]
@@ -13,8 +13,11 @@ pub enum LoweredInstr {
     // =========================================================================
     // Data Movement
     // =========================================================================
-    /// `dst = src` elementwise, both of one shape.
-    Mov { dst: TensorId, src: TensorId },
+    /// `dst = src` elementwise over regions of one shape.
+    Mov {
+        dst: TensorRegion,
+        src: TensorRegion,
+    },
 
     // =========================================================================
     // Elementwise
