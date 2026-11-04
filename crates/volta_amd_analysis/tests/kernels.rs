@@ -3,6 +3,7 @@
 mod common;
 
 use common::{array, array_of};
+use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::{
     AnalysisError, AnalysisResult, ArrayKind, EvalError, LowerError, Terminal,
 };
@@ -13,7 +14,7 @@ fn the_copy_kernel_writes_its_expected_outputs() {
         "copy",
         &[
             array("in", 0x10000, ArrayKind::Input),
-            array("out", 0x20000, ArrayKind::Output),
+            array("out", 0x20000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -25,7 +26,7 @@ fn the_add_kernel_writes_its_expected_outputs() {
         &[
             array("a", 0x10000, ArrayKind::Input),
             array("b", 0x20000, ArrayKind::Input),
-            array("out", 0x30000, ArrayKind::Output),
+            array("out", 0x30000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -36,7 +37,7 @@ fn the_relu_kernel_writes_its_expected_outputs() {
         "relu",
         &[
             array("a", 0x10000, ArrayKind::Input),
-            array("out", 0x20000, ArrayKind::Output),
+            array("out", 0x20000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -47,7 +48,7 @@ fn the_sigmoid_kernel_writes_its_expected_outputs() {
         "sigmoid",
         &[
             array("a", 0x10000, ArrayKind::Input),
-            array("out", 0x20000, ArrayKind::Output),
+            array("out", 0x20000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -60,7 +61,7 @@ fn the_softmax_kernel_writes_its_expected_outputs() {
         128,
         &[
             array_of("input", 0x10000, 128, ArrayKind::Input),
-            array_of("output", 0x20000, 128, ArrayKind::Output),
+            array_of("output", 0x20000, 128, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -77,7 +78,7 @@ fn the_matmul_kernel_writes_its_expected_outputs() {
         &[
             array_of("a", 0x10000, len, ArrayKind::Input),
             array_of("b", 0x20000, len, ArrayKind::Input),
-            array_of("c", 0x30000, len, ArrayKind::Output),
+            array_of("c", 0x30000, len, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -89,7 +90,7 @@ fn the_transpose_kernel_writes_its_expected_outputs() {
         "transpose",
         &[
             array("a", 0x10000, ArrayKind::Input),
-            array("out", 0x20000, ArrayKind::Output),
+            array("out", 0x20000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -104,7 +105,7 @@ fn the_float_ops_kernel_writes_its_expected_outputs() {
         &[
             array("a", 0x10000, ArrayKind::Input),
             array("b", 0x20000, ArrayKind::Input),
-            array_of("out", 0x30000, 64 * FLOAT_OPS_ROW, ArrayKind::Output),
+            array_of("out", 0x30000, 64 * FLOAT_OPS_ROW, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -115,8 +116,8 @@ fn the_accvgpr_kernel_writes_its_expected_outputs() {
         "accvgpr",
         &[
             array("a", 0x10000, ArrayKind::Input),
-            array("out", 0x20000, ArrayKind::Output),
-            array("back", 0x30000, ArrayKind::Output),
+            array("out", 0x20000, ArrayKind::Output(F32)),
+            array("back", 0x30000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -132,12 +133,12 @@ fn the_mfma_matmul_kernel_writes_its_expected_outputs() {
         &[
             array_of("a", 0x10000, 32 * 8, ArrayKind::Input),
             array_of("b", 0x20000, 8 * 32, ArrayKind::Input),
-            array_of("c", 0x30000, 32 * 32, ArrayKind::Output),
+            array_of("c", 0x30000, 32 * 32, ArrayKind::Output(F32)),
         ],
     );
 }
 
-/// Each work-item writes one result per word or f32 operation to its own row of 64 words.
+/// Each work-item writes integer and float results to separate rows of 64 elements.
 const BIT_OPS_ROW: u64 = 64;
 
 #[test]
@@ -147,7 +148,13 @@ fn the_bit_ops_kernel_writes_its_expected_outputs() {
         &[
             array_of("a", 0x10000, 2 * 64, ArrayKind::Input),
             array("b", 0x20000, ArrayKind::Input),
-            array_of("out", 0x30000, 64 * BIT_OPS_ROW, ArrayKind::Output),
+            array_of("out", 0x30000, 64 * BIT_OPS_ROW, ArrayKind::Output(U32)),
+            array_of(
+                "float_out",
+                0x40000,
+                64 * BIT_OPS_ROW,
+                ArrayKind::Output(F32),
+            ),
         ],
     );
 }
@@ -200,7 +207,7 @@ fn the_ck_gemm_kernel_writes_its_expected_outputs() {
         &[
             array_of("a", a, 8 * 8, ArrayKind::Input),
             array_of("b", b, 8 * 8, ArrayKind::Input),
-            array_of("c", c, 8 * 8, ArrayKind::Output),
+            array_of("c", c, 8 * 8, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -213,7 +220,7 @@ fn the_convolution_1d_kernel_writes_its_expected_outputs() {
         &[
             array_of("input", 0x10000, 64 + 25 - 1, ArrayKind::Input),
             array_of("filter", 0x20000, 25, ArrayKind::Input),
-            array("output", 0x30000, ArrayKind::Output),
+            array("output", 0x30000, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -227,9 +234,62 @@ fn the_convolution_2d_kernel_writes_its_expected_outputs() {
         &[
             array_of("input", 0x10000, 10 * 10, ArrayKind::Input),
             array_of("filter", 0x20000, 3 * 3, ArrayKind::Input),
-            array("output", 0x30000, ArrayKind::Output),
+            array("output", 0x30000, ArrayKind::Output(F32)),
         ],
     );
+}
+
+// Test that the same stored bits become real constants in float outputs and words in integer outputs.
+#[test]
+fn constant_outputs_follow_their_declared_types() {
+    common::check_run(
+        "output_constants",
+        &[
+            array("floats", 0x10000, ArrayKind::Output(F32)),
+            array("words", 0x20000, ArrayKind::Output(U32)),
+        ],
+    );
+}
+
+// Test that a symbolic input cannot be exported as a concrete integer word.
+#[test]
+fn symbolic_integer_outputs_are_rejected() {
+    let arrays = [
+        array("in", 0x10000, ArrayKind::Input),
+        array("out", 0x20000, ArrayKind::Output(U32)),
+    ];
+    common::check_rejected_kernel("copy", "copy", &arrays, |result| {
+        matches!(
+            result,
+            Ok(AnalysisResult {
+                terminal: Terminal::Aborted {
+                    error: EvalError::InvalidIntegerOutput { address: 0x20000 },
+                    ..
+                },
+                symbolic_outputs: None,
+                ..
+            })
+        )
+    });
+}
+
+// Test that storing a NaN bit pattern to a float output aborts instead of exporting a real value.
+#[test]
+fn nan_float_outputs_are_rejected() {
+    let arrays = [array("out", 0x10000, ArrayKind::Output(F32))];
+    common::check_rejected_kernel("output_constants", "nan_output", &arrays, |result| {
+        matches!(
+            result,
+            Ok(AnalysisResult {
+                terminal: Terminal::Aborted {
+                    error: EvalError::InvalidFloatOutput { address: 0x10000 },
+                    ..
+                },
+                symbolic_outputs: None,
+                ..
+            })
+        )
+    });
 }
 
 // Test that a shift, a sign-bit trick and an integer addition each reject a symbolic input,
@@ -238,7 +298,7 @@ fn the_convolution_2d_kernel_writes_its_expected_outputs() {
 fn integer_operations_on_symbolic_values_are_rejected() {
     let arrays = [
         array("input", 0x10000, ArrayKind::Input),
-        array("output", 0x20000, ArrayKind::Output),
+        array("output", 0x20000, ArrayKind::Output(F32)),
     ];
     for kernel in ["symbolic_shift", "symbolic_negation", "symbolic_add"] {
         common::check_rejected_kernel("unsupported", kernel, &arrays, |result| {
@@ -263,7 +323,7 @@ fn integer_operations_on_symbolic_values_are_rejected() {
 fn selecting_between_constants_under_a_symbolic_condition_is_rejected() {
     let arrays = [
         array("input", 0x10000, ArrayKind::Input),
-        array("output", 0x20000, ArrayKind::Output),
+        array("output", 0x20000, ArrayKind::Output(F32)),
     ];
     common::check_rejected_kernel("unsupported", "symbolic_select", &arrays, |result| {
         matches!(
@@ -285,7 +345,7 @@ fn selecting_between_constants_under_a_symbolic_condition_is_rejected() {
 fn intra_wave_divergence_is_rejected() {
     let arrays = [
         array("input", 0x10000, ArrayKind::Input),
-        array("output", 0x20000, ArrayKind::Output),
+        array("output", 0x20000, ArrayKind::Output(F32)),
     ];
     common::check_rejected_kernel("unsupported", "divergent_store", &arrays, |result| {
         matches!(

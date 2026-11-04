@@ -7,11 +7,19 @@ use volta_expr::{ExprArena, ExprId, StringId, SymbolicOutputs};
 
 use super::EvalError;
 use super::scalar::KernargBuffer;
+use super::wave::{as_f32, concrete_word};
+
+/// How each 32-bit output element is interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputType {
+    F32,
+    U32,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArrayKind {
     Input,
-    Output,
+    Output(OutputType),
 }
 
 /// An array of 32-bit words in global memory: element `i` is at `base + 4i`. An input
@@ -97,17 +105,33 @@ impl GlobalMemory {
         Err(EvalError::GlobalRead { address })
     }
 
-    /// Record a store's value for this execution; a later store to the element replaces it.
-    /// Output elements cannot be loaded, so no wave observes the store, and the time the
-    /// hardware makes it visible is not modeled.
-    pub fn store_dword(&mut self, address: u64, value: ExprId) -> Result<(), EvalError> {
-        let is_output = self
+    /// Interpret a stored word according to the output type and record its mathematical value.
+    /// Output elements cannot be loaded; a later store replaces the recorded value.
+    pub fn store_dword(
+        &mut self,
+        address: u64,
+        value: ExprId,
+        arena: &mut ExprArena,
+    ) -> Result<(), EvalError> {
+        let output_type = self
             .regions
             .iter()
-            .any(|region| region.kind == ArrayKind::Output && region.element_at(address).is_some());
-        if !is_output {
-            return Err(EvalError::GlobalWrite { address });
-        }
+            .find_map(|region| match region.kind {
+                ArrayKind::Output(ty) if region.element_at(address).is_some() => Some(ty),
+                _ => None,
+            })
+            .ok_or(EvalError::GlobalWrite { address })?;
+
+        // Decode float constants without changing real expressions; integer outputs need known bits.
+        let value = match output_type {
+            OutputType::F32 => {
+                as_f32(arena, value).ok_or(EvalError::InvalidFloatOutput { address })?
+            }
+            OutputType::U32 => {
+                concrete_word(arena, value).ok_or(EvalError::InvalidIntegerOutput { address })?;
+                value
+            }
+        };
         self.written.insert(address, value);
         Ok(())
     }
@@ -117,7 +141,7 @@ impl GlobalMemory {
         let outputs = self
             .regions
             .iter()
-            .filter(|region| region.kind == ArrayKind::Output)
+            .filter(|region| matches!(region.kind, ArrayKind::Output(_)))
             .map(|region| {
                 let elements = self
                     .written

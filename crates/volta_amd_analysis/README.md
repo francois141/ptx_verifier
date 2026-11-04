@@ -30,10 +30,11 @@ sign-mask tricks for negation and absolute value; floating-point arithmetic and 
 including lane exchanges, remain supported. A select between two different constant words
 under a symbolic condition is rejected, since the words could encode floats or integers.
 
-`ArrayDef` marks each global-memory array `Input` or `Output`. Global stores write
-output elements, which the kernel cannot load. On completion,
-`AnalysisResult.symbolic_outputs` holds the output elements that execution wrote; an
-aborted run has none.
+`ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Output
+stores decode `F32` constants into mathematical reals and preserve existing real
+expressions; `U32` outputs require concrete 32-bit words. Invalid values abort at
+the store. Outputs cannot be loaded. On completion, `AnalysisResult.symbolic_outputs`
+holds the interpreted values that execution wrote; an aborted run has none.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
 (§6.2, §12.6, §12.7, §12.11, §12.12); scalar addressing and completion follow §8.2–8.3. Operand checks

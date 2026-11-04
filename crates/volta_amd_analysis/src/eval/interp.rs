@@ -363,9 +363,13 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::GlobalLoad { dst, address } => {
                 registers.global_load(&mut self.arena, &self.global, lane, dst.regs(), *address)
             }
-            LoweredInstr::GlobalStore { src, address } => {
-                registers.global_store(&self.arena, &mut self.global, lane, &src.regs(), *address)
-            }
+            LoweredInstr::GlobalStore { src, address } => registers.global_store(
+                &mut self.arena,
+                &mut self.global,
+                lane,
+                &src.regs(),
+                *address,
+            ),
             LoweredInstr::BufferLoad { dst, address } => {
                 self.buffer_load(wave, lane, *address, dst.regs())
             }

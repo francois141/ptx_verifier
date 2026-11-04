@@ -1,8 +1,8 @@
 // Compiled with -cl-fast-relaxed-math in addition to the copy fixture's flags. Each work-item
-// writes one result per BinOp and TernaryOp to its own 64-word row of `out`; the f32 ops
-// reinterpret the input words as floats, and `base` is `b`'s low word, an SGPR.
+// writes integer and float results to separate 64-element rows; the f32 ops reinterpret
+// the input words as floats, and `base` is `b`'s low word, an SGPR.
 __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
-                      __global unsigned *out) {
+                      __global unsigned *out, __global float *float_out) {
     unsigned i = __builtin_amdgcn_workitem_id_x();
     unsigned base = (unsigned)(ulong)b;
     // Integer operations use concrete words; floating-point operations use symbolic inputs.
@@ -16,6 +16,7 @@ __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
     int p = ((int)t << 8) >> 8, q = ((int)(t ^ 0x5a5a5a) << 8) >> 8;
     int r = ((int)(t + 0x123456) << 8) >> 8, s = (int)(t ^ 0xf0f0f0f0);
     __global unsigned *row = out + 64 * i;
+    __global float *float_row = float_out + 64 * i;
     row[0] = x & y;
     row[1] = x | y;
     row[2] = x ^ y;
@@ -25,18 +26,18 @@ __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
     row[6] = (x >> 5) & 0xff;
     row[7] = (x << 4) | y;
     row[8] = x | z | (y & 0xf0);
-    row[9] = as_uint(u + v);
-    row[10] = as_uint(u - v);
-    row[11] = as_uint(u * v);
-    row[12] = as_uint(fmin(u, v));
-    row[13] = as_uint(fmax(u, v));
+    float_row[9] = u + v;
+    float_row[10] = u - v;
+    float_row[11] = u * v;
+    float_row[12] = fmin(u, v);
+    float_row[13] = fmax(u, v);
     row[14] = x + z;
     row[15] = z - y;
     row[16] = x - base;
     row[17] = (z << 3) + y;
     row[18] = y + z + (x >> 2);
     row[19] = (x & z) | y;
-    row[21] = as_uint(u - as_float(base));
+    float_row[21] = u - as_float(base);
     row[22] = ~(y ^ z);
     row[23] = x < y ? x : y;
     row[24] = x > y ? x : y;
@@ -50,11 +51,11 @@ __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
     row[31] = zh > x ? zh : x;
     unsigned ulo = x > 3 ? x : 3;
     row[32] = ulo < 60 ? ulo : 60;
-    row[33] = as_uint(fmin(fmin(u, w), v));
-    row[34] = as_uint(fmax(fmax(u, w), v));
-    row[35] = as_uint(__builtin_amdgcn_fmed3f(u, v, w));
-    row[36] = as_uint(__builtin_elementwise_minimum(__builtin_elementwise_minimum(v, w), u));
-    row[37] = as_uint(__builtin_elementwise_maximum(__builtin_elementwise_maximum(v, w), u));
+    float_row[33] = fmin(fmin(u, w), v);
+    float_row[34] = fmax(fmax(u, w), v);
+    float_row[35] = __builtin_amdgcn_fmed3f(u, v, w);
+    float_row[36] = __builtin_elementwise_minimum(__builtin_elementwise_minimum(v, w), u);
+    float_row[37] = __builtin_elementwise_maximum(__builtin_elementwise_maximum(v, w), u);
     // The wait model counts no stores, so none may be issued before the loads complete.
     __builtin_amdgcn_sched_barrier(0);
     row[20] = (i ^ (i >> 1)) & (i >> 2);

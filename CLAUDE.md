@@ -412,9 +412,11 @@ values. Pending scalar destinations reject reads and writes until a zero LGKM wa
 `execute_lane` evaluates an instruction for a caller-selected active lane.
 `ds_bpermute_b32` gathers source register values across the wave before changing any
 of its destinations; results use the existing LGKM completion tracking.
-`ArrayDef` marks each global-memory array `Input` or `Output`; inputs are read-only
-and outputs cannot be loaded. `analyze` returns a completed run's written output
-elements as `SymbolicOutputs` and none for an aborted run.
+`ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Inputs
+are read-only and outputs cannot be loaded. Global and buffer stores interpret
+`F32` outputs as mathematical reals and require concrete words for `U32` outputs;
+invalid values abort at the store. `analyze` returns a completed run's written
+output elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`. All lanes stay active; EXEC-changing
 instructions are rejected. Integer and bitwise operations require concrete words because
 symbolic values are floats and do not represent bit patterns, so integer arithmetic and

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{ArrayDef, ArrayKind, Terminal, WorkgroupLaunch, analyze};
 use volta_equivalence::check::EquivCheckOptions;
@@ -16,7 +17,7 @@ fn check_matmul(input_bases: [u64; 2]) -> EquivalenceVerdict {
     let arrays = [
         ("A", A_BASE, ArrayKind::Input),
         ("B", B_BASE, ArrayKind::Input),
-        ("C", C_BASE, ArrayKind::Output),
+        ("C", C_BASE, ArrayKind::Output(F32)),
     ]
     .map(|(name, base, kind)| ArrayDef {
         name: name.into(),

@@ -9,7 +9,7 @@ mod ir;
 mod lower;
 
 pub use analysis::{AnalysisError, AnalysisResult, analyze};
-pub use eval::{ArrayDef, ArrayKind, EvalError, Terminal, WaveId, WorkgroupLaunch};
+pub use eval::{ArrayDef, ArrayKind, EvalError, OutputType, Terminal, WaveId, WorkgroupLaunch};
 pub use ir::{
     Agpr, BinOp, BranchCondition, BufferAddress, BufferImmOffset, CmpOp, GlobalAddress, InstrId,
     LaneMask, LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp,

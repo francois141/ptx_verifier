@@ -33,6 +33,8 @@ pub enum EvalError {
     KernargRead { address: u64 },
     GlobalRead { address: u64 },
     GlobalWrite { address: u64 },
+    InvalidFloatOutput { address: u64 },
+    InvalidIntegerOutput { address: u64 },
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
@@ -164,6 +166,18 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "4-byte write at {address:#x} is not an element of an output array"
+                )
+            }
+            Self::InvalidFloatOutput { address } => {
+                write!(
+                    f,
+                    "f32 output at {address:#x} must not be a NaN or wider than 32 bits"
+                )
+            }
+            Self::InvalidIntegerOutput { address } => {
+                write!(
+                    f,
+                    "u32 output at {address:#x} must be a concrete 32-bit word"
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),

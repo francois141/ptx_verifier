@@ -462,7 +462,7 @@ impl WaveRegisters {
     /// Store the word of each register of `src` to consecutive addresses.
     pub(super) fn global_store(
         &self,
-        arena: &ExprArena,
+        arena: &mut ExprArena,
         global: &mut GlobalMemory,
         lane: usize,
         src: &[LaneReg],
@@ -471,7 +471,7 @@ impl WaveRegisters {
         let start = self.global_address(arena, lane, address)?;
         for (i, &reg) in (0u64..).zip(src) {
             let word_address = start.checked_add(4 * i).ok_or(EvalError::AddressOverflow)?;
-            global.store_dword(word_address, self.read_lane_reg(lane, reg)?)?;
+            global.store_dword(word_address, self.read_lane_reg(lane, reg)?, arena)?;
         }
         Ok(())
     }
