@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Buffer, Dtype, Instruction, Kernel, Operand, Partitions, Scalar, Statement, TensorName,
+    Bounds, Buffer, Dtype, Instruction, Kernel, Operand, Partitions, Scalar, Statement, TensorName,
     TileDecl, TileShape,
 };
 use super::error::{ParseError, bail};
@@ -111,6 +111,11 @@ enum Value {
     ShapeOf(TensorName),
     /// An imported module's member, fully qualified: `nl.add` is `nki.language.add`.
     Member(String),
+    /// A rectangular region of a tensor, from a subscript.
+    Region {
+        tensor: TensorName,
+        dims: Vec<Bounds>,
+    },
 }
 
 impl Value {
@@ -175,10 +180,41 @@ impl Scope<'_> {
                 };
                 Ok(Value::Int(value))
             }
-            Expr::Subscript { .. } | Expr::Slice { .. } => {
-                bail!(line, "unsupported expression")
+            Expr::Subscript { base, indices } => {
+                let Value::Tensor(tensor) = self.evaluate(*base, line)? else {
+                    bail!(line, "only a tensor can be indexed");
+                };
+                let mut dims = Vec::new();
+                for index in indices {
+                    dims.push(self.bounds(index, line)?);
+                }
+                Ok(Value::Region { tensor, dims })
             }
+            Expr::Slice { .. } => bail!(line, "a slice is only valid inside `[]`"),
         }
+    }
+
+    /// One subscript index as slice bounds. An integer index would drop its
+    /// dimension, so only a slice is accepted.
+    fn bounds(&self, index: Expr, line: usize) -> Result<Bounds, ParseError> {
+        let Expr::Slice { start, stop } = index else {
+            bail!(line, "a tensor index must be a slice");
+        };
+        Ok(Bounds {
+            start: self.bound(start, line)?,
+            stop: self.bound(stop, line)?,
+        })
+    }
+
+    /// A slice bound, absent when the subscript omits it.
+    fn bound(&self, bound: Option<Box<Expr>>, line: usize) -> Result<Option<u64>, ParseError> {
+        let Some(expr) = bound else {
+            return Ok(None);
+        };
+        let Value::Int(value) = self.evaluate(*expr, line)? else {
+            bail!(line, "a slice bound must be an integer");
+        };
+        Ok(Some(value))
     }
 
     fn resolve(&self, name: &Dotted, line: usize) -> Result<Value, ParseError> {
@@ -221,7 +257,7 @@ impl Scope<'_> {
         qualified
     }
 
-    /// The tensor `name` refers to: the innermost enclosing iteration's, else an outer one's.                                                                                                                                                                        
+    /// The tensor `name` refers to: the innermost enclosing iteration's, else an outer one's.
     fn lookup(&self, name: &str) -> Option<TensorName> {
         for depth in (0..=self.iterations.len()).rev() {
             let mut candidate = name.to_string();
@@ -502,15 +538,17 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
     Ok(buffer)
 }
 
-/// A tensor, a scalar, or a module member, e.g. `x`, `0.125`, or `nl.add`.
+/// A tensor, a region of one, a scalar, or a module member, e.g. `x`, `x[0:4, :]`,
+/// `0.125` or `nl.add`.
 fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, ParseError> {
     match value {
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),
         Value::Member(member) => Ok(Operand::Member(member)),
         Value::Float(value) => Ok(Operand::Scalar(value)),
+        Value::Region { tensor, dims } => Ok(Operand::Region { tensor, dims }),
         _ => bail!(
             line,
-            "operand `{keyword}` must be a tensor, a scalar, or a module member"
+            "operand `{keyword}` must be a tensor, a region, a scalar, or a module member"
         ),
     }
 }
