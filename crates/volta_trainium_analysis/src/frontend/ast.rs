@@ -64,6 +64,23 @@ impl Partitions {
     }
 }
 
+/// A finite decimal literal, e.g. `tensor_scalar`'s `operand0=0.125`. `new`
+/// rejects non-finite values, so equality is reflexive and `Eq` holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scalar(f64);
+
+impl Eq for Scalar {}
+
+impl Scalar {
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dtype {
     /// `t.dtype`: the element type of tensor `t`.
@@ -104,6 +121,7 @@ pub enum Operand {
     Tensor(TensorName),
     /// A member of an imported module, its alias expanded, e.g. `nki.language.add`.
     Member(String),
+    Scalar(Scalar),
 }
 
 impl fmt::Display for Kernel {
@@ -170,6 +188,13 @@ impl fmt::Display for Operand {
         match self {
             Self::Tensor(tensor) => write!(f, "{tensor}"),
             Self::Member(member) => f.write_str(member),
+            Self::Scalar(value) => write!(f, "{value}"),
         }
+    }
+}
+
+impl fmt::Display for Scalar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }

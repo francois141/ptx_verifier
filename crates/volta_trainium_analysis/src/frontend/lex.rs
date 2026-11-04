@@ -4,6 +4,7 @@
 
 use std::fmt;
 
+use super::ast::Scalar;
 use super::error::{ParseError, bail};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub enum TokenKind {
     Name(String),
     Keyword(Keyword),
     Int(u64),
+    Float(Scalar),
     LParen,
     RParen,
     Comma,
@@ -81,6 +83,7 @@ impl fmt::Display for TokenKind {
             Self::Name(name) => write!(f, "`{name}`"),
             Self::Keyword(keyword) => write!(f, "`{}`", keyword.text()),
             Self::Int(value) => write!(f, "`{value}`"),
+            Self::Float(value) => write!(f, "`{value}`"),
             Self::LParen => f.write_str("`(`"),
             Self::RParen => f.write_str("`)`"),
             Self::Comma => f.write_str("`,`"),
@@ -190,10 +193,10 @@ fn scan(code: &str, line: usize) -> Result<Vec<TokenKind>, ParseError> {
                 let len = run(rest, |c| c == '_' || c.is_ascii_alphanumeric());
                 (word(&rest[..len], line)?, len)
             }
-            // A number takes the letters and dots after it, so `1.0` is one unsupported number.
+            // A number takes the letters and dots after it, so `1.0` is one token.
             _ if c.is_ascii_digit() => {
                 let len = run(rest, |c| c == '_' || c == '.' || c.is_ascii_alphanumeric());
-                (integer(&rest[..len], line)?, len)
+                (number(&rest[..len], line)?, len)
             }
             _ => bail!(line, "unsupported character `{c}`"),
         };
@@ -220,11 +223,17 @@ fn word(text: &str, line: usize) -> Result<TokenKind, ParseError> {
     Ok(TokenKind::Name(text.into()))
 }
 
-/// A decimal integer; floats, other bases and digit separators are unsupported.
-fn integer(literal: &str, line: usize) -> Result<TokenKind, ParseError> {
-    let leading_zero = literal.len() > 1 && literal.starts_with('0');
-    match literal.parse() {
-        Ok(value) if !leading_zero => Ok(TokenKind::Int(value)),
-        _ => bail!(line, "unsupported number `{literal}`"),
+/// A decimal integer or float; other bases and digit separators are unsupported.
+fn number(literal: &str, line: usize) -> Result<TokenKind, ParseError> {
+    if literal.contains('.') {
+        if let Some(value) = literal.parse().ok().and_then(Scalar::new) {
+            return Ok(TokenKind::Float(value));
+        }
+    } else {
+        let leading_zero = literal.len() > 1 && literal.starts_with('0');
+        if let (Ok(value), false) = (literal.parse(), leading_zero) {
+            return Ok(TokenKind::Int(value));
+        }
     }
+    bail!(line, "unsupported number `{literal}`")
 }

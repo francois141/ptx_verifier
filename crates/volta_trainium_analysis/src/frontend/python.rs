@@ -4,6 +4,7 @@
 
 use std::fmt;
 
+use super::ast::Scalar;
 use super::error::{ParseError, bail};
 use super::lex::{Keyword, Token, TokenKind, tokenize};
 
@@ -68,6 +69,7 @@ pub struct Call {
 
 pub enum Expr {
     Int(u64),
+    Float(Scalar),
     Name(Dotted),
     Tuple(Vec<Expr>),
 }
@@ -204,6 +206,7 @@ impl Parser {
         let Token { kind, line } = self.advance();
         match kind {
             TokenKind::Int(value) => Ok(Expr::Int(value)),
+            TokenKind::Float(value) => Ok(Expr::Float(value)),
             TokenKind::Name(head) => Ok(Expr::Name(self.attributes(head)?)),
             TokenKind::LParen => self.parenthesized(),
             other => bail!(line, "expected an expression, found {other}"),
