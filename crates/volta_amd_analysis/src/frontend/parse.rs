@@ -170,7 +170,12 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
             return Err(format!("unsupported statement {line:?}"));
         }
         // Accept comma-separated operands and space-separated wait counters.
-        if rest.contains(',') && rest.split(',').any(|piece| piece.trim().is_empty()) {
+        let operand_list = if opcode == "s_waitcnt" {
+            rest
+        } else {
+            rest.strip_suffix(',').unwrap_or(rest)
+        };
+        if rest.contains(',') && operand_list.split(',').any(|piece| piece.trim().is_empty()) {
             return Err(format!("empty operand in {line:?}"));
         }
         // Keep selector lists such as op_sel_hi:[1,0] in one operand.
@@ -359,9 +364,14 @@ mod tests {
             "global_load_dword ,v1, v0, s[0:1]",
             "global_load_dword v1,, v0, s[0:1]",
             "global_load_dword v1, , v0, s[0:1]",
-            "global_load_dword v1, v0, s[0:1],",
+            "global_load_dword v1, v0, s[0:1],,",
+            "global_load_dword v1, v0, s[0:1], ,",
             "s_waitcnt vmcnt(0),, lgkmcnt(0)",
+            "s_waitcnt vmcnt(0),",
+            "s_waitcnt vmcnt(0), lgkmcnt(0),",
+            "s_waitcnt vmcnt(0) lgkmcnt(0),",
             "s_endpgm ,",
+            "s_waitcnt ,",
         ] {
             assert_eq!(
                 parse_kernel(&kernel_source(line, ""), "test").unwrap_err(),
