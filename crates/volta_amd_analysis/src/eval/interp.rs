@@ -150,6 +150,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::ScalarOp64 { .. }
             | LoweredInstr::LShlScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
+            | LoweredInstr::CmpEqScalar64 { .. }
             | LoweredInstr::ReadFirstLane { .. }
             | LoweredInstr::WaitCnt { .. }
             | LoweredInstr::Nop => {
@@ -217,6 +218,7 @@ impl<'a> Interpreter<'a> {
     fn branch_taken(&self, wave: WaveId, condition: BranchCondition) -> Result<bool, EvalError> {
         let registers = &self.waves[wave].registers;
         match condition {
+            BranchCondition::Scc0 => Ok(!registers.read_scc()?),
             BranchCondition::Scc1 => registers.read_scc(),
             BranchCondition::VccNz => Ok(registers.read_vcc_mask(&self.arena)? != 0),
             BranchCondition::ExecZ => Ok(false),

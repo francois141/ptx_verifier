@@ -4,8 +4,11 @@ mod common;
 
 use common::{array, array_of};
 use volta_amd_analysis::OutputType::{F32, U32};
+use volta_amd_analysis::frontend::ast::{Kernel, Operand};
+use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    AnalysisError, AnalysisResult, ArrayKind, EvalError, LowerError, Terminal,
+    AnalysisError, AnalysisResult, ArrayKind, EvalError, LowerError, Terminal, WorkgroupLaunch,
+    analyze,
 };
 
 #[test]
@@ -157,6 +160,122 @@ fn the_bit_ops_kernel_writes_its_expected_outputs() {
             ),
         ],
     );
+}
+
+// Test signed arithmetic, comparisons of 64-bit values with equal low words,
+// and a two-iteration scalar loop.
+#[test]
+fn the_scalar_ops_kernel_writes_its_expected_outputs() {
+    let out = 0x10000_u64;
+    let mut kernarg = out.to_le_bytes().to_vec();
+    for value in [-(1_i32 << 30), -8] {
+        kernarg.extend(value.to_le_bytes());
+    }
+    // The OR is 3 << 32; x and y differ only in their high words.
+    for value in [1_u64 << 32, 2_u64 << 32, 3_u64 << 32] {
+        kernarg.extend(value.to_le_bytes());
+    }
+    kernarg.extend(2_i32.to_le_bytes());
+    common::check_run_kernel(
+        "scalar_ops",
+        "scalar_ops",
+        64,
+        &kernarg,
+        &[array_of("out", out, 64 * 8, ArrayKind::Output(U32))],
+    );
+}
+
+/// Launch the scalar fixture with concrete arithmetic operands, comparison
+/// words and loop count.
+fn run_scalar_ops(
+    kernel: &Kernel,
+    signed: [i32; 2],
+    words: [u64; 3],
+    count: i32,
+) -> Result<AnalysisResult, AnalysisError> {
+    let out = 0x10000_u64;
+    let mut kernarg = out.to_le_bytes().to_vec();
+    for value in signed {
+        kernarg.extend(value.to_le_bytes());
+    }
+    for value in words {
+        kernarg.extend(value.to_le_bytes());
+    }
+    kernarg.extend(count.to_le_bytes());
+    analyze(
+        kernel,
+        &WorkgroupLaunch {
+            kernarg_address: 0x1000,
+            workgroup_size: (64, 1, 1),
+        },
+        &kernarg,
+        &[array_of("out", out, 64 * 8, ArrayKind::Output(U32))],
+    )
+}
+
+/// Check all six written words in every lane's row, with no extra output
+/// elements.
+fn assert_scalar_rows(result: AnalysisResult, expected: [u32; 6]) {
+    assert_eq!(result.terminal, Terminal::Completed);
+    let outputs = result.symbolic_outputs.unwrap();
+    assert_eq!(outputs.outputs.len(), 1);
+    assert_eq!(outputs.outputs[0].0, "out");
+    assert_eq!(outputs.outputs[0].1.len(), 64 * 6);
+    for lane in 0..64 {
+        for (column, word) in expected.iter().enumerate() {
+            let index = lane * 8 + column as u64;
+            let actual = outputs
+                .element("out", index)
+                .and_then(|id| outputs.arena.as_int_const(id));
+            assert_eq!(actual, Some(i64::from(*word)), "out[{index}]");
+        }
+    }
+}
+
+// Test arithmetic boundaries, 64-bit comparisons and loop counts. The zero comparison
+// adds one to the loop result only when x is zero, exercising both branch outcomes.
+#[test]
+fn scalar_ops_handles_boundary_arguments() {
+    let kernel = parse_kernel(include_str!("fixtures/scalar_ops.s"), "scalar_ops").unwrap();
+    // Require the compiled fixture to retain both instruction forms under test.
+    assert!(kernel.instructions.iter().any(|instr| {
+        instr.opcode == "s_cmp_eq_u64" && instr.operands.last() == Some(&Operand::Imm(0))
+    }));
+    assert!(
+        kernel
+            .instructions
+            .iter()
+            .any(|instr| instr.opcode == "s_cbranch_scc0")
+    );
+    for (signed, words, count, expected) in [
+        // Zero OR differs from a word with a nonzero high half; x = 0 adds one to the loop result.
+        (
+            [i32::MIN, -1],
+            [0, 0, 1 << 32],
+            1,
+            [0, u32::MAX, 1, 0, 1, 27],
+        ),
+        // Equal full-width words and three iterations of the recurrence.
+        (
+            [i32::MAX, i32::MAX],
+            [0x8000_0001_0000_0001; 3],
+            3,
+            [0x3fff_ffff, 0xc000_0000, i32::MAX as u32, 1, 1, 480_266],
+        ),
+        // Equal signed maximum operands; comparison words differ only in
+        // their low halves.
+        (
+            [-8, 8],
+            [0x1_0000_0001, 0x1_0000_0002, 0x1_0000_0003],
+            2,
+            [u32::MAX, 0, 0xffff_fff8, 1, 0, 693],
+        ),
+    ] {
+        assert_scalar_rows(
+            run_scalar_ops(&kernel, signed, words, count).unwrap(),
+            expected,
+        );
+    }
 }
 
 /// The `ck::kernel_gemm_xdl_cshuffle_v3` instance `ck_gemm.hip` compiles: two waves, each

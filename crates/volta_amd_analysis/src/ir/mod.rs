@@ -135,6 +135,10 @@ pub enum ScalarOp32 {
     MulI32,
     /// The high word of the unsigned product; SCC is unchanged.
     MulHiU32,
+    /// The high word of the signed product; SCC is unchanged.
+    MulHiI32,
+    /// Signed maximum; SCC is whether src0 >= src1 (CDNA4 §12.1).
+    MaxI32,
     /// SCC is whether the result is nonzero, as for every op below.
     AndB32,
     XorB32,
@@ -151,8 +155,9 @@ pub enum ScalarOp32 {
 /// A 64-bit scalar ALU operation of two sources over lane masks or words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarOp64 {
-    /// SCC is whether the result is nonzero, as for `AndN2B64`.
+    /// SCC is whether the result is nonzero, as for `OrB64` and `AndN2B64`.
     AndB64,
+    OrB64,
     /// `src0 & !src1`.
     AndN2B64,
     /// `SCC ? src0 : src1`; SCC is unchanged.
@@ -166,6 +171,7 @@ pub enum ScalarCmpOp {
     GeI32,
     LtU32,
     GeU32,
+    LgU32,
     /// Whether bit `src1 & 31` of `src0` is set.
     BitCmp1B32,
 }
@@ -173,6 +179,8 @@ pub enum ScalarCmpOp {
 /// The condition of a conditional branch, which is uniform across the wave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchCondition {
+    /// SCC is clear.
+    Scc0,
     /// SCC is set.
     Scc1,
     /// Some lane's VCC bit is set.
@@ -541,6 +549,11 @@ pub enum LoweredInstr {
         op: ScalarCmpOp,
         src0: ScalarSrc,
         src1: ScalarSrc,
+    },
+    /// Compare two 64-bit scalar sources for equality and write SCC.
+    CmpEqScalar64 {
+        src0: ScalarSrc64,
+        src1: ScalarSrc64,
     },
     Branch {
         target: InstrId,

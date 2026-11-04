@@ -96,6 +96,7 @@ impl Interpreter<'_> {
                 let registers = &mut self.waves[wave].registers;
                 let value = match op {
                     ScalarOp64::AndB64 => a & b,
+                    ScalarOp64::OrB64 => a | b,
                     ScalarOp64::AndN2B64 => a & !b,
                     ScalarOp64::CSelectB64 => {
                         if registers.read_scc()? {
@@ -125,9 +126,16 @@ impl Interpreter<'_> {
                     ScalarCmpOp::GeI32 => (a as i32) >= (b as i32),
                     ScalarCmpOp::LtU32 => a < b,
                     ScalarCmpOp::GeU32 => a >= b,
+                    ScalarCmpOp::LgU32 => a != b,
                     ScalarCmpOp::BitCmp1B32 => (a >> (b & 31)) & 1 == 1,
                 };
                 self.waves[wave].registers.write_scc(scc);
+                Ok(())
+            }
+            LoweredInstr::CmpEqScalar64 { src0, src1 } => {
+                let a = self.read_scalar64(wave, *src0)?;
+                let b = self.read_scalar64(wave, *src1)?;
+                self.waves[wave].registers.write_scc(a == b);
                 Ok(())
             }
             LoweredInstr::ReadFirstLane { dst, src } => {
@@ -270,6 +278,14 @@ fn scalar_op32(
         }
         ScalarOp32::MulI32 => (a.wrapping_mul(b), None),
         ScalarOp32::MulHiU32 => (((u64::from(a) * u64::from(b)) >> 32) as u32, None),
+        ScalarOp32::MulHiI32 => {
+            let product = i64::from(a as i32) * i64::from(b as i32);
+            ((product >> 32) as u32, None)
+        }
+        ScalarOp32::MaxI32 => {
+            let (a, b) = (a as i32, b as i32);
+            (a.max(b) as u32, Some(a >= b))
+        }
         ScalarOp32::AndB32 => scc_if_nonzero(a & b),
         ScalarOp32::XorB32 => scc_if_nonzero(a ^ b),
         ScalarOp32::LShlB32 => scc_if_nonzero(a << (b & 31)),

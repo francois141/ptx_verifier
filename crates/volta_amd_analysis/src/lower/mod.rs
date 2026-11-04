@@ -104,6 +104,8 @@ fn lower_instruction(
         ("s_sub_i32", operands) => lower_scalar_op32(ir::ScalarOp32::SubI32, operands),
         ("s_mul_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MulI32, operands),
         ("s_mul_hi_u32", operands) => lower_scalar_op32(ir::ScalarOp32::MulHiU32, operands),
+        ("s_mul_hi_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MulHiI32, operands),
+        ("s_max_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MaxI32, operands),
         ("s_and_b32", operands) => lower_scalar_op32(ir::ScalarOp32::AndB32, operands),
         ("s_xor_b32", operands) => lower_scalar_op32(ir::ScalarOp32::XorB32, operands),
         ("s_lshl_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlB32, operands),
@@ -111,6 +113,7 @@ fn lower_instruction(
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
         ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
         ("s_and_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndB64, operands),
+        ("s_or_b64", operands) => lower_scalar_op64(ir::ScalarOp64::OrB64, operands),
         ("s_andn2_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndN2B64, operands),
         ("s_cselect_b64", operands) => lower_scalar_op64(ir::ScalarOp64::CSelectB64, operands),
         ("s_lshl_b64", [dst, src, shift]) => Ok(LShlScalar64 {
@@ -122,8 +125,17 @@ fn lower_instruction(
         ("s_cmp_ge_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeI32, operands),
         ("s_cmp_lt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtU32, operands),
         ("s_cmp_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
+        ("s_cmp_lg_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LgU32, operands),
+        ("s_cmp_eq_u64", [src0, src1]) => Ok(CmpEqScalar64 {
+            src0: scalar_source64(src0)?,
+            src1: scalar_source64(src1)?,
+        }),
         ("s_bitcmp1_b32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::BitCmp1B32, operands),
         ("s_branch", [target]) => Ok(Branch {
+            target: branch_target(target, labels)?,
+        }),
+        ("s_cbranch_scc0", [target]) => Ok(CondBranch {
+            condition: BranchCondition::Scc0,
             target: branch_target(target, labels)?,
         }),
         ("s_cbranch_scc1", [target]) => Ok(CondBranch {
@@ -443,6 +455,8 @@ fn lower_instruction(
             | "s_abs_i32"
             | "s_lshl_b64"
             | "s_branch"
+            | "s_cmp_eq_u64"
+            | "s_cbranch_scc0"
             | "s_cbranch_scc1"
             | "s_cbranch_vccnz"
             | "s_cbranch_execz"
@@ -616,7 +630,8 @@ fn is_inline(bits: u32) -> bool {
             .any(|value| value.to_bits() == bits)
 }
 
-/// 64-bit operations take only inline constants before GFX12, sign-extended to 64 bits.
+/// Supported 64-bit sources are register pairs, lane masks and inline integer constants.
+/// Inline integer constants are sign-extended to 64 bits.
 fn scalar_source64(operand: &Operand) -> Result<ScalarSrc64, &'static str> {
     match operand {
         Operand::Vcc => Ok(ScalarSrc64::Vcc),
