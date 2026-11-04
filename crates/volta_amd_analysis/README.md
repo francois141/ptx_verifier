@@ -48,6 +48,10 @@ and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/ll
 The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
 unbalanced and extra-quoted arguments are rejected.
 
+Target strings may include `xnack` and `sramecc` selections once each, in either
+order. Unknown, repeated, conflicting or empty feature fields are rejected.
+This validates target syntax; execution support for a feature mode is checked separately.
+
 ## Tests
 
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
