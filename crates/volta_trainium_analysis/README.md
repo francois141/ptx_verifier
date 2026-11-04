@@ -16,7 +16,11 @@ The frontend is public; the other stages are private.
 
 ## Fixtures
 
-`tests/fixtures/add.py` adds two 128 x 128 tensors elementwise: it copies `a`
+`tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
 and `b` from HBM into SBUF tiles (`nisa.dma_copy`), adds the tiles
 (`nisa.tensor_tensor` with `op=nl.add`), and copies the sum back to `out` in
 HBM.
+
+`tests/fixtures/gemm_relu.py` computes `relu(a_t.T @ b)`: the activation reads
+the matmul's PSUM tile directly, fusing the move to SBUF with the relu
+instead of a separate `tensor_copy`.
