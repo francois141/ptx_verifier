@@ -11,6 +11,18 @@ fn word(line: &str) -> (&str, &str) {
         .map_or((line, ""), |(head, tail)| (head, tail.trim()))
 }
 
+/// A leading bare or quoted label, and the statement following its colon.
+fn label_definition(line: &str) -> Option<(&str, &str)> {
+    let (name, rest) = if let Some(quoted) = line.strip_prefix('"') {
+        quoted.split_once('"')?
+    } else {
+        let end = line.find(|c: char| c == ':' || c.is_whitespace())?;
+        line.split_at(end)
+    };
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    (!name.is_empty()).then_some((name, rest))
+}
+
 /// Parse an unsigned decimal or hexadecimal integer.
 fn integer(text: &str) -> Option<u64> {
     match text.strip_prefix("0x") {
@@ -142,17 +154,31 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         .ok_or("expected one quoted string after .amdgcn_target")?
         .to_string();
 
-    // The instruction body ends at a section switch or function-end label.
-    let mut entries = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.strip_suffix(':') == Some(name));
-    let (entry, _) = entries
-        .next()
-        .ok_or_else(|| format!("kernel {name:?} not found"))?;
-    if entries.next().is_some() {
-        return Err(format!("multiple entry labels for kernel {name:?}"));
+    // Count definitions even in forms the selected-body parser cannot consume, so an
+    // inline or differently spaced duplicate cannot hide behind a canonical entry.
+    let mut entry = None;
+    for (index, line) in lines.iter().enumerate() {
+        let mut statement = *line;
+        let mut standalone = true;
+        while let Some((label, rest)) = label_definition(statement) {
+            if label == name {
+                if entry.is_some() {
+                    return Err(format!("multiple entry labels for kernel {name:?}"));
+                }
+                entry = Some((index, standalone && rest.is_empty()));
+            }
+            standalone = false;
+            statement = rest;
+        }
     }
+    let (entry, standalone) = entry.ok_or_else(|| format!("kernel {name:?} not found"))?;
+    if !standalone {
+        return Err(format!(
+            "unsupported inline entry label for kernel {name:?}"
+        ));
+    }
+
+    // The instruction body ends at a section switch or function-end label.
     let mut instructions = Vec::new();
     let mut labels = BTreeMap::new();
     for line in &lines[entry + 1..] {

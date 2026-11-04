@@ -402,6 +402,8 @@ targets, instructions, or operand forms produce `LowerError`.
 The target directive requires exactly one quoted string, rejecting unbalanced
 or extra quotes and extra string arguments.
 Kernel selection rejects repeated matching entry labels or descriptor blocks;
+bare, quoted, spaced and inline label forms participate in the duplicate check.
+A selected entry must occupy its own line rather than drop inline statements;
 distinct kernel names remain selectable.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
 The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
