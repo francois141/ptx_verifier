@@ -1,0 +1,15 @@
+{
+  "description": "sigmoid over 64 fp32 elements, one wave",
+  "kernel": "sigmoid",
+  "block": 64,
+  "arrays": [
+    {"name": "a",   "kind": "in",  "dtype": "f32", "shape": [64]},
+    {"name": "out", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"ptr": "a"},
+    {"ptr": "out"}
+  ],
+  "spec": "sigmoid.spec",
+  "dims": {"N": 64}
+}

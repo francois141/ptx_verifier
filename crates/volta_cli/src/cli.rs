@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{AnalyzeArgs, CompareArgs, SolveArgs, VerifyArgs, VizArgs};
+use crate::commands::{AnalyzeArgs, CompareArgs, ExtractLeanArgs, SolveArgs, VerifyArgs, VizArgs};
 
 /// Log level for controlling output verbosity
 #[cfg(feature = "logging")]
@@ -85,7 +85,19 @@ pub(crate) enum Commands {
     /// the canonical solver.
     Solve(SolveArgs),
 
+    /// Extract proof obligations after checking the kernel's available graph evidence
+    Extract {
+        #[command(subcommand)]
+        format: ExtractFormat,
+    },
+
     /// Build the event-graph viewer: one self-contained HTML page over a store of recorded runs
     /// (`just viz` records every volta_pipeline test into one, then builds the page)
     Viz(VizArgs),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ExtractFormat {
+    /// Write Lean 4 proof obligations; fail on detected races, deadlocks or incomplete checks
+    Lean(ExtractLeanArgs),
 }

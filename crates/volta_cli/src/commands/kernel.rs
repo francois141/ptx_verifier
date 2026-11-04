@@ -1,5 +1,4 @@
-//! `volta solve`: a kernel file of any ISA through its interpreter, its outputs checked against
-//! a spec when one is given.
+//! Kernel execution shared by the solve and Lean extraction commands.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -75,6 +74,29 @@ pub(crate) struct SolveArgs {
     iterations: NonZeroUsize,
 }
 
+#[derive(Args)]
+pub(crate) struct ExtractLeanArgs {
+    #[command(flatten)]
+    input: KernelArgs,
+
+    /// Claim each element within this absolute tolerance, a rational such as 1/1000
+    /// (default: claim equality)
+    #[arg(long, value_name = "Q")]
+    tolerance: Option<String>,
+
+    /// Lean module to write (default: FILE's stem, `.lean`, in the current directory)
+    #[arg(short, long, alias = "lean-out", value_name = "FILE")]
+    output: Option<PathBuf>,
+}
+
+enum KernelAction {
+    Solve(EquivCheckOptions),
+    ExtractLean {
+        tolerance: Option<String>,
+        output: Option<PathBuf>,
+    },
+}
+
 pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode {
     let options = EquivCheckOptions {
         sample: args.sample,
@@ -82,7 +104,25 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
         recycle_terms: args.recycle_terms,
         iterations: args.iterations,
     };
-    let args = args.input;
+    cmd_run(args.input, KernelAction::Solve(options), log)
+}
+
+pub(crate) fn cmd_extract_lean(args: ExtractLeanArgs, log: &mut run_log::RunLog) -> ExitCode {
+    cmd_run(
+        args.input,
+        KernelAction::ExtractLean {
+            tolerance: args.tolerance,
+            output: args.output,
+        },
+        log,
+    )
+}
+
+fn cmd_run(args: KernelArgs, action: KernelAction, log: &mut run_log::RunLog) -> ExitCode {
+    let command = match &action {
+        KernelAction::Solve(_) => "solve",
+        KernelAction::ExtractLean { .. } => "extract lean",
+    };
     let file = &args.file;
     let Some(isa) = Isa::of_path(file) else {
         eprintln!(
@@ -124,6 +164,10 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
         Ok(spec) => spec,
         Err(code) => return code,
     };
+    if spec.is_none() && matches!(&action, KernelAction::ExtractLean { .. }) {
+        eprintln!("error: extract lean needs a spec: --spec, or the launch file's \"spec\"");
+        return ExitCode::FAILURE;
+    }
     let mut files = FileCache::new();
     let source = match files.read(file) {
         Ok(contents) => contents.to_string(),
@@ -156,7 +200,7 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
         }
         Err(e) => {
             eprintln!("error: {}", e);
-            log.record(&format!("solve {}: FAILED: {}", file.display(), e));
+            log.record(&format!("{command} {}: FAILED: {}", file.display(), e));
             return ExitCode::FAILURE;
         }
     };
@@ -172,12 +216,50 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
             isa.name()
         ),
     }
+
+    // Build the whole module only after the shared extraction guard accepts the run.
+    // In particular, a rejected kernel must not create or overwrite an output file.
+    let extracted = if let KernelAction::ExtractLean { tolerance, .. } = &action {
+        match run.extract_lean(
+            spec.as_ref().expect("extraction requires a spec"),
+            tolerance.as_deref(),
+        ) {
+            Ok(challenge) => Some(challenge),
+            Err(e) => {
+                eprintln!("error: {e}");
+                log.record(&format!("{command} {}: FAILED: {e}", file.display()));
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     if let (Some(path), Ok(exprs)) = (&args.emit_exprs, &run.outputs) {
         if let Err(e) = write_exprs(path, exprs) {
             eprintln!("error: failed to write {}: {}", path.display(), e);
             return ExitCode::FAILURE;
         }
         println!("Wrote output expressions to {}", path.display());
+    }
+    if let (Some(challenge), KernelAction::ExtractLean { output, .. }) = (extracted, &action) {
+        let path = output.clone().unwrap_or_else(|| {
+            PathBuf::from(file.file_stem().unwrap_or_default()).with_extension("lean")
+        });
+        if let Err(e) = std::fs::write(&path, &challenge.module) {
+            eprintln!("error: failed to write {}: {}", path.display(), e);
+            return ExitCode::FAILURE;
+        }
+        println!(
+            "Wrote {} Lean proof obligation(s) to {} (proofs still required)",
+            challenge.statements,
+            path.display()
+        );
+        log.record(&format!(
+            "{command} {}: wrote {}",
+            file.display(),
+            path.display()
+        ));
+        return ExitCode::SUCCESS;
     }
 
     let Some(spec) = spec else {
@@ -200,6 +282,9 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
     };
 
     let vc_start = Instant::now();
+    let KernelAction::Solve(options) = action else {
+        unreachable!("Lean extraction returned above")
+    };
     let solver = Solver::Canonical(options);
     let solution = match run.solve(&spec, &solver) {
         Ok(solution) => solution,
@@ -209,8 +294,9 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
         }
     };
     let vc_secs = vc_start.elapsed().as_secs_f64();
-    let Solution::Canonical { verdict, report } = &solution;
-    print_spec_check("solve", verdict, report.as_ref(), exec_secs, vc_secs, log);
+    if let Solution::Canonical { verdict, report } = &solution {
+        print_spec_check("solve", verdict, report.as_ref(), exec_secs, vc_secs, log);
+    }
     let decision = run.decide(&solution);
     log.record(&format!(
         "solve {}: {}",

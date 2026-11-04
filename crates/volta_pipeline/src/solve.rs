@@ -1,15 +1,20 @@
-//! A kernel's outputs against a spec, by the caller's solver. The solver first requires the
+//! A kernel's outputs against a spec, by the caller's solver. Both solvers first require the
 //! kernel to write exactly the spec's elements; the canonical decision procedure then decides
-//! each element.
+//! each element, while the Lean solver states each one for a prover instead.
 
 use std::collections::HashMap;
 use std::fmt;
 
+use rug::Rational;
 use volta_equivalence::check::{EquivCheckOptions, EquivCheckReport};
 use volta_expr::SymbolicOutputs;
+use volta_expr::lean::{Claim, to_lean};
 use volta_spec::{InstantiateErrorKind, OutputSpec, ParsedSpec, SpecEnv, SpecError};
 
 use crate::equivalence::{EquivalenceVerdict, check_equivalence};
+
+/// The namespace of the Lean module the Lean solver writes, unless the caller names one.
+pub const DEFAULT_LEAN_NAMESPACE: &str = "VoltaChallenge";
 
 /// How a kernel's outputs are checked against a spec.
 #[derive(Debug, Clone)]
@@ -17,6 +22,20 @@ pub enum Solver {
     /// The canonicalizing decision procedure of `volta_equivalence`, each claimed difference
     /// confirmed by the numeric oracle.
     Canonical(EquivCheckOptions),
+    /// Lean 4 statements of `claim` for every element, in namespace `namespace`, for a prover
+    /// to discharge.
+    Lean { claim: Claim, namespace: String },
+}
+
+/// `Claim::Within` the rational `tolerance` (`1/1000`), or `Claim::Equal` without one.
+pub fn claim(tolerance: Option<&str>) -> Result<Claim, String> {
+    match tolerance {
+        None => Ok(Claim::Equal),
+        Some(text) => text
+            .parse::<Rational>()
+            .map(Claim::Within)
+            .map_err(|_| format!("tolerance `{text}` is not a rational such as 1/1000")),
+    }
 }
 
 /// A spec at concrete dims: for each array it defines, the value of every element.
@@ -142,6 +161,30 @@ pub fn check_against_spec(
     Ok((verdict, report))
 }
 
+/// Lean statements of `claim` comparing every element of `kernel` with `spec`'s.
+pub fn state_against_spec(
+    kernel: &SymbolicOutputs,
+    spec: &Spec,
+    claim: &Claim,
+    namespace: &str,
+) -> Result<LeanSolution, SpecError> {
+    if let Some(mismatch) = spec.index_set_mismatch(kernel) {
+        return Ok(LeanSolution::Stopped(mismatch));
+    }
+    let baseline = volta_spec::unfold(&spec.outputs, &spec.env, 0)?;
+    Ok(
+        match to_lean(kernel, &baseline, &spec.arrays, claim, namespace) {
+            Ok(module) => LeanSolution::Stated(LeanChallenge {
+                module,
+                statements: baseline.outputs.iter().map(|(_, e)| e.len()).sum(),
+            }),
+            Err(e) => LeanSolution::Stopped(EquivalenceVerdict::Failed {
+                reason: format!("no Lean statements: {e}"),
+            }),
+        },
+    )
+}
+
 /// What a solver made of a kernel's outputs against a spec.
 #[derive(Debug)]
 pub enum Solution {
@@ -150,13 +193,38 @@ pub enum Solution {
         verdict: EquivalenceVerdict,
         report: Option<EquivCheckReport>,
     },
+    Lean(LeanSolution),
+}
+
+#[derive(Debug)]
+pub enum LeanSolution {
+    /// Statements for a prover: whether the kernel matches the spec rests on their proofs.
+    Stated(LeanChallenge),
+    /// No statements, for this verdict: no outputs, an index set mismatch, or an expression
+    /// Lean cannot state.
+    Stopped(EquivalenceVerdict),
+}
+
+/// A Lean 4 module of one `Prop` per output element.
+#[derive(Debug)]
+pub struct LeanChallenge {
+    pub module: String,
+    pub statements: usize,
 }
 
 impl Solution {
-    /// The equivalence branch's verdict as `decide` weighs it.
+    /// The equivalence branch's verdict as `decide` weighs it: Lean statements leave
+    /// equivalence undecided until a prover discharges them.
     pub fn verdict(&self) -> EquivalenceVerdict {
         match self {
             Solution::Canonical { verdict, .. } => verdict.clone(),
+            Solution::Lean(LeanSolution::Stated(challenge)) => EquivalenceVerdict::Failed {
+                reason: format!(
+                    "left to Lean: {} statement(s) to prove",
+                    challenge.statements
+                ),
+            },
+            Solution::Lean(LeanSolution::Stopped(verdict)) => verdict.clone(),
         }
     }
 }
@@ -178,6 +246,7 @@ pub(crate) fn solve(
                     verdict,
                     report: None,
                 },
+                Solver::Lean { .. } => Solution::Lean(LeanSolution::Stopped(verdict)),
             });
         }
     };
@@ -185,6 +254,9 @@ pub(crate) fn solve(
         Solver::Canonical(options) => {
             let (verdict, report) = check_against_spec(kernel, spec, options)?;
             Ok(Solution::Canonical { verdict, report })
+        }
+        Solver::Lean { claim, namespace } => {
+            state_against_spec(kernel, spec, claim, namespace).map(Solution::Lean)
         }
     }
 }

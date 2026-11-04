@@ -9,6 +9,7 @@ logging = ["dep:log"]  # Full logging when enabled
 
 [dependencies]
 log = { workspace = true, optional = true }
+rug.workspace = true
 volta_amd_analysis.workspace = true
 volta_common.workspace = true
 volta_equivalence.workspace = true
