@@ -54,6 +54,7 @@ impl<'a> Interpreter<'a> {
                     let b = self.tensors[rhs].read(&mut self.arena, instr, &index)?;
                     let value = match op {
                         ArithOp::Add => self.arena.add(a, b),
+                        ArithOp::Multiply => self.arena.mul(a, b),
                     };
                     self.tensors[dst].write(index, value);
                 }
@@ -97,6 +98,11 @@ impl<'a> Interpreter<'a> {
             ActivationFunc::Relu => {
                 let zero = self.arena.int(0);
                 self.arena.max(x, zero)
+            }
+            ActivationFunc::Square => self.arena.mul(x, x),
+            ActivationFunc::Rsqrt => {
+                let root = self.arena.sqrt(x);
+                self.arena.rcp(root)
             }
         }
     }
