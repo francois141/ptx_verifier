@@ -1,6 +1,8 @@
 //! Raw buffer loads and stores for a single lane.
 //! A buffer resource defines the base address and bounds of each access to global memory.
 
+use volta_graph::Space;
+
 use crate::ir::{BufferAddress, LaneReg, Sgpr, Vgpr};
 
 use super::wave::{LoadCounter, WaveId};
@@ -101,6 +103,8 @@ impl Interpreter<'_> {
         let range = self.buffer_range(wave, lane, address, word_count)?;
         let values = match range {
             BufferRange::Inside(start) => {
+                self.recorder
+                    .memory_read(wave, Space::Global, start, 4 * word_count as u32);
                 let mut values = Vec::with_capacity(dst.len());
                 for word_index in 0..word_count {
                     let word_address = start + 4 * word_index;
@@ -131,12 +135,16 @@ impl Interpreter<'_> {
             BufferRange::Outside => return Ok(()),
         };
 
+        let mut values = Vec::with_capacity(src.len());
         for (word_index, &reg) in src.iter().enumerate() {
             let word_address = start + 4 * word_index as u64;
             let value = self.waves[wave].registers.read_lane_reg(lane, reg)?;
             self.global
                 .store_dword(word_address, value, &mut self.arena)?;
+            values.push(value);
         }
+        self.recorder
+            .memory_write(wave, Space::Global, start, &values);
         Ok(())
     }
 }

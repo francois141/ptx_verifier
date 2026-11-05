@@ -3,11 +3,10 @@
 use std::fmt;
 
 use volta_expr::SymbolicOutputs;
-use volta_graph::{AbortCause, EventGraph, GraphBuilder, Provenance};
+use volta_graph::{AbortCause, EventGraph};
 
 use crate::eval::{ArrayDef, EvalError, Interpreter, Terminal, WorkgroupLaunch};
 use crate::frontend::ast::Kernel;
-use crate::ir::LoweredKernel;
 use crate::lower::{LowerError, lower_kernel};
 
 /// Errors that prevent the execution from starting at all.
@@ -46,8 +45,8 @@ pub struct AnalysisResult {
     pub terminal: Terminal,
     /// Written output values; absent if execution aborted.
     pub symbolic_outputs: Option<SymbolicOutputs>,
-    /// The execution's event graph. It records no events yet and ends as the execution did,
-    /// so a completed run's graph passes every graph check vacuously.
+    /// The execution's event graph: each wave's global, buffer and LDS accesses, `vmcnt` and
+    /// `lgkmcnt` waits, barriers and exit.
     pub graph: EventGraph,
 }
 
@@ -62,8 +61,8 @@ pub fn analyze(
     let lowered = lower_kernel(kernel)?;
     let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays)?;
     let terminal = interp.run(&lowered);
-    let symbolic_outputs = (terminal == Terminal::Completed).then(|| interp.into_outputs());
-    let graph = GraphBuilder::new(provenance(&lowered, launch)).finish(graph_terminal(&terminal));
+    let (graph, symbolic_outputs) =
+        interp.into_results(terminal == Terminal::Completed, graph_terminal(&terminal));
     Ok(AnalysisResult {
         terminal,
         symbolic_outputs,
@@ -84,18 +83,5 @@ fn graph_terminal(terminal: &Terminal) -> volta_graph::Terminal {
             },
             reason: error.to_string(),
         },
-    }
-}
-
-/// The launch and target this analysis executes under.
-fn provenance(kernel: &LoweredKernel, launch: &WorkgroupLaunch) -> Provenance {
-    Provenance {
-        kernel: kernel.name.clone(),
-        block_dim: launch.workgroup_size,
-        // Workgroup 0 runs alone, and no supported instruction reads the grid size.
-        grid_dim: (1, 1, 1),
-        targets: vec![kernel.target.clone()],
-        assumptions: Vec::new(),
-        instructions: Vec::new(),
     }
 }

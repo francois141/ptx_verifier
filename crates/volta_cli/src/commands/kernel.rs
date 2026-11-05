@@ -212,7 +212,7 @@ fn cmd_run(args: KernelArgs, action: KernelAction, log: &mut run_log::RunLog) ->
             print_graph_report("kernel", graph, report, &source)
         }
         GraphEvidence::NotRecorded => println!(
-            "kernel: race freedom not checked: the {} interpreter records no memory events",
+            "kernel: race freedom not checked: the {} frontend runs no graph checks",
             isa.name()
         ),
     }

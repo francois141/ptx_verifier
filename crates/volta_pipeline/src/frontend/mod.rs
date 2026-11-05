@@ -127,7 +127,7 @@ pub enum GraphEvidence {
         graph: Box<EventGraph>,
         report: Box<GraphReport>,
     },
-    /// The ISA's interpreter records no memory events, so nothing speaks for race freedom.
+    /// The ISA's frontend runs no graph checks, so nothing speaks for race freedom.
     NotRecorded,
 }
 
