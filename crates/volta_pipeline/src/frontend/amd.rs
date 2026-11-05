@@ -1,5 +1,5 @@
-//! AMD gfx950 assembly: `volta_amd_analysis` runs workgroup 0 of the kernel. Its interpreter
-//! records no memory events, so a run carries no race evidence.
+//! AMD gfx950 assembly: `volta_amd_analysis` runs workgroup 0 of the kernel. This frontend does
+//! not run the graph checks on its event graph yet, so a run carries no race evidence.
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{ArrayDef, ArrayKind, OutputType, Terminal, WorkgroupLaunch, analyze};
