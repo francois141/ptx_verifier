@@ -21,4 +21,5 @@ volta_spec.workspace = true
 volta_trainium_analysis.workspace = true
 
 [dev-dependencies]
+volta_trainium_analysis.workspace = true
 volta_viz.workspace = true

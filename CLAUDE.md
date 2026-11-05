@@ -44,7 +44,7 @@ Direct dependencies of each crate:
 ```
 volta_cli          → volta_pipeline, volta_equivalence, volta_ptx_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
 volta_viz          → volta_graph_check, volta_graph, volta_expr
-volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_amd_analysis, volta_spec, volta_viz)
+volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_amd_analysis, volta_trainium_analysis, volta_spec, volta_viz)
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
@@ -514,7 +514,9 @@ normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
 `activation_reduce` and two `tensor_scalar`s, the second broadcasting a
 `[4, 1]` tile. `tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor
 through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
-`nl.affine_range(2)`.
+`nl.affine_range(2)`. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
+kernels' math over their own array names (`a_t` being A transposed);
+`volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them.
 
 ## Crate: volta_graph_check
 
@@ -651,7 +653,7 @@ evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
 and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
 anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches),
-`architecture_tests.rs` (the stage/branch boundaries), and
+`architecture_tests.rs` (the stage/branch boundaries),
 `amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
 and softmax against their formulas, accounting for CK's column-major B and softmax at
 several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
@@ -659,9 +661,12 @@ or change the softmax row width). CK attention checks two batches and two heads 
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
+`trainium_equivalence_tests.rs` checks the NKI `matmul` and `gemm_relu` fixtures against
+the `.spec` files beside them, with `gemm_relu` against the unclamped product as a
+negative test.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
-checks LDS reuse within workgroup 0, including pending-read races. `just amd`
-runs them alongside the analysis crate's snapshot tests.
+checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
+`just trainium` run them alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
 

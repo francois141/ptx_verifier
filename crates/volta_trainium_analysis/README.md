@@ -59,3 +59,11 @@ each partition into a `(4, 1)` tile, `nisa.tensor_scalar` scales and biases it,
 tile of rows at a time: `nl.affine_range(2)` unrolls into two iterations, each
 with its own SBUF tile, copying `a[i * 4:(i + 1) * 4, :]` in and back out to the
 matching rows of `out`.
+
+`tests/fixtures/matmul.spec` and `tests/fixtures/gemm_relu.spec` state the
+`matmul` and `gemm_relu` kernels' math over the kernels' own array names, with
+`a_t` as A transposed (`[K, M]`), the layout `nc_matmul`'s stationary operand
+takes. `volta_pipeline`'s `trainium_equivalence_tests.rs` checks each kernel
+against its spec by the decision procedure rather than by text, and `gemm_relu`
+against `matmul.spec` (the product without the clamp) as a negative test;
+`just trainium` runs them with this crate's tests.

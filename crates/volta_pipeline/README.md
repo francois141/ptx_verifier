@@ -52,6 +52,10 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
   LDS. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
   swapped inputs.
+- `trainium_equivalence_tests.rs`: the NKI `matmul` and `gemm_relu` fixtures against
+  their `.spec` files beside them in the Trainium analysis crate, and `gemm_relu`
+  against the unclamped product as a negative test. Functional equivalence only;
+  `just trainium` runs them.
 - the suites below, over `tests/common/`.
 
 ### How a test runs
