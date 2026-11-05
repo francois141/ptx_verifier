@@ -181,6 +181,118 @@ fn amd_ck_gemm_matches_its_specification() {
     );
 }
 
+/// The `kentry` of the CK attention instance `ck_fmha.hip` compiles: four waves over a 64 x 64
+/// query/key tile.
+const CK_FMHA_KERNEL: &str = concat!(
+    "_ZN7ck_tile6kentryINS_8gfx950_tELi3ENS_13FmhaFwdKernelINS_23BlockFmhaPipelineQRKSVSINS_2",
+    "4BlockFmhaPipelineProblemIffffffhffffNS_13TileFmhaShapeINS_8sequenceIJLi64ELi64ELi32ELi6",
+    "4ELi32ELi64EEEENS6_IJLi4ELi1ELi1EEEENS6_IJLi16ELi16ELi16EEEES8_S9_Lb1EEELb0ENS_17Compose",
+    "dAttentionILj0ELb1EEENS_30SimplifiedGenericAttentionMaskILb0EEELb0ENS_14TileFmhaTraitsIL",
+    "b0ELb0ELb0ELb0ELb0ELNS_22BlockAttentionBiasEnumE0ELb0ELb0ELb0ELNS_28BlockAttentionQuantS",
+    "caleEnumE0ELin1ELb0ELb0EEEEENS_35BlockFmhaPipelineQXKSVSCustomPolicyILb1ELb0ELi1ELi1EEEL",
+    "b0EEENS_17Default2DEpilogueINS_24Default2DEpilogueProblemIffLb0ELb0ELb1EEEvEEEEJNSR_21Fm",
+    "haFwdBatchModeKargsEEEENSt3__19enable_ifIXnt26kattr_no_packed_fp32_ops_vIT_EEvE4typeEDpT",
+    "2_",
+);
+const Q_BASE: u64 = 0x10000;
+const K_BASE: u64 = 0x20000;
+const V_BASE: u64 = 0x30000;
+const O_BASE: u64 = 0x40000;
+
+/// The kernel's `FmhaFwdBatchModeKargs` for one batch and one head of 64 x 64 row-major tensors.
+fn ck_fmha_kernarg(q: u64, k: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    // The tensors, then a null sink pointer, which disables the optional sink.
+    for pointer in [q, k, V_BASE, O_BASE, 0] {
+        bytes.extend(pointer.to_le_bytes());
+    }
+    // seqlen_q, seqlen_k, hdim_q, hdim_v, num_head_q and nhead_ratio_qk.
+    for field in [64_i32, 64, 64, 64, 1, 1] {
+        bytes.extend(field.to_le_bytes());
+    }
+    // The fast-exp2 build takes the host's scale times log2(e), here for the formula's 1 / 8.
+    bytes.extend((std::f32::consts::LOG2_E / 8.0).to_le_bytes());
+    // Row, head and batch strides of Q, K, V and O around the optional head count and offset.
+    for field in [
+        64_i32, 64, 64, 64, 64, 64, 64, 64, 0, 0, 4096, 4096, 4096, 4096,
+    ] {
+        bytes.extend(field.to_le_bytes());
+    }
+    // Padding, then null cumulative sequence length pointers.
+    bytes.resize(144, 0);
+    bytes
+}
+
+fn check_ck_fmha(q: u64, k: u64, sample: u64) -> EquivalenceVerdict {
+    let arrays = [
+        ("Q", Q_BASE, ArrayKind::Input),
+        ("K", K_BASE, ArrayKind::Input),
+        ("V", V_BASE, ArrayKind::Input),
+        ("O", O_BASE, ArrayKind::Output(F32)),
+    ]
+    .map(|(name, base, kind)| ArrayDef {
+        name: name.into(),
+        base,
+        len: 64 * 64,
+        kind,
+    });
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (256, 1, 1),
+    };
+
+    // Execute the compiled kernel on its one workgroup of four waves.
+    let source = include_str!("../../volta_amd_analysis/tests/fixtures/ck_fmha.s");
+    let kernel = parse_kernel(source, CK_FMHA_KERNEL).unwrap();
+    let result = analyze(&kernel, &launch, &ck_fmha_kernarg(q, k), &arrays).unwrap();
+    assert!(
+        matches!(&result.terminal, Terminal::Completed),
+        "ck_fmha did not complete: {:?}",
+        result.terminal
+    );
+    let actual = result
+        .symbolic_outputs
+        .expect("completed attention outputs");
+
+    // The reference states the formula independently of the kernel execution.
+    let dims = HashMap::from([("N".into(), 64), ("H".into(), 64)]);
+    let spec = include_str!("../../volta_equivalence/tests/specs/attention.spec");
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    check_equivalence(
+        &reference,
+        &actual,
+        &["O".into()],
+        &EquivCheckOptions {
+            sample,
+            ..EquivCheckOptions::default()
+        },
+    )
+    .0
+}
+
+// Test that every output of CK attention agrees with softmax(Q K^T / 8) V.
+#[test]
+fn amd_ck_fmha_matches_its_specification() {
+    assert_eq!(
+        check_ck_fmha(Q_BASE, K_BASE, 0),
+        EquivalenceVerdict::Equivalent {
+            checked: 4096,
+            total: 4096,
+        }
+    );
+}
+
+// Test that swapping the query and key tensors is refuted in the first output row, since
+// attention is not symmetric.
+#[test]
+fn amd_ck_fmha_with_swapped_query_and_key_is_refuted() {
+    let verdict = check_ck_fmha(K_BASE, Q_BASE, 64);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
 fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
     // Run the compiled kernel, which normalizes groups of sixteen, at this workgroup size.
     let arrays = [

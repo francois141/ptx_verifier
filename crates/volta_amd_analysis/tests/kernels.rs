@@ -388,11 +388,20 @@ fn invalid_f64_sources_are_rejected() {
         array("input", 0x10000, ArrayKind::Input),
         array("output", 0x20000, ArrayKind::Output(F32)),
     ];
-    let cases: [(&str, fn(&EvalError) -> bool); 4] = [
-        ("f64_half_as_word", |error| matches!(error, EvalError::F64Half { .. })),
-        ("f64_overwritten_half", |error| matches!(error, EvalError::F64Half { .. })),
-        ("f64_from_symbolic_words", |error| matches!(error, EvalError::InvalidF64Vgpr { .. })),
-        ("f64_nan_constant", |error| matches!(error, EvalError::InvalidF64Bits(_))),
+    type ErrorCheck = fn(&EvalError) -> bool;
+    let cases: [(&str, ErrorCheck); 4] = [
+        ("f64_half_as_word", |error| {
+            matches!(error, EvalError::F64Half { .. })
+        }),
+        ("f64_overwritten_half", |error| {
+            matches!(error, EvalError::F64Half { .. })
+        }),
+        ("f64_from_symbolic_words", |error| {
+            matches!(error, EvalError::InvalidF64Vgpr { .. })
+        }),
+        ("f64_nan_constant", |error| {
+            matches!(error, EvalError::InvalidF64Bits(_))
+        }),
     ];
     for (kernel, expected) in cases {
         common::check_rejected_kernel("unsupported", kernel, &arrays, |result| {
