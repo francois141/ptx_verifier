@@ -62,10 +62,10 @@ extract-lean:
     @cargo test -q -p volta_amd_analysis --test lean_tests >/dev/null
     @echo "Wrote target/lean/sigmoid.lean"
 
-# Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them), and their functional equivalence with their specs
+# Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them), and their functional equivalence with their specs (in release: v2 against attention takes seconds there, a minute in debug)
 trainium:
     cargo test -q -p volta_trainium_analysis
-    cargo test -q -p volta_pipeline --test trainium_equivalence_tests
+    cargo test -q --release -p volta_pipeline --test trainium_equivalence_tests
 
 external:
     python3 external/races.py

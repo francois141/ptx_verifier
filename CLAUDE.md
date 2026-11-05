@@ -505,22 +505,41 @@ rational, since only f64-round-tripping reals print as decimals.
 A kernel is parsed for one call: `parse_kernel(source, name, shapes)` takes each
 parameter's shape, as `@nki.jit` specializes a kernel per call (a missing,
 unknown, repeated or empty one is `ParseError::ParamShape`), and lowering takes
-parameter shapes from the parsed `ast::Param`s. The parser's `Scope` binds each
-name once, to a tensor with its extents or to a compile-time integer: `d, n =
-q.shape`, `m = n`, `+`/`*`/`//` and `nl.tile_size.{pmax, gemm_stationary_fmax,
-gemm_moving_fmax}` evaluate there, `t.shape` is a tuple, and an `assert` (a
-chain of `==`/`!=`/`<`/`<=`/`>`/`>=`, tuples by `==`/`!=` only) is checked and
-leaves no statement; a false one is a parse error. `asserted_shapes(source,
-name)` reads a kernel's literal `assert p.shape == (...)`s as its shapes, for
-`volta_pipeline`'s NKI frontend, which has no caller.
+parameter shapes from the parsed `ast::Param`s. The parser runs the kernel's
+Python as NKI's tracer does: a `Trace` (every tensor declared and its extents,
+list storage, the statements emitted, per-helper call counts) and a `Frame` per
+call (its module, locals, the names it assigns, its tile prefix). Names bind and
+rebind as in Python, to tensors, integers, tuples and lists (`Value::List` is an
+index into the trace's storage, so lists are shared); a name a function assigns
+is local throughout it; only a tensor's name must be unique. `d, n = q.shape`,
+`+`/`*`/`//`, `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax}`,
+`list`/`tuple` and item reads and writes evaluate there, `t.shape` is a tuple, and
+an `assert` (a chain of `==`/`!=`/`<`/`<=`/`>`/`>=`, tuples by `==`/`!=` only) is
+checked and leaves no statement; a false one is a parse error.
+`asserted_shapes(source, name)` reads a kernel's literal `assert p.shape ==
+(...)`s as its shapes, for `volta_pipeline`'s NKI frontend, which has no caller.
+
+Modules are read whole but functions lazily: the lexer tokenizes all of Python
+(strings, every bracket, `\` continuations), making what the subset lacks an
+`Unsupported` token, and `python::parse` keeps each `def` as a `FunctionSource` of
+tokens, parsed only when reached, so the samples' file parses although v10's
+classes use far more Python. A module's globals are imports, `from` imports,
+functions and classes (never read; using one is an error).
+`parse_kernel_with_modules(source, modules, name, shapes)` takes the imported
+modules' sources by name. A helper call (a statement, an assignment's value or a
+`return`'s, at most 32 deep) runs the helper's body in a new frame, with defaults,
+keyword arguments and a final `return`'s value; its tiles take the prefix
+`name[call].` (`softmax_isa[0].row_max`), and its errors are `ParseError::InCall`,
+lines in the helper's module.
 
 A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
 lowered: the interpreter has no program counter, and the integer-expression
 machinery is `parse.rs`'s. It binds the loop variable to each index, folds the
-body's arithmetic and emits the body once per index; the loop variable and the
-tiles an iteration declares take its index as a suffix (`x` becomes `x.0`, a
-name Python cannot write), so each iteration owns its own, and the variable is
-unbound after its iteration. The count is any compile-time integer.
+body's arithmetic and emits the body once per index; the tiles an iteration
+declares take its index as a suffix (`x` becomes `x.0`, a name Python cannot
+write), so each iteration owns its own, while other names rebind as in Python (the
+loop variable keeps its last value). The count is any compile-time integer; a
+`for` over a tuple or list unrolls the same way.
 
 A subscript is a rectangular region, one slice per dimension, and only slices:
 an integer index would drop its dimension. `lower/` resolves each bound against
@@ -549,6 +568,14 @@ kernels' math over their own array names (`a_t` being A transposed);
 and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative test.
 `tests/fixtures/attention.spec` is the NKI attention samples' reference, their
 `numpy_attention` in their layout (`q`, `k`, `v` as `[D, N]`, `kernel_out` as `[N, D]`).
+`tests/fixtures/nki_samples/` vendors the samples' `attention_kernels.py` and
+`attention_kernel_utils.py` unmodified (nki-samples `ef43bf3`, MIT-0);
+`attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
+`.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
+on its first output row (all 16,384 outputs in an ignored test) and refutes it
+against attention with `q` and `k` swapped. `tests/fixtures/helper_call.py` calls
+`helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
+unreached code (a class, `if`, f-strings) that is never parsed.
 
 ## Crate: volta_graph_check
 
@@ -691,7 +718,9 @@ and softmax against their formulas, accounting for CK's column-major B and softm
 several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
 or change the softmax row width), and `trainium_equivalence_tests.rs` (the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
-against the unclamped product and `softmax` against the softmax of `-x` as negative tests).
+against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
+and the NKI samples' `attn_fwd_v2` against `attention.spec`, on its first row by default,
+with `q` and `k` swapped as a negative test).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 

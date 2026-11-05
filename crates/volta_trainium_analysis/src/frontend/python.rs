@@ -1,6 +1,7 @@
 //! The Python subset NKI kernels are written in, as a syntax tree, and its
-//! recursive-descent parser. Only Python's own rules are checked here; what
-//! the names refer to is for `parse` to resolve.
+//! recursive-descent parser. A module's items are read eagerly but a function
+//! only when `FunctionSource::parse` is called, so code no kernel reaches may use
+//! any Python. Only Python's own rules are checked here; names are `parse`'s.
 
 use std::fmt;
 
@@ -32,17 +33,54 @@ pub enum Item {
         path: Dotted,
         alias: Option<String>,
     },
-    Function(Function),
+    /// `from module import name [as alias], ...`.
+    FromImport {
+        line: usize,
+        module: Dotted,
+        names: Vec<(String, Option<String>)>,
+    },
+    Function(FunctionSource),
+    /// `class name...:`, whose body is never read.
+    Class {
+        line: usize,
+        name: String,
+    },
 }
 
-/// `@decorator` on `def name(params):` and its body.
-pub struct Function {
-    /// The decorator's line.
+/// A `def`, decorators included, as tokens: parsed only by `parse`.
+#[derive(Clone)]
+pub struct FunctionSource {
     pub line: usize,
-    pub decorator: Dotted,
     pub name: String,
-    pub params: Vec<String>,
+    /// From the first decorator or `def` through the body's end, then `Eof`.
+    tokens: Vec<Token>,
+}
+
+impl FunctionSource {
+    pub fn parse(&self) -> Result<Function, ParseError> {
+        Parser {
+            tokens: self.tokens.clone(),
+            pos: 0,
+        }
+        .function()
+    }
+}
+
+/// `@decorator ... def name(params):` and its body, docstring dropped.
+pub struct Function {
+    /// The first decorator's line, else the `def`'s.
+    pub line: usize,
+    pub decorators: Vec<Dotted>,
+    pub name: String,
+    pub params: Vec<Param>,
     pub body: Vec<Stmt>,
+}
+
+/// A parameter, and its default value if it has one: `axis=(1,)`.
+#[derive(Clone)]
+pub struct Param {
+    pub name: String,
+    pub default: Option<Expr>,
 }
 
 #[derive(Clone)]
@@ -68,12 +106,17 @@ pub enum Stmt {
     Return { line: usize, value: Expr },
 }
 
-/// What an assignment binds: one name, or each item of a tuple to a name.
+/// What an assignment binds: one name, each item of a tuple to a name, or an item.
 #[derive(Clone)]
 pub enum Target {
     Name(String),
     /// `a, b = value`.
     Unpack(Vec<String>),
+    /// `name[index] = value`.
+    Item {
+        name: String,
+        index: Expr,
+    },
 }
 
 #[derive(Clone)]
@@ -122,17 +165,27 @@ pub enum BinOp {
     Add,
 }
 
-/// An assignment's left side as its target: a name, or a tuple of names.
+/// An assignment's left side as its target: a name, a tuple of names, or `name[index]`.
 fn target(expr: Expr, line: usize) -> Result<Target, ParseError> {
     let name = |expr: Expr| match expr {
         Expr::Name(Dotted { head, attributes }) if attributes.is_empty() => Ok(head),
-        _ => bail!(line, "only names can be assigned to"),
+        _ => bail!(line, "only names and `name[index]` can be assigned to"),
     };
 
     match expr {
         Expr::Tuple(items) => Ok(Target::Unpack(
             items.into_iter().map(name).collect::<Result<_, _>>()?,
         )),
+        Expr::Subscript { base, mut indices } if indices.len() == 1 => {
+            let index = indices.pop().expect("one index");
+            if matches!(index, Expr::Slice { .. }) {
+                bail!(line, "only one item, not a slice, can be assigned to");
+            }
+            Ok(Target::Item {
+                name: name(*base)?,
+                index,
+            })
+        }
         expr => Ok(Target::Name(name(expr)?)),
     }
 }
@@ -153,18 +206,108 @@ impl Parser {
     fn items(mut self) -> Result<Vec<Item>, ParseError> {
         let mut items = Vec::new();
         loop {
-            let Token { kind, line } = self.advance();
+            if self.docstring() {
+                continue;
+            }
+            let Token { kind, line } = self.tokens[self.pos].clone();
             let item = match kind {
                 TokenKind::Eof => return Ok(items),
-                TokenKind::Keyword(Keyword::Import) => self.import(line)?,
-                TokenKind::At => Item::Function(self.function(line)?),
+                TokenKind::Keyword(Keyword::Import) => {
+                    self.advance();
+                    self.import(line)?
+                }
+                TokenKind::Keyword(Keyword::From) => {
+                    self.advance();
+                    self.import_from(line)?
+                }
+                TokenKind::At | TokenKind::Keyword(Keyword::Def | Keyword::Class) => {
+                    self.definition(line)?
+                }
                 other => bail!(
                     line,
-                    "expected `import` or a decorated function, found {other}"
+                    "expected an import, a function or a class, found {other}"
                 ),
             };
             items.push(item);
         }
+    }
+
+    /// Skips a statement of only a string, such as a docstring, if one comes next.
+    fn docstring(&mut self) -> bool {
+        let is_string = self.tokens[self.pos].kind == TokenKind::Str
+            && self.tokens[self.pos + 1].kind == TokenKind::Newline;
+        if is_string {
+            self.pos += 2;
+        }
+        is_string
+    }
+
+    /// `module import name [as alias], ...` to the end of the line, after `from`.
+    fn import_from(&mut self, line: usize) -> Result<Item, ParseError> {
+        let module = self.dotted()?;
+        self.expect(TokenKind::Keyword(Keyword::Import))?;
+        let mut names = Vec::new();
+        loop {
+            let name = self.name()?;
+            let alias = if self.eat(&TokenKind::Keyword(Keyword::As)) {
+                Some(self.name()?)
+            } else {
+                None
+            };
+            names.push((name, alias));
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::Newline)?;
+
+        Ok(Item::FromImport {
+            line,
+            module,
+            names,
+        })
+    }
+
+    /// A `def` or `class` and any decorators, read only far enough to name it: its
+    /// tokens run to its header line's end and then through its indented block.
+    fn definition(&mut self, line: usize) -> Result<Item, ParseError> {
+        let start = self.pos;
+        while self.eat(&TokenKind::At) {
+            self.skip_line();
+        }
+
+        let Token { kind, .. } = self.advance();
+        let name = self.name()?;
+        self.skip_line();
+        if self.eat(&TokenKind::Indent) {
+            let mut depth = 1;
+            while depth > 0 {
+                match self.advance().kind {
+                    TokenKind::Indent => depth += 1,
+                    TokenKind::Dedent => depth -= 1,
+                    TokenKind::Eof => bail!(line, "unterminated block"),
+                    _ => {}
+                }
+            }
+        }
+
+        match kind {
+            TokenKind::Keyword(Keyword::Def) => {
+                let mut tokens = self.tokens[start..self.pos].to_vec();
+                tokens.push(Token::new(TokenKind::Eof, self.tokens[self.pos - 1].line));
+                Ok(Item::Function(FunctionSource { line, name, tokens }))
+            }
+            TokenKind::Keyword(Keyword::Class) => Ok(Item::Class { line, name }),
+            other => bail!(
+                line,
+                "expected `def` or `class` after a decorator, found {other}"
+            ),
+        }
+    }
+
+    /// Advances past the end of the current logical line.
+    fn skip_line(&mut self) {
+        while !matches!(self.advance().kind, TokenKind::Newline | TokenKind::Eof) {}
     }
 
     /// `path [as alias]` to the end of the line, after `import`.
@@ -180,31 +323,54 @@ impl Parser {
         Ok(Item::Import { line, path, alias })
     }
 
-    /// `decorator`, then `def name(params):` and its indented body, after `@`.
-    fn function(&mut self, line: usize) -> Result<Function, ParseError> {
-        let decorator = self.dotted()?;
-        self.expect(TokenKind::Newline)?;
+    /// `@decorator`s, then `def name(params):` and its indented body.
+    fn function(&mut self) -> Result<Function, ParseError> {
+        let line = self.line();
+        let mut decorators = Vec::new();
+        while self.eat(&TokenKind::At) {
+            decorators.push(self.dotted()?);
+            self.expect(TokenKind::Newline)?;
+        }
 
         self.expect(TokenKind::Keyword(Keyword::Def))?;
         let name = self.name()?;
         self.expect(TokenKind::LParen)?;
-        let params = self.comma_list(TokenKind::RParen, Self::name)?;
+        let params = self.comma_list(TokenKind::RParen, Self::param)?;
         self.expect(TokenKind::Colon)?;
         self.expect(TokenKind::Newline)?;
-
-        self.expect(TokenKind::Indent)?;
-        let mut body = Vec::new();
-        while !self.eat(&TokenKind::Dedent) {
-            body.push(self.statement()?);
-        }
+        let body = self.block()?;
 
         Ok(Function {
             line,
-            decorator,
+            decorators,
             name,
             params,
             body,
         })
+    }
+
+    /// `name [= default]`.
+    fn param(&mut self) -> Result<Param, ParseError> {
+        let name = self.name()?;
+        let default = if self.eat(&TokenKind::Equals) {
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        Ok(Param { name, default })
+    }
+
+    /// An indented block's statements; a statement of only a string, such as a
+    /// docstring, does nothing and is dropped.
+    fn block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        self.expect(TokenKind::Indent)?;
+        let mut body = Vec::new();
+        while !self.eat(&TokenKind::Dedent) {
+            if !self.docstring() {
+                body.push(self.statement()?);
+            }
+        }
+        Ok(body)
     }
 
     fn statement(&mut self) -> Result<Stmt, ParseError> {
@@ -222,12 +388,7 @@ impl Parser {
             let iterable = self.expr()?;
             self.expect(TokenKind::Colon)?;
             self.expect(TokenKind::Newline)?;
-
-            self.expect(TokenKind::Indent)?;
-            let mut body = Vec::new();
-            while !self.eat(&TokenKind::Dedent) {
-                body.push(self.statement()?);
-            }
+            let body = self.block()?;
             return Ok(Stmt::For {
                 line,
                 var,

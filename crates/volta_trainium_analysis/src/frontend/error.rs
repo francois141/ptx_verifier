@@ -11,6 +11,13 @@ pub enum ParseError {
         param: String,
         problem: ShapeProblem,
     },
+    /// An error in helper `function` of `module`, which the kernel called; its line is
+    /// that module's.
+    InCall {
+        function: String,
+        module: String,
+        error: Box<ParseError>,
+    },
     /// Malformed or unsupported source at a 1-based line.
     Syntax { line: usize, message: String },
 }
@@ -40,6 +47,11 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::KernelNotFound(name) => write!(f, "kernel `{name}` not found"),
+            Self::InCall {
+                function,
+                module,
+                error,
+            } => write!(f, "in `{function}` of module `{module}`: {error}"),
             Self::ParamShape { param, problem } => match problem {
                 ShapeProblem::Missing => write!(f, "no shape is given for parameter `{param}`"),
                 ShapeProblem::NotAParam => {

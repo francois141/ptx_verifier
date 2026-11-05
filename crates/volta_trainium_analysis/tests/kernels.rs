@@ -69,3 +69,27 @@ fn the_call_shapes_kernel_parses_lowers_and_runs_as_expected() {
 fn the_softmax_kernel_parses_lowers_and_runs_as_expected() {
     common::check("softmax", "kernel", &[("x", &[2, 3])]);
 }
+
+#[test]
+fn the_helper_call_kernel_parses_lowers_and_runs_as_expected() {
+    common::check_importing(
+        "helper_call",
+        "kernel",
+        &["helpers"],
+        &[("a", &[2, 3]), ("b", &[2, 3])],
+    );
+}
+
+/// The NKI samples' `attn_fwd_v2` from their unmodified file, inlining `softmax_isa` from
+/// `attention_kernel_utils.py`, at the 128 x 128 size it asserts. Its outputs are checked
+/// against `attention.spec` in `volta_pipeline`, not as text.
+#[test]
+fn the_attention_v2_kernel_parses_and_lowers_as_expected() {
+    let size: &[u64] = &[128, 128];
+    common::check_lowering(
+        "nki_samples/attention_kernels",
+        "attn_fwd_v2",
+        &["attention_kernel_utils"],
+        &[("q", size), ("k", size), ("v", size)],
+    );
+}

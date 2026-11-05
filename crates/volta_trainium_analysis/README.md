@@ -55,18 +55,46 @@ on shapes, as NKI's tracer does:
   is a parse error naming the comparison, e.g. ``assertion fails for this call:
   `64 == 128` is false``.
 
-A name is bound once: to a tensor (a parameter or an `nl.ndarray`) or to an
-integer. `asserted_shapes(source, name)` reads the shapes a kernel's own
-`assert param.shape == (extent, ...)` statements state, for running a kernel
-without a caller, as `volta_pipeline`'s NKI frontend does.
+Names bind and rebind as in Python: to tensors (an alias `b = a` included),
+integers, tuples and lists, and a name a function assigns anywhere is local
+throughout it, so reading it first is an error. Each tensor still needs a name of
+its own: declaring a second `x` in one scope is an error. `asserted_shapes(source,
+name)` reads the shapes a kernel's own `assert param.shape == (extent, ...)`
+statements state, for running a kernel without a caller, as `volta_pipeline`'s NKI
+frontend does.
+
+## Modules and helper functions
+
+A kernel's file is read whole, but a function only when it is reached, so code no
+kernel calls may use any Python: the samples' file also holds v10's classes. The
+lexer therefore tokenizes all of Python, strings (docstrings included), every
+bracket and `\` continuations; what the subset does not support becomes an
+`Unsupported` token, an error only in code that is parsed. A module's top level
+may hold imports, `from module import name`s, functions, classes (whose bodies are
+never read; using one is an error) and docstrings.
+
+`parse_kernel_with_modules(source, modules, name, shapes)` also takes the modules
+the file imports from, as `(module name, source)`; `parse_kernel` takes none. A
+`from nki.language import add` needs no source. A call to a helper function,
+`scores = softmax_isa(qk_sbuf)`, runs its body in a frame of its own: arguments by
+position or keyword, defaults (`axis=(1,)`), and its value from a final `return`.
+Its tiles take the call as a prefix, `softmax_isa[0].row_max`, so two calls declare
+distinct tiles. A helper call may be a statement, an assignment's value or a
+`return`'s, not part of a larger expression; calls nest at most 32 deep. An error
+inside a helper names it and its module, its line being that module's.
+
+The helpers may use `list(...)` and `tuple(...)`, item reads and writes
+(`shape[a] = 1`) and `for` over a tuple or list. Lists are shared, as in Python:
+they live in the trace and a `Value::List` is an index into it, so every name bound
+to one sees a change.
 
 ## Loops and regions
 
-A `for` over `nl.affine_range(count)` is unrolled while the kernel is resolved,
-since execution has no control flow; each iteration's tiles are named after its
-index (`x.0`, `x.1`), so they stay distinct. The count is any compile-time
-integer, e.g. `seqlen_kv // 4`. The loop variable is bound only within its
-iteration, so later loops can reuse the name.
+A `for` over `nl.affine_range(count)`, a tuple or a list is unrolled while the
+kernel is resolved, since execution has no control flow; each iteration's tiles are
+named after its index (`x.0`, `x.1`), so they stay distinct, while other names
+rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its last
+value). The count is any compile-time integer, e.g. `seqlen_kv // 4`.
 
 A subscript such as `a[0:4, :]` names a rectangular region, one slice per
 dimension; `nisa.dma_copy` and `nisa.tensor_copy` copy between regions, and an
@@ -89,8 +117,21 @@ or of a kernel-allocated HBM tensor is an `EvalError::UninitializedRead`.
 ## Fixtures
 
 `tests/kernels.rs` runs each fixture for one call, giving each parameter's shape
-(`common::check(name, kernel, shapes)`); the fixtures' own shape `assert`s check
-those shapes.
+(`common::check(name, kernel, shapes)`, or `check_importing` with the fixture
+modules it imports from); the fixtures' own shape `assert`s check those shapes.
+
+`tests/fixtures/nki_samples/` holds the NKI samples' `attention_kernels.py` and
+`attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at
+`ef43bf3` (`src/nki_samples/tutorials/attention_fwd_performance/`, MIT No
+Attribution). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
+checked against `attention.spec` instead).
+
+`tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
+and calls it twice, by default and by keyword argument; `row_sums` builds its
+`[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as
+`softmax_isa` does. Both modules also hold code no call reaches: a class, and
+functions using `if`, `%` and f-strings.
 
 `tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
 and `b` from HBM into SBUF tiles (`nisa.dma_copy`), adds the tiles
@@ -134,10 +175,13 @@ against its spec by the decision procedure rather than by text, and `gemm_relu`
 against `matmul.spec` (the product without the clamp) as a negative test.
 They also check `softmax` against `softmax.spec`, and, as a negative test,
 against the softmax of `-x`, which a `subtract` with its operands reversed would
-compute. `just trainium` runs them with this crate's tests.
+compute. `just trainium` runs them, in release, with this crate's tests.
 
 `tests/fixtures/attention.spec` is the reference for the NKI attention samples
 (`attention_fwd_v1` onward): `numpy_attention` from their `test_attention.py`
 transcribed, in their layout, with `q`, `k` and `v` as `[D, N]` (head dimension
-by sequence length) and the kernels' `kernel_out` as `[N, D]`. No kernel is
-checked against it yet.
+by sequence length) and the kernels' `kernel_out` as `[N, D]`. In
+`volta_pipeline`'s `trainium_equivalence_tests.rs`, v2, read
+from its own file with `softmax_isa` inlined, is proved equal to it on the first row
+of 128 outputs by default and on all 16,384 by an ignored test (about a minute in
+release), and attention with `q` and `k` swapped is refuted.

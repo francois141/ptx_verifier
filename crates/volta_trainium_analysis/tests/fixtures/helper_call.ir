@@ -1,0 +1,15 @@
+kernel kernel(a, b) -> kernel_out
+  a: hbm[2, 3]
+  b: hbm[2, 3]
+  kernel_out: hbm[2, 1]
+  x: sbuf[2, 3]
+  y: sbuf[2, 3]
+  row_sums[0].sums: sbuf[2, 1]
+  row_sums[1].sums: sbuf[2, 1]
+  total: sbuf[2, 1]
+  x = mov(a)
+  y = mov(b)
+  row_sums[0].sums = reduce add(x)
+  row_sums[1].sums = reduce add(y)
+  total = add(row_sums[0].sums, row_sums[1].sums)
+  kernel_out = mov(total)
