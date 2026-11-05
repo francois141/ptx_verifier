@@ -31,6 +31,8 @@ pub(crate) struct WaveState {
     pub pc: InstrId,
     pub registers: WaveRegisters,
     pub status: Status,
+    /// The instructions `lgkmcnt` counts that no wait has completed, oldest first.
+    pub lgkm_in_flight: VecDeque<LgkmInFlight>,
 }
 
 impl WaveState {
@@ -40,8 +42,19 @@ impl WaveState {
             pc: InstrId(0),
             registers,
             status: Status::Ready,
+            lgkm_in_flight: VecDeque::new(),
         }
     }
+}
+
+/// An instruction `lgkmcnt` counts, in flight, with the destinations pending until it completes.
+#[derive(Debug)]
+pub(crate) enum LgkmInFlight {
+    /// A DS instruction: a read's or lane exchange's destinations, pending in every lane; none
+    /// for a write.
+    Ds { dst: Vec<Vgpr> },
+    /// A scalar load.
+    Scalar { dst: Vec<Sgpr> },
 }
 
 /// A register's value; a pending value is a load's result, which the wave may neither read nor
@@ -83,7 +96,7 @@ pub(crate) struct WaveRegisters {
 }
 
 /// The counter whose wait completes a vector register load: `vmcnt` for global and buffer
-/// loads, `lgkmcnt` for LDS reads and lane exchanges.
+/// loads, `lgkmcnt` for LDS reads and lane exchanges, which the wave's `lgkm_in_flight` tracks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LoadCounter {
     Vm,
@@ -91,15 +104,13 @@ pub(super) enum LoadCounter {
 }
 
 /// One lane's vector and accumulation registers, its VCC bit as a boolean expression, and the
-/// destinations of each of its loads still pending per counter, oldest first; only VGPRs are
-/// loaded.
+/// destinations of each of its `vmcnt` loads still pending, oldest first; only VGPRs are loaded.
 #[derive(Debug, Clone)]
 struct LaneRegisters {
     values: [VectorValue; 256],
     accumulators: [Option<ExprId>; 256],
     vcc: Option<ExprId>,
     pending_loads: VecDeque<Vec<Vgpr>>,
-    pending_lds_reads: VecDeque<Vec<Vgpr>>,
 }
 
 // Initialize the wave with all registers unwritten.
@@ -110,7 +121,6 @@ impl Default for WaveRegisters {
             accumulators: [None; 256],
             vcc: None,
             pending_loads: VecDeque::new(),
-            pending_lds_reads: VecDeque::new(),
         };
         Self {
             scalar: std::array::from_fn(|_| ScalarValue::Word(RegValue::Uninitialized)),
@@ -170,18 +180,12 @@ impl WaveRegisters {
         Ok(())
     }
 
-    pub(super) fn has_pending_scalar_loads(&self) -> bool {
-        self.scalar
-            .iter()
-            .any(|slot| matches!(slot, ScalarValue::Word(RegValue::Pending(_))))
-    }
-
-    /// Make all pending scalar loads readable after lgkmcnt(0).
-    /// The stored expression stays the same; only its readiness changes.
-    pub(super) fn finish_scalar_loads(&mut self) {
-        for slot in &mut self.scalar {
-            if let ScalarValue::Word(RegValue::Pending(value)) = slot {
-                *slot = ScalarValue::Word(RegValue::Ready(*value));
+    /// A completed scalar load makes `dst` readable; the stored expression stays the same.
+    pub(super) fn finish_scalar_load(&mut self, dst: &[Sgpr]) {
+        for reg in dst {
+            let slot = &mut self.scalar[usize::from(reg.0)];
+            if let ScalarValue::Word(RegValue::Pending(value)) = *slot {
+                *slot = ScalarValue::Word(RegValue::Ready(value));
             }
         }
     }
@@ -628,9 +632,8 @@ impl WaveRegisters {
         for (&reg, &value) in dst.iter().zip(values) {
             registers.values[usize::from(reg.0)] = VectorValue::Word(RegValue::Pending(value));
         }
-        match counter {
-            LoadCounter::Vm => registers.pending_loads.push_back(dst.to_vec()),
-            LoadCounter::Lgkm => registers.pending_lds_reads.push_back(dst.to_vec()),
+        if counter == LoadCounter::Vm {
+            registers.pending_loads.push_back(dst.to_vec());
         }
         Ok(())
     }
@@ -668,25 +671,36 @@ impl WaveRegisters {
         }
     }
 
-    /// Wait until at most `outstanding` loads counted by `counter` are in flight per lane. Loads
-    /// return in issue order, so the most recent stay pending; counting no stores or LDS writes
-    /// keeps more loads pending than the hardware does.
-    pub(super) fn finish_vector_loads(&mut self, counter: LoadCounter, outstanding: usize) {
+    /// Wait until at most `outstanding` `vmcnt` loads are in flight per lane. Loads return in
+    /// issue order, so the most recent stay pending; counting no stores keeps more loads pending
+    /// than the hardware does.
+    pub(super) fn finish_vm_loads(&mut self, outstanding: usize) {
         for registers in &mut self.vector {
-            let pending = match counter {
-                LoadCounter::Vm => &mut registers.pending_loads,
-                LoadCounter::Lgkm => &mut registers.pending_lds_reads,
-            };
-            let completed = pending.len().saturating_sub(outstanding);
+            let completed = registers.pending_loads.len().saturating_sub(outstanding);
+            for load in registers
+                .pending_loads
+                .drain(..completed)
+                .collect::<Vec<_>>()
+            {
+                registers.finish(&load);
+            }
+        }
+    }
 
-            for load in pending.drain(..completed) {
-                for reg in load {
-                    let slot = &mut registers.values[usize::from(reg.0)];
+    /// A completed DS read or lane exchange makes `dst` readable in every lane.
+    pub(super) fn finish_ds_load(&mut self, dst: &[Vgpr]) {
+        for registers in &mut self.vector {
+            registers.finish(dst);
+        }
+    }
+}
 
-                    if let VectorValue::Word(RegValue::Pending(value)) = *slot {
-                        *slot = VectorValue::Word(RegValue::Ready(value));
-                    }
-                }
+impl LaneRegisters {
+    fn finish(&mut self, load: &[Vgpr]) {
+        for reg in load {
+            let slot = &mut self.values[usize::from(reg.0)];
+            if let VectorValue::Word(RegValue::Pending(value)) = *slot {
+                *slot = VectorValue::Word(RegValue::Ready(value));
             }
         }
     }

@@ -6,7 +6,7 @@ use crate::ir::{
     ScalarShift64, ScalarSrc, ScalarSrc64, Sgpr,
 };
 
-use super::wave::{LoadCounter, WaveId, WaveRegisters};
+use super::wave::{LgkmInFlight, WaveId, WaveRegisters};
 use super::{EvalError, Interpreter};
 
 /// Read-only kernel argument bytes at a concrete device address.
@@ -182,17 +182,21 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Nop => Ok(()),
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
-                let registers = &mut self.waves[wave].registers;
-                // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
-                if lgkmcnt.is_some_and(|n| n != 0) && registers.has_pending_scalar_loads() {
+                let scalar_load_in_flight = self.waves[wave]
+                    .lgkm_in_flight
+                    .iter()
+                    .any(|instruction| matches!(instruction, LgkmInFlight::Scalar { .. }));
+                // Scalar loads return out of order, so only lgkmcnt(0) says which are ready; a
+                // partial wait with one in flight is not modeled (issue #19).
+                if lgkmcnt.is_some_and(|n| n != 0) && scalar_load_in_flight {
                     return Err(EvalError::UnsupportedInstruction);
                 }
                 if let Some(outstanding) = vmcnt {
-                    registers.finish_vector_loads(LoadCounter::Vm, usize::from(*outstanding));
+                    let registers = &mut self.waves[wave].registers;
+                    registers.finish_vm_loads(usize::from(*outstanding));
                 }
                 if let Some(outstanding) = lgkmcnt {
-                    registers.finish_vector_loads(LoadCounter::Lgkm, usize::from(*outstanding));
-                    registers.finish_scalar_loads();
+                    self.wait_lgkm(wave, usize::from(*outstanding));
                 }
                 Ok(())
             }
@@ -234,7 +238,11 @@ impl Interpreter<'_> {
             }
             values
         };
-        registers.start_scalar_load(dst, values)
+        registers.start_scalar_load(dst, values)?;
+        let dst = dst.to_vec();
+        let scalar_load = LgkmInFlight::Scalar { dst };
+        self.waves[wave].lgkm_in_flight.push_back(scalar_load);
+        Ok(())
     }
 }
 

@@ -2,6 +2,7 @@
 
 mod arithm;
 mod buffer;
+mod ds;
 mod global;
 mod interp;
 mod launch;

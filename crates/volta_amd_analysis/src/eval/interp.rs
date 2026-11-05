@@ -23,7 +23,9 @@ use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
-use super::wave::{LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word};
+use super::wave::{
+    LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word,
+};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`, and the
@@ -136,6 +138,9 @@ impl<'a> Interpreter<'a> {
         let mut next = InstrId(pc.0 + 1);
         match instruction {
             LoweredInstr::EndPgm => {
+                // TODO: confirm in the CDNA4 ISA that `s_endpgm` implicitly performs `s_waitcnt 0`,
+                // then also complete the wave's vmcnt and expcnt waits here, not only lgkmcnt.
+                self.wait_lgkm(wave, 0);
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
             }
@@ -206,13 +211,9 @@ impl<'a> Interpreter<'a> {
                 *src_b,
                 *src_c,
             )?,
-            LoweredInstr::DsBPermute {
-                dst,
-                addr,
-                src,
-                offset,
-            } => self.execute_ds_bpermute(wave, *dst, *addr, *src, *offset)?,
-            LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses)?,
+            LoweredInstr::DsWrite { .. }
+            | LoweredInstr::DsRead { .. }
+            | LoweredInstr::DsBPermute { .. } => self.execute_ds(wave, instruction)?,
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
@@ -233,8 +234,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
-            | LoweredInstr::BufferStore { .. }
-            | LoweredInstr::DsRead { .. } => {
+            | LoweredInstr::BufferStore { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
                 }
@@ -242,6 +242,19 @@ impl<'a> Interpreter<'a> {
         }
         self.waves[wave].pc = next;
         Ok(())
+    }
+
+    /// `s_waitcnt lgkmcnt(outstanding)`: every DS instruction and scalar load but the last
+    /// `outstanding` completes, in issue order.
+    pub(super) fn wait_lgkm(&mut self, wave: WaveId, outstanding: usize) {
+        let state = &mut self.waves[wave];
+        let completed = state.lgkm_in_flight.len().saturating_sub(outstanding);
+        for instruction in state.lgkm_in_flight.drain(..completed) {
+            match instruction {
+                LgkmInFlight::Ds { dst } => state.registers.finish_ds_load(&dst),
+                LgkmInFlight::Scalar { dst } => state.registers.finish_scalar_load(&dst),
+            }
+        }
     }
 
     /// Every lane is active, so EXEC is never zero.
@@ -435,32 +448,6 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::DsRead { addr, accesses } => self.ds_read(wave, lane, *addr, *accesses),
             _ => Err(EvalError::UnsupportedInstruction),
         }
-    }
-
-    /// Gather register values across the wave, pending until an LGKM wait completes the exchange.
-    fn execute_ds_bpermute(
-        &mut self,
-        wave: WaveId,
-        dst: Vgpr,
-        addr: Vgpr,
-        src: Vgpr,
-        offset: u16,
-    ) -> Result<(), EvalError> {
-        let registers = &mut self.waves[wave].registers;
-        let mut values = Vec::with_capacity(64);
-
-        // Read every source before changing destinations, which may overlap `addr` or `src`.
-        for lane in 0..64 {
-            let address = registers.read_concrete_address_vgpr(&self.arena, lane, addr)?;
-            // CDNA4 §12.12: bits [7:2] select the source lane; no LDS memory is accessed.
-            let source_lane = ((address.wrapping_add(u32::from(offset)) >> 2) & 63) as usize;
-            values.push(registers.read_vgpr(source_lane, src)?);
-        }
-
-        for (lane, value) in values.into_iter().enumerate() {
-            registers.start_vector_load(lane, &[dst], &[value], LoadCounter::Lgkm)?;
-        }
-        Ok(())
     }
 
     /// `lane`'s byte address: its address VGPR plus `offset`.

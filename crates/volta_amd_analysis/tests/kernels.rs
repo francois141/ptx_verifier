@@ -695,3 +695,25 @@ fn two_lds_writes_in_the_same_wave_are_rejected() {
         result.as_ref().is_ok_and(|run| run.terminal == expected)
     });
 }
+
+// Test that lgkmcnt(1) completes every DS instruction in flight but the last, writes included,
+// and that a partial wait with a scalar load in flight is rejected (issue #19).
+#[test]
+fn a_partial_lgkm_wait_completes_all_but_the_last_instructions() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output(F32)),
+    ];
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    common::check_run_kernel("lgkm_wait", "partial_wait", 64, &kernarg, &arrays);
+
+    let expected = Terminal::Aborted {
+        wave: WaveId(0),
+        pc: InstrId(8),
+        error: EvalError::UnsupportedInstruction,
+    };
+    let kernel = "partial_wait_with_scalar_load";
+    common::check_rejected_kernel("lgkm_wait", kernel, &arrays, |result| {
+        result.as_ref().is_ok_and(|run| run.terminal == expected)
+    });
+}
