@@ -1,5 +1,5 @@
-//! The parsed form of one NKI kernel: HBM tensors, on-chip tiles, and the
-//! `nki.isa` instructions over them. `Display` renders a kernel one statement
+//! The parsed form of one NKI kernel: HBM tensors, on-chip tiles, the
+//! `nki.isa` instructions over them, and the tensor it returns. `Display` renders a kernel one statement
 //! per line, the form of the fixtures' expected `.ast` files.
 
 use std::collections::BTreeMap;
@@ -16,9 +16,11 @@ pub struct Kernel {
     pub name: String,
     /// The arguments in order: tensors in device memory (HBM).
     pub params: Vec<TensorName>,
-    /// Every tensor a statement names is a parameter or a tile declared by an
+    /// Every tensor a statement names is a parameter or a tensor declared by an
     /// earlier statement, and no name is declared twice.
     pub body: Vec<Statement>,
+    /// The tensor named by the `return` ending the body, if any.
+    pub returned: Option<TensorName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +29,8 @@ pub enum Statement {
     AssertShape { tensor: TensorName, shape: Vec<u64> },
     /// `name = nl.ndarray((partitions, free), dtype, buffer=...)`.
     Declare(TileDecl),
+    /// `name = nl.ndarray(shape, dtype, buffer=nl.shared_hbm)`.
+    DeclareHbm(HbmDecl),
     /// `nisa.<opcode>(operand=..., ...)`.
     Instruction(Instruction),
 }
@@ -38,6 +42,15 @@ pub struct TileDecl {
     pub shape: TileShape,
     pub dtype: Dtype,
     pub buffer: Buffer,
+}
+
+/// A tensor the kernel allocates in device memory (HBM), such as the output it returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HbmDecl {
+    pub name: TensorName,
+    /// The extents, outermost first.
+    pub shape: Vec<NonZeroU64>,
+    pub dtype: Dtype,
 }
 
 /// A tile's `(partitions, free)` shape: `free` elements in each of `partitions` partitions.
@@ -145,6 +158,9 @@ impl fmt::Display for Kernel {
         for statement in &self.body {
             writeln!(f, "  {statement}")?;
         }
+        if let Some(returned) = &self.returned {
+            writeln!(f, "  return {returned}")?;
+        }
         Ok(())
     }
 }
@@ -166,6 +182,17 @@ impl fmt::Display for Statement {
                     tile.name,
                     partitions.get(),
                     tile.dtype
+                )
+            }
+
+            Self::DeclareHbm(tensor) => {
+                let extents: Vec<String> = tensor.shape.iter().map(|e| e.to_string()).collect();
+                write!(
+                    f,
+                    "{}: shared_hbm[{}] of {}",
+                    tensor.name,
+                    extents.join(", "),
+                    tensor.dtype
                 )
             }
 

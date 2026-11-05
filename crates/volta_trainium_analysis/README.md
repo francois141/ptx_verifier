@@ -38,6 +38,19 @@ dimension; `nisa.dma_copy` and `nisa.tensor_copy` copy between regions, and an
 omitted bound means the tensor's own edge. An integer index is rejected, since
 it would drop its dimension.
 
+## Outputs
+
+A kernel's outputs are the arguments it writes, such as an `out` parameter, and
+the tensor it returns. A kernel may end with `return t`, where `t` is an HBM
+tensor it allocates with `nl.ndarray(shape, dtype, buffer=nl.shared_hbm)`, of
+any rank; returning an argument or a tile is a lowering error, and `return`
+anywhere but the last statement is a parse error. The returned tensor's output
+array is named after it (`kernel_out` in the attention samples).
+
+Each tensor records what its unwritten elements hold (`ir::Initial`): an
+argument's are its input symbols, while reading an unwritten element of a tile
+or of a kernel-allocated HBM tensor is an `EvalError::UninitializedRead`.
+
 ## Fixtures
 
 `tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
@@ -59,6 +72,9 @@ each partition into a `(4, 1)` tile, `nisa.tensor_scalar` scales and biases it,
 tile of rows at a time: `nl.affine_range(2)` unrolls into two iterations, each
 with its own SBUF tile, copying `a[i * 4:(i + 1) * 4, :]` in and back out to the
 matching rows of `out`.
+
+`tests/fixtures/returned_output.py` multiplies two 2 x 4 tensors elementwise
+into `kernel_out`, an HBM tensor it allocates with `nl.shared_hbm` and returns.
 
 `tests/fixtures/matmul.spec` and `tests/fixtures/gemm_relu.spec` state the
 `matmul` and `gemm_relu` kernels' math over the kernels' own array names, with

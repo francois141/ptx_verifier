@@ -66,6 +66,8 @@ pub enum Stmt {
         iterable: Call,
         body: Vec<Stmt>,
     },
+    /// `return value`.
+    Return { line: usize, value: Expr },
 }
 
 #[derive(Clone)]
@@ -205,6 +207,12 @@ impl Parser {
                 iterable,
                 body,
             });
+        }
+
+        if self.eat(&TokenKind::Keyword(Keyword::Return)) {
+            let value = self.expr()?;
+            self.expect(TokenKind::Newline)?;
+            return Ok(Stmt::Return { line, value });
         }
 
         let target = self.binding();

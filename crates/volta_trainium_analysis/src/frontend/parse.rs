@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Bounds, Buffer, Dtype, Instruction, Kernel, Operand, Partitions, Scalar, Statement, TensorName,
-    TileDecl, TileShape,
+    Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Partitions, Scalar, Statement,
+    TensorName, TileDecl, TileShape,
 };
 use super::error::{ParseError, bail};
 use super::python::{self, BinOp, Call, Dotted, Expr, Function, Item, Stmt};
@@ -15,6 +15,8 @@ use super::python::{self, BinOp, Call, Dotted, Expr, Function, Item, Stmt};
 const NKI: &str = "nki";
 const NKI_LANGUAGE: &str = "nki.language";
 const NKI_ISA: &str = "nki.isa";
+/// The `nki.language` buffer of a device-memory tensor the kernel allocates.
+const SHARED_HBM: &str = "shared_hbm";
 
 /// Parse `source` and return its `@nki.jit` kernel `name`.
 pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, ParseError> {
@@ -67,7 +69,8 @@ fn split_module(items: Vec<Item>) -> Result<(Imports, Vec<Function>), ParseError
     Ok((imports, functions))
 }
 
-/// A `@nki.jit` function, its parameters the HBM tensors it receives.
+/// A `@nki.jit` function, its parameters the HBM tensors it receives, and the
+/// tensor its last statement returns, if that is a `return`.
 fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
     let line = function.line;
     let mut scope = Scope {
@@ -87,16 +90,38 @@ fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
         params.push(scope.bind(param, line)?);
     }
 
+    let mut statements = function.body;
+    let returned = match statements.pop() {
+        Some(Stmt::Return { line, value }) => Some((value, line)),
+        last => {
+            statements.extend(last);
+            None
+        }
+    };
+
     let mut body = Vec::new();
-    for stmt in function.body {
+    for stmt in statements {
         statement(stmt, &mut scope, &mut body)?;
     }
+
+    let returned = returned
+        .map(|(value, line)| returned_tensor(value, &scope, line))
+        .transpose()?;
 
     Ok(Kernel {
         name: function.name,
         params,
         body,
+        returned,
     })
+}
+
+/// The tensor `return value` names.
+fn returned_tensor(value: Expr, scope: &Scope, line: usize) -> Result<TensorName, ParseError> {
+    let Value::Tensor(tensor) = scope.evaluate(value, line)? else {
+        bail!(line, "a kernel can only return a tensor");
+    };
+    Ok(tensor)
 }
 
 /// What an expression denotes.
@@ -290,6 +315,7 @@ fn statement(stmt: Stmt, scope: &mut Scope, out: &mut Vec<Statement>) -> Result<
             iterable,
             body,
         } => unroll(var, iterable, body, scope, out, line),
+        Stmt::Return { line, .. } => bail!(line, "`return` must be the kernel's last statement"),
     }
 }
 
@@ -338,7 +364,8 @@ fn affine_range(call: Call, scope: &Scope, line: usize) -> Result<u64, ParseErro
     Ok(count)
 }
 
-/// `x = nl.ndarray(...)` declares the tile `x`; `nisa.<opcode>(...)` is an instruction.
+/// `x = nl.ndarray(...)` declares the tile or HBM tensor `x`; `nisa.<opcode>(...)` is an
+/// instruction.
 fn call_statement(
     target: Option<String>,
     call: Call,
@@ -355,15 +382,14 @@ fn call_statement(
                 call.callee
             );
         };
-        let tile = declaration(target, call, scope, line)?;
-        return Ok(Statement::Declare(tile));
+        return declaration(target, call, scope, line);
     }
 
     if let Some(opcode) = callee.member_of(NKI_ISA) {
         if let Some(target) = target {
             bail!(
                 line,
-                "`{target}` is bound to an instruction; only `nl.ndarray` declares tiles"
+                "`{target}` is bound to an instruction; only `nl.ndarray` declares tensors"
             );
         }
         let instruction = instruction(opcode.to_owned(), call, scope, line)?;
@@ -400,28 +426,33 @@ fn shape_assertion(
     Ok(Statement::AssertShape { tensor, shape })
 }
 
-/// `target = nl.ndarray(shape, dtype, buffer=...)`.
+/// `target = nl.ndarray(shape, dtype, buffer=...)`: an HBM tensor of any rank in
+/// `nl.shared_hbm`, else an on-chip tile.
 fn declaration(
     target: String,
     call: Call,
     scope: &mut Scope,
     line: usize,
-) -> Result<TileDecl, ParseError> {
+) -> Result<Statement, ParseError> {
     let [shape, dtype, buffer] = ndarray_arguments(call, scope, line)?;
-
-    let shape = read_shape(shape, line)?;
     let dtype = read_dtype(dtype, line)?;
-    let buffer = read_buffer(buffer, line)?;
 
     // As in Python, the arguments are evaluated before the target is bound.
-    let name = scope.bind(target, line)?;
+    if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
+        let shape = read_extents(shape, line)?;
+        let name = scope.bind(target, line)?;
+        return Ok(Statement::DeclareHbm(HbmDecl { name, shape, dtype }));
+    }
 
-    Ok(TileDecl {
+    let shape = read_shape(shape, line)?;
+    let buffer = read_buffer(buffer, line)?;
+    let name = scope.bind(target, line)?;
+    Ok(Statement::Declare(TileDecl {
         name,
         shape,
         dtype,
         buffer,
-    })
+    }))
 }
 
 /// `nl.ndarray`'s shape, dtype and buffer, each given by position or by keyword.
@@ -509,6 +540,28 @@ fn read_shape(value: Value, line: usize) -> Result<TileShape, ParseError> {
     Ok(TileShape { partitions, free })
 }
 
+/// An HBM tensor's extents, e.g. `(128, 512)`: one or more positive integers.
+fn read_extents(value: Value, line: usize) -> Result<Vec<NonZeroU64>, ParseError> {
+    let Value::Tuple(extents) = value else {
+        bail!(line, "a tensor's shape must be a tuple");
+    };
+    if extents.is_empty() {
+        bail!(line, "a tensor's shape must have at least one extent");
+    }
+
+    let mut shape = Vec::new();
+    for extent in extents {
+        let Value::Int(extent) = extent else {
+            bail!(line, "a tensor's extents must be integers");
+        };
+        let Some(extent) = NonZeroU64::new(extent) else {
+            bail!(line, "a tensor's extents must be positive");
+        };
+        shape.push(extent);
+    }
+    Ok(shape)
+}
+
 /// A tensor's `dtype` or a `nki.language` type, e.g. `a.dtype` or `nl.float32`.
 fn read_dtype(value: Value, line: usize) -> Result<Dtype, ParseError> {
     if let Some(dtype) = value.member_of(NKI_LANGUAGE) {
@@ -532,7 +585,7 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
     else {
         bail!(
             line,
-            "a tile's buffer must be `nl.sbuf` or `nl.psum`; HBM tensors are parameters"
+            "a tensor's buffer must be `nl.sbuf`, `nl.psum` or `nl.{SHARED_HBM}`"
         );
     };
     Ok(buffer)

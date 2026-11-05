@@ -1,4 +1,5 @@
-//! A lowered kernel's tensors: each with the memory it lives in and its shape.
+//! A lowered kernel's tensors: each with the memory it lives in, its shape, and
+//! what its elements hold before they are written.
 
 use std::fmt;
 
@@ -14,11 +15,21 @@ pub struct Tensor {
     pub name: String,
     pub memory: Memory,
     pub shape: Shape,
+    pub initial: Initial,
+}
+
+/// What a tensor's elements hold before an instruction writes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Initial {
+    /// A kernel argument's: each element is its input symbol.
+    Argument,
+    /// A tile's or a kernel-allocated HBM tensor's: nothing, so reading one is an error.
+    Uninitialized,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Memory {
-    /// Device memory, where the kernel's arguments live.
+    /// Device memory, where the kernel's arguments and the tensor it returns live.
     Hbm,
     Sbuf,
     Psum,

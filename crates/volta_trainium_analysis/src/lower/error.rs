@@ -1,5 +1,6 @@
-//! Lowering error types: a kernel's parameters left without a shape, and the
-//! errors of one body statement (shapes, instructions, operands).
+//! Lowering error types: a kernel's parameters left without a shape, a returned
+//! tensor it did not allocate, and the errors of one body statement (shapes,
+//! instructions, operands).
 
 use std::fmt;
 
@@ -13,6 +14,9 @@ pub enum LowerError {
     // =========================================================================
     /// A parameter whose shape no `assert` binds.
     UnassertedParam(TensorName),
+
+    /// A returned tensor other than one the kernel allocates in `nl.shared_hbm`.
+    ReturnsUnallocated(TensorName),
 
     // =========================================================================
     // Statement Errors
@@ -114,6 +118,11 @@ impl fmt::Display for LowerError {
             Self::UnassertedParam(param) => {
                 write!(f, "no `assert` binds the shape of parameter `{param}`")
             }
+            Self::ReturnsUnallocated(tensor) => write!(
+                f,
+                "`{tensor}` is returned, but only an HBM tensor the kernel allocates \
+                 with `nl.shared_hbm` can be"
+            ),
             Self::Statement { index, error } => write!(f, "statement {index}: {error}"),
         }
     }
