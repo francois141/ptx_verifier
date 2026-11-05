@@ -1120,6 +1120,10 @@ impl WaveRegisters {
     /// issue order, so the most recent stay pending; counting no stores keeps more loads pending
     /// than the hardware does.
     pub(super) fn finish_vm_loads(&mut self, outstanding: usize) {
+        // The all-ones field gives no completion evidence for the logical issue history.
+        if outstanding == 63 {
+            return;
+        }
         for lane in 0..self.vector.len() {
             let completed: Vec<Vec<Vgpr>> = match self.vector.get_mut(lane) {
                 Some(registers) => {
