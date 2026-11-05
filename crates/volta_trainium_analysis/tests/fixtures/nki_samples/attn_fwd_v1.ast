@@ -1,0 +1,38 @@
+kernel attn_fwd_v1(q: [128, 128], k: [128, 128], v: [128, 128])
+  kernel_out: shared_hbm[128, 128] of q.dtype
+  q_sbuf: sbuf[128, 128] of q.dtype
+  dma_copy(dst=q_sbuf, src=q)
+  k_sbuf: sbuf[128, 128] of k.dtype
+  dma_copy(dst=k_sbuf, src=k)
+  v_sbuf: sbuf[128, 128] of v.dtype
+  dma_copy(dst=v_sbuf, src=v)
+  qk_psum: psum[128, 128] of float32
+  nc_matmul(dst=qk_psum, moving=k_sbuf, stationary=q_sbuf)
+  qk: sbuf[128, 128] of float32
+  tensor_copy(dst=qk, src=qk_psum)
+  row_max: sbuf[128, 1] of qk.dtype
+  tensor_reduce(axis=1, data=qk, dst=row_max, op=nki.language.maximum)
+  norm_row: sbuf[128, 128] of float32
+  tensor_scalar(data=qk, dst=norm_row, op0=nki.language.subtract, operand0=row_max)
+  exp_row: sbuf[128, 128] of norm_row.dtype
+  activation(data=norm_row, dst=exp_row, op=nki.language.exp)
+  sum_row: sbuf[128, 1] of exp_row.dtype
+  tensor_reduce(axis=1, data=exp_row, dst=sum_row, op=nki.language.add)
+  inverse_sum_row: sbuf[128, 1] of sum_row.dtype
+  reciprocal(data=sum_row, dst=inverse_sum_row)
+  scores: sbuf[128, 128] of float32
+  tensor_scalar(data=exp_row, dst=scores, op0=nki.language.multiply, operand0=inverse_sum_row)
+  v_psum_t: psum[128, 128] of v_sbuf.dtype
+  nc_transpose(data=v_sbuf, dst=v_psum_t)
+  v_sbuf_t: sbuf[128, 128] of v_sbuf.dtype
+  tensor_copy(dst=v_sbuf_t, src=v_psum_t)
+  scores_t_psum: psum[128, 128] of scores.dtype
+  nc_transpose(data=scores, dst=scores_t_psum)
+  scores_t: sbuf[128, 128] of float32
+  tensor_copy(dst=scores_t, src=scores_t_psum)
+  attn_out: psum[128, 128] of float32
+  nc_matmul(dst=attn_out, moving=v_sbuf_t, stationary=scores_t)
+  attn_out_sbuf: sbuf[128, 128] of float32
+  tensor_copy(dst=attn_out_sbuf, src=attn_out)
+  dma_copy(dst=kernel_out, src=attn_out_sbuf)
+  return kernel_out

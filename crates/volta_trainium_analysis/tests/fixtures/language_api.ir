@@ -1,0 +1,29 @@
+kernel kernel(a, b, mx, rs, tr)
+  a: hbm[2, 2]
+  b: hbm[2, 2]
+  mx: hbm[2, 1]
+  rs: hbm[2, 1]
+  tr: hbm[2, 2]
+  x: sbuf[2, 2]
+  y: sbuf[2, 2]
+  p: psum[2, 2]
+  s: sbuf[2, 2]
+  m: sbuf[2, 1]
+  e: sbuf[2, 2]
+  u: sbuf[2, 1]
+  r: sbuf[2, 1]
+  t: psum[2, 2]
+  w: sbuf[2, 2]
+  x = mov(a)
+  y = mov(b)
+  p = matmul(x, y)
+  s = mov(p)
+  m = reduce maximum(s)
+  mx = mov(m)
+  e = exp(x)
+  u = reduce add(e)
+  r = reciprocal(u)
+  rs = mov(r)
+  t = transpose(x)
+  w = mov(t)
+  tr = mov(w)

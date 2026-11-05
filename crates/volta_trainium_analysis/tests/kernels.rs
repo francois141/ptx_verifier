@@ -93,3 +93,32 @@ fn the_attention_v2_kernel_parses_and_lowers_as_expected() {
         &[("q", size), ("k", size), ("v", size)],
     );
 }
+
+#[test]
+fn the_language_api_kernel_parses_lowers_and_runs_as_expected() {
+    let tile: &[u64] = &[2, 2];
+    common::check(
+        "language_api",
+        "kernel",
+        &[
+            ("a", tile),
+            ("b", tile),
+            ("mx", &[2, 1]),
+            ("rs", &[2, 1]),
+            ("tr", tile),
+        ],
+    );
+}
+
+/// The NKI samples' `attn_fwd_v1`, written with the `nki.language` functions that return a
+/// tile, from its unmodified file at the 128 x 128 size it asserts.
+#[test]
+fn the_attention_v1_kernel_parses_and_lowers_as_expected() {
+    let size: &[u64] = &[128, 128];
+    common::check_lowering(
+        "nki_samples/attention_kernels",
+        "attn_fwd_v1",
+        &["attention_kernel_utils"],
+        &[("q", size), ("k", size), ("v", size)],
+    );
+}

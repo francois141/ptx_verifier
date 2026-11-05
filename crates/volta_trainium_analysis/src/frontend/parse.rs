@@ -190,8 +190,8 @@ impl Module {
 /// What running a kernel's Python accumulates, across every call it makes.
 struct Trace<'p> {
     program: &'p Program,
-    /// Every tensor declared so far, with its extents.
-    tensors: BTreeMap<TensorName, Vec<u64>>,
+    /// Every tensor declared so far.
+    tensors: BTreeMap<TensorName, Declared>,
     /// The items of each list `Value::List` refers to: lists are shared, as in Python.
     lists: Vec<Vec<Value>>,
     /// The statements emitted so far, in order.
@@ -199,6 +199,20 @@ struct Trace<'p> {
     /// How many times each helper function has been called, which names its tiles.
     calls: BTreeMap<String, u64>,
     depth: usize,
+}
+
+/// A declared tensor's extents and whether it is in device memory.
+struct Declared {
+    extents: Vec<u64>,
+    place: Place,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// Device memory (HBM): a parameter or an `nl.shared_hbm` tensor.
+    Hbm,
+    /// An SBUF or PSUM tile.
+    OnChip,
 }
 
 /// One function call's names.
@@ -265,7 +279,7 @@ fn kernel(program: &Program, name: &str, shapes: &[(&str, &[u64])]) -> Result<Ke
         }
         let shape = param_shape(&param.name, shapes)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
-        let tensor = trace.declare(&frame, &param.name, extents, line)?;
+        let tensor = trace.declare(&frame, &param.name, extents, Place::Hbm);
         frame
             .locals
             .insert(param.name.clone(), Value::Tensor(tensor.clone()));
@@ -456,6 +470,7 @@ fn bind_arguments(
 enum Value {
     Int(u64),
     Float(Scalar),
+    Bool(bool),
     Tuple(Vec<Value>),
     /// A list: an index into `Trace::lists`, so every name bound to it sees a change.
     List(usize),
@@ -511,6 +526,7 @@ impl fmt::Display for Value {
         match self {
             Self::Int(value) => write!(f, "{value}"),
             Self::Float(value) => write!(f, "{value}"),
+            Self::Bool(value) => f.write_str(if *value { "True" } else { "False" }),
             Self::Tuple(items) => {
                 let items: Vec<String> = items.iter().map(Value::to_string).collect();
                 write!(f, "({})", items.join(", "))
@@ -572,6 +588,7 @@ impl<'p> Frame<'p> {
             }
             (Value::Tensor(tensor), [attribute]) if attribute == "shape" => Ok(Value::Tuple(
                 trace.tensors[&tensor]
+                    .extents
                     .iter()
                     .map(|&e| Value::Int(e))
                     .collect(),
@@ -643,35 +660,38 @@ fn assigned_names(body: &[Stmt], names: &mut BTreeSet<String>) {
 }
 
 impl Trace<'_> {
-    /// Declare tensor `name` of `frame`, its name qualified by the frame's call and
-    /// iterations; each tensor needs a name of its own.
+    /// Declare tensor `name` of `frame`, named after the frame's call and iterations
+    /// (`softmax_isa[0].x.1`); a name declared again, as `x = nl.exp(x)` does, takes a
+    /// version suffix Python cannot write, `x~1`, so every tensor has a name of its own.
     fn declare(
         &mut self,
         frame: &Frame,
         name: &str,
         extents: Vec<u64>,
-        line: usize,
-    ) -> Result<TensorName, ParseError> {
+        place: Place,
+    ) -> TensorName {
         let mut qualified = format!("{}{name}", frame.prefix);
         for index in &frame.iterations {
             qualified.push('.');
             qualified.push_str(&index.to_string());
         }
 
-        let tensor = TensorName(qualified);
-        if self.tensors.insert(tensor.clone(), extents).is_some() {
-            bail!(
-                line,
-                "tensor `{tensor}` is declared twice; each needs its own name"
-            );
+        let mut tensor = TensorName(qualified.clone());
+        let mut version = 0;
+        while self.tensors.contains_key(&tensor) {
+            version += 1;
+            tensor = TensorName(format!("{qualified}~{version}"));
         }
-        Ok(tensor)
+        self.tensors
+            .insert(tensor.clone(), Declared { extents, place });
+        tensor
     }
 
     fn evaluate(&mut self, frame: &Frame, expr: Expr, line: usize) -> Result<Value, ParseError> {
         match expr {
             Expr::Int(value) => Ok(Value::Int(value)),
             Expr::Float(value) => Ok(Value::Float(value)),
+            Expr::Bool(value) => Ok(Value::Bool(value)),
             Expr::Name(name) => frame.resolve(self, &name, line),
             Expr::Tuple(items) => {
                 let mut values = Vec::new();
@@ -1001,11 +1021,20 @@ fn assignment(
                 value
             }
             Value::Builtin(_) => trace.evaluate(frame, Expr::Call(call), line)?,
-            _ => bail!(
-                line,
-                "only `nl.ndarray` and helper functions can be assigned from a call, not `{}`",
-                call.callee
-            ),
+            callee => {
+                let Some(function) = TileFunction::of(&callee) else {
+                    bail!(
+                        line,
+                        "only `nl.ndarray`, the `nki.language` functions returning a tile and \
+                         helper functions can be assigned from a call, not `{}`",
+                        call.callee
+                    );
+                };
+                let Target::Name(name) = target else {
+                    bail!(line, "`{}` returns one tile", call.callee);
+                };
+                return tile_call(name, function, call, trace, frame, line);
+            }
         },
         value => trace.evaluate(frame, value, line)?,
     };
@@ -1077,11 +1106,19 @@ fn effect(value: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<
             inline(&module, &name, call, trace, frame, line)?;
             Ok(())
         }
-        callee if callee.member_of(NKI_LANGUAGE) == Some("ndarray") => bail!(
-            line,
-            "the tile of `{}` must be bound to a name",
-            call.callee
-        ),
+        callee if callee.member_of(NKI_LANGUAGE) == Some("store") => {
+            store(&call, trace, frame, line)
+        }
+        callee
+            if callee.member_of(NKI_LANGUAGE) == Some("ndarray")
+                || TileFunction::of(&callee).is_some() =>
+        {
+            bail!(
+                line,
+                "the tile of `{}` must be bound to a name",
+                call.callee
+            )
+        }
         callee => {
             let Some(opcode) = callee.member_of(NKI_ISA) else {
                 bail!(line, "unsupported call `{}`", call.callee);
@@ -1117,80 +1154,386 @@ fn declaration(
     frame: &mut Frame,
     line: usize,
 ) -> Result<(), ParseError> {
-    let [shape, dtype, buffer] = ndarray_arguments(call, trace, frame, line)?;
+    let [shape, dtype, buffer] = ndarray_arguments(&call, trace, frame, line)?;
     let dtype = read_dtype(dtype, line)?;
 
     // As in Python, the arguments are evaluated before the target is bound.
     let statement = if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
         let shape = read_extents(shape, line)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
-        let name = trace.declare(frame, &target, extents, line)?;
+        let name = trace.declare(frame, &target, extents, Place::Hbm);
         Statement::DeclareHbm(HbmDecl { name, shape, dtype })
     } else {
         let shape = read_shape(shape, line)?;
         let buffer = read_buffer(buffer, line)?;
-        let extents = vec![u64::from(shape.partitions.get()), shape.free.get()];
-        let name = trace.declare(frame, &target, extents, line)?;
-        Statement::Declare(TileDecl {
-            name,
-            shape,
-            dtype,
-            buffer,
-        })
+        declare_tile(target, shape, dtype, buffer, trace, frame);
+        return Ok(());
     };
 
-    let (Statement::Declare(TileDecl { name, .. }) | Statement::DeclareHbm(HbmDecl { name, .. })) =
-        &statement
-    else {
-        unreachable!("a declaration");
+    let Statement::DeclareHbm(HbmDecl { name, .. }) = &statement else {
+        unreachable!("an HBM declaration");
     };
     frame.locals.insert(target, Value::Tensor(name.clone()));
     trace.body.push(statement);
     Ok(())
 }
 
+/// Declare the on-chip tile `target`, bind the name to it and emit its declaration.
+fn declare_tile(
+    target: String,
+    shape: TileShape,
+    dtype: Dtype,
+    buffer: Buffer,
+    trace: &mut Trace,
+    frame: &mut Frame,
+) -> TensorName {
+    let extents = vec![u64::from(shape.partitions.get()), shape.free.get()];
+    let name = trace.declare(frame, &target, extents, Place::OnChip);
+    frame.locals.insert(target, Value::Tensor(name.clone()));
+    trace.body.push(Statement::Declare(TileDecl {
+        name: name.clone(),
+        shape,
+        dtype,
+        buffer,
+    }));
+    name
+}
+
 /// `nl.ndarray`'s shape, dtype and buffer, each given by position or by keyword.
 fn ndarray_arguments(
-    call: Call,
+    call: &Call,
     trace: &mut Trace,
     frame: &Frame,
     line: usize,
 ) -> Result<[Value; 3], ParseError> {
-    const PARAMS: [&str; 3] = ["shape", "dtype", "buffer"];
+    let [shape, dtype, buffer] =
+        arguments(call, ["shape", "dtype", "buffer"], 3, trace, frame, line)?;
+    Ok([
+        shape.expect("required"),
+        dtype.expect("required"),
+        buffer.expect("required"),
+    ])
+}
 
-    if call.args.len() > PARAMS.len() {
-        bail!(line, "`{}` takes at most 3 arguments", call.callee);
+/// The values of `call`'s arguments for `params`, each by position or by keyword; the
+/// first `required` must be given.
+fn arguments<const N: usize>(
+    call: &Call,
+    params: [&str; N],
+    required: usize,
+    trace: &mut Trace,
+    frame: &Frame,
+    line: usize,
+) -> Result<[Option<Value>; N], ParseError> {
+    let callee = &call.callee;
+    if call.args.len() > N {
+        bail!(line, "`{callee}` takes at most {N} arguments");
     }
-    let mut given: [Option<Expr>; 3] = [None, None, None];
-    for (slot, expr) in given.iter_mut().zip(call.args) {
-        *slot = Some(expr);
+    let mut given: [Option<Expr>; N] = std::array::from_fn(|_| None);
+    for (slot, expr) in given.iter_mut().zip(&call.args) {
+        *slot = Some(expr.clone());
     }
 
-    for (keyword, expr) in call.kwargs {
-        let Some(index) = PARAMS.iter().position(|param| *param == keyword) else {
-            bail!(line, "`{}` has no argument `{keyword}`", call.callee);
+    for (keyword, expr) in &call.kwargs {
+        let Some(index) = params.iter().position(|param| param == keyword) else {
+            bail!(line, "`{callee}` has no argument `{keyword}`");
         };
-        if given[index].replace(expr).is_some() {
-            bail!(
-                line,
-                "argument `{keyword}` of `{}` given twice",
-                call.callee
-            );
+        if given[index].replace(expr.clone()).is_some() {
+            bail!(line, "argument `{keyword}` of `{callee}` given twice");
         }
     }
 
-    let [Some(shape), Some(dtype), Some(buffer)] = given else {
+    let mut values: [Option<Value>; N] = std::array::from_fn(|_| None);
+    for (index, (expr, value)) in given.into_iter().zip(&mut values).enumerate() {
+        match expr {
+            Some(expr) => *value = Some(trace.evaluate(frame, expr, line)?),
+            None if index < required => {
+                bail!(line, "`{callee}` needs argument `{}`", params[index])
+            }
+            None => {}
+        }
+    }
+    Ok(values)
+}
+
+// =============================================================================
+// nki.language functions that return a tile
+// =============================================================================
+
+/// The `nki.language` functions that return a new tile. Each is one instruction
+/// writing a tile it declares, as NKI lowers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TileFunction {
+    Load,
+    Matmul,
+    Max,
+    Sum,
+    Exp,
+    Reciprocal,
+    Transpose,
+}
+
+impl TileFunction {
+    const ALL: [Self; 7] = [
+        Self::Load,
+        Self::Matmul,
+        Self::Max,
+        Self::Sum,
+        Self::Exp,
+        Self::Reciprocal,
+        Self::Transpose,
+    ];
+
+    /// Its `nki.language` member: `nl.load` is `load`.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Load => "load",
+            Self::Matmul => "matmul",
+            Self::Max => "max",
+            Self::Sum => "sum",
+            Self::Exp => "exp",
+            Self::Reciprocal => "reciprocal",
+            Self::Transpose => "transpose",
+        }
+    }
+
+    fn of(callee: &Value) -> Option<Self> {
+        let name = callee.member_of(NKI_LANGUAGE)?;
+        Self::ALL
+            .into_iter()
+            .find(|function| function.name() == name)
+    }
+}
+
+/// `target = nl.<function>(...)`: the tile `target`, declared in the memory the
+/// instruction writes (PSUM for `matmul` and `transpose`, else SBUF), and that instruction.
+fn tile_call(
+    target: String,
+    function: TileFunction,
+    call: Call,
+    trace: &mut Trace,
+    frame: &mut Frame,
+    line: usize,
+) -> Result<(), ParseError> {
+    let callee = call.callee.to_string();
+    let member = |name: &str| Operand::Member(format!("{NKI_LANGUAGE}.{name}"));
+    let tile_extents = |trace: &Trace, tensor: &TensorName| -> Result<[u64; 2], ParseError> {
+        match trace.tensors[tensor].extents[..] {
+            [partitions, free] => Ok([partitions, free]),
+            _ => bail!(
+                line,
+                "`{callee}` takes a two-dimensional tile, not `{tensor}`"
+            ),
+        }
+    };
+
+    let (extents, buffer, dtype, opcode, mut operands) = match function {
+        TileFunction::Load => {
+            let [src] = arguments(&call, ["src"], 1, trace, frame, line)?;
+            let src = src.expect("required");
+            let (tensor, extents) = region_extents(trace, &src, &callee, line)?;
+            in_hbm(trace, &tensor, "src", &callee, line)?;
+            let operands = vec![("src", read_operand("src", src, line)?)];
+            (
+                extents,
+                Buffer::Sbuf,
+                Dtype::Of(tensor),
+                "dma_copy",
+                operands,
+            )
+        }
+        TileFunction::Matmul => {
+            let [x, y, transpose_x] =
+                arguments(&call, ["x", "y", "transpose_x"], 2, trace, frame, line)?;
+            if transpose_x != Some(Value::Bool(true)) {
+                bail!(
+                    line,
+                    "`{callee}` is supported with `transpose_x=True` only, which computes \
+                     `x.T @ y` as `nc_matmul` does"
+                );
+            }
+            let [x, y] = [tile(x, "x", &callee, line)?, tile(y, "y", &callee, line)?];
+            let [[_, rows], [_, columns]] = [tile_extents(trace, &x)?, tile_extents(trace, &y)?];
+            let operands = vec![
+                ("stationary", Operand::Tensor(x)),
+                ("moving", Operand::Tensor(y)),
+            ];
+            let dtype = Dtype::Named("float32".into());
+            (
+                vec![rows, columns],
+                Buffer::Psum,
+                dtype,
+                "nc_matmul",
+                operands,
+            )
+        }
+        TileFunction::Max | TileFunction::Sum => {
+            let [x, axis, keepdims] =
+                arguments(&call, ["x", "axis", "keepdims"], 2, trace, frame, line)?;
+            if keepdims != Some(Value::Bool(true)) {
+                bail!(line, "`{callee}` is supported with `keepdims=True` only");
+            }
+            let x = tile(x, "x", &callee, line)?;
+            let [partitions, _] = tile_extents(trace, &x)?;
+            let op = match function {
+                TileFunction::Max => "maximum",
+                _ => "add",
+            };
+            let axis = read_operand("axis", axis.expect("required"), line)?;
+            let operands = vec![
+                ("data", Operand::Tensor(x.clone())),
+                ("op", member(op)),
+                ("axis", axis),
+            ];
+            (
+                vec![partitions, 1],
+                Buffer::Sbuf,
+                Dtype::Of(x),
+                "tensor_reduce",
+                operands,
+            )
+        }
+        TileFunction::Exp | TileFunction::Reciprocal | TileFunction::Transpose => {
+            let [x] = arguments(&call, ["x"], 1, trace, frame, line)?;
+            let x = tile(x, "x", &callee, line)?;
+            let [partitions, free] = tile_extents(trace, &x)?;
+            let data = ("data", Operand::Tensor(x.clone()));
+            match function {
+                TileFunction::Exp => {
+                    let operands = vec![data, ("op", member("exp"))];
+                    (
+                        vec![partitions, free],
+                        Buffer::Sbuf,
+                        Dtype::Of(x),
+                        "activation",
+                        operands,
+                    )
+                }
+                TileFunction::Reciprocal => {
+                    let operands = vec![data];
+                    (
+                        vec![partitions, free],
+                        Buffer::Sbuf,
+                        Dtype::Of(x),
+                        "reciprocal",
+                        operands,
+                    )
+                }
+                _ => {
+                    let operands = vec![data];
+                    (
+                        vec![free, partitions],
+                        Buffer::Psum,
+                        Dtype::Of(x),
+                        "nc_transpose",
+                        operands,
+                    )
+                }
+            }
+        }
+    };
+
+    let shape = Value::Tuple(extents.iter().map(|&extent| Value::Int(extent)).collect());
+    let shape = read_shape(shape, line)?;
+    let name = declare_tile(target, shape, dtype, buffer, trace, frame);
+    operands.push(("dst", Operand::Tensor(name)));
+    let operands = operands
+        .into_iter()
+        .map(|(keyword, operand)| (keyword.to_string(), operand))
+        .collect();
+    trace.body.push(Statement::Instruction(Instruction {
+        opcode: opcode.into(),
+        operands,
+    }));
+    Ok(())
+}
+
+/// `nl.store(dst, value)`: `value` copied into `dst`, an HBM tensor or a region of one.
+fn store(call: &Call, trace: &mut Trace, frame: &Frame, line: usize) -> Result<(), ParseError> {
+    let [dst, value] = arguments(call, ["dst", "value"], 2, trace, frame, line)?;
+    let callee = call.callee.to_string();
+    if let Some(dst) = &dst {
+        let (tensor, _) = region_extents(trace, dst, &callee, line)?;
+        in_hbm(trace, &tensor, "dst", &callee, line)?;
+    }
+    let operands = [("dst", dst), ("src", value)]
+        .into_iter()
+        .map(|(keyword, value)| {
+            let operand = read_operand(keyword, value.expect("required"), line)?;
+            Ok((keyword.to_string(), operand))
+        })
+        .collect::<Result<_, ParseError>>()?;
+    trace.body.push(Statement::Instruction(Instruction {
+        opcode: "dma_copy".into(),
+        operands,
+    }));
+    Ok(())
+}
+
+/// `nl.load` reads and `nl.store` writes device memory only.
+fn in_hbm(
+    trace: &Trace,
+    tensor: &TensorName,
+    keyword: &str,
+    callee: &str,
+    line: usize,
+) -> Result<(), ParseError> {
+    if trace.tensors[tensor].place != Place::Hbm {
         bail!(
             line,
-            "`{}` needs a shape, a dtype and a buffer",
-            call.callee
+            "`{keyword}` of `{callee}` must be in HBM, not the tile `{tensor}`"
         );
+    }
+    Ok(())
+}
+
+/// Argument `keyword` of `callee`, which must be a tile.
+fn tile(
+    value: Option<Value>,
+    keyword: &str,
+    callee: &str,
+    line: usize,
+) -> Result<TensorName, ParseError> {
+    match value {
+        Some(Value::Tensor(tensor)) => Ok(tensor),
+        Some(other) => bail!(
+            line,
+            "`{keyword}` of `{callee}` must be a tile, not `{other}`"
+        ),
+        None => bail!(line, "`{callee}` needs argument `{keyword}`"),
+    }
+}
+
+/// The tensor a tensor or region `value` reads, and the region's extents.
+fn region_extents(
+    trace: &Trace,
+    value: &Value,
+    callee: &str,
+    line: usize,
+) -> Result<(TensorName, Vec<u64>), ParseError> {
+    let (tensor, dims) = match value {
+        Value::Tensor(tensor) => (tensor, &[][..]),
+        Value::Region { tensor, dims } => (tensor, &dims[..]),
+        other => bail!(line, "`{callee}` reads a tensor or a region, not `{other}`"),
     };
-    Ok([
-        trace.evaluate(frame, shape, line)?,
-        trace.evaluate(frame, dtype, line)?,
-        trace.evaluate(frame, buffer, line)?,
-    ])
+    let shape = &trace.tensors[tensor].extents;
+    if dims.is_empty() {
+        return Ok((tensor.clone(), shape.clone()));
+    }
+    if dims.len() != shape.len() {
+        bail!(line, "a region of `{tensor}` needs {} slices", shape.len());
+    }
+
+    let mut extents = Vec::new();
+    for (bounds, &extent) in dims.iter().zip(shape) {
+        let low = bounds.start.unwrap_or(0);
+        let high = bounds.stop.unwrap_or(extent);
+        if low > high || high > extent {
+            bail!(line, "a slice of `{tensor}` is outside its extent {extent}");
+        }
+        extents.push(high - low);
+    }
+    Ok((tensor.clone(), extents))
 }
 
 /// `nisa.<opcode>(keyword=operand, ...)`: every operand by keyword, so its role is explicit.

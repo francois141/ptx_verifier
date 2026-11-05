@@ -131,6 +131,7 @@ pub struct Call {
 pub enum Expr {
     Int(u64),
     Float(Scalar),
+    Bool(bool),
     Name(Dotted),
     Tuple(Vec<Expr>),
     /// `callee(args)`.
@@ -528,6 +529,7 @@ impl Parser {
         let mut base = match kind {
             TokenKind::Int(value) => Expr::Int(value),
             TokenKind::Float(value) => Expr::Float(value),
+            TokenKind::Bool(value) => Expr::Bool(value),
             TokenKind::Name(head) => {
                 let name = self.attributes(head)?;
                 if self.eat(&TokenKind::LParen) {

@@ -60,7 +60,8 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   `attention.spec`: on its first row of 128 outputs by default, on all 16,384 in an
   ignored test (`cargo test --release -p volta_pipeline --test
   trainium_equivalence_tests -- --ignored`, about a minute), and refuted against
-  attention with `q` and `k` swapped. Functional equivalence only; `just trainium`
+  attention with `q` and `k` swapped; `attn_fwd_v1` likewise, and v1 against v2
+  directly, kernel to kernel. Functional equivalence only; `just trainium`
   runs them in release.
 - the suites below, over `tests/common/`.
 

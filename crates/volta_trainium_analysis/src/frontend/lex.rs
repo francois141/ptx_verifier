@@ -75,10 +75,10 @@ impl CmpOp {
 }
 
 /// Python's other keywords, `Unsupported` tokens rather than names.
-const UNSUPPORTED_KEYWORDS: [&str; 26] = [
-    "False", "None", "True", "and", "async", "await", "break", "continue", "del", "elif", "else",
-    "except", "finally", "global", "if", "is", "lambda", "nonlocal", "not", "or", "pass", "raise",
-    "try", "while", "with", "yield",
+const UNSUPPORTED_KEYWORDS: [&str; 24] = [
+    "None", "and", "async", "await", "break", "continue", "del", "elif", "else", "except",
+    "finally", "global", "if", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "try",
+    "while", "with", "yield",
 ];
 
 /// The prefixes a string literal may carry, e.g. `f"..."` or `rb'...'`.
@@ -90,6 +90,8 @@ pub enum TokenKind {
     Keyword(Keyword),
     Int(u64),
     Float(Scalar),
+    /// `True` or `False`.
+    Bool(bool),
     /// A string literal; its text is never read, so it is not kept.
     Str,
     LParen,
@@ -135,6 +137,7 @@ impl fmt::Display for TokenKind {
             Self::Keyword(keyword) => write!(f, "`{}`", keyword.text()),
             Self::Int(value) => write!(f, "`{value}`"),
             Self::Float(value) => write!(f, "`{value}`"),
+            Self::Bool(value) => write!(f, "`{}`", if *value { "True" } else { "False" }),
             Self::Str => f.write_str("a string"),
             Self::LParen => f.write_str("`(`"),
             Self::RParen => f.write_str("`)`"),
@@ -381,6 +384,11 @@ fn run(text: &str, accept: impl Fn(char) -> bool) -> usize {
 }
 
 fn word(text: &str) -> TokenKind {
+    match text {
+        "True" => return TokenKind::Bool(true),
+        "False" => return TokenKind::Bool(false),
+        _ => {}
+    }
     if let Some(keyword) = Keyword::from_word(text) {
         return TokenKind::Keyword(keyword);
     }

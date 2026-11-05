@@ -1,0 +1,24 @@
+kernel kernel(a: [2, 2], b: [2, 2], mx: [2, 1], rs: [2, 1], tr: [2, 2])
+  x: sbuf[2, 2] of a.dtype
+  dma_copy(dst=x, src=a)
+  y: sbuf[2, 2] of b.dtype
+  dma_copy(dst=y, src=b)
+  p: psum[2, 2] of float32
+  nc_matmul(dst=p, moving=y, stationary=x)
+  s: sbuf[2, 2] of float32
+  tensor_copy(dst=s, src=p)
+  m: sbuf[2, 1] of s.dtype
+  tensor_reduce(axis=1, data=s, dst=m, op=nki.language.maximum)
+  dma_copy(dst=mx, src=m)
+  e: sbuf[2, 2] of x.dtype
+  activation(data=x, dst=e, op=nki.language.exp)
+  u: sbuf[2, 1] of e.dtype
+  tensor_reduce(axis=1, data=e, dst=u, op=nki.language.add)
+  r: sbuf[2, 1] of u.dtype
+  reciprocal(data=u, dst=r)
+  dma_copy(dst=rs, src=r)
+  t: psum[2, 2] of x.dtype
+  nc_transpose(data=x, dst=t)
+  w: sbuf[2, 2] of a.dtype
+  tensor_copy(dst=w, src=t)
+  dma_copy(dst=tr, src=w)
