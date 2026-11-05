@@ -473,13 +473,20 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts eight `nki.isa` instructions - `dma_copy`, `tensor_copy`,
-`tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`, `nc_matmul`
-and `nc_transpose` - and resolves their `nki.language` operands by searching
-`ArithOp::ALL` (`nl.add`, `nl.multiply`) and `ActivationFunc::ALL`
-(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`) for a variant whose `name()`
-matches, so a new function reaches lowering by joining that array and needs no
-arm of its own; any other member is a lowering error.
+Lowering accepts ten `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+`tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
+`tensor_reduce`, `reciprocal`, `nc_matmul` and `nc_transpose` - and resolves
+their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
+`nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
+(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`) for a variant whose
+`name()` matches, so a new function reaches lowering by joining that array and
+needs no arm of its own; any other member is a lowering error. Binary ops take
+NKI's operand order (`data1 op data2`, `data op operand`). `tensor_reduce` is
+`LoweredInstr::Reduce`, a per-partition fold into `dst[p, 0]` seeded with the
+first element (shared with `activation_reduce` as `Interpreter::fold`); its
+`axis` (an `ast::Operand::Int` or `Ints`) must be the free axis, `1` or `(1,)`.
+`reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which
+is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
 
 A kernel's outputs are the arguments it writes and the tensor it returns: a
 final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
@@ -538,9 +545,11 @@ tensors into a `kernel_out` it allocates and returns.
 `tests/fixtures/call_shapes.py` opens like the attention kernels (shape
 unpacking, an alias, chained and `<=`/`>=` asserts, `nl.tile_size.pmax`) and adds
 2 x 4 tensors one `(rows, cols // 2)` tile at a time; `tests/kernels.rs` passes
-each fixture's call shapes. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
+each fixture's call shapes. `tests/fixtures/softmax.py` is `softmax_isa`'s body
+inline over a 2 x 3 tile, checked against `softmax.spec`. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
 kernels' math over their own array names (`a_t` being A transposed);
-`volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them.
+`volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them,
+and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative test.
 `tests/fixtures/attention.spec` is the NKI attention samples' reference, their
 `numpy_attention` in their layout (`q`, `k`, `v` as `[D, N]`, `kernel_out` as `[N, D]`).
 
@@ -687,9 +696,9 @@ or change the softmax row width). CK attention checks two batches and two heads 
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
-`trainium_equivalence_tests.rs` checks the NKI `matmul` and `gemm_relu` fixtures against
-the `.spec` files beside them, with `gemm_relu` against the unclamped product as a
-negative test.
+`trainium_equivalence_tests.rs` checks the NKI `matmul`, 
+`gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
+against the unclamped product and `softmax` against the softmax of `-x` as negative tests.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
 checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
 `just trainium` run them alongside the analysis crate's snapshot tests.

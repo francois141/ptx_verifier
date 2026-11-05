@@ -45,6 +45,13 @@ pub enum LoweredInstr {
         reduce_op: ArithOp,
         reduce_res: TensorId,
     },
+    /// Each `dst[p, 0]` the fold of `op` over `data`'s partition `p`, seeded with its
+    /// first element; `dst` has one free element per partition of the tile `data`.
+    Reduce {
+        op: ArithOp,
+        dst: TensorId,
+        data: TensorId,
+    },
     /// `dst = data` with each step applied in turn (`acc = op(acc, operand)`),
     /// elementwise over on-chip tiles of one shape; a `[partitions, 1]` operand
     /// broadcasts its single free element across the free axis.

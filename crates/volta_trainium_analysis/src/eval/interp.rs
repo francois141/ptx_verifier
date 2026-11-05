@@ -82,20 +82,28 @@ impl<'a> Interpreter<'a> {
             } => {
                 let [partitions, free] = self.tensors[dst].tile_shape();
                 for partition in 0..partitions {
-                    let mut reduced = None;
+                    let mut values = Vec::new();
                     for element in 0..free {
                         let index = Index(vec![partition, element]);
                         let x = self.tensors[data].read(&mut self.arena, instr, &index)?;
                         let value = self.activation(func, x);
                         self.tensors[dst].write(index, value);
-                        reduced = Some(match reduced {
-                            Some(accumulated) => self.arith(reduce_op, accumulated, value),
-                            None => value,
-                        });
+                        values.push(value);
                     }
-                    if let Some(reduced) = reduced {
-                        self.tensors[reduce_res].write(Index(vec![partition, 0]), reduced);
+                    let reduced = self.fold(reduce_op, values);
+                    self.tensors[reduce_res].write(Index(vec![partition, 0]), reduced);
+                }
+            }
+            LoweredInstr::Reduce { op, dst, data } => {
+                let [partitions, free] = self.tensors[data].tile_shape();
+                for partition in 0..partitions {
+                    let mut values = Vec::new();
+                    for element in 0..free {
+                        let index = Index(vec![partition, element]);
+                        values.push(self.tensors[data].read(&mut self.arena, instr, &index)?);
                     }
+                    let reduced = self.fold(op, values);
+                    self.tensors[dst].write(Index(vec![partition, 0]), reduced);
                 }
             }
             LoweredInstr::TensorScalar {
@@ -151,14 +159,29 @@ impl<'a> Interpreter<'a> {
                 let root = self.arena.sqrt(x);
                 self.arena.rcp(root)
             }
+            ActivationFunc::Exp => self.arena.exp(x),
+            ActivationFunc::Reciprocal => self.arena.rcp(x),
         }
     }
 
     fn arith(&mut self, op: ArithOp, a: ExprId, b: ExprId) -> ExprId {
         match op {
             ArithOp::Add => self.arena.add(a, b),
+            ArithOp::Subtract => self.arena.sub(a, b),
             ArithOp::Multiply => self.arena.mul(a, b),
+            ArithOp::Maximum => self.arena.max(a, b),
         }
+    }
+
+    /// `op` folded left over `values`, seeded with the first rather than an identity,
+    /// so a fold of `maximum` needs no `-inf`. A tile's free size is positive, so
+    /// `values` is never empty.
+    fn fold(&mut self, op: ArithOp, values: Vec<ExprId>) -> ExprId {
+        let mut values = values.into_iter();
+        let first = values.next().expect("a tile has a free element");
+        values.fold(first, |accumulated, value| {
+            self.arith(op, accumulated, value)
+        })
     }
 
     /// The value a scalar operand contributes at `index`: a literal, or the operand

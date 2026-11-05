@@ -151,6 +151,10 @@ pub enum Operand {
     /// A member of an imported module, its alias expanded, e.g. `nki.language.add`.
     Member(String),
     Scalar(Scalar),
+    /// An integer, e.g. `axis=1`.
+    Int(u64),
+    /// A tuple of integers, e.g. `axis=(1,)`.
+    Ints(Vec<u64>),
     /// A rectangular region of a tensor, one slice per subscript index.
     Region {
         tensor: TensorName,
@@ -239,6 +243,14 @@ impl fmt::Display for Operand {
             Self::Tensor(tensor) => write!(f, "{tensor}"),
             Self::Member(member) => f.write_str(member),
             Self::Scalar(value) => write!(f, "{value}"),
+            Self::Int(value) => write!(f, "{value}"),
+            Self::Ints(values) => match &values[..] {
+                [value] => write!(f, "({value},)"),
+                _ => {
+                    let values: Vec<String> = values.iter().map(u64::to_string).collect();
+                    write!(f, "({})", values.join(", "))
+                }
+            },
             Self::Region { tensor, dims } => {
                 let dims: Vec<String> = dims.iter().map(Bounds::to_string).collect();
                 write!(f, "{tensor}[{}]", dims.join(", "))
