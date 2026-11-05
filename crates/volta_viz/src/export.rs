@@ -13,7 +13,7 @@ use volta_graph::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOpId, BarrierArrivals, BlockedOn, BulkWaitScope,
     CollectiveSide, ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind,
     Footprint, GenerationId, GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity,
-    Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx, ThreadUnit,
 };
 use volta_graph_check::allocation_order::AllocationOrderViolation;
 use volta_graph_check::allocation_permit::AllocationPermitViolation;
@@ -373,14 +373,14 @@ impl Lanes {
             lanes.thread.insert(t, lanes.lanes.len());
             lanes.lanes.push(Lane {
                 kind: LaneKind::Thread,
-                label: format!("t{}", t.0),
+                label: thread_name(graph, t),
                 thread: Some(t),
             });
             if issuers.contains(&t) {
                 lanes.asynchronous.insert(t, lanes.lanes.len());
                 lanes.lanes.push(Lane {
                     kind: LaneKind::Async,
-                    label: format!("async t{}", t.0),
+                    label: format!("async {}", thread_name(graph, t)),
                     thread: Some(t),
                 });
             }
@@ -553,7 +553,7 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
                 .to_string(),
             ));
             info.push(("operand", format!("{:?}", a.role)));
-            info.push(("attributed to", format!("t{}", a.attributed.0)));
+            info.push(("attributed to", thread_name(graph, a.attributed)));
             if let Some(v) = a.value {
                 info.push(("value", stored_value(arena, graph.value(v))));
             }
@@ -667,7 +667,7 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
 fn async_info(graph: &EventGraph, op: AsyncOpId, info: &mut Info) {
     let a = graph.async_op(op);
     info.push(("operation", async_name(graph, op)));
-    info.push(("issuer", format!("t{}", a.issuer.0)));
+    info.push(("issuer", thread_name(graph, a.issuer)));
     info.push(("effects", a.effects.len().to_string()));
     if !a.tracking.is_empty() {
         let tracking: Vec<String> = a
@@ -681,7 +681,7 @@ fn async_info(graph: &EventGraph, op: AsyncOpId, info: &mut Info) {
 
 fn context_name(graph: &EventGraph, ctx: ExecContext) -> String {
     match ctx {
-        ExecContext::Thread(t) => format!("thread t{}", t.0),
+        ExecContext::Thread(t) => format!("thread {}", thread_name(graph, t)),
         ExecContext::Async(op) => format!("async {}", async_name(graph, op)),
         ExecContext::Generation(g) => format!("generation {}", generation_name(graph, g)),
     }
@@ -704,6 +704,14 @@ fn object_name(graph: &EventGraph, object: SyncObjectId) -> String {
         }
         SyncObjectKind::AsyncGroupWait { thread } => format!("cp.async groups t{}", thread.0),
         SyncObjectKind::BulkGroupWait { thread } => format!("bulk groups t{}", thread.0),
+    }
+}
+
+/// `t3` for a CTA thread, `w3` for a wave.
+fn thread_name(graph: &EventGraph, t: ThreadIx) -> String {
+    match graph.provenance().unit {
+        ThreadUnit::CtaThread => format!("t{}", t.0),
+        ThreadUnit::Wave { .. } => format!("w{}", t.0),
     }
 }
 
@@ -892,8 +900,8 @@ fn terminal(graph: &EventGraph) -> Json {
             thread, pc, reason, ..
         } => {
             let at = match (thread, pc) {
-                (Some(t), Some(pc)) => format!("t{} at pc {}: ", t.0, pc.0),
-                (Some(t), None) => format!("t{}: ", t.0),
+                (Some(t), Some(pc)) => format!("{} at pc {}: ", thread_name(graph, *t), pc.0),
+                (Some(t), None) => format!("{}: ", thread_name(graph, *t)),
                 (None, _) => String::new(),
             };
             let events = thread.map_or(Vec::new(), |t| last_event(graph, t));

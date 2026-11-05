@@ -1,117 +1,114 @@
-//! AMD kernels' event graphs through the graph branch: one graph thread per wave, each DS
-//! instruction an async operation that `s_waitcnt lgkmcnt` completes, and each `s_barrier` a
-//! generation the waves gather into and are scattered from.
+//! AMD kernels' event graphs through the graph branch. Each wave is a graph thread; each DS
+//! instruction is an async operation that branches off its wave at issue and joins it at the
+//! `s_waitcnt lgkmcnt` that completes it; each `s_barrier` gathers the waves into a generation
+//! and scatters them from it. Race-free kernels must conclude `Verified`, and racy ones must fail
+//! the memory-conflict check with the expected pair of waves.
 
-use std::path::{Path, PathBuf};
+mod common;
 
 use volta_amd_analysis::ArrayKind::{Input, Output};
 use volta_amd_analysis::OutputType::F32;
-use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{AnalysisResult, ArrayDef, WorkgroupLaunch, analyze};
-use volta_expr::SymbolicOutputs;
-use volta_graph::{BarrierArrivals, ContributionKind, EventId, GenerationKind, ThreadIx};
+use volta_amd_analysis::{ArrayDef, ArrayKind};
+use volta_graph::AccessMode::{Read, Write};
+use volta_graph::{AsyncOpKind, Space};
+use volta_graph_check::GraphConclusion;
 use volta_graph_check::domain::ConflictKind;
-use volta_graph_check::{GraphConclusion, check_graph};
 
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../volta_amd_analysis/tests/fixtures")
-        .join(name)
-}
+use common::Side;
+use common::amd::{AmdChecked, CK_GEMM_KERNEL, amd_fixture, check_amd, ck_gemm_kernarg};
 
-/// Compare `outputs`, one `array[index] = expr` line per element, with `path`; `VOLTA_BLESS=1`
-/// rewrites it.
-fn assert_out_file(path: &Path, outputs: &SymbolicOutputs) {
-    let lines = outputs.outputs.iter().flat_map(|(array, elements)| {
-        elements.iter().map(move |&(index, value)| {
-            format!("{array}[{index}] = {}\n", outputs.arena.display_expr(value))
-        })
-    });
-    let actual: String = lines.collect();
-    if std::env::var_os("VOLTA_BLESS").is_some_and(|v| v == "1") {
-        return std::fs::write(path, actual).unwrap();
-    }
-    let expected = std::fs::read_to_string(path).expect("no .out file (VOLTA_BLESS=1 writes it)");
-    assert_eq!(
-        actual, expected,
-        "outputs differ (VOLTA_BLESS=1 accepts them)"
+/// Two waves over 128-word `input` and `output` arrays, the kernel's two pointer arguments.
+fn run_lds_sync(kernel: &str) -> AmdChecked {
+    let arrays = [("input", 0x10000, Input), ("output", 0x20000, Output(F32))].map(
+        |(name, base, kind): (&str, u64, ArrayKind)| ArrayDef {
+            name: name.into(),
+            base,
+            len: 128,
+            kind,
+        },
     );
-}
-
-/// Run `kernel` of lds_sync.s on two waves over 128-word `input` and `output` arrays.
-fn run_lds_sync(kernel: &str) -> AnalysisResult {
-    let source = std::fs::read_to_string(fixture("lds_sync.s")).unwrap();
-    let kernel = parse_kernel(&source, kernel).unwrap();
-    let arrays =
-        [("input", 0x10000, Input), ("output", 0x20000, Output(F32))].map(|(name, base, kind)| {
-            ArrayDef {
-                name: name.into(),
-                base,
-                len: 128,
-                kind,
-            }
-        });
     let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
-    let launch = WorkgroupLaunch {
-        kernarg_address: 0x1000,
-        workgroup_size: (128, 1, 1),
-    };
-    analyze(&kernel, &launch, &kernarg, &arrays).unwrap()
+    check_amd(
+        "lds_sync.s",
+        amd_fixture!("lds_sync"),
+        kernel,
+        128,
+        &kernarg,
+        &arrays,
+    )
 }
 
-// Test that `exchange` writes lds_sync.out and verifies: each wave's s_waitcnt completes its LDS
-// write before both gather into one s_barrier generation. In `barrier_without_wait` the writes are
-// still in flight at the barrier, so wave 0's read races wave 1's write.
+/// A wave's DS access.
+fn ds(wave: u32, mode: volta_graph::AccessMode) -> Side {
+    Side::effect(wave, mode, AsyncOpKind::Ds)
+}
+
+// Test that LDS words exchanged across barriers, each write completed by the wait before it,
+// verify, and that CK's GEMM, which stages both tiles through LDS, does too.
 #[test]
-fn lds_accesses_of_two_waves_are_ordered_by_a_wait_then_a_barrier() {
-    let result = run_lds_sync("exchange");
-    assert_out_file(
-        &fixture("lds_sync.out"),
-        result.symbolic_outputs.as_ref().unwrap(),
-    );
+fn lds_accesses_ordered_by_waits_and_barriers_are_verified() {
+    for kernel in ["exchange", "two_rounds"] {
+        let run = run_lds_sync(kernel);
+        assert_eq!(
+            run.report.conclusion(),
+            GraphConclusion::Verified,
+            "{kernel}"
+        );
+        assert!(run.analysis.symbolic_outputs.is_some(), "{kernel}");
+    }
 
-    let graph = &result.graph;
-    let barriers: Vec<_> = graph
-        .generations()
-        .values()
-        .filter(|g| matches!(g.kind, GenerationKind::Barrier { .. }))
-        .collect();
-    let [barrier] = barriers[..] else {
-        panic!("expected one barrier generation, got {barriers:?}");
-    };
-    let arrivals = BarrierArrivals::FullCta;
-    assert_eq!(barrier.kind, GenerationKind::Barrier { arrivals });
-    assert!(
-        barrier
-            .contributions
-            .iter()
-            .all(|c| c.kind == ContributionKind::Blocking)
+    let (a, b, c) = (0x10000, 0x20000, 0x30000);
+    let arrays = [("a", a, Input), ("b", b, Input), ("c", c, Output(F32))].map(
+        |(name, base, kind): (&str, u64, ArrayKind)| ArrayDef {
+            name: name.into(),
+            base,
+            len: 8 * 8,
+            kind,
+        },
     );
-    let waves = [Some(ThreadIx(0)), Some(ThreadIx(1))];
-    let threads = |events: &[EventId]| {
-        events
-            .iter()
-            .map(|&e| graph.thread_of(e))
-            .collect::<Vec<_>>()
-    };
-    let gathered: Vec<_> = barrier.contributions.iter().map(|c| c.event).collect();
-    assert_eq!(threads(&gathered), waves);
-    assert_eq!(threads(&barrier.releases), waves);
-    assert_eq!(graph.threads(), 2);
-    assert_eq!(check_graph(graph).conclusion(), GraphConclusion::Verified);
+    let run = check_amd(
+        "ck_gemm.s",
+        amd_fixture!("ck_gemm"),
+        CK_GEMM_KERNEL,
+        128,
+        &ck_gemm_kernarg(a, b, c),
+        &arrays,
+    );
+    assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
+}
 
-    let racy = run_lds_sync("barrier_without_wait");
-    let report = check_graph(&racy.graph);
-    let conflicts = report.memory_conflict.violations();
-    let thread = |event| racy.graph.acting_thread(event);
-    assert!(
-        conflicts.iter().any(|c| c.kind == ConflictKind::WriteRead
-            && thread(c.earlier) == Some(ThreadIx(1))
-            && thread(c.later) == Some(ThreadIx(0))),
-        "expected wave 1's write racing wave 0's read, got {conflicts:?}"
-    );
-    assert!(matches!(
-        report.conclusion(),
-        GraphConclusion::Rejected { .. }
-    ));
+// Test that a read of another wave's word races its write when no barrier orders them, when the
+// barrier comes before the s_waitcnt that completes the write, and when a wave overwrites a word
+// before the barrier that would keep the other wave's read ahead of it.
+#[test]
+fn lds_accesses_no_wait_and_barrier_order_race() {
+    for (kernel, earlier, later) in [
+        ("no_barrier", ds(0, Write), ds(1, Read)),
+        ("barrier_without_wait", ds(1, Write), ds(0, Read)),
+        ("overwrite_without_barrier", ds(0, Write), ds(1, Read)),
+    ] {
+        let run = run_lds_sync(kernel);
+        let graph = &run.analysis.graph;
+        let pairs = run.report.memory_conflict.violations();
+        assert!(
+            pairs.iter().any(|c| c.kind == ConflictKind::WriteRead
+                && c.location.space == Space::Shared
+                && common::side(graph, c.earlier) == earlier
+                && common::side(graph, c.later) == later),
+            "{kernel}: expected an LDS write of {earlier:?} racing a read of {later:?}, got \
+             {:?}",
+            run.report.memory_conflict
+        );
+        assert!(
+            pairs
+                .iter()
+                .all(|c| common::side(graph, c.earlier).thread
+                    != common::side(graph, c.later).thread),
+            "{kernel}: a wave's DS instructions run in issue order, got {pairs:?}"
+        );
+        assert!(
+            matches!(run.report.conclusion(), GraphConclusion::Rejected { .. }),
+            "{kernel}"
+        );
+    }
 }

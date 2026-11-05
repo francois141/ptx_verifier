@@ -28,7 +28,7 @@ def add_config(size):
     "path,size,isa,race_verified",
     [
         ("examples/quickstart/add.ptx", 128, "NVIDIA PTX", True),
-        ("crates/volta_amd_analysis/tests/fixtures/add.s", 64, "AMD gfx950", None),
+        ("crates/volta_amd_analysis/tests/fixtures/add.s", 64, "AMD gfx950", True),
         (
             "crates/volta_trainium_analysis/tests/fixtures/add.py",
             256,
