@@ -1,6 +1,4 @@
-kernel kernel(a, b)
-  assert a.shape == [2, 4]
-  assert b.shape == [2, 4]
+kernel kernel(a: [2, 4], b: [2, 4])
   kernel_out: shared_hbm[2, 4] of a.dtype
   x: sbuf[2, 4] of a.dtype
   y: sbuf[2, 4] of b.dtype

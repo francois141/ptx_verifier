@@ -1,6 +1,4 @@
-kernel kernel(a, out)
-  assert a.shape == [4, 8]
-  assert out.shape == [4, 8]
+kernel kernel(a: [4, 8], out: [4, 8])
   x: sbuf[4, 8] of a.dtype
   squares: sbuf[4, 8] of float32
   sum_sq: sbuf[4, 1] of float32

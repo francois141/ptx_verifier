@@ -1,9 +1,10 @@
 //! AWS Trainium NKI: `volta_trainium_analysis` lowers the `@nki.jit` kernel and executes it.
-//! A kernel's tensor shapes come from its `assert`s, so it takes no launch; its interpreter
-//! records no memory events, so a run carries no race evidence.
+//! It is called with the parameter shapes its own `assert param.shape == (...)`s state, so it
+//! takes no launch; its interpreter records no memory events, so a run carries no race evidence.
 
 use volta_ptx_analysis::AnalysisConfig;
-use volta_trainium_analysis::frontend::parse::parse_kernel;
+use volta_trainium_analysis::frontend::error::ParseError;
+use volta_trainium_analysis::frontend::parse::{asserted_shapes, parse_kernel};
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
 use super::{Frontend, FrontendError, GraphEvidence, KernelRun, only_kernel};
@@ -30,11 +31,17 @@ impl Frontend for NkiFrontend {
             Some(name) => name.to_string(),
             None => only_kernel(jit_functions(source))?,
         };
-        let parsed = parse_kernel(source, &name).map_err(|e| FrontendError::Parse {
+        let parse_error = |e: ParseError| FrontendError::Parse {
             title: "NKI parse error".into(),
             message: Some(e.to_string()),
             span: None,
-        })?;
+        };
+        let shapes = asserted_shapes(source, &name).map_err(parse_error)?;
+        let shapes: Vec<(&str, &[u64])> = shapes
+            .iter()
+            .map(|(param, extents)| (param.as_str(), extents.as_slice()))
+            .collect();
+        let parsed = parse_kernel(source, &name, &shapes).map_err(parse_error)?;
 
         let lowered = lower_kernel(&parsed)
             .map_err(|e| FrontendError::Analysis(format!("lowering failed: {e}")))?;

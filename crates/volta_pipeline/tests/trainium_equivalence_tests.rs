@@ -7,9 +7,11 @@ use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 use volta_trainium_analysis::frontend::parse::parse_kernel;
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
-/// Run `kernel` against `spec` at dims `[M, N, K]`, comparing the `out` array.
+/// Run `kernel` against `spec` at dims `[M, N, K]`, comparing the `out` array: the
+/// kernel is called with `a_t` of `[K, M]`, `b` of `[K, N]` and `out` of `[M, N]`.
 fn check(kernel: &str, spec: &str, [m, n, k]: [u64; 3]) -> EquivalenceVerdict {
-    let parsed = parse_kernel(kernel, "kernel").unwrap();
+    let shapes: [(&str, &[u64]); 3] = [("a_t", &[k, m]), ("b", &[k, n]), ("out", &[m, n])];
+    let parsed = parse_kernel(kernel, "kernel", &shapes).unwrap();
     let lowered = lower_kernel(&parsed).unwrap();
     let actual = evaluate(&lowered).unwrap();
 

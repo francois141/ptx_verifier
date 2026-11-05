@@ -27,11 +27,35 @@ Each activation is built from `volta_expr`'s primitives rather than an opaque
 node, so the decision procedure can reason through it: `nl.rsqrt` becomes
 `rcp(sqrt(x))` and `nl.relu` becomes `max(x, 0)`.
 
+## Shapes and compile-time integers
+
+`@nki.jit` specializes a kernel to the shapes of the arguments it is called
+with, so `parse_kernel(source, name, shapes)` takes each parameter's shape, e.g.
+`&[("q", &[128, 128]), ...]`: a missing, unknown, repeated or empty shape is a
+`ParseError::ParamShape`. The parser then evaluates everything that depends only
+on shapes, as NKI's tracer does:
+
+- `d_head, seqlen_q = q.shape` and `seqlen_kv = seqlen_q` bind integers; `t.shape`
+  is a tuple of `t`'s extents, so `nl.ndarray(q.shape, ...)` works too.
+- `+`, `*` and `//` on integers, and `nl.tile_size.pmax` (128),
+  `gemm_stationary_fmax` (128) and `gemm_moving_fmax` (512).
+- `assert`s are checked rather than kept: a chain of `==`, `!=`, `<`, `<=`, `>` and
+  `>=` over integers (tuples, such as shapes, by `==` and `!=` only). A false one
+  is a parse error naming the comparison, e.g. ``assertion fails for this call:
+  `64 == 128` is false``.
+
+A name is bound once: to a tensor (a parameter or an `nl.ndarray`) or to an
+integer. `asserted_shapes(source, name)` reads the shapes a kernel's own
+`assert param.shape == (extent, ...)` statements state, for running a kernel
+without a caller, as `volta_pipeline`'s NKI frontend does.
+
 ## Loops and regions
 
 A `for` over `nl.affine_range(count)` is unrolled while the kernel is resolved,
 since execution has no control flow; each iteration's tiles are named after its
-index (`x.0`, `x.1`), so they stay distinct. The count must be a literal.
+index (`x.0`, `x.1`), so they stay distinct. The count is any compile-time
+integer, e.g. `seqlen_kv // 4`. The loop variable is bound only within its
+iteration, so later loops can reuse the name.
 
 A subscript such as `a[0:4, :]` names a rectangular region, one slice per
 dimension; `nisa.dma_copy` and `nisa.tensor_copy` copy between regions, and an
@@ -52,6 +76,10 @@ argument's are its input symbols, while reading an unwritten element of a tile
 or of a kernel-allocated HBM tensor is an `EvalError::UninitializedRead`.
 
 ## Fixtures
+
+`tests/kernels.rs` runs each fixture for one call, giving each parameter's shape
+(`common::check(name, kernel, shapes)`); the fixtures' own shape `assert`s check
+those shapes.
 
 `tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
 and `b` from HBM into SBUF tiles (`nisa.dma_copy`), adds the tiles
@@ -75,6 +103,11 @@ matching rows of `out`.
 
 `tests/fixtures/returned_output.py` multiplies two 2 x 4 tensors elementwise
 into `kernel_out`, an HBM tensor it allocates with `nl.shared_hbm` and returns.
+
+`tests/fixtures/call_shapes.py` opens like the attention kernels: it unpacks
+`a.shape` into `rows, cols`, aliases `width = cols`, reads `nl.tile_size.pmax`
+and checks chained, `<=` and `>=` `assert`s. It then adds two 2 x 4 tensors one
+`(rows, cols // 2)` tile of columns at a time.
 
 `tests/fixtures/matmul.spec` and `tests/fixtures/gemm_relu.spec` state the
 `matmul` and `gemm_relu` kernels' math over the kernels' own array names, with
