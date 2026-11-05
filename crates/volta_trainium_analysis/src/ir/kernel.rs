@@ -84,6 +84,9 @@ impl fmt::Display for LoweredKernel {
                     name(data),
                     reduce_op.name()
                 )?,
+                LoweredInstr::Reduce { op, dst, data } => {
+                    writeln!(f, "  {} = reduce {}({})", name(dst), op.name(), name(data))?
+                }
                 LoweredInstr::TensorScalar {
                     dst,
                     data,

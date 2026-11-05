@@ -830,17 +830,29 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
     Ok(buffer)
 }
 
-/// A tensor, a region of one, a scalar, or a module member, e.g. `x`, `x[0:4, :]`,
-/// `0.125` or `nl.add`.
+/// A tensor, a region of one, a scalar, a module member, an integer or a tuple of
+/// them, e.g. `x`, `x[0:4, :]`, `0.125`, `nl.add`, `1` or `(1,)`.
 fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, ParseError> {
     match value {
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),
         Value::Member(member) => Ok(Operand::Member(member)),
         Value::Float(value) => Ok(Operand::Scalar(value)),
+        Value::Int(value) => Ok(Operand::Int(value)),
         Value::Region { tensor, dims } => Ok(Operand::Region { tensor, dims }),
-        _ => bail!(
+        Value::Tuple(items) => {
+            let mut values = Vec::new();
+            for item in items {
+                let Value::Int(value) = item else {
+                    bail!(line, "operand `{keyword}`'s tuple must hold integers only");
+                };
+                values.push(value);
+            }
+            Ok(Operand::Ints(values))
+        }
+        Value::DtypeOf(_) => bail!(
             line,
-            "operand `{keyword}` must be a tensor, a region, a scalar, or a module member"
+            "operand `{keyword}` must be a tensor, a region, a scalar, a module member, \
+             or integers"
         ),
     }
 }

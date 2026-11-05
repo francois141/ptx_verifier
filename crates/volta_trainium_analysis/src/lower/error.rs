@@ -60,6 +60,9 @@ pub enum StatementError {
 
     UnsupportedActivation(Operand),
 
+    /// A reduction `axis` other than a tile's free axis.
+    UnsupportedAxis(Operand),
+
     // =========================================================================
     // Operand Errors
     // =========================================================================
@@ -146,6 +149,10 @@ impl fmt::Display for StatementError {
             Self::UnsupportedActivation(op) => {
                 write!(f, "unsupported activation function `{op}`")
             }
+            Self::UnsupportedAxis(axis) => write!(
+                f,
+                "unsupported reduction axis `{axis}`: only a tile's free axis, `1` or `(1,)`"
+            ),
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")

@@ -64,3 +64,8 @@ fn the_returned_output_kernel_parses_lowers_and_runs_as_expected() {
 fn the_call_shapes_kernel_parses_lowers_and_runs_as_expected() {
     common::check("call_shapes", "kernel", &[("a", &[2, 4]), ("b", &[2, 4])]);
 }
+
+#[test]
+fn the_softmax_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("softmax", "kernel", &[("x", &[2, 3])]);
+}

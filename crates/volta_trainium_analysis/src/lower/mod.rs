@@ -173,6 +173,35 @@ fn lower_instruction(
             })
         }
 
+        "reciprocal" => {
+            let [dst, data] = operands(instruction, &["dst", "data"])?;
+            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
+            for tile in [&dst, &data] {
+                tile_extents(tile)?;
+            }
+            same_shape(&dst, &data)?;
+            Ok(LoweredInstr::Activation {
+                func: ActivationFunc::Reciprocal,
+                dst: dst.id,
+                data: data.id,
+            })
+        }
+
+        "tensor_reduce" => {
+            let [dst, data, op, axis] = operands(instruction, &["dst", "data", "op", "axis"])?;
+            let op = arith_op(op)?;
+            free_axis(axis)?;
+            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
+            let [partitions, _] = tile_extents(&data)?;
+            tile_extents(&dst)?;
+            result_shape(&dst, Shape(vec![partitions, 1]))?;
+            Ok(LoweredInstr::Reduce {
+                op,
+                dst: dst.id,
+                data: data.id,
+            })
+        }
+
         "tensor_scalar" => {
             let ([dst, data, op0, operand0], [op1, operand1]) = operands_with_optional(
                 instruction,
@@ -319,6 +348,16 @@ fn activation_func(operand: &Operand) -> Result<ActivationFunc, StatementError> 
         .into_iter()
         .find(|func| Some(func.name()) == name)
         .ok_or_else(|| StatementError::UnsupportedActivation(operand.clone()))
+}
+
+/// A reduction's `axis`: a tile's one free axis, `1` or `(1,)`. Axis 0 is the
+/// partition axis, which `nki.isa` reductions cannot reduce.
+fn free_axis(axis: &Operand) -> Result<(), StatementError> {
+    match axis {
+        Operand::Int(1) => Ok(()),
+        Operand::Ints(axes) if axes[..] == [1] => Ok(()),
+        _ => Err(StatementError::UnsupportedAxis(axis.clone())),
+    }
 }
 
 /// A `tensor_scalar` step: its `nki.language` op, and an operand that is a literal

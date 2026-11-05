@@ -1,0 +1,6 @@
+kernel_out[0] = (exp((x[0] - max(max(x[0], x[1]), x[2]))) * rcp(((exp((x[0] - max(max(x[0], x[1]), x[2]))) + exp((x[1] - max(max(x[0], x[1]), x[2])))) + exp((x[2] - max(max(x[0], x[1]), x[2]))))))
+kernel_out[1] = (exp((x[1] - max(max(x[0], x[1]), x[2]))) * rcp(((exp((x[0] - max(max(x[0], x[1]), x[2]))) + exp((x[1] - max(max(x[0], x[1]), x[2])))) + exp((x[2] - max(max(x[0], x[1]), x[2]))))))
+kernel_out[2] = (exp((x[2] - max(max(x[0], x[1]), x[2]))) * rcp(((exp((x[0] - max(max(x[0], x[1]), x[2]))) + exp((x[1] - max(max(x[0], x[1]), x[2])))) + exp((x[2] - max(max(x[0], x[1]), x[2]))))))
+kernel_out[3] = (exp((x[3] - max(max(x[3], x[4]), x[5]))) * rcp(((exp((x[3] - max(max(x[3], x[4]), x[5]))) + exp((x[4] - max(max(x[3], x[4]), x[5])))) + exp((x[5] - max(max(x[3], x[4]), x[5]))))))
+kernel_out[4] = (exp((x[4] - max(max(x[3], x[4]), x[5]))) * rcp(((exp((x[3] - max(max(x[3], x[4]), x[5]))) + exp((x[4] - max(max(x[3], x[4]), x[5])))) + exp((x[5] - max(max(x[3], x[4]), x[5]))))))
+kernel_out[5] = (exp((x[5] - max(max(x[3], x[4]), x[5]))) * rcp(((exp((x[3] - max(max(x[3], x[4]), x[5]))) + exp((x[4] - max(max(x[3], x[4]), x[5])))) + exp((x[5] - max(max(x[3], x[4]), x[5]))))))

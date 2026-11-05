@@ -45,9 +45,10 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   the AMD assembly fixtures and the equivalence crate's specifications, accounting
   for CK's column-major B. These tests check functional equivalence under Volta's
   arithmetic model; they do not check AMD races. `just amd` runs them.
-- `trainium_equivalence_tests.rs`: the NKI `matmul` and `gemm_relu` fixtures against
-  their `.spec` files beside them in the Trainium analysis crate, and `gemm_relu`
-  against the unclamped product as a negative test. Functional equivalence only;
+- `trainium_equivalence_tests.rs`: the NKI `matmul`, `gemm_relu` and `softmax`
+  fixtures against their `.spec` files beside them in the Trainium analysis crate,
+  with `gemm_relu` against the unclamped product and `softmax` against the softmax
+  of `-x` (a reversed `subtract`) as negative tests. Functional equivalence only;
   `just trainium` runs them.
 - the suites below, over `tests/common/`.
 

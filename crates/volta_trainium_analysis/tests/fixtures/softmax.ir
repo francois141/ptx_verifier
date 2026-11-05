@@ -1,0 +1,18 @@
+kernel kernel(x) -> kernel_out
+  x: hbm[2, 3]
+  kernel_out: hbm[2, 3]
+  data: sbuf[2, 3]
+  row_max: sbuf[2, 1]
+  norm: sbuf[2, 3]
+  exp_vals: sbuf[2, 3]
+  row_sum: sbuf[2, 1]
+  inv_sum: sbuf[2, 1]
+  result: sbuf[2, 3]
+  data = mov(x)
+  row_max = reduce maximum(data)
+  norm = subtract(data, row_max)
+  exp_vals = exp(norm)
+  row_sum = reduce add(exp_vals)
+  inv_sum = reciprocal(row_sum)
+  result = multiply(exp_vals, inv_sum)
+  kernel_out = mov(result)

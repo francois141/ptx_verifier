@@ -16,12 +16,23 @@ The frontend is public; the other stages are private.
 
 ## Instructions
 
-Lowering accepts eight `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+Lowering accepts ten `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
-`nc_matmul` and `nc_transpose`. Their `nki.language` operands come from
-`ArithOp` (`nl.add`, `nl.multiply`) and `ActivationFunc` (`nl.sigmoid`,
-`nl.relu`, `nl.square`, `nl.rsqrt`); a new member means a variant in the enum's
-`ALL` array, not a case in lowering.
+`tensor_reduce`, `reciprocal`, `nc_matmul` and `nc_transpose`. Their
+`nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
+`nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
+`nl.square`, `nl.rsqrt`, `nl.exp`); a new member means a variant in the enum's
+`ALL` array, not a case in lowering. Binary ops take their operands in NKI's
+order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
+operand`, so `nl.subtract` is `data - operand`.
+
+`tensor_reduce` folds `op` over each partition of a tile into one free element,
+`dst[p, 0]`, seeded with the partition's first element (as `activation_reduce`
+does), so `nl.maximum` needs no `-inf`. NKI reduces free axes only, so its `axis`
+must be the tile's free axis, `1` or `(1,)`; `negate` and `keepdims` are not
+supported yet. `reciprocal` is elementwise `1 / x`: it lowers to an `Activation`
+of `ActivationFunc::Reciprocal`, which is outside `ALL`, so `activation`'s `op`
+cannot name it.
 
 Each activation is built from `volta_expr`'s primitives rather than an opaque
 node, so the decision procedure can reason through it: `nl.rsqrt` becomes
@@ -109,13 +120,21 @@ into `kernel_out`, an HBM tensor it allocates with `nl.shared_hbm` and returns.
 and checks chained, `<=` and `>=` `assert`s. It then adds two 2 x 4 tensors one
 `(rows, cols // 2)` tile of columns at a time.
 
+`tests/fixtures/softmax.py` is `attention_kernel_utils.softmax_isa`'s body
+written inline over a 2 x 3 tile: a `tensor_reduce` max, a `tensor_scalar`
+subtract of that `[2, 1]` row max, `activation` with `nl.exp`, a `tensor_reduce`
+sum, `reciprocal` and a `tensor_scalar` multiply. `tests/fixtures/softmax.spec`
+states softmax along each row.
+
 `tests/fixtures/matmul.spec` and `tests/fixtures/gemm_relu.spec` state the
 `matmul` and `gemm_relu` kernels' math over the kernels' own array names, with
 `a_t` as A transposed (`[K, M]`), the layout `nc_matmul`'s stationary operand
 takes. `volta_pipeline`'s `trainium_equivalence_tests.rs` checks each kernel
 against its spec by the decision procedure rather than by text, and `gemm_relu`
-against `matmul.spec` (the product without the clamp) as a negative test;
-`just trainium` runs them with this crate's tests.
+against `matmul.spec` (the product without the clamp) as a negative test.
+They also check `softmax` against `softmax.spec`, and, as a negative test,
+against the softmax of `-x`, which a `subtract` with its operands reversed would
+compute. `just trainium` runs them with this crate's tests.
 
 `tests/fixtures/attention.spec` is the reference for the NKI attention samples
 (`attention_fwd_v1` onward): `numpy_attention` from their `test_attention.py`
