@@ -67,3 +67,9 @@ takes. `volta_pipeline`'s `trainium_equivalence_tests.rs` checks each kernel
 against its spec by the decision procedure rather than by text, and `gemm_relu`
 against `matmul.spec` (the product without the clamp) as a negative test;
 `just trainium` runs them with this crate's tests.
+
+`tests/fixtures/attention.spec` is the reference for the NKI attention samples
+(`attention_fwd_v1` onward): `numpy_attention` from their `test_attention.py`
+transcribed, in their layout, with `q`, `k` and `v` as `[D, N]` (head dimension
+by sequence length) and the kernels' `kernel_out` as `[N, D]`. No kernel is
+checked against it yet.

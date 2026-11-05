@@ -517,6 +517,8 @@ through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
 `nl.affine_range(2)`. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
 kernels' math over their own array names (`a_t` being A transposed);
 `volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them.
+`tests/fixtures/attention.spec` is the NKI attention samples' reference, their
+`numpy_attention` in their layout (`q`, `k`, `v` as `[D, N]`, `kernel_out` as `[N, D]`).
 
 ## Crate: volta_graph_check
 
