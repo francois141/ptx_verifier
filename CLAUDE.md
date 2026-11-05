@@ -424,6 +424,8 @@ sign-mask tricks on symbolic values are rejected; floating-point arithmetic and 
 including lane exchanges, remain supported. A select between two different constant words
 under a symbolic condition is rejected (`AmbiguousSelect`).
 Negated select sources use floating-point semantics, so they are not ambiguous.
+F32 e64 comparisons and f32 FMA accept absolute-value and negation input modifiers on any
+source; these operate on mathematical expressions. E64 comparisons write VCC or an SGPR pair.
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks (`SymbolicSgpr`).
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.

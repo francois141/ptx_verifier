@@ -69,6 +69,15 @@ pub enum Vop3Src {
     Inline(u32),
 }
 
+/// A VOP3 f32 source with its input modifiers: `abs` takes the absolute value, then `neg`
+/// negates it. The modifiers act on the real the source holds, not on its bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModifiedSrc {
+    pub src: Vop3Src,
+    pub abs: bool,
+    pub neg: bool,
+}
+
 /// The first source of a VOP2 instruction: a VGPR, an SGPR, or a constant (inline
 /// or literal) whose 32 bits are the operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,6 +529,29 @@ pub enum CmpOp {
     LgF32,
 }
 
+impl CmpOp {
+    /// Whether the comparison reads its sources as f32s rather than as words.
+    pub fn is_f32(self) -> bool {
+        match self {
+            Self::LtI32
+            | Self::EqI32
+            | Self::LeI32
+            | Self::GtI32
+            | Self::NeI32
+            | Self::GeI32
+            | Self::LtU32
+            | Self::EqU32
+            | Self::LeU32
+            | Self::GtU32
+            | Self::NeU32
+            | Self::GeU32 => false,
+            Self::LtF32 | Self::LeF32 | Self::GtF32 | Self::GeF32 | Self::EqF32 | Self::LgF32 => {
+                true
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
     ScalarLoad {
@@ -624,12 +656,13 @@ pub enum LoweredInstr {
         src0: [Src0; 2],
         src1: [Vgpr; 2],
     },
-    /// Sets each lane's bit of an SGPR-pair lane mask to `src0 op src1`.
+    /// Sets each lane's bit of VCC or an SGPR-pair mask to `src0 op src1`. Only an f32
+    /// comparison's sources may carry input modifiers.
     CmpE64 {
         op: CmpOp,
-        dst: [Sgpr; 2],
-        src0: Vop3Src,
-        src1: Vop3Src,
+        dst: LaneMask,
+        src0: ModifiedSrc,
+        src1: ModifiedSrc,
     },
     /// `dst = VCC ? src1 : src0` in each lane.
     CndMask32 {
@@ -668,9 +701,9 @@ pub enum LoweredInstr {
     /// `dst = src0 * src1 + src2`.
     FmaF32 {
         dst: Vgpr,
-        src0: Vop3Src,
-        src1: Vop3Src,
-        src2: Vop3Src,
+        src0: ModifiedSrc,
+        src1: ModifiedSrc,
+        src2: ModifiedSrc,
     },
     /// `dst = src0 * src1 + dst`.
     FmacF32 {

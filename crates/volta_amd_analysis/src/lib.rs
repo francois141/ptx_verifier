@@ -15,8 +15,8 @@ pub use eval::{
 };
 pub use ir::{
     Agpr, BinOp, BranchCondition, BufferAddress, BufferImmOffset, CmpOp, GlobalAddress, InstrId,
-    LaneMask, LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp,
-    ScalarDst64, ScalarOp32, ScalarOp64, ScalarSrc, ScalarSrc64, Sgpr, Src0, TernaryOp, UnaryOp,
-    Vgpr, Vop3BinOp, Vop3Src,
+    LaneMask, LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ModifiedSrc,
+    ScalarCmpOp, ScalarDst64, ScalarOp32, ScalarOp64, ScalarSrc, ScalarSrc64, Sgpr, Src0,
+    TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
 };
 pub use lower::{LowerError, lower_kernel};

@@ -3,7 +3,9 @@
 
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
-use crate::ir::{BinOp, CmpOp, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src};
+use crate::ir::{
+    BinOp, CmpOp, LaneMask, ModifiedSrc, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
+};
 
 use super::EvalError;
 use super::wave::{WaveRegisters, concrete_word};
@@ -476,22 +478,10 @@ fn unary_operand_type(op: UnaryOp) -> OperandType {
 }
 
 fn cmp_operand_type(op: CmpOp) -> OperandType {
-    match op {
-        CmpOp::LtI32
-        | CmpOp::EqI32
-        | CmpOp::LeI32
-        | CmpOp::GtI32
-        | CmpOp::NeI32
-        | CmpOp::GeI32
-        | CmpOp::LtU32
-        | CmpOp::EqU32
-        | CmpOp::LeU32
-        | CmpOp::GtU32
-        | CmpOp::NeU32
-        | CmpOp::GeU32 => OperandType::Word,
-        CmpOp::LtF32 | CmpOp::LeF32 | CmpOp::GtF32 | CmpOp::GeF32 | CmpOp::EqF32 | CmpOp::LgF32 => {
-            OperandType::F32
-        }
+    if op.is_f32() {
+        OperandType::F32
+    } else {
+        OperandType::Word
     }
 }
 
@@ -517,23 +507,23 @@ pub(super) fn evaluate_cmp(
     compare(arena, lane, op, a, b)
 }
 
-/// `evaluate_cmp` over VOP3 sources.
+/// `evaluate_cmp` over VOP3 sources; an f32 comparison applies their input modifiers.
 pub(super) fn evaluate_cmp_e64(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
     lane: usize,
     op: CmpOp,
-    src0: Vop3Src,
-    src1: Vop3Src,
+    src0: ModifiedSrc,
+    src1: ModifiedSrc,
 ) -> Result<ExprId, EvalError> {
     let (a, b) = match cmp_operand_type(op) {
         OperandType::Word => (
-            registers.read_src(arena, lane, src0)?,
-            registers.read_src(arena, lane, src1)?,
+            registers.read_src(arena, lane, src0.src)?,
+            registers.read_src(arena, lane, src1.src)?,
         ),
         OperandType::F32 => (
-            registers.read_f32_src(arena, lane, src0)?,
-            registers.read_f32_src(arena, lane, src1)?,
+            registers.read_modified_src(arena, lane, src0)?,
+            registers.read_modified_src(arena, lane, src1)?,
         ),
     };
     compare(arena, lane, op, a, b)

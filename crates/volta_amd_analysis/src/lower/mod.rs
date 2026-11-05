@@ -9,8 +9,8 @@ use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
     self, Agpr, BranchCondition, BufferAddress, BufferImmOffset, BufferLoadDst, BufferStoreSrc,
     DsReadDst, DsWriteData, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask,
-    LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ScalarCmpOp,
-    ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
+    LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ModifiedSrc,
+    ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -353,11 +353,11 @@ fn lower_instruction(
         }),
         ("v_fma_f32", [dst, src0, src1, src2]) => Ok(FmaF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vop3_src(src0)
+            src0: modified_src(src0)
                 .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-            src1: vop3_src(src1)
+            src1: modified_src(src1)
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
-            src2: vop3_src(src2)
+            src2: modified_src(src2)
                 .ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         }),
         ("v_fmac_f32_e32", [dst, src0, src1]) => Ok(FmacF32 {
@@ -609,13 +609,18 @@ fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'
     let [dst, src0, src1] = operands else {
         return Err("unsupported operand count");
     };
+    let src0 =
+        modified_src(src0).ok_or("expected a VGPR, an SGPR or an inline constant first source")?;
+    let src1 =
+        modified_src(src1).ok_or("expected a VGPR, an SGPR or an inline constant second source")?;
+    if !op.is_f32() && [src0, src1].iter().any(|src| src.abs || src.neg) {
+        return Err("input modifiers require an f32 comparison");
+    }
     Ok(LoweredInstr::CmpE64 {
         op,
-        dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
-        src0: vop3_src(src0)
-            .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-        src1: vop3_src(src1)
-            .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+        dst: lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?,
+        src0,
+        src1,
     })
 }
 
@@ -1039,6 +1044,23 @@ fn without_neg(operand: &Operand) -> &Operand {
         Operand::Neg(source) => source.as_ref(),
         _ => operand,
     }
+}
+
+/// A VOP3 source and its input modifiers, written `-src`, `|src|` or `-|src|`.
+fn modified_src(operand: &Operand) -> Option<ModifiedSrc> {
+    let (neg, operand) = match operand {
+        Operand::Neg(source) => (true, source.as_ref()),
+        _ => (false, operand),
+    };
+    let (abs, operand) = match operand {
+        Operand::Abs(source) => (true, source.as_ref()),
+        _ => (false, operand),
+    };
+    Some(ModifiedSrc {
+        src: vop3_src(operand)?,
+        abs,
+        neg,
+    })
 }
 
 /// Only src0 of a VOP2 encoding can name an SGPR or a 32-bit literal; src1 is a VGPR.

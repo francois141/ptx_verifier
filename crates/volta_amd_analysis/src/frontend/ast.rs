@@ -50,6 +50,8 @@ pub enum Operand {
     InlineFloat(u32),
     /// A floating-point source with its sign negated.
     Neg(Box<Operand>),
+    /// The absolute value of a floating-point register source.
+    Abs(Box<Operand>),
     /// The vector condition code, one bit per lane.
     Vcc,
     /// The mask of the wave's active lanes.

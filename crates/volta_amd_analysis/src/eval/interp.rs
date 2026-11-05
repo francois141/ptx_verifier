@@ -7,8 +7,8 @@ use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
 use crate::ir::{
-    BranchCondition, CmpOp, DsReadDst, DsWriteData, InstrId, LdsAccesses, LoweredInstr,
-    LoweredKernel, Sgpr, Vgpr, Vop3Src,
+    BranchCondition, CmpOp, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr,
+    LoweredKernel, ModifiedSrc, Sgpr, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -236,9 +236,9 @@ impl<'a> Interpreter<'a> {
         &mut self,
         wave: WaveId,
         op: CmpOp,
-        dst: [Sgpr; 2],
-        src0: Vop3Src,
-        src1: Vop3Src,
+        dst: LaneMask,
+        src0: ModifiedSrc,
+        src1: ModifiedSrc,
     ) -> Result<(), EvalError> {
         let registers = &mut self.waves[wave].registers;
         // Read every lane before writing the mask, which may overlap a scalar source.
@@ -379,9 +379,9 @@ impl<'a> Interpreter<'a> {
                 src1,
                 src2,
             } => {
-                let a = registers.read_f32_src(&mut self.arena, lane, *src0)?;
-                let b = registers.read_f32_src(&mut self.arena, lane, *src1)?;
-                let c = registers.read_f32_src(&mut self.arena, lane, *src2)?;
+                let a = registers.read_modified_src(&mut self.arena, lane, *src0)?;
+                let b = registers.read_modified_src(&mut self.arena, lane, *src1)?;
+                let c = registers.read_modified_src(&mut self.arena, lane, *src2)?;
                 let result = self.arena.fma(a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }

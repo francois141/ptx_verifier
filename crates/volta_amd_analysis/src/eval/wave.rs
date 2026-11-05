@@ -5,7 +5,9 @@ use std::collections::VecDeque;
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
-use crate::ir::{Agpr, GlobalAddress, InstrId, LaneMask, LaneReg, Sgpr, Src0, Vgpr, Vop3Src};
+use crate::ir::{
+    Agpr, GlobalAddress, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0, Vgpr, Vop3Src,
+};
 
 use super::EvalError;
 use super::global::GlobalMemory;
@@ -234,13 +236,20 @@ impl WaveRegisters {
         Ok(())
     }
 
-    /// Store comparison predicates in an SGPR pair, retaining concrete halves as ordinary words.
+    /// Store one comparison predicate per lane in VCC or an SGPR pair. An SGPR pair retains
+    /// concrete halves as ordinary words.
     pub fn write_lane_mask(
         &mut self,
         arena: &mut ExprArena,
-        pair: [Sgpr; 2],
+        mask: LaneMask,
         conditions: &[ExprId],
     ) -> Result<(), EvalError> {
+        let LaneMask::Sgprs(pair) = mask else {
+            for (lane, &condition) in conditions.iter().enumerate() {
+                self.write_vcc(lane, condition)?;
+            }
+            return Ok(());
+        };
         for reg in pair {
             self.check_scalar_destination(reg)?;
         }
@@ -391,6 +400,18 @@ impl WaveRegisters {
                 f32_from_bits(arena, bits).ok_or(EvalError::InvalidFloatConstant(bits))
             }
         }
+    }
+
+    /// `lane`'s value of a VOP3 f32 source after its input modifiers.
+    pub fn read_modified_src(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: ModifiedSrc,
+    ) -> Result<ExprId, EvalError> {
+        let value = self.read_f32_src(arena, lane, src.src)?;
+        let value = if src.abs { arena.abs(value) } else { value };
+        Ok(if src.neg { arena.neg(value) } else { value })
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit

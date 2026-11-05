@@ -101,6 +101,7 @@ fn the_transpose_kernel_writes_its_expected_outputs() {
 /// Each work-item writes one result per operation to its own row of 32 floats.
 const FLOAT_OPS_ROW: u64 = 32;
 
+// Test float arithmetic, source modifiers and selects against their expected expressions.
 #[test]
 fn the_float_ops_kernel_writes_its_expected_outputs() {
     common::check_run(

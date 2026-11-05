@@ -68,8 +68,17 @@ fn operand(text: &str) -> Option<Operand> {
         };
         return Some(Operand::OpSelHi([bit(a)?, bit(b)?]));
     }
-    if let Some(source @ Operand::Reg { .. }) = text.strip_prefix('-').and_then(operand) {
+    if let Some(source @ (Operand::Reg { .. } | Operand::Abs(_))) =
+        text.strip_prefix('-').and_then(operand)
+    {
         return Some(Operand::Neg(Box::new(source)));
+    }
+    if let Some(source @ Operand::Reg { .. }) = text
+        .strip_prefix('|')
+        .and_then(|s| s.strip_suffix('|'))
+        .and_then(operand)
+    {
+        return Some(Operand::Abs(Box::new(source)));
     }
     if text.contains('.') {
         let value = text.parse::<f32>().ok()?;
@@ -285,6 +294,7 @@ mod tests {
         assert_eq!(kernel.descriptor["system_vgpr_workitem_id"], 0);
     }
 
+    // Test supported operand forms and reject malformed or unsupported modifiers.
     #[test]
     fn parses_operand_forms_and_rejects_others() {
         assert_eq!(operand("0x10"), Some(Imm(16)));
@@ -296,9 +306,15 @@ mod tests {
         };
         assert_eq!(operand("vmcnt(3)"), Some(vm3));
         assert_eq!(operand("-1"), Some(Imm(-1)));
-        // Negation wraps register operands; negative float constants keep their encoded bits.
+        // Float modifiers wrap registers; negative float constants keep their encoded bits.
         assert_eq!(operand("-v7"), Some(Operand::Neg(Box::new(vgpr(7, 7)))));
         assert_eq!(operand("-s9"), Some(Operand::Neg(Box::new(sgpr(9, 9)))));
+        assert_eq!(operand("|v7|"), Some(Operand::Abs(Box::new(vgpr(7, 7)))));
+        assert_eq!(operand("|s9|"), Some(Operand::Abs(Box::new(sgpr(9, 9)))));
+        assert_eq!(
+            operand("-|v7|"),
+            Some(Operand::Neg(Box::new(Operand::Abs(Box::new(vgpr(7, 7))))))
+        );
         assert_eq!(
             operand("-1.0"),
             Some(Operand::InlineFloat((-1.0f32).to_bits()))
@@ -310,6 +326,14 @@ mod tests {
         for bad in [
             "-vcc",
             "-vmcnt(3)",
+            "|1|",
+            "|1.0|",
+            "|vcc|",
+            "|v7",
+            "v7|",
+            "||v7||",
+            "--v7",
+            "|-v7|",
             "op_sel_hi:[1]",
             "op_sel_hi:[1,0,1]",
             "op_sel_hi:[2,0]",
