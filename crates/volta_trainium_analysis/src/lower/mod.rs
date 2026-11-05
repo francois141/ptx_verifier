@@ -1,6 +1,6 @@
 //! Lowering a parsed NKI kernel into its tensors and the instructions over them.
 //! A parameter's shape is the one its `assert` binds, which must precede the
-//! parameter's first use as an operand.
+//! parameter's first use as an operand; a declared tensor's is its declaration's.
 
 mod error;
 
@@ -10,22 +10,22 @@ use id_collections::IdVec;
 
 use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Statement, TensorName};
 use crate::ir::{
-    ActivationFunc, ArithOp, Index, LoweredInstr, LoweredKernel, Memory, ScalarOperand, ScalarStep,
-    Shape, Tensor, TensorId, TensorRegion,
+    ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory, ScalarOperand,
+    ScalarStep, Shape, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, StatementError};
 
 const NKI_LANGUAGE: &str = "nki.language";
 
-/// Lower `kernel` into its tensors, the parameters first and then the tiles in
-/// declaration order, and its instructions in order.
+/// Lower `kernel` into its tensors, the parameters first and then the declared
+/// tensors in declaration order, its instructions in order, and the tensor it returns.
 pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
     let mut scope = Scope::default();
     let params = kernel
         .params
         .iter()
-        .map(|param| scope.add(param.clone(), Memory::Hbm, None))
+        .map(|param| scope.add(param.clone(), Memory::Hbm, None, Initial::Argument))
         .collect();
 
     let mut instructions = Vec::new();
@@ -42,7 +42,18 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
                     u64::from(tile.shape.partitions.get()),
                     tile.shape.free.get(),
                 ];
-                scope.add(tile.name.clone(), memory(tile.buffer), Some(Shape(shape)));
+                let memory = memory(tile.buffer);
+                scope.add(
+                    tile.name.clone(),
+                    memory,
+                    Some(Shape(shape)),
+                    Initial::Uninitialized,
+                );
+            }
+            Statement::DeclareHbm(tensor) => {
+                let shape = Shape(tensor.shape.iter().map(|extent| extent.get()).collect());
+                let name = tensor.name.clone();
+                scope.add(name, Memory::Hbm, Some(shape), Initial::Uninitialized);
             }
             Statement::Instruction(instruction) => {
                 instructions.push(lower_instruction(instruction, &scope).map_err(at)?);
@@ -50,11 +61,18 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         }
     }
 
+    let returned = kernel
+        .returned
+        .as_ref()
+        .map(|tensor| scope.returned(tensor))
+        .transpose()?;
+
     Ok(LoweredKernel {
         name: kernel.name.clone(),
         params,
         tensors: scope.into_tensors()?,
         instructions: IdVec::from_vec(instructions),
+        returned,
     })
 }
 
@@ -459,6 +477,7 @@ struct Entry {
     name: TensorName,
     memory: Memory,
     shape: Option<Shape>,
+    initial: Initial,
 }
 
 /// A tensor operand whose shape is bound.
@@ -478,11 +497,18 @@ struct Scope {
 }
 
 impl Scope {
-    fn add(&mut self, name: TensorName, memory: Memory, shape: Option<Shape>) -> TensorId {
+    fn add(
+        &mut self,
+        name: TensorName,
+        memory: Memory,
+        shape: Option<Shape>,
+        initial: Initial,
+    ) -> TensorId {
         let id = self.entries.push(Entry {
             name: name.clone(),
             memory,
             shape,
+            initial,
         });
         self.ids.insert(name, id);
         id
@@ -532,6 +558,16 @@ impl Scope {
         })
     }
 
+    /// The tensor a kernel returns: one it allocates in HBM, not an argument or a tile.
+    fn returned(&self, name: &TensorName) -> Result<TensorId, LowerError> {
+        let id = self.ids[name];
+        let entry = &self.entries[id];
+        if (entry.memory, entry.initial) != (Memory::Hbm, Initial::Uninitialized) {
+            return Err(LowerError::ReturnsUnallocated(name.clone()));
+        }
+        Ok(id)
+    }
+
     fn into_tensors(self) -> Result<IdVec<TensorId, Tensor>, LowerError> {
         self.entries.try_map(|_, entry| {
             let Some(shape) = entry.shape else {
@@ -541,6 +577,7 @@ impl Scope {
                 name: entry.name.0,
                 memory: entry.memory,
                 shape,
+                initial: entry.initial,
             })
         })
     }

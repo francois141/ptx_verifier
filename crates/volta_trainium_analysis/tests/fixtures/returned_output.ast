@@ -1,0 +1,12 @@
+kernel kernel(a, b)
+  assert a.shape == [2, 4]
+  assert b.shape == [2, 4]
+  kernel_out: shared_hbm[2, 4] of a.dtype
+  x: sbuf[2, 4] of a.dtype
+  y: sbuf[2, 4] of b.dtype
+  z: sbuf[2, 4] of a.dtype
+  dma_copy(dst=x, src=a)
+  dma_copy(dst=y, src=b)
+  tensor_tensor(data1=x, data2=y, dst=z, op=nki.language.multiply)
+  dma_copy(dst=kernel_out, src=z)
+  return kernel_out

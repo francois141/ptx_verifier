@@ -37,3 +37,8 @@ fn the_tiled_copy_kernel_parses_lowers_and_runs_as_expected() {
 fn the_rms_norm_kernel_parses_lowers_and_runs_as_expected() {
     common::check("rms_norm", "kernel");
 }
+
+#[test]
+fn the_returned_output_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("returned_output", "kernel");
+}

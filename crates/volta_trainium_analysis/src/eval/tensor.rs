@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use volta_expr::{ExprArena, ExprId, StringId};
 
-use crate::ir::{Index, InstrId, Memory, Tensor};
+use crate::ir::{Index, Initial, InstrId, Tensor};
 
 use super::EvalError;
 
@@ -54,6 +54,7 @@ impl<'a> TensorState<'a> {
     }
 
     /// The element at `index`: its last written value, else an argument's input symbol.
+    /// Any other tensor's unwritten element is uninitialized.
     pub(super) fn read(
         &self,
         arena: &mut ExprArena,
@@ -63,12 +64,12 @@ impl<'a> TensorState<'a> {
         if let Some(&value) = self.written.get(index) {
             return Ok(value);
         }
-        match self.tensor.memory {
-            Memory::Hbm => {
+        match self.tensor.initial {
+            Initial::Argument => {
                 let offset = self.tensor.shape.offset(index);
                 Ok(arena.input_element(self.symbol, offset))
             }
-            Memory::Sbuf | Memory::Psum => Err(EvalError::UninitializedRead {
+            Initial::Uninitialized => Err(EvalError::UninitializedRead {
                 instr,
                 tensor: self.tensor.name.clone(),
                 index: index.clone(),

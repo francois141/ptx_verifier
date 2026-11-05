@@ -481,6 +481,13 @@ and `nc_transpose` - and resolves their `nki.language` operands by searching
 matches, so a new function reaches lowering by joining that array and needs no
 arm of its own; any other member is a lowering error.
 
+A kernel's outputs are the arguments it writes and the tensor it returns: a
+final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
+buffer=nl.shared_hbm)` (any rank), its output array named `t`. Returning an
+argument or a tile is a lowering error. `ir::Initial` records what a tensor's
+unwritten elements hold: an argument's are input symbols, while a tile's or an
+allocated HBM tensor's are uninitialized, so reading one is `UninitializedRead`.
+
 A `tensor_scalar` operand is a float literal or a `[partitions, 1]` tile whose
 single free element broadcasts across the destination's free axis; its second
 `(op, operand)` pair is optional and both keywords must appear together.
@@ -514,7 +521,8 @@ normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
 `activation_reduce` and two `tensor_scalar`s, the second broadcasting a
 `[4, 1]` tile. `tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor
 through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
-`nl.affine_range(2)`. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
+`nl.affine_range(2)`. `tests/fixtures/returned_output.py` multiplies two 2 x 4
+tensors into a `kernel_out` it allocates and returns. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
 kernels' math over their own array names (`a_t` being A transposed);
 `volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them.
 `tests/fixtures/attention.spec` is the NKI attention samples' reference, their

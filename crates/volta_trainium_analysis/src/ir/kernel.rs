@@ -1,4 +1,4 @@
-//! A lowered kernel: its parameters, tensors and instructions. `Display`
+//! A lowered kernel: its parameters, tensors, instructions and returned tensor. `Display`
 //! renders it the way the fixtures' expected `.ir` files hold it.
 
 use std::fmt;
@@ -14,6 +14,8 @@ pub struct LoweredKernel {
     pub params: Vec<TensorId>,
     pub tensors: IdVec<TensorId, Tensor>,
     pub instructions: IdVec<InstrId, LoweredInstr>,
+    /// The HBM tensor it allocates and returns, if any.
+    pub returned: Option<TensorId>,
 }
 
 impl fmt::Display for LoweredKernel {
@@ -40,7 +42,11 @@ impl fmt::Display for LoweredKernel {
         };
 
         let params: Vec<&str> = self.params.iter().map(|&param| name(param)).collect();
-        writeln!(f, "kernel {}({})", self.name, params.join(", "))?;
+        write!(f, "kernel {}({})", self.name, params.join(", "))?;
+        match self.returned {
+            Some(returned) => writeln!(f, " -> {}", name(returned))?,
+            None => writeln!(f)?,
+        }
 
         for tensor in self.tensors.values() {
             let memory = tensor.memory.name();

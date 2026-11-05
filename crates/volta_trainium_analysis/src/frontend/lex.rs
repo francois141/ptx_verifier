@@ -15,6 +15,7 @@ pub enum Keyword {
     Assert,
     For,
     In,
+    Return,
 }
 
 impl Keyword {
@@ -26,6 +27,7 @@ impl Keyword {
             "assert" => Some(Self::Assert),
             "for" => Some(Self::For),
             "in" => Some(Self::In),
+            "return" => Some(Self::Return),
             _ => None,
         }
     }
@@ -38,15 +40,16 @@ impl Keyword {
             Self::Assert => "assert",
             Self::For => "for",
             Self::In => "in",
+            Self::Return => "return",
         }
     }
 }
 
 /// Python's other keywords, rejected rather than read as names.
-const UNSUPPORTED_KEYWORDS: [&str; 29] = [
+const UNSUPPORTED_KEYWORDS: [&str; 28] = [
     "False", "None", "True", "and", "async", "await", "break", "class", "continue", "del", "elif",
     "else", "except", "finally", "from", "global", "if", "is", "lambda", "nonlocal", "not", "or",
-    "pass", "raise", "return", "try", "while", "with", "yield",
+    "pass", "raise", "try", "while", "with", "yield",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

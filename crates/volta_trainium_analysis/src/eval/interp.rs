@@ -12,14 +12,21 @@ use crate::ir::{
 use super::EvalError;
 use super::tensor::TensorState;
 
-/// Run `kernel` and return, in parameter order, each argument it wrote with its written
-/// elements by offset. An unwritten argument element holds its input symbol.
+/// Run `kernel` and return, in parameter order, each argument it wrote, then the tensor it
+/// returns, each with its written elements by offset. An unwritten argument element holds
+/// its input symbol.
 pub fn evaluate(kernel: &LoweredKernel) -> Result<SymbolicOutputs, EvalError> {
     let mut interp = Interpreter::new(kernel);
     for (instr, instruction) in kernel.instructions.iter() {
         interp.step(instr, instruction)?;
     }
-    Ok(interp.into_outputs(&kernel.params))
+    let outputs: Vec<TensorId> = kernel
+        .params
+        .iter()
+        .copied()
+        .chain(kernel.returned)
+        .collect();
+    Ok(interp.into_outputs(&outputs))
 }
 
 struct Interpreter<'a> {
@@ -212,11 +219,11 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    fn into_outputs(self, params: &[TensorId]) -> SymbolicOutputs {
-        let outputs = params
+    fn into_outputs(self, outputs: &[TensorId]) -> SymbolicOutputs {
+        let outputs = outputs
             .iter()
-            .map(|&param| {
-                let tensor = &self.tensors[param];
+            .map(|&output| {
+                let tensor = &self.tensors[output];
                 (tensor.name().to_owned(), tensor.written_by_offset())
             })
             .filter(|(_, elements)| !elements.is_empty())
