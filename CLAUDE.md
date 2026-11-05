@@ -511,7 +511,8 @@ list storage, the statements emitted, per-helper call counts) and a `Frame` per
 call (its module, locals, the names it assigns, its tile prefix). Names bind and
 rebind as in Python, to tensors, integers, tuples and lists (`Value::List` is an
 index into the trace's storage, so lists are shared); a name a function assigns
-is local throughout it; only a tensor's name must be unique. `d, n = q.shape`,
+is local throughout it; a tile name declared again takes a version suffix (`x~1`),
+so every tensor's name is unique. `d, n = q.shape`,
 `+`/`*`/`//`, `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax}`,
 `list`/`tuple` and item reads and writes evaluate there, `t.shape` is a tuple, and
 an `assert` (a chain of `==`/`!=`/`<`/`<=`/`>`/`>=`, tuples by `==`/`!=` only) is
@@ -530,7 +531,12 @@ modules' sources by name. A helper call (a statement, an assignment's value or a
 `return`'s, at most 32 deep) runs the helper's body in a new frame, with defaults,
 keyword arguments and a final `return`'s value; its tiles take the prefix
 `name[call].` (`softmax_isa[0].row_max`), and its errors are `ParseError::InCall`,
-lines in the helper's module.
+lines in the helper's module. v1's tile-returning `nki.language` calls (`load`,
+`matmul` with `transpose_x=True`, `max`/`sum` with `keepdims=True`, `exp`,
+`reciprocal`, `transpose`, and `store`) are rewritten by `tile_call`/`store` into a
+tile declaration named after the target (PSUM for `matmul` and `transpose`) and
+the one `nki.isa` instruction it lowers to; `load`/`store` require HBM
+(`Declared::place`). `True`/`False` are `Value::Bool`.
 
 A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
 lowered: the interpreter has no program counter, and the integer-expression
@@ -573,7 +579,9 @@ and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative 
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
-against attention with `q` and `k` swapped. `tests/fixtures/helper_call.py` calls
+against attention with `q` and `k` swapped; v1 likewise, and v1 against v2 kernel to
+kernel. `tests/fixtures/language_api.py` covers the tile-returning API on 2 x 2
+inputs. `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a class, `if`, f-strings) that is never parsed.
 
@@ -719,8 +727,8 @@ several workgroup sizes; negative tests swap matmul inputs or attention's query 
 or change the softmax row width), and `trainium_equivalence_tests.rs` (the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
-and the NKI samples' `attn_fwd_v2` against `attention.spec`, on its first row by default,
-with `q` and `k` swapped as a negative test).
+and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
+other, on their first row by default, with `q` and `k` swapped as a negative test).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 

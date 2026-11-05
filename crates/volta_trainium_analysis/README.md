@@ -14,6 +14,28 @@ The directories mirror the other analyses' stages:
 
 The frontend is public; the other stages are private.
 
+## The tile-returning `nki.language` API
+
+v1 is written with `nki.language` functions that return a new tile rather than
+writing a `dst`. The parser rewrites each into a tile declaration, named after the
+assigned variable, and the one `nki.isa` instruction NKI lowers it to, so lowering
+and execution see only `nki.isa`:
+
+| Call | Tile | Instruction |
+|---|---|---|
+| `x = nl.load(src)` | SBUF, `src`'s region shape | `dma_copy` |
+| `nl.store(dst, value)` | (none) | `dma_copy(dst, src=value)` |
+| `p = nl.matmul(x, y, transpose_x=True)` | PSUM `[x.free, y.free]` | `nc_matmul(stationary=x, moving=y)` |
+| `m = nl.max(x, axis, keepdims=True)` | SBUF `[P, 1]` | `tensor_reduce(op=maximum)` |
+| `s = nl.sum(x, axis, keepdims=True)` | SBUF `[P, 1]` | `tensor_reduce(op=add)` |
+| `e = nl.exp(x)` | SBUF, `x`'s shape | `activation(op=exp)` |
+| `r = nl.reciprocal(x)` | SBUF, `x`'s shape | `reciprocal` |
+| `t = nl.transpose(x)` | PSUM `[F, P]` | `nc_transpose` |
+
+`nl.load` reads and `nl.store` writes device memory only. `transpose_x=False`, where
+NKI inserts a transpose, and `keepdims=False` are rejected, as are `dtype=` and
+`mask=`. `True` and `False` are values.
+
 ## Instructions
 
 Lowering accepts ten `nki.isa` instructions: `dma_copy`, `tensor_copy`,
@@ -57,8 +79,9 @@ on shapes, as NKI's tracer does:
 
 Names bind and rebind as in Python: to tensors (an alias `b = a` included),
 integers, tuples and lists, and a name a function assigns anywhere is local
-throughout it, so reading it first is an error. Each tensor still needs a name of
-its own: declaring a second `x` in one scope is an error. `asserted_shapes(source,
+throughout it, so reading it first is an error. Every tensor gets a name of its
+own: a name declared again, as `x = nl.exp(x)` does, takes a version suffix Python
+cannot write (`x~1`, `x~2`). `asserted_shapes(source,
 name)` reads the shapes a kernel's own `assert param.shape == (extent, ...)`
 statements state, for running a kernel without a caller, as `volta_pipeline`'s NKI
 frontend does.
@@ -127,6 +150,11 @@ Attribution). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at t
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 
+`tests/fixtures/language_api.py` calls each tile-returning `nki.language` function
+on 2 x 2 inputs: a row max of `a.T @ b`, a reciprocal of row sums of `exp(a)`, and
+a transpose through PSUM, stored with `nl.store`. `attn_fwd_v1.ast` and `.ir`
+snapshot v1, whose lowered form is v2's algorithm.
+
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as
@@ -184,4 +212,5 @@ by sequence length) and the kernels' `kernel_out` as `[N, D]`. In
 `volta_pipeline`'s `trainium_equivalence_tests.rs`, v2, read
 from its own file with `softmax_isa` inlined, is proved equal to it on the first row
 of 128 outputs by default and on all 16,384 by an ignored test (about a minute in
-release), and attention with `q` and `k` swapped is refuted.
+release), and attention with `q` and `k` swapped is refuted. v1 is proved equal to
+it the same way, and to v2 directly, kernel against kernel, on their first row.

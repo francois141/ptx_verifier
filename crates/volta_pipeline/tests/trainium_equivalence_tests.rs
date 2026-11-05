@@ -135,27 +135,44 @@ const ATTENTION_SPEC: &str =
     include_str!("../../volta_trainium_analysis/tests/fixtures/attention.spec");
 
 /// The NKI samples' `kernel` from their own file, called as their test calls it: `q`, `k`
-/// and `v` of `[128, 128]` (v1 and v2 assert that size), against `spec`'s `kernel_out`.
-fn check_attention(kernel: &str, spec: &str, sample: u64) -> EquivalenceVerdict {
+/// and `v` of `[128, 128]` (v1 and v2 assert that size).
+fn attention_kernel(kernel: &str) -> Kernel {
     let size: &[u64] = &[128, 128];
-    let parsed = parse_kernel_with_modules(
+    parse_kernel_with_modules(
         ATTENTION_KERNELS,
         &[("attention_kernel_utils", ATTENTION_UTILS)],
         kernel,
         &[("q", size), ("k", size), ("v", size)],
     )
-    .unwrap();
-    let options = EquivCheckOptions {
+    .unwrap()
+}
+
+fn sampled(sample: u64) -> EquivCheckOptions {
+    EquivCheckOptions {
         sample,
         ..EquivCheckOptions::default()
-    };
+    }
+}
+
+/// Attention sample `kernel` against `spec`'s `kernel_out`, on its first `sample` outputs.
+fn check_attention(kernel: &str, spec: &str, sample: u64) -> EquivalenceVerdict {
+    let dims = [("D", 128), ("N", 128)];
     against_spec(
-        &parsed,
+        &attention_kernel(kernel),
         spec,
-        &[("D", 128), ("N", 128)],
+        &dims,
         "kernel_out",
-        &options,
+        &sampled(sample),
     )
+}
+
+/// Attention samples `reference` and `other` against each other, kernel to kernel.
+fn check_attention_pair(reference: &str, other: &str, sample: u64) -> EquivalenceVerdict {
+    let [reference, other] = [reference, other].map(|kernel| {
+        let lowered = lower_kernel(&attention_kernel(kernel)).unwrap();
+        evaluate(&lowered).unwrap()
+    });
+    check_equivalence(&reference, &other, &["kernel_out".into()], &sampled(sample)).0
 }
 
 // The first row of outputs: every element of the 128 x 128 output is checked by
@@ -194,5 +211,42 @@ fn nki_attention_v2_against_attention_with_q_and_k_swapped_is_refuted() {
     assert!(
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+// v1 writes attention with the `nki.language` functions that return a tile, which the
+// parser rewrites into the `nki.isa` instructions v2 calls itself.
+#[test]
+fn nki_attention_v1_matches_attention_on_its_first_row() {
+    assert_eq!(
+        check_attention("attn_fwd_v1", ATTENTION_SPEC, 128),
+        EquivalenceVerdict::Equivalent {
+            checked: 128,
+            total: 16384,
+        }
+    );
+}
+
+#[test]
+#[ignore = "checks all 16,384 outputs; run with --ignored in release"]
+fn nki_attention_v1_matches_attention_everywhere() {
+    assert_eq!(
+        check_attention("attn_fwd_v1", ATTENTION_SPEC, 0),
+        EquivalenceVerdict::Equivalent {
+            checked: 16384,
+            total: 16384,
+        }
+    );
+}
+
+// Kernel against kernel, with no spec between them.
+#[test]
+fn nki_attention_v1_matches_v2_on_their_first_row() {
+    assert_eq!(
+        check_attention_pair("attn_fwd_v1", "attn_fwd_v2", 128),
+        EquivalenceVerdict::Equivalent {
+            checked: 128,
+            total: 16384,
+        }
     );
 }
