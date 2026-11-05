@@ -35,9 +35,6 @@ and negation input modifiers on any source; these operate on mathematical expres
 E64 comparisons write VCC or an SGPR pair.
 Packed f32 add, multiply and FMA share component selection and negation handling;
 each register holds one real expression, and either selector reads the same inline constant.
-The analysis records one event-graph thread per wave: each global, buffer and LDS instruction
-is an async operation with one effect per lane and access, completed by `vmcnt` or `lgkmcnt`
-waits, alongside barriers and exits. The AMD frontend does not run the graph checks on it yet.
 An f64 register pair holds one real expression or two concrete words that encode one. Reading
 a half as a word, or a pair whose halves no longer match, is rejected; conversions keep the
 exact real. F64 arithmetic, comparisons and conversions share one source reader and modifiers.

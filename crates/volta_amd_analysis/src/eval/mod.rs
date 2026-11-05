@@ -7,7 +7,6 @@ mod interp;
 mod launch;
 mod lds;
 mod mfma;
-mod record;
 mod scalar;
 mod wave;
 

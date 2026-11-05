@@ -7,10 +7,9 @@ use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::ast::{Kernel, Operand};
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    AnalysisError, AnalysisResult, ArrayDef, ArrayKind, EvalError, InstrId, LdsLaneAccess, LdsRace,
+    AnalysisError, AnalysisResult, ArrayKind, EvalError, InstrId, LdsLaneAccess, LdsRace,
     LowerError, Terminal, WaveId, WorkgroupLaunch, analyze,
 };
-use volta_graph::{AccessMode, EventGraph, Space};
 
 #[test]
 fn the_copy_kernel_writes_its_expected_outputs() {
@@ -363,49 +362,6 @@ fn the_scalar_alu_ops_kernel_writes_its_expected_outputs() {
         &kernarg,
         &[array_of("out", out, 64 * 128, ArrayKind::Output(U32))],
     );
-}
-
-/// The event graph of one wave running `kernel` of the assembly `source`, with array pointers
-/// as its arguments.
-fn run_graph(source: &str, kernel: &str, arrays: &[ArrayDef]) -> EventGraph {
-    let parsed = parse_kernel(source, kernel).unwrap();
-    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
-    let launch = WorkgroupLaunch {
-        kernarg_address: 0x1000,
-        workgroup_size: (64, 1, 1),
-    };
-    analyze(&parsed, &launch, &kernarg, arrays).unwrap().graph
-}
-
-fn effect_count(graph: &EventGraph, space: Space, mode: AccessMode) -> usize {
-    graph
-        .accesses()
-        .values()
-        .filter(|a| a.space == space && a.mode == mode)
-        .count()
-}
-
-// Test that the event graph records one effect per lane of each global and LDS access. Each lane
-// of `copy` loads and stores one word, and `write_write_race` records the LDS writes of lanes 0 to
-// 31, because lane 32 then writes lane 0's word, which ends the run.
-#[test]
-fn the_event_graph_records_each_lanes_memory_effects() {
-    let arrays = [
-        array("in", 0x10000, ArrayKind::Input),
-        array("out", 0x20000, ArrayKind::Output(F32)),
-    ];
-    let graph = run_graph(include_str!("fixtures/copy.s"), "copy", &arrays);
-    assert_eq!(effect_count(&graph, Space::Global, AccessMode::Read), 64);
-    assert_eq!(effect_count(&graph, Space::Global, AccessMode::Write), 64);
-
-    let arrays = [
-        array("input", 0x10000, ArrayKind::Input),
-        array("output", 0x20000, ArrayKind::Output(F32)),
-    ];
-    let source = include_str!("fixtures/lds_race.s");
-    let graph = run_graph(source, "write_write_race", &arrays);
-    assert_eq!(effect_count(&graph, Space::Global, AccessMode::Read), 64);
-    assert_eq!(effect_count(&graph, Space::Shared, AccessMode::Write), 32);
 }
 
 // Test f64 arithmetic, modifiers, constants, conversions, comparisons, moves and overlapping

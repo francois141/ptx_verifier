@@ -182,7 +182,6 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Nop => Ok(()),
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
-                let pc = self.waves[wave].pc;
                 let registers = &mut self.waves[wave].registers;
                 // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
                 if lgkmcnt.is_some_and(|n| n != 0) && registers.has_pending_scalar_loads() {
@@ -190,14 +189,10 @@ impl Interpreter<'_> {
                 }
                 if let Some(outstanding) = vmcnt {
                     registers.finish_vector_loads(LoadCounter::Vm, usize::from(*outstanding));
-                    self.recorder
-                        .wait(wave, pc, LoadCounter::Vm, usize::from(*outstanding));
                 }
                 if let Some(outstanding) = lgkmcnt {
                     registers.finish_vector_loads(LoadCounter::Lgkm, usize::from(*outstanding));
                     registers.finish_scalar_loads();
-                    self.recorder
-                        .wait(wave, pc, LoadCounter::Lgkm, usize::from(*outstanding));
                 }
                 Ok(())
             }

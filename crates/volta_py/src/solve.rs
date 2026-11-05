@@ -25,7 +25,7 @@ pub struct SolveResultPy {
     #[pyo3(get)]
     pub outputs: Vec<(String, Vec<(u64, String)>)>,
     /// Whether every graph check passed on a completed trace; `None` when the ISA's
-    /// frontend runs no graph checks, so race freedom is not checked.
+    /// interpreter records no memory events, so race freedom is not checked.
     #[pyo3(get)]
     pub race_verified: Option<bool>,
     /// `"ACCEPT"`, `"REJECT"` or `"UNKNOWN"` against the spec; `None` without a spec.

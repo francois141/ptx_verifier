@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 
 use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, SymbolicOutputs};
-use volta_graph::{EventGraph, Space};
 
 use crate::ir::{
     BranchCondition, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr,
@@ -23,7 +22,6 @@ use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
-use super::record::{EventRecorder, memory_counter};
 use super::scalar::KernargBuffer;
 use super::wave::{LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word};
 
@@ -36,7 +34,6 @@ pub(crate) struct Interpreter<'a> {
     pub(super) global: GlobalMemory,
     pub(super) lds: Lds,
     pub(super) waves: IdVec<WaveId, WaveState>,
-    pub(super) recorder: EventRecorder,
 }
 
 /// How the execution of workgroup 0 ended.
@@ -76,14 +73,12 @@ impl<'a> Interpreter<'a> {
             .ok_or_else(|| EvalError::Launch {
                 message: "expected .amdhsa_group_segment_fixed_size of at most 64 KiB".into(),
             })?;
-        let recorder = EventRecorder::new(kernel, waves.len());
         Ok(Self {
             arena,
             kernarg,
             global,
             lds: Lds::new(lds_size),
             waves,
-            recorder,
         })
     }
 
@@ -121,7 +116,6 @@ impl<'a> Interpreter<'a> {
                 state.status = Status::Ready;
             }
         }
-        self.recorder.barrier_release();
         true
     }
 
@@ -140,19 +134,12 @@ impl<'a> Interpreter<'a> {
             .get(pc)
             .ok_or(EvalError::MissingEndPgm)?;
         let mut next = InstrId(pc.0 + 1);
-        if let Some(counter) = memory_counter(instruction) {
-            self.recorder.memory_issue(wave, pc, counter);
-        }
         match instruction {
             LoweredInstr::EndPgm => {
-                self.recorder.exit(wave, pc);
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
             }
-            LoweredInstr::Barrier => {
-                self.recorder.barrier_arrival(wave, pc);
-                self.waves[wave].status = Status::AtBarrier;
-            }
+            LoweredInstr::Barrier => self.waves[wave].status = Status::AtBarrier,
             LoweredInstr::Branch { target } => next = *target,
             LoweredInstr::CondBranch { condition, target } => {
                 if self.branch_taken(wave, *condition)? {
@@ -430,23 +417,15 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, dst[1], high)
             }
             LoweredInstr::GlobalLoad { dst, address } => {
-                let start = registers.global_address(&self.arena, lane, *address)?;
-                let width = 4 * dst.regs().len() as u32;
-                self.recorder.memory_read(wave, Space::Global, start, width);
                 registers.global_load(&mut self.arena, &self.global, lane, dst.regs(), *address)
             }
-            LoweredInstr::GlobalStore { src, address } => {
-                let start = registers.global_address(&self.arena, lane, *address)?;
-                let regs = src.regs();
-                let values = regs
-                    .iter()
-                    .map(|&reg| registers.read_lane_reg(lane, reg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                registers.global_store(&mut self.arena, &mut self.global, lane, &regs, *address)?;
-                self.recorder
-                    .memory_write(wave, Space::Global, start, &values);
-                Ok(())
-            }
+            LoweredInstr::GlobalStore { src, address } => registers.global_store(
+                &mut self.arena,
+                &mut self.global,
+                lane,
+                &src.regs(),
+                *address,
+            ),
             LoweredInstr::BufferLoad { dst, address } => {
                 self.buffer_load(wave, lane, *address, dst.regs())
             }
@@ -533,8 +512,6 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 self.lds.write(start_address, &values)?;
-                self.recorder
-                    .memory_write(wave, Space::Shared, start_address, &values);
             }
         }
         Ok(())
@@ -556,8 +533,6 @@ impl<'a> Interpreter<'a> {
             let destination_regs = destination.regs();
             let word_count = destination_regs.len() as u32;
             let loaded_values = self.lds.read(start_address, word_count)?;
-            self.recorder
-                .memory_read(wave, Space::Shared, start_address, 4 * word_count);
 
             destinations.extend_from_slice(destination_regs);
             values.extend(loaded_values);
@@ -571,15 +546,8 @@ impl<'a> Interpreter<'a> {
         )
     }
 
-    /// The recorded event graph, ending in `terminal`, and the written output elements of a
-    /// completed run, together with the arena that holds their expressions.
-    pub(crate) fn into_results(
-        self,
-        completed: bool,
-        terminal: volta_graph::Terminal,
-    ) -> (EventGraph, Option<SymbolicOutputs>) {
-        let graph = self.recorder.finish(terminal);
-        let outputs = completed.then(|| self.global.into_outputs(self.arena));
-        (graph, outputs)
+    /// The written output elements, together with the arena that holds their expressions.
+    pub(crate) fn into_outputs(self) -> SymbolicOutputs {
+        self.global.into_outputs(self.arena)
     }
 }
