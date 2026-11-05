@@ -14,7 +14,8 @@ use crate::ir::{
 use super::EvalError;
 use super::arithm::{
     evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp64, evaluate_cndmask,
-    evaluate_cndmask_e64, evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
+    evaluate_cndmask_e64, evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op,
+    evaluate_vop3_bin_op,
 };
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
@@ -212,7 +213,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
-            | LoweredInstr::PackedAddF32 { .. }
+            | LoweredInstr::PackedF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
@@ -407,14 +408,8 @@ impl<'a> Interpreter<'a> {
                 let result = self.arena.fma(a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::PackedAddF32 { dst, src0, src1 } => {
-                // Read both components before writing a destination that may also be a source.
-                let a = registers.read_f32_src(&mut self.arena, lane, src0[0])?;
-                let b = registers.read_f32_src(&mut self.arena, lane, src1[0])?;
-                let low = self.arena.add(a, b);
-                let a = registers.read_f32_src(&mut self.arena, lane, src0[1])?;
-                let b = registers.read_f32_src(&mut self.arena, lane, src1[1])?;
-                let high = self.arena.add(a, b);
+            LoweredInstr::PackedF32 { dst, op } => {
+                let [low, high] = evaluate_packed_f32(&mut self.arena, registers, lane, *op)?;
                 registers.write_vgpr(lane, dst[0], low)?;
                 registers.write_vgpr(lane, dst[1], high)
             }

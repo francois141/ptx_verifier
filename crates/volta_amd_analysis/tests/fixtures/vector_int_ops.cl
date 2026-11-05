@@ -90,4 +90,35 @@ __kernel void vector_int_ops(__global unsigned *out, unsigned factor, unsigned m
     unsigned bit_count;
     __asm__ volatile("v_bcnt_u32_b32 %0, %1, 7" : "=v"(bit_count) : "v"(value));
     row[34] = bit_count;
+
+    // Each packed move chooses one word from each source, writing the first source low.
+    uint2 x = (uint2)(i, value), y = (uint2)(i + 0x20000, i + 0x30000), pair;
+    __asm__ volatile("v_pk_mov_b32 %0, %1, %2" : "=v"(pair) : "v"(x), "v"(y));
+    row[35] = pair.s0;
+    row[36] = pair.s1;
+    __asm__ volatile("v_pk_mov_b32 %0, %1, %2 op_sel:[0,1]"
+                     : "=v"(pair) : "v"(x), "v"(y));
+    row[37] = pair.s0;
+    row[38] = pair.s1;
+    __asm__ volatile("v_pk_mov_b32 %0, %1, %2 op_sel:[1,1]"
+                     : "=v"(pair) : "v"(x), "v"(y));
+    row[39] = pair.s0;
+    row[40] = pair.s1;
+
+    // Swapping in place must read both original words before either destination changes.
+    pair = x;
+    __asm__ volatile("v_pk_mov_b32 %0, %0, %0 op_sel:[1,0]" : "+v"(pair));
+    row[41] = pair.s0;
+    row[42] = pair.s1;
+
+    // Reusing one SGPR pair can select its two distinct words in the same instruction.
+    __asm__ volatile("v_pk_mov_b32 %0, %1, %1 op_sel:[0,1]"
+                     : "=v"(pair) : "s"(scalar_pair));
+    row[43] = pair.s0;
+    row[44] = pair.s1;
+
+    // Inline constants supply the low word of each source.
+    __asm__ volatile("v_pk_mov_b32 %0, -2, 64" : "=v"(pair));
+    row[45] = pair.s0;
+    row[46] = pair.s1;
 }

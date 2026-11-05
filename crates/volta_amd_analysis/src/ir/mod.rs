@@ -84,6 +84,15 @@ impl ModifiedSrc {
     }
 }
 
+/// Packed f32 arithmetic with two selected components per source. The operand count
+/// follows the operation; every component remains a separate mathematical expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackedF32Op {
+    Add([[ModifiedSrc; 2]; 2]),
+    Mul([[ModifiedSrc; 2]; 2]),
+    Fma([[ModifiedSrc; 2]; 3]),
+}
+
 /// The first source of a VOP2 instruction: a VGPR, an SGPR, or a constant (inline
 /// or literal) whose 32 bits are the operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -743,7 +752,7 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src: Src0,
     },
-    /// Copy a 64-bit source's words, low first, into a VGPR pair in each lane.
+    /// Copy two selected source words into a VGPR pair in each lane.
     Mov64 {
         dst: [Vgpr; 2],
         src: [Src0; 2],
@@ -817,11 +826,10 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
-    /// Add two f32 components; lowering resolves each source's word selectors.
-    PackedAddF32 {
+    /// Compute two f32 results; lowering resolves source-word selectors and negation.
+    PackedF32 {
         dst: [Vgpr; 2],
-        src0: [Vop3Src; 2],
-        src1: [Vop3Src; 2],
+        op: PackedF32Op,
     },
     /// The wave's `D = A * B + C` over f32, for a 16 x 4 `A`, a 4 x 16 `B` and 16 x 16 `C` and
     /// `D`: lane `l` holds `A[l % 16][l / 16]` and `B[l / 16][l % 16]`, and its `r`th

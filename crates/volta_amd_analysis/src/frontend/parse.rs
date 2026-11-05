@@ -56,17 +56,23 @@ fn operand(text: &str) -> Option<Operand> {
             .and_then(|table| u8::try_from(table).ok())
             .map(Operand::BitOp3);
     }
-    if let Some(selectors) = text
-        .strip_prefix("op_sel_hi:[")
-        .and_then(|s| s.strip_suffix(']'))
-    {
-        let (a, b) = selectors.split_once(',')?;
-        let bit = |s: &str| match s {
-            "0" => Some(false),
-            "1" => Some(true),
-            _ => None,
-        };
-        return Some(Operand::OpSelHi([bit(a)?, bit(b)?]));
+    for (prefix, make_operand) in [
+        ("op_sel:[", Operand::OpSel as fn(Vec<bool>) -> Operand),
+        ("op_sel_hi:[", Operand::OpSelHi),
+        ("neg_lo:[", Operand::NegLo),
+        ("neg_hi:[", Operand::NegHi),
+    ] {
+        if let Some(bits) = text.strip_prefix(prefix).and_then(|s| s.strip_suffix(']')) {
+            let bits = bits
+                .split(',')
+                .map(|s| match s {
+                    "0" => Some(false),
+                    "1" => Some(true),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return (2..=3).contains(&bits.len()).then(|| make_operand(bits));
+        }
     }
     if let Some(source @ (Operand::Reg { .. } | Operand::Abs(_))) =
         text.strip_prefix('-').and_then(operand)
@@ -321,7 +327,23 @@ mod tests {
         );
         assert_eq!(
             operand("op_sel_hi:[1,0]"),
-            Some(Operand::OpSelHi([true, false]))
+            Some(Operand::OpSelHi(vec![true, false]))
+        );
+        assert_eq!(
+            operand("op_sel:[1,0,0]"),
+            Some(Operand::OpSel(vec![true, false, false]))
+        );
+        assert_eq!(
+            operand("op_sel_hi:[1,0,1]"),
+            Some(Operand::OpSelHi(vec![true, false, true]))
+        );
+        assert_eq!(
+            operand("neg_lo:[0,1]"),
+            Some(Operand::NegLo(vec![false, true]))
+        );
+        assert_eq!(
+            operand("neg_hi:[0,0,1]"),
+            Some(Operand::NegHi(vec![false, false, true]))
         );
         for bad in [
             "-vcc",
@@ -335,7 +357,10 @@ mod tests {
             "--v7",
             "|-v7|",
             "op_sel_hi:[1]",
-            "op_sel_hi:[1,0,1]",
+            "op_sel_hi:[1,0,1,0]",
+            "op_sel:[]",
+            "neg_lo:[1,]",
+            "neg_hi:[0,2]",
             "op_sel_hi:[2,0]",
             "s[3:0]",
             "s[0]",

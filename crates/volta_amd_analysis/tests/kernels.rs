@@ -101,6 +101,21 @@ fn the_transpose_kernel_writes_its_expected_outputs() {
 /// Each work-item writes one result per operation to its own row of 32 floats.
 const FLOAT_OPS_ROW: u64 = 32;
 
+// Test packed add, multiply and FMA with selectors, negation and overlapping sources.
+// The expected expressions are derived from the source operations for both components.
+#[test]
+fn the_packed_float_ops_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "packed_float_ops",
+        &[
+            array_of("a", 0x10000, 128, ArrayKind::Input),
+            array_of("b", 0x20000, 128, ArrayKind::Input),
+            array_of("c", 0x30000, 128, ArrayKind::Input),
+            array_of("out", 0x40000, 64 * 32, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test float arithmetic, source modifiers and selects against their expected expressions.
 #[test]
 fn the_float_ops_kernel_writes_its_expected_outputs() {
@@ -294,7 +309,7 @@ fn scalar_ops_handles_boundary_arguments() {
     }
 }
 
-// Test integer multiplication, masked bit counts, 64-bit moves and all six signed comparisons.
+// Test integer multiplication, bit counts, 64-bit and packed moves, and signed comparisons.
 // Check all 64 lanes against the expected outputs in vector_int_ops.out.
 #[test]
 fn the_vector_int_ops_kernel_writes_its_expected_outputs() {

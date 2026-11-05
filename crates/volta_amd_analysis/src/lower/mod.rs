@@ -10,7 +10,8 @@ use crate::ir::{
     self, Agpr, BranchCondition, BufferAddress, BufferImmOffset, BufferLoadDst, BufferStoreSrc,
     DsReadDst, DsWriteData, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask,
     LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ModifiedSrc,
-    ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr, Vop3Src,
+    PackedF32Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr,
+    Vop3Src,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -400,7 +401,10 @@ fn lower_instruction(
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
-        ("v_pk_add_f32", operands) => lower_packed_add(operands),
+        ("v_pk_add_f32", operands) => lower_packed_f32(operands, PackedF32Op::Add),
+        ("v_pk_mul_f32", operands) => lower_packed_f32(operands, PackedF32Op::Mul),
+        ("v_pk_fma_f32", operands) => lower_packed_f32(operands, PackedF32Op::Fma),
+        ("v_pk_mov_b32", operands) => lower_packed_move(operands),
         // A nonzero cbsz, abid or blgp modifier is an unsupported operand of the frontend.
         ("v_mfma_f32_16x16x4_f32", [dst, src_a, src_b, src_c]) => {
             let dst =
@@ -722,26 +726,138 @@ fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'
     })
 }
 
-/// Packed f32 sources occupy two aligned dwords (CDNA4 §6.7). The low result uses
-/// each source's first word; op_sel_hi selects the word for the high result.
-fn lower_packed_add(operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
-    let [dst, src0, src1, Operand::OpSelHi(high)] = operands else {
-        return Err("expected a destination pair, two sources and explicit op_sel_hi");
+/// Resolve packed f32 sources into the words and negations used by each result.
+fn lower_packed_f32<const N: usize>(
+    operands: &[Operand],
+    operation: fn([[ModifiedSrc; 2]; N]) -> PackedF32Op,
+) -> Result<LoweredInstr, &'static str> {
+    let Some((dst, operands)) = operands.split_first() else {
+        return Err("expected a destination pair and packed f32 sources");
     };
-    let source = |operand: &Operand, high: bool| {
-        if let Some(regs) = vgprs::<2>(operand) {
-            return Ok([regs[0], regs[usize::from(high)]].map(Vop3Src::Vgpr));
+    if operands.len() < N {
+        return Err("expected one operand per packed f32 source");
+    }
+    let (sources, modifiers) = operands.split_at(N);
+    let mut low = None;
+    let mut high = None;
+    let mut negate_low = None;
+    let mut negate_high = None;
+    for modifier in modifiers {
+        let (slot, bits) = match modifier {
+            Operand::OpSel(bits) => (&mut low, bits),
+            Operand::OpSelHi(bits) => (&mut high, bits),
+            Operand::NegLo(bits) => (&mut negate_low, bits),
+            Operand::NegHi(bits) => (&mut negate_high, bits),
+            _ => return Err("expected packed source selectors or negation modifiers"),
+        };
+        let bits: [bool; N] = bits
+            .as_slice()
+            .try_into()
+            .map_err(|_| "expected one modifier bit per source")?;
+        if slot.replace(bits).is_some() {
+            return Err("duplicate packed source modifier");
         }
-        match vop3_src(operand) {
-            Some(src @ Vop3Src::Inline(_)) if !high => Ok([src; 2]),
-            _ => Err("expected an even-aligned VGPR pair or a low-word inline constant"),
-        }
-    };
-    Ok(LoweredInstr::PackedAddF32 {
+    }
+    let low = low.unwrap_or([false; N]);
+    let high = high.unwrap_or([true; N]);
+    let negate_low = negate_low.unwrap_or([false; N]);
+    let negate_high = negate_high.unwrap_or([false; N]);
+    // gfx950 cannot select [0,1] for binary low results, or src1/src2 high words for FMA.
+    // LLVM's validateOpSel enforces these restrictions independently of source register class.
+    if (N == 2 && !low[0] && low[1]) || (N == 3 && (low[1] || low[2])) {
+        return Err("unsupported packed f32 low-word selectors on gfx950");
+    }
+
+    validate_packed_scalar_sources(sources)?;
+    let sources = sources
+        .iter()
+        .enumerate()
+        .map(|(i, source)| {
+            packed_f32_source(source, [low[i], high[i]], [negate_low[i], negate_high[i]])
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| "expected one operand per packed f32 source")?;
+    Ok(LoweredInstr::PackedF32 {
         dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
-        src0: source(src0, high[0])?,
-        src1: source(src1, high[1])?,
+        op: operation(sources),
     })
+}
+
+/// Select the f32 words and negations used by the two packed results.
+fn packed_f32_source(
+    operand: &Operand,
+    high: [bool; 2],
+    negate: [bool; 2],
+) -> Result<[ModifiedSrc; 2], &'static str> {
+    let words = packed_source_words(operand)?;
+    Ok(std::array::from_fn(|i| ModifiedSrc {
+        src: words[usize::from(high[i])],
+        abs: false,
+        neg: negate[i],
+    }))
+}
+
+/// A packed move selects one word from each source and preserves both values unchanged.
+fn lower_packed_move(operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, _, _, modifiers @ ..] = operands else {
+        return Err("expected a destination pair and two packed move sources");
+    };
+    let selectors = match modifiers {
+        [] => [false; 2],
+        [Operand::OpSel(bits)] => bits
+            .as_slice()
+            .try_into()
+            .map_err(|_| "expected one selector bit per packed move source")?,
+        _ => return Err("expected only packed move source selectors"),
+    };
+    let sources = &operands[1..3];
+    validate_packed_scalar_sources(sources)?;
+    let select = |index: usize| -> Result<Src0, &'static str> {
+        let words = packed_source_words(&sources[index])?;
+        Ok(match words[usize::from(selectors[index])] {
+            Vop3Src::Vgpr(reg) => Src0::Vgpr(reg),
+            Vop3Src::Sgpr(reg) => Src0::Sgpr(reg),
+            // This instruction's sources are 64-bit, and an inline constant's high word is unknown.
+            Vop3Src::Inline(_) if selectors[index] => {
+                return Err("expected the low-word selector for an inline constant");
+            }
+            Vop3Src::Inline(bits) => Src0::Const(bits),
+        })
+    };
+    Ok(LoweredInstr::Mov64 {
+        dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+        src: [select(0)?, select(1)?],
+    })
+}
+
+/// Packed instructions may reuse one scalar pair, but cannot read distinct scalar pairs.
+fn validate_packed_scalar_sources(sources: &[Operand]) -> Result<(), &'static str> {
+    let mut scalar_pair = None;
+    for source in sources {
+        if let Some(pair) = sgprs::<2>(source) {
+            if scalar_pair.is_some_and(|previous| previous != pair) {
+                return Err("expected at most one distinct SGPR source pair");
+            }
+            scalar_pair = Some(pair);
+        }
+    }
+    Ok(())
+}
+
+/// Packed sources are aligned register pairs, or an inline constant that fills both words.
+/// Packed f32 operations read it through either selector, as in LLVM's gfx950 packed-to-scalar
+/// conversion; a packed move restricts it further.
+fn packed_source_words(operand: &Operand) -> Result<[Vop3Src; 2], &'static str> {
+    if let Some(pair) = vgprs::<2>(operand) {
+        Ok(pair.map(Vop3Src::Vgpr))
+    } else if let Some(pair) = sgprs::<2>(operand) {
+        Ok(pair.map(Vop3Src::Sgpr))
+    } else if let Some(src @ Vop3Src::Inline(_)) = vop3_src(operand) {
+        Ok([src; 2])
+    } else {
+        Err("expected an aligned VGPR or SGPR pair, or an inline constant")
+    }
 }
 
 fn lower_scalar_op32(

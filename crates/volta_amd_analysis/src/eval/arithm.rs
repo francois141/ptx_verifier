@@ -4,8 +4,8 @@
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 use crate::ir::{
-    BinOp, CmpOp, CmpPredicate, LaneMask, ModifiedSrc, Signedness, Src0, TernaryOp, UnaryOp, Vgpr,
-    Vop3BinOp, Vop3Src,
+    BinOp, CmpOp, CmpPredicate, LaneMask, ModifiedSrc, PackedF32Op, Signedness, Src0, TernaryOp,
+    UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
 };
 
 use super::EvalError;
@@ -128,6 +128,38 @@ pub(super) fn evaluate_bin_op(
         BinOp::MinF32 => arena.min(a, b),
         BinOp::MaxF32 => arena.max(a, b),
     })
+}
+
+/// Compute both packed f32 results before the caller overwrites any source registers.
+pub(super) fn evaluate_packed_f32(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: PackedF32Op,
+) -> Result<[ExprId; 2], EvalError> {
+    let mut component = |index| -> Result<ExprId, EvalError> {
+        let mut read =
+            |srcs: [ModifiedSrc; 2]| registers.read_modified_src(arena, lane, srcs[index]);
+        match op {
+            PackedF32Op::Add([src0, src1]) => {
+                let a = read(src0)?;
+                let b = read(src1)?;
+                Ok(arena.add(a, b))
+            }
+            PackedF32Op::Mul([src0, src1]) => {
+                let a = read(src0)?;
+                let b = read(src1)?;
+                Ok(arena.mul(a, b))
+            }
+            PackedF32Op::Fma([src0, src1, src2]) => {
+                let a = read(src0)?;
+                let b = read(src1)?;
+                let c = read(src2)?;
+                Ok(arena.fma(a, b, c))
+            }
+        }
+    };
+    Ok([component(0)?, component(1)?])
 }
 
 /// `VCC ? src1 : src0` in `lane`. A word selected against a real is the f32 its bits encode,

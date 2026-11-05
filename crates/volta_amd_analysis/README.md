@@ -33,6 +33,11 @@ Negated select sources use floating-point semantics, so they are not ambiguous.
 F32 e64 comparisons, e64 selects, f32 FMA and three-source f32 operations accept absolute-value
 and negation input modifiers on any source; these operate on mathematical expressions.
 E64 comparisons write VCC or an SGPR pair.
+Packed f32 add, multiply and FMA share component selection and negation handling;
+each register holds one real expression, and either selector reads the same inline constant.
+Packed moves select one word from each source and reuse the 64-bit move execution,
+preserving concrete words and symbolic expressions unchanged. An inline constant must use the
+low-word selector, because the high word of its 64-bit source is not established.
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks.
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
@@ -48,6 +53,9 @@ Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/a
 also follow LLVM 21.1.8's
 [operand validation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/AsmParser/AMDGPUAsmParser.cpp)
 and [counter widths](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp).
+Packed f32 low-word selectors also follow LLVM's later
+[gfx950 validation fix](https://github.com/llvm/llvm-project/commit/cac3cc2836765f5b039bcb213cda99db2818c11e).
+Inline constants follow its [packed-to-scalar regression](https://github.com/llvm/llvm-project/blob/1b2bf711eb920b78c24e31a6c958751d0bdd0007/llvm/test/CodeGen/AMDGPU/unpack-non-coissue-insts-post-ra-scheduler.mir).
 
 The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
 unbalanced and extra-quoted arguments are rejected.
@@ -57,9 +65,11 @@ unbalanced and extra-quoted arguments are rejected.
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
 fixtures, then compare their symbolic outputs with the corresponding `.out` files.
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
-The `vector_int_ops` fixture checks multiplication, bit counts and 64-bit moves, with signed
-64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
+The `vector_int_ops` fixture checks multiplication, bit counts, 64-bit and packed moves,
+and signed 64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
 in both encodings, and `scalar_alu_ops` the scalar ALU, comparison and branch families.
+The `packed_float_ops` fixture checks paired arithmetic, selectors, negation and destination
+overlap against independently derived expressions.
 Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:

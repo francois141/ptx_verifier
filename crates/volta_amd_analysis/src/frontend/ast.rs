@@ -65,8 +65,12 @@ pub enum Operand {
     Offset1(u64),
     /// The truth table of `v_bitop3_b32`.
     BitOp3(u8),
-    /// Source-word selectors for the high result of a packed instruction.
-    OpSelHi([bool; 2]),
+    /// Source-word selectors for packed instructions.
+    OpSel(Vec<bool>),
+    OpSelHi(Vec<bool>),
+    /// Negate selected sources for the low or high result of a packed instruction.
+    NegLo(Vec<bool>),
+    NegHi(Vec<bool>),
     /// `vmcnt(n)` or `lgkmcnt(n)`.
     Wait {
         counter: Counter,
