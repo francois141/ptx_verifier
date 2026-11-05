@@ -124,6 +124,7 @@ fn the_compare_ops_kernel_writes_its_expected_outputs() {
             array("a", 0x10000, ArrayKind::Input),
             array("b", 0x20000, ArrayKind::Input),
             array_of("out", 0x30000, 64 * 12, ArrayKind::Output(F32)),
+            array_of("out_e32", 0x40000, 64 * 12, ArrayKind::Output(F32)),
         ],
     );
 }
@@ -293,7 +294,7 @@ fn scalar_ops_handles_boundary_arguments() {
     }
 }
 
-// Test integer multiplication, masked bit counts, 64-bit moves and signed comparisons.
+// Test integer multiplication, masked bit counts, 64-bit moves and all six signed comparisons.
 // Check all 64 lanes against the expected outputs in vector_int_ops.out.
 #[test]
 fn the_vector_int_ops_kernel_writes_its_expected_outputs() {
@@ -312,7 +313,39 @@ fn the_vector_int_ops_kernel_writes_its_expected_outputs() {
         "vector_int_ops",
         64,
         &kernarg,
-        &[array_of("out", out, 64 * 32, ArrayKind::Output(U32))],
+        &[array_of("out", out, 64 * 64, ArrayKind::Output(U32))],
+    );
+}
+
+// Test every 64-bit integer comparison in its e32 and e64 encodings across lanes whose values
+// are below, equal to and above zero, and 64-bit moves from a VGPR pair.
+#[test]
+fn the_compare64_ops_kernel_writes_its_expected_outputs() {
+    common::check_run(
+        "compare64_ops",
+        &[array_of("out", 0x10000, 64 * 32, ArrayKind::Output(U32))],
+    );
+}
+
+// Test the scalar ALU results and the SCC each one leaves, every scalar comparison in both
+// operand orders, bit comparisons, branches on VCC and EXEC, and 64-bit literal sources.
+#[test]
+fn the_scalar_alu_ops_kernel_writes_its_expected_outputs() {
+    let out = 0x10000_u64;
+    let mut kernarg = out.to_le_bytes().to_vec();
+    // Two operands whose signed and unsigned orders differ, then two shift counts and bit indices.
+    for value in [0xf0f0_f00f_u32, 0x1234_5678, 36, 32] {
+        kernarg.extend(value.to_le_bytes());
+    }
+    for value in [0xf0f0_f0f0_0000_ffff_u64, 0x0ff0_0ff0_1234_5678] {
+        kernarg.extend(value.to_le_bytes());
+    }
+    common::check_run_kernel(
+        "scalar_alu_ops",
+        "scalar_alu_ops",
+        64,
+        &kernarg,
+        &[array_of("out", out, 64 * 128, ArrayKind::Output(U32))],
     );
 }
 

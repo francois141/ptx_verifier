@@ -7,13 +7,13 @@ use id_collections::IdVec;
 use volta_expr::{ExprArena, SymbolicOutputs};
 
 use crate::ir::{
-    BranchCondition, CmpOp, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr,
-    LoweredKernel, ModifiedSrc, Sgpr, Vgpr, Vop3Src,
+    BranchCondition, CmpOp, CmpPredicate, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses,
+    LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Signedness, Src0, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
 use super::arithm::{
-    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp_lt_i64, evaluate_cndmask,
+    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp64, evaluate_cndmask,
     evaluate_cndmask_e64, evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
 };
 use super::global::{ArrayDef, GlobalMemory};
@@ -150,9 +150,10 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AbsScalar32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
-            | LoweredInstr::LShlScalar64 { .. }
+            | LoweredInstr::ShiftScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
-            | LoweredInstr::CmpEqScalar64 { .. }
+            | LoweredInstr::ScalarCmp64 { .. }
+            | LoweredInstr::BitCmpScalar64 { .. }
             | LoweredInstr::ReadFirstLane { .. }
             | LoweredInstr::WaitCnt { .. }
             | LoweredInstr::Nop => {
@@ -164,6 +165,13 @@ impl<'a> Interpreter<'a> {
                 src0,
                 src1,
             } => self.execute_cmp_e64(wave, *op, *dst, *src0, *src1)?,
+            LoweredInstr::Cmp64 {
+                op,
+                signedness,
+                dst,
+                src0,
+                src1,
+            } => self.execute_cmp64(wave, *op, *signedness, *dst, *src0, *src1)?,
             LoweredInstr::MadU64U32 {
                 dst,
                 carry,
@@ -198,7 +206,6 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::Mov64 { .. }
             | LoweredInstr::Cmp { .. }
-            | LoweredInstr::CmpLtI64 { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
@@ -227,7 +234,9 @@ impl<'a> Interpreter<'a> {
             BranchCondition::Scc0 => Ok(!registers.read_scc()?),
             BranchCondition::Scc1 => registers.read_scc(),
             BranchCondition::VccNz => Ok(registers.read_vcc_mask(&self.arena)? != 0),
+            BranchCondition::VccZ => Ok(registers.read_vcc_mask(&self.arena)? == 0),
             BranchCondition::ExecZ => Ok(false),
+            BranchCondition::ExecNz => Ok(true),
         }
     }
 
@@ -244,6 +253,25 @@ impl<'a> Interpreter<'a> {
         // Read every lane before writing the mask, which may overlap a scalar source.
         let conditions = (0..64)
             .map(|lane| evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1))
+            .collect::<Result<Vec<_>, _>>()?;
+        registers.write_lane_mask(&mut self.arena, dst, &conditions)
+    }
+
+    /// Every lane's comparison is evaluated before `dst` is written, as a source may be `dst`.
+    fn execute_cmp64(
+        &mut self,
+        wave: WaveId,
+        op: CmpPredicate,
+        signedness: Signedness,
+        dst: LaneMask,
+        src0: [Src0; 2],
+        src1: [Src0; 2],
+    ) -> Result<(), EvalError> {
+        let registers = &mut self.waves[wave].registers;
+        let conditions = (0..64)
+            .map(|lane| {
+                evaluate_cmp64(&mut self.arena, registers, lane, op, signedness, src0, src1)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         registers.write_lane_mask(&mut self.arena, dst, &conditions)
     }
@@ -338,11 +366,6 @@ impl<'a> Interpreter<'a> {
                 let condition = evaluate_cmp(&mut self.arena, registers, lane, *op, *src0, *src1)?;
                 registers.write_vcc(lane, condition)
             }
-            LoweredInstr::CmpLtI64 { src0, src1 } => {
-                let condition =
-                    evaluate_cmp_lt_i64(&mut self.arena, registers, lane, *src0, *src1)?;
-                registers.write_vcc(lane, condition)
-            }
             LoweredInstr::CndMask32 { dst, src0, src1 } => {
                 let result = evaluate_cndmask(&mut self.arena, registers, lane, *src0, *src1)?;
                 registers.write_vgpr(lane, *dst, result)
@@ -352,17 +375,9 @@ impl<'a> Interpreter<'a> {
                 src0,
                 src1,
                 mask,
-                negate,
             } => {
-                let result = evaluate_cndmask_e64(
-                    &mut self.arena,
-                    registers,
-                    lane,
-                    *src0,
-                    *src1,
-                    *mask,
-                    *negate,
-                )?;
+                let result =
+                    evaluate_cndmask_e64(&mut self.arena, registers, lane, *src0, *src1, *mask)?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::AccvgprWrite32 { dst, src } => {

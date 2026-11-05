@@ -102,35 +102,57 @@ fn lower_instruction(
         ("s_addc_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddcU32, operands),
         ("s_add_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AddI32, operands),
         ("s_sub_i32", operands) => lower_scalar_op32(ir::ScalarOp32::SubI32, operands),
+        ("s_sub_u32", operands) => lower_scalar_op32(ir::ScalarOp32::SubU32, operands),
+        ("s_subb_u32", operands) => lower_scalar_op32(ir::ScalarOp32::SubbU32, operands),
         ("s_mul_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MulI32, operands),
         ("s_mul_hi_u32", operands) => lower_scalar_op32(ir::ScalarOp32::MulHiU32, operands),
         ("s_mul_hi_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MulHiI32, operands),
+        ("s_min_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MinI32, operands),
+        ("s_min_u32", operands) => lower_scalar_op32(ir::ScalarOp32::MinU32, operands),
         ("s_max_i32", operands) => lower_scalar_op32(ir::ScalarOp32::MaxI32, operands),
+        ("s_max_u32", operands) => lower_scalar_op32(ir::ScalarOp32::MaxU32, operands),
         ("s_and_b32", operands) => lower_scalar_op32(ir::ScalarOp32::AndB32, operands),
+        ("s_or_b32", operands) => lower_scalar_op32(ir::ScalarOp32::OrB32, operands),
         ("s_xor_b32", operands) => lower_scalar_op32(ir::ScalarOp32::XorB32, operands),
+        ("s_andn2_b32", operands) => lower_scalar_op32(ir::ScalarOp32::AndN2B32, operands),
+        ("s_orn2_b32", operands) => lower_scalar_op32(ir::ScalarOp32::OrN2B32, operands),
+        ("s_nand_b32", operands) => lower_scalar_op32(ir::ScalarOp32::NandB32, operands),
+        ("s_nor_b32", operands) => lower_scalar_op32(ir::ScalarOp32::NorB32, operands),
+        ("s_xnor_b32", operands) => lower_scalar_op32(ir::ScalarOp32::XnorB32, operands),
         ("s_lshl_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlB32, operands),
         ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
         ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
         ("s_and_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndB64, operands),
         ("s_or_b64", operands) => lower_scalar_op64(ir::ScalarOp64::OrB64, operands),
+        ("s_xor_b64", operands) => lower_scalar_op64(ir::ScalarOp64::XorB64, operands),
         ("s_andn2_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndN2B64, operands),
+        ("s_orn2_b64", operands) => lower_scalar_op64(ir::ScalarOp64::OrN2B64, operands),
+        ("s_nand_b64", operands) => lower_scalar_op64(ir::ScalarOp64::NandB64, operands),
+        ("s_nor_b64", operands) => lower_scalar_op64(ir::ScalarOp64::NorB64, operands),
+        ("s_xnor_b64", operands) => lower_scalar_op64(ir::ScalarOp64::XnorB64, operands),
         ("s_cselect_b64", operands) => lower_scalar_op64(ir::ScalarOp64::CSelectB64, operands),
-        ("s_lshl_b64", [dst, src, shift]) => Ok(LShlScalar64 {
-            dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
-            src: scalar_source64(src)?,
-            shift: scalar_source(shift).ok_or("expected an SGPR or a 32-bit constant count")?,
-        }),
+        ("s_lshl_b64", operands) => lower_scalar_shift64(ir::ScalarShift64::LShlB64, operands),
+        ("s_lshr_b64", operands) => lower_scalar_shift64(ir::ScalarShift64::LShrB64, operands),
+        ("s_ashr_i64", operands) => lower_scalar_shift64(ir::ScalarShift64::AShrI64, operands),
+        ("s_cmp_lt_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtI32, operands),
+        ("s_cmp_eq_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::EqI32, operands),
+        ("s_cmp_le_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LeI32, operands),
         ("s_cmp_gt_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtI32, operands),
+        ("s_cmp_lg_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LgI32, operands),
         ("s_cmp_ge_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeI32, operands),
         ("s_cmp_lt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtU32, operands),
-        ("s_cmp_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
+        ("s_cmp_eq_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::EqU32, operands),
+        ("s_cmp_le_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LeU32, operands),
+        ("s_cmp_gt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtU32, operands),
         ("s_cmp_lg_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LgU32, operands),
-        ("s_cmp_eq_u64", [src0, src1]) => Ok(CmpEqScalar64 {
-            src0: scalar_source64(src0)?,
-            src1: scalar_source64(src1)?,
-        }),
+        ("s_cmp_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
+        ("s_cmp_eq_u64", operands) => lower_scalar_cmp64(ir::ScalarCmp64Op::EqU64, operands),
+        ("s_cmp_lg_u64", operands) => lower_scalar_cmp64(ir::ScalarCmp64Op::LgU64, operands),
+        ("s_bitcmp0_b32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::BitCmp0B32, operands),
         ("s_bitcmp1_b32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::BitCmp1B32, operands),
+        ("s_bitcmp0_b64", operands) => lower_bitcmp64(false, operands),
+        ("s_bitcmp1_b64", operands) => lower_bitcmp64(true, operands),
         ("s_branch", [target]) => Ok(Branch {
             target: branch_target(target, labels)?,
         }),
@@ -146,8 +168,16 @@ fn lower_instruction(
             condition: BranchCondition::VccNz,
             target: branch_target(target, labels)?,
         }),
+        ("s_cbranch_vccz", [target]) => Ok(CondBranch {
+            condition: BranchCondition::VccZ,
+            target: branch_target(target, labels)?,
+        }),
         ("s_cbranch_execz", [target]) => Ok(CondBranch {
             condition: BranchCondition::ExecZ,
+            target: branch_target(target, labels)?,
+        }),
+        ("s_cbranch_execnz", [target]) => Ok(CondBranch {
+            condition: BranchCondition::ExecNz,
             target: branch_target(target, labels)?,
         }),
         ("s_barrier", []) => Ok(Barrier),
@@ -252,6 +282,9 @@ fn lower_instruction(
             lower_ternary_op(ir::TernaryOp::BitOp3(*table), operands)
         }
         ("v_mul_lo_u32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MulLoU32, operands),
+        ("v_mul_hi_u32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MulHiU32, operands),
+        ("v_mul_hi_i32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MulHiI32, operands),
+        ("v_bcnt_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::BcntU32, operands),
         ("v_mbcnt_lo_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MbcntLoU32, operands),
         ("v_mbcnt_hi_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MbcntHiU32, operands),
         ("v_mov_b32_e32", operands) => lower_unary_op(ir::UnaryOp::Mov32, operands),
@@ -272,6 +305,15 @@ fn lower_instruction(
         ("v_cmp_le_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
         ("v_cmp_eq_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
         ("v_cmp_lg_f32_e32", operands) => lower_cmp(ir::CmpOp::LgF32, operands),
+        ("v_cmp_gt_f32_e32", operands) => lower_cmp(ir::CmpOp::GtF32, operands),
+        ("v_cmp_ge_f32_e32", operands) => lower_cmp(ir::CmpOp::GeF32, operands),
+        // Over Volta's NaN-free reals, each negated comparison equals the opposite ordered one.
+        ("v_cmp_nge_f32_e32", operands) => lower_cmp(ir::CmpOp::LtF32, operands),
+        ("v_cmp_nlg_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
+        ("v_cmp_ngt_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
+        ("v_cmp_nle_f32_e32", operands) => lower_cmp(ir::CmpOp::GtF32, operands),
+        ("v_cmp_neq_f32_e32", operands) => lower_cmp(ir::CmpOp::LgF32, operands),
+        ("v_cmp_nlt_f32_e32", operands) => lower_cmp(ir::CmpOp::GeF32, operands),
         ("v_cmp_lt_i32_e32", operands) => lower_cmp(ir::CmpOp::LtI32, operands),
         ("v_cmp_eq_i32_e32", operands) => lower_cmp(ir::CmpOp::EqI32, operands),
         ("v_cmp_le_i32_e32", operands) => lower_cmp(ir::CmpOp::LeI32, operands),
@@ -284,13 +326,7 @@ fn lower_instruction(
         ("v_cmp_gt_u32_e32", operands) => lower_cmp(ir::CmpOp::GtU32, operands),
         ("v_cmp_ne_u32_e32", operands) => lower_cmp(ir::CmpOp::NeU32, operands),
         ("v_cmp_ge_u32_e32", operands) => lower_cmp(ir::CmpOp::GeU32, operands),
-        ("v_cmp_lt_i64_e32", [vcc, src0, src1]) => {
-            expect_vcc(vcc)?;
-            Ok(CmpLtI64 {
-                src0: src0_words(src0)?,
-                src1: vgprs(src1).ok_or("expected an even-aligned VGPR second source pair")?,
-            })
-        }
+        (mnemonic, operands) if cmp64_opcode(mnemonic).is_some() => lower_cmp64(mnemonic, operands),
         ("v_cmp_lt_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtF32, operands),
         ("v_cmp_eq_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::EqF32, operands),
         ("v_cmp_le_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeF32, operands),
@@ -318,12 +354,11 @@ fn lower_instruction(
         ("v_cmp_ge_u32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeU32, operands),
         ("v_cndmask_b32_e64", [dst, src0, src1, mask]) => Ok(CndMask32E64 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src0: vop3_src(without_neg(src0))
+            src0: modified_src(src0)
                 .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-            src1: vop3_src(without_neg(src1))
+            src1: modified_src(src1)
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             mask: lane_mask(mask).ok_or("expected vcc or an aligned SGPR pair as the mask")?,
-            negate: [src0, src1].map(|source| matches!(source, Operand::Neg(_))),
         }),
         ("v_mad_u64_u32", [dst, carry, src0, src1, src2]) => Ok(MadU64U32 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
@@ -482,18 +517,17 @@ fn lower_instruction(
             | "s_movk_i32"
             | "s_mov_b64"
             | "s_abs_i32"
-            | "s_lshl_b64"
             | "s_branch"
-            | "s_cmp_eq_u64"
             | "s_cbranch_scc0"
             | "s_cbranch_scc1"
             | "s_cbranch_vccnz"
+            | "s_cbranch_vccz"
             | "s_cbranch_execz"
+            | "s_cbranch_execnz"
             | "s_barrier"
             | "v_readfirstlane_b32"
             | "v_bitop3_b32"
             | "v_mov_b64_e32"
-            | "v_cmp_lt_i64_e32"
             | "v_cndmask_b32_e64"
             | "v_mad_u64_u32"
             | "buffer_load_dword"
@@ -554,14 +588,18 @@ fn lower_ternary_op(op: ir::TernaryOp, operands: &[Operand]) -> Result<LoweredIn
     let [dst, src0, src1, src2] = operands else {
         return Err("unsupported operand count");
     };
+    let srcs = [
+        modified_src(src0).ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+        modified_src(src1).ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+        modified_src(src2).ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
+    ];
+    if !op.is_f32() && srcs.iter().any(|src| src.is_modified()) {
+        return Err("input modifiers require f32 sources");
+    }
     Ok(LoweredInstr::TernaryOp {
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-        srcs: [
-            vop3_src(src0).ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-            vop3_src(src1).ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
-            vop3_src(src2).ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
-        ],
+        srcs,
     })
 }
 
@@ -605,6 +643,66 @@ fn lower_cmp(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'stat
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CmpEncoding {
+    E32,
+    E64,
+}
+
+/// `v_cmp_{lt,eq,le,gt,ne,ge}_{i64,u64}_{e32,e64}`.
+fn cmp64_opcode(mnemonic: &str) -> Option<(ir::CmpPredicate, ir::Signedness, CmpEncoding)> {
+    let mut parts = mnemonic.strip_prefix("v_cmp_")?.split('_');
+    let op = match parts.next()? {
+        "lt" => ir::CmpPredicate::Lt,
+        "eq" => ir::CmpPredicate::Eq,
+        "le" => ir::CmpPredicate::Le,
+        "gt" => ir::CmpPredicate::Gt,
+        "ne" => ir::CmpPredicate::Ne,
+        "ge" => ir::CmpPredicate::Ge,
+        _ => return None,
+    };
+    let signedness = match parts.next()? {
+        "i64" => ir::Signedness::Signed,
+        "u64" => ir::Signedness::Unsigned,
+        _ => return None,
+    };
+    let encoding = match parts.next()? {
+        "e32" => CmpEncoding::E32,
+        "e64" => CmpEncoding::E64,
+        _ => return None,
+    };
+    parts.next().is_none().then_some((op, signedness, encoding))
+}
+
+fn lower_cmp64(mnemonic: &str, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let (op, signedness, encoding) = cmp64_opcode(mnemonic).ok_or("unsupported instruction")?;
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    let (dst, src0, src1) = match encoding {
+        // An e32 comparison writes VCC, and its second source must be a VGPR pair.
+        CmpEncoding::E32 => {
+            expect_vcc(dst)?;
+            let src1 =
+                vgprs::<2>(src1).ok_or("expected an even-aligned VGPR second source pair")?;
+            (LaneMask::Vcc, src0_words(src0)?, src1.map(Src0::Vgpr))
+        }
+        // An e64 comparison writes VCC or an SGPR pair, and its VOP3 encoding holds no literal.
+        CmpEncoding::E64 => (
+            lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?,
+            vop3_words(src0)?,
+            vop3_words(src1)?,
+        ),
+    };
+    Ok(LoweredInstr::Cmp64 {
+        op,
+        signedness,
+        dst,
+        src0,
+        src1,
+    })
+}
+
 fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
     let [dst, src0, src1] = operands else {
         return Err("unsupported operand count");
@@ -613,7 +711,7 @@ fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'
         modified_src(src0).ok_or("expected a VGPR, an SGPR or an inline constant first source")?;
     let src1 =
         modified_src(src1).ok_or("expected a VGPR, an SGPR or an inline constant second source")?;
-    if !op.is_f32() && [src0, src1].iter().any(|src| src.abs || src.neg) {
+    if !op.is_f32() && (src0.is_modified() || src1.is_modified()) {
         return Err("input modifiers require an f32 comparison");
     }
     Ok(LoweredInstr::CmpE64 {
@@ -669,11 +767,51 @@ fn lower_scalar_op64(
     let [dst, src0, src1] = operands else {
         return Err("unsupported operand count");
     };
+    let (src0, src1) = scalar_sources64(src0, src1)?;
     Ok(LoweredInstr::ScalarOp64 {
         op,
         dst: scalar_dst64(dst)?,
-        src0: scalar_source64(src0)?,
-        src1: scalar_source64(src1)?,
+        src0,
+        src1,
+    })
+}
+
+fn lower_scalar_shift64(
+    op: ir::ScalarShift64,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src, shift] = operands else {
+        return Err("unsupported operand count");
+    };
+    let (src, shift) = scalar_source64_and_word(src, shift)?;
+    Ok(LoweredInstr::ShiftScalar64 {
+        op,
+        dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
+        src,
+        shift,
+    })
+}
+
+fn lower_scalar_cmp64(
+    op: ir::ScalarCmp64Op,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    let (src0, src1) = scalar_sources64(src0, src1)?;
+    Ok(LoweredInstr::ScalarCmp64 { op, src0, src1 })
+}
+
+fn lower_bitcmp64(expected: bool, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [src, index] = operands else {
+        return Err("unsupported operand count");
+    };
+    let (src, index) = scalar_source64_and_word(src, index)?;
+    Ok(LoweredInstr::BitCmpScalar64 {
+        src,
+        index,
+        expected,
     })
 }
 
@@ -705,17 +843,54 @@ fn is_inline(bits: u32) -> bool {
             .any(|value| value.to_bits() == bits)
 }
 
-/// Supported 64-bit sources are register pairs, lane masks and inline integer constants.
-/// Inline integer constants are sign-extended to 64 bits.
+/// Supported 64-bit sources are register pairs, lane masks and constants. Inline integers
+/// sign-extend, and a literal must have a clear sign bit, so zero and sign extension agree.
 fn scalar_source64(operand: &Operand) -> Result<ScalarSrc64, &'static str> {
     match operand {
         Operand::Vcc => Ok(ScalarSrc64::Vcc),
         Operand::Exec => Ok(ScalarSrc64::Exec),
-        Operand::Imm(value) if (-16..=64).contains(value) => Ok(ScalarSrc64::Const(*value as u64)),
-        _ => sgprs(operand)
-            .map(ScalarSrc64::Sgprs)
-            .ok_or("expected an aligned SGPR pair, vcc, exec or an inline integer constant"),
+        Operand::Imm(value) if (-16..=i64::from(i32::MAX)).contains(value) => {
+            Ok(ScalarSrc64::Const(*value as u64))
+        }
+        _ => sgprs(operand).map(ScalarSrc64::Sgprs).ok_or(
+            "expected an SGPR pair, vcc, exec or a constant with a defined 64-bit extension",
+        ),
     }
+}
+
+/// Whether a 64-bit source is a constant that only a literal can encode.
+fn is_literal64(src: ScalarSrc64) -> bool {
+    matches!(src, ScalarSrc64::Const(bits) if !(-16..=64).contains(&(bits as i64)))
+}
+
+/// A SOP2 or SOPC encoding holds at most one 32-bit literal.
+fn scalar_sources64(
+    src0: &Operand,
+    src1: &Operand,
+) -> Result<(ScalarSrc64, ScalarSrc64), &'static str> {
+    let src0 = scalar_source64(src0)?;
+    let src1 = scalar_source64(src1)?;
+    if is_literal64(src0) && is_literal64(src1) && src0 != src1 {
+        return Err("expected at most one 32-bit literal");
+    }
+    Ok((src0, src1))
+}
+
+/// A 64-bit source and a 32-bit count or index, which share the one 32-bit literal.
+fn scalar_source64_and_word(
+    src: &Operand,
+    word: &Operand,
+) -> Result<(ScalarSrc64, ScalarSrc), &'static str> {
+    let src = scalar_source64(src)?;
+    let word = scalar_source(word).ok_or("expected an SGPR or a 32-bit constant count or index")?;
+    if let (ScalarSrc64::Const(wide), ScalarSrc::Const(bits)) = (src, word)
+        && is_literal64(src)
+        && !is_inline(bits)
+        && wide != u64::from(bits)
+    {
+        return Err("expected at most one 32-bit literal");
+    }
+    Ok((src, word))
 }
 
 /// EXEC is never a destination, so every lane of a full wave stays active.
@@ -1038,14 +1213,6 @@ fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
     }
 }
 
-/// A source without its negation.
-fn without_neg(operand: &Operand) -> &Operand {
-    match operand {
-        Operand::Neg(source) => source.as_ref(),
-        _ => operand,
-    }
-}
-
 /// A VOP3 source and its input modifiers, written `-src`, `|src|` or `-|src|`.
 fn modified_src(operand: &Operand) -> Option<ModifiedSrc> {
     let (neg, operand) = match operand {
@@ -1076,18 +1243,36 @@ fn first_source(operand: &Operand) -> Result<Src0, &'static str> {
         .ok_or("expected a VGPR, an SGPR or a 32-bit constant first source")
 }
 
-/// A 64-bit first source's words, low first: an aligned SGPR pair or a constant. Inline integers
-/// sign-extend (CDNA4 §6.2). A literal with a clear sign bit extends the same way whether zero-
-/// or sign-extended, and any other literal is rejected because the two would differ.
+/// An even-aligned VGPR pair's or an aligned SGPR pair's words, low first.
+fn pair_words(operand: &Operand) -> Option<[Src0; 2]> {
+    vgprs::<2>(operand)
+        .map(|pair| pair.map(Src0::Vgpr))
+        .or_else(|| sgprs::<2>(operand).map(|pair| pair.map(Src0::Sgpr)))
+}
+
+/// A constant's two words after sign extension, low first.
+fn constant_words(value: i64) -> [Src0; 2] {
+    [value as u32, (value >> 32) as u32].map(Src0::Const)
+}
+
+/// A 64-bit first source's words: a register pair or a constant. Inline integers sign-extend
+/// (CDNA4 §6.2). A literal with a clear sign bit extends the same way whether zero- or
+/// sign-extended, and any other literal is rejected because the two would differ.
 fn src0_words(operand: &Operand) -> Result<[Src0; 2], &'static str> {
-    if let Some(pair) = sgprs::<2>(operand) {
-        return Ok(pair.map(Src0::Sgpr));
-    }
     match operand {
         Operand::Imm(value) if (-16..=i64::from(i32::MAX)).contains(value) => {
-            Ok([*value as u32, (*value >> 32) as u32].map(Src0::Const))
+            Ok(constant_words(*value))
         }
-        _ => Err("expected an aligned SGPR pair or a constant with a defined 64-bit extension"),
+        _ => pair_words(operand)
+            .ok_or("expected a register pair or a constant with a defined 64-bit extension"),
+    }
+}
+
+/// A 64-bit VOP3 source's words: a register pair or an inline integer, which sign-extends.
+fn vop3_words(operand: &Operand) -> Result<[Src0; 2], &'static str> {
+    match operand {
+        Operand::Imm(value) if (-16..=64).contains(value) => Ok(constant_words(*value)),
+        _ => pair_words(operand).ok_or("expected a register pair or an inline integer constant"),
     }
 }
 

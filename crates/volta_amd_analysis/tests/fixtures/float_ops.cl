@@ -76,4 +76,14 @@ __kernel void float_ops(__global const float *a, __global const float *b, __glob
         "v_cndmask_b32_e32 %0, %1, %2, vcc"
         : "=&v"(result) : "v"(x), "v"(y) : "vcc");
     row[26] = result;
+
+    // E64 selects and three-source operations accept the same modifiers.
+    __asm__ volatile(
+        "v_cmp_lt_f32_e64 %1, %2, %3\n\t"
+        "v_cndmask_b32_e64 %0, |%2|, -|%3|, %1"
+        : "=&v"(result), "=&s"(mask) : "v"(x), "v"(y));
+    row[27] = result;
+    __asm__ volatile("v_max3_f32 %0, -%1, |%2|, %1"
+                     : "=v"(result) : "v"(x), "v"(y));
+    row[28] = result;
 }

@@ -30,8 +30,9 @@ sign-mask tricks for negation and absolute value; floating-point arithmetic and 
 including lane exchanges, remain supported. A select between two different constant words
 under a symbolic condition is rejected, since the words could encode floats or integers.
 Negated select sources use floating-point semantics, so they are not ambiguous.
-F32 e64 comparisons and f32 FMA accept absolute-value and negation input modifiers on any
-source; these operate on mathematical expressions. E64 comparisons write VCC or an SGPR pair.
+F32 e64 comparisons, e64 selects, f32 FMA and three-source f32 operations accept absolute-value
+and negation input modifiers on any source; these operate on mathematical expressions.
+E64 comparisons write VCC or an SGPR pair.
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks.
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
@@ -56,8 +57,9 @@ unbalanced and extra-quoted arguments are rejected.
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
 fixtures, then compare their symbolic outputs with the corresponding `.out` files.
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
-The `vector_int_ops` fixture checks low-word multiplication, masked bit counts, 64-bit moves and
-signed 64-bit comparisons.
+The `vector_int_ops` fixture checks multiplication, bit counts and 64-bit moves, with signed
+64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
+in both encodings, and `scalar_alu_ops` the scalar ALU, comparison and branch families.
 Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:

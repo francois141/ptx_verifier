@@ -6,82 +6,141 @@
 	.p2align	8
 	.type	compare_ops,@function
 compare_ops:
-	s_load_dwordx4 s[4:7], s[0:1], 0x0
-	s_load_dwordx2 s[0:1], s[0:1], 0x10
+	s_load_dwordx8 s[0:7], s[0:1], 0x0
 	v_lshlrev_b32_e32 v1, 2, v0
 	v_mul_u32_u24_e32 v0, 12, v0
 	v_lshlrev_b32_e32 v0, 2, v0
 	s_waitcnt lgkmcnt(0)
-	global_load_dword v2, v1, s[4:5]
-	global_load_dword v1, v1, s[6:7]
+	global_load_dword v2, v1, s[2:3]
+	global_load_dword v1, v1, s[0:1]
 	s_waitcnt vmcnt(0)
 	;;#ASMSTART
-	v_cmp_lt_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_lt_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1]
+	global_store_dword v0, v3, s[4:5]
 	;;#ASMSTART
-	v_cmp_eq_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_eq_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:4
+	global_store_dword v0, v3, s[4:5] offset:4
 	;;#ASMSTART
-	v_cmp_le_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_le_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:8
+	global_store_dword v0, v3, s[4:5] offset:8
 	;;#ASMSTART
-	v_cmp_gt_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_gt_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:12
+	global_store_dword v0, v3, s[4:5] offset:12
 	;;#ASMSTART
-	v_cmp_lg_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_lg_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:16
+	global_store_dword v0, v3, s[4:5] offset:16
 	;;#ASMSTART
-	v_cmp_ge_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_ge_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:20
+	global_store_dword v0, v3, s[4:5] offset:20
 	;;#ASMSTART
-	v_cmp_nge_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_nge_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:24
+	global_store_dword v0, v3, s[4:5] offset:24
 	;;#ASMSTART
-	v_cmp_nlg_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_nlg_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:28
+	global_store_dword v0, v3, s[4:5] offset:28
 	;;#ASMSTART
-	v_cmp_ngt_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_ngt_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:32
+	global_store_dword v0, v3, s[4:5] offset:32
 	;;#ASMSTART
-	v_cmp_nle_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_nle_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:36
+	global_store_dword v0, v3, s[4:5] offset:36
 	;;#ASMSTART
-	v_cmp_neq_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_neq_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:40
+	global_store_dword v0, v3, s[4:5] offset:40
 	;;#ASMSTART
-	v_cmp_nlt_f32_e64 s[2:3], v2, v1
-	v_cndmask_b32_e64 v3, v2, v1, s[2:3]
+	v_cmp_nlt_f32_e64 s[0:1], v1, v2
+	v_cndmask_b32_e64 v3, v1, v2, s[0:1]
 	;;#ASMEND
-	global_store_dword v0, v3, s[0:1] offset:44
+	global_store_dword v0, v3, s[4:5] offset:44
+	;;#ASMSTART
+	v_cmp_lt_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7]
+	;;#ASMSTART
+	v_cmp_eq_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:4
+	;;#ASMSTART
+	v_cmp_le_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:8
+	;;#ASMSTART
+	v_cmp_gt_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:12
+	;;#ASMSTART
+	v_cmp_lg_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:16
+	;;#ASMSTART
+	v_cmp_ge_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:20
+	;;#ASMSTART
+	v_cmp_nge_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:24
+	;;#ASMSTART
+	v_cmp_nlg_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:28
+	;;#ASMSTART
+	v_cmp_ngt_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:32
+	;;#ASMSTART
+	v_cmp_nle_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:36
+	;;#ASMSTART
+	v_cmp_neq_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:40
+	;;#ASMSTART
+	v_cmp_nlt_f32_e32 vcc, v1, v2
+	v_cndmask_b32_e32 v3, v1, v2, vcc
+	;;#ASMEND
+	global_store_dword v0, v3, s[6:7] offset:44
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
 	.amdhsa_kernel compare_ops
 		.amdhsa_group_segment_fixed_size 0
 		.amdhsa_private_segment_fixed_size 0
-		.amdhsa_kernarg_size 24
+		.amdhsa_kernarg_size 32
 		.amdhsa_user_sgpr_count 2
 		.amdhsa_user_sgpr_dispatch_ptr 0
 		.amdhsa_user_sgpr_queue_ptr 0
@@ -100,7 +159,7 @@ compare_ops:
 		.amdhsa_next_free_vgpr 4
 		.amdhsa_next_free_sgpr 8
 		.amdhsa_accum_offset 4
-		.amdhsa_reserve_vcc 0
+		.amdhsa_reserve_vcc 1
 		.amdhsa_float_round_mode_32 0
 		.amdhsa_float_round_mode_16_64 0
 		.amdhsa_float_denorm_mode_32 3
@@ -125,7 +184,7 @@ compare_ops:
 	.set compare_ops.num_agpr, 0
 	.set compare_ops.numbered_sgpr, 8
 	.set compare_ops.private_seg_size, 0
-	.set compare_ops.uses_vcc, 0
+	.set compare_ops.uses_vcc, 1
 	.set compare_ops.uses_flat_scratch, 0
 	.set compare_ops.has_dyn_sized_stack, 0
 	.set compare_ops.has_recursion, 0
@@ -136,77 +195,138 @@ compare_ops:
 	.type	__clang_ocl_kern_imp_compare_ops,@function
 __clang_ocl_kern_imp_compare_ops:
 	s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)
-	v_and_b32_e32 v8, 0x3ff, v31
-	v_lshlrev_b32_e32 v6, 2, v8
-	v_mov_b32_e32 v7, 0
-	v_lshl_add_u64 v[2:3], v[2:3], 0, v[6:7]
-	v_lshl_add_u64 v[0:1], v[0:1], 0, v[6:7]
-	global_load_dword v2, v[2:3], off
-	global_load_dword v3, v[0:1], off
-	v_mul_u32_u24_e32 v0, 12, v8
-	v_lshlrev_b32_e32 v6, 2, v0
-	v_lshl_add_u64 v[0:1], v[4:5], 0, v[6:7]
+	v_and_b32_e32 v10, 0x3ff, v31
+	v_lshlrev_b32_e32 v8, 2, v10
+	v_mov_b32_e32 v9, 0
+	v_lshl_add_u64 v[2:3], v[2:3], 0, v[8:9]
+	v_lshl_add_u64 v[0:1], v[0:1], 0, v[8:9]
+	global_load_dword v11, v[2:3], off
+	global_load_dword v12, v[0:1], off
+	v_mul_u32_u24_e32 v0, 12, v10
+	v_lshlrev_b32_e32 v8, 2, v0
+	v_lshl_add_u64 v[0:1], v[4:5], 0, v[8:9]
+	v_lshl_add_u64 v[2:3], v[6:7], 0, v[8:9]
 	s_waitcnt vmcnt(0)
 	;;#ASMSTART
-	v_cmp_lt_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_lt_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off
 	;;#ASMSTART
-	v_cmp_eq_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_eq_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:4
 	;;#ASMSTART
-	v_cmp_le_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_le_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:8
 	;;#ASMSTART
-	v_cmp_gt_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_gt_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:12
 	;;#ASMSTART
-	v_cmp_lg_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_lg_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:16
 	;;#ASMSTART
-	v_cmp_ge_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_ge_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:20
 	;;#ASMSTART
-	v_cmp_nge_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_nge_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:24
 	;;#ASMSTART
-	v_cmp_nlg_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_nlg_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:28
 	;;#ASMSTART
-	v_cmp_ngt_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_ngt_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:32
 	;;#ASMSTART
-	v_cmp_nle_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_nle_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:36
 	;;#ASMSTART
-	v_cmp_neq_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_neq_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:40
 	;;#ASMSTART
-	v_cmp_nlt_f32_e64 s[0:1], v3, v2
-	v_cndmask_b32_e64 v4, v3, v2, s[0:1]
+	v_cmp_nlt_f32_e64 s[0:1], v12, v11
+	v_cndmask_b32_e64 v4, v12, v11, s[0:1]
 	;;#ASMEND
 	global_store_dword v[0:1], v4, off offset:44
+	;;#ASMSTART
+	v_cmp_lt_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off
+	;;#ASMSTART
+	v_cmp_eq_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:4
+	;;#ASMSTART
+	v_cmp_le_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:8
+	;;#ASMSTART
+	v_cmp_gt_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:12
+	;;#ASMSTART
+	v_cmp_lg_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:16
+	;;#ASMSTART
+	v_cmp_ge_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:20
+	;;#ASMSTART
+	v_cmp_nge_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:24
+	;;#ASMSTART
+	v_cmp_nlg_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:28
+	;;#ASMSTART
+	v_cmp_ngt_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:32
+	;;#ASMSTART
+	v_cmp_nle_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:36
+	;;#ASMSTART
+	v_cmp_neq_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:40
+	;;#ASMSTART
+	v_cmp_nlt_f32_e32 vcc, v12, v11
+	v_cndmask_b32_e32 v0, v12, v11, vcc
+	;;#ASMEND
+	global_store_dword v[2:3], v0, off offset:44
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:
@@ -216,7 +336,7 @@ __clang_ocl_kern_imp_compare_ops:
 	.set __clang_ocl_kern_imp_compare_ops.num_agpr, 0
 	.set __clang_ocl_kern_imp_compare_ops.numbered_sgpr, 32
 	.set __clang_ocl_kern_imp_compare_ops.private_seg_size, 0
-	.set __clang_ocl_kern_imp_compare_ops.uses_vcc, 0
+	.set __clang_ocl_kern_imp_compare_ops.uses_vcc, 1
 	.set __clang_ocl_kern_imp_compare_ops.uses_flat_scratch, 0
 	.set __clang_ocl_kern_imp_compare_ops.has_dyn_sized_stack, 0
 	.set __clang_ocl_kern_imp_compare_ops.has_recursion, 0
@@ -253,9 +373,14 @@ amdhsa.kernels:
         .size:           8
         .type_name:      'float*'
         .value_kind:     global_buffer
+      - .address_space:  global
+        .offset:         24
+        .size:           8
+        .type_name:      'float*'
+        .value_kind:     global_buffer
     .group_segment_fixed_size: 0
     .kernarg_segment_align: 8
-    .kernarg_segment_size: 24
+    .kernarg_segment_size: 32
     .language:       OpenCL C
     .language_version:
       - 1

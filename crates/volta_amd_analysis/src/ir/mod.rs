@@ -78,6 +78,12 @@ pub struct ModifiedSrc {
     pub neg: bool,
 }
 
+impl ModifiedSrc {
+    pub fn is_modified(self) -> bool {
+        self.abs || self.neg
+    }
+}
+
 /// The first source of a VOP2 instruction: a VGPR, an SGPR, or a constant (inline
 /// or literal) whose 32 bits are the operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +112,7 @@ pub enum ScalarSrc {
 }
 
 /// A 64-bit scalar ALU source: an aligned SGPR pair, VCC or EXEC as lane masks, or a
-/// constant, which a 32-bit inline constant gives sign-extended.
+/// constant: a sign-extended inline integer, or a 32-bit literal with a clear sign bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarSrc64 {
     Sgprs([Sgpr; 2]),
@@ -146,11 +152,32 @@ pub enum ScalarOp32 {
     MulHiU32,
     /// The high word of the signed product; SCC is unchanged.
     MulHiI32,
+    /// SCC is the borrow out.
+    SubU32,
+    /// `src0 - src1 - SCC`; SCC is the borrow out.
+    SubbU32,
+    /// Signed minimum; SCC is whether src0 < src1 (CDNA4 §12.1).
+    MinI32,
+    /// Unsigned minimum; SCC is whether src0 < src1.
+    MinU32,
     /// Signed maximum; SCC is whether src0 >= src1 (CDNA4 §12.1).
     MaxI32,
+    /// Unsigned maximum; SCC is whether src0 >= src1.
+    MaxU32,
     /// SCC is whether the result is nonzero, as for every op below.
     AndB32,
+    OrB32,
     XorB32,
+    /// `src0 & !src1`.
+    AndN2B32,
+    /// `src0 | !src1`.
+    OrN2B32,
+    /// `!(src0 & src1)`.
+    NandB32,
+    /// `!(src0 | src1)`.
+    NorB32,
+    /// `!(src0 ^ src1)`.
+    XnorB32,
     /// `src0 << src1`, using the count's low five bits.
     LShlB32,
     /// The logical `src0 >> src1`.
@@ -167,22 +194,56 @@ pub enum ScalarOp64 {
     /// SCC is whether the result is nonzero, as for `OrB64` and `AndN2B64`.
     AndB64,
     OrB64,
+    XorB64,
     /// `src0 & !src1`.
     AndN2B64,
+    /// `src0 | !src1`.
+    OrN2B64,
+    /// `!(src0 & src1)`.
+    NandB64,
+    /// `!(src0 | src1)`.
+    NorB64,
+    /// `!(src0 ^ src1)`.
+    XnorB64,
     /// `SCC ? src0 : src1`; SCC is unchanged.
     CSelectB64,
+}
+
+/// A 64-bit scalar shift; the count uses its low six bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarShift64 {
+    LShlB64,
+    LShrB64,
+    /// The arithmetic shift right.
+    AShrI64,
 }
 
 /// A scalar comparison of two words, which writes SCC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarCmpOp {
+    LtI32,
+    EqI32,
+    LeI32,
     GtI32,
+    LgI32,
     GeI32,
     LtU32,
-    GeU32,
+    EqU32,
+    LeU32,
+    GtU32,
     LgU32,
+    GeU32,
+    /// Whether bit `src1 & 31` of `src0` is clear.
+    BitCmp0B32,
     /// Whether bit `src1 & 31` of `src0` is set.
     BitCmp1B32,
+}
+
+/// A scalar comparison of two 64-bit values, which writes SCC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarCmp64Op {
+    EqU64,
+    LgU64,
 }
 
 /// The condition of a conditional branch, which is uniform across the wave.
@@ -194,8 +255,12 @@ pub enum BranchCondition {
     Scc1,
     /// Some lane's VCC bit is set.
     VccNz,
+    /// No lane's VCC bit is set.
+    VccZ,
     /// No lane is active.
     ExecZ,
+    /// Some lane is active.
+    ExecNz,
 }
 
 /// A raw buffer instruction's address in each lane: the byte offset in the lane's VGPR plus
@@ -470,11 +535,24 @@ pub enum TernaryOp {
     BitOp3(u8),
 }
 
+impl TernaryOp {
+    /// Whether the operation reads its sources as f32s rather than as words.
+    pub fn is_f32(self) -> bool {
+        matches!(self, Self::Min3F32 | Self::Max3F32 | Self::Med3F32)
+    }
+}
+
 /// A VOP3 operation on two concrete 32-bit integers. Symbolic operands are rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vop3BinOp {
     /// The low word of the product.
     MulLoU32,
+    /// The high word of the unsigned product.
+    MulHiU32,
+    /// The high word of the signed product.
+    MulHiI32,
+    /// `src1` plus the number of set bits in `src0`.
+    BcntU32,
     /// `src1` plus the number of set bits in `src0` below bit `lane`, all 32 from lane 32 on.
     MbcntLoU32,
     /// `src1` plus the number of set bits in `src0` below bit `lane - 32`, none up to lane 32.
@@ -502,6 +580,24 @@ pub enum UnaryOp {
     SqrtF32,
     /// `1 / sqrt(src)`.
     RsqF32,
+}
+
+/// The relation tested between two ordered values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpPredicate {
+    Lt,
+    Eq,
+    Le,
+    Gt,
+    Ne,
+    Ge,
+}
+
+/// Whether a comparison orders integer words as signed or unsigned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signedness {
+    Signed,
+    Unsigned,
 }
 
 /// A VOPC comparison of two sources, read as f32s or, for the integer ops, as words.
@@ -584,8 +680,9 @@ pub enum LoweredInstr {
         src0: ScalarSrc64,
         src1: ScalarSrc64,
     },
-    /// `dst = src << (shift & 63)`; SCC is whether the result is nonzero.
-    LShlScalar64 {
+    /// `dst = src op shift`; SCC is whether the result is nonzero.
+    ShiftScalar64 {
+        op: ScalarShift64,
         dst: [Sgpr; 2],
         src: ScalarSrc64,
         shift: ScalarSrc,
@@ -595,10 +692,16 @@ pub enum LoweredInstr {
         src0: ScalarSrc,
         src1: ScalarSrc,
     },
-    /// Compare two 64-bit scalar sources for equality and write SCC.
-    CmpEqScalar64 {
+    ScalarCmp64 {
+        op: ScalarCmp64Op,
         src0: ScalarSrc64,
         src1: ScalarSrc64,
+    },
+    /// Sets SCC to whether bit `index & 63` of `src` equals `expected`.
+    BitCmpScalar64 {
+        src: ScalarSrc64,
+        index: ScalarSrc,
+        expected: bool,
     },
     Branch {
         target: InstrId,
@@ -625,7 +728,7 @@ pub enum LoweredInstr {
     TernaryOp {
         op: TernaryOp,
         dst: Vgpr,
-        srcs: [Vop3Src; 3],
+        srcs: [ModifiedSrc; 3],
     },
     /// `dst = op(src0, src1)` in each lane.
     Vop3BinOp {
@@ -651,10 +754,15 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
-    /// Sets each lane's VCC bit to `src0 < src1`, signed 64-bit integers with the low word first.
-    CmpLtI64 {
+    /// Sets each lane's bit of VCC or an SGPR-pair mask to `src0 op src1`. Each source is two
+    /// concrete words, low word first, that form one 64-bit integer of the given signedness.
+    /// Lowering enforces each encoding's source forms.
+    Cmp64 {
+        op: CmpPredicate,
+        signedness: Signedness,
+        dst: LaneMask,
         src0: [Src0; 2],
-        src1: [Vgpr; 2],
+        src1: [Src0; 2],
     },
     /// Sets each lane's bit of VCC or an SGPR-pair mask to `src0 op src1`. Only an f32
     /// comparison's sources may carry input modifiers.
@@ -670,14 +778,12 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
-    /// `dst = mask ? src1 : src0` in each lane.
-    /// `negate[i]` negates `src_i`; any negation reads both sources as f32s.
+    /// `dst = mask ? src1 : src0` in each lane. Any input modifier reads both sources as f32s.
     CndMask32E64 {
         dst: Vgpr,
-        src0: Vop3Src,
-        src1: Vop3Src,
+        src0: ModifiedSrc,
+        src1: ModifiedSrc,
         mask: LaneMask,
-        negate: [bool; 2],
     },
     /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
     /// carry out of 64 bits in each lane's bit of `carry`.
