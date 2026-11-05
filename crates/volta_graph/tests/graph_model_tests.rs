@@ -6,13 +6,14 @@ use volta_graph::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOpKind, BarrierArrivals, ContributionKind,
     EventKind, ExecContext, Footprint, GenerationEvidence, GenerationKind, GraphBuilder,
     InstructionInfo, MemAccess, OperandRole, OrderingKind, ProgramPoint, Provenance, Proxy, Space,
-    StoredValue, SyncObjectKind, Terminal, ThreadIx,
+    StoredValue, SyncObjectKind, Terminal, ThreadIx, ThreadUnit,
 };
 
 fn provenance(threads: u32, instructions: usize) -> Provenance {
     Provenance {
         kernel: "k".to_string(),
         block_dim: (threads, 1, 1),
+        unit: ThreadUnit::CtaThread,
         grid_dim: (1, 1, 1),
         targets: vec!["Sm100a".to_string()],
         assumptions: Vec::new(),

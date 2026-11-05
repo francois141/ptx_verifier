@@ -1,0 +1,19 @@
+{
+  "description": "AI compiler sm_89/SwiGLUFloat8Kernel/kernel, 1.0000x Triton: PTX Gym's problem, gate e4m3[256, 4096], value e4m3[256, 4096], output f16[256, 4096]",
+  "kernel": "kernel",
+  "block": [512, 1, 1],
+  "grid": [512, 1, 1],
+  "dynamic_shared_bytes": 101376,
+  "arrays": [
+    {"name": "gate", "kind": "in", "dtype": "e4m3", "shape": [256, 4096]},
+    {"name": "value", "kind": "in", "dtype": "e4m3", "shape": [256, 4096]},
+    {"name": "output", "kind": "out", "dtype": "f16", "shape": [256, 4096]}
+  ],
+  "params": [
+    {"name": "gate_ptr", "ptr": "gate"},
+    {"name": "value_ptr", "ptr": "value"},
+    {"name": "output_ptr", "ptr": "output"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

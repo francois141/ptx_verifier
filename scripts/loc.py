@@ -3,11 +3,11 @@
     python3 scripts/loc.py          # tables per component and per language
     python3 scripts/loc.py --json   # the same counts as JSON
 
-Counts the Rust, Python, JavaScript, CSS and HTML files under `crates/`,
-`scripts/` and `ai_compiler_kernels/`. Test data (`.ptx`, `.out`, `.spec`,
-launch JSON) and build output are not code and are skipped. Every line is
-code, a comment or blank; code under a `tests/` directory, in a `tests.rs`
-file or in a `test_*.py` file is reported in its own column.
+Counts the Rust, Python, JavaScript, CSS and HTML files under `crates/` and
+`scripts/`. Test data (`.ptx`, `.out`, `.spec`, launch JSON) and build output
+are not code and are skipped. Every line is code, a comment or blank; code
+under a `tests/` directory, in a `tests.rs` file or in a `test_*.py` file is
+reported in its own column.
 """
 
 import argparse
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE_ROOTS = ("crates", "scripts", "ai_compiler_kernels")
+SOURCE_ROOTS = ("crates", "scripts")
 SKIPPED_DIRS = frozenset({"target", ".venv", "__pycache__", ".pytest_cache", ".git"})
 
 

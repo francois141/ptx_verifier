@@ -4,7 +4,8 @@ use id_collections::id_type;
 #[id_type]
 pub struct EventId(pub u32);
 
-/// A CTA thread, by its linearized index (`tid.x + tid.y * ntid.x + ...`).
+/// A graph thread: a CTA thread by its linearized index (`tid.x + tid.y * ntid.x + ...`), or
+/// a wave by its index, as [`crate::Provenance::unit`] says.
 #[id_type]
 pub struct ThreadIx(pub u32);
 

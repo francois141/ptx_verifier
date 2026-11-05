@@ -1,0 +1,19 @@
+{
+  "description": "AI compiler sm_100a/LionNeurIPS2023Optimizer/kernel, 1.0002x Triton: PTX Gym's problem, p f32[1048576], grad f32[1048576], exp_avg f32[1048576]",
+  "kernel": "kernel",
+  "block": [256, 1, 1],
+  "grid": [1024, 1, 1],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "p", "kind": "inout", "dtype": "f32", "shape": [1048576]},
+    {"name": "grad", "kind": "in", "dtype": "f32", "shape": [1048576]},
+    {"name": "exp_avg", "kind": "inout", "dtype": "f32", "shape": [1048576]}
+  ],
+  "params": [
+    {"name": "p_ptr", "ptr": "p"},
+    {"name": "grad_ptr", "ptr": "grad"},
+    {"name": "exp_avg_ptr", "ptr": "exp_avg"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -1,0 +1,34 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// out[i] = a[i] + b[i] over f32, one element per thread.
+.visible .entry add(
+    .param .u64 add_param_a,
+    .param .u64 add_param_b,
+    .param .u64 add_param_out
+)
+{
+    .reg .b32 %r<2>;
+    .reg .f32 %f<4>;
+    .reg .b64 %rd<11>;
+
+    ld.param.u64 %rd1, [add_param_a];
+    ld.param.u64 %rd2, [add_param_b];
+    ld.param.u64 %rd3, [add_param_out];
+    cvta.to.global.u64 %rd4, %rd1;
+    cvta.to.global.u64 %rd5, %rd2;
+    cvta.to.global.u64 %rd6, %rd3;
+
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd7, %r1, 4;
+    add.s64 %rd8, %rd4, %rd7;
+    add.s64 %rd9, %rd5, %rd7;
+    add.s64 %rd10, %rd6, %rd7;
+
+    ld.global.f32 %f1, [%rd8];
+    ld.global.f32 %f2, [%rd9];
+    add.f32 %f3, %f1, %f2;
+    st.global.f32 [%rd10], %f3;
+    ret;
+}

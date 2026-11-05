@@ -1,0 +1,29 @@
+{
+  "description": "AI compiler sm_100a/SageAttentionICLR2025/kernel, 1.4104x Triton: PTX Gym's problem, Q i8[16, 16, 1024, 64], K i8[16, 2, 128, 64], V f16[16, 2, 128, 64], Q_scale f32[16, 16, 8], K_scale f32[16, 2, 2], Out f16[16, 16, 1024, 64], mask i8[1], Lse f32[1]",
+  "kernel": "kernel",
+  "block": [256, 1, 1],
+  "grid": [8, 16, 16],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "Q", "kind": "in", "dtype": "i8", "shape": [16, 16, 1024, 64]},
+    {"name": "K", "kind": "in", "dtype": "i8", "shape": [16, 2, 128, 64]},
+    {"name": "V", "kind": "in", "dtype": "f16", "shape": [16, 2, 128, 64]},
+    {"name": "Q_scale", "kind": "in", "dtype": "f32", "shape": [16, 16, 8]},
+    {"name": "K_scale", "kind": "in", "dtype": "f32", "shape": [16, 2, 2]},
+    {"name": "Out", "kind": "out", "dtype": "f16", "shape": [16, 16, 1024, 64]},
+    {"name": "mask", "kind": "in", "dtype": "i8", "shape": [1]},
+    {"name": "Lse", "kind": "out", "dtype": "f32", "shape": [1]}
+  ],
+  "params": [
+    {"name": "Q_ptr", "ptr": "Q"},
+    {"name": "K_ptr", "ptr": "K"},
+    {"name": "V_ptr", "ptr": "V"},
+    {"name": "Q_scale_ptr", "ptr": "Q_scale"},
+    {"name": "K_scale_ptr", "ptr": "K_scale"},
+    {"name": "Out_ptr", "ptr": "Out"},
+    {"name": "mask_ptr", "ptr": "mask"},
+    {"name": "Lse_ptr", "ptr": "Lse"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -2,11 +2,11 @@
 //! wave, as another `impl Interpreter`. The ALU operates on concrete words.
 
 use crate::ir::{
-    LoweredInstr, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarOp32, ScalarOp64, ScalarSrc,
-    ScalarSrc64, Sgpr,
+    LoweredInstr, ScalarCmp64Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarOp32, ScalarOp64,
+    ScalarShift64, ScalarSrc, ScalarSrc64, Sgpr,
 };
 
-use super::wave::{LoadCounter, WaveId, WaveRegisters};
+use super::wave::{LgkmInFlight, WaveId, WaveRegisters};
 use super::{EvalError, Interpreter};
 
 /// Read-only kernel argument bytes at a concrete device address.
@@ -96,7 +96,13 @@ impl Interpreter<'_> {
                 let registers = &mut self.waves[wave].registers;
                 let value = match op {
                     ScalarOp64::AndB64 => a & b,
+                    ScalarOp64::OrB64 => a | b,
+                    ScalarOp64::XorB64 => a ^ b,
                     ScalarOp64::AndN2B64 => a & !b,
+                    ScalarOp64::OrN2B64 => a | !b,
+                    ScalarOp64::NandB64 => !(a & b),
+                    ScalarOp64::NorB64 => !(a | b),
+                    ScalarOp64::XnorB64 => !(a ^ b),
                     ScalarOp64::CSelectB64 => {
                         if registers.read_scc()? {
                             a
@@ -110,9 +116,19 @@ impl Interpreter<'_> {
                 }
                 self.write_scalar64(wave, *dst, value)
             }
-            LoweredInstr::LShlScalar64 { dst, src, shift } => {
-                let value =
-                    self.read_scalar64(wave, *src)? << (self.read_scalar_word(wave, *shift)? & 63);
+            LoweredInstr::ShiftScalar64 {
+                op,
+                dst,
+                src,
+                shift,
+            } => {
+                let value = self.read_scalar64(wave, *src)?;
+                let shift = self.read_scalar_word(wave, *shift)? & 63;
+                let value = match op {
+                    ScalarShift64::LShlB64 => value << shift,
+                    ScalarShift64::LShrB64 => value >> shift,
+                    ScalarShift64::AShrI64 => ((value as i64) >> shift) as u64,
+                };
                 let registers = &mut self.waves[wave].registers;
                 registers.write_scc(value != 0);
                 registers.write_sgpr_pair(&mut self.arena, *dst, value)
@@ -120,14 +136,43 @@ impl Interpreter<'_> {
             LoweredInstr::ScalarCmp { op, src0, src1 } => {
                 let a = self.read_scalar_word(wave, *src0)?;
                 let b = self.read_scalar_word(wave, *src1)?;
+                let (signed_a, signed_b) = (a as i32, b as i32);
                 let scc = match op {
-                    ScalarCmpOp::GtI32 => (a as i32) > (b as i32),
-                    ScalarCmpOp::GeI32 => (a as i32) >= (b as i32),
+                    ScalarCmpOp::LtI32 => signed_a < signed_b,
+                    ScalarCmpOp::EqI32 | ScalarCmpOp::EqU32 => a == b,
+                    ScalarCmpOp::LeI32 => signed_a <= signed_b,
+                    ScalarCmpOp::GtI32 => signed_a > signed_b,
+                    ScalarCmpOp::LgI32 | ScalarCmpOp::LgU32 => a != b,
+                    ScalarCmpOp::GeI32 => signed_a >= signed_b,
                     ScalarCmpOp::LtU32 => a < b,
+                    ScalarCmpOp::LeU32 => a <= b,
+                    ScalarCmpOp::GtU32 => a > b,
                     ScalarCmpOp::GeU32 => a >= b,
+                    ScalarCmpOp::BitCmp0B32 => (a >> (b & 31)) & 1 == 0,
                     ScalarCmpOp::BitCmp1B32 => (a >> (b & 31)) & 1 == 1,
                 };
                 self.waves[wave].registers.write_scc(scc);
+                Ok(())
+            }
+            LoweredInstr::ScalarCmp64 { op, src0, src1 } => {
+                let a = self.read_scalar64(wave, *src0)?;
+                let b = self.read_scalar64(wave, *src1)?;
+                let scc = match op {
+                    ScalarCmp64Op::EqU64 => a == b,
+                    ScalarCmp64Op::LgU64 => a != b,
+                };
+                self.waves[wave].registers.write_scc(scc);
+                Ok(())
+            }
+            LoweredInstr::BitCmpScalar64 {
+                src,
+                index,
+                expected,
+            } => {
+                let value = self.read_scalar64(wave, *src)?;
+                let index = self.read_scalar_word(wave, *index)? & 63;
+                let bit = (value >> index) & 1 == 1;
+                self.waves[wave].registers.write_scc(bit == *expected);
                 Ok(())
             }
             LoweredInstr::ReadFirstLane { dst, src } => {
@@ -137,17 +182,21 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Nop => Ok(()),
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
-                let registers = &mut self.waves[wave].registers;
-                // Scalar loads can finish out of order, so only lgkmcnt(0) says which are ready.
-                if lgkmcnt.is_some_and(|n| n != 0) && registers.has_pending_scalar_loads() {
+                let scalar_load_in_flight = self.waves[wave]
+                    .lgkm_in_flight
+                    .iter()
+                    .any(|instruction| matches!(instruction, LgkmInFlight::Scalar { .. }));
+                // Scalar loads return out of order, so only lgkmcnt(0) says which are ready; a
+                // partial wait with one in flight is not modeled (issue #19).
+                if lgkmcnt.is_some_and(|n| n != 0) && scalar_load_in_flight {
                     return Err(EvalError::UnsupportedInstruction);
                 }
                 if let Some(outstanding) = vmcnt {
-                    registers.finish_vector_loads(LoadCounter::Vm, usize::from(*outstanding));
+                    let registers = &mut self.waves[wave].registers;
+                    registers.finish_vm_loads(usize::from(*outstanding));
                 }
                 if let Some(outstanding) = lgkmcnt {
-                    registers.finish_vector_loads(LoadCounter::Lgkm, usize::from(*outstanding));
-                    registers.finish_scalar_loads();
+                    self.wait_lgkm(wave, usize::from(*outstanding));
                 }
                 Ok(())
             }
@@ -189,7 +238,11 @@ impl Interpreter<'_> {
             }
             values
         };
-        registers.start_scalar_load(dst, values)
+        registers.start_scalar_load(dst, values)?;
+        let dst = dst.to_vec();
+        let scalar_load = LgkmInFlight::Scalar { dst };
+        self.waves[wave].lgkm_in_flight.push_back(scalar_load);
+        Ok(())
     }
 }
 
@@ -268,10 +321,36 @@ fn scalar_op32(
             let (difference, overflow) = (a as i32).overflowing_sub(b as i32);
             (difference as u32, Some(overflow))
         }
+        ScalarOp32::SubU32 => (a.wrapping_sub(b), Some(b > a)),
+        ScalarOp32::SubbU32 => {
+            let borrow = u32::from(registers.read_scc()?);
+            let scc = u64::from(b) + u64::from(borrow) > u64::from(a);
+            (a.wrapping_sub(b).wrapping_sub(borrow), Some(scc))
+        }
         ScalarOp32::MulI32 => (a.wrapping_mul(b), None),
         ScalarOp32::MulHiU32 => (((u64::from(a) * u64::from(b)) >> 32) as u32, None),
+        ScalarOp32::MulHiI32 => {
+            let product = i64::from(a as i32) * i64::from(b as i32);
+            ((product >> 32) as u32, None)
+        }
+        ScalarOp32::MinI32 => {
+            let (a, b) = (a as i32, b as i32);
+            (a.min(b) as u32, Some(a < b))
+        }
+        ScalarOp32::MinU32 => (a.min(b), Some(a < b)),
+        ScalarOp32::MaxI32 => {
+            let (a, b) = (a as i32, b as i32);
+            (a.max(b) as u32, Some(a >= b))
+        }
+        ScalarOp32::MaxU32 => (a.max(b), Some(a >= b)),
         ScalarOp32::AndB32 => scc_if_nonzero(a & b),
+        ScalarOp32::OrB32 => scc_if_nonzero(a | b),
         ScalarOp32::XorB32 => scc_if_nonzero(a ^ b),
+        ScalarOp32::AndN2B32 => scc_if_nonzero(a & !b),
+        ScalarOp32::OrN2B32 => scc_if_nonzero(a | !b),
+        ScalarOp32::NandB32 => scc_if_nonzero(!(a & b)),
+        ScalarOp32::NorB32 => scc_if_nonzero(!(a | b)),
+        ScalarOp32::XnorB32 => scc_if_nonzero(!(a ^ b)),
         ScalarOp32::LShlB32 => scc_if_nonzero(a << (b & 31)),
         ScalarOp32::LShrB32 => scc_if_nonzero(a >> (b & 31)),
         ScalarOp32::AShrI32 => scc_if_nonzero(((a as i32) >> (b & 31)) as u32),

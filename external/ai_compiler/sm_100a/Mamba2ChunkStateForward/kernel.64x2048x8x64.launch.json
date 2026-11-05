@@ -1,0 +1,25 @@
+{
+  "description": "AI compiler sm_100a/Mamba2ChunkStateForward/kernel, 1.0984x Triton: PTX Gym's problem, x f16[64, 2048, 8, 64], b f16[64, 2048, 4, 128], states f32[64, 8, 8, 64, 128], dt f32[64, 8, 8, 256], dA_cumsum f32[64, 8, 8, 256], seq_idx i32[64, 2048]",
+  "kernel": "kernel",
+  "block": [64, 1, 1],
+  "grid": [1, 512, 8],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f16", "shape": [64, 2048, 8, 64]},
+    {"name": "b", "kind": "in", "dtype": "f16", "shape": [64, 2048, 4, 128]},
+    {"name": "states", "kind": "out", "dtype": "f32", "shape": [64, 8, 8, 64, 128]},
+    {"name": "dt", "kind": "in", "dtype": "f32", "shape": [64, 8, 8, 256]},
+    {"name": "dA_cumsum", "kind": "in", "dtype": "f32", "shape": [64, 8, 8, 256]},
+    {"name": "seq_idx", "kind": "in", "dtype": "i32", "shape": [64, 2048]}
+  ],
+  "params": [
+    {"name": "x_ptr", "ptr": "x"},
+    {"name": "b_ptr", "ptr": "b"},
+    {"name": "states_ptr", "ptr": "states"},
+    {"name": "dt_ptr", "ptr": "dt"},
+    {"name": "dA_cumsum_ptr", "ptr": "dA_cumsum"},
+    {"name": "seq_idx_ptr", "ptr": "seq_idx"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

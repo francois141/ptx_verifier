@@ -3,10 +3,13 @@
 
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
-use crate::ir::{BinOp, CmpOp, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
+use crate::ir::{
+    BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, F64Op, F64Src, LaneMask, ModifiedSrc,
+    PackedF32Op, Signedness, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
+};
 
 use super::EvalError;
-use super::wave::{WaveRegisters, concrete_word};
+use super::wave::{WaveRegisters, apply_modifiers, concrete_word};
 
 enum OperandType {
     Word,
@@ -43,9 +46,10 @@ fn operand_type(op: BinOp) -> OperandType {
 }
 
 fn ternary_operand_type(op: TernaryOp) -> OperandType {
-    match op {
-        TernaryOp::Min3F32 | TernaryOp::Max3F32 | TernaryOp::Med3F32 => OperandType::F32,
-        _ => OperandType::Word,
+    if op.is_f32() {
+        OperandType::F32
+    } else {
+        OperandType::Word
     }
 }
 
@@ -126,6 +130,151 @@ pub(super) fn evaluate_bin_op(
     })
 }
 
+/// Compute both packed f32 results before the caller overwrites any source registers.
+pub(super) fn evaluate_packed_f32(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: PackedF32Op,
+) -> Result<[ExprId; 2], EvalError> {
+    let mut component = |index| -> Result<ExprId, EvalError> {
+        let mut read =
+            |srcs: [ModifiedSrc; 2]| registers.read_modified_src(arena, lane, srcs[index]);
+        match op {
+            PackedF32Op::Add([src0, src1]) => {
+                let a = read(src0)?;
+                let b = read(src1)?;
+                Ok(arena.add(a, b))
+            }
+            PackedF32Op::Mul([src0, src1]) => {
+                let a = read(src0)?;
+                let b = read(src1)?;
+                Ok(arena.mul(a, b))
+            }
+            PackedF32Op::Fma([src0, src1, src2]) => {
+                let a = read(src0)?;
+                let b = read(src1)?;
+                let c = read(src2)?;
+                Ok(arena.fma(a, b, c))
+            }
+        }
+    };
+    Ok([component(0)?, component(1)?])
+}
+
+/// `op(srcs)` in `lane`, as one f64 value.
+pub(super) fn evaluate_f64_op(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: F64Op,
+) -> Result<ExprId, EvalError> {
+    let mut read = |src| registers.read_modified_f64(arena, lane, src);
+    Ok(match op {
+        F64Op::Add([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.add(a, b)
+        }
+        F64Op::Mul([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.mul(a, b)
+        }
+        F64Op::Min([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.min(a, b)
+        }
+        F64Op::Max([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.max(a, b)
+        }
+        F64Op::Fma([a, b, c]) => {
+            let (a, b, c) = (read(a)?, read(b)?, read(c)?);
+            arena.fma(a, b, c)
+        }
+        F64Op::Rcp([a]) => {
+            let a = read(a)?;
+            arena.rcp(a)
+        }
+        F64Op::Sqrt([a]) => {
+            let a = read(a)?;
+            arena.sqrt(a)
+        }
+        F64Op::Rsq([a]) => {
+            let a = read(a)?;
+            let root = arena.sqrt(a);
+            arena.rcp(root)
+        }
+    })
+}
+
+/// A conversion's source as a real: an f32 keeps its expression, and an integer needs known bits.
+pub(super) fn evaluate_cvt_to_f64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CvtToF64Op,
+    src: ModifiedSrc<Src0>,
+) -> Result<ExprId, EvalError> {
+    let concrete = |arena: &mut ExprArena| {
+        let value = registers.read_src0(arena, lane, src.src)?;
+        concrete_words(arena, lane, [value]).map(|[word]| word)
+    };
+    let integer = match op {
+        CvtToF64Op::F32 => {
+            let value = registers.read_f32_src0(arena, lane, src.src)?;
+            return Ok(apply_modifiers(arena, value, src.abs, src.neg));
+        }
+        CvtToF64Op::I32 => i64::from(concrete(arena)? as i32),
+        CvtToF64Op::U32 => i64::from(concrete(arena)?),
+    };
+    Ok(arena.real(Real::from_i64(integer)))
+}
+
+/// An f64 source converted to `op`'s type: an f32 keeps the exact real, and an integer needs a
+/// concrete value.
+pub(super) fn evaluate_cvt_from_f64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CvtFromF64Op,
+    src: ModifiedSrc<F64Src>,
+) -> Result<ExprId, EvalError> {
+    let value = registers.read_modified_f64(arena, lane, src)?;
+    let symbolic = EvalError::SymbolicWord { lane };
+    Ok(match op {
+        CvtFromF64Op::F32 => value,
+        CvtFromF64Op::I32 => {
+            let truncated = truncate_to_i32(arena, value).ok_or(symbolic)?;
+            arena.int(i64::from(truncated as u32))
+        }
+        CvtFromF64Op::U32 => {
+            let truncated = truncate_to_u32(arena, value).ok_or(symbolic)?;
+            arena.int(i64::from(truncated))
+        }
+    })
+}
+
+/// The boolean `src0 op src1` in `lane` over f64 values.
+pub(super) fn evaluate_cmp_f64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CmpPredicate,
+    src0: ModifiedSrc<F64Src>,
+    src1: ModifiedSrc<F64Src>,
+) -> Result<ExprId, EvalError> {
+    let a = registers.read_modified_f64(arena, lane, src0)?;
+    let b = registers.read_modified_f64(arena, lane, src1)?;
+    Ok(match op {
+        CmpPredicate::Lt => arena.lt(a, b),
+        CmpPredicate::Eq => arena.eq(a, b),
+        CmpPredicate::Le => arena.le(a, b),
+        CmpPredicate::Gt => arena.gt(a, b),
+        CmpPredicate::Ne => arena.ne(a, b),
+        CmpPredicate::Ge => arena.ge(a, b),
+    })
+}
+
 /// `VCC ? src1 : src0` in `lane`. A word selected against a real is the f32 its bits encode,
 /// read as `WaveRegisters::read_f32` reads it; two words are selected by `select_words`.
 pub(super) fn evaluate_cndmask(
@@ -154,21 +303,27 @@ pub(super) fn evaluate_cndmask_e64(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
     lane: usize,
-    src0: Vop3Src,
-    src1: Vop3Src,
+    src0: ModifiedSrc,
+    src1: ModifiedSrc,
     mask: LaneMask,
 ) -> Result<ExprId, EvalError> {
     let condition = registers.read_lane_condition(arena, lane, mask)?;
-    let a = registers.read_src(arena, lane, src0)?;
-    let b = registers.read_src(arena, lane, src1)?;
+    // Source modifiers give the select float semantics (V_CNDMASK_B32).
+    if src0.is_modified() || src1.is_modified() {
+        let a = registers.read_modified_src(arena, lane, src0)?;
+        let b = registers.read_modified_src(arena, lane, src1)?;
+        return Ok(arena.select(condition, b, a));
+    }
+    let a = registers.read_src(arena, lane, src0.src)?;
+    let b = registers.read_src(arena, lane, src1.src)?;
     if let Some(word) = select_words(arena, lane, condition, a, b)? {
         return Ok(word);
     }
     // A symbolic source is a real, so a concrete word selected against it must be the f32 its
     // bits encode, or the select would mix raw bits with reals.
     let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
-        (Some(_), None) => (registers.read_f32_src(arena, lane, src0)?, b),
-        (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1)?),
+        (Some(_), None) => (registers.read_f32_src(arena, lane, src0.src)?, b),
+        (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1.src)?),
         _ => (a, b),
     };
     Ok(arena.select(condition, b, a))
@@ -202,11 +357,11 @@ pub(super) fn evaluate_ternary_op(
     registers: &WaveRegisters,
     lane: usize,
     op: TernaryOp,
-    srcs: [Vop3Src; 3],
+    srcs: [ModifiedSrc; 3],
 ) -> Result<ExprId, EvalError> {
     let [a, b, c] = srcs.map(|src| match ternary_operand_type(op) {
-        OperandType::Word => registers.read_src(arena, lane, src),
-        OperandType::F32 => registers.read_f32_src(arena, lane, src),
+        OperandType::Word => registers.read_src(arena, lane, src.src),
+        OperandType::F32 => registers.read_modified_src(arena, lane, src),
     });
     let (a, b, c) = (a?, b?, c?);
     // Integer operations need concrete words: a symbolic value is a float, without known bits.
@@ -317,6 +472,29 @@ pub(super) fn evaluate_ternary_op(
             };
             arena.int(i64::from(bitop3(table, a, b, c)))
         }
+    })
+}
+
+/// Evaluate `op(src0, src1)` in `lane` on concrete 32-bit integers, rejecting symbolic operands.
+pub(super) fn evaluate_vop3_bin_op(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: Vop3BinOp,
+    src0: Vop3Src,
+    src1: Vop3Src,
+) -> Result<ExprId, EvalError> {
+    let a = registers.read_src(arena, lane, src0)?;
+    let b = registers.read_src(arena, lane, src1)?;
+    // Bit `n` is set for each lane `n` below this one; each masked count examines one word of it.
+    let lower_lanes = (1u64 << lane) - 1;
+    fold_concrete_words(arena, lane, [a, b], |[a, b]| match op {
+        Vop3BinOp::MulLoU32 => a.wrapping_mul(b),
+        Vop3BinOp::MulHiU32 => ((u64::from(a) * u64::from(b)) >> 32) as u32,
+        Vop3BinOp::MulHiI32 => ((i64::from(a as i32) * i64::from(b as i32)) >> 32) as u32,
+        Vop3BinOp::BcntU32 => b.wrapping_add(a.count_ones()),
+        Vop3BinOp::MbcntLoU32 => b.wrapping_add((a & lower_lanes as u32).count_ones()),
+        Vop3BinOp::MbcntHiU32 => b.wrapping_add((a & (lower_lanes >> 32) as u32).count_ones()),
     })
 }
 
@@ -447,20 +625,10 @@ fn unary_operand_type(op: UnaryOp) -> OperandType {
 }
 
 fn cmp_operand_type(op: CmpOp) -> OperandType {
-    match op {
-        CmpOp::LtI32
-        | CmpOp::EqI32
-        | CmpOp::LeI32
-        | CmpOp::GtI32
-        | CmpOp::NeI32
-        | CmpOp::GeI32
-        | CmpOp::LtU32
-        | CmpOp::EqU32
-        | CmpOp::LeU32
-        | CmpOp::GtU32
-        | CmpOp::NeU32
-        | CmpOp::GeU32 => OperandType::Word,
-        CmpOp::LtF32 | CmpOp::LeF32 | CmpOp::EqF32 | CmpOp::LgF32 => OperandType::F32,
+    if op.is_f32() {
+        OperandType::F32
+    } else {
+        OperandType::Word
     }
 }
 
@@ -486,26 +654,60 @@ pub(super) fn evaluate_cmp(
     compare(arena, lane, op, a, b)
 }
 
-/// `evaluate_cmp` over VOP3 sources.
+/// `evaluate_cmp` over VOP3 sources; an f32 comparison applies their input modifiers.
 pub(super) fn evaluate_cmp_e64(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
     lane: usize,
     op: CmpOp,
-    src0: Vop3Src,
-    src1: Vop3Src,
+    src0: ModifiedSrc,
+    src1: ModifiedSrc,
 ) -> Result<ExprId, EvalError> {
     let (a, b) = match cmp_operand_type(op) {
         OperandType::Word => (
-            registers.read_src(arena, lane, src0)?,
-            registers.read_src(arena, lane, src1)?,
+            registers.read_src(arena, lane, src0.src)?,
+            registers.read_src(arena, lane, src1.src)?,
         ),
         OperandType::F32 => (
-            registers.read_f32_src(arena, lane, src0)?,
-            registers.read_f32_src(arena, lane, src1)?,
+            registers.read_modified_src(arena, lane, src0)?,
+            registers.read_modified_src(arena, lane, src1)?,
         ),
     };
     compare(arena, lane, op, a, b)
+}
+
+/// The boolean `src0 op src1` in `lane`, reading each source as two concrete words,
+/// low word first, that together form one 64-bit integer of the given signedness.
+pub(super) fn evaluate_cmp64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CmpPredicate,
+    signedness: Signedness,
+    src0: [Src0; 2],
+    src1: [Src0; 2],
+) -> Result<ExprId, EvalError> {
+    let words = [
+        registers.read_src0(arena, lane, src0[0])?,
+        registers.read_src0(arena, lane, src0[1])?,
+        registers.read_src0(arena, lane, src1[0])?,
+        registers.read_src0(arena, lane, src1[1])?,
+    ];
+    let [a_low, a_high, b_low, b_high] = concrete_words(arena, lane, words)?;
+    let a = (u64::from(a_high) << 32) | u64::from(a_low);
+    let b = (u64::from(b_high) << 32) | u64::from(b_low);
+    let order = match signedness {
+        Signedness::Signed => (a as i64).cmp(&(b as i64)),
+        Signedness::Unsigned => a.cmp(&b),
+    };
+    Ok(arena.bool_val(match op {
+        CmpPredicate::Lt => order.is_lt(),
+        CmpPredicate::Eq => order.is_eq(),
+        CmpPredicate::Le => order.is_le(),
+        CmpPredicate::Gt => order.is_gt(),
+        CmpPredicate::Ne => order.is_ne(),
+        CmpPredicate::Ge => order.is_ge(),
+    }))
 }
 
 /// An integer comparison needs concrete words, which it reinterprets as `op`'s signedness.
@@ -538,6 +740,8 @@ fn compare(
         CmpOp::GeU32 => arena.bool_val(unsigned(arena)?.is_ge()),
         CmpOp::LtF32 => arena.lt(a, b),
         CmpOp::LeF32 => arena.le(a, b),
+        CmpOp::GtF32 => arena.gt(a, b),
+        CmpOp::GeF32 => arena.ge(a, b),
         CmpOp::EqF32 => arena.eq(a, b),
         CmpOp::LgF32 => arena.ne(a, b),
     })
@@ -558,6 +762,26 @@ fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
                 Some(word) => word,
                 None if integer.is_negative() => 0,
                 None => u32::MAX,
+            }
+        }
+    })
+}
+
+/// A concrete real truncated toward zero and clamped to the i32 range; `None` when symbolic.
+fn truncate_to_i32(arena: &ExprArena, value: ExprId) -> Option<i32> {
+    let ExprNode::RealConst(real) = arena.node(value) else {
+        return None;
+    };
+    Some(match real.repr() {
+        RealRepr::NegInf => i32::MIN,
+        RealRepr::PosInf => i32::MAX,
+        RealRepr::Rational(rational) => {
+            let integer = rational.clone().trunc();
+            let integer = integer.numer();
+            match integer.to_i32() {
+                Some(word) => word,
+                None if integer.is_negative() => i32::MIN,
+                None => i32::MAX,
             }
         }
     })

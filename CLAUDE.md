@@ -412,18 +412,43 @@ values. Pending scalar destinations reject reads and writes until a zero LGKM wa
 `execute_lane` evaluates an instruction for a caller-selected active lane.
 `ds_bpermute_b32` gathers source register values across the wave before changing any
 of its destinations; results use the existing LGKM completion tracking.
-`ArrayDef` marks each global-memory array `Input` or `Output`; inputs are read-only
-and outputs cannot be loaded. `analyze` returns a completed run's written output
-elements as `SymbolicOutputs` and none for an aborted run.
+`ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Inputs
+are read-only and outputs cannot be loaded. Global and buffer stores interpret
+`F32` outputs as mathematical reals and require concrete words for `U32` outputs;
+invalid values abort at the store. `analyze` returns a completed run's written
+output elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`. All lanes stay active; EXEC-changing
 instructions are rejected. Integer and bitwise operations require concrete words because
 symbolic values are floats and do not represent bit patterns, so integer arithmetic and
 sign-mask tricks on symbolic values are rejected; floating-point arithmetic and transfers,
 including lane exchanges, remain supported. A select between two different constant words
 under a symbolic condition is rejected (`AmbiguousSelect`).
+Negated select sources use floating-point semantics, so they are not ambiguous.
+F32 e64 comparisons, e64 selects, f32 FMA and three-source f32 operations accept absolute-value
+and negation input modifiers on any source; these operate on mathematical expressions.
+E64 comparisons write VCC or an SGPR pair.
+Packed f32 add, multiply and FMA share component selection and negation handling;
+each register holds one real expression, and either selector reads the same inline constant.
+An f64 register pair holds one real expression or two concrete words that encode one. Reading
+a half as a word, or a pair whose halves no longer match, is rejected; conversions keep the
+exact real. F64 arithmetic, comparisons and conversions share one source reader and modifiers.
+Packed moves select one word from each source and reuse the 64-bit move execution,
+preserving concrete words and symbolic expressions unchanged. An inline constant must use the
+low-word selector, because the high word of its 64-bit source is not established.
+Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
+scalar instructions reject symbolic masks (`SymbolicSgpr`).
+Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
 Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
+The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
+The `vector_int_ops` fixture checks multiplication, bit counts, 64-bit and packed moves,
+and signed 64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
+in both encodings, and `scalar_alu_ops` the scalar ALU, comparison and branch families.
+The `packed_float_ops` fixture checks paired arithmetic, selectors, negation and destination
+overlap against independently derived expressions.
+The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, comparisons and
+moves.
 Rejection fixtures assert the specific lowering or execution error instead of
 comparing outputs.
 `tests/lean_tests.rs` writes the sigmoid fixture's outputs against
@@ -433,7 +458,8 @@ kernel's large-input branch rescales by f32(e^-64), and over the reals the exact
 is false there.
 Do not add unit tests or `tests.rs` modules: cover execution behavior
 through compiled fixtures in `tests/kernels.rs`.
-See the crate README for ISA references, test commands, and fixture regeneration.
+See the crate README for ISA references, test commands, and fixture regeneration,
+including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
 
 ## Crate: volta_trainium_analysis
 
@@ -635,12 +661,14 @@ and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
 anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches),
 `architecture_tests.rs` (the stage/branch boundaries),
-`amd_equivalence_tests.rs` (compiled AMD matmul against `matmul.spec`, including
-a swapped-input negative test; functional equivalence only), and
-`trainium_equivalence_tests.rs` (the NKI `matmul` and `gemm_relu` fixtures against
-the `.spec` files beside them, and `gemm_relu` against the unclamped product as a
-negative test). `just amd` and `just trainium` run each ISA's specification
-comparisons alongside its analysis crate's snapshot tests.
+`amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
+and softmax against their formulas, accounting for CK's column-major B and softmax at
+several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
+or change the softmax row width), and `trainium_equivalence_tests.rs` (the NKI `matmul` 
+and `gemm_relu` fixtures against the `.spec` files beside them, and `gemm_relu` against 
+the unclamped product as a negative test).
+These check functional equivalence only. `just amd` and `just trainium` run them 
+alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
 

@@ -3,7 +3,10 @@
 use std::fmt;
 
 use volta_expr::SymbolicOutputs;
-use volta_graph::{AbortCause, EventGraph, GraphBuilder, Provenance};
+use volta_graph::{
+    AbortCause, Assumption, EventGraph, InstructionInfo, ProgramPoint, Provenance, ThreadIx,
+    ThreadUnit,
+};
 
 use crate::eval::{ArrayDef, EvalError, Interpreter, Terminal, WorkgroupLaunch};
 use crate::frontend::ast::Kernel;
@@ -46,8 +49,8 @@ pub struct AnalysisResult {
     pub terminal: Terminal,
     /// Written output values; absent if execution aborted.
     pub symbolic_outputs: Option<SymbolicOutputs>,
-    /// The execution's event graph. It records no events yet and ends as the execution did,
-    /// so a completed run's graph passes every graph check vacuously.
+    /// The execution's event graph, one thread per wave: its `s_barrier` generations and exits.
+    /// It records no memory access yet, so a completed run passes the memory checks vacuously.
     pub graph: EventGraph,
 }
 
@@ -60,10 +63,11 @@ pub fn analyze(
     arrays: &[ArrayDef],
 ) -> Result<AnalysisResult, AnalysisError> {
     let lowered = lower_kernel(kernel)?;
-    let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays)?;
+    let provenance = provenance(&lowered, launch);
+    let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays, provenance)?;
     let terminal = interp.run(&lowered);
-    let symbolic_outputs = (terminal == Terminal::Completed).then(|| interp.into_outputs());
-    let graph = GraphBuilder::new(provenance(&lowered, launch)).finish(graph_terminal(&terminal));
+    let (graph, outputs) = interp.finish(graph_terminal(&terminal));
+    let symbolic_outputs = (terminal == Terminal::Completed).then_some(outputs);
     Ok(AnalysisResult {
         terminal,
         symbolic_outputs,
@@ -75,9 +79,9 @@ pub fn analyze(
 fn graph_terminal(terminal: &Terminal) -> volta_graph::Terminal {
     match terminal {
         Terminal::Completed => volta_graph::Terminal::Completed,
-        Terminal::Aborted { error, .. } => volta_graph::Terminal::Aborted {
-            thread: None,
-            pc: None,
+        Terminal::Aborted { wave, pc, error } => volta_graph::Terminal::Aborted {
+            thread: Some(ThreadIx(wave.0)),
+            pc: Some(ProgramPoint(pc.0)),
             cause: match error {
                 EvalError::UnsupportedInstruction => AbortCause::Unsupported,
                 _ => AbortCause::Error,
@@ -89,13 +93,26 @@ fn graph_terminal(terminal: &Terminal) -> volta_graph::Terminal {
 
 /// The launch and target this analysis executes under.
 fn provenance(kernel: &LoweredKernel, launch: &WorkgroupLaunch) -> Provenance {
+    let instructions = kernel
+        .instructions
+        .values()
+        .map(|instruction| InstructionInfo {
+            kind: instruction.name(),
+            span: None,
+        })
+        .collect();
     Provenance {
         kernel: kernel.name.clone(),
         block_dim: launch.workgroup_size,
+        unit: ThreadUnit::Wave { lanes: 64 },
         // Workgroup 0 runs alone, and no supported instruction reads the grid size.
         grid_dim: (1, 1, 1),
         targets: vec![kernel.target.clone()],
-        assumptions: Vec::new(),
-        instructions: Vec::new(),
+        assumptions: vec![
+            Assumption::StructuredCta,
+            Assumption::SingleCtaAnalyzed,
+            Assumption::ExitedThreadsArrive,
+        ],
+        instructions,
     }
 }

@@ -23,5 +23,5 @@ pub use ir::tensor_map::{
     Im2colBox, TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode,
 };
-pub use launch_file::LaunchFile;
+pub use launch_file::{LaunchFile, SpecFile};
 pub use lower::LowerError;

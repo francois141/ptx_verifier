@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::eval::LdsRace;
 use crate::ir::{Agpr, Sgpr, Vgpr};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub enum EvalError {
     PartialBufferAccess { buffer_offset: u64 },
     LdsAccess { address: u64, size: u32 },
     UninitializedLds { address: u32 },
+    LdsRace(LdsRace),
     PendingSgpr(Sgpr),
     PendingVgpr { lane: usize, reg: Vgpr },
     InvalidAddressRegister(Sgpr),
@@ -29,10 +31,18 @@ pub enum EvalError {
     InvalidFloatAgpr { lane: usize, reg: Agpr },
     InvalidFloatSgpr(Sgpr),
     InvalidFloatConstant(u32),
+    /// A word instruction read one half of an f64 held across a register pair.
+    F64Half { lane: usize, reg: Vgpr },
+    /// A VGPR pair read as an f64 holds neither one f64 value nor two concrete words.
+    InvalidF64Vgpr { lane: usize, reg: Vgpr },
+    /// The bits of an f64 source encode a NaN.
+    InvalidF64Bits(u64),
     AddressOverflow,
     KernargRead { address: u64 },
     GlobalRead { address: u64 },
     GlobalWrite { address: u64 },
+    InvalidFloatOutput { address: u64 },
+    InvalidIntegerOutput { address: u64 },
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
@@ -101,6 +111,7 @@ impl fmt::Display for EvalError {
             Self::UninitializedLds { address } => {
                 write!(f, "LDS read at {address:#x} of a word no wave has written")
             }
+            Self::LdsRace(race) => write!(f, "{race}"),
             Self::PendingSgpr(reg) => write!(f, "scalar register s{} has a pending load", reg.0),
             Self::PendingVgpr { lane, reg } => {
                 write!(
@@ -144,6 +155,15 @@ impl fmt::Display for EvalError {
                     reg.0
                 )
             }
+            Self::F64Half { lane, reg } => {
+                write!(f, "v{} in lane {lane} holds one half of an f64", reg.0)
+            }
+            Self::InvalidF64Vgpr { lane, reg } => write!(
+                f,
+                "VGPR pair at v{} in lane {lane} holds neither an f64 value nor two concrete words",
+                reg.0
+            ),
+            Self::InvalidF64Bits(bits) => write!(f, "f64 source {bits:#x} is a NaN"),
             Self::InvalidFloatConstant(bits) => {
                 write!(f, "f32 constant {bits:#x} must not be a NaN")
             }
@@ -164,6 +184,18 @@ impl fmt::Display for EvalError {
                 write!(
                     f,
                     "4-byte write at {address:#x} is not an element of an output array"
+                )
+            }
+            Self::InvalidFloatOutput { address } => {
+                write!(
+                    f,
+                    "f32 output at {address:#x} must not be a NaN or wider than 32 bits"
+                )
+            }
+            Self::InvalidIntegerOutput { address } => {
+                write!(
+                    f,
+                    "u32 output at {address:#x} must be a concrete 32-bit word"
                 )
             }
             Self::UnsupportedInstruction => write!(f, "unsupported instruction"),

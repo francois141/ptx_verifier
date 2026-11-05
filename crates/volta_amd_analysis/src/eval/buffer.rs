@@ -134,7 +134,8 @@ impl Interpreter<'_> {
         for (word_index, &reg) in src.iter().enumerate() {
             let word_address = start + 4 * word_index as u64;
             let value = self.waves[wave].registers.read_lane_reg(lane, reg)?;
-            self.global.store_dword(word_address, value)?;
+            self.global
+                .store_dword(word_address, value, &mut self.arena)?;
         }
         Ok(())
     }

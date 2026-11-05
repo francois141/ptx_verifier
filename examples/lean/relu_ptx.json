@@ -1,0 +1,15 @@
+{
+  "description": "relu over 128 fp32 elements into fp16, one per thread",
+  "kernel": "k",
+  "block": 128,
+  "arrays": [
+    {"name": "x",   "kind": "in",  "dtype": "f32", "shape": [128]},
+    {"name": "out", "kind": "out", "dtype": "f16", "shape": [128]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "out"}
+  ],
+  "spec": "relu.spec",
+  "dims": {"N": 128}
+}

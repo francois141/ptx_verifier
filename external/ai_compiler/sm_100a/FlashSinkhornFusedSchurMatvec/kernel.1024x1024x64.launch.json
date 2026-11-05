@@ -1,0 +1,34 @@
+{
+  "description": "AI compiler sm_100a/FlashSinkhornFusedSchurMatvec/kernel, 1.5491x Triton: PTX Gym's problem, x f16[1024, 64], y f16[1024, 64], f_hat f32[1024], g_hat f32[1024], log_a f32[1024], log_b f32[1024], f_out f32[1024], g_out f32[1024], labels i32[1], W f32[1]",
+  "kernel": "kernel",
+  "block": [256, 1, 1],
+  "grid": [64, 1, 1],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f16", "shape": [1024, 64]},
+    {"name": "y", "kind": "in", "dtype": "f16", "shape": [1024, 64]},
+    {"name": "f_hat", "kind": "in", "dtype": "f32", "shape": [1024]},
+    {"name": "g_hat", "kind": "in", "dtype": "f32", "shape": [1024]},
+    {"name": "log_a", "kind": "in", "dtype": "f32", "shape": [1024]},
+    {"name": "log_b", "kind": "in", "dtype": "f32", "shape": [1024]},
+    {"name": "f_out", "kind": "out", "dtype": "f32", "shape": [1024]},
+    {"name": "g_out", "kind": "out", "dtype": "f32", "shape": [1024]},
+    {"name": "labels", "kind": "in", "dtype": "i32", "shape": [1]},
+    {"name": "W", "kind": "in", "dtype": "f32", "shape": [1]}
+  ],
+  "params": [
+    {"name": "x_ptr", "ptr": "x"},
+    {"name": "y_ptr", "ptr": "y"},
+    {"name": "f_hat_ptr", "ptr": "f_hat"},
+    {"name": "g_hat_ptr", "ptr": "g_hat"},
+    {"name": "log_a_ptr", "ptr": "log_a"},
+    {"name": "log_b_ptr", "ptr": "log_b"},
+    {"name": "f_out_ptr", "ptr": "f_out"},
+    {"name": "g_out_ptr", "ptr": "g_out"},
+    {"name": "label_x_ptr", "ptr": "labels"},
+    {"name": "label_y_ptr", "ptr": "labels"},
+    {"name": "W_ptr", "ptr": "W"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

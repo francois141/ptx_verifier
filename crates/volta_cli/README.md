@@ -1,8 +1,15 @@
 # volta_cli
 
-The `volta` binary (`src/main.rs`). It parses command-line flags into an
-`AnalysisConfig`, drives `volta_pipeline`, and prints results with exit codes.
-It holds no verification logic of its own.
+The `volta` binary parses command-line flags into an `AnalysisConfig`, drives
+`volta_pipeline`, and prints results with exit codes. It holds no verification
+logic of its own.
+
+`src/main.rs` handles startup, logging, and dispatch. `src/cli.rs` defines the
+command tree and global options, while `src/commands/` groups each command's
+arguments and handler (with `solve` and `extract lean` sharing `kernel.rs`).
+Shared helpers live in `config.rs` (launch configuration), `ptx.rs` (PTX loading
+and analysis), `spec.rs` (specification loading), and `output.rs` (reports, exit
+codes, and expression output).
 
 | command | does | exit |
 |---------|------|------|
@@ -10,9 +17,20 @@ It holds no verification logic of its own.
 | `volta analyze <file> -k K ...` | analysis + the ten graph checks: prints the symbolic outputs, a per-instruction-kind profile (`--no-profile`), each check's verdict, any deadlock and the first failure; `GRAPH VERIFICATION: VERIFIED \| REJECTED \| UNKNOWN` | 0 / 1 / 2 |
 | `volta compare <ref> <opt> --kernel1 .. --kernel2 .. --check-array A` | both kernels through both branches, then `decide`: `VERDICT: ACCEPT \| REJECT \| UNKNOWN` | 0 / 1 / 2 |
 | `volta verify <file> <spec> -k K --dim N=..` | one kernel against a `.spec` (file or inline string), through both branches and `decide` | 0 / 1 / 2 |
+| `volta solve <file> --spec SPEC --dim N=..` | PTX, AMD or Trainium kernel checked by the canonical solver | 0 / 1 / 2 |
+| `volta extract lean <file> --spec SPEC --dim N=.. -o challenge.lean` | graph checks followed by Lean proof obligations; requires a spec, including one supplied by `--config` | 0 / 1 |
 | `volta viz <store> -o page.html` | the `volta_viz` page over a run store | |
 
 ## Flow of a command
+
+Lean extraction uses `volta extract lean`, replacing `solve --solver lean`.
+`--tolerance 1/1000` states an absolute error bound instead of exact equality.
+The output defaults to the kernel file's stem with a `.lean` extension;
+`--output FILE` (`-o`, also `--lean-out`) selects another destination.
+Detected races, deadlocks, incomplete PTX checks or extraction failures return
+exit code 1 before creating or overwriting the Lean output. AMD and Trainium
+currently extract without race checks. Exit code 0 means the module was written;
+the propositions still require proofs.
 
 ```
 clap args ──► LaunchArgs (shared, flattened) ──► AnalysisConfig

@@ -1,7 +1,8 @@
 # volta_py
 
 Python bindings (PyO3, built with maturin) for the Volta engine, published as
-the `volta` Python module. This is v0: `parse`, `analyze` and `verify`.
+the `volta` Python module. PTX source APIs are `parse`, `analyze` and `verify`;
+`solve` and `extract_lean` accept kernel files for PTX, AMD and Trainium.
 `compare` is not exposed yet; see `volta_cli` for the full command set.
 
 ```python
@@ -21,6 +22,14 @@ assert v.equivalent and v.mismatches == []
 
 ## Modules
 
+- `solve.rs`: `solve(path, config=None, spec=..., dims=...)` checks outputs
+  with the canonical solver and returns a `SolveResult` with its verdict.
+- `extract.rs`: `extract_lean(path, config=None, spec=..., dims=..., tolerance=None)`
+  returns a `LeanExtraction` with `lean`, `statements`, `isa` and `race_verified`.
+  Detected races raise `DataRaceError`, deadlocks raise `DeadlockError`, and other
+  failed or incomplete graph checks raise `VoltaError` before any module is returned.
+  AMD and Trainium have no graph checks and return `race_verified=None`.
+  The propositions still need proofs. This replaces `solve(..., solver="lean")`.
 - `config.rs`: Python classes that wrap the Rust config types one to one
   (`Config`, `ArrayDef`, `ArrayKind`, `Param`), instead of the CLI's string
   mini-language (`"x:0x10000:4:128:in"`).

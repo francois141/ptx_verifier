@@ -8,7 +8,7 @@ use volta_graph::{
     CollectiveSide, ContributionKind, EventGraph, EventId, FenceKind, Footprint,
     GenerationEvidence, GenerationId, GenerationKind, GraphBuilder, InstructionInfo, MemAccess,
     MemberOrdering, OperandRole, OrderingKind, Parity, ProgramPoint, Provenance, Proxy, Space,
-    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx,
+    StoredValue, SyncObjectId, SyncObjectKind, Terminal, ThreadIx, ThreadUnit,
 };
 
 pub const PC: ProgramPoint = ProgramPoint(0);
@@ -17,6 +17,7 @@ pub fn provenance(threads: u32) -> Provenance {
     Provenance {
         kernel: "k".to_string(),
         block_dim: (threads, 1, 1),
+        unit: ThreadUnit::CtaThread,
         grid_dim: (1, 1, 1),
         targets: vec!["Sm100a".to_string()],
         assumptions: vec![Assumption::StructuredCta, Assumption::ExitedThreadsArrive],

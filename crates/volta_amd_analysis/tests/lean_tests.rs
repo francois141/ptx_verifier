@@ -9,6 +9,7 @@ use std::path::Path;
 
 use common::array;
 use rug::Rational;
+use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind};
 use volta_expr::lean::{Claim, to_lean};
 use volta_spec::extract_expressions_from_spec;
@@ -18,7 +19,7 @@ use volta_spec::extract_expressions_from_spec;
 fn the_sigmoid_kernel_is_stated_within_a_thousandth_of_its_formula() {
     let arrays = [
         array("a", 0x10000, ArrayKind::Input),
-        array("out", 0x20000, ArrayKind::Output),
+        array("out", 0x20000, ArrayKind::Output(F32)),
     ];
     let claim = Claim::Within(Rational::from((1, 1000)));
     let lean = write_challenge("sigmoid", &arrays, &claim)

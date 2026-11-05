@@ -1,0 +1,19 @@
+{
+  "description": "AI compiler sm_100a/RMSNormFloat8Kernel/kernel, 1.0206x Triton: PTX Gym's problem, x e4m3[256, 4096], weight e4m3[256, 4096], output f16[256, 4096]",
+  "kernel": "kernel",
+  "block": [512, 1, 1],
+  "grid": [256, 1, 1],
+  "dynamic_shared_bytes": 232448,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "e4m3", "shape": [256, 4096]},
+    {"name": "weight", "kind": "in", "dtype": "e4m3", "shape": [256, 4096]},
+    {"name": "output", "kind": "out", "dtype": "f16", "shape": [256, 4096]}
+  ],
+  "params": [
+    {"name": "x_ptr", "ptr": "x"},
+    {"name": "weight_ptr", "ptr": "weight"},
+    {"name": "output_ptr", "ptr": "output"},
+    {"name": "Triton scratch pointer", "int": 0},
+    {"name": "Triton scratch pointer", "int": 0}
+  ]
+}

@@ -10,7 +10,7 @@ use crate::model::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOpKind, BarrierArrivals, BlockedOn,
     BulkWaitScope, CollectiveSide, ContributionKind, EventKind, ExecContext, FenceKind, Footprint,
     GenerationKind, GroupFamily, MemberOrdering, OrderingKind, Parity, Proxy, Space, StoredValue,
-    SyncObjectKind, Terminal,
+    SyncObjectKind, Terminal, ThreadUnit,
 };
 
 impl EventGraph {
@@ -30,6 +30,9 @@ impl EventGraph {
             p.grid_dim.2,
             p.targets.join(",")
         )?;
+        if let ThreadUnit::Wave { lanes } = p.unit {
+            writeln!(out, "threads are waves of {lanes}")?;
+        }
         for a in &p.assumptions {
             writeln!(out, "assume {:?}", a)?;
         }

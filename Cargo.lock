@@ -738,7 +738,9 @@ name = "volta_pipeline"
 version = "0.1.0"
 dependencies = [
  "log",
+ "rug",
  "volta_amd_analysis",
+ "volta_common",
  "volta_equivalence",
  "volta_expr",
  "volta_graph",
