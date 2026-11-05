@@ -4,17 +4,18 @@
 use std::collections::BTreeMap;
 
 use id_collections::IdVec;
-use volta_expr::{ExprArena, SymbolicOutputs};
+use volta_expr::{ExprArena, ExprId, SymbolicOutputs};
 
 use crate::ir::{
-    BranchCondition, CmpOp, CmpPredicate, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses,
-    LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Signedness, Src0, Vgpr, Vop3Src,
+    BranchCondition, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr,
+    LoweredKernel, Sgpr, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
 use super::arithm::{
-    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp64, evaluate_cndmask,
-    evaluate_cndmask_e64, evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op,
+    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp_f64, evaluate_cmp64,
+    evaluate_cndmask, evaluate_cndmask_e64, evaluate_cvt_from_f64, evaluate_cvt_to_f64,
+    evaluate_f64_op, evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op,
     evaluate_vop3_bin_op,
 };
 use super::global::{ArrayDef, GlobalMemory};
@@ -22,7 +23,7 @@ use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
-use super::wave::{LoadCounter, Status, WaveId, WaveState, concrete_word};
+use super::wave::{LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word};
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`, and the
@@ -165,14 +166,26 @@ impl<'a> Interpreter<'a> {
                 dst,
                 src0,
                 src1,
-            } => self.execute_cmp_e64(wave, *op, *dst, *src0, *src1)?,
+            } => self.write_comparison(wave, *dst, |arena, registers, lane| {
+                evaluate_cmp_e64(arena, registers, lane, *op, *src0, *src1)
+            })?,
             LoweredInstr::Cmp64 {
                 op,
                 signedness,
                 dst,
                 src0,
                 src1,
-            } => self.execute_cmp64(wave, *op, *signedness, *dst, *src0, *src1)?,
+            } => self.write_comparison(wave, *dst, |arena, registers, lane| {
+                evaluate_cmp64(arena, registers, lane, *op, *signedness, *src0, *src1)
+            })?,
+            LoweredInstr::CmpF64 {
+                op,
+                dst,
+                src0,
+                src1,
+            } => self.write_comparison(wave, *dst, |arena, registers, lane| {
+                evaluate_cmp_f64(arena, registers, lane, *op, *src0, *src1)
+            })?,
             LoweredInstr::MadU64U32 {
                 dst,
                 carry,
@@ -213,6 +226,9 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
+            | LoweredInstr::F64 { .. }
+            | LoweredInstr::CvtToF64 { .. }
+            | LoweredInstr::CvtFromF64 { .. }
             | LoweredInstr::PackedF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
@@ -239,42 +255,6 @@ impl<'a> Interpreter<'a> {
             BranchCondition::ExecZ => Ok(false),
             BranchCondition::ExecNz => Ok(true),
         }
-    }
-
-    /// Every lane's comparison is evaluated before `dst` is written, as a source may be `dst`.
-    fn execute_cmp_e64(
-        &mut self,
-        wave: WaveId,
-        op: CmpOp,
-        dst: LaneMask,
-        src0: ModifiedSrc,
-        src1: ModifiedSrc,
-    ) -> Result<(), EvalError> {
-        let registers = &mut self.waves[wave].registers;
-        // Read every lane before writing the mask, which may overlap a scalar source.
-        let conditions = (0..64)
-            .map(|lane| evaluate_cmp_e64(&mut self.arena, registers, lane, op, src0, src1))
-            .collect::<Result<Vec<_>, _>>()?;
-        registers.write_lane_mask(&mut self.arena, dst, &conditions)
-    }
-
-    /// Every lane's comparison is evaluated before `dst` is written, as a source may be `dst`.
-    fn execute_cmp64(
-        &mut self,
-        wave: WaveId,
-        op: CmpPredicate,
-        signedness: Signedness,
-        dst: LaneMask,
-        src0: [Src0; 2],
-        src1: [Src0; 2],
-    ) -> Result<(), EvalError> {
-        let registers = &mut self.waves[wave].registers;
-        let conditions = (0..64)
-            .map(|lane| {
-                evaluate_cmp64(&mut self.arena, registers, lane, op, signedness, src0, src1)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        registers.write_lane_mask(&mut self.arena, dst, &conditions)
     }
 
     /// Every lane's result is computed before `dst` and `carry` are written, as either may
@@ -321,6 +301,20 @@ impl<'a> Interpreter<'a> {
         registers.write_sgpr_pair(&mut self.arena, carry, carries)
     }
 
+    /// Evaluate a comparison in every lane before writing `dst`, which may overlap a source.
+    fn write_comparison(
+        &mut self,
+        wave: WaveId,
+        dst: LaneMask,
+        evaluate: impl Fn(&mut ExprArena, &WaveRegisters, usize) -> Result<ExprId, EvalError>,
+    ) -> Result<(), EvalError> {
+        let registers = &mut self.waves[wave].registers;
+        let conditions = (0..64)
+            .map(|lane| evaluate(&mut self.arena, registers, lane))
+            .collect::<Result<Vec<_>, _>>()?;
+        registers.write_lane_mask(&mut self.arena, dst, &conditions)
+    }
+
     /// Execute one instruction for an active lane of `wave` selected by the caller.
     pub(crate) fn execute_lane(
         &mut self,
@@ -358,10 +352,19 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::Mov64 { dst, src } => {
-                let low = registers.read_src0(&mut self.arena, lane, src[0])?;
-                let high = registers.read_src0(&mut self.arena, lane, src[1])?;
-                registers.write_vgpr(lane, dst[0], low)?;
-                registers.write_vgpr(lane, dst[1], high)
+                registers.move_words(&mut self.arena, lane, *dst, *src)
+            }
+            LoweredInstr::F64 { dst, op } => {
+                let result = evaluate_f64_op(&mut self.arena, registers, lane, *op)?;
+                registers.write_f64(lane, *dst, result)
+            }
+            LoweredInstr::CvtToF64 { op, dst, src } => {
+                let result = evaluate_cvt_to_f64(&mut self.arena, registers, lane, *op, *src)?;
+                registers.write_f64(lane, *dst, result)
+            }
+            LoweredInstr::CvtFromF64 { op, dst, src } => {
+                let result = evaluate_cvt_from_f64(&mut self.arena, registers, lane, *op, *src)?;
+                registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::Cmp { op, src0, src1 } => {
                 let condition = evaluate_cmp(&mut self.arena, registers, lane, *op, *src0, *src1)?;

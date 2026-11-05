@@ -69,19 +69,57 @@ pub enum Vop3Src {
     Inline(u32),
 }
 
-/// A VOP3 f32 source with its input modifiers: `abs` takes the absolute value, then `neg`
-/// negates it. The modifiers act on the real the source holds, not on its bits.
+/// A float source with its input modifiers: `abs` takes the absolute value, then `neg` negates
+/// it. The modifiers act on the real the source holds, not on its bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModifiedSrc {
-    pub src: Vop3Src,
+pub struct ModifiedSrc<S = Vop3Src> {
+    pub src: S,
     pub abs: bool,
     pub neg: bool,
 }
 
-impl ModifiedSrc {
-    pub fn is_modified(self) -> bool {
+impl<S> ModifiedSrc<S> {
+    pub fn is_modified(&self) -> bool {
         self.abs || self.neg
     }
+}
+
+/// An f64 source: a VGPR pair, an SGPR pair, or the 64 bits of a constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum F64Src {
+    Vgprs([Vgpr; 2]),
+    Sgprs([Sgpr; 2]),
+    Const(u64),
+}
+
+/// An f64 operation over its modified sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum F64Op {
+    Add([ModifiedSrc<F64Src>; 2]),
+    Mul([ModifiedSrc<F64Src>; 2]),
+    Min([ModifiedSrc<F64Src>; 2]),
+    Max([ModifiedSrc<F64Src>; 2]),
+    Fma([ModifiedSrc<F64Src>; 3]),
+    Rcp([ModifiedSrc<F64Src>; 1]),
+    Sqrt([ModifiedSrc<F64Src>; 1]),
+    /// `1 / sqrt(src)`.
+    Rsq([ModifiedSrc<F64Src>; 1]),
+}
+
+/// The source type of a conversion to f64.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CvtToF64Op {
+    F32,
+    I32,
+    U32,
+}
+
+/// The result type of a conversion from f64; integer results truncate toward zero and clamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CvtFromF64Op {
+    F32,
+    I32,
+    U32,
 }
 
 /// Packed f32 arithmetic with two selected components per source. The operand count
@@ -773,6 +811,13 @@ pub enum LoweredInstr {
         src0: [Src0; 2],
         src1: [Src0; 2],
     },
+    /// Sets each lane's bit of VCC or an SGPR-pair mask to `src0 op src1` over f64 values.
+    CmpF64 {
+        op: CmpPredicate,
+        dst: LaneMask,
+        src0: ModifiedSrc<F64Src>,
+        src1: ModifiedSrc<F64Src>,
+    },
     /// Sets each lane's bit of VCC or an SGPR-pair mask to `src0 op src1`. Only an f32
     /// comparison's sources may carry input modifiers.
     CmpE64 {
@@ -825,6 +870,23 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src0: Src0,
         src1: Vgpr,
+    },
+    /// `dst = op(srcs)` in each lane, as one f64 value across the pair.
+    F64 {
+        dst: [Vgpr; 2],
+        op: F64Op,
+    },
+    /// Convert a source to one f64 value across the pair in each lane.
+    CvtToF64 {
+        op: CvtToF64Op,
+        dst: [Vgpr; 2],
+        src: ModifiedSrc<Src0>,
+    },
+    /// Convert an f64 source in each lane.
+    CvtFromF64 {
+        op: CvtFromF64Op,
+        dst: Vgpr,
+        src: ModifiedSrc<F64Src>,
     },
     /// Compute two f32 results; lowering resolves source-word selectors and negation.
     PackedF32 {

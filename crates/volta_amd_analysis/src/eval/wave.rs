@@ -6,7 +6,7 @@ use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
 
 use crate::ir::{
-    Agpr, GlobalAddress, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0, Vgpr, Vop3Src,
+    Agpr, F64Src, GlobalAddress, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -53,6 +53,15 @@ enum RegValue {
     Pending(ExprId),
 }
 
+/// A vector register holds a word, or one half of an f64 stored as a single real across a pair.
+/// Both halves name the real, so a pair is one f64 only while its halves still match.
+#[derive(Debug, Clone, Copy)]
+enum VectorValue {
+    Word(RegValue),
+    F64Low(ExprId),
+    F64High(ExprId),
+}
+
 /// ScalarValue distinguishes one stored value from 32 separate lane predicates.
 /// For a single value, the inner RegValue tracks whether it can be read.
 /// Storing each mask half in its own SGPR makes overwrites replace the affected predicates.
@@ -86,7 +95,7 @@ pub(super) enum LoadCounter {
 /// loaded.
 #[derive(Debug, Clone)]
 struct LaneRegisters {
-    values: [RegValue; 256],
+    values: [VectorValue; 256],
     accumulators: [Option<ExprId>; 256],
     vcc: Option<ExprId>,
     pending_loads: VecDeque<Vec<Vgpr>>,
@@ -97,7 +106,7 @@ struct LaneRegisters {
 impl Default for WaveRegisters {
     fn default() -> Self {
         let lane = LaneRegisters {
-            values: [RegValue::Uninitialized; 256],
+            values: [VectorValue::Word(RegValue::Uninitialized); 256],
             accumulators: [None; 256],
             vcc: None,
             pending_loads: VecDeque::new(),
@@ -310,9 +319,14 @@ impl WaveRegisters {
     pub fn read_vgpr(&self, lane: usize, reg: Vgpr) -> Result<ExprId, EvalError> {
         let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
         match registers.values[usize::from(reg.0)] {
-            RegValue::Ready(value) => Ok(value),
-            RegValue::Pending(_) => Err(EvalError::PendingVgpr { lane, reg }),
-            RegValue::Uninitialized => Err(EvalError::UninitializedVgpr { lane, reg }),
+            VectorValue::Word(RegValue::Ready(value)) => Ok(value),
+            VectorValue::Word(RegValue::Pending(_)) => Err(EvalError::PendingVgpr { lane, reg }),
+            VectorValue::Word(RegValue::Uninitialized) => {
+                Err(EvalError::UninitializedVgpr { lane, reg })
+            }
+            VectorValue::F64Low(_) | VectorValue::F64High(_) => {
+                Err(EvalError::F64Half { lane, reg })
+            }
         }
     }
 
@@ -410,8 +424,52 @@ impl WaveRegisters {
         src: ModifiedSrc,
     ) -> Result<ExprId, EvalError> {
         let value = self.read_f32_src(arena, lane, src.src)?;
-        let value = if src.abs { arena.abs(value) } else { value };
-        Ok(if src.neg { arena.neg(value) } else { value })
+        Ok(apply_modifiers(arena, value, src.abs, src.neg))
+    }
+
+    /// `lane`'s value of an f64 source. A VGPR pair holds one f64 value or two concrete words
+    /// that encode one; a broken pair and a pair of symbolic f32 words are not an f64.
+    pub fn read_f64_src(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: F64Src,
+    ) -> Result<ExprId, EvalError> {
+        let bits = match src {
+            F64Src::Vgprs(pair) => {
+                let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+                let [low, high] = pair.map(|reg| registers.values[usize::from(reg.0)]);
+                if let (VectorValue::F64Low(value), VectorValue::F64High(other)) = (low, high)
+                    && value == other
+                {
+                    return Ok(value);
+                }
+                let low = self.read_vgpr(lane, pair[0])?;
+                let high = self.read_vgpr(lane, pair[1])?;
+                let (Some(low), Some(high)) =
+                    (concrete_word(arena, low), concrete_word(arena, high))
+                else {
+                    return Err(EvalError::InvalidF64Vgpr { lane, reg: pair[0] });
+                };
+                u64::from(low) | (u64::from(high) << 32)
+            }
+            F64Src::Sgprs(pair) => self.read_sgpr_pair(arena, pair)?,
+            F64Src::Const(bits) => bits,
+        };
+        arena
+            .float_from_f64(f64::from_bits(bits))
+            .map_err(|_| EvalError::InvalidF64Bits(bits))
+    }
+
+    /// `lane`'s value of an f64 source after its input modifiers.
+    pub fn read_modified_f64(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: ModifiedSrc<F64Src>,
+    ) -> Result<ExprId, EvalError> {
+        let value = self.read_f64_src(arena, lane, src.src)?;
+        Ok(apply_modifiers(arena, value, src.abs, src.neg))
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
@@ -459,8 +517,56 @@ impl WaveRegisters {
     /// Write a vector register in one lane unless the lane is invalid or a load is still writing
     /// to the register.
     pub fn write_vgpr(&mut self, lane: usize, reg: Vgpr, value: ExprId) -> Result<(), EvalError> {
-        *self.vector_destination(lane, reg)? = RegValue::Ready(value);
+        *self.vector_destination(lane, reg)? = VectorValue::Word(RegValue::Ready(value));
         Ok(())
+    }
+
+    /// Write one f64 value across a VGPR pair, unless a load is still writing either half.
+    pub fn write_f64(
+        &mut self,
+        lane: usize,
+        dst: [Vgpr; 2],
+        value: ExprId,
+    ) -> Result<(), EvalError> {
+        self.vector_destination(lane, dst[0])?;
+        *self.vector_destination(lane, dst[1])? = VectorValue::F64High(value);
+        *self.vector_destination(lane, dst[0])? = VectorValue::F64Low(value);
+        Ok(())
+    }
+
+    /// Copy two source words to a VGPR pair, reading both before writing either. An f64 half
+    /// stays a half, so a whole copy keeps the f64 and a copy that splits it leaves none.
+    pub fn move_words(
+        &mut self,
+        arena: &mut ExprArena,
+        lane: usize,
+        dst: [Vgpr; 2],
+        src: [Src0; 2],
+    ) -> Result<(), EvalError> {
+        let low = self.move_source(arena, lane, src[0])?;
+        let high = self.move_source(arena, lane, src[1])?;
+        self.vector_destination(lane, dst[0])?;
+        *self.vector_destination(lane, dst[1])? = high;
+        *self.vector_destination(lane, dst[0])? = low;
+        Ok(())
+    }
+
+    /// A moved source's stored form: an f64 half stays a half, and anything else is a word.
+    fn move_source(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        src: Src0,
+    ) -> Result<VectorValue, EvalError> {
+        if let Src0::Vgpr(reg) = src {
+            let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+            let value = registers.values[usize::from(reg.0)];
+            if matches!(value, VectorValue::F64Low(_) | VectorValue::F64High(_)) {
+                return Ok(value);
+            }
+        }
+        let value = self.read_src0(arena, lane, src)?;
+        Ok(VectorValue::Word(RegValue::Ready(value)))
     }
 
     pub fn write_lane_reg(
@@ -520,7 +626,7 @@ impl WaveRegisters {
 
         let registers = &mut self.vector[lane];
         for (&reg, &value) in dst.iter().zip(values) {
-            registers.values[usize::from(reg.0)] = RegValue::Pending(value);
+            registers.values[usize::from(reg.0)] = VectorValue::Word(RegValue::Pending(value));
         }
         match counter {
             LoadCounter::Vm => registers.pending_loads.push_back(dst.to_vec()),
@@ -546,14 +652,18 @@ impl WaveRegisters {
         Ok(())
     }
 
-    fn vector_destination(&mut self, lane: usize, reg: Vgpr) -> Result<&mut RegValue, EvalError> {
+    fn vector_destination(
+        &mut self,
+        lane: usize,
+        reg: Vgpr,
+    ) -> Result<&mut VectorValue, EvalError> {
         let registers = self
             .vector
             .get_mut(lane)
             .ok_or(EvalError::InvalidLane(lane))?;
         let slot = &mut registers.values[usize::from(reg.0)];
         match slot {
-            RegValue::Pending(_) => Err(EvalError::PendingVgpr { lane, reg }),
+            VectorValue::Word(RegValue::Pending(_)) => Err(EvalError::PendingVgpr { lane, reg }),
             _ => Ok(slot),
         }
     }
@@ -573,8 +683,8 @@ impl WaveRegisters {
                 for reg in load {
                     let slot = &mut registers.values[usize::from(reg.0)];
 
-                    if let RegValue::Pending(value) = *slot {
-                        *slot = RegValue::Ready(value);
+                    if let VectorValue::Word(RegValue::Pending(value)) = *slot {
+                        *slot = VectorValue::Word(RegValue::Ready(value));
                     }
                 }
             }
@@ -598,6 +708,17 @@ pub(super) fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
             .and_then(|bits| f32_from_bits(arena, bits)),
         None => Some(value),
     }
+}
+
+/// A float `value` after its input modifiers: the absolute value, then the negation.
+pub(super) fn apply_modifiers(
+    arena: &mut ExprArena,
+    value: ExprId,
+    abs: bool,
+    neg: bool,
+) -> ExprId {
+    let value = if abs { arena.abs(value) } else { value };
+    if neg { arena.neg(value) } else { value }
 }
 
 /// The f32 that `bits` encode, as an exact real; `None` for a NaN.

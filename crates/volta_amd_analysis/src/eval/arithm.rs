@@ -4,12 +4,12 @@
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 use crate::ir::{
-    BinOp, CmpOp, CmpPredicate, LaneMask, ModifiedSrc, PackedF32Op, Signedness, Src0, TernaryOp,
-    UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
+    BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, F64Op, F64Src, LaneMask, ModifiedSrc,
+    PackedF32Op, Signedness, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
 };
 
 use super::EvalError;
-use super::wave::{WaveRegisters, concrete_word};
+use super::wave::{WaveRegisters, apply_modifiers, concrete_word};
 
 enum OperandType {
     Word,
@@ -160,6 +160,119 @@ pub(super) fn evaluate_packed_f32(
         }
     };
     Ok([component(0)?, component(1)?])
+}
+
+/// `op(srcs)` in `lane`, as one f64 value.
+pub(super) fn evaluate_f64_op(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: F64Op,
+) -> Result<ExprId, EvalError> {
+    let mut read = |src| registers.read_modified_f64(arena, lane, src);
+    Ok(match op {
+        F64Op::Add([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.add(a, b)
+        }
+        F64Op::Mul([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.mul(a, b)
+        }
+        F64Op::Min([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.min(a, b)
+        }
+        F64Op::Max([a, b]) => {
+            let (a, b) = (read(a)?, read(b)?);
+            arena.max(a, b)
+        }
+        F64Op::Fma([a, b, c]) => {
+            let (a, b, c) = (read(a)?, read(b)?, read(c)?);
+            arena.fma(a, b, c)
+        }
+        F64Op::Rcp([a]) => {
+            let a = read(a)?;
+            arena.rcp(a)
+        }
+        F64Op::Sqrt([a]) => {
+            let a = read(a)?;
+            arena.sqrt(a)
+        }
+        F64Op::Rsq([a]) => {
+            let a = read(a)?;
+            let root = arena.sqrt(a);
+            arena.rcp(root)
+        }
+    })
+}
+
+/// A conversion's source as a real: an f32 keeps its expression, and an integer needs known bits.
+pub(super) fn evaluate_cvt_to_f64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CvtToF64Op,
+    src: ModifiedSrc<Src0>,
+) -> Result<ExprId, EvalError> {
+    let concrete = |arena: &mut ExprArena| {
+        let value = registers.read_src0(arena, lane, src.src)?;
+        concrete_words(arena, lane, [value]).map(|[word]| word)
+    };
+    let integer = match op {
+        CvtToF64Op::F32 => {
+            let value = registers.read_f32_src0(arena, lane, src.src)?;
+            return Ok(apply_modifiers(arena, value, src.abs, src.neg));
+        }
+        CvtToF64Op::I32 => i64::from(concrete(arena)? as i32),
+        CvtToF64Op::U32 => i64::from(concrete(arena)?),
+    };
+    Ok(arena.real(Real::from_i64(integer)))
+}
+
+/// An f64 source converted to `op`'s type: an f32 keeps the exact real, and an integer needs a
+/// concrete value.
+pub(super) fn evaluate_cvt_from_f64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CvtFromF64Op,
+    src: ModifiedSrc<F64Src>,
+) -> Result<ExprId, EvalError> {
+    let value = registers.read_modified_f64(arena, lane, src)?;
+    let symbolic = EvalError::SymbolicWord { lane };
+    Ok(match op {
+        CvtFromF64Op::F32 => value,
+        CvtFromF64Op::I32 => {
+            let truncated = truncate_to_i32(arena, value).ok_or(symbolic)?;
+            arena.int(i64::from(truncated as u32))
+        }
+        CvtFromF64Op::U32 => {
+            let truncated = truncate_to_u32(arena, value).ok_or(symbolic)?;
+            arena.int(i64::from(truncated))
+        }
+    })
+}
+
+/// The boolean `src0 op src1` in `lane` over f64 values.
+pub(super) fn evaluate_cmp_f64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: CmpPredicate,
+    src0: ModifiedSrc<F64Src>,
+    src1: ModifiedSrc<F64Src>,
+) -> Result<ExprId, EvalError> {
+    let a = registers.read_modified_f64(arena, lane, src0)?;
+    let b = registers.read_modified_f64(arena, lane, src1)?;
+    Ok(match op {
+        CmpPredicate::Lt => arena.lt(a, b),
+        CmpPredicate::Eq => arena.eq(a, b),
+        CmpPredicate::Le => arena.le(a, b),
+        CmpPredicate::Gt => arena.gt(a, b),
+        CmpPredicate::Ne => arena.ne(a, b),
+        CmpPredicate::Ge => arena.ge(a, b),
+    })
 }
 
 /// `VCC ? src1 : src0` in `lane`. A word selected against a real is the f32 its bits encode,
@@ -649,6 +762,26 @@ fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
                 Some(word) => word,
                 None if integer.is_negative() => 0,
                 None => u32::MAX,
+            }
+        }
+    })
+}
+
+/// A concrete real truncated toward zero and clamped to the i32 range; `None` when symbolic.
+fn truncate_to_i32(arena: &ExprArena, value: ExprId) -> Option<i32> {
+    let ExprNode::RealConst(real) = arena.node(value) else {
+        return None;
+    };
+    Some(match real.repr() {
+        RealRepr::NegInf => i32::MIN,
+        RealRepr::PosInf => i32::MAX,
+        RealRepr::Rational(rational) => {
+            let integer = rational.clone().trunc();
+            let integer = integer.numer();
+            match integer.to_i32() {
+                Some(word) => word,
+                None if integer.is_negative() => i32::MIN,
+                None => i32::MAX,
             }
         }
     })

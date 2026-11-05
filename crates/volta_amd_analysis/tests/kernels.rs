@@ -364,6 +364,50 @@ fn the_scalar_alu_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test f64 arithmetic, modifiers, constants, conversions, comparisons, moves and overlapping
+// registers. Check all 64 lanes against the expected outputs in f64_ops.out.
+#[test]
+fn the_f64_ops_kernel_writes_its_expected_outputs() {
+    let arrays = [
+        array("a", 0x10000, ArrayKind::Input),
+        array("b", 0x20000, ArrayKind::Input),
+        array("c", 0x30000, ArrayKind::Input),
+        array_of("out", 0x40000, 64 * 64, ArrayKind::Output(F32)),
+        array_of("int_out", 0x50000, 64 * 8, ArrayKind::Output(U32)),
+    ];
+    let mut kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    kernarg.extend(1.5_f64.to_bits().to_le_bytes());
+    common::check_run_kernel("f64_ops", "f64_ops", 64, &kernarg, &arrays);
+}
+
+// Test that a register pair is not an f64 once a half is read as a word or overwritten, or when
+// it holds two symbolic words, and that a constant encoding a NaN is rejected.
+#[test]
+fn invalid_f64_sources_are_rejected() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output(F32)),
+    ];
+    let cases: [(&str, fn(&EvalError) -> bool); 4] = [
+        ("f64_half_as_word", |error| matches!(error, EvalError::F64Half { .. })),
+        ("f64_overwritten_half", |error| matches!(error, EvalError::F64Half { .. })),
+        ("f64_from_symbolic_words", |error| matches!(error, EvalError::InvalidF64Vgpr { .. })),
+        ("f64_nan_constant", |error| matches!(error, EvalError::InvalidF64Bits(_))),
+    ];
+    for (kernel, expected) in cases {
+        common::check_rejected_kernel("unsupported", kernel, &arrays, |result| {
+            matches!(
+                result,
+                Ok(AnalysisResult {
+                    terminal: Terminal::Aborted { error, .. },
+                    symbolic_outputs: None,
+                    ..
+                }) if expected(error)
+            )
+        });
+    }
+}
+
 /// The `ck::kernel_gemm_xdl_cshuffle_v3` instance `ck_gemm.hip` compiles: two waves, each
 /// accumulating a 32 x 64 slice of a 64 x 64 tile with `v_mfma_f32_16x16x4_f32`.
 const CK_GEMM_KERNEL: &str = concat!(

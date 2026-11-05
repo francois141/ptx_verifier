@@ -8,8 +8,8 @@ use id_collections::IdVec;
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
     self, Agpr, BranchCondition, BufferAddress, BufferImmOffset, BufferLoadDst, BufferStoreSrc,
-    DsReadDst, DsWriteData, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId, LaneMask,
-    LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ModifiedSrc,
+    DsReadDst, DsWriteData, F64Op, F64Src, GlobalAddress, GlobalLoadDst, GlobalStoreSrc, InstrId,
+    LaneMask, LaneReg, LaneRegs, LdsAccesses, LoweredInstr, LoweredKernel, MfmaSrcC, ModifiedSrc,
     PackedF32Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarSrc, ScalarSrc64, Sgpr, Src0, Vgpr,
     Vop3Src,
 };
@@ -401,6 +401,56 @@ fn lower_instruction(
             src0: first_source(src0)?,
             src1: vgpr(src1).ok_or("expected one VGPR second source")?,
         }),
+        ("v_add_f64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Add),
+        ("v_mul_f64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Mul),
+        ("v_min_f64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Min),
+        ("v_max_f64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Max),
+        ("v_fma_f64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Fma),
+        ("v_rcp_f64_e32", operands) => lower_f64_op(Encoding::E32, operands, F64Op::Rcp),
+        ("v_rcp_f64_e64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Rcp),
+        ("v_sqrt_f64_e32", operands) => lower_f64_op(Encoding::E32, operands, F64Op::Sqrt),
+        ("v_sqrt_f64_e64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Sqrt),
+        ("v_rsq_f64_e32", operands) => lower_f64_op(Encoding::E32, operands, F64Op::Rsq),
+        ("v_rsq_f64_e64", operands) => lower_f64_op(Encoding::E64, operands, F64Op::Rsq),
+        ("v_cvt_f64_f32_e32", operands) => {
+            lower_cvt_to_f64(ir::CvtToF64Op::F32, Encoding::E32, operands)
+        }
+        ("v_cvt_f64_f32_e64", operands) => {
+            lower_cvt_to_f64(ir::CvtToF64Op::F32, Encoding::E64, operands)
+        }
+        ("v_cvt_f64_i32_e32", operands) => {
+            lower_cvt_to_f64(ir::CvtToF64Op::I32, Encoding::E32, operands)
+        }
+        ("v_cvt_f64_i32_e64", operands) => {
+            lower_cvt_to_f64(ir::CvtToF64Op::I32, Encoding::E64, operands)
+        }
+        ("v_cvt_f64_u32_e32", operands) => {
+            lower_cvt_to_f64(ir::CvtToF64Op::U32, Encoding::E32, operands)
+        }
+        ("v_cvt_f64_u32_e64", operands) => {
+            lower_cvt_to_f64(ir::CvtToF64Op::U32, Encoding::E64, operands)
+        }
+        ("v_cvt_f32_f64_e32", operands) => {
+            lower_cvt_from_f64(ir::CvtFromF64Op::F32, Encoding::E32, operands)
+        }
+        ("v_cvt_f32_f64_e64", operands) => {
+            lower_cvt_from_f64(ir::CvtFromF64Op::F32, Encoding::E64, operands)
+        }
+        ("v_cvt_i32_f64_e32", operands) => {
+            lower_cvt_from_f64(ir::CvtFromF64Op::I32, Encoding::E32, operands)
+        }
+        ("v_cvt_i32_f64_e64", operands) => {
+            lower_cvt_from_f64(ir::CvtFromF64Op::I32, Encoding::E64, operands)
+        }
+        ("v_cvt_u32_f64_e32", operands) => {
+            lower_cvt_from_f64(ir::CvtFromF64Op::U32, Encoding::E32, operands)
+        }
+        ("v_cvt_u32_f64_e64", operands) => {
+            lower_cvt_from_f64(ir::CvtFromF64Op::U32, Encoding::E64, operands)
+        }
+        (mnemonic, operands) if cmp_f64_opcode(mnemonic).is_some() => {
+            lower_cmp_f64(mnemonic, operands)
+        }
         ("v_pk_add_f32", operands) => lower_packed_f32(operands, PackedF32Op::Add),
         ("v_pk_mul_f32", operands) => lower_packed_f32(operands, PackedF32Op::Mul),
         ("v_pk_fma_f32", operands) => lower_packed_f32(operands, PackedF32Op::Fma),
@@ -648,13 +698,13 @@ fn lower_cmp(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'stat
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CmpEncoding {
+enum Encoding {
     E32,
     E64,
 }
 
 /// `v_cmp_{lt,eq,le,gt,ne,ge}_{i64,u64}_{e32,e64}`.
-fn cmp64_opcode(mnemonic: &str) -> Option<(ir::CmpPredicate, ir::Signedness, CmpEncoding)> {
+fn cmp64_opcode(mnemonic: &str) -> Option<(ir::CmpPredicate, ir::Signedness, Encoding)> {
     let mut parts = mnemonic.strip_prefix("v_cmp_")?.split('_');
     let op = match parts.next()? {
         "lt" => ir::CmpPredicate::Lt,
@@ -671,8 +721,8 @@ fn cmp64_opcode(mnemonic: &str) -> Option<(ir::CmpPredicate, ir::Signedness, Cmp
         _ => return None,
     };
     let encoding = match parts.next()? {
-        "e32" => CmpEncoding::E32,
-        "e64" => CmpEncoding::E64,
+        "e32" => Encoding::E32,
+        "e64" => Encoding::E64,
         _ => return None,
     };
     parts.next().is_none().then_some((op, signedness, encoding))
@@ -685,14 +735,14 @@ fn lower_cmp64(mnemonic: &str, operands: &[Operand]) -> Result<LoweredInstr, &'s
     };
     let (dst, src0, src1) = match encoding {
         // An e32 comparison writes VCC, and its second source must be a VGPR pair.
-        CmpEncoding::E32 => {
+        Encoding::E32 => {
             expect_vcc(dst)?;
             let src1 =
                 vgprs::<2>(src1).ok_or("expected an even-aligned VGPR second source pair")?;
             (LaneMask::Vcc, src0_words(src0)?, src1.map(Src0::Vgpr))
         }
         // An e64 comparison writes VCC or an SGPR pair, and its VOP3 encoding holds no literal.
-        CmpEncoding::E64 => (
+        Encoding::E64 => (
             lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?,
             vop3_words(src0)?,
             vop3_words(src1)?,
@@ -723,6 +773,137 @@ fn lower_cmp_e64(op: ir::CmpOp, operands: &[Operand]) -> Result<LoweredInstr, &'
         dst: lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?,
         src0,
         src1,
+    })
+}
+
+/// `v_cmp_{lt,eq,le,gt,lg,ge,nge,nlg,ngt,nle,neq,nlt}_f64_{e32,e64}`. Over Volta's NaN-free
+/// reals, each negated comparison equals the opposite ordered one.
+fn cmp_f64_opcode(mnemonic: &str) -> Option<(ir::CmpPredicate, Encoding)> {
+    let (predicate, encoding) = mnemonic.strip_prefix("v_cmp_")?.split_once("_f64_")?;
+    let op = match predicate {
+        "lt" | "nge" => ir::CmpPredicate::Lt,
+        "eq" | "nlg" => ir::CmpPredicate::Eq,
+        "le" | "ngt" => ir::CmpPredicate::Le,
+        "gt" | "nle" => ir::CmpPredicate::Gt,
+        "lg" | "neq" => ir::CmpPredicate::Ne,
+        "ge" | "nlt" => ir::CmpPredicate::Ge,
+        _ => return None,
+    };
+    let encoding = match encoding {
+        "e32" => Encoding::E32,
+        "e64" => Encoding::E64,
+        _ => return None,
+    };
+    Some((op, encoding))
+}
+
+fn lower_cmp_f64(mnemonic: &str, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let (op, encoding) = cmp_f64_opcode(mnemonic).ok_or("unsupported instruction")?;
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    let invalid = "expected a register pair or a constant f64 source";
+    let src0 = f64_source(src0, encoding).ok_or(invalid)?;
+    let src1 = f64_source(src1, encoding).ok_or(invalid)?;
+    let dst = match encoding {
+        // An e32 comparison writes VCC, and its second source must be a VGPR pair.
+        Encoding::E32 => {
+            expect_vcc(dst)?;
+            if !matches!(src1.src, F64Src::Vgprs(_)) {
+                return Err("expected an even-aligned VGPR second source pair");
+            }
+            LaneMask::Vcc
+        }
+        Encoding::E64 => lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?,
+    };
+    Ok(LoweredInstr::CmpF64 {
+        op,
+        dst,
+        src0,
+        src1,
+    })
+}
+
+/// An f64 source: a register pair or an inline constant. An inline float keeps its value and an
+/// inline integer gives its sign-extended bits. A 32-bit encoding also takes a literal, which
+/// supplies the high word (CDNA4 §6.2.1.1).
+fn f64_src(operand: &Operand, encoding: Encoding) -> Option<F64Src> {
+    match operand {
+        Operand::InlineFloat(bits) => {
+            Some(F64Src::Const(f64::from(f32::from_bits(*bits)).to_bits()))
+        }
+        Operand::Imm(value) if (-16..=64).contains(value) => Some(F64Src::Const(*value as u64)),
+        Operand::Imm(_) => match encoding {
+            Encoding::E32 => word(operand).map(|bits| F64Src::Const(u64::from(bits) << 32)),
+            Encoding::E64 => None,
+        },
+        _ => vgprs::<2>(operand)
+            .map(F64Src::Vgprs)
+            .or_else(|| sgprs::<2>(operand).map(F64Src::Sgprs)),
+    }
+}
+
+/// An f64 source and its input modifiers, which only a 64-bit encoding holds.
+fn f64_source(operand: &Operand, encoding: Encoding) -> Option<ModifiedSrc<F64Src>> {
+    let source = with_modifiers(operand, |source| f64_src(source, encoding))?;
+    (matches!(encoding, Encoding::E64) || !source.is_modified()).then_some(source)
+}
+
+fn lower_f64_op<const N: usize>(
+    encoding: Encoding,
+    operands: &[Operand],
+    operation: fn([ModifiedSrc<F64Src>; N]) -> F64Op,
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, sources @ ..] = operands else {
+        return Err("unsupported operand count");
+    };
+    let srcs = sources
+        .iter()
+        .map(|source| f64_source(source, encoding))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("expected a register pair or a constant f64 source")?;
+    Ok(LoweredInstr::F64 {
+        dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+        op: operation(srcs.try_into().map_err(|_| "unsupported operand count")?),
+    })
+}
+
+/// A 32-bit encoding also takes a literal, and only a 64-bit f32 conversion takes input modifiers.
+fn lower_cvt_to_f64(
+    op: ir::CvtToF64Op,
+    encoding: Encoding,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src] = operands else {
+        return Err("unsupported operand count");
+    };
+    let src = with_modifiers(src, |source| match encoding {
+        Encoding::E32 => first_source(source).ok(),
+        Encoding::E64 => vop3_src(source).map(src0_from_vop3),
+    })
+    .ok_or("expected a VGPR, an SGPR or a constant source")?;
+    if src.is_modified() && (op != ir::CvtToF64Op::F32 || matches!(encoding, Encoding::E32)) {
+        return Err("input modifiers require the 64-bit encoding of an f32 conversion");
+    }
+    Ok(LoweredInstr::CvtToF64 {
+        op,
+        dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+        src,
+    })
+}
+
+fn lower_cvt_from_f64(
+    op: ir::CvtFromF64Op,
+    encoding: Encoding,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::CvtFromF64 {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        src: f64_source(src, encoding).ok_or("expected a register pair or a constant f64 source")?,
     })
 }
 
@@ -815,15 +996,12 @@ fn lower_packed_move(operands: &[Operand]) -> Result<LoweredInstr, &'static str>
     validate_packed_scalar_sources(sources)?;
     let select = |index: usize| -> Result<Src0, &'static str> {
         let words = packed_source_words(&sources[index])?;
-        Ok(match words[usize::from(selectors[index])] {
-            Vop3Src::Vgpr(reg) => Src0::Vgpr(reg),
-            Vop3Src::Sgpr(reg) => Src0::Sgpr(reg),
-            // This instruction's sources are 64-bit, and an inline constant's high word is unknown.
-            Vop3Src::Inline(_) if selectors[index] => {
-                return Err("expected the low-word selector for an inline constant");
-            }
-            Vop3Src::Inline(bits) => Src0::Const(bits),
-        })
+        let word = words[usize::from(selectors[index])];
+        // This instruction's sources are 64-bit, and an inline constant's high word is unknown.
+        if matches!(word, Vop3Src::Inline(_)) && selectors[index] {
+            return Err("expected the low-word selector for an inline constant");
+        }
+        Ok(src0_from_vop3(word))
     };
     Ok(LoweredInstr::Mov64 {
         dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
@@ -1329,8 +1507,11 @@ fn vop3_src(operand: &Operand) -> Option<Vop3Src> {
     }
 }
 
-/// A VOP3 source and its input modifiers, written `-src`, `|src|` or `-|src|`.
-fn modified_src(operand: &Operand) -> Option<ModifiedSrc> {
+/// A source and its input modifiers, written `-src`, `|src|` or `-|src|`.
+fn with_modifiers<S>(
+    operand: &Operand,
+    decode: impl FnOnce(&Operand) -> Option<S>,
+) -> Option<ModifiedSrc<S>> {
     let (neg, operand) = match operand {
         Operand::Neg(source) => (true, source.as_ref()),
         _ => (false, operand),
@@ -1340,10 +1521,24 @@ fn modified_src(operand: &Operand) -> Option<ModifiedSrc> {
         _ => (false, operand),
     };
     Some(ModifiedSrc {
-        src: vop3_src(operand)?,
+        src: decode(operand)?,
         abs,
         neg,
     })
+}
+
+/// A VOP3 source and its input modifiers.
+fn modified_src(operand: &Operand) -> Option<ModifiedSrc> {
+    with_modifiers(operand, vop3_src)
+}
+
+/// A VOP3 source as the wider first-source type.
+fn src0_from_vop3(src: Vop3Src) -> Src0 {
+    match src {
+        Vop3Src::Vgpr(reg) => Src0::Vgpr(reg),
+        Vop3Src::Sgpr(reg) => Src0::Sgpr(reg),
+        Vop3Src::Inline(bits) => Src0::Const(bits),
+    }
 }
 
 /// Only src0 of a VOP2 encoding can name an SGPR or a 32-bit literal; src1 is a VGPR.
