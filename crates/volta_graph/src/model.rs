@@ -580,11 +580,22 @@ impl Assumption {
     }
 }
 
+/// What one graph thread ([`crate::ThreadIx`]) executes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadUnit {
+    /// One CTA thread, by its linearized index.
+    CtaThread,
+    /// One wave of `lanes` work-items issuing every instruction together: thread `w` is the
+    /// wave of work-items `w * lanes` to `(w + 1) * lanes - 1`.
+    Wave { lanes: u32 },
+}
+
 /// The launch, target and model the graph was produced under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Provenance {
     pub kernel: String,
     pub block_dim: (u32, u32, u32),
+    pub unit: ThreadUnit,
     pub grid_dim: (u32, u32, u32),
     pub targets: Vec<String>,
     pub assumptions: Vec<Assumption>,
@@ -593,8 +604,13 @@ pub struct Provenance {
 }
 
 impl Provenance {
+    /// The graph's threads: the block's work-items, grouped into waves for `ThreadUnit::Wave`.
     pub fn threads(&self) -> u32 {
-        self.block_dim.0 * self.block_dim.1 * self.block_dim.2
+        let work_items = self.block_dim.0 * self.block_dim.1 * self.block_dim.2;
+        match self.unit {
+            ThreadUnit::CtaThread => work_items,
+            ThreadUnit::Wave { lanes } => work_items.div_ceil(lanes),
+        }
     }
 
     pub fn assumes(&self, assumption: Assumption) -> bool {

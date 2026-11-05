@@ -8,6 +8,8 @@
 //!   the event's position in the candidate trace. Every edge the graph encodes runs from a
 //!   smaller to a larger position, which [`EventGraph::validate`] checks; consumers must not
 //!   assume it of a graph that failed validation.
+//! * **Threads** are CTA threads, or AMD waves whose lanes issue together
+//!   ([`Provenance::unit`]).
 //! * **Execution contexts** ([`ExecContext`]): a `Thread` event is part of that thread's program
 //!   order of issuance; an `Async` event (an asynchronous operation's memory effect or
 //!   completion) is in no thread's program order; a `Generation` event is a synchronization

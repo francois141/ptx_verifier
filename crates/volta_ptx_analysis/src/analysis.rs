@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_expr::{ExprArena, SymbolicOutputs};
-use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance};
+use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance, ThreadUnit};
 
 use crate::config::AnalysisConfig;
 use crate::eval::{EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stats};
@@ -201,6 +201,7 @@ fn provenance(
     Provenance {
         kernel: func.name.to_string(),
         block_dim: config.block_dim,
+        unit: ThreadUnit::CtaThread,
         grid_dim: config.grid_dim,
         targets: module
             .target

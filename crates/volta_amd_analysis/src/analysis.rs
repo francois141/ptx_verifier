@@ -3,7 +3,9 @@
 use std::fmt;
 
 use volta_expr::SymbolicOutputs;
-use volta_graph::{AbortCause, EventGraph, GraphBuilder, Provenance};
+use volta_graph::{
+    AbortCause, Assumption, EventGraph, GraphBuilder, InstructionInfo, Provenance, ThreadUnit,
+};
 
 use crate::eval::{ArrayDef, EvalError, Interpreter, Terminal, WorkgroupLaunch};
 use crate::frontend::ast::Kernel;
@@ -89,13 +91,26 @@ fn graph_terminal(terminal: &Terminal) -> volta_graph::Terminal {
 
 /// The launch and target this analysis executes under.
 fn provenance(kernel: &LoweredKernel, launch: &WorkgroupLaunch) -> Provenance {
+    let instructions = kernel
+        .instructions
+        .values()
+        .map(|instruction| InstructionInfo {
+            kind: instruction.name(),
+            span: None,
+        })
+        .collect();
     Provenance {
         kernel: kernel.name.clone(),
         block_dim: launch.workgroup_size,
+        unit: ThreadUnit::Wave { lanes: 64 },
         // Workgroup 0 runs alone, and no supported instruction reads the grid size.
         grid_dim: (1, 1, 1),
         targets: vec![kernel.target.clone()],
-        assumptions: Vec::new(),
-        instructions: Vec::new(),
+        assumptions: vec![
+            Assumption::StructuredCta,
+            Assumption::SingleCtaAnalyzed,
+            Assumption::ExitedThreadsArrive,
+        ],
+        instructions,
     }
 }

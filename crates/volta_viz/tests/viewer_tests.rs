@@ -10,7 +10,7 @@ use volta_graph::{
     AbortCause, AccessMode, AsyncOpKind, BarrierArrivals, CollectiveSide, ContributionKind,
     EventGraph, EventId, Footprint, GenerationEvidence, GenerationKind, GraphBuilder,
     InstructionInfo, MemAccess, MemberOrdering, OperandRole, OrderingKind, ProgramPoint,
-    Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal, ThreadIx,
+    Provenance, Proxy, Space, StoredValue, SyncObjectKind, Terminal, ThreadIx, ThreadUnit,
 };
 use volta_graph_check::check_graph;
 use volta_viz::{Outcome, Run, RunId, write_page, write_run};
@@ -61,6 +61,7 @@ fn provenance() -> Provenance {
     Provenance {
         kernel: "k".to_string(),
         block_dim: (2, 1, 1),
+        unit: ThreadUnit::CtaThread,
         grid_dim: (1, 1, 1),
         targets: vec!["Sm100a".to_string()],
         assumptions: Vec::new(),
