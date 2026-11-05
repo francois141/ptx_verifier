@@ -169,6 +169,7 @@ impl EventGraph {
                 AsyncOpKind::Tcgen05Ld => "tcgen05-ld".to_string(),
                 AsyncOpKind::Tcgen05St => "tcgen05-st".to_string(),
                 AsyncOpKind::WgmmaMma { instance } => format!("wgmma#{}", instance),
+                AsyncOpKind::Ds => "ds".to_string(),
             };
             write!(
                 out,

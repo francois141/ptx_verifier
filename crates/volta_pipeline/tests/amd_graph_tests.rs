@@ -1,14 +1,16 @@
-//! AMD kernels' event graphs through the graph branch: one graph thread per wave, and each
-//! `s_barrier` a generation the waves gather into and are scattered from.
+//! AMD kernels' event graphs through the graph branch: one graph thread per wave, each DS
+//! instruction an async operation that `s_waitcnt lgkmcnt` completes, and each `s_barrier` a
+//! generation the waves gather into and are scattered from.
 
 use std::path::{Path, PathBuf};
 
 use volta_amd_analysis::ArrayKind::{Input, Output};
 use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{ArrayDef, WorkgroupLaunch, analyze};
+use volta_amd_analysis::{AnalysisResult, ArrayDef, WorkgroupLaunch, analyze};
 use volta_expr::SymbolicOutputs;
 use volta_graph::{BarrierArrivals, ContributionKind, EventId, GenerationKind, ThreadIx};
+use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::{GraphConclusion, check_graph};
 
 fn fixture(name: &str) -> PathBuf {
@@ -36,13 +38,10 @@ fn assert_out_file(path: &Path, outputs: &SymbolicOutputs) {
     );
 }
 
-// Test that `exchange` writes lds_sync.out, that its two waves gather into one s_barrier generation
-// and are scattered from it, and that the graph checks find no race (vacuously for now: no memory
-// access is recorded yet).
-#[test]
-fn the_waves_gather_into_a_barrier_generation_and_are_scattered_from_it() {
+/// Run `kernel` of lds_sync.s on two waves over 128-word `input` and `output` arrays.
+fn run_lds_sync(kernel: &str) -> AnalysisResult {
     let source = std::fs::read_to_string(fixture("lds_sync.s")).unwrap();
-    let kernel = parse_kernel(&source, "exchange").unwrap();
+    let kernel = parse_kernel(&source, kernel).unwrap();
     let arrays =
         [("input", 0x10000, Input), ("output", 0x20000, Output(F32))].map(|(name, base, kind)| {
             ArrayDef {
@@ -57,16 +56,28 @@ fn the_waves_gather_into_a_barrier_generation_and_are_scattered_from_it() {
         kernarg_address: 0x1000,
         workgroup_size: (128, 1, 1),
     };
-    let result = analyze(&kernel, &launch, &kernarg, &arrays).unwrap();
+    analyze(&kernel, &launch, &kernarg, &arrays).unwrap()
+}
+
+// Test that `exchange` writes lds_sync.out and verifies: each wave's s_waitcnt completes its LDS
+// write before both gather into one s_barrier generation. In `barrier_without_wait` the writes are
+// still in flight at the barrier, so wave 0's read races wave 1's write.
+#[test]
+fn lds_accesses_of_two_waves_are_ordered_by_a_wait_then_a_barrier() {
+    let result = run_lds_sync("exchange");
     assert_out_file(
         &fixture("lds_sync.out"),
         result.symbolic_outputs.as_ref().unwrap(),
     );
 
     let graph = &result.graph;
-    let generations: Vec<_> = graph.generations().values().collect();
-    let [barrier] = generations[..] else {
-        panic!("expected one barrier generation, got {generations:?}");
+    let barriers: Vec<_> = graph
+        .generations()
+        .values()
+        .filter(|g| matches!(g.kind, GenerationKind::Barrier { .. }))
+        .collect();
+    let [barrier] = barriers[..] else {
+        panic!("expected one barrier generation, got {barriers:?}");
     };
     let arrivals = BarrierArrivals::FullCta;
     assert_eq!(barrier.kind, GenerationKind::Barrier { arrivals });
@@ -88,4 +99,19 @@ fn the_waves_gather_into_a_barrier_generation_and_are_scattered_from_it() {
     assert_eq!(threads(&barrier.releases), waves);
     assert_eq!(graph.threads(), 2);
     assert_eq!(check_graph(graph).conclusion(), GraphConclusion::Verified);
+
+    let racy = run_lds_sync("barrier_without_wait");
+    let report = check_graph(&racy.graph);
+    let conflicts = report.memory_conflict.violations();
+    let thread = |event| racy.graph.acting_thread(event);
+    assert!(
+        conflicts.iter().any(|c| c.kind == ConflictKind::WriteRead
+            && thread(c.earlier) == Some(ThreadIx(1))
+            && thread(c.later) == Some(ThreadIx(0))),
+        "expected wave 1's write racing wave 0's read, got {conflicts:?}"
+    );
+    assert!(matches!(
+        report.conclusion(),
+        GraphConclusion::Rejected { .. }
+    ));
 }

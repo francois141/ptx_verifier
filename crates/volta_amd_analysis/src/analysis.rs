@@ -49,8 +49,9 @@ pub struct AnalysisResult {
     pub terminal: Terminal,
     /// Written output values; absent if execution aborted.
     pub symbolic_outputs: Option<SymbolicOutputs>,
-    /// The execution's event graph, one thread per wave: its `s_barrier` generations and exits.
-    /// It records no memory access yet, so a completed run passes the memory checks vacuously.
+    /// The execution's event graph, one thread per wave: its LDS accesses as DS operations that
+    /// `s_waitcnt lgkmcnt` completes, its `s_barrier` generations and its exits. Global memory
+    /// accesses are not recorded.
     pub graph: EventGraph,
 }
 
@@ -112,6 +113,8 @@ fn provenance(kernel: &LoweredKernel, launch: &WorkgroupLaunch) -> Provenance {
             Assumption::StructuredCta,
             Assumption::SingleCtaAnalyzed,
             Assumption::ExitedThreadsArrive,
+            Assumption::EagerAsyncData,
+            Assumption::SharedMemoryOnly,
         ],
         instructions,
     }

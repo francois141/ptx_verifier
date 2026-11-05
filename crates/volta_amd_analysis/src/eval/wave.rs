@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 
 use id_collections::id_type;
 use volta_expr::{ExprArena, ExprId};
+use volta_graph::AsyncOpId;
 
 use crate::ir::{
     Agpr, F64Src, GlobalAddress, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0, Vgpr, Vop3Src,
@@ -50,9 +51,9 @@ impl WaveState {
 /// An instruction `lgkmcnt` counts, in flight, with the destinations pending until it completes.
 #[derive(Debug)]
 pub(crate) enum LgkmInFlight {
-    /// A DS instruction: a read's or lane exchange's destinations, pending in every lane; none
-    /// for a write.
-    Ds { dst: Vec<Vgpr> },
+    /// A DS instruction, the event graph's `op`: a read's or lane exchange's destinations,
+    /// pending in every lane; none for a write.
+    Ds { op: AsyncOpId, dst: Vec<Vgpr> },
     /// A scalar load.
     Scalar { dst: Vec<Sgpr> },
 }

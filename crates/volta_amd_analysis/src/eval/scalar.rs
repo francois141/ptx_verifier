@@ -196,7 +196,8 @@ impl Interpreter<'_> {
                     registers.finish_vm_loads(usize::from(*outstanding));
                 }
                 if let Some(outstanding) = lgkmcnt {
-                    self.wait_lgkm(wave, usize::from(*outstanding));
+                    let pc = self.waves[wave].pc;
+                    self.wait_lgkm(wave, pc, usize::from(*outstanding));
                 }
                 Ok(())
             }

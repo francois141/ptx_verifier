@@ -2,18 +2,22 @@
 //! `lgkmcnt` queue, which `Interpreter::wait_lgkm` completes. Their data moves at issue; a read's
 //! or lane exchange's destinations stay pending until it completes.
 
-use crate::ir::{LoweredInstr, Vgpr};
+use crate::ir::{InstrId, LoweredInstr, Vgpr};
 
 use super::wave::{LgkmInFlight, LoadCounter, WaveId};
 use super::{EvalError, Interpreter};
 
 impl Interpreter<'_> {
-    /// Issue the DS instruction for every lane of `wave`, in flight until a wait completes it.
+    /// Issue the DS instruction at `pc` for every lane of `wave`, in flight until a wait
+    /// completes it. Its words enter the event graph before any lane runs, so an access the run
+    /// rejects still appears in the graph.
     pub(super) fn execute_ds(
         &mut self,
         wave: WaveId,
+        pc: InstrId,
         instruction: &LoweredInstr,
     ) -> Result<(), EvalError> {
+        let op = self.record_ds_issue(wave, pc, instruction)?;
         let dst = match *instruction {
             LoweredInstr::DsBPermute {
                 dst,
@@ -42,7 +46,7 @@ impl Interpreter<'_> {
         };
         self.waves[wave]
             .lgkm_in_flight
-            .push_back(LgkmInFlight::Ds { dst });
+            .push_back(LgkmInFlight::Ds { op, dst });
         Ok(())
     }
 

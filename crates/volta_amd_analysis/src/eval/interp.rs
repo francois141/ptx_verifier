@@ -148,7 +148,7 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::EndPgm => {
                 // TODO: confirm in the CDNA4 ISA that `s_endpgm` implicitly performs `s_waitcnt 0`,
                 // then also complete the wave's vmcnt and expcnt waits here, not only lgkmcnt.
-                self.wait_lgkm(wave, 0);
+                self.wait_lgkm(wave, pc, 0);
                 self.record_exit(wave, pc);
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
@@ -225,7 +225,7 @@ impl<'a> Interpreter<'a> {
             )?,
             LoweredInstr::DsWrite { .. }
             | LoweredInstr::DsRead { .. }
-            | LoweredInstr::DsBPermute { .. } => self.execute_ds(wave, instruction)?,
+            | LoweredInstr::DsBPermute { .. } => self.execute_ds(wave, pc, instruction)?,
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
@@ -256,17 +256,22 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    /// `s_waitcnt lgkmcnt(outstanding)`: every DS instruction and scalar load but the last
-    /// `outstanding` completes, in issue order.
-    pub(super) fn wait_lgkm(&mut self, wave: WaveId, outstanding: usize) {
+    /// `s_waitcnt lgkmcnt(outstanding)` at `pc`: every DS instruction and scalar load but the
+    /// last `outstanding` completes, in issue order.
+    pub(super) fn wait_lgkm(&mut self, wave: WaveId, pc: InstrId, outstanding: usize) {
         let state = &mut self.waves[wave];
         let completed = state.lgkm_in_flight.len().saturating_sub(outstanding);
+        let mut ds_ops = Vec::new();
         for instruction in state.lgkm_in_flight.drain(..completed) {
             match instruction {
-                LgkmInFlight::Ds { dst } => state.registers.finish_ds_load(&dst),
+                LgkmInFlight::Ds { op, dst } => {
+                    state.registers.finish_ds_load(&dst);
+                    ds_ops.push(op);
+                }
                 LgkmInFlight::Scalar { dst } => state.registers.finish_scalar_load(&dst),
             }
         }
+        self.record_lgkm_wait(wave, pc, outstanding, &ds_ops);
     }
 
     /// Every lane is active, so EXEC is never zero.
@@ -463,7 +468,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// `lane`'s byte address: its address VGPR plus `offset`.
-    fn lds_address(
+    pub(super) fn lds_address(
         &self,
         wave: WaveId,
         lane: usize,
@@ -546,7 +551,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// The event graph, ended as `terminal` says, and the written output elements, together
-    /// with the arena that holds their expressions.
+    /// with the arena that holds their expressions and the graph's stored values.
     pub(crate) fn finish(self, terminal: volta_graph::Terminal) -> (EventGraph, SymbolicOutputs) {
         (
             self.graph.finish(terminal),
