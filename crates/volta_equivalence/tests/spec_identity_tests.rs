@@ -133,6 +133,16 @@ proved_equivalent! {
     /// softmax(QK^T)V: safe softmax with one division vs naive weights each divided.
     attention_normalized_once_or_per_score: &[("N", 2), ("D", 2)];
 
+    // NKI attention kernels' reformulations
+    /// A row max as the max of its tiles' maxes.
+    row_max_of_tile_maxes: &[("N", 2), ("F", 4)];
+    /// exp(x + (-max)), the activation bias of a negated max, is exp(x - max).
+    softmax_biased_by_the_negated_max: &[("N", 3)];
+    /// e * (1/((a + b) + (c + d))) over tiled row sums is e / sum.
+    softmax_reciprocal_of_tiled_sums: &[("N", 4)];
+    /// The softmax division delayed past the matmul with v.
+    attention_scaled_after_the_matmul: &[("N", 3), ("D", 2)];
+
     // Opaque operations
     /// sqrt(ab) = sqrt(ba).
     sqrt_operands_are_canonicalized: &[("N", 2)];
