@@ -44,6 +44,10 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   a swapped-input negative test. It reuses the AMD analysis crate's assembly fixture
   and the equivalence crate's specification. These tests check functional equivalence
   under Volta's arithmetic model; they do not check AMD races. `just amd` runs them.
+- `trainium_equivalence_tests.rs`: the NKI `matmul` and `gemm_relu` fixtures against
+  their `.spec` files beside them in the Trainium analysis crate, and `gemm_relu`
+  against the unclamped product as a negative test. Functional equivalence only;
+  `just trainium` runs them.
 - the suites below, over `tests/common/`.
 
 ### How a test runs

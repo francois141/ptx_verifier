@@ -44,7 +44,7 @@ Direct dependencies of each crate:
 ```
 volta_cli          → volta_pipeline, volta_equivalence, volta_ptx_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
 volta_viz          → volta_graph_check, volta_graph, volta_expr
-volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_amd_analysis, volta_spec, volta_viz)
+volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_amd_analysis, volta_trainium_analysis, volta_spec, volta_viz)
 volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
@@ -485,7 +485,9 @@ normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
 `activation_reduce` and two `tensor_scalar`s, the second broadcasting a
 `[4, 1]` tile. `tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor
 through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
-`nl.affine_range(2)`.
+`nl.affine_range(2)`. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
+kernels' math over their own array names (`a_t` being A transposed);
+`volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them.
 
 ## Crate: volta_graph_check
 
@@ -622,10 +624,13 @@ evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
 and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
 anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches),
-`architecture_tests.rs` (the stage/branch boundaries), and
+`architecture_tests.rs` (the stage/branch boundaries),
 `amd_equivalence_tests.rs` (compiled AMD matmul against `matmul.spec`, including
-a swapped-input negative test; functional equivalence only). `just amd` runs the
-AMD specification comparisons alongside the analysis crate's snapshot tests.
+a swapped-input negative test; functional equivalence only), and
+`trainium_equivalence_tests.rs` (the NKI `matmul` and `gemm_relu` fixtures against
+the `.spec` files beside them, and `gemm_relu` against the unclamped product as a
+negative test). `just amd` and `just trainium` run each ISA's specification
+comparisons alongside its analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
 
