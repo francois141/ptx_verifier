@@ -1,32 +1,92 @@
-//! Read an NKI kernel file as HBM tensors, on-chip tiles and the instructions
-//! over them. Every name resolves to an imported module's member or a tensor;
-//! imports come first and nothing is rebound, so names resolve as at run time.
+//! Read an NKI kernel file, specialized to one call's parameter shapes, as HBM
+//! tensors, on-chip tiles and the instructions over them. Integer arithmetic and
+//! `assert`s are evaluated here; imports come first and nothing is rebound.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::fmt;
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Partitions, Scalar, Statement,
-    TensorName, TileDecl, TileShape,
+    Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Param, Partitions, Scalar,
+    Statement, TensorName, TileDecl, TileShape,
 };
-use super::error::{ParseError, bail};
-use super::python::{self, BinOp, Call, Dotted, Expr, Function, Item, Stmt};
+use super::error::{ParseError, ShapeProblem, bail};
+use super::lex::CmpOp;
+use super::python::{self, BinOp, Call, Dotted, Expr, Function, Item, Stmt, Target};
 
 const NKI: &str = "nki";
 const NKI_LANGUAGE: &str = "nki.language";
 const NKI_ISA: &str = "nki.isa";
 /// The `nki.language` buffer of a device-memory tensor the kernel allocates.
 const SHARED_HBM: &str = "shared_hbm";
+/// `nl.tile_size`'s members, the hardware's tile limits.
+const TILE_SIZES: [(&str, u64); 3] = [
+    ("pmax", Partitions::MAX as u64),
+    ("gemm_stationary_fmax", 128),
+    ("gemm_moving_fmax", 512),
+];
 
-/// Parse `source` and return its `@nki.jit` kernel `name`.
-pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, ParseError> {
+/// Parse `source` and return its `@nki.jit` kernel `name` for a call whose
+/// arguments have `shapes`, as `@nki.jit` specializes a kernel to each call.
+pub fn parse_kernel(
+    source: &str,
+    name: &str,
+    shapes: &[(&str, &[u64])],
+) -> Result<Kernel, ParseError> {
     let items = python::parse(source)?;
     let (imports, functions) = split_module(items)?;
+    kernel(find(functions, name)?, &imports, shapes)
+}
 
-    let Some(function) = functions.into_iter().find(|function| function.name == name) else {
-        return Err(ParseError::KernelNotFound(name.into()));
+/// The shapes kernel `name`'s top-level `assert param.shape == (extent, ...)`
+/// statements state, the first for each parameter, for running it without a call.
+pub fn asserted_shapes(source: &str, name: &str) -> Result<Vec<(String, Vec<u64>)>, ParseError> {
+    let (_, functions) = split_module(python::parse(source)?)?;
+    let function = find(functions, name)?;
+
+    let mut shapes: Vec<(String, Vec<u64>)> = Vec::new();
+    for stmt in &function.body {
+        let Some((param, extents)) = literal_shape(stmt) else {
+            continue;
+        };
+        if function.params.contains(&param) && !shapes.iter().any(|(given, _)| *given == param) {
+            shapes.push((param, extents));
+        }
+    }
+    Ok(shapes)
+}
+
+/// The name and extents of `assert name.shape == (extent, ...)` with integer literal extents.
+fn literal_shape(stmt: &Stmt) -> Option<(String, Vec<u64>)> {
+    let Stmt::Assert {
+        test: Expr::Compare { first, rest },
+        ..
+    } = stmt
+    else {
+        return None;
     };
-    kernel(function, &imports)
+    let (Expr::Name(name), [(CmpOp::Eq, Expr::Tuple(extents))]) = (&**first, &rest[..]) else {
+        return None;
+    };
+    if name.attributes != ["shape"] {
+        return None;
+    }
+
+    let extents = extents
+        .iter()
+        .map(|extent| match extent {
+            Expr::Int(extent) => Some(*extent),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    Some((name.head.clone(), extents))
+}
+
+fn find(functions: Vec<Function>, name: &str) -> Result<Function, ParseError> {
+    functions
+        .into_iter()
+        .find(|function| function.name == name)
+        .ok_or_else(|| ParseError::KernelNotFound(name.into()))
 }
 
 /// The module each imported name is bound to.
@@ -69,14 +129,17 @@ fn split_module(items: Vec<Item>) -> Result<(Imports, Vec<Function>), ParseError
     Ok((imports, functions))
 }
 
-/// A `@nki.jit` function, its parameters the HBM tensors it receives, and the
-/// tensor its last statement returns, if that is a `return`.
-fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
+/// A `@nki.jit` function, its parameters the HBM tensors it receives with the
+/// call's shapes, and the tensor its last statement returns, if that is a `return`.
+fn kernel(
+    function: Function,
+    imports: &Imports,
+    shapes: &[(&str, &[u64])],
+) -> Result<Kernel, ParseError> {
     let line = function.line;
     let mut scope = Scope {
         imports,
-        tensors: BTreeSet::new(),
-        integers: BTreeMap::new(),
+        names: BTreeMap::new(),
         iterations: Vec::new(),
     };
 
@@ -85,9 +148,26 @@ fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
         bail!(line, "unsupported decorator `@{}`", function.decorator);
     }
 
+    for (index, (given, _)) in shapes.iter().enumerate() {
+        let problem = if !function.params.iter().any(|param| param == given) {
+            ShapeProblem::NotAParam
+        } else if shapes[..index].iter().any(|(earlier, _)| earlier == given) {
+            ShapeProblem::Repeated
+        } else {
+            continue;
+        };
+        return Err(ParseError::ParamShape {
+            param: (*given).into(),
+            problem,
+        });
+    }
+
     let mut params = Vec::new();
     for param in function.params {
-        params.push(scope.bind(param, line)?);
+        let shape = param_shape(&param, shapes)?;
+        let extents = shape.iter().map(|extent| extent.get()).collect();
+        let name = scope.bind_tensor(param, extents, line)?;
+        params.push(Param { name, shape });
     }
 
     let mut statements = function.body;
@@ -116,6 +196,23 @@ fn kernel(function: Function, imports: &Imports) -> Result<Kernel, ParseError> {
     })
 }
 
+/// The shape `shapes` gives parameter `param`: one or more positive extents.
+fn param_shape(param: &str, shapes: &[(&str, &[u64])]) -> Result<Vec<NonZeroU64>, ParseError> {
+    let problem = |problem| ParseError::ParamShape {
+        param: param.into(),
+        problem,
+    };
+
+    let Some((_, extents)) = shapes.iter().find(|(given, _)| *given == param) else {
+        return Err(problem(ShapeProblem::Missing));
+    };
+    let shape: Option<Vec<NonZeroU64>> = extents.iter().map(|&e| NonZeroU64::new(e)).collect();
+    match shape {
+        Some(shape) if !shape.is_empty() => Ok(shape),
+        _ => Err(problem(ShapeProblem::Empty)),
+    }
+}
+
 /// The tensor `return value` names.
 fn returned_tensor(value: Expr, scope: &Scope, line: usize) -> Result<TensorName, ParseError> {
     let Value::Tensor(tensor) = scope.evaluate(value, line)? else {
@@ -124,7 +221,8 @@ fn returned_tensor(value: Expr, scope: &Scope, line: usize) -> Result<TensorName
     Ok(tensor)
 }
 
-/// What an expression denotes.
+/// What an expression denotes. A tensor's `shape` is a tuple of its extents.
+#[derive(PartialEq)]
 enum Value {
     Int(u64),
     Float(Scalar),
@@ -132,8 +230,6 @@ enum Value {
     Tensor(TensorName),
     /// `t.dtype`: the element type of tensor `t`.
     DtypeOf(TensorName),
-    /// `t.shape`: the extents of tensor `t`.
-    ShapeOf(TensorName),
     /// An imported module's member, fully qualified: `nl.add` is `nki.language.add`.
     Member(String),
     /// A rectangular region of a tensor, from a subscript.
@@ -154,28 +250,78 @@ impl Value {
     }
 }
 
-/// The names a kernel body sees: the imports, and the tensors bound so far.
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(value) => write!(f, "{value}"),
+            Self::Float(value) => write!(f, "{value}"),
+            Self::Tuple(items) => {
+                let items: Vec<String> = items.iter().map(Value::to_string).collect();
+                write!(f, "({})", items.join(", "))
+            }
+            Self::Tensor(tensor) => write!(f, "{tensor}"),
+            Self::DtypeOf(tensor) => write!(f, "{tensor}.dtype"),
+            Self::Member(member) => f.write_str(member),
+            Self::Region { tensor, dims } => {
+                let dims: Vec<String> = dims.iter().map(Bounds::to_string).collect();
+                write!(f, "{tensor}[{}]", dims.join(", "))
+            }
+        }
+    }
+}
+
+/// What a name in the kernel body is bound to.
+enum Binding {
+    /// A tensor, with its extents.
+    Tensor(Vec<u64>),
+    /// A compile-time integer: a shape's extent, arithmetic on one, or a loop index.
+    Int(u64),
+}
+
+/// The names a kernel body sees: the imports, and the tensors and integers bound so far.
 struct Scope<'a> {
     imports: &'a Imports,
-    tensors: BTreeSet<TensorName>,
-    /// Unrolled loop variables, each bound to its current index.
-    integers: BTreeMap<String, u64>,
+    /// Keyed by qualified name, so each unrolled iteration binds its own.
+    names: BTreeMap<String, Binding>,
     /// The index of each enclosing unrolled iteration, outermost first.
     iterations: Vec<u64>,
 }
 
 impl Scope<'_> {
-    /// Bind `name` to a new tensor; it may neither shadow an import nor rebind a name.
-    fn bind(&mut self, name: String, line: usize) -> Result<TensorName, ParseError> {
+    /// Bind `name`, qualified; it may neither shadow an import nor rebind a name.
+    fn bind(&mut self, name: String, binding: Binding, line: usize) -> Result<String, ParseError> {
         if self.imports.contains_key(&name) {
             bail!(line, "`{name}` shadows an import");
         }
 
-        let tensor = TensorName(self.qualified(&name));
-        if !self.tensors.insert(tensor.clone()) {
-            bail!(line, "tensor `{tensor}` is already defined");
+        let qualified = self.qualified(&name);
+        if self.names.contains_key(&qualified) {
+            bail!(line, "`{qualified}` is already defined");
         }
-        Ok(tensor)
+        self.names.insert(qualified.clone(), binding);
+        Ok(qualified)
+    }
+
+    fn bind_tensor(
+        &mut self,
+        name: String,
+        extents: Vec<u64>,
+        line: usize,
+    ) -> Result<TensorName, ParseError> {
+        self.bind(name, Binding::Tensor(extents), line)
+            .map(TensorName)
+    }
+
+    /// Bind `name` to `value`, which must be an integer.
+    fn bind_int(&mut self, name: String, value: Value, line: usize) -> Result<(), ParseError> {
+        let Value::Int(value) = value else {
+            bail!(
+                line,
+                "`{name}` must be bound to an integer or an `nl.ndarray` tensor, not `{value}`"
+            );
+        };
+        self.bind(name, Binding::Int(value), line)?;
+        Ok(())
     }
 
     fn evaluate(&self, expr: Expr, line: usize) -> Result<Value, ParseError> {
@@ -198,6 +344,8 @@ impl Scope<'_> {
                 };
                 let value = match op {
                     BinOp::Mul => lhs.checked_mul(rhs),
+                    BinOp::FloorDiv if rhs == 0 => bail!(line, "integer division by zero"),
+                    BinOp::FloorDiv => Some(lhs / rhs),
                     BinOp::Add => lhs.checked_add(rhs),
                 };
                 let Some(value) = value else {
@@ -216,7 +364,31 @@ impl Scope<'_> {
                 Ok(Value::Region { tensor, dims })
             }
             Expr::Slice { .. } => bail!(line, "a slice is only valid inside `[]`"),
+            Expr::Call(call) => bail!(
+                line,
+                "`{}` can only be called as a statement, or bound if it is `nl.ndarray`",
+                call.callee
+            ),
+            Expr::Compare { .. } => bail!(line, "a comparison is only valid in an `assert`"),
         }
+    }
+
+    /// The first comparison of the chain `first op second ...` that is false, if any.
+    fn failed_comparison(
+        &self,
+        first: Expr,
+        rest: Vec<(CmpOp, Expr)>,
+        line: usize,
+    ) -> Result<Option<(Value, CmpOp, Value)>, ParseError> {
+        let mut lhs = self.evaluate(first, line)?;
+        for (op, rhs) in rest {
+            let rhs = self.evaluate(rhs, line)?;
+            if !holds(op, &lhs, &rhs, line)? {
+                return Ok(Some((lhs, op, rhs)));
+            }
+            lhs = rhs;
+        }
+        Ok(None)
     }
 
     /// One subscript index as slice bounds. An integer index would drop its
@@ -249,25 +421,24 @@ impl Scope<'_> {
                 member.push('.');
                 member.push_str(attribute);
             }
-            return Ok(Value::Member(member));
+            return tile_size(member, line);
         }
 
-        if let Some(&value) = self.integers.get(&name.head) {
-            if !name.attributes.is_empty() {
-                bail!(line, "unsupported attribute on `{}`", name.head);
-            }
-            return Ok(Value::Int(value));
-        }
-
-        let Some(tensor) = self.lookup(&name.head) else {
+        let Some((qualified, binding)) = self.lookup(&name.head) else {
             bail!(line, "unknown name `{}`", name.head);
         };
 
-        match name.attributes.as_slice() {
-            [] => Ok(Value::Tensor(tensor)),
-            [attribute] if attribute == "dtype" => Ok(Value::DtypeOf(tensor)),
-            [attribute] if attribute == "shape" => Ok(Value::ShapeOf(tensor)),
-            _ => bail!(line, "unsupported tensor attribute `{name}`"),
+        match (binding, name.attributes.as_slice()) {
+            (Binding::Int(value), []) => Ok(Value::Int(*value)),
+            (Binding::Int(_), _) => bail!(line, "unsupported attribute on `{}`", name.head),
+            (Binding::Tensor(_), []) => Ok(Value::Tensor(TensorName(qualified))),
+            (Binding::Tensor(_), [attribute]) if attribute == "dtype" => {
+                Ok(Value::DtypeOf(TensorName(qualified)))
+            }
+            (Binding::Tensor(extents), [attribute]) if attribute == "shape" => Ok(Value::Tuple(
+                extents.iter().map(|&extent| Value::Int(extent)).collect(),
+            )),
+            (Binding::Tensor(_), _) => bail!(line, "unsupported tensor attribute `{name}`"),
         }
     }
 
@@ -282,33 +453,71 @@ impl Scope<'_> {
         qualified
     }
 
-    /// The tensor `name` refers to: the innermost enclosing iteration's, else an outer one's.
-    fn lookup(&self, name: &str) -> Option<TensorName> {
+    /// What `name` refers to, with its qualified name: the innermost enclosing
+    /// iteration's binding, else an outer one's.
+    fn lookup(&self, name: &str) -> Option<(String, &Binding)> {
         for depth in (0..=self.iterations.len()).rev() {
             let mut candidate = name.to_string();
             for index in &self.iterations[..depth] {
                 candidate.push('.');
                 candidate.push_str(&index.to_string());
             }
-            let candidate = TensorName(candidate);
-            if self.tensors.contains(&candidate) {
-                return Some(candidate);
+            if let Some(binding) = self.names.get(&candidate) {
+                return Some((candidate, binding));
             }
         }
         None
     }
 }
 
+/// An `nl.tile_size` limit as its integer; any other member as itself.
+fn tile_size(member: String, line: usize) -> Result<Value, ParseError> {
+    let Some(limit) = member
+        .strip_prefix(NKI_LANGUAGE)
+        .and_then(|rest| rest.strip_prefix(".tile_size."))
+    else {
+        return Ok(Value::Member(member));
+    };
+    let Some(&(_, value)) = TILE_SIZES.iter().find(|(name, _)| *name == limit) else {
+        bail!(line, "unsupported tile size `nl.tile_size.{limit}`");
+    };
+    Ok(Value::Int(value))
+}
+
+/// Whether `lhs op rhs` holds: integers compare by any operator, tuples such as
+/// shapes by `==` and `!=`.
+fn holds(op: CmpOp, lhs: &Value, rhs: &Value, line: usize) -> Result<bool, ParseError> {
+    match (lhs, rhs, op) {
+        (Value::Int(lhs), Value::Int(rhs), _) => Ok(match op {
+            CmpOp::Eq => lhs == rhs,
+            CmpOp::Ne => lhs != rhs,
+            CmpOp::Lt => lhs < rhs,
+            CmpOp::Le => lhs <= rhs,
+            CmpOp::Gt => lhs > rhs,
+            CmpOp::Ge => lhs >= rhs,
+        }),
+        (Value::Tuple(_), Value::Tuple(_), CmpOp::Eq) => Ok(lhs == rhs),
+        (Value::Tuple(_), Value::Tuple(_), CmpOp::Ne) => Ok(lhs != rhs),
+        _ => bail!(
+            line,
+            "cannot compare `{lhs}` {} `{rhs}`: `assert` compares integers, or tuples by `==` and `!=`",
+            op.text()
+        ),
+    }
+}
+
 fn statement(stmt: Stmt, scope: &mut Scope, out: &mut Vec<Statement>) -> Result<(), ParseError> {
     match stmt {
-        Stmt::Call { line, target, call } => {
-            out.push(call_statement(target, call, scope, line)?);
+        Stmt::Assign {
+            line,
+            target,
+            value,
+        } => assignment(target, value, scope, out, line),
+        Stmt::Expr { line, value } => {
+            out.push(effect(value, scope, line)?);
             Ok(())
         }
-        Stmt::AssertEq { line, left, right } => {
-            out.push(shape_assertion(left, right, scope, line)?);
-            Ok(())
-        }
+        Stmt::Assert { line, test } => assertion(test, scope, line),
         Stmt::For {
             line,
             var,
@@ -320,34 +529,35 @@ fn statement(stmt: Stmt, scope: &mut Scope, out: &mut Vec<Statement>) -> Result<
 }
 
 /// `for var in nl.affine_range(count):` as its body once per index, each
-/// iteration declaring its own tiles.
+/// iteration binding its own index and tiles. The index is unbound after its
+/// iteration, so later loops can reuse the name.
 fn unroll(
     var: String,
-    iterable: Call,
+    iterable: Expr,
     body: Vec<Stmt>,
     scope: &mut Scope,
     out: &mut Vec<Statement>,
     line: usize,
 ) -> Result<(), ParseError> {
     let count = affine_range(iterable, scope, line)?;
-    if scope.imports.contains_key(&var) {
-        bail!(line, "`{var}` shadows an import");
-    }
 
     for index in 0..count {
-        scope.integers.insert(var.clone(), index);
         scope.iterations.push(index);
+        let bound = scope.bind(var.clone(), Binding::Int(index), line)?;
         for stmt in body.clone() {
             statement(stmt, scope, out)?;
         }
+        scope.names.remove(&bound);
         scope.iterations.pop();
-        scope.integers.remove(&var);
     }
     Ok(())
 }
 
 /// The trip count of `nl.affine_range(count)`: only a concrete count unrolls.
-fn affine_range(call: Call, scope: &Scope, line: usize) -> Result<u64, ParseError> {
+fn affine_range(iterable: Expr, scope: &Scope, line: usize) -> Result<u64, ParseError> {
+    let Expr::Call(call) = iterable else {
+        bail!(line, "a loop must iterate over `nl.affine_range(count)`");
+    };
     let callee = scope.resolve(&call.callee, line)?;
     if callee.member_of(NKI_LANGUAGE) != Some("affine_range") {
         bail!(line, "unsupported loop iterable `{}`", call.callee);
@@ -364,66 +574,93 @@ fn affine_range(call: Call, scope: &Scope, line: usize) -> Result<u64, ParseErro
     Ok(count)
 }
 
-/// `x = nl.ndarray(...)` declares the tile or HBM tensor `x`; `nisa.<opcode>(...)` is an
-/// instruction.
-fn call_statement(
-    target: Option<String>,
-    call: Call,
+/// `x = nl.ndarray(...)` declares the tile or HBM tensor `x`; any other value
+/// binds integers, `a, b = t.shape` one per extent.
+fn assignment(
+    target: Target,
+    value: Expr,
     scope: &mut Scope,
+    out: &mut Vec<Statement>,
     line: usize,
-) -> Result<Statement, ParseError> {
+) -> Result<(), ParseError> {
+    let value = match value {
+        Expr::Call(call) => {
+            let callee = scope.resolve(&call.callee, line)?;
+            if callee.member_of(NKI_LANGUAGE) != Some("ndarray") {
+                bail!(
+                    line,
+                    "only `nl.ndarray` declares tensors, not `{}`",
+                    call.callee
+                );
+            }
+            let Target::Name(name) = target else {
+                bail!(line, "`nl.ndarray` declares one tensor");
+            };
+            out.push(declaration(name, call, scope, line)?);
+            return Ok(());
+        }
+        value => scope.evaluate(value, line)?,
+    };
+
+    match target {
+        Target::Name(name) => scope.bind_int(name, value, line),
+        Target::Unpack(names) => {
+            let Value::Tuple(items) = value else {
+                bail!(line, "only a tuple can be unpacked, not `{value}`");
+            };
+            if items.len() != names.len() {
+                bail!(
+                    line,
+                    "cannot unpack {} values into {} names",
+                    items.len(),
+                    names.len()
+                );
+            }
+            for (name, item) in names.into_iter().zip(items) {
+                scope.bind_int(name, item, line)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// An expression statement: `nisa.<opcode>(...)`, an instruction.
+fn effect(value: Expr, scope: &Scope, line: usize) -> Result<Statement, ParseError> {
+    let Expr::Call(call) = value else {
+        bail!(
+            line,
+            "a statement must be an `nki.isa` call, an assignment or an `assert`"
+        );
+    };
     let callee = scope.resolve(&call.callee, line)?;
 
     if callee.member_of(NKI_LANGUAGE) == Some("ndarray") {
-        let Some(target) = target else {
-            bail!(
-                line,
-                "the tile of `{}` must be bound to a name",
-                call.callee
-            );
-        };
-        return declaration(target, call, scope, line);
-    }
-
-    if let Some(opcode) = callee.member_of(NKI_ISA) {
-        if let Some(target) = target {
-            bail!(
-                line,
-                "`{target}` is bound to an instruction; only `nl.ndarray` declares tensors"
-            );
-        }
-        let instruction = instruction(opcode.to_owned(), call, scope, line)?;
-        return Ok(Statement::Instruction(instruction));
-    }
-
-    bail!(line, "unsupported call `{}`", call.callee);
-}
-
-/// `assert t.shape == (extent, ...)`.
-fn shape_assertion(
-    left: Expr,
-    right: Expr,
-    scope: &Scope,
-    line: usize,
-) -> Result<Statement, ParseError> {
-    let left = scope.evaluate(left, line)?;
-    let right = scope.evaluate(right, line)?;
-    let (Value::ShapeOf(tensor), Value::Tuple(extents)) = (left, right) else {
         bail!(
             line,
-            "only `tensor.shape == (extent, ...)` assertions are supported"
+            "the tile of `{}` must be bound to a name",
+            call.callee
         );
-    };
-
-    let mut shape = Vec::new();
-    for extent in extents {
-        let Value::Int(extent) = extent else {
-            bail!(line, "a shape's extents must be integers");
-        };
-        shape.push(extent);
     }
+    let Some(opcode) = callee.member_of(NKI_ISA) else {
+        bail!(line, "unsupported call `{}`", call.callee);
+    };
+    let instruction = instruction(opcode.to_owned(), call, scope, line)?;
+    Ok(Statement::Instruction(instruction))
+}
 
-    Ok(Statement::AssertShape { tensor, shape })
+/// `assert a op b ...`, checked against the call's shapes: it leaves no statement.
+fn assertion(test: Expr, scope: &Scope, line: usize) -> Result<(), ParseError> {
+    let Expr::Compare { first, rest } = test else {
+        bail!(line, "an `assert` must be a comparison");
+    };
+    if let Some((lhs, op, rhs)) = scope.failed_comparison(*first, rest, line)? {
+        bail!(
+            line,
+            "assertion fails for this call: `{lhs} {} {rhs}` is false",
+            op.text()
+        );
+    }
+    Ok(())
 }
 
 /// `target = nl.ndarray(shape, dtype, buffer=...)`: an HBM tensor of any rank in
@@ -440,13 +677,15 @@ fn declaration(
     // As in Python, the arguments are evaluated before the target is bound.
     if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
         let shape = read_extents(shape, line)?;
-        let name = scope.bind(target, line)?;
+        let extents = shape.iter().map(|extent| extent.get()).collect();
+        let name = scope.bind_tensor(target, extents, line)?;
         return Ok(Statement::DeclareHbm(HbmDecl { name, shape, dtype }));
     }
 
     let shape = read_shape(shape, line)?;
     let buffer = read_buffer(buffer, line)?;
-    let name = scope.bind(target, line)?;
+    let extents = vec![u64::from(shape.partitions.get()), shape.free.get()];
+    let name = scope.bind_tensor(target, extents, line)?;
     Ok(Statement::Declare(TileDecl {
         name,
         shape,

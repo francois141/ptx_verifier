@@ -1,6 +1,4 @@
-kernel kernel(a, out)
-  assert a.shape == [2, 4]
-  assert out.shape == [2, 4]
+kernel kernel(a: [2, 4], out: [2, 4])
   x: sbuf[2, 4] of a.dtype
   y: sbuf[2, 4] of a.dtype
   dma_copy(dst=x, src=a)

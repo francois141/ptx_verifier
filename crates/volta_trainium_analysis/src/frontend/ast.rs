@@ -15,7 +15,7 @@ pub struct TensorName(pub String);
 pub struct Kernel {
     pub name: String,
     /// The arguments in order: tensors in device memory (HBM).
-    pub params: Vec<TensorName>,
+    pub params: Vec<Param>,
     /// Every tensor a statement names is a parameter or a tensor declared by an
     /// earlier statement, and no name is declared twice.
     pub body: Vec<Statement>,
@@ -23,10 +23,18 @@ pub struct Kernel {
     pub returned: Option<TensorName>,
 }
 
+/// An argument, with the shape of the call the kernel is specialized to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Param {
+    pub name: TensorName,
+    /// The extents, outermost first.
+    pub shape: Vec<NonZeroU64>,
+}
+
+/// The statements that remain once the parser has evaluated the kernel's integer
+/// arithmetic and checked its `assert`s against the call's shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
-    /// `assert tensor.shape == (extent, ...)`.
-    AssertShape { tensor: TensorName, shape: Vec<u64> },
     /// `name = nl.ndarray((partitions, free), dtype, buffer=...)`.
     Declare(TileDecl),
     /// `name = nl.ndarray(shape, dtype, buffer=nl.shared_hbm)`.
@@ -152,7 +160,11 @@ pub enum Operand {
 
 impl fmt::Display for Kernel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let params: Vec<&str> = self.params.iter().map(|param| param.0.as_str()).collect();
+        let params: Vec<String> = self
+            .params
+            .iter()
+            .map(|param| format!("{}: [{}]", param.name, extents(&param.shape)))
+            .collect();
         writeln!(f, "kernel {}({})", self.name, params.join(", "))?;
 
         for statement in &self.body {
@@ -168,11 +180,6 @@ impl fmt::Display for Kernel {
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AssertShape { tensor, shape } => {
-                let extents: Vec<String> = shape.iter().map(u64::to_string).collect();
-                write!(f, "assert {tensor}.shape == [{}]", extents.join(", "))
-            }
-
             Self::Declare(tile) => {
                 let TileShape { partitions, free } = tile.shape;
                 let buffer = tile.buffer.name();
@@ -185,16 +192,13 @@ impl fmt::Display for Statement {
                 )
             }
 
-            Self::DeclareHbm(tensor) => {
-                let extents: Vec<String> = tensor.shape.iter().map(|e| e.to_string()).collect();
-                write!(
-                    f,
-                    "{}: shared_hbm[{}] of {}",
-                    tensor.name,
-                    extents.join(", "),
-                    tensor.dtype
-                )
-            }
+            Self::DeclareHbm(tensor) => write!(
+                f,
+                "{}: shared_hbm[{}] of {}",
+                tensor.name,
+                extents(&tensor.shape),
+                tensor.dtype
+            ),
 
             Self::Instruction(instruction) => {
                 let operands: Vec<String> = instruction
@@ -206,6 +210,12 @@ impl fmt::Display for Statement {
             }
         }
     }
+}
+
+/// `2, 4` for the shape `(2, 4)`.
+fn extents(shape: &[NonZeroU64]) -> String {
+    let extents: Vec<String> = shape.iter().map(NonZeroU64::to_string).collect();
+    extents.join(", ")
 }
 
 impl fmt::Display for TensorName {

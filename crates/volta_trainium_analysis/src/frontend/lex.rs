@@ -45,6 +45,29 @@ impl Keyword {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl CmpOp {
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+        }
+    }
+}
+
 /// Python's other keywords, rejected rather than read as names.
 const UNSUPPORTED_KEYWORDS: [&str; 28] = [
     "False", "None", "True", "and", "async", "await", "break", "class", "continue", "del", "elif",
@@ -64,12 +87,14 @@ pub enum TokenKind {
     RBracket,
     Comma,
     Equals,
-    EqualsEquals,
+    /// A comparison operator: `==`, `!=`, `<`, `<=`, `>` or `>=`.
+    Compare(CmpOp),
     Dot,
     Colon,
     At,
     Star,
     Plus,
+    SlashSlash,
     /// The end of a logical line.
     Newline,
     Indent,
@@ -103,12 +128,13 @@ impl fmt::Display for TokenKind {
             Self::RBracket => f.write_str("`]`"),
             Self::Comma => f.write_str("`,`"),
             Self::Equals => f.write_str("`=`"),
-            Self::EqualsEquals => f.write_str("`==`"),
+            Self::Compare(op) => write!(f, "`{}`", op.text()),
             Self::Dot => f.write_str("`.`"),
             Self::Colon => f.write_str("`:`"),
             Self::At => f.write_str("`@`"),
             Self::Star => f.write_str("`*`"),
             Self::Plus => f.write_str("`+`"),
+            Self::SlashSlash => f.write_str("`//`"),
             Self::Newline => f.write_str("end of line"),
             Self::Indent => f.write_str("an indented block"),
             Self::Dedent => f.write_str("end of block"),
@@ -203,13 +229,19 @@ fn scan(code: &str, line: usize) -> Result<Vec<TokenKind>, ParseError> {
             '[' => (TokenKind::LBracket, 1),
             ']' => (TokenKind::RBracket, 1),
             ',' => (TokenKind::Comma, 1),
-            '=' if rest.starts_with("==") => (TokenKind::EqualsEquals, 2),
+            '=' if rest.starts_with("==") => (TokenKind::Compare(CmpOp::Eq), 2),
             '=' => (TokenKind::Equals, 1),
+            '!' if rest.starts_with("!=") => (TokenKind::Compare(CmpOp::Ne), 2),
+            '<' if rest.starts_with("<=") => (TokenKind::Compare(CmpOp::Le), 2),
+            '<' => (TokenKind::Compare(CmpOp::Lt), 1),
+            '>' if rest.starts_with(">=") => (TokenKind::Compare(CmpOp::Ge), 2),
+            '>' => (TokenKind::Compare(CmpOp::Gt), 1),
             '.' => (TokenKind::Dot, 1),
             ':' => (TokenKind::Colon, 1),
             '@' => (TokenKind::At, 1),
             '*' => (TokenKind::Star, 1),
             '+' => (TokenKind::Plus, 1),
+            '/' if rest.starts_with("//") => (TokenKind::SlashSlash, 2),
             _ if c == '_' || c.is_ascii_alphabetic() => {
                 let len = run(rest, |c| c == '_' || c.is_ascii_alphanumeric());
                 (word(&rest[..len], line)?, len)

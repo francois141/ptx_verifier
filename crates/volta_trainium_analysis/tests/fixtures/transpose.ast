@@ -1,6 +1,4 @@
-kernel kernel(a, out)
-  assert a.shape == [2, 3]
-  assert out.shape == [3, 2]
+kernel kernel(a: [2, 3], out: [3, 2])
   x: sbuf[2, 3] of a.dtype
   t: psum[3, 2] of a.dtype
   y: sbuf[3, 2] of a.dtype

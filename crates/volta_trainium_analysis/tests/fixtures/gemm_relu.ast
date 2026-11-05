@@ -1,7 +1,4 @@
-kernel kernel(a_t, b, out)
-  assert a_t.shape == [8, 4]
-  assert b.shape == [8, 4]
-  assert out.shape == [4, 4]
+kernel kernel(a_t: [8, 4], b: [8, 4], out: [4, 4])
   x: sbuf[8, 4] of a_t.dtype
   y: sbuf[8, 4] of b.dtype
   acc: psum[4, 4] of float32

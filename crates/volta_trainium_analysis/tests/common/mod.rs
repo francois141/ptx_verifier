@@ -9,15 +9,16 @@ use std::path::{Path, PathBuf};
 use volta_trainium_analysis::frontend::parse::parse_kernel;
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
-/// Parse, lower and run kernel `kernel` of `tests/fixtures/<name>.py`, comparing each stage's
-/// result with its file; `.out` holds one `array[index] = expr` line per written element.
-pub fn check(name: &str, kernel: &str) {
+/// Parse, lower and run kernel `kernel` of `tests/fixtures/<name>.py` for a call with
+/// parameter `shapes`, comparing each stage's result with its file; `.out` holds one
+/// `array[index] = expr` line per written element.
+pub fn check(name: &str, kernel: &str, shapes: &[(&str, &[u64])]) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
     let source = std::fs::read_to_string(fixture.with_extension("py")).unwrap();
 
-    let parsed = parse_kernel(&source, kernel).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let parsed = parse_kernel(&source, kernel, shapes).unwrap_or_else(|e| panic!("{name}: {e}"));
     compare(fixture.with_extension("ast"), parsed.to_string());
 
     let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));

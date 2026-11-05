@@ -1,6 +1,6 @@
 //! Lowering a parsed NKI kernel into its tensors and the instructions over them.
-//! A parameter's shape is the one its `assert` binds, which must precede the
-//! parameter's first use as an operand; a declared tensor's is its declaration's.
+//! A parameter's shape is the call's, which the parser records; a declared
+//! tensor's is its declaration's.
 
 mod error;
 
@@ -25,18 +25,16 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
     let params = kernel
         .params
         .iter()
-        .map(|param| scope.add(param.clone(), Memory::Hbm, None, Initial::Argument))
+        .map(|param| {
+            let shape = Shape(param.shape.iter().map(|extent| extent.get()).collect());
+            scope.add(param.name.clone(), Memory::Hbm, shape, Initial::Argument)
+        })
         .collect();
 
     let mut instructions = Vec::new();
     for (index, statement) in kernel.body.iter().enumerate() {
         let at = |error| LowerError::Statement { index, error };
         match statement {
-            Statement::AssertShape { tensor, shape } => {
-                scope
-                    .assert_shape(tensor, Shape(shape.clone()))
-                    .map_err(at)?;
-            }
             Statement::Declare(tile) => {
                 let shape = vec![
                     u64::from(tile.shape.partitions.get()),
@@ -46,14 +44,14 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
                 scope.add(
                     tile.name.clone(),
                     memory,
-                    Some(Shape(shape)),
+                    Shape(shape),
                     Initial::Uninitialized,
                 );
             }
             Statement::DeclareHbm(tensor) => {
                 let shape = Shape(tensor.shape.iter().map(|extent| extent.get()).collect());
                 let name = tensor.name.clone();
-                scope.add(name, Memory::Hbm, Some(shape), Initial::Uninitialized);
+                scope.add(name, Memory::Hbm, shape, Initial::Uninitialized);
             }
             Statement::Instruction(instruction) => {
                 instructions.push(lower_instruction(instruction, &scope).map_err(at)?);
@@ -70,7 +68,7 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
     Ok(LoweredKernel {
         name: kernel.name.clone(),
         params,
-        tensors: scope.into_tensors()?,
+        tensors: scope.into_tensors(),
         instructions: IdVec::from_vec(instructions),
         returned,
     })
@@ -376,7 +374,7 @@ fn region<'s>(
         _ => return Err(StatementError::NotATensor { keyword }),
     };
 
-    let tensor = scope.named(name)?;
+    let tensor = scope.named(name);
     let extents = tensor.shape.0.as_slice();
 
     if dims.is_empty() {
@@ -472,15 +470,14 @@ fn same_shape(left: &Shaped, right: &Shaped) -> Result<(), StatementError> {
 // Scope
 // =============================================================================
 
-/// A tensor as lowering sees it: a parameter has no shape until one is asserted.
 struct Entry {
     name: TensorName,
     memory: Memory,
-    shape: Option<Shape>,
+    shape: Shape,
     initial: Initial,
 }
 
-/// A tensor operand whose shape is bound.
+/// A tensor operand.
 struct Shaped<'a> {
     id: TensorId,
     name: &'a TensorName,
@@ -501,7 +498,7 @@ impl Scope {
         &mut self,
         name: TensorName,
         memory: Memory,
-        shape: Option<Shape>,
+        shape: Shape,
         initial: Initial,
     ) -> TensorId {
         let id = self.entries.push(Entry {
@@ -514,24 +511,7 @@ impl Scope {
         id
     }
 
-    /// Bind the shape of a parameter not yet asserted, or check a bound shape against it.
-    fn assert_shape(&mut self, tensor: &TensorName, asserted: Shape) -> Result<(), StatementError> {
-        let entry = &mut self.entries[self.ids[tensor]];
-        match &entry.shape {
-            None => entry.shape = Some(asserted),
-            Some(shape) if *shape == asserted => {}
-            Some(shape) => {
-                return Err(StatementError::ShapeContradiction {
-                    tensor: tensor.clone(),
-                    shape: shape.clone(),
-                    asserted,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Operand `keyword`, a tensor whose shape is bound.
+    /// Operand `keyword`, a tensor.
     fn shaped(
         &self,
         operand: &Operand,
@@ -540,22 +520,18 @@ impl Scope {
         let Operand::Tensor(name) = operand else {
             return Err(StatementError::NotATensor { keyword });
         };
-        self.named(name)
+        Ok(self.named(name))
     }
 
-    /// The tensor `name`, whose shape an `assert` must already have bound.
-    fn named(&self, name: &TensorName) -> Result<Shaped<'_>, StatementError> {
+    fn named(&self, name: &TensorName) -> Shaped<'_> {
         let id = self.ids[name];
         let entry = &self.entries[id];
-        let Some(shape) = &entry.shape else {
-            return Err(StatementError::Unshaped(name.clone()));
-        };
-        Ok(Shaped {
+        Shaped {
             id,
             name: &entry.name,
             memory: entry.memory,
-            shape,
-        })
+            shape: &entry.shape,
+        }
     }
 
     /// The tensor a kernel returns: one it allocates in HBM, not an argument or a tile.
@@ -568,17 +544,12 @@ impl Scope {
         Ok(id)
     }
 
-    fn into_tensors(self) -> Result<IdVec<TensorId, Tensor>, LowerError> {
-        self.entries.try_map(|_, entry| {
-            let Some(shape) = entry.shape else {
-                return Err(LowerError::UnassertedParam(entry.name));
-            };
-            Ok(Tensor {
-                name: entry.name.0,
-                memory: entry.memory,
-                shape,
-                initial: entry.initial,
-            })
+    fn into_tensors(self) -> IdVec<TensorId, Tensor> {
+        self.entries.map(|_, entry| Tensor {
+            name: entry.name.0,
+            memory: entry.memory,
+            shape: entry.shape,
+            initial: entry.initial,
         })
     }
 }

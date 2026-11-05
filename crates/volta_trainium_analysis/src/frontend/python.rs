@@ -6,7 +6,7 @@ use std::fmt;
 
 use super::ast::Scalar;
 use super::error::{ParseError, bail};
-use super::lex::{Keyword, Token, TokenKind, tokenize};
+use super::lex::{CmpOp, Keyword, Token, TokenKind, tokenize};
 
 /// A dotted name: `nl.add` has head `nl` and attributes `[add]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,27 +47,33 @@ pub struct Function {
 
 #[derive(Clone)]
 pub enum Stmt {
-    /// `[target =] call`.
-    Call {
+    /// `target = value`.
+    Assign {
         line: usize,
-        target: Option<String>,
-        call: Call,
+        target: Target,
+        value: Expr,
     },
-    /// `assert left == right`.
-    AssertEq {
-        line: usize,
-        left: Expr,
-        right: Expr,
-    },
+    /// An expression evaluated for its effect, e.g. an `nki.isa` call.
+    Expr { line: usize, value: Expr },
+    /// `assert test`.
+    Assert { line: usize, test: Expr },
     /// `for var in iterable:` and its indented body.
     For {
         line: usize,
         var: String,
-        iterable: Call,
+        iterable: Expr,
         body: Vec<Stmt>,
     },
     /// `return value`.
     Return { line: usize, value: Expr },
+}
+
+/// What an assignment binds: one name, or each item of a tuple to a name.
+#[derive(Clone)]
+pub enum Target {
+    Name(String),
+    /// `a, b = value`.
+    Unpack(Vec<String>),
 }
 
 #[derive(Clone)]
@@ -84,6 +90,13 @@ pub enum Expr {
     Float(Scalar),
     Name(Dotted),
     Tuple(Vec<Expr>),
+    /// `callee(args)`.
+    Call(Call),
+    /// `first op1 second op2 third ...`: each operand compared with the next.
+    Compare {
+        first: Box<Expr>,
+        rest: Vec<(CmpOp, Expr)>,
+    },
     /// `lhs op rhs`.
     Binary {
         op: BinOp,
@@ -105,7 +118,23 @@ pub enum Expr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Mul,
+    FloorDiv,
     Add,
+}
+
+/// An assignment's left side as its target: a name, or a tuple of names.
+fn target(expr: Expr, line: usize) -> Result<Target, ParseError> {
+    let name = |expr: Expr| match expr {
+        Expr::Name(Dotted { head, attributes }) if attributes.is_empty() => Ok(head),
+        _ => bail!(line, "only names can be assigned to"),
+    };
+
+    match expr {
+        Expr::Tuple(items) => Ok(Target::Unpack(
+            items.into_iter().map(name).collect::<Result<_, _>>()?,
+        )),
+        expr => Ok(Target::Name(name(expr)?)),
+    }
 }
 
 /// The module's top-level items in order.
@@ -182,17 +211,15 @@ impl Parser {
         let line = self.line();
 
         if self.eat(&TokenKind::Keyword(Keyword::Assert)) {
-            let left = self.expr()?;
-            self.expect(TokenKind::EqualsEquals)?;
-            let right = self.expr()?;
+            let test = self.expr()?;
             self.expect(TokenKind::Newline)?;
-            return Ok(Stmt::AssertEq { line, left, right });
+            return Ok(Stmt::Assert { line, test });
         }
 
         if self.eat(&TokenKind::Keyword(Keyword::For)) {
             let var = self.name()?;
             self.expect(TokenKind::Keyword(Keyword::In))?;
-            let iterable = self.call()?;
+            let iterable = self.expr()?;
             self.expect(TokenKind::Colon)?;
             self.expect(TokenKind::Newline)?;
 
@@ -215,19 +242,41 @@ impl Parser {
             return Ok(Stmt::Return { line, value });
         }
 
-        let target = self.binding();
-        let call = self.call()?;
-        self.expect(TokenKind::Newline)?;
+        let value = self.expr_list()?;
+        if !self.eat(&TokenKind::Equals) {
+            self.expect(TokenKind::Newline)?;
+            return Ok(Stmt::Expr { line, value });
+        }
 
-        Ok(Stmt::Call { line, target, call })
+        let target = target(value, line)?;
+        let value = self.expr_list()?;
+        self.expect(TokenKind::Newline)?;
+        Ok(Stmt::Assign {
+            line,
+            target,
+            value,
+        })
     }
 
-    /// `callee(args)`: positional arguments, then keyword ones.
-    fn call(&mut self) -> Result<Call, ParseError> {
-        let line = self.line();
-        let callee = self.dotted()?;
-        self.expect(TokenKind::LParen)?;
+    /// An expression, or the tuple `e, ...` of several without parentheses.
+    fn expr_list(&mut self) -> Result<Expr, ParseError> {
+        let first = self.expr()?;
+        if !self.eat(&TokenKind::Comma) {
+            return Ok(first);
+        }
 
+        let mut items = vec![first];
+        while !matches!(self.peek(), TokenKind::Equals | TokenKind::Newline) {
+            items.push(self.expr()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        Ok(Expr::Tuple(items))
+    }
+
+    /// The arguments of `callee(args)`, after `(`: positional ones, then keyword ones.
+    fn call(&mut self, callee: Dotted, line: usize) -> Result<Call, ParseError> {
         let mut args = Vec::new();
         let mut kwargs: Vec<(String, Expr)> = Vec::new();
         for (keyword, expr) in self.comma_list(TokenKind::RParen, Self::argument)? {
@@ -261,8 +310,26 @@ impl Parser {
         Ok((keyword, expr))
     }
 
-    /// An expression: `+` over `*` over a primary.
+    /// An expression: comparisons over `+` over `*` and `//` over a primary.
     fn expr(&mut self) -> Result<Expr, ParseError> {
+        let first = self.sum()?;
+        let mut rest = Vec::new();
+        while let &TokenKind::Compare(op) = self.peek() {
+            self.advance();
+            rest.push((op, self.sum()?));
+        }
+
+        if rest.is_empty() {
+            return Ok(first);
+        }
+        Ok(Expr::Compare {
+            first: Box::new(first),
+            rest,
+        })
+    }
+
+    /// A sum of terms.
+    fn sum(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.term()?;
         while self.eat(&TokenKind::Plus) {
             let rhs = self.term()?;
@@ -275,27 +342,39 @@ impl Parser {
         Ok(lhs)
     }
 
-    /// A product of primaries.
+    /// Primaries multiplied or floor-divided, left to right.
     fn term(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.primary()?;
-        while self.eat(&TokenKind::Star) {
+        loop {
+            let op = match self.peek() {
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::SlashSlash => BinOp::FloorDiv,
+                _ => return Ok(lhs),
+            };
+            self.advance();
             let rhs = self.primary()?;
             lhs = Expr::Binary {
-                op: BinOp::Mul,
+                op,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             };
         }
-        Ok(lhs)
     }
 
-    /// A literal, a dotted name, or a parenthesized expression or tuple, then any `[...]`.
+    /// A literal, a dotted name, a call, or a parenthesized expression or tuple, then any `[...]`.
     fn primary(&mut self) -> Result<Expr, ParseError> {
         let Token { kind, line } = self.advance();
         let mut base = match kind {
             TokenKind::Int(value) => Expr::Int(value),
             TokenKind::Float(value) => Expr::Float(value),
-            TokenKind::Name(head) => Expr::Name(self.attributes(head)?),
+            TokenKind::Name(head) => {
+                let name = self.attributes(head)?;
+                if self.eat(&TokenKind::LParen) {
+                    Expr::Call(self.call(name, line)?)
+                } else {
+                    Expr::Name(name)
+                }
+            }
             TokenKind::LParen => self.parenthesized()?,
             other => bail!(line, "expected an expression, found {other}"),
         };
@@ -384,7 +463,7 @@ impl Parser {
         Ok(Dotted { head, attributes })
     }
 
-    /// Consumes `name =` if it comes next: an assignment's target or an argument's keyword.
+    /// Consumes `name =` if it comes next: a keyword argument's keyword.
     fn binding(&mut self) -> Option<String> {
         let TokenKind::Name(name) = self.peek() else {
             return None;

@@ -498,13 +498,25 @@ is an `ast::Scalar`, a newtype whose constructor rejects non-finite values, so
 it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
 rational, since only f64-round-tripping reals print as decimals.
 
+A kernel is parsed for one call: `parse_kernel(source, name, shapes)` takes each
+parameter's shape, as `@nki.jit` specializes a kernel per call (a missing,
+unknown, repeated or empty one is `ParseError::ParamShape`), and lowering takes
+parameter shapes from the parsed `ast::Param`s. The parser's `Scope` binds each
+name once, to a tensor with its extents or to a compile-time integer: `d, n =
+q.shape`, `m = n`, `+`/`*`/`//` and `nl.tile_size.{pmax, gemm_stationary_fmax,
+gemm_moving_fmax}` evaluate there, `t.shape` is a tuple, and an `assert` (a
+chain of `==`/`!=`/`<`/`<=`/`>`/`>=`, tuples by `==`/`!=` only) is checked and
+leaves no statement; a false one is a parse error. `asserted_shapes(source,
+name)` reads a kernel's literal `assert p.shape == (...)`s as its shapes, for
+`volta_pipeline`'s NKI frontend, which has no caller.
+
 A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
 lowered: the interpreter has no program counter, and the integer-expression
 machinery is `parse.rs`'s. It binds the loop variable to each index, folds the
-body's arithmetic and emits the body once per index; the tiles an iteration
-declares take its index as a suffix (`x` becomes `x.0`, a name Python cannot
-write), so each iteration owns its own. A count that is not a literal is an
-error, since nothing else unrolls.
+body's arithmetic and emits the body once per index; the loop variable and the
+tiles an iteration declares take its index as a suffix (`x` becomes `x.0`, a
+name Python cannot write), so each iteration owns its own, and the variable is
+unbound after its iteration. The count is any compile-time integer.
 
 A subscript is a rectangular region, one slice per dimension, and only slices:
 an integer index would drop its dimension. `lower/` resolves each bound against
@@ -522,7 +534,11 @@ normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
 `[4, 1]` tile. `tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor
 through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
 `nl.affine_range(2)`. `tests/fixtures/returned_output.py` multiplies two 2 x 4
-tensors into a `kernel_out` it allocates and returns. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
+tensors into a `kernel_out` it allocates and returns.
+`tests/fixtures/call_shapes.py` opens like the attention kernels (shape
+unpacking, an alias, chained and `<=`/`>=` asserts, `nl.tile_size.pmax`) and adds
+2 x 4 tensors one `(rows, cols // 2)` tile at a time; `tests/kernels.rs` passes
+each fixture's call shapes. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
 kernels' math over their own array names (`a_t` being A transposed);
 `volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them.
 `tests/fixtures/attention.spec` is the NKI attention samples' reference, their

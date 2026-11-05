@@ -1,6 +1,5 @@
-//! Lowering error types: a kernel's parameters left without a shape, a returned
-//! tensor it did not allocate, and the errors of one body statement (shapes,
-//! instructions, operands).
+//! Lowering error types: a returned tensor the kernel did not allocate, and the
+//! errors of one body statement (shapes, instructions, operands).
 
 use std::fmt;
 
@@ -12,9 +11,6 @@ pub enum LowerError {
     // =========================================================================
     // Kernel Errors
     // =========================================================================
-    /// A parameter whose shape no `assert` binds.
-    UnassertedParam(TensorName),
-
     /// A returned tensor other than one the kernel allocates in `nl.shared_hbm`.
     ReturnsUnallocated(TensorName),
 
@@ -30,16 +26,6 @@ pub enum StatementError {
     // =========================================================================
     // Shape Errors
     // =========================================================================
-    /// An operand used before an `assert` binds its shape.
-    Unshaped(TensorName),
-
-    /// An `assert` contradicting the shape the tensor was declared or asserted with.
-    ShapeContradiction {
-        tensor: TensorName,
-        shape: Shape,
-        asserted: Shape,
-    },
-
     /// Two operands that must have one shape.
     ShapeMismatch([(TensorName, Shape); 2]),
 
@@ -115,9 +101,6 @@ pub enum StatementError {
 impl fmt::Display for LowerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnassertedParam(param) => {
-                write!(f, "no `assert` binds the shape of parameter `{param}`")
-            }
             Self::ReturnsUnallocated(tensor) => write!(
                 f,
                 "`{tensor}` is returned, but only an HBM tensor the kernel allocates \
@@ -131,17 +114,6 @@ impl fmt::Display for LowerError {
 impl fmt::Display for StatementError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unshaped(tensor) => {
-                write!(f, "`{tensor}` is used before an `assert` binds its shape")
-            }
-            Self::ShapeContradiction {
-                tensor,
-                shape,
-                asserted,
-            } => write!(
-                f,
-                "`{tensor}` has shape {shape}, not the asserted {asserted}"
-            ),
             Self::ShapeMismatch([(left, left_shape), (right, right_shape)]) => write!(
                 f,
                 "`{left}` has shape {left_shape} but `{right}` has shape {right_shape}"
