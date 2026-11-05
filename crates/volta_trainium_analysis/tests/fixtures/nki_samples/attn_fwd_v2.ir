@@ -1,0 +1,40 @@
+kernel attn_fwd_v2(q, k, v) -> kernel_out
+  q: hbm[128, 128]
+  k: hbm[128, 128]
+  v: hbm[128, 128]
+  kernel_out: hbm[128, 128]
+  q_sbuf: sbuf[128, 128]
+  k_sbuf: sbuf[128, 128]
+  v_sbuf: sbuf[128, 128]
+  qk: psum[128, 128]
+  qk_sbuf: sbuf[128, 128]
+  softmax_isa[0].row_max: sbuf[128, 1]
+  softmax_isa[0].norm: sbuf[128, 128]
+  softmax_isa[0].exp_vals: sbuf[128, 128]
+  softmax_isa[0].row_sum: sbuf[128, 1]
+  softmax_isa[0].inv_sum: sbuf[128, 1]
+  softmax_isa[0].result: sbuf[128, 128]
+  scores_t_psum: psum[128, 128]
+  scores_t: sbuf[128, 128]
+  v_t_psum: psum[128, 128]
+  v_t: sbuf[128, 128]
+  attn_out: psum[128, 128]
+  attn_out_sbuf: sbuf[128, 128]
+  q_sbuf = mov(q)
+  k_sbuf = mov(k)
+  v_sbuf = mov(v)
+  qk = matmul(q_sbuf, k_sbuf)
+  qk_sbuf = mov(qk)
+  softmax_isa[0].row_max = reduce maximum(qk_sbuf)
+  softmax_isa[0].norm = subtract(qk_sbuf, softmax_isa[0].row_max)
+  softmax_isa[0].exp_vals = exp(softmax_isa[0].norm)
+  softmax_isa[0].row_sum = reduce add(softmax_isa[0].exp_vals)
+  softmax_isa[0].inv_sum = reciprocal(softmax_isa[0].row_sum)
+  softmax_isa[0].result = multiply(softmax_isa[0].exp_vals, softmax_isa[0].inv_sum)
+  scores_t_psum = transpose(softmax_isa[0].result)
+  scores_t = mov(scores_t_psum)
+  v_t_psum = transpose(v_sbuf)
+  v_t = mov(v_t_psum)
+  attn_out = matmul(scores_t, v_t)
+  attn_out_sbuf = mov(attn_out)
+  kernel_out = mov(attn_out_sbuf)

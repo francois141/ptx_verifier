@@ -55,8 +55,13 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
 - `trainium_equivalence_tests.rs`: the NKI `matmul`, `gemm_relu` and `softmax`
   fixtures against their `.spec` files beside them in the Trainium analysis crate,
   with `gemm_relu` against the unclamped product and `softmax` against the softmax
-  of `-x` (a reversed `subtract`) as negative tests. Functional equivalence only;
-  `just trainium` runs them.
+  of `-x` (a reversed `subtract`) as negative tests. Also the NKI samples' own
+  `attn_fwd_v2`, read from its unmodified file with `softmax_isa` inlined, against
+  `attention.spec`: on its first row of 128 outputs by default, on all 16,384 in an
+  ignored test (`cargo test --release -p volta_pipeline --test
+  trainium_equivalence_tests -- --ignored`, about a minute), and refuted against
+  attention with `q` and `k` swapped. Functional equivalence only; `just trainium`
+  runs them in release.
 - the suites below, over `tests/common/`.
 
 ### How a test runs

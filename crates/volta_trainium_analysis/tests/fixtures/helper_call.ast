@@ -1,0 +1,14 @@
+kernel kernel(a: [2, 3], b: [2, 3])
+  kernel_out: shared_hbm[2, 1] of a.dtype
+  x: sbuf[2, 3] of a.dtype
+  dma_copy(dst=x, src=a)
+  y: sbuf[2, 3] of b.dtype
+  dma_copy(dst=y, src=b)
+  row_sums[0].sums: sbuf[2, 1] of float32
+  tensor_reduce(axis=(1,), data=x, dst=row_sums[0].sums, op=nki.language.add)
+  row_sums[1].sums: sbuf[2, 1] of float32
+  tensor_reduce(axis=(1,), data=y, dst=row_sums[1].sums, op=nki.language.add)
+  total: sbuf[2, 1] of float32
+  tensor_tensor(data1=row_sums[0].sums, data2=row_sums[1].sums, dst=total, op=nki.language.add)
+  dma_copy(dst=kernel_out, src=total)
+  return kernel_out

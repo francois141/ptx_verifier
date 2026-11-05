@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use volta_equivalence::check::EquivCheckOptions;
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
-use volta_trainium_analysis::frontend::parse::parse_kernel;
+use volta_trainium_analysis::frontend::ast::Kernel;
+use volta_trainium_analysis::frontend::parse::{parse_kernel, parse_kernel_with_modules};
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
 /// Run `kernel` against `spec` at dims `[M, N, K]`, comparing the `out` array: the
@@ -24,7 +25,18 @@ fn verdict(
     array: &str,
 ) -> EquivalenceVerdict {
     let parsed = parse_kernel(kernel, "kernel", shapes).unwrap();
-    let lowered = lower_kernel(&parsed).unwrap();
+    against_spec(&parsed, spec, dims, array, &EquivCheckOptions::default())
+}
+
+/// Lower and run `parsed`, then check its `array` against `spec` at `dims`.
+fn against_spec(
+    parsed: &Kernel,
+    spec: &str,
+    dims: &[(&str, u64)],
+    array: &str,
+    options: &EquivCheckOptions,
+) -> EquivalenceVerdict {
+    let lowered = lower_kernel(parsed).unwrap();
     let actual = evaluate(&lowered).unwrap();
 
     let dims = dims
@@ -33,13 +45,7 @@ fn verdict(
         .collect::<HashMap<_, _>>();
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
 
-    check_equivalence(
-        &reference,
-        &actual,
-        &[array.into()],
-        &EquivCheckOptions::default(),
-    )
-    .0
+    check_equivalence(&reference, &actual, &[array.into()], options).0
 }
 
 const MATMUL: &str = include_str!("../../volta_trainium_analysis/tests/fixtures/matmul.py");
@@ -114,6 +120,77 @@ fn nki_softmax_against_the_softmax_of_its_negated_input_is_refuted() {
     const NEGATED: &str = "dim P; dim F; array x[P, F]; array kernel_out[P, F];
         kernel_out[p, f] = exp(0.0 - x[p, f]) / sum(g in 0..F, exp(0.0 - x[p, g]));";
     let verdict = check_softmax(NEGATED);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+const ATTENTION_KERNELS: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/nki_samples/attention_kernels.py");
+const ATTENTION_UTILS: &str = include_str!(
+    "../../volta_trainium_analysis/tests/fixtures/nki_samples/attention_kernel_utils.py"
+);
+const ATTENTION_SPEC: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/attention.spec");
+
+/// The NKI samples' `kernel` from their own file, called as their test calls it: `q`, `k`
+/// and `v` of `[128, 128]` (v1 and v2 assert that size), against `spec`'s `kernel_out`.
+fn check_attention(kernel: &str, spec: &str, sample: u64) -> EquivalenceVerdict {
+    let size: &[u64] = &[128, 128];
+    let parsed = parse_kernel_with_modules(
+        ATTENTION_KERNELS,
+        &[("attention_kernel_utils", ATTENTION_UTILS)],
+        kernel,
+        &[("q", size), ("k", size), ("v", size)],
+    )
+    .unwrap();
+    let options = EquivCheckOptions {
+        sample,
+        ..EquivCheckOptions::default()
+    };
+    against_spec(
+        &parsed,
+        spec,
+        &[("D", 128), ("N", 128)],
+        "kernel_out",
+        &options,
+    )
+}
+
+// The first row of outputs: every element of the 128 x 128 output is checked by
+// `nki_attention_v2_matches_attention_everywhere`, which takes minutes.
+#[test]
+fn nki_attention_v2_matches_attention_on_its_first_row() {
+    assert_eq!(
+        check_attention("attn_fwd_v2", ATTENTION_SPEC, 128),
+        EquivalenceVerdict::Equivalent {
+            checked: 128,
+            total: 16384,
+        }
+    );
+}
+
+#[test]
+#[ignore = "checks all 16,384 outputs; run with --ignored in release"]
+fn nki_attention_v2_matches_attention_everywhere() {
+    assert_eq!(
+        check_attention("attn_fwd_v2", ATTENTION_SPEC, 0),
+        EquivalenceVerdict::Equivalent {
+            checked: 16384,
+            total: 16384,
+        }
+    );
+}
+
+// The scores of k against q, the transpose of q against k: the kernel's first output must
+// differ from attention with the two inputs swapped. One refuted element suffices, and
+// each costs the decision procedure far more than a proof.
+#[test]
+fn nki_attention_v2_against_attention_with_q_and_k_swapped_is_refuted() {
+    let swapped = ATTENTION_SPEC.replace("q[d, i] * k[d,", "k[d, i] * q[d,");
+    assert_ne!(swapped, ATTENTION_SPEC);
+    let verdict = check_attention("attn_fwd_v2", &swapped, 1);
     assert!(
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"

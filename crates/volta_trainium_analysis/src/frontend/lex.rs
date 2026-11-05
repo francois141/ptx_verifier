@@ -1,6 +1,6 @@
-//! Python tokens of the NKI subset: names, keywords, numbers and punctuation,
-//! with Python's NEWLINE/INDENT/DEDENT structure. Strings are not tokens, so
-//! every `#` starts a comment.
+//! Python tokens with Python's NEWLINE/INDENT/DEDENT structure. Every file of
+//! the NKI samples tokenizes, unsupported syntax included: what the subset does
+//! not support becomes an `Unsupported` token, an error only where it is parsed.
 
 use std::fmt;
 
@@ -10,8 +10,10 @@ use super::error::{ParseError, bail};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     Import,
+    From,
     As,
     Def,
+    Class,
     Assert,
     For,
     In,
@@ -22,8 +24,10 @@ impl Keyword {
     fn from_word(word: &str) -> Option<Self> {
         match word {
             "import" => Some(Self::Import),
+            "from" => Some(Self::From),
             "as" => Some(Self::As),
             "def" => Some(Self::Def),
+            "class" => Some(Self::Class),
             "assert" => Some(Self::Assert),
             "for" => Some(Self::For),
             "in" => Some(Self::In),
@@ -35,8 +39,10 @@ impl Keyword {
     fn text(self) -> &'static str {
         match self {
             Self::Import => "import",
+            Self::From => "from",
             Self::As => "as",
             Self::Def => "def",
+            Self::Class => "class",
             Self::Assert => "assert",
             Self::For => "for",
             Self::In => "in",
@@ -68,12 +74,15 @@ impl CmpOp {
     }
 }
 
-/// Python's other keywords, rejected rather than read as names.
-const UNSUPPORTED_KEYWORDS: [&str; 28] = [
-    "False", "None", "True", "and", "async", "await", "break", "class", "continue", "del", "elif",
-    "else", "except", "finally", "from", "global", "if", "is", "lambda", "nonlocal", "not", "or",
-    "pass", "raise", "try", "while", "with", "yield",
+/// Python's other keywords, `Unsupported` tokens rather than names.
+const UNSUPPORTED_KEYWORDS: [&str; 26] = [
+    "False", "None", "True", "and", "async", "await", "break", "continue", "del", "elif", "else",
+    "except", "finally", "global", "if", "is", "lambda", "nonlocal", "not", "or", "pass", "raise",
+    "try", "while", "with", "yield",
 ];
+
+/// The prefixes a string literal may carry, e.g. `f"..."` or `rb'...'`.
+const STRING_PREFIXES: [&str; 8] = ["r", "b", "u", "f", "rb", "br", "fr", "rf"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
@@ -81,6 +90,8 @@ pub enum TokenKind {
     Keyword(Keyword),
     Int(u64),
     Float(Scalar),
+    /// A string literal; its text is never read, so it is not kept.
+    Str,
     LParen,
     RParen,
     LBracket,
@@ -95,6 +106,8 @@ pub enum TokenKind {
     Star,
     Plus,
     SlashSlash,
+    /// Source the subset does not support: a keyword, number or operator, e.g. `if` or `-`.
+    Unsupported(String),
     /// The end of a logical line.
     Newline,
     Indent,
@@ -110,7 +123,7 @@ pub struct Token {
 }
 
 impl Token {
-    fn new(kind: TokenKind, line: usize) -> Self {
+    pub fn new(kind: TokenKind, line: usize) -> Self {
         Self { kind, line }
     }
 }
@@ -122,6 +135,7 @@ impl fmt::Display for TokenKind {
             Self::Keyword(keyword) => write!(f, "`{}`", keyword.text()),
             Self::Int(value) => write!(f, "`{value}`"),
             Self::Float(value) => write!(f, "`{value}`"),
+            Self::Str => f.write_str("a string"),
             Self::LParen => f.write_str("`(`"),
             Self::RParen => f.write_str("`)`"),
             Self::LBracket => f.write_str("`[`"),
@@ -135,6 +149,7 @@ impl fmt::Display for TokenKind {
             Self::Star => f.write_str("`*`"),
             Self::Plus => f.write_str("`+`"),
             Self::SlashSlash => f.write_str("`//`"),
+            Self::Unsupported(text) => write!(f, "the unsupported `{text}`"),
             Self::Newline => f.write_str("end of line"),
             Self::Indent => f.write_str("an indented block"),
             Self::Dedent => f.write_str("end of block"),
@@ -145,120 +160,219 @@ impl fmt::Display for TokenKind {
 
 /// The tokens of `source`, ending with `Eof`.
 pub fn tokenize(source: &str) -> Result<Vec<Token>, ParseError> {
-    let mut tokens = Vec::new();
-    let mut indents = vec![0];
-    // The line of each open `(`: until they close, physical lines join into one logical line.
-    let mut open_parens = Vec::new();
-
-    for (index, text) in source.lines().enumerate() {
-        let line = index + 1;
-        let code = text.split_once('#').map_or(text, |(code, _)| code);
-        if code.trim().is_empty() {
-            continue;
-        }
-
-        if open_parens.is_empty() {
-            for kind in indentation(code, line, &mut indents)? {
-                tokens.push(Token::new(kind, line));
-            }
-        }
-
-        for kind in scan(code, line)? {
-            if kind == TokenKind::LParen {
-                open_parens.push(line);
-            }
-            if kind == TokenKind::RParen && open_parens.pop().is_none() {
-                bail!(line, "unmatched `)`");
-            }
-            tokens.push(Token::new(kind, line));
-        }
-
-        if open_parens.is_empty() {
-            tokens.push(Token::new(TokenKind::Newline, line));
-        }
-    }
-
-    if let Some(&line) = open_parens.first() {
-        bail!(line, "unclosed `(`");
-    }
-
-    let last = source.lines().count().max(1);
-    for _ in 1..indents.len() {
-        tokens.push(Token::new(TokenKind::Dedent, last));
-    }
-    tokens.push(Token::new(TokenKind::Eof, last));
-    Ok(tokens)
-}
-
-/// The `Indent` or `Dedent`s that start a logical line. `indents` holds the
-/// widths of the open blocks, increasing from the outermost 0, which never closes.
-fn indentation(
-    code: &str,
-    line: usize,
-    indents: &mut Vec<usize>,
-) -> Result<Vec<TokenKind>, ParseError> {
-    let body = code.trim_start_matches(' ');
-    if body.starts_with(char::is_whitespace) {
-        bail!(line, "indentation must use spaces only");
-    }
-    let width = code.len() - body.len();
-
-    let innermost = indents.last().copied().unwrap_or(0);
-    if width > innermost {
-        indents.push(width);
-        return Ok(vec![TokenKind::Indent]);
-    }
-
-    let Some(level) = indents.iter().position(|&open| open == width) else {
-        bail!(line, "unindent does not match any outer indentation level");
+    let mut lexer = Lexer {
+        rest: source,
+        line: 1,
+        tokens: Vec::new(),
+        indents: vec![0],
+        brackets: Vec::new(),
     };
-    let closed = indents.len() - 1 - level;
-    indents.truncate(level + 1);
-    Ok(vec![TokenKind::Dedent; closed])
+    lexer.run()?;
+    Ok(lexer.tokens)
 }
 
-/// The tokens of one physical line, its comment removed.
-fn scan(code: &str, line: usize) -> Result<Vec<TokenKind>, ParseError> {
-    let mut kinds = Vec::new();
-    let mut rest = code.trim_start_matches([' ', '\t']);
+struct Lexer<'a> {
+    /// The source not yet scanned.
+    rest: &'a str,
+    line: usize,
+    tokens: Vec<Token>,
+    /// The widths of the open blocks, increasing from the outermost 0, which never closes.
+    indents: Vec<usize>,
+    /// Each open `(`, `[` or `{` and its line: until they close, lines join into one.
+    brackets: Vec<(char, usize)>,
+}
 
-    while let Some(c) = rest.chars().next() {
+impl Lexer<'_> {
+    fn run(&mut self) -> Result<(), ParseError> {
+        while !self.rest.is_empty() {
+            self.logical_line()?;
+        }
+        if let Some(&(open, line)) = self.brackets.first() {
+            bail!(line, "unclosed `{open}`");
+        }
+        for _ in 1..self.indents.len() {
+            self.push(TokenKind::Dedent);
+        }
+        self.push(TokenKind::Eof);
+        Ok(())
+    }
+
+    /// One logical line from its indentation through its end, joining physical lines
+    /// inside brackets and strings and after a `\`. A blank or comment-only line yields nothing.
+    fn logical_line(&mut self) -> Result<(), ParseError> {
+        let body = self.rest.trim_start_matches(' ');
+        let width = self.rest.len() - body.len();
+        self.rest = body.trim_start_matches(['\t', '\x0c', ' ']);
+        if self.at_line_end() {
+            self.end_physical_line();
+            return Ok(());
+        }
+        if self.rest.len() != body.len() {
+            bail!(self.line, "indentation must use spaces only");
+        }
+        self.indentation(width)?;
+
+        loop {
+            self.rest = self.rest.trim_start_matches([' ', '\t', '\x0c']);
+            if let Some(after) = self.rest.strip_prefix("\\\n") {
+                self.rest = after;
+                self.line += 1;
+                continue;
+            }
+            if !self.at_line_end() {
+                self.token()?;
+                continue;
+            }
+            if self.brackets.is_empty() {
+                self.push(TokenKind::Newline);
+                self.end_physical_line();
+                return Ok(());
+            }
+            self.end_physical_line();
+            if self.rest.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Whether only a comment, if anything, is left on the physical line.
+    fn at_line_end(&self) -> bool {
+        self.rest.is_empty() || self.rest.starts_with(['#', '\n', '\r'])
+    }
+
+    /// Skip the rest of the physical line, comment included, and its line break.
+    fn end_physical_line(&mut self) {
+        let end = self.rest.find('\n').map_or(self.rest.len(), |at| at + 1);
+        self.rest = &self.rest[end..];
+        self.line += 1;
+    }
+
+    /// The `Indent` or `Dedent`s a logical line of indentation `width` opens with.
+    fn indentation(&mut self, width: usize) -> Result<(), ParseError> {
+        let innermost = self.indents.last().copied().unwrap_or(0);
+        if width > innermost {
+            self.indents.push(width);
+            self.push(TokenKind::Indent);
+            return Ok(());
+        }
+
+        let Some(level) = self.indents.iter().position(|&open| open == width) else {
+            bail!(
+                self.line,
+                "unindent does not match any outer indentation level"
+            );
+        };
+        for _ in level + 1..self.indents.len() {
+            self.push(TokenKind::Dedent);
+        }
+        self.indents.truncate(level + 1);
+        Ok(())
+    }
+
+    fn token(&mut self) -> Result<(), ParseError> {
+        let c = self.rest.chars().next().expect("not at the line's end");
         let (kind, len) = match c {
-            '(' => (TokenKind::LParen, 1),
-            ')' => (TokenKind::RParen, 1),
-            '[' => (TokenKind::LBracket, 1),
-            ']' => (TokenKind::RBracket, 1),
+            '(' | '[' | '{' => {
+                self.brackets.push((c, self.line));
+                let kind = match c {
+                    '(' => TokenKind::LParen,
+                    '[' => TokenKind::LBracket,
+                    _ => TokenKind::Unsupported("{".into()),
+                };
+                (kind, 1)
+            }
+            ')' | ']' | '}' => {
+                let (open, kind) = match c {
+                    ')' => ('(', TokenKind::RParen),
+                    ']' => ('[', TokenKind::RBracket),
+                    _ => ('{', TokenKind::Unsupported("}".into())),
+                };
+                if self.brackets.pop().map(|(bracket, _)| bracket) != Some(open) {
+                    bail!(self.line, "unmatched `{c}`");
+                }
+                (kind, 1)
+            }
+            '\'' | '"' => return self.string(0),
             ',' => (TokenKind::Comma, 1),
-            '=' if rest.starts_with("==") => (TokenKind::Compare(CmpOp::Eq), 2),
+            '=' if self.rest.starts_with("==") => (TokenKind::Compare(CmpOp::Eq), 2),
             '=' => (TokenKind::Equals, 1),
-            '!' if rest.starts_with("!=") => (TokenKind::Compare(CmpOp::Ne), 2),
-            '<' if rest.starts_with("<=") => (TokenKind::Compare(CmpOp::Le), 2),
+            '!' if self.rest.starts_with("!=") => (TokenKind::Compare(CmpOp::Ne), 2),
+            '<' if self.rest.starts_with("<=") => (TokenKind::Compare(CmpOp::Le), 2),
             '<' => (TokenKind::Compare(CmpOp::Lt), 1),
-            '>' if rest.starts_with(">=") => (TokenKind::Compare(CmpOp::Ge), 2),
+            '>' if self.rest.starts_with(">=") => (TokenKind::Compare(CmpOp::Ge), 2),
             '>' => (TokenKind::Compare(CmpOp::Gt), 1),
-            '.' => (TokenKind::Dot, 1),
             ':' => (TokenKind::Colon, 1),
             '@' => (TokenKind::At, 1),
             '*' => (TokenKind::Star, 1),
             '+' => (TokenKind::Plus, 1),
-            '/' if rest.starts_with("//") => (TokenKind::SlashSlash, 2),
-            _ if c == '_' || c.is_ascii_alphabetic() => {
-                let len = run(rest, |c| c == '_' || c.is_ascii_alphanumeric());
-                (word(&rest[..len], line)?, len)
-            }
+            '/' if self.rest.starts_with("//") => (TokenKind::SlashSlash, 2),
             // A number takes the letters and dots after it, so `1.0` is one token.
-            _ if c.is_ascii_digit() => {
-                let len = run(rest, |c| c == '_' || c == '.' || c.is_ascii_alphanumeric());
-                (number(&rest[..len], line)?, len)
+            _ if c.is_ascii_digit() || (c == '.' && self.rest[1..].starts_with(is_digit)) => {
+                let len = run(self.rest, |c| {
+                    c == '_' || c == '.' || c.is_ascii_alphanumeric()
+                });
+                (number(&self.rest[..len]), len)
             }
-            _ => bail!(line, "unsupported character `{c}`"),
+            '.' => (TokenKind::Dot, 1),
+            _ if c == '_' || c.is_alphabetic() => {
+                let len = run(self.rest, |c| c == '_' || c.is_alphanumeric());
+                let word = &self.rest[..len];
+                let prefix = STRING_PREFIXES.contains(&word.to_ascii_lowercase().as_str());
+                if prefix && self.rest[len..].starts_with(['\'', '"']) {
+                    return self.string(len);
+                }
+                (self::word(word), len)
+            }
+            _ => (TokenKind::Unsupported(c.into()), c.len_utf8()),
         };
-
-        kinds.push(kind);
-        rest = rest[len..].trim_start_matches([' ', '\t']);
+        self.push(kind);
+        self.rest = &self.rest[len..];
+        Ok(())
     }
 
-    Ok(kinds)
+    /// A string literal after its `prefix_len`-byte prefix, quoted singly or by a triple
+    /// quote; only a triple-quoted one may span lines. Its text is skipped, not read.
+    fn string(&mut self, prefix_len: usize) -> Result<(), ParseError> {
+        let line = self.line;
+        let body = &self.rest[prefix_len..];
+        let quote = if body.starts_with("\"\"\"") || body.starts_with("'''") {
+            &body[..3]
+        } else {
+            &body[..1]
+        };
+
+        let text = &body[quote.len()..];
+        let mut chars = text.char_indices();
+        let end = loop {
+            let Some((at, c)) = chars.next() else {
+                bail!(line, "unterminated string");
+            };
+            match c {
+                // An escaped character, raw strings included, never closes the string.
+                '\\' => {
+                    if let Some((_, '\n')) = chars.next() {
+                        self.line += 1;
+                    }
+                }
+                '\n' if quote.len() == 1 => bail!(line, "unterminated string"),
+                '\n' => self.line += 1,
+                _ if text[at..].starts_with(quote) => break at,
+                _ => {}
+            }
+        };
+
+        self.tokens.push(Token::new(TokenKind::Str, line));
+        self.rest = &text[end + quote.len()..];
+        Ok(())
+    }
+
+    fn push(&mut self, kind: TokenKind) {
+        self.tokens.push(Token::new(kind, self.line));
+    }
+}
+
+fn is_digit(c: char) -> bool {
+    c.is_ascii_digit()
 }
 
 /// The length of `text`'s longest prefix whose characters satisfy `accept`.
@@ -266,27 +380,27 @@ fn run(text: &str, accept: impl Fn(char) -> bool) -> usize {
     text.find(|c| !accept(c)).unwrap_or(text.len())
 }
 
-fn word(text: &str, line: usize) -> Result<TokenKind, ParseError> {
+fn word(text: &str) -> TokenKind {
     if let Some(keyword) = Keyword::from_word(text) {
-        return Ok(TokenKind::Keyword(keyword));
+        return TokenKind::Keyword(keyword);
     }
     if UNSUPPORTED_KEYWORDS.contains(&text) {
-        bail!(line, "unsupported keyword `{text}`");
+        return TokenKind::Unsupported(text.into());
     }
-    Ok(TokenKind::Name(text.into()))
+    TokenKind::Name(text.into())
 }
 
-/// A decimal integer or float; other bases and digit separators are unsupported.
-fn number(literal: &str, line: usize) -> Result<TokenKind, ParseError> {
+/// A decimal integer or float; other bases, exponents and digit separators are unsupported.
+fn number(literal: &str) -> TokenKind {
     if literal.contains('.') {
         if let Some(value) = literal.parse().ok().and_then(Scalar::new) {
-            return Ok(TokenKind::Float(value));
+            return TokenKind::Float(value);
         }
     } else {
         let leading_zero = literal.len() > 1 && literal.starts_with('0');
         if let (Ok(value), false) = (literal.parse(), leading_zero) {
-            return Ok(TokenKind::Int(value));
+            return TokenKind::Int(value);
         }
     }
-    bail!(line, "unsupported number `{literal}`")
+    TokenKind::Unsupported(literal.into())
 }
