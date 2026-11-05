@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, SymbolicOutputs};
+use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
     BranchCondition, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr,
@@ -22,6 +23,7 @@ use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
+use super::record::Recording;
 use super::scalar::KernargBuffer;
 use super::wave::{
     LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word,
@@ -29,13 +31,15 @@ use super::wave::{
 
 /// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
 /// wave's scalar and vector registers, whose values are expressions of `arena`, and the
-/// workgroup's LDS.
+/// workgroup's LDS; and the event graph of the execution so far.
 pub(crate) struct Interpreter<'a> {
     pub(super) arena: ExprArena,
     pub(super) kernarg: KernargBuffer<'a>,
     pub(super) global: GlobalMemory,
     pub(super) lds: Lds,
     pub(super) waves: IdVec<WaveId, WaveState>,
+    pub(super) graph: GraphBuilder,
+    pub(super) rec: Recording,
 }
 
 /// How the execution of workgroup 0 ended.
@@ -53,12 +57,13 @@ pub enum Terminal {
 
 impl<'a> Interpreter<'a> {
     /// Launch workgroup 0 with `kernarg` as the argument buffer at `launch.kernarg_address`
-    /// and `arrays` in global memory.
+    /// and `arrays` in global memory, recording the execution's graph under `provenance`.
     pub(crate) fn new(
         kernel: &LoweredKernel,
         launch: &WorkgroupLaunch,
         kernarg: &'a [u8],
         arrays: &[ArrayDef],
+        provenance: Provenance,
     ) -> Result<Self, EvalError> {
         let mut arena = ExprArena::new();
         let waves = initialize_waves(kernel, launch, &mut arena)?;
@@ -81,6 +86,8 @@ impl<'a> Interpreter<'a> {
             global,
             lds: Lds::new(lds_size),
             waves,
+            graph: GraphBuilder::new(provenance),
+            rec: Recording::default(),
         })
     }
 
@@ -113,6 +120,7 @@ impl<'a> Interpreter<'a> {
             return false;
         }
 
+        self.record_barrier_release();
         for state in self.waves.values_mut() {
             if at_barrier(state) {
                 state.status = Status::Ready;
@@ -141,10 +149,14 @@ impl<'a> Interpreter<'a> {
                 // TODO: confirm in the CDNA4 ISA that `s_endpgm` implicitly performs `s_waitcnt 0`,
                 // then also complete the wave's vmcnt and expcnt waits here, not only lgkmcnt.
                 self.wait_lgkm(wave, 0);
+                self.record_exit(wave, pc);
                 self.waves[wave].status = Status::Exited;
                 return Ok(());
             }
-            LoweredInstr::Barrier => self.waves[wave].status = Status::AtBarrier,
+            LoweredInstr::Barrier => {
+                self.record_barrier_arrival(wave, pc);
+                self.waves[wave].status = Status::AtBarrier;
+            }
             LoweredInstr::Branch { target } => next = *target,
             LoweredInstr::CondBranch { condition, target } => {
                 if self.branch_taken(wave, *condition)? {
@@ -533,8 +545,12 @@ impl<'a> Interpreter<'a> {
         )
     }
 
-    /// The written output elements, together with the arena that holds their expressions.
-    pub(crate) fn into_outputs(self) -> SymbolicOutputs {
-        self.global.into_outputs(self.arena)
+    /// The event graph, ended as `terminal` says, and the written output elements, together
+    /// with the arena that holds their expressions.
+    pub(crate) fn finish(self, terminal: volta_graph::Terminal) -> (EventGraph, SymbolicOutputs) {
+        (
+            self.graph.finish(terminal),
+            self.global.into_outputs(self.arena),
+        )
     }
 }
