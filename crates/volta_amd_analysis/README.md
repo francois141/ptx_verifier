@@ -54,6 +54,8 @@ unbalanced and extra-quoted arguments are rejected.
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
 fixtures, then compare their symbolic outputs with the corresponding `.out` files.
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
+The `vector_int_ops` fixture checks low-word multiplication, masked bit counts, 64-bit moves and
+signed 64-bit comparisons.
 Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:

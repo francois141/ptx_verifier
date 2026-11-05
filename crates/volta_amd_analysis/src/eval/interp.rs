@@ -13,8 +13,8 @@ use crate::ir::{
 
 use super::EvalError;
 use super::arithm::{
-    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cndmask, evaluate_cndmask_e64,
-    evaluate_ternary_op, evaluate_unary_op,
+    evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp_lt_i64, evaluate_cndmask,
+    evaluate_cndmask_e64, evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
 };
 use super::global::{ArrayDef, GlobalMemory};
 use super::launch::{WorkgroupLaunch, initialize_waves};
@@ -194,8 +194,11 @@ impl<'a> Interpreter<'a> {
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
+            | LoweredInstr::Vop3BinOp { .. }
             | LoweredInstr::UnaryOp { .. }
+            | LoweredInstr::Mov64 { .. }
             | LoweredInstr::Cmp { .. }
+            | LoweredInstr::CmpLtI64 { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
@@ -311,12 +314,33 @@ impl<'a> Interpreter<'a> {
                 let result = evaluate_ternary_op(&mut self.arena, registers, lane, *op, *srcs)?;
                 registers.write_vgpr(lane, *dst, result)
             }
+            LoweredInstr::Vop3BinOp {
+                op,
+                dst,
+                src0,
+                src1,
+            } => {
+                let result =
+                    evaluate_vop3_bin_op(&mut self.arena, registers, lane, *op, *src0, *src1)?;
+                registers.write_vgpr(lane, *dst, result)
+            }
             LoweredInstr::UnaryOp { op, dst, src } => {
                 let result = evaluate_unary_op(&mut self.arena, registers, lane, *op, *src)?;
                 registers.write_vgpr(lane, *dst, result)
             }
+            LoweredInstr::Mov64 { dst, src } => {
+                let low = registers.read_src0(&mut self.arena, lane, src[0])?;
+                let high = registers.read_src0(&mut self.arena, lane, src[1])?;
+                registers.write_vgpr(lane, dst[0], low)?;
+                registers.write_vgpr(lane, dst[1], high)
+            }
             LoweredInstr::Cmp { op, src0, src1 } => {
                 let condition = evaluate_cmp(&mut self.arena, registers, lane, *op, *src0, *src1)?;
+                registers.write_vcc(lane, condition)
+            }
+            LoweredInstr::CmpLtI64 { src0, src1 } => {
+                let condition =
+                    evaluate_cmp_lt_i64(&mut self.arena, registers, lane, *src0, *src1)?;
                 registers.write_vcc(lane, condition)
             }
             LoweredInstr::CndMask32 { dst, src0, src1 } => {

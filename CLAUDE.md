@@ -431,6 +431,8 @@ Kernel tests in `tests/kernels.rs` run each assembly fixture
 `tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
 its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
+The `vector_int_ops` fixture checks low-word multiplication, masked bit counts, 64-bit moves and
+signed 64-bit comparisons.
 Rejection fixtures assert the specific lowering or execution error instead of
 comparing outputs.
 `tests/lean_tests.rs` writes the sigmoid fixture's outputs against

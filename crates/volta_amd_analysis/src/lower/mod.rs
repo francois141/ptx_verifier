@@ -251,7 +251,14 @@ fn lower_instruction(
         ("v_bitop3_b32", [operands @ .., Operand::BitOp3(table)]) => {
             lower_ternary_op(ir::TernaryOp::BitOp3(*table), operands)
         }
+        ("v_mul_lo_u32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MulLoU32, operands),
+        ("v_mbcnt_lo_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MbcntLoU32, operands),
+        ("v_mbcnt_hi_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MbcntHiU32, operands),
         ("v_mov_b32_e32", operands) => lower_unary_op(ir::UnaryOp::Mov32, operands),
+        ("v_mov_b64_e32", [dst, src]) => Ok(Mov64 {
+            dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            src: src0_words(src)?,
+        }),
         ("v_bfrev_b32_e32", operands) => lower_unary_op(ir::UnaryOp::BfRev32, operands),
         ("v_cvt_f32_u32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32U32, operands),
         ("v_cvt_u32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtU32F32, operands),
@@ -277,6 +284,13 @@ fn lower_instruction(
         ("v_cmp_gt_u32_e32", operands) => lower_cmp(ir::CmpOp::GtU32, operands),
         ("v_cmp_ne_u32_e32", operands) => lower_cmp(ir::CmpOp::NeU32, operands),
         ("v_cmp_ge_u32_e32", operands) => lower_cmp(ir::CmpOp::GeU32, operands),
+        ("v_cmp_lt_i64_e32", [vcc, src0, src1]) => {
+            expect_vcc(vcc)?;
+            Ok(CmpLtI64 {
+                src0: src0_words(src0)?,
+                src1: vgprs(src1).ok_or("expected an even-aligned VGPR second source pair")?,
+            })
+        }
         ("v_cmp_lt_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtF32, operands),
         ("v_cmp_eq_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::EqF32, operands),
         ("v_cmp_le_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeF32, operands),
@@ -478,6 +492,8 @@ fn lower_instruction(
             | "s_barrier"
             | "v_readfirstlane_b32"
             | "v_bitop3_b32"
+            | "v_mov_b64_e32"
+            | "v_cmp_lt_i64_e32"
             | "v_cndmask_b32_e64"
             | "v_mad_u64_u32"
             | "buffer_load_dword"
@@ -546,6 +562,23 @@ fn lower_ternary_op(op: ir::TernaryOp, operands: &[Operand]) -> Result<LoweredIn
             vop3_src(src1).ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             vop3_src(src2).ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         ],
+    })
+}
+
+fn lower_vop3_bin_op(
+    op: ir::Vop3BinOp,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src0, src1] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::Vop3BinOp {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        src0: vop3_src(src0)
+            .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+        src1: vop3_src(src1)
+            .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
     })
 }
 
@@ -1019,6 +1052,21 @@ fn first_source(operand: &Operand) -> Result<Src0, &'static str> {
     sgpr(operand)
         .map(Src0::Sgpr)
         .ok_or("expected a VGPR, an SGPR or a 32-bit constant first source")
+}
+
+/// A 64-bit first source's words, low first: an aligned SGPR pair or a constant. Inline integers
+/// sign-extend (CDNA4 §6.2). A literal with a clear sign bit extends the same way whether zero-
+/// or sign-extended, and any other literal is rejected because the two would differ.
+fn src0_words(operand: &Operand) -> Result<[Src0; 2], &'static str> {
+    if let Some(pair) = sgprs::<2>(operand) {
+        return Ok(pair.map(Src0::Sgpr));
+    }
+    match operand {
+        Operand::Imm(value) if (-16..=i64::from(i32::MAX)).contains(value) => {
+            Ok([*value as u32, (*value >> 32) as u32].map(Src0::Const))
+        }
+        _ => Err("expected an aligned SGPR pair or a constant with a defined 64-bit extension"),
+    }
 }
 
 fn scalar_source(operand: &Operand) -> Option<ScalarSrc> {

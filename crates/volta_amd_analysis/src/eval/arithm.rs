@@ -3,7 +3,7 @@
 
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
-use crate::ir::{BinOp, CmpOp, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src};
+use crate::ir::{BinOp, CmpOp, LaneMask, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src};
 
 use super::EvalError;
 use super::wave::{WaveRegisters, concrete_word};
@@ -329,6 +329,26 @@ pub(super) fn evaluate_ternary_op(
     })
 }
 
+/// Evaluate `op(src0, src1)` in `lane` on concrete 32-bit integers, rejecting symbolic operands.
+pub(super) fn evaluate_vop3_bin_op(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: Vop3BinOp,
+    src0: Vop3Src,
+    src1: Vop3Src,
+) -> Result<ExprId, EvalError> {
+    let a = registers.read_src(arena, lane, src0)?;
+    let b = registers.read_src(arena, lane, src1)?;
+    // Bit `n` is set for each lane `n` below this one; each masked count examines one word of it.
+    let lower_lanes = (1u64 << lane) - 1;
+    fold_concrete_words(arena, lane, [a, b], |[a, b]| match op {
+        Vop3BinOp::MulLoU32 => a.wrapping_mul(b),
+        Vop3BinOp::MbcntLoU32 => b.wrapping_add((a & lower_lanes as u32).count_ones()),
+        Vop3BinOp::MbcntHiU32 => b.wrapping_add((a & (lower_lanes >> 32) as u32).count_ones()),
+    })
+}
+
 /// Bit `i` of the result is bit `4 * a_i + 2 * b_i + c_i` of `table`.
 fn bitop3(table: u8, a: u32, b: u32, c: u32) -> u32 {
     (0..32)
@@ -517,6 +537,26 @@ pub(super) fn evaluate_cmp_e64(
         ),
     };
     compare(arena, lane, op, a, b)
+}
+
+/// Whether `src0 < src1` in `lane`, each source two concrete words, low first, that together
+/// form a signed 64-bit integer.
+pub(super) fn evaluate_cmp_lt_i64(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src0: [Src0; 2],
+    src1: [Vgpr; 2],
+) -> Result<ExprId, EvalError> {
+    let words = [
+        registers.read_src0(arena, lane, src0[0])?,
+        registers.read_src0(arena, lane, src0[1])?,
+        registers.read_vgpr(lane, src1[0])?,
+        registers.read_vgpr(lane, src1[1])?,
+    ];
+    let [a_low, a_high, b_low, b_high] = concrete_words(arena, lane, words)?;
+    let signed = |low: u32, high: u32| ((u64::from(high) << 32) | u64::from(low)) as i64;
+    Ok(arena.bool_val(signed(a_low, a_high) < signed(b_low, b_high)))
 }
 
 /// An integer comparison needs concrete words, which it reinterprets as `op`'s signedness.

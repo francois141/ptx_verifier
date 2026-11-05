@@ -461,6 +461,17 @@ pub enum TernaryOp {
     BitOp3(u8),
 }
 
+/// A VOP3 operation on two concrete 32-bit integers. Symbolic operands are rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vop3BinOp {
+    /// The low word of the product.
+    MulLoU32,
+    /// `src1` plus the number of set bits in `src0` below bit `lane`, all 32 from lane 32 on.
+    MbcntLoU32,
+    /// `src1` plus the number of set bits in `src0` below bit `lane - 32`, none up to lane 32.
+    MbcntHiU32,
+}
+
 /// A VOP1 operation of one source: the f32 ops and the conversion to u32 read it as an f32,
 /// the others as a word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,17 +595,34 @@ pub enum LoweredInstr {
         dst: Vgpr,
         srcs: [Vop3Src; 3],
     },
+    /// `dst = op(src0, src1)` in each lane.
+    Vop3BinOp {
+        op: Vop3BinOp,
+        dst: Vgpr,
+        src0: Vop3Src,
+        src1: Vop3Src,
+    },
     /// `dst = op src` in each lane.
     UnaryOp {
         op: UnaryOp,
         dst: Vgpr,
         src: Src0,
     },
+    /// Copy a 64-bit source's words, low first, into a VGPR pair in each lane.
+    Mov64 {
+        dst: [Vgpr; 2],
+        src: [Src0; 2],
+    },
     /// Sets each lane's VCC bit to `src0 op src1`.
     Cmp {
         op: CmpOp,
         src0: Src0,
         src1: Vgpr,
+    },
+    /// Sets each lane's VCC bit to `src0 < src1`, signed 64-bit integers with the low word first.
+    CmpLtI64 {
+        src0: [Src0; 2],
+        src1: [Vgpr; 2],
     },
     /// Sets each lane's bit of an SGPR-pair lane mask to `src0 op src1`.
     CmpE64 {

@@ -292,6 +292,29 @@ fn scalar_ops_handles_boundary_arguments() {
     }
 }
 
+// Test integer multiplication, masked bit counts, 64-bit moves and signed comparisons.
+// Check all 64 lanes against the expected outputs in vector_int_ops.out.
+#[test]
+fn the_vector_int_ops_kernel_writes_its_expected_outputs() {
+    let out = 0x10000_u64;
+    let mut kernarg = out.to_le_bytes().to_vec();
+    // The multiplication factor, then the mask for the masked bit counts.
+    for value in [0x1_0001_u32, 0xaaaa_aaaa] {
+        kernarg.extend(value.to_le_bytes());
+    }
+    // Compare values above, below and equal to 0x7fffffff, including a negative value.
+    for value in [1_u64 << 32, 0x8000_0000, 0x7fff_fffe, u64::MAX, 0x7fff_ffff] {
+        kernarg.extend(value.to_le_bytes());
+    }
+    common::check_run_kernel(
+        "vector_int_ops",
+        "vector_int_ops",
+        64,
+        &kernarg,
+        &[array_of("out", out, 64 * 32, ArrayKind::Output(U32))],
+    );
+}
+
 /// The `ck::kernel_gemm_xdl_cshuffle_v3` instance `ck_gemm.hip` compiles: two waves, each
 /// accumulating a 32 x 64 slice of a 64 x 64 tile with `v_mfma_f32_16x16x4_f32`.
 const CK_GEMM_KERNEL: &str = concat!(
