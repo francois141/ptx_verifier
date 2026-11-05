@@ -259,6 +259,10 @@ impl<'a> Interpreter<'a> {
     /// `s_waitcnt lgkmcnt(outstanding)` at `pc`: every DS instruction and scalar load but the
     /// last `outstanding` completes, in issue order.
     pub(super) fn wait_lgkm(&mut self, wave: WaveId, pc: InstrId, outstanding: usize) {
+        // The all-ones field is don't-care, not a bound on the unbounded issue history.
+        if outstanding == 15 {
+            return;
+        }
         let state = &mut self.waves[wave];
         let completed = state.lgkm_in_flight.len().saturating_sub(outstanding);
         let mut ds_ops = Vec::new();
