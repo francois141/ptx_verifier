@@ -8,10 +8,13 @@ use std::collections::BTreeMap;
 
 use id_collections::IdVec;
 
-use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Scalar, Statement, TensorName};
+use crate::frontend::ast::{
+    Buffer, Instruction, Kernel, Operand, RegionProblem, Scalar, Selected, Statement, TensorName,
+    resolve_region,
+};
 use crate::ir::{
     ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory, ScalarOperand,
-    ScalarStep, Shape, Tensor, TensorId, TensorRegion,
+    ScalarStep, Selection, Shape, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, StatementError};
@@ -36,17 +39,12 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         let at = |error| LowerError::Statement { index, error };
         match statement {
             Statement::Declare(tile) => {
-                let shape = vec![
-                    u64::from(tile.shape.partitions.get()),
-                    tile.shape.free.get(),
-                ];
+                let shape = Shape(tile.shape.extents());
+                if shape.element_count().is_none() {
+                    return Err(at(StatementError::ElementCountOverflow(tile.name.clone())));
+                }
                 let memory = memory(tile.buffer);
-                scope.add(
-                    tile.name.clone(),
-                    memory,
-                    Shape(shape),
-                    Initial::Uninitialized,
-                );
+                scope.add(tile.name.clone(), memory, shape, Initial::Uninitialized);
             }
             Statement::DeclareHbm(tensor) => {
                 let shape = Shape(tensor.shape.iter().map(|extent| extent.get()).collect());
@@ -169,8 +167,8 @@ fn lower_instruction(
                 scope.tile(reduce_res, "reduce_res")?,
             ];
             same_shape(&dst, &data)?;
-            let [partitions, _] = dst.extents()?;
-            result_shape(&reduce_res, Shape(vec![partitions, 1]))?;
+            let [partitions, _] = data.matrix()?;
+            per_partition(&reduce_res, partitions)?;
             Ok(LoweredInstr::ActivationReduce {
                 func,
                 dst: dst.region,
@@ -196,8 +194,8 @@ fn lower_instruction(
             let op = arith_op(op)?;
             free_axis(axis)?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
-            let [partitions, _] = data.extents()?;
-            result_shape(&dst, Shape(vec![partitions, 1]))?;
+            let [partitions, _] = data.matrix()?;
+            per_partition(&dst, partitions)?;
             Ok(LoweredInstr::Reduce {
                 op,
                 dst: dst.region,
@@ -214,7 +212,7 @@ fn lower_instruction(
 
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
-            let [partitions, _] = dst.extents()?;
+            let [partitions, _] = dst.region.tile_extents();
 
             let first = scalar_step(op0, operand0, "operand0", partitions, scope)?;
             let second = match (op1, operand1) {
@@ -253,13 +251,14 @@ fn lower_instruction(
             moving.in_memory(Memory::Sbuf)?;
             dst.in_memory(Memory::Psum)?;
             let [[contraction, rows], [moving_contraction, columns]] =
-                [stationary.extents()?, moving.extents()?];
+                [stationary.matrix()?, moving.matrix()?];
             if contraction != moving_contraction {
                 return Err(StatementError::ContractionMismatch([
                     stationary.described(),
                     moving.described(),
                 ]));
             }
+            dst.matrix()?;
             result_shape(&dst, Shape(vec![rows, columns]))?;
             Ok(LoweredInstr::Matmul {
                 dst: dst.region,
@@ -271,7 +270,8 @@ fn lower_instruction(
         "nc_transpose" => {
             let [dst, data] = operands(instruction, &["dst", "data"])?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
-            let [partitions, free] = data.extents()?;
+            let [partitions, free] = data.matrix()?;
+            dst.matrix()?;
             result_shape(&dst, Shape(vec![free, partitions]))?;
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
@@ -375,13 +375,12 @@ fn scalar_step(
         Operand::Scalar(value) => ScalarOperand::Constant(*value),
         _ => {
             let tile = scope.tile(operand, keyword)?;
-            let expected = Shape(vec![partitions, 1]);
-            if tile.region.shape != expected {
+            if tile.region.tile_extents() != [partitions, 1] {
                 let (tensor, shape) = tile.described();
                 return Err(StatementError::NotBroadcastable {
                     tensor,
                     shape,
-                    expected,
+                    expected: Shape(vec![partitions, 1]),
                 });
             }
             ScalarOperand::Broadcast(tile.region)
@@ -394,9 +393,9 @@ fn scalar_step(
 // Operand Checks
 // =============================================================================
 
-/// Two operands that must name regions of one shape.
+/// Two operands that must name regions of one shape, their indexed dimensions dropped.
 fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), StatementError> {
-    if left.region.shape == right.region.shape {
+    if left.kept == right.kept {
         return Ok(());
     }
     Err(StatementError::ShapeMismatch([
@@ -407,7 +406,7 @@ fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), Stateme
 
 /// Check that `dst` names a region of the shape `expected` of the instruction's result.
 fn result_shape(dst: &RegionOperand, expected: Shape) -> Result<(), StatementError> {
-    if dst.region.shape == expected {
+    if dst.kept == expected {
         return Ok(());
     }
     let (tensor, shape) = dst.described();
@@ -418,20 +417,38 @@ fn result_shape(dst: &RegionOperand, expected: Shape) -> Result<(), StatementErr
     })
 }
 
+/// Check that the tile region `dst` holds one element per partition of `partitions`,
+/// as a reduction's result: `t[:, 0:1]`, or `t[:, 0]` with its free dimension dropped.
+fn per_partition(dst: &RegionOperand, partitions: u64) -> Result<(), StatementError> {
+    if dst.region.tile_extents() == [partitions, 1] {
+        return Ok(());
+    }
+    let (tensor, shape) = dst.described();
+    Err(StatementError::ResultShape {
+        tensor,
+        shape,
+        expected: Shape(vec![partitions, 1]),
+    })
+}
+
 /// A tensor operand: a region of a tensor, the whole tensor if not subscripted.
 struct RegionOperand<'a> {
     name: &'a TensorName,
     memory: Memory,
     region: TensorRegion,
+    /// The region's shape with its indexed dimensions dropped, which shape rules compare.
+    kept: Shape,
 }
 
 impl RegionOperand<'_> {
-    /// The region's `[partitions, free]` extents, if it is a region of an on-chip
-    /// tile; every SBUF and PSUM tensor is a two-dimensional tile.
-    fn extents(&self) -> Result<[u64; 2], StatementError> {
-        match (self.memory, &self.region.shape.0[..]) {
-            (Memory::Sbuf | Memory::Psum, &[partitions, free]) => Ok([partitions, free]),
-            _ => Err(StatementError::OffChip(self.name.clone())),
+    /// Its `[rows, columns]` shape, for an instruction over tiles of one free dimension.
+    fn matrix(&self) -> Result<[u64; 2], StatementError> {
+        match self.kept.0[..] {
+            [rows, columns] => Ok([rows, columns]),
+            _ => Err(StatementError::NotAMatrix {
+                tensor: self.name.clone(),
+                shape: self.kept.clone(),
+            }),
         }
     }
 
@@ -447,7 +464,7 @@ impl RegionOperand<'_> {
 
     /// Its tensor and the region's shape, for an error.
     fn described(&self) -> (TensorName, Shape) {
-        (self.name.clone(), self.region.shape.clone())
+        (self.name.clone(), self.kept.clone())
     }
 }
 
@@ -489,7 +506,7 @@ impl Scope {
     }
 
     /// Operand `keyword`, a tensor or a region of one: the whole tensor, or the
-    /// subscript's slices resolved against its shape.
+    /// subscript resolved against its shape.
     fn region(
         &self,
         operand: &Operand,
@@ -502,59 +519,63 @@ impl Scope {
         };
         let id = self.ids[name];
         let entry = &self.entries[id];
-        let extents = entry.shape.0.as_slice();
 
-        let region = if dims.is_empty() {
-            TensorRegion {
-                tensor: id,
-                start: Index(vec![0; extents.len()]),
+        let selected = resolve_region(dims, &entry.shape.0).map_err(|problem| match problem {
+            RegionProblem::TooManyIndices => StatementError::RegionRank {
+                tensor: name.clone(),
                 shape: entry.shape.clone(),
-            }
-        } else {
-            if dims.len() != extents.len() {
-                return Err(StatementError::RegionRank {
-                    tensor: name.clone(),
-                    shape: entry.shape.clone(),
-                    slices: dims.len(),
-                });
-            }
-            let mut start = Vec::new();
-            let mut shape = Vec::new();
-            for (dimension, (bounds, &extent)) in dims.iter().zip(extents).enumerate() {
-                let low = bounds.start.unwrap_or(0);
-                let high = bounds.stop.unwrap_or(extent);
-                if low >= high || high > extent {
-                    return Err(StatementError::RegionBounds {
-                        tensor: name.clone(),
-                        dimension,
-                        extent,
-                    });
+                indices: dims.len(),
+            },
+            RegionProblem::OutOfBounds { dimension } => StatementError::RegionBounds {
+                tensor: name.clone(),
+                dimension,
+                extent: entry.shape.0[dimension],
+            },
+        })?;
+
+        let (mut start, mut shape, mut selections, mut kept) = (vec![], vec![], vec![], vec![]);
+        for selected in selected {
+            match selected {
+                Selected::Index(index) => {
+                    start.push(index);
+                    shape.push(1);
+                    selections.push(Selection::Index);
                 }
-                start.push(low);
-                shape.push(high - low);
+                Selected::Slice { start: low, extent } => {
+                    start.push(low);
+                    shape.push(extent);
+                    selections.push(Selection::Slice);
+                    kept.push(extent);
+                }
             }
-            TensorRegion {
-                tensor: id,
-                start: Index(start),
-                shape: Shape(shape),
-            }
-        };
+        }
 
         Ok(RegionOperand {
             name: &entry.name,
             memory: entry.memory,
-            region,
+            region: TensorRegion {
+                tensor: id,
+                start: Index(start),
+                shape: Shape(shape),
+                selections,
+            },
+            kept: Shape(kept),
         })
     }
 
-    /// Operand `keyword`, a region of an on-chip tile.
+    /// Operand `keyword`, a region of an on-chip tile that keeps its partition dimension.
     fn tile(
         &self,
         operand: &Operand,
         keyword: &'static str,
     ) -> Result<RegionOperand<'_>, StatementError> {
         let tile = self.region(operand, keyword)?;
-        tile.extents()?;
+        if !matches!(tile.memory, Memory::Sbuf | Memory::Psum) {
+            return Err(StatementError::OffChip(tile.name.clone()));
+        }
+        if tile.region.selections[0] == Selection::Index {
+            return Err(StatementError::PartitionIndexed(tile.name.clone()));
+        }
         Ok(tile)
     }
 

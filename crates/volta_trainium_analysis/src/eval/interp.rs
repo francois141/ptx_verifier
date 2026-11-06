@@ -62,8 +62,9 @@ impl<'a> Interpreter<'a> {
     }
 
     /// The elements `instruction` writes, every operand read before any is written.
-    /// An elementwise instruction's regions have one shape, so `dst`'s local indices
-    /// index them all.
+    /// A copy's regions have one shape once indexed dimensions are dropped, so their
+    /// row-major orders pair their elements; every other instruction works on its tile
+    /// regions' `[partitions, free]` views, and an elementwise one's views coincide.
     fn writes(
         &mut self,
         instr: InstrId,
@@ -72,9 +73,18 @@ impl<'a> Interpreter<'a> {
         let mut writes = Vec::new();
         match instruction {
             LoweredInstr::Mov { dst, src } => {
-                for at in indices(instr, dst, &self.tensors)? {
-                    let value = self.read(instr, src, &at)?;
-                    writes.push(Write::at(dst, &at, value));
+                let pairs = indices(instr, dst, &self.tensors)?.zip(src.shape.indices());
+                for (to, from) in pairs {
+                    let value = self.tensors[src.tensor].read(
+                        &mut self.arena,
+                        instr,
+                        &src.start.shifted(&from),
+                    )?;
+                    writes.push(Write {
+                        tensor: dst.tensor,
+                        index: dst.start.shifted(&to),
+                        value,
+                    });
                 }
             }
             LoweredInstr::Memset { dst, value } => {
@@ -82,23 +92,23 @@ impl<'a> Interpreter<'a> {
                     .arena
                     .float_from_f64(value.get())
                     .expect("a Scalar is finite");
-                for at in indices(instr, dst, &self.tensors)? {
-                    writes.push(Write::at(dst, &at, value));
+                for [p, f] in elements(dst) {
+                    writes.push(Write::at(dst, [p, f], value));
                 }
             }
             LoweredInstr::Arith { op, dst, lhs, rhs } => {
-                for at in indices(instr, dst, &self.tensors)? {
-                    let a = self.read(instr, lhs, &at)?;
-                    let b = self.read(instr, rhs, &at)?;
+                for at in elements(dst) {
+                    let a = self.read(instr, lhs, at)?;
+                    let b = self.read(instr, rhs, at)?;
                     let value = self.arith(*op, a, b);
-                    writes.push(Write::at(dst, &at, value));
+                    writes.push(Write::at(dst, at, value));
                 }
             }
             LoweredInstr::Activation { func, dst, data } => {
-                for at in indices(instr, dst, &self.tensors)? {
-                    let x = self.read(instr, data, &at)?;
+                for at in elements(dst) {
+                    let x = self.read(instr, data, at)?;
                     let value = self.activation(*func, x);
-                    writes.push(Write::at(dst, &at, value));
+                    writes.push(Write::at(dst, at, value));
                 }
             }
             LoweredInstr::ActivationReduce {
@@ -108,30 +118,28 @@ impl<'a> Interpreter<'a> {
                 reduce_op,
                 reduce_res,
             } => {
-                let [partitions, free] = extents(dst);
+                let [partitions, free] = dst.tile_extents();
                 for partition in 0..partitions {
                     let mut values = Vec::new();
                     for element in 0..free {
-                        let at = Index(vec![partition, element]);
-                        let x = self.read(instr, data, &at)?;
+                        let x = self.read(instr, data, [partition, element])?;
                         let value = self.activation(*func, x);
-                        writes.push(Write::at(dst, &at, value));
+                        writes.push(Write::at(dst, [partition, element], value));
                         values.push(value);
                     }
                     let reduced = self.fold(*reduce_op, values);
-                    writes.push(Write::at(reduce_res, &Index(vec![partition, 0]), reduced));
+                    writes.push(Write::at(reduce_res, [partition, 0], reduced));
                 }
             }
             LoweredInstr::Reduce { op, dst, data } => {
-                let [partitions, free] = extents(data);
+                let [partitions, free] = data.tile_extents();
                 for partition in 0..partitions {
                     let mut values = Vec::new();
                     for element in 0..free {
-                        let at = Index(vec![partition, element]);
-                        values.push(self.read(instr, data, &at)?);
+                        values.push(self.read(instr, data, [partition, element])?);
                     }
                     let reduced = self.fold(*op, values);
-                    writes.push(Write::at(dst, &Index(vec![partition, 0]), reduced));
+                    writes.push(Write::at(dst, [partition, 0], reduced));
                 }
             }
             LoweredInstr::TensorScalar {
@@ -140,13 +148,13 @@ impl<'a> Interpreter<'a> {
                 first,
                 second,
             } => {
-                for at in indices(instr, dst, &self.tensors)? {
-                    let mut value = self.read(instr, data, &at)?;
+                for at in elements(dst) {
+                    let mut value = self.read(instr, data, at)?;
                     for step in [Some(first), second.as_ref()].into_iter().flatten() {
-                        let operand = self.scalar(instr, &step.operand, &at)?;
+                        let operand = self.scalar(instr, &step.operand, at)?;
                         value = self.arith(step.op, value, operand);
                     }
-                    writes.push(Write::at(dst, &at, value));
+                    writes.push(Write::at(dst, at, value));
                 }
             }
             LoweredInstr::Matmul {
@@ -155,23 +163,23 @@ impl<'a> Interpreter<'a> {
                 moving,
             } => self.matmul(instr, dst, [stationary, moving], &mut writes)?,
             LoweredInstr::Transpose { dst, data } => {
-                for at in indices(instr, data, &self.tensors)? {
-                    let value = self.read(instr, data, &at)?;
-                    writes.push(Write::at(dst, &at.transposed(), value));
+                for [p, f] in elements(data) {
+                    let value = self.read(instr, data, [p, f])?;
+                    writes.push(Write::at(dst, [f, p], value));
                 }
             }
         }
         Ok(writes)
     }
 
-    /// The element of `region` at its local index `at`.
+    /// The element at `[partition, free]` of the tile region's view.
     fn read(
         &mut self,
         instr: InstrId,
         region: &TensorRegion,
-        at: &Index,
+        [partition, free]: [u64; 2],
     ) -> Result<ExprId, EvalError> {
-        let index = region.start.shifted(at);
+        let index = region.tile_index(partition, free);
         self.tensors[region.tensor].read(&mut self.arena, instr, &index)
     }
 
@@ -218,20 +226,20 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    /// The value a scalar operand contributes at the local index `at`: a literal, or
-    /// the operand region's single free element in `at`'s partition.
+    /// The value a scalar operand contributes at `[partition, _]`: a literal, or the
+    /// operand region's single element in that partition.
     fn scalar(
         &mut self,
         instr: InstrId,
         operand: &ScalarOperand,
-        at: &Index,
+        [partition, _]: [u64; 2],
     ) -> Result<ExprId, EvalError> {
         match operand {
             ScalarOperand::Constant(value) => Ok(self
                 .arena
                 .float_from_f64(value.get())
                 .expect("a Scalar is finite")),
-            ScalarOperand::Broadcast(tile) => self.read(instr, tile, &Index(vec![at.0[0], 0])),
+            ScalarOperand::Broadcast(tile) => self.read(instr, tile, [partition, 0]),
         }
     }
 
@@ -245,22 +253,21 @@ impl<'a> Interpreter<'a> {
         [stationary, moving]: [&TensorRegion; 2],
         writes: &mut Vec<Write>,
     ) -> Result<(), EvalError> {
-        let [contraction, rows] = extents(stationary);
-        let [_, columns] = extents(moving);
+        let [contraction, rows] = stationary.tile_extents();
+        let [_, columns] = moving.tile_extents();
         for row in 0..rows {
             for column in 0..columns {
-                let at = Index(vec![row, column]);
-                let mut sum = match self.tensors[dst.tensor].written(&dst.start.shifted(&at)) {
+                let mut sum = match self.tensors[dst.tensor].written(&dst.tile_index(row, column)) {
                     Some(earlier) => earlier,
                     None => self.arena.int(0),
                 };
                 for k in 0..contraction {
-                    let a = self.read(instr, stationary, &Index(vec![k, row]))?;
-                    let b = self.read(instr, moving, &Index(vec![k, column]))?;
+                    let a = self.read(instr, stationary, [k, row])?;
+                    let b = self.read(instr, moving, [k, column])?;
                     let product = self.arena.mul(a, b);
                     sum = self.arena.add(sum, product);
                 }
-                writes.push(Write::at(dst, &at, sum));
+                writes.push(Write::at(dst, [row, column], sum));
             }
         }
         Ok(())
@@ -290,23 +297,20 @@ struct Write {
 }
 
 impl Write {
-    /// `value` written to `region`'s element at its local index `at`.
-    fn at(region: &TensorRegion, at: &Index, value: ExprId) -> Self {
+    /// `value` written at `[partition, free]` of the tile region's view.
+    fn at(region: &TensorRegion, [partition, free]: [u64; 2], value: ExprId) -> Self {
         Self {
             tensor: region.tensor,
-            index: region.start.shifted(at),
+            index: region.tile_index(partition, free),
             value,
         }
     }
 }
 
-/// A tile region's `[partitions, free]` extents: lowering makes every tile operand
-/// a two-dimensional region of an on-chip tile.
-fn extents(region: &TensorRegion) -> [u64; 2] {
-    let [partitions, free] = region.shape.0[..] else {
-        unreachable!("a tile region has two dimensions, not {}", region.shape);
-    };
-    [partitions, free]
+/// Every `[partition, free]` position of a tile region's view, partition-major.
+fn elements(region: &TensorRegion) -> impl Iterator<Item = [u64; 2]> {
+    let [partitions, free] = region.tile_extents();
+    (0..partitions).flat_map(move |partition| (0..free).map(move |element| [partition, element]))
 }
 
 /// The local indices of `region` in row-major order; its element count must fit in a `u64`.

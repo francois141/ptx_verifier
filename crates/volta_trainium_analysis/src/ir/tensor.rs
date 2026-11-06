@@ -45,7 +45,8 @@ impl Memory {
     }
 }
 
-/// A tensor's extents, outermost first; an on-chip tile's are `[partitions, free]`.
+/// A tensor's extents, outermost first; an on-chip tile's are its partitions, then
+/// one or more free extents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape(pub Vec<u64>);
 
@@ -54,13 +55,50 @@ pub struct Shape(pub Vec<u64>);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(pub Vec<u64>);
 
-/// A rectangular region of a tensor: `shape` elements from `start`, per dimension.
-/// A whole tensor is a zero `start` with the tensor's own shape.
+/// A rectangular region of a tensor: `shape` elements from `start`, per dimension of
+/// the tensor, an indexed dimension's extent being 1. A whole tensor is a zero `start`
+/// with the tensor's own shape, every dimension sliced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorRegion {
     pub tensor: TensorId,
     pub start: Index,
     pub shape: Shape,
+    /// How the region selects each dimension, which its rendering keeps.
+    pub selections: Vec<Selection>,
+}
+
+/// How a region selects one dimension of its tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection {
+    /// One position: the dimension is dropped from the region's own shape.
+    Index,
+    /// A range of positions, which the region's shape keeps.
+    Slice,
+}
+
+impl TensorRegion {
+    /// A tile region's `[partitions, free]` view: its first dimension, the partitions,
+    /// and every other dimension flattened row-major into one free axis. Lowering keeps
+    /// a tile region's partition dimension and bounds every tile's element count.
+    pub fn tile_extents(&self) -> [u64; 2] {
+        let [partitions, ref free @ ..] = self.shape.0[..] else {
+            unreachable!("a tile region has a partition dimension");
+        };
+        [partitions, free.iter().product()]
+    }
+
+    /// The tensor index of the element at `[partition, free]` of the region's
+    /// `tile_extents` view.
+    pub fn tile_index(&self, partition: u64, free: u64) -> Index {
+        let mut local = vec![0; self.shape.0.len()];
+        local[0] = partition;
+        let mut rest = free;
+        for (coordinate, &extent) in local.iter_mut().zip(&self.shape.0).skip(1).rev() {
+            *coordinate = rest % extent;
+            rest /= extent;
+        }
+        self.start.shifted(&Index(local))
+    }
 }
 
 impl Shape {

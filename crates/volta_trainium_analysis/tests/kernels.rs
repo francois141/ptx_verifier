@@ -149,3 +149,21 @@ fn the_regions_matmul_kernel_parses_lowers_and_runs_as_expected() {
         &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
     );
 }
+
+// softmax.py's math through integer and partial subscripts and a 3-D tile: its outputs
+// are softmax.expected's.
+#[test]
+fn the_subscripts_softmax_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("subscripts_softmax", "kernel", &[("x", &[2, 3])]);
+}
+
+// matmul.py's math staged through indexed HBM tensors and a 3-D tile: its outputs are
+// matmul.expected's.
+#[test]
+fn the_subscripts_matmul_kernel_parses_lowers_and_runs_as_expected() {
+    common::check(
+        "subscripts_matmul",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+}

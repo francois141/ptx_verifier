@@ -32,6 +32,16 @@ pub enum StatementError {
     /// A matmul's `stationary` and `moving` regions, whose partitions (the contraction) differ.
     ContractionMismatch([(TensorName, Shape); 2]),
 
+    /// An instruction over tiles of one free dimension given a region of another rank,
+    /// its indexed dimensions dropped.
+    NotAMatrix {
+        tensor: TensorName,
+        shape: Shape,
+    },
+
+    /// A tile whose element count overflows `u64`.
+    ElementCountOverflow(TensorName),
+
     /// A destination region whose shape is not the instruction's result's.
     ResultShape {
         tensor: TensorName,
@@ -91,14 +101,18 @@ pub enum StatementError {
         expected: Shape,
     },
 
-    /// A region whose slice count differs from its tensor's rank.
+    /// A subscript with more indices than its tensor has dimensions.
     RegionRank {
         tensor: TensorName,
         shape: Shape,
-        slices: usize,
+        indices: usize,
     },
 
-    /// A slice reaching outside its tensor, or selecting no elements.
+    /// A tile region indexing the partition dimension, which every tile operand keeps.
+    PartitionIndexed(TensorName),
+
+    /// An index outside its tensor's dimension, or a slice reaching outside it or
+    /// selecting no elements.
     RegionBounds {
         tensor: TensorName,
         dimension: usize,
@@ -178,19 +192,32 @@ impl fmt::Display for StatementError {
             Self::RegionRank {
                 tensor,
                 shape,
-                slices,
+                indices,
             } => write!(
                 f,
-                "a region of `{tensor}{shape}` needs {} slices, not {slices}",
+                "a subscript of `{tensor}{shape}` takes at most {} indices, not {indices}",
                 shape.0.len()
             ),
+            Self::PartitionIndexed(tensor) => write!(
+                f,
+                "a region of the tile `{tensor}` must slice its partition dimension, \
+                 not index it"
+            ),
+            Self::NotAMatrix { tensor, shape } => write!(
+                f,
+                "the `{tensor}` operand has shape {shape}, but the instruction takes \
+                 tiles of one free dimension"
+            ),
+            Self::ElementCountOverflow(tensor) => {
+                write!(f, "the element count of `{tensor}` overflows u64")
+            }
             Self::RegionBounds {
                 tensor,
                 dimension,
                 extent,
             } => write!(
                 f,
-                "`{tensor}`'s slice in dimension {dimension} is empty or outside its extent {extent}"
+                "`{tensor}`'s index in dimension {dimension} is empty or outside its extent {extent}"
             ),
         }
     }

@@ -1,0 +1,23 @@
+kernel kernel(a_t, b, out)
+  a_t: hbm[4, 2]
+  b: hbm[4, 3]
+  out: hbm[2, 3]
+  staged: hbm[2, 2, 5]
+  sb: sbuf[2, 2, 5]
+  acc: psum[2, 3]
+  z: sbuf[2, 3]
+  blocks: hbm[1, 1, 2, 3]
+  w: sbuf[2, 3]
+  staged[0, 0:2, 0:2] = mov(a_t[0:2, 0:2])
+  staged[0, 0:2, 2:5] = mov(b[0:2, 0:3])
+  staged[1, 0:2, 0:2] = mov(a_t[2:4, 0:2])
+  staged[1, 0:2, 2:5] = mov(b[2:4, 0:3])
+  acc = memset(0)
+  sb[0:2, 0, 0:5] = mov(staged[0, 0:2, 0:5])
+  acc = matmul(sb[0:2, 0, 0:2], sb[0:2, 0, 2:5])
+  sb[0:2, 1, 0:5] = mov(staged[1, 0:2, 0:5])
+  acc = matmul(sb[0:2, 1, 0:2], sb[0:2, 1, 2:5])
+  z = mov(acc)
+  blocks[0, 0, 0:2, 0:3] = mov(z)
+  w = mov(blocks[0, 0, 0:2, 0:3])
+  out = mov(w)

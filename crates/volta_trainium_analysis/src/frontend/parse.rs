@@ -7,8 +7,8 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Param, Partitions, Scalar,
-    Statement, TensorName, TileDecl, TileShape,
+    Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Param, Partitions, RegionProblem,
+    Scalar, Statement, Subscript, TensorName, TileDecl, TileShape, kept_extents, resolve_region,
 };
 use super::error::{ParseError, ShapeProblem, bail};
 use super::lex::CmpOp;
@@ -482,7 +482,7 @@ enum Value {
     /// A rectangular region of a tensor, from a subscript.
     Region {
         tensor: TensorName,
-        dims: Vec<Bounds>,
+        dims: Vec<Subscript>,
     },
     /// A function of a module, called by running its body.
     Function {
@@ -539,7 +539,7 @@ impl fmt::Display for Value {
             Self::DtypeOf(tensor) => write!(f, "{tensor}.dtype"),
             Self::Member(member) => f.write_str(member),
             Self::Region { tensor, dims } => {
-                let dims: Vec<String> = dims.iter().map(Bounds::to_string).collect();
+                let dims: Vec<String> = dims.iter().map(Subscript::to_string).collect();
                 write!(f, "{tensor}[{}]", dims.join(", "))
             }
             Self::Function { name, .. } => write!(f, "function `{name}`"),
@@ -738,8 +738,8 @@ impl Trace<'_> {
         }
     }
 
-    /// `base[indices]`: a tensor's region, one slice per dimension, or a tuple's or
-    /// list's item.
+    /// `base[indices]`: a tensor's region, an integer or a slice per leading
+    /// dimension, or a tuple's or list's item.
     fn subscript(
         &mut self,
         frame: &Frame,
@@ -750,7 +750,7 @@ impl Trace<'_> {
         if let Value::Tensor(tensor) = base {
             let mut dims = Vec::new();
             for index in indices {
-                dims.push(self.bounds(frame, index, line)?);
+                dims.push(self.subscript_index(frame, index, line)?);
             }
             return Ok(Value::Region { tensor, dims });
         }
@@ -841,16 +841,26 @@ impl Trace<'_> {
         Ok(None)
     }
 
-    /// One subscript index as slice bounds. An integer index would drop its
-    /// dimension, so only a slice is accepted.
-    fn bounds(&mut self, frame: &Frame, index: Expr, line: usize) -> Result<Bounds, ParseError> {
-        let Expr::Slice { start, stop } = index else {
-            bail!(line, "a tensor index must be a slice");
-        };
-        Ok(Bounds {
-            start: self.bound(frame, start, line)?,
-            stop: self.bound(frame, stop, line)?,
-        })
+    /// One index of a tensor's subscript: a slice, or an integer.
+    fn subscript_index(
+        &mut self,
+        frame: &Frame,
+        index: Expr,
+        line: usize,
+    ) -> Result<Subscript, ParseError> {
+        if let Expr::Slice { start, stop } = index {
+            return Ok(Subscript::Slice(Bounds {
+                start: self.bound(frame, start, line)?,
+                stop: self.bound(frame, stop, line)?,
+            }));
+        }
+        match self.evaluate(frame, index, line)? {
+            Value::Int(index) => Ok(Subscript::Index(index)),
+            other => bail!(
+                line,
+                "a tensor index must be an integer or a slice, not `{other}`"
+            ),
+        }
     }
 
     /// A slice bound, absent when the subscript omits it.
@@ -1306,8 +1316,7 @@ fn declare_tile(
     trace: &mut Trace,
     frame: &Frame,
 ) -> TensorName {
-    let extents = vec![u64::from(shape.partitions.get()), shape.free.get()];
-    let name = trace.declare(frame, target, extents, Place::OnChip);
+    let name = trace.declare(frame, target, shape.extents(), Place::OnChip);
     trace.body.push(Statement::Declare(TileDecl {
         name: name.clone(),
         shape,
@@ -1622,7 +1631,8 @@ fn tile(
     }
 }
 
-/// The tensor a tensor or region `value` reads, and the region's extents.
+/// The tensor a tensor or region `value` reads, and the region's shape: its
+/// extents, less the dimensions an integer index drops.
 fn region_extents(
     trace: &Trace,
     value: &Value,
@@ -1635,26 +1645,20 @@ fn region_extents(
         other => bail!(line, "`{callee}` reads a tensor or a region, not `{other}`"),
     };
     let shape = &trace.tensors[tensor].extents;
-    if dims.is_empty() {
-        return Ok((tensor.clone(), shape.clone()));
+    match resolve_region(dims, shape) {
+        Ok(selected) => Ok((tensor.clone(), kept_extents(&selected))),
+        Err(RegionProblem::TooManyIndices) => bail!(
+            line,
+            "`{tensor}` has {} dimensions, fewer than its subscript's {}",
+            shape.len(),
+            dims.len()
+        ),
+        Err(RegionProblem::OutOfBounds { dimension }) => bail!(
+            line,
+            "`{tensor}`'s index in dimension {dimension} is empty or outside its extent {}",
+            shape[dimension]
+        ),
     }
-    if dims.len() != shape.len() {
-        bail!(line, "a region of `{tensor}` needs {} slices", shape.len());
-    }
-
-    let mut extents = Vec::new();
-    for (bounds, &extent) in dims.iter().zip(shape) {
-        let low = bounds.start.unwrap_or(0);
-        let high = bounds.stop.unwrap_or(extent);
-        if low >= high || high > extent {
-            bail!(
-                line,
-                "a slice of `{tensor}` is empty or outside its extent {extent}"
-            );
-        }
-        extents.push(high - low);
-    }
-    Ok((tensor.clone(), extents))
 }
 
 /// `nisa.<opcode>(keyword=operand, ...)`: every operand by keyword, so its role is explicit.
@@ -1683,17 +1687,27 @@ fn instruction(
 // Reading values as kernel parts
 // =============================================================================
 
-/// A tile's `(partitions, free)` extents, e.g. `(128, 512)`.
+/// A tile's `(partitions, free, ...)` extents, e.g. `(128, 512)` or `(128, 4, 128)`.
 fn read_shape(value: Value, line: usize) -> Result<TileShape, ParseError> {
     let Value::Tuple(extents) = value else {
         bail!(line, "a tile's shape must be a tuple");
     };
-    let [Value::Int(partitions), Value::Int(free)] = extents[..] else {
+    let mut ints = Vec::new();
+    for extent in &extents {
+        let Value::Int(extent) = *extent else {
+            bail!(line, "a tile's extents must be integers");
+        };
+        ints.push(extent);
+    }
+    let [partitions, ref free @ ..] = ints[..] else {
+        bail!(line, "a tile's shape must be `(partitions, free, ...)`");
+    };
+    if free.is_empty() {
         bail!(
             line,
-            "a tile's shape must be two integers `(partitions, free)`"
+            "a tile's shape needs a free dimension: `(partitions, free, ...)`"
         );
-    };
+    }
 
     let Some(partitions) = Partitions::new(partitions) else {
         bail!(
@@ -1702,8 +1716,8 @@ fn read_shape(value: Value, line: usize) -> Result<TileShape, ParseError> {
             Partitions::MAX
         );
     };
-    let Some(free) = NonZeroU64::new(free) else {
-        bail!(line, "a tile's free size must be positive");
+    let Some(free) = free.iter().map(|&extent| NonZeroU64::new(extent)).collect() else {
+        bail!(line, "a tile's free extents must be positive");
     };
 
     Ok(TileShape { partitions, free })
