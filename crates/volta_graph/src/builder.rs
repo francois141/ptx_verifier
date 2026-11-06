@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use id_collections::IdVec;
 
 use crate::graph::EventGraph;
@@ -5,16 +7,50 @@ use crate::ids::{
     AccessId, AsyncOpId, EventId, GenerationId, ProgramPoint, SyncObjectId, ThreadIx, ValueId,
 };
 use crate::model::{
-    AbortCause, AsyncOp, AsyncOpKind, Contribution, ContributionKind, Event, EventKind,
-    ExecContext, FenceKind, Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess,
-    Parity, Provenance, StoredValue, SyncObject, SyncObjectKind, Terminal,
+    AbortCause, AccessMode, AsyncOp, AsyncOpKind, BulkWaitScope, Contribution, ContributionKind,
+    Event, EventKind, ExecContext, FenceKind, Footprint, Generation, GenerationEvidence,
+    GenerationKind, GroupFamily, MemAccess, OperandRole, OrderingKind, Parity, Provenance, Proxy,
+    Space, StoredValue, SyncObject, SyncObjectKind, Terminal,
 };
 
 /// Append-only construction of an [`EventGraph`] in trace order. It records what the producer
-/// reports and keeps the graph's indexes consistent; it decides nothing about the execution.
+/// reports and keeps the graph's indexes consistent, including the generations of group waits;
+/// when anything happens is the producer's decision.
 #[derive(Debug)]
 pub struct GraphBuilder {
     graph: EventGraph,
+    /// The objects whose generations the builder numbers, with the index the next one takes.
+    numbered: HashMap<SyncObjectKind, (SyncObjectId, u32)>,
+}
+
+/// What an ordinary memory effect does at its footprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    Read,
+    Write(StoredValue),
+}
+
+/// An ordinary memory effect as the producer performs it: a [`MemAccess`] whose written value
+/// the builder stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrdinaryAccess {
+    pub space: Space,
+    pub footprint: Footprint,
+    pub proxy: Proxy,
+    pub role: OperandRole,
+    pub effect: Effect,
+}
+
+/// A thread's wait for its own asynchronous operations, past the `keep_pending` most recent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupWait {
+    /// `cp.async.wait_group n` (`wait_all`: `n = 0`); an AMD `s_waitcnt lgkmcnt(n)`.
+    Async { keep_pending: u32 },
+    /// `cp.async.bulk.wait_group{.read} n`.
+    Bulk {
+        keep_pending: u32,
+        scope: BulkWaitScope,
+    },
 }
 
 impl GraphBuilder {
@@ -37,6 +73,7 @@ impl GraphBuilder {
                     reason: "graph under construction".to_string(),
                 },
             },
+            numbered: HashMap::new(),
         }
     }
 
@@ -70,6 +107,46 @@ impl GraphBuilder {
     ) -> EventId {
         let id = self.graph.accesses.push(access);
         self.push(ExecContext::Thread(thread), EventKind::Access(id), Some(pc))
+    }
+
+    /// `thread`'s own ordinary access at `pc`.
+    pub fn ordinary_thread_access(
+        &mut self,
+        thread: ThreadIx,
+        pc: ProgramPoint,
+        access: OrdinaryAccess,
+    ) -> EventId {
+        let access = self.mem_access(thread, access);
+        self.thread_access(thread, pc, access)
+    }
+
+    /// One ordinary memory effect of `op`, attributed to `attributed`.
+    pub fn ordinary_async_effect(
+        &mut self,
+        op: AsyncOpId,
+        attributed: ThreadIx,
+        access: OrdinaryAccess,
+    ) -> EventId {
+        let access = self.mem_access(attributed, access);
+        self.async_effect(op, access)
+    }
+
+    /// The [`MemAccess`] of `access`, storing the value it writes.
+    fn mem_access(&mut self, attributed: ThreadIx, access: OrdinaryAccess) -> MemAccess {
+        let (mode, value) = match access.effect {
+            Effect::Read => (AccessMode::Read, None),
+            Effect::Write(stored) => (AccessMode::Write, Some(self.value(stored))),
+        };
+        MemAccess {
+            space: access.space,
+            mode,
+            ordering: OrderingKind::Ordinary,
+            proxy: access.proxy,
+            footprint: access.footprint,
+            role: access.role,
+            attributed,
+            value,
+        }
     }
 
     /// `issuer` issues an asynchronous operation at `pc`.
@@ -129,6 +206,43 @@ impl GraphBuilder {
                 event: done,
                 kind: ContributionKind::AsyncCompletion { op, tx_bytes },
             });
+    }
+
+    /// `thread`'s wait at `pc` completed `ops`: the next generation of its wait object tracks
+    /// them, completes and releases `thread`. A wait that completed nothing records nothing.
+    pub fn group_wait(
+        &mut self,
+        thread: ThreadIx,
+        pc: ProgramPoint,
+        wait: GroupWait,
+        ops: &[AsyncOpId],
+    ) -> Option<GenerationId> {
+        if ops.is_empty() {
+            return None;
+        }
+        let (object, kind) = match wait {
+            GroupWait::Async { keep_pending } => (
+                SyncObjectKind::AsyncGroupWait { thread },
+                GenerationKind::AsyncGroupWait { keep_pending },
+            ),
+            GroupWait::Bulk {
+                keep_pending,
+                scope,
+            } => (
+                SyncObjectKind::BulkGroupWait { thread },
+                GenerationKind::BulkGroupWait {
+                    keep_pending,
+                    scope,
+                },
+            ),
+        };
+        let generation = self.next_generation(object, kind);
+        for &op in ops {
+            self.track(op, generation, 0);
+        }
+        self.complete_generation(generation, GenerationEvidence::default());
+        self.resume(thread, pc, generation);
+        Some(generation)
     }
 
     pub fn sync_object(&mut self, kind: SyncObjectKind) -> SyncObjectId {
@@ -213,6 +327,16 @@ impl GraphBuilder {
                 event: exit,
                 kind: ContributionKind::Exited,
             });
+    }
+
+    /// The next generation of the object of kind `object`, which its first generation creates.
+    fn next_generation(&mut self, object: SyncObjectKind, kind: GenerationKind) -> GenerationId {
+        let (id, index) = match self.numbered.get(&object) {
+            Some(&numbered) => numbered,
+            None => (self.sync_object(object.clone()), 0),
+        };
+        self.numbered.insert(object, (id, index + 1));
+        self.open_generation(id, index, kind)
     }
 
     pub fn wait_start(

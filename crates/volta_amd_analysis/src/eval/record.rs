@@ -2,11 +2,9 @@
 //! three sections: the issue of each DS instruction, the `s_waitcnt lgkmcnt` wait that completes
 //! it, and the workgroup barrier. Execution never reads this bookkeeping.
 
-use std::collections::HashMap;
-
 use volta_graph::{
-    AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, Footprint,
-    GenerationEvidence, GenerationId, GenerationKind, MemAccess, OperandRole, OrderingKind,
+    AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, Effect, Footprint,
+    GenerationEvidence, GenerationId, GenerationKind, GroupWait, OperandRole, OrdinaryAccess,
     ProgramPoint, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
 };
 
@@ -34,9 +32,6 @@ pub(super) struct Recording {
 
     /// The generation the waves are gathering into, until the barrier releases them.
     forming: Option<FormingBarrier>,
-
-    /// Each wave's `s_waitcnt lgkmcnt` object, and how many of its generations have opened.
-    lgkm_waits: HashMap<WaveId, (SyncObjectId, u32)>,
 }
 
 /// Graph threads are waves (`ThreadUnit::Wave`).
@@ -82,7 +77,7 @@ impl Interpreter<'_> {
             .async_issue(thread(wave), point(pc), AsyncOpKind::Ds);
 
         for access in accesses {
-            self.graph.async_effect(op, access);
+            self.graph.ordinary_async_effect(op, thread(wave), access);
         }
 
         Ok(op)
@@ -132,29 +127,25 @@ impl Interpreter<'_> {
         Ok(words)
     }
 
-    /// `wave`'s access of one LDS word, storing a value if it writes.
-    fn lds_access(&mut self, wave: WaveId, word: LdsWord) -> Result<MemAccess, EvalError> {
-        let (mode, value) = match word.source {
+    /// `wave`'s ordinary access of one LDS word.
+    fn lds_access(&self, wave: WaveId, word: LdsWord) -> Result<OrdinaryAccess, EvalError> {
+        let effect = match word.source {
             Some((lane, reg)) => {
                 let stored = self.waves[wave].registers.read_lane_reg(lane, reg)?;
-                let value = self.graph.value(StoredValue::Scalar(stored));
-                (AccessMode::Write, Some(value))
+                Effect::Write(StoredValue::Scalar(stored))
             }
-            None => (AccessMode::Read, None),
+            None => Effect::Read,
         };
 
-        Ok(MemAccess {
+        Ok(OrdinaryAccess {
             space: Space::Shared,
-            mode,
-            ordering: OrderingKind::Ordinary,
-            proxy: Proxy::Generic,
             footprint: Footprint::Bytes {
                 addr: u64::from(word.address),
                 width: 4,
             },
+            proxy: Proxy::Generic,
             role: OperandRole::Plain,
-            attributed: thread(wave),
-            value,
+            effect,
         })
     }
 }
@@ -172,37 +163,10 @@ impl Interpreter<'_> {
         outstanding: usize,
         ops: &[AsyncOpId],
     ) {
-        if ops.is_empty() {
-            return;
-        }
-
-        let generation = self.open_lgkm_generation(wave, outstanding);
-        for &op in ops {
-            self.graph.track(op, generation, 0);
-        }
-
-        let evidence = GenerationEvidence::default();
-        self.graph.complete_generation(generation, evidence);
-        self.graph.resume(thread(wave), point(pc), generation);
-    }
-
-    /// The next generation of `wave`'s `lgkmcnt` wait object, which its first wait creates.
-    fn open_lgkm_generation(&mut self, wave: WaveId, outstanding: usize) -> GenerationId {
-        let (object, index) = match self.rec.lgkm_waits.get(&wave) {
-            Some(&known) => known,
-            None => {
-                let kind = SyncObjectKind::AsyncGroupWait {
-                    thread: thread(wave),
-                };
-                (self.graph.sync_object(kind), 0)
-            }
-        };
-        self.rec.lgkm_waits.insert(wave, (object, index + 1));
-
-        let kind = GenerationKind::AsyncGroupWait {
+        let wait = GroupWait::Async {
             keep_pending: outstanding as u32,
         };
-        self.graph.open_generation(object, index, kind)
+        self.graph.group_wait(thread(wave), point(pc), wait, ops);
     }
 }
 

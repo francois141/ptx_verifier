@@ -258,7 +258,7 @@ pub struct MemAccess {
 // Synchronization objects and generations
 // =========================================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SyncObjectKind {
     /// One of the CTA's hardware named barriers (`bar.sync`, `bar.arrive`); an AMD
     /// workgroup's one `s_barrier` is barrier 0.

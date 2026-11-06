@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use volta_graph::{
     AccessMode, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals,
-    BlockedOn, BlockedThread, BulkWaitScope, CollectiveSide, ContributionKind, EventId, Footprint,
-    GenerationEvidence, GenerationId, GenerationKind, GroupFamily, MbarrierState, MemAccess,
-    MemberOrdering, OperandRole, OrderingKind, Parity, ProgramPoint, Proxy, Space, StoredValue,
+    BlockedOn, BlockedThread, BulkWaitScope, CollectiveSide, ContributionKind, Effect, EventId,
+    Footprint, GenerationEvidence, GenerationId, GenerationKind, GroupWait, MbarrierState,
+    MemberOrdering, OperandRole, OrdinaryAccess, Parity, ProgramPoint, Proxy, Space, StoredValue,
     SyncObjectId, SyncObjectKind, ThreadIx,
 };
 
@@ -64,8 +64,9 @@ struct FormingCollective {
     ordering: MemberOrdering,
 }
 
-/// Producer-side graph bookkeeping: the forming generation of every synchronization object and
-/// the async ops awaiting a completion association. Execution never reads it.
+/// Producer-side graph bookkeeping: the forming generation of every synchronization object the
+/// builder does not track and the async ops awaiting a completion association. Execution never
+/// reads it.
 #[derive(Debug, Default)]
 pub(in crate::eval) struct Recording {
     named_barriers: HashMap<u32, (SyncObjectId, u32)>,
@@ -73,7 +74,6 @@ pub(in crate::eval) struct Recording {
     warps: HashMap<u32, CollectiveObject>,
     forming_warp_ops: HashMap<(u32, InstrId, u32), FormingCollective>,
     mbarriers: HashMap<MbarrierId, MbarrierRecord>,
-    group_waits: HashMap<(ThreadId, GroupFamily), (SyncObjectId, u32)>,
     unobserved_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
     tcgen05_pending: HashMap<(u32, Tcgen05Wait), Vec<AsyncOpId>>,
 }
@@ -124,8 +124,11 @@ impl Interpreter<'_> {
         value: Option<Value>,
         origin: AccessOrigin,
     ) {
-        let value = value.map(stored);
-        self.record_access(t, pc, space, addr, width, value, origin);
+        let effect = match value {
+            Some(value) => Effect::Write(stored(value)),
+            None => Effect::Read,
+        };
+        self.record_access(t, pc, space, addr, width, effect, origin);
     }
 
     /// Record `t`'s write of an object Volta keeps outside the byte memory (a tensor map)
@@ -138,8 +141,8 @@ impl Interpreter<'_> {
         addr: u64,
         width: u64,
     ) {
-        let value = Some(StoredValue::Opaque);
-        self.record_access(t, pc, space, addr, width, value, AccessOrigin::Thread);
+        let effect = Effect::Write(StoredValue::Opaque);
+        self.record_access(t, pc, space, addr, width, effect, AccessOrigin::Thread);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -150,40 +153,31 @@ impl Interpreter<'_> {
         space: MemSpace,
         addr: u64,
         width: u64,
-        value: Option<StoredValue>,
+        effect: Effect,
         origin: AccessOrigin,
     ) {
         let Some(space) = graph_space(space) else {
             return;
         };
-        let (mode, value) = match value {
-            Some(v) => (AccessMode::Write, Some(self.graph.value(v))),
-            None => (AccessMode::Read, None),
+        let footprint = Footprint::Bytes {
+            addr,
+            width: width as u32,
         };
-        let (proxy, role) = match origin {
-            AccessOrigin::Thread => (Proxy::Generic, OperandRole::Plain),
-            AccessOrigin::Async { proxy, role, .. } => (proxy, role),
-            AccessOrigin::Applied => return,
-        };
-        let access = MemAccess {
+        let access = |proxy, role| OrdinaryAccess {
             space,
-            mode,
-            ordering: OrderingKind::Ordinary,
+            footprint,
             proxy,
-            footprint: Footprint::Bytes {
-                addr,
-                width: width as u32,
-            },
             role,
-            attributed: tix(t),
-            value,
+            effect,
         };
         match origin {
             AccessOrigin::Thread => {
-                self.graph.thread_access(tix(t), point(pc), access);
+                let access = access(Proxy::Generic, OperandRole::Plain);
+                self.graph.ordinary_thread_access(tix(t), point(pc), access);
             }
-            AccessOrigin::Async { op, .. } => {
-                self.graph.async_effect(op, access);
+            AccessOrigin::Async { op, proxy, role } => {
+                let access = access(proxy, role);
+                self.graph.ordinary_async_effect(op, tix(t), access);
             }
             AccessOrigin::Applied => {}
         }
@@ -202,25 +196,23 @@ impl Interpreter<'_> {
         col: u32,
         cols: u32,
     ) {
-        let value = (mode == AccessMode::Write).then(|| self.graph.value(StoredValue::Opaque));
-        self.graph.async_effect(
-            op,
-            MemAccess {
-                space: Space::Tensor,
-                mode,
-                ordering: OrderingKind::Ordinary,
-                proxy: Proxy::Async,
-                footprint: Footprint::Tensor {
-                    lane: lane as u8,
-                    lanes: lanes as u8,
-                    col: col as u16,
-                    cols: cols as u16,
-                },
-                role,
-                attributed: tix(t),
-                value,
+        let effect = match mode {
+            AccessMode::Read => Effect::Read,
+            AccessMode::Write => Effect::Write(StoredValue::Opaque),
+        };
+        let access = OrdinaryAccess {
+            space: Space::Tensor,
+            footprint: Footprint::Tensor {
+                lane: lane as u8,
+                lanes: lanes as u8,
+                col: col as u16,
+                cols: cols as u16,
             },
-        );
+            proxy: Proxy::Async,
+            role,
+            effect,
+        };
+        self.graph.ordinary_async_effect(op, tix(t), access);
     }
 
     /// Record `op`'s effect on the cells `(lane_base + lane, col_base + col)` of `cells`, merging
@@ -786,8 +778,8 @@ impl Interpreter<'_> {
         keep_pending: u32,
         ops: &[AsyncOpId],
     ) {
-        let kind = GenerationKind::AsyncGroupWait { keep_pending };
-        self.record_wait_generation(t, pc, GroupFamily::CpAsync, kind, ops);
+        let wait = GroupWait::Async { keep_pending };
+        self.graph.group_wait(tix(t), point(pc), wait, ops);
     }
 
     /// `t`'s `cp.async.bulk.wait_group{.read}` keeping `keep_pending` groups completed `ops`.
@@ -799,48 +791,11 @@ impl Interpreter<'_> {
         scope: BulkWaitScope,
         ops: &[AsyncOpId],
     ) {
-        let kind = GenerationKind::BulkGroupWait {
+        let wait = GroupWait::Bulk {
             keep_pending,
             scope,
         };
-        self.record_wait_generation(t, pc, GroupFamily::Bulk, kind, ops);
-    }
-
-    /// One generation of `t`'s waits on its `family` groups, completing `ops` and releasing `t`.
-    fn record_wait_generation(
-        &mut self,
-        t: ThreadId,
-        pc: InstrId,
-        family: GroupFamily,
-        kind: GenerationKind,
-        ops: &[AsyncOpId],
-    ) {
-        if ops.is_empty() {
-            return;
-        }
-        let (object, index) = match self.rec.group_waits.get(&(t, family)) {
-            Some(&known) => known,
-            None => {
-                let thread = tix(t);
-                let object = match family {
-                    GroupFamily::Bulk => SyncObjectKind::BulkGroupWait { thread },
-                    GroupFamily::CpAsync | GroupFamily::Wgmma => {
-                        SyncObjectKind::AsyncGroupWait { thread }
-                    }
-                };
-                (self.graph.sync_object(object), 0)
-            }
-        };
-        self.rec
-            .group_waits
-            .insert((t, family), (object, index + 1));
-        let generation = self.graph.open_generation(object, index, kind);
-        for &op in ops {
-            self.graph.track(op, generation, 0);
-        }
-        self.graph
-            .complete_generation(generation, GenerationEvidence::default());
-        self.graph.resume(tix(t), point(pc), generation);
+        self.graph.group_wait(tix(t), point(pc), wait, ops);
     }
 
     pub(in crate::eval) fn record_exit(&mut self, t: ThreadId, pc: InstrId) -> EventId {
