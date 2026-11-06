@@ -20,12 +20,41 @@ const NKI_LANGUAGE: &str = "nki.language";
 const NKI_ISA: &str = "nki.isa";
 /// The `nki.language` buffer of a device-memory tensor the kernel allocates.
 const SHARED_HBM: &str = "shared_hbm";
-/// `nl.tile_size`'s members, the hardware's tile limits.
-const TILE_SIZES: [(&str, u64); 3] = [
-    ("pmax", Partitions::MAX as u64),
-    ("gemm_stationary_fmax", 128),
-    ("gemm_moving_fmax", 512),
-];
+
+/// The values a kernel reads from `nl.tile_size`. `Default` is the hardware's limits, as
+/// NKI defines them; smaller ones run a tiled kernel's loops on small inputs, the kernel
+/// tiled exactly as at full size but with smaller tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileSizes {
+    /// `nl.tile_size.pmax`: a tile's partitions.
+    pub pmax: u64,
+    /// `nl.tile_size.gemm_stationary_fmax`: a matmul's stationary free size.
+    pub gemm_stationary_fmax: u64,
+    /// `nl.tile_size.gemm_moving_fmax`: a matmul's moving free size.
+    pub gemm_moving_fmax: u64,
+}
+
+impl Default for TileSizes {
+    fn default() -> Self {
+        Self {
+            pmax: Partitions::MAX as u64,
+            gemm_stationary_fmax: 128,
+            gemm_moving_fmax: 512,
+        }
+    }
+}
+
+impl TileSizes {
+    /// The value of `nl.tile_size.<member>`, if NKI defines that member here.
+    fn member(self, member: &str) -> Option<u64> {
+        match member {
+            "pmax" => Some(self.pmax),
+            "gemm_stationary_fmax" => Some(self.gemm_stationary_fmax),
+            "gemm_moving_fmax" => Some(self.gemm_moving_fmax),
+            _ => None,
+        }
+    }
+}
 /// The name the kernel's own module goes by.
 const MAIN: &str = "__main__";
 /// How deeply helper calls may nest, which bounds recursion.
@@ -49,8 +78,20 @@ pub fn parse_kernel_with_modules(
     name: &str,
     shapes: &[(&str, &[u64])],
 ) -> Result<Kernel, ParseError> {
+    parse_kernel_with_tile_sizes(source, modules, name, shapes, TileSizes::default())
+}
+
+/// `parse_kernel_with_modules` with `nl.tile_size` reading `tile_sizes`.
+pub fn parse_kernel_with_tile_sizes(
+    source: &str,
+    modules: &[(&str, &str)],
+    name: &str,
+    shapes: &[(&str, &[u64])],
+    tile_sizes: TileSizes,
+) -> Result<Kernel, ParseError> {
     let mut program = Program {
         modules: BTreeMap::new(),
+        tile_sizes,
     };
     program.modules.insert(MAIN.into(), Module::parse(source)?);
     for (module, source) in modules {
@@ -112,6 +153,7 @@ fn literal_shape(stmt: &Stmt) -> Option<(String, Vec<u64>)> {
 /// Every module a kernel may reach, by module name; the kernel's own is `MAIN`.
 struct Program {
     modules: BTreeMap<String, Module>,
+    tile_sizes: TileSizes,
 }
 
 /// A module's global names. Functions are parsed only when called.
@@ -584,7 +626,7 @@ impl<'p> Frame<'p> {
                     member.push('.');
                     member.push_str(attribute);
                 }
-                tile_size(member, line)
+                tile_size(trace.program.tile_sizes, member, line)
             }
             (Value::Tensor(tensor), [attribute]) if attribute == "dtype" => {
                 Ok(Value::DtypeOf(tensor))
@@ -631,7 +673,7 @@ fn global(
                 };
                 value
             } else if from == "nki" || from.starts_with("nki.") {
-                tile_size(format!("{from}.{name}"), line)?
+                tile_size(program.tile_sizes, format!("{from}.{name}"), line)?
             } else {
                 bail!(
                     line,
@@ -881,14 +923,14 @@ impl Trace<'_> {
 }
 
 /// An `nl.tile_size` limit as its integer; any other member as itself.
-fn tile_size(member: String, line: usize) -> Result<Value, ParseError> {
+fn tile_size(tile_sizes: TileSizes, member: String, line: usize) -> Result<Value, ParseError> {
     let Some(limit) = member
         .strip_prefix(NKI_LANGUAGE)
         .and_then(|rest| rest.strip_prefix(".tile_size."))
     else {
         return Ok(Value::Member(member));
     };
-    let Some(&(_, value)) = TILE_SIZES.iter().find(|(name, _)| *name == limit) else {
+    let Some(value) = tile_sizes.member(limit) else {
         bail!(line, "unsupported tile size `nl.tile_size.{limit}`");
     };
     Ok(Value::Int(value))

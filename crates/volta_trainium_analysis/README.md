@@ -74,7 +74,10 @@ on shapes, as NKI's tracer does:
 - `d_head, seqlen_q = q.shape` and `seqlen_kv = seqlen_q` bind integers; `t.shape`
   is a tuple of `t`'s extents, so `nl.ndarray(q.shape, ...)` works too.
 - `+`, `*` and `//` on integers, and `nl.tile_size.pmax` (128),
-  `gemm_stationary_fmax` (128) and `gemm_moving_fmax` (512).
+  `gemm_stationary_fmax` (128) and `gemm_moving_fmax` (512): the hardware's
+  limits, `TileSizes::default()`. `parse_kernel_with_tile_sizes(source, modules,
+  name, shapes, tile_sizes)` reads others, so a tiled kernel such as v3 runs its
+  loops on small inputs with small tiles, tiled exactly as at full size.
 - `assert`s are checked rather than kept: a chain of `==`, `!=`, `<`, `<=`, `>` and
   `>=` over integers (tuples, such as shapes, by `==` and `!=` only). A false one
   is a parse error naming the comparison, e.g. ``assertion fails for this call:
@@ -155,7 +158,8 @@ exactly one free dimension once indexed ones are dropped, so `axis=(1,)` is
 unambiguous. Copies pair their regions' elements in row-major order.
 
 v3 and v4 parse, lower and run unmodified at the size they assert (`q`, `k` and `v`
-of `[128, 512]`), each in about ten seconds in release.
+of `[128, 512]`), each in about ten seconds in release; `volta_pipeline` checks them
+there and at reduced tile sizes.
 
 ## Outputs
 
