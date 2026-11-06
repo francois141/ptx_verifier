@@ -60,3 +60,29 @@ __kernel void overwrite_without_barrier(__global const float *input, __global fl
     SYNC();
     output[i] = shared[(i + 64) % 128];
 }
+
+// Keep the read, optional wait, barrier and overwrite in one assembly block so Clang cannot
+// insert a wait before the barrier. The final wait makes the read result usable by the store.
+#define READ_THEN_REUSE(name, wait_before_barrier)                                                \
+    __kernel void name(__global const float *input, __global float *output) {                     \
+        __local float shared[128];                                                                \
+        unsigned i = __builtin_amdgcn_workitem_id_x();                                            \
+        float value = input[i];                                                                   \
+        shared[i] = value;                                                                        \
+        SYNC();                                                                                   \
+        float other;                                                                              \
+        __asm__ volatile("ds_read_b32 %0, %1\n"                                                   \
+                         wait_before_barrier                                                      \
+                         "s_barrier\n"                                                            \
+                         "ds_write_b32 %2, %3\n"                                                  \
+                         "s_waitcnt lgkmcnt(0)"                                                   \
+                         : "=&v"(other)                                                           \
+                         : "v"((unsigned)&shared[i ^ 64]), "v"((unsigned)&shared[i]), "v"(value)  \
+                         : "memory");                                                             \
+        output[i] = other;                                                                        \
+    }
+
+// Each wave overwrites its words while the other wave's read remains in flight.
+READ_THEN_REUSE(read_pending_across_reuse_barrier, "")
+// Completing both waves' reads before the barrier makes the overwrites safe.
+READ_THEN_REUSE(read_wait_before_reuse_barrier, "s_waitcnt lgkmcnt(0)\n")

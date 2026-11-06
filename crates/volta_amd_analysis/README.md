@@ -33,6 +33,7 @@ Negated select sources use floating-point semantics, so they are not ambiguous.
 F32 e64 comparisons, e64 selects, f32 FMA and three-source f32 operations accept absolute-value
 and negation input modifiers on any source; these operate on mathematical expressions.
 E64 comparisons write VCC or an SGPR pair.
+Scalar and vector NOT require concrete words. Accumulator writes accept VGPRs, SGPRs and inline constants.
 Packed f32 add, multiply and FMA share component selection and negation handling;
 each register holds one real expression, and either selector reads the same inline constant.
 An f64 register pair holds one real expression or two concrete words that encode one. Reading
@@ -75,6 +76,8 @@ The `packed_float_ops` fixture checks paired arithmetic, selectors, negation and
 overlap against independently derived expressions.
 The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, comparisons and
 moves.
+`accvgpr` checks each source form; the bitwise fixtures check NOT results and scalar SCC.
+`lds_sync` includes a pending-read race and its waited control.
 Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:
@@ -105,6 +108,24 @@ using the same `ds_bpermute` [shuffle builtin](https://github.com/ROCm/composabl
 clang -x cl -cl-std=CL1.2 --target=amdgcn-amd-amdhsa -mcpu=gfx950 -nogpulib \
   -O2 -g0 -fno-verbose-asm -Xclang -target-feature -Xclang -xnack \
   -S copy.cl -o copy.s
+```
+
+### Compiling the CK GEMM fixture
+
+`ck_gemm.hip` contains the same GEMM instance with and without its K-block main loop.
+The main-loop tests use M=N=40, K=192 to exercise three K tiles, padding and data exchanged
+between both waves.
+Use [CK rocm-7.0.0](https://github.com/ROCm/composable_kernel/tree/rocm-7.0.0)
+headers, including `ck/config.h` configured for gfx950, and the HIP headers described below:
+
+```sh
+clang++ -x hip -std=c++20 -fbracket-depth=1024 \
+  --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
+  --hip-path="$HIP_ROOT" -DNDEBUG -Wno-unknown-warning-option \
+  -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
+  -fno-hip-fp32-correctly-rounded-divide-sqrt -I "$CK_ROOT/include" \
+  -S crates/volta_amd_analysis/tests/fixtures/ck_gemm.hip \
+  -o crates/volta_amd_analysis/tests/fixtures/ck_gemm.s
 ```
 
 ### Compiling the CK attention fixture

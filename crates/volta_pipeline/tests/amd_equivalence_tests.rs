@@ -10,11 +10,10 @@ use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 
 mod common;
 
-use common::amd::{CK_GEMM_KERNEL, ck_gemm_kernarg};
-
-const A_BASE: u64 = 0x10000;
-const B_BASE: u64 = 0x20000;
-const C_BASE: u64 = 0x30000;
+use common::amd::{
+    CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE,
+    GEMM_C_BASE as C_BASE, amd_fixture, ck_gemm_kernarg, gemm_arrays,
+};
 const MATMUL_SPEC: &str = include_str!("../../volta_equivalence/tests/specs/matmul.spec");
 
 fn check_gemm(
@@ -27,17 +26,7 @@ fn check_gemm(
 ) -> EquivalenceVerdict {
     // Allocate A, B, and C for an M x K by K x N matrix product.
     let [m, n, k] = dims;
-    let arrays = [
-        ("A", A_BASE, m * k, ArrayKind::Input),
-        ("B", B_BASE, k * n, ArrayKind::Input),
-        ("C", C_BASE, m * n, ArrayKind::Output(F32)),
-    ]
-    .map(|(name, base, len, kind)| ArrayDef {
-        name: name.into(),
-        base,
-        len,
-        kind,
-    });
+    let arrays = gemm_arrays(dims);
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (workitems, 1, 1),
@@ -124,27 +113,50 @@ fn amd_mfma_matmul_matches_its_specification() {
     );
 }
 
+/// Check CK's column-major B using the specification's physical layout B[j * K + k].
+fn check_ck_gemm(kernel: &str, dims: [i32; 3], input_bases: [u64; 2]) -> EquivalenceVerdict {
+    let kernarg = ck_gemm_kernarg(input_bases[0], input_bases[1], C_BASE, dims);
+    check_gemm(
+        amd_fixture!("ck_gemm"),
+        kernel,
+        128,
+        dims.map(|d| d as u64),
+        &kernarg,
+        include_str!("../../volta_equivalence/tests/specs/matmul_transposed.spec"),
+    )
+}
+
 // Test that CK's padded GEMM produces the requested 8 x 8 matrix product.
 #[test]
 fn amd_ck_gemm_matches_its_specification() {
-    let kernarg = ck_gemm_kernarg(A_BASE, B_BASE, C_BASE);
-    // CK stores B column-major: element (k, j) is B[j * 8 + k]. The transposed
-    // specification uses that physical indexing for this square B matrix.
-    let spec = include_str!("../../volta_equivalence/tests/specs/matmul_transposed.spec");
-    let verdict = check_gemm(
-        include_str!("../../volta_amd_analysis/tests/fixtures/ck_gemm.s"),
-        CK_GEMM_KERNEL,
-        128,
-        [8, 8, 8],
-        &kernarg,
-        spec,
-    );
     assert_eq!(
-        verdict,
+        check_ck_gemm(CK_GEMM_KERNEL, [8, 8, 8], [A_BASE, B_BASE]),
         EquivalenceVerdict::Equivalent {
             checked: 64,
             total: 64,
         }
+    );
+}
+
+// Test all three K tiles and padding, with live inputs exchanged between both waves.
+#[test]
+fn amd_ck_gemm_main_loop_matches_its_specification() {
+    assert_eq!(
+        check_ck_gemm(CK_GEMM_MAIN_LOOP_KERNEL, [40, 40, 192], [A_BASE, B_BASE]),
+        EquivalenceVerdict::Equivalent {
+            checked: 1600,
+            total: 1600,
+        }
+    );
+}
+
+// Test that swapping CK's equal-sized input arrays is refuted against the intended product.
+#[test]
+fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
+    let verdict = check_ck_gemm(CK_GEMM_MAIN_LOOP_KERNEL, [40, 40, 192], [B_BASE, A_BASE]);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
     );
 }
 

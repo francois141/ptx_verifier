@@ -144,13 +144,15 @@ fn the_compare_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that accumulator writes preserve symbolic VGPR and SGPR sources and inline constants,
+// and that reading the original accumulator back preserves each lane's input.
 #[test]
 fn the_accvgpr_kernel_writes_its_expected_outputs() {
     common::check_run(
         "accvgpr",
         &[
             array("a", 0x10000, ArrayKind::Input),
-            array("out", 0x20000, ArrayKind::Output(F32)),
+            array_of("out", 0x20000, 4 * 64, ArrayKind::Output(F32)),
             array("back", 0x30000, ArrayKind::Output(F32)),
         ],
     );
@@ -175,6 +177,8 @@ fn the_mfma_matmul_kernel_writes_its_expected_outputs() {
 /// Each work-item writes integer and float results to separate rows of 64 elements.
 const BIT_OPS_ROW: u64 = 64;
 
+// Test concrete bit operations, including NOT in both encodings, and symbolic float arithmetic
+// against independently calculated outputs for all 64 lanes.
 #[test]
 fn the_bit_ops_kernel_writes_its_expected_outputs() {
     common::check_run(
@@ -583,7 +587,7 @@ fn nan_float_outputs_are_rejected() {
     });
 }
 
-// Test that a shift, a sign-bit trick and an integer addition each reject a symbolic input,
+// Test that integer arithmetic and bitwise operations reject symbolic inputs,
 // because symbolic values are floats without known bits.
 #[test]
 fn integer_operations_on_symbolic_values_are_rejected() {
@@ -591,7 +595,12 @@ fn integer_operations_on_symbolic_values_are_rejected() {
         array("input", 0x10000, ArrayKind::Input),
         array("output", 0x20000, ArrayKind::Output(F32)),
     ];
-    for kernel in ["symbolic_shift", "symbolic_negation", "symbolic_add"] {
+    for kernel in [
+        "symbolic_shift",
+        "symbolic_negation",
+        "symbolic_add",
+        "symbolic_not",
+    ] {
         common::check_rejected_kernel("unsupported", kernel, &arrays, |result| {
             matches!(
                 result,

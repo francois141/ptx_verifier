@@ -1,6 +1,6 @@
 // Composable Kernel's fp32 universal GEMM, the DeviceGemm_Xdl_CShuffleV3 instance of CK's
 // example/01_gemm/gemm_xdl_fp32_v3.cpp (rocm-7.0.0) with MNKPadding, so a problem smaller than
-// its 64 x 64 x 64 block tile runs: the device kernel that instance launches for one K block.
+// its 64 x 64 x 64 block tile runs, with and without a K-block main loop.
 #define CK_ENABLE_DYNAMIC_WARP_SIZE 1
 // CK 7.0.0's device_gemm_xdl_cshuffle_v3.hpp uses std::map and std::string without including them.
 #include <map>
@@ -36,6 +36,12 @@ using DeviceGemm =
 // An 8 x 8 x 8 problem padded to one K block: no main loop and a full tail.
 using GridwiseGemm = DeviceGemm::GridwiseGemm;
 template __global__ void ck::kernel_gemm_xdl_cshuffle_v3<GridwiseGemm, false, ck::InMemoryDataOperationEnum::Set, 1, ck::TailNumber::Full>(GridwiseGemm::Argument);
+
+// Three 64-wide K blocks exercise two main-loop iterations before the full tail.
+static_assert(!GridwiseGemm::CalculateHasMainKBlockLoop(128));
+static_assert(GridwiseGemm::CalculateHasMainKBlockLoop(192));
+static_assert(GridwiseGemm::CalculateKBlockLoopTailNum(192) == ck::TailNumber::Full);
+template __global__ void ck::kernel_gemm_xdl_cshuffle_v3<GridwiseGemm, true, ck::InMemoryDataOperationEnum::Set, 1, ck::TailNumber::Full>(GridwiseGemm::Argument);
 
 // The ROCm device library's definitions (ockl's workitem.cl and mul.cl), linked by hipcc.
 extern "C" __device__ size_t __ockl_get_group_id(unsigned dim)

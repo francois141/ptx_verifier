@@ -15,7 +15,20 @@ accvgpr:
 	;;#ASMSTART
 	v_accvgpr_write_b32 a0, v1
 	;;#ASMEND
+	v_readfirstlane_b32 s2, v1
+	;;#ASMSTART
+	v_accvgpr_write_b32 a1, s2
+	;;#ASMEND
+	;;#ASMSTART
+	v_accvgpr_write_b32 a2, 0
+	;;#ASMEND
+	;;#ASMSTART
+	v_accvgpr_write_b32 a3, 1.0
+	;;#ASMEND
 	global_store_dword v0, a0, s[6:7]
+	global_store_dword v0, a1, s[6:7] offset:256
+	global_store_dword v0, a2, s[6:7] offset:512
+	global_store_dword v0, a3, s[6:7] offset:768
 	;;#ASMSTART
 	v_accvgpr_read_b32 v1, a0
 	;;#ASMEND
@@ -42,7 +55,7 @@ accvgpr:
 		.amdhsa_system_sgpr_workgroup_id_z 0
 		.amdhsa_system_sgpr_workgroup_info 0
 		.amdhsa_system_vgpr_workitem_id 0
-		.amdhsa_next_free_vgpr 5
+		.amdhsa_next_free_vgpr 8
 		.amdhsa_next_free_sgpr 8
 		.amdhsa_accum_offset 4
 		.amdhsa_reserve_vcc 0
@@ -67,7 +80,7 @@ accvgpr:
 	.size	accvgpr, .Lfunc_end0-accvgpr
 
 	.set accvgpr.num_vgpr, 2
-	.set accvgpr.num_agpr, 1
+	.set accvgpr.num_agpr, 4
 	.set accvgpr.numbered_sgpr, 8
 	.set accvgpr.private_seg_size, 0
 	.set accvgpr.uses_vcc, 0
@@ -91,7 +104,20 @@ __clang_ocl_kern_imp_accvgpr:
 	;;#ASMSTART
 	v_accvgpr_write_b32 a0, v8
 	;;#ASMEND
+	v_readfirstlane_b32 s0, v8
+	;;#ASMSTART
+	v_accvgpr_write_b32 a1, s0
+	;;#ASMEND
+	;;#ASMSTART
+	v_accvgpr_write_b32 a2, 0
+	;;#ASMEND
+	;;#ASMSTART
+	v_accvgpr_write_b32 a3, 1.0
+	;;#ASMEND
 	global_store_dword v[0:1], a0, off
+	global_store_dword v[0:1], a1, off offset:256
+	global_store_dword v[0:1], a2, off offset:512
+	global_store_dword v[0:1], a3, off offset:768
 	v_lshl_add_u64 v[0:1], v[4:5], 0, v[6:7]
 	;;#ASMSTART
 	v_accvgpr_read_b32 v2, a0
@@ -103,7 +129,7 @@ __clang_ocl_kern_imp_accvgpr:
 	.size	__clang_ocl_kern_imp_accvgpr, .Lfunc_end1-__clang_ocl_kern_imp_accvgpr
 
 	.set __clang_ocl_kern_imp_accvgpr.num_vgpr, 32
-	.set __clang_ocl_kern_imp_accvgpr.num_agpr, 1
+	.set __clang_ocl_kern_imp_accvgpr.num_agpr, 4
 	.set __clang_ocl_kern_imp_accvgpr.numbered_sgpr, 32
 	.set __clang_ocl_kern_imp_accvgpr.private_seg_size, 0
 	.set __clang_ocl_kern_imp_accvgpr.uses_vcc, 0
@@ -115,7 +141,7 @@ __clang_ocl_kern_imp_accvgpr:
 	.fill 256, 4, 3212836864
 	.section	.AMDGPU.gpr_maximums,"",@progbits
 	.set amdgpu.max_num_vgpr, 32
-	.set amdgpu.max_num_agpr, 1
+	.set amdgpu.max_num_agpr, 4
 	.set amdgpu.max_num_sgpr, 32
 	.text
 	.ident	"Homebrew clang version 21.1.8"
@@ -124,7 +150,7 @@ __clang_ocl_kern_imp_accvgpr:
 	.amdgpu_metadata
 ---
 amdhsa.kernels:
-  - .agpr_count:     1
+  - .agpr_count:     4
     .args:
       - .address_space:  global
         .is_const:       true
@@ -157,7 +183,7 @@ amdhsa.kernels:
     .symbol:         accvgpr.kd
     .uniform_work_group_size: 1
     .uses_dynamic_stack: false
-    .vgpr_count:     5
+    .vgpr_count:     8
     .vgpr_spill_count: 0
     .wavefront_size: 64
 amdhsa.target:   'amdgcn-amd-amdhsa--gfx950:xnack-'

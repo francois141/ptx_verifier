@@ -138,4 +138,32 @@ __kernel void scalar_alu_ops(__global unsigned *out, unsigned a, unsigned b, uns
     __asm__ volatile("s_and_b64 %0, %1, 0xffff00" : "=&s"(literal) : "s"(scalar_x) : "scc");
     row[104] = (unsigned)literal;
     row[105] = (unsigned)(literal >> 32);
+
+    // NOT sets SCC for a nonzero result and clears it when the source is all ones.
+    unsigned inverted, zero, nonzero_scc, zero_scc;
+    __asm__ volatile(
+        "s_not_b32 %0, %4\n\t"
+        "s_cselect_b32 %1, 1, 0\n\t"
+        "s_not_b32 %2, -1\n\t"
+        "s_cselect_b32 %3, 1, 0"
+        : "=&s"(inverted), "=&s"(nonzero_scc), "=&s"(zero), "=&s"(zero_scc)
+        : "s"(scalar_a) : "scc");
+    row[106] = inverted;
+    row[107] = nonzero_scc;
+    row[108] = zero;
+    row[109] = zero_scc;
+    ulong inverted64, zero64;
+    __asm__ volatile(
+        "s_not_b64 %0, %4\n\t"
+        "s_cselect_b32 %1, 1, 0\n\t"
+        "s_not_b64 %2, -1\n\t"
+        "s_cselect_b32 %3, 1, 0"
+        : "=&s"(inverted64), "=&s"(nonzero_scc), "=&s"(zero64), "=&s"(zero_scc)
+        : "s"(scalar_x) : "scc");
+    row[110] = (unsigned)inverted64;
+    row[111] = (unsigned)(inverted64 >> 32);
+    row[112] = nonzero_scc;
+    row[113] = (unsigned)zero64;
+    row[114] = (unsigned)(zero64 >> 32);
+    row[115] = zero_scc;
 }

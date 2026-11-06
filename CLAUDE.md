@@ -427,6 +427,7 @@ Negated select sources use floating-point semantics, so they are not ambiguous.
 F32 e64 comparisons, e64 selects, f32 FMA and three-source f32 operations accept absolute-value
 and negation input modifiers on any source; these operate on mathematical expressions.
 E64 comparisons write VCC or an SGPR pair.
+Scalar and vector NOT require concrete words. Accumulator writes accept VGPRs, SGPRs and inline constants.
 Packed f32 add, multiply and FMA share component selection and negation handling;
 each register holds one real expression, and either selector reads the same inline constant.
 An f64 register pair holds one real expression or two concrete words that encode one. Reading
@@ -611,7 +612,9 @@ anything else is UNKNOWN. Tests:
 and softmax against their formulas, accounting for CK's column-major B and softmax at
 several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
 or change the softmax row width).
-These check functional equivalence only. `just amd`
+CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
+The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
+checks LDS reuse within workgroup 0, including pending-read races. `just amd`
 runs them alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
@@ -670,6 +673,8 @@ thread after it; `n` counts the test's runs).
 ## Crate: volta_equivalence
 
 **Path**: `crates/volta_equivalence/`
+
+`tests/specs/matmul_transposed.spec` stores B as `[N, K]` for `B[j, k]`, including rectangular operands.
 
 Everything after VC extraction: takes two `SymbolicOutputs` and decides them
 element by element. Depends only on `volta_expr`, so it checks expressions

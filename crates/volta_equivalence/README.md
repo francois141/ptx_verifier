@@ -76,4 +76,5 @@ so a corrupt dump errors instead of panicking.
 Spec-to-spec only: `tests/spec_equivalence_tests.rs` over `tests/specs/*.spec`,
 and `tests/spec_identity_tests.rs`, one test per
 `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity. PTX-driven tests live
-in `volta_pipeline/tests/`.
+in `volta_pipeline/tests/`. `matmul_transposed.spec` stores B as `[N, K]`,
+so its `B[j, k]` indexing also covers rectangular operands.

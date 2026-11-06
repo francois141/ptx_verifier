@@ -611,6 +611,8 @@ pub enum Vop3BinOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Mov32,
+    /// Invert all 32 bits of a concrete word.
+    Not32,
     /// The source's 32 bits in reverse order.
     BfRev32,
     /// The u32 source as an f32.
@@ -848,10 +850,10 @@ pub enum LoweredInstr {
         src1: Vop3Src,
         src2: [Vgpr; 2],
     },
-    /// Copy a VGPR's word into an AGPR.
+    /// Copy a VGPR, an SGPR or an inline constant into an AGPR without changing its value.
     AccvgprWrite32 {
         dst: Agpr,
-        src: Vgpr,
+        src: Vop3Src,
     },
     /// Copy an AGPR's word into a VGPR.
     AccvgprRead32 {

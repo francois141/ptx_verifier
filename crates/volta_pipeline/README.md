@@ -45,6 +45,9 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   the AMD assembly fixtures and the equivalence crate's specifications, accounting
   for CK's column-major B. These tests check functional equivalence under Volta's
   arithmetic model; they do not check AMD races. `just amd` runs them.
+- `amd_graph_tests.rs`: LDS reuse and pending-read races in workgroup 0. CK GEMM compares
+  one and three K tiles over the same LDS storage. Its equivalence tests check all
+  1,600 outputs at M=N=40, K=192 and refute swapped inputs.
 - the suites below, over `tests/common/`.
 
 ### How a test runs

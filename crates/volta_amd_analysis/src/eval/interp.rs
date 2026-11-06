@@ -415,7 +415,7 @@ impl<'a> Interpreter<'a> {
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::AccvgprWrite32 { dst, src } => {
-                let value = registers.read_vgpr(lane, *src)?;
+                let value = registers.read_src(&mut self.arena, lane, *src)?;
                 registers.write_agpr(lane, *dst, value)
             }
             LoweredInstr::AccvgprRead32 { dst, src } => {

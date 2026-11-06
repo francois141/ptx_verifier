@@ -588,6 +588,10 @@ pub(super) fn evaluate_unary_op(
 
     Ok(match op {
         UnaryOp::Mov32 => a,
+        UnaryOp::Not32 => {
+            non_symbolic_word(arena)?;
+            not32(arena, a)
+        }
         UnaryOp::BfRev32 => {
             let reversed = non_symbolic_word(arena)?.reverse_bits();
             arena.int(i64::from(reversed))
@@ -613,7 +617,9 @@ pub(super) fn evaluate_unary_op(
 
 fn unary_operand_type(op: UnaryOp) -> OperandType {
     match op {
-        UnaryOp::Mov32 | UnaryOp::BfRev32 | UnaryOp::CvtF32U32 => OperandType::Word,
+        UnaryOp::Mov32 | UnaryOp::Not32 | UnaryOp::BfRev32 | UnaryOp::CvtF32U32 => {
+            OperandType::Word
+        }
         UnaryOp::CvtU32F32
         | UnaryOp::RcpIflagF32
         | UnaryOp::Exp2F32
