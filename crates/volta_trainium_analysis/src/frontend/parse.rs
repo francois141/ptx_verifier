@@ -497,15 +497,18 @@ enum Value {
 enum Builtin {
     List,
     Tuple,
+    /// `range(count)`, only as a `for` loop's iterable.
+    Range,
 }
 
 impl Builtin {
-    const ALL: [Self; 2] = [Self::List, Self::Tuple];
+    const ALL: [Self; 3] = [Self::List, Self::Tuple, Self::Range];
 
     fn name(self) -> &'static str {
         match self {
             Self::List => "list",
             Self::Tuple => "tuple",
+            Self::Range => "range",
         }
     }
 }
@@ -693,12 +696,10 @@ impl Trace<'_> {
             Expr::Float(value) => Ok(Value::Float(value)),
             Expr::Bool(value) => Ok(Value::Bool(value)),
             Expr::Name(name) => frame.resolve(self, &name, line),
-            Expr::Tuple(items) => {
-                let mut values = Vec::new();
-                for item in items {
-                    values.push(self.evaluate(frame, item, line)?);
-                }
-                Ok(Value::Tuple(values))
+            Expr::Tuple(items) => Ok(Value::Tuple(self.evaluate_all(frame, items, line)?)),
+            Expr::List(items) => {
+                let items = self.evaluate_all(frame, items, line)?;
+                Ok(self.new_list(items))
             }
             Expr::Binary { op, lhs, rhs } => {
                 let lhs = self.evaluate(frame, *lhs, line)?;
@@ -783,6 +784,9 @@ impl Trace<'_> {
         line: usize,
     ) -> Result<Value, ParseError> {
         let name = builtin.name();
+        if builtin == Builtin::Range {
+            bail!(line, "`range` is only supported as a `for` loop's iterable");
+        }
         if !call.kwargs.is_empty() {
             bail!(line, "`{name}` takes no keyword arguments");
         }
@@ -795,12 +799,27 @@ impl Trace<'_> {
             other => bail!(line, "`{name}` needs a tuple or a list, not `{other}`"),
         };
         Ok(match builtin {
-            Builtin::List => {
-                self.lists.push(items);
-                Value::List(self.lists.len() - 1)
-            }
+            Builtin::List => self.new_list(items),
             Builtin::Tuple => Value::Tuple(items),
+            Builtin::Range => unreachable!("rejected above"),
         })
+    }
+
+    fn evaluate_all(
+        &mut self,
+        frame: &Frame,
+        exprs: Vec<Expr>,
+        line: usize,
+    ) -> Result<Vec<Value>, ParseError> {
+        exprs
+            .into_iter()
+            .map(|expr| self.evaluate(frame, expr, line))
+            .collect()
+    }
+
+    fn new_list(&mut self, items: Vec<Value>) -> Value {
+        self.lists.push(items);
+        Value::List(self.lists.len() - 1)
     }
 
     /// The first comparison of the chain `first op second ...` that is false, if any.
@@ -936,7 +955,8 @@ fn unroll(
     Ok(())
 }
 
-/// What a `for` iterates over: `nl.affine_range(count)`'s indices, or a tuple's or list's items.
+/// What a `for` iterates over: `nl.affine_range(count)`'s or `range(count)`'s indices, or a
+/// tuple's or list's items.
 enum Iterable {
     Range(u64),
     Tuple(Vec<Value>),
@@ -964,8 +984,10 @@ fn iterable_items(
 ) -> Result<Iterable, ParseError> {
     if let Expr::Call(call) = &iterable {
         let callee = frame.resolve(trace, &call.callee, line)?;
-        if callee.member_of(NKI_LANGUAGE) == Some("affine_range") {
-            return affine_range(call.clone(), trace, frame, line).map(Iterable::Range);
+        if callee.member_of(NKI_LANGUAGE) == Some("affine_range")
+            || callee == Value::Builtin(Builtin::Range)
+        {
+            return trip_count(call.clone(), trace, frame, line).map(Iterable::Range);
         }
     }
     match trace.evaluate(frame, iterable, line)? {
@@ -973,26 +995,28 @@ fn iterable_items(
         Value::List(list) => Ok(Iterable::List(list)),
         other => bail!(
             line,
-            "a loop must iterate over `nl.affine_range(count)`, a tuple or a list, not `{other}`"
+            "a loop must iterate over `nl.affine_range(count)`, `range(count)`, a tuple or a list, \
+             not `{other}`"
         ),
     }
 }
 
-/// The trip count of `nl.affine_range(count)`: only a concrete count unrolls.
-fn affine_range(
+/// The trip count of `nl.affine_range(count)` or `range(count)`: only a concrete count
+/// unrolls.
+fn trip_count(
     call: Call,
     trace: &mut Trace,
     frame: &Frame,
     line: usize,
 ) -> Result<u64, ParseError> {
     if !call.kwargs.is_empty() {
-        bail!(line, "`affine_range` takes no keyword arguments");
+        bail!(line, "`{}` takes no keyword arguments", call.callee);
     }
     let [count] = &call.args[..] else {
-        bail!(line, "`affine_range` takes one argument");
+        bail!(line, "`{}` takes one argument", call.callee);
     };
     let Value::Int(count) = trace.evaluate(frame, count.clone(), line)? else {
-        bail!(line, "`affine_range`'s count must be an integer");
+        bail!(line, "`{}`'s count must be an integer", call.callee);
     };
     Ok(count)
 }
@@ -1008,11 +1032,15 @@ fn assignment(
 ) -> Result<(), ParseError> {
     let value = match value {
         Expr::Call(call) => match frame.resolve(trace, &call.callee, line)? {
-            callee if callee.member_of(NKI_LANGUAGE) == Some("ndarray") => {
+            callee if is_tensor_call(&callee) => {
                 let Target::Name(name) = target else {
-                    bail!(line, "`nl.ndarray` declares one tensor");
+                    bail!(line, "`{}` declares one tensor", call.callee);
                 };
-                return declaration(name, call, trace, frame, line);
+                // As in Python, the arguments are evaluated before the target is bound.
+                let tensor = tensor_call(&name, &callee, call, trace, frame, line)?;
+                let tensor = tensor.expect("a tensor call");
+                frame.locals.insert(name, Value::Tensor(tensor));
+                return Ok(());
             }
             Value::Function { module, name } => {
                 let Some(value) = inline(&module, &name, call, trace, frame, line)? else {
@@ -1021,20 +1049,12 @@ fn assignment(
                 value
             }
             Value::Builtin(_) => trace.evaluate(frame, Expr::Call(call), line)?,
-            callee => {
-                let Some(function) = TileFunction::of(&callee) else {
-                    bail!(
-                        line,
-                        "only `nl.ndarray`, the `nki.language` functions returning a tile and \
-                         helper functions can be assigned from a call, not `{}`",
-                        call.callee
-                    );
-                };
-                let Target::Name(name) = target else {
-                    bail!(line, "`{}` returns one tile", call.callee);
-                };
-                return tile_call(name, function, call, trace, frame, line);
-            }
+            _ => bail!(
+                line,
+                "only `nl.ndarray`, `nl.zeros`, the `nki.language` functions returning a tile \
+                 and helper functions can be assigned from a call, not `{}`",
+                call.callee
+            ),
         },
         value => trace.evaluate(frame, value, line)?,
     };
@@ -1101,6 +1121,16 @@ fn effect(value: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<
         );
     };
 
+    if call.callee.attributes == ["append"] {
+        let list = Dotted {
+            head: call.callee.head.clone(),
+            attributes: Vec::new(),
+        };
+        if let Value::List(list) = frame.resolve(trace, &list, line)? {
+            return append(list, call, trace, frame, line);
+        }
+    }
+
     match frame.resolve(trace, &call.callee, line)? {
         Value::Function { module, name } => {
             inline(&module, &name, call, trace, frame, line)?;
@@ -1109,10 +1139,7 @@ fn effect(value: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<
         callee if callee.member_of(NKI_LANGUAGE) == Some("store") => {
             store(&call, trace, frame, line)
         }
-        callee
-            if callee.member_of(NKI_LANGUAGE) == Some("ndarray")
-                || TileFunction::of(&callee).is_some() =>
-        {
+        callee if is_tensor_call(&callee) => {
             bail!(
                 line,
                 "the tile of `{}` must be bound to a name",
@@ -1130,6 +1157,36 @@ fn effect(value: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<
     }
 }
 
+/// `items.append(value)`; a tensor `value` declares a tile named after its list item,
+/// `qk_tiles[0]`.
+fn append(
+    list: usize,
+    call: Call,
+    trace: &mut Trace,
+    frame: &Frame,
+    line: usize,
+) -> Result<(), ParseError> {
+    let name = &call.callee.head;
+    if !call.kwargs.is_empty() || call.args.len() != 1 {
+        bail!(line, "`{name}.append` takes one argument");
+    }
+    let arg = call.args.into_iter().next().expect("one argument");
+
+    let value = match arg {
+        Expr::Call(inner) => {
+            let callee = frame.resolve(trace, &inner.callee, line)?;
+            let item = format!("{name}[{}]", trace.lists[list].len());
+            match tensor_call(&item, &callee, inner.clone(), trace, frame, line)? {
+                Some(tensor) => Value::Tensor(tensor),
+                None => trace.evaluate(frame, Expr::Call(inner), line)?,
+            }
+        }
+        arg => trace.evaluate(frame, arg, line)?,
+    };
+    trace.lists[list].push(value);
+    Ok(())
+}
+
 /// `assert a op b ...`, checked against the call's shapes: it leaves no statement.
 fn assertion(test: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<(), ParseError> {
     let Expr::Compare { first, rest } = test else {
@@ -1145,51 +1202,112 @@ fn assertion(test: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Resul
     Ok(())
 }
 
+/// The calls that declare a new tensor: `nl.ndarray`, `nl.zeros` and the
+/// `nki.language` functions returning a tile. `target` names the tensor; the caller
+/// binds it, to a variable or a list's item. `None` if `callee` is none of them.
+fn tensor_call(
+    target: &str,
+    callee: &Value,
+    call: Call,
+    trace: &mut Trace,
+    frame: &Frame,
+    line: usize,
+) -> Result<Option<TensorName>, ParseError> {
+    let tensor = match callee.member_of(NKI_LANGUAGE) {
+        Some("ndarray") => declaration(target, &call, trace, frame, line)?,
+        Some("zeros") => zeros(target, &call, trace, frame, line)?,
+        _ => match TileFunction::of(callee) {
+            Some(function) => tile_call(target, function, call, trace, frame, line)?,
+            None => return Ok(None),
+        },
+    };
+    Ok(Some(tensor))
+}
+
+fn is_tensor_call(callee: &Value) -> bool {
+    matches!(callee.member_of(NKI_LANGUAGE), Some("ndarray" | "zeros"))
+        || TileFunction::of(callee).is_some()
+}
+
 /// `target = nl.ndarray(shape, dtype, buffer=...)`: an HBM tensor of any rank in
 /// `nl.shared_hbm`, else an on-chip tile.
 fn declaration(
-    target: String,
-    call: Call,
+    target: &str,
+    call: &Call,
     trace: &mut Trace,
-    frame: &mut Frame,
+    frame: &Frame,
     line: usize,
-) -> Result<(), ParseError> {
-    let [shape, dtype, buffer] = ndarray_arguments(&call, trace, frame, line)?;
+) -> Result<TensorName, ParseError> {
+    let [shape, dtype, buffer] = ndarray_arguments(call, trace, frame, line)?;
     let dtype = read_dtype(dtype, line)?;
 
-    // As in Python, the arguments are evaluated before the target is bound.
-    let statement = if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
+    if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
         let shape = read_extents(shape, line)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
-        let name = trace.declare(frame, &target, extents, Place::Hbm);
-        Statement::DeclareHbm(HbmDecl { name, shape, dtype })
-    } else {
-        let shape = read_shape(shape, line)?;
-        let buffer = read_buffer(buffer, line)?;
-        declare_tile(target, shape, dtype, buffer, trace, frame);
-        return Ok(());
-    };
+        let name = trace.declare(frame, target, extents, Place::Hbm);
+        trace.body.push(Statement::DeclareHbm(HbmDecl {
+            name: name.clone(),
+            shape,
+            dtype,
+        }));
+        return Ok(name);
+    }
 
-    let Statement::DeclareHbm(HbmDecl { name, .. }) = &statement else {
-        unreachable!("an HBM declaration");
-    };
-    frame.locals.insert(target, Value::Tensor(name.clone()));
-    trace.body.push(statement);
-    Ok(())
+    let shape = read_shape(shape, line)?;
+    let buffer = read_buffer(buffer, line)?;
+    Ok(declare_tile(target, shape, dtype, buffer, trace, frame))
 }
 
-/// Declare the on-chip tile `target`, bind the name to it and emit its declaration.
+/// `target = nl.zeros(shape, dtype, buffer=...)`: an on-chip tile, every element set
+/// to zero by a `memset`.
+fn zeros(
+    target: &str,
+    call: &Call,
+    trace: &mut Trace,
+    frame: &Frame,
+    line: usize,
+) -> Result<TensorName, ParseError> {
+    let [shape, dtype, buffer] = ndarray_arguments(call, trace, frame, line)?;
+    if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
+        bail!(
+            line,
+            "`{}` allocates an on-chip tile only: `nl.sbuf` or `nl.psum`",
+            call.callee
+        );
+    }
+    let tile = declare_tile(
+        target,
+        read_shape(shape, line)?,
+        read_dtype(dtype, line)?,
+        read_buffer(buffer, line)?,
+        trace,
+        frame,
+    );
+    let zero = Scalar::new(0.0).expect("zero is finite");
+    let operands = [
+        ("dst", Operand::Tensor(tile.clone())),
+        ("value", Operand::Scalar(zero)),
+    ];
+    trace.body.push(Statement::Instruction(Instruction {
+        opcode: "memset".into(),
+        operands: operands
+            .map(|(keyword, operand)| (keyword.to_string(), operand))
+            .into(),
+    }));
+    Ok(tile)
+}
+
+/// Declare the on-chip tile `target` and emit its declaration.
 fn declare_tile(
-    target: String,
+    target: &str,
     shape: TileShape,
     dtype: Dtype,
     buffer: Buffer,
     trace: &mut Trace,
-    frame: &mut Frame,
+    frame: &Frame,
 ) -> TensorName {
     let extents = vec![u64::from(shape.partitions.get()), shape.free.get()];
-    let name = trace.declare(frame, &target, extents, Place::OnChip);
-    frame.locals.insert(target, Value::Tensor(name.clone()));
+    let name = trace.declare(frame, target, extents, Place::OnChip);
     trace.body.push(Statement::Declare(TileDecl {
         name: name.clone(),
         shape,
@@ -1308,13 +1426,13 @@ impl TileFunction {
 /// `target = nl.<function>(...)`: the tile `target`, declared in the memory the
 /// instruction writes (PSUM for `matmul` and `transpose`, else SBUF), and that instruction.
 fn tile_call(
-    target: String,
+    target: &str,
     function: TileFunction,
     call: Call,
     trace: &mut Trace,
-    frame: &mut Frame,
+    frame: &Frame,
     line: usize,
-) -> Result<(), ParseError> {
+) -> Result<TensorName, ParseError> {
     let callee = call.callee.to_string();
     let member = |name: &str| Operand::Member(format!("{NKI_LANGUAGE}.{name}"));
     let tile_extents = |trace: &Trace, tensor: &TensorName| -> Result<[u64; 2], ParseError> {
@@ -1436,7 +1554,7 @@ fn tile_call(
     let shape = Value::Tuple(extents.iter().map(|&extent| Value::Int(extent)).collect());
     let shape = read_shape(shape, line)?;
     let name = declare_tile(target, shape, dtype, buffer, trace, frame);
-    operands.push(("dst", Operand::Tensor(name)));
+    operands.push(("dst", Operand::Tensor(name.clone())));
     let operands = operands
         .into_iter()
         .map(|(keyword, operand)| (keyword.to_string(), operand))
@@ -1445,7 +1563,7 @@ fn tile_call(
         opcode: opcode.into(),
         operands,
     }));
-    Ok(())
+    Ok(name)
 }
 
 /// `nl.store(dst, value)`: `value` copied into `dst`, an HBM tensor or a region of one.

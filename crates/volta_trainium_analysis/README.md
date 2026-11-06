@@ -32,14 +32,17 @@ and execution see only `nki.isa`:
 | `r = nl.reciprocal(x)` | SBUF, `x`'s shape | `reciprocal` |
 | `t = nl.transpose(x)` | PSUM `[F, P]` | `nc_transpose` |
 
-`nl.load` reads and `nl.store` writes device memory only. `transpose_x=False`, where
+`t = nl.zeros(shape, dtype, buffer)` declares an on-chip tile and a `memset` of it
+to zero, so a later `nc_matmul` into it accumulates onto zeros: the accumulator
+v3 and v4 contract into over a loop. `nl.load` reads and `nl.store` writes device
+memory only. `transpose_x=False`, where
 NKI inserts a transpose, and `keepdims=False` are rejected, as are `dtype=` and
 `mask=`. `True` and `False` are values.
 
 ## Instructions
 
-Lowering accepts ten `nki.isa` instructions: `dma_copy`, `tensor_copy`,
-`tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
+Lowering accepts eleven `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+`memset`, `tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
 `tensor_reduce`, `reciprocal`, `nc_matmul` and `nc_transpose`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
@@ -106,14 +109,16 @@ distinct tiles. A helper call may be a statement, an assignment's value or a
 `return`'s, not part of a larger expression; calls nest at most 32 deep. An error
 inside a helper names it and its module, its line being that module's.
 
-The helpers may use `list(...)` and `tuple(...)`, item reads and writes
-(`shape[a] = 1`) and `for` over a tuple or list. Lists are shared, as in Python:
+The helpers may use `list(...)` and `tuple(...)`, list literals (`[]`), item reads
+and writes (`shape[a] = 1`), `items.append(value)` and `for` over a tuple or list.
+An appended tensor call, `qk_tiles.append(nl.ndarray(...))` as v4 writes, declares
+a tile named after its item, `qk_tiles[0]`. Lists are shared, as in Python:
 they live in the trace and a `Value::List` is an index into it, so every name bound
 to one sees a change.
 
 ## Loops and regions
 
-A `for` over `nl.affine_range(count)`, a tuple or a list is unrolled while the
+A `for` over `nl.affine_range(count)`, `range(count)`, a tuple or a list is unrolled while the
 kernel is resolved, since execution has no control flow; each iteration's tiles are
 named after its index (`x.0`, `x.1`), so they stay distinct, while other names
 rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its last
@@ -154,6 +159,11 @@ checked against `attention.spec` instead).
 on 2 x 2 inputs: a row max of `a.T @ b`, a reciprocal of row sums of `exp(a)`, and
 a transpose through PSUM, stored with `nl.store`. `attn_fwd_v1.ast` and `.ir`
 snapshot v1, whose lowered form is v2's algorithm.
+
+`tests/fixtures/accumulate.py` computes `matmul.py`'s product with its contraction
+split in two chunks of rows over a `range(2)` loop, accumulated into an
+`nl.zeros` PSUM tile, so its `.expected` is `matmul.expected`; it then copies the
+result through a list of two tiles built with `.append`.
 
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its

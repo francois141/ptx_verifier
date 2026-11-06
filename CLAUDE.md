@@ -473,8 +473,8 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts ten `nki.isa` instructions - `dma_copy`, `tensor_copy`,
-`tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
+Lowering accepts eleven `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+`memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
 `tensor_reduce`, `reciprocal`, `nc_matmul` and `nc_transpose` - and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
@@ -539,7 +539,11 @@ lines in the helper's module. v1's tile-returning `nki.language` calls (`load`,
 `reciprocal`, `transpose`, and `store`) are rewritten by `tile_call`/`store` into a
 tile declaration named after the target (PSUM for `matmul` and `transpose`) and
 the one `nki.isa` instruction it lowers to; `load`/`store` require HBM
-(`Declared::place`). `True`/`False` are `Value::Bool`.
+(`Declared::place`). `True`/`False` are `Value::Bool`. `nl.zeros` is an on-chip tile
+plus a `memset` to zero. `tensor_call` declares the tensor of any of these calls under
+the name the caller gives, binding nothing: an assignment binds its target, and
+`items.append(call)` a new list item, the tile named `items[k]`. `range(count)`
+unrolls like `nl.affine_range`; list literals evaluate to new lists.
 
 A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
 lowered: the interpreter has no program counter, and the integer-expression
@@ -584,7 +588,9 @@ and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative 
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
 against attention with `q` and `k` swapped; v1 likewise, and v1 against v2 kernel to
 kernel. `tests/fixtures/language_api.py` covers the tile-returning API on 2 x 2
-inputs. `tests/fixtures/helper_call.py` calls
+inputs. `tests/fixtures/accumulate.py` accumulates `matmul.py`'s product over two
+contraction chunks into `nl.zeros` (its `.expected` is `matmul.expected`).
+`tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a class, `if`, f-strings) that is never parsed.
 

@@ -84,6 +84,9 @@ impl fmt::Display for LoweredKernel {
                     name(data),
                     reduce_op.name()
                 )?,
+                LoweredInstr::Memset { dst, value } => {
+                    writeln!(f, "  {} = memset({value})", name(dst))?
+                }
                 LoweredInstr::Reduce { op, dst, data } => {
                     writeln!(f, "  {} = reduce {}({})", name(dst), op.name(), name(data))?
                 }
