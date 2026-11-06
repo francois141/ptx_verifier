@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use volta_graph::{
     AccessMode, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierArrivals as GraphArrivals,
-    BlockedOn, BlockedThread, BulkWaitScope, CollectiveSide, ContributionKind, Effect, EventId,
-    Footprint, GenerationEvidence, GenerationId, GenerationKind, GroupWait, MbarrierState,
+    BarrierWait, BlockedOn, BlockedThread, BulkWaitScope, CollectiveSide, ContributionKind, Effect,
+    EventId, Footprint, GenerationEvidence, GenerationId, GenerationKind, GroupWait, MbarrierState,
     MemberOrdering, OperandRole, OrdinaryAccess, Parity, ProgramPoint, Proxy, Space, StoredValue,
     SyncObjectId, SyncObjectKind, ThreadIx,
 };
@@ -69,8 +69,6 @@ struct FormingCollective {
 /// reads it.
 #[derive(Debug, Default)]
 pub(in crate::eval) struct Recording {
-    named_barriers: HashMap<u32, (SyncObjectId, u32)>,
-    forming_barriers: HashMap<u32, GenerationId>,
     warps: HashMap<u32, CollectiveObject>,
     forming_warp_ops: HashMap<(u32, InstrId, u32), FormingCollective>,
     mbarriers: HashMap<MbarrierId, MbarrierRecord>,
@@ -269,87 +267,24 @@ impl Interpreter<'_> {
     // Named barriers
     // =====================================================================
 
-    /// `t` arrives at named barrier `id` (`blocking` for `bar.sync`).
+    /// `t` arrives at named barrier `id`, waiting there for `bar.sync`.
     pub(in crate::eval) fn record_barrier_arrival(
         &mut self,
         t: ThreadId,
         pc: InstrId,
         id: u32,
         arrivals: BarrierArrivals,
-        blocking: bool,
+        wait: BarrierWait,
     ) {
-        let generation = match self.rec.forming_barriers.get(&id) {
-            Some(&g) => g,
-            None => {
-                let (object, index) = match self.rec.named_barriers.get(&id) {
-                    Some(&known) => known,
-                    None => {
-                        let object = self
-                            .graph
-                            .sync_object(SyncObjectKind::NamedBarrier { id: id as u8 });
-                        (object, 0)
-                    }
-                };
-                let g = self.graph.open_generation(
-                    object,
-                    index,
-                    GenerationKind::Barrier {
-                        arrivals: graph_arrivals(arrivals),
-                    },
-                );
-                self.rec.named_barriers.insert(id, (object, index + 1));
-                self.rec.forming_barriers.insert(id, g);
-                g
-            }
-        };
-        let kind = if blocking {
-            ContributionKind::Blocking
-        } else {
-            ContributionKind::Arrival {
-                count: 1,
-                expect_tx: 0,
-                ordering: ArrivalOrdering::Release,
-            }
-        };
-        self.graph.contribute(tix(t), point(pc), generation, kind);
-    }
-
-    /// Named barrier `id` fires, releasing `waiting` (each blocked at its own pc); a full-CTA
-    /// barrier also counts every exited thread.
-    pub(in crate::eval) fn record_barrier_fire(
-        &mut self,
-        id: u32,
-        arrivals: BarrierArrivals,
-        waiting: &[ThreadId],
-    ) {
-        let Some(generation) = self.rec.forming_barriers.remove(&id) else {
-            return;
-        };
-        if arrivals == BarrierArrivals::FullCta {
-            self.record_exited_contributions(generation, 0..self.threads.len() as u32);
-        }
+        let arrivals = graph_arrivals(arrivals);
         self.graph
-            .complete_generation(generation, GenerationEvidence::default());
-        for &w in waiting {
-            let pc = self.threads[w].pc;
-            self.graph.resume(tix(w), point(pc), generation);
-        }
+            .barrier_arrive(tix(t), point(pc), id as u8, arrivals, wait);
     }
 
-    /// Every exited thread among `candidates` counts as arrived at `generation`.
-    fn record_exited_contributions(
-        &mut self,
-        generation: GenerationId,
-        candidates: impl Iterator<Item = u32>,
-    ) {
-        for t in candidates {
-            let t = ThreadId(t);
-            if self.threads[t].status == Status::Exited
-                && let Some(exit) = self.graph.exit_event(tix(t))
-            {
-                self.graph.contribute_exited(generation, exit);
-            }
-        }
+    /// Named barrier `id` fires, releasing the threads blocked in it; a full-CTA barrier also
+    /// counts every exited thread.
+    pub(in crate::eval) fn record_barrier_fire(&mut self, id: u32) {
+        self.graph.barrier_fire(id as u8);
     }
 
     // =====================================================================
@@ -413,7 +348,8 @@ impl Interpreter<'_> {
         members: &[ThreadId],
         lanes: impl Iterator<Item = u32>,
     ) -> GenerationId {
-        self.record_exited_contributions(forming.entry, lanes);
+        self.graph
+            .contribute_exited_threads(forming.entry, lanes.map(ThreadIx));
         self.graph
             .complete_generation(forming.entry, GenerationEvidence::default());
         for &m in members {
@@ -647,7 +583,10 @@ impl Interpreter<'_> {
         let state = &self.threads[t];
         let on = match state.status {
             Status::AtBarrier { id, .. } => BlockedOn::Barrier {
-                generation: self.rec.forming_barriers[&id],
+                generation: self
+                    .graph
+                    .forming_barrier(id as u8)
+                    .expect("a blocked thread's barrier is forming"),
             },
             Status::AtWarpOp { mask } => {
                 let warp = t.0 / WARP_SIZE;

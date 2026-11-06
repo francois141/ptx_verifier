@@ -7,20 +7,23 @@ use crate::ids::{
     AccessId, AsyncOpId, EventId, GenerationId, ProgramPoint, SyncObjectId, ThreadIx, ValueId,
 };
 use crate::model::{
-    AbortCause, AccessMode, AsyncOp, AsyncOpKind, BulkWaitScope, Contribution, ContributionKind,
-    Event, EventKind, ExecContext, FenceKind, Footprint, Generation, GenerationEvidence,
-    GenerationKind, GroupFamily, MemAccess, OperandRole, OrderingKind, Parity, Provenance, Proxy,
-    Space, StoredValue, SyncObject, SyncObjectKind, Terminal,
+    AbortCause, AccessMode, ArrivalOrdering, AsyncOp, AsyncOpKind, BarrierArrivals, BulkWaitScope,
+    Contribution, ContributionKind, Event, EventKind, ExecContext, FenceKind, Footprint,
+    Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess, OperandRole,
+    OrderingKind, Parity, Provenance, Proxy, Space, StoredValue, SyncObject, SyncObjectKind,
+    Terminal,
 };
 
 /// Append-only construction of an [`EventGraph`] in trace order. It records what the producer
-/// reports and keeps the graph's indexes consistent, including the generations of group waits;
-/// when anything happens is the producer's decision.
+/// reports and keeps the graph's indexes consistent, including the generations of named
+/// barriers and group waits; when anything happens is the producer's decision.
 #[derive(Debug)]
 pub struct GraphBuilder {
     graph: EventGraph,
     /// The objects whose generations the builder numbers, with the index the next one takes.
     numbered: HashMap<SyncObjectKind, (SyncObjectId, u32)>,
+    /// The generation each named barrier's arrivals form until it fires.
+    forming_barriers: HashMap<u8, GenerationId>,
 }
 
 /// What an ordinary memory effect does at its footprint.
@@ -53,6 +56,15 @@ pub enum GroupWait {
     },
 }
 
+/// Whether a thread arriving at a named barrier waits there until the generation completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierWait {
+    /// `bar.sync`, `s_barrier`: the thread blocks and resumes when the barrier fires.
+    Blocking,
+    /// `bar.arrive`: a release of the thread's prior effects; the thread continues.
+    NonBlocking,
+}
+
 impl GraphBuilder {
     pub fn new(provenance: Provenance) -> Self {
         let threads = provenance.threads();
@@ -74,6 +86,7 @@ impl GraphBuilder {
                 },
             },
             numbered: HashMap::new(),
+            forming_barriers: HashMap::new(),
         }
     }
 
@@ -329,6 +342,19 @@ impl GraphBuilder {
             });
     }
 
+    /// Every thread among `threads` that has exited counts as arrived at `generation`.
+    pub fn contribute_exited_threads(
+        &mut self,
+        generation: GenerationId,
+        threads: impl IntoIterator<Item = ThreadIx>,
+    ) {
+        for thread in threads {
+            if let Some(exit) = self.exit_event(thread) {
+                self.contribute_exited(generation, exit);
+            }
+        }
+    }
+
     /// The next generation of the object of kind `object`, which its first generation creates.
     fn next_generation(&mut self, object: SyncObjectKind, kind: GenerationKind) -> GenerationId {
         let (id, index) = match self.numbered.get(&object) {
@@ -337,6 +363,88 @@ impl GraphBuilder {
         };
         self.numbered.insert(object, (id, index + 1));
         self.open_generation(id, index, kind)
+    }
+
+    /// `thread` arrives at named barrier `id` at `pc`, joining the generation its arrivals form.
+    /// The arrival that opens a generation gives the `arrivals` it fires on.
+    pub fn barrier_arrive(
+        &mut self,
+        thread: ThreadIx,
+        pc: ProgramPoint,
+        id: u8,
+        arrivals: BarrierArrivals,
+        wait: BarrierWait,
+    ) -> EventId {
+        let generation = match self.forming_barrier(id) {
+            Some(generation) => generation,
+            None => {
+                let object = SyncObjectKind::NamedBarrier { id };
+                let kind = GenerationKind::Barrier { arrivals };
+                let generation = self.next_generation(object, kind);
+                self.forming_barriers.insert(id, generation);
+                generation
+            }
+        };
+        let kind = match wait {
+            BarrierWait::Blocking => ContributionKind::Blocking,
+            BarrierWait::NonBlocking => ContributionKind::Arrival {
+                count: 1,
+                expect_tx: 0,
+                ordering: ArrivalOrdering::Release,
+            },
+        };
+        self.contribute(thread, pc, generation, kind)
+    }
+
+    /// The generation named barrier `id`'s arrivals form, if one arrived since it last fired.
+    pub fn forming_barrier(&self, id: u8) -> Option<GenerationId> {
+        self.forming_barriers.get(&id).copied()
+    }
+
+    /// Named barrier `id` fires: a full-CTA generation counts every exited thread as arrived
+    /// (the Sync' rule), the generation completes, and its blocked threads resume in thread
+    /// order. Panics unless a thread arrived at `id` since it last fired.
+    pub fn barrier_fire(&mut self, id: u8) -> GenerationId {
+        let generation = self.forming_barriers.remove(&id);
+        let generation = generation.expect("a firing barrier was arrived at");
+
+        let kind = self.graph.generations[generation].kind;
+        if kind
+            == (GenerationKind::Barrier {
+                arrivals: BarrierArrivals::FullCta,
+            })
+        {
+            let threads = (0..self.graph.program_order.len() as u32).map(ThreadIx);
+            self.contribute_exited_threads(generation, threads);
+        }
+
+        let blocked = self.blocked_arrivals(generation);
+        self.complete_generation(generation, GenerationEvidence::default());
+        for (thread, pc) in blocked {
+            self.resume(thread, pc, generation);
+        }
+        generation
+    }
+
+    /// Each thread blocking in `generation`, in thread order, with the pc it arrived at.
+    fn blocked_arrivals(&self, generation: GenerationId) -> Vec<(ThreadIx, ProgramPoint)> {
+        let mut blocked: Vec<_> = self.graph.generations[generation]
+            .contributions
+            .iter()
+            .filter(|c| c.kind == ContributionKind::Blocking)
+            .map(|c| {
+                let event = &self.graph.events[c.event];
+                let ExecContext::Thread(thread) = event.ctx else {
+                    unreachable!("a blocking contribution is its thread's event");
+                };
+                (
+                    thread,
+                    event.pc.expect("a contribution has its arrival's pc"),
+                )
+            })
+            .collect();
+        blocked.sort_by_key(|&(thread, _)| thread);
+        blocked
     }
 
     pub fn wait_start(

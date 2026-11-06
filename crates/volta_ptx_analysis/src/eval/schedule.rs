@@ -194,7 +194,7 @@ impl<'p> Interpreter<'p> {
                     }
                     trace!("fired bar.sync {} (full CTA)", id);
                     let waiting: Vec<ThreadId> = waiting.iter().map(|w| w.thread).collect();
-                    self.record_barrier_fire(id as u32, BarrierArrivals::FullCta, &waiting);
+                    self.record_barrier_fire(id as u32);
                     self.advance_thread_group(&waiting);
                     return Ok(true);
                 }
@@ -235,7 +235,7 @@ impl<'p> Interpreter<'p> {
             self.barriers[id] = PendingArrivals::default();
             trace!("fired bar.sync {} ({} threads)", id, count);
             let waiting: Vec<ThreadId> = waiting.iter().map(|w| w.thread).collect();
-            self.record_barrier_fire(id as u32, BarrierArrivals::Count(count), &waiting);
+            self.record_barrier_fire(id as u32);
             self.advance_thread_group(&waiting);
             return Ok(true);
         }

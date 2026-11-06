@@ -40,7 +40,7 @@ mod ids;
 mod model;
 mod validate;
 
-pub use builder::{Effect, GraphBuilder, GroupWait, OrdinaryAccess};
+pub use builder::{BarrierWait, Effect, GraphBuilder, GroupWait, OrdinaryAccess};
 pub use graph::EventGraph;
 pub use ids::{
     AccessId, AsyncOpId, EventId, GenerationId, ProgramPoint, SyncObjectId, ThreadIx, ValueId,

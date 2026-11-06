@@ -23,7 +23,6 @@ use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
 use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
-use super::record::Recording;
 use super::scalar::KernargBuffer;
 use super::wave::{
     LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word,
@@ -38,7 +37,6 @@ pub(crate) struct Interpreter<'a> {
     pub(super) lds: Lds,
     pub(super) waves: IdVec<WaveId, WaveState>,
     pub(super) graph: GraphBuilder,
-    pub(super) rec: Recording,
     /// How many workgroups the run covers: one for a selected workgroup, or every workgroup
     /// of the launch grid, X fastest.
     pub(super) workgroups: usize,
@@ -107,7 +105,6 @@ impl<'a> Interpreter<'a> {
             lds: Lds::new(lds_size, workgroups),
             waves,
             graph: GraphBuilder::new(provenance),
-            rec: Recording::default(),
             workgroups,
         })
     }

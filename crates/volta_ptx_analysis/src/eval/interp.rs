@@ -33,8 +33,8 @@ use crate::ir::{
 use crate::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
-    AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, EventGraph, FenceKind, GraphBuilder,
-    GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
+    AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierWait, EventGraph, FenceKind,
+    GraphBuilder, GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
 };
 
 /// Per-array output footprint: `(array name, [(element index, value)])`.
@@ -1551,7 +1551,7 @@ impl<'p> Interpreter<'p> {
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, thread_count.as_ref())?;
                 self.stats.block_syncs += 1;
-                self.record_barrier_arrival(t, pc, id, arrivals, true);
+                self.record_barrier_arrival(t, pc, id, arrivals, BarrierWait::Blocking);
                 self.threads[t].status = Status::AtBarrier {
                     id,
                     arrivals,
@@ -1567,7 +1567,7 @@ impl<'p> Interpreter<'p> {
             } => {
                 let (id, arrivals) =
                     self.barrier_operands(t, pc, barrier_id, Some(thread_count))?;
-                self.record_barrier_arrival(t, pc, id, arrivals, false);
+                self.record_barrier_arrival(t, pc, id, arrivals, BarrierWait::NonBlocking);
                 let pending = &mut self.barriers[id as usize];
                 pending.arrivals = Some(arrivals);
                 pending.threads.push(ArrivedThread {
