@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use id_collections::IdVec;
 
-use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Statement, TensorName};
+use crate::frontend::ast::{Buffer, Instruction, Kernel, Operand, Scalar, Statement, TensorName};
 use crate::ir::{
     ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory, ScalarOperand,
     ScalarStep, Shape, Tensor, TensorId, TensorRegion,
@@ -106,6 +106,18 @@ fn lower_instruction(
             }
             same_region(&dst_tensor, &dst, &src_tensor, &src)?;
             Ok(LoweredInstr::Mov { dst, src })
+        }
+
+        "memset" => {
+            let [dst, value] = operands(instruction, &["dst", "value"])?;
+            let dst = scope.shaped(dst, "dst")?;
+            tile_extents(&dst)?;
+            let value = match value {
+                Operand::Scalar(value) => *value,
+                Operand::Int(value) => Scalar::new(*value as f64).expect("an integer is finite"),
+                _ => return Err(StatementError::NotAScalar { keyword: "value" }),
+            };
+            Ok(LoweredInstr::Memset { dst: dst.id, value })
         }
 
         // =====================================================================

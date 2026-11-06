@@ -134,6 +134,8 @@ pub enum Expr {
     Bool(bool),
     Name(Dotted),
     Tuple(Vec<Expr>),
+    /// `[item, ...]`.
+    List(Vec<Expr>),
     /// `callee(args)`.
     Call(Call),
     /// `first op1 second op2 third ...`: each operand compared with the next.
@@ -539,6 +541,7 @@ impl Parser {
                 }
             }
             TokenKind::LParen => self.parenthesized()?,
+            TokenKind::LBracket => Expr::List(self.comma_list(TokenKind::RBracket, Self::expr)?),
             other => bail!(line, "expected an expression, found {other}"),
         };
 

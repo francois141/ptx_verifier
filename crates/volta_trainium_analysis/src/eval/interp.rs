@@ -58,6 +58,15 @@ impl<'a> Interpreter<'a> {
                     self.tensors[dst.tensor].write(dst.start.shifted(&offset), value);
                 }
             }
+            LoweredInstr::Memset { dst, value } => {
+                let value = self
+                    .arena
+                    .float_from_f64(value.get())
+                    .expect("a Scalar is finite");
+                for index in self.tensors[dst].indices(instr)? {
+                    self.tensors[dst].write(index, value);
+                }
+            }
             LoweredInstr::Arith { op, dst, lhs, rhs } => {
                 for index in self.tensors[dst].indices(instr)? {
                     let a = self.tensors[lhs].read(&mut self.arena, instr, &index)?;

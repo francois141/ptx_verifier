@@ -2,6 +2,8 @@
 
 use id_collections::id_type;
 
+use crate::frontend::ast::Scalar;
+
 use super::{ActivationFunc, ArithOp, ScalarStep, TensorId, TensorRegion};
 
 /// An instruction's position in its kernel body.
@@ -18,6 +20,8 @@ pub enum LoweredInstr {
         dst: TensorRegion,
         src: TensorRegion,
     },
+    /// Every element of the on-chip tile `dst` set to `value`.
+    Memset { dst: TensorId, value: Scalar },
 
     // =========================================================================
     // Elementwise

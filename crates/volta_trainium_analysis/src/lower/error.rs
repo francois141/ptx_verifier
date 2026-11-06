@@ -70,6 +70,11 @@ pub enum StatementError {
         keyword: &'static str,
     },
 
+    /// An operand that must be a number literal.
+    NotAScalar {
+        keyword: &'static str,
+    },
+
     /// An HBM tensor where an instruction takes on-chip tiles only.
     OffChip(TensorName),
 
@@ -154,6 +159,7 @@ impl fmt::Display for StatementError {
                 "unsupported reduction axis `{axis}`: only a tile's free axis, `1` or `(1,)`"
             ),
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
+            Self::NotAScalar { keyword } => write!(f, "operand `{keyword}` must be a number"),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")
             }

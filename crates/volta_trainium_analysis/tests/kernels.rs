@@ -122,3 +122,12 @@ fn the_attention_v1_kernel_parses_and_lowers_as_expected() {
         &[("q", size), ("k", size), ("v", size)],
     );
 }
+
+#[test]
+fn the_accumulate_kernel_parses_lowers_and_runs_as_expected() {
+    common::check(
+        "accumulate",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+}
