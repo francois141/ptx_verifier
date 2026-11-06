@@ -1,0 +1,21 @@
+kernel kernel(a_t, b, out)
+  a_t: hbm[4, 2]
+  b: hbm[4, 3]
+  out: hbm[2, 3]
+  ab: sbuf[4, 5]
+  acc: psum[2, 5]
+  z: sbuf[2, 3]
+  z_t: psum[3, 3]
+  w: sbuf[3, 3]
+  back: psum[2, 3]
+  ab[0:4, 0:2] = mov(a_t)
+  ab[0:4, 2:5] = mov(b)
+  acc[0:2, 1:4] = memset(0)
+  acc[0:2, 1:4] = matmul(ab[0:2, 0:2], ab[0:2, 2:5])
+  acc[0:2, 1:4] = matmul(ab[2:4, 0:2], ab[2:4, 2:5])
+  z = mov(acc[0:2, 1:4])
+  z_t[0:3, 1:3] = transpose(z)
+  w[0:3, 1:3] = mov(z_t[0:3, 1:3])
+  back = transpose(w[0:3, 1:3])
+  z = mov(back)
+  out = mov(z)

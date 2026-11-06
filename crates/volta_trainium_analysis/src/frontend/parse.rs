@@ -1646,8 +1646,11 @@ fn region_extents(
     for (bounds, &extent) in dims.iter().zip(shape) {
         let low = bounds.start.unwrap_or(0);
         let high = bounds.stop.unwrap_or(extent);
-        if low > high || high > extent {
-            bail!(line, "a slice of `{tensor}` is outside its extent {extent}");
+        if low >= high || high > extent {
+            bail!(
+                line,
+                "a slice of `{tensor}` is empty or outside its extent {extent}"
+            );
         }
         extents.push(high - low);
     }

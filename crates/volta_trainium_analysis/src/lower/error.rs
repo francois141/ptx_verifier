@@ -26,13 +26,13 @@ pub enum StatementError {
     // =========================================================================
     // Shape Errors
     // =========================================================================
-    /// Two operands that must have one shape.
+    /// Two operands that must have one shape, each a tensor and its region's shape.
     ShapeMismatch([(TensorName, Shape); 2]),
 
-    /// A matmul's `stationary` and `moving` tiles, whose partitions (the contraction) differ.
+    /// A matmul's `stationary` and `moving` regions, whose partitions (the contraction) differ.
     ContractionMismatch([(TensorName, Shape); 2]),
 
-    /// A destination whose shape is not the instruction's result's.
+    /// A destination region whose shape is not the instruction's result's.
     ResultShape {
         tensor: TensorName,
         shape: Shape,
@@ -84,7 +84,7 @@ pub enum StatementError {
         expected: Memory,
     },
 
-    /// A scalar operand that is not a one-free-element tile of its destination's partitions.
+    /// A scalar operand that is not a one-free-element region of its destination's partitions.
     NotBroadcastable {
         tensor: TensorName,
         shape: Shape,
@@ -98,7 +98,7 @@ pub enum StatementError {
         slices: usize,
     },
 
-    /// A slice reaching outside its tensor, or whose bounds run backwards.
+    /// A slice reaching outside its tensor, or selecting no elements.
     RegionBounds {
         tensor: TensorName,
         dimension: usize,
@@ -124,12 +124,13 @@ impl fmt::Display for StatementError {
         match self {
             Self::ShapeMismatch([(left, left_shape), (right, right_shape)]) => write!(
                 f,
-                "`{left}` has shape {left_shape} but `{right}` has shape {right_shape}"
+                "the `{left}` operand has shape {left_shape} but the `{right}` operand has \
+                 shape {right_shape}"
             ),
             Self::ContractionMismatch([(left, left_shape), (right, right_shape)]) => write!(
                 f,
-                "`{left}` has shape {left_shape} but `{right}` has shape {right_shape}: \
-                 their partitions must match"
+                "the `{left}` operand has shape {left_shape} but the `{right}` operand has \
+                 shape {right_shape}: their partitions must match"
             ),
             Self::ResultShape {
                 tensor,
@@ -137,7 +138,7 @@ impl fmt::Display for StatementError {
                 expected,
             } => write!(
                 f,
-                "`{tensor}` has shape {shape}, not the result's {expected}"
+                "the `{tensor}` operand has shape {shape}, not the result's {expected}"
             ),
             Self::UnsupportedInstruction(opcode) => {
                 write!(f, "unsupported instruction `nki.isa.{opcode}`")
@@ -172,7 +173,7 @@ impl fmt::Display for StatementError {
                 expected,
             } => write!(
                 f,
-                "scalar operand `{tensor}` has shape {shape}, not the broadcast {expected}"
+                "the scalar operand on `{tensor}` has shape {shape}, not the broadcast {expected}"
             ),
             Self::RegionRank {
                 tensor,
@@ -189,7 +190,7 @@ impl fmt::Display for StatementError {
                 extent,
             } => write!(
                 f,
-                "`{tensor}`'s slice in dimension {dimension} is outside its extent {extent}"
+                "`{tensor}`'s slice in dimension {dimension} is empty or outside its extent {extent}"
             ),
         }
     }

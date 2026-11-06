@@ -131,3 +131,21 @@ fn the_accumulate_kernel_parses_lowers_and_runs_as_expected() {
         &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
     );
 }
+
+// softmax.py's math with every operand a region of a wider tile: its outputs are
+// softmax.expected's.
+#[test]
+fn the_regions_softmax_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("regions_softmax", "kernel", &[("x", &[2, 3])]);
+}
+
+// matmul.py's math with every operand a region of a wider tile: its outputs are
+// matmul.expected's.
+#[test]
+fn the_regions_matmul_kernel_parses_lowers_and_runs_as_expected() {
+    common::check(
+        "regions_matmul",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+}
