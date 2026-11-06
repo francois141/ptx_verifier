@@ -5,7 +5,7 @@ use std::fmt;
 
 use id_collections::IdVec;
 
-use super::{InstrId, LoweredInstr, ScalarOperand, Tensor, TensorId, TensorRegion};
+use super::{InstrId, LoweredInstr, ScalarOperand, Selection, Tensor, TensorId, TensorRegion};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredKernel {
@@ -23,7 +23,8 @@ impl fmt::Display for LoweredKernel {
         let name = |tensor: TensorId| self.tensors[tensor].name.as_str();
         let region = |region: &TensorRegion| {
             let whole = region.start.0.iter().all(|&start| start == 0)
-                && region.shape == self.tensors[region.tensor].shape;
+                && region.shape == self.tensors[region.tensor].shape
+                && region.selections.iter().all(|&s| s == Selection::Slice);
             if whole {
                 return name(region.tensor).to_string();
             }
@@ -32,7 +33,11 @@ impl fmt::Display for LoweredKernel {
                 .0
                 .iter()
                 .zip(&region.shape.0)
-                .map(|(start, extent)| format!("{start}:{}", start + extent))
+                .zip(&region.selections)
+                .map(|((start, extent), selection)| match selection {
+                    Selection::Index => start.to_string(),
+                    Selection::Slice => format!("{start}:{}", start + extent),
+                })
                 .collect();
             format!("{}[{}]", name(region.tensor), dims.join(", "))
         };

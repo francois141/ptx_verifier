@@ -13,4 +13,4 @@ pub use arith::ArithOp;
 pub use instr::{InstrId, LoweredInstr};
 pub use kernel::LoweredKernel;
 pub use scalar::{ScalarOperand, ScalarStep};
-pub use tensor::{Index, Initial, Memory, Shape, Tensor, TensorId, TensorRegion};
+pub use tensor::{Index, Initial, Memory, Selection, Shape, Tensor, TensorId, TensorRegion};

@@ -124,18 +124,38 @@ named after its index (`x.0`, `x.1`), so they stay distinct, while other names
 rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its last
 value). The count is any compile-time integer, e.g. `seqlen_kv // 4`.
 
-A subscript such as `a[0:4, :]` names a rectangular region, one slice per
-dimension, an omitted bound meaning the tensor's own edge; an empty slice is an
-error, and so is an integer index, since it would drop its dimension. Every
-instruction operand may be a region, as v3 and v4 write `dst=row_max_kv[:, j:j+1]`
-or `stationary=q_sbuf[0:PMAX, ...]`: lowering resolves each one into an
-`ir::TensorRegion`, and every shape rule (same shape, the result's shape, a
-`[partitions, 1]` broadcast operand, the matmul contraction) is a rule on the
-regions' shapes, not their tensors'. A whole tensor is the region from zero over its
-own shape, which `.ir` prints as the bare name. An instruction reads every operand
-before writing any element, so regions of one tile may overlap: `t[:, 1:4] =
-mov(t[:, 0:3])` shifts the old values. Hardware limits on where a region may start
-(e.g. partition offsets) are not checked.
+A subscript such as `a[0:4, :]` or `qk[i, j, :, :]` names a rectangular region:
+each index is a slice, an omitted bound meaning the tensor's own edge, or an
+integer, which selects one position and drops the dimension, as in numpy. A
+subscript may omit trailing dimensions, which it then selects whole, so
+`norm_row[i]` is `norm_row[i, :, :]`; an empty slice or an index outside its
+dimension is an error. `ast::resolve_region` resolves a subscript for both the
+parser (an `nl.load`'s tile takes the region's shape) and lowering.
+
+Every instruction operand may be a region, as v3 and v4 write `dst=row_max_kv[:,
+j:j+1]`, `stationary=q_sbuf[0:PMAX, ...]` or `operand0=inverse_sum_row[:, i]`:
+lowering resolves each one into an `ir::TensorRegion`, and every shape rule is a
+rule on the regions' shapes with their indexed dimensions dropped, not on their
+tensors'. So `dma_copy(dst=qk[i, j, :, :], src=qk_sbuf)` copies a `[PMAX, FMAX]`
+tile, and a broadcast operand or reduction result needs one element per partition:
+`t[:, 0:1]` and `t[:, 0]` both qualify. A whole tensor is the region from zero over
+its own shape, which `.ir` prints as the bare name; an indexed dimension prints as
+its position (`stats[0:2, 0]`). An instruction reads every operand before writing
+any element, so regions of one tile may overlap: `t[:, 1:4] = mov(t[:, 0:3])`
+shifts the old values. Hardware limits on where a region may start (e.g. partition
+offsets) are not checked.
+
+A tile has its partitions and one or more free dimensions, e.g. v4's
+`nl.ndarray((PMAX, seqlen_kv // PMAX, d_head), buffer=nl.sbuf)`. A tile region must
+slice its partition dimension. Instructions see each tile region as `[partitions,
+free]`, its other dimensions flattened row-major into one free axis, so an
+elementwise instruction pairs `v_sbuf_t[:, i, :]` with a `[PMAX, d_head]` tile;
+`nc_matmul`, `nc_transpose`, `tensor_reduce` and `activation_reduce` take regions of
+exactly one free dimension once indexed ones are dropped, so `axis=(1,)` is
+unambiguous. Copies pair their regions' elements in row-major order.
+
+v3 and v4 parse, lower and run unmodified at the size they assert (`q`, `k` and `v`
+of `[128, 512]`), each in about ten seconds in release.
 
 ## Outputs
 
@@ -182,6 +202,15 @@ reduced one column at a time (v3's two-level max), its statistics share one
 SBUF tile, its contraction runs in two partition chunks accumulated into a
 `memset` region of a wider PSUM tile, and its result is transposed there and back
 through regions.
+
+`tests/fixtures/subscripts_softmax.py` and `subscripts_matmul.py` compute the same
+two fixtures' math through integer and partial subscripts and N-D tiles, so their
+`.expected` files are again `softmax.expected` and `matmul.expected`: the softmax
+writes its statistics to `stats[:, 0]` and `stats[:, 1]`, stores an intermediate as
+`norm_row[0]` of a 3-D HBM tensor and loads it back, and keeps its exponentials in
+a `(rows, 1, cols)` tile; the matmul stages each contraction chunk at `staged[i]` in
+HBM and `sb[:, i, :]` of a 3-D SBUF tile, multiplies `sb[:, i, 0:rows]` by
+`sb[:, i, rows:]`, and stores through a 4-D HBM tensor, as v3 and v4 do.
 
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its

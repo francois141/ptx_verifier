@@ -35,7 +35,7 @@ pub struct Param {
 /// arithmetic and checked its `assert`s against the call's shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
-    /// `name = nl.ndarray((partitions, free), dtype, buffer=...)`.
+    /// `name = nl.ndarray((partitions, free, ...), dtype, buffer=...)`.
     Declare(TileDecl),
     /// `name = nl.ndarray(shape, dtype, buffer=nl.shared_hbm)`.
     DeclareHbm(HbmDecl),
@@ -61,11 +61,21 @@ pub struct HbmDecl {
     pub dtype: Dtype,
 }
 
-/// A tile's `(partitions, free)` shape: `free` elements in each of `partitions` partitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A tile's `(partitions, free, ...)` shape: its partitions, then one or more free
+/// dimensions, outermost first, which every partition holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileShape {
     pub partitions: Partitions,
-    pub free: NonZeroU64,
+    pub free: Vec<NonZeroU64>,
+}
+
+impl TileShape {
+    /// Its extents, the partitions first.
+    pub fn extents(&self) -> Vec<u64> {
+        std::iter::once(u64::from(self.partitions.get()))
+            .chain(self.free.iter().map(|extent| extent.get()))
+            .collect()
+    }
 }
 
 /// A tile's partition count, from 1 to `Partitions::MAX` (NKI's `nl.tile_size.pmax`).
@@ -137,12 +147,83 @@ pub struct Instruction {
     pub operands: BTreeMap<String, Operand>,
 }
 
-/// One dimension of a tensor region: the slice bounds as written, an omitted
-/// bound meaning the tensor's own edge. Lowering resolves those against its shape.
+/// One index of a subscript, as written: an integer, which selects one position and
+/// drops the dimension, or a slice, which keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subscript {
+    Index(u64),
+    Slice(Bounds),
+}
+
+/// A slice's bounds as written, an omitted bound meaning the tensor's own edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
     pub start: Option<u64>,
     pub stop: Option<u64>,
+}
+
+/// One dimension of a region resolved against its tensor's extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selected {
+    /// One position, the dimension dropped from the region's shape.
+    Index(u64),
+    /// `extent` positions from `start`, at least one.
+    Slice { start: u64, extent: u64 },
+}
+
+/// Why a subscript names no region of its tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionProblem {
+    /// More indices than the tensor has dimensions.
+    TooManyIndices,
+    /// An index outside dimension `dimension`, or a slice of it that is empty or
+    /// reaches outside it.
+    OutOfBounds { dimension: usize },
+}
+
+/// `dims` resolved against a tensor's `extents`, one per dimension: as in numpy, a
+/// subscript may omit trailing dimensions, which it then selects whole.
+pub fn resolve_region(dims: &[Subscript], extents: &[u64]) -> Result<Vec<Selected>, RegionProblem> {
+    if dims.len() > extents.len() {
+        return Err(RegionProblem::TooManyIndices);
+    }
+    let whole = Subscript::Slice(Bounds {
+        start: None,
+        stop: None,
+    });
+    let dims = dims.iter().copied().chain(std::iter::repeat(whole));
+    extents
+        .iter()
+        .zip(dims)
+        .enumerate()
+        .map(|(dimension, (&extent, subscript))| match subscript {
+            Subscript::Index(index) if index < extent => Ok(Selected::Index(index)),
+            Subscript::Slice(bounds) => {
+                let start = bounds.start.unwrap_or(0);
+                let stop = bounds.stop.unwrap_or(extent);
+                if start < stop && stop <= extent {
+                    Ok(Selected::Slice {
+                        start,
+                        extent: stop - start,
+                    })
+                } else {
+                    Err(RegionProblem::OutOfBounds { dimension })
+                }
+            }
+            Subscript::Index(_) => Err(RegionProblem::OutOfBounds { dimension }),
+        })
+        .collect()
+}
+
+/// The shape of a resolved region: its slices' extents, the indexed dimensions dropped.
+pub fn kept_extents(selected: &[Selected]) -> Vec<u64> {
+    selected
+        .iter()
+        .filter_map(|selected| match *selected {
+            Selected::Index(_) => None,
+            Selected::Slice { extent, .. } => Some(extent),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,10 +236,10 @@ pub enum Operand {
     Int(u64),
     /// A tuple of integers, e.g. `axis=(1,)`.
     Ints(Vec<u64>),
-    /// A rectangular region of a tensor, one slice per subscript index.
+    /// A rectangular region of a tensor, from a subscript.
     Region {
         tensor: TensorName,
-        dims: Vec<Bounds>,
+        dims: Vec<Subscript>,
     },
 }
 
@@ -185,13 +266,14 @@ impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Declare(tile) => {
-                let TileShape { partitions, free } = tile.shape;
                 let buffer = tile.buffer.name();
+                let extents: Vec<String> =
+                    tile.shape.extents().iter().map(u64::to_string).collect();
                 write!(
                     f,
-                    "{}: {buffer}[{}, {free}] of {}",
+                    "{}: {buffer}[{}] of {}",
                     tile.name,
-                    partitions.get(),
+                    extents.join(", "),
                     tile.dtype
                 )
             }
@@ -252,9 +334,18 @@ impl fmt::Display for Operand {
                 }
             },
             Self::Region { tensor, dims } => {
-                let dims: Vec<String> = dims.iter().map(Bounds::to_string).collect();
+                let dims: Vec<String> = dims.iter().map(Subscript::to_string).collect();
                 write!(f, "{tensor}[{}]", dims.join(", "))
             }
+        }
+    }
+}
+
+impl fmt::Display for Subscript {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Index(index) => write!(f, "{index}"),
+            Self::Slice(bounds) => write!(f, "{bounds}"),
         }
     }
 }
