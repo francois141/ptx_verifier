@@ -516,7 +516,9 @@ rebind as in Python, to tensors, integers, tuples and lists (`Value::List` is an
 index into the trace's storage, so lists are shared); a name a function assigns
 is local throughout it; a tile name declared again takes a version suffix (`x~1`),
 so every tensor's name is unique. `d, n = q.shape`,
-`+`/`*`/`//`, `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax}`,
+`+`/`*`/`//`, `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax}` (a
+`TileSizes`, the hardware's by default, others through
+`parse_kernel_with_tile_sizes`),
 `list`/`tuple` and item reads and writes evaluate there, `t.shape` is a tuple, and
 an `assert` (a chain of `==`/`!=`/`<`/`<=`/`>`/`>=`, tuples by `==`/`!=` only) is
 checked and leaves no statement; a false one is a parse error.
@@ -761,7 +763,13 @@ CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute sw
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
-other, on their first row by default, with `q` and `k` swapped as a negative test.
+other, on their first row by default, with `q` and `k` swapped as a negative test;
+`attn_fwd_v3` and `attn_fwd_v4` from the file with their `assert seqlen_q >= 512`
+stated as `>= FMAX_MOVING` - checked to change nothing at hardware tile sizes -
+proved equal to the spec and each other everywhere at three reduced `TileSizes`,
+refuted with `q` and `k` swapped, and unmodified at `[128, 512]` on one row of each
+of the four query tiles in one ignored test, about 135 s and 12.7 GB, mostly the
+spec's unfolding.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
 checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
 `just trainium` run them alongside the analysis crate's snapshot tests.

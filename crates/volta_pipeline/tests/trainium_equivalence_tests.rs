@@ -3,9 +3,12 @@
 use std::collections::HashMap;
 
 use volta_equivalence::check::EquivCheckOptions;
+use volta_expr::SymbolicOutputs;
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 use volta_trainium_analysis::frontend::ast::Kernel;
-use volta_trainium_analysis::frontend::parse::{parse_kernel, parse_kernel_with_modules};
+use volta_trainium_analysis::frontend::parse::{
+    TileSizes, parse_kernel, parse_kernel_with_modules, parse_kernel_with_tile_sizes,
+};
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
 /// Run `kernel` against `spec` at dims `[M, N, K]`, comparing the `out` array: the
@@ -248,5 +251,205 @@ fn nki_attention_v1_matches_v2_on_their_first_row() {
             checked: 128,
             total: 16384,
         }
+    );
+}
+
+/// The samples' file with v3 to v8a's `assert seqlen_q >= 512` stated as the limit it
+/// stands for, `nl.tile_size.gemm_moving_fmax` (512 on the hardware), so they also run
+/// at smaller tile sizes. This is the one change; every other line is the samples'.
+fn tileable_attention_kernels() -> String {
+    const ASSERT: &str = "assert seqlen_q >= 512";
+    assert_eq!(ATTENTION_KERNELS.matches(ASSERT).count(), 7);
+    ATTENTION_KERNELS.replace(ASSERT, "assert seqlen_q >= FMAX_MOVING")
+}
+
+/// Tiled sample `kernel` of the tileable file, `q`, `k` and `v` of `[d, n]`, with
+/// `nl.tile_size` reading `tile_sizes`.
+fn tiled_attention_kernel(kernel: &str, tile_sizes: TileSizes, [d, n]: [u64; 2]) -> Kernel {
+    let shape: &[u64] = &[d, n];
+    parse_kernel_with_tile_sizes(
+        &tileable_attention_kernels(),
+        &[("attention_kernel_utils", ATTENTION_UTILS)],
+        kernel,
+        &[("q", shape), ("k", shape), ("v", shape)],
+        tile_sizes,
+    )
+    .unwrap()
+}
+
+/// Reduced tile sizes and the `[d_head, seqlen]` they run v3 and v4 at: `pmax` and
+/// `gemm_stationary_fmax` equal, as on the hardware and as both kernels need, and every
+/// loop running at least twice.
+const REDUCED: [(TileSizes, [u64; 2]); 3] = [
+    (reduced_tiles(4, 8), [4, 16]),
+    (reduced_tiles(4, 8), [4, 32]),
+    (reduced_tiles(8, 16), [8, 32]),
+];
+
+const fn reduced_tiles(pmax: u64, gemm_moving_fmax: u64) -> TileSizes {
+    TileSizes {
+        pmax,
+        gemm_stationary_fmax: pmax,
+        gemm_moving_fmax,
+    }
+}
+
+/// Tiled sample `kernel` against `spec` at `[d, n]`, on its first `sample` outputs.
+fn check_tiled_attention(
+    kernel: &str,
+    spec: &str,
+    tile_sizes: TileSizes,
+    [d, n]: [u64; 2],
+    sample: u64,
+) -> EquivalenceVerdict {
+    against_spec(
+        &tiled_attention_kernel(kernel, tile_sizes, [d, n]),
+        spec,
+        &[("D", d), ("N", n)],
+        "kernel_out",
+        &sampled(sample),
+    )
+}
+
+/// Tiled samples `reference` and `other` against each other at `[d, n]`.
+fn check_tiled_attention_pair(
+    [reference, other]: [&str; 2],
+    tile_sizes: TileSizes,
+    shape: [u64; 2],
+    sample: u64,
+) -> EquivalenceVerdict {
+    let [reference, other] = [reference, other].map(|kernel| {
+        let lowered = lower_kernel(&tiled_attention_kernel(kernel, tile_sizes, shape)).unwrap();
+        evaluate(&lowered).unwrap()
+    });
+    check_equivalence(&reference, &other, &["kernel_out".into()], &sampled(sample)).0
+}
+
+/// Equivalent on every one of an `[n, d]` output's elements.
+fn everywhere([d, n]: [u64; 2]) -> EquivalenceVerdict {
+    EquivalenceVerdict::Equivalent {
+        checked: d * n,
+        total: d * n,
+    }
+}
+
+// At the hardware's tile sizes the stated limit is the literal one, so the tileable file
+// parses to exactly the samples' kernels.
+#[test]
+fn nki_attention_tileable_kernels_are_the_samples_at_full_size() {
+    let shape: &[u64] = &[128, 512];
+    let shapes = [("q", shape), ("k", shape), ("v", shape)];
+    let modules = [("attention_kernel_utils", ATTENTION_UTILS)];
+    let tileable = tileable_attention_kernels();
+    for kernel in ["attn_fwd_v3", "attn_fwd_v4"] {
+        assert_eq!(
+            parse_kernel_with_modules(&tileable, &modules, kernel, &shapes),
+            parse_kernel_with_modules(ATTENTION_KERNELS, &modules, kernel, &shapes),
+            "{kernel}"
+        );
+    }
+}
+
+#[test]
+fn nki_attention_v3_matches_attention_at_reduced_tile_sizes() {
+    for (tile_sizes, shape) in REDUCED {
+        assert_eq!(
+            check_tiled_attention("attn_fwd_v3", ATTENTION_SPEC, tile_sizes, shape, 0),
+            everywhere(shape),
+            "{tile_sizes:?} at {shape:?}"
+        );
+    }
+}
+
+#[test]
+fn nki_attention_v4_matches_attention_at_reduced_tile_sizes() {
+    for (tile_sizes, shape) in REDUCED {
+        assert_eq!(
+            check_tiled_attention("attn_fwd_v4", ATTENTION_SPEC, tile_sizes, shape, 0),
+            everywhere(shape),
+            "{tile_sizes:?} at {shape:?}"
+        );
+    }
+}
+
+#[test]
+fn nki_attention_v3_matches_v4_at_reduced_tile_sizes() {
+    for (tile_sizes, shape) in REDUCED {
+        assert_eq!(
+            check_tiled_attention_pair(["attn_fwd_v3", "attn_fwd_v4"], tile_sizes, shape, 0),
+            everywhere(shape),
+            "{tile_sizes:?} at {shape:?}"
+        );
+    }
+}
+
+#[test]
+fn nki_attention_v3_and_v4_against_attention_with_q_and_k_swapped_are_refuted() {
+    let swapped = ATTENTION_SPEC.replace("q[d, i] * k[d,", "k[d, i] * q[d,");
+    assert_ne!(swapped, ATTENTION_SPEC);
+    let (tile_sizes, shape) = REDUCED[0];
+    for kernel in ["attn_fwd_v3", "attn_fwd_v4"] {
+        let verdict = check_tiled_attention(kernel, &swapped, tile_sizes, shape, 1);
+        assert!(
+            matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+            "{kernel}: expected a confirmed difference, got {verdict:?}"
+        );
+    }
+}
+
+/// One output row of each of v3 and v4's four 128-row query tiles at `[128, 512]`, each at
+/// another partition of its tile: 0, 42, 85 and 127.
+const QUERY_TILE_ROWS: [u64; 4] = [0, 170, 341, 511];
+
+/// `outputs` with `kernel_out` cut down to `rows` of its 128-element rows, so the
+/// check covers every query tile, not just a prefix of the outputs.
+fn only_rows(mut outputs: SymbolicOutputs, rows: &[u64]) -> SymbolicOutputs {
+    for (_, elements) in &mut outputs.outputs {
+        elements.retain(|&(index, _)| rows.contains(&(index / 128)));
+    }
+    outputs
+}
+
+// The unmodified kernels at the size they assert, on one row of each query tile. One
+// test, so the spec's 65,536 outputs (most of the time, and many GB) unfold once.
+#[test]
+#[ignore = "unfolds attention at 128 x 512 (about 3 minutes and 12 GB); run with --ignored in release"]
+fn nki_attention_v3_and_v4_match_attention_and_each_other_on_a_row_of_each_query_tile_at_full_size()
+{
+    let shape: &[u64] = &[128, 512];
+    let dims = [("D", 128), ("N", 512)]
+        .map(|(dim, value)| (dim.to_string(), value))
+        .into();
+    let reference = only_rows(
+        volta_spec::extract_expressions_from_spec(ATTENTION_SPEC, &dims).unwrap(),
+        &QUERY_TILE_ROWS,
+    );
+    let every_tile = EquivalenceVerdict::Equivalent {
+        checked: 512,
+        total: 512,
+    };
+
+    let [v3, v4] = ["attn_fwd_v3", "attn_fwd_v4"].map(|kernel| {
+        let parsed = parse_kernel_with_modules(
+            ATTENTION_KERNELS,
+            &[("attention_kernel_utils", ATTENTION_UTILS)],
+            kernel,
+            &[("q", shape), ("k", shape), ("v", shape)],
+        )
+        .unwrap();
+        only_rows(
+            evaluate(&lower_kernel(&parsed).unwrap()).unwrap(),
+            &QUERY_TILE_ROWS,
+        )
+    });
+    let arrays = ["kernel_out".into()];
+    for (kernel, actual) in [("v3", &v3), ("v4", &v4)] {
+        let verdict = check_equivalence(&reference, actual, &arrays, &sampled(0)).0;
+        assert_eq!(verdict, every_tile, "{kernel} against attention.spec");
+    }
+    assert_eq!(
+        check_equivalence(&v3, &v4, &arrays, &sampled(0)).0,
+        every_tile,
+        "v3 against v4"
     );
 }

@@ -61,8 +61,17 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   ignored test (`cargo test --release -p volta_pipeline --test
   trainium_equivalence_tests -- --ignored`, about a minute), and refuted against
   attention with `q` and `k` swapped; `attn_fwd_v1` likewise, and v1 against v2
-  directly, kernel to kernel. Functional equivalence only; `just trainium`
-  runs them in release.
+  directly, kernel to kernel. The tiled `attn_fwd_v3` and `attn_fwd_v4` run from
+  the same file with one line changed: their `assert seqlen_q >= 512` stated as
+  the limit it stands for, `FMAX_MOVING` (`gemm_moving_fmax`), which a test checks
+  leaves both kernels unchanged at the hardware's tile sizes. At three reduced
+  tile sizes (`TileSizes`, e.g. `pmax` 4 and `gemm_moving_fmax` 8 on `[4, 16]`
+  inputs) each is proved equal to `attention.spec` and to the other on every
+  output, and refuted with `q` and `k` swapped; unmodified at full size (`[128,
+  512]`), an ignored test proves both and the pair on one row of each of the four
+  query tiles, each at another partition (rows 0, 170, 341 and 511: about 135 s
+  and 12.7 GB, most of it unfolding the spec's 65,536 outputs). Functional
+  equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 
 ### How a test runs
