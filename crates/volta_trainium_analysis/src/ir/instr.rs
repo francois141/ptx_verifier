@@ -4,12 +4,15 @@ use id_collections::id_type;
 
 use crate::frontend::ast::Scalar;
 
-use super::{ActivationFunc, ArithOp, ScalarStep, TensorId, TensorRegion};
+use super::{ActivationFunc, ArithOp, ScalarStep, TensorRegion};
 
 /// An instruction's position in its kernel body.
 #[id_type]
 pub struct InstrId(pub u32);
 
+/// Every tile operand is a region of an on-chip tile, `[partitions, free]` like the
+/// tile itself; the whole tile is one region. An instruction reads all its operands
+/// before it writes, so regions of one tile may overlap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredInstr {
     // =========================================================================
@@ -20,48 +23,48 @@ pub enum LoweredInstr {
         dst: TensorRegion,
         src: TensorRegion,
     },
-    /// Every element of the on-chip tile `dst` set to `value`.
-    Memset { dst: TensorId, value: Scalar },
+    /// Every element of `dst` set to `value`.
+    Memset { dst: TensorRegion, value: Scalar },
 
     // =========================================================================
     // Elementwise
     // =========================================================================
-    /// `dst = op(lhs, rhs)` elementwise, all three on-chip tiles of one shape.
+    /// `dst = op(lhs, rhs)` elementwise over regions of one shape.
     Arith {
         op: ArithOp,
-        dst: TensorId,
-        lhs: TensorId,
-        rhs: TensorId,
+        dst: TensorRegion,
+        lhs: TensorRegion,
+        rhs: TensorRegion,
     },
-    /// `dst = func(data)` elementwise, both on-chip tiles of one shape.
+    /// `dst = func(data)` elementwise over regions of one shape.
     Activation {
         func: ActivationFunc,
-        dst: TensorId,
-        data: TensorId,
+        dst: TensorRegion,
+        data: TensorRegion,
     },
     /// `dst = func(data)` elementwise, and each `reduce_res[p, 0]` the fold of
-    /// `reduce_op` over `dst`'s partition `p`. `dst` and `data` are tiles of one
-    /// shape; `reduce_res` has one free element per partition.
+    /// `reduce_op` over `dst`'s partition `p`. `dst` and `data` have one shape;
+    /// `reduce_res` has one free element per partition.
     ActivationReduce {
         func: ActivationFunc,
-        dst: TensorId,
-        data: TensorId,
+        dst: TensorRegion,
+        data: TensorRegion,
         reduce_op: ArithOp,
-        reduce_res: TensorId,
+        reduce_res: TensorRegion,
     },
     /// Each `dst[p, 0]` the fold of `op` over `data`'s partition `p`, seeded with its
-    /// first element; `dst` has one free element per partition of the tile `data`.
+    /// first element; `dst` has one free element per partition of `data`.
     Reduce {
         op: ArithOp,
-        dst: TensorId,
-        data: TensorId,
+        dst: TensorRegion,
+        data: TensorRegion,
     },
     /// `dst = data` with each step applied in turn (`acc = op(acc, operand)`),
-    /// elementwise over on-chip tiles of one shape; a `[partitions, 1]` operand
+    /// elementwise over regions of one shape; a `[partitions, 1]` operand
     /// broadcasts its single free element across the free axis.
     TensorScalar {
-        dst: TensorId,
-        data: TensorId,
+        dst: TensorRegion,
+        data: TensorRegion,
         first: ScalarStep,
         second: Option<ScalarStep>,
     },
@@ -69,13 +72,16 @@ pub enum LoweredInstr {
     // =========================================================================
     // Tensor Engine
     // =========================================================================
-    /// `dst = stationary.T @ moving` from SBUF tiles into a PSUM tile, contracting their
-    /// partitions; a `dst` element written before accumulates the product instead.
+    /// `dst = stationary.T @ moving` from SBUF regions into a PSUM region, contracting
+    /// their partitions; a `dst` element written before accumulates the product instead.
     Matmul {
-        dst: TensorId,
-        stationary: TensorId,
-        moving: TensorId,
+        dst: TensorRegion,
+        stationary: TensorRegion,
+        moving: TensorRegion,
     },
-    /// `dst[f, p] = data[p, f]` over on-chip tiles.
-    Transpose { dst: TensorId, data: TensorId },
+    /// `dst[f, p] = data[p, f]` over on-chip regions.
+    Transpose {
+        dst: TensorRegion,
+        data: TensorRegion,
+    },
 }

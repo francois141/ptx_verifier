@@ -21,10 +21,6 @@ pub struct LoweredKernel {
 impl fmt::Display for LoweredKernel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = |tensor: TensorId| self.tensors[tensor].name.as_str();
-        let scalar = |operand: ScalarOperand| match operand {
-            ScalarOperand::Constant(value) => value.to_string(),
-            ScalarOperand::Broadcast(tensor) => name(tensor).to_string(),
-        };
         let region = |region: &TensorRegion| {
             let whole = region.start.0.iter().all(|&start| start == 0)
                 && region.shape == self.tensors[region.tensor].shape;
@@ -40,6 +36,10 @@ impl fmt::Display for LoweredKernel {
                 .collect();
             format!("{}[{}]", name(region.tensor), dims.join(", "))
         };
+        let scalar = |operand: &ScalarOperand| match operand {
+            ScalarOperand::Constant(value) => value.to_string(),
+            ScalarOperand::Broadcast(tile) => region(tile),
+        };
 
         let params: Vec<&str> = self.params.iter().map(|&param| name(param)).collect();
         write!(f, "kernel {}({})", self.name, params.join(", "))?;
@@ -54,20 +54,20 @@ impl fmt::Display for LoweredKernel {
         }
 
         for instruction in self.instructions.values() {
-            match instruction.clone() {
+            match instruction {
                 LoweredInstr::Mov { dst, src } => {
-                    writeln!(f, "  {} = mov({})", region(&dst), region(&src))?
+                    writeln!(f, "  {} = mov({})", region(dst), region(src))?
                 }
                 LoweredInstr::Arith { op, dst, lhs, rhs } => writeln!(
                     f,
                     "  {} = {}({}, {})",
-                    name(dst),
+                    region(dst),
                     op.name(),
-                    name(lhs),
-                    name(rhs)
+                    region(lhs),
+                    region(rhs)
                 )?,
                 LoweredInstr::Activation { func, dst, data } => {
-                    writeln!(f, "  {} = {}({})", name(dst), func.name(), name(data))?
+                    writeln!(f, "  {} = {}({})", region(dst), func.name(), region(data))?
                 }
                 LoweredInstr::ActivationReduce {
                     func,
@@ -78,18 +78,22 @@ impl fmt::Display for LoweredKernel {
                 } => writeln!(
                     f,
                     "  {}, {} = {}({}) reduce {}",
-                    name(dst),
-                    name(reduce_res),
+                    region(dst),
+                    region(reduce_res),
                     func.name(),
-                    name(data),
+                    region(data),
                     reduce_op.name()
                 )?,
                 LoweredInstr::Memset { dst, value } => {
-                    writeln!(f, "  {} = memset({value})", name(dst))?
+                    writeln!(f, "  {} = memset({value})", region(dst))?
                 }
-                LoweredInstr::Reduce { op, dst, data } => {
-                    writeln!(f, "  {} = reduce {}({})", name(dst), op.name(), name(data))?
-                }
+                LoweredInstr::Reduce { op, dst, data } => writeln!(
+                    f,
+                    "  {} = reduce {}({})",
+                    region(dst),
+                    op.name(),
+                    region(data)
+                )?,
                 LoweredInstr::TensorScalar {
                     dst,
                     data,
@@ -99,13 +103,13 @@ impl fmt::Display for LoweredKernel {
                     let mut expr = format!(
                         "{}({}, {})",
                         first.op.name(),
-                        name(data),
-                        scalar(first.operand)
+                        region(data),
+                        scalar(&first.operand)
                     );
                     if let Some(step) = second {
-                        expr = format!("{}({}, {})", step.op.name(), expr, scalar(step.operand));
+                        expr = format!("{}({}, {})", step.op.name(), expr, scalar(&step.operand));
                     }
-                    writeln!(f, "  {} = {expr}", name(dst))?
+                    writeln!(f, "  {} = {expr}", region(dst))?
                 }
                 LoweredInstr::Matmul {
                     dst,
@@ -114,12 +118,12 @@ impl fmt::Display for LoweredKernel {
                 } => writeln!(
                     f,
                     "  {} = matmul({}, {})",
-                    name(dst),
-                    name(stationary),
-                    name(moving)
+                    region(dst),
+                    region(stationary),
+                    region(moving)
                 )?,
                 LoweredInstr::Transpose { dst, data } => {
-                    writeln!(f, "  {} = transpose({})", name(dst), name(data))?
+                    writeln!(f, "  {} = transpose({})", region(dst), region(data))?
                 }
             }
         }

@@ -125,9 +125,17 @@ rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its la
 value). The count is any compile-time integer, e.g. `seqlen_kv // 4`.
 
 A subscript such as `a[0:4, :]` names a rectangular region, one slice per
-dimension; `nisa.dma_copy` and `nisa.tensor_copy` copy between regions, and an
-omitted bound means the tensor's own edge. An integer index is rejected, since
-it would drop its dimension.
+dimension, an omitted bound meaning the tensor's own edge; an empty slice is an
+error, and so is an integer index, since it would drop its dimension. Every
+instruction operand may be a region, as v3 and v4 write `dst=row_max_kv[:, j:j+1]`
+or `stationary=q_sbuf[0:PMAX, ...]`: lowering resolves each one into an
+`ir::TensorRegion`, and every shape rule (same shape, the result's shape, a
+`[partitions, 1]` broadcast operand, the matmul contraction) is a rule on the
+regions' shapes, not their tensors'. A whole tensor is the region from zero over its
+own shape, which `.ir` prints as the bare name. An instruction reads every operand
+before writing any element, so regions of one tile may overlap: `t[:, 1:4] =
+mov(t[:, 0:3])` shifts the old values. Hardware limits on where a region may start
+(e.g. partition offsets) are not checked.
 
 ## Outputs
 
@@ -164,6 +172,16 @@ snapshot v1, whose lowered form is v2's algorithm.
 split in two chunks of rows over a `range(2)` loop, accumulated into an
 `nl.zeros` PSUM tile, so its `.expected` is `matmul.expected`; it then copies the
 result through a list of two tiles built with `.append`.
+
+`tests/fixtures/regions_softmax.py` and `regions_matmul.py` compute `softmax.py`'s
+and `matmul.py`'s math with every operand a region of a wider tile, so their
+`.expected` files are those fixtures'. Between them every instruction takes a
+region: the softmax's input sits in the middle columns of a scratch tile and is
+reduced one column at a time (v3's two-level max), its statistics share one
+`[rows, 2]` tile and broadcast from its columns; the matmul's operands share one
+SBUF tile, its contraction runs in two partition chunks accumulated into a
+`memset` region of a wider PSUM tile, and its result is transposed there and back
+through regions.
 
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its

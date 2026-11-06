@@ -29,30 +29,6 @@ impl<'a> TensorState<'a> {
         &self.tensor.name
     }
 
-    /// Its `[partitions, free]` shape, for an operand lowering requires to be an on-chip
-    /// tile, which always has two dimensions.
-    pub(super) fn tile_shape(&self) -> [u64; 2] {
-        let [partitions, free] = self.tensor.shape.0[..] else {
-            unreachable!("`{}` is not a two-dimensional tile", self.tensor.name);
-        };
-        [partitions, free]
-    }
-
-    /// The tensor's indices, whose offsets must fit in a `u64`.
-    pub(super) fn indices(
-        &self,
-        instr: InstrId,
-    ) -> Result<impl Iterator<Item = Index> + use<'a>, EvalError> {
-        let tensor = self.tensor;
-        if tensor.shape.element_count().is_none() {
-            return Err(EvalError::ElementCountOverflow {
-                instr,
-                tensor: tensor.name.clone(),
-            });
-        }
-        Ok(tensor.shape.indices())
-    }
-
     /// The element at `index`: its last written value, else an argument's input symbol.
     /// Any other tensor's unwritten element is uninitialized.
     pub(super) fn read(

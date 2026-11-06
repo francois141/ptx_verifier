@@ -555,11 +555,16 @@ loop variable keeps its last value). The count is any compile-time integer; a
 `for` over a tuple or list unrolls the same way.
 
 A subscript is a rectangular region, one slice per dimension, and only slices:
-an integer index would drop its dimension. `lower/` resolves each bound against
-the tensor's shape - an omitted bound is that edge - keeping shapes its own
-concern. `dma_copy` and `tensor_copy` therefore take `TensorRegion` operands; a
-whole tensor is a zero `start` with the tensor's own shape, which `.ir` renders
-as the bare name, so only a true sub-rectangle prints bounds.
+an integer index would drop its dimension, and an empty slice is an error.
+`lower/` resolves each bound against the tensor's shape - an omitted bound is that
+edge - keeping shapes its own concern (`Scope::region`, `Scope::tile` for an
+on-chip one). Every instruction operand is therefore an `ir::TensorRegion`, its
+tile operands two-dimensional regions of on-chip tiles, and every shape rule
+compares region shapes; a whole tensor is a zero `start` with the tensor's own
+shape, which `.ir` renders as the bare name, so only a true sub-rectangle prints
+bounds. The interpreter computes an instruction's writes (`Write`, by tensor
+index) before applying any, so overlapping regions of one tile read old values.
+Region start restrictions of the hardware (partition offsets) are not checked.
 
 `tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
 (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
@@ -590,6 +595,9 @@ against attention with `q` and `k` swapped; v1 likewise, and v1 against v2 kerne
 kernel. `tests/fixtures/language_api.py` covers the tile-returning API on 2 x 2
 inputs. `tests/fixtures/accumulate.py` accumulates `matmul.py`'s product over two
 contraction chunks into `nl.zeros` (its `.expected` is `matmul.expected`).
+`tests/fixtures/regions_softmax.py` and `regions_matmul.py` compute `softmax.py`'s
+and `matmul.py`'s math with every operand of every instruction a region of a wider
+tile (their `.expected` files are those fixtures').
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a class, `if`, f-strings) that is never parsed.

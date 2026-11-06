@@ -91,33 +91,36 @@ fn lower_instruction(
         // =====================================================================
         "dma_copy" => {
             let [dst, src] = operands(instruction, &["dst", "src"])?;
-            let (dst_tensor, dst) = region(dst, "dst", scope)?;
-            let (src_tensor, src) = region(src, "src", scope)?;
-            same_region(&dst_tensor, &dst, &src_tensor, &src)?;
-            Ok(LoweredInstr::Mov { dst, src })
+            let [dst, src] = [scope.region(dst, "dst")?, scope.region(src, "src")?];
+            same_shape(&dst, &src)?;
+            Ok(LoweredInstr::Mov {
+                dst: dst.region,
+                src: src.region,
+            })
         }
 
         "tensor_copy" => {
             let [dst, src] = operands(instruction, &["dst", "src"])?;
-            let (dst_tensor, dst) = region(dst, "dst", scope)?;
-            let (src_tensor, src) = region(src, "src", scope)?;
-            for tile in [&dst_tensor, &src_tensor] {
-                tile_extents(tile)?;
-            }
-            same_region(&dst_tensor, &dst, &src_tensor, &src)?;
-            Ok(LoweredInstr::Mov { dst, src })
+            let [dst, src] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
+            same_shape(&dst, &src)?;
+            Ok(LoweredInstr::Mov {
+                dst: dst.region,
+                src: src.region,
+            })
         }
 
         "memset" => {
             let [dst, value] = operands(instruction, &["dst", "value"])?;
-            let dst = scope.shaped(dst, "dst")?;
-            tile_extents(&dst)?;
+            let dst = scope.tile(dst, "dst")?;
             let value = match value {
                 Operand::Scalar(value) => *value,
                 Operand::Int(value) => Scalar::new(*value as f64).expect("an integer is finite"),
                 _ => return Err(StatementError::NotAScalar { keyword: "value" }),
             };
-            Ok(LoweredInstr::Memset { dst: dst.id, value })
+            Ok(LoweredInstr::Memset {
+                dst: dst.region,
+                value,
+            })
         }
 
         // =====================================================================
@@ -127,35 +130,29 @@ fn lower_instruction(
             let [dst, data1, data2, op] = operands(instruction, &["dst", "data1", "data2", "op"])?;
             let op = arith_op(op)?;
             let [dst, lhs, rhs] = [
-                scope.shaped(dst, "dst")?,
-                scope.shaped(data1, "data1")?,
-                scope.shaped(data2, "data2")?,
+                scope.tile(dst, "dst")?,
+                scope.tile(data1, "data1")?,
+                scope.tile(data2, "data2")?,
             ];
-            for tile in [&dst, &lhs, &rhs] {
-                tile_extents(tile)?;
-            }
             same_shape(&lhs, &rhs)?;
             same_shape(&dst, &lhs)?;
             Ok(LoweredInstr::Arith {
                 op,
-                dst: dst.id,
-                lhs: lhs.id,
-                rhs: rhs.id,
+                dst: dst.region,
+                lhs: lhs.region,
+                rhs: rhs.region,
             })
         }
 
         "activation" => {
             let [dst, op, data] = operands(instruction, &["dst", "op", "data"])?;
             let func = activation_func(op)?;
-            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
-            for tile in [&dst, &data] {
-                tile_extents(tile)?;
-            }
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
             Ok(LoweredInstr::Activation {
                 func,
-                dst: dst.id,
-                data: data.id,
+                dst: dst.region,
+                data: data.region,
             })
         }
 
@@ -167,35 +164,30 @@ fn lower_instruction(
             let func = activation_func(op)?;
             let reduce_op = arith_op(reduce_op)?;
             let [dst, data, reduce_res] = [
-                scope.shaped(dst, "dst")?,
-                scope.shaped(data, "data")?,
-                scope.shaped(reduce_res, "reduce_res")?,
+                scope.tile(dst, "dst")?,
+                scope.tile(data, "data")?,
+                scope.tile(reduce_res, "reduce_res")?,
             ];
-            let [partitions, _] = tile_extents(&dst)?;
-            tile_extents(&data)?;
-            tile_extents(&reduce_res)?;
             same_shape(&dst, &data)?;
+            let [partitions, _] = dst.extents()?;
             result_shape(&reduce_res, Shape(vec![partitions, 1]))?;
             Ok(LoweredInstr::ActivationReduce {
                 func,
-                dst: dst.id,
-                data: data.id,
+                dst: dst.region,
+                data: data.region,
                 reduce_op,
-                reduce_res: reduce_res.id,
+                reduce_res: reduce_res.region,
             })
         }
 
         "reciprocal" => {
             let [dst, data] = operands(instruction, &["dst", "data"])?;
-            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
-            for tile in [&dst, &data] {
-                tile_extents(tile)?;
-            }
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
             Ok(LoweredInstr::Activation {
                 func: ActivationFunc::Reciprocal,
-                dst: dst.id,
-                data: data.id,
+                dst: dst.region,
+                data: data.region,
             })
         }
 
@@ -203,14 +195,13 @@ fn lower_instruction(
             let [dst, data, op, axis] = operands(instruction, &["dst", "data", "op", "axis"])?;
             let op = arith_op(op)?;
             free_axis(axis)?;
-            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
-            let [partitions, _] = tile_extents(&data)?;
-            tile_extents(&dst)?;
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
+            let [partitions, _] = data.extents()?;
             result_shape(&dst, Shape(vec![partitions, 1]))?;
             Ok(LoweredInstr::Reduce {
                 op,
-                dst: dst.id,
-                data: data.id,
+                dst: dst.region,
+                data: data.region,
             })
         }
 
@@ -221,10 +212,9 @@ fn lower_instruction(
                 &["op1", "operand1"],
             )?;
 
-            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
-            let [partitions, _] = tile_extents(&dst)?;
-            tile_extents(&data)?;
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
+            let [partitions, _] = dst.extents()?;
 
             let first = scalar_step(op0, operand0, "operand0", partitions, scope)?;
             let second = match (op1, operand1) {
@@ -241,8 +231,8 @@ fn lower_instruction(
             };
 
             Ok(LoweredInstr::TensorScalar {
-                dst: dst.id,
-                data: data.id,
+                dst: dst.region,
+                data: data.region,
                 first,
                 second,
             })
@@ -255,38 +245,37 @@ fn lower_instruction(
             let [dst, stationary, moving] =
                 operands(instruction, &["dst", "stationary", "moving"])?;
             let [dst, stationary, moving] = [
-                scope.shaped(dst, "dst")?,
-                scope.shaped(stationary, "stationary")?,
-                scope.shaped(moving, "moving")?,
+                scope.tile(dst, "dst")?,
+                scope.tile(stationary, "stationary")?,
+                scope.tile(moving, "moving")?,
             ];
-            in_memory(&stationary, Memory::Sbuf)?;
-            in_memory(&moving, Memory::Sbuf)?;
-            in_memory(&dst, Memory::Psum)?;
+            stationary.in_memory(Memory::Sbuf)?;
+            moving.in_memory(Memory::Sbuf)?;
+            dst.in_memory(Memory::Psum)?;
             let [[contraction, rows], [moving_contraction, columns]] =
-                [tile_extents(&stationary)?, tile_extents(&moving)?];
+                [stationary.extents()?, moving.extents()?];
             if contraction != moving_contraction {
                 return Err(StatementError::ContractionMismatch([
-                    (stationary.name.clone(), stationary.shape.clone()),
-                    (moving.name.clone(), moving.shape.clone()),
+                    stationary.described(),
+                    moving.described(),
                 ]));
             }
             result_shape(&dst, Shape(vec![rows, columns]))?;
             Ok(LoweredInstr::Matmul {
-                dst: dst.id,
-                stationary: stationary.id,
-                moving: moving.id,
+                dst: dst.region,
+                stationary: stationary.region,
+                moving: moving.region,
             })
         }
 
         "nc_transpose" => {
             let [dst, data] = operands(instruction, &["dst", "data"])?;
-            let [dst, data] = [scope.shaped(dst, "dst")?, scope.shaped(data, "data")?];
-            tile_extents(&dst)?;
-            let [partitions, free] = tile_extents(&data)?;
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
+            let [partitions, free] = data.extents()?;
             result_shape(&dst, Shape(vec![free, partitions]))?;
             Ok(LoweredInstr::Transpose {
-                dst: dst.id,
-                data: data.id,
+                dst: dst.region,
+                data: data.region,
             })
         }
 
@@ -373,7 +362,7 @@ fn free_axis(axis: &Operand) -> Result<(), StatementError> {
 }
 
 /// A `tensor_scalar` step: its `nki.language` op, and an operand that is a literal
-/// or a tile of one free element per partition of the destination.
+/// or a tile region of one free element per partition of the destination.
 fn scalar_step(
     op: &Operand,
     operand: &Operand,
@@ -385,16 +374,17 @@ fn scalar_step(
     let operand = match operand {
         Operand::Scalar(value) => ScalarOperand::Constant(*value),
         _ => {
-            let tile = scope.shaped(operand, keyword)?;
+            let tile = scope.tile(operand, keyword)?;
             let expected = Shape(vec![partitions, 1]);
-            if tile_extents(&tile)? != [partitions, 1] {
+            if tile.region.shape != expected {
+                let (tensor, shape) = tile.described();
                 return Err(StatementError::NotBroadcastable {
-                    tensor: tile.name.clone(),
-                    shape: tile.shape.clone(),
+                    tensor,
+                    shape,
                     expected,
                 });
             }
-            ScalarOperand::Broadcast(tile.id)
+            ScalarOperand::Broadcast(tile.region)
         }
     };
     Ok(ScalarStep { op, operand })
@@ -404,117 +394,61 @@ fn scalar_step(
 // Operand Checks
 // =============================================================================
 
-/// `operand`'s `[partitions, free]` extents; every SBUF and PSUM tensor is a two-dimensional tile.
-fn tile_extents(operand: &Shaped) -> Result<[u64; 2], StatementError> {
-    match (operand.memory, &operand.shape.0[..]) {
-        (Memory::Sbuf | Memory::Psum, &[partitions, free]) => Ok([partitions, free]),
-        _ => Err(StatementError::OffChip(operand.name.clone())),
-    }
-}
-
-/// `operand` as a region of its tensor, with the tensor itself: the whole
-/// tensor, or the subscript's slices resolved against its shape.
-fn region<'s>(
-    operand: &Operand,
-    keyword: &'static str,
-    scope: &'s Scope,
-) -> Result<(Shaped<'s>, TensorRegion), StatementError> {
-    let (name, dims) = match operand {
-        Operand::Tensor(name) => (name, [].as_slice()),
-        Operand::Region { tensor, dims } => (tensor, dims.as_slice()),
-        _ => return Err(StatementError::NotATensor { keyword }),
-    };
-
-    let tensor = scope.named(name);
-    let extents = tensor.shape.0.as_slice();
-
-    if dims.is_empty() {
-        let region = TensorRegion {
-            tensor: tensor.id,
-            start: Index(vec![0; extents.len()]),
-            shape: tensor.shape.clone(),
-        };
-        return Ok((tensor, region));
-    }
-
-    if dims.len() != extents.len() {
-        return Err(StatementError::RegionRank {
-            tensor: name.clone(),
-            shape: tensor.shape.clone(),
-            slices: dims.len(),
-        });
-    }
-
-    let mut start = Vec::new();
-    let mut shape = Vec::new();
-    for (dimension, (bounds, &extent)) in dims.iter().zip(extents).enumerate() {
-        let low = bounds.start.unwrap_or(0);
-        let high = bounds.stop.unwrap_or(extent);
-        if low > high || high > extent {
-            return Err(StatementError::RegionBounds {
-                tensor: name.clone(),
-                dimension,
-                extent,
-            });
-        }
-        start.push(low);
-        shape.push(high - low);
-    }
-
-    let region = TensorRegion {
-        tensor: tensor.id,
-        start: Index(start),
-        shape: Shape(shape),
-    };
-    Ok((tensor, region))
-}
-
-/// Both sides of a copy must name rectangles of one shape.
-fn same_region(
-    dst: &Shaped,
-    dst_region: &TensorRegion,
-    src: &Shaped,
-    src_region: &TensorRegion,
-) -> Result<(), StatementError> {
-    if dst_region.shape == src_region.shape {
+/// Two operands that must name regions of one shape.
+fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), StatementError> {
+    if left.region.shape == right.region.shape {
         return Ok(());
     }
     Err(StatementError::ShapeMismatch([
-        (dst.name.clone(), dst_region.shape.clone()),
-        (src.name.clone(), src_region.shape.clone()),
+        left.described(),
+        right.described(),
     ]))
 }
 
-fn in_memory(operand: &Shaped, expected: Memory) -> Result<(), StatementError> {
-    if operand.memory == expected {
+/// Check that `dst` names a region of the shape `expected` of the instruction's result.
+fn result_shape(dst: &RegionOperand, expected: Shape) -> Result<(), StatementError> {
+    if dst.region.shape == expected {
         return Ok(());
     }
-    Err(StatementError::WrongMemory {
-        tensor: operand.name.clone(),
-        expected,
-    })
-}
-
-/// Check that `dst` has the shape `expected` of the instruction's result.
-fn result_shape(dst: &Shaped, expected: Shape) -> Result<(), StatementError> {
-    if *dst.shape == expected {
-        return Ok(());
-    }
+    let (tensor, shape) = dst.described();
     Err(StatementError::ResultShape {
-        tensor: dst.name.clone(),
-        shape: dst.shape.clone(),
+        tensor,
+        shape,
         expected,
     })
 }
 
-fn same_shape(left: &Shaped, right: &Shaped) -> Result<(), StatementError> {
-    if left.shape == right.shape {
-        return Ok(());
+/// A tensor operand: a region of a tensor, the whole tensor if not subscripted.
+struct RegionOperand<'a> {
+    name: &'a TensorName,
+    memory: Memory,
+    region: TensorRegion,
+}
+
+impl RegionOperand<'_> {
+    /// The region's `[partitions, free]` extents, if it is a region of an on-chip
+    /// tile; every SBUF and PSUM tensor is a two-dimensional tile.
+    fn extents(&self) -> Result<[u64; 2], StatementError> {
+        match (self.memory, &self.region.shape.0[..]) {
+            (Memory::Sbuf | Memory::Psum, &[partitions, free]) => Ok([partitions, free]),
+            _ => Err(StatementError::OffChip(self.name.clone())),
+        }
     }
-    Err(StatementError::ShapeMismatch([
-        (left.name.clone(), left.shape.clone()),
-        (right.name.clone(), right.shape.clone()),
-    ]))
+
+    fn in_memory(&self, expected: Memory) -> Result<(), StatementError> {
+        if self.memory == expected {
+            return Ok(());
+        }
+        Err(StatementError::WrongMemory {
+            tensor: self.name.clone(),
+            expected,
+        })
+    }
+
+    /// Its tensor and the region's shape, for an error.
+    fn described(&self) -> (TensorName, Shape) {
+        (self.name.clone(), self.region.shape.clone())
+    }
 }
 
 // =============================================================================
@@ -526,14 +460,6 @@ struct Entry {
     memory: Memory,
     shape: Shape,
     initial: Initial,
-}
-
-/// A tensor operand.
-struct Shaped<'a> {
-    id: TensorId,
-    name: &'a TensorName,
-    memory: Memory,
-    shape: &'a Shape,
 }
 
 /// The tensors named so far. The parser guarantees every name a statement uses
@@ -562,27 +488,74 @@ impl Scope {
         id
     }
 
-    /// Operand `keyword`, a tensor.
-    fn shaped(
+    /// Operand `keyword`, a tensor or a region of one: the whole tensor, or the
+    /// subscript's slices resolved against its shape.
+    fn region(
         &self,
         operand: &Operand,
         keyword: &'static str,
-    ) -> Result<Shaped<'_>, StatementError> {
-        let Operand::Tensor(name) = operand else {
-            return Err(StatementError::NotATensor { keyword });
+    ) -> Result<RegionOperand<'_>, StatementError> {
+        let (name, dims) = match operand {
+            Operand::Tensor(name) => (name, [].as_slice()),
+            Operand::Region { tensor, dims } => (tensor, dims.as_slice()),
+            _ => return Err(StatementError::NotATensor { keyword }),
         };
-        Ok(self.named(name))
-    }
-
-    fn named(&self, name: &TensorName) -> Shaped<'_> {
         let id = self.ids[name];
         let entry = &self.entries[id];
-        Shaped {
-            id,
+        let extents = entry.shape.0.as_slice();
+
+        let region = if dims.is_empty() {
+            TensorRegion {
+                tensor: id,
+                start: Index(vec![0; extents.len()]),
+                shape: entry.shape.clone(),
+            }
+        } else {
+            if dims.len() != extents.len() {
+                return Err(StatementError::RegionRank {
+                    tensor: name.clone(),
+                    shape: entry.shape.clone(),
+                    slices: dims.len(),
+                });
+            }
+            let mut start = Vec::new();
+            let mut shape = Vec::new();
+            for (dimension, (bounds, &extent)) in dims.iter().zip(extents).enumerate() {
+                let low = bounds.start.unwrap_or(0);
+                let high = bounds.stop.unwrap_or(extent);
+                if low >= high || high > extent {
+                    return Err(StatementError::RegionBounds {
+                        tensor: name.clone(),
+                        dimension,
+                        extent,
+                    });
+                }
+                start.push(low);
+                shape.push(high - low);
+            }
+            TensorRegion {
+                tensor: id,
+                start: Index(start),
+                shape: Shape(shape),
+            }
+        };
+
+        Ok(RegionOperand {
             name: &entry.name,
             memory: entry.memory,
-            shape: &entry.shape,
-        }
+            region,
+        })
+    }
+
+    /// Operand `keyword`, a region of an on-chip tile.
+    fn tile(
+        &self,
+        operand: &Operand,
+        keyword: &'static str,
+    ) -> Result<RegionOperand<'_>, StatementError> {
+        let tile = self.region(operand, keyword)?;
+        tile.extents()?;
+        Ok(tile)
     }
 
     /// The tensor a kernel returns: one it allocates in HBM, not an argument or a tile.
