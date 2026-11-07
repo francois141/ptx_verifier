@@ -13,13 +13,17 @@ use crate::frontend::ast::{
     resolve_region,
 };
 use crate::ir::{
-    ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory, ScalarOperand,
-    ScalarStep, Selection, Shape, Tensor, TensorId, TensorRegion,
+    ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory, Reduction,
+    ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, StatementError};
 
 const NKI_LANGUAGE: &str = "nki.language";
+
+/// The one `reduce_cmd` lowered: reset the accumulator, then reduce this instruction's
+/// result. The others carry an accumulator across instructions, which is not modelled.
+const RESET_REDUCE: &str = "nki.isa.reduce_cmd.reset_reduce";
 
 /// Lower `kernel` into its tensors, the parameters first and then the declared
 /// tensors in declaration order, its instructions in order, and the tensor it returns.
@@ -143,38 +147,51 @@ fn lower_instruction(
         }
 
         "activation" => {
-            let [dst, op, data] = operands(instruction, &["dst", "op", "data"])?;
-            let func = activation_func(op)?;
+            let ([dst, op, data], [bias, reduce_op, reduce_res, reduce_cmd]) =
+                operands_with_optional(
+                    instruction,
+                    &["dst", "op", "data"],
+                    &["bias", "reduce_op", "reduce_res", "reduce_cmd"],
+                )?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
+            let reduce = match (reduce_op, reduce_res, reduce_cmd) {
+                (Some(op), Some(res), Some(cmd)) => {
+                    reset_reduce(cmd)?;
+                    Some(reduction(op, res, &dst, scope)?)
+                }
+                (None, None, None) => None,
+                _ => {
+                    return Err(StatementError::UnpairedOperands {
+                        opcode: instruction.opcode.clone(),
+                        keywords: &["reduce_op", "reduce_res", "reduce_cmd"],
+                    });
+                }
+            };
             Ok(LoweredInstr::Activation {
-                func,
+                func: activation_func(op)?,
+                bias: bias_operand(bias, &dst, scope)?,
                 dst: dst.region,
                 data: data.region,
+                reduce,
             })
         }
 
+        // `activation` with `reduce_cmd=reset_reduce`, as the NKI docs define it.
         "activation_reduce" => {
-            let [dst, op, data, reduce_op, reduce_res] = operands(
+            let ([dst, op, data, reduce_op, reduce_res], [bias]) = operands_with_optional(
                 instruction,
                 &["dst", "op", "data", "reduce_op", "reduce_res"],
+                &["bias"],
             )?;
-            let func = activation_func(op)?;
-            let reduce_op = arith_op(reduce_op)?;
-            let [dst, data, reduce_res] = [
-                scope.tile(dst, "dst")?,
-                scope.tile(data, "data")?,
-                scope.tile(reduce_res, "reduce_res")?,
-            ];
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
-            let [partitions, _] = data.matrix()?;
-            per_partition(&reduce_res, partitions)?;
-            Ok(LoweredInstr::ActivationReduce {
-                func,
+            Ok(LoweredInstr::Activation {
+                func: activation_func(op)?,
+                bias: bias_operand(bias, &dst, scope)?,
+                reduce: Some(reduction(reduce_op, reduce_res, &data, scope)?),
                 dst: dst.region,
                 data: data.region,
-                reduce_op,
-                reduce_res: reduce_res.region,
             })
         }
 
@@ -186,18 +203,50 @@ fn lower_instruction(
                 func: ActivationFunc::Reciprocal,
                 dst: dst.region,
                 data: data.region,
+                bias: None,
+                reduce: None,
             })
         }
 
         "tensor_reduce" => {
-            let [dst, data, op, axis] = operands(instruction, &["dst", "data", "op", "axis"])?;
+            let ([dst, data, op, axis], [negate]) =
+                operands_with_optional(instruction, &["dst", "data", "op", "axis"], &["negate"])?;
             let op = arith_op(op)?;
             free_axis(axis)?;
+            let sign = match negate {
+                None | Some(Operand::Bool(false)) => Sign::Kept,
+                Some(Operand::Bool(true)) => Sign::Negated,
+                Some(_) => return Err(StatementError::NotABool { keyword: "negate" }),
+            };
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             let [partitions, _] = data.matrix()?;
             per_partition(&dst, partitions)?;
             Ok(LoweredInstr::Reduce {
                 op,
+                dst: dst.region,
+                data: data.region,
+                sign,
+            })
+        }
+
+        // One `tensor_scalar` step, then its result's reduction into `reduce_res`.
+        "tensor_scalar_reduce" => {
+            let ([dst, data, op0, operand0, reduce_op, reduce_res], [reduce_cmd]) =
+                operands_with_optional(
+                    instruction,
+                    &["dst", "data", "op0", "operand0", "reduce_op", "reduce_res"],
+                    &["reduce_cmd"],
+                )?;
+            if let Some(cmd) = reduce_cmd {
+                reset_reduce(cmd)?;
+            }
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
+            same_shape(&dst, &data)?;
+            let [partitions, _] = dst.region.tile_extents();
+            Ok(LoweredInstr::TensorScalar {
+                first: scalar_step(op0, operand0, "operand0", partitions, scope)?,
+                second: None,
+                reduce: Some(reduction(reduce_op, reduce_res, &dst, scope)?),
                 dst: dst.region,
                 data: data.region,
             })
@@ -223,7 +272,7 @@ fn lower_instruction(
                 _ => {
                     return Err(StatementError::UnpairedOperands {
                         opcode: instruction.opcode.clone(),
-                        keywords: ["op1", "operand1"],
+                        keywords: &["op1", "operand1"],
                     });
                 }
             };
@@ -233,6 +282,7 @@ fn lower_instruction(
                 data: data.region,
                 first,
                 second,
+                reduce: None,
             })
         }
 
@@ -370,23 +420,70 @@ fn scalar_step(
     partitions: u64,
     scope: &Scope,
 ) -> Result<ScalarStep, StatementError> {
+    Ok(ScalarStep {
+        op: arith_op(op)?,
+        operand: scalar_operand(operand, keyword, partitions, scope)?,
+    })
+}
+
+/// An operand broadcast across a destination of `partitions` partitions: a literal, or
+/// a tile region of one free element per partition.
+fn scalar_operand(
+    operand: &Operand,
+    keyword: &'static str,
+    partitions: u64,
+    scope: &Scope,
+) -> Result<ScalarOperand, StatementError> {
+    if let Operand::Scalar(value) = operand {
+        return Ok(ScalarOperand::Constant(*value));
+    }
+    let tile = scope.tile(operand, keyword)?;
+    if tile.region.tile_extents() != [partitions, 1] {
+        let (tensor, shape) = tile.described();
+        return Err(StatementError::NotBroadcastable {
+            tensor,
+            shape,
+            expected: Shape(vec![partitions, 1]),
+        });
+    }
+    Ok(ScalarOperand::Broadcast(tile.region))
+}
+
+/// An activation's optional `bias`, broadcast across `dst` like a `tensor_scalar` operand.
+fn bias_operand(
+    bias: Option<&Operand>,
+    dst: &RegionOperand,
+    scope: &Scope,
+) -> Result<Option<ScalarOperand>, StatementError> {
+    let [partitions, _] = dst.region.tile_extents();
+    bias.map(|bias| scalar_operand(bias, "bias", partitions, scope))
+        .transpose()
+}
+
+/// The reduction by `op` of an instruction's elementwise result, of the shape of
+/// `result`, into `res`, one element per partition.
+fn reduction(
+    op: &Operand,
+    res: &Operand,
+    result: &RegionOperand,
+    scope: &Scope,
+) -> Result<Reduction, StatementError> {
     let op = arith_op(op)?;
-    let operand = match operand {
-        Operand::Scalar(value) => ScalarOperand::Constant(*value),
-        _ => {
-            let tile = scope.tile(operand, keyword)?;
-            if tile.region.tile_extents() != [partitions, 1] {
-                let (tensor, shape) = tile.described();
-                return Err(StatementError::NotBroadcastable {
-                    tensor,
-                    shape,
-                    expected: Shape(vec![partitions, 1]),
-                });
-            }
-            ScalarOperand::Broadcast(tile.region)
-        }
-    };
-    Ok(ScalarStep { op, operand })
+    let res = scope.tile(res, "reduce_res")?;
+    let [partitions, _] = result.matrix()?;
+    per_partition(&res, partitions)?;
+    Ok(Reduction {
+        op,
+        res: res.region,
+    })
+}
+
+/// Check that a `reduce_cmd` is `nisa.reduce_cmd.reset_reduce`.
+fn reset_reduce(cmd: &Operand) -> Result<(), StatementError> {
+    match cmd {
+        Operand::Member(member) if member == RESET_REDUCE => Ok(()),
+        _ => Err(StatementError::UnsupportedReduceCmd(cmd.clone())),
+    }
 }
 
 // =============================================================================
