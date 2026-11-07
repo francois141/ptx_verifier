@@ -4,7 +4,9 @@
 
 mod common;
 
-use volta_trainium_analysis::frontend::parse::KernelCall;
+use volta_trainium_analysis::frontend::ast::TensorName;
+use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel};
+use volta_trainium_analysis::{EvalError, Index, InstrId, LowerError, evaluate, lower_kernel};
 
 #[test]
 fn the_add_kernel_parses_lowers_and_runs_as_expected() {
@@ -186,4 +188,78 @@ fn the_pipelined_scale_kernel_parses_lowers_and_runs_as_expected() {
         ..KernelCall::new(&[("a", &[6, 4])])
     };
     common::check_call("pipelined_scale", "kernel", &[], &call);
+}
+
+// The `address=` placements, `accumulate=`, `dma_transpose` and `engine=` of
+// attn_fwd_v10, on `matmul.py`'s product transposed.
+#[test]
+fn the_placed_tiles_kernel_parses_lowers_and_runs_as_expected() {
+    common::check(
+        "placed_tiles",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3])],
+    );
+}
+
+/// Run `kernel` of `placement_errors.py` through lowering, for a call with `shapes`.
+fn lowered_placement_error(
+    kernel: &str,
+    shapes: &[(&str, &[u64])],
+) -> Result<volta_trainium_analysis::LoweredKernel, LowerError> {
+    let parsed = parse_kernel(&common::source("placement_errors"), kernel, shapes).unwrap();
+    lower_kernel(&parsed)
+}
+
+#[test]
+fn reading_bytes_another_placed_tile_wrote_is_an_error() {
+    let lowered = lowered_placement_error("clobbered_read", &[("a", &[2, 1])]).unwrap();
+    assert_eq!(
+        evaluate(&lowered).unwrap_err(),
+        EvalError::ClobberedRead {
+            instr: InstrId(4),
+            tensor: "acc".into(),
+            index: Index(vec![0, 1]),
+            by: InstrId(1),
+            through: "half".into(),
+        }
+    );
+}
+
+#[test]
+fn accumulating_into_unwritten_psum_is_an_error() {
+    let shapes: [(&str, &[u64]); 2] = [("a_t", &[4, 2]), ("b", &[4, 3])];
+    let lowered = lowered_placement_error("accumulate_uninitialized", &shapes).unwrap();
+    assert_eq!(
+        evaluate(&lowered).unwrap_err(),
+        EvalError::UninitializedRead {
+            instr: InstrId(2),
+            tensor: "acc".into(),
+            index: Index(vec![0, 0]),
+        }
+    );
+}
+
+#[test]
+fn placing_some_tiles_but_not_others_is_an_error() {
+    assert_eq!(
+        lowered_placement_error("mixed_allocation", &[("a", &[2, 4])]).unwrap_err(),
+        LowerError::MixedAllocation {
+            placed: TensorName("x".into()),
+            unplaced: TensorName("y".into()),
+        }
+    );
+}
+
+#[test]
+fn a_placed_tile_past_the_end_of_its_buffer_is_an_error() {
+    let error = parse_kernel(
+        &common::source("placement_errors"),
+        "overflowing_psum",
+        &[("a", &[2, 4])],
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("does not fit in `nl.psum`"),
+        "{error}"
+    );
 }

@@ -68,11 +68,12 @@ pub enum LoweredInstr {
     // Tensor Engine
     // =========================================================================
     /// `dst = stationary.T @ moving` from SBUF regions into a PSUM region, contracting
-    /// their partitions; a `dst` element written before accumulates the product instead.
+    /// their partitions, or `dst += ...` as `accumulation` says.
     Matmul {
         dst: TensorRegion,
         stationary: TensorRegion,
         moving: TensorRegion,
+        accumulation: Accumulation,
     },
     /// `dst[f, p] = data[p, f]` over on-chip regions.
     Transpose {
@@ -88,6 +89,17 @@ pub enum LoweredInstr {
 pub struct Reduction {
     pub op: ArithOp,
     pub res: TensorRegion,
+}
+
+/// Whether `nc_matmul` adds its product to `dst` or overwrites it, from `accumulate=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Accumulation {
+    /// `None`, the default: an element's first write overwrites it, later ones add.
+    FirstOverwrites,
+    /// `False`.
+    Overwrite,
+    /// `True`: every element must hold a value already.
+    Accumulate,
 }
 
 /// Whether a reduction's result is written as folded or negated (`negate=True`).

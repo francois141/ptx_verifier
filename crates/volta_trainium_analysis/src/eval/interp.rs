@@ -6,12 +6,13 @@ use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
 
 use crate::ir::{
-    ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Reduction, ScalarOperand,
-    Sign, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Reduction,
+    ScalarOperand, Sign, TensorId, TensorRegion,
 };
 
 use super::EvalError;
-use super::tensor::TensorState;
+use super::alias;
+use super::tensor::{Clobber, TensorState};
 
 /// Run `kernel` and return, in parameter order, each argument it wrote, then the tensor it
 /// returns, each with its written elements by offset. An unwritten argument element holds
@@ -33,6 +34,8 @@ pub fn evaluate(kernel: &LoweredKernel) -> Result<SymbolicOutputs, EvalError> {
 struct Interpreter<'a> {
     arena: ExprArena,
     tensors: IdVec<TensorId, TensorState<'a>>,
+    /// Each tensor's aliases: the tiles `address=` places over its bytes.
+    aliases: IdVec<TensorId, Vec<TensorId>>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -46,6 +49,7 @@ impl<'a> Interpreter<'a> {
         Self {
             arena,
             tensors: IdVec::from_vec(tensors),
+            aliases: alias::aliases(&kernel.tensors),
         }
     }
 
@@ -56,6 +60,17 @@ impl<'a> Interpreter<'a> {
             value,
         } in self.writes(instr, instruction)?
         {
+            let tile = self.tensors[tensor].tensor();
+            if let Some((partition, bytes)) = alias::element_bytes(tile, &index) {
+                for &other in &self.aliases[tensor] {
+                    for clobbered in
+                        alias::overlapping(self.tensors[other].tensor(), partition, &bytes)
+                    {
+                        let through = tile.name.clone();
+                        self.tensors[other].clobber(clobbered, Clobber { instr, through });
+                    }
+                }
+            }
             self.tensors[tensor].write(index, value);
         }
         Ok(())
@@ -174,7 +189,8 @@ impl<'a> Interpreter<'a> {
                 dst,
                 stationary,
                 moving,
-            } => self.matmul(instr, dst, [stationary, moving], &mut writes)?,
+                accumulation,
+            } => self.matmul(instr, dst, [stationary, moving], *accumulation, &mut writes)?,
             LoweredInstr::Transpose { dst, data } => {
                 for [p, f] in elements(data) {
                     let value = self.read(instr, data, [p, f])?;
@@ -269,21 +285,32 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Each `dst[row, column]` as the sum over `k` of `stationary[k, row] * moving[k, column]`.
-    /// With `nc_matmul`'s default `accumulate=None`, a PSUM element's first write overwrites
-    /// it and later ones accumulate. `dst` is in PSUM and the operands in SBUF, so none alias.
+    /// Each `dst[row, column]` as the sum over `k` of `stationary[k, row] * moving[k, column]`,
+    /// added to the element's value as `accumulation` says. `dst` is in PSUM and the
+    /// operands in SBUF, so none alias.
     fn matmul(
         &mut self,
         instr: InstrId,
         dst: &TensorRegion,
         [stationary, moving]: [&TensorRegion; 2],
+        accumulation: Accumulation,
         writes: &mut Vec<Write>,
     ) -> Result<(), EvalError> {
         let [contraction, rows] = stationary.tile_extents();
         let [_, columns] = moving.tile_extents();
         for row in 0..rows {
             for column in 0..columns {
-                let mut sum = match self.tensors[dst.tensor].written(&dst.tile_index(row, column)) {
+                let index = dst.tile_index(row, column);
+                let earlier = match accumulation {
+                    Accumulation::Overwrite => None,
+                    Accumulation::FirstOverwrites => {
+                        self.tensors[dst.tensor].written(instr, &index)?
+                    }
+                    Accumulation::Accumulate => {
+                        Some(self.tensors[dst.tensor].read(&mut self.arena, instr, &index)?)
+                    }
+                };
+                let mut sum = match earlier {
                     Some(earlier) => earlier,
                     None => self.arena.int(0),
                 };

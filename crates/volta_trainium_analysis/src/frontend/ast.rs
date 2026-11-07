@@ -50,6 +50,18 @@ pub struct TileDecl {
     pub shape: TileShape,
     pub dtype: Dtype,
     pub buffer: Buffer,
+    /// Where `address=` places it; the compiler places a tile without one.
+    pub address: Option<Address>,
+}
+
+/// A tile's place in its buffer, from `nl.ndarray(..., address=(partition, offset))`:
+/// its partitions from `partition`, each holding the tile's free elements row-major
+/// from byte `offset`, `element_bytes` each, the size of the tile's dtype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Address {
+    pub partition: u64,
+    pub offset: u64,
+    pub element_bytes: u64,
 }
 
 /// A tensor the kernel allocates in device memory (HBM), such as the output it returns.
@@ -238,6 +250,8 @@ pub enum Operand {
     Ints(Vec<u64>),
     /// `True` or `False`, e.g. `negate=True`.
     Bool(bool),
+    /// `None`, e.g. `accumulate=None`.
+    None,
     /// A rectangular region of a tensor, from a subscript.
     Region {
         tensor: TensorName,
@@ -277,7 +291,13 @@ impl fmt::Display for Statement {
                     tile.name,
                     extents.join(", "),
                     tile.dtype
-                )
+                )?;
+                match tile.address {
+                    Some(Address {
+                        partition, offset, ..
+                    }) => write!(f, " at ({partition}, {offset})"),
+                    None => Ok(()),
+                }
             }
 
             Self::DeclareHbm(tensor) => write!(
@@ -330,6 +350,7 @@ impl fmt::Display for Operand {
             Self::Int(value) => write!(f, "{value}"),
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
+            Self::None => f.write_str("None"),
             Self::Ints(values) => match &values[..] {
                 [value] => write!(f, "({value},)"),
                 _ => {

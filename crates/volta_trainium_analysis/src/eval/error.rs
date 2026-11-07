@@ -17,6 +17,16 @@ pub enum EvalError {
         index: Index,
     },
 
+    /// An element read after a write through another tile placed over its bytes.
+    ClobberedRead {
+        instr: InstrId,
+        tensor: String,
+        index: Index,
+        /// The instruction whose write clobbered it, and the tile it wrote.
+        by: InstrId,
+        through: String,
+    },
+
     // =========================================================================
     // Shape Errors
     // =========================================================================
@@ -35,6 +45,18 @@ impl fmt::Display for EvalError {
                 f,
                 "instruction {}: `{tensor}{index}` is read before it is written",
                 instr.0
+            ),
+            Self::ClobberedRead {
+                instr,
+                tensor,
+                index,
+                by,
+                through,
+            } => write!(
+                f,
+                "instruction {}: `{tensor}{index}` is read after instruction {} wrote \
+                 `{through}`, which `address=` places over its bytes",
+                instr.0, by.0
             ),
             Self::ElementCountOverflow { instr, tensor } => write!(
                 f,

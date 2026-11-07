@@ -5,6 +5,8 @@ use std::fmt;
 
 use id_collections::id_type;
 
+pub use crate::frontend::ast::Address;
+
 /// A tensor's position in its kernel's tensor set.
 #[id_type]
 pub struct TensorId(pub u32);
@@ -16,6 +18,9 @@ pub struct Tensor {
     pub memory: Memory,
     pub shape: Shape,
     pub initial: Initial,
+    /// An on-chip tile's place in its buffer, if `address=` gave one: tiles placed
+    /// where others are alias their bytes.
+    pub address: Option<Address>,
 }
 
 /// What a tensor's elements hold before an instruction writes them.
@@ -124,6 +129,17 @@ impl Shape {
             .fold(0, |offset, (&extent, &coordinate)| {
                 offset * extent + coordinate
             })
+    }
+
+    /// The index at position `offset` of a row-major layout of the shape, which must
+    /// lie within it.
+    pub fn index_at(&self, mut offset: u64) -> Index {
+        let mut coordinates = vec![0; self.0.len()];
+        for (coordinate, &extent) in coordinates.iter_mut().zip(&self.0).rev() {
+            *coordinate = offset % extent;
+            offset /= extent;
+        }
+        Index(coordinates)
     }
 
     /// The index after `index` in row-major order, if any.
