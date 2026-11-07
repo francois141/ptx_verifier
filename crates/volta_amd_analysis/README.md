@@ -16,6 +16,14 @@ global inputs and keep their destinations unavailable until `s_waitcnt lgkmcnt(0
 Scalar execution requires XNACK to be disabled; partial LGKM waits with pending scalar
 loads are rejected. `ds_bpermute_b32` exchanges register values across a wave without
 accessing LDS memory; its results remain pending until an LGKM wait completes them.
+The maximum LGKM field, `lgkmcnt(15)`, does not wait or complete any operation, even
+when the logical issue history exceeds 15 instructions. It leaves DS and scalar-load
+destinations pending and creates no graph completion evidence. Other fields of a
+combined wait still take effect. Counter fields and their maximum-value defaults
+follow [LLVM's gfx9 wait encoding](https://releases.llvm.org/21.1.0/docs/AMDGPU/gfx9_waitcnt.html).
+The maximal VM field, `vmcnt(63)`, likewise leaves every vector-load destination
+pending. The interpreter does not infer completion from hardware queue capacity
+or backpressure; an explicit zero or supported partial wait must establish it.
 Launch initialization supports full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
 with an optional kernarg pointer and enabled workgroup IDs. `WorkgroupLaunch` selects a
@@ -82,6 +90,10 @@ moves.
 `lds_sync` includes a pending-read race and its waited control. `workgroup_ids` checks all
 three launch coordinates, including a disabled Y axis, and rejects invalid grid coordinates.
 Rejection fixtures instead require a specific lowering or execution error.
+`tests/lgkm_wait.rs` checks maximal-field DS and scalar waits across the counter's
+field limit, actual zero and partial waits, combined VM/LGKM waits, and END completion.
+Its VM controls use distinct load destinations across the 63-field boundary and
+check read/overwrite refusal, actual zero/partial completion and independent LGKM waits.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:
 
