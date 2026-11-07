@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use volta_trainium_analysis::LoweredKernel;
 use volta_trainium_analysis::frontend::ast::Kernel;
-use volta_trainium_analysis::frontend::parse::parse_kernel_with_modules;
+use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel_for_call};
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
 /// Parse, lower and run kernel `kernel` of `tests/fixtures/<name>.py` for a call with
@@ -20,8 +20,13 @@ pub fn check(name: &str, kernel: &str, shapes: &[(&str, &[u64])]) {
 
 /// `check` for a fixture that imports from `modules`, each `tests/fixtures/<module>.py`.
 pub fn check_importing(name: &str, kernel: &str, modules: &[&str], shapes: &[(&str, &[u64])]) {
+    check_call(name, kernel, modules, &KernelCall::new(shapes));
+}
+
+/// `check_importing` for `call`, which may give dtypes and tile sizes too.
+pub fn check_call(name: &str, kernel: &str, modules: &[&str], call: &KernelCall) {
     let fixture = fixtures().join(name);
-    let (_, lowered) = check_lowering(name, kernel, modules, shapes);
+    let (_, lowered) = lower_call(name, kernel, modules, call);
 
     let outputs = evaluate(&lowered).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut rendered = String::new();
@@ -43,6 +48,15 @@ pub fn check_lowering(
     modules: &[&str],
     shapes: &[(&str, &[u64])],
 ) -> (Kernel, LoweredKernel) {
+    lower_call(name, kernel, modules, &KernelCall::new(shapes))
+}
+
+fn lower_call(
+    name: &str,
+    kernel: &str,
+    modules: &[&str],
+    call: &KernelCall,
+) -> (Kernel, LoweredKernel) {
     let fixture = fixtures().join(name);
     let source = std::fs::read_to_string(fixture.with_extension("py")).unwrap();
     let sources: Vec<(String, String)> = modules
@@ -60,7 +74,7 @@ pub fn check_lowering(
         .map(|(name, source)| (name.as_str(), source.as_str()))
         .collect();
 
-    let parsed = parse_kernel_with_modules(&source, &sources, kernel, shapes)
+    let parsed = parse_kernel_for_call(&source, &sources, kernel, call)
         .unwrap_or_else(|e| panic!("{name}: {e}"));
     let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
     let base = fixture.with_file_name(match kernel {

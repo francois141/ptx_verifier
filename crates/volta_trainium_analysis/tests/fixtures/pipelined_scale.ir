@@ -1,0 +1,14 @@
+kernel kernel(a) -> out
+  a: hbm[6, 4]
+  out: hbm[6, 4]
+  tiles: sbuf[2, 2, 4]
+  scaled: sbuf[2, 2, 4]
+  tiles[0:2, 0, 0:4] = mov(a[0:2, 0:4])
+  scaled[0:2, 0, 0:4] = multiply(tiles[0:2, 0, 0:4], 2)
+  tiles[0:2, 1, 0:4] = mov(a[2:4, 0:4])
+  out[0:2, 0:4] = mov(scaled[0:2, 0, 0:4])
+  scaled[0:2, 1, 0:4] = multiply(tiles[0:2, 1, 0:4], 2)
+  tiles[0:2, 0, 0:4] = mov(a[4:6, 0:4])
+  out[2:4, 0:4] = mov(scaled[0:2, 1, 0:4])
+  scaled[0:2, 0, 0:4] = multiply(tiles[0:2, 0, 0:4], 2)
+  out[4:6, 0:4] = mov(scaled[0:2, 0, 0:4])

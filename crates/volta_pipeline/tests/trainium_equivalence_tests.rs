@@ -7,7 +7,7 @@ use volta_expr::SymbolicOutputs;
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{
-    TileSizes, parse_kernel, parse_kernel_with_modules, parse_kernel_with_tile_sizes,
+    KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
 };
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
@@ -289,12 +289,16 @@ fn tileable_attention_kernels() -> String {
 /// `nl.tile_size` reading `tile_sizes`.
 fn tiled_attention_kernel(kernel: &str, tile_sizes: TileSizes, [d, n]: [u64; 2]) -> Kernel {
     let shape: &[u64] = &[d, n];
-    parse_kernel_with_tile_sizes(
+    let shapes = [("q", shape), ("k", shape), ("v", shape)];
+    let call = KernelCall {
+        tile_sizes,
+        ..KernelCall::new(&shapes)
+    };
+    parse_kernel_for_call(
         &tileable_attention_kernels(),
         &[("attention_kernel_utils", ATTENTION_UTILS)],
         kernel,
-        &[("q", shape), ("k", shape), ("v", shape)],
-        tile_sizes,
+        &call,
     )
     .unwrap()
 }
@@ -313,6 +317,7 @@ const fn reduced_tiles(pmax: u64, gemm_moving_fmax: u64) -> TileSizes {
         pmax,
         gemm_stationary_fmax: pmax,
         gemm_moving_fmax,
+        sbuf_fmax_bytes: TileSizes::HARDWARE.sbuf_fmax_bytes,
     }
 }
 

@@ -514,35 +514,48 @@ rational, since only f64-round-tripping reals print as decimals.
 A kernel is parsed for one call: `parse_kernel(source, name, shapes)` takes each
 parameter's shape, as `@nki.jit` specializes a kernel per call (a missing,
 unknown, repeated or empty one is `ParseError::ParamShape`), and lowering takes
-parameter shapes from the parsed `ast::Param`s. The parser runs the kernel's
-Python as NKI's tracer does: a `Trace` (every tensor declared and its extents,
-list storage, the statements emitted, per-helper call counts) and a `Frame` per
-call (its module, locals, the names it assigns, its tile prefix). Names bind and
-rebind as in Python, to tensors, integers, tuples and lists (`Value::List` is an
-index into the trace's storage, so lists are shared); a name a function assigns
-is local throughout it; a tile name declared again takes a version suffix (`x~1`),
-so every tensor's name is unique. `d, n = q.shape`,
-`+`/`*`/`//`, `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax}` (a
-`TileSizes`, the hardware's by default, others through
-`parse_kernel_with_tile_sizes`),
-`list`/`tuple` and item reads and writes evaluate there, `t.shape` is a tuple, and
-an `assert` (a chain of `==`/`!=`/`<`/`<=`/`>`/`>=`, tuples by `==`/`!=` only) is
-checked and leaves no statement; a false one is a parse error.
+parameter shapes from the parsed `ast::Param`s. A `KernelCall`
+(`parse_kernel_for_call`) also gives parameter dtypes by `nki.language` name, needed
+only where a kernel compares one (v10's allocator), and the `TileSizes`. The parser
+runs the kernel's Python as NKI's tracer does: a `Trace` (every tensor declared, its
+extents and dtype, list and object storage, the classes instantiated, the
+statements emitted, per-helper call counts) and a `Frame` per call (its module,
+locals, the names it assigns, its tile prefix, the name its caller binds its value
+to). Names bind and rebind as in Python, to tensors, signed integers, tuples, lists,
+`None` and objects (`Value::List` and `Value::Object` index the trace's storage, so
+both are shared); a name a function assigns is local throughout it; a tile name
+declared again takes a version suffix (`x~1`), so every tensor's name is unique.
+`d, n = q.shape`, `+`/`-`/`*`/`//`/`%`/`&`, unary `-`/`~` and `op=` (Python's
+rounding), `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax,
+sbuf_fmax_bytes}` (`TileSizes::HARDWARE` by default; `sbuf_fmax_bytes`, a tile's
+largest SBUF free size in bytes, is a Trn2 partition's 192 KiB, a value the docs do not state), `list`/`tuple`/`len`, item reads and writes
+and tuple or list slices evaluate there, and `t.shape` is a tuple. Comparisons are
+values (integers ordered and chained; tuples, bools, floats, `None`, objects by
+identity and dtypes, `q.dtype` by the call's, by `==`/`!=`), as are `and`/`or`/`not`
+over Python's truth of a bool, integer or `None`. An `assert` (its message unread)
+is checked and leaves no statement; a false one is a parse error. An
+`if`/`elif`/`else` runs its taken branch, a `return` (bare: `None`) may come
+anywhere (`Flow`), and `with nl.no_reorder():` runs its body, the instructions
+being in program order anyway.
 `asserted_shapes(source, name)` reads a kernel's literal `assert p.shape ==
 (...)`s as its shapes, for `volta_pipeline`'s NKI frontend, which has no caller.
 
 Modules are read whole but functions lazily: the lexer tokenizes all of Python
 (strings, every bracket, `\` continuations), making what the subset lacks an
 `Unsupported` token, and `python::parse` keeps each `def` as a `FunctionSource` of
-tokens, parsed only when reached, so the samples' file parses although v10's
-classes use far more Python. A module's globals are imports, `from` imports,
-functions and classes (never read; using one is an error).
-`parse_kernel_with_modules(source, modules, name, shapes)` takes the imported
-modules' sources by name. A helper call (a statement, an assignment's value or a
-`return`'s, at most 32 deep) runs the helper's body in a new frame, with defaults,
-keyword arguments and a final `return`'s value; its tiles take the prefix
-`name[call].` (`softmax_isa[0].row_max`), and its errors are `ParseError::InCall`,
-lines in the helper's module. v1's tile-returning `nki.language` calls (`load`,
+tokens, and each `class` as a `ClassSource`, parsed only when reached, so code no
+kernel reaches may use any Python. A module's globals are imports, `from` imports,
+functions and classes. `parse_kernel_with_modules(source, modules, name, shapes)`
+takes the imported modules' sources by name. A call of a helper or a method (at most
+32 deep) runs its body in a new frame, with defaults (evaluated in its module),
+keyword arguments and its `return`'s value; its tiles take the prefix `name[call].`
+(`softmax_isa[0].row_max`, `Allocator.tile[0].x`), except that a tensor declared by
+`return nl.ndarray(...)` takes the name its caller binds it to, and its errors are
+`ParseError::InCall`, lines in the helper's module. A class (base `nl.NKIObject` or
+none) is read on first instantiation into a `ClassDef`, its body's attributes
+evaluated; calling it makes an object, run through `__init__` if it has one. An
+attribute reads the object's own, else the class's, else a bound `Value::Method`, and
+`obj.name = value` sets the object's own (a tensor call there declares `name`). v1's tile-returning `nki.language` calls (`load`,
 `matmul` with `transpose_x=True`, `max`/`sum` with `keepdims=True`, `exp`,
 `reciprocal`, `transpose`, and `store`) are rewritten by `tile_call`/`store` into a
 tile declaration named after the target (PSUM for `matmul` and `transpose`) and
@@ -550,8 +563,8 @@ the one `nki.isa` instruction it lowers to; `load`/`store` require HBM
 (`Declared::place`). `True`/`False` are `Value::Bool`. `nl.zeros` is an on-chip tile
 plus a `memset` to zero. `tensor_call` declares the tensor of any of these calls under
 the name the caller gives, binding nothing: an assignment binds its target, and
-`items.append(call)` a new list item, the tile named `items[k]`. `range(count)`
-unrolls like `nl.affine_range`; list literals evaluate to new lists.
+`items.append(call)` a new list item, the tile named `items[k]`. `range([start,]
+stop)` unrolls like `nl.affine_range`; list literals evaluate to new lists.
 
 A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
 lowered: the interpreter has no program counter, and the integer-expression
@@ -622,9 +635,13 @@ stage theirs (again `softmax.expected` and `matmul.expected`).
 `tensor_scalar_reduce` maxima, `tensor_reduce` with `negate=True`, and `activation`
 with a `bias` and a `reset_reduce` sum (a hand-written `.expected`; `volta_pipeline`
 proves it equal to `softmax.spec`).
+`tests/fixtures/pipelined_scale.py` doubles a tensor as v10 schedules its work: an
+allocator class sizing tiles from the call's `bfloat16` dtype, a buffers object, and
+guarded stages software-pipelined over `range(0, count + 2)` in `nl.no_reorder()`
+(`common::check_call`; a hand-written `.expected`).
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
-unreached code (a class, `if`, f-strings) that is never parsed.
+unreached code (a conditional expression, a dict, f-strings) that is never parsed.
 
 ## Crate: volta_graph_check
 
