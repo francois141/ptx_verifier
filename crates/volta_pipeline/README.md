@@ -80,7 +80,10 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   keep their scores in `nl.bfloat16`, and v10 its inputs too, which is not
   modelled: they are checked over the reals. The
   `fused_softmax` fixture, softmax as v8 fuses it, is proved equal to
-  `softmax.spec`. Functional
+  `softmax.spec`. The other tutorials' kernels run from their unmodified files too:
+  `nki_tensor_add` is proved equal to `tensor_addition.spec` (`a + b`) on every
+  output at its torch driver's 256 x 1024 (its 128 x 512 tiles are literals, so
+  there is no reduced size), and refuted against a subtraction. Functional
   equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 

@@ -636,7 +636,9 @@ and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative 
 `tests/fixtures/attention.spec` is the NKI attention samples' reference, their
 `numpy_attention` in their layout (`q`, `k`, `v` as `[D, N]`, `kernel_out` as `[N, D]`).
 `tests/fixtures/nki_samples/` vendors the samples' `attention_kernels.py` and
-`attention_kernel_utils.py` unmodified (nki-samples `ef43bf3`, MIT-0);
+`attention_kernel_utils.py` unmodified (nki-samples `ef43bf3`, MIT-0), and the other
+tutorials' kernel files likewise, each with a `.spec` of its reference
+(`tensor_addition_nki_kernels.py`, `tensor_addition.spec`);
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
@@ -825,7 +827,8 @@ seven PSUM banks), refuted with `q` and `k` swapped, and unmodified at `[128, 51
 on one row of each of the four query tiles in one ignored test, about 5 minutes and 12 GB,
 mostly the spec's unfolding and the eight kernels' runs (upstream's seqlen 4096 for v10
 is out of reach); `fused_softmax` against
-`softmax.spec`.
+`softmax.spec`; the tensor addition tutorial's `nki_tensor_add`, unmodified, against
+`tensor_addition.spec` at its driver's 256 x 1024, refuted against a subtraction.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
 checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
 `just trainium` run them alongside the analysis crate's snapshot tests.

@@ -253,7 +253,9 @@ modules it imports from); the fixtures' own shape `assert`s check those shapes.
 `tests/fixtures/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at
 `ef43bf3` (`src/nki_samples/tutorials/attention_fwd_performance/`, MIT No
-Attribution). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+Attribution), and the other tutorials' kernel files the same way, each with a
+`.spec` of its reference beside the fixtures: `tensor_addition_nki_kernels.py`
+(`tensor_addition.spec`, `a + b`). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 
