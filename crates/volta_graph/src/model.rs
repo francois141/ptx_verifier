@@ -552,6 +552,8 @@ pub enum Assumption {
     StructuredCta,
     /// One CTA (block (0, 0, 0)) is analyzed; the others run the same code.
     SingleCtaAnalyzed,
+    /// Only the workgroup at these coordinates is analyzed; no cross-workgroup checks.
+    SingleWorkgroupAnalyzed { id: (u32, u32, u32) },
     /// Every cluster holds exactly one CTA.
     SingleCtaCluster,
     /// No `clusterlaunchcontrol.try_cancel` request ever succeeds.
@@ -574,6 +576,9 @@ impl Assumption {
             }
             Assumption::SingleCtaAnalyzed => {
                 "CTA (0, 0, 0) is analyzed and stands for every CTA of the grid"
+            }
+            Assumption::SingleWorkgroupAnalyzed { .. } => {
+                "only the selected workgroup is analyzed; cross-workgroup interactions are not checked"
             }
             Assumption::SingleCtaCluster => "every cluster holds exactly one CTA",
             Assumption::NeverStealClusterLaunchControl => {

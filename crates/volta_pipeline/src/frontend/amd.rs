@@ -100,6 +100,8 @@ fn workgroup_launch(
     let workgroup = WorkgroupLaunch {
         kernarg_address: KERNARG_ADDRESS,
         workgroup_size: launch.block_dim,
+        workgroup_id: (0, 0, 0),
+        grid_size: launch.grid_dim,
     };
     Ok((workgroup, kernarg, arrays))
 }

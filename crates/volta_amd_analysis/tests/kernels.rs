@@ -11,6 +11,92 @@ use volta_amd_analysis::{
     LowerError, Terminal, WaveId, WorkgroupLaunch, analyze,
 };
 
+// Test nonzero X/Y/Z coordinates in every lane, including descriptors with unused axes.
+#[test]
+fn workgroup_ids_follow_the_kernel_descriptor() {
+    let cases: [(&str, &[u32]); 4] = [
+        ("workgroup_x", &[2]),
+        ("workgroup_y", &[3]),
+        ("workgroup_z", &[5]),
+        ("workgroup_xyz", &[2, 3, 5]),
+    ];
+    for (name, expected) in cases {
+        let actual = run_workgroup_id_kernel(name).symbolic_outputs.unwrap();
+        assert_eq!(actual.outputs.len(), 1);
+        let (array, elements) = &actual.outputs[0];
+        assert_eq!(array, "out");
+        assert_eq!(elements.len(), expected.len() * 64);
+
+        // Each coordinate must reach all 64 lanes, with no missing or extra stores.
+        for (i, &(index, value)) in elements.iter().enumerate() {
+            assert_eq!(index, i as u64);
+            assert_eq!(
+                actual.arena.as_int_const(value),
+                Some(i64::from(expected[i / 64])),
+                "{name}[{index}]"
+            );
+        }
+    }
+}
+
+// Test that graph metadata identifies the selected workgroup and the full launch grid.
+#[test]
+fn workgroup_graph_records_selected_launch() {
+    let result = run_workgroup_id_kernel("workgroup_xyz");
+    let provenance = result.graph.provenance();
+    assert_eq!(provenance.grid_dim, (3, 4, 6));
+    assert!(provenance.assumes(volta_graph::Assumption::SingleWorkgroupAnalyzed {
+        id: (2, 3, 5),
+    }));
+}
+
+/// Run a coordinate fixture in workgroup (2, 3, 5) with room for all three coordinates per lane.
+fn run_workgroup_id_kernel(name: &str) -> AnalysisResult {
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id: (2, 3, 5),
+        grid_size: (3, 4, 6),
+    };
+    let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), name).unwrap();
+    let out = array_of("out", 0x10000, 3 * 64, ArrayKind::Output(U32));
+    let result = analyze(&kernel, &launch, &out.base.to_le_bytes(), &[out]).unwrap();
+    assert_eq!(result.terminal, Terminal::Completed, "{name}");
+    result
+}
+
+// Test that an empty grid or a workgroup outside any of its three axes is rejected at launch.
+#[test]
+fn invalid_workgroup_ids_are_rejected() {
+    let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), "workgroup_xyz").unwrap();
+    let out = array_of("out", 0x10000, 192, ArrayKind::Output(U32));
+    for (grid_size, workgroup_id) in [
+        ((0, 1, 1), (0, 0, 0)),
+        ((1, 0, 1), (0, 0, 0)),
+        ((1, 1, 0), (0, 0, 0)),
+        ((3, 4, 6), (3, 0, 0)),
+        ((3, 4, 6), (0, 4, 0)),
+        ((3, 4, 6), (0, 0, 6)),
+    ] {
+        let launch = WorkgroupLaunch {
+            kernarg_address: 0x1000,
+            workgroup_size: (64, 1, 1),
+            workgroup_id,
+            grid_size,
+        };
+        let result = analyze(
+            &kernel,
+            &launch,
+            &out.base.to_le_bytes(),
+            std::slice::from_ref(&out),
+        );
+        assert!(
+            matches!(result, Err(AnalysisError::Eval(EvalError::Launch { .. }))),
+            "expected launch rejection for grid {grid_size:?}, workgroup {workgroup_id:?}"
+        );
+    }
+}
+
 #[test]
 fn the_copy_kernel_writes_its_expected_outputs() {
     common::check_run(
@@ -242,6 +328,8 @@ fn run_scalar_ops(
         &WorkgroupLaunch {
             kernarg_address: 0x1000,
             workgroup_size: (64, 1, 1),
+            workgroup_id: (0, 0, 0),
+            grid_size: (1, 1, 1),
         },
         &kernarg,
         &[array_of("out", out, 64 * 8, ArrayKind::Output(U32))],

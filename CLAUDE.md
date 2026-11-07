@@ -224,7 +224,8 @@ crate-level docs in `lib.rs` are the contract.
 - `Terminal`: `Completed`, `Stuck` (each blocked thread's wait condition and
   state) or `Aborted` (partial graph; its `AbortCause` is `Unsupported` for
   behavior the producer does not model, else `Error`). `Provenance`: launch, targets,
-  `Assumption`s, per-instruction kind and source span.
+  `Assumption`s, per-instruction kind and source span. `SingleWorkgroupAnalyzed` records
+  the selected AMD workgroup's coordinates without claiming cross-workgroup verification.
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
@@ -402,8 +403,9 @@ targets, instructions, or operand forms produce `LowerError`.
 The target directive requires exactly one quoted string, rejecting unbalanced
 or extra quotes and extra string arguments.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
-The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
-to initial registers. It accepts full waves in 1D, 2D, and 3D workgroups, matching
+The internal `initialize_waves` maps a supported descriptor and `WorkgroupLaunch` inputs
+to initial registers, including the selected workgroup's concrete X/Y/Z IDs. Grid dimensions
+must be nonzero and contain that ID. It accepts full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
 and rejects unsupported launch layouts. `execute_scalar` handles wave-wide loads from
 kernel arguments or global inputs, up to sixteen words, for XNACK-disabled execution.
@@ -611,7 +613,9 @@ anything else is UNKNOWN. Tests:
 `amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
 and softmax against their formulas, accounting for CK's column-major B and softmax at
 several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
-or change the softmax row width).
+or change the softmax row width). CK attention checks two batches and two heads on grid
+(2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
+stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
 checks LDS reuse within workgroup 0, including pending-read races. `just amd`
@@ -675,6 +679,7 @@ thread after it; `n` counts the test's runs).
 **Path**: `crates/volta_equivalence/`
 
 `tests/specs/matmul_transposed.spec` stores B as `[N, K]` for `B[j, k]`, including rectangular operands.
+`attention_batch_head.spec` selects one batch/head from global BHSD inputs and returns its local output slice.
 
 Everything after VC extraction: takes two `SymbolicOutputs` and decides them
 element by element. Depends only on `volta_expr`, so it checks expressions

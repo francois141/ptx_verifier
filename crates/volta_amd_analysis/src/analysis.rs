@@ -1,4 +1,4 @@
-//! The analysis stage: one execution of workgroup 0 of one kernel, and how it ended.
+//! The analysis stage: one execution of a selected workgroup of one kernel, and how it ended.
 
 use std::fmt;
 
@@ -68,7 +68,7 @@ impl AnalysisResult {
     }
 }
 
-/// Lower `kernel` and run workgroup 0 under `launch`, with `kernarg` as the argument buffer at
+/// Lower `kernel` and run the selected workgroup under `launch`, with `kernarg` at
 /// `launch.kernarg_address` and `arrays` in global memory.
 pub fn analyze(
     kernel: &Kernel,
@@ -124,12 +124,13 @@ fn provenance(kernel: &Kernel, lowered: &LoweredKernel, launch: &WorkgroupLaunch
         kernel: lowered.name.clone(),
         block_dim: launch.workgroup_size,
         unit: ThreadUnit::Wave { lanes: 64 },
-        // Workgroup 0 runs alone, and no supported instruction reads the grid size.
-        grid_dim: (1, 1, 1),
+        grid_dim: launch.grid_size,
         targets: vec![lowered.target.clone()],
         assumptions: vec![
             Assumption::StructuredCta,
-            Assumption::SingleCtaAnalyzed,
+            Assumption::SingleWorkgroupAnalyzed {
+                id: launch.workgroup_id,
+            },
             Assumption::ExitedThreadsArrive,
             Assumption::EagerAsyncData,
             Assumption::SharedMemoryOnly,

@@ -46,6 +46,8 @@ pub fn check_amd(
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (workitems, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (1, 1, 1),
     };
     let analysis = analyze(&parsed, &launch, kernarg, arrays)
         .unwrap_or_else(|e| panic!("{file}: analysis cannot start: {e}"));

@@ -1,4 +1,4 @@
-//! The execution state of one wave of workgroup 0.
+//! The execution state of one wave of the selected workgroup.
 
 use std::collections::VecDeque;
 
@@ -13,7 +13,8 @@ use crate::ir::{
 use super::EvalError;
 use super::global::GlobalMemory;
 
-/// A wave of workgroup 0, identified by its index: wave `w` holds work-items `64w` to `64w + 63`.
+/// A wave of the selected workgroup, identified by its index.
+/// Wave `w` holds work-items `64w` to `64w + 63`.
 #[id_type]
 pub struct WaveId(pub u32);
 

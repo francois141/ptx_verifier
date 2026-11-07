@@ -10,6 +10,8 @@ The graph is a record of what happened in the one schedule the interpreter
 ran: which thread did what, which barrier generation each arrival joined,
 which async operation each wait observed. It asserts no happens-before
 relation. Each check decides for itself which edges order which events.
+`SingleWorkgroupAnalyzed` records the selected AMD workgroup ID; the graph does not cover
+interactions with other workgroups, even when the launch grid contains more than one.
 
 ```
 src/

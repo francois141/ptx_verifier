@@ -1,5 +1,5 @@
-//! The interpreter of workgroup 0: its run over every wave, and its execution of vector
-//! instructions in one lane of a wave.
+//! The interpreter of one selected workgroup: its run over every wave, and its execution of
+//! vector instructions in one lane of a wave.
 
 use std::collections::BTreeMap;
 
@@ -29,9 +29,8 @@ use super::wave::{
     LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word,
 };
 
-/// The symbolic execution state of workgroup 0: one `WaveState` per wave, each holding that
-/// wave's scalar and vector registers, whose values are expressions of `arena`, and the
-/// workgroup's LDS; and the event graph of the execution so far.
+/// The selected workgroup's symbolic state: one `WaveState` per wave, holding registers whose
+/// values are expressions of `arena`, plus the workgroup's LDS and the execution's event graph.
 pub(crate) struct Interpreter<'a> {
     pub(super) arena: ExprArena,
     pub(super) kernarg: KernargBuffer<'a>,
@@ -42,7 +41,7 @@ pub(crate) struct Interpreter<'a> {
     pub(super) rec: Recording,
 }
 
-/// How the execution of workgroup 0 ended.
+/// How the execution of the selected workgroup ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Terminal {
     /// Every wave executed `s_endpgm`.
@@ -56,7 +55,7 @@ pub enum Terminal {
 }
 
 impl<'a> Interpreter<'a> {
-    /// Launch workgroup 0 with `kernarg` as the argument buffer at `launch.kernarg_address`
+    /// Launch the selected workgroup with `kernarg` as the argument buffer at `launch.kernarg_address`
     /// and `arrays` in global memory, recording the execution's graph under `provenance`.
     pub(crate) fn new(
         kernel: &LoweredKernel,

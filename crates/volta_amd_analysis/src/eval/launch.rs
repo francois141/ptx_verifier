@@ -10,13 +10,17 @@ use crate::ir::{LoweredKernel, Sgpr, Vgpr};
 use super::EvalError;
 use super::wave::{WaveId, WaveRegisters, WaveState};
 
-/// Launch inputs of workgroup 0, the workgroup Volta analyzes.
+/// Launch inputs of the workgroup Volta analyzes.
 #[derive(Debug, Clone, Copy)]
 pub struct WorkgroupLaunch {
     /// Address of the buffer containing the kernel's arguments.
     pub kernarg_address: u64,
     /// Number of work-items along X, Y, and Z in this workgroup.
     pub workgroup_size: (u32, u32, u32),
+    /// This workgroup's X, Y, and Z coordinates in the grid.
+    pub workgroup_id: (u32, u32, u32),
+    /// Number of workgroups along X, Y, and Z in the grid.
+    pub grid_size: (u32, u32, u32),
 }
 
 /// Create every wave of the workgroup at the kernel's first instruction, with the requested
@@ -45,6 +49,15 @@ pub(crate) fn initialize_waves(
         });
     };
 
+    // Validate that the selected workgroup is located inside a nonempty grid.
+    let (x, y, z) = launch.workgroup_id;
+    let (grid_x, grid_y, grid_z) = launch.grid_size;
+    if x >= grid_x || y >= grid_y || z >= grid_z {
+        return Err(EvalError::Launch {
+            message: "expected a workgroup ID inside a grid with nonzero dimensions".into(),
+        });
+    }
+
     reject_unsupported_inputs(&kernel.descriptor)?;
 
     // Read a required setting and check its supported range.
@@ -63,10 +76,13 @@ pub(crate) fn initialize_waves(
 
     // Read which launch inputs and register counts the descriptor requests.
     let kernarg_enabled = setting("user_sgpr_kernarg_segment_ptr", 1)? != 0;
-    let workgroup_ids = ["x", "y", "z"]
+    let workgroup_ids = [("x", x), ("y", y), ("z", z)]
         .into_iter()
-        .map(|axis| setting(&format!("system_sgpr_workgroup_id_{axis}"), 1))
-        .sum::<Result<u64, _>>()?;
+        .map(|(axis, id)| {
+            setting(&format!("system_sgpr_workgroup_id_{axis}"), 1)
+                .map(|enabled| (enabled != 0).then_some(id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let user_sgprs = setting("user_sgpr_count", 2)?;
     let workitem_id_mode = setting("system_vgpr_workitem_id", 2)?;
@@ -97,9 +113,9 @@ pub(crate) fn initialize_waves(
         }
 
         // Each enabled workgroup ID follows the user registers; disabled axes take no register.
-        for reg in user_sgprs..user_sgprs + workgroup_ids {
-            let id = arena.int(0);
-            registers.write_sgpr(Sgpr(reg as u8), id)?;
+        for (offset, &id) in workgroup_ids.iter().flatten().enumerate() {
+            let id = arena.int(i64::from(id));
+            registers.write_sgpr(Sgpr(user_sgprs as u8 + offset as u8), id)?;
         }
 
         // Initialize each lane's work-item coordinates in v0.

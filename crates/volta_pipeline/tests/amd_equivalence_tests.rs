@@ -30,6 +30,8 @@ fn check_gemm(
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (workitems, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (1, 1, 1),
     };
 
     // Execute the compiled fixture with its argument layout and workgroup size.
@@ -178,31 +180,43 @@ const K_BASE: u64 = 0x20000;
 const V_BASE: u64 = 0x30000;
 const O_BASE: u64 = 0x40000;
 
-/// The kernel's `FmhaFwdBatchModeKargs` for one batch and one head of 64 x 64 row-major tensors.
-fn ck_fmha_kernarg(q: u64, k: u64) -> Vec<u8> {
+/// CK's arguments for contiguous [batch, head, sequence, dimension] tensors, 64 x 64 per head.
+fn ck_fmha_kernarg(q: u64, k: u64, heads: i32) -> Vec<u8> {
     let mut bytes = Vec::new();
     // The tensors, then a null sink pointer, which disables the optional sink.
     for pointer in [q, k, V_BASE, O_BASE, 0] {
         bytes.extend(pointer.to_le_bytes());
     }
     // seqlen_q, seqlen_k, hdim_q, hdim_v, num_head_q and nhead_ratio_qk.
-    for field in [64_i32, 64, 64, 64, 1, 1] {
+    for field in [64_i32, 64, 64, 64, heads, 1] {
         bytes.extend(field.to_le_bytes());
     }
     // The fast-exp2 build takes the host's scale times log2(e), here for the formula's 1 / 8.
     bytes.extend((std::f32::consts::LOG2_E / 8.0).to_le_bytes());
-    // Row, head and batch strides of Q, K, V and O around the optional head count and offset.
-    for field in [
-        64_i32, 64, 64, 64, 64, 64, 64, 64, 0, 0, 4096, 4096, 4096, 4096,
-    ] {
+    // Row and head strides of Q, K, V and O, then num_head_q_total and head_start.
+    for field in [64_i32, 64, 64, 64, 4096, 4096, 4096, 4096, 0, 0] {
         bytes.extend(field.to_le_bytes());
+    }
+    // Each batch contains all heads, with strides measured in elements.
+    for _ in 0..4 {
+        bytes.extend((heads * 4096).to_le_bytes());
     }
     // Padding, then null cumulative sequence length pointers.
     bytes.resize(144, 0);
     bytes
 }
 
-fn check_ck_fmha(q: u64, k: u64, sample: u64) -> EquivalenceVerdict {
+/// Check one batch/head's full output footprint and its values against the attention formula.
+fn check_ck_fmha(
+    kernarg: &[u8],
+    grid_size: (u32, u32, u32),
+    workgroup_id: (u32, u32, u32),
+    sample: u64,
+) -> EquivalenceVerdict {
+    // This gfx950 instance maps X to head, Y to query tile, and Z to batch.
+    let (heads, tiles, batches) = grid_size;
+    let (head, tile, batch) = workgroup_id;
+    assert_eq!((tiles, tile), (1, 0));
     let arrays = [
         ("Q", Q_BASE, ArrayKind::Input),
         ("K", K_BASE, ArrayKind::Input),
@@ -212,30 +226,54 @@ fn check_ck_fmha(q: u64, k: u64, sample: u64) -> EquivalenceVerdict {
     .map(|(name, base, kind)| ArrayDef {
         name: name.into(),
         base,
-        len: 64 * 64,
+        len: u64::from(batches) * u64::from(heads) * 4096,
         kind,
     });
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (256, 1, 1),
+        workgroup_id,
+        grid_size,
     };
 
-    // Execute the compiled kernel on its one workgroup of four waves.
+    // Each invocation executes one workgroup; its input symbols retain global tensor indices.
     let source = include_str!("../../volta_amd_analysis/tests/fixtures/ck_fmha.s");
     let kernel = parse_kernel(source, CK_FMHA_KERNEL).unwrap();
-    let result = analyze(&kernel, &launch, &ck_fmha_kernarg(q, k), &arrays).unwrap();
+    let result = analyze(&kernel, &launch, kernarg, &arrays).unwrap();
     assert!(
         matches!(&result.terminal, Terminal::Completed),
-        "ck_fmha did not complete: {:?}",
+        "ck_fmha {workgroup_id:?} did not complete: {:?}",
         result.terminal
     );
-    let actual = result
+    let mut actual = result
         .symbolic_outputs
         .expect("completed attention outputs");
 
-    // The reference states the formula independently of the kernel execution.
-    let dims = HashMap::from([("N".into(), 64), ("H".into(), 64)]);
-    let spec = include_str!("../../volta_equivalence/tests/specs/attention.spec");
+    // Require exactly this block's output slice before renumbering it for the local spec.
+    let output_start = (u64::from(batch) * u64::from(heads) + u64::from(head)) * 4096;
+    assert_eq!(actual.outputs.len(), 1);
+    let (name, elements) = &mut actual.outputs[0];
+    assert_eq!(name.as_str(), "O");
+    assert_eq!(elements.len(), 4096);
+    for (local, (index, _)) in elements.iter_mut().enumerate() {
+        assert_eq!(
+            *index,
+            output_start + local as u64,
+            "workgroup {workgroup_id:?}"
+        );
+        *index -= output_start;
+    }
+
+    // The reference selects the batch/head independently of CK's strides and register values.
+    let dims = HashMap::from([
+        ("B".into(), u64::from(batches)),
+        ("G".into(), u64::from(heads)),
+        ("N".into(), 64),
+        ("H".into(), 64),
+        ("Batch".into(), u64::from(batch)),
+        ("Head".into(), u64::from(head)),
+    ]);
+    let spec = include_str!("../../volta_equivalence/tests/specs/attention_batch_head.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
     check_equivalence(
         &reference,
@@ -249,26 +287,46 @@ fn check_ck_fmha(q: u64, k: u64, sample: u64) -> EquivalenceVerdict {
     .0
 }
 
-// Test that every output of CK attention agrees with softmax(Q K^T / 8) V.
+// Test all 16,384 attention outputs across two batches and two heads, one workgroup at a time.
 #[test]
-fn amd_ck_fmha_matches_its_specification() {
-    assert_eq!(
-        check_ck_fmha(Q_BASE, K_BASE, 0),
-        EquivalenceVerdict::Equivalent {
-            checked: 4096,
-            total: 4096,
+fn amd_ck_fmha_batches_and_heads_match_their_specification() {
+    let kernarg = ck_fmha_kernarg(Q_BASE, K_BASE, 2);
+    for batch in 0..2 {
+        for head in 0..2 {
+            assert_eq!(
+                check_ck_fmha(&kernarg, (2, 1, 2), (head, 0, batch), 0),
+                EquivalenceVerdict::Equivalent {
+                    checked: 4096,
+                    total: 4096,
+                },
+                "batch {batch}, head {head}"
+            );
         }
-    );
+    }
 }
 
 // Test that swapping the query and key tensors is refuted in the first output row, since
 // attention is not symmetric.
 #[test]
 fn amd_ck_fmha_with_swapped_query_and_key_is_refuted() {
-    let verdict = check_ck_fmha(K_BASE, Q_BASE, 64);
+    let kernarg = ck_fmha_kernarg(K_BASE, Q_BASE, 1);
+    let verdict = check_ck_fmha(&kernarg, (1, 1, 1), (0, 0, 0), 64);
     assert!(
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+// Test that reading the previous head's Q is refuted even though the output slice is correct.
+#[test]
+fn amd_ck_fmha_with_wrong_head_stride_is_refuted() {
+    let mut kernarg = ck_fmha_kernarg(Q_BASE, K_BASE, 2);
+    // nhead_stride_q is at byte 84 in FmhaFwdCommonKargs; zero makes both heads read head 0.
+    kernarg[84..88].copy_from_slice(&0_i32.to_le_bytes());
+    let verdict = check_ck_fmha(&kernarg, (2, 1, 2), (1, 0, 1), 64);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a wrong-head read to be refuted, got {verdict:?}"
     );
 }
 
@@ -287,6 +345,8 @@ fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (workitems, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (1, 1, 1),
     };
     let kernarg = [A_BASE, B_BASE].map(u64::to_le_bytes).concat();
     let source = include_str!("../../volta_amd_analysis/tests/fixtures/softmax.s");

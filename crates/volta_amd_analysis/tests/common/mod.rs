@@ -85,6 +85,8 @@ pub fn check_rejected_kernel(
     let launch = WorkgroupLaunch {
         kernarg_address: KERNARG_ADDRESS,
         workgroup_size: (WORKITEMS, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (1, 1, 1),
     };
     let result = analyze(&parsed, &launch, &kernarg, arrays);
     let passed = expected(&result);
@@ -147,6 +149,8 @@ fn run_outputs(
     let launch = WorkgroupLaunch {
         kernarg_address: KERNARG_ADDRESS,
         workgroup_size: (workitems, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (1, 1, 1),
     };
     let result = analyze(&kernel, &launch, kernarg, arrays).map_err(|e| e.to_string())?;
 

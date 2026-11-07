@@ -18,7 +18,9 @@ loads are rejected. `ds_bpermute_b32` exchanges register values across a wave wi
 accessing LDS memory; its results remain pending until an LGKM wait completes them.
 Launch initialization supports full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
-with an optional kernarg pointer and enabled workgroup IDs. Work-items are ordered
+with an optional kernarg pointer and enabled workgroup IDs. `WorkgroupLaunch` selects a
+concrete X/Y/Z workgroup ID within nonzero grid dimensions; only that workgroup is executed.
+Disabled ID axes consume no SGPR. Work-items are ordered
 with X advancing first, then Y, then Z, following
 [AMD's execution model](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html#hierarchical-thread-model).
 Unsupported instructions and launch layouts return `EvalError`.
@@ -77,7 +79,8 @@ overlap against independently derived expressions.
 The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, comparisons and
 moves.
 `accvgpr` checks each source form; the bitwise fixtures check NOT results and scalar SCC.
-`lds_sync` includes a pending-read race and its waited control.
+`lds_sync` includes a pending-read race and its waited control. `workgroup_ids` checks all
+three launch coordinates, including a disabled Y axis, and rejects invalid grid coordinates.
 Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
 Run both suites from the repository root:
