@@ -61,18 +61,24 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   ignored test (`cargo test --release -p volta_pipeline --test
   trainium_equivalence_tests -- --ignored`, about a minute), and refuted against
   attention with `q` and `k` swapped; `attn_fwd_v1` likewise, and v1 against v2
-  directly, kernel to kernel. The tiled `attn_fwd_v3` to `attn_fwd_v8a` run from
-  the same file with one line changed: their `assert seqlen_q >= 512` stated as
+  directly, kernel to kernel. The tiled `attn_fwd_v3` to `attn_fwd_v8a` and
+  `attn_fwd_v10` run from the same file, each called with its upstream input dtype
+  (`bfloat16` for v10, whose allocator sizes tiles by it, else `float32`), with one
+  line changed in v3 to v8a: their `assert seqlen_q >= 512` stated as
   the limit it stands for, `FMAX_MOVING` (`gemm_moving_fmax`), which a test checks
-  leaves every kernel unchanged at the hardware's tile sizes. At three reduced
-  tile sizes (`TileSizes`, e.g. `pmax` 4 and `gemm_moving_fmax` 8 on `[4, 16]`
-  inputs) each is proved equal to `attention.spec`, and to the version before it,
+  leaves every kernel unchanged at the hardware's tile sizes (v10 states it so
+  itself). At four reduced tile sizes (`TileSizes`, e.g. `pmax` 4 and
+  `gemm_moving_fmax` 8 on `[4, 16]` inputs; the last gives eight key tiles, so v10's
+  QK matmuls wrap around its seven PSUM banks as at seqlen 4096) each is proved
+  equal to `attention.spec`, and to the version before it (v8a for v10),
   on every output, and refuted with `q` and `k` swapped; unmodified at full size
   (`[128, 512]`), an ignored test proves each against the spec and the version
   before it on one row of each of the four query tiles, each at another partition
   (rows 0, 170, 341 and 511: about 5 minutes and 12 GB, most of it unfolding the spec's
-  65,536 outputs and running the seven kernels). v7 to v8a keep their scores in
-  `nl.bfloat16`, which is not modelled: they are checked over the reals. The
+  65,536 outputs and running the eight kernels). Upstream runs v10 at seqlen 4096,
+  out of reach here: each of its 524,288 outputs sums 4,096 exponentials. v7 to v8a
+  keep their scores in `nl.bfloat16`, and v10 its inputs too, which is not
+  modelled: they are checked over the reals. The
   `fused_softmax` fixture, softmax as v8 fuses it, is proved equal to
   `softmax.spec`. Functional
   equivalence only; `just trainium` runs them in release.

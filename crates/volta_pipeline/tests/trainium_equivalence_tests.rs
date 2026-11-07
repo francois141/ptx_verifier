@@ -9,6 +9,35 @@ use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{
     KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
 };
+
+/// The inputs' dtype upstream's `test_attention.py` calls each tiled sample with:
+/// `bfloat16` for v10, whose allocator sizes its tiles by it, else `float32`.
+fn upstream_dtype(kernel: &str) -> &'static str {
+    match kernel {
+        "attn_fwd_v10" => "bfloat16",
+        _ => "float32",
+    }
+}
+
+/// Tiled sample `kernel` of `source` for `q`, `k` and `v` of `shape` in their upstream
+/// dtype, with `nl.tile_size` reading `tile_sizes`.
+fn parse_tiled(source: &str, kernel: &str, tile_sizes: TileSizes, shape: &[u64]) -> Kernel {
+    let shapes = [("q", shape), ("k", shape), ("v", shape)];
+    let dtype = upstream_dtype(kernel);
+    let dtypes = [("q", dtype), ("k", dtype), ("v", dtype)];
+    let call = KernelCall {
+        dtypes: &dtypes,
+        tile_sizes,
+        ..KernelCall::new(&shapes)
+    };
+    parse_kernel_for_call(
+        source,
+        &[("attention_kernel_utils", ATTENTION_UTILS)],
+        kernel,
+        &call,
+    )
+    .unwrap_or_else(|e| panic!("{kernel}: {e}"))
+}
 use volta_trainium_analysis::{evaluate, lower_kernel};
 
 /// Run `kernel` against `spec` at dims `[M, N, K]`, comparing the `out` array: the
@@ -285,31 +314,20 @@ fn tileable_attention_kernels() -> String {
     ATTENTION_KERNELS.replace(ASSERT, "assert seqlen_q >= FMAX_MOVING")
 }
 
-/// Tiled sample `kernel` of the tileable file, `q`, `k` and `v` of `[d, n]`, with
-/// `nl.tile_size` reading `tile_sizes`.
+/// Tiled sample `kernel` of the tileable file at `[d, n]` (`parse_tiled`).
 fn tiled_attention_kernel(kernel: &str, tile_sizes: TileSizes, [d, n]: [u64; 2]) -> Kernel {
-    let shape: &[u64] = &[d, n];
-    let shapes = [("q", shape), ("k", shape), ("v", shape)];
-    let call = KernelCall {
-        tile_sizes,
-        ..KernelCall::new(&shapes)
-    };
-    parse_kernel_for_call(
-        &tileable_attention_kernels(),
-        &[("attention_kernel_utils", ATTENTION_UTILS)],
-        kernel,
-        &call,
-    )
-    .unwrap()
+    parse_tiled(&tileable_attention_kernels(), kernel, tile_sizes, &[d, n])
 }
 
-/// Reduced tile sizes and the `[d_head, seqlen]` they run v3 and v4 at: `pmax` and
-/// `gemm_stationary_fmax` equal, as on the hardware and as both kernels need, and every
-/// loop running at least twice.
-const REDUCED: [(TileSizes, [u64; 2]); 3] = [
+/// Reduced tile sizes and the `[d_head, seqlen]` the tiled kernels run at: `pmax` and
+/// `gemm_stationary_fmax` equal, as on the hardware and as the kernels need, and every
+/// loop running at least twice. The last gives eight key tiles, so v10's QK matmuls wrap
+/// around its seven PSUM banks as they do at seqlen 4096.
+const REDUCED: [(TileSizes, [u64; 2]); 4] = [
     (reduced_tiles(4, 8), [4, 16]),
     (reduced_tiles(4, 8), [4, 32]),
     (reduced_tiles(8, 16), [8, 32]),
+    (reduced_tiles(4, 4), [4, 32]),
 ];
 
 const fn reduced_tiles(pmax: u64, gemm_moving_fmax: u64) -> TileSizes {
@@ -365,20 +383,18 @@ fn everywhere([d, n]: [u64; 2]) -> EquivalenceVerdict {
 #[test]
 fn nki_attention_tileable_kernels_are_the_samples_at_full_size() {
     let shape: &[u64] = &[128, 512];
-    let shapes = [("q", shape), ("k", shape), ("v", shape)];
-    let modules = [("attention_kernel_utils", ATTENTION_UTILS)];
     let tileable = tileable_attention_kernels();
     for kernel in TILED {
         assert_eq!(
-            parse_kernel_with_modules(&tileable, &modules, kernel, &shapes),
-            parse_kernel_with_modules(ATTENTION_KERNELS, &modules, kernel, &shapes),
+            parse_tiled(&tileable, kernel, TileSizes::HARDWARE, shape),
+            parse_tiled(ATTENTION_KERNELS, kernel, TileSizes::HARDWARE, shape),
             "{kernel}"
         );
     }
 }
 
-/// The samples' tiled kernels, in the tutorial's order.
-const TILED: [&str; 7] = [
+/// The samples' tiled kernels, in the tutorial's order (the samples have no v9).
+const TILED: [&str; 8] = [
     "attn_fwd_v3",
     "attn_fwd_v4",
     "attn_fwd_v5",
@@ -386,6 +402,7 @@ const TILED: [&str; 7] = [
     "attn_fwd_v7",
     "attn_fwd_v8",
     "attn_fwd_v8a",
+    "attn_fwd_v10",
 ];
 
 /// Check tiled sample `kernel` equal to `attention.spec` on every output at each
@@ -439,6 +456,13 @@ fn nki_attention_v8_matches_attention_at_reduced_tile_sizes() {
 #[test]
 fn nki_attention_v8a_matches_attention_at_reduced_tile_sizes() {
     assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v8a");
+}
+
+// v10 places every tile itself (`v_psum_t` over `qk_psum`'s PSUM banks) and software
+// pipelines v8a's stages across query tiles; it states `seqlen_q >= FMAX_MOVING` itself.
+#[test]
+fn nki_attention_v10_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v10");
 }
 
 // Each version against the one before it, kernel to kernel.
@@ -506,13 +530,7 @@ fn nki_attention_tiled_versions_match_attention_and_each_other_on_a_row_of_each_
 
     let mut previous: Option<(&str, SymbolicOutputs)> = None;
     for kernel in TILED {
-        let parsed = parse_kernel_with_modules(
-            ATTENTION_KERNELS,
-            &[("attention_kernel_utils", ATTENTION_UTILS)],
-            kernel,
-            &[("q", shape), ("k", shape), ("v", shape)],
-        )
-        .unwrap();
+        let parsed = parse_tiled(ATTENTION_KERNELS, kernel, TileSizes::HARDWARE, shape);
         let actual = only_rows(
             evaluate(&lower_kernel(&parsed).unwrap()).unwrap(),
             &QUERY_TILE_ROWS,
