@@ -63,7 +63,7 @@ pub enum StatementError {
     /// An instruction's paired optional operands given only in part.
     UnpairedOperands {
         opcode: String,
-        keywords: [&'static str; 2],
+        keywords: &'static [&'static str],
     },
 
     UnsupportedArithOp(Operand),
@@ -72,6 +72,10 @@ pub enum StatementError {
 
     /// A reduction `axis` other than a tile's free axis.
     UnsupportedAxis(Operand),
+
+    /// A `reduce_cmd` other than `reset_reduce`, which would carry an accumulator
+    /// across instructions.
+    UnsupportedReduceCmd(Operand),
 
     // =========================================================================
     // Operand Errors
@@ -82,6 +86,11 @@ pub enum StatementError {
 
     /// An operand that must be a number literal.
     NotAScalar {
+        keyword: &'static str,
+    },
+
+    /// An operand that must be `True` or `False`.
+    NotABool {
         keyword: &'static str,
     },
 
@@ -175,6 +184,13 @@ impl fmt::Display for StatementError {
             ),
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
             Self::NotAScalar { keyword } => write!(f, "operand `{keyword}` must be a number"),
+            Self::NotABool { keyword } => {
+                write!(f, "operand `{keyword}` must be `True` or `False`")
+            }
+            Self::UnsupportedReduceCmd(cmd) => write!(
+                f,
+                "unsupported `reduce_cmd` `{cmd}`: only `nisa.reduce_cmd.reset_reduce`"
+            ),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")
             }

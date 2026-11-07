@@ -167,3 +167,10 @@ fn the_subscripts_matmul_kernel_parses_lowers_and_runs_as_expected() {
         &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
     );
 }
+
+// Softmax as attn_fwd_v8 computes it: tensor_scalar_reduce, tensor_reduce with negate,
+// and activation with a bias and a reset_reduce reduction, over two chunks of columns.
+#[test]
+fn the_fused_softmax_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("fused_softmax", "kernel", &[("x", &[2, 4])]);
+}

@@ -236,6 +236,8 @@ pub enum Operand {
     Int(u64),
     /// A tuple of integers, e.g. `axis=(1,)`.
     Ints(Vec<u64>),
+    /// `True` or `False`, e.g. `negate=True`.
+    Bool(bool),
     /// A rectangular region of a tensor, from a subscript.
     Region {
         tensor: TensorName,
@@ -326,6 +328,8 @@ impl fmt::Display for Operand {
             Self::Member(member) => f.write_str(member),
             Self::Scalar(value) => write!(f, "{value}"),
             Self::Int(value) => write!(f, "{value}"),
+            Self::Bool(true) => f.write_str("True"),
+            Self::Bool(false) => f.write_str("False"),
             Self::Ints(values) => match &values[..] {
                 [value] => write!(f, "({value},)"),
                 _ => {

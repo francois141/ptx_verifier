@@ -6,8 +6,8 @@ use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
 
 use crate::ir::{
-    ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, ScalarOperand, TensorId,
-    TensorRegion,
+    ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Reduction, ScalarOperand,
+    Sign, TensorId, TensorRegion,
 };
 
 use super::EvalError;
@@ -104,41 +104,46 @@ impl<'a> Interpreter<'a> {
                     writes.push(Write::at(dst, at, value));
                 }
             }
-            LoweredInstr::Activation { func, dst, data } => {
-                for at in elements(dst) {
-                    let x = self.read(instr, data, at)?;
-                    let value = self.activation(*func, x);
-                    writes.push(Write::at(dst, at, value));
-                }
-            }
-            LoweredInstr::ActivationReduce {
+            LoweredInstr::Activation {
                 func,
                 dst,
                 data,
-                reduce_op,
-                reduce_res,
+                bias,
+                reduce,
             } => {
                 let [partitions, free] = dst.tile_extents();
                 for partition in 0..partitions {
-                    let mut values = Vec::new();
+                    let mut row = Vec::new();
                     for element in 0..free {
-                        let x = self.read(instr, data, [partition, element])?;
+                        let at = [partition, element];
+                        let mut x = self.read(instr, data, at)?;
+                        if let Some(bias) = bias {
+                            let bias = self.scalar(instr, bias, at)?;
+                            x = self.arith(ArithOp::Add, x, bias);
+                        }
                         let value = self.activation(*func, x);
-                        writes.push(Write::at(dst, [partition, element], value));
-                        values.push(value);
+                        writes.push(Write::at(dst, at, value));
+                        row.push(value);
                     }
-                    let reduced = self.fold(*reduce_op, values);
-                    writes.push(Write::at(reduce_res, [partition, 0], reduced));
+                    writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
                 }
             }
-            LoweredInstr::Reduce { op, dst, data } => {
+            LoweredInstr::Reduce {
+                op,
+                dst,
+                data,
+                sign,
+            } => {
                 let [partitions, free] = data.tile_extents();
                 for partition in 0..partitions {
                     let mut values = Vec::new();
                     for element in 0..free {
                         values.push(self.read(instr, data, [partition, element])?);
                     }
-                    let reduced = self.fold(*op, values);
+                    let mut reduced = self.fold(*op, values);
+                    if *sign == Sign::Negated {
+                        reduced = self.arena.neg(reduced);
+                    }
                     writes.push(Write::at(dst, [partition, 0], reduced));
                 }
             }
@@ -147,14 +152,22 @@ impl<'a> Interpreter<'a> {
                 data,
                 first,
                 second,
+                reduce,
             } => {
-                for at in elements(dst) {
-                    let mut value = self.read(instr, data, at)?;
-                    for step in [Some(first), second.as_ref()].into_iter().flatten() {
-                        let operand = self.scalar(instr, &step.operand, at)?;
-                        value = self.arith(step.op, value, operand);
+                let [partitions, free] = dst.tile_extents();
+                for partition in 0..partitions {
+                    let mut row = Vec::new();
+                    for element in 0..free {
+                        let at = [partition, element];
+                        let mut value = self.read(instr, data, at)?;
+                        for step in [Some(first), second.as_ref()].into_iter().flatten() {
+                            let operand = self.scalar(instr, &step.operand, at)?;
+                            value = self.arith(step.op, value, operand);
+                        }
+                        writes.push(Write::at(dst, at, value));
+                        row.push(value);
                     }
-                    writes.push(Write::at(dst, at, value));
+                    writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
                 }
             }
             LoweredInstr::Matmul {
@@ -224,6 +237,19 @@ impl<'a> Interpreter<'a> {
         values.fold(first, |accumulated, value| {
             self.arith(op, accumulated, value)
         })
+    }
+
+    /// The write of `reduction`'s result for one partition's `row` of an instruction's
+    /// result, if it has one.
+    fn reduce_row(
+        &mut self,
+        reduction: Option<&Reduction>,
+        partition: u64,
+        row: Vec<ExprId>,
+    ) -> Option<Write> {
+        let Reduction { op, res } = reduction?;
+        let reduced = self.fold(*op, row);
+        Some(Write::at(res, [partition, 0], reduced))
     }
 
     /// The value a scalar operand contributes at `[partition, _]`: a literal, or the

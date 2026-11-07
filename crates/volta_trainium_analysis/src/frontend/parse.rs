@@ -1817,13 +1817,14 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
 }
 
 /// A tensor, a region of one, a scalar, a module member, an integer or a tuple of
-/// them, e.g. `x`, `x[0:4, :]`, `0.125`, `nl.add`, `1` or `(1,)`.
+/// them, or a bool, e.g. `x`, `x[0:4, :]`, `0.125`, `nl.add`, `1`, `(1,)` or `True`.
 fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, ParseError> {
     match value {
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),
         Value::Member(member) => Ok(Operand::Member(member)),
         Value::Float(value) => Ok(Operand::Scalar(value)),
         Value::Int(value) => Ok(Operand::Int(value)),
+        Value::Bool(value) => Ok(Operand::Bool(value)),
         Value::Region { tensor, dims } => Ok(Operand::Region { tensor, dims }),
         Value::Tuple(items) => {
             let mut values = Vec::new();
@@ -1838,7 +1839,7 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
         other => bail!(
             line,
             "operand `{keyword}` must be a tensor, a region, a scalar, a module member, \
-             or integers, not `{other}`"
+             integers or a bool, not `{other}`"
         ),
     }
 }

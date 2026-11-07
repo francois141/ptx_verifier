@@ -4,7 +4,7 @@ use id_collections::id_type;
 
 use crate::frontend::ast::Scalar;
 
-use super::{ActivationFunc, ArithOp, ScalarStep, TensorRegion};
+use super::{ActivationFunc, ArithOp, ScalarOperand, ScalarStep, TensorRegion};
 
 /// An instruction's position in its kernel body.
 #[id_type]
@@ -36,28 +36,22 @@ pub enum LoweredInstr {
         lhs: TensorRegion,
         rhs: TensorRegion,
     },
-    /// `dst = func(data)` elementwise over regions of one shape.
+    /// `dst = func(data + bias)` elementwise over regions of one shape, `bias`
+    /// broadcast like a `tensor_scalar` operand, then the result's `reduce`.
     Activation {
         func: ActivationFunc,
         dst: TensorRegion,
         data: TensorRegion,
-    },
-    /// `dst = func(data)` elementwise, and each `reduce_res[p, 0]` the fold of
-    /// `reduce_op` over `dst`'s partition `p`. `dst` and `data` have one shape;
-    /// `reduce_res` has one free element per partition.
-    ActivationReduce {
-        func: ActivationFunc,
-        dst: TensorRegion,
-        data: TensorRegion,
-        reduce_op: ArithOp,
-        reduce_res: TensorRegion,
+        bias: Option<ScalarOperand>,
+        reduce: Option<Reduction>,
     },
     /// Each `dst[p, 0]` the fold of `op` over `data`'s partition `p`, seeded with its
-    /// first element; `dst` has one free element per partition of `data`.
+    /// first element, then `sign` applied; `dst` has one free element per partition.
     Reduce {
         op: ArithOp,
         dst: TensorRegion,
         data: TensorRegion,
+        sign: Sign,
     },
     /// `dst = data` with each step applied in turn (`acc = op(acc, operand)`),
     /// elementwise over regions of one shape; a `[partitions, 1]` operand
@@ -67,6 +61,7 @@ pub enum LoweredInstr {
         data: TensorRegion,
         first: ScalarStep,
         second: Option<ScalarStep>,
+        reduce: Option<Reduction>,
     },
 
     // =========================================================================
@@ -84,4 +79,20 @@ pub enum LoweredInstr {
         dst: TensorRegion,
         data: TensorRegion,
     },
+}
+
+/// A reduction of an instruction's elementwise result: each `res[p, 0]` the fold of
+/// `op` over the result's partition `p`, seeded with its first element, so the
+/// accumulator holds this instruction's result only (NKI's `reduce_cmd.reset_reduce`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reduction {
+    pub op: ArithOp,
+    pub res: TensorRegion,
+}
+
+/// Whether a reduction's result is written as folded or negated (`negate=True`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sign {
+    Kept,
+    Negated,
 }

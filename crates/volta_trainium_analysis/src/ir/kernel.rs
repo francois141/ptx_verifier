@@ -5,7 +5,10 @@ use std::fmt;
 
 use id_collections::IdVec;
 
-use super::{InstrId, LoweredInstr, ScalarOperand, Selection, Tensor, TensorId, TensorRegion};
+use super::{
+    InstrId, LoweredInstr, Reduction, ScalarOperand, Selection, Sign, Tensor, TensorId,
+    TensorRegion,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweredKernel {
@@ -46,6 +49,14 @@ impl fmt::Display for LoweredKernel {
             ScalarOperand::Broadcast(tile) => region(tile),
         };
 
+        // `dst = expr`, or `dst, res = expr reduce op` with a reduction.
+        let reduced = |dst: String, expr: String, reduce: Option<&Reduction>| match reduce {
+            Some(Reduction { op, res }) => {
+                format!("{dst}, {} = {expr} reduce {}", region(res), op.name())
+            }
+            None => format!("{dst} = {expr}"),
+        };
+
         let params: Vec<&str> = self.params.iter().map(|&param| name(param)).collect();
         write!(f, "kernel {}({})", self.name, params.join(", "))?;
         match self.returned {
@@ -71,39 +82,41 @@ impl fmt::Display for LoweredKernel {
                     region(lhs),
                     region(rhs)
                 )?,
-                LoweredInstr::Activation { func, dst, data } => {
-                    writeln!(f, "  {} = {}({})", region(dst), func.name(), region(data))?
-                }
-                LoweredInstr::ActivationReduce {
+                LoweredInstr::Activation {
                     func,
                     dst,
                     data,
-                    reduce_op,
-                    reduce_res,
-                } => writeln!(
-                    f,
-                    "  {}, {} = {}({}) reduce {}",
-                    region(dst),
-                    region(reduce_res),
-                    func.name(),
-                    region(data),
-                    reduce_op.name()
-                )?,
+                    bias,
+                    reduce,
+                } => {
+                    let data = match bias {
+                        Some(bias) => format!("add({}, {})", region(data), scalar(bias)),
+                        None => region(data),
+                    };
+                    let expr = format!("{}({data})", func.name());
+                    writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
+                }
                 LoweredInstr::Memset { dst, value } => {
                     writeln!(f, "  {} = memset({value})", region(dst))?
                 }
-                LoweredInstr::Reduce { op, dst, data } => writeln!(
-                    f,
-                    "  {} = reduce {}({})",
-                    region(dst),
-                    op.name(),
-                    region(data)
-                )?,
+                LoweredInstr::Reduce {
+                    op,
+                    dst,
+                    data,
+                    sign,
+                } => {
+                    let reduce = format!("reduce {}({})", op.name(), region(data));
+                    match sign {
+                        Sign::Kept => writeln!(f, "  {} = {reduce}", region(dst))?,
+                        Sign::Negated => writeln!(f, "  {} = neg({reduce})", region(dst))?,
+                    }
+                }
                 LoweredInstr::TensorScalar {
                     dst,
                     data,
                     first,
                     second,
+                    reduce,
                 } => {
                     let mut expr = format!(
                         "{}({}, {})",
@@ -114,7 +127,7 @@ impl fmt::Display for LoweredKernel {
                     if let Some(step) = second {
                         expr = format!("{}({}, {})", step.op.name(), expr, scalar(&step.operand));
                     }
-                    writeln!(f, "  {} = {expr}", region(dst))?
+                    writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
                 LoweredInstr::Matmul {
                     dst,

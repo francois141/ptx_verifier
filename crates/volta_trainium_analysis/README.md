@@ -41,9 +41,10 @@ NKI inserts a transpose, and `keepdims=False` are rejected, as are `dtype=` and
 
 ## Instructions
 
-Lowering accepts eleven `nki.isa` instructions: `dma_copy`, `tensor_copy`,
-`memset`, `tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
-`tensor_reduce`, `reciprocal`, `nc_matmul` and `nc_transpose`. Their
+Lowering accepts twelve `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+`memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
+`activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul` and
+`nc_transpose`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
 `nl.square`, `nl.rsqrt`, `nl.exp`); a new member means a variant in the enum's
@@ -52,12 +53,26 @@ order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
 operand`, so `nl.subtract` is `data - operand`.
 
 `tensor_reduce` folds `op` over each partition of a tile into one free element,
-`dst[p, 0]`, seeded with the partition's first element (as `activation_reduce`
-does), so `nl.maximum` needs no `-inf`. NKI reduces free axes only, so its `axis`
-must be the tile's free axis, `1` or `(1,)`; `negate` and `keepdims` are not
-supported yet. `reciprocal` is elementwise `1 / x`: it lowers to an `Activation`
-of `ActivationFunc::Reciprocal`, which is outside `ALL`, so `activation`'s `op`
-cannot name it.
+`dst[p, 0]`, seeded with the partition's first element, so `nl.maximum` needs no
+`-inf`. NKI reduces free axes only, so its `axis` must be the tile's free axis, `1`
+or `(1,)`; `negate=True` negates the result (`ir::Sign`), and `keepdims` is not
+supported. `reciprocal` is elementwise `1 / x`: it lowers to an `Activation` of
+`ActivationFunc::Reciprocal`, which is outside `ALL`, so `activation`'s `op` cannot
+name it.
+
+`activation` computes `op(data + bias)`, `bias` an optional operand broadcast like a
+`tensor_scalar` one, and may reduce its result: with `reduce_op`, `reduce_res` and
+`reduce_cmd=nisa.reduce_cmd.reset_reduce` all given, each `reduce_res[p, 0]` is the
+fold of `reduce_op` over partition `p` of the result, seeded with its first element
+(an `ir::Reduction`). The other `reduce_cmd`s carry the accumulator registers across
+instructions, which is not modelled, so they are lowering errors, as is `scale`.
+`activation_reduce` is the same instruction, as the NKI docs define it, and lowers to
+the same `Activation`. `tensor_scalar_reduce` is a one-step `tensor_scalar` with such
+a reduction (`reduce_cmd`, if given, must be `reset_reduce`, its default).
+
+A tile's `dtype` is recorded but not modelled: every value is a real, so a kernel
+that keeps scores in `nl.bfloat16`, as v7 to v8a do, is checked over the reals, and
+the rounding it introduces is outside the check.
 
 Each activation is built from `volta_expr`'s primitives rather than an opaque
 node, so the decision procedure can reason through it: `nl.rsqrt` becomes
@@ -153,11 +168,11 @@ A tile has its partitions and one or more free dimensions, e.g. v4's
 slice its partition dimension. Instructions see each tile region as `[partitions,
 free]`, its other dimensions flattened row-major into one free axis, so an
 elementwise instruction pairs `v_sbuf_t[:, i, :]` with a `[PMAX, d_head]` tile;
-`nc_matmul`, `nc_transpose`, `tensor_reduce` and `activation_reduce` take regions of
-exactly one free dimension once indexed ones are dropped, so `axis=(1,)` is
-unambiguous. Copies pair their regions' elements in row-major order.
+`nc_matmul`, `nc_transpose`, `tensor_reduce` and an instruction's reduction take
+regions of exactly one free dimension once indexed ones are dropped, so `axis=(1,)`
+is unambiguous. Copies pair their regions' elements in row-major order.
 
-v3 and v4 parse, lower and run unmodified at the size they assert (`q`, `k` and `v`
+v3 to v8a parse, lower and run unmodified at the size they assert (`q`, `k` and `v`
 of `[128, 512]`), each in about ten seconds in release; `volta_pipeline` checks them
 there and at reduced tile sizes.
 
@@ -215,6 +230,13 @@ writes its statistics to `stats[:, 0]` and `stats[:, 1]`, stores an intermediate
 a `(rows, 1, cols)` tile; the matmul stages each contraction chunk at `staged[i]` in
 HBM and `sb[:, i, :]` of a 3-D SBUF tile, multiplies `sb[:, i, 0:rows]` by
 `sb[:, i, rows:]`, and stores through a 4-D HBM tensor, as v3 and v4 do.
+
+`tests/fixtures/fused_softmax.py` computes softmax over a 2 x 4 tile as v8 does, in
+two chunks of columns: `tensor_scalar_reduce` (a multiply by `1.0`) takes each
+chunk's max, `tensor_reduce` with `negate=True` folds them into the negated row max,
+and `activation` exponentiates each chunk with that as its `bias` and a
+`reset_reduce` sum; its `.expected` is written out by hand, and `volta_pipeline`
+proves it equal to `softmax.spec`.
 
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its

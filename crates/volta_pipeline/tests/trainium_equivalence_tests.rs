@@ -129,6 +129,28 @@ fn nki_softmax_against_the_softmax_of_its_negated_input_is_refuted() {
     );
 }
 
+const FUSED_SOFTMAX: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/fused_softmax.py");
+
+// Softmax as attn_fwd_v8 fuses it: a negated max reduction, then activation with a bias
+// and a reduction. A sign error in either would compute another function.
+#[test]
+fn nki_fused_softmax_matches_its_specification() {
+    assert_eq!(
+        verdict(
+            FUSED_SOFTMAX,
+            &[("x", &[2, 4])],
+            SOFTMAX_SPEC,
+            &[("P", 2), ("F", 4)],
+            "kernel_out",
+        ),
+        EquivalenceVerdict::Equivalent {
+            checked: 8,
+            total: 8,
+        }
+    );
+}
+
 const ATTENTION_KERNELS: &str =
     include_str!("../../volta_trainium_analysis/tests/fixtures/nki_samples/attention_kernels.py");
 const ATTENTION_UTILS: &str = include_str!(
@@ -341,7 +363,7 @@ fn nki_attention_tileable_kernels_are_the_samples_at_full_size() {
     let shapes = [("q", shape), ("k", shape), ("v", shape)];
     let modules = [("attention_kernel_utils", ATTENTION_UTILS)];
     let tileable = tileable_attention_kernels();
-    for kernel in ["attn_fwd_v3", "attn_fwd_v4"] {
+    for kernel in TILED {
         assert_eq!(
             parse_kernel_with_modules(&tileable, &modules, kernel, &shapes),
             parse_kernel_with_modules(ATTENTION_KERNELS, &modules, kernel, &shapes),
@@ -350,45 +372,91 @@ fn nki_attention_tileable_kernels_are_the_samples_at_full_size() {
     }
 }
 
-#[test]
-fn nki_attention_v3_matches_attention_at_reduced_tile_sizes() {
+/// The samples' tiled kernels, in the tutorial's order.
+const TILED: [&str; 7] = [
+    "attn_fwd_v3",
+    "attn_fwd_v4",
+    "attn_fwd_v5",
+    "attn_fwd_v6",
+    "attn_fwd_v7",
+    "attn_fwd_v8",
+    "attn_fwd_v8a",
+];
+
+/// Check tiled sample `kernel` equal to `attention.spec` on every output at each
+/// reduced tile size.
+fn assert_matches_attention_at_reduced_tile_sizes(kernel: &str) {
     for (tile_sizes, shape) in REDUCED {
         assert_eq!(
-            check_tiled_attention("attn_fwd_v3", ATTENTION_SPEC, tile_sizes, shape, 0),
+            check_tiled_attention(kernel, ATTENTION_SPEC, tile_sizes, shape, 0),
             everywhere(shape),
-            "{tile_sizes:?} at {shape:?}"
+            "{kernel}: {tile_sizes:?} at {shape:?}"
         );
     }
+}
+
+#[test]
+fn nki_attention_v3_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v3");
 }
 
 #[test]
 fn nki_attention_v4_matches_attention_at_reduced_tile_sizes() {
-    for (tile_sizes, shape) in REDUCED {
-        assert_eq!(
-            check_tiled_attention("attn_fwd_v4", ATTENTION_SPEC, tile_sizes, shape, 0),
-            everywhere(shape),
-            "{tile_sizes:?} at {shape:?}"
-        );
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v4");
+}
+
+// v5 delays the softmax division until after the product with v.
+#[test]
+fn nki_attention_v5_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v5");
+}
+
+// v6 fuses the max subtraction and the sum into one activation (bias, reduce) and
+// negates the max in its reduction.
+#[test]
+fn nki_attention_v6_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v6");
+}
+
+// v7 stores the scores in bfloat16, which Volta does not round: a check over the reals.
+#[test]
+fn nki_attention_v7_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v7");
+}
+
+// v8 takes the row maxima with tensor_scalar_reduce on a copy evicted from PSUM.
+#[test]
+fn nki_attention_v8_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v8");
+}
+
+// v8a reorders v8 into the stages v10 pipelines, reading the evicted copy.
+#[test]
+fn nki_attention_v8a_matches_attention_at_reduced_tile_sizes() {
+    assert_matches_attention_at_reduced_tile_sizes("attn_fwd_v8a");
+}
+
+// Each version against the one before it, kernel to kernel.
+#[test]
+fn nki_attention_each_tiled_version_matches_the_previous_at_reduced_tile_sizes() {
+    for pair in TILED.windows(2) {
+        let pair = [pair[0], pair[1]];
+        for (tile_sizes, shape) in REDUCED {
+            assert_eq!(
+                check_tiled_attention_pair(pair, tile_sizes, shape, 0),
+                everywhere(shape),
+                "{pair:?}: {tile_sizes:?} at {shape:?}"
+            );
+        }
     }
 }
 
 #[test]
-fn nki_attention_v3_matches_v4_at_reduced_tile_sizes() {
-    for (tile_sizes, shape) in REDUCED {
-        assert_eq!(
-            check_tiled_attention_pair(["attn_fwd_v3", "attn_fwd_v4"], tile_sizes, shape, 0),
-            everywhere(shape),
-            "{tile_sizes:?} at {shape:?}"
-        );
-    }
-}
-
-#[test]
-fn nki_attention_v3_and_v4_against_attention_with_q_and_k_swapped_are_refuted() {
+fn nki_attention_tiled_versions_against_attention_with_q_and_k_swapped_are_refuted() {
     let swapped = ATTENTION_SPEC.replace("q[d, i] * k[d,", "k[d, i] * q[d,");
     assert_ne!(swapped, ATTENTION_SPEC);
     let (tile_sizes, shape) = REDUCED[0];
-    for kernel in ["attn_fwd_v3", "attn_fwd_v4"] {
+    for kernel in TILED {
         let verdict = check_tiled_attention(kernel, &swapped, tile_sizes, shape, 1);
         assert!(
             matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
@@ -397,7 +465,7 @@ fn nki_attention_v3_and_v4_against_attention_with_q_and_k_swapped_are_refuted() 
     }
 }
 
-/// One output row of each of v3 and v4's four 128-row query tiles at `[128, 512]`, each at
+/// One output row of each of the tiled kernels' four 128-row query tiles at `[128, 512]`, each at
 /// another partition of its tile: 0, 42, 85 and 127.
 const QUERY_TILE_ROWS: [u64; 4] = [0, 170, 341, 511];
 
@@ -410,12 +478,13 @@ fn only_rows(mut outputs: SymbolicOutputs, rows: &[u64]) -> SymbolicOutputs {
     outputs
 }
 
-// The unmodified kernels at the size they assert, on one row of each query tile. One
-// test, so the spec's 65,536 outputs (most of the time, and many GB) unfold once.
+// The unmodified kernels at the size they assert, on one row of each query tile, each
+// against the spec and the version before it. One test, so the spec's 65,536 outputs
+// (most of the time, and many GB) unfold once.
 #[test]
-#[ignore = "unfolds attention at 128 x 512 (about 3 minutes and 12 GB); run with --ignored in release"]
-fn nki_attention_v3_and_v4_match_attention_and_each_other_on_a_row_of_each_query_tile_at_full_size()
-{
+#[ignore = "unfolds attention at 128 x 512 (about 5 minutes and 12 GB); run with --ignored in release"]
+fn nki_attention_tiled_versions_match_attention_and_each_other_on_a_row_of_each_query_tile_at_full_size()
+ {
     let shape: &[u64] = &[128, 512];
     let dims = [("D", 128), ("N", 512)]
         .map(|(dim, value)| (dim.to_string(), value))
@@ -428,8 +497,10 @@ fn nki_attention_v3_and_v4_match_attention_and_each_other_on_a_row_of_each_query
         checked: 512,
         total: 512,
     };
+    let arrays = ["kernel_out".into()];
 
-    let [v3, v4] = ["attn_fwd_v3", "attn_fwd_v4"].map(|kernel| {
+    let mut previous: Option<(&str, SymbolicOutputs)> = None;
+    for kernel in TILED {
         let parsed = parse_kernel_with_modules(
             ATTENTION_KERNELS,
             &[("attention_kernel_utils", ATTENTION_UTILS)],
@@ -437,19 +508,22 @@ fn nki_attention_v3_and_v4_match_attention_and_each_other_on_a_row_of_each_query
             &[("q", shape), ("k", shape), ("v", shape)],
         )
         .unwrap();
-        only_rows(
+        let actual = only_rows(
             evaluate(&lower_kernel(&parsed).unwrap()).unwrap(),
             &QUERY_TILE_ROWS,
-        )
-    });
-    let arrays = ["kernel_out".into()];
-    for (kernel, actual) in [("v3", &v3), ("v4", &v4)] {
-        let verdict = check_equivalence(&reference, actual, &arrays, &sampled(0)).0;
-        assert_eq!(verdict, every_tile, "{kernel} against attention.spec");
+        );
+        assert_eq!(
+            check_equivalence(&reference, &actual, &arrays, &sampled(0)).0,
+            every_tile,
+            "{kernel} against attention.spec"
+        );
+        if let Some((earlier, outputs)) = &previous {
+            assert_eq!(
+                check_equivalence(outputs, &actual, &arrays, &sampled(0)).0,
+                every_tile,
+                "{earlier} against {kernel}"
+            );
+        }
+        previous = Some((kernel, actual));
     }
-    assert_eq!(
-        check_equivalence(&v3, &v4, &arrays, &sampled(0)).0,
-        every_tile,
-        "v3 against v4"
-    );
 }

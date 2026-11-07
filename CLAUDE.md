@@ -473,9 +473,10 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts eleven `nki.isa` instructions - `dma_copy`, `tensor_copy`,
-`memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `activation`, `activation_reduce`,
-`tensor_reduce`, `reciprocal`, `nc_matmul` and `nc_transpose` - and resolves
+Lowering accepts twelve `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+`memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
+`activation`, `activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul` and
+`nc_transpose` - and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
 (`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`) for a variant whose
@@ -483,8 +484,9 @@ their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 needs no arm of its own; any other member is a lowering error. Binary ops take
 NKI's operand order (`data1 op data2`, `data op operand`). `tensor_reduce` is
 `LoweredInstr::Reduce`, a per-partition fold into `dst[p, 0]` seeded with the
-first element (shared with `activation_reduce` as `Interpreter::fold`); its
-`axis` (an `ast::Operand::Int` or `Ints`) must be the free axis, `1` or `(1,)`.
+first element (shared with `ir::Reduction` as `Interpreter::fold`); its
+`axis` (an `ast::Operand::Int` or `Ints`) must be the free axis, `1` or `(1,)`,
+and `negate=True` (an `ast::Operand::Bool`) negates the result (`ir::Sign`).
 `reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which
 is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
 
@@ -498,9 +500,16 @@ allocated HBM tensor's are uninitialized, so reading one is `UninitializedRead`.
 A `tensor_scalar` operand is a float literal or a `[partitions, 1]` tile whose
 single free element broadcasts across the destination's free axis; its second
 `(op, operand)` pair is optional and both keywords must appear together.
-`activation_reduce` folds `reduce_op` over each partition of its activated
-result into `reduce_res[p, 0]`, seeded with the partition's first element rather
-than an identity, so a non-additive `reduce_op` is correct too. A float literal
+`LoweredInstr::Activation` is `func(data + bias)`, `bias` an optional
+`ScalarOperand`, with an optional `ir::Reduction`: each `reduce_res[p, 0]` the fold
+of `reduce_op` over partition `p` of the result, seeded with its first element rather
+than an identity, so a non-additive `reduce_op` is correct too. `activation` takes
+one with `reduce_op`, `reduce_res` and `reduce_cmd=nisa.reduce_cmd.reset_reduce`
+together (the other `reduce_cmd`s carry an accumulator across instructions and are
+errors, as is `scale`); `activation_reduce` is that instruction, as the NKI docs
+define it, and `tensor_scalar_reduce` is a one-step `TensorScalar` with a
+`Reduction`. A tile's `dtype` is not modelled: values are reals, so v7 to v8a's
+`nl.bfloat16` scores are checked without their rounding. A float literal
 is an `ast::Scalar`, a newtype whose constructor rejects non-finite values, so
 it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
 rational, since only f64-round-tripping reals print as decimals.
@@ -574,7 +583,7 @@ row-major), and copies pair elements in row-major order. A whole tensor is a zer
 `start` with the tensor's own shape, which `.ir` renders as the bare name. The
 interpreter computes an instruction's writes (`Write`, by tensor index) before
 applying any, so overlapping regions of one tile read old values. Region start
-restrictions of the hardware (partition offsets) are not checked. v3 and v4 parse,
+restrictions of the hardware (partition offsets) are not checked. v3 to v8a parse,
 lower and run unmodified at `[128, 512]`.
 
 `tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
@@ -612,6 +621,10 @@ tile (their `.expected` files are those fixtures').
 `tests/fixtures/subscripts_softmax.py` and `subscripts_matmul.py` compute the same math
 through integer and partial subscripts, 3-D tiles and 3-D/4-D HBM tensors, as v3 and v4
 stage theirs (again `softmax.expected` and `matmul.expected`).
+`tests/fixtures/fused_softmax.py` is softmax as v8 fuses it, over two column chunks:
+`tensor_scalar_reduce` maxima, `tensor_reduce` with `negate=True`, and `activation`
+with a `bias` and a `reset_reduce` sum (a hand-written `.expected`; `volta_pipeline`
+proves it equal to `softmax.spec`).
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a class, `if`, f-strings) that is never parsed.
@@ -764,12 +777,13 @@ CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute sw
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
 other, on their first row by default, with `q` and `k` swapped as a negative test;
-`attn_fwd_v3` and `attn_fwd_v4` from the file with their `assert seqlen_q >= 512`
+the tiled `attn_fwd_v3` to `attn_fwd_v8a` from the file with their `assert seqlen_q >= 512`
 stated as `>= FMAX_MOVING` - checked to change nothing at hardware tile sizes -
-proved equal to the spec and each other everywhere at three reduced `TileSizes`,
-refuted with `q` and `k` swapped, and unmodified at `[128, 512]` on one row of each
-of the four query tiles in one ignored test, about 135 s and 12.7 GB, mostly the
-spec's unfolding.
+each proved equal to the spec, and to the version before it, everywhere at three
+reduced `TileSizes`, refuted with `q` and `k` swapped, and unmodified at `[128, 512]`
+on one row of each of the four query tiles in one ignored test, about 5 minutes and 12 GB,
+mostly the spec's unfolding and the seven kernels' runs; `fused_softmax` against
+`softmax.spec`.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
 checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
 `just trainium` run them alongside the analysis crate's snapshot tests.
