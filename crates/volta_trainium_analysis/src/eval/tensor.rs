@@ -1,4 +1,5 @@
-//! A tensor during execution: its lowered form and the elements written to it so far.
+//! A tensor during execution: its lowered form, the elements written to it so far, and
+//! those a write through a tile placed over them clobbered since.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +15,15 @@ pub(super) struct TensorState<'a> {
     symbol: StringId,
     /// Its written elements by index.
     written: BTreeMap<Index, ExprId>,
+    /// Its clobbered elements by index, each with the write that clobbered it.
+    clobbered: BTreeMap<Index, Clobber>,
+}
+
+/// A write through one tile over an element of another.
+#[derive(Debug, Clone)]
+pub(super) struct Clobber {
+    pub(super) instr: InstrId,
+    pub(super) through: String,
 }
 
 impl<'a> TensorState<'a> {
@@ -22,6 +32,7 @@ impl<'a> TensorState<'a> {
             tensor,
             symbol: arena.intern_string(tensor.name.clone()),
             written: BTreeMap::new(),
+            clobbered: BTreeMap::new(),
         }
     }
 
@@ -29,14 +40,19 @@ impl<'a> TensorState<'a> {
         &self.tensor.name
     }
 
+    pub(super) fn tensor(&self) -> &'a Tensor {
+        self.tensor
+    }
+
     /// The element at `index`: its last written value, else an argument's input symbol.
-    /// Any other tensor's unwritten element is uninitialized.
+    /// Any other tensor's unwritten element is uninitialized, and a clobbered one an error.
     pub(super) fn read(
         &self,
         arena: &mut ExprArena,
         instr: InstrId,
         index: &Index,
     ) -> Result<ExprId, EvalError> {
+        self.unclobbered(instr, index)?;
         if let Some(&value) = self.written.get(index) {
             return Ok(value);
         }
@@ -53,13 +69,37 @@ impl<'a> TensorState<'a> {
         }
     }
 
-    /// The value last written at `index`, if any.
-    pub(super) fn written(&self, index: &Index) -> Option<ExprId> {
-        self.written.get(index).copied()
+    /// The value last written at `index`, if any; a clobbered element is an error.
+    pub(super) fn written(
+        &self,
+        instr: InstrId,
+        index: &Index,
+    ) -> Result<Option<ExprId>, EvalError> {
+        self.unclobbered(instr, index)?;
+        Ok(self.written.get(index).copied())
     }
 
     pub(super) fn write(&mut self, index: Index, value: ExprId) {
+        self.clobbered.remove(&index);
         self.written.insert(index, value);
+    }
+
+    pub(super) fn clobber(&mut self, index: Index, clobber: Clobber) {
+        self.written.remove(&index);
+        self.clobbered.insert(index, clobber);
+    }
+
+    fn unclobbered(&self, instr: InstrId, index: &Index) -> Result<(), EvalError> {
+        match self.clobbered.get(index) {
+            Some(Clobber { instr: by, through }) => Err(EvalError::ClobberedRead {
+                instr,
+                tensor: self.tensor.name.clone(),
+                index: index.clone(),
+                by: *by,
+                through: through.clone(),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The written elements by offset, sorted: row-major index order is offset order.

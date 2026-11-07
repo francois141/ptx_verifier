@@ -473,10 +473,11 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts twelve `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+Lowering accepts thirteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
-`activation`, `activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul` and
-`nc_transpose` - and resolves
+`activation`, `activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul`,
+`nc_transpose` and `dma_transpose` (`axes=(1, 0)` only, the same `Transpose`) - drops
+an `engine=` naming `nisa.vector_engine`, `scalar_engine` or `gpsimd_engine`, and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
 (`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`) for a variant whose
@@ -489,6 +490,21 @@ first element (shared with `ir::Reduction` as `Interpreter::fold`); its
 and `negate=True` (an `ast::Operand::Bool`) negates the result (`ir::Sign`).
 `reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which
 is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
+
+`nc_matmul`'s `accumulate=` is `ir::Accumulation`: `False` overwrites `dst`, `True` adds
+to it (an unwritten element is an `UninitializedRead`), and `None`, the default,
+overwrites an element's first write and adds to later ones.
+
+`nl.ndarray(..., address=(partition, offset))` places an on-chip tile (`ast::Address`,
+`Tensor::address`): its partitions from `partition`, its free elements row-major from byte
+`offset` at their dtype's size (`float32` 4, `bfloat16`/`float16` 2; the dtype must be
+known), within 128 partitions of `sbuf_fmax_bytes` (SBUF) or 16 KiB (PSUM, eight 2 KiB
+banks). A kernel places all its on-chip tiles or none (`LowerError::MixedAllocation`).
+Placed tiles may overlap (v10's `v_psum_t` and `qk_psum`): `eval/alias.rs` pairs the
+overlapping tiles, a write through one clobbers the other's elements covering its bytes,
+and reading a clobbered element is `EvalError::ClobberedRead`. This is program order; how
+the compiler orders accesses through overlapping tiles is unstated in the docs and, like
+DMA asynchrony, outside the check.
 
 A kernel's outputs are the arguments it writes and the tensor it returns: a
 final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
@@ -642,6 +658,12 @@ proves it equal to `softmax.spec`).
 allocator class sizing tiles from the call's `bfloat16` dtype, a buffers object, and
 guarded stages software-pipelined over `range(0, count + 2)` in `nl.no_reorder()`
 (`common::check_call`; a hand-written `.expected`).
+`tests/fixtures/placed_tiles.py` is `matmul.py`'s product transposed with every tile
+placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (so
+`accumulate=False` must overwrite), `engine=` and `dma_transpose` (a hand-written
+`.expected`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
+column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
+`MixedAllocation`, and a tile past the end of PSUM.
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a conditional expression, a dict, f-strings) that is never parsed.

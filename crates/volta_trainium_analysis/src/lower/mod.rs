@@ -4,17 +4,18 @@
 
 mod error;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use id_collections::IdVec;
 
 use crate::frontend::ast::{
-    Buffer, Instruction, Kernel, Operand, RegionProblem, Scalar, Selected, Statement, TensorName,
-    resolve_region,
+    Address, Buffer, Instruction, Kernel, Operand, RegionProblem, Scalar, Selected, Statement,
+    TensorName, resolve_region,
 };
 use crate::ir::{
-    ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory, Reduction,
-    ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory,
+    Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, StatementError};
@@ -25,6 +26,14 @@ const NKI_LANGUAGE: &str = "nki.language";
 /// result. The others carry an accumulator across instructions, which is not modelled.
 const RESET_REDUCE: &str = "nki.isa.reduce_cmd.reset_reduce";
 
+/// The compute engines an instruction's `engine=` may pick. Which engine runs an
+/// instruction does not change its result, so lowering drops the choice.
+const ENGINES: [&str; 3] = [
+    "nki.isa.vector_engine",
+    "nki.isa.scalar_engine",
+    "nki.isa.gpsimd_engine",
+];
+
 /// Lower `kernel` into its tensors, the parameters first and then the declared
 /// tensors in declaration order, its instructions in order, and the tensor it returns.
 pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
@@ -34,7 +43,13 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         .iter()
         .map(|param| {
             let shape = Shape(param.shape.iter().map(|extent| extent.get()).collect());
-            scope.add(param.name.clone(), Memory::Hbm, shape, Initial::Argument)
+            scope.add(
+                param.name.clone(),
+                Memory::Hbm,
+                shape,
+                Initial::Argument,
+                None,
+            )
         })
         .collect();
 
@@ -48,12 +63,13 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
                     return Err(at(StatementError::ElementCountOverflow(tile.name.clone())));
                 }
                 let memory = memory(tile.buffer);
-                scope.add(tile.name.clone(), memory, shape, Initial::Uninitialized);
+                let (name, address) = (tile.name.clone(), tile.address);
+                scope.add(name, memory, shape, Initial::Uninitialized, address);
             }
             Statement::DeclareHbm(tensor) => {
                 let shape = Shape(tensor.shape.iter().map(|extent| extent.get()).collect());
                 let name = tensor.name.clone();
-                scope.add(name, Memory::Hbm, shape, Initial::Uninitialized);
+                scope.add(name, Memory::Hbm, shape, Initial::Uninitialized, None);
             }
             Statement::Instruction(instruction) => {
                 instructions.push(lower_instruction(instruction, &scope).map_err(at)?);
@@ -61,6 +77,7 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         }
     }
 
+    scope.placed_all_or_none()?;
     let returned = kernel
         .returned
         .as_ref()
@@ -87,6 +104,7 @@ fn lower_instruction(
     instruction: &Instruction,
     scope: &Scope,
 ) -> Result<LoweredInstr, StatementError> {
+    let instruction = &without_engine(instruction)?;
     match instruction.opcode.as_str() {
         // =====================================================================
         // Data Movement
@@ -290,8 +308,21 @@ fn lower_instruction(
         // Tensor Engine
         // =====================================================================
         "nc_matmul" => {
-            let [dst, stationary, moving] =
-                operands(instruction, &["dst", "stationary", "moving"])?;
+            let ([dst, stationary, moving], [accumulate]) = operands_with_optional(
+                instruction,
+                &["dst", "stationary", "moving"],
+                &["accumulate"],
+            )?;
+            let accumulation = match accumulate {
+                None | Some(Operand::None) => Accumulation::FirstOverwrites,
+                Some(Operand::Bool(false)) => Accumulation::Overwrite,
+                Some(Operand::Bool(true)) => Accumulation::Accumulate,
+                Some(_) => {
+                    return Err(StatementError::NotABool {
+                        keyword: "accumulate",
+                    });
+                }
+            };
             let [dst, stationary, moving] = [
                 scope.tile(dst, "dst")?,
                 scope.tile(stationary, "stationary")?,
@@ -314,12 +345,29 @@ fn lower_instruction(
                 dst: dst.region,
                 stationary: stationary.region,
                 moving: moving.region,
+                accumulation,
             })
         }
 
         "nc_transpose" => {
             let [dst, data] = operands(instruction, &["dst", "data"])?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
+            let [partitions, free] = data.matrix()?;
+            dst.matrix()?;
+            result_shape(&dst, Shape(vec![free, partitions]))?;
+            Ok(LoweredInstr::Transpose {
+                dst: dst.region,
+                data: data.region,
+            })
+        }
+
+        // A transpose the DMA engines perform, which is a 2-D one with `axes=(1, 0)`.
+        "dma_transpose" => {
+            let [dst, src, axes] = operands(instruction, &["dst", "src", "axes"])?;
+            if *axes != Operand::Ints(vec![1, 0]) {
+                return Err(StatementError::UnsupportedTransposeAxes(axes.clone()));
+            }
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
             let [partitions, free] = data.matrix()?;
             dst.matrix()?;
             result_shape(&dst, Shape(vec![free, partitions]))?;
@@ -336,6 +384,19 @@ fn lower_instruction(
 // =============================================================================
 // Operands
 // =============================================================================
+
+/// `instruction` without its `engine=`, which must name a compute engine if given.
+fn without_engine(instruction: &Instruction) -> Result<Cow<'_, Instruction>, StatementError> {
+    let Some(engine) = instruction.operands.get("engine") else {
+        return Ok(Cow::Borrowed(instruction));
+    };
+    if !matches!(engine, Operand::Member(member) if ENGINES.contains(&member.as_str())) {
+        return Err(StatementError::UnsupportedEngine(engine.clone()));
+    }
+    let mut instruction = instruction.clone();
+    instruction.operands.remove("engine");
+    Ok(Cow::Owned(instruction))
+}
 
 /// The operands of `instruction` in the order of `keywords`, exactly its operand keywords.
 fn operands<'a, const N: usize>(
@@ -574,6 +635,7 @@ struct Entry {
     memory: Memory,
     shape: Shape,
     initial: Initial,
+    address: Option<Address>,
 }
 
 /// The tensors named so far. The parser guarantees every name a statement uses
@@ -591,12 +653,14 @@ impl Scope {
         memory: Memory,
         shape: Shape,
         initial: Initial,
+        address: Option<Address>,
     ) -> TensorId {
         let id = self.entries.push(Entry {
             name: name.clone(),
             memory,
             shape,
             initial,
+            address,
         });
         self.ids.insert(name, id);
         id
@@ -676,6 +740,22 @@ impl Scope {
         Ok(tile)
     }
 
+    /// Check that `address=` places every on-chip tile or none of them.
+    fn placed_all_or_none(&self) -> Result<(), LowerError> {
+        let tiles = self
+            .entries
+            .values()
+            .filter(|entry| entry.memory != Memory::Hbm);
+        let (placed, unplaced): (Vec<_>, Vec<_>) = tiles.partition(|entry| entry.address.is_some());
+        match (placed.first(), unplaced.first()) {
+            (Some(placed), Some(unplaced)) => Err(LowerError::MixedAllocation {
+                placed: placed.name.clone(),
+                unplaced: unplaced.name.clone(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
     /// The tensor a kernel returns: one it allocates in HBM, not an argument or a tile.
     fn returned(&self, name: &TensorName) -> Result<TensorId, LowerError> {
         let id = self.ids[name];
@@ -692,6 +772,7 @@ impl Scope {
             memory: entry.memory,
             shape: entry.shape,
             initial: entry.initial,
+            address: entry.address,
         })
     }
 }

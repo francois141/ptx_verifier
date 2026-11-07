@@ -1,5 +1,6 @@
-//! Lowering error types: a returned tensor the kernel did not allocate, and the
-//! errors of one body statement (shapes, instructions, operands).
+//! Lowering error types: a returned tensor the kernel did not allocate, tiles placed
+//! both by `address=` and by the compiler, and the errors of one body statement
+//! (shapes, instructions, operands).
 
 use std::fmt;
 
@@ -13,6 +14,13 @@ pub enum LowerError {
     // =========================================================================
     /// A returned tensor other than one the kernel allocates in `nl.shared_hbm`.
     ReturnsUnallocated(TensorName),
+
+    /// A kernel placing some tiles by `address=` and leaving others to the compiler,
+    /// which could place them over the placed ones.
+    MixedAllocation {
+        placed: TensorName,
+        unplaced: TensorName,
+    },
 
     // =========================================================================
     // Statement Errors
@@ -77,6 +85,12 @@ pub enum StatementError {
     /// across instructions.
     UnsupportedReduceCmd(Operand),
 
+    /// An `engine` other than one of `nki.isa`'s compute engines.
+    UnsupportedEngine(Operand),
+
+    /// A `dma_transpose` `axes` other than `(1, 0)`, a 2-D transpose.
+    UnsupportedTransposeAxes(Operand),
+
     // =========================================================================
     // Operand Errors
     // =========================================================================
@@ -137,6 +151,11 @@ impl fmt::Display for LowerError {
                 "`{tensor}` is returned, but only an HBM tensor the kernel allocates \
                  with `nl.shared_hbm` can be"
             ),
+            Self::MixedAllocation { placed, unplaced } => write!(
+                f,
+                "`{placed}` is placed by `address=` but `{unplaced}` is not: a kernel places \
+                 all of its tiles or none"
+            ),
             Self::Statement { index, error } => write!(f, "statement {index}: {error}"),
         }
     }
@@ -190,6 +209,15 @@ impl fmt::Display for StatementError {
             Self::UnsupportedReduceCmd(cmd) => write!(
                 f,
                 "unsupported `reduce_cmd` `{cmd}`: only `nisa.reduce_cmd.reset_reduce`"
+            ),
+            Self::UnsupportedEngine(engine) => write!(
+                f,
+                "unsupported `engine` `{engine}`: only `nisa.vector_engine`, \
+                 `nisa.scalar_engine` or `nisa.gpsimd_engine`"
+            ),
+            Self::UnsupportedTransposeAxes(axes) => write!(
+                f,
+                "unsupported `axes` `{axes}`: only `(1, 0)`, a 2-D transpose"
             ),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")

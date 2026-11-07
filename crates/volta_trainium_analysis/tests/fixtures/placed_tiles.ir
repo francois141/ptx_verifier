@@ -1,0 +1,22 @@
+kernel kernel(a_t, b) -> out
+  a_t: hbm[4, 2]
+  b: hbm[4, 3]
+  out: hbm[3, 2]
+  x: sbuf[4, 2] at (0, 0), 4 bytes each
+  y: sbuf[4, 3] at (0, 32), 4 bytes each
+  product: sbuf[2, 3] at (0, 64), 4 bytes each
+  product_t: sbuf[3, 2] at (0, 96), 4 bytes each
+  result: sbuf[3, 2] at (0, 128), 4 bytes each
+  acc: psum[2, 3] at (0, 0), 4 bytes each
+  staged: psum[3, 2] at (0, 0), 4 bytes each
+  x = mov(a_t)
+  y = mov(b)
+  acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)
+  acc = matmul(x[2:4, 0:2], y[2:4, 0:3], accumulate=True)
+  acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)
+  acc = matmul(x[2:4, 0:2], y[2:4, 0:3], accumulate=True)
+  product = mov(acc)
+  product_t = transpose(product)
+  staged = mov(product_t)
+  result = mov(staged)
+  out = mov(result)

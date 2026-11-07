@@ -6,8 +6,8 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    InstrId, LoweredInstr, Reduction, ScalarOperand, Selection, Sign, Tensor, TensorId,
-    TensorRegion,
+    Accumulation, InstrId, LoweredInstr, Reduction, ScalarOperand, Selection, Sign, Tensor,
+    TensorId, TensorRegion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +66,15 @@ impl fmt::Display for LoweredKernel {
 
         for tensor in self.tensors.values() {
             let memory = tensor.memory.name();
-            writeln!(f, "  {}: {memory}{}", tensor.name, tensor.shape)?;
+            write!(f, "  {}: {memory}{}", tensor.name, tensor.shape)?;
+            match tensor.address {
+                Some(address) => writeln!(
+                    f,
+                    " at ({}, {}), {} bytes each",
+                    address.partition, address.offset, address.element_bytes
+                )?,
+                None => writeln!(f)?,
+            }
         }
 
         for instruction in self.instructions.values() {
@@ -133,13 +141,21 @@ impl fmt::Display for LoweredKernel {
                     dst,
                     stationary,
                     moving,
-                } => writeln!(
-                    f,
-                    "  {} = matmul({}, {})",
-                    region(dst),
-                    region(stationary),
-                    region(moving)
-                )?,
+                    accumulation,
+                } => {
+                    let accumulate = match accumulation {
+                        Accumulation::FirstOverwrites => "",
+                        Accumulation::Overwrite => ", accumulate=False",
+                        Accumulation::Accumulate => ", accumulate=True",
+                    };
+                    writeln!(
+                        f,
+                        "  {} = matmul({}, {}{accumulate})",
+                        region(dst),
+                        region(stationary),
+                        region(moving)
+                    )?
+                }
                 LoweredInstr::Transpose { dst, data } => {
                     writeln!(f, "  {} = transpose({})", region(dst), region(data))?
                 }

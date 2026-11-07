@@ -7,8 +7,9 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Param, Partitions, RegionProblem,
-    Scalar, Statement, Subscript, TensorName, TileDecl, TileShape, kept_extents, resolve_region,
+    Address, Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Param, Partitions,
+    RegionProblem, Scalar, Statement, Subscript, TensorName, TileDecl, TileShape, kept_extents,
+    resolve_region,
 };
 use super::error::{ParseError, ShapeProblem, bail};
 use super::lex::CmpOp;
@@ -33,7 +34,8 @@ pub struct TileSizes {
     pub gemm_stationary_fmax: u64,
     /// `nl.tile_size.gemm_moving_fmax`: a matmul's moving free size.
     pub gemm_moving_fmax: u64,
-    /// `nl.tile_size.sbuf_fmax_bytes`: an SBUF partition's usable bytes.
+    /// `nl.tile_size.sbuf_fmax_bytes`: a tile's largest SBUF free size in bytes, which
+    /// bounds where `address=` may place an SBUF tile.
     pub sbuf_fmax_bytes: u64,
 }
 
@@ -65,6 +67,9 @@ impl TileSizes {
         }
     }
 }
+/// A PSUM partition's bytes: eight 2 KiB banks, as v10's allocator assumes.
+const PSUM_PARTITION_BYTES: u64 = 16 * 1024;
+
 /// The name the kernel's own module goes by.
 const MAIN: &str = "__main__";
 /// How deeply helper calls may nest, which bounds recursion.
@@ -1788,10 +1793,28 @@ fn declaration(
     frame: &Frame,
     line: usize,
 ) -> Result<TensorName, ParseError> {
-    let [shape, dtype, buffer] = ndarray_arguments(call, trace, frame, line)?;
+    let [shape, dtype, buffer, name, address] = arguments(
+        call,
+        ["shape", "dtype", "buffer", "name", "address"],
+        3,
+        trace,
+        frame,
+        line,
+    )?;
+    let [shape, dtype, buffer] = [shape, dtype, buffer].map(|value| value.expect("required"));
     let dtype = read_dtype(dtype, line)?;
+    if name.is_some() {
+        bail!(line, "`{}`'s `name` is not supported", call.callee);
+    }
+    let address = address.filter(|address| !matches!(address, Value::None));
 
     if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
+        if address.is_some() {
+            bail!(
+                line,
+                "`address=` places on-chip tiles only, not an HBM tensor"
+            );
+        }
         let shape = read_extents(shape, line)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
         let name = trace.declare(target, extents, Place::Hbm, trace.dtype_name(&dtype));
@@ -1805,7 +1828,10 @@ fn declaration(
 
     let shape = read_shape(shape, line)?;
     let buffer = read_buffer(buffer, line)?;
-    Ok(declare_tile(target, shape, dtype, buffer, trace))
+    let address = address
+        .map(|address| read_address(address, &shape, &dtype, buffer, trace, line))
+        .transpose()?;
+    Ok(declare_tile(target, shape, dtype, buffer, address, trace))
 }
 
 /// `target = nl.zeros(shape, dtype, buffer=...)`: an on-chip tile, every element set
@@ -1830,6 +1856,7 @@ fn zeros(
         read_shape(shape, line)?,
         read_dtype(dtype, line)?,
         read_buffer(buffer, line)?,
+        None,
         trace,
     );
     let zero = Scalar::new(0.0).expect("zero is finite");
@@ -1852,6 +1879,7 @@ fn declare_tile(
     shape: TileShape,
     dtype: Dtype,
     buffer: Buffer,
+    address: Option<Address>,
     trace: &mut Trace,
 ) -> TensorName {
     let dtype_name = trace.dtype_name(&dtype);
@@ -1861,8 +1889,73 @@ fn declare_tile(
         shape,
         dtype,
         buffer,
+        address,
     }));
     name
+}
+
+/// A tile's `address=(partition, offset)`, its offset in bytes. Its dtype must be
+/// known, to size its elements, and the tile must fit in its buffer from there.
+fn read_address(
+    value: Value,
+    shape: &TileShape,
+    dtype: &Dtype,
+    buffer: Buffer,
+    trace: &Trace,
+    line: usize,
+) -> Result<Address, ParseError> {
+    let Value::Tuple(items) = &value else {
+        bail!(
+            line,
+            "`address=` must be a `(partition, offset)` tuple, not `{value}`"
+        );
+    };
+    let [Value::Int(partition), Value::Int(offset)] = items[..] else {
+        bail!(
+            line,
+            "`address=` must be a `(partition, offset)` tuple, not `{value}`"
+        );
+    };
+    let partition = non_negative(partition, "a partition offset", line)?;
+    let offset = non_negative(offset, "a byte offset", line)?;
+
+    let element_bytes = match trace.dtype_name(dtype).as_deref() {
+        Some("float32") => 4,
+        Some("bfloat16" | "float16") => 2,
+        Some(other) => bail!(
+            line,
+            "a tile placed by `address=` of dtype `{other}` is not supported"
+        ),
+        None => bail!(
+            line,
+            "the dtype `{dtype}` of a tile placed by `address=` sizes its elements, so the \
+             call must give it"
+        ),
+    };
+
+    let free: u64 = shape.free.iter().map(|extent| extent.get()).product();
+    let capacity = match buffer {
+        Buffer::Sbuf => trace.program.tile_sizes.sbuf_fmax_bytes,
+        Buffer::Psum => PSUM_PARTITION_BYTES,
+    };
+    let partitions = u64::from(shape.partitions.get());
+    let end = free
+        .checked_mul(element_bytes)
+        .and_then(|bytes| bytes.checked_add(offset));
+    if partition + partitions > u64::from(Partitions::MAX) || end.is_none_or(|end| end > capacity) {
+        bail!(
+            line,
+            "a tile of {partitions} partitions of {free} {element_bytes}-byte elements at \
+             `({partition}, {offset})` does not fit in `nl.{}`: {} partitions of {capacity} bytes",
+            buffer.name(),
+            Partitions::MAX
+        );
+    }
+    Ok(Address {
+        partition,
+        offset,
+        element_bytes,
+    })
 }
 
 /// `nl.ndarray`'s shape, dtype and buffer, each given by position or by keyword.
@@ -2100,7 +2193,7 @@ fn tile_call(
     };
 
     let shape = tile_shape(&extents, line)?;
-    let name = declare_tile(target, shape, dtype, buffer, trace);
+    let name = declare_tile(target, shape, dtype, buffer, None, trace);
     operands.push(("dst", Operand::Tensor(name.clone())));
     let operands = operands
         .into_iter()
@@ -2321,7 +2414,7 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
 }
 
 /// A tensor, a region of one, a scalar, a module member, an integer or a tuple of
-/// them, or a bool, e.g. `x`, `x[0:4, :]`, `0.125`, `nl.add`, `1`, `(1,)` or `True`.
+/// them, a bool or `None`, e.g. `x`, `x[0:4, :]`, `0.125`, `nl.add`, `1`, `(1,)` or `True`.
 fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, ParseError> {
     match value {
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),
@@ -2333,6 +2426,7 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
             line,
         )?)),
         Value::Bool(value) => Ok(Operand::Bool(value)),
+        Value::None => Ok(Operand::None),
         Value::Region { tensor, dims } => Ok(Operand::Region { tensor, dims }),
         Value::Tuple(items) => {
             let mut values = Vec::new();

@@ -41,10 +41,12 @@ NKI inserts a transpose, and `keepdims=False` are rejected, as are `dtype=` and
 
 ## Instructions
 
-Lowering accepts twelve `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+Lowering accepts thirteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
-`activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul` and
-`nc_transpose`. Their
+`activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul`, `nc_transpose` and
+`dma_transpose`. An instruction's `engine=` (`nisa.vector_engine`,
+`nisa.scalar_engine` or `nisa.gpsimd_engine`) is accepted and dropped, since the
+engine does not change the result. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
 `nl.square`, `nl.rsqrt`, `nl.exp`); a new member means a variant in the enum's
@@ -69,6 +71,13 @@ instructions, which is not modelled, so they are lowering errors, as is `scale`.
 `activation_reduce` is the same instruction, as the NKI docs define it, and lowers to
 the same `Activation`. `tensor_scalar_reduce` is a one-step `tensor_scalar` with such
 a reduction (`reduce_cmd`, if given, must be `reset_reduce`, its default).
+
+`nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
+`False` overwrites `dst`, `True` adds to it (an unwritten element is an
+`UninitializedRead`, as reading uninitialized PSUM is undefined), and `None`, the
+default, overwrites an element's first write and adds to later ones.
+`dma_transpose` with `axes=(1, 0)` is a 2-D transpose of one tile region into
+another, the same `Transpose` as `nc_transpose`; other `axes` are errors.
 
 A tile's `dtype` is recorded but not modelled: every value is a real, so a kernel
 that keeps scores in `nl.bfloat16`, as v7 to v8a do, is checked over the reals, and
@@ -212,6 +221,29 @@ Each tensor records what its unwritten elements hold (`ir::Initial`): an
 argument's are its input symbols, while reading an unwritten element of a tile
 or of a kernel-allocated HBM tensor is an `EvalError::UninitializedRead`.
 
+## Placed tiles
+
+`nl.ndarray(shape, dtype, buffer, address=(partition, offset))` places an on-chip
+tile itself, as attn_fwd_v10's allocators do: its partitions from `partition`, each
+holding the tile's free elements row-major from byte `offset` (`ast::Address`,
+`Tensor::address`). Elements take their dtype's size, `float32` 4 bytes and
+`bfloat16` or `float16` 2, so the dtype must be known (a `q.dtype` from the call's
+dtypes); any other dtype is an error. The tile must fit in its buffer: 128 partitions
+of `nl.tile_size.sbuf_fmax_bytes` in SBUF, or of 16 KiB in PSUM (eight 2 KiB banks,
+as v10 assumes). `address=` on an HBM tensor and `name=` are errors, and a kernel
+places all its on-chip tiles or none (`LowerError::MixedAllocation`), since the
+compiler could place an unplaced tile anywhere.
+
+Two placed tiles may overlap, as v10's `v_psum_t` and `qk_psum` share PSUM bank 0.
+The interpreter finds each pair of tiles whose bytes overlap (`eval/alias.rs`), and a
+write through one clobbers every element of the other that covers any of its bytes:
+reading a clobbered element before writing it again is an
+`EvalError::ClobberedRead`, which names the write, so a kernel is checked only on
+values its own tile wrote. This holds in program order. Whether the compiler orders
+accesses through two tiles placed over each other, inside or outside
+`nl.no_reorder()`, the docs do not say; that ordering is outside the check, like the
+asynchrony of DMAs.
+
 ## Fixtures
 
 `tests/kernels.rs` runs each fixture for one call, giving each parameter's shape
@@ -266,6 +298,15 @@ work: an allocator class sizing two tiles from the call's `bfloat16` dtype, a bu
 object, and three stages, each skipping the tile indices outside the tensor, called
 in a software-pipelined `range(0, count + 2)` inside `with nl.no_reorder()` (its
 `.expected` is hand-written).
+`tests/fixtures/placed_tiles.py` computes `matmul.py`'s product transposed with every
+tile placed by `address=`, including a PSUM tile placed over the accumulator once it
+is dead: `accumulate=(i != 0)` over two contraction chunks, twice, so the second
+pass's `accumulate=False` must overwrite the first's sum, then `engine=` copies and a
+`dma_transpose` (a hand-written `.expected`, `matmul.expected` transposed).
+`tests/fixtures/placement_errors.py` holds kernels `tests/kernels.rs` expects to fail:
+a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
+(`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM, a
+kernel placing only some tiles, and a tile past the end of PSUM.
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as

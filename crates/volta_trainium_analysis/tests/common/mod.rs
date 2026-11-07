@@ -86,6 +86,12 @@ fn lower_call(
     (parsed, lowered)
 }
 
+/// The source of `tests/fixtures/<name>.py`.
+pub fn source(name: &str) -> String {
+    let path = fixtures().join(name).with_extension("py");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
