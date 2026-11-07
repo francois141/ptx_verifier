@@ -550,3 +550,50 @@ fn nki_attention_tiled_versions_match_attention_and_each_other_on_a_row_of_each_
         previous = Some((kernel, actual));
     }
 }
+
+const TENSOR_ADDITION: &str = include_str!(
+    "../../volta_trainium_analysis/tests/fixtures/nki_samples/tensor_addition_nki_kernels.py"
+);
+const TENSOR_ADDITION_SPEC: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/tensor_addition.spec");
+
+/// The tensor addition tutorial's kernel, from its unmodified file, for float32 `a_input`
+/// and `b_input` of `[m, n]`, against `tensor_addition.spec`.
+fn check_tensor_addition(spec: &str, [m, n]: [u64; 2]) -> EquivalenceVerdict {
+    let shape: &[u64] = &[m, n];
+    let shapes = [("a_input", shape), ("b_input", shape)];
+    let dtypes = [("a_input", "float32"), ("b_input", "float32")];
+    let call = KernelCall {
+        dtypes: &dtypes,
+        ..KernelCall::new(&shapes)
+    };
+    let parsed = parse_kernel_for_call(TENSOR_ADDITION, &[], "nki_tensor_add", &call).unwrap();
+    against_spec(
+        &parsed,
+        spec,
+        &[("M", m), ("N", n)],
+        "c_output",
+        &EquivCheckOptions::default(),
+    )
+}
+
+// At the torch driver's own size: its tiles are literal 128 x 512, so it has no reduced
+// one, and each output is one addition.
+#[test]
+fn nki_tensor_addition_matches_its_specification_at_full_size() {
+    assert_eq!(
+        check_tensor_addition(TENSOR_ADDITION_SPEC, [256, 1024]),
+        everywhere([256, 1024])
+    );
+}
+
+#[test]
+fn nki_tensor_addition_against_a_subtraction_is_refuted() {
+    let subtraction = TENSOR_ADDITION_SPEC.replace("] + b_input", "] - b_input");
+    assert_ne!(subtraction, TENSOR_ADDITION_SPEC);
+    let verdict = check_tensor_addition(&subtraction, [128, 512]);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
