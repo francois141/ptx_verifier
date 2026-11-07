@@ -400,6 +400,8 @@ operands and duplicate settings.
 `lower_kernel(&kernel)` validates supported gfx950 instruction forms and preserves
 physical register identities, explicit waits, and launch metadata. Unsupported
 targets, instructions, or operand forms produce `LowerError`.
+Target feature fields accept `xnack` and `sramecc` once each, in either order,
+without discarding the accepted string; unknown, repeated, conflicting and empty fields reject.
 The target directive requires exactly one quoted string, rejecting unbalanced
 or extra quotes and extra string arguments.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
