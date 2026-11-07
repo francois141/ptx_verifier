@@ -1,6 +1,6 @@
 //! Read an NKI kernel, specialized to one call's parameter shapes, as HBM tensors,
 //! on-chip tiles and the instructions over them. The kernel's Python runs here, as
-//! NKI's tracer runs it: integers, lists, `assert`s, loops and helper calls.
+//! NKI's tracer runs it: integers, lists, objects, `assert`s, `if`s, loops and calls.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -13,7 +13,8 @@ use super::ast::{
 use super::error::{ParseError, ShapeProblem, bail};
 use super::lex::CmpOp;
 use super::python::{
-    self, BinOp, Call, Dotted, Expr, Function, FunctionSource, Item, Stmt, Target,
+    self, BinOp, Call, ClassSource, Dotted, Expr, Function, FunctionSource, Item, LogicalOp, Stmt,
+    Target, UnaryOp,
 };
 
 const NKI_LANGUAGE: &str = "nki.language";
@@ -32,25 +33,34 @@ pub struct TileSizes {
     pub gemm_stationary_fmax: u64,
     /// `nl.tile_size.gemm_moving_fmax`: a matmul's moving free size.
     pub gemm_moving_fmax: u64,
+    /// `nl.tile_size.sbuf_fmax_bytes`: an SBUF partition's usable bytes.
+    pub sbuf_fmax_bytes: u64,
 }
 
 impl Default for TileSizes {
     fn default() -> Self {
-        Self {
-            pmax: Partitions::MAX as u64,
-            gemm_stationary_fmax: 128,
-            gemm_moving_fmax: 512,
-        }
+        Self::HARDWARE
     }
 }
 
 impl TileSizes {
+    /// The hardware's limits, as NKI defines them.
+    pub const HARDWARE: Self = Self {
+        pmax: Partitions::MAX as u64,
+        gemm_stationary_fmax: 128,
+        gemm_moving_fmax: 512,
+        // A tile's largest SBUF free size in bytes, a whole partition: Trn2's 24 MiB
+        // over 128 partitions. The docs state no value; v10 reads it to bound its allocator.
+        sbuf_fmax_bytes: 192 * 1024,
+    };
+
     /// The value of `nl.tile_size.<member>`, if NKI defines that member here.
     fn member(self, member: &str) -> Option<u64> {
         match member {
             "pmax" => Some(self.pmax),
             "gemm_stationary_fmax" => Some(self.gemm_stationary_fmax),
             "gemm_moving_fmax" => Some(self.gemm_moving_fmax),
+            "sbuf_fmax_bytes" => Some(self.sbuf_fmax_bytes),
             _ => None,
         }
     }
@@ -78,20 +88,40 @@ pub fn parse_kernel_with_modules(
     name: &str,
     shapes: &[(&str, &[u64])],
 ) -> Result<Kernel, ParseError> {
-    parse_kernel_with_tile_sizes(source, modules, name, shapes, TileSizes::default())
+    parse_kernel_for_call(source, modules, name, &KernelCall::new(shapes))
 }
 
-/// `parse_kernel_with_modules` with `nl.tile_size` reading `tile_sizes`.
-pub fn parse_kernel_with_tile_sizes(
+/// What `@nki.jit` specializes a kernel to: each parameter's shape, the dtypes of
+/// any parameters the kernel compares a dtype of, and the `nl.tile_size` it reads.
+#[derive(Debug, Clone, Copy)]
+pub struct KernelCall<'a> {
+    pub shapes: &'a [(&'a str, &'a [u64])],
+    /// `nki.language` dtype names, e.g. `("q", "bfloat16")`.
+    pub dtypes: &'a [(&'a str, &'a str)],
+    pub tile_sizes: TileSizes,
+}
+
+impl<'a> KernelCall<'a> {
+    /// A call with `shapes`, no dtypes and the hardware's tile sizes.
+    pub fn new(shapes: &'a [(&'a str, &'a [u64])]) -> Self {
+        Self {
+            shapes,
+            dtypes: &[],
+            tile_sizes: TileSizes::default(),
+        }
+    }
+}
+
+/// `parse_kernel_with_modules` for `call`.
+pub fn parse_kernel_for_call(
     source: &str,
     modules: &[(&str, &str)],
     name: &str,
-    shapes: &[(&str, &[u64])],
-    tile_sizes: TileSizes,
+    call: &KernelCall,
 ) -> Result<Kernel, ParseError> {
     let mut program = Program {
         modules: BTreeMap::new(),
-        tile_sizes,
+        tile_sizes: call.tile_sizes,
     };
     program.modules.insert(MAIN.into(), Module::parse(source)?);
     for (module, source) in modules {
@@ -99,7 +129,7 @@ pub fn parse_kernel_with_tile_sizes(
             .modules
             .insert((*module).into(), Module::parse(source)?);
     }
-    kernel(&program, name, shapes)
+    kernel(&program, name, call)
 }
 
 /// The shapes kernel `name`'s top-level `assert param.shape == (extent, ...)`
@@ -170,7 +200,7 @@ enum Global {
         name: String,
     },
     Function(FunctionSource),
-    Class,
+    Class(ClassSource),
 }
 
 impl Module {
@@ -211,7 +241,9 @@ impl Module {
                     Global::Function(function.clone()),
                     function.line,
                 )?,
-                Item::Class { line, name } => bind(name, Global::Class, line)?,
+                Item::Class(class) => {
+                    bind(class.name.clone(), Global::Class(class.clone()), class.line)?
+                }
             }
         }
         Ok(Self { globals })
@@ -236,6 +268,10 @@ struct Trace<'p> {
     tensors: BTreeMap<TensorName, Declared>,
     /// The items of each list `Value::List` refers to: lists are shared, as in Python.
     lists: Vec<Vec<Value>>,
+    /// The attributes of each object `Value::Object` refers to, shared like lists.
+    objects: Vec<Object>,
+    /// Each class instantiated so far, by module and name.
+    classes: BTreeMap<ClassName, ClassDef>,
     /// The statements emitted so far, in order.
     body: Vec<Statement>,
     /// How many times each helper function has been called, which names its tiles.
@@ -243,10 +279,12 @@ struct Trace<'p> {
     depth: usize,
 }
 
-/// A declared tensor's extents and whether it is in device memory.
+/// A declared tensor's extents, whether it is in device memory, and its dtype's
+/// `nki.language` name, unknown for a parameter whose dtype the call does not give.
 struct Declared {
     extents: Vec<u64>,
     place: Place,
+    dtype: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +293,25 @@ enum Place {
     Hbm,
     /// An SBUF or PSUM tile.
     OnChip,
+}
+
+/// A class, by the module that defines it and its name there.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ClassName {
+    module: String,
+    name: String,
+}
+
+/// A class's attributes, evaluated when it is first instantiated, and its methods.
+struct ClassDef {
+    attributes: BTreeMap<String, Value>,
+    methods: BTreeMap<String, FunctionSource>,
+}
+
+/// An instance: its class and the attributes assigned to it.
+struct Object {
+    class: ClassName,
+    attributes: BTreeMap<String, Value>,
 }
 
 /// One function call's names.
@@ -267,22 +324,33 @@ struct Frame<'p> {
     prefix: String,
     /// The index of each enclosing unrolled iteration, outermost first.
     iterations: Vec<u64>,
+    /// What the caller binds the call's value to, qualified in the caller: a tensor
+    /// that `return nl.ndarray(...)` declares takes this name.
+    returned_name: Option<String>,
+}
+
+/// Whether a statement ends its function, and the value it returns if so.
+enum Flow {
+    Next,
+    Return(Value),
 }
 
 /// A `@nki.jit` function, its parameters the HBM tensors it receives with the
-/// call's shapes, and the tensor its last statement returns, if that is a `return`.
-fn kernel(program: &Program, name: &str, shapes: &[(&str, &[u64])]) -> Result<Kernel, ParseError> {
+/// call's shapes, and the tensor it returns, if it returns one.
+fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, ParseError> {
     let function = program.modules[MAIN].function(name)?.parse()?;
     let line = function.line;
     let mut trace = Trace {
         program,
         tensors: BTreeMap::new(),
         lists: Vec::new(),
+        objects: Vec::new(),
+        classes: BTreeMap::new(),
         body: Vec::new(),
         calls: BTreeMap::new(),
         depth: 0,
     };
-    let mut frame = Frame::new(MAIN, &function, String::new());
+    let mut frame = Frame::new(MAIN, &function, String::new(), None);
 
     let decorators: Vec<String> = function.decorators.iter().map(Dotted::to_string).collect();
     let is_jit = match &function.decorators[..] {
@@ -296,10 +364,14 @@ fn kernel(program: &Program, name: &str, shapes: &[(&str, &[u64])]) -> Result<Ke
         );
     }
 
-    for (index, (given, _)) in shapes.iter().enumerate() {
-        let problem = if !function.params.iter().any(|param| param.name == *given) {
+    let is_param = |given: &str| function.params.iter().any(|param| param.name == given);
+    for (index, (given, _)) in call.shapes.iter().enumerate() {
+        let problem = if !is_param(given) {
             ShapeProblem::NotAParam
-        } else if shapes[..index].iter().any(|(earlier, _)| earlier == given) {
+        } else if call.shapes[..index]
+            .iter()
+            .any(|(earlier, _)| earlier == given)
+        {
             ShapeProblem::Repeated
         } else {
             continue;
@@ -308,6 +380,20 @@ fn kernel(program: &Program, name: &str, shapes: &[(&str, &[u64])]) -> Result<Ke
             param: (*given).into(),
             problem,
         });
+    }
+    for (index, (given, _)) in call.dtypes.iter().enumerate() {
+        if !is_param(given) {
+            bail!(
+                line,
+                "a dtype is given for `{given}`, which is not a parameter"
+            );
+        }
+        if call.dtypes[..index]
+            .iter()
+            .any(|(earlier, _)| earlier == given)
+        {
+            bail!(line, "the dtype of `{given}` is given twice");
+        }
     }
 
     let mut params = Vec::new();
@@ -319,9 +405,14 @@ fn kernel(program: &Program, name: &str, shapes: &[(&str, &[u64])]) -> Result<Ke
                 param.name
             );
         }
-        let shape = param_shape(&param.name, shapes)?;
+        let shape = param_shape(&param.name, call.shapes)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
-        let tensor = trace.declare(&frame, &param.name, extents, Place::Hbm);
+        let dtype = call
+            .dtypes
+            .iter()
+            .find(|(given, _)| *given == param.name)
+            .map(|(_, dtype)| (*dtype).to_string());
+        let tensor = trace.declare(frame.qualify(&param.name), extents, Place::Hbm, dtype);
         frame
             .locals
             .insert(param.name.clone(), Value::Tensor(tensor.clone()));
@@ -331,10 +422,10 @@ fn kernel(program: &Program, name: &str, shapes: &[(&str, &[u64])]) -> Result<Ke
         });
     }
 
-    let returned = match run(function.body, &mut trace, &mut frame)? {
-        None => None,
-        Some(Value::Tensor(tensor)) => Some(tensor),
-        Some(other) => bail!(line, "a kernel can only return a tensor, not `{other}`"),
+    let returned = match run(&function.body, &mut trace, &mut frame)? {
+        Value::None => None,
+        Value::Tensor(tensor) => Some(tensor),
+        other => bail!(line, "a kernel can only return a tensor, not `{other}`"),
     };
 
     Ok(Kernel {
@@ -362,68 +453,81 @@ fn param_shape(param: &str, shapes: &[(&str, &[u64])]) -> Result<Vec<NonZeroU64>
     }
 }
 
-/// Run a function body; a `return` may only be its last statement, whose value it gives.
-fn run(
-    mut body: Vec<Stmt>,
-    trace: &mut Trace,
-    frame: &mut Frame,
-) -> Result<Option<Value>, ParseError> {
-    let returned = match body.pop() {
-        Some(Stmt::Return { line, value }) => Some((value, line)),
-        last => {
-            body.extend(last);
-            None
-        }
-    };
-
-    for stmt in body {
-        statement(stmt, trace, frame)?;
+/// Run a function body and return what its `return` gives, `None` if it runs off its end.
+fn run(body: &[Stmt], trace: &mut Trace, frame: &mut Frame) -> Result<Value, ParseError> {
+    match block(body, trace, frame)? {
+        Flow::Return(value) => Ok(value),
+        Flow::Next => Ok(Value::None),
     }
-    returned
-        .map(|(value, line)| returned_value(value, trace, frame, line))
-        .transpose()
 }
 
-/// `return value`'s value; `value` may be a helper call, as an assignment's may.
+/// Run `body` until a statement returns.
+fn block(body: &[Stmt], trace: &mut Trace, frame: &mut Frame) -> Result<Flow, ParseError> {
+    for stmt in body {
+        if let Flow::Return(value) = statement(stmt.clone(), trace, frame)? {
+            return Ok(Flow::Return(value));
+        }
+    }
+    Ok(Flow::Next)
+}
+
+/// `return value`'s value; `value` may be a call, as an assignment's may, and a tensor
+/// it declares takes the name the frame's caller binds it to.
 fn returned_value(
     value: Expr,
     trace: &mut Trace,
-    frame: &mut Frame,
+    frame: &Frame,
     line: usize,
 ) -> Result<Value, ParseError> {
-    let Expr::Call(call) = &value else {
+    let Expr::Call(call) = value else {
         return trace.evaluate(frame, value, line);
     };
-    let Value::Function { module, name } = frame.resolve(trace, &call.callee, line)? else {
-        return trace.evaluate(frame, value, line);
-    };
-    let Some(returned) = inline(&module, &name, call.clone(), trace, frame, line)? else {
-        bail!(line, "`{name}` returns nothing to return");
-    };
-    Ok(returned)
+    let callee = frame.resolve(trace, &call.callee, line)?;
+    if is_tensor_call(&callee) {
+        let name = frame
+            .returned_name
+            .clone()
+            .unwrap_or_else(|| frame.qualify("return"));
+        let tensor = tensor_call(name, &callee, call, trace, frame, line)?;
+        return Ok(Value::Tensor(tensor.expect("a tensor call")));
+    }
+    let returned_name = frame.returned_name.clone();
+    trace.call(callee, call, frame, line, returned_name)
 }
 
-/// Call helper `name` of `module` with `call`'s arguments, evaluated in the caller's
-/// `frame`: its body runs in a frame of its own, its tiles named after the call.
+/// A Python function: a module's, or a class's method bound to an object.
+struct Callable {
+    module: String,
+    /// Its name in errors and tile names: `softmax_isa`, or `Allocator.allocate` for a method.
+    name: String,
+    source: FunctionSource,
+    receiver: Option<usize>,
+}
+
+/// Call `callable` with `call`'s arguments, evaluated in the caller's `frame`: its body
+/// runs in a frame of its own, its tiles named after the call.
 fn inline(
-    module: &str,
-    name: &str,
+    callable: Callable,
     call: Call,
     trace: &mut Trace,
     frame: &Frame,
     line: usize,
-) -> Result<Option<Value>, ParseError> {
+    returned_name: Option<String>,
+) -> Result<Value, ParseError> {
     let program = trace.program;
+    let Callable {
+        module,
+        name,
+        source,
+        receiver,
+    } = callable;
     let in_call = |error| ParseError::InCall {
-        function: name.into(),
-        module: module.into(),
+        function: name.clone(),
+        module: module.clone(),
         error: Box::new(error),
     };
 
-    let function = program.modules[module]
-        .function(name)?
-        .parse()
-        .map_err(in_call)?;
+    let function = source.parse().map_err(in_call)?;
     if !function.decorators.is_empty() {
         bail!(line, "`{name}` is decorated, so it cannot be called inline");
     }
@@ -431,7 +535,7 @@ fn inline(
         bail!(line, "calls nest more than {MAX_CALL_DEPTH} deep");
     }
 
-    let mut args = Vec::new();
+    let mut args: Vec<Value> = receiver.into_iter().map(Value::Object).collect();
     for arg in call.args {
         args.push(trace.evaluate(frame, arg, line)?);
     }
@@ -440,19 +544,19 @@ fn inline(
         kwargs.push((keyword, trace.evaluate(frame, arg, line)?));
     }
 
-    let count = trace.calls.entry(name.to_string()).or_default();
+    let count = trace.calls.entry(name.clone()).or_default();
     let prefix = format!("{name}[{count}].");
     *count += 1;
     let module = program
         .modules
-        .get_key_value(module)
+        .get_key_value(&module)
         .expect("a loaded module")
         .0;
-    let mut callee = Frame::new(module, &function, prefix);
+    let mut callee = Frame::new(module, &function, prefix, returned_name);
     bind_arguments(&function, args, kwargs, trace, &mut callee, line)?;
 
     trace.depth += 1;
-    let returned = run(function.body, trace, &mut callee).map_err(in_call);
+    let returned = run(&function.body, trace, &mut callee).map_err(in_call);
     trace.depth -= 1;
     returned
 }
@@ -493,8 +597,8 @@ fn bind_arguments(
         let value = match (value, &param.default) {
             (Some(value), _) => value,
             (None, Some(default)) => {
-                let empty = Frame::new(callee.module, function, String::new());
-                trace.evaluate(&empty, default.clone(), line)?
+                let module = Frame::module_level(callee.module);
+                trace.evaluate(&module, default.clone(), line)?
             }
             (None, None) => bail!(line, "`{name}` needs an argument for `{}`", param.name),
         };
@@ -510,7 +614,8 @@ fn bind_arguments(
 /// What an expression denotes. A tensor's `shape` is a tuple of its extents.
 #[derive(Clone, PartialEq)]
 enum Value {
-    Int(u64),
+    None,
+    Int(i64),
     Float(Scalar),
     Bool(bool),
     Tuple(Vec<Value>),
@@ -531,6 +636,14 @@ enum Value {
         module: String,
         name: String,
     },
+    Class(ClassName),
+    /// An instance: an index into `Trace::objects`.
+    Object(usize),
+    /// Method `name` of an object's class, bound to the object.
+    Method {
+        object: usize,
+        name: String,
+    },
     Builtin(Builtin),
 }
 
@@ -539,17 +652,19 @@ enum Value {
 enum Builtin {
     List,
     Tuple,
-    /// `range(count)`, only as a `for` loop's iterable.
+    Len,
+    /// `range([start,] stop)`, only as a `for` loop's iterable.
     Range,
 }
 
 impl Builtin {
-    const ALL: [Self; 3] = [Self::List, Self::Tuple, Self::Range];
+    const ALL: [Self; 4] = [Self::List, Self::Tuple, Self::Len, Self::Range];
 
     fn name(self) -> &'static str {
         match self {
             Self::List => "list",
             Self::Tuple => "tuple",
+            Self::Len => "len",
             Self::Range => "range",
         }
     }
@@ -564,11 +679,30 @@ impl Value {
         let name = member.strip_prefix(module)?.strip_prefix('.')?;
         (!name.contains('.')).then_some(name)
     }
+
+    /// The integer `n`, which must fit Python's integers as the subset has them.
+    fn int(n: u64, line: usize) -> Result<Self, ParseError> {
+        match i64::try_from(n) {
+            Ok(n) => Ok(Self::Int(n)),
+            Err(_) => bail!(line, "the integer {n} is too large"),
+        }
+    }
+
+    /// Its truth value, as Python's `if` takes it.
+    fn truth(&self, line: usize) -> Result<bool, ParseError> {
+        match self {
+            Self::None => Ok(false),
+            Self::Bool(value) => Ok(*value),
+            Self::Int(value) => Ok(*value != 0),
+            other => bail!(line, "the truth of `{other}` is not supported"),
+        }
+    }
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::None => f.write_str("None"),
             Self::Int(value) => write!(f, "{value}"),
             Self::Float(value) => write!(f, "{value}"),
             Self::Bool(value) => f.write_str(if *value { "True" } else { "False" }),
@@ -585,13 +719,21 @@ impl fmt::Display for Value {
                 write!(f, "{tensor}[{}]", dims.join(", "))
             }
             Self::Function { name, .. } => write!(f, "function `{name}`"),
+            Self::Class(class) => write!(f, "class `{}`", class.name),
+            Self::Object(_) => f.write_str("an object"),
+            Self::Method { name, .. } => write!(f, "method `{name}`"),
             Self::Builtin(builtin) => write!(f, "built-in `{}`", builtin.name()),
         }
     }
 }
 
 impl<'p> Frame<'p> {
-    fn new(module: &'p str, function: &Function, prefix: String) -> Self {
+    fn new(
+        module: &'p str,
+        function: &Function,
+        prefix: String,
+        returned_name: Option<String>,
+    ) -> Self {
         let mut assigned = BTreeSet::new();
         assigned_names(&function.body, &mut assigned);
         Self {
@@ -600,7 +742,30 @@ impl<'p> Frame<'p> {
             assigned,
             prefix,
             iterations: Vec::new(),
+            returned_name,
         }
+    }
+
+    /// A frame of `module`'s globals only, where defaults and class bodies evaluate.
+    fn module_level(module: &'p str) -> Self {
+        Self {
+            module,
+            locals: BTreeMap::new(),
+            assigned: BTreeSet::new(),
+            prefix: String::new(),
+            iterations: Vec::new(),
+            returned_name: None,
+        }
+    }
+
+    /// Tensor `name` of this frame, named after its call and iterations: `softmax_isa[0].x.1`.
+    fn qualify(&self, name: &str) -> String {
+        let mut qualified = format!("{}{name}", self.prefix);
+        for index in &self.iterations {
+            qualified.push('.');
+            qualified.push_str(&index.to_string());
+        }
+        qualified
     }
 
     /// `name` and its attributes: a local, else a global of the frame's module, else a
@@ -619,28 +784,9 @@ impl<'p> Frame<'p> {
             bail!(line, "unknown name `{head}`");
         };
 
-        match (value, name.attributes.as_slice()) {
-            (value, []) => Ok(value),
-            (Value::Member(mut member), attributes) => {
-                for attribute in attributes {
-                    member.push('.');
-                    member.push_str(attribute);
-                }
-                tile_size(trace.program.tile_sizes, member, line)
-            }
-            (Value::Tensor(tensor), [attribute]) if attribute == "dtype" => {
-                Ok(Value::DtypeOf(tensor))
-            }
-            (Value::Tensor(tensor), [attribute]) if attribute == "shape" => Ok(Value::Tuple(
-                trace.tensors[&tensor]
-                    .extents
-                    .iter()
-                    .map(|&e| Value::Int(e))
-                    .collect(),
-            )),
-            (Value::Tensor(_), _) => bail!(line, "unsupported tensor attribute `{name}`"),
-            (_, _) => bail!(line, "unsupported attribute on `{head}`"),
-        }
+        name.attributes.iter().try_fold(value, |value, attribute| {
+            trace.attribute(value, attribute, line)
+        })
     }
 }
 
@@ -662,7 +808,10 @@ fn global(
             module: module.into(),
             name: name.into(),
         },
-        Global::Class => bail!(line, "`{name}` is a class, and classes are not supported"),
+        Global::Class(_) => Value::Class(ClassName {
+            module: module.into(),
+            name: name.into(),
+        }),
         Global::Imported { module: from, name } => {
             if follows == program.modules.len() {
                 bail!(line, "`{name}` is imported in a cycle");
@@ -685,7 +834,8 @@ fn global(
     Ok(Some(value))
 }
 
-/// Every name `body` assigns: assignment targets and loop variables, nested loops included.
+/// Every name `body` assigns: assignment targets and loop variables, in nested blocks
+/// too. Assigning an attribute assigns no name.
 fn assigned_names(body: &[Stmt], names: &mut BTreeSet<String>) {
     for stmt in body {
         match stmt {
@@ -694,47 +844,104 @@ fn assigned_names(body: &[Stmt], names: &mut BTreeSet<String>) {
                     names.insert(name.clone());
                 }
                 Target::Unpack(targets) => names.extend(targets.iter().cloned()),
+                Target::Attribute { .. } => {}
             },
             Stmt::For { var, body, .. } => {
                 names.insert(var.clone());
                 assigned_names(body, names);
             }
+            Stmt::If { body, orelse, .. } => {
+                assigned_names(body, names);
+                assigned_names(orelse, names);
+            }
+            Stmt::With { body, .. } => assigned_names(body, names),
             Stmt::Expr { .. } | Stmt::Assert { .. } | Stmt::Return { .. } => {}
         }
     }
 }
 
 impl Trace<'_> {
-    /// Declare tensor `name` of `frame`, named after the frame's call and iterations
-    /// (`softmax_isa[0].x.1`); a name declared again, as `x = nl.exp(x)` does, takes a
-    /// version suffix Python cannot write, `x~1`, so every tensor has a name of its own.
+    /// Declare tensor `qualified`, a frame's qualified name; a name declared again, as
+    /// `x = nl.exp(x)` does, takes a version suffix Python cannot write, `x~1`, so every
+    /// tensor has a name of its own.
     fn declare(
         &mut self,
-        frame: &Frame,
-        name: &str,
+        qualified: String,
         extents: Vec<u64>,
         place: Place,
+        dtype: Option<String>,
     ) -> TensorName {
-        let mut qualified = format!("{}{name}", frame.prefix);
-        for index in &frame.iterations {
-            qualified.push('.');
-            qualified.push_str(&index.to_string());
-        }
-
         let mut tensor = TensorName(qualified.clone());
         let mut version = 0;
         while self.tensors.contains_key(&tensor) {
             version += 1;
             tensor = TensorName(format!("{qualified}~{version}"));
         }
-        self.tensors
-            .insert(tensor.clone(), Declared { extents, place });
+        self.tensors.insert(
+            tensor.clone(),
+            Declared {
+                extents,
+                place,
+                dtype,
+            },
+        );
         tensor
+    }
+
+    /// The `nki.language` name of `dtype`, if it is known.
+    fn dtype_name(&self, dtype: &Dtype) -> Option<String> {
+        match dtype {
+            Dtype::Named(name) => Some(name.clone()),
+            Dtype::Of(tensor) => self.tensors[tensor].dtype.clone(),
+        }
+    }
+
+    /// `value.attribute`: a module's member, a tensor's `dtype` or `shape`, or an object's
+    /// attribute, else its class's, else its class's method.
+    fn attribute(&self, value: Value, attribute: &str, line: usize) -> Result<Value, ParseError> {
+        match value {
+            Value::Member(member) => tile_size(
+                self.program.tile_sizes,
+                format!("{member}.{attribute}"),
+                line,
+            ),
+            Value::Tensor(tensor) if attribute == "dtype" => Ok(Value::DtypeOf(tensor)),
+            Value::Tensor(tensor) if attribute == "shape" => {
+                let extents = &self.tensors[&tensor].extents;
+                let extents = extents.iter().map(|&e| Value::int(e, line));
+                Ok(Value::Tuple(extents.collect::<Result<_, _>>()?))
+            }
+            Value::Tensor(tensor) => {
+                bail!(line, "unsupported tensor attribute `{tensor}.{attribute}`")
+            }
+            Value::Object(object) => {
+                let Object { class, attributes } = &self.objects[object];
+                let def = &self.classes[class];
+                if let Some(value) = attributes.get(attribute) {
+                    Ok(value.clone())
+                } else if let Some(value) = def.attributes.get(attribute) {
+                    Ok(value.clone())
+                } else if def.methods.contains_key(attribute) {
+                    Ok(Value::Method {
+                        object,
+                        name: attribute.into(),
+                    })
+                } else {
+                    bail!(
+                        line,
+                        "`{}` object has no attribute `{attribute}`",
+                        class.name
+                    )
+                }
+            }
+            other => bail!(line, "unsupported attribute `{attribute}` of `{other}`"),
+        }
     }
 
     fn evaluate(&mut self, frame: &Frame, expr: Expr, line: usize) -> Result<Value, ParseError> {
         match expr {
-            Expr::Int(value) => Ok(Value::Int(value)),
+            Expr::None => Ok(Value::None),
+            Expr::Int(value) => Value::int(value, line),
             Expr::Float(value) => Ok(Value::Float(value)),
             Expr::Bool(value) => Ok(Value::Bool(value)),
             Expr::Name(name) => frame.resolve(self, &name, line),
@@ -747,18 +954,35 @@ impl Trace<'_> {
                 let lhs = self.evaluate(frame, *lhs, line)?;
                 let rhs = self.evaluate(frame, *rhs, line)?;
                 let (Value::Int(lhs), Value::Int(rhs)) = (lhs, rhs) else {
-                    bail!(line, "arithmetic needs integer operands");
+                    bail!(line, "`{}` needs integer operands", op.text());
                 };
-                let value = match op {
-                    BinOp::Mul => lhs.checked_mul(rhs),
-                    BinOp::FloorDiv if rhs == 0 => bail!(line, "integer division by zero"),
-                    BinOp::FloorDiv => Some(lhs / rhs),
-                    BinOp::Add => lhs.checked_add(rhs),
+                Ok(Value::Int(arithmetic(op, lhs, rhs, line)?))
+            }
+            Expr::Unary { op, operand } => {
+                let operand = self.evaluate(frame, *operand, line)?;
+                match (op, operand) {
+                    (UnaryOp::Not, operand) => Ok(Value::Bool(!operand.truth(line)?)),
+                    (UnaryOp::Neg, Value::Int(value)) => match value.checked_neg() {
+                        Some(value) => Ok(Value::Int(value)),
+                        None => bail!(line, "integer arithmetic overflows"),
+                    },
+                    (UnaryOp::Neg, Value::Float(value)) => Ok(Value::Float(
+                        Scalar::new(-value.get()).expect("a negated finite float is finite"),
+                    )),
+                    (UnaryOp::Invert, Value::Int(value)) => Ok(Value::Int(!value)),
+                    (_, operand) => bail!(line, "unsupported operand `{operand}`"),
+                }
+            }
+            Expr::Logical { op, lhs, rhs } => {
+                let lhs = self.evaluate(frame, *lhs, line)?;
+                let decided = match op {
+                    LogicalOp::And => !lhs.truth(line)?,
+                    LogicalOp::Or => lhs.truth(line)?,
                 };
-                let Some(value) = value else {
-                    bail!(line, "integer arithmetic overflows");
-                };
-                Ok(Value::Int(value))
+                if decided {
+                    return Ok(lhs);
+                }
+                self.evaluate(frame, *rhs, line)
             }
             Expr::Subscript { base, indices } => {
                 let base = self.evaluate(frame, *base, line)?;
@@ -767,21 +991,127 @@ impl Trace<'_> {
             Expr::Slice { .. } => bail!(line, "a slice is only valid inside `[]`"),
             Expr::Call(call) => {
                 let callee = frame.resolve(self, &call.callee, line)?;
-                let Value::Builtin(builtin) = callee else {
-                    bail!(
-                        line,
-                        "`{}` can only be called as a statement or an assignment's value",
-                        call.callee
-                    );
-                };
-                self.builtin(frame, builtin, call, line)
+                self.call(callee, call, frame, line, None)
             }
-            Expr::Compare { .. } => bail!(line, "a comparison is only valid in an `assert`"),
+            Expr::Compare { first, rest } => Ok(Value::Bool(
+                self.failed_comparison(frame, *first, rest, line)?.is_none(),
+            )),
         }
     }
 
+    /// Call `callee`: a module's function or an object's method, run inline, a class,
+    /// instantiated, or a built-in; what the caller binds the result to is `returned_name`.
+    fn call(
+        &mut self,
+        callee: Value,
+        call: Call,
+        frame: &Frame,
+        line: usize,
+        returned_name: Option<String>,
+    ) -> Result<Value, ParseError> {
+        let callable = match callee {
+            Value::Function { module, name } => Callable {
+                source: self.program.modules[&module].function(&name)?.clone(),
+                module,
+                name,
+                receiver: None,
+            },
+            Value::Method { object, name } => {
+                let class = self.objects[object].class.clone();
+                Callable {
+                    source: self.classes[&class].methods[&name].clone(),
+                    name: format!("{}.{name}", class.name),
+                    module: class.module,
+                    receiver: Some(object),
+                }
+            }
+            Value::Class(class) => return self.instantiate(class, call, frame, line),
+            Value::Builtin(builtin) => return self.builtin(frame, builtin, call, line),
+            _ => bail!(
+                line,
+                "`{}` can only be called as a statement or an assignment's value",
+                call.callee
+            ),
+        };
+        inline(callable, call, self, frame, line, returned_name)
+    }
+
+    /// `Class(args)`: a new object, initialized by the class's `__init__` if it has one.
+    /// A class must derive from `nl.NKIObject` alone, or from nothing.
+    fn instantiate(
+        &mut self,
+        class: ClassName,
+        call: Call,
+        frame: &Frame,
+        line: usize,
+    ) -> Result<Value, ParseError> {
+        if !self.classes.contains_key(&class) {
+            let def = self.class_def(&class, line)?;
+            self.classes.insert(class.clone(), def);
+        }
+        self.objects.push(Object {
+            class: class.clone(),
+            attributes: BTreeMap::new(),
+        });
+        let object = self.objects.len() - 1;
+
+        if self.classes[&class].methods.contains_key("__init__") {
+            let init = Value::Method {
+                object,
+                name: "__init__".into(),
+            };
+            self.call(init, call, frame, line, None)?;
+        } else if !call.args.is_empty() || !call.kwargs.is_empty() {
+            bail!(line, "`{}` takes no arguments", class.name);
+        }
+        Ok(Value::Object(object))
+    }
+
+    /// Class `class`'s body: its attributes, evaluated in its module, and its methods.
+    fn class_def(&mut self, class: &ClassName, line: usize) -> Result<ClassDef, ParseError> {
+        let program = self.program;
+        let (module, Global::Class(source)) = program
+            .modules
+            .get_key_value(&class.module)
+            .map(|(module, globals)| (module, &globals.globals[&class.name]))
+            .expect("a class of a loaded module")
+        else {
+            unreachable!("`Value::Class` names a class");
+        };
+        let parsed = source.parse()?;
+        let scope = Frame::module_level(module);
+
+        for base in &parsed.bases {
+            if scope.resolve(self, base, line)?.member_of(NKI_LANGUAGE) != Some("NKIObject") {
+                bail!(
+                    line,
+                    "class `{}` may only derive from `nl.NKIObject`, not `{base}`",
+                    class.name
+                );
+            }
+        }
+        let mut attributes = BTreeMap::new();
+        for (line, name, value) in parsed.attributes {
+            let value = self.evaluate(&scope, value, line)?;
+            attributes.insert(name, value);
+        }
+        let mut methods = BTreeMap::new();
+        for method in parsed.methods {
+            if methods
+                .insert(method.name.clone(), method.clone())
+                .is_some()
+            {
+                bail!(method.line, "method `{}` is defined twice", method.name);
+            }
+        }
+        Ok(ClassDef {
+            attributes,
+            methods,
+        })
+    }
+
     /// `base[indices]`: a tensor's region, an integer or a slice per leading
-    /// dimension, or a tuple's or list's item.
+    /// dimension, or a tuple's or list's item or slice.
     fn subscript(
         &mut self,
         frame: &Frame,
@@ -800,13 +1130,27 @@ impl Trace<'_> {
         let [index] = &indices[..] else {
             bail!(line, "a tuple or list takes one index");
         };
+        let items = match &base {
+            Value::Tuple(items) => items.clone(),
+            Value::List(list) => self.lists[*list].clone(),
+            _ => bail!(line, "`{base}` cannot be indexed"),
+        };
+
+        if let Expr::Slice { start, stop } = index {
+            let start = self.bound(frame, start.clone(), line)?.unwrap_or(0);
+            let stop = self.bound(frame, stop.clone(), line)?;
+            let len = items.len() as u64;
+            let stop = stop.unwrap_or(len).min(len);
+            let start = start.min(stop);
+            let items = items[start as usize..stop as usize].to_vec();
+            return Ok(match base {
+                Value::List(_) => self.new_list(items),
+                _ => Value::Tuple(items),
+            });
+        }
+
         let Value::Int(index) = self.evaluate(frame, index.clone(), line)? else {
             bail!(line, "an index must be an integer");
-        };
-        let items = match &base {
-            Value::Tuple(items) => items,
-            Value::List(list) => &self.lists[*list],
-            _ => bail!(line, "`{base}` cannot be indexed"),
         };
         let item = usize::try_from(index)
             .ok()
@@ -817,7 +1161,7 @@ impl Trace<'_> {
         Ok(item.clone())
     }
 
-    /// `list(items)` or `tuple(items)` of a tuple or list.
+    /// `list(items)`, `tuple(items)` or `len(items)` of a tuple or list.
     fn builtin(
         &mut self,
         frame: &Frame,
@@ -843,6 +1187,7 @@ impl Trace<'_> {
         Ok(match builtin {
             Builtin::List => self.new_list(items),
             Builtin::Tuple => Value::Tuple(items),
+            Builtin::Len => Value::int(items.len() as u64, line)?,
             Builtin::Range => unreachable!("rejected above"),
         })
     }
@@ -875,12 +1220,76 @@ impl Trace<'_> {
         let mut lhs = self.evaluate(frame, first, line)?;
         for (op, rhs) in rest {
             let rhs = self.evaluate(frame, rhs, line)?;
-            if !holds(op, &lhs, &rhs, line)? {
+            if !self.holds(op, &lhs, &rhs, line)? {
                 return Ok(Some((lhs, op, rhs)));
             }
             lhs = rhs;
         }
         Ok(None)
+    }
+
+    /// Whether `lhs op rhs` holds: integers compare by any operator, other values by
+    /// `==` and `!=` only.
+    fn holds(&self, op: CmpOp, lhs: &Value, rhs: &Value, line: usize) -> Result<bool, ParseError> {
+        let ordered = |lhs: &i64, rhs: &i64| match op {
+            CmpOp::Eq => lhs == rhs,
+            CmpOp::Ne => lhs != rhs,
+            CmpOp::Lt => lhs < rhs,
+            CmpOp::Le => lhs <= rhs,
+            CmpOp::Gt => lhs > rhs,
+            CmpOp::Ge => lhs >= rhs,
+        };
+        match (lhs, rhs, op) {
+            (Value::Int(lhs), Value::Int(rhs), _) => Ok(ordered(lhs, rhs)),
+            (_, _, CmpOp::Eq) => self.equal(lhs, rhs, line),
+            (_, _, CmpOp::Ne) => Ok(!self.equal(lhs, rhs, line)?),
+            _ => bail!(
+                line,
+                "cannot compare `{lhs}` {} `{rhs}`: only integers are ordered",
+                op.text()
+            ),
+        }
+    }
+
+    /// Whether `lhs == rhs`, as Python has it for the values compared: integers, bools,
+    /// floats, `None`, tuples, objects by identity, and dtypes, a tensor's by its name.
+    fn equal(&self, lhs: &Value, rhs: &Value, line: usize) -> Result<bool, ParseError> {
+        let [lhs, rhs] = [lhs, rhs].map(|value| self.dtype_member(value, line));
+        let (lhs, rhs) = (lhs?, rhs?);
+        match (&lhs, &rhs) {
+            (Value::None, _) | (_, Value::None) => Ok(lhs == rhs),
+            (Value::Int(a), Value::Int(b)) => Ok(a == b),
+            (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
+            (Value::Float(a), Value::Float(b)) => Ok(a == b),
+            (Value::Member(a), Value::Member(b)) => Ok(a == b),
+            (Value::Object(a), Value::Object(b)) => Ok(a == b),
+            (Value::Tuple(a), Value::Tuple(b)) => {
+                if a.len() != b.len() {
+                    return Ok(false);
+                }
+                for (a, b) in a.iter().zip(b) {
+                    if !self.equal(a, b, line)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => bail!(line, "cannot compare `{lhs}` with `{rhs}`"),
+        }
+    }
+
+    /// `value`, a tensor's dtype as its `nki.language` member: `q.dtype` as `nl.bfloat16`.
+    fn dtype_member(&self, value: &Value, line: usize) -> Result<Value, ParseError> {
+        let Value::DtypeOf(tensor) = value else {
+            return Ok(value.clone());
+        };
+        match &self.tensors[tensor].dtype {
+            Some(dtype) => Ok(Value::Member(format!("{NKI_LANGUAGE}.{dtype}"))),
+            None => bail!(
+                line,
+                "the dtype of `{tensor}` is compared, so the call must give it"
+            ),
+        }
     }
 
     /// One index of a tensor's subscript: a slice, or an integer.
@@ -897,7 +1306,7 @@ impl Trace<'_> {
             }));
         }
         match self.evaluate(frame, index, line)? {
-            Value::Int(index) => Ok(Subscript::Index(index)),
+            Value::Int(index) => Ok(Subscript::Index(non_negative(index, "an index", line)?)),
             other => bail!(
                 line,
                 "a tensor index must be an integer or a slice, not `{other}`"
@@ -918,7 +1327,45 @@ impl Trace<'_> {
         let Value::Int(value) = self.evaluate(frame, *expr, line)? else {
             bail!(line, "a slice bound must be an integer");
         };
-        Ok(Some(value))
+        Ok(Some(non_negative(value, "a slice bound", line)?))
+    }
+}
+
+/// `lhs op rhs` over Python's integers: `//` rounds down and `%` takes the divisor's sign.
+fn arithmetic(op: BinOp, lhs: i64, rhs: i64, line: usize) -> Result<i64, ParseError> {
+    if matches!(op, BinOp::FloorDiv | BinOp::Mod) && rhs == 0 {
+        bail!(line, "integer division by zero");
+    }
+    let floor_div = || {
+        let quotient = lhs.checked_div(rhs)?;
+        let inexact = lhs.checked_rem(rhs)? != 0;
+        Some(if inexact && (lhs < 0) != (rhs < 0) {
+            quotient - 1
+        } else {
+            quotient
+        })
+    };
+    let value = match op {
+        BinOp::Add => lhs.checked_add(rhs),
+        BinOp::Sub => lhs.checked_sub(rhs),
+        BinOp::Mul => lhs.checked_mul(rhs),
+        BinOp::FloorDiv => floor_div(),
+        BinOp::Mod => floor_div()
+            .and_then(|quotient| quotient.checked_mul(rhs))
+            .and_then(|product| lhs.checked_sub(product)),
+        BinOp::BitAnd => Some(lhs & rhs),
+    };
+    let Some(value) = value else {
+        bail!(line, "integer arithmetic overflows");
+    };
+    Ok(value)
+}
+
+/// `value`, which must not be negative, as what it is used as: `what`.
+fn non_negative(value: i64, what: &str, line: usize) -> Result<u64, ParseError> {
+    match u64::try_from(value) {
+        Ok(value) => Ok(value),
+        Err(_) => bail!(line, "{what} must not be negative, not {value}"),
     }
 }
 
@@ -933,52 +1380,74 @@ fn tile_size(tile_sizes: TileSizes, member: String, line: usize) -> Result<Value
     let Some(value) = tile_sizes.member(limit) else {
         bail!(line, "unsupported tile size `nl.tile_size.{limit}`");
     };
-    Ok(Value::Int(value))
-}
-
-/// Whether `lhs op rhs` holds: integers compare by any operator, tuples such as
-/// shapes by `==` and `!=`.
-fn holds(op: CmpOp, lhs: &Value, rhs: &Value, line: usize) -> Result<bool, ParseError> {
-    match (lhs, rhs, op) {
-        (Value::Int(lhs), Value::Int(rhs), _) => Ok(match op {
-            CmpOp::Eq => lhs == rhs,
-            CmpOp::Ne => lhs != rhs,
-            CmpOp::Lt => lhs < rhs,
-            CmpOp::Le => lhs <= rhs,
-            CmpOp::Gt => lhs > rhs,
-            CmpOp::Ge => lhs >= rhs,
-        }),
-        (Value::Tuple(_), Value::Tuple(_), CmpOp::Eq) => Ok(lhs == rhs),
-        (Value::Tuple(_), Value::Tuple(_), CmpOp::Ne) => Ok(lhs != rhs),
-        _ => bail!(
-            line,
-            "cannot compare `{lhs}` {} `{rhs}`: `assert` compares integers, or tuples by `==` and `!=`",
-            op.text()
-        ),
-    }
+    Value::int(value, line)
 }
 
 // =============================================================================
 // Statements
 // =============================================================================
 
-fn statement(stmt: Stmt, trace: &mut Trace, frame: &mut Frame) -> Result<(), ParseError> {
+fn statement(stmt: Stmt, trace: &mut Trace, frame: &mut Frame) -> Result<Flow, ParseError> {
     match stmt {
         Stmt::Assign {
             line,
             target,
             value,
-        } => assignment(target, value, trace, frame, line),
-        Stmt::Expr { line, value } => effect(value, trace, frame, line),
-        Stmt::Assert { line, test } => assertion(test, trace, frame, line),
+        } => assignment(target, value, trace, frame, line)?,
+        Stmt::Expr { line, value } => effect(value, trace, frame, line)?,
+        Stmt::Assert { line, test } => assertion(test, trace, frame, line)?,
         Stmt::For {
             line,
             var,
             iterable,
             body,
-        } => unroll(var, iterable, body, trace, frame, line),
-        Stmt::Return { line, .. } => bail!(line, "`return` must be a function's last statement"),
+        } => return unroll(var, iterable, &body, trace, frame, line),
+        Stmt::If {
+            line,
+            test,
+            body,
+            orelse,
+        } => {
+            let taken = if trace.evaluate(frame, test, line)?.truth(line)? {
+                body
+            } else {
+                orelse
+            };
+            return block(&taken, trace, frame);
+        }
+        Stmt::With {
+            line,
+            context,
+            body,
+        } => {
+            no_reorder(context, trace, frame, line)?;
+            return block(&body, trace, frame);
+        }
+        Stmt::Return { line, value } => {
+            let value = match value {
+                Some(value) => returned_value(value, trace, frame, line)?,
+                None => Value::None,
+            };
+            return Ok(Flow::Return(value));
+        }
     }
+    Ok(Flow::Next)
+}
+
+/// `with nl.no_reorder():`, the only context the subset enters: its body runs in program
+/// order, as every instruction does here.
+fn no_reorder(context: Expr, trace: &Trace, frame: &Frame, line: usize) -> Result<(), ParseError> {
+    let Expr::Call(call) = context else {
+        bail!(line, "`with` supports `nl.no_reorder()` only");
+    };
+    let callee = frame.resolve(trace, &call.callee, line)?;
+    if callee.member_of(NKI_LANGUAGE) != Some("no_reorder")
+        || !call.args.is_empty()
+        || !call.kwargs.is_empty()
+    {
+        bail!(line, "`with` supports `nl.no_reorder()` only");
+    }
+    Ok(())
 }
 
 /// `for var in iterable:` as its body once per item, binding `var` to it; each
@@ -986,11 +1455,11 @@ fn statement(stmt: Stmt, trace: &mut Trace, frame: &mut Frame) -> Result<(), Par
 fn unroll(
     var: String,
     iterable: Expr,
-    body: Vec<Stmt>,
+    body: &[Stmt],
     trace: &mut Trace,
     frame: &mut Frame,
     line: usize,
-) -> Result<(), ParseError> {
+) -> Result<Flow, ParseError> {
     let items = iterable_items(iterable, trace, frame, line)?;
 
     let mut index = 0;
@@ -998,19 +1467,20 @@ fn unroll(
     while let Some(item) = items.get(trace, index) {
         frame.iterations.push(index as u64);
         frame.locals.insert(var.clone(), item);
-        for stmt in body.clone() {
-            statement(stmt, trace, frame)?;
-        }
+        let flow = block(body, trace, frame);
         frame.iterations.pop();
+        if let Flow::Return(value) = flow? {
+            return Ok(Flow::Return(value));
+        }
         index += 1;
     }
-    Ok(())
+    Ok(Flow::Next)
 }
 
-/// What a `for` iterates over: `nl.affine_range(count)`'s or `range(count)`'s indices, or a
-/// tuple's or list's items.
+/// What a `for` iterates over: `nl.affine_range(count)`'s or `range([start,] stop)`'s
+/// integers, or a tuple's or list's items.
 enum Iterable {
-    Range(u64),
+    Range { start: i64, stop: i64 },
     Tuple(Vec<Value>),
     List(usize),
 }
@@ -1018,9 +1488,9 @@ enum Iterable {
 impl Iterable {
     fn get(&self, trace: &Trace, index: usize) -> Option<Value> {
         match self {
-            Self::Range(count) => {
-                let index = u64::try_from(index).ok()?;
-                (index < *count).then_some(Value::Int(index))
+            Self::Range { start, stop } => {
+                let value = start.checked_add(i64::try_from(index).ok()?)?;
+                (value < *stop).then_some(Value::Int(value))
             }
             Self::Tuple(items) => items.get(index).cloned(),
             Self::List(list) => trace.lists[*list].get(index).cloned(),
@@ -1039,7 +1509,7 @@ fn iterable_items(
         if callee.member_of(NKI_LANGUAGE) == Some("affine_range")
             || callee == Value::Builtin(Builtin::Range)
         {
-            return trip_count(call.clone(), trace, frame, line).map(Iterable::Range);
+            return range(call.clone(), &callee, trace, frame, line);
         }
     }
     match trace.evaluate(frame, iterable, line)? {
@@ -1047,34 +1517,46 @@ fn iterable_items(
         Value::List(list) => Ok(Iterable::List(list)),
         other => bail!(
             line,
-            "a loop must iterate over `nl.affine_range(count)`, `range(count)`, a tuple or a list, \
-             not `{other}`"
+            "a loop must iterate over `nl.affine_range(count)`, `range([start,] stop)`, a \
+             tuple or a list, not `{other}`"
         ),
     }
 }
 
-/// The trip count of `nl.affine_range(count)` or `range(count)`: only a concrete count
-/// unrolls.
-fn trip_count(
+/// The integers of `nl.affine_range(count)` or `range([start,] stop)`: only concrete
+/// bounds unroll.
+fn range(
     call: Call,
+    callee: &Value,
     trace: &mut Trace,
     frame: &Frame,
     line: usize,
-) -> Result<u64, ParseError> {
+) -> Result<Iterable, ParseError> {
+    let name = &call.callee;
     if !call.kwargs.is_empty() {
-        bail!(line, "`{}` takes no keyword arguments", call.callee);
+        bail!(line, "`{name}` takes no keyword arguments");
     }
-    let [count] = &call.args[..] else {
-        bail!(line, "`{}` takes one argument", call.callee);
-    };
-    let Value::Int(count) = trace.evaluate(frame, count.clone(), line)? else {
-        bail!(line, "`{}`'s count must be an integer", call.callee);
-    };
-    Ok(count)
+    let mut bounds = Vec::new();
+    for bound in call.args {
+        let Value::Int(bound) = trace.evaluate(frame, bound, line)? else {
+            bail!(line, "`{name}`'s bounds must be integers");
+        };
+        bounds.push(bound);
+    }
+    match bounds[..] {
+        [stop] => Ok(Iterable::Range { start: 0, stop }),
+        [start, stop] if *callee == Value::Builtin(Builtin::Range) => {
+            Ok(Iterable::Range { start, stop })
+        }
+        _ if *callee == Value::Builtin(Builtin::Range) => {
+            bail!(line, "`{name}` takes one or two arguments")
+        }
+        _ => bail!(line, "`{name}` takes one argument"),
+    }
 }
 
-/// `x = nl.ndarray(...)` declares the tile or HBM tensor `x`, and `x = helper(...)`
-/// binds what the helper returns; any other value is bound as is.
+/// `x = nl.ndarray(...)` declares the tile or HBM tensor `x`, and `x = f(...)` binds
+/// what the call returns; any other value is bound as is.
 fn assignment(
     target: Target,
     value: Expr,
@@ -1082,29 +1564,31 @@ fn assignment(
     frame: &mut Frame,
     line: usize,
 ) -> Result<(), ParseError> {
+    let bound = match &target {
+        Target::Name(name)
+        | Target::Attribute {
+            attribute: name, ..
+        } => Some(frame.qualify(name)),
+        Target::Unpack(_) | Target::Item { .. } => None,
+    };
     let value = match value {
         Expr::Call(call) => match frame.resolve(trace, &call.callee, line)? {
             callee if is_tensor_call(&callee) => {
-                let Target::Name(name) = target else {
+                let Some(name) = bound else {
                     bail!(line, "`{}` declares one tensor", call.callee);
                 };
                 // As in Python, the arguments are evaluated before the target is bound.
-                let tensor = tensor_call(&name, &callee, call, trace, frame, line)?;
-                let tensor = tensor.expect("a tensor call");
-                frame.locals.insert(name, Value::Tensor(tensor));
-                return Ok(());
+                let tensor = tensor_call(name, &callee, call, trace, frame, line)?;
+                Value::Tensor(tensor.expect("a tensor call"))
             }
-            Value::Function { module, name } => {
-                let Some(value) = inline(&module, &name, call, trace, frame, line)? else {
-                    bail!(line, "`{name}` returns nothing to assign");
-                };
-                value
-            }
-            Value::Builtin(_) => trace.evaluate(frame, Expr::Call(call), line)?,
+            callee @ (Value::Function { .. }
+            | Value::Method { .. }
+            | Value::Class(_)
+            | Value::Builtin(_)) => trace.call(callee, call, frame, line, bound)?,
             _ => bail!(
                 line,
-                "only `nl.ndarray`, `nl.zeros`, the `nki.language` functions returning a tile \
-                 and helper functions can be assigned from a call, not `{}`",
+                "only `nl.ndarray`, `nl.zeros`, the `nki.language` functions returning a tile, \
+                 functions, methods and classes can be assigned from a call, not `{}`",
                 call.callee
             ),
         },
@@ -1114,6 +1598,16 @@ fn assignment(
     match target {
         Target::Name(name) => {
             frame.locals.insert(name, value);
+            Ok(())
+        }
+        Target::Attribute { object, attribute } => {
+            let Value::Object(object) = frame.resolve(trace, &object, line)? else {
+                bail!(
+                    line,
+                    "only an object's attributes can be assigned, not `{object}`'s"
+                );
+            };
+            trace.objects[object].attributes.insert(attribute, value);
             Ok(())
         }
         Target::Unpack(names) => {
@@ -1164,12 +1658,13 @@ fn assignment(
     }
 }
 
-/// An expression statement: `nisa.<opcode>(...)`, an instruction, or a helper call.
+/// An expression statement: `nisa.<opcode>(...)`, an instruction, or a call of a
+/// function, method or class.
 fn effect(value: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<(), ParseError> {
     let Expr::Call(call) = value else {
         bail!(
             line,
-            "a statement must be a call, an assignment, an `assert` or a `for`"
+            "a statement must be a call, an assignment, an `assert`, an `if`, a `with` or a `for`"
         );
     };
 
@@ -1184,8 +1679,8 @@ fn effect(value: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<
     }
 
     match frame.resolve(trace, &call.callee, line)? {
-        Value::Function { module, name } => {
-            inline(&module, &name, call, trace, frame, line)?;
+        callee @ (Value::Function { .. } | Value::Method { .. } | Value::Class(_)) => {
+            trace.call(callee, call, frame, line, None)?;
             Ok(())
         }
         callee if callee.member_of(NKI_LANGUAGE) == Some("store") => {
@@ -1227,8 +1722,8 @@ fn append(
     let value = match arg {
         Expr::Call(inner) => {
             let callee = frame.resolve(trace, &inner.callee, line)?;
-            let item = format!("{name}[{}]", trace.lists[list].len());
-            match tensor_call(&item, &callee, inner.clone(), trace, frame, line)? {
+            let item = frame.qualify(&format!("{name}[{}]", trace.lists[list].len()));
+            match tensor_call(item, &callee, inner.clone(), trace, frame, line)? {
                 Some(tensor) => Value::Tensor(tensor),
                 None => trace.evaluate(frame, Expr::Call(inner), line)?,
             }
@@ -1239,26 +1734,29 @@ fn append(
     Ok(())
 }
 
-/// `assert a op b ...`, checked against the call's shapes: it leaves no statement.
+/// `assert test`, checked against the call: it leaves no statement.
 fn assertion(test: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Result<(), ParseError> {
-    let Expr::Compare { first, rest } = test else {
-        bail!(line, "an `assert` must be a comparison");
-    };
-    if let Some((lhs, op, rhs)) = trace.failed_comparison(frame, *first, rest, line)? {
-        bail!(
-            line,
-            "assertion fails for this call: `{lhs} {} {rhs}` is false",
-            op.text()
-        );
+    if let Expr::Compare { first, rest } = test {
+        if let Some((lhs, op, rhs)) = trace.failed_comparison(frame, *first, rest, line)? {
+            bail!(
+                line,
+                "assertion fails for this call: `{lhs} {} {rhs}` is false",
+                op.text()
+            );
+        }
+        return Ok(());
+    }
+    if !trace.evaluate(frame, test, line)?.truth(line)? {
+        bail!(line, "assertion fails for this call");
     }
     Ok(())
 }
 
 /// The calls that declare a new tensor: `nl.ndarray`, `nl.zeros` and the
-/// `nki.language` functions returning a tile. `target` names the tensor; the caller
-/// binds it, to a variable or a list's item. `None` if `callee` is none of them.
+/// `nki.language` functions returning a tile. `target`, qualified in its frame, names the
+/// tensor; the caller binds it. `None` if `callee` is none of them.
 fn tensor_call(
-    target: &str,
+    target: String,
     callee: &Value,
     call: Call,
     trace: &mut Trace,
@@ -1284,7 +1782,7 @@ fn is_tensor_call(callee: &Value) -> bool {
 /// `target = nl.ndarray(shape, dtype, buffer=...)`: an HBM tensor of any rank in
 /// `nl.shared_hbm`, else an on-chip tile.
 fn declaration(
-    target: &str,
+    target: String,
     call: &Call,
     trace: &mut Trace,
     frame: &Frame,
@@ -1296,7 +1794,7 @@ fn declaration(
     if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
         let shape = read_extents(shape, line)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
-        let name = trace.declare(frame, target, extents, Place::Hbm);
+        let name = trace.declare(target, extents, Place::Hbm, trace.dtype_name(&dtype));
         trace.body.push(Statement::DeclareHbm(HbmDecl {
             name: name.clone(),
             shape,
@@ -1307,13 +1805,13 @@ fn declaration(
 
     let shape = read_shape(shape, line)?;
     let buffer = read_buffer(buffer, line)?;
-    Ok(declare_tile(target, shape, dtype, buffer, trace, frame))
+    Ok(declare_tile(target, shape, dtype, buffer, trace))
 }
 
 /// `target = nl.zeros(shape, dtype, buffer=...)`: an on-chip tile, every element set
 /// to zero by a `memset`.
 fn zeros(
-    target: &str,
+    target: String,
     call: &Call,
     trace: &mut Trace,
     frame: &Frame,
@@ -1333,7 +1831,6 @@ fn zeros(
         read_dtype(dtype, line)?,
         read_buffer(buffer, line)?,
         trace,
-        frame,
     );
     let zero = Scalar::new(0.0).expect("zero is finite");
     let operands = [
@@ -1351,14 +1848,14 @@ fn zeros(
 
 /// Declare the on-chip tile `target` and emit its declaration.
 fn declare_tile(
-    target: &str,
+    target: String,
     shape: TileShape,
     dtype: Dtype,
     buffer: Buffer,
     trace: &mut Trace,
-    frame: &Frame,
 ) -> TensorName {
-    let name = trace.declare(frame, target, shape.extents(), Place::OnChip);
+    let dtype_name = trace.dtype_name(&dtype);
+    let name = trace.declare(target, shape.extents(), Place::OnChip, dtype_name);
     trace.body.push(Statement::Declare(TileDecl {
         name: name.clone(),
         shape,
@@ -1477,7 +1974,7 @@ impl TileFunction {
 /// `target = nl.<function>(...)`: the tile `target`, declared in the memory the
 /// instruction writes (PSUM for `matmul` and `transpose`, else SBUF), and that instruction.
 fn tile_call(
-    target: &str,
+    target: String,
     function: TileFunction,
     call: Call,
     trace: &mut Trace,
@@ -1602,9 +2099,8 @@ fn tile_call(
         }
     };
 
-    let shape = Value::Tuple(extents.iter().map(|&extent| Value::Int(extent)).collect());
-    let shape = read_shape(shape, line)?;
-    let name = declare_tile(target, shape, dtype, buffer, trace, frame);
+    let shape = tile_shape(&extents, line)?;
+    let name = declare_tile(target, shape, dtype, buffer, trace);
     operands.push(("dst", Operand::Tensor(name.clone())));
     let operands = operands
         .into_iter()
@@ -1739,9 +2235,17 @@ fn read_shape(value: Value, line: usize) -> Result<TileShape, ParseError> {
         let Value::Int(extent) = *extent else {
             bail!(line, "a tile's extents must be integers");
         };
+        let Ok(extent) = u64::try_from(extent) else {
+            bail!(line, "a tile's free extents must be positive");
+        };
         ints.push(extent);
     }
-    let [partitions, ref free @ ..] = ints[..] else {
+    tile_shape(&ints, line)
+}
+
+/// A tile's shape from its extents, the partitions first.
+fn tile_shape(extents: &[u64], line: usize) -> Result<TileShape, ParseError> {
+    let [partitions, ref free @ ..] = extents[..] else {
         bail!(line, "a tile's shape must be `(partitions, free, ...)`");
     };
     if free.is_empty() {
@@ -1779,7 +2283,7 @@ fn read_extents(value: Value, line: usize) -> Result<Vec<NonZeroU64>, ParseError
         let Value::Int(extent) = extent else {
             bail!(line, "a tensor's extents must be integers");
         };
-        let Some(extent) = NonZeroU64::new(extent) else {
+        let Some(extent) = u64::try_from(extent).ok().and_then(NonZeroU64::new) else {
             bail!(line, "a tensor's extents must be positive");
         };
         shape.push(extent);
@@ -1823,7 +2327,11 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),
         Value::Member(member) => Ok(Operand::Member(member)),
         Value::Float(value) => Ok(Operand::Scalar(value)),
-        Value::Int(value) => Ok(Operand::Int(value)),
+        Value::Int(value) => Ok(Operand::Int(non_negative(
+            value,
+            "an integer operand",
+            line,
+        )?)),
         Value::Bool(value) => Ok(Operand::Bool(value)),
         Value::Region { tensor, dims } => Ok(Operand::Region { tensor, dims }),
         Value::Tuple(items) => {
@@ -1832,7 +2340,7 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
                 let Value::Int(value) = item else {
                     bail!(line, "operand `{keyword}`'s tuple must hold integers only");
                 };
-                values.push(value);
+                values.push(non_negative(value, "an integer operand", line)?);
             }
             Ok(Operand::Ints(values))
         }

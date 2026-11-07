@@ -4,6 +4,8 @@
 
 mod common;
 
+use volta_trainium_analysis::frontend::parse::KernelCall;
+
 #[test]
 fn the_add_kernel_parses_lowers_and_runs_as_expected() {
     common::check(
@@ -173,4 +175,15 @@ fn the_subscripts_matmul_kernel_parses_lowers_and_runs_as_expected() {
 #[test]
 fn the_fused_softmax_kernel_parses_lowers_and_runs_as_expected() {
     common::check("fused_softmax", "kernel", &[("x", &[2, 4])]);
+}
+
+// attn_fwd_v10's Python on a small kernel: an allocator class whose sizes depend on the
+// call's dtype, a buffers object, and pipelined stages that skip out-of-range tiles.
+#[test]
+fn the_pipelined_scale_kernel_parses_lowers_and_runs_as_expected() {
+    let call = KernelCall {
+        dtypes: &[("a", "bfloat16")],
+        ..KernelCall::new(&[("a", &[6, 4])])
+    };
+    common::check_call("pipelined_scale", "kernel", &[], &call);
 }

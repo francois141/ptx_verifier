@@ -83,23 +83,35 @@ node, so the decision procedure can reason through it: `nl.rsqrt` becomes
 `@nki.jit` specializes a kernel to the shapes of the arguments it is called
 with, so `parse_kernel(source, name, shapes)` takes each parameter's shape, e.g.
 `&[("q", &[128, 128]), ...]`: a missing, unknown, repeated or empty shape is a
-`ParseError::ParamShape`. The parser then evaluates everything that depends only
-on shapes, as NKI's tracer does:
+`ParseError::ParamShape`. A `KernelCall` (`parse_kernel_for_call(source, modules,
+name, call)`) also gives parameter dtypes by `nki.language` name, e.g. `("q",
+"bfloat16")`, and the tile sizes; a parameter's dtype is needed only when the kernel
+compares it, as v10's allocator does to size its tiles. The parser then evaluates
+everything that depends only on the call, as NKI's tracer does:
 
 - `d_head, seqlen_q = q.shape` and `seqlen_kv = seqlen_q` bind integers; `t.shape`
   is a tuple of `t`'s extents, so `nl.ndarray(q.shape, ...)` works too.
-- `+`, `*` and `//` on integers, and `nl.tile_size.pmax` (128),
-  `gemm_stationary_fmax` (128) and `gemm_moving_fmax` (512): the hardware's
-  limits, `TileSizes::default()`. `parse_kernel_with_tile_sizes(source, modules,
-  name, shapes, tile_sizes)` reads others, so a tiled kernel such as v3 runs its
-  loops on small inputs with small tiles, tiled exactly as at full size.
-- `assert`s are checked rather than kept: a chain of `==`, `!=`, `<`, `<=`, `>` and
-  `>=` over integers (tuples, such as shapes, by `==` and `!=` only). A false one
-  is a parse error naming the comparison, e.g. ``assertion fails for this call:
-  `64 == 128` is false``.
+- Integers are signed: `+`, `-`, `*`, `//`, `%`, `&`, unary `-` and `~`, and `+=`
+  and the like, `//` and `%` rounding as Python's do. `nl.tile_size.pmax` (128),
+  `gemm_stationary_fmax` (128), `gemm_moving_fmax` (512) and `sbuf_fmax_bytes`
+  (a tile's largest SBUF free size in bytes: a Trn2 partition's 192 KiB, a value the
+  docs do not state) are the hardware's
+  limits, `TileSizes::HARDWARE`. A `KernelCall` may give others, so a tiled kernel
+  such as v3 runs its loops on small inputs with small tiles, tiled exactly as at
+  full size.
+- Comparisons are values: integers by any of `==`, `!=`, `<`, `<=`, `>` and `>=`,
+  chained, and other values (tuples, bools, floats, `None`, objects by identity,
+  dtypes, `q.dtype` by the call's dtype) by `==` and `!=`; `and`, `or` and `not`
+  take Python's truth of a bool, an integer or `None`.
+- `assert`s are checked rather than kept, any message unread. A false one is a
+  parse error, naming the comparison if it is one, e.g. ``assertion fails for
+  this call: `64 == 128` is false``.
+- An `if`, `elif` and `else` runs its taken branch only, and a `return` may come
+  anywhere, a bare one returning `None`. `with nl.no_reorder():` runs its body: it
+  only keeps the instructions in program order, which they always are here.
 
 Names bind and rebind as in Python: to tensors (an alias `b = a` included),
-integers, tuples and lists, and a name a function assigns anywhere is local
+integers, tuples, lists, `None` and objects, and a name a function assigns anywhere is local
 throughout it, so reading it first is an error. Every tensor gets a name of its
 own: a name declared again, as `x = nl.exp(x)` does, takes a version suffix Python
 cannot write (`x~1`, `x~2`). `asserted_shapes(source,
@@ -110,25 +122,36 @@ frontend does.
 ## Modules and helper functions
 
 A kernel's file is read whole, but a function only when it is reached, so code no
-kernel calls may use any Python: the samples' file also holds v10's classes. The
-lexer therefore tokenizes all of Python, strings (docstrings included), every
+kernel calls may use any Python. The lexer therefore tokenizes all of Python, strings (docstrings included), every
 bracket and `\` continuations; what the subset does not support becomes an
 `Unsupported` token, an error only in code that is parsed. A module's top level
-may hold imports, `from module import name`s, functions, classes (whose bodies are
-never read; using one is an error) and docstrings.
+may hold imports, `from module import name`s, functions, classes (each read when
+first instantiated) and docstrings.
 
 `parse_kernel_with_modules(source, modules, name, shapes)` also takes the modules
 the file imports from, as `(module name, source)`; `parse_kernel` takes none. A
 `from nki.language import add` needs no source. A call to a helper function,
 `scores = softmax_isa(qk_sbuf)`, runs its body in a frame of its own: arguments by
-position or keyword, defaults (`axis=(1,)`), and its value from a final `return`.
-Its tiles take the call as a prefix, `softmax_isa[0].row_max`, so two calls declare
-distinct tiles. A helper call may be a statement, an assignment's value or a
-`return`'s, not part of a larger expression; calls nest at most 32 deep. An error
-inside a helper names it and its module, its line being that module's.
+position or keyword, defaults (`axis=(1,)`, evaluated in the helper's module), and
+its value from a `return`. Its tiles take the call as a prefix,
+`softmax_isa[0].row_max`, so two calls declare distinct tiles, but a tensor it
+declares in a `return nl.ndarray(...)` takes the name its caller assigns it to, so
+`bufs.q_sbuf = sb.create_ndarray(...)` declares `q_sbuf`. Calls nest at most 32
+deep. An error inside a helper names it and its module, its line being that
+module's.
 
-The helpers may use `list(...)` and `tuple(...)`, list literals (`[]`), item reads
-and writes (`shape[a] = 1`), `items.append(value)` and `for` over a tuple or list.
+A class, `class Buffers(nl.NKIObject):` (`nl.NKIObject` is the only base allowed),
+holds attributes assigned in its body (`q_sbuf = None`) and methods. Calling it makes
+an object, run through its `__init__` if it has one; objects are shared like lists
+(`Value::Object` is an index into the trace). An attribute reads the object's own,
+else its class's, else a method bound to the object, and `obj.name = value` assigns
+the object's own, a tensor call included (named `name`). A method call `sb.allocate(n)`
+runs like a helper call with `self` bound, its tiles prefixed
+`SBLinearAllocator.allocate[0].`.
+
+The helpers may use `list(...)`, `tuple(...)` and `len(...)`, list literals (`[]`),
+item reads and writes (`shape[a] = 1`), slices of a tuple or list (`shape[1:]`),
+`items.append(value)` and `for` over a tuple or list.
 An appended tensor call, `qk_tiles.append(nl.ndarray(...))` as v4 writes, declares
 a tile named after its item, `qk_tiles[0]`. Lists are shared, as in Python:
 they live in the trace and a `Value::List` is an index into it, so every name bound
@@ -136,7 +159,7 @@ to one sees a change.
 
 ## Loops and regions
 
-A `for` over `nl.affine_range(count)`, `range(count)`, a tuple or a list is unrolled while the
+A `for` over `nl.affine_range(count)`, `range([start,] stop)`, a tuple or a list is unrolled while the
 kernel is resolved, since execution has no control flow; each iteration's tiles are
 named after its index (`x.0`, `x.1`), so they stay distinct, while other names
 rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its last
@@ -238,11 +261,17 @@ and `activation` exponentiates each chunk with that as its `bias` and a
 `reset_reduce` sum; its `.expected` is written out by hand, and `volta_pipeline`
 proves it equal to `softmax.spec`.
 
+`tests/fixtures/pipelined_scale.py` doubles a 6 x 4 tensor as v10 schedules its
+work: an allocator class sizing two tiles from the call's `bfloat16` dtype, a buffers
+object, and three stages, each skipping the tile indices outside the tensor, called
+in a software-pipelined `range(0, count + 2)` inside `with nl.no_reorder()` (its
+`.expected` is hand-written).
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as
-`softmax_isa` does. Both modules also hold code no call reaches: a class, and
-functions using `if`, `%` and f-strings.
+`softmax_isa` does. Both modules also hold code no call reaches, using syntax the
+subset lacks (a conditional expression, a dict, an f-string as a value), which is
+never parsed.
 
 `tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
 and `b` from HBM into SBUF tiles (`nisa.dma_copy`), adds the tiles

@@ -18,6 +18,14 @@ pub enum Keyword {
     For,
     In,
     Return,
+    None,
+    If,
+    Elif,
+    Else,
+    And,
+    Or,
+    Not,
+    With,
 }
 
 impl Keyword {
@@ -32,6 +40,14 @@ impl Keyword {
             "for" => Some(Self::For),
             "in" => Some(Self::In),
             "return" => Some(Self::Return),
+            "None" => Some(Self::None),
+            "if" => Some(Self::If),
+            "elif" => Some(Self::Elif),
+            "else" => Some(Self::Else),
+            "and" => Some(Self::And),
+            "or" => Some(Self::Or),
+            "not" => Some(Self::Not),
+            "with" => Some(Self::With),
             _ => None,
         }
     }
@@ -47,6 +63,14 @@ impl Keyword {
             Self::For => "for",
             Self::In => "in",
             Self::Return => "return",
+            Self::None => "None",
+            Self::If => "if",
+            Self::Elif => "elif",
+            Self::Else => "else",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Not => "not",
+            Self::With => "with",
         }
     }
 }
@@ -74,11 +98,35 @@ impl CmpOp {
     }
 }
 
+/// An integer operator, binary or, with `=`, augmented assignment: `+`, `-`, `*`, `//`,
+/// `%` or `&`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    FloorDiv,
+    Mod,
+    BitAnd,
+}
+
+impl BinOp {
+    pub fn text(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::FloorDiv => "//",
+            Self::Mod => "%",
+            Self::BitAnd => "&",
+        }
+    }
+}
+
 /// Python's other keywords, `Unsupported` tokens rather than names.
-const UNSUPPORTED_KEYWORDS: [&str; 24] = [
-    "None", "and", "async", "await", "break", "continue", "del", "elif", "else", "except",
-    "finally", "global", "if", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "try",
-    "while", "with", "yield",
+const UNSUPPORTED_KEYWORDS: [&str; 16] = [
+    "async", "await", "break", "continue", "del", "except", "finally", "global", "is", "lambda",
+    "nonlocal", "pass", "raise", "try", "while", "yield",
 ];
 
 /// The prefixes a string literal may carry, e.g. `f"..."` or `rb'...'`.
@@ -105,10 +153,12 @@ pub enum TokenKind {
     Dot,
     Colon,
     At,
-    Star,
-    Plus,
-    SlashSlash,
-    /// Source the subset does not support: a keyword, number or operator, e.g. `if` or `-`.
+    Operator(BinOp),
+    /// `~`.
+    Tilde,
+    /// `op=`, e.g. `*=`.
+    AugAssign(BinOp),
+    /// Source the subset does not support: a keyword, number or operator, e.g. `try` or `/`.
     Unsupported(String),
     /// The end of a logical line.
     Newline,
@@ -149,9 +199,9 @@ impl fmt::Display for TokenKind {
             Self::Dot => f.write_str("`.`"),
             Self::Colon => f.write_str("`:`"),
             Self::At => f.write_str("`@`"),
-            Self::Star => f.write_str("`*`"),
-            Self::Plus => f.write_str("`+`"),
-            Self::SlashSlash => f.write_str("`//`"),
+            Self::Operator(op) => write!(f, "`{}`", op.text()),
+            Self::Tilde => f.write_str("`~`"),
+            Self::AugAssign(op) => write!(f, "`{}=`", op.text()),
             Self::Unsupported(text) => write!(f, "the unsupported `{text}`"),
             Self::Newline => f.write_str("end of line"),
             Self::Indent => f.write_str("an indented block"),
@@ -306,9 +356,11 @@ impl Lexer<'_> {
             '>' => (TokenKind::Compare(CmpOp::Gt), 1),
             ':' => (TokenKind::Colon, 1),
             '@' => (TokenKind::At, 1),
-            '*' => (TokenKind::Star, 1),
-            '+' => (TokenKind::Plus, 1),
-            '/' if self.rest.starts_with("//") => (TokenKind::SlashSlash, 2),
+            '*' if self.rest.starts_with("**") => (TokenKind::Unsupported("**".into()), 2),
+            '-' if self.rest.starts_with("->") => (TokenKind::Unsupported("->".into()), 2),
+            '+' | '-' | '*' | '%' | '&' => operator(self.rest, 1),
+            '/' if self.rest.starts_with("//") => operator(self.rest, 2),
+            '~' => (TokenKind::Tilde, 1),
             // A number takes the letters and dots after it, so `1.0` is one token.
             _ if c.is_ascii_digit() || (c == '.' && self.rest[1..].starts_with(is_digit)) => {
                 let len = run(self.rest, |c| {
@@ -372,6 +424,22 @@ impl Lexer<'_> {
     fn push(&mut self, kind: TokenKind) {
         self.tokens.push(Token::new(kind, self.line));
     }
+}
+
+/// The `len`-byte operator `rest` begins with, or its augmented assignment if `=` follows.
+fn operator(rest: &str, len: usize) -> (TokenKind, usize) {
+    let op = match &rest[..len] {
+        "+" => BinOp::Add,
+        "-" => BinOp::Sub,
+        "*" => BinOp::Mul,
+        "//" => BinOp::FloorDiv,
+        "%" => BinOp::Mod,
+        _ => BinOp::BitAnd,
+    };
+    if rest[len..].starts_with('=') && !rest[len..].starts_with("==") {
+        return (TokenKind::AugAssign(op), len + 1);
+    }
+    (TokenKind::Operator(op), len)
 }
 
 fn is_digit(c: char) -> bool {
