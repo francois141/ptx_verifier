@@ -204,9 +204,9 @@ elementwise instruction pairs `v_sbuf_t[:, i, :]` with a `[PMAX, d_head]` tile;
 regions of exactly one free dimension once indexed ones are dropped, so `axis=(1,)`
 is unambiguous. Copies pair their regions' elements in row-major order.
 
-v3 to v8a parse, lower and run unmodified at the size they assert (`q`, `k` and `v`
-of `[128, 512]`), each in about ten seconds in release; `volta_pipeline` checks them
-there and at reduced tile sizes.
+v3 to v8a and v10 parse, lower and run unmodified at the size they assert (`q`, `k`
+and `v` of `[128, 512]`; v10's in `bfloat16`), each in about ten seconds in release;
+`volta_pipeline` checks them there and at reduced tile sizes.
 
 ## Outputs
 

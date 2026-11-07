@@ -609,8 +609,8 @@ row-major), and copies pair elements in row-major order. A whole tensor is a zer
 `start` with the tensor's own shape, which `.ir` renders as the bare name. The
 interpreter computes an instruction's writes (`Write`, by tensor index) before
 applying any, so overlapping regions of one tile read old values. Region start
-restrictions of the hardware (partition offsets) are not checked. v3 to v8a parse,
-lower and run unmodified at `[128, 512]`.
+restrictions of the hardware (partition offsets) are not checked. v3 to v8a and v10
+parse, lower and run unmodified at `[128, 512]`.
 
 `tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
 (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
@@ -809,12 +809,15 @@ or change the softmax row width), and `trainium_equivalence_tests.rs` (the NKI `
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
 other, on their first row by default, with `q` and `k` swapped as a negative test;
-the tiled `attn_fwd_v3` to `attn_fwd_v8a` from the file with their `assert seqlen_q >= 512`
-stated as `>= FMAX_MOVING` - checked to change nothing at hardware tile sizes -
-each proved equal to the spec, and to the version before it, everywhere at three
-reduced `TileSizes`, refuted with `q` and `k` swapped, and unmodified at `[128, 512]`
+the tiled `attn_fwd_v3` to `attn_fwd_v8a` and `attn_fwd_v10` from the file, each in its
+upstream input dtype (`bfloat16` for v10, else `float32`), v3 to v8a with their `assert
+seqlen_q >= 512` stated as `>= FMAX_MOVING` - checked to change nothing at hardware tile
+sizes - each proved equal to the spec, and to the version before it (v8a for v10),
+everywhere at four reduced `TileSizes` (the last wrapping v10's QK matmuls around its
+seven PSUM banks), refuted with `q` and `k` swapped, and unmodified at `[128, 512]`
 on one row of each of the four query tiles in one ignored test, about 5 minutes and 12 GB,
-mostly the spec's unfolding and the seven kernels' runs; `fused_softmax` against
+mostly the spec's unfolding and the eight kernels' runs (upstream's seqlen 4096 for v10
+is out of reach); `fused_softmax` against
 `softmax.spec`).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
