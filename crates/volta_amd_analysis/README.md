@@ -66,6 +66,10 @@ Inline constants follow its [packed-to-scalar regression](https://github.com/llv
 The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
 unbalanced and extra-quoted arguments are rejected.
 
+Ordinary operand lists accept one trailing comma after nonempty operands.
+Named wait-counter lists reject a trailing comma. Leading, interior and repeated
+trailing empty operands remain errors; lowering still checks instruction arity.
+
 ## Tests
 
 Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
