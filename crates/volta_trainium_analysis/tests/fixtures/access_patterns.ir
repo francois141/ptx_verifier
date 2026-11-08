@@ -1,0 +1,9 @@
+kernel kernel(a) -> out
+  a: hbm[2, 6]
+  out: hbm[2, 6]
+  t: sbuf[2, 3, 2]
+  sums: sbuf[2, 3]
+  t = mov(a.ap([[6, 2], [1, 3], [3, 2]], offset=0))
+  sums = reduce add(t)
+  out[0:2, 0:3] = mov(sums)
+  out[0:2, 3:6] = mov(t.ap([[6, 2], [2, 3]], offset=1))

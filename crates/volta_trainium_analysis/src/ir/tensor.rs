@@ -60,16 +60,33 @@ pub struct Shape(pub Vec<u64>);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Index(pub Vec<u64>);
 
-/// A rectangular region of a tensor: `shape` elements from `start`, per dimension of
-/// the tensor, an indexed dimension's extent being 1. A whole tensor is a zero `start`
-/// with the tensor's own shape, every dimension sliced.
+/// The elements of a tensor an operand names, viewed in `shape`: a rectangular
+/// region, or an access pattern's strided view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorRegion {
     pub tensor: TensorId,
-    pub start: Index,
     pub shape: Shape,
-    /// How the region selects each dimension, which its rendering keeps.
-    pub selections: Vec<Selection>,
+    pub layout: Layout,
+}
+
+/// Where each element of a region's `shape` lies in its tensor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layout {
+    /// `shape` elements from `start`, per dimension of the tensor, an indexed
+    /// dimension's extent being 1. A whole tensor is a zero `start` with the tensor's
+    /// own shape, every dimension sliced.
+    Rectangle {
+        start: Index,
+        /// How the region selects each dimension, which its rendering keeps.
+        selections: Vec<Selection>,
+    },
+    /// `t.ap(pattern, offset)`, as `torch.as_strided`: element `local` is the one at
+    /// position `offset + steps . local` of the tensor's row-major layout, `storage`.
+    Pattern {
+        offset: u64,
+        steps: Vec<u64>,
+        storage: Shape,
+    },
 }
 
 /// How a region selects one dimension of its tensor.
@@ -102,7 +119,35 @@ impl TensorRegion {
             *coordinate = rest % extent;
             rest /= extent;
         }
-        self.start.shifted(&Index(local))
+        self.element(&Index(local))
+    }
+
+    /// The tensor index of the element at `local`, an index within the region's `shape`.
+    pub fn element(&self, local: &Index) -> Index {
+        match &self.layout {
+            Layout::Rectangle { start, .. } => start.shifted(local),
+            Layout::Pattern {
+                offset,
+                steps,
+                storage,
+            } => {
+                let position = steps
+                    .iter()
+                    .zip(&local.0)
+                    .fold(*offset, |position, (step, coordinate)| {
+                        position + step * coordinate
+                    });
+                storage.index_at(position)
+            }
+        }
+    }
+
+    /// Whether the region drops its tensor's first dimension, a tile's partitions.
+    pub fn indexes_first_dimension(&self) -> bool {
+        match &self.layout {
+            Layout::Rectangle { selections, .. } => selections[0] == Selection::Index,
+            Layout::Pattern { .. } => false,
+        }
     }
 }
 

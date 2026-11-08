@@ -6,7 +6,7 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, InstrId, LoweredInstr, Reduction, ScalarOperand, Selection, Sign, Tensor,
+    Accumulation, InstrId, Layout, LoweredInstr, Reduction, ScalarOperand, Selection, Sign, Tensor,
     TensorId, TensorRegion,
 };
 
@@ -24,25 +24,35 @@ pub struct LoweredKernel {
 impl fmt::Display for LoweredKernel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = |tensor: TensorId| self.tensors[tensor].name.as_str();
-        let region = |region: &TensorRegion| {
-            let whole = region.start.0.iter().all(|&start| start == 0)
-                && region.shape == self.tensors[region.tensor].shape
-                && region.selections.iter().all(|&s| s == Selection::Slice);
-            if whole {
-                return name(region.tensor).to_string();
+        let region = |region: &TensorRegion| match &region.layout {
+            Layout::Rectangle { start, selections } => {
+                let whole = start.0.iter().all(|&start| start == 0)
+                    && region.shape == self.tensors[region.tensor].shape
+                    && selections.iter().all(|&s| s == Selection::Slice);
+                if whole {
+                    return name(region.tensor).to_string();
+                }
+                let dims: Vec<String> = start
+                    .0
+                    .iter()
+                    .zip(&region.shape.0)
+                    .zip(selections)
+                    .map(|((start, extent), selection)| match selection {
+                        Selection::Index => start.to_string(),
+                        Selection::Slice => format!("{start}:{}", start + extent),
+                    })
+                    .collect();
+                format!("{}[{}]", name(region.tensor), dims.join(", "))
             }
-            let dims: Vec<String> = region
-                .start
-                .0
-                .iter()
-                .zip(&region.shape.0)
-                .zip(&region.selections)
-                .map(|((start, extent), selection)| match selection {
-                    Selection::Index => start.to_string(),
-                    Selection::Slice => format!("{start}:{}", start + extent),
-                })
-                .collect();
-            format!("{}[{}]", name(region.tensor), dims.join(", "))
+            Layout::Pattern { offset, steps, .. } => {
+                let pairs: Vec<String> = steps
+                    .iter()
+                    .zip(&region.shape.0)
+                    .map(|(step, count)| format!("[{step}, {count}]"))
+                    .collect();
+                let pattern = pairs.join(", ");
+                format!("{}.ap([{pattern}], offset={offset})", name(region.tensor))
+            }
         };
         let scalar = |operand: &ScalarOperand| match operand {
             ScalarOperand::Constant(value) => value.to_string(),

@@ -14,5 +14,5 @@ pub use instr::{Accumulation, InstrId, LoweredInstr, Reduction, Sign};
 pub use kernel::LoweredKernel;
 pub use scalar::{ScalarOperand, ScalarStep};
 pub use tensor::{
-    Address, Index, Initial, Memory, Selection, Shape, Tensor, TensorId, TensorRegion,
+    Address, Index, Initial, Layout, Memory, Selection, Shape, Tensor, TensorId, TensorRegion,
 };

@@ -45,8 +45,9 @@ pub enum LoweredInstr {
         bias: Option<ScalarOperand>,
         reduce: Option<Reduction>,
     },
-    /// Each `dst[p, 0]` the fold of `op` over `data`'s partition `p`, seeded with its
-    /// first element, then `sign` applied; `dst` has one free element per partition.
+    /// Each `dst[p, r]` the fold of `op` over the `r`th of `dst`'s free count of equal,
+    /// consecutive runs of `data`'s partition `p` (its reduced trailing axes), seeded
+    /// with the run's first element, then `sign` applied.
     Reduce {
         op: ArithOp,
         dst: TensorRegion,

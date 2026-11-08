@@ -257,6 +257,12 @@ pub enum Operand {
         tensor: TensorName,
         dims: Vec<Subscript>,
     },
+    /// `tensor.ap(pattern, offset=offset)`: a strided view, each pair `[step, count]`.
+    Pattern {
+        tensor: TensorName,
+        pattern: Vec<[u64; 2]>,
+        offset: u64,
+    },
 }
 
 impl fmt::Display for Kernel {
@@ -361,6 +367,17 @@ impl fmt::Display for Operand {
             Self::Region { tensor, dims } => {
                 let dims: Vec<String> = dims.iter().map(Subscript::to_string).collect();
                 write!(f, "{tensor}[{}]", dims.join(", "))
+            }
+            Self::Pattern {
+                tensor,
+                pattern,
+                offset,
+            } => {
+                let pairs: Vec<String> = pattern
+                    .iter()
+                    .map(|[step, count]| format!("[{step}, {count}]"))
+                    .collect();
+                write!(f, "{tensor}.ap([{}], offset={offset})", pairs.join(", "))
             }
         }
     }
