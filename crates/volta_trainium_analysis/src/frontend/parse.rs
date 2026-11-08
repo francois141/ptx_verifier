@@ -96,14 +96,37 @@ pub fn parse_kernel_with_modules(
     parse_kernel_for_call(source, modules, name, &KernelCall::new(shapes))
 }
 
-/// What `@nki.jit` specializes a kernel to: each parameter's shape, the dtypes of
-/// any parameters the kernel compares a dtype of, and the `nl.tile_size` it reads.
+/// What `@nki.jit` specializes a kernel to: each tensor parameter's shape, the dtypes
+/// of any the kernel compares or sizes a dtype of, its other parameters' values, and
+/// the `nl.tile_size` it reads.
 #[derive(Debug, Clone, Copy)]
 pub struct KernelCall<'a> {
     pub shapes: &'a [(&'a str, &'a [u64])],
     /// `nki.language` dtype names, e.g. `("q", "bfloat16")`.
     pub dtypes: &'a [(&'a str, &'a str)],
+    /// The parameters that are not tensors, e.g. `("pool_size", Constant::Int(2))`;
+    /// one the call gives no value or shape takes its default.
+    pub constants: &'a [(&'a str, Constant<'a>)],
     pub tile_sizes: TileSizes,
+}
+
+/// A kernel argument that is not a tensor, a Python value the kernel computes with.
+#[derive(Debug, Clone, Copy)]
+pub enum Constant<'a> {
+    Int(i64),
+    /// A tuple of integers, e.g. `(3, 4)`.
+    Ints(&'a [i64]),
+    Bool(bool),
+}
+
+impl Constant<'_> {
+    fn value(self) -> Value {
+        match self {
+            Self::Int(value) => Value::Int(value),
+            Self::Ints(values) => Value::Tuple(values.iter().copied().map(Value::Int).collect()),
+            Self::Bool(value) => Value::Bool(value),
+        }
+    }
 }
 
 impl<'a> KernelCall<'a> {
@@ -112,6 +135,7 @@ impl<'a> KernelCall<'a> {
         Self {
             shapes,
             dtypes: &[],
+            constants: &[],
             tile_sizes: TileSizes::default(),
         }
     }
@@ -386,6 +410,23 @@ fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, Pa
             problem,
         });
     }
+    for (index, (given, _)) in call.constants.iter().enumerate() {
+        if !is_param(given) {
+            bail!(
+                line,
+                "a value is given for `{given}`, which is not a parameter"
+            );
+        }
+        if call.shapes.iter().any(|(shaped, _)| shaped == given) {
+            bail!(line, "`{given}` is given both a shape and a value");
+        }
+        if call.constants[..index]
+            .iter()
+            .any(|(earlier, _)| earlier == given)
+        {
+            bail!(line, "the value of `{given}` is given twice");
+        }
+    }
     for (index, (given, _)) in call.dtypes.iter().enumerate() {
         if !is_param(given) {
             bail!(
@@ -403,12 +444,22 @@ fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, Pa
 
     let mut params = Vec::new();
     for param in &function.params {
-        if param.default.is_some() {
-            bail!(
-                line,
-                "kernel parameter `{}` cannot have a default",
-                param.name
-            );
+        let shaped = call.shapes.iter().any(|(given, _)| *given == param.name);
+        let constant = call
+            .constants
+            .iter()
+            .find(|(given, _)| *given == param.name);
+        let value = match (constant, &param.default) {
+            _ if shaped => None,
+            (Some((_, constant)), _) => Some(constant.value()),
+            (None, Some(default)) => {
+                Some(trace.evaluate(&Frame::module_level(MAIN), default.clone(), line)?)
+            }
+            (None, None) => None,
+        };
+        if let Some(value) = value {
+            frame.locals.insert(param.name.clone(), value);
+            continue;
         }
         let shape = param_shape(&param.name, call.shapes)?;
         let extents = shape.iter().map(|extent| extent.get()).collect();
@@ -1482,7 +1533,12 @@ fn unroll(
     Ok(Flow::Next)
 }
 
-/// What a `for` iterates over: `nl.affine_range(count)`'s or `range([start,] stop)`'s
+/// The `nki.language` loop iterators. Each unrolls in order: `affine_range` declares
+/// its iterations independent, and `sequential_range` and `static_range` do not, but
+/// each runs the same iterations in program order.
+const LOOP_RANGES: [&str; 3] = ["affine_range", "sequential_range", "static_range"];
+
+/// What a `for` iterates over: an `nl` loop iterator's or `range([start,] stop)`'s
 /// integers, or a tuple's or list's items.
 enum Iterable {
     Range { start: i64, stop: i64 },
@@ -1511,9 +1567,10 @@ fn iterable_items(
 ) -> Result<Iterable, ParseError> {
     if let Expr::Call(call) = &iterable {
         let callee = frame.resolve(trace, &call.callee, line)?;
-        if callee.member_of(NKI_LANGUAGE) == Some("affine_range")
-            || callee == Value::Builtin(Builtin::Range)
-        {
+        let loop_range = callee
+            .member_of(NKI_LANGUAGE)
+            .is_some_and(|member| LOOP_RANGES.contains(&member));
+        if loop_range || callee == Value::Builtin(Builtin::Range) {
             return range(call.clone(), &callee, trace, frame, line);
         }
     }
@@ -1522,14 +1579,15 @@ fn iterable_items(
         Value::List(list) => Ok(Iterable::List(list)),
         other => bail!(
             line,
-            "a loop must iterate over `nl.affine_range(count)`, `range([start,] stop)`, a \
-             tuple or a list, not `{other}`"
+            "a loop must iterate over `nl.affine_range`, `nl.sequential_range` or \
+             `nl.static_range` of a count, `range([start,] stop)`, a tuple or a list, not \
+             `{other}`"
         ),
     }
 }
 
-/// The integers of `nl.affine_range(count)` or `range([start,] stop)`: only concrete
-/// bounds unroll.
+/// The integers of an `nl` loop iterator's `(count)` or `range([start,] stop)`: only
+/// concrete bounds unroll.
 fn range(
     call: Call,
     callee: &Value,
@@ -2292,7 +2350,17 @@ fn region_extents(
     }
 }
 
-/// `nisa.<opcode>(keyword=operand, ...)`: every operand by keyword, so its role is explicit.
+/// The leading parameters of the `nki.isa` instructions a kernel may give by position,
+/// in the order their docs declare them.
+const POSITIONAL: [(&str, &[&str]); 4] = [
+    ("dma_copy", &["dst", "src"]),
+    ("tensor_copy", &["dst", "src"]),
+    ("nc_matmul", &["dst", "stationary", "moving"]),
+    ("nc_transpose", &["dst", "data"]),
+];
+
+/// `nisa.<opcode>(operand, ..., keyword=operand, ...)`: positional operands only where
+/// `POSITIONAL` names them, so each operand's role is explicit.
 fn instruction(
     opcode: String,
     call: Call,
@@ -2300,12 +2368,25 @@ fn instruction(
     frame: &Frame,
     line: usize,
 ) -> Result<Instruction, ParseError> {
-    if !call.args.is_empty() {
-        bail!(line, "`{}` takes its operands by keyword", call.callee);
+    let params = POSITIONAL
+        .iter()
+        .find(|(name, _)| *name == opcode)
+        .map_or(&[][..], |(_, params)| *params);
+    if call.args.len() > params.len() {
+        bail!(
+            line,
+            "`{}` takes at most {} operands by position, the rest by keyword",
+            call.callee,
+            params.len()
+        );
     }
-
+    let callee = call.callee.to_string();
+    let positional = params.iter().map(|param| param.to_string()).zip(call.args);
     let mut operands = BTreeMap::new();
-    for (keyword, expr) in call.kwargs {
+    for (keyword, expr) in positional.chain(call.kwargs) {
+        if operands.contains_key(&keyword) {
+            bail!(line, "operand `{keyword}` of `{callee}` is given twice");
+        }
         let value = trace.evaluate(frame, expr, line)?;
         let operand = read_operand(&keyword, value, line)?;
         operands.insert(keyword, operand);

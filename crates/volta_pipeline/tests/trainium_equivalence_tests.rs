@@ -7,7 +7,7 @@ use volta_expr::SymbolicOutputs;
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{
-    KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
+    Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
 };
 
 /// The inputs' dtype upstream's `test_attention.py` calls each tiled sample with:
@@ -596,4 +596,147 @@ fn nki_tensor_addition_against_a_subtraction_is_refuted() {
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
     );
+}
+
+const MATRIX_MULTIPLICATION: &str = include_str!(
+    "../../volta_trainium_analysis/tests/fixtures/nki_samples/matrix_multiplication_nki_kernels.py"
+);
+const MATRIX_MULTIPLICATION_SPEC: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/matrix_multiplication.spec");
+
+/// Matrix multiplication tutorial `kernel`, from its unmodified file, for `lhsT` of
+/// `[k, m]` and `rhs` of `[k, n]`, with `nl.tile_size` reading `tile_sizes`.
+fn matrix_multiplication(kernel: &str, tile_sizes: TileSizes, dims: [u64; 3]) -> SymbolicOutputs {
+    matrix_multiplication_with(kernel, tile_sizes, dims, &[])
+}
+
+/// `matrix_multiplication` with the kernel's other parameters given `constants`.
+fn matrix_multiplication_with(
+    kernel: &str,
+    tile_sizes: TileSizes,
+    [m, n, k]: [u64; 3],
+    constants: &[(&str, Constant)],
+) -> SymbolicOutputs {
+    let (lhs_t, rhs): (&[u64], &[u64]) = (&[k, m], &[k, n]);
+    let shapes = [("lhsT", lhs_t), ("rhs", rhs)];
+    let call = KernelCall {
+        tile_sizes,
+        constants,
+        ..KernelCall::new(&shapes)
+    };
+    let parsed = parse_kernel_for_call(MATRIX_MULTIPLICATION, &[], kernel, &call)
+        .unwrap_or_else(|e| panic!("{kernel}: {e}"));
+    evaluate(&lower_kernel(&parsed).unwrap()).unwrap()
+}
+
+/// `outputs`' `result` against `spec` at `[m, n, k]`.
+fn matrix_multiplication_against(
+    spec: &str,
+    outputs: &SymbolicOutputs,
+    [m, n, k]: [u64; 3],
+    sample: u64,
+) -> EquivalenceVerdict {
+    let dims = [("M", m), ("N", n), ("K", k)]
+        .map(|(dim, value)| (dim.to_string(), value))
+        .into();
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    check_equivalence(&reference, outputs, &["result".into()], &sampled(sample)).0
+}
+
+/// The tutorial's tiled kernels, in its order.
+const TILED_MATMULS: [&str; 4] = [
+    "nki_matmul_tiled_",
+    "nki_matmul_hoist_load_",
+    "nki_matmul_block_free_dimension_",
+    "nki_matmul_fully_optimized_",
+];
+
+/// Reduced tile sizes and the `[M, N, K]` they run the tiled kernels at: each a
+/// multiple of `nki_matmul_fully_optimized_`'s blocks of 16 x 2 x 8 tiles, two of each,
+/// so every loop of every kernel runs at least twice.
+const REDUCED_MATMULS: [(TileSizes, [u64; 3]); 2] = [
+    (reduced_tiles(2, 4), [64, 16, 32]),
+    (reduced_tiles(4, 8), [128, 32, 64]),
+];
+
+// `nki_matmul_basic_` asserts its 64 x 512 x 128 and reads no tile size.
+#[test]
+fn nki_matmul_basic_matches_its_specification_at_full_size() {
+    let dims = [64, 512, 128];
+    let outputs = matrix_multiplication("nki_matmul_basic_", TileSizes::HARDWARE, dims);
+    assert_eq!(
+        matrix_multiplication_against(MATRIX_MULTIPLICATION_SPEC, &outputs, dims, 0),
+        EquivalenceVerdict::Equivalent {
+            checked: 64 * 512,
+            total: 64 * 512,
+        }
+    );
+}
+
+#[test]
+fn nki_tiled_matmuls_match_their_specification_and_each_other_at_reduced_tile_sizes() {
+    for (tile_sizes, dims @ [m, n, _]) in REDUCED_MATMULS {
+        let everywhere = EquivalenceVerdict::Equivalent {
+            checked: m * n,
+            total: m * n,
+        };
+        let mut previous: Option<(&str, SymbolicOutputs)> = None;
+        for kernel in TILED_MATMULS {
+            let outputs = matrix_multiplication(kernel, tile_sizes, dims);
+            assert_eq!(
+                matrix_multiplication_against(MATRIX_MULTIPLICATION_SPEC, &outputs, dims, 0),
+                everywhere,
+                "{kernel}: {tile_sizes:?} at {dims:?}"
+            );
+            if let Some((earlier, earlier_outputs)) = &previous {
+                let arrays = ["result".into()];
+                assert_eq!(
+                    check_equivalence(earlier_outputs, &outputs, &arrays, &sampled(0)).0,
+                    everywhere,
+                    "{earlier} against {kernel}: {tile_sizes:?} at {dims:?}"
+                );
+            }
+            previous = Some((kernel, outputs));
+        }
+    }
+}
+
+// The fully optimized kernel's meta-parameters given by the call rather than defaulted:
+// blocks of 2 x 2 x 2 tiles, two of each.
+#[test]
+fn nki_matmul_fully_optimized_matches_its_specification_with_smaller_blocks() {
+    let dims @ [m, n, _] = [16, 32, 16];
+    let blocks = [
+        ("TILES_IN_BLOCK_M", Constant::Int(2)),
+        ("TILES_IN_BLOCK_N", Constant::Int(2)),
+        ("TILES_IN_BLOCK_K", Constant::Int(2)),
+    ];
+    let kernel = "nki_matmul_fully_optimized_";
+    let outputs = matrix_multiplication_with(kernel, reduced_tiles(4, 8), dims, &blocks);
+    assert_eq!(
+        matrix_multiplication_against(MATRIX_MULTIPLICATION_SPEC, &outputs, dims, 0),
+        EquivalenceVerdict::Equivalent {
+            checked: m * n,
+            total: m * n,
+        }
+    );
+}
+
+// Summing the product twice, as a PSUM tile accumulated across output tiles would.
+#[test]
+fn nki_matmuls_against_a_doubled_product_are_refuted() {
+    let doubled = MATRIX_MULTIPLICATION_SPEC.replace("= sum(", "= 2 * sum(");
+    assert_ne!(doubled, MATRIX_MULTIPLICATION_SPEC);
+    let basic = [64, 512, 128];
+    let (tile_sizes, reduced) = REDUCED_MATMULS[0];
+    let kernels = std::iter::once(("nki_matmul_basic_", TileSizes::HARDWARE, basic))
+        .chain(TILED_MATMULS.map(|kernel| (kernel, tile_sizes, reduced)));
+    for (kernel, tile_sizes, dims) in kernels {
+        let outputs = matrix_multiplication(kernel, tile_sizes, dims);
+        let verdict = matrix_multiplication_against(&doubled, &outputs, dims, 1);
+        assert!(
+            matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+            "{kernel}: expected a confirmed difference, got {verdict:?}"
+        );
+    }
 }

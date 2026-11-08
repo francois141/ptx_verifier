@@ -95,7 +95,14 @@ with, so `parse_kernel(source, name, shapes)` takes each parameter's shape, e.g.
 `ParseError::ParamShape`. A `KernelCall` (`parse_kernel_for_call(source, modules,
 name, call)`) also gives parameter dtypes by `nki.language` name, e.g. `("q",
 "bfloat16")`, and the tile sizes; a parameter's dtype is needed only when the kernel
-compares it, as v10's allocator does to size its tiles. The parser then evaluates
+compares it, as v10's allocator does to size its tiles. A parameter the call gives
+no shape is not a tensor: it takes the call's `KernelCall::constants` value (a
+`Constant`: an integer, a tuple of integers or a bool), else its default, as the
+matrix multiplication tutorial's `TILES_IN_BLOCK_M=16` does. An `nki.isa`
+instruction's operands are by keyword, except the leading ones of `dma_copy` and
+`tensor_copy` (`dst`, `src`), `nc_matmul` (`dst`, `stationary`, `moving`) and
+`nc_transpose` (`dst`, `data`), which may come by position in that order, as their
+docs declare them. The parser then evaluates
 everything that depends only on the call, as NKI's tracer does:
 
 - `d_head, seqlen_q = q.shape` and `seqlen_kv = seqlen_q` bind integers; `t.shape`
@@ -168,7 +175,8 @@ to one sees a change.
 
 ## Loops and regions
 
-A `for` over `nl.affine_range(count)`, `range([start,] stop)`, a tuple or a list is unrolled while the
+A `for` over `nl.affine_range(count)`, `nl.sequential_range(count)`,
+`nl.static_range(count)`, `range([start,] stop)`, a tuple or a list is unrolled while the
 kernel is resolved, since execution has no control flow; each iteration's tiles are
 named after its index (`x.0`, `x.1`), so they stay distinct, while other names
 rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its last
@@ -255,7 +263,8 @@ modules it imports from); the fixtures' own shape `assert`s check those shapes.
 `ef43bf3` (`src/nki_samples/tutorials/attention_fwd_performance/`, MIT No
 Attribution), and the other tutorials' kernel files the same way, each with a
 `.spec` of its reference beside the fixtures: `tensor_addition_nki_kernels.py`
-(`tensor_addition.spec`, `a + b`). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+(`tensor_addition.spec`, `a + b`) and `matrix_multiplication_nki_kernels.py`
+(`matrix_multiplication.spec`, `lhsT.T @ rhs`). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 

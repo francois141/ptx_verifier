@@ -532,7 +532,11 @@ parameter's shape, as `@nki.jit` specializes a kernel per call (a missing,
 unknown, repeated or empty one is `ParseError::ParamShape`), and lowering takes
 parameter shapes from the parsed `ast::Param`s. A `KernelCall`
 (`parse_kernel_for_call`) also gives parameter dtypes by `nki.language` name, needed
-only where a kernel compares one (v10's allocator), and the `TileSizes`. The parser
+only where a kernel compares or sizes one (v10's allocator), the values of the
+parameters that are not tensors (`constants`, each a `Constant`; one without a value
+or shape takes its default), and the `TileSizes`. `nisa` operands are by keyword, but
+`POSITIONAL` lets `dma_copy`, `tensor_copy`, `nc_matmul` and `nc_transpose` take their
+leading ones by position, in their docs' order. The parser
 runs the kernel's Python as NKI's tracer does: a `Trace` (every tensor declared, its
 extents and dtype, list and object storage, the classes instantiated, the
 statements emitted, per-helper call counts) and a `Frame` per call (its module,
@@ -582,7 +586,8 @@ the name the caller gives, binding nothing: an assignment binds its target, and
 `items.append(call)` a new list item, the tile named `items[k]`. `range([start,]
 stop)` unrolls like `nl.affine_range`; list literals evaluate to new lists.
 
-A `for` over `nl.affine_range(count)` is unrolled at resolution rather than
+A `for` over `nl.affine_range(count)` (or `sequential_range`, `static_range`: each
+unrolls in program order) is unrolled at resolution rather than
 lowered: the interpreter has no program counter, and the integer-expression
 machinery is `parse.rs`'s. It binds the loop variable to each index, folds the
 body's arithmetic and emits the body once per index; the tiles an iteration
@@ -635,7 +640,8 @@ and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative 
 `tests/fixtures/nki_samples/` vendors the samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified (nki-samples `ef43bf3`, MIT-0), and the other
 tutorials' kernel files likewise, each with a `.spec` of its reference
-(`tensor_addition_nki_kernels.py`, `tensor_addition.spec`);
+(`tensor_addition_nki_kernels.py`, `tensor_addition.spec`;
+`matrix_multiplication_nki_kernels.py`, `matrix_multiplication.spec`);
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
@@ -821,7 +827,11 @@ on one row of each of the four query tiles in one ignored test, about 5 minutes 
 mostly the spec's unfolding and the eight kernels' runs (upstream's seqlen 4096 for v10
 is out of reach); `fused_softmax` against
 `softmax.spec`; the tensor addition tutorial's `nki_tensor_add`, unmodified, against
-`tensor_addition.spec` at its driver's 256 x 1024, refuted against a subtraction).
+`tensor_addition.spec` at its driver's 256 x 1024, refuted against a subtraction; the
+matrix multiplication tutorial's five kernels against `matrix_multiplication.spec`,
+`nki_matmul_basic_` at its asserted 64 x 512 x 128 and the four tiled ones, each also
+against the one before, at two reduced `TileSizes` and once with the fully optimized
+kernel's meta-parameters given as `Constant`s, refuted against a doubled product).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 
