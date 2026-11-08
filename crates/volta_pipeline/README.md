@@ -91,7 +91,9 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   tile sizes whose `[M, N, K]` give every loop two iterations (the driver's
   4096 x 2048 x 1024 is out of reach); the fully optimized kernel also with its
   `TILES_IN_BLOCK_*` meta-parameters given by the call. All five are refuted against
-  a doubled product. Functional
+  a doubled product. The transpose2d tutorial's kernel, its `shape2D` given by the
+  call, is proved equal to `transpose2d.spec` on every output at its drivers'
+  5 x (3 x 4) and 5 x (37 x 44), and refuted against the identity. Functional
   equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 

@@ -1361,6 +1361,12 @@ impl Trace<'_> {
                 stop: self.bound(frame, stop, line)?,
             }));
         }
+        if let Expr::Call(call) = &index {
+            let callee = frame.resolve(self, &call.callee, line)?;
+            if callee.member_of(NKI_LANGUAGE) == Some("ds") {
+                return self.dynamic_slice(frame, call, line);
+            }
+        }
         match self.evaluate(frame, index, line)? {
             Value::Int(index) => Ok(Subscript::Index(non_negative(index, "an index", line)?)),
             other => bail!(
@@ -1368,6 +1374,34 @@ impl Trace<'_> {
                 "a tensor index must be an integer or a slice, not `{other}`"
             ),
         }
+    }
+
+    /// `nl.ds(start, size)`: the slice `start:start + size`.
+    fn dynamic_slice(
+        &mut self,
+        frame: &Frame,
+        call: &Call,
+        line: usize,
+    ) -> Result<Subscript, ParseError> {
+        let [start, size] = call.args.as_slice() else {
+            bail!(line, "`nl.ds` takes a start and a size, by position");
+        };
+        if !call.kwargs.is_empty() {
+            bail!(line, "`nl.ds` takes a start and a size, by position");
+        }
+        let mut int = |expr: &Expr, what| match self.evaluate(frame, expr.clone(), line)? {
+            Value::Int(value) => non_negative(value, what, line),
+            other => bail!(line, "`nl.ds` needs an integer {what}, not `{other}`"),
+        };
+        let start = int(start, "start")?;
+        let size = int(size, "size")?;
+        if size == 0 {
+            bail!(line, "`nl.ds` needs a positive size");
+        }
+        Ok(Subscript::Slice(Bounds {
+            start: Some(start),
+            stop: Some(start + size),
+        }))
     }
 
     /// A slice bound, absent when the subscript omits it.
