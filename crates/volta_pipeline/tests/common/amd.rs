@@ -139,3 +139,63 @@ pub fn ck_gemm_kernarg(a: u64, b: u64, c: u64, dims: [i32; 3]) -> Vec<u8> {
     bytes.resize(112, 0); // is_reduce = false, then padding.
     bytes
 }
+
+/// The `kentry` of the CK attention instance `ck_fmha.hip` compiles: four waves over a 64 x 64
+/// query/key tile.
+pub const CK_FMHA_KERNEL: &str = concat!(
+    "_ZN7ck_tile6kentryINS_8gfx950_tELi3ENS_13FmhaFwdKernelINS_23BlockFmhaPipelineQRKSVSINS_2",
+    "4BlockFmhaPipelineProblemIffffffhffffNS_13TileFmhaShapeINS_8sequenceIJLi64ELi64ELi32ELi6",
+    "4ELi32ELi64EEEENS6_IJLi4ELi1ELi1EEEENS6_IJLi16ELi16ELi16EEEES8_S9_Lb1EEELb0ENS_17Compose",
+    "dAttentionILj0ELb1EEENS_30SimplifiedGenericAttentionMaskILb0EEELb0ENS_14TileFmhaTraitsIL",
+    "b0ELb0ELb0ELb0ELb0ELNS_22BlockAttentionBiasEnumE0ELb0ELb0ELb0ELNS_28BlockAttentionQuantS",
+    "caleEnumE0ELin1ELb0ELb0EEEEENS_35BlockFmhaPipelineQXKSVSCustomPolicyILb1ELb0ELi1ELi1EEEL",
+    "b0EEENS_17Default2DEpilogueINS_24Default2DEpilogueProblemIffLb0ELb0ELb1EEEvEEEEJNSR_21Fm",
+    "haFwdBatchModeKargsEEEENSt3__19enable_ifIXnt26kattr_no_packed_fp32_ops_vIT_EEvE4typeEDpT",
+    "2_",
+);
+pub const FMHA_Q_BASE: u64 = 0x10000;
+pub const FMHA_K_BASE: u64 = 0x20000;
+pub const FMHA_V_BASE: u64 = 0x30000;
+pub const FMHA_O_BASE: u64 = 0x40000;
+
+/// Q, K, V and O at the test addresses, each holding `len` words of contiguous heads.
+pub fn fmha_arrays(len: u64) -> [ArrayDef; 4] {
+    [
+        ("Q", FMHA_Q_BASE, ArrayKind::Input),
+        ("K", FMHA_K_BASE, ArrayKind::Input),
+        ("V", FMHA_V_BASE, ArrayKind::Input),
+        ("O", FMHA_O_BASE, ArrayKind::Output(OutputType::F32)),
+    ]
+    .map(|(name, base, kind)| ArrayDef {
+        name: name.into(),
+        base,
+        len,
+        kind,
+    })
+}
+
+/// CK's arguments for contiguous [batch, head, sequence, dimension] tensors, 64 x 64 per head.
+pub fn ck_fmha_kernarg(q: u64, k: u64, heads: i32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    // The tensors, then a null sink pointer, which disables the optional sink.
+    for pointer in [q, k, FMHA_V_BASE, FMHA_O_BASE, 0] {
+        bytes.extend(pointer.to_le_bytes());
+    }
+    // seqlen_q, seqlen_k, hdim_q, hdim_v, num_head_q and nhead_ratio_qk.
+    for field in [64_i32, 64, 64, 64, heads, 1] {
+        bytes.extend(field.to_le_bytes());
+    }
+    // The fast-exp2 build takes the host's scale times log2(e), here for the formula's 1 / 8.
+    bytes.extend((std::f32::consts::LOG2_E / 8.0).to_le_bytes());
+    // Row and head strides of Q, K, V and O, then num_head_q_total and head_start.
+    for field in [64_i32, 64, 64, 64, 4096, 4096, 4096, 4096, 0, 0] {
+        bytes.extend(field.to_le_bytes());
+    }
+    // Each batch contains all heads, with strides measured in elements.
+    for _ in 0..4 {
+        bytes.extend((heads * 4096).to_le_bytes());
+    }
+    // Padding, then null cumulative sequence length pointers.
+    bytes.resize(144, 0);
+    bytes
+}

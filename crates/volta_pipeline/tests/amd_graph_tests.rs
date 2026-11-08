@@ -6,18 +6,21 @@
 
 mod common;
 
+use std::collections::BTreeSet;
+
 use volta_amd_analysis::ArrayKind::{Input, Output};
 use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind};
 use volta_graph::AccessMode::{Read, Write};
-use volta_graph::{AsyncOpKind, GenerationKind, Space};
+use volta_graph::{AsyncOpKind, EventKind, GenerationKind, Space};
 use volta_graph_check::domain::ConflictKind;
 use volta_graph_check::{GraphConclusion, PropertyResult};
 
 use common::Side;
 use common::amd::{
-    AmdChecked, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE,
-    amd_fixture, check_amd, ck_gemm_kernarg, gemm_arrays,
+    AmdChecked, CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE, FMHA_Q_BASE,
+    GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, amd_fixture, check_amd, ck_fmha_kernarg,
+    ck_gemm_kernarg, fmha_arrays, gemm_arrays,
 };
 
 /// Two waves over 128-word `input` and `output` arrays, the kernel's two pointer arguments.
@@ -141,6 +144,54 @@ fn ck_gemm_main_loop_lds_accesses_are_ordered() {
             .count()
     };
     assert_eq!(barrier_count(&main_loop), barrier_count(&no_loop) + 4);
+}
+
+// Test that the main loop's LDS accesses also verify with a partial fourth K tile (K = 200)
+// and with 64 x 64 tiles that need no padding.
+#[test]
+fn ck_gemm_main_loop_lds_accesses_verify_at_other_sizes() {
+    for dims in [[40, 40, 200], [64, 64, 256]] {
+        let run = run_ck_gemm(CK_GEMM_MAIN_LOOP_KERNEL, dims);
+        assert_eq!(
+            run.report.conclusion(),
+            GraphConclusion::Verified,
+            "{dims:?}"
+        );
+    }
+}
+
+// Test that CK attention's four waves all write and read LDS, and that the execution verifies,
+// so every conflicting pair of those accesses is ordered by waits and barriers.
+#[test]
+fn ck_fmha_lds_accesses_from_all_waves_are_ordered() {
+    let run = check_amd(
+        "ck_fmha.s",
+        amd_fixture!("ck_fmha"),
+        CK_FMHA_KERNEL,
+        256,
+        &ck_fmha_kernarg(FMHA_Q_BASE, FMHA_K_BASE, 1),
+        &fmha_arrays(4096),
+    );
+    assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
+
+    // Collect the waves whose DS effects write and read LDS, so a verdict without
+    // cross-wave LDS traffic cannot pass.
+    let graph = &run.analysis.graph;
+    let mut writers = BTreeSet::new();
+    let mut readers = BTreeSet::new();
+    for (event, ev) in graph.events().iter() {
+        if let EventKind::Access(access) = ev.kind
+            && graph.access(access).space == Space::Shared
+        {
+            let side = common::side(graph, event);
+            match side.mode {
+                Write => writers.insert(side.thread),
+                Read => readers.insert(side.thread),
+            };
+        }
+    }
+    let waves = BTreeSet::from([0, 1, 2, 3]);
+    assert_eq!((writers, readers), (waves.clone(), waves));
 }
 
 // Test that a barrier alone leaves an LDS read racing another wave's overwrite, while a
