@@ -315,7 +315,7 @@ impl Parser {
     fn items(mut self) -> Result<Vec<Item>, ParseError> {
         let mut items = Vec::new();
         loop {
-            if self.docstring() {
+            if self.docstring() || self.main_guard()? {
                 continue;
             }
             let Token { kind, line } = self.tokens[self.pos].clone();
@@ -349,6 +349,30 @@ impl Parser {
             self.pos += 2;
         }
         is_string
+    }
+
+    /// Skips an `if __name__ == "...":` and its block, if one comes next: a script's
+    /// driver, which never runs where the module is imported, as a kernel's module is.
+    fn main_guard(&mut self) -> Result<bool, ParseError> {
+        let header = [
+            TokenKind::Keyword(Keyword::If),
+            TokenKind::Name("__name__".into()),
+            TokenKind::Compare(CmpOp::Eq),
+            TokenKind::Str,
+            TokenKind::Colon,
+            TokenKind::Newline,
+        ];
+        let is_guard = self.tokens[self.pos..]
+            .iter()
+            .map(|token| &token.kind)
+            .take(header.len())
+            .eq(header.iter());
+        if is_guard {
+            let line = self.line();
+            self.pos += header.len();
+            self.skip_block(line)?;
+        }
+        Ok(is_guard)
     }
 
     /// `module import name [as alias], ...` to the end of the line, after `from`.
@@ -388,17 +412,7 @@ impl Parser {
         let Token { kind, .. } = self.advance();
         let name = self.name()?;
         self.skip_line();
-        if self.eat(&TokenKind::Indent) {
-            let mut depth = 1;
-            while depth > 0 {
-                match self.advance().kind {
-                    TokenKind::Indent => depth += 1,
-                    TokenKind::Dedent => depth -= 1,
-                    TokenKind::Eof => bail!(line, "unterminated block"),
-                    _ => {}
-                }
-            }
-        }
+        self.skip_block(line)?;
 
         match kind {
             TokenKind::Keyword(Keyword::Def) => {
@@ -416,6 +430,22 @@ impl Parser {
                 "expected `def` or `class` after a decorator, found {other}"
             ),
         }
+    }
+
+    /// Advances past the indented block that comes next, if one does.
+    fn skip_block(&mut self, line: usize) -> Result<(), ParseError> {
+        if self.eat(&TokenKind::Indent) {
+            let mut depth = 1;
+            while depth > 0 {
+                match self.advance().kind {
+                    TokenKind::Indent => depth += 1,
+                    TokenKind::Dedent => depth -= 1,
+                    TokenKind::Eof => bail!(line, "unterminated block"),
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Advances past the end of the current logical line.

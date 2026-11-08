@@ -564,7 +564,8 @@ Modules are read whole but functions lazily: the lexer tokenizes all of Python
 (strings, every bracket, `\` continuations), making what the subset lacks an
 `Unsupported` token, and `python::parse` keeps each `def` as a `FunctionSource` of
 tokens, and each `class` as a `ClassSource`, parsed only when reached, so code no
-kernel reaches may use any Python. A module's globals are imports, `from` imports,
+kernel reaches may use any Python; an `if __name__ == "...":` driver block is skipped
+unread. A module's globals are imports, `from` imports,
 functions and classes. `parse_kernel_with_modules(source, modules, name, shapes)`
 takes the imported modules' sources by name. A call of a helper or a method (at most
 32 deep) runs its body in a new frame, with defaults (evaluated in its module),
@@ -597,7 +598,8 @@ loop variable keeps its last value). The count is any compile-time integer; a
 `for` over a tuple or list unrolls the same way.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
-an integer index that drops the dimension (numpy's rule), trailing dimensions
+an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
+`start:start + size`), trailing dimensions
 omitted meaning whole; an empty slice or an out-of-range index is an error.
 `ast::resolve_region` resolves one against a shape for the parser (an `nl.load`
 tile's shape is the region's kept extents) and for `lower/` (`Scope::region`,
@@ -641,7 +643,8 @@ and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative 
 `attention_kernel_utils.py` unmodified (nki-samples `ef43bf3`, MIT-0), and the other
 tutorials' kernel files likewise, each with a `.spec` of its reference
 (`tensor_addition_nki_kernels.py`, `tensor_addition.spec`;
-`matrix_multiplication_nki_kernels.py`, `matrix_multiplication.spec`);
+`matrix_multiplication_nki_kernels.py`, `matrix_multiplication.spec`;
+`transpose2d_nki_kernels.py`, `transpose2d.spec`, its arrays viewed in three dimensions);
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
@@ -831,7 +834,9 @@ is out of reach); `fused_softmax` against
 matrix multiplication tutorial's five kernels against `matrix_multiplication.spec`,
 `nki_matmul_basic_` at its asserted 64 x 512 x 128 and the four tiled ones, each also
 against the one before, at two reduced `TileSizes` and once with the fully optimized
-kernel's meta-parameters given as `Constant`s, refuted against a doubled product).
+kernel's meta-parameters given as `Constant`s, refuted against a doubled product; the
+transpose2d tutorial's kernel, `shape2D` a `Constant::Ints`, against `transpose2d.spec`
+at its drivers' 5 x (3 x 4) and 5 x (37 x 44), refuted against the identity).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 

@@ -142,7 +142,9 @@ kernel calls may use any Python. The lexer therefore tokenizes all of Python, st
 bracket and `\` continuations; what the subset does not support becomes an
 `Unsupported` token, an error only in code that is parsed. A module's top level
 may hold imports, `from module import name`s, functions, classes (each read when
-first instantiated) and docstrings.
+first instantiated), docstrings and an `if __name__ == "...":` block, skipped
+unread: a script's driver, which does not run where the module is imported, as NKI
+imports a kernel's.
 
 `parse_kernel_with_modules(source, modules, name, shapes)` also takes the modules
 the file imports from, as `(module name, source)`; `parse_kernel` takes none. A
@@ -184,7 +186,8 @@ value). The count is any compile-time integer, e.g. `seqlen_kv // 4`.
 
 A subscript such as `a[0:4, :]` or `qk[i, j, :, :]` names a rectangular region:
 each index is a slice, an omitted bound meaning the tensor's own edge, or an
-integer, which selects one position and drops the dimension, as in numpy. A
+integer, which selects one position and drops the dimension, as in numpy;
+`nl.ds(start, size)` is the slice `start:start + size`. A
 subscript may omit trailing dimensions, which it then selects whole, so
 `norm_row[i]` is `norm_row[i, :, :]`; an empty slice or an index outside its
 dimension is an error. `ast::resolve_region` resolves a subscript for both the
@@ -263,8 +266,10 @@ modules it imports from); the fixtures' own shape `assert`s check those shapes.
 `ef43bf3` (`src/nki_samples/tutorials/attention_fwd_performance/`, MIT No
 Attribution), and the other tutorials' kernel files the same way, each with a
 `.spec` of its reference beside the fixtures: `tensor_addition_nki_kernels.py`
-(`tensor_addition.spec`, `a + b`) and `matrix_multiplication_nki_kernels.py`
-(`matrix_multiplication.spec`, `lhsT.T @ rhs`). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+(`tensor_addition.spec`, `a + b`), `matrix_multiplication_nki_kernels.py`
+(`matrix_multiplication.spec`, `lhsT.T @ rhs`) and `transpose2d_nki_kernels.py`
+(`transpose2d.spec`, each row's `[X, Y]` matrix transposed, its arrays viewed as
+`[P, X, Y]` and `[P, Y, X]` since a spec index is affine). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 

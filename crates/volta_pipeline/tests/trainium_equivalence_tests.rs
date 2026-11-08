@@ -740,3 +740,62 @@ fn nki_matmuls_against_a_doubled_product_are_refuted() {
         );
     }
 }
+
+const TRANSPOSE2D: &str = include_str!(
+    "../../volta_trainium_analysis/tests/fixtures/nki_samples/transpose2d_nki_kernels.py"
+);
+const TRANSPOSE2D_SPEC: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/transpose2d.spec");
+
+/// The transpose2d tutorial's kernel, from its unmodified file, for a float32
+/// `in_tensor` of `[p, x * y]` with `shape2D=(x, y)`, against `spec`.
+fn check_transpose2d(spec: &str, [p, x, y]: [u64; 3]) -> EquivalenceVerdict {
+    let shape: &[u64] = &[p, x * y];
+    let shapes = [("in_tensor", shape)];
+    let dtypes = [("in_tensor", "float32")];
+    let shape_2d = [x as i64, y as i64];
+    let constants = [("shape2D", Constant::Ints(&shape_2d))];
+    let call = KernelCall {
+        dtypes: &dtypes,
+        constants: &constants,
+        ..KernelCall::new(&shapes)
+    };
+    let parsed = parse_kernel_for_call(TRANSPOSE2D, &[], "tensor_transpose2D_kernel_", &call)
+        .unwrap_or_else(|e| panic!("{e}"));
+    against_spec(
+        &parsed,
+        spec,
+        &[("P", p), ("X", x), ("Y", y)],
+        "out_tensor",
+        &EquivCheckOptions::default(),
+    )
+}
+
+// At the torch and numpy drivers' 5 x (3 x 4) and the jax driver's 5 x (37 x 44).
+#[test]
+fn nki_transpose2d_matches_its_specification_at_its_drivers_sizes() {
+    for dims @ [p, x, y] in [[5, 3, 4], [5, 37, 44]] {
+        assert_eq!(
+            check_transpose2d(TRANSPOSE2D_SPEC, dims),
+            EquivalenceVerdict::Equivalent {
+                checked: p * x * y,
+                total: p * x * y,
+            },
+            "{dims:?}"
+        );
+    }
+}
+
+// The identity, which agrees with the transpose only where `i * Y + j == j * X + i`.
+#[test]
+fn nki_transpose2d_against_the_identity_is_refuted() {
+    let identity = TRANSPOSE2D_SPEC
+        .replace("out_tensor[P, Y, X]", "out_tensor[P, X, Y]")
+        .replace("out_tensor[p, j, i]", "out_tensor[p, i, j]");
+    assert_ne!(identity, TRANSPOSE2D_SPEC);
+    let verdict = check_transpose2d(&identity, [5, 3, 4]);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
