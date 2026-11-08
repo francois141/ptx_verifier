@@ -83,7 +83,15 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   `softmax.spec`. The other tutorials' kernels run from their unmodified files too:
   `nki_tensor_add` is proved equal to `tensor_addition.spec` (`a + b`) on every
   output at its torch driver's 256 x 1024 (its 128 x 512 tiles are literals, so
-  there is no reduced size), and refuted against a subtraction. Functional
+  there is no reduced size), and refuted against a subtraction. The matrix
+  multiplication tutorial's five kernels are proved equal to
+  `matrix_multiplication.spec` (`lhsT.T @ rhs`) on every output:
+  `nki_matmul_basic_` at the 64 x 512 x 128 it asserts, and the tiled, hoisted,
+  blocked and fully optimized kernels, each also to the one before, at two reduced
+  tile sizes whose `[M, N, K]` give every loop two iterations (the driver's
+  4096 x 2048 x 1024 is out of reach); the fully optimized kernel also with its
+  `TILES_IN_BLOCK_*` meta-parameters given by the call. All five are refuted against
+  a doubled product. Functional
   equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 
