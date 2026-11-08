@@ -12,4 +12,4 @@ pub use ir::{
     ActivationFunc, ArithOp, Index, Initial, InstrId, LoweredInstr, LoweredKernel, Memory,
     ScalarOperand, ScalarStep, Shape, Tensor, TensorId, TensorRegion,
 };
-pub use lower::{LowerError, StatementError, lower_kernel};
+pub use lower::{LowerError, PatternProblem, StatementError, lower_kernel};

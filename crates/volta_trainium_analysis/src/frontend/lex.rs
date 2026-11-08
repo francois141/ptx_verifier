@@ -98,13 +98,14 @@ impl CmpOp {
     }
 }
 
-/// An integer operator, binary or, with `=`, augmented assignment: `+`, `-`, `*`, `//`,
-/// `%` or `&`.
+/// A binary operator or, with `=`, augmented assignment: `+`, `-`, `*`, `/`, `//`, `%`
+/// or `&`. Only `/`, Python's true division, takes floats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
     Mul,
+    Div,
     FloorDiv,
     Mod,
     BitAnd,
@@ -116,6 +117,7 @@ impl BinOp {
             Self::Add => "+",
             Self::Sub => "-",
             Self::Mul => "*",
+            Self::Div => "/",
             Self::FloorDiv => "//",
             Self::Mod => "%",
             Self::BitAnd => "&",
@@ -360,6 +362,7 @@ impl Lexer<'_> {
             '-' if self.rest.starts_with("->") => (TokenKind::Unsupported("->".into()), 2),
             '+' | '-' | '*' | '%' | '&' => operator(self.rest, 1),
             '/' if self.rest.starts_with("//") => operator(self.rest, 2),
+            '/' => operator(self.rest, 1),
             '~' => (TokenKind::Tilde, 1),
             // A number takes the letters and dots after it, so `1.0` is one token.
             _ if c.is_ascii_digit() || (c == '.' && self.rest[1..].starts_with(is_digit)) => {
@@ -432,6 +435,7 @@ fn operator(rest: &str, len: usize) -> (TokenKind, usize) {
         "+" => BinOp::Add,
         "-" => BinOp::Sub,
         "*" => BinOp::Mul,
+        "/" => BinOp::Div,
         "//" => BinOp::FloorDiv,
         "%" => BinOp::Mod,
         _ => BinOp::BitAnd,

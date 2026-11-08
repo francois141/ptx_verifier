@@ -86,7 +86,13 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   `TILES_IN_BLOCK_*` meta-parameters given by the call. All five are refuted against
   a doubled product. The transpose2d tutorial's kernel, its `shape2D` given by the
   call, is proved equal to `transpose2d.spec` on every output at its drivers'
-  5 x (3 x 4) and 5 x (37 x 44), and refuted against the identity. Functional
+  5 x (3 x 4) and 5 x (37 x 44), and refuted against the identity. The
+  average_pool2d tutorial's kernel, which sums a strided `.ap()` view of its tile over
+  its two window axes and scales by `1.0 / (pool_size * pool_size)`, is proved equal
+  to `average_pool2d.spec` (each window's mean) at its drivers' 2 x 6 x 6 with 2 x 2
+  windows and at 3 x 8 x 12 with 4 x 4, and refuted against the unscaled sum and
+  against overlapping windows. That scale is exact only for power-of-two pool sizes;
+  a 3 x 3 pool's float `1/9` is not the mean over the reals. Functional
   equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 

@@ -134,6 +134,12 @@ pub enum StatementError {
     /// A tile region indexing the partition dimension, which every tile operand keeps.
     PartitionIndexed(TensorName),
 
+    /// A `tensor.ap(...)` view that does not name elements of its tensor as a view must.
+    AccessPattern {
+        tensor: TensorName,
+        problem: PatternProblem,
+    },
+
     /// An index outside its tensor's dimension, or a slice reaching outside it or
     /// selecting no elements.
     RegionBounds {
@@ -199,7 +205,8 @@ impl fmt::Display for StatementError {
             }
             Self::UnsupportedAxis(axis) => write!(
                 f,
-                "unsupported reduction axis `{axis}`: only a tile's free axis, `1` or `(1,)`"
+                "unsupported reduction axis `{axis}`: only a region's trailing free axes, \
+                 e.g. `1`, `(1,)` or `[3, 4]`"
             ),
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
             Self::NotAScalar { keyword } => write!(f, "operand `{keyword}` must be a number"),
@@ -262,6 +269,43 @@ impl fmt::Display for StatementError {
             } => write!(
                 f,
                 "`{tensor}`'s index in dimension {dimension} is empty or outside its extent {extent}"
+            ),
+            Self::AccessPattern { tensor, problem } => {
+                write!(f, "access pattern of `{tensor}`: {problem}")
+            }
+        }
+    }
+}
+
+/// How an access pattern fails to name elements of its tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternProblem {
+    /// No `[step, count]` pair.
+    Empty,
+    /// A pair counting no elements.
+    ZeroCount,
+    /// An element past the tensor's end.
+    OutOfBounds,
+    /// A tile's first pair, its partitions, stepping other than its `free` size.
+    PartitionStep { free: u64 },
+    /// An element of a tile outside the partition its pattern starts in.
+    CrossesPartition { free: u64 },
+}
+
+impl fmt::Display for PatternProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "it has no `[step, count]` pair"),
+            Self::ZeroCount => write!(f, "a pair counts no elements"),
+            Self::OutOfBounds => write!(f, "an element lies past the tensor's end"),
+            Self::PartitionStep { free } => write!(
+                f,
+                "a tile's first pair steps over its partitions, so its step must be the \
+                 free size {free}"
+            ),
+            Self::CrossesPartition { free } => write!(
+                f,
+                "an element lies outside its partition's {free} free elements"
             ),
         }
     }

@@ -26,8 +26,8 @@ and execution see only `nki.isa`:
 | `x = nl.load(src)` | SBUF, `src`'s region shape | `dma_copy` |
 | `nl.store(dst, value)` | (none) | `dma_copy(dst, src=value)` |
 | `p = nl.matmul(x, y, transpose_x=True)` | PSUM `[x.free, y.free]` | `nc_matmul(stationary=x, moving=y)` |
-| `m = nl.max(x, axis, keepdims=True)` | SBUF `[P, 1]` | `tensor_reduce(op=maximum)` |
-| `s = nl.sum(x, axis, keepdims=True)` | SBUF `[P, 1]` | `tensor_reduce(op=add)` |
+| `m = nl.max(x, axis, keepdims=False)` | SBUF, `x`'s shape less `axis` | `tensor_reduce(op=maximum)` |
+| `s = nl.sum(x, axis, keepdims=False)` | SBUF, `x`'s shape less `axis` | `tensor_reduce(op=add)` |
 | `e = nl.exp(x)` | SBUF, `x`'s shape | `activation(op=exp)` |
 | `r = nl.reciprocal(x)` | SBUF, `x`'s shape | `reciprocal` |
 | `t = nl.transpose(x)` | PSUM `[F, P]` | `nc_transpose` |
@@ -36,8 +36,10 @@ and execution see only `nki.isa`:
 to zero, so a later `nc_matmul` into it accumulates onto zeros: the accumulator
 v3 and v4 contract into over a loop. `nl.load` reads and `nl.store` writes device
 memory only. `transpose_x=False`, where
-NKI inserts a transpose, and `keepdims=False` are rejected, as are `dtype=` and
-`mask=`. `True` and `False` are values.
+NKI inserts a transpose, is rejected, as are `dtype=` and `mask=`. `nl.max` and
+`nl.sum` reduce trailing free axes of a tile, a region or an access-pattern view
+(`nl.sum(pool_view, axis=[3, 4])`), `keepdims=True` keeping them as extents of 1.
+`True` and `False` are values.
 
 ## Instructions
 
@@ -54,11 +56,13 @@ engine does not change the result. Their
 order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
 operand`, so `nl.subtract` is `data - operand`.
 
-`tensor_reduce` folds `op` over each partition of a tile into one free element,
-`dst[p, 0]`, seeded with the partition's first element, so `nl.maximum` needs no
-`-inf`. NKI reduces free axes only, so its `axis` must be the tile's free axis, `1`
-or `(1,)`; `negate=True` negates the result (`ir::Sign`), and `keepdims` is not
-supported. `reciprocal` is elementwise `1 / x`: it lowers to an `Activation` of
+`tensor_reduce` folds `op` over `axis`, which must be its data region's trailing
+free axes (`1`, `(1,)`, `(2,)` of a 3-D region, `[3, 4]`), NKI reducing free axes
+only: each element of `dst`, the region's other dimensions, is the fold of one run of
+consecutive elements of its `[partitions, free]` view, seeded with the run's first
+element, so `nl.maximum` needs no `-inf`. Reducing every free axis leaves one element
+per partition, `t[:, 0:1]` or `t[:, 0]`; `negate=True` negates the result
+(`ir::Sign`). `reciprocal` is elementwise `1 / x`: it lowers to an `Activation` of
 `ActivationFunc::Reciprocal`, which is outside `ALL`, so `activation`'s `op` cannot
 name it.
 
@@ -108,7 +112,9 @@ everything that depends only on the call, as NKI's tracer does:
 - `d_head, seqlen_q = q.shape` and `seqlen_kv = seqlen_q` bind integers; `t.shape`
   is a tuple of `t`'s extents, so `nl.ndarray(q.shape, ...)` works too.
 - Integers are signed: `+`, `-`, `*`, `//`, `%`, `&`, unary `-` and `~`, and `+=`
-  and the like, `//` and `%` rounding as Python's do. `nl.tile_size.pmax` (128),
+  and the like, `//` and `%` rounding as Python's do. `/` is true division, of
+  integers (within 2^53, which convert exactly) or floats, to the f64 quotient, so
+  `1.0 / (pool_size * pool_size)` is the float literal it computes. `nl.tile_size.pmax` (128),
   `gemm_stationary_fmax` (128), `gemm_moving_fmax` (512) and `sbuf_fmax_bytes`
   (a tile's largest SBUF free size in bytes: a Trn2 partition's 192 KiB, a value the
   docs do not state) are the hardware's
@@ -206,14 +212,24 @@ any element, so regions of one tile may overlap: `t[:, 1:4] = mov(t[:, 0:3])`
 shifts the old values. Hardware limits on where a region may start (e.g. partition
 offsets) are not checked.
 
+An operand may also be an access-pattern view, `t.ap(pattern, offset=0)`, which
+the docs liken to `torch.as_strided`: `pattern` is `[step, count]` pairs, one
+dimension of the view each, and the element at `local` is the one at position
+`offset + sum(step * local)` of `t`'s row-major layout (`ir::Layout::Pattern`;
+rectangles are `Layout::Rectangle`, and `TensorRegion::element` maps either). It must
+stay within `t`, and on a tile its first pair is the partitions, so its step must be
+the tile's free size and every other element must stay in the partition it starts in
+(`StatementError::AccessPattern`, a `PatternProblem`). The `ap` parameters for
+dynamic or reinterpreted views (`scalar_offset`, `vector_offset`, `indirect_dim`,
+`dtype`) are rejected. `.ir` prints a view as `t.ap([[step, count], ...], offset=o)`.
+
 A tile has its partitions and one or more free dimensions, e.g. v4's
 `nl.ndarray((PMAX, seqlen_kv // PMAX, d_head), buffer=nl.sbuf)`. A tile region must
 slice its partition dimension. Instructions see each tile region as `[partitions,
 free]`, its other dimensions flattened row-major into one free axis, so an
 elementwise instruction pairs `v_sbuf_t[:, i, :]` with a `[PMAX, d_head]` tile;
-`nc_matmul`, `nc_transpose`, `tensor_reduce` and an instruction's reduction take
-regions of exactly one free dimension once indexed ones are dropped, so `axis=(1,)`
-is unambiguous. Copies pair their regions' elements in row-major order.
+`nc_matmul`, `nc_transpose` and an instruction's reduction take regions of exactly
+one free dimension once indexed ones are dropped. Copies pair their regions' elements in row-major order.
 
 v3 to v8a and v10 parse, lower and run unmodified at the size they assert (`q`, `k`
 and `v` of `[128, 512]`; v10's in `bfloat16`), each in about ten seconds in release;
@@ -267,9 +283,11 @@ modules it imports from); the fixtures' own shape `assert`s check those shapes.
 Attribution), and the other tutorials' kernel files the same way, each with a
 `.spec` of its reference beside the fixtures: `tensor_addition_nki_kernels.py`
 (`tensor_addition.spec`, `a + b`), `matrix_multiplication_nki_kernels.py`
-(`matrix_multiplication.spec`, `lhsT.T @ rhs`) and `transpose2d_nki_kernels.py`
+(`matrix_multiplication.spec`, `lhsT.T @ rhs`), `transpose2d_nki_kernels.py`
 (`transpose2d.spec`, each row's `[X, Y]` matrix transposed, its arrays viewed as
-`[P, X, Y]` and `[P, Y, X]` since a spec index is affine). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+`[P, X, Y]` and `[P, Y, X]` since a spec index is affine) and
+`average_pool2d_nki_kernels.py` (`average_pool2d.spec`, the mean of each `S x S`
+window). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 
@@ -323,6 +341,12 @@ pass's `accumulate=False` must overwrite the first's sum, then `engine=` copies 
 a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
 (`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM, a
 kernel placing only some tiles, and a tile past the end of PSUM.
+`tests/fixtures/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
+tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
+through a tile view with an offset (a hand-written `.expected`);
+`pattern_errors.py`'s kernels must fail to lower: a tile view whose first step is not
+the free size, one leaving its partition, one past its tensor's end, and a
+`tensor_reduce` over a leading axis.
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as

@@ -1,0 +1,9 @@
+kernel kernel(a: [2, 6])
+  out: shared_hbm[2, 6] of float32
+  t: sbuf[2, 3, 2] of float32
+  dma_copy(dst=t, src=a.ap([[6, 2], [1, 3], [3, 2]], offset=0))
+  sums: sbuf[2, 3] of float32
+  tensor_reduce(axis=(2,), data=t, dst=sums, op=nki.language.add)
+  dma_copy(dst=out[:, 0:3], src=sums)
+  dma_copy(dst=out[:, 3:6], src=t.ap([[6, 2], [2, 3]], offset=1))
+  return out

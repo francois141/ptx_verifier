@@ -6,7 +6,9 @@ mod common;
 
 use volta_trainium_analysis::frontend::ast::TensorName;
 use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel};
-use volta_trainium_analysis::{EvalError, Index, InstrId, LowerError, evaluate, lower_kernel};
+use volta_trainium_analysis::{
+    EvalError, Index, InstrId, LowerError, PatternProblem, StatementError, evaluate, lower_kernel,
+};
 
 #[test]
 fn the_add_kernel_parses_lowers_and_runs_as_expected() {
@@ -262,4 +264,50 @@ fn a_placed_tile_past_the_end_of_its_buffer_is_an_error() {
         error.to_string().contains("does not fit in `nl.psum`"),
         "{error}"
     );
+}
+
+#[test]
+fn the_access_patterns_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("access_patterns", "kernel", &[("a", &[2, 6])]);
+}
+
+/// The error lowering `kernel` of `pattern_errors.py` gives, for `a` of `shape`.
+fn pattern_error(kernel: &str, shape: &[u64]) -> StatementError {
+    let source = common::source("pattern_errors");
+    let parsed = parse_kernel(&source, kernel, &[("a", shape)]).unwrap();
+    match lower_kernel(&parsed).unwrap_err() {
+        LowerError::Statement { error, .. } => error,
+        other => panic!("{kernel}: expected a statement error, got {other}"),
+    }
+}
+
+#[test]
+fn access_patterns_outside_their_tensor_or_partition_are_errors() {
+    let cases = [
+        ("partition_step", PatternProblem::PartitionStep { free: 6 }),
+        (
+            "crossing_partitions",
+            PatternProblem::CrossesPartition { free: 6 },
+        ),
+        ("out_of_bounds", PatternProblem::OutOfBounds),
+    ];
+    for (kernel, problem) in cases {
+        let tensor = if kernel == "out_of_bounds" { "a" } else { "t" };
+        assert_eq!(
+            pattern_error(kernel, &[2, 6]),
+            StatementError::AccessPattern {
+                tensor: TensorName(tensor.into()),
+                problem,
+            },
+            "{kernel}"
+        );
+    }
+}
+
+#[test]
+fn reducing_other_than_trailing_axes_is_an_error() {
+    assert!(matches!(
+        pattern_error("leading_axis", &[2, 3, 2]),
+        StatementError::UnsupportedAxis(_)
+    ));
 }

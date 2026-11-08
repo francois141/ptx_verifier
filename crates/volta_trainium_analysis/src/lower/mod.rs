@@ -14,11 +14,12 @@ use crate::frontend::ast::{
     TensorName, resolve_region,
 };
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Index, Initial, LoweredInstr, LoweredKernel, Memory,
-    Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Index, Initial, Layout, LoweredInstr, LoweredKernel,
+    Memory, Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId,
+    TensorRegion,
 };
 
-pub use error::{LowerError, StatementError};
+pub use error::{LowerError, PatternProblem, StatementError};
 
 const NKI_LANGUAGE: &str = "nki.language";
 
@@ -230,15 +231,14 @@ fn lower_instruction(
             let ([dst, data, op, axis], [negate]) =
                 operands_with_optional(instruction, &["dst", "data", "op", "axis"], &["negate"])?;
             let op = arith_op(op)?;
-            free_axis(axis)?;
             let sign = match negate {
                 None | Some(Operand::Bool(false)) => Sign::Kept,
                 Some(Operand::Bool(true)) => Sign::Negated,
                 Some(_) => return Err(StatementError::NotABool { keyword: "negate" }),
             };
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
-            let [partitions, _] = data.matrix()?;
-            per_partition(&dst, partitions)?;
+            let kept = trailing_axes(axis, &data.kept)?;
+            reduced_shape(&dst, &kept)?;
             Ok(LoweredInstr::Reduce {
                 op,
                 dst: dst.region,
@@ -462,14 +462,22 @@ fn activation_func(operand: &Operand) -> Result<ActivationFunc, StatementError> 
         .ok_or_else(|| StatementError::UnsupportedActivation(operand.clone()))
 }
 
-/// A reduction's `axis`: a tile's one free axis, `1` or `(1,)`. Axis 0 is the
-/// partition axis, which `nki.isa` reductions cannot reduce.
-fn free_axis(axis: &Operand) -> Result<(), StatementError> {
-    match axis {
-        Operand::Int(1) => Ok(()),
-        Operand::Ints(axes) if axes[..] == [1] => Ok(()),
-        _ => Err(StatementError::UnsupportedAxis(axis.clone())),
+/// The dimensions of `data`'s region, of kept shape `shape`, that a `tensor_reduce`
+/// over `axis` keeps: `axis` must be its trailing free axes, e.g. `1`, `(1,)` or
+/// `[3, 4]`. Axis 0 is the partition axis, which `nki.isa` reductions cannot reduce.
+fn trailing_axes(axis: &Operand, shape: &Shape) -> Result<Shape, StatementError> {
+    let axes = match axis {
+        Operand::Int(axis) => std::slice::from_ref(axis),
+        Operand::Ints(axes) => &axes[..],
+        _ => return Err(StatementError::UnsupportedAxis(axis.clone())),
+    };
+    let rank = shape.0.len() as u64;
+    let first = rank.saturating_sub(axes.len() as u64);
+    let trailing = first >= 1 && axes.iter().copied().eq(first..rank);
+    if !trailing {
+        return Err(StatementError::UnsupportedAxis(axis.clone()));
     }
+    Ok(Shape(shape.0[..first as usize].to_vec()))
 }
 
 /// A `tensor_scalar` step: its `nki.language` op, and an operand that is a literal
@@ -567,6 +575,29 @@ fn result_shape(dst: &RegionOperand, expected: Shape) -> Result<(), StatementErr
     if dst.kept == expected {
         return Ok(());
     }
+    let (tensor, shape) = dst.described();
+    Err(StatementError::ResultShape {
+        tensor,
+        shape,
+        expected,
+    })
+}
+
+/// Check that the tile region `dst` holds a `tensor_reduce`'s result, `kept` its data's
+/// partitions and unreduced dimensions: `kept`'s elements per partition, so the result
+/// of reducing every free axis is `t[:, 0:1]` or `t[:, 0]`.
+fn reduced_shape(dst: &RegionOperand, kept: &Shape) -> Result<(), StatementError> {
+    let [partitions, ref outer @ ..] = kept.0[..] else {
+        unreachable!("a tile region keeps its partitions");
+    };
+    if dst.region.tile_extents() == [partitions, outer.iter().product()] {
+        return Ok(());
+    }
+    let expected = if outer.is_empty() {
+        Shape(vec![partitions, 1])
+    } else {
+        kept.clone()
+    };
     let (tensor, shape) = dst.described();
     Err(StatementError::ResultShape {
         tensor,
@@ -676,6 +707,11 @@ impl Scope {
         let (name, dims) = match operand {
             Operand::Tensor(name) => (name, [].as_slice()),
             Operand::Region { tensor, dims } => (tensor, dims.as_slice()),
+            Operand::Pattern {
+                tensor,
+                pattern,
+                offset,
+            } => return self.pattern(tensor, pattern, *offset),
             _ => return Err(StatementError::NotATensor { keyword }),
         };
         let id = self.ids[name];
@@ -716,11 +752,71 @@ impl Scope {
             memory: entry.memory,
             region: TensorRegion {
                 tensor: id,
-                start: Index(start),
                 shape: Shape(shape),
-                selections,
+                layout: Layout::Rectangle {
+                    start: Index(start),
+                    selections,
+                },
             },
             kept: Shape(kept),
+        })
+    }
+
+    /// `tensor.ap(pattern, offset)`, each of its elements within the tensor and, on
+    /// chip, the first pair its partitions: a step of the tile's free size, every other
+    /// element in the partition it starts in.
+    fn pattern(
+        &self,
+        name: &TensorName,
+        pattern: &[[u64; 2]],
+        offset: u64,
+    ) -> Result<RegionOperand<'_>, StatementError> {
+        let id = self.ids[name];
+        let entry = &self.entries[id];
+        let problem = |problem| StatementError::AccessPattern {
+            tensor: name.clone(),
+            problem,
+        };
+        if pattern.is_empty() {
+            return Err(problem(PatternProblem::Empty));
+        }
+        if pattern.iter().any(|&[_, count]| count == 0) {
+            return Err(problem(PatternProblem::ZeroCount));
+        }
+        let span = |pairs: &[[u64; 2]]| {
+            pairs.iter().try_fold(0u64, |span, &[step, count]| {
+                step.checked_mul(count - 1)?.checked_add(span)
+            })
+        };
+        let size = entry.shape.element_count();
+        let last = span(pattern).and_then(|span| span.checked_add(offset));
+        if !matches!((last, size), (Some(last), Some(size)) if last < size) {
+            return Err(problem(PatternProblem::OutOfBounds));
+        }
+        if entry.memory != Memory::Hbm {
+            let free: u64 = entry.shape.0[1..].iter().product();
+            if pattern[0][0] != free {
+                return Err(problem(PatternProblem::PartitionStep { free }));
+            }
+            let within = span(&pattern[1..]).and_then(|span| span.checked_add(offset % free));
+            if !matches!(within, Some(within) if within < free) {
+                return Err(problem(PatternProblem::CrossesPartition { free }));
+            }
+        }
+        let counts = Shape(pattern.iter().map(|&[_, count]| count).collect());
+        Ok(RegionOperand {
+            name: &entry.name,
+            memory: entry.memory,
+            region: TensorRegion {
+                tensor: id,
+                shape: counts.clone(),
+                layout: Layout::Pattern {
+                    offset,
+                    steps: pattern.iter().map(|&[step, _]| step).collect(),
+                    storage: entry.shape.clone(),
+                },
+            },
+            kept: counts,
         })
     }
 
@@ -734,7 +830,7 @@ impl Scope {
         if !matches!(tile.memory, Memory::Sbuf | Memory::Psum) {
             return Err(StatementError::OffChip(tile.name.clone()));
         }
-        if tile.region.selections[0] == Selection::Index {
+        if tile.region.indexes_first_dimension() {
             return Err(StatementError::PartitionIndexed(tile.name.clone()));
         }
         Ok(tile)

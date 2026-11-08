@@ -481,10 +481,12 @@ their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `name()` matches, so a new function reaches lowering by joining that array and
 needs no arm of its own; any other member is a lowering error. Binary ops take
 NKI's operand order (`data1 op data2`, `data op operand`). `tensor_reduce` is
-`LoweredInstr::Reduce`, a per-partition fold into `dst[p, 0]` seeded with the
-first element (shared with `ir::Reduction` as `Interpreter::fold`); its
-`axis` (an `ast::Operand::Int` or `Ints`) must be the free axis, `1` or `(1,)`,
-and `negate=True` (an `ast::Operand::Bool`) negates the result (`ir::Sign`).
+`LoweredInstr::Reduce`: its `axis` (an `ast::Operand::Int` or `Ints`) must be the
+data region's trailing free axes (`1`, `(1,)`, `[3, 4]`), and each `dst` element, the
+other dimensions, folds one run of consecutive elements of each partition's free
+view, seeded with its first (shared with `ir::Reduction` as `Interpreter::fold`);
+reducing every free axis leaves `dst[p, 0]`. `negate=True` (an `ast::Operand::Bool`)
+negates the result (`ir::Sign`).
 `reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which
 is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
 
@@ -546,7 +548,7 @@ to). Names bind and rebind as in Python, to tensors, signed integers, tuples, li
 both are shared); a name a function assigns is local throughout it; a tile name
 declared again takes a version suffix (`x~1`), so every tensor's name is unique.
 `d, n = q.shape`, `+`/`-`/`*`/`//`/`%`/`&`, unary `-`/`~` and `op=` (Python's
-rounding), `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax,
+rounding), `/` (true division to an f64, of integers within 2^53 or floats), `nl.tile_size.{pmax, gemm_stationary_fmax, gemm_moving_fmax,
 sbuf_fmax_bytes}` (`TileSizes::HARDWARE` by default; `sbuf_fmax_bytes`, a tile's
 largest SBUF free size in bytes, is a Trn2 partition's 192 KiB, a value the docs do not state), `list`/`tuple`/`len`, item reads and writes
 and tuple or list slices evaluate there, and `t.shape` is a tuple. Comparisons are
@@ -577,7 +579,7 @@ none) is read on first instantiation into a `ClassDef`, its body's attributes
 evaluated; calling it makes an object, run through `__init__` if it has one. An
 attribute reads the object's own, else the class's, else a bound `Value::Method`, and
 `obj.name = value` sets the object's own (a tensor call there declares `name`). v1's tile-returning `nki.language` calls (`load`,
-`matmul` with `transpose_x=True`, `max`/`sum` with `keepdims=True`, `exp`,
+`matmul` with `transpose_x=True`, `max`/`sum` over trailing free axes, `exp`,
 `reciprocal`, `transpose`, and `store`) are rewritten by `tile_call`/`store` into a
 tile declaration named after the target (PSUM for `matmul` and `transpose`) and
 the one `nki.isa` instruction it lowers to; `load`/`store` require HBM
@@ -608,8 +610,16 @@ instruction operand is an `ir::TensorRegion` - full-rank `start` and `shape`, an
 indexed dimension of extent 1, and each dimension's `Selection` for `.ir` - and
 every shape rule compares kept shapes (indexed dimensions dropped); a broadcast
 operand or reduction result needs one element per partition (`t[:, 0:1]` or
-`t[:, 0]`), and matmul, transpose and the reductions a kept shape of exactly two
-dimensions. A tile (`ast::TileShape`) has partitions and one or more free
+`t[:, 0]`), and matmul, transpose and an instruction's reduction a kept shape of
+exactly two dimensions. An operand may instead be `t.ap(pattern, offset=0)`
+(`ast::Operand::Pattern`), as `torch.as_strided`: its `[step, count]` pairs are the
+view's dimensions, element `local` at position `offset + sum(step * local)` of `t`'s
+row-major layout. A `TensorRegion`'s `ir::Layout` is a `Rectangle` (`start`,
+`selections`) or that `Pattern`, and `TensorRegion::element` maps either; a view must
+stay within `t`, and on a tile its first pair is the partitions, stepping the free
+size, with every other element in its starting partition
+(`StatementError::AccessPattern`, a `PatternProblem`); `ap`'s dynamic and `dtype`
+parameters are rejected. A tile (`ast::TileShape`) has partitions and one or more free
 dimensions; instructions evaluate each tile region through its `[partitions, free]`
 view (`TensorRegion::tile_extents`/`tile_index`, other dimensions flattened
 row-major), and copies pair elements in row-major order. A whole tensor is a zero
@@ -644,7 +654,8 @@ and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative 
 tutorials' kernel files likewise, each with a `.spec` of its reference
 (`tensor_addition_nki_kernels.py`, `tensor_addition.spec`;
 `matrix_multiplication_nki_kernels.py`, `matrix_multiplication.spec`;
-`transpose2d_nki_kernels.py`, `transpose2d.spec`, its arrays viewed in three dimensions);
+`transpose2d_nki_kernels.py`, `transpose2d.spec`, its arrays viewed in three dimensions;
+`average_pool2d_nki_kernels.py`, `average_pool2d.spec`);
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
@@ -672,6 +683,10 @@ placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (
 `.expected`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
 column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `MixedAllocation`, and a tile past the end of PSUM.
+`tests/fixtures/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
+`axis=(2,)` and copies out through a tile view with an offset (a hand-written
+`.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
+`PatternProblem` a tile or HBM view can hit and a `tensor_reduce` over a leading axis.
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a conditional expression, a dict, f-strings) that is never parsed.
@@ -836,7 +851,10 @@ matrix multiplication tutorial's five kernels against `matrix_multiplication.spe
 against the one before, at two reduced `TileSizes` and once with the fully optimized
 kernel's meta-parameters given as `Constant`s, refuted against a doubled product; the
 transpose2d tutorial's kernel, `shape2D` a `Constant::Ints`, against `transpose2d.spec`
-at its drivers' 5 x (3 x 4) and 5 x (37 x 44), refuted against the identity).
+at its drivers' 5 x (3 x 4) and 5 x (37 x 44), refuted against the identity; the
+average_pool2d tutorial's kernel, its `.ap()` view summed over `axis=[3, 4]`, against
+`average_pool2d.spec` with 2 x 2 and 4 x 4 windows, refuted against the unscaled sum
+and against overlapping windows).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 

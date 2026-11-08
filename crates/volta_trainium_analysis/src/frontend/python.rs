@@ -786,7 +786,10 @@ impl Parser {
     }
 
     fn term(&mut self) -> Result<Expr, ParseError> {
-        self.binary(&[BinOp::Mul, BinOp::FloorDiv, BinOp::Mod], Self::factor)
+        self.binary(
+            &[BinOp::Mul, BinOp::Div, BinOp::FloorDiv, BinOp::Mod],
+            Self::factor,
+        )
     }
 
     /// `operand op operand ...` for the `ops` of one precedence level, left to right.

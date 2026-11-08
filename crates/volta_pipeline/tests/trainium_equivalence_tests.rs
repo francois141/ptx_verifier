@@ -799,3 +799,73 @@ fn nki_transpose2d_against_the_identity_is_refuted() {
         "expected a confirmed difference, got {verdict:?}"
     );
 }
+
+const AVERAGE_POOL2D: &str = include_str!(
+    "../../volta_trainium_analysis/tests/fixtures/nki_samples/average_pool2d_nki_kernels.py"
+);
+const AVERAGE_POOL2D_SPEC: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/average_pool2d.spec");
+
+/// The average_pool2d tutorial's kernel, from its unmodified file, for a float32
+/// `in_tensor` of `[c, h, w]` with `pool_size=s`, against `spec`.
+fn check_average_pool2d(spec: &str, [c, h, w, s]: [u64; 4]) -> EquivalenceVerdict {
+    let shape: &[u64] = &[c, h, w];
+    let shapes = [("in_tensor", shape)];
+    let dtypes = [("in_tensor", "float32")];
+    let constants = [("pool_size", Constant::Int(s as i64))];
+    let call = KernelCall {
+        dtypes: &dtypes,
+        constants: &constants,
+        ..KernelCall::new(&shapes)
+    };
+    let parsed = parse_kernel_for_call(AVERAGE_POOL2D, &[], "tensor_avgpool_kernel", &call)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let dims = [
+        ("C", c),
+        ("H", h),
+        ("W", w),
+        ("S", s),
+        ("HOUT", h / s),
+        ("WOUT", w / s),
+    ];
+    against_spec(
+        &parsed,
+        spec,
+        &dims,
+        "out_tensor",
+        &EquivCheckOptions::default(),
+    )
+}
+
+// At the drivers' 2 x 6 x 6 with 2 x 2 windows, then 4 x 4 windows of a non-square input.
+// The kernel scales each window's sum by the float `1.0 / (pool_size * pool_size)`, the
+// mean exactly only where that is: pool sizes that are powers of two.
+#[test]
+fn nki_average_pool2d_matches_its_specification() {
+    for dims @ [c, h, w, s] in [[2, 6, 6, 2], [3, 8, 12, 4]] {
+        let outputs = c * (h / s) * (w / s);
+        assert_eq!(
+            check_average_pool2d(AVERAGE_POOL2D_SPEC, dims),
+            EquivalenceVerdict::Equivalent {
+                checked: outputs,
+                total: outputs,
+            },
+            "{dims:?}"
+        );
+    }
+}
+
+// The window sum undivided, and overlapping windows one element apart.
+#[test]
+fn nki_average_pool2d_against_unscaled_or_overlapping_windows_is_refuted() {
+    let unscaled = AVERAGE_POOL2D_SPEC.replace(" / (S * S);", ";");
+    let overlapping = AVERAGE_POOL2D_SPEC.replace("[c, i * S + a, j * S + b]", "[c, i + a, j + b]");
+    for spec in [unscaled, overlapping] {
+        assert_ne!(spec, AVERAGE_POOL2D_SPEC);
+        let verdict = check_average_pool2d(&spec, [2, 6, 6, 2]);
+        assert!(
+            matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+            "expected a confirmed difference, got {verdict:?}"
+        );
+    }
+}

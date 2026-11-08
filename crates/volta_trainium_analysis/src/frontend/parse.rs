@@ -687,6 +687,14 @@ enum Value {
         tensor: TensorName,
         dims: Vec<Subscript>,
     },
+    /// `t.ap`, tensor `t`'s access-pattern method.
+    AccessPatternOf(TensorName),
+    /// `t.ap(pattern, offset=offset)`: a strided view of `t`, each pair `[step, count]`.
+    Pattern {
+        tensor: TensorName,
+        pattern: Vec<[u64; 2]>,
+        offset: u64,
+    },
     /// A function of a module, called by running its body.
     Function {
         module: String,
@@ -773,6 +781,19 @@ impl fmt::Display for Value {
             Self::Region { tensor, dims } => {
                 let dims: Vec<String> = dims.iter().map(Subscript::to_string).collect();
                 write!(f, "{tensor}[{}]", dims.join(", "))
+            }
+            Self::AccessPatternOf(tensor) => write!(f, "method `{tensor}.ap`"),
+            Self::Pattern {
+                tensor,
+                pattern,
+                offset,
+            } => {
+                let operand = Operand::Pattern {
+                    tensor: tensor.clone(),
+                    pattern: pattern.clone(),
+                    offset: *offset,
+                };
+                write!(f, "{operand}")
             }
             Self::Function { name, .. } => write!(f, "function `{name}`"),
             Self::Class(class) => write!(f, "class `{}`", class.name),
@@ -962,6 +983,7 @@ impl Trace<'_> {
                 line,
             ),
             Value::Tensor(tensor) if attribute == "dtype" => Ok(Value::DtypeOf(tensor)),
+            Value::Tensor(tensor) if attribute == "ap" => Ok(Value::AccessPatternOf(tensor)),
             Value::Tensor(tensor) if attribute == "shape" => {
                 let extents = &self.tensors[&tensor].extents;
                 let extents = extents.iter().map(|&e| Value::int(e, line));
@@ -1009,6 +1031,9 @@ impl Trace<'_> {
             Expr::Binary { op, lhs, rhs } => {
                 let lhs = self.evaluate(frame, *lhs, line)?;
                 let rhs = self.evaluate(frame, *rhs, line)?;
+                if op == BinOp::Div {
+                    return true_division(&lhs, &rhs, line);
+                }
                 let (Value::Int(lhs), Value::Int(rhs)) = (lhs, rhs) else {
                     bail!(line, "`{}` needs integer operands", op.text());
                 };
@@ -1083,6 +1108,9 @@ impl Trace<'_> {
             }
             Value::Class(class) => return self.instantiate(class, call, frame, line),
             Value::Builtin(builtin) => return self.builtin(frame, builtin, call, line),
+            Value::AccessPatternOf(tensor) => {
+                return self.access_pattern(tensor, &call, frame, line);
+            }
             _ => bail!(
                 line,
                 "`{}` can only be called as a statement or an assignment's value",
@@ -1090,6 +1118,51 @@ impl Trace<'_> {
             ),
         };
         inline(callable, call, self, frame, line, returned_name)
+    }
+
+    /// `tensor.ap(pattern, offset=0)`: `pattern` a list or tuple of `[step, count]` pairs
+    /// of integers, `offset` an element offset. The `ap` parameters for dynamic or
+    /// reinterpreted views (`scalar_offset`, `dtype`, ...) are unsupported.
+    fn access_pattern(
+        &mut self,
+        tensor: TensorName,
+        call: &Call,
+        frame: &Frame,
+        line: usize,
+    ) -> Result<Value, ParseError> {
+        let callee = format!("{tensor}.ap");
+        let [pattern, offset] = arguments(call, ["pattern", "offset"], 1, self, frame, line)?;
+        let integer = |value: &Value, what| match value {
+            Value::Int(value) => non_negative(*value, what, line),
+            other => bail!(line, "`{callee}` needs an integer {what}, not `{other}`"),
+        };
+        let offset = match &offset {
+            None | Some(Value::None) => 0,
+            Some(offset) => integer(offset, "offset")?,
+        };
+        let pairs = self.items(&pattern.expect("required"), &callee, line)?;
+        let mut steps = Vec::new();
+        for pair in pairs {
+            let Ok([step, count]) = <[Value; 2]>::try_from(self.items(&pair, &callee, line)?)
+            else {
+                bail!(line, "`{callee}` takes `[step, count]` pairs");
+            };
+            steps.push([integer(&step, "step")?, integer(&count, "count")?]);
+        }
+        Ok(Value::Pattern {
+            tensor,
+            pattern: steps,
+            offset,
+        })
+    }
+
+    /// The items of a tuple or list `value`, an argument of `callee`.
+    fn items(&self, value: &Value, callee: &str, line: usize) -> Result<Vec<Value>, ParseError> {
+        match value {
+            Value::Tuple(items) => Ok(items.clone()),
+            Value::List(list) => Ok(self.lists[*list].clone()),
+            other => bail!(line, "`{callee}` needs a tuple or a list, not `{other}`"),
+        }
     }
 
     /// `Class(args)`: a new object, initialized by the class's `__init__` if it has one.
@@ -1421,6 +1494,26 @@ impl Trace<'_> {
     }
 }
 
+/// `lhs / rhs`, Python's true division of integers or floats: the f64 quotient, which
+/// for integers is Python's correctly rounded one while they convert exactly.
+fn true_division(lhs: &Value, rhs: &Value, line: usize) -> Result<Value, ParseError> {
+    const EXACT: u64 = 1 << f64::MANTISSA_DIGITS;
+    let number = |value: &Value| match value {
+        Value::Int(value) if value.unsigned_abs() <= EXACT => Ok(*value as f64),
+        Value::Int(value) => bail!(line, "`/` of {value}, which no float holds exactly"),
+        Value::Float(value) => Ok(value.get()),
+        other => bail!(line, "`/` needs numbers, not `{other}`"),
+    };
+    let (lhs, rhs) = (number(lhs)?, number(rhs)?);
+    if rhs == 0.0 {
+        bail!(line, "division by zero");
+    }
+    match Scalar::new(lhs / rhs) {
+        Some(quotient) => Ok(Value::Float(quotient)),
+        None => bail!(line, "`/` overflows a float"),
+    }
+}
+
 /// `lhs op rhs` over Python's integers: `//` rounds down and `%` takes the divisor's sign.
 fn arithmetic(op: BinOp, lhs: i64, rhs: i64, line: usize) -> Result<i64, ParseError> {
     if matches!(op, BinOp::FloorDiv | BinOp::Mod) && rhs == 0 {
@@ -1439,6 +1532,7 @@ fn arithmetic(op: BinOp, lhs: i64, rhs: i64, line: usize) -> Result<i64, ParseEr
         BinOp::Add => lhs.checked_add(rhs),
         BinOp::Sub => lhs.checked_sub(rhs),
         BinOp::Mul => lhs.checked_mul(rhs),
+        BinOp::Div => unreachable!("`/` is true division"),
         BinOp::FloorDiv => floor_div(),
         BinOp::Mod => floor_div()
             .and_then(|quotient| quotient.checked_mul(rhs))
@@ -1681,7 +1775,8 @@ fn assignment(
             callee @ (Value::Function { .. }
             | Value::Method { .. }
             | Value::Class(_)
-            | Value::Builtin(_)) => trace.call(callee, call, frame, line, bound)?,
+            | Value::Builtin(_)
+            | Value::AccessPatternOf(_)) => trace.call(callee, call, frame, line, bound)?,
             _ => bail!(
                 line,
                 "only `nl.ndarray`, `nl.zeros`, the `nki.language` functions returning a tile, \
@@ -2221,25 +2316,57 @@ fn tile_call(
         TileFunction::Max | TileFunction::Sum => {
             let [x, axis, keepdims] =
                 arguments(&call, ["x", "axis", "keepdims"], 2, trace, frame, line)?;
-            if keepdims != Some(Value::Bool(true)) {
-                bail!(line, "`{callee}` is supported with `keepdims=True` only");
+            let x = x.expect("required");
+            let (tensor, extents) = region_extents(trace, &x, &callee, line)?;
+            let axis = axis.expect("required");
+            let axes = match &axis {
+                Value::Int(axis) => vec![non_negative(*axis, "an axis", line)?],
+                axes => {
+                    let items = trace.items(axes, &callee, line)?;
+                    let axis = |item: &Value| match item {
+                        Value::Int(axis) => non_negative(*axis, "an axis", line),
+                        other => bail!(line, "`{callee}` needs integer axes, not `{other}`"),
+                    };
+                    items.iter().map(axis).collect::<Result<_, _>>()?
+                }
+            };
+            let keepdims = match keepdims {
+                None | Some(Value::Bool(false)) => false,
+                Some(Value::Bool(true)) => true,
+                Some(other) => bail!(
+                    line,
+                    "`keepdims` of `{callee}` must be a bool, not `{other}`"
+                ),
+            };
+            let rank = extents.len() as u64;
+            let first = rank.saturating_sub(axes.len() as u64);
+            if first == 0 || !axes.iter().copied().eq(first..rank) {
+                bail!(
+                    line,
+                    "`{callee}` reduces a tile's trailing free axes, not {axes:?} of its {rank}"
+                );
             }
-            let x = tile(x, "x", &callee, line)?;
-            let [partitions, _] = tile_extents(trace, &x)?;
+            let mut reduced = extents[..first as usize].to_vec();
+            if keepdims {
+                reduced.extend(std::iter::repeat_n(1, axes.len()));
+            }
             let op = match function {
                 TileFunction::Max => "maximum",
                 _ => "add",
             };
-            let axis = read_operand("axis", axis.expect("required"), line)?;
+            let axis = match axis {
+                Value::Int(_) => read_operand("axis", axis, line)?,
+                _ => Operand::Ints(axes),
+            };
             let operands = vec![
-                ("data", Operand::Tensor(x.clone())),
+                ("data", read_operand("x", x, line)?),
                 ("op", member(op)),
                 ("axis", axis),
             ];
             (
-                vec![partitions, 1],
+                reduced,
                 Buffer::Sbuf,
-                Dtype::Of(x),
+                Dtype::Of(tensor),
                 "tensor_reduce",
                 operands,
             )
@@ -2365,7 +2492,16 @@ fn region_extents(
     let (tensor, dims) = match value {
         Value::Tensor(tensor) => (tensor, &[][..]),
         Value::Region { tensor, dims } => (tensor, &dims[..]),
-        other => bail!(line, "`{callee}` reads a tensor or a region, not `{other}`"),
+        Value::Pattern {
+            tensor, pattern, ..
+        } => {
+            let counts = pattern.iter().map(|&[_, count]| count).collect();
+            return Ok((tensor.clone(), counts));
+        }
+        other => bail!(
+            line,
+            "`{callee}` reads a tensor, a region or a view, not `{other}`"
+        ),
     };
     let shape = &trace.tensors[tensor].extents;
     match resolve_region(dims, shape) {
@@ -2543,6 +2679,15 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
         Value::Bool(value) => Ok(Operand::Bool(value)),
         Value::None => Ok(Operand::None),
         Value::Region { tensor, dims } => Ok(Operand::Region { tensor, dims }),
+        Value::Pattern {
+            tensor,
+            pattern,
+            offset,
+        } => Ok(Operand::Pattern {
+            tensor,
+            pattern,
+            offset,
+        }),
         Value::Tuple(items) => {
             let mut values = Vec::new();
             for item in items {

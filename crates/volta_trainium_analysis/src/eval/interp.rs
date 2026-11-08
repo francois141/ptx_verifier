@@ -93,11 +93,11 @@ impl<'a> Interpreter<'a> {
                     let value = self.tensors[src.tensor].read(
                         &mut self.arena,
                         instr,
-                        &src.start.shifted(&from),
+                        &src.element(&from),
                     )?;
                     writes.push(Write {
                         tensor: dst.tensor,
-                        index: dst.start.shifted(&to),
+                        index: dst.element(&to),
                         value,
                     });
                 }
@@ -149,17 +149,19 @@ impl<'a> Interpreter<'a> {
                 data,
                 sign,
             } => {
-                let [partitions, free] = data.tile_extents();
-                for partition in 0..partitions {
+                let [_, free] = data.tile_extents();
+                let [_, results] = dst.tile_extents();
+                let inner = free / results;
+                for [partition, result] in elements(dst) {
                     let mut values = Vec::new();
-                    for element in 0..free {
+                    for element in result * inner..(result + 1) * inner {
                         values.push(self.read(instr, data, [partition, element])?);
                     }
                     let mut reduced = self.fold(*op, values);
                     if *sign == Sign::Negated {
                         reduced = self.arena.neg(reduced);
                     }
-                    writes.push(Write::at(dst, [partition, 0], reduced));
+                    writes.push(Write::at(dst, [partition, result], reduced));
                 }
             }
             LoweredInstr::TensorScalar {
