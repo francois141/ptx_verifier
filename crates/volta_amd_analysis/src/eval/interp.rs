@@ -19,8 +19,8 @@ use super::arithm::{
     evaluate_f64_op, evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op,
     evaluate_vop3_bin_op,
 };
-use super::global::{ArrayDef, GlobalMemory};
-use super::launch::{WorkgroupLaunch, initialize_waves};
+use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
+use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::record::Recording;
@@ -39,6 +39,18 @@ pub(crate) struct Interpreter<'a> {
     pub(super) waves: IdVec<WaveId, WaveState>,
     pub(super) graph: GraphBuilder,
     pub(super) rec: Recording,
+    /// How many workgroups the run covers: one for a selected workgroup, or every workgroup
+    /// of the launch grid, X fastest.
+    pub(super) workgroups: usize,
+}
+
+/// A run over every workgroup of a launch grid, as `Interpreter::finish_grid` returns it.
+pub(crate) struct GridRun {
+    pub graph: EventGraph,
+    pub arena: ExprArena,
+    /// Each workgroup's output arrays with their written elements.
+    pub outputs: Vec<OutputArrays>,
+    pub conflicts: Vec<OutputConflict>,
 }
 
 /// How the execution of the selected workgroup ended.
@@ -56,21 +68,30 @@ pub enum Terminal {
 
 impl<'a> Interpreter<'a> {
     /// Launch the selected workgroup with `kernarg` as the argument buffer at `launch.kernarg_address`
-    /// and `arrays` in global memory, recording the execution's graph under `provenance`.
+    /// and `arrays` in global memory, recording the execution's graph under `provenance`. With
+    /// `whole_grid`, the run covers every workgroup of `launch.grid_size` instead: each
+    /// workgroup-ID register holds every workgroup's coordinate.
     pub(crate) fn new(
         kernel: &LoweredKernel,
         launch: &WorkgroupLaunch,
         kernarg: &'a [u8],
         arrays: &[ArrayDef],
         provenance: Provenance,
+        whole_grid: bool,
     ) -> Result<Self, EvalError> {
         let mut arena = ExprArena::new();
-        let waves = initialize_waves(kernel, launch, &mut arena)?;
+        let mut waves = initialize_waves(kernel, launch, &mut arena)?;
+        let workgroups = if whole_grid {
+            vary_workgroup_ids(kernel, launch.grid_size, &mut waves, &mut arena)?;
+            grid_workgroups(launch.grid_size)?
+        } else {
+            1
+        };
         let kernarg = KernargBuffer {
             address: launch.kernarg_address,
             bytes: kernarg,
         };
-        let global = GlobalMemory::new(arrays, &kernarg, &mut arena)?;
+        let global = GlobalMemory::new(arrays, &kernarg, &mut arena, workgroups)?;
         let lds_size = kernel
             .descriptor
             .get("group_segment_fixed_size")
@@ -83,10 +104,11 @@ impl<'a> Interpreter<'a> {
             arena,
             kernarg,
             global,
-            lds: Lds::new(lds_size),
+            lds: Lds::new(lds_size, workgroups),
             waves,
             graph: GraphBuilder::new(provenance),
             rec: Recording::default(),
+            workgroups,
         })
     }
 
@@ -158,10 +180,19 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::Branch { target } => next = *target,
             LoweredInstr::CondBranch { condition, target } => {
-                if self.branch_taken(wave, *condition)? {
+                if self.branch_taken_in_every_workgroup(wave, *condition)? {
                     next = *target;
                 }
             }
+            LoweredInstr::WaitCnt { .. } | LoweredInstr::Nop => {
+                self.execute_scalar(wave, instruction)?;
+            }
+            LoweredInstr::DsWrite { .. }
+            | LoweredInstr::DsRead { .. }
+            | LoweredInstr::DsBPermute { .. } => {
+                self.execute_ds(wave, pc, instruction)?;
+            }
+            // Every other instruction computes register values or accesses global memory.
             LoweredInstr::ScalarLoad { .. }
             | LoweredInstr::MovScalar32 { .. }
             | LoweredInstr::MovScalar64 { .. }
@@ -173,10 +204,111 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::ScalarCmp64 { .. }
             | LoweredInstr::BitCmpScalar64 { .. }
             | LoweredInstr::ReadFirstLane { .. }
-            | LoweredInstr::WaitCnt { .. }
-            | LoweredInstr::Nop => {
-                self.execute_scalar(wave, instruction)?;
+            | LoweredInstr::CmpE64 { .. }
+            | LoweredInstr::Cmp64 { .. }
+            | LoweredInstr::CmpF64 { .. }
+            | LoweredInstr::MadU64U32 { .. }
+            | LoweredInstr::Mfma16x16x4F32 { .. }
+            | LoweredInstr::BinOp { .. }
+            | LoweredInstr::TernaryOp { .. }
+            | LoweredInstr::Vop3BinOp { .. }
+            | LoweredInstr::UnaryOp { .. }
+            | LoweredInstr::Mov64 { .. }
+            | LoweredInstr::Cmp { .. }
+            | LoweredInstr::CndMask32 { .. }
+            | LoweredInstr::CndMask32E64 { .. }
+            | LoweredInstr::AccvgprWrite32 { .. }
+            | LoweredInstr::AccvgprRead32 { .. }
+            | LoweredInstr::FmaF32 { .. }
+            | LoweredInstr::FmacF32 { .. }
+            | LoweredInstr::F64 { .. }
+            | LoweredInstr::CvtToF64 { .. }
+            | LoweredInstr::CvtFromF64 { .. }
+            | LoweredInstr::PackedF32 { .. }
+            | LoweredInstr::GlobalLoad { .. }
+            | LoweredInstr::GlobalStore { .. }
+            | LoweredInstr::BufferLoad { .. }
+            | LoweredInstr::BufferStore { .. } => self.execute_for_workgroups(wave, instruction)?,
+        }
+        self.waves[wave].pc = next;
+        Ok(())
+    }
+
+    /// Execute a value instruction. One that reads no workgroup-dependent location runs
+    /// once; otherwise it runs once per workgroup from the same registers, and each location it
+    /// writes keeps every workgroup's result.
+    fn execute_for_workgroups(
+        &mut self,
+        wave: WaveId,
+        instruction: &LoweredInstr,
+    ) -> Result<(), EvalError> {
+        if !self.waves[wave].registers.has_varying() {
+            return self.execute_value(wave, instruction);
+        }
+
+        // Execute once while rejecting workgroup-dependent reads; undo it if one occurs.
+        let issued = self.waves[wave].lgkm_in_flight.len();
+        self.waves[wave].registers.begin_undoable();
+        match self.execute_value(wave, instruction) {
+            Err(EvalError::DependsOnWorkgroup) => {
+                self.waves[wave].registers.undo_execution();
+                self.waves[wave].lgkm_in_flight.truncate(issued);
             }
+            result => {
+                self.waves[wave].registers.commit();
+                return result;
+            }
+        }
+
+        self.execute_each_workgroup(wave, instruction)
+    }
+
+    /// Execute the data operation in each workgroup, retaining each result and counting a load
+    /// only once. LDS instructions also use this path because their memory can differ even
+    /// when the wave's registers agree.
+    pub(super) fn execute_each_workgroup(
+        &mut self,
+        wave: WaveId,
+        instruction: &LoweredInstr,
+    ) -> Result<(), EvalError> {
+        if self.workgroups == 1 {
+            return self.execute_value(wave, instruction);
+        }
+        let mut results = Vec::with_capacity(self.workgroups);
+        for workgroup in 0..self.workgroups {
+            let issued = self.waves[wave].lgkm_in_flight.len();
+            self.waves[wave].registers.begin_workgroup(workgroup);
+            self.global.select(Some(workgroup));
+            self.lds.select(workgroup);
+            let outcome = self.execute_value(wave, instruction);
+            self.global.select(None);
+            self.lds.select(0);
+            let writes = self.waves[wave].registers.end_workgroup();
+            if workgroup > 0 {
+                self.waves[wave].lgkm_in_flight.truncate(issued);
+            }
+            outcome?;
+            results.push(writes);
+        }
+        self.waves[wave].registers.combine(&self.arena, results);
+        Ok(())
+    }
+
+    /// Execute the data effects of an instruction; graph recording and DS completion
+    /// tracking happen once in `execute_ds`, outside per-workgroup execution.
+    fn execute_value(&mut self, wave: WaveId, instruction: &LoweredInstr) -> Result<(), EvalError> {
+        match instruction {
+            LoweredInstr::ScalarLoad { .. }
+            | LoweredInstr::MovScalar32 { .. }
+            | LoweredInstr::MovScalar64 { .. }
+            | LoweredInstr::AbsScalar32 { .. }
+            | LoweredInstr::ScalarOp32 { .. }
+            | LoweredInstr::ScalarOp64 { .. }
+            | LoweredInstr::ShiftScalar64 { .. }
+            | LoweredInstr::ScalarCmp { .. }
+            | LoweredInstr::ScalarCmp64 { .. }
+            | LoweredInstr::BitCmpScalar64 { .. }
+            | LoweredInstr::ReadFirstLane { .. } => self.execute_scalar(wave, instruction),
             LoweredInstr::CmpE64 {
                 op,
                 dst,
@@ -184,7 +316,7 @@ impl<'a> Interpreter<'a> {
                 src1,
             } => self.write_comparison(wave, *dst, |arena, registers, lane| {
                 evaluate_cmp_e64(arena, registers, lane, *op, *src0, *src1)
-            })?,
+            }),
             LoweredInstr::Cmp64 {
                 op,
                 signedness,
@@ -193,7 +325,7 @@ impl<'a> Interpreter<'a> {
                 src1,
             } => self.write_comparison(wave, *dst, |arena, registers, lane| {
                 evaluate_cmp64(arena, registers, lane, *op, *signedness, *src0, *src1)
-            })?,
+            }),
             LoweredInstr::CmpF64 {
                 op,
                 dst,
@@ -201,14 +333,14 @@ impl<'a> Interpreter<'a> {
                 src1,
             } => self.write_comparison(wave, *dst, |arena, registers, lane| {
                 evaluate_cmp_f64(arena, registers, lane, *op, *src0, *src1)
-            })?,
+            }),
             LoweredInstr::MadU64U32 {
                 dst,
                 carry,
                 src0,
                 src1,
                 src2,
-            } => self.execute_mad_u64_u32(wave, *dst, *carry, *src0, *src1, *src2)?,
+            } => self.execute_mad_u64_u32(wave, *dst, *carry, *src0, *src1, *src2),
             LoweredInstr::Mfma16x16x4F32 {
                 dst,
                 src_a,
@@ -221,10 +353,14 @@ impl<'a> Interpreter<'a> {
                 *src_a,
                 *src_b,
                 *src_c,
-            )?,
-            LoweredInstr::DsWrite { .. }
-            | LoweredInstr::DsRead { .. }
-            | LoweredInstr::DsBPermute { .. } => self.execute_ds(wave, pc, instruction)?,
+            ),
+            LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses),
+            LoweredInstr::DsBPermute {
+                dst,
+                addr,
+                src,
+                offset,
+            } => self.execute_ds_bpermute(wave, *dst, *addr, *src, *offset),
             // EXEC holds every lane: launches are full waves and no supported instruction writes it.
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
@@ -245,14 +381,21 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
-            | LoweredInstr::BufferStore { .. } => {
+            | LoweredInstr::BufferStore { .. }
+            | LoweredInstr::DsRead { .. } => {
                 for lane in 0..64 {
                     self.execute_lane(wave, lane, instruction)?;
                 }
+                Ok(())
             }
+            // `step` executes control and wait instructions itself.
+            LoweredInstr::EndPgm
+            | LoweredInstr::Barrier
+            | LoweredInstr::Branch { .. }
+            | LoweredInstr::CondBranch { .. }
+            | LoweredInstr::WaitCnt { .. }
+            | LoweredInstr::Nop => Err(EvalError::UnsupportedInstruction),
         }
-        self.waves[wave].pc = next;
-        Ok(())
     }
 
     /// `s_waitcnt lgkmcnt(outstanding)` at `pc`: every DS instruction and scalar load but the
@@ -271,6 +414,30 @@ impl<'a> Interpreter<'a> {
             }
         }
         self.record_lgkm_wait(wave, pc, outstanding, &ds_ops);
+    }
+
+    /// Whether a branch is taken, which must be alike in every workgroup. A condition that
+    /// differs between workgroups is evaluated in each; differing outcomes are rejected.
+    fn branch_taken_in_every_workgroup(
+        &mut self,
+        wave: WaveId,
+        condition: BranchCondition,
+    ) -> Result<bool, EvalError> {
+        match self.branch_taken(wave, condition) {
+            Err(EvalError::DependsOnWorkgroup) => {}
+            result => return result,
+        }
+        let mut taken = None;
+        for workgroup in 0..self.workgroups {
+            self.waves[wave].registers.set_view(Some(workgroup));
+            let outcome = self.branch_taken(wave, condition);
+            self.waves[wave].registers.set_view(None);
+            let outcome = outcome?;
+            if *taken.get_or_insert(outcome) != outcome {
+                return Err(EvalError::DependsOnWorkgroup);
+            }
+        }
+        taken.ok_or(EvalError::DependsOnWorkgroup)
     }
 
     /// Every lane is active, so EXEC is never zero.
@@ -549,8 +716,19 @@ impl<'a> Interpreter<'a> {
         )
     }
 
-    /// The event graph, ended as `terminal` says, and the written output elements, together
-    /// with the arena that holds their expressions and the graph's stored values.
+    /// End a run over a whole grid, keeping each workgroup's outputs and their conflicts.
+    pub(crate) fn finish_grid(self, terminal: volta_graph::Terminal) -> GridRun {
+        let outputs = self.global.workgroup_outputs(&self.arena);
+        let conflicts = self.global.conflicts(&self.arena);
+        GridRun {
+            graph: self.graph.finish(terminal),
+            arena: self.arena,
+            outputs,
+            conflicts,
+        }
+    }
+
+    /// The event graph and output elements, together with the arena holding their expressions.
     pub(crate) fn finish(self, terminal: volta_graph::Terminal) -> (EventGraph, SymbolicOutputs) {
         (
             self.graph.finish(terminal),

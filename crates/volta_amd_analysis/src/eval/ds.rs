@@ -18,30 +18,15 @@ impl Interpreter<'_> {
         instruction: &LoweredInstr,
     ) -> Result<(), EvalError> {
         let op = self.record_ds_issue(wave, pc, instruction)?;
-        let dst = match *instruction {
-            LoweredInstr::DsBPermute {
-                dst,
-                addr,
-                src,
-                offset,
-            } => {
-                self.execute_ds_bpermute(wave, dst, addr, src, offset)?;
-                vec![dst]
-            }
-            LoweredInstr::DsRead { accesses, .. } => {
-                for lane in 0..64 {
-                    self.execute_lane(wave, lane, instruction)?;
-                }
-                let mut dst: Vec<Vgpr> = Vec::new();
-                for (_, destination) in accesses.accesses() {
-                    dst.extend_from_slice(destination.regs());
-                }
-                dst
-            }
-            LoweredInstr::DsWrite { addr, accesses } => {
-                self.ds_write(wave, addr, accesses)?;
-                Vec::new()
-            }
+        self.execute_each_workgroup(wave, instruction)?;
+        let dst = match instruction {
+            LoweredInstr::DsBPermute { dst, .. } => vec![*dst],
+            LoweredInstr::DsRead { accesses, .. } => accesses
+                .accesses()
+                .into_iter()
+                .flat_map(|(_, destination)| destination.regs().to_vec())
+                .collect(),
+            LoweredInstr::DsWrite { .. } => Vec::new(),
             _ => unreachable!("only DS instructions are issued to the LDS"),
         };
         self.waves[wave]
@@ -51,7 +36,7 @@ impl Interpreter<'_> {
     }
 
     /// Gather register values across the wave, pending until an LGKM wait completes the exchange.
-    fn execute_ds_bpermute(
+    pub(super) fn execute_ds_bpermute(
         &mut self,
         wave: WaveId,
         dst: Vgpr,

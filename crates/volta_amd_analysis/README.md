@@ -19,7 +19,14 @@ accessing LDS memory; its results remain pending until an LGKM wait completes th
 Launch initialization supports full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
 with an optional kernarg pointer and enabled workgroup IDs. `WorkgroupLaunch` selects a
-concrete X/Y/Z workgroup ID within nonzero grid dimensions; only that workgroup is executed.
+concrete X/Y/Z workgroup ID within nonzero grid dimensions; `analyze` executes only that
+workgroup. `analyze_grid` runs every workgroup along one shared control flow, keeping each
+workgroup's concrete words and real expressions in its registers and LDS. Instructions that
+read differing values run once per workgroup, using the same evaluators as `analyze`.
+Different branch outcomes or LDS access addresses abort the run with `DependsOnWorkgroup`.
+The shared event graph records the LDS accesses and synchronization common to every workgroup;
+written output values are exported separately for each workgroup. Duplicate output stores
+across workgroups are reported separately from the LDS graph checks.
 Disabled ID axes consume no SGPR. Work-items are ordered
 with X advancing first, then Y, then Z, following
 [AMD's execution model](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html#hierarchical-thread-model).
@@ -80,13 +87,19 @@ The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, 
 moves.
 `accvgpr` checks each source form; the bitwise fixtures check NOT results and scalar SCC.
 `lds_sync` includes a pending-read race and its waited control. `workgroup_ids` checks all
-three launch coordinates, including a disabled Y axis, and rejects invalid grid coordinates.
+three launch coordinates, including a disabled Y axis, and rejects invalid grid coordinates;
+a grid run over all its workgroups must match a run of each workgroup alone and report
+duplicate stores. It also checks integer data through LDS and lane exchange, uniform branch
+outcomes with different VCC masks, and rejection of varying LDS addresses and NaN operands.
 Rejection fixtures instead require a specific lowering or execution error.
 Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
-Run both suites from the repository root:
+`volta_pipeline/tests/amd_grid_tests.rs` compares CK grid outputs with independent workgroup
+runs, checks that their stores do not overlap, and rejects differing control flow.
+Run the kernel and equivalence suites, then the graph and grid suites, from the repository root:
 
 ```sh
 just amd
+cargo test -p volta_pipeline --test amd_graph_tests --test amd_grid_tests
 ```
 
 `tests/lean_tests.rs` states the sigmoid fixture's outputs against

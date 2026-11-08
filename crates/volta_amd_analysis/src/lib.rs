@@ -8,7 +8,9 @@ mod eval;
 mod ir;
 mod lower;
 
-pub use analysis::{AnalysisError, AnalysisResult, analyze};
+pub use analysis::{
+    AnalysisError, AnalysisResult, GridAnalysis, StoreConflict, analyze, analyze_grid,
+};
 pub use eval::{
     ArrayDef, ArrayKind, EvalError, LdsLaneAccess, LdsRace, OutputType, Terminal, WaveId,
     WorkgroupLaunch,

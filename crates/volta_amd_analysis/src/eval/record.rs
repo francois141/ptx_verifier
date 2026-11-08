@@ -4,14 +4,13 @@
 
 use std::collections::HashMap;
 
-use volta_expr::ExprId;
 use volta_graph::{
     AccessMode, AsyncOpId, AsyncOpKind, BarrierArrivals, ContributionKind, Footprint,
     GenerationEvidence, GenerationId, GenerationKind, MemAccess, OperandRole, OrderingKind,
     ProgramPoint, Proxy, Space, StoredValue, SyncObjectId, SyncObjectKind, ThreadIx,
 };
 
-use crate::ir::{InstrId, LoweredInstr};
+use crate::ir::{InstrId, LaneReg, LoweredInstr};
 
 use super::EvalError;
 use super::interp::Interpreter;
@@ -52,11 +51,11 @@ fn point(pc: InstrId) -> ProgramPoint {
 // ===== Record issue =====
 // Each DS instruction is an async operation over its lanes' LDS words.
 
-/// One LDS word a DS instruction accesses, with the value a write stores.
+/// One LDS word a DS instruction accesses, with the source lane and register for a write.
 #[derive(Debug, Clone, Copy)]
 struct LdsWord {
     address: u32,
-    stored: Option<ExprId>,
+    source: Option<(usize, LaneReg)>,
 }
 
 impl Interpreter<'_> {
@@ -68,13 +67,21 @@ impl Interpreter<'_> {
         pc: InstrId,
         instruction: &LoweredInstr,
     ) -> Result<AsyncOpId, EvalError> {
+        // Resolve addresses without selecting a workgroup: a varying address rejects the run.
         let words = self.ds_words(wave, instruction)?;
+        // The graph uses representative stored values; execution keeps each workgroup's data.
+        self.waves[wave].registers.set_view(Some(0));
+        let accesses = words
+            .into_iter()
+            .map(|word| self.lds_access(wave, word))
+            .collect::<Result<Vec<_>, _>>();
+        self.waves[wave].registers.set_view(None);
+        let accesses = accesses?;
         let op = self
             .graph
             .async_issue(thread(wave), point(pc), AsyncOpKind::Ds);
 
-        for word in words {
-            let access = self.lds_access(wave, word);
+        for access in accesses {
             self.graph.async_effect(op, access);
         }
 
@@ -91,15 +98,16 @@ impl Interpreter<'_> {
         let mut words = Vec::new();
         match *instruction {
             LoweredInstr::DsWrite { addr, accesses } => {
-                let registers = &self.waves[wave].registers;
                 for lane in 0..64 {
                     for (offset, data) in accesses.accesses() {
                         let start = self.lds_address(wave, lane, addr, offset)?;
                         let regs = data.regs();
                         let addresses = self.lds.word_addresses(start, regs.len() as u32)?;
                         for (address, reg) in addresses.into_iter().zip(regs) {
-                            let stored = Some(registers.read_lane_reg(lane, reg)?);
-                            words.push(LdsWord { address, stored });
+                            words.push(LdsWord {
+                                address,
+                                source: Some((lane, reg)),
+                            });
                         }
                     }
                 }
@@ -112,7 +120,7 @@ impl Interpreter<'_> {
                         for address in self.lds.word_addresses(start, count)? {
                             words.push(LdsWord {
                                 address,
-                                stored: None,
+                                source: None,
                             });
                         }
                     }
@@ -125,16 +133,17 @@ impl Interpreter<'_> {
     }
 
     /// `wave`'s access of one LDS word, storing a value if it writes.
-    fn lds_access(&mut self, wave: WaveId, word: LdsWord) -> MemAccess {
-        let (mode, value) = match word.stored {
-            Some(stored) => {
+    fn lds_access(&mut self, wave: WaveId, word: LdsWord) -> Result<MemAccess, EvalError> {
+        let (mode, value) = match word.source {
+            Some((lane, reg)) => {
+                let stored = self.waves[wave].registers.read_lane_reg(lane, reg)?;
                 let value = self.graph.value(StoredValue::Scalar(stored));
                 (AccessMode::Write, Some(value))
             }
             None => (AccessMode::Read, None),
         };
 
-        MemAccess {
+        Ok(MemAccess {
             space: Space::Shared,
             mode,
             ordering: OrderingKind::Ordinary,
@@ -146,7 +155,7 @@ impl Interpreter<'_> {
             role: OperandRole::Plain,
             attributed: thread(wave),
             value,
-        }
+        })
     }
 }
 

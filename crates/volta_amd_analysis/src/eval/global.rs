@@ -61,7 +61,21 @@ impl Region {
 #[derive(Debug, Default)]
 pub(super) struct GlobalMemory {
     regions: Vec<Region>,
-    written: BTreeMap<u64, ExprId>,
+    /// Each workgroup's written output words by address; a selected workgroup's run has one.
+    written: Vec<BTreeMap<u64, ExprId>>,
+    /// The workgroup a store applies to; `None` applies it to every workgroup.
+    selected: Option<usize>,
+}
+
+/// Every output array with its written elements, in index order.
+pub(crate) type OutputArrays = Vec<(String, Vec<(u64, ExprId)>)>;
+
+/// An output element that more than one workgroup stores.
+pub(crate) struct OutputConflict {
+    pub array: String,
+    pub index: u64,
+    /// The first workgroup to store the element and a later one that also stores it.
+    pub workgroups: [usize; 2],
 }
 
 impl GlobalMemory {
@@ -70,6 +84,7 @@ impl GlobalMemory {
         arrays: &[ArrayDef],
         kernarg: &KernargBuffer,
         arena: &mut ExprArena,
+        workgroups: usize,
     ) -> Result<Self, EvalError> {
         check_unique_names(arrays)?;
         let mut ranges = vec![kernarg_range(kernarg)?];
@@ -89,7 +104,8 @@ impl GlobalMemory {
         }
         Ok(Self {
             regions,
-            written: BTreeMap::new(),
+            written: vec![BTreeMap::new(); workgroups],
+            selected: None,
         })
     }
 
@@ -132,19 +148,75 @@ impl GlobalMemory {
                 value
             }
         };
-        self.written.insert(address, value);
+        match self.selected {
+            Some(workgroup) => {
+                if let Some(written) = self.written.get_mut(workgroup) {
+                    written.insert(address, value);
+                }
+            }
+            None => {
+                for written in &mut self.written {
+                    written.insert(address, value);
+                }
+            }
+        }
         Ok(())
     }
 
-    /// Export every output array with only its written elements, in index order.
+    /// Apply later stores to `workgroup` only, or to every workgroup for `None`.
+    pub fn select(&mut self, workgroup: Option<usize>) {
+        self.selected = workgroup;
+    }
+
+    /// Export the first workgroup's output arrays with only their written elements.
     pub fn into_outputs(self, arena: ExprArena) -> SymbolicOutputs {
-        let outputs = self
-            .regions
+        let outputs = match self.written.first() {
+            Some(written) => self.outputs_of(written, &arena),
+            None => Vec::new(),
+        };
+        SymbolicOutputs { arena, outputs }
+    }
+
+    /// Each workgroup's output arrays with only their written elements.
+    pub fn workgroup_outputs(&self, arena: &ExprArena) -> Vec<OutputArrays> {
+        self.written
+            .iter()
+            .map(|written| self.outputs_of(written, arena))
+            .collect()
+    }
+
+    /// Every output element a later workgroup stores after an earlier one stored it.
+    pub fn conflicts(&self, arena: &ExprArena) -> Vec<OutputConflict> {
+        let mut first_writer = BTreeMap::new();
+        let mut conflicts = Vec::new();
+        for (workgroup, written) in self.written.iter().enumerate() {
+            for &address in written.keys() {
+                let Some(&first) = first_writer.get(&address) else {
+                    first_writer.insert(address, workgroup);
+                    continue;
+                };
+                // Only output elements are ever written, so each address names one.
+                for region in &self.regions {
+                    if let Some(index) = region.element_at(address) {
+                        conflicts.push(OutputConflict {
+                            array: arena.string(region.name).to_owned(),
+                            index,
+                            workgroups: [first, workgroup],
+                        });
+                    }
+                }
+            }
+        }
+        conflicts
+    }
+
+    /// Every output array with the elements `written` holds, in index order.
+    fn outputs_of(&self, written: &BTreeMap<u64, ExprId>, arena: &ExprArena) -> OutputArrays {
+        self.regions
             .iter()
             .filter(|region| matches!(region.kind, ArrayKind::Output(_)))
             .map(|region| {
-                let elements = self
-                    .written
+                let elements = written
                     .iter()
                     .filter_map(|(&address, &value)| {
                         region.element_at(address).map(|index| (index, value))
@@ -152,8 +224,7 @@ impl GlobalMemory {
                     .collect();
                 (arena.string(region.name).to_owned(), elements)
             })
-            .collect();
-        SymbolicOutputs { arena, outputs }
+            .collect()
     }
 }
 

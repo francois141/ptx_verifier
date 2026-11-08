@@ -8,8 +8,9 @@ use volta_amd_analysis::frontend::ast::{Kernel, Operand};
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
     AnalysisError, AnalysisResult, ArrayKind, EvalError, InstrId, LdsLaneAccess, LdsRace,
-    LowerError, Terminal, WaveId, WorkgroupLaunch, analyze,
+    LowerError, StoreConflict, Terminal, WaveId, WorkgroupLaunch, analyze, analyze_grid,
 };
+use volta_expr::SymbolicOutputs;
 
 // Test nonzero X/Y/Z coordinates in every lane, including descriptors with unused axes.
 #[test]
@@ -45,9 +46,7 @@ fn workgroup_graph_records_selected_launch() {
     let result = run_workgroup_id_kernel("workgroup_xyz");
     let provenance = result.graph.provenance();
     assert_eq!(provenance.grid_dim, (3, 4, 6));
-    assert!(provenance.assumes(volta_graph::Assumption::SingleWorkgroupAnalyzed {
-        id: (2, 3, 5),
-    }));
+    assert!(provenance.assumes(volta_graph::Assumption::SingleWorkgroupAnalyzed { id: (2, 3, 5) }));
 }
 
 /// Run a coordinate fixture in workgroup (2, 3, 5) with room for all three coordinates per lane.
@@ -65,9 +64,63 @@ fn run_workgroup_id_kernel(name: &str) -> AnalysisResult {
     result
 }
 
-// Test that an empty grid or a workgroup outside any of its three axes is rejected at launch.
+// Test that one run over a 2 x 2 x 2 grid gives every workgroup the coordinates a run of that
+// workgroup alone stores, and reports each element that later workgroups store again.
 #[test]
-fn invalid_workgroup_ids_are_rejected() {
+fn a_grid_run_gives_each_workgroup_its_own_outputs() {
+    let grid_size = (2, 2, 2);
+    let launch = |workgroup_id| WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id,
+        grid_size,
+    };
+    let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), "workgroup_xyz").unwrap();
+    let out = array_of("out", 0x10000, 3 * 64, ArrayKind::Output(U32));
+    let arrays = std::slice::from_ref(&out);
+    let kernarg = out.base.to_le_bytes();
+    // A grid run ignores the selected coordinate, even when it lies outside the grid.
+    let grid = analyze_grid(
+        &kernel,
+        &launch((u32::MAX, u32::MAX, u32::MAX)),
+        &kernarg,
+        arrays,
+    )
+    .unwrap();
+    assert_eq!(grid.terminal, Terminal::Completed);
+    assert_eq!(grid.workgroups.len(), 8);
+
+    // Each workgroup's stored words must equal those of a run that selects it.
+    for (id, outputs) in &grid.workgroups {
+        let alone = analyze(&kernel, &launch(*id), &kernarg, arrays).unwrap();
+        let expected = alone.symbolic_outputs.unwrap();
+        assert_eq!(output_words(outputs), output_words(&expected), "{id:?}");
+    }
+
+    // All eight workgroups store the same 192 elements, so each later one conflicts with the first.
+    assert_eq!(grid.conflicts.len(), 7 * 192);
+    assert_eq!(
+        grid.conflicts[0],
+        StoreConflict {
+            array: "out".into(),
+            index: 0,
+            workgroups: [(0, 0, 0), (1, 0, 0)],
+        }
+    );
+}
+
+/// Each written element of the first output array with its concrete word, if it has one.
+fn output_words(outputs: &SymbolicOutputs) -> Vec<(u64, Option<i64>)> {
+    outputs.outputs[0]
+        .1
+        .iter()
+        .map(|&(index, value)| (index, outputs.arena.as_int_const(value)))
+        .collect()
+}
+
+// Test rejection of empty or overflowing grids and selected workgroups outside the grid.
+#[test]
+fn invalid_workgroup_launches_are_rejected() {
     let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), "workgroup_xyz").unwrap();
     let out = array_of("out", 0x10000, 192, ArrayKind::Output(U32));
     for (grid_size, workgroup_id) in [
@@ -95,6 +148,182 @@ fn invalid_workgroup_ids_are_rejected() {
             "expected launch rejection for grid {grid_size:?}, workgroup {workgroup_id:?}"
         );
     }
+    for grid_size in [(0, 1, 1), (1, 0, 1), (1, 1, 0), (1 << 31, 1 << 31, 4)] {
+        let launch = WorkgroupLaunch {
+            kernarg_address: 0x1000,
+            workgroup_size: (64, 1, 1),
+            workgroup_id: (0, 0, 0),
+            grid_size,
+        };
+        let result = analyze_grid(
+            &kernel,
+            &launch,
+            &out.base.to_le_bytes(),
+            std::slice::from_ref(&out),
+        );
+        assert!(
+            matches!(result, Err(AnalysisError::Eval(EvalError::Launch { .. }))),
+            "expected launch rejection for grid {grid_size:?}"
+        );
+    }
+}
+
+// Test that equal LDS addresses can depend on workgroup IDs, while each workgroup's words
+// retain their bits through LDS, XOR and lane exchange, and convert numerically to floats.
+#[test]
+fn grid_lds_words_keep_their_integer_bits() {
+    let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), "grid_lds_words").unwrap();
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (2, 1, 1),
+    };
+    let arrays = [
+        array_of("out", 0x10000, 2 * 192, ArrayKind::Output(U32)),
+        array_of("converted", 0x20000, 2 * 64, ArrayKind::Output(F32)),
+    ];
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    let grid = analyze_grid(&kernel, &launch, &kernarg, &arrays).unwrap();
+    assert_eq!(grid.terminal, Terminal::Completed);
+    assert_eq!(grid.workgroups.len(), 2);
+    assert!(grid.conflicts.is_empty());
+
+    for (id, outputs) in &grid.workgroups {
+        let group = u64::from(id.0);
+        assert_eq!(outputs.outputs.len(), 2);
+        let (name, words) = &outputs.outputs[0];
+        assert_eq!(name, "out");
+        assert_eq!(words.len(), 192);
+        for (local, &(index, value)) in words.iter().enumerate() {
+            assert_eq!(index, group * 192 + local as u64);
+            let lane = local as u64 % 64;
+            let read = group * 64 + (lane ^ 1) + 1;
+            let expected = match local / 64 {
+                0 => read,
+                1 => read ^ 85,
+                2 => group * 64 + (lane ^ 3) + 1,
+                _ => unreachable!(),
+            };
+            assert_eq!(outputs.arena.as_int_const(value), Some(expected as i64));
+        }
+
+        let (name, converted) = &outputs.outputs[1];
+        assert_eq!(name, "converted");
+        assert_eq!(converted.len(), 64);
+        for (lane, &(index, value)) in converted.iter().enumerate() {
+            assert_eq!(index, group * 64 + lane as u64);
+            let expected = group * 64 + (lane as u64 ^ 1) + 1;
+            assert_eq!(outputs.arena.as_f64(value), Some(expected as f64));
+        }
+    }
+}
+
+// Test that differing VCC masks may take the same branch and still select different lanes.
+#[test]
+fn grid_branches_compare_taken_paths_not_individual_vcc_bits() {
+    let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), "grid_vcc_branch").unwrap();
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (2, 1, 1),
+    };
+    let out = array_of("out", 0x10000, 128, ArrayKind::Output(U32));
+    let grid = analyze_grid(&kernel, &launch, &out.base.to_le_bytes(), &[out]).unwrap();
+    assert_eq!(grid.terminal, Terminal::Completed);
+    assert_eq!(grid.workgroups.len(), 2);
+    assert!(grid.conflicts.is_empty());
+    for (id, outputs) in &grid.workgroups {
+        let expected: Vec<_> = (0..64)
+            .map(|lane| {
+                (
+                    u64::from(id.0) * 64 + lane,
+                    Some(if lane == u64::from(id.0) { 17 } else { 0 }),
+                )
+            })
+            .collect();
+        assert_eq!(output_words(outputs), expected, "{id:?}");
+    }
+}
+
+// Test that individually valid workgroups cannot share one LDS graph when their addresses differ.
+#[test]
+fn grid_runs_reject_different_lds_addresses() {
+    let kernel = parse_kernel(
+        include_str!("fixtures/workgroup_ids.s"),
+        "grid_lds_addresses",
+    )
+    .unwrap();
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (2, 1, 1),
+    };
+    let out = array_of("out", 0x10000, 128, ArrayKind::Output(U32));
+    let arrays = std::slice::from_ref(&out);
+    let kernarg = out.base.to_le_bytes();
+    for group in 0..2 {
+        let selected = WorkgroupLaunch {
+            workgroup_id: (group, 0, 0),
+            ..launch
+        };
+        let alone = analyze(&kernel, &selected, &kernarg, arrays).unwrap();
+        assert_eq!(alone.terminal, Terminal::Completed);
+    }
+    let grid = analyze_grid(&kernel, &launch, &kernarg, arrays).unwrap();
+    assert!(matches!(
+        grid.terminal,
+        Terminal::Aborted {
+            error: EvalError::DependsOnWorkgroup,
+            ..
+        }
+    ));
+    assert!(grid.workgroups.is_empty());
+}
+
+// Test that a later workgroup's NaN source is rejected before multiplication by zero can fold.
+#[test]
+fn grid_runs_do_not_hide_nan_sources_in_later_workgroups() {
+    let kernel = parse_kernel(include_str!("fixtures/workgroup_ids.s"), "grid_lds_nan").unwrap();
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (2, 1, 1),
+    };
+    let out = array_of("out", 0x10000, 128, ArrayKind::Output(F32));
+    let arrays = std::slice::from_ref(&out);
+    let kernarg = out.base.to_le_bytes();
+    let first = analyze(&kernel, &launch, &kernarg, arrays).unwrap();
+    assert_eq!(first.terminal, Terminal::Completed);
+    let second = analyze(
+        &kernel,
+        &WorkgroupLaunch {
+            workgroup_id: (1, 0, 0),
+            ..launch
+        },
+        &kernarg,
+        arrays,
+    )
+    .unwrap();
+    assert!(matches!(
+        second.terminal,
+        Terminal::Aborted {
+            error: EvalError::InvalidFloatVgpr { .. },
+            ..
+        }
+    ));
+    let grid = analyze_grid(&kernel, &launch, &kernarg, arrays).unwrap();
+    assert!(matches!(
+        grid.terminal,
+        Terminal::Aborted {
+            error: EvalError::InvalidFloatVgpr { .. },
+            ..
+        }
+    ));
+    assert!(grid.workgroups.is_empty());
 }
 
 #[test]

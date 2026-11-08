@@ -1,4 +1,5 @@
-//! The analysis stage: one execution of a selected workgroup of one kernel, and how it ended.
+//! The analysis stage: one execution of a selected workgroup of one kernel, or of every
+//! workgroup of its launch grid at once, and how it ended.
 
 use std::fmt;
 
@@ -8,7 +9,10 @@ use volta_graph::{
     ThreadUnit,
 };
 
-use crate::eval::{ArrayDef, EvalError, Interpreter, Terminal, WorkgroupLaunch};
+use crate::eval::{
+    ArrayDef, EvalError, Interpreter, Terminal, WorkgroupLaunch, workgroup_coordinates,
+    workgroup_outputs,
+};
 use crate::frontend::ast::Kernel;
 use crate::ir::LoweredKernel;
 use crate::lower::{LowerError, lower_kernel};
@@ -78,7 +82,7 @@ pub fn analyze(
 ) -> Result<AnalysisResult, AnalysisError> {
     let lowered = lower_kernel(kernel)?;
     let provenance = provenance(kernel, &lowered, launch);
-    let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays, provenance)?;
+    let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays, provenance, false)?;
     let terminal = interp.run(&lowered);
     let (graph, outputs) = interp.finish(graph_terminal(&terminal));
     let (symbolic_outputs, aborted_arena) = match terminal {
@@ -90,6 +94,86 @@ pub fn analyze(
         symbolic_outputs,
         graph,
         aborted_arena,
+    })
+}
+
+/// A run of the launch grid with separate values for each workgroup. Instructions reading
+/// differing values run once per workgroup. Branch decisions and LDS addresses must agree
+/// so one control flow and event graph describe them all; otherwise the run aborts.
+#[derive(Debug)]
+pub struct GridAnalysis {
+    pub terminal: Terminal,
+    /// The run's event graph, which every workgroup shares.
+    pub graph: EventGraph,
+    /// Each workgroup's coordinates and outputs, numbering X fastest; empty if the run aborted.
+    pub workgroups: Vec<((u32, u32, u32), SymbolicOutputs)>,
+    /// Every output element a later workgroup stores after an earlier one stored it.
+    pub conflicts: Vec<StoreConflict>,
+    /// The run's arena, which holds the graph's stored values.
+    arena: ExprArena,
+}
+
+impl GridAnalysis {
+    /// The arena holding the graph's stored values.
+    pub fn arena(&self) -> &ExprArena {
+        &self.arena
+    }
+}
+
+/// An output element that two workgroups both store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreConflict {
+    pub array: String,
+    pub index: u64,
+    /// The first workgroup to store the element and a later one that stores it too.
+    pub workgroups: [(u32, u32, u32); 2],
+}
+
+/// Lower `kernel` and run every workgroup of `launch.grid_size` at once, with `kernarg` at
+/// `launch.kernarg_address` and `arrays` in global memory. `launch.workgroup_id` is ignored:
+/// workgroup (0, 0, 0) represents the grid in the launch registers and the graph.
+pub fn analyze_grid(
+    kernel: &Kernel,
+    launch: &WorkgroupLaunch,
+    kernarg: &[u8],
+    arrays: &[ArrayDef],
+) -> Result<GridAnalysis, AnalysisError> {
+    let launch = &WorkgroupLaunch {
+        workgroup_id: (0, 0, 0),
+        ..*launch
+    };
+    let lowered = lower_kernel(kernel)?;
+    let provenance = provenance(kernel, &lowered, launch);
+    let mut interp = Interpreter::new(&lowered, launch, kernarg, arrays, provenance, true)?;
+    let terminal = interp.run(&lowered);
+    let run = interp.finish_grid(graph_terminal(&terminal));
+
+    // Give each workgroup an arena containing its output expressions after execution completes.
+    let mut workgroups = Vec::new();
+    let mut conflicts = Vec::new();
+    if terminal == Terminal::Completed {
+        for (index, outputs) in run.outputs.iter().enumerate() {
+            let outputs = workgroup_outputs(&run.arena, outputs);
+            workgroups.push((workgroup_coordinates(launch.grid_size, index), outputs));
+        }
+        conflicts = run
+            .conflicts
+            .iter()
+            .map(|conflict| StoreConflict {
+                array: conflict.array.clone(),
+                index: conflict.index,
+                workgroups: conflict
+                    .workgroups
+                    .map(|index| workgroup_coordinates(launch.grid_size, index)),
+            })
+            .collect();
+    }
+    Ok(GridAnalysis {
+        terminal,
+        graph: run.graph,
+        workgroups,
+        conflicts,
+        arena: run.arena,
     })
 }
 
