@@ -187,8 +187,9 @@ impl Interpreter<'_> {
                     .iter()
                     .any(|instruction| matches!(instruction, LgkmInFlight::Scalar { .. }));
                 // Scalar loads return out of order, so only lgkmcnt(0) says which are ready; a
-                // partial wait with one in flight is not modeled (issue #19).
-                if lgkmcnt.is_some_and(|n| n != 0) && scalar_load_in_flight {
+                // partial wait with one in flight is not modeled (issue #19). The all-ones
+                // field does not wait at all and leaves scalar destinations pending.
+                if lgkmcnt.is_some_and(|n| n != 0 && n != 15) && scalar_load_in_flight {
                     return Err(EvalError::UnsupportedInstruction);
                 }
                 if let Some(outstanding) = vmcnt {
