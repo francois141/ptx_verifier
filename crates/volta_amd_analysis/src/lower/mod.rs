@@ -99,6 +99,19 @@ fn lower_instruction(
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
         }),
+        // NOT shares XOR's concrete-word evaluation and nonzero-result SCC rule.
+        ("s_not_b32", [dst, src]) => Ok(ScalarOp32 {
+            op: ir::ScalarOp32::XorB32,
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src0: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
+            src1: ScalarSrc::Const(u32::MAX),
+        }),
+        ("s_not_b64", [dst, src]) => Ok(ScalarOp64 {
+            op: ir::ScalarOp64::XorB64,
+            dst: scalar_dst64(dst)?,
+            src0: scalar_source64(src)?,
+            src1: ScalarSrc64::Const(u64::MAX),
+        }),
         ("s_add_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddU32, operands),
         ("s_addc_u32", operands) => lower_scalar_op32(ir::ScalarOp32::AddcU32, operands),
         ("s_add_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AddI32, operands),
@@ -293,6 +306,14 @@ fn lower_instruction(
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
             src: src0_words(src)?,
         }),
+        ("v_not_b32_e32", operands) => lower_unary_op(ir::UnaryOp::Not32, operands),
+        ("v_not_b32_e64", [dst, src]) => Ok(UnaryOp {
+            op: ir::UnaryOp::Not32,
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: src0_from_vop3(
+                vop3_src(src).ok_or("expected a VGPR, an SGPR or an inline constant source")?,
+            ),
+        }),
         ("v_bfrev_b32_e32", operands) => lower_unary_op(ir::UnaryOp::BfRev32, operands),
         ("v_cvt_f32_u32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32U32, operands),
         ("v_cvt_u32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtU32F32, operands),
@@ -378,10 +399,9 @@ fn lower_instruction(
                 src1: vgpr(src1).ok_or("expected one VGPR second source")?,
             })
         }
-        // gfx950 also accepts an SGPR or an inline constant source; only a VGPR is supported.
         ("v_accvgpr_write_b32", [dst, src]) => Ok(AccvgprWrite32 {
             dst: agpr(dst).ok_or("expected one destination AGPR")?,
-            src: vgpr(src).ok_or("expected one source VGPR")?,
+            src: vop3_src(src).ok_or("expected a VGPR, an SGPR or an inline constant source")?,
         }),
         ("v_accvgpr_read_b32", [dst, src]) => Ok(AccvgprRead32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
@@ -571,6 +591,8 @@ fn lower_instruction(
             | "s_movk_i32"
             | "s_mov_b64"
             | "s_abs_i32"
+            | "s_not_b32"
+            | "s_not_b64"
             | "s_branch"
             | "s_cbranch_scc0"
             | "s_cbranch_scc1"
@@ -582,6 +604,7 @@ fn lower_instruction(
             | "v_readfirstlane_b32"
             | "v_bitop3_b32"
             | "v_mov_b64_e32"
+            | "v_not_b32_e64"
             | "v_cndmask_b32_e64"
             | "v_mad_u64_u32"
             | "buffer_load_dword"

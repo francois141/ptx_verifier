@@ -233,7 +233,8 @@ crate-level docs in `lib.rs` are the contract.
 - `Terminal`: `Completed`, `Stuck` (each blocked thread's wait condition and
   state) or `Aborted` (partial graph; its `AbortCause` is `Unsupported` for
   behavior the producer does not model, else `Error`). `Provenance`: launch, targets,
-  `Assumption`s, per-instruction kind and source span.
+  `Assumption`s, per-instruction kind and source span. `SingleWorkgroupAnalyzed` records
+  the selected AMD workgroup's coordinates without claiming cross-workgroup verification.
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
@@ -411,8 +412,9 @@ targets, instructions, or operand forms produce `LowerError`.
 The target directive requires exactly one quoted string, rejecting unbalanced
 or extra quotes and extra string arguments.
 `WaveRegisters` stores one wave's register values as `volta_expr` expressions.
-The internal `initialize_wave` maps a supported descriptor and `WaveLaunch` inputs
-to initial registers. It accepts full waves in 1D, 2D, and 3D workgroups, matching
+The internal `initialize_waves` maps a supported descriptor and `WorkgroupLaunch` inputs
+to initial registers, including the selected workgroup's concrete X/Y/Z IDs. Grid dimensions
+must be nonzero and contain that ID. It accepts full waves in 1D, 2D, and 3D workgroups, matching
 [AMD's X/Y/Z launch interface](https://releases.llvm.org/21.1.0/docs/AMDGPUUsage.html#initial-kernel-execution-state),
 and rejects unsupported launch layouts. `execute_scalar` handles wave-wide loads from
 kernel arguments or global inputs, up to sixteen words, for XNACK-disabled execution.
@@ -436,6 +438,7 @@ Negated select sources use floating-point semantics, so they are not ambiguous.
 F32 e64 comparisons, e64 selects, f32 FMA and three-source f32 operations accept absolute-value
 and negation input modifiers on any source; these operate on mathematical expressions.
 E64 comparisons write VCC or an SGPR pair.
+Scalar and vector NOT require concrete words. Accumulator writes accept VGPRs, SGPRs and inline constants.
 Packed f32 add, multiply and FMA share component selection and negation handling;
 each register holds one real expression, and either selector reads the same inline constant.
 An f64 register pair holds one real expression or two concrete words that encode one. Reading
@@ -868,7 +871,11 @@ anything else is UNKNOWN. Tests:
 `amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
 and softmax against their formulas, accounting for CK's column-major B and softmax at
 several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
-or change the softmax row width), and `trainium_equivalence_tests.rs` (the NKI `matmul`, 
+or change the softmax row width). CK attention checks two batches and two heads on grid
+(2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
+stride. Workgroups run separately; cross-workgroup races are not checked.
+CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
+`trainium_equivalence_tests.rs` checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
@@ -900,9 +907,10 @@ refuted against a decay one step too long, a scan without its recurrence and, fo
 its scan restarted each tile; the tensor_indirection tutorial's kernel, its offsets a
 call's `contents`, against `tensor_indirection.spec` (an index array) at its driver's
 128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
-against one moved offset and the ungathered `data[:, i]`).
-These check functional equivalence only. `just amd` and `just trainium` run them 
-alongside the analysis crate's snapshot tests.
+against one moved offset and the ungathered `data[:, i]`.
+The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
+checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
+`just trainium` run them alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
 
@@ -960,6 +968,9 @@ thread after it; `n` counts the test's runs).
 ## Crate: volta_equivalence
 
 **Path**: `crates/volta_equivalence/`
+
+`tests/specs/matmul_transposed.spec` stores B as `[N, K]` for `B[j, k]`, including rectangular operands.
+`attention_batch_head.spec` selects one batch/head from global BHSD inputs and returns its local output slice.
 
 Everything after VC extraction: takes two `SymbolicOutputs` and decides them
 element by element. Depends only on `volta_expr`, so it checks expressions

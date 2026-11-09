@@ -1,10 +1,12 @@
 //! Helpers shared by the end-to-end test crates: PTX loading, parsing, launch
 //! configs, running a kernel through `volta_pipeline::verify_kernel` (the
-//! analysis stage, then the graph branch), and output rendering. With
-//! `VOLTA_VIZ_DIR` set (`just viz`), every kernel run is also recorded for the
+//! analysis stage, then the graph branch), and output rendering; [`amd`] does the same for AMD
+//! kernels. With `VOLTA_VIZ_DIR` set (`just viz`), every kernel run is also recorded for the
 //! graph viewer.
 
 #![allow(dead_code)]
+
+pub mod amd;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -31,6 +33,7 @@ use volta_viz::{Outcome, Run, RunId, write_run};
 
 /// The PTX test kernel at `tests/ptx/<name>.ptx` as source text, or as a
 /// parsed module with `ptx!(parse "<name>")`.
+#[allow(unused_macros)]
 macro_rules! ptx {
     (parse $name:literal) => {
         parse_named($name, &ptx!($name))
@@ -85,10 +88,15 @@ impl Deref for Ptx {
     }
 }
 
-/// With `VOLTA_VIZ_DIR` set, write the run into that store for `volta viz`, keyed by the test
-/// binary, the test (libtest names each test's thread after it) and the run's position in
-/// the test: a fresh thread per test restarts the count.
 fn record(ptx: &Ptx, outcome: Outcome) {
+    let file = ptx.file.map(|name| format!("{name}.ptx"));
+    record_run(file.as_deref(), &ptx.source, outcome);
+}
+
+/// With `VOLTA_VIZ_DIR` set, write the run of `source` (read from `file`) into that store for
+/// `volta viz`, keyed by the test binary, the test (libtest names each test's thread after it)
+/// and the run's position in the test: a fresh thread per test restarts the count.
+fn record_run(file: Option<&str>, source: &str, outcome: Outcome) {
     let Some(dir) = std::env::var_os("VOLTA_VIZ_DIR") else {
         return;
     };
@@ -107,11 +115,10 @@ fn record(ptx: &Ptx, outcome: Outcome) {
             .to_string(),
         ordinal: NonZeroU32::new(ordinal).expect("the count starts at 1"),
     };
-    let file = ptx.file.map(|name| format!("{name}.ptx"));
     let run = Run {
         id: &id,
-        ptx_file: file.as_deref(),
-        source: &ptx.source,
+        ptx_file: file,
+        source,
         outcome,
     };
     let dir = Path::new(&dir);

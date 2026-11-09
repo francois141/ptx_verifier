@@ -300,7 +300,8 @@ fn completion_implies_proxy_fence(kind: AsyncOpKind) -> bool {
         | AsyncOpKind::Tcgen05Mma
         | AsyncOpKind::Tcgen05Ld
         | AsyncOpKind::Tcgen05St
-        | AsyncOpKind::WgmmaMma { .. } => false,
+        | AsyncOpKind::WgmmaMma { .. }
+        | AsyncOpKind::Ds => false,
     }
 }
 

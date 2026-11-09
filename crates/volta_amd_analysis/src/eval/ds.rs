@@ -2,52 +2,41 @@
 //! `lgkmcnt` queue, which `Interpreter::wait_lgkm` completes. Their data moves at issue; a read's
 //! or lane exchange's destinations stay pending until it completes.
 
-use crate::ir::{LoweredInstr, Vgpr};
+use crate::ir::{InstrId, LoweredInstr, Vgpr};
 
 use super::wave::{LgkmInFlight, LoadCounter, WaveId};
 use super::{EvalError, Interpreter};
 
 impl Interpreter<'_> {
-    /// Issue the DS instruction for every lane of `wave`, in flight until a wait completes it.
+    /// Issue the DS instruction at `pc` for every lane of `wave`, in flight until a wait
+    /// completes it. Its words enter the event graph before any lane runs, so an access the run
+    /// rejects still appears in the graph.
     pub(super) fn execute_ds(
         &mut self,
         wave: WaveId,
+        pc: InstrId,
         instruction: &LoweredInstr,
     ) -> Result<(), EvalError> {
-        let dst = match *instruction {
-            LoweredInstr::DsBPermute {
-                dst,
-                addr,
-                src,
-                offset,
-            } => {
-                self.execute_ds_bpermute(wave, dst, addr, src, offset)?;
-                vec![dst]
-            }
-            LoweredInstr::DsRead { accesses, .. } => {
-                for lane in 0..64 {
-                    self.execute_lane(wave, lane, instruction)?;
-                }
-                let mut dst: Vec<Vgpr> = Vec::new();
-                for (_, destination) in accesses.accesses() {
-                    dst.extend_from_slice(destination.regs());
-                }
-                dst
-            }
-            LoweredInstr::DsWrite { addr, accesses } => {
-                self.ds_write(wave, addr, accesses)?;
-                Vec::new()
-            }
+        let op = self.record_ds_issue(wave, pc, instruction)?;
+        self.execute_each_workgroup(wave, instruction)?;
+        let dst = match instruction {
+            LoweredInstr::DsBPermute { dst, .. } => vec![*dst],
+            LoweredInstr::DsRead { accesses, .. } => accesses
+                .accesses()
+                .into_iter()
+                .flat_map(|(_, destination)| destination.regs().to_vec())
+                .collect(),
+            LoweredInstr::DsWrite { .. } => Vec::new(),
             _ => unreachable!("only DS instructions are issued to the LDS"),
         };
         self.waves[wave]
             .lgkm_in_flight
-            .push_back(LgkmInFlight::Ds { dst });
+            .push_back(LgkmInFlight::Ds { op, dst });
         Ok(())
     }
 
     /// Gather register values across the wave, pending until an LGKM wait completes the exchange.
-    fn execute_ds_bpermute(
+    pub(super) fn execute_ds_bpermute(
         &mut self,
         wave: WaveId,
         dst: Vgpr,

@@ -10,6 +10,8 @@ pub struct Kernel {
     pub target: String,
     /// The kernel body in order.
     pub instructions: Vec<Instruction>,
+    /// Each instruction's byte range in the source, without its comment.
+    pub spans: Vec<(usize, usize)>,
     /// Each label of the body and the index of the instruction it precedes.
     pub labels: BTreeMap<String, usize>,
     /// The numeric `.amdhsa_*` settings of the kernel descriptor, keyed without the prefix.

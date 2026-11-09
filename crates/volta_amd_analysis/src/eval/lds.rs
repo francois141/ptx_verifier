@@ -40,20 +40,28 @@ impl fmt::Display for LdsRace {
     }
 }
 
-/// The workgroup's `size` bytes of LDS as 32-bit words keyed by byte address. A write takes
-/// effect at once, so a wave that reads after a barrier observes every write before it.
+/// Each workgroup's `size` bytes of LDS as words keyed by byte address. Transfers preserve
+/// concrete words and symbolic expressions; only the consuming arithmetic interprets them.
+/// Writes take effect at issue, while the event graph checks their ordering.
 #[derive(Debug)]
 pub(super) struct Lds {
     size: u32,
-    words: BTreeMap<u32, ExprId>,
+    words: Vec<BTreeMap<u32, ExprId>>,
+    selected: usize,
 }
 
 impl Lds {
-    pub fn new(size: u32) -> Self {
+    pub fn new(size: u32, workgroups: usize) -> Self {
         Self {
             size,
-            words: BTreeMap::new(),
+            words: vec![BTreeMap::new(); workgroups],
+            selected: 0,
         }
+    }
+
+    /// Select the workgroup whose private LDS a data transfer reads or writes.
+    pub(super) fn select(&mut self, workgroup: usize) {
+        self.selected = workgroup;
     }
 
     /// Check alignment and bounds, then return the byte address of each 32-bit word.
@@ -88,13 +96,12 @@ impl Lds {
         let mut values = Vec::with_capacity(addresses.len());
 
         for word_address in addresses {
-            let value =
-                self.words
-                    .get(&word_address)
-                    .copied()
-                    .ok_or(EvalError::UninitializedLds {
-                        address: word_address,
-                    })?;
+            let value = self.words[self.selected]
+                .get(&word_address)
+                .copied()
+                .ok_or(EvalError::UninitializedLds {
+                    address: word_address,
+                })?;
             values.push(value);
         }
         Ok(values)
@@ -103,7 +110,7 @@ impl Lds {
     pub(super) fn write(&mut self, address: u64, values: &[ExprId]) -> Result<(), EvalError> {
         let addresses = self.word_addresses(address, values.len() as u32)?;
         for (word_address, &value) in addresses.into_iter().zip(values) {
-            self.words.insert(word_address, value);
+            self.words[self.selected].insert(word_address, value);
         }
         Ok(())
     }

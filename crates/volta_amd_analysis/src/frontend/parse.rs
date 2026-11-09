@@ -163,6 +163,7 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         .position(|line| line.strip_suffix(':') == Some(name))
         .ok_or_else(|| format!("kernel {name:?} not found"))?;
     let mut instructions = Vec::new();
+    let mut spans = Vec::new();
     let mut labels = BTreeMap::new();
     for line in &lines[entry + 1..] {
         let (opcode, rest) = word(line);
@@ -206,6 +207,9 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
             opcode: opcode.into(),
             operands,
         });
+        // Each line is a subslice of `source`, so its address gives its offset.
+        let start = line.as_ptr() as usize - source.as_ptr() as usize;
+        spans.push((start, start + line.len()));
     }
 
     // Read launch settings from the kernel's separate descriptor block.
@@ -220,6 +224,7 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
                 name: name.into(),
                 target,
                 instructions,
+                spans,
                 labels,
                 descriptor,
             });

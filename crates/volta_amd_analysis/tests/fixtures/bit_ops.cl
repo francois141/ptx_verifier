@@ -74,4 +74,19 @@ __kernel void bit_ops(__global const unsigned *a, __global const unsigned *b,
     row[49] = qs > r ? qs : r;
     int plo = p > 2 ? p : 2;
     row[50] = plo < 9 ? plo : 9;
+
+    // NOT keeps its full 32-bit result for either encoding and each source form.
+    unsigned inverted, scalar_base = (unsigned)__builtin_amdgcn_readfirstlane(base);
+    __asm__ volatile("v_not_b32_e32 %0, %1" : "=v"(inverted) : "v"(x));
+    row[51] = inverted;
+    __asm__ volatile("v_not_b32_e64 %0, %1" : "=v"(inverted) : "v"(x));
+    row[52] = inverted;
+    __asm__ volatile("v_not_b32_e32 %0, 0" : "=v"(inverted));
+    row[53] = inverted;
+    __asm__ volatile("v_not_b32_e64 %0, -1" : "=v"(inverted));
+    row[54] = inverted;
+    __asm__ volatile("v_not_b32_e64 %0, %1" : "=v"(inverted) : "s"(scalar_base));
+    row[55] = inverted;
+    __asm__ volatile("v_not_b32_e32 %0, 0x87654321" : "=v"(inverted));
+    row[56] = inverted;
 }

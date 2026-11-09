@@ -1,8 +1,9 @@
-//! AMD gfx950 assembly: `volta_amd_analysis` runs workgroup 0 of the kernel. Its interpreter
-//! records no memory events, so a run carries no race evidence.
+//! AMD gfx950 assembly: `volta_amd_analysis` runs workgroup 0 of the kernel, then the graph
+//! branch's checks run over the event graph it records (its LDS accesses, waits and barriers).
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{ArrayDef, ArrayKind, OutputType, Terminal, WorkgroupLaunch, analyze};
+use volta_graph_check::check_graph;
 use volta_ptx_analysis::{AnalysisConfig, ParamValue};
 
 use super::{Frontend, FrontendError, GraphEvidence, KernelRun, only_kernel};
@@ -34,6 +35,7 @@ impl Frontend for AmdFrontend {
         let result = analyze(&parsed, &workgroup, &kernarg, &arrays)
             .map_err(|e| FrontendError::Analysis(e.to_string()))?;
 
+        let report = check_graph(&result.graph);
         let outputs = result
             .symbolic_outputs
             .ok_or_else(|| match &result.terminal {
@@ -45,7 +47,10 @@ impl Frontend for AmdFrontend {
 
         Ok(KernelRun {
             outputs,
-            graph: GraphEvidence::NotRecorded,
+            graph: GraphEvidence::Checked {
+                graph: Box::new(result.graph),
+                report: Box::new(report),
+            },
         })
     }
 }
@@ -95,6 +100,8 @@ fn workgroup_launch(
     let workgroup = WorkgroupLaunch {
         kernarg_address: KERNARG_ADDRESS,
         workgroup_size: launch.block_dim,
+        workgroup_id: (0, 0, 0),
+        grid_size: launch.grid_dim,
     };
     Ok((workgroup, kernarg, arrays))
 }

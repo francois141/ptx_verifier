@@ -44,7 +44,14 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   and softmax against their formulas, including negative tests. It reuses
   the AMD assembly fixtures and the equivalence crate's specifications, accounting
   for CK's column-major B. These tests check functional equivalence under Volta's
-  arithmetic model; they do not check AMD races. `just amd` runs them.
+  arithmetic model; they do not check AMD races. CK attention checks all 16,384 outputs
+  across two batches and two heads, executing workgroups separately and checking each
+  output footprint; a wrong Q head stride must be refuted. `just amd` runs them.
+- `amd_graph_tests.rs`: LDS reuse and pending-read races in workgroup 0. CK GEMM compares
+  one and three K tiles over the same LDS storage, and its main loop also verifies at
+  K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
+  LDS. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
+  swapped inputs.
 - `trainium_equivalence_tests.rs`: the NKI `matmul`, `gemm_relu` and `softmax`
   fixtures against their `.spec` files beside them in the Trainium analysis crate,
   with `gemm_relu` against the unclamped product and `softmax` against the softmax

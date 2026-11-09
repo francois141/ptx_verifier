@@ -1,91 +1,225 @@
-//! AMD kernels' event graphs through the graph branch: one graph thread per wave, and each
-//! `s_barrier` a generation the waves gather into and are scattered from.
+//! AMD kernels' event graphs through the graph branch. Each wave is a graph thread; each DS
+//! instruction is an async operation that branches off its wave at issue and joins it at the
+//! `s_waitcnt lgkmcnt` that completes it; each `s_barrier` gathers the waves into a generation
+//! and scatters them from it. Race-free kernels must conclude `Verified`, and racy ones must fail
+//! the memory-conflict check with the expected pair of waves.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::collections::BTreeSet;
 
 use volta_amd_analysis::ArrayKind::{Input, Output};
 use volta_amd_analysis::OutputType::F32;
-use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{ArrayDef, WorkgroupLaunch, analyze};
-use volta_expr::SymbolicOutputs;
-use volta_graph::{BarrierArrivals, ContributionKind, EventId, GenerationKind, ThreadIx};
-use volta_graph_check::{GraphConclusion, check_graph};
+use volta_amd_analysis::{ArrayDef, ArrayKind};
+use volta_graph::AccessMode::{Read, Write};
+use volta_graph::{AsyncOpKind, EventKind, GenerationKind, Space};
+use volta_graph_check::domain::ConflictKind;
+use volta_graph_check::{GraphConclusion, PropertyResult};
 
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../volta_amd_analysis/tests/fixtures")
-        .join(name)
-}
+use common::Side;
+use common::amd::{
+    AmdChecked, CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE, FMHA_Q_BASE,
+    GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, amd_fixture, check_amd, ck_fmha_kernarg,
+    ck_gemm_kernarg, fmha_arrays, gemm_arrays,
+};
 
-/// Compare `outputs`, one `array[index] = expr` line per element, with `path`; `VOLTA_BLESS=1`
-/// rewrites it.
-fn assert_out_file(path: &Path, outputs: &SymbolicOutputs) {
-    let lines = outputs.outputs.iter().flat_map(|(array, elements)| {
-        elements.iter().map(move |&(index, value)| {
-            format!("{array}[{index}] = {}\n", outputs.arena.display_expr(value))
-        })
-    });
-    let actual: String = lines.collect();
-    if std::env::var_os("VOLTA_BLESS").is_some_and(|v| v == "1") {
-        return std::fs::write(path, actual).unwrap();
-    }
-    let expected = std::fs::read_to_string(path).expect("no .out file (VOLTA_BLESS=1 writes it)");
-    assert_eq!(
-        actual, expected,
-        "outputs differ (VOLTA_BLESS=1 accepts them)"
+/// Two waves over 128-word `input` and `output` arrays, the kernel's two pointer arguments.
+fn run_lds_sync(kernel: &str) -> AmdChecked {
+    let arrays = [("input", 0x10000, Input), ("output", 0x20000, Output(F32))].map(
+        |(name, base, kind): (&str, u64, ArrayKind)| ArrayDef {
+            name: name.into(),
+            base,
+            len: 128,
+            kind,
+        },
     );
-}
-
-// Test that `exchange` writes lds_sync.out, that its two waves gather into one s_barrier generation
-// and are scattered from it, and that the graph checks find no race (vacuously for now: no memory
-// access is recorded yet).
-#[test]
-fn the_waves_gather_into_a_barrier_generation_and_are_scattered_from_it() {
-    let source = std::fs::read_to_string(fixture("lds_sync.s")).unwrap();
-    let kernel = parse_kernel(&source, "exchange").unwrap();
-    let arrays =
-        [("input", 0x10000, Input), ("output", 0x20000, Output(F32))].map(|(name, base, kind)| {
-            ArrayDef {
-                name: name.into(),
-                base,
-                len: 128,
-                kind,
-            }
-        });
     let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
-    let launch = WorkgroupLaunch {
-        kernarg_address: 0x1000,
-        workgroup_size: (128, 1, 1),
-    };
-    let result = analyze(&kernel, &launch, &kernarg, &arrays).unwrap();
-    assert_out_file(
-        &fixture("lds_sync.out"),
-        result.symbolic_outputs.as_ref().unwrap(),
-    );
+    check_amd(
+        "lds_sync.s",
+        amd_fixture!("lds_sync"),
+        kernel,
+        128,
+        &kernarg,
+        &arrays,
+    )
+}
 
-    let graph = &result.graph;
-    let generations: Vec<_> = graph.generations().values().collect();
-    let [barrier] = generations[..] else {
-        panic!("expected one barrier generation, got {generations:?}");
+/// A wave's DS access.
+fn ds(wave: u32, mode: volta_graph::AccessMode) -> Side {
+    Side::effect(wave, mode, AsyncOpKind::Ds)
+}
+
+// Test that LDS exchanges verify when waits complete the accesses before each barrier.
+#[test]
+fn lds_accesses_ordered_by_waits_and_barriers_are_verified() {
+    for kernel in ["exchange", "two_rounds"] {
+        let run = run_lds_sync(kernel);
+        assert_eq!(
+            run.report.conclusion(),
+            GraphConclusion::Verified,
+            "{kernel}"
+        );
+        assert!(run.analysis.symbolic_outputs.is_some(), "{kernel}");
+    }
+}
+
+// Test that a read of another wave's word races its write when no barrier orders them, when the
+// barrier comes before the s_waitcnt that completes the write, and when a wave overwrites a word
+// before the barrier that would keep the other wave's read ahead of it.
+#[test]
+fn lds_accesses_no_wait_and_barrier_order_race() {
+    for (kernel, earlier, later) in [
+        ("no_barrier", ds(0, Write), ds(1, Read)),
+        ("barrier_without_wait", ds(1, Write), ds(0, Read)),
+        ("overwrite_without_barrier", ds(0, Write), ds(1, Read)),
+    ] {
+        let run = run_lds_sync(kernel);
+        let graph = &run.analysis.graph;
+        let pairs = run.report.memory_conflict.violations();
+        assert!(
+            pairs.iter().any(|c| c.kind == ConflictKind::WriteRead
+                && c.location.space == Space::Shared
+                && common::side(graph, c.earlier) == earlier
+                && common::side(graph, c.later) == later),
+            "{kernel}: expected an LDS write of {earlier:?} racing a read of {later:?}, got \
+             {:?}",
+            run.report.memory_conflict
+        );
+        assert!(
+            pairs
+                .iter()
+                .all(|c| common::side(graph, c.earlier).thread
+                    != common::side(graph, c.later).thread),
+            "{kernel}: a wave's DS instructions run in issue order, got {pairs:?}"
+        );
+        assert!(
+            matches!(run.report.conclusion(), GraphConclusion::Rejected { .. }),
+            "{kernel}"
+        );
+    }
+}
+
+/// Run either CK GEMM specialization with the same array layout and kernel argument builder.
+fn run_ck_gemm(kernel: &str, dims: [i32; 3]) -> AmdChecked {
+    let arrays = gemm_arrays(dims.map(|d| d as u64));
+    check_amd(
+        "ck_gemm.s",
+        amd_fixture!("ck_gemm"),
+        kernel,
+        128,
+        &ck_gemm_kernarg(GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, dims),
+        &arrays,
+    )
+}
+
+// Test that three K tiles reuse the same LDS storage as one tile, with more accesses and
+// four extra barrier generations, and that both executions verify.
+#[test]
+fn ck_gemm_main_loop_lds_accesses_are_ordered() {
+    let no_loop = run_ck_gemm(CK_GEMM_KERNEL, [40, 40, 64]);
+    let main_loop = run_ck_gemm(CK_GEMM_MAIN_LOOP_KERNEL, [40, 40, 192]);
+    for run in [&no_loop, &main_loop] {
+        assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
+    }
+
+    // Repeated tiles add LDS accesses while still writing the same 32 KiB of LDS.
+    let (PropertyResult::Pass(no_loop_memory), PropertyResult::Pass(main_loop_memory)) = (
+        &no_loop.report.memory_conflict,
+        &main_loop.report.memory_conflict,
+    ) else {
+        panic!("both CK GEMM memory-conflict checks must pass");
     };
-    let arrivals = BarrierArrivals::FullCta;
-    assert_eq!(barrier.kind, GenerationKind::Barrier { arrivals });
-    assert!(
-        barrier
-            .contributions
-            .iter()
-            .all(|c| c.kind == ContributionKind::Blocking)
+    assert!(no_loop_memory.effects > 0);
+    assert_eq!(no_loop_memory.written_bytes, 32 * 1024);
+    assert_eq!(main_loop_memory.written_bytes, no_loop_memory.written_bytes);
+    assert!(main_loop_memory.effects > no_loop_memory.effects);
+
+    // Each of the two main-loop iterations adds two workgroup barriers.
+    let barrier_count = |run: &AmdChecked| {
+        run.analysis
+            .graph
+            .generations()
+            .values()
+            .filter(|generation| matches!(generation.kind, GenerationKind::Barrier { .. }))
+            .count()
+    };
+    assert_eq!(barrier_count(&main_loop), barrier_count(&no_loop) + 4);
+}
+
+// Test that the main loop's LDS accesses also verify with a partial fourth K tile (K = 200)
+// and with 64 x 64 tiles that need no padding.
+#[test]
+fn ck_gemm_main_loop_lds_accesses_verify_at_other_sizes() {
+    for dims in [[40, 40, 200], [64, 64, 256]] {
+        let run = run_ck_gemm(CK_GEMM_MAIN_LOOP_KERNEL, dims);
+        assert_eq!(
+            run.report.conclusion(),
+            GraphConclusion::Verified,
+            "{dims:?}"
+        );
+    }
+}
+
+// Test that CK attention's four waves all write and read LDS, and that the execution verifies,
+// so every conflicting pair of those accesses is ordered by waits and barriers.
+#[test]
+fn ck_fmha_lds_accesses_from_all_waves_are_ordered() {
+    let run = check_amd(
+        "ck_fmha.s",
+        amd_fixture!("ck_fmha"),
+        CK_FMHA_KERNEL,
+        256,
+        &ck_fmha_kernarg(FMHA_Q_BASE, FMHA_K_BASE, 1),
+        &fmha_arrays(4096),
     );
-    let waves = [Some(ThreadIx(0)), Some(ThreadIx(1))];
-    let threads = |events: &[EventId]| {
-        events
+    assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
+
+    // Collect the waves whose DS effects write and read LDS, so a verdict without
+    // cross-wave LDS traffic cannot pass.
+    let graph = &run.analysis.graph;
+    let mut writers = BTreeSet::new();
+    let mut readers = BTreeSet::new();
+    for (event, ev) in graph.events().iter() {
+        if let EventKind::Access(access) = ev.kind
+            && graph.access(access).space == Space::Shared
+        {
+            let side = common::side(graph, event);
+            match side.mode {
+                Write => writers.insert(side.thread),
+                Read => readers.insert(side.thread),
+            };
+        }
+    }
+    let waves = BTreeSet::from([0, 1, 2, 3]);
+    assert_eq!((writers, readers), (waves.clone(), waves));
+}
+
+// Test that a barrier alone leaves an LDS read racing another wave's overwrite, while a
+// wait before that barrier orders the read and makes the same exchange verify.
+#[test]
+fn lds_reads_must_complete_before_the_reuse_barrier() {
+    let waited = run_lds_sync("read_wait_before_reuse_barrier");
+    assert_eq!(waited.report.conclusion(), GraphConclusion::Verified);
+
+    let run = run_lds_sync("read_pending_across_reuse_barrier");
+    assert!(run.analysis.symbolic_outputs.is_some());
+    assert!(matches!(
+        run.report.conclusion(),
+        GraphConclusion::Rejected { .. }
+    ));
+    let graph = &run.analysis.graph;
+    assert!(
+        run.report
+            .memory_conflict
+            .violations()
             .iter()
-            .map(|&e| graph.thread_of(e))
-            .collect::<Vec<_>>()
-    };
-    let gathered: Vec<_> = barrier.contributions.iter().map(|c| c.event).collect();
-    assert_eq!(threads(&gathered), waves);
-    assert_eq!(threads(&barrier.releases), waves);
-    assert_eq!(graph.threads(), 2);
-    assert_eq!(check_graph(graph).conclusion(), GraphConclusion::Verified);
+            .any(|conflict| {
+                conflict.kind == ConflictKind::ReadWrite
+                    && conflict.location.space == Space::Shared
+                    && common::side(graph, conflict.earlier) == ds(0, Read)
+                    && common::side(graph, conflict.later) == ds(1, Write)
+            }),
+        "expected wave 0's pending LDS read to race wave 1's overwrite: {:?}",
+        run.report.memory_conflict
+    );
 }

@@ -15,6 +15,14 @@ __kernel void symbolic_add(__global const unsigned *input, __global unsigned *ou
     output[i] = input[i] + 1;
 }
 
+// A symbolic real has no concrete 32-bit pattern to invert.
+__kernel void symbolic_not(__global const unsigned *input, __global unsigned *output) {
+    unsigned i = __builtin_amdgcn_workitem_id_x();
+    unsigned result;
+    __asm__ volatile("v_not_b32_e32 %0, %1" : "=v"(result) : "v"(input[i]));
+    output[i] = result;
+}
+
 // A comparison of a symbolic input chooses between the bits of two float constants.
 __kernel void symbolic_select(__global const float *input, __global float *output) {
     unsigned i = __builtin_amdgcn_workitem_id_x();

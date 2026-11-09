@@ -16,6 +16,8 @@
 //! * `R` is [`ValidatedGraph`]'s closure. Every edge runs forward in the trace, so of a pair
 //!   only the earlier effect can reach the later one. Equal values stored concurrently are
 //!   still a conflict: the algorithm has no exception for them.
+//! * Two DS instructions of one AMD wave (`AsyncOpKind::Ds`) are never a pair: the LDS
+//!   performs a wave's DS instructions in issue order, an order the graph does not record.
 //! * The pairs are enumerated per byte without visiting every ordered one: each location keeps
 //!   its effects as a forest in which an effect's children were ordered before it when it
 //!   arrived, so an earlier effect reaching the new one vouches for its whole subtree. `B` is
@@ -27,7 +29,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use volta_graph::{AccessMode, AsyncOpId, EventGraph, EventId, EventKind, ExecContext};
+use volta_graph::{
+    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext,
+};
 
 use crate::domain::{ByteLocation, ConflictKind, bytes, in_m, outside_contract, written_bytes};
 use crate::relation::{HbView, ThreadPoint, ValidatedGraph, thread_points};
@@ -157,6 +161,7 @@ pub fn check_memory_conflicts<'g>(
             while let Some(n) = unordered.pop() {
                 let earlier = &nodes[n];
                 if let Some(kind) = ConflictKind::of(earlier.mode, access.mode)
+                    && !same_wave_ds(graph, earlier.event, e)
                     && reported.insert((earlier.event, e))
                 {
                     found.push(MemoryConflict {
@@ -196,4 +201,18 @@ pub fn check_memory_conflicts<'g>(
     let certificate =
         matches!(result, PropertyResult::Pass(_)).then_some(MemoryConflictFree { graph });
     (result, certificate)
+}
+
+// TODO: how is it best to represent this in the codebase? Not clear yet.
+/// Whether `a` and `b` are effects of two DS instructions of one AMD wave, which the LDS
+/// performs in issue order, so they never race.
+fn same_wave_ds(graph: &EventGraph, a: EventId, b: EventId) -> bool {
+    let ds = |e: EventId| match graph.event(e).ctx {
+        ExecContext::Async(op) if graph.async_op(op).kind == AsyncOpKind::Ds => Some(op),
+        _ => None,
+    };
+    match (ds(a), ds(b)) {
+        (Some(x), Some(y)) => x != y && graph.async_op(x).issuer == graph.async_op(y).issuer,
+        _ => false,
+    }
 }

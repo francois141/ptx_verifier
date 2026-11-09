@@ -1,9 +1,10 @@
-//! The execution state of one wave of workgroup 0.
+//! The execution state of one wave of the selected workgroup.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use id_collections::id_type;
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::{ExprArena, ExprId, ExprNode};
+use volta_graph::AsyncOpId;
 
 use crate::ir::{
     Agpr, F64Src, GlobalAddress, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0, Vgpr, Vop3Src,
@@ -12,7 +13,8 @@ use crate::ir::{
 use super::EvalError;
 use super::global::GlobalMemory;
 
-/// A wave of workgroup 0, identified by its index: wave `w` holds work-items `64w` to `64w + 63`.
+/// A wave of the selected workgroup, identified by its index.
+/// Wave `w` holds work-items `64w` to `64w + 63`.
 #[id_type]
 pub struct WaveId(pub u32);
 
@@ -50,16 +52,16 @@ impl WaveState {
 /// An instruction `lgkmcnt` counts, in flight, with the destinations pending until it completes.
 #[derive(Debug)]
 pub(crate) enum LgkmInFlight {
-    /// A DS instruction: a read's or lane exchange's destinations, pending in every lane; none
-    /// for a write.
-    Ds { dst: Vec<Vgpr> },
+    /// A DS instruction, the event graph's `op`: a read's or lane exchange's destinations,
+    /// pending in every lane; none for a write.
+    Ds { op: AsyncOpId, dst: Vec<Vgpr> },
     /// A scalar load.
     Scalar { dst: Vec<Sgpr> },
 }
 
 /// A register's value; a pending value is a load's result, which the wave may neither read nor
 /// overwrite before a wait completes the load.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum RegValue {
     Uninitialized,
     Ready(ExprId),
@@ -68,7 +70,7 @@ enum RegValue {
 
 /// A vector register holds a word, or one half of an f64 stored as a single real across a pair.
 /// Both halves name the real, so a pair is one f64 only while its halves still match.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum VectorValue {
     Word(RegValue),
     F64Low(ExprId),
@@ -78,7 +80,7 @@ enum VectorValue {
 /// ScalarValue distinguishes one stored value from 32 separate lane predicates.
 /// For a single value, the inner RegValue tracks whether it can be read.
 /// Storing each mask half in its own SGPR makes overwrites replace the affected predicates.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 enum ScalarValue {
     /// One value, with RegValue tracking whether it is ready, pending or unwritten.
     /// The wrapper leaves the value unchanged; it may be concrete or symbolic.
@@ -93,7 +95,57 @@ pub(crate) struct WaveRegisters {
     scalar: [ScalarValue; 102], // Scalar registers are shared by the wave.
     scc: Option<bool>,          // The scalar condition code, once an instruction writes it.
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
+    /// Locations whose state differs between the launch's workgroups, one state per workgroup.
+    varying: HashMap<Slot, Box<[Stored]>>,
+    /// The workgroup whose state a read of a varying location returns. Without one, such a
+    /// read is rejected, so the instruction runs again once per workgroup.
+    view: Option<usize>,
+    /// While an execution may still be undone, each location's state before it wrote it.
+    undo: Option<Undo>,
+    /// Whether this execution repeats an instruction for a later workgroup, so the load it
+    /// issues, which every workgroup issues alike, is counted only once.
+    repeat: bool,
 }
+
+/// A register location: a scalar register, SCC, or one lane's VGPR, AGPR or VCC bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Slot {
+    Scalar(u8),
+    Scc,
+    Vector { lane: u8, reg: u8 },
+    Agpr { lane: u8, reg: u8 },
+    Vcc(u8),
+}
+
+/// The stored state of one location.
+#[derive(Debug, Clone, PartialEq)]
+enum Stored {
+    Scalar(ScalarValue),
+    Scc(Option<bool>),
+    Vector(VectorValue),
+    Agpr(Option<ExprId>),
+    Vcc(Option<ExprId>),
+}
+
+/// What undoing an execution restores: each written location's earlier states, and each
+/// lane's count of pending vector loads.
+#[derive(Debug)]
+struct Undo {
+    writes: Vec<EarlierState>,
+    pending_loads: Vec<usize>,
+}
+
+/// A location's stored state and per-workgroup states before an execution wrote it.
+#[derive(Debug)]
+struct EarlierState {
+    slot: Slot,
+    state: Stored,
+    varying: Option<Box<[Stored]>>,
+}
+
+/// The locations one workgroup's execution of an instruction wrote, with their new states.
+#[derive(Debug)]
+pub(super) struct WorkgroupWrites(Vec<(Slot, Stored)>);
 
 /// The counter whose wait completes a vector register load: `vmcnt` for global and buffer
 /// loads, `lgkmcnt` for LDS reads and lane exchanges, which the wave's `lgkm_in_flight` tracks.
@@ -126,7 +178,388 @@ impl Default for WaveRegisters {
             scalar: std::array::from_fn(|_| ScalarValue::Word(RegValue::Uninitialized)),
             scc: None,
             vector: vec![lane; 64],
+            varying: HashMap::new(),
+            view: None,
+            undo: None,
+            repeat: false,
         }
+    }
+}
+
+// Track values that differ between workgroups, and execute an instruction once per workgroup.
+impl WaveRegisters {
+    /// Whether any location holds a different state in different workgroups.
+    pub(super) fn has_varying(&self) -> bool {
+        !self.varying.is_empty()
+    }
+
+    /// Give `reg` one word per workgroup, such as each workgroup's own coordinate.
+    pub(super) fn set_varying_sgpr(&mut self, reg: Sgpr, words: &[ExprId]) {
+        let states: Box<[Stored]> = words
+            .iter()
+            .map(|&word| Stored::Scalar(ScalarValue::Word(RegValue::Ready(word))))
+            .collect();
+        if let Some(first) = states.first() {
+            self.assign(Slot::Scalar(reg.0), first.clone());
+        }
+        self.varying.insert(Slot::Scalar(reg.0), states);
+    }
+
+    /// Start an execution that `undo_execution` can reverse.
+    pub(super) fn begin_undoable(&mut self) {
+        let pending_loads = self
+            .vector
+            .iter()
+            .map(|lane| lane.pending_loads.len())
+            .collect();
+        self.undo = Some(Undo {
+            writes: Vec::new(),
+            pending_loads,
+        });
+    }
+
+    /// Keep everything the execution wrote.
+    pub(super) fn commit(&mut self) {
+        self.undo = None;
+    }
+
+    /// Restore every location the execution wrote and forget the loads it issued.
+    pub(super) fn undo_execution(&mut self) {
+        let Some(undo) = self.undo.take() else {
+            return;
+        };
+        self.restore(undo.writes);
+        for (lane, count) in self.vector.iter_mut().zip(undo.pending_loads) {
+            lane.pending_loads.truncate(count);
+        }
+    }
+
+    /// Execute as `workgroup`: reads of varying locations return that workgroup's states.
+    pub(super) fn begin_workgroup(&mut self, workgroup: usize) {
+        self.begin_undoable();
+        self.view = Some(workgroup);
+        self.repeat = workgroup > 0;
+    }
+
+    /// Collect what the workgroup's execution wrote, then restore the earlier states so the
+    /// next workgroup starts from the same registers. The first workgroup's loads stay issued.
+    pub(super) fn end_workgroup(&mut self) -> WorkgroupWrites {
+        let mut written = Vec::new();
+        if let Some(undo) = &self.undo {
+            let mut seen = HashSet::new();
+            for earlier in &undo.writes {
+                if seen.insert(earlier.slot) {
+                    written.push((earlier.slot, self.base_state(earlier.slot)));
+                }
+            }
+        }
+        if let Some(undo) = self.undo.take() {
+            self.restore(undo.writes);
+        }
+        self.view = None;
+        self.repeat = false;
+        WorkgroupWrites(written)
+    }
+
+    /// Keep one state when every workgroup agrees, otherwise retain each workgroup's state.
+    /// Concrete words and symbolic expressions keep the same representation as in a single run.
+    pub(super) fn combine(&mut self, arena: &ExprArena, results: Vec<WorkgroupWrites>) {
+        let results: Vec<HashMap<Slot, Stored>> = results
+            .into_iter()
+            .map(|writes| writes.0.into_iter().collect())
+            .collect();
+        let mut slots: Vec<Slot> = results
+            .iter()
+            .flat_map(|writes| writes.keys().copied())
+            .collect();
+        slots.sort();
+        slots.dedup();
+        for slot in slots {
+            // A location some workgroup did not write keeps its current state there.
+            let states: Vec<Stored> = results
+                .iter()
+                .map(|writes| {
+                    writes
+                        .get(&slot)
+                        .cloned()
+                        .unwrap_or_else(|| self.base_state(slot))
+                })
+                .collect();
+            let Some(first) = states.first().cloned() else {
+                continue;
+            };
+            self.varying.remove(&slot);
+            if states.iter().all(|state| same_state(arena, state, &first)) {
+                self.assign(slot, first);
+            } else {
+                self.assign(slot, first);
+                self.varying.insert(slot, states.into());
+            }
+        }
+    }
+
+    /// Read varying locations as `workgroup`'s, or reject reads of them for `None`.
+    pub(super) fn set_view(&mut self, workgroup: Option<usize>) {
+        self.view = workgroup;
+    }
+
+    /// A varying location's state in the viewed workgroup, or `None` for a uniform location.
+    fn varying_state(&self, slot: Slot) -> Result<Option<&Stored>, EvalError> {
+        if self.varying.is_empty() {
+            return Ok(None);
+        }
+        match (self.varying.get(&slot), self.view) {
+            (None, _) => Ok(None),
+            (Some(states), Some(workgroup)) => Ok(states.get(workgroup)),
+            (Some(_), None) => Err(EvalError::DependsOnWorkgroup),
+        }
+    }
+
+    /// A location's state for a pending-load check, which every workgroup shares because
+    /// loads are issued alike; a varying location reports the viewed or first workgroup's.
+    fn state_for_write(&self, slot: Slot) -> Option<&Stored> {
+        let states = self.varying.get(&slot)?;
+        states.get(self.view.unwrap_or(0))
+    }
+
+    fn scalar_at(&self, index: usize) -> Result<Option<&ScalarValue>, EvalError> {
+        if let Ok(reg) = u8::try_from(index)
+            && let Some(Stored::Scalar(value)) = self.varying_state(Slot::Scalar(reg))?
+        {
+            return Ok(Some(value));
+        }
+        Ok(self.scalar.get(index))
+    }
+
+    fn scalar_for_write(&self, index: usize) -> Option<&ScalarValue> {
+        if let Ok(reg) = u8::try_from(index)
+            && let Some(Stored::Scalar(value)) = self.state_for_write(Slot::Scalar(reg))
+        {
+            return Some(value);
+        }
+        self.scalar.get(index)
+    }
+
+    fn scc_at(&self) -> Result<Option<bool>, EvalError> {
+        match self.varying_state(Slot::Scc)? {
+            Some(Stored::Scc(scc)) => Ok(*scc),
+            _ => Ok(self.scc),
+        }
+    }
+
+    fn vector_at(&self, lane: usize, reg: Vgpr) -> Result<VectorValue, EvalError> {
+        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+        match self.varying_state(vector_slot(lane, reg))? {
+            Some(Stored::Vector(value)) => Ok(*value),
+            _ => Ok(registers.values[usize::from(reg.0)]),
+        }
+    }
+
+    fn vector_for_write(&self, lane: usize, reg: Vgpr) -> Result<VectorValue, EvalError> {
+        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+        match self.state_for_write(vector_slot(lane, reg)) {
+            Some(Stored::Vector(value)) => Ok(*value),
+            _ => Ok(registers.values[usize::from(reg.0)]),
+        }
+    }
+
+    fn agpr_at(&self, lane: usize, reg: Agpr) -> Result<Option<ExprId>, EvalError> {
+        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+        let slot = Slot::Agpr {
+            lane: lane as u8,
+            reg: reg.0,
+        };
+        match self.varying_state(slot)? {
+            Some(Stored::Agpr(value)) => Ok(*value),
+            _ => Ok(registers.accumulators[usize::from(reg.0)]),
+        }
+    }
+
+    fn vcc_at(&self, lane: usize) -> Result<Option<ExprId>, EvalError> {
+        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
+        match self.varying_state(Slot::Vcc(lane as u8))? {
+            Some(Stored::Vcc(value)) => Ok(*value),
+            _ => Ok(registers.vcc),
+        }
+    }
+
+    /// A location's stored state, ignoring per-workgroup states.
+    fn base_state(&self, slot: Slot) -> Stored {
+        match slot {
+            Slot::Scalar(reg) => Stored::Scalar(
+                self.scalar
+                    .get(usize::from(reg))
+                    .cloned()
+                    .unwrap_or(ScalarValue::Word(RegValue::Uninitialized)),
+            ),
+            Slot::Scc => Stored::Scc(self.scc),
+            Slot::Vector { lane, reg } => Stored::Vector(
+                self.vector
+                    .get(usize::from(lane))
+                    .map_or(VectorValue::Word(RegValue::Uninitialized), |registers| {
+                        registers.values[usize::from(reg)]
+                    }),
+            ),
+            Slot::Agpr { lane, reg } => Stored::Agpr(
+                self.vector
+                    .get(usize::from(lane))
+                    .and_then(|registers| registers.accumulators[usize::from(reg)]),
+            ),
+            Slot::Vcc(lane) => Stored::Vcc(
+                self.vector
+                    .get(usize::from(lane))
+                    .and_then(|registers| registers.vcc),
+            ),
+        }
+    }
+
+    /// Overwrite a location's stored state without recording the write.
+    fn assign(&mut self, slot: Slot, state: Stored) {
+        match (slot, state) {
+            (Slot::Scalar(reg), Stored::Scalar(value)) => {
+                if let Some(stored) = self.scalar.get_mut(usize::from(reg)) {
+                    *stored = value;
+                }
+            }
+            (Slot::Scc, Stored::Scc(value)) => self.scc = value,
+            (Slot::Vector { lane, reg }, Stored::Vector(value)) => {
+                if let Some(registers) = self.vector.get_mut(usize::from(lane)) {
+                    registers.values[usize::from(reg)] = value;
+                }
+            }
+            (Slot::Agpr { lane, reg }, Stored::Agpr(value)) => {
+                if let Some(registers) = self.vector.get_mut(usize::from(lane)) {
+                    registers.accumulators[usize::from(reg)] = value;
+                }
+            }
+            (Slot::Vcc(lane), Stored::Vcc(value)) => {
+                if let Some(registers) = self.vector.get_mut(usize::from(lane)) {
+                    registers.vcc = value;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Restore the states an undo log recorded, latest write first.
+    fn restore(&mut self, writes: Vec<EarlierState>) {
+        for earlier in writes.into_iter().rev() {
+            self.assign(earlier.slot, earlier.state);
+            match earlier.varying {
+                Some(states) => {
+                    self.varying.insert(earlier.slot, states);
+                }
+                None => {
+                    self.varying.remove(&earlier.slot);
+                }
+            }
+        }
+    }
+
+    /// Before writing `slot`: it no longer differs between workgroups, and an execution that
+    /// may be undone remembers its earlier state.
+    fn note_write(&mut self, slot: Slot) {
+        let varying = self.varying.remove(&slot);
+        if self.undo.is_some() {
+            let state = self.base_state(slot);
+            if let Some(undo) = &mut self.undo {
+                undo.writes.push(EarlierState {
+                    slot,
+                    state,
+                    varying,
+                });
+            }
+        }
+    }
+
+    fn set_scalar(&mut self, index: usize, value: ScalarValue) {
+        if let Ok(reg) = u8::try_from(index) {
+            self.note_write(Slot::Scalar(reg));
+            self.assign(Slot::Scalar(reg), Stored::Scalar(value));
+        }
+    }
+
+    /// Make a completed load's destination readable, in every workgroup's state.
+    fn finish_slot(&mut self, slot: Slot) {
+        let finish = |state: &mut Stored| {
+            if let Stored::Scalar(ScalarValue::Word(value))
+            | Stored::Vector(VectorValue::Word(value)) = state
+                && let RegValue::Pending(loaded) = *value
+            {
+                *value = RegValue::Ready(loaded);
+            }
+        };
+        let mut state = self.base_state(slot);
+        finish(&mut state);
+        self.assign(slot, state);
+        if let Some(states) = self.varying.get_mut(&slot) {
+            for state in states.iter_mut() {
+                finish(state);
+            }
+        }
+    }
+}
+
+/// Whether two expressions are the same value: one node, or equal constants, input elements
+/// or parameters, which separate executions create as separate nodes.
+fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+    if a == b {
+        return true;
+    }
+    let (a, b) = (arena.node(a), arena.node(b));
+    let atom = matches!(
+        a,
+        ExprNode::IntConst(_)
+            | ExprNode::RealConst(_)
+            | ExprNode::BoolConst(_)
+            | ExprNode::InputElement { .. }
+            | ExprNode::ParamSymbol(_)
+    );
+    atom && a == b
+}
+
+fn same_reg_value(arena: &ExprArena, a: RegValue, b: RegValue) -> bool {
+    match (a, b) {
+        (RegValue::Uninitialized, RegValue::Uninitialized) => true,
+        (RegValue::Ready(a), RegValue::Ready(b)) | (RegValue::Pending(a), RegValue::Pending(b)) => {
+            same_value(arena, a, b)
+        }
+        _ => false,
+    }
+}
+
+/// Whether two workgroups' states of a location hold the same values.
+fn same_state(arena: &ExprArena, a: &Stored, b: &Stored) -> bool {
+    let same_option = |a: &Option<ExprId>, b: &Option<ExprId>| match (a, b) {
+        (Some(a), Some(b)) => same_value(arena, *a, *b),
+        (None, None) => true,
+        _ => false,
+    };
+    match (a, b) {
+        (Stored::Scalar(ScalarValue::Word(a)), Stored::Scalar(ScalarValue::Word(b)))
+        | (Stored::Vector(VectorValue::Word(a)), Stored::Vector(VectorValue::Word(b))) => {
+            same_reg_value(arena, *a, *b)
+        }
+        (Stored::Scalar(ScalarValue::LaneMask(a)), Stored::Scalar(ScalarValue::LaneMask(b))) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(a, b)| same_value(arena, *a, *b))
+        }
+        (Stored::Scc(a), Stored::Scc(b)) => a == b,
+        (Stored::Vector(VectorValue::F64Low(a)), Stored::Vector(VectorValue::F64Low(b)))
+        | (Stored::Vector(VectorValue::F64High(a)), Stored::Vector(VectorValue::F64High(b))) => {
+            same_value(arena, *a, *b)
+        }
+        (Stored::Agpr(a), Stored::Agpr(b)) | (Stored::Vcc(a), Stored::Vcc(b)) => same_option(a, b),
+        _ => false,
+    }
+}
+
+fn vector_slot(lane: usize, reg: Vgpr) -> Slot {
+    Slot::Vector {
+        lane: lane as u8,
+        reg: reg.0,
     }
 }
 
@@ -135,7 +568,7 @@ impl WaveRegisters {
     /// Reject symbolic lane masks, which must be read as individual lane predicates,
     /// because their comparison results are not yet known.
     pub fn read_sgpr(&self, reg: Sgpr) -> Result<ExprId, EvalError> {
-        match self.scalar.get(usize::from(reg.0)) {
+        match self.scalar_at(usize::from(reg.0))? {
             Some(ScalarValue::Word(RegValue::Ready(value))) => Ok(*value),
             Some(ScalarValue::Word(RegValue::Pending(_))) => Err(EvalError::PendingSgpr(reg)),
             Some(ScalarValue::Word(RegValue::Uninitialized)) => {
@@ -150,13 +583,16 @@ impl WaveRegisters {
     pub fn write_sgpr(&mut self, reg: Sgpr, value: ExprId) -> Result<(), EvalError> {
         self.check_scalar_destination(reg)?;
         // Writing a value replaces any comparison predicates previously held here.
-        self.scalar[usize::from(reg.0)] = ScalarValue::Word(RegValue::Ready(value));
+        self.set_scalar(
+            usize::from(reg.0),
+            ScalarValue::Word(RegValue::Ready(value)),
+        );
         Ok(())
     }
 
     /// Allow a write to replace a value or mask, but not an unfinished load.
     fn check_scalar_destination(&self, reg: Sgpr) -> Result<(), EvalError> {
-        match self.scalar.get(usize::from(reg.0)) {
+        match self.scalar_for_write(usize::from(reg.0)) {
             Some(ScalarValue::Word(RegValue::Pending(_))) => Err(EvalError::PendingSgpr(reg)),
             Some(_) => Ok(()),
             None => Err(EvalError::InvalidSgpr(reg)),
@@ -175,7 +611,10 @@ impl WaveRegisters {
         }
         // Store each load result, but block reads and overwrites until a wait completes it.
         for (reg, value) in dst.into_iter().zip(values) {
-            self.scalar[usize::from(reg.0)] = ScalarValue::Word(RegValue::Pending(value));
+            self.set_scalar(
+                usize::from(reg.0),
+                ScalarValue::Word(RegValue::Pending(value)),
+            );
         }
         Ok(())
     }
@@ -183,10 +622,7 @@ impl WaveRegisters {
     /// A completed scalar load makes `dst` readable; the stored expression stays the same.
     pub(super) fn finish_scalar_load(&mut self, dst: &[Sgpr]) {
         for reg in dst {
-            let slot = &mut self.scalar[usize::from(reg.0)];
-            if let ScalarValue::Word(RegValue::Pending(value)) = *slot {
-                *slot = ScalarValue::Word(RegValue::Ready(value));
-            }
+            self.finish_slot(Slot::Scalar(reg.0));
         }
     }
 
@@ -220,10 +656,11 @@ impl WaveRegisters {
     }
 
     pub fn read_scc(&self) -> Result<bool, EvalError> {
-        self.scc.ok_or(EvalError::UninitializedScc)
+        self.scc_at()?.ok_or(EvalError::UninitializedScc)
     }
 
     pub fn write_scc(&mut self, scc: bool) {
+        self.note_write(Slot::Scc);
         self.scc = Some(scc);
     }
 
@@ -272,10 +709,11 @@ impl WaveRegisters {
             let word = bits.iter().enumerate().try_fold(0u32, |word, (i, &bit)| {
                 arena.as_bool(bit).map(|bit| word | (u32::from(bit) << i))
             });
-            self.scalar[usize::from(reg.0)] = match word {
+            let value = match word {
                 Some(word) => ScalarValue::Word(RegValue::Ready(arena.int(i64::from(word)))),
                 None => ScalarValue::LaneMask(bits.into()),
             };
+            self.set_scalar(usize::from(reg.0), value);
         }
         Ok(())
     }
@@ -292,7 +730,7 @@ impl WaveRegisters {
             LaneMask::Sgprs(pair) => {
                 // Select the SGPR for this lane, then read its predicate or extract its known bit.
                 let reg = *pair.get(lane / 32).ok_or(EvalError::InvalidLane(lane))?;
-                if let Some(ScalarValue::LaneMask(bits)) = self.scalar.get(usize::from(reg.0)) {
+                if let Some(ScalarValue::LaneMask(bits)) = self.scalar_at(usize::from(reg.0))? {
                     return Ok(bits[lane % 32]);
                 }
                 let word = self.read_sgpr_word(arena, reg)?;
@@ -321,8 +759,7 @@ impl WaveRegisters {
     /// Read a lane's vector register, rejecting an invalid lane, an unwritten register, or a
     /// pending load's destination.
     pub fn read_vgpr(&self, lane: usize, reg: Vgpr) -> Result<ExprId, EvalError> {
-        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
-        match registers.values[usize::from(reg.0)] {
+        match self.vector_at(lane, reg)? {
             VectorValue::Word(RegValue::Ready(value)) => Ok(value),
             VectorValue::Word(RegValue::Pending(_)) => Err(EvalError::PendingVgpr { lane, reg }),
             VectorValue::Word(RegValue::Uninitialized) => {
@@ -347,8 +784,8 @@ impl WaveRegisters {
     }
 
     pub fn read_agpr(&self, lane: usize, reg: Agpr) -> Result<ExprId, EvalError> {
-        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
-        registers.accumulators[usize::from(reg.0)].ok_or(EvalError::UninitializedAgpr { lane, reg })
+        self.agpr_at(lane, reg)?
+            .ok_or(EvalError::UninitializedAgpr { lane, reg })
     }
 
     pub fn read_lane_reg(&self, lane: usize, reg: LaneReg) -> Result<ExprId, EvalError> {
@@ -441,8 +878,8 @@ impl WaveRegisters {
     ) -> Result<ExprId, EvalError> {
         let bits = match src {
             F64Src::Vgprs(pair) => {
-                let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
-                let [low, high] = pair.map(|reg| registers.values[usize::from(reg.0)]);
+                let low = self.vector_at(lane, pair[0])?;
+                let high = self.vector_at(lane, pair[1])?;
                 if let (VectorValue::F64Low(value), VectorValue::F64High(other)) = (low, high)
                     && value == other
                 {
@@ -505,23 +942,24 @@ impl WaveRegisters {
 
     /// `lane`'s VCC bit, which must have been written by a comparison.
     pub fn read_vcc(&self, lane: usize) -> Result<ExprId, EvalError> {
-        let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
-        registers.vcc.ok_or(EvalError::UninitializedVcc { lane })
+        self.vcc_at(lane)?
+            .ok_or(EvalError::UninitializedVcc { lane })
     }
 
     pub fn write_vcc(&mut self, lane: usize, condition: ExprId) -> Result<(), EvalError> {
-        let registers = self
-            .vector
-            .get_mut(lane)
-            .ok_or(EvalError::InvalidLane(lane))?;
-        registers.vcc = Some(condition);
+        if lane >= self.vector.len() {
+            return Err(EvalError::InvalidLane(lane));
+        }
+        self.note_write(Slot::Vcc(lane as u8));
+        self.assign(Slot::Vcc(lane as u8), Stored::Vcc(Some(condition)));
         Ok(())
     }
 
     /// Write a vector register in one lane unless the lane is invalid or a load is still writing
     /// to the register.
     pub fn write_vgpr(&mut self, lane: usize, reg: Vgpr, value: ExprId) -> Result<(), EvalError> {
-        *self.vector_destination(lane, reg)? = VectorValue::Word(RegValue::Ready(value));
+        self.check_vector_destination(lane, reg)?;
+        self.set_vector(lane, reg, VectorValue::Word(RegValue::Ready(value)));
         Ok(())
     }
 
@@ -532,9 +970,10 @@ impl WaveRegisters {
         dst: [Vgpr; 2],
         value: ExprId,
     ) -> Result<(), EvalError> {
-        self.vector_destination(lane, dst[0])?;
-        *self.vector_destination(lane, dst[1])? = VectorValue::F64High(value);
-        *self.vector_destination(lane, dst[0])? = VectorValue::F64Low(value);
+        self.check_vector_destination(lane, dst[0])?;
+        self.check_vector_destination(lane, dst[1])?;
+        self.set_vector(lane, dst[1], VectorValue::F64High(value));
+        self.set_vector(lane, dst[0], VectorValue::F64Low(value));
         Ok(())
     }
 
@@ -549,9 +988,10 @@ impl WaveRegisters {
     ) -> Result<(), EvalError> {
         let low = self.move_source(arena, lane, src[0])?;
         let high = self.move_source(arena, lane, src[1])?;
-        self.vector_destination(lane, dst[0])?;
-        *self.vector_destination(lane, dst[1])? = high;
-        *self.vector_destination(lane, dst[0])? = low;
+        self.check_vector_destination(lane, dst[0])?;
+        self.check_vector_destination(lane, dst[1])?;
+        self.set_vector(lane, dst[1], high);
+        self.set_vector(lane, dst[0], low);
         Ok(())
     }
 
@@ -563,8 +1003,7 @@ impl WaveRegisters {
         src: Src0,
     ) -> Result<VectorValue, EvalError> {
         if let Src0::Vgpr(reg) = src {
-            let registers = self.vector.get(lane).ok_or(EvalError::InvalidLane(lane))?;
-            let value = registers.values[usize::from(reg.0)];
+            let value = self.vector_at(lane, reg)?;
             if matches!(value, VectorValue::F64Low(_) | VectorValue::F64High(_)) {
                 return Ok(value);
             }
@@ -587,11 +1026,15 @@ impl WaveRegisters {
 
     /// AGPRs are never a load's destination, so a write needs no pending check.
     pub fn write_agpr(&mut self, lane: usize, reg: Agpr, value: ExprId) -> Result<(), EvalError> {
-        let registers = self
-            .vector
-            .get_mut(lane)
-            .ok_or(EvalError::InvalidLane(lane))?;
-        registers.accumulators[usize::from(reg.0)] = Some(value);
+        if lane >= self.vector.len() {
+            return Err(EvalError::InvalidLane(lane));
+        }
+        let slot = Slot::Agpr {
+            lane: lane as u8,
+            reg: reg.0,
+        };
+        self.note_write(slot);
+        self.assign(slot, Stored::Agpr(Some(value)));
         Ok(())
     }
 
@@ -625,14 +1068,17 @@ impl WaveRegisters {
     ) -> Result<(), EvalError> {
         // Check every destination before changing any register.
         for &reg in dst {
-            self.vector_destination(lane, reg)?;
+            self.check_vector_destination(lane, reg)?;
         }
 
-        let registers = &mut self.vector[lane];
         for (&reg, &value) in dst.iter().zip(values) {
-            registers.values[usize::from(reg.0)] = VectorValue::Word(RegValue::Pending(value));
+            self.set_vector(lane, reg, VectorValue::Word(RegValue::Pending(value)));
         }
-        if counter == LoadCounter::Vm {
+        // A repeated execution for a later workgroup issues the load the first one counted.
+        if counter == LoadCounter::Vm
+            && !self.repeat
+            && let Some(registers) = self.vector.get_mut(lane)
+        {
             registers.pending_loads.push_back(dst.to_vec());
         }
         Ok(())
@@ -655,52 +1101,44 @@ impl WaveRegisters {
         Ok(())
     }
 
-    fn vector_destination(
-        &mut self,
-        lane: usize,
-        reg: Vgpr,
-    ) -> Result<&mut VectorValue, EvalError> {
-        let registers = self
-            .vector
-            .get_mut(lane)
-            .ok_or(EvalError::InvalidLane(lane))?;
-        let slot = &mut registers.values[usize::from(reg.0)];
-        match slot {
+    /// Reject an invalid lane, or a register a load is still writing.
+    fn check_vector_destination(&self, lane: usize, reg: Vgpr) -> Result<(), EvalError> {
+        match self.vector_for_write(lane, reg)? {
             VectorValue::Word(RegValue::Pending(_)) => Err(EvalError::PendingVgpr { lane, reg }),
-            _ => Ok(slot),
+            _ => Ok(()),
         }
+    }
+
+    /// Write `reg` in a lane that `check_vector_destination` accepted.
+    fn set_vector(&mut self, lane: usize, reg: Vgpr, value: VectorValue) {
+        let slot = vector_slot(lane, reg);
+        self.note_write(slot);
+        self.assign(slot, Stored::Vector(value));
     }
 
     /// Wait until at most `outstanding` `vmcnt` loads are in flight per lane. Loads return in
     /// issue order, so the most recent stay pending; counting no stores keeps more loads pending
     /// than the hardware does.
     pub(super) fn finish_vm_loads(&mut self, outstanding: usize) {
-        for registers in &mut self.vector {
-            let completed = registers.pending_loads.len().saturating_sub(outstanding);
-            for load in registers
-                .pending_loads
-                .drain(..completed)
-                .collect::<Vec<_>>()
-            {
-                registers.finish(&load);
+        for lane in 0..self.vector.len() {
+            let completed: Vec<Vec<Vgpr>> = match self.vector.get_mut(lane) {
+                Some(registers) => {
+                    let count = registers.pending_loads.len().saturating_sub(outstanding);
+                    registers.pending_loads.drain(..count).collect()
+                }
+                None => Vec::new(),
+            };
+            for reg in completed.into_iter().flatten() {
+                self.finish_slot(vector_slot(lane, reg));
             }
         }
     }
 
     /// A completed DS read or lane exchange makes `dst` readable in every lane.
     pub(super) fn finish_ds_load(&mut self, dst: &[Vgpr]) {
-        for registers in &mut self.vector {
-            registers.finish(dst);
-        }
-    }
-}
-
-impl LaneRegisters {
-    fn finish(&mut self, load: &[Vgpr]) {
-        for reg in load {
-            let slot = &mut self.values[usize::from(reg.0)];
-            if let VectorValue::Word(RegValue::Pending(value)) = *slot {
-                *slot = VectorValue::Word(RegValue::Ready(value));
+        for lane in 0..self.vector.len() {
+            for &reg in dst {
+                self.finish_slot(vector_slot(lane, reg));
             }
         }
     }
