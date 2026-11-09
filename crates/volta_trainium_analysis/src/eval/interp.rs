@@ -6,8 +6,8 @@ use id_collections::IdVec;
 use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
 
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Reduction,
-    ScalarOperand, Sign, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Order,
+    Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
 };
 
 use super::EvalError;
@@ -123,6 +123,7 @@ impl<'a> Interpreter<'a> {
                 func,
                 dst,
                 data,
+                scale,
                 bias,
                 reduce,
             } => {
@@ -132,6 +133,10 @@ impl<'a> Interpreter<'a> {
                     for element in 0..free {
                         let at = [partition, element];
                         let mut x = self.read(instr, data, at)?;
+                        if let Some(scale) = scale {
+                            let scale = self.scalar(instr, scale, at)?;
+                            x = self.arith(ArithOp::Multiply, x, scale);
+                        }
                         if let Some(bias) = bias {
                             let bias = self.scalar(instr, bias, at)?;
                             x = self.arith(ArithOp::Add, x, bias);
@@ -185,6 +190,27 @@ impl<'a> Interpreter<'a> {
                         row.push(value);
                     }
                     writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
+                }
+            }
+            LoweredInstr::Scan {
+                dst,
+                data0,
+                data1,
+                initial,
+                op0,
+                op1,
+            } => {
+                let [partitions, free] = dst.tile_extents();
+                for partition in 0..partitions {
+                    let mut acc = self.scalar(instr, initial, [partition, 0])?;
+                    for element in 0..free {
+                        let at = [partition, element];
+                        let a = self.read(instr, data0, at)?;
+                        let b = self.read(instr, data1, at)?;
+                        let step = self.ordered(*op0, a, acc);
+                        acc = self.ordered(*op1, step, b);
+                        writes.push(Write::at(dst, at, acc));
+                    }
                 }
             }
             LoweredInstr::Matmul {
@@ -243,6 +269,14 @@ impl<'a> Interpreter<'a> {
             ArithOp::Subtract => self.arena.sub(a, b),
             ArithOp::Multiply => self.arena.mul(a, b),
             ArithOp::Maximum => self.arena.max(a, b),
+        }
+    }
+
+    /// `op(first, second)`, or `op(second, first)` if `order` reverses it.
+    fn ordered(&mut self, (op, order): (ArithOp, Order), first: ExprId, second: ExprId) -> ExprId {
+        match order {
+            Order::Given => self.arith(op, first, second),
+            Order::Reversed => self.arith(op, second, first),
         }
     }
 

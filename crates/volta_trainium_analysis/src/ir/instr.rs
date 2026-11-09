@@ -36,12 +36,13 @@ pub enum LoweredInstr {
         lhs: TensorRegion,
         rhs: TensorRegion,
     },
-    /// `dst = func(data + bias)` elementwise over regions of one shape, `bias`
-    /// broadcast like a `tensor_scalar` operand, then the result's `reduce`.
+    /// `dst = func(data * scale + bias)` elementwise over regions of one shape, `scale`
+    /// and `bias` broadcast like a `tensor_scalar` operand, then the result's `reduce`.
     Activation {
         func: ActivationFunc,
         dst: TensorRegion,
         data: TensorRegion,
+        scale: Option<ScalarOperand>,
         bias: Option<ScalarOperand>,
         reduce: Option<Reduction>,
     },
@@ -63,6 +64,17 @@ pub enum LoweredInstr {
         first: ScalarStep,
         second: Option<ScalarStep>,
         reduce: Option<Reduction>,
+    },
+    /// Along each partition, `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])`
+    /// over matrix regions of one shape, `initial` in place of `dst[p, -1]`; each
+    /// `Order` says whether its data operand is the op's left operand as written.
+    Scan {
+        dst: TensorRegion,
+        data0: TensorRegion,
+        data1: TensorRegion,
+        initial: ScalarOperand,
+        op0: (ArithOp, Order),
+        op1: (ArithOp, Order),
     },
 
     // =========================================================================
@@ -108,4 +120,12 @@ pub enum Accumulation {
 pub enum Sign {
     Kept,
     Negated,
+}
+
+/// The operand order of one of a scan's ops: `Given` is `op0(data0, acc)` and
+/// `op1(acc, data1)`, `Reversed` (`reverse0=True`, `reverse1=True`) swaps them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Given,
+    Reversed,
 }

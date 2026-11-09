@@ -474,9 +474,9 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts thirteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+Lowering accepts fourteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
-`activation`, `activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul`,
+`activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `reciprocal`, `nc_matmul`,
 `nc_transpose` and `dma_transpose` (`axes=(1, 0)` only, the same `Transpose`) - drops
 an `engine=` naming `nisa.vector_engine`, `scalar_engine` or `gpsimd_engine`, and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
@@ -493,6 +493,10 @@ reducing every free axis leaves `dst[p, 0]`. `negate=True` (an `ast::Operand::Bo
 negates the result (`ir::Sign`).
 `reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which
 is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
+`tensor_tensor_scan` is `LoweredInstr::Scan`, the docs' recurrence along each partition
+of matrix regions, `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])` from
+`initial` (a literal or a `[partitions, 1]` tile), `reverse0`/`reverse1` swapping an op's
+operands (`ir::Order`).
 
 `nc_matmul`'s `accumulate=` is `ir::Accumulation`: `False` overwrites `dst`, `True` adds
 to it (an unwritten element is an `UninitializedRead`), and `None`, the default,
@@ -519,13 +523,13 @@ allocated HBM tensor's are uninitialized, so reading one is `UninitializedRead`.
 A `tensor_scalar` operand is a float literal or a `[partitions, 1]` tile whose
 single free element broadcasts across the destination's free axis; its second
 `(op, operand)` pair is optional and both keywords must appear together.
-`LoweredInstr::Activation` is `func(data + bias)`, `bias` an optional
-`ScalarOperand`, with an optional `ir::Reduction`: each `reduce_res[p, 0]` the fold
+`LoweredInstr::Activation` is `func(data * scale + bias)`, `scale` and `bias` optional
+`ScalarOperand`s, with an optional `ir::Reduction`: each `reduce_res[p, 0]` the fold
 of `reduce_op` over partition `p` of the result, seeded with its first element rather
 than an identity, so a non-additive `reduce_op` is correct too. `activation` takes
 one with `reduce_op`, `reduce_res` and `reduce_cmd=nisa.reduce_cmd.reset_reduce`
 together (the other `reduce_cmd`s carry an accumulator across instructions and are
-errors, as is `scale`); `activation_reduce` is that instruction, as the NKI docs
+errors); `activation_reduce` is that instruction, as the NKI docs
 define it, and `tensor_scalar_reduce` is a one-step `TensorScalar` with a
 `Reduction`. A tile's `dtype` is not modelled: values are reals, so v7 to v8a's
 `nl.bfloat16` scores are checked without their rounding. A float literal
@@ -588,7 +592,11 @@ attribute reads the object's own, else the class's, else a bound `Value::Method`
 tile declaration named after the target (PSUM for `matmul` and `transpose`) and
 the one `nki.isa` instruction it lowers to; `load`/`store` require HBM
 (`Declared::place`). `True`/`False` are `Value::Bool`. `nl.zeros` is an on-chip tile
-plus a `memset` to zero. `tensor_call` declares the tensor of any of these calls under
+(`buffer` defaulting to `nl.sbuf`) plus a `memset` to zero. `nl.broadcast_to(x, shape)`
+(numpy's rule, partitions included) is a `tensor_copy` into a new SBUF tile from an
+`ast::Operand::Broadcast`, which lowering reads through a pattern stepping 0 along each
+repeated dimension (`StatementError::BroadcastShape` otherwise). A region's `.shape`
+and `.dtype` are values, as a tensor's are. `tensor_call` declares the tensor of any of these calls under
 the name the caller gives, binding nothing: an assignment binds its target, and
 `items.append(call)` a new list item, the tile named `items[k]`. `range([start,]
 stop)` unrolls like `nl.affine_range`; list literals evaluate to new lists.
@@ -659,7 +667,8 @@ tutorials' kernel files likewise, each with a `.spec` of its reference
 (`tensor_addition_nki_kernels.py`, `tensor_addition.spec`;
 `matrix_multiplication_nki_kernels.py`, `matrix_multiplication.spec`;
 `transpose2d_nki_kernels.py`, `transpose2d.spec`, its arrays viewed in three dimensions;
-`average_pool2d_nki_kernels.py`, `average_pool2d.spec`);
+`average_pool2d_nki_kernels.py`, `average_pool2d.spec`; `mamba_nki_kernels.py`,
+`mamba.spec`, its scan unrolled into causal sums);
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
@@ -691,6 +700,9 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
 `PatternProblem` a tile or HBM view can hit and a `tensor_reduce` over a leading axis.
+`tests/fixtures/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
+ops reversed, from `1.0`, and applies `activation`'s `scale` (a hand-written `.expected`);
+a test widens its parsed broadcast past its row's shape (`BroadcastShape`).
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a conditional expression, a dict, f-strings) that is never parsed.
@@ -858,7 +870,12 @@ transpose2d tutorial's kernel, `shape2D` a `Constant::Ints`, against `transpose2
 at its drivers' 5 x (3 x 4) and 5 x (37 x 44), refuted against the identity; the
 average_pool2d tutorial's kernel, its `.ap()` view summed over `axis=[3, 4]`, against
 `average_pool2d.spec` with 2 x 2 and 4 x 4 windows, refuted against the unscaled sum
-and against overlapping windows).
+and against overlapping windows; the fused_mamba tutorial's `mamba_v1` to `mamba_v3`
+against `mamba.spec` and each other at 2 x 128 x 8 x 2 with `pmax` 64 and
+`gemm_moving_fmax` 4, v3's `seq_len_fsize = 512` stated as that tile size (checked to
+change nothing at hardware sizes) so it carries its scan across two sequence tiles,
+refuted against a decay one step too long, a scan without its recurrence and, for v3,
+its scan restarted each tile).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 

@@ -869,3 +869,176 @@ fn nki_average_pool2d_against_unscaled_or_overlapping_windows_is_refuted() {
         );
     }
 }
+
+const MAMBA: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/nki_samples/mamba_nki_kernels.py");
+const MAMBA_SPEC: &str = include_str!("../../volta_trainium_analysis/tests/fixtures/mamba.spec");
+
+/// The fused_mamba tutorial's kernels, in its order.
+const MAMBAS: [&str; 3] = ["mamba_v1", "mamba_v2", "mamba_v3"];
+
+/// The tutorial's file with v3's sequence tile, `seq_len_fsize = 512` ("decided through
+/// empirical profiling"), stated as the tile size it equals on the hardware, so reduced
+/// tile sizes give v3 several sequence tiles.
+fn tileable_mambas() -> String {
+    let literal = "seq_len_fsize = 512\n";
+    assert_eq!(MAMBA.matches(literal).count(), 1);
+    MAMBA.replace(literal, "seq_len_fsize = nl.tile_size.gemm_moving_fmax\n")
+}
+
+/// Mamba `kernel` of `source`, its arguments float32 as the drivers make them, for `delta`
+/// and `u` of `[batch, channels, seq_len]`, `A` of `[channels, state]` and `B` and `C` of
+/// `[batch, state, seq_len]`, run.
+fn mamba(
+    source: &str,
+    kernel: &str,
+    tile_sizes: TileSizes,
+    [batch, channels, seq_len, state]: [u64; 4],
+) -> SymbolicOutputs {
+    evaluate(
+        &lower_kernel(&parse_mamba(
+            source,
+            kernel,
+            tile_sizes,
+            [batch, channels, seq_len, state],
+        ))
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn parse_mamba(
+    source: &str,
+    kernel: &str,
+    tile_sizes: TileSizes,
+    [batch, channels, seq_len, state]: [u64; 4],
+) -> Kernel {
+    let (sequence, a, by_state): (&[u64], &[u64], &[u64]) = (
+        &[batch, channels, seq_len],
+        &[channels, state],
+        &[batch, state, seq_len],
+    );
+    let shapes = [
+        ("delta", sequence),
+        ("u", sequence),
+        ("A", a),
+        ("B", by_state),
+        ("C", by_state),
+    ];
+    let dtypes = ["delta", "u", "A", "B", "C"].map(|param| (param, "float32"));
+    let call = KernelCall {
+        dtypes: &dtypes,
+        tile_sizes,
+        ..KernelCall::new(&shapes)
+    };
+    parse_kernel_for_call(source, &[], kernel, &call).unwrap_or_else(|e| panic!("{kernel}: {e}"))
+}
+
+/// `outputs`' `output` against `spec` at `[batch, channels, seq_len, state]`.
+fn mamba_against(
+    spec: &str,
+    outputs: &SymbolicOutputs,
+    [batch, channels, seq_len, state]: [u64; 4],
+) -> EquivalenceVerdict {
+    let dims = [
+        ("BATCH", batch),
+        ("CH", channels),
+        ("L", seq_len),
+        ("N", state),
+    ]
+    .map(|(dim, value)| (dim.to_string(), value))
+    .into();
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    check_equivalence(
+        &reference,
+        outputs,
+        &["output".into()],
+        &EquivCheckOptions::default(),
+    )
+    .0
+}
+
+/// Two batches, two channel tiles of `pmax` 64 (v1 and v2 assert 128 channels per tile
+/// group, literally), two states, and for v3 two sequence tiles of 4.
+const MAMBA_TILES: TileSizes = reduced_tiles(64, 4);
+const MAMBA_DIMS: [u64; 4] = [2, 128, 8, 2];
+
+// At the hardware's tile sizes the stated tile is the literal one, so the tileable file
+// parses to exactly the tutorial's kernels.
+#[test]
+fn nki_mamba_tileable_kernels_are_the_tutorials_at_full_size() {
+    let tileable = tileable_mambas();
+    let dims = [1, 128, 1024, 1];
+    for kernel in MAMBAS {
+        assert_eq!(
+            parse_mamba(&tileable, kernel, TileSizes::HARDWARE, dims),
+            parse_mamba(MAMBA, kernel, TileSizes::HARDWARE, dims),
+            "{kernel}"
+        );
+    }
+}
+
+#[test]
+fn nki_mambas_match_their_specification_and_each_other_at_reduced_tile_sizes() {
+    let tileable = tileable_mambas();
+    let [batch, channels, seq_len, _] = MAMBA_DIMS;
+    let outputs = batch * channels * seq_len;
+    let equivalent = EquivalenceVerdict::Equivalent {
+        checked: outputs,
+        total: outputs,
+    };
+    let runs = MAMBAS.map(|kernel| mamba(&tileable, kernel, MAMBA_TILES, MAMBA_DIMS));
+    for (kernel, run) in MAMBAS.iter().zip(&runs) {
+        assert_eq!(
+            mamba_against(MAMBA_SPEC, run, MAMBA_DIMS),
+            equivalent,
+            "{kernel}"
+        );
+    }
+    for pair in [[0, 1], [1, 2]] {
+        let [before, after] = pair.map(|i| &runs[i]);
+        assert_eq!(
+            check_equivalence(
+                before,
+                after,
+                &["output".into()],
+                &EquivCheckOptions::default()
+            )
+            .0,
+            equivalent,
+            "{} against {}",
+            MAMBAS[pair[1]],
+            MAMBAS[pair[0]]
+        );
+    }
+}
+
+// The decay over one step too many (from `delta[s]` on), and the scan without its
+// recurrence (`s = t` only); and v3 restarting each sequence tile's scan from zero.
+#[test]
+fn nki_mambas_against_a_shifted_decay_a_missing_scan_or_a_dropped_carry_are_refuted() {
+    let shifted = MAMBA_SPEC.replace("r in s + 1..t + 1", "r in s..t + 1");
+    let unscanned = MAMBA_SPEC.replace("s in 0..t + 1", "s in t..t + 1");
+    let tileable = tileable_mambas();
+    let refuted = |verdict: EquivalenceVerdict| {
+        assert!(
+            matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+            "expected a confirmed difference, got {verdict:?}"
+        );
+    };
+    for spec in [&shifted, &unscanned] {
+        assert_ne!(spec, MAMBA_SPEC);
+        for kernel in MAMBAS {
+            refuted(mamba_against(
+                spec,
+                &mamba(&tileable, kernel, MAMBA_TILES, MAMBA_DIMS),
+                MAMBA_DIMS,
+            ));
+        }
+    }
+    let carry = "initial=scan_init,";
+    assert_eq!(tileable.matches(carry).count(), 1);
+    let restarting = tileable.replace(carry, "initial=0.0,");
+    let run = mamba(&restarting, "mamba_v3", MAMBA_TILES, MAMBA_DIMS);
+    refuted(mamba_against(MAMBA_SPEC, &run, MAMBA_DIMS));
+}

@@ -10,7 +10,7 @@ mod tensor;
 
 pub use activation::ActivationFunc;
 pub use arith::ArithOp;
-pub use instr::{Accumulation, InstrId, LoweredInstr, Reduction, Sign};
+pub use instr::{Accumulation, InstrId, LoweredInstr, Order, Reduction, Sign};
 pub use kernel::LoweredKernel;
 pub use scalar::{ScalarOperand, ScalarStep};
 pub use tensor::{
