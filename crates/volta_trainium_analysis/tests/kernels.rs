@@ -5,7 +5,9 @@
 mod common;
 
 use volta_trainium_analysis::frontend::ast::{Operand, Statement, TensorName};
-use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel};
+use volta_trainium_analysis::frontend::parse::{
+    Constant, KernelCall, parse_kernel, parse_kernel_for_call,
+};
 use volta_trainium_analysis::{
     EvalError, Index, InstrId, LowerError, PatternProblem, StatementError, evaluate, lower_kernel,
 };
@@ -347,4 +349,144 @@ fn reducing_other_than_trailing_axes_is_an_error() {
         pattern_error("leading_axis", &[2, 3, 2]),
         StatementError::UnsupportedAxis(_)
     ));
+}
+
+/// The first 16 offsets of `indirect.py`'s index, the gather reading its first three.
+const OFFSETS: [u64; 16] = [3, 0, 3, 1, 2, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2];
+
+#[test]
+fn the_indirect_kernel_parses_lowers_and_runs_as_expected() {
+    let call = KernelCall {
+        contents: &[("idx", &OFFSETS)],
+        ..KernelCall::new(&[("a", &[32, 4]), ("idx", &[16, 1])])
+    };
+    common::check_call("indirect", "kernel", &[], &call);
+}
+
+/// Run kernel `kernel` of `indirect_errors.py` for `call` through lowering.
+fn lowered_indirect_error(
+    kernel: &str,
+    call: &KernelCall,
+) -> Result<volta_trainium_analysis::LoweredKernel, LowerError> {
+    let source = common::source("indirect_errors");
+    let parsed = parse_kernel_for_call(&source, &[], kernel, call).unwrap();
+    lower_kernel(&parsed)
+}
+
+/// The error running `two_groups` gives with `first` and `second` as its groups' offsets.
+fn two_groups_error(contents: &[(&str, &[u64])]) -> EvalError {
+    let shapes: [(&str, &[u64]); 3] = [("a", &[32, 4]), ("first", &[16, 1]), ("second", &[16, 1])];
+    let call = KernelCall {
+        contents,
+        ..KernelCall::new(&shapes)
+    };
+    evaluate(&lowered_indirect_error("two_groups", &call).unwrap()).unwrap_err()
+}
+
+// The docs read offset `i` from `index[i % 16, i // 16]`, the sample from the rows of
+// each partition's 16-partition group; a gather is defined only where they agree.
+#[test]
+fn a_gather_whose_partition_groups_read_other_offsets_is_an_error() {
+    let mut second = [0; 16];
+    second[1] = 2;
+    let first: [u64; 16] = std::array::from_fn(|row| row as u64 % 4);
+    assert_eq!(
+        two_groups_error(&[("first", &first), ("second", &second)]),
+        EvalError::IndirectReadings {
+            instr: InstrId(3),
+            partition: 16,
+            column: 1,
+            offsets: [1, 2],
+        }
+    );
+}
+
+#[test]
+fn a_gather_offset_outside_its_data_or_not_concrete_is_an_error() {
+    let mut beyond = [0; 16];
+    beyond[0] = 4;
+    let expected = EvalError::IndirectOffset {
+        instr: InstrId(3),
+        tensor: "offsets".into(),
+        index: Index(vec![0, 0]),
+        extent: 4,
+    };
+    assert_eq!(
+        two_groups_error(&[("first", &beyond), ("second", &beyond)]),
+        expected
+    );
+    assert_eq!(two_groups_error(&[]), expected);
+}
+
+#[test]
+fn contents_not_matching_their_tensor_are_an_error() {
+    let source = common::source("indirect_errors");
+    let shapes: [(&str, &[u64]); 2] = [("a", &[16, 4]), ("idx", &[16, 1])];
+    for (contents, message) in [
+        (
+            &[("idx", &[0u64; 15][..])][..],
+            "gives 15 elements for `idx`",
+        ),
+        (
+            &[("a", &[0u64; 64][..]), ("a", &[0u64; 64][..])][..],
+            "given twice",
+        ),
+        (&[("out", &[0u64; 1][..])][..], "not a tensor parameter"),
+    ] {
+        let call = KernelCall {
+            contents,
+            ..KernelCall::new(&shapes)
+        };
+        let error = parse_kernel_for_call(&source, &[], "on_gpsimd", &call).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+    }
+}
+
+/// The statement error lowering `gather` gives for `a` and `idx` of `shapes`, `count` columns.
+fn gather_error(shapes: [(&str, &[u64]); 2], count: i64) -> StatementError {
+    let call = KernelCall {
+        constants: &[("count", Constant::Int(count))],
+        ..KernelCall::new(&shapes)
+    };
+    match lowered_indirect_error("gather", &call).unwrap_err() {
+        LowerError::Statement { error, .. } => error,
+        other => panic!("expected a statement error, got {other}"),
+    }
+}
+
+#[test]
+fn gathers_the_docs_do_not_define_are_errors() {
+    let shapes: [(&str, &[u64]); 2] = [("a", &[16, 4]), ("idx", &[16, 1])];
+    let statement_error =
+        |kernel| match lowered_indirect_error(kernel, &KernelCall::new(&shapes)).unwrap_err() {
+            LowerError::Statement { error, .. } => error,
+            other => panic!("{kernel}: expected a statement error, got {other}"),
+        };
+    assert_eq!(
+        statement_error("on_gpsimd"),
+        StatementError::IndirectEngine(Operand::Member("nki.isa.engine.gpsimd".into()))
+    );
+    assert_eq!(
+        statement_error("scatter"),
+        StatementError::IndirectOperand { keyword: "dst" }
+    );
+    assert_eq!(
+        gather_error(shapes, 17),
+        StatementError::IndirectCount {
+            count: 17,
+            capacity: 16
+        }
+    );
+    assert_eq!(
+        gather_error([("a", &[8, 4]), ("idx", &[8, 1])], 2),
+        StatementError::IndirectPartitions(8)
+    );
+    assert_eq!(
+        gather_error([("a", &[16, 4]), ("idx", &[32, 1])], 2),
+        StatementError::IndirectIndex {
+            tensor: TensorName("offsets".into()),
+            shape: volta_trainium_analysis::Shape(vec![32, 1]),
+            partitions: 16,
+        }
+    );
 }

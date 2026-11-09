@@ -1,0 +1,11 @@
+kernel kernel(a: [32, 4], idx: [16, 1] = [3, 0, 3, 1, 2, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2])
+  out: shared_hbm[32, 3] of a.dtype
+  t: sbuf[32, 4] of a.dtype
+  dma_copy(dst=t, src=a)
+  offsets: sbuf[32, 1] of uint16
+  dma_copy(dst=offsets[0:16, :], src=idx)
+  dma_copy(dst=offsets[16:32, :], src=idx)
+  gathered: sbuf[32, 3] of a.dtype
+  tensor_copy(dst=gathered, engine=nki.isa.engine.scalar, src=t.indirect(offsets, num_elem=3))
+  dma_copy(dst=out, src=gathered)
+  return out

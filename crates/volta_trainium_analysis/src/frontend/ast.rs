@@ -29,6 +29,8 @@ pub struct Param {
     pub name: TensorName,
     /// The extents, outermost first.
     pub shape: Vec<NonZeroU64>,
+    /// Its elements, row-major, if the call gives them: an index tensor's offsets.
+    pub contents: Option<Vec<u64>>,
 }
 
 /// The statements that remain once the parser has evaluated the kernel's integer
@@ -269,6 +271,13 @@ pub enum Operand {
         tensor: TensorName,
         shape: Vec<u64>,
     },
+    /// `tensor.indirect(index, num_elem=count)`: `count` columns of each partition of
+    /// `tensor`, gathered at the free-dimension offsets tile `index` holds.
+    Indirect {
+        tensor: TensorName,
+        index: TensorName,
+        count: Option<u64>,
+    },
 }
 
 impl fmt::Display for Kernel {
@@ -276,7 +285,14 @@ impl fmt::Display for Kernel {
         let params: Vec<String> = self
             .params
             .iter()
-            .map(|param| format!("{}: [{}]", param.name, extents(&param.shape)))
+            .map(|param| match &param.contents {
+                None => format!("{}: [{}]", param.name, extents(&param.shape)),
+                Some(contents) => {
+                    let contents: Vec<String> = contents.iter().map(u64::to_string).collect();
+                    let shape = extents(&param.shape);
+                    format!("{}: [{shape}] = [{}]", param.name, contents.join(", "))
+                }
+            })
             .collect();
         writeln!(f, "kernel {}({})", self.name, params.join(", "))?;
 
@@ -389,6 +405,16 @@ impl fmt::Display for Operand {
                 let extents: Vec<String> = shape.iter().map(u64::to_string).collect();
                 write!(f, "nl.broadcast_to({tensor}, ({}))", extents.join(", "))
             }
+            Self::Indirect {
+                tensor,
+                index,
+                count: None,
+            } => write!(f, "{tensor}.indirect({index})"),
+            Self::Indirect {
+                tensor,
+                index,
+                count: Some(count),
+            } => write!(f, "{tensor}.indirect({index}, num_elem={count})"),
         }
     }
 }

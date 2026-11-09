@@ -107,6 +107,9 @@ pub struct KernelCall<'a> {
     /// The parameters that are not tensors, e.g. `("pool_size", Constant::Int(2))`;
     /// one the call gives no value or shape takes its default.
     pub constants: &'a [(&'a str, Constant<'a>)],
+    /// Tensor parameters whose elements the call gives, row-major, e.g. an index
+    /// tensor's offsets, which must be concrete to address another tensor.
+    pub contents: &'a [(&'a str, &'a [u64])],
     pub tile_sizes: TileSizes,
 }
 
@@ -136,6 +139,7 @@ impl<'a> KernelCall<'a> {
             shapes,
             dtypes: &[],
             constants: &[],
+            contents: &[],
             tile_sizes: TileSizes::default(),
         }
     }
@@ -427,6 +431,20 @@ fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, Pa
             bail!(line, "the value of `{given}` is given twice");
         }
     }
+    for (index, (given, _)) in call.contents.iter().enumerate() {
+        if !call.shapes.iter().any(|(shaped, _)| shaped == given) {
+            bail!(
+                line,
+                "contents are given for `{given}`, which is not a tensor parameter of the call"
+            );
+        }
+        if call.contents[..index]
+            .iter()
+            .any(|(earlier, _)| earlier == given)
+        {
+            bail!(line, "the contents of `{given}` are given twice");
+        }
+    }
     for (index, (given, _)) in call.dtypes.iter().enumerate() {
         if !is_param(given) {
             bail!(
@@ -472,9 +490,33 @@ fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, Pa
         frame
             .locals
             .insert(param.name.clone(), Value::Tensor(tensor.clone()));
+        let contents = match call.contents.iter().find(|(given, _)| *given == param.name) {
+            None => None,
+            Some((_, contents)) => {
+                let count: Option<u64> = shape
+                    .iter()
+                    .try_fold(1u64, |count, extent| count.checked_mul(extent.get()));
+                if count != Some(contents.len() as u64) {
+                    bail!(
+                        line,
+                        "the call gives {} elements for `{}`, not one per element of its shape",
+                        contents.len(),
+                        param.name
+                    );
+                }
+                if let Some(large) = contents
+                    .iter()
+                    .find(|&&value| i64::try_from(value).is_err())
+                {
+                    bail!(line, "the element {large} of `{}` is too large", param.name);
+                }
+                Some(contents.to_vec())
+            }
+        };
         params.push(Param {
             name: tensor,
             shape,
+            contents,
         });
     }
 
@@ -689,6 +731,14 @@ enum Value {
     },
     /// `t.ap`, tensor `t`'s access-pattern method.
     AccessPatternOf(TensorName),
+    /// `t.indirect`, tensor `t`'s tensor-indirection method.
+    IndirectOf(TensorName),
+    /// `t.indirect(index, num_elem=count)`: a gather of `t`'s free dimension.
+    Indirect {
+        tensor: TensorName,
+        index: TensorName,
+        count: Option<u64>,
+    },
     /// `t.ap(pattern, offset=offset)`: a strided view of `t`, each pair `[step, count]`.
     Pattern {
         tensor: TensorName,
@@ -783,6 +833,19 @@ impl fmt::Display for Value {
                 write!(f, "{tensor}[{}]", dims.join(", "))
             }
             Self::AccessPatternOf(tensor) => write!(f, "method `{tensor}.ap`"),
+            Self::IndirectOf(tensor) => write!(f, "method `{tensor}.indirect`"),
+            Self::Indirect {
+                tensor,
+                index,
+                count,
+            } => {
+                let operand = Operand::Indirect {
+                    tensor: tensor.clone(),
+                    index: index.clone(),
+                    count: *count,
+                };
+                write!(f, "{operand}")
+            }
             Self::Pattern {
                 tensor,
                 pattern,
@@ -984,6 +1047,7 @@ impl Trace<'_> {
             ),
             Value::Tensor(tensor) if attribute == "dtype" => Ok(Value::DtypeOf(tensor)),
             Value::Tensor(tensor) if attribute == "ap" => Ok(Value::AccessPatternOf(tensor)),
+            Value::Tensor(tensor) if attribute == "indirect" => Ok(Value::IndirectOf(tensor)),
             Value::Tensor(tensor) if attribute == "shape" => {
                 let extents = &self.tensors[&tensor].extents;
                 let extents = extents.iter().map(|&e| Value::int(e, line));
@@ -1121,6 +1185,7 @@ impl Trace<'_> {
             Value::AccessPatternOf(tensor) => {
                 return self.access_pattern(tensor, &call, frame, line);
             }
+            Value::IndirectOf(tensor) => return self.indirect(tensor, &call, frame, line),
             _ => bail!(
                 line,
                 "`{}` can only be called as a statement or an assignment's value",
@@ -1163,6 +1228,33 @@ impl Trace<'_> {
             tensor,
             pattern: steps,
             offset,
+        })
+    }
+
+    /// `tensor.indirect(index, num_elem=None)`: one index tile; the docs' further
+    /// `*index` tiles are unsupported.
+    fn indirect(
+        &mut self,
+        tensor: TensorName,
+        call: &Call,
+        frame: &Frame,
+        line: usize,
+    ) -> Result<Value, ParseError> {
+        let callee = format!("{tensor}.indirect");
+        let [index, count] = arguments(call, ["index", "num_elem"], 1, self, frame, line)?;
+        let index = tile(index, "index", &callee, line)?;
+        let count = match count {
+            None | Some(Value::None) => None,
+            Some(Value::Int(count)) => Some(non_negative(count, "num_elem", line)?),
+            Some(other) => bail!(
+                line,
+                "`num_elem` of `{callee}` must be an integer, not `{other}`"
+            ),
+        };
+        Ok(Value::Indirect {
+            tensor,
+            index,
+            count,
         })
     }
 
@@ -1786,7 +1878,8 @@ fn assignment(
             | Value::Method { .. }
             | Value::Class(_)
             | Value::Builtin(_)
-            | Value::AccessPatternOf(_)) => trace.call(callee, call, frame, line, bound)?,
+            | Value::AccessPatternOf(_)
+            | Value::IndirectOf(_)) => trace.call(callee, call, frame, line, bound)?,
             _ => bail!(
                 line,
                 "only `nl.ndarray`, `nl.zeros`, the `nki.language` functions returning a tile, \
@@ -2722,6 +2815,15 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
             tensor,
             pattern,
             offset,
+        }),
+        Value::Indirect {
+            tensor,
+            index,
+            count,
+        } => Ok(Operand::Indirect {
+            tensor,
+            index,
+            count,
         }),
         Value::Tuple(items) => {
             let mut values = Vec::new();

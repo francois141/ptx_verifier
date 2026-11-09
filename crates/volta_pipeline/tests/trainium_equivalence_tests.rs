@@ -1042,3 +1042,164 @@ fn nki_mambas_against_a_shifted_decay_a_missing_scan_or_a_dropped_carry_are_refu
     let run = mamba(&restarting, "mamba_v3", MAMBA_TILES, MAMBA_DIMS);
     refuted(mamba_against(MAMBA_SPEC, &run, MAMBA_DIMS));
 }
+
+const TENSOR_INDIRECTION: &str = include_str!(
+    "../../volta_trainium_analysis/tests/fixtures/nki_samples/tensor_indirection_nki_kernels.py"
+);
+const TENSOR_INDIRECTION_SPEC: &str =
+    include_str!("../../volta_trainium_analysis/tests/fixtures/tensor_indirection.spec");
+
+/// The tensor indirection tutorial's kernel, from its unmodified file, run on `data_tensor`
+/// of `[data_p, data_f]` with `index_tensor` holding `offsets`, as its driver's
+/// `torch.randint` draws them.
+fn tensor_indirection(data: [u64; 2], offsets: &[u64]) -> SymbolicOutputs {
+    let index: [u64; 2] = [1, offsets.len() as u64];
+    let shapes: [(&str, &[u64]); 2] = [("index_tensor", &index), ("data_tensor", &data)];
+    let call = KernelCall {
+        contents: &[("index_tensor", offsets)],
+        ..KernelCall::new(&shapes)
+    };
+    let parsed =
+        parse_kernel_for_call(TENSOR_INDIRECTION, &[], "tensor_indirection_kernel", &call).unwrap();
+    evaluate(&lower_kernel(&parsed).unwrap()).unwrap()
+}
+
+/// `outputs`' `out_tensor` against `spec` at `[data_p, data_f]`, its index array holding
+/// `offsets`.
+fn tensor_indirection_against(
+    spec: &str,
+    outputs: &SymbolicOutputs,
+    [data_p, data_f]: [u64; 2],
+    offsets: &[u64],
+) -> EquivalenceVerdict {
+    let dims = [
+        ("DATA_P", data_p),
+        ("DATA_F", data_f),
+        ("INDEX_F", offsets.len() as u64),
+        ("ONE", 1),
+    ]
+    .map(|(dim, value)| (dim.to_string(), value))
+    .into();
+    let offsets = offsets.iter().map(|&offset| offset as i64).collect();
+    let indices = [("index_tensor".to_string(), offsets)].into();
+    let reference =
+        volta_spec::extract_expressions_from_spec_with_indices(spec, &dims, &indices).unwrap();
+    check_equivalence(
+        &reference,
+        outputs,
+        &["out_tensor".into()],
+        &EquivCheckOptions::default(),
+    )
+    .0
+}
+
+/// `count` offsets below `data_f` from a fixed linear congruential sequence, with repeats.
+fn drawn_offsets(count: usize, data_f: u64, seed: u64) -> Vec<u64> {
+    let mut state = seed;
+    (0..count)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % data_f
+        })
+        .collect()
+}
+
+/// The driver's `DATA_P`, `DATA_F` and `INDEX_F`.
+const INDIRECTION_DATA: [u64; 2] = [128, 64];
+const INDIRECTION_INDEX_F: usize = 32;
+
+#[test]
+fn nki_tensor_indirection_matches_its_specification_at_its_drivers_size() {
+    let [data_p, data_f] = INDIRECTION_DATA;
+    let extremes: Vec<u64> = (0..INDIRECTION_INDEX_F as u64)
+        .map(|i| if i % 2 == 0 { data_f - 1 } else { 0 })
+        .collect();
+    for offsets in [
+        drawn_offsets(INDIRECTION_INDEX_F, data_f, 1),
+        drawn_offsets(INDIRECTION_INDEX_F, data_f, 2),
+        extremes,
+    ] {
+        let outputs = data_p * offsets.len() as u64;
+        assert_eq!(
+            tensor_indirection_against(
+                TENSOR_INDIRECTION_SPEC,
+                &tensor_indirection(INDIRECTION_DATA, &offsets),
+                INDIRECTION_DATA,
+                &offsets
+            ),
+            EquivalenceVerdict::Equivalent {
+                checked: outputs,
+                total: outputs
+            },
+            "{offsets:?}"
+        );
+    }
+}
+
+// One 16-partition group and one index column, then three of each.
+#[test]
+fn nki_tensor_indirection_matches_its_specification_at_other_sizes() {
+    for (data, index_f) in [([16, 8], 16), ([48, 20], 48)] {
+        let offsets = drawn_offsets(index_f, data[1], 3);
+        let outputs = data[0] * index_f as u64;
+        assert_eq!(
+            tensor_indirection_against(
+                TENSOR_INDIRECTION_SPEC,
+                &tensor_indirection(data, &offsets),
+                data,
+                &offsets
+            ),
+            EquivalenceVerdict::Equivalent {
+                checked: outputs,
+                total: outputs
+            },
+            "{data:?}"
+        );
+    }
+}
+
+#[test]
+fn nki_tensor_indirection_against_another_offset_or_no_gather_is_refuted() {
+    let offsets = drawn_offsets(INDIRECTION_INDEX_F, INDIRECTION_DATA[1], 1);
+    let outputs = tensor_indirection(INDIRECTION_DATA, &offsets);
+    let refuted = |verdict: EquivalenceVerdict| {
+        assert!(
+            matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+            "expected a confirmed difference, got {verdict:?}"
+        );
+    };
+
+    let mut moved = offsets.clone();
+    moved[17] = (moved[17] + 1) % INDIRECTION_DATA[1];
+    refuted(tensor_indirection_against(
+        TENSOR_INDIRECTION_SPEC,
+        &outputs,
+        INDIRECTION_DATA,
+        &moved,
+    ));
+
+    let ungathered =
+        TENSOR_INDIRECTION_SPEC.replace("data_tensor[p, index_tensor[0, i]]", "data_tensor[p, i]");
+    assert_ne!(ungathered, TENSOR_INDIRECTION_SPEC);
+    let ungathered = ungathered.replace("array index_tensor[ONE, INDEX_F] index;", "");
+    let dims = [
+        ("DATA_P", INDIRECTION_DATA[0]),
+        ("DATA_F", INDIRECTION_DATA[1]),
+        ("INDEX_F", INDIRECTION_INDEX_F as u64),
+        ("ONE", 1),
+    ]
+    .map(|(dim, value)| (dim.to_string(), value))
+    .into();
+    let reference = volta_spec::extract_expressions_from_spec(&ungathered, &dims).unwrap();
+    refuted(
+        check_equivalence(
+            &reference,
+            &outputs,
+            &["out_tensor".into()],
+            &EquivCheckOptions::default(),
+        )
+        .0,
+    );
+}

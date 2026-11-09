@@ -3,7 +3,7 @@
 //! Arguments are laid out row-major in HBM, so their symbols and outputs use offsets.
 
 use id_collections::IdVec;
-use volta_expr::{ExprArena, ExprId, Real, SymbolicOutputs};
+use volta_expr::{ExprArena, ExprId, ExprNode, Real, SymbolicOutputs};
 
 use crate::ir::{
     Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Order,
@@ -219,6 +219,22 @@ impl<'a> Interpreter<'a> {
                 moving,
                 accumulation,
             } => self.matmul(instr, dst, [stationary, moving], *accumulation, &mut writes)?,
+            LoweredInstr::Gather { dst, data, index } => {
+                for [partition, column] in elements(dst) {
+                    let docs = self.offset(instr, index, data, [0, column])?;
+                    let group = self.offset(instr, index, data, [partition, column])?;
+                    if docs != group {
+                        return Err(EvalError::IndirectReadings {
+                            instr,
+                            partition,
+                            column,
+                            offsets: [docs, group],
+                        });
+                    }
+                    let value = self.read(instr, data, [partition, docs])?;
+                    writes.push(Write::at(dst, [partition, column], value));
+                }
+            }
             LoweredInstr::Transpose { dst, data } => {
                 for [p, f] in elements(data) {
                     let value = self.read(instr, data, [p, f])?;
@@ -238,6 +254,40 @@ impl<'a> Interpreter<'a> {
     ) -> Result<ExprId, EvalError> {
         let index = region.tile_index(partition, free);
         self.tensors[region.tensor].read(&mut self.arena, instr, &index)
+    }
+
+    /// The offset into `data`'s free dimension that gathered `column` of `partition`
+    /// reads: element `[group + column % 16, column / 16]` of `index`, `group` the first
+    /// partition of `partition`'s 16-partition group.
+    fn offset(
+        &mut self,
+        instr: InstrId,
+        index: &TensorRegion,
+        data: &TensorRegion,
+        [partition, column]: [u64; 2],
+    ) -> Result<u64, EvalError> {
+        const GROUP: u64 = 16;
+        let row = partition - partition % GROUP + column % GROUP;
+        let value = self.read(instr, index, [row, column / GROUP])?;
+        let [_, extent] = data.tile_extents();
+        let offset = match self.arena.node(value) {
+            ExprNode::IntConst(value) => u64::try_from(*value).ok(),
+            ExprNode::RealConst(value) => {
+                let rounded = value.to_f64();
+                let exact = Real::from_f64(rounded).is_ok_and(|exact| exact == *value);
+                (exact && rounded.fract() == 0.0 && rounded >= 0.0).then_some(rounded as u64)
+            }
+            _ => None,
+        };
+        match offset {
+            Some(offset) if offset < extent => Ok(offset),
+            _ => Err(EvalError::IndirectOffset {
+                instr,
+                tensor: self.tensors[index.tensor].name().to_string(),
+                index: index.tile_index(row, column / GROUP),
+                extent,
+            }),
+        }
     }
 
     fn activation(&mut self, func: ActivationFunc, x: ExprId) -> ExprId {

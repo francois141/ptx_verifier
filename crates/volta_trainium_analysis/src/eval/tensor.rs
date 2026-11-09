@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use volta_expr::{ExprArena, ExprId, StringId};
+use volta_expr::{ExprArena, ExprId, Real, StringId};
 
 use crate::ir::{Index, Initial, InstrId, Tensor};
 
@@ -56,10 +56,15 @@ impl<'a> TensorState<'a> {
         if let Some(&value) = self.written.get(index) {
             return Ok(value);
         }
-        match self.tensor.initial {
+        match &self.tensor.initial {
             Initial::Argument => {
                 let offset = self.tensor.shape.offset(index);
                 Ok(arena.input_element(self.symbol, offset))
+            }
+            Initial::Integers(contents) => {
+                let value = contents[self.tensor.shape.offset(index) as usize];
+                let value = i64::try_from(value).expect("the parser bounds an index's contents");
+                Ok(arena.real(Real::from_i64(value)))
             }
             Initial::Uninitialized => Err(EvalError::UninitializedRead {
                 instr,

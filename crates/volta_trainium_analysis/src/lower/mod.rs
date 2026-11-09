@@ -27,13 +27,29 @@ const NKI_LANGUAGE: &str = "nki.language";
 /// result. The others carry an accumulator across instructions, which is not modelled.
 const RESET_REDUCE: &str = "nki.isa.reduce_cmd.reset_reduce";
 
-/// The compute engines an instruction's `engine=` may pick. Which engine runs an
-/// instruction does not change its result, so lowering drops the choice.
-const ENGINES: [&str; 3] = [
-    "nki.isa.vector_engine",
-    "nki.isa.scalar_engine",
-    "nki.isa.gpsimd_engine",
+/// The compute engines an instruction's `engine=` may pick, by `nki.isa` member;
+/// `engine.unknown` lets the compiler choose. Which engine runs an instruction does not
+/// change its result, but tensor indirection runs on the vector or scalar engine only.
+const ENGINES: [(&str, Option<Engine>); 7] = [
+    ("nki.isa.engine.vector", Some(Engine::Vector)),
+    ("nki.isa.engine.scalar", Some(Engine::Scalar)),
+    ("nki.isa.engine.gpsimd", Some(Engine::Gpsimd)),
+    ("nki.isa.engine.unknown", None),
+    ("nki.isa.vector_engine", Some(Engine::Vector)),
+    ("nki.isa.scalar_engine", Some(Engine::Scalar)),
+    ("nki.isa.gpsimd_engine", Some(Engine::Gpsimd)),
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Engine {
+    Vector,
+    Scalar,
+    Gpsimd,
+}
+
+/// The partitions tensor indirection on the vector and scalar engines reads one
+/// column of offsets from.
+const INDIRECT_GROUP: u64 = 16;
 
 /// Lower `kernel` into its tensors, the parameters first and then the declared
 /// tensors in declaration order, its instructions in order, and the tensor it returns.
@@ -44,13 +60,11 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         .iter()
         .map(|param| {
             let shape = Shape(param.shape.iter().map(|extent| extent.get()).collect());
-            scope.add(
-                param.name.clone(),
-                Memory::Hbm,
-                shape,
-                Initial::Argument,
-                None,
-            )
+            let initial = match &param.contents {
+                None => Initial::Argument,
+                Some(contents) => Initial::Integers(contents.clone()),
+            };
+            scope.add(param.name.clone(), Memory::Hbm, shape, initial, None)
         })
         .collect();
 
@@ -105,7 +119,8 @@ fn lower_instruction(
     instruction: &Instruction,
     scope: &Scope,
 ) -> Result<LoweredInstr, StatementError> {
-    let instruction = &without_engine(instruction)?;
+    let (instruction, engine) = without_engine(instruction)?;
+    let instruction = &instruction;
     match instruction.opcode.as_str() {
         // =====================================================================
         // Data Movement
@@ -122,6 +137,14 @@ fn lower_instruction(
 
         "tensor_copy" => {
             let [dst, src] = operands(instruction, &["dst", "src"])?;
+            if let Operand::Indirect {
+                tensor,
+                index,
+                count,
+            } = src
+            {
+                return gather(dst, [tensor, index], *count, engine, scope);
+            }
             let [dst, src] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
             same_shape(&dst, &src)?;
             Ok(LoweredInstr::Mov {
@@ -413,17 +436,71 @@ fn lower_instruction(
 // Operands
 // =============================================================================
 
-/// `instruction` without its `engine=`, which must name a compute engine if given.
-fn without_engine(instruction: &Instruction) -> Result<Cow<'_, Instruction>, StatementError> {
-    let Some(engine) = instruction.operands.get("engine") else {
-        return Ok(Cow::Borrowed(instruction));
+/// `instruction` without its `engine=`, which must name a compute engine if given, and
+/// the engine it names.
+fn without_engine(
+    instruction: &Instruction,
+) -> Result<(Cow<'_, Instruction>, Option<Engine>), StatementError> {
+    let Some(given) = instruction.operands.get("engine") else {
+        return Ok((Cow::Borrowed(instruction), None));
     };
-    if !matches!(engine, Operand::Member(member) if ENGINES.contains(&member.as_str())) {
-        return Err(StatementError::UnsupportedEngine(engine.clone()));
-    }
+    let engine = ENGINES
+        .iter()
+        .find(|(name, _)| matches!(given, Operand::Member(member) if member == name));
+    let Some(&(_, engine)) = engine else {
+        return Err(StatementError::UnsupportedEngine(given.clone()));
+    };
     let mut instruction = instruction.clone();
     instruction.operands.remove("engine");
-    Ok(Cow::Owned(instruction))
+    Ok((Cow::Owned(instruction), engine))
+}
+
+/// `tensor_copy(dst, data.indirect(index, num_elem=count))`: `dst` a `[partitions,
+/// count]` tile region, `data` a matrix tile and `index` an SBUF matrix of its
+/// partitions, `count` by default the index's size, as the NKI docs give it.
+fn gather(
+    dst: &Operand,
+    [data, index]: [&TensorName; 2],
+    count: Option<u64>,
+    engine: Option<Engine>,
+    scope: &Scope,
+) -> Result<LoweredInstr, StatementError> {
+    if let Some(engine @ Engine::Gpsimd) = engine {
+        let member = ENGINES.iter().find(|(_, named)| *named == Some(engine));
+        let member = member.expect("every engine has a member").0;
+        return Err(StatementError::IndirectEngine(Operand::Member(
+            member.into(),
+        )));
+    }
+    let dst = scope.tile(dst, "dst")?;
+    let data = scope.tile(&Operand::Tensor(data.clone()), "src")?;
+    let index = scope.tile(&Operand::Tensor(index.clone()), "index")?;
+    index.in_memory(Memory::Sbuf)?;
+    let [partitions, _] = data.matrix()?;
+    if partitions % INDIRECT_GROUP != 0 {
+        return Err(StatementError::IndirectPartitions(partitions));
+    }
+    let columns = match index.kept.0[..] {
+        [rows, columns] if rows == partitions => columns,
+        _ => {
+            return Err(StatementError::IndirectIndex {
+                tensor: index.name.clone(),
+                shape: index.kept.clone(),
+                partitions,
+            });
+        }
+    };
+    let capacity = INDIRECT_GROUP * columns;
+    let count = count.unwrap_or(partitions * columns);
+    if count > capacity {
+        return Err(StatementError::IndirectCount { count, capacity });
+    }
+    result_shape(&dst, Shape(vec![partitions, count]))?;
+    Ok(LoweredInstr::Gather {
+        dst: dst.region,
+        data: data.region,
+        index: index.region,
+    })
 }
 
 /// The operands of `instruction` in the order of `keywords`, exactly its operand keywords.
@@ -753,6 +830,7 @@ impl Scope {
                 offset,
             } => return self.pattern(tensor, pattern, *offset),
             Operand::Broadcast { tensor, shape } => return self.broadcast(tensor, shape),
+            Operand::Indirect { .. } => return Err(StatementError::IndirectOperand { keyword }),
             _ => return Err(StatementError::NotATensor { keyword }),
         };
         let id = self.ids[name];
@@ -944,7 +1022,7 @@ impl Scope {
     fn returned(&self, name: &TensorName) -> Result<TensorId, LowerError> {
         let id = self.ids[name];
         let entry = &self.entries[id];
-        if (entry.memory, entry.initial) != (Memory::Hbm, Initial::Uninitialized) {
+        if (entry.memory, &entry.initial) != (Memory::Hbm, &Initial::Uninitialized) {
             return Err(LowerError::ReturnsUnallocated(name.clone()));
         }
         Ok(id)
