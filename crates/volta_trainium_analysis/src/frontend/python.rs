@@ -117,7 +117,8 @@ pub enum Stmt {
     },
     /// An expression evaluated for its effect, e.g. an `nki.isa` call.
     Expr { line: usize, value: Expr },
-    /// `assert test` or `assert test, message`; the message is never read.
+    /// `assert test` or `assert test, message`; the message, any expression, is skipped
+    /// unread.
     Assert { line: usize, test: Expr },
     /// `for var in iterable:` and its indented body.
     For {
@@ -571,10 +572,10 @@ impl Parser {
         if self.eat(&TokenKind::Keyword(Keyword::Assert)) {
             let test = self.expr()?;
             if self.eat(&TokenKind::Comma) {
-                self.expect(TokenKind::Str)?;
-                while self.eat(&TokenKind::Str) {}
+                self.skip_line();
+            } else {
+                self.expect(TokenKind::Newline)?;
             }
-            self.expect(TokenKind::Newline)?;
             return Ok(Stmt::Assert { line, test });
         }
 

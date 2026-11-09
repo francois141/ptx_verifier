@@ -88,6 +88,10 @@ pub enum StatementError {
     /// An `engine` other than one of `nki.isa`'s compute engines.
     UnsupportedEngine(Operand),
 
+    /// A gather on an engine other than the vector or scalar engine, which the NKI
+    /// docs require of tensor indirection.
+    IndirectEngine(Operand),
+
     /// A `dma_transpose` `axes` other than `(1, 0)`, a 2-D transpose.
     UnsupportedTransposeAxes(Operand),
 
@@ -147,6 +151,29 @@ pub enum StatementError {
         shape: Shape,
         target: Shape,
     },
+
+    /// An indirect view where the instruction does not gather: only `tensor_copy`'s `src`.
+    IndirectOperand {
+        keyword: &'static str,
+    },
+
+    /// An indirect view's index, which must be a `[partitions, columns]` tile of its
+    /// data's partitions.
+    IndirectIndex {
+        tensor: TensorName,
+        shape: Shape,
+        partitions: u64,
+    },
+
+    /// A `num_elem` beyond the offsets an index's columns hold, 16 per column.
+    IndirectCount {
+        count: u64,
+        capacity: u64,
+    },
+
+    /// An indirect view of a partition count other than whole 16-partition groups,
+    /// each of which reads its offsets from 16 rows of the index.
+    IndirectPartitions(u64),
 
     /// An index outside its tensor's dimension, or a slice reaching outside it or
     /// selecting no elements.
@@ -227,8 +254,13 @@ impl fmt::Display for StatementError {
             ),
             Self::UnsupportedEngine(engine) => write!(
                 f,
-                "unsupported `engine` `{engine}`: only `nisa.vector_engine`, \
-                 `nisa.scalar_engine` or `nisa.gpsimd_engine`"
+                "unsupported `engine` `{engine}`: only `nisa.engine.vector`, `scalar`, \
+                 `gpsimd` or `unknown`, or `nisa.vector_engine`, `scalar_engine` or \
+                 `gpsimd_engine`"
+            ),
+            Self::IndirectEngine(engine) => write!(
+                f,
+                "tensor indirection runs on the vector or scalar engine, not `{engine}`"
             ),
             Self::UnsupportedTransposeAxes(axes) => write!(
                 f,
@@ -285,6 +317,27 @@ impl fmt::Display for StatementError {
             } => write!(
                 f,
                 "`{tensor}{shape}` cannot broadcast to {target}: each extent must match or be 1"
+            ),
+            Self::IndirectOperand { keyword } => write!(
+                f,
+                "`{keyword}` cannot be an indirect view: only `tensor_copy`'s `src` gathers"
+            ),
+            Self::IndirectIndex {
+                tensor,
+                shape,
+                partitions,
+            } => write!(
+                f,
+                "the index `{tensor}{shape}` of an indirect view must be a matrix of its \
+                 data's {partitions} partitions"
+            ),
+            Self::IndirectPartitions(partitions) => write!(
+                f,
+                "an indirect view's {partitions} partitions are not whole 16-partition groups"
+            ),
+            Self::IndirectCount { count, capacity } => write!(
+                f,
+                "`num_elem={count}` exceeds the {capacity} offsets the index holds, 16 per column"
             ),
             Self::AccessPattern { tensor, problem } => {
                 write!(f, "access pattern of `{tensor}`: {problem}")

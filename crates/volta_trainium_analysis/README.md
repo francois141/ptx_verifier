@@ -45,16 +45,20 @@ partitions included (mamba's one-partition `B_i` to 128); the docs say it return
 tile, so it is a copy into one, its source an `ast::Operand::Broadcast` that lowering
 reads through a pattern stepping 0 along each repeated dimension (`dtype=` is
 rejected). A region's `.shape` (its kept extents) and `.dtype` are values, as a
-tensor's are. `True` and `False` are values.
+tensor's are. `True` and `False` are values. `t.indirect(index, num_elem=count)` is an
+`ast::Operand::Indirect`, a tensor-indirection view that only `tensor_copy`'s `src`
+takes (see below); the docs' further `*index` tiles are unsupported.
 
 ## Instructions
 
 Lowering accepts fourteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
 `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `reciprocal`, `nc_matmul`,
-`nc_transpose` and `dma_transpose`. An instruction's `engine=` (`nisa.vector_engine`,
-`nisa.scalar_engine` or `nisa.gpsimd_engine`) is accepted and dropped, since the
-engine does not change the result. Their
+`nc_transpose` and `dma_transpose`. An instruction's `engine=` (`nisa.engine.vector`,
+`scalar`, `gpsimd` or `unknown`, the compiler's choice, or the older
+`nisa.vector_engine`, `scalar_engine` and `gpsimd_engine`) is accepted and dropped,
+since the engine does not change the result; only tensor indirection, which the docs
+run on the vector or scalar engine, rejects `gpsimd`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
 `nl.square`, `nl.rsqrt`, `nl.exp`); a new member means a variant in the enum's
@@ -90,6 +94,20 @@ for `dst[p, -1]`; `reverse0=True` and `reverse1=True` swap their op's operands
 (`ir::Order`). Its rank-3 form is rejected: the docs do not say how two free
 dimensions are ordered for the scan.
 
+`tensor_copy(dst, data.indirect(index, num_elem=count))` is `LoweredInstr::Gather`,
+tensor indirection (Trn3 and later): `dst[p, i] = data[p, offset]` for each of its
+`count` columns (by default the index's size, as the docs give it, at most its 16
+offsets per column), `data` a matrix tile and `index` an SBUF matrix of its
+partitions, which must be whole 16-partition groups. The docs read offset `i` from
+`index[i % 16, i // 16]`; the tutorial's docstring reads it from the rows of each
+partition's 16-partition group (`index[start + i % 16, i // 16]`), and the docs do not
+say which data partitions an index row serves. A gather is defined only where both
+readings agree, as when every group holds the same offsets, which the tutorial
+replicates; elsewhere it is `EvalError::IndirectReadings`. An offset must be a concrete
+integer below `data`'s free size (`EvalError::IndirectOffset`), so the index's values
+come from the call (`KernelCall::contents`, below); a symbolic one is that error too. A
+scatter, `dst=t.indirect(...)`, is rejected.
+
 `nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
 `False` overwrites `dst`, `True` adds to it (an unwritten element is an
 `UninitializedRead`, as reading uninitialized PSUM is undefined), and `None`, the
@@ -116,7 +134,10 @@ name, call)`) also gives parameter dtypes by `nki.language` name, e.g. `("q",
 compares it, as v10's allocator does to size its tiles. A parameter the call gives
 no shape is not a tensor: it takes the call's `KernelCall::constants` value (a
 `Constant`: an integer, a tuple of integers or a bool), else its default, as the
-matrix multiplication tutorial's `TILES_IN_BLOCK_M=16` does. An `nki.isa`
+matrix multiplication tutorial's `TILES_IN_BLOCK_M=16` does. `KernelCall::contents`
+gives a tensor parameter's elements, row-major, as integers (`ast::Param::contents`,
+`ir::Initial::Integers`), as PTX's `IndexInput` does but with chosen values: a gather's
+offsets, which address another tensor and so must be concrete. An `nki.isa`
 instruction's operands are by keyword, except the leading ones of `dma_copy` and
 `tensor_copy` (`dst`, `src`), `nc_matmul` (`dst`, `stationary`, `moving`) and
 `nc_transpose` (`dst`, `data`), which may come by position in that order, as their
@@ -139,7 +160,8 @@ everything that depends only on the call, as NKI's tracer does:
   chained, and other values (tuples, bools, floats, `None`, objects by identity,
   dtypes, `q.dtype` by the call's dtype) by `==` and `!=`; `and`, `or` and `not`
   take Python's truth of a bool, an integer or `None`.
-- `assert`s are checked rather than kept, any message unread. A false one is a
+- `assert`s are checked rather than kept, any message (any expression, e.g. a
+  parenthesized f-string) skipped unread. A false one is a
   parse error, naming the comparison if it is one, e.g. ``assertion fails for
   this call: `64 == 128` is false``.
 - An `if`, `elif` and `else` runs its taken branch only, and a `return` may come
@@ -259,7 +281,8 @@ anywhere but the last statement is a parse error. The returned tensor's output
 array is named after it (`kernel_out` in the attention samples).
 
 Each tensor records what its unwritten elements hold (`ir::Initial`): an
-argument's are its input symbols, while reading an unwritten element of a tile
+argument's are its input symbols, or the integers its call gives, while reading an
+unwritten element of a tile
 or of a kernel-allocated HBM tensor is an `EvalError::UninitializedRead`.
 
 ## Placed tiles
@@ -302,7 +325,8 @@ Attribution), and the other tutorials' kernel files the same way, each with a
 `[P, X, Y]` and `[P, Y, X]` since a spec index is affine) and
 `average_pool2d_nki_kernels.py` (`average_pool2d.spec`, the mean of each `S x S`
 window) and `mamba_nki_kernels.py` (`mamba.spec`, `mamba_torch.py`'s `mamba_layer`, its
-scan unrolled into causal sums). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+scan unrolled into causal sums) and `tensor_indirection_nki_kernels.py`
+(`tensor_indirection.spec`, `data[:, index[0]]`, its index an index array). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 
@@ -368,6 +392,14 @@ the free size, one leaving its partition, one past its tensor's end, and a
 `activation`'s `scale`, its `scale` tile an `nl.zeros` without a `buffer` (a
 hand-written `.expected`); a test widens its parsed broadcast to a shape its row
 cannot take, which lowering rejects (`StatementError::BroadcastShape`).
+`tests/fixtures/indirect.py` gathers three columns, one offset repeated, of each of a
+32-row tile's two 16-partition groups on `nisa.engine.scalar`, its index replicated
+across them from a call's `contents` (an `.expected` computed from `a[p, idx[i]]`);
+`indirect_errors.py`'s kernels must fail: groups holding different offsets
+(`IndirectReadings`), an offset past the data or not given (`IndirectOffset`), and at
+lowering a gather on `gpsimd`, a scatter, a `num_elem` beyond the index's 16 per
+column, partitions short of a group and an index of other partitions; a call's
+`contents` of the wrong length, given twice or for a non-tensor are parse errors.
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as

@@ -24,10 +24,12 @@ pub struct Tensor {
 }
 
 /// What a tensor's elements hold before an instruction writes them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Initial {
     /// A kernel argument's: each element is its input symbol.
     Argument,
+    /// A kernel argument whose elements the call gives, row-major: an index tensor's.
+    Integers(Vec<u64>),
     /// A tile's or a kernel-allocated HBM tensor's: nothing, so reading one is an error.
     Uninitialized,
 }

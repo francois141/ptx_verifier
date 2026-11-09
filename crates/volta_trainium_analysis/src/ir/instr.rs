@@ -25,6 +25,14 @@ pub enum LoweredInstr {
     },
     /// Every element of `dst` set to `value`.
     Memset { dst: TensorRegion, value: Scalar },
+    /// Tensor indirection: `dst[p, i] = data[p, index[i % 16, i // 16]]` for each of
+    /// `dst`'s `count` columns, `index` holding free-dimension offsets of `data`, as the
+    /// NKI docs state it, and the same offset from the rows of `p`'s 16-partition group.
+    Gather {
+        dst: TensorRegion,
+        data: TensorRegion,
+        index: TensorRegion,
+    },
 
     // =========================================================================
     // Elementwise

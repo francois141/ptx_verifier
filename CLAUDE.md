@@ -483,7 +483,8 @@ Lowering accepts fourteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
 `activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `reciprocal`, `nc_matmul`,
 `nc_transpose` and `dma_transpose` (`axes=(1, 0)` only, the same `Transpose`) - drops
-an `engine=` naming `nisa.vector_engine`, `scalar_engine` or `gpsimd_engine`, and resolves
+an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd` or `unknown` (or the older
+`nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
 (`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`) for a variant whose
@@ -502,6 +503,14 @@ is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
 of matrix regions, `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])` from
 `initial` (a literal or a `[partitions, 1]` tile), `reverse0`/`reverse1` swapping an op's
 operands (`ir::Order`).
+`tensor_copy(dst, data.indirect(index, num_elem=count))` (`ast::Operand::Indirect`, only
+as `tensor_copy`'s `src`) is `LoweredInstr::Gather`, tensor indirection: `dst[p, i] =
+data[p, offset]` for `count` columns (default the index's size, at most 16 per index
+column), `index` an SBUF matrix of `data`'s partitions, whole 16-partition groups, and
+not on `gpsimd` (`StatementError::IndirectEngine`). The docs read offset `i` from
+`index[i % 16, i // 16]`, the tutorial from the rows of each partition's group; a gather
+is defined only where they agree (else `EvalError::IndirectReadings`), and an offset must
+be a concrete integer below `data`'s free size (`EvalError::IndirectOffset`).
 
 `nc_matmul`'s `accumulate=` is `ir::Accumulation`: `False` overwrites `dst`, `True` adds
 to it (an unwritten element is an `UninitializedRead`), and `None`, the default,
@@ -523,7 +532,9 @@ final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
 buffer=nl.shared_hbm)` (any rank), its output array named `t`. Returning an
 argument or a tile is a lowering error. `ir::Initial` records what a tensor's
 unwritten elements hold: an argument's are input symbols, while a tile's or an
-allocated HBM tensor's are uninitialized, so reading one is `UninitializedRead`.
+allocated HBM tensor's are uninitialized, so reading one is `UninitializedRead`;
+`Initial::Integers` holds the integers a call gives an argument (`KernelCall::contents`,
+`ast::Param::contents`), as PTX's `IndexInput` with chosen values: a gather's offsets.
 
 A `tensor_scalar` operand is a float literal or a `[partitions, 1]` tile whose
 single free element broadcasts across the destination's free axis; its second
@@ -568,7 +579,8 @@ and tuple or list slices evaluate there, and `t.shape` is a tuple. Comparisons a
 values (integers ordered and chained; tuples, bools, floats, `None`, objects by
 identity and dtypes, `q.dtype` by the call's, by `==`/`!=`), as are `and`/`or`/`not`
 over Python's truth of a bool, integer or `None`. An `assert` (its message unread)
-is checked and leaves no statement; a false one is a parse error. An
+is checked and leaves no statement (its message, any expression, skipped); a false one
+is a parse error. An
 `if`/`elif`/`else` runs its taken branch, a `return` (bare: `None`) may come
 anywhere (`Flow`), and `with nl.no_reorder():` runs its body, the instructions
 being in program order anyway.
@@ -673,7 +685,8 @@ tutorials' kernel files likewise, each with a `.spec` of its reference
 `matrix_multiplication_nki_kernels.py`, `matrix_multiplication.spec`;
 `transpose2d_nki_kernels.py`, `transpose2d.spec`, its arrays viewed in three dimensions;
 `average_pool2d_nki_kernels.py`, `average_pool2d.spec`; `mamba_nki_kernels.py`,
-`mamba.spec`, its scan unrolled into causal sums);
+`mamba.spec`, its scan unrolled into causal sums; `tensor_indirection_nki_kernels.py`,
+`tensor_indirection.spec`, its offsets an index array);
 `attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
 `.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
@@ -708,6 +721,10 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `tests/fixtures/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
 ops reversed, from `1.0`, and applies `activation`'s `scale` (a hand-written `.expected`);
 a test widens its parsed broadcast past its row's shape (`BroadcastShape`).
+`tests/fixtures/indirect.py` gathers three columns, one offset repeated, over two
+16-partition groups on `nisa.engine.scalar` from a call's `contents` (an `.expected`
+computed from `a[p, idx[i]]`); `indirect_errors.py`'s kernels must fail, one per
+`IndirectReadings`/`IndirectOffset` case and lowering's indirection errors.
 `tests/fixtures/helper_call.py` calls
 `helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
 unreached code (a conditional expression, a dict, f-strings) that is never parsed.
@@ -880,7 +897,10 @@ against `mamba.spec` and each other at 2 x 128 x 8 x 2 with `pmax` 64 and
 `gemm_moving_fmax` 4, v3's `seq_len_fsize = 512` stated as that tile size (checked to
 change nothing at hardware sizes) so it carries its scan across two sequence tiles,
 refuted against a decay one step too long, a scan without its recurrence and, for v3,
-its scan restarted each tile).
+its scan restarted each tile; the tensor_indirection tutorial's kernel, its offsets a
+call's `contents`, against `tensor_indirection.spec` (an index array) at its driver's
+128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
+against one moved offset and the ungathered `data[:, i]`).
 These check functional equivalence only. `just amd` and `just trainium` run them 
 alongside the analysis crate's snapshot tests.
 

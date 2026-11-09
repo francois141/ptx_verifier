@@ -101,7 +101,14 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   checks the three kernels unchanged there), so v3 runs two sequence tiles and carries
   its scan across them; the driver's 2048 steps x 256 channels x 16 states are out of
   reach. All three are refuted against a decay one step too long and a scan without
-  its recurrence, and v3 restarting each tile's scan from zero is refuted too.
+  its recurrence, and v3 restarting each tile's scan from zero is refuted too. The
+  tensor_indirection tutorial's kernel, its index tensor's offsets given by the call
+  (`KernelCall::contents`, three draws with repeats and one of extreme offsets), is
+  proved equal to `tensor_indirection.spec` (`data[:, index[0]]`, the offsets its
+  index array) on every output at its driver's 128 x 64 with 32 offsets, and at
+  16 x 8 with 16 and 48 x 20 with 48 (one and three 16-partition groups and index
+  columns); it is refuted against the spec given one other offset and against the
+  ungathered `data[:, i]`.
   Functional equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 

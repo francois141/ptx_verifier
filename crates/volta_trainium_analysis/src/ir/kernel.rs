@@ -6,7 +6,7 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, ArithOp, InstrId, Layout, LoweredInstr, Order, Reduction, ScalarOperand,
+    Accumulation, ArithOp, Initial, InstrId, Layout, LoweredInstr, Order, Reduction, ScalarOperand,
     Selection, Sign, Tensor, TensorId, TensorRegion,
 };
 
@@ -77,6 +77,10 @@ impl fmt::Display for LoweredKernel {
         for tensor in self.tensors.values() {
             let memory = tensor.memory.name();
             write!(f, "  {}: {memory}{}", tensor.name, tensor.shape)?;
+            if let Initial::Integers(contents) = &tensor.initial {
+                let contents: Vec<String> = contents.iter().map(u64::to_string).collect();
+                write!(f, " = [{}]", contents.join(", "))?;
+            }
             match tensor.address {
                 Some(address) => writeln!(
                     f,
@@ -118,6 +122,13 @@ impl fmt::Display for LoweredKernel {
                     let expr = format!("{}({data})", func.name());
                     writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
+                LoweredInstr::Gather { dst, data, index } => writeln!(
+                    f,
+                    "  {} = gather({}, {})",
+                    region(dst),
+                    region(data),
+                    region(index)
+                )?,
                 LoweredInstr::Memset { dst, value } => {
                     writeln!(f, "  {} = memset({value})", region(dst))?
                 }
