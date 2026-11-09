@@ -6,8 +6,8 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, InstrId, Layout, LoweredInstr, Reduction, ScalarOperand, Selection, Sign, Tensor,
-    TensorId, TensorRegion,
+    Accumulation, ArithOp, InstrId, Layout, LoweredInstr, Order, Reduction, ScalarOperand,
+    Selection, Sign, Tensor, TensorId, TensorRegion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,13 +104,17 @@ impl fmt::Display for LoweredKernel {
                     func,
                     dst,
                     data,
+                    scale,
                     bias,
                     reduce,
                 } => {
-                    let data = match bias {
-                        Some(bias) => format!("add({}, {})", region(data), scalar(bias)),
-                        None => region(data),
-                    };
+                    let mut data = region(data);
+                    if let Some(scale) = scale {
+                        data = format!("multiply({data}, {})", scalar(scale));
+                    }
+                    if let Some(bias) = bias {
+                        data = format!("add({data}, {})", scalar(bias));
+                    }
                     let expr = format!("{}({data})", func.name());
                     writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
@@ -146,6 +150,30 @@ impl fmt::Display for LoweredKernel {
                         expr = format!("{}({}, {})", step.op.name(), expr, scalar(&step.operand));
                     }
                     writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
+                }
+                LoweredInstr::Scan {
+                    dst,
+                    data0,
+                    data1,
+                    initial,
+                    op0,
+                    op1,
+                } => {
+                    let applied = |(op, order): (ArithOp, Order), first: String, second| {
+                        let [left, right] = match order {
+                            Order::Given => [first, second],
+                            Order::Reversed => [second, first],
+                        };
+                        format!("{}({left}, {right})", op.name())
+                    };
+                    let step = applied(*op0, region(data0), "acc".to_string());
+                    let step = applied(*op1, step, region(data1));
+                    writeln!(
+                        f,
+                        "  {} = scan(acc = {}; acc = {step})",
+                        region(dst),
+                        scalar(initial)
+                    )?
                 }
                 LoweredInstr::Matmul {
                     dst,

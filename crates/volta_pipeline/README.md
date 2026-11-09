@@ -99,8 +99,17 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   to `average_pool2d.spec` (each window's mean) at its drivers' 2 x 6 x 6 with 2 x 2
   windows and at 3 x 8 x 12 with 4 x 4, and refuted against the unscaled sum and
   against overlapping windows. That scale is exact only for power-of-two pool sizes;
-  a 3 x 3 pool's float `1/9` is not the mean over the reals. Functional
-  equivalence only; `just trainium` runs them in release.
+  a 3 x 3 pool's float `1/9` is not the mean over the reals. The fused_mamba
+  tutorial's `mamba_v1` to `mamba_v3`, float32 as its drivers call them, are proved
+  equal to `mamba.spec` (the torch reference's scan unrolled into causal sums) and v2
+  to v1 and v3 to v2, on every output, at 2 batches x 128 channels x 8 steps x 2
+  states with `pmax` 64 and `gemm_moving_fmax` 4. v3's `seq_len_fsize = 512` is
+  stated as `nl.tile_size.gemm_moving_fmax`, the 512 it equals on the hardware (a test
+  checks the three kernels unchanged there), so v3 runs two sequence tiles and carries
+  its scan across them; the driver's 2048 steps x 256 channels x 16 states are out of
+  reach. All three are refuted against a decay one step too long and a scan without
+  its recurrence, and v3 restarting each tile's scan from zero is refuted too.
+  Functional equivalence only; `just trainium` runs them in release.
 - the suites below, over `tests/common/`.
 
 ### How a test runs

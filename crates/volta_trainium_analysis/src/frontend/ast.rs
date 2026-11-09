@@ -263,6 +263,12 @@ pub enum Operand {
         pattern: Vec<[u64; 2]>,
         offset: u64,
     },
+    /// `nl.broadcast_to(tensor, shape)`: the whole tensor read at `shape`, of its rank,
+    /// each dimension of extent 1 repeated (numpy's rule).
+    Broadcast {
+        tensor: TensorName,
+        shape: Vec<u64>,
+    },
 }
 
 impl fmt::Display for Kernel {
@@ -378,6 +384,10 @@ impl fmt::Display for Operand {
                     .map(|[step, count]| format!("[{step}, {count}]"))
                     .collect();
                 write!(f, "{tensor}.ap([{}], offset={offset})", pairs.join(", "))
+            }
+            Self::Broadcast { tensor, shape } => {
+                let extents: Vec<String> = shape.iter().map(u64::to_string).collect();
+                write!(f, "nl.broadcast_to({tensor}, ({}))", extents.join(", "))
             }
         }
     }

@@ -1,0 +1,21 @@
+kernel kernel(a: [2, 3], b: [1, 3], c: [2, 1])
+  out: shared_hbm[2, 9] of float32
+  x: sbuf[2, 3] of a.dtype
+  dma_copy(dst=x, src=a[0:2, 0:3])
+  row: sbuf[1, 3] of float32
+  dma_copy(dst=row, src=b)
+  scale: sbuf[2, 1] of float32
+  memset(dst=scale, value=0)
+  dma_copy(dst=scale, src=c)
+  rows_b: sbuf[2, 3] of row.dtype
+  tensor_copy(dst=rows_b, src=nl.broadcast_to(row, (2, 3)))
+  forward: sbuf[2, 3] of float32
+  tensor_tensor_scan(data0=x, data1=rows_b, dst=forward, initial=scale, op0=nki.language.multiply, op1=nki.language.add)
+  reversed: sbuf[2, 3] of float32
+  tensor_tensor_scan(data0=x, data1=rows_b, dst=reversed, initial=1, op0=nki.language.subtract, op1=nki.language.subtract, reverse0=True, reverse1=True)
+  scaled: sbuf[2, 3] of float32
+  activation(data=x, dst=scaled, op=nki.language.exp, scale=scale)
+  dma_copy(dst=out[:, 0:3], src=forward)
+  dma_copy(dst=out[:, 3:6], src=reversed)
+  dma_copy(dst=out[:, 6:9], src=scaled)
+  return out

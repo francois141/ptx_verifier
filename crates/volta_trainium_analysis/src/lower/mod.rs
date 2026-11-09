@@ -15,7 +15,7 @@ use crate::frontend::ast::{
 };
 use crate::ir::{
     Accumulation, ActivationFunc, ArithOp, Index, Initial, Layout, LoweredInstr, LoweredKernel,
-    Memory, Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId,
+    Memory, Order, Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId,
     TensorRegion,
 };
 
@@ -166,11 +166,11 @@ fn lower_instruction(
         }
 
         "activation" => {
-            let ([dst, op, data], [bias, reduce_op, reduce_res, reduce_cmd]) =
+            let ([dst, op, data], [scale, bias, reduce_op, reduce_res, reduce_cmd]) =
                 operands_with_optional(
                     instruction,
                     &["dst", "op", "data"],
-                    &["bias", "reduce_op", "reduce_res", "reduce_cmd"],
+                    &["scale", "bias", "reduce_op", "reduce_res", "reduce_cmd"],
                 )?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
@@ -189,7 +189,8 @@ fn lower_instruction(
             };
             Ok(LoweredInstr::Activation {
                 func: activation_func(op)?,
-                bias: bias_operand(bias, &dst, scope)?,
+                scale: broadcast_operand(scale, "scale", &dst, scope)?,
+                bias: broadcast_operand(bias, "bias", &dst, scope)?,
                 dst: dst.region,
                 data: data.region,
                 reduce,
@@ -198,16 +199,17 @@ fn lower_instruction(
 
         // `activation` with `reduce_cmd=reset_reduce`, as the NKI docs define it.
         "activation_reduce" => {
-            let ([dst, op, data, reduce_op, reduce_res], [bias]) = operands_with_optional(
+            let ([dst, op, data, reduce_op, reduce_res], [scale, bias]) = operands_with_optional(
                 instruction,
                 &["dst", "op", "data", "reduce_op", "reduce_res"],
-                &["bias"],
+                &["scale", "bias"],
             )?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
             Ok(LoweredInstr::Activation {
                 func: activation_func(op)?,
-                bias: bias_operand(bias, &dst, scope)?,
+                scale: broadcast_operand(scale, "scale", &dst, scope)?,
+                bias: broadcast_operand(bias, "bias", &dst, scope)?,
                 reduce: Some(reduction(reduce_op, reduce_res, &data, scope)?),
                 dst: dst.region,
                 data: data.region,
@@ -222,6 +224,7 @@ fn lower_instruction(
                 func: ActivationFunc::Reciprocal,
                 dst: dst.region,
                 data: data.region,
+                scale: None,
                 bias: None,
                 reduce: None,
             })
@@ -301,6 +304,31 @@ fn lower_instruction(
                 first,
                 second,
                 reduce: None,
+            })
+        }
+
+        "tensor_tensor_scan" => {
+            let ([dst, data0, data1, initial, op0, op1], [reverse0, reverse1]) =
+                operands_with_optional(
+                    instruction,
+                    &["dst", "data0", "data1", "initial", "op0", "op1"],
+                    &["reverse0", "reverse1"],
+                )?;
+            let [dst, data0, data1] = [
+                scope.tile(dst, "dst")?,
+                scope.tile(data0, "data0")?,
+                scope.tile(data1, "data1")?,
+            ];
+            let [partitions, _] = data0.matrix()?;
+            same_shape(&data0, &data1)?;
+            same_shape(&dst, &data0)?;
+            Ok(LoweredInstr::Scan {
+                initial: scalar_operand(initial, "initial", partitions, scope)?,
+                op0: (arith_op(op0)?, order(reverse0, "reverse0")?),
+                op1: (arith_op(op1)?, order(reverse1, "reverse1")?),
+                dst: dst.region,
+                data0: data0.region,
+                data1: data1.region,
             })
         }
 
@@ -518,15 +546,27 @@ fn scalar_operand(
     Ok(ScalarOperand::Broadcast(tile.region))
 }
 
-/// An activation's optional `bias`, broadcast across `dst` like a `tensor_scalar` operand.
-fn bias_operand(
-    bias: Option<&Operand>,
+/// An activation's optional `scale` or `bias`, broadcast across `dst` like a
+/// `tensor_scalar` operand.
+fn broadcast_operand(
+    operand: Option<&Operand>,
+    keyword: &'static str,
     dst: &RegionOperand,
     scope: &Scope,
 ) -> Result<Option<ScalarOperand>, StatementError> {
     let [partitions, _] = dst.region.tile_extents();
-    bias.map(|bias| scalar_operand(bias, "bias", partitions, scope))
+    operand
+        .map(|operand| scalar_operand(operand, keyword, partitions, scope))
         .transpose()
+}
+
+/// A scan op's operand order from its optional `reverse0` or `reverse1`.
+fn order(reverse: Option<&Operand>, keyword: &'static str) -> Result<Order, StatementError> {
+    match reverse {
+        None | Some(Operand::Bool(false)) => Ok(Order::Given),
+        Some(Operand::Bool(true)) => Ok(Order::Reversed),
+        Some(_) => Err(StatementError::NotABool { keyword }),
+    }
 }
 
 /// The reduction by `op` of an instruction's elementwise result, of the shape of
@@ -712,6 +752,7 @@ impl Scope {
                 pattern,
                 offset,
             } => return self.pattern(tensor, pattern, *offset),
+            Operand::Broadcast { tensor, shape } => return self.broadcast(tensor, shape),
             _ => return Err(StatementError::NotATensor { keyword }),
         };
         let id = self.ids[name];
@@ -817,6 +858,53 @@ impl Scope {
                 },
             },
             kept: counts,
+        })
+    }
+
+    /// `nl.broadcast_to(tensor, shape)`: `tensor` read at `shape` through a pattern
+    /// stepping 0 along each dimension it repeats, so it may repeat a tile's partition.
+    fn broadcast(
+        &self,
+        name: &TensorName,
+        target: &[u64],
+    ) -> Result<RegionOperand<'_>, StatementError> {
+        let id = self.ids[name];
+        let entry = &self.entries[id];
+        let extents = &entry.shape.0;
+        let broadcastable = extents.len() == target.len()
+            && extents
+                .iter()
+                .zip(target)
+                .all(|(&from, &to)| from == to || from == 1);
+        if !broadcastable {
+            return Err(StatementError::BroadcastShape {
+                tensor: name.clone(),
+                shape: entry.shape.clone(),
+                target: Shape(target.to_vec()),
+            });
+        }
+        let mut steps = vec![0; extents.len()];
+        let mut stride = 1;
+        for (dimension, &extent) in extents.iter().enumerate().rev() {
+            if extent == target[dimension] {
+                steps[dimension] = stride;
+            }
+            stride *= extent;
+        }
+        let shape = Shape(target.to_vec());
+        Ok(RegionOperand {
+            name: &entry.name,
+            memory: entry.memory,
+            region: TensorRegion {
+                tensor: id,
+                shape: shape.clone(),
+                layout: Layout::Pattern {
+                    offset: 0,
+                    steps,
+                    storage: entry.shape.clone(),
+                },
+            },
+            kept: shape,
         })
     }
 

@@ -4,7 +4,7 @@
 
 mod common;
 
-use volta_trainium_analysis::frontend::ast::TensorName;
+use volta_trainium_analysis::frontend::ast::{Operand, Statement, TensorName};
 use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel};
 use volta_trainium_analysis::{
     EvalError, Index, InstrId, LowerError, PatternProblem, StatementError, evaluate, lower_kernel,
@@ -269,6 +269,43 @@ fn a_placed_tile_past_the_end_of_its_buffer_is_an_error() {
 #[test]
 fn the_access_patterns_kernel_parses_lowers_and_runs_as_expected() {
     common::check("access_patterns", "kernel", &[("a", &[2, 6])]);
+}
+
+#[test]
+fn the_scan_kernel_parses_lowers_and_runs_as_expected() {
+    common::check(
+        "scan",
+        "kernel",
+        &[("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])],
+    );
+}
+
+// The parser checks `nl.broadcast_to`'s shape, so the lowering's check is reached by
+// widening the parsed copy's source to a shape `row` does not broadcast to.
+#[test]
+fn broadcasting_to_an_incompatible_shape_is_an_error() {
+    let source = common::source("scan");
+    let shapes: [(&str, &[u64]); 3] = [("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])];
+    let mut parsed = parse_kernel(&source, "kernel", &shapes).unwrap();
+    let mut widened = 0;
+    for statement in &mut parsed.body {
+        if let Statement::Instruction(instruction) = statement {
+            for operand in instruction.operands.values_mut() {
+                if let Operand::Broadcast { shape, .. } = operand {
+                    *shape = vec![2, 4];
+                    widened += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(widened, 1);
+    match lower_kernel(&parsed).unwrap_err() {
+        LowerError::Statement {
+            error: StatementError::BroadcastShape { tensor, .. },
+            ..
+        } => assert_eq!(tensor, TensorName("row".into())),
+        other => panic!("expected a broadcast shape error, got {other}"),
+    }
 }
 
 /// The error lowering `kernel` of `pattern_errors.py` gives, for `a` of `shape`.

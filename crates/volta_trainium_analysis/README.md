@@ -31,22 +31,28 @@ and execution see only `nki.isa`:
 | `e = nl.exp(x)` | SBUF, `x`'s shape | `activation(op=exp)` |
 | `r = nl.reciprocal(x)` | SBUF, `x`'s shape | `reciprocal` |
 | `t = nl.transpose(x)` | PSUM `[F, P]` | `nc_transpose` |
+| `b = nl.broadcast_to(x, shape)` | SBUF `shape` | `tensor_copy(src=nl.broadcast_to(x, shape))` |
 
-`t = nl.zeros(shape, dtype, buffer)` declares an on-chip tile and a `memset` of it
+`t = nl.zeros(shape, dtype, buffer=nl.sbuf)` declares an on-chip tile and a `memset` of it
 to zero, so a later `nc_matmul` into it accumulates onto zeros: the accumulator
 v3 and v4 contract into over a loop. `nl.load` reads and `nl.store` writes device
 memory only. `transpose_x=False`, where
 NKI inserts a transpose, is rejected, as are `dtype=` and `mask=`. `nl.max` and
 `nl.sum` reduce trailing free axes of a tile, a region or an access-pattern view
 (`nl.sum(pool_view, axis=[3, 4])`), `keepdims=True` keeping them as extents of 1.
-`True` and `False` are values.
+`nl.broadcast_to` follows numpy's rule, each extent of `x` matching `shape` or 1, the
+partitions included (mamba's one-partition `B_i` to 128); the docs say it returns a
+tile, so it is a copy into one, its source an `ast::Operand::Broadcast` that lowering
+reads through a pattern stepping 0 along each repeated dimension (`dtype=` is
+rejected). A region's `.shape` (its kept extents) and `.dtype` are values, as a
+tensor's are. `True` and `False` are values.
 
 ## Instructions
 
-Lowering accepts thirteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+Lowering accepts fourteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
-`activation_reduce`, `tensor_reduce`, `reciprocal`, `nc_matmul`, `nc_transpose` and
-`dma_transpose`. An instruction's `engine=` (`nisa.vector_engine`,
+`activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `reciprocal`, `nc_matmul`,
+`nc_transpose` and `dma_transpose`. An instruction's `engine=` (`nisa.vector_engine`,
 `nisa.scalar_engine` or `nisa.gpsimd_engine`) is accepted and dropped, since the
 engine does not change the result. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
@@ -66,15 +72,23 @@ per partition, `t[:, 0:1]` or `t[:, 0]`; `negate=True` negates the result
 `ActivationFunc::Reciprocal`, which is outside `ALL`, so `activation`'s `op` cannot
 name it.
 
-`activation` computes `op(data + bias)`, `bias` an optional operand broadcast like a
-`tensor_scalar` one, and may reduce its result: with `reduce_op`, `reduce_res` and
+`activation` computes `op(data * scale + bias)`, as its docs' pseudo-code does, `scale`
+and `bias` optional operands broadcast like a `tensor_scalar` one (a literal or a
+`[partitions, 1]` tile, mamba's `scale=A_i`), and may reduce its result: with `reduce_op`, `reduce_res` and
 `reduce_cmd=nisa.reduce_cmd.reset_reduce` all given, each `reduce_res[p, 0]` is the
 fold of `reduce_op` over partition `p` of the result, seeded with its first element
 (an `ir::Reduction`). The other `reduce_cmd`s carry the accumulator registers across
-instructions, which is not modelled, so they are lowering errors, as is `scale`.
+instructions, which is not modelled, so they are lowering errors.
 `activation_reduce` is the same instruction, as the NKI docs define it, and lowers to
 the same `Activation`. `tensor_scalar_reduce` is a one-step `tensor_scalar` with such
 a reduction (`reduce_cmd`, if given, must be `reset_reduce`, its default).
+
+`tensor_tensor_scan` is `LoweredInstr::Scan`, the docs' recurrence along each partition
+of matrix regions: `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])`,
+`initial` (a literal or a `[partitions, 1]` tile, v3's carried `scan_init`) standing
+for `dst[p, -1]`; `reverse0=True` and `reverse1=True` swap their op's operands
+(`ir::Order`). Its rank-3 form is rejected: the docs do not say how two free
+dimensions are ordered for the scan.
 
 `nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
 `False` overwrites `dst`, `True` adds to it (an unwritten element is an
@@ -287,7 +301,8 @@ Attribution), and the other tutorials' kernel files the same way, each with a
 (`transpose2d.spec`, each row's `[X, Y]` matrix transposed, its arrays viewed as
 `[P, X, Y]` and `[P, Y, X]` since a spec index is affine) and
 `average_pool2d_nki_kernels.py` (`average_pool2d.spec`, the mean of each `S x S`
-window). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
+window) and `mamba_nki_kernels.py` (`mamba.spec`, `mamba_torch.py`'s `mamba_layer`, its
+scan unrolled into causal sums). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
 128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 
@@ -347,6 +362,12 @@ through a tile view with an offset (a hand-written `.expected`);
 `pattern_errors.py`'s kernels must fail to lower: a tile view whose first step is not
 the free size, one leaving its partition, one past its tensor's end, and a
 `tensor_reduce` over a leading axis.
+`tests/fixtures/scan.py` scans each row of a 2 x 3 tile with a one-partition row
+`nl.broadcast_to` both partitions, from a `[2, 1]` tile (`acc = a * acc + b`) and from
+`1.0` with both ops reversed (`acc = b - (acc - a)`), and takes `exp(a * c)` through
+`activation`'s `scale`, its `scale` tile an `nl.zeros` without a `buffer` (a
+hand-written `.expected`); a test widens its parsed broadcast to a shape its row
+cannot take, which lowering rejects (`StatementError::BroadcastShape`).
 `tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as

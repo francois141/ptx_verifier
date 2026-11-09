@@ -140,6 +140,14 @@ pub enum StatementError {
         problem: PatternProblem,
     },
 
+    /// An `nl.broadcast_to` whose `target` is not `tensor`'s shape with some
+    /// extents of 1 widened, at the same rank.
+    BroadcastShape {
+        tensor: TensorName,
+        shape: Shape,
+        target: Shape,
+    },
+
     /// An index outside its tensor's dimension, or a slice reaching outside it or
     /// selecting no elements.
     RegionBounds {
@@ -269,6 +277,14 @@ impl fmt::Display for StatementError {
             } => write!(
                 f,
                 "`{tensor}`'s index in dimension {dimension} is empty or outside its extent {extent}"
+            ),
+            Self::BroadcastShape {
+                tensor,
+                shape,
+                target,
+            } => write!(
+                f,
+                "`{tensor}{shape}` cannot broadcast to {target}: each extent must match or be 1"
             ),
             Self::AccessPattern { tensor, problem } => {
                 write!(f, "access pattern of `{tensor}`: {problem}")

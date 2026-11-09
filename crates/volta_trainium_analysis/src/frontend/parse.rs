@@ -992,6 +992,16 @@ impl Trace<'_> {
             Value::Tensor(tensor) => {
                 bail!(line, "unsupported tensor attribute `{tensor}.{attribute}`")
             }
+            Value::Region { tensor, .. } | Value::Pattern { tensor, .. }
+                if attribute == "dtype" =>
+            {
+                Ok(Value::DtypeOf(tensor))
+            }
+            region @ (Value::Region { .. } | Value::Pattern { .. }) if attribute == "shape" => {
+                let (_, extents) = region_extents(self, &region, "shape", line)?;
+                let extents = extents.iter().map(|&e| Value::int(e, line));
+                Ok(Value::Tuple(extents.collect::<Result<_, _>>()?))
+            }
             Value::Object(object) => {
                 let Object { class, attributes } = &self.objects[object];
                 let def = &self.classes[class];
@@ -2021,7 +2031,7 @@ fn declaration(
     Ok(declare_tile(target, shape, dtype, buffer, address, trace))
 }
 
-/// `target = nl.zeros(shape, dtype, buffer=...)`: an on-chip tile, every element set
+/// `target = nl.zeros(shape, dtype, buffer=nl.sbuf)`: an on-chip tile, every element set
 /// to zero by a `memset`.
 fn zeros(
     target: String,
@@ -2030,19 +2040,23 @@ fn zeros(
     frame: &Frame,
     line: usize,
 ) -> Result<TensorName, ParseError> {
-    let [shape, dtype, buffer] = ndarray_arguments(call, trace, frame, line)?;
-    if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) {
-        bail!(
+    let [shape, dtype, buffer] =
+        arguments(call, ["shape", "dtype", "buffer"], 2, trace, frame, line)?;
+    let [shape, dtype] = [shape, dtype].map(|value| value.expect("required"));
+    let buffer = match buffer {
+        None => Buffer::Sbuf,
+        Some(buffer) if buffer.member_of(NKI_LANGUAGE) == Some(SHARED_HBM) => bail!(
             line,
             "`{}` allocates an on-chip tile only: `nl.sbuf` or `nl.psum`",
             call.callee
-        );
-    }
+        ),
+        Some(buffer) => read_buffer(buffer, line)?,
+    };
     let tile = declare_tile(
         target,
         read_shape(shape, line)?,
         read_dtype(dtype, line)?,
-        read_buffer(buffer, line)?,
+        buffer,
         None,
         trace,
     );
@@ -2145,22 +2159,6 @@ fn read_address(
     })
 }
 
-/// `nl.ndarray`'s shape, dtype and buffer, each given by position or by keyword.
-fn ndarray_arguments(
-    call: &Call,
-    trace: &mut Trace,
-    frame: &Frame,
-    line: usize,
-) -> Result<[Value; 3], ParseError> {
-    let [shape, dtype, buffer] =
-        arguments(call, ["shape", "dtype", "buffer"], 3, trace, frame, line)?;
-    Ok([
-        shape.expect("required"),
-        dtype.expect("required"),
-        buffer.expect("required"),
-    ])
-}
-
 /// The values of `call`'s arguments for `params`, each by position or by keyword; the
 /// first `required` must be given.
 fn arguments<const N: usize>(
@@ -2217,10 +2215,11 @@ enum TileFunction {
     Exp,
     Reciprocal,
     Transpose,
+    BroadcastTo,
 }
 
 impl TileFunction {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Load,
         Self::Matmul,
         Self::Max,
@@ -2228,6 +2227,7 @@ impl TileFunction {
         Self::Exp,
         Self::Reciprocal,
         Self::Transpose,
+        Self::BroadcastTo,
     ];
 
     /// Its `nki.language` member: `nl.load` is `load`.
@@ -2240,6 +2240,7 @@ impl TileFunction {
             Self::Exp => "exp",
             Self::Reciprocal => "reciprocal",
             Self::Transpose => "transpose",
+            Self::BroadcastTo => "broadcast_to",
         }
     }
 
@@ -2253,6 +2254,7 @@ impl TileFunction {
 
 /// `target = nl.<function>(...)`: the tile `target`, declared in the memory the
 /// instruction writes (PSUM for `matmul` and `transpose`, else SBUF), and that instruction.
+/// `broadcast_to` returns a tile, so it is a copy into `target`, not a view of `x`.
 fn tile_call(
     target: String,
     function: TileFunction,
@@ -2370,6 +2372,39 @@ fn tile_call(
                 "tensor_reduce",
                 operands,
             )
+        }
+        TileFunction::BroadcastTo => {
+            let [x, shape, dtype] =
+                arguments(&call, ["x", "shape", "dtype"], 2, trace, frame, line)?;
+            if dtype.is_some_and(|dtype| !matches!(dtype, Value::None)) {
+                bail!(line, "`{callee}`'s `dtype` is not supported");
+            }
+            let x = tile(x, "x", &callee, line)?;
+            let shape: Vec<u64> = read_extents(shape.expect("required"), line)?
+                .iter()
+                .map(|extent| extent.get())
+                .collect();
+            let extents = &trace.tensors[&x].extents;
+            let broadcastable = extents.len() == shape.len()
+                && extents
+                    .iter()
+                    .zip(&shape)
+                    .all(|(&from, &to)| from == to || from == 1);
+            if !broadcastable {
+                bail!(
+                    line,
+                    "`{callee}` cannot broadcast `{x}` of shape {extents:?} to {shape:?}: \
+                     each dimension must match or be 1"
+                );
+            }
+            let operands = vec![(
+                "src",
+                Operand::Broadcast {
+                    tensor: x.clone(),
+                    shape: shape.clone(),
+                },
+            )];
+            (shape, Buffer::Sbuf, Dtype::Of(x), "tensor_copy", operands)
         }
         TileFunction::Exp | TileFunction::Reciprocal | TileFunction::Transpose => {
             let [x] = arguments(&call, ["x"], 1, trace, frame, line)?;
