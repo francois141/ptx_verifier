@@ -65,13 +65,19 @@ pub enum ReduceOp {
     Max,
 }
 
-/// An index expression: the small affine sublanguage allowed in array index position.
+/// An index expression: the small integer sublanguage allowed in array index position.
 /// Deliberately not full `SpecExpr` - an index must resolve to one concrete `u64` per
-/// element, as a kernel's own addresses must.
-#[derive(Debug, Clone)]
+/// element, as a kernel's own addresses must, so the arrays it reads are index arrays,
+/// whose integers the caller gives.
+#[derive(Debug, Clone, PartialEq)]
 pub enum IndexExpr {
     Int(u64),
     Var(String),
+    /// An element of an index array, e.g. `index[i]` in `data[p, index[i]]`.
+    Read {
+        array: String,
+        indices: Vec<IndexExpr>,
+    },
     Add(Box<IndexExpr>, Box<IndexExpr>),
     Sub(Box<IndexExpr>, Box<IndexExpr>),
     Mul(Box<IndexExpr>, Box<IndexExpr>),
@@ -278,6 +284,8 @@ pub struct SpecEnv {
     pub arrays: HashMap<String, Shape>,
     pub params: HashSet<String>,
     pub zero_padded: HashSet<String>,
+    /// Each index array's integers, row-major over its shape in `arrays`.
+    pub indices: HashMap<String, Vec<i64>>,
 }
 
 /// Errors from unfolding a spec: all boundary violations in the spec
@@ -307,6 +315,10 @@ pub enum SpecError {
         var: String,
         start: i64,
     },
+    /// A subscript reading an array that is not an index array.
+    NotAnIndexArray(String),
+    /// An index array read as a value rather than inside a subscript.
+    IndexArrayAsValue(String),
     Nan(NanError),
 }
 
@@ -318,6 +330,13 @@ impl fmt::Display for SpecError {
                 write!(f, "the range of '{var}' starts at {start}, below 0")
             }
             Self::UnknownArray(name) => write!(f, "unknown array '{}'", name),
+            Self::NotAnIndexArray(name) => write!(
+                f,
+                "array '{name}' is read in a subscript, but only an index array's integers can be"
+            ),
+            Self::IndexArrayAsValue(name) => {
+                write!(f, "index array '{name}' is read outside a subscript")
+            }
             Self::ShapeVarMismatch {
                 array,
                 expected,
@@ -427,10 +446,57 @@ fn eval_index(
     match expr {
         IndexExpr::Int(v) => Ok(*v as i64),
         IndexExpr::Var(name) => resolve_var(name, env, bindings).map(|v| v as i64),
+        IndexExpr::Read { array, indices } => {
+            let Some(values) = env.indices.get(array) else {
+                return Err(match env.arrays.contains_key(array) {
+                    true => SpecError::NotAnIndexArray(array.clone()),
+                    false => SpecError::UnknownArray(array.clone()),
+                });
+            };
+            let flat = in_bounds(array, indices, env, bindings)?;
+            Ok(values[flat as usize])
+        }
         IndexExpr::Add(a, b) => Ok(eval_index(a, env, bindings)? + eval_index(b, env, bindings)?),
         IndexExpr::Sub(a, b) => Ok(eval_index(a, env, bindings)? - eval_index(b, env, bindings)?),
         IndexExpr::Mul(a, b) => Ok(eval_index(a, env, bindings)? * eval_index(b, env, bindings)?),
     }
+}
+
+/// The row-major offset of `array[indices]`, which must lie within its shape.
+fn in_bounds(
+    array: &str,
+    indices: &[IndexExpr],
+    env: &SpecEnv,
+    bindings: &HashMap<String, u64>,
+) -> Result<u64, SpecError> {
+    let shape = env
+        .arrays
+        .get(array)
+        .ok_or_else(|| SpecError::UnknownArray(array.to_string()))?;
+    if indices.len() != shape.rank() {
+        return Err(SpecError::IndexRankMismatch {
+            array: array.to_string(),
+            expected: shape.rank(),
+            found: indices.len(),
+        });
+    }
+    let idx: Vec<i64> = indices
+        .iter()
+        .map(|e| eval_index(e, env, bindings))
+        .collect::<Result<_, _>>()?;
+    if idx
+        .iter()
+        .zip(shape.dims())
+        .any(|(&i, &d)| i < 0 || i as u64 >= d)
+    {
+        return Err(SpecError::IndexOutOfBounds {
+            array: array.to_string(),
+            index: idx,
+            shape: shape.dims().to_vec(),
+        });
+    }
+    let idx: Vec<u64> = idx.into_iter().map(|i| i as u64).collect();
+    Ok(shape.flatten(&idx))
 }
 
 fn array_string_id(
@@ -505,6 +571,11 @@ fn index_free_vars(expr: &IndexExpr, out: &mut std::collections::HashSet<String>
         IndexExpr::Add(a, b) | IndexExpr::Sub(a, b) | IndexExpr::Mul(a, b) => {
             index_free_vars(a, out);
             index_free_vars(b, out);
+        }
+        IndexExpr::Read { indices, .. } => {
+            for index in indices {
+                index_free_vars(index, out);
+            }
         }
     }
 }
@@ -591,39 +662,21 @@ fn eval(
             Ok(arena.int(v as i64))
         }
         SpecExpr::Index { array, indices } => {
-            let shape = env
-                .arrays
-                .get(array)
-                .ok_or_else(|| SpecError::UnknownArray(array.clone()))?;
-            if indices.len() != shape.rank() {
-                return Err(SpecError::IndexRankMismatch {
-                    array: array.clone(),
-                    expected: shape.rank(),
-                    found: indices.len(),
-                });
+            if env.indices.contains_key(array) {
+                return Err(SpecError::IndexArrayAsValue(array.clone()));
             }
-            let idx: Vec<i64> = indices
-                .iter()
-                .map(|e| eval_index(e, env, bindings))
-                .collect::<Result<_, _>>()?;
-            if idx
-                .iter()
-                .zip(shape.dims())
-                .any(|(&i, &d)| i < 0 || i as u64 >= d)
-            {
-                if env.zero_padded.contains(array) {
-                    return Ok(arena.int(0));
+            match in_bounds(array, indices, env, bindings) {
+                Ok(flat) => {
+                    let sid = array_string_id(array, arena, array_ids);
+                    Ok(arena.input_element(sid, flat))
                 }
-                return Err(SpecError::IndexOutOfBounds {
-                    array: array.clone(),
-                    index: idx,
-                    shape: shape.dims().to_vec(),
-                });
+                Err(SpecError::IndexOutOfBounds { array: read, .. })
+                    if read == *array && env.zero_padded.contains(array) =>
+                {
+                    Ok(arena.int(0))
+                }
+                Err(error) => Err(error),
             }
-            let idx: Vec<u64> = idx.into_iter().map(|i| i as u64).collect();
-            let flat = shape.flatten(&idx);
-            let sid = array_string_id(array, arena, array_ids);
-            Ok(arena.input_element(sid, flat))
         }
         SpecExpr::Add(a, b) => {
             let (a, b) = (

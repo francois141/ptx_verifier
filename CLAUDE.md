@@ -187,7 +187,12 @@ in one call (every element; `ExtractError` names the failed stage). A `sum`/`max
 range is `start..end` over `IndexExpr`s of dims and enclosing variables
 (`sum(s in 0..t + 1, ...)`, a scan's causal sum); the memo keys each reduction on the
 variables its body and range read, an empty range is the identity, and a non-empty
-one below 0 is `SpecError::NegativeRangeStart`.
+one below 0 is `SpecError::NegativeRangeStart`. `array NAME[...] index;` declares an
+index array (`ast::Elements::Indices`): integers the caller gives, row-major
+(`instantiate_with_indices`, `extract_expressions_from_spec_with_indices`;
+`SpecEnv::indices`), read only inside subscripts (`IndexExpr::Read`, a gather's
+`data[p, index[0, i]]`); one read as a value is `SpecError::IndexArrayAsValue`, a
+subscript reading another array `NotAnIndexArray`.
 
 ## Crate: volta_graph
 

@@ -15,8 +15,8 @@ pub mod lex;
 pub mod parse;
 pub mod spec;
 
-pub use ast::{ArrayDecl, DimDecl, OutputDecl, Padding, ParamDecl, ParsedSpec};
-pub use instantiate::{InstantiateErrorKind, instantiate};
+pub use ast::{ArrayDecl, DimDecl, Elements, OutputDecl, Padding, ParamDecl, ParsedSpec};
+pub use instantiate::{InstantiateErrorKind, instantiate, instantiate_with_indices};
 pub use parse::{ParseError, ParseErrorKind, parse_spec};
 pub use spec::{IndexExpr, OutputSpec, ReduceOp, Shape, SpecEnv, SpecError, SpecExpr, unfold};
 
@@ -46,7 +46,18 @@ pub fn extract_expressions_from_spec(
     source: &str,
     dims: &HashMap<String, u64>,
 ) -> Result<SymbolicOutputs, ExtractError> {
+    extract_expressions_from_spec_with_indices(source, dims, &HashMap::new())
+}
+
+/// `extract_expressions_from_spec`, with each index array's integers, row-major, from
+/// `indices` (array name -> integers).
+pub fn extract_expressions_from_spec_with_indices(
+    source: &str,
+    dims: &HashMap<String, u64>,
+    indices: &HashMap<String, Vec<i64>>,
+) -> Result<SymbolicOutputs, ExtractError> {
     let parsed = parse_spec(source).map_err(ExtractError::Parse)?;
-    let (env, specs) = instantiate(&parsed, dims).map_err(ExtractError::Instantiate)?;
+    let (env, specs) =
+        instantiate_with_indices(&parsed, dims, indices).map_err(ExtractError::Instantiate)?;
     unfold(&specs, &env, 0).map_err(ExtractError::Unfold)
 }

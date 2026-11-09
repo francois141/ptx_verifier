@@ -30,13 +30,24 @@ pub enum Padding {
     Zero,
 }
 
-/// An `array NAME[dim, ...] [padded];` declaration: an array's shape, given as
+/// What an array's elements are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Elements {
+    /// Symbolic inputs (or the outputs equations define).
+    Symbolic,
+    /// `array NAME[...] index;`: integers the caller gives at instantiation, read only
+    /// inside subscripts (a gather's offsets, `data[p, index[i]]`).
+    Indices,
+}
+
+/// An `array NAME[dim, ...] [padded | index];` declaration: an array's shape, given as
 /// a list of named dims (resolved to a concrete `Shape` at instantiation).
 #[derive(Debug, Clone)]
 pub struct ArrayDecl {
     pub name: String,
     pub dims: Vec<String>,
     pub padding: Padding,
+    pub elements: Elements,
     pub span: Span,
 }
 
