@@ -8,7 +8,7 @@ use crate::spec::{IndexExpr, ReduceOp, SpecExpr};
 use volta_common::Span;
 use volta_common::report::Locate;
 
-use crate::ast::{ArrayDecl, DimDecl, OutputDecl, Padding, ParamDecl, ParsedSpec};
+use crate::ast::{ArrayDecl, DimDecl, Elements, OutputDecl, Padding, ParamDecl, ParsedSpec};
 use crate::lex::{Lexer, Token, TokenKind};
 
 #[derive(Debug)]
@@ -193,18 +193,23 @@ impl Parser {
         self.expect(TokenKind::LBracket, "'['")?;
         let dims = self.parse_ident_list()?;
         self.expect(TokenKind::RBracket, "']'")?;
-        let padding = match &self.peek().kind {
+        let (padding, elements) = match &self.peek().kind {
             TokenKind::Ident(word) if word == "padded" => {
                 self.bump();
-                Padding::Zero
+                (Padding::Zero, Elements::Symbolic)
             }
-            _ => Padding::None,
+            TokenKind::Ident(word) if word == "index" => {
+                self.bump();
+                (Padding::None, Elements::Indices)
+            }
+            _ => (Padding::None, Elements::Symbolic),
         };
         self.expect(TokenKind::Semicolon, "';'")?;
         Ok(ArrayDecl {
             name,
             dims,
             padding,
+            elements,
             span,
         })
     }
@@ -439,7 +444,20 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.bump();
-                Ok(IndexExpr::var(name))
+                if self.peek().kind != TokenKind::LBracket {
+                    return Ok(IndexExpr::var(name));
+                }
+                self.bump();
+                let mut indices = vec![self.parse_index_expr()?];
+                while self.peek().kind == TokenKind::Comma {
+                    self.bump();
+                    indices.push(self.parse_index_expr()?);
+                }
+                self.expect(TokenKind::RBracket, "']'")?;
+                Ok(IndexExpr::Read {
+                    array: name,
+                    indices,
+                })
             }
             TokenKind::LParen => {
                 self.bump();
@@ -448,7 +466,8 @@ impl Parser {
                 Ok(e)
             }
             _ => Err(self.unexpected(
-                "an integer, a variable, or '(' (index expressions only allow +, -, *, and parens)",
+                "an integer, a variable, an index array's element, or '(' (index expressions \
+                 only allow +, -, *, and parens)",
             )),
         }
     }
@@ -665,5 +684,25 @@ mod tests {
             .map(|a| (a.name.as_str(), a.padding))
             .collect();
         assert_eq!(padding, [("x", Padding::Zero), ("y", Padding::None)]);
+    }
+
+    #[test]
+    fn index_arrays_are_declared_and_read_in_subscripts() {
+        let spec =
+            parse_spec("dim N; array x[N]; array i[N] index; array y[N]; y[k] = x[i[k] + 1];")
+                .unwrap();
+        let elements: Vec<_> = spec.arrays.iter().map(|a| a.elements).collect();
+        assert_eq!(
+            elements,
+            [Elements::Symbolic, Elements::Indices, Elements::Symbolic]
+        );
+        let SpecExpr::Index { indices, .. } = &spec.outputs[0].body else {
+            panic!("expected an array read");
+        };
+        let read = IndexExpr::Read {
+            array: "i".into(),
+            indices: vec![IndexExpr::var("k")],
+        };
+        assert_eq!(indices[..], [read + IndexExpr::int(1)]);
     }
 }

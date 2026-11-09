@@ -32,8 +32,12 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
   - `dim NAME;`: an integer size, given a value at instantiation;
   - `param NAME;`: a symbolic scalar, matched to the kernel's symbolic float
     parameter of the same name;
-  - `array NAME[d0, d1, ...] [padded];`: an array's shape. With `padded`, an
-    out-of-shape read is 0 (convolution borders) instead of an error;
+  - `array NAME[d0, d1, ...] [padded | index];`: an array's shape. With `padded`, an
+    out-of-shape read is 0 (convolution borders) instead of an error. With `index`,
+    its elements are integers the caller gives at instantiation, read only inside
+    subscripts: `out[p, i] = data[p, index[0, i]];` is a gather (an index array read as
+    a value, a subscript reading another array, or an equation defining one is an
+    error);
   - `NAME[i, j, ...] = expr;`: an output equation. Bodies use `+ - * /`,
     unary `-`, builtins (`exp`, `log`, `sqrt`, `abs`, `sign`, `min`, `max`)
     and reductions `sum(k in 0..K, e)` / `max(k in 0..K, e)`. A range's ends
@@ -43,11 +47,14 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
     one starting below 0 is an `unfold` error. Bodies parse directly into
     `SpecExpr` (`spec.rs`).
 - **`instantiate.rs`**: `instantiate(parsed, dims)` resolves every dim to a
-  concrete value, producing the `SpecEnv` and `OutputSpec`s `unfold` takes.
+  concrete value, producing the `SpecEnv` and `OutputSpec`s `unfold` takes;
+  `instantiate_with_indices(parsed, dims, indices)` also takes each index array's
+  integers, row-major, one per element of its shape.
   Parsing and instantiation are separate, so one parsed spec serves many sizes.
 - **`spec.rs`**: the mathematical form of a spec: `OutputSpec` (an output
   array as a formula `SpecExpr` over other arrays, with `sum`/`max`
-  reductions over `start..end` `IndexExpr`s), `Shape` and `SpecEnv`. `unfold`
+  reductions over `start..end` `IndexExpr`s, which may read index arrays),
+  `Shape` and `SpecEnv`. `unfold`
   memoizes each reduction on its site and the values of the variables its body
   and range read, then expands every output element
   into a `volta_expr::SymbolicOutputs`, using the same arena constructors the
@@ -55,7 +62,9 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
   (`volta_spec::unfold`).
 
 `extract_expressions_from_spec(source, dims)` runs the whole pipeline: spec text
-and dim values in, `SymbolicOutputs` out (every element, no sampling). Its
+and dim values in, `SymbolicOutputs` out (every element, no sampling);
+`extract_expressions_from_spec_with_indices(source, dims, indices)` takes the index
+arrays' integers too. Its
 `ExtractError` says which stage failed (`Parse`, `Instantiate`, `Unfold`).
 
 Each spec output must be declared `out` or `inout` in the kernel's launch
