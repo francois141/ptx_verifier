@@ -57,21 +57,6 @@ impl Shape {
     }
 }
 
-/// A reduction's (`sum`/`max`) loop bound: either a literal, or a name
-/// resolved against `SpecEnv::dims` (so the same spec can be reused across
-/// configs that share array shapes but differ in e.g. K).
-#[derive(Debug, Clone)]
-pub enum Bound {
-    Const(u64),
-    Named(String),
-}
-
-impl From<u64> for Bound {
-    fn from(v: u64) -> Self {
-        Bound::Const(v)
-    }
-}
-
 /// The operator combining a reduction's terms; an enum (not a bool) so the empty-range
 /// identity (`sum` = 0, `max` = -infinity) and future additions stay exhaustively matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,12 +136,14 @@ pub enum SpecExpr {
     Sqrt(Box<SpecExpr>),
     Abs(Box<SpecExpr>),
     Sign(Box<SpecExpr>),
-    /// `op_{var=0}^{bound-1} body`, unrolled into `bound` terms combined by `op` (empty-range
-    /// identity: `0` for `Sum`, `-infinity` for `Max`, as in `ExprArena::max` chains).
+    /// `op_{var=start}^{end-1} body`, unrolled into `end - start` terms combined by `op`
+    /// (empty-range identity: `0` for `Sum`, `-infinity` for `Max`, as in `ExprArena::max`
+    /// chains). The ends are index expressions over dims and enclosing variables.
     Reduce {
         op: ReduceOp,
         var: String,
-        bound: Bound,
+        start: IndexExpr,
+        end: IndexExpr,
         body: Box<SpecExpr>,
     },
 }
@@ -212,23 +199,27 @@ impl SpecExpr {
     pub fn reduce(
         op: ReduceOp,
         var: impl Into<String>,
-        bound: impl Into<Bound>,
+        start: IndexExpr,
+        end: IndexExpr,
         body: Self,
     ) -> Self {
         SpecExpr::Reduce {
             op,
             var: var.into(),
-            bound: bound.into(),
+            start,
+            end,
             body: Box::new(body),
         }
     }
 
-    pub fn sum(var: impl Into<String>, bound: impl Into<Bound>, body: Self) -> Self {
-        Self::reduce(ReduceOp::Sum, var, bound, body)
+    /// `sum(var in 0..end, body)`.
+    pub fn sum(var: impl Into<String>, end: IndexExpr, body: Self) -> Self {
+        Self::reduce(ReduceOp::Sum, var, IndexExpr::Int(0), end, body)
     }
 
-    pub fn max_reduce(var: impl Into<String>, bound: impl Into<Bound>, body: Self) -> Self {
-        Self::reduce(ReduceOp::Max, var, bound, body)
+    /// `max(var in 0..end, body)`.
+    pub fn max_reduce(var: impl Into<String>, end: IndexExpr, body: Self) -> Self {
+        Self::reduce(ReduceOp::Max, var, IndexExpr::Int(0), end, body)
     }
 }
 
@@ -295,7 +286,6 @@ pub struct SpecEnv {
 #[derive(Debug)]
 pub enum SpecError {
     UnboundVar(String),
-    UnknownDim(String),
     UnknownArray(String),
     ShapeVarMismatch {
         array: String,
@@ -312,6 +302,11 @@ pub enum SpecError {
         index: Vec<i64>,
         shape: Vec<u64>,
     },
+    /// A non-empty reduction range of `var` starting below 0.
+    NegativeRangeStart {
+        var: String,
+        start: i64,
+    },
     Nan(NanError),
 }
 
@@ -319,7 +314,9 @@ impl fmt::Display for SpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnboundVar(name) => write!(f, "unbound variable '{}'", name),
-            Self::UnknownDim(name) => write!(f, "unknown named bound '{}'", name),
+            Self::NegativeRangeStart { var, start } => {
+                write!(f, "the range of '{var}' starts at {start}, below 0")
+            }
             Self::UnknownArray(name) => write!(f, "unknown array '{}'", name),
             Self::ShapeVarMismatch {
                 array,
@@ -405,17 +402,6 @@ pub fn unfold(
     Ok(SymbolicOutputs { arena, outputs })
 }
 
-fn resolve_bound(bound: &Bound, env: &SpecEnv) -> Result<u64, SpecError> {
-    match bound {
-        Bound::Const(n) => Ok(*n),
-        Bound::Named(name) => env
-            .dims
-            .get(name)
-            .copied()
-            .ok_or_else(|| SpecError::UnknownDim(name.clone())),
-    }
-}
-
 /// Resolve a bare name in expression/index position: a bound variable (output index or
 /// loop variable) takes precedence, falling back to a `dim`'s concrete value so e.g.
 /// `sum(...) / N` can reference a declared `dim` directly.
@@ -493,11 +479,19 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
         | SpecExpr::Sign(a) => {
             free_vars(a, out);
         }
-        SpecExpr::Reduce { var, body, .. } => {
+        SpecExpr::Reduce {
+            var,
+            start,
+            end,
+            body,
+            ..
+        } => {
             let mut inner = std::collections::HashSet::new();
             free_vars(body, &mut inner);
             inner.remove(var);
             out.extend(inner);
+            index_free_vars(start, out);
+            index_free_vars(end, out);
         }
     }
 }
@@ -520,7 +514,7 @@ fn eval_reduce(
     site: &SpecExpr,
     op: ReduceOp,
     var: &str,
-    bound: &Bound,
+    [start, end]: [&IndexExpr; 2],
     body: &SpecExpr,
     env: &SpecEnv,
     bindings: &HashMap<String, u64>,
@@ -529,8 +523,7 @@ fn eval_reduce(
     memo: &mut ReduceMemo,
 ) -> Result<ExprId, SpecError> {
     let mut relevant = std::collections::HashSet::new();
-    free_vars(body, &mut relevant);
-    relevant.remove(var);
+    free_vars(site, &mut relevant);
     let mut key_vars: Vec<(String, u64)> = relevant
         .into_iter()
         .filter_map(|name| bindings.get(&name).map(|&v| (name, v)))
@@ -541,12 +534,22 @@ fn eval_reduce(
         return Ok(cached);
     }
 
-    let n = resolve_bound(bound, env)?;
+    let [low, high] = [
+        eval_index(start, env, bindings)?,
+        eval_index(end, env, bindings)?,
+    ];
+    if low < 0 && high > low {
+        return Err(SpecError::NegativeRangeStart {
+            var: var.to_string(),
+            start: low,
+        });
+    }
+    let range = low.max(0) as u64..high.max(0) as u64;
     let mut inner = bindings.clone();
     let result = match op {
         ReduceOp::Sum => {
             let mut acc = arena.int(0);
-            for i in 0..n {
+            for i in range {
                 inner.insert(var.to_string(), i);
                 let term = eval(body, env, &inner, arena, array_ids, memo)?;
                 acc = arena.add(acc, term);
@@ -557,7 +560,7 @@ fn eval_reduce(
             // Empty range -> -infinity, the same running-max identity
             // `ExprArena::max` already uses for its chains.
             let mut acc = arena.float_from_f64(f64::NEG_INFINITY)?;
-            for i in 0..n {
+            for i in range {
                 inner.insert(var.to_string(), i);
                 let term = eval(body, env, &inner, arena, array_ids, memo)?;
                 acc = arena.max(acc, term);
@@ -691,10 +694,20 @@ fn eval(
         SpecExpr::Reduce {
             op,
             var,
-            bound,
+            start,
+            end,
             body,
         } => eval_reduce(
-            expr, *op, var, bound, body, env, bindings, arena, array_ids, memo,
+            expr,
+            *op,
+            var,
+            [start, end],
+            body,
+            env,
+            bindings,
+            arena,
+            array_ids,
+            memo,
         ),
     }
 }
@@ -707,7 +720,7 @@ mod tests {
     fn matmul_spec() -> Vec<OutputSpec> {
         let body = SpecExpr::sum(
             "k",
-            Bound::Named("K".to_string()),
+            IndexExpr::var("K"),
             SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("k")])
                 * SpecExpr::index("B", vec![IndexExpr::var("k"), IndexExpr::var("j")]),
         );
@@ -818,7 +831,7 @@ mod tests {
         let body = SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("k")])
             - SpecExpr::max_reduce(
                 "j",
-                Bound::Named("N".to_string()),
+                IndexExpr::var("N"),
                 SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("j")]),
             );
         let specs = vec![OutputSpec {
@@ -859,5 +872,66 @@ mod tests {
             row0[0], row1[0],
             "the two rows' maxes must not collapse into one"
         );
+    }
+
+    /// `out[i] = sum(k in 0..i + 1, A[k])`: the memo keys on the range's variables, so each
+    /// prefix is its own sum, `out[i]` reading `A[0..=i]`.
+    #[test]
+    fn a_range_over_an_enclosing_variable_unfolds_per_binding() {
+        let body = SpecExpr::reduce(
+            ReduceOp::Sum,
+            "k",
+            IndexExpr::int(0),
+            IndexExpr::var("i") + IndexExpr::int(1),
+            SpecExpr::index("A", vec![IndexExpr::var("k")]),
+        );
+        let specs = vec![OutputSpec {
+            array: "out".to_string(),
+            shape: Shape::new(vec![3]),
+            vars: vec!["i".to_string()],
+            body,
+        }];
+        let env = SpecEnv {
+            arrays: HashMap::from([("A".to_string(), Shape::new(vec![3]))]),
+            ..SpecEnv::default()
+        };
+        let output = unfold(&specs, &env, 0).unwrap();
+        let (_, elems) = &output.outputs[0];
+        let reads: Vec<usize> = elems
+            .iter()
+            .map(|&(_, id)| input_reads(&output.arena, id))
+            .collect();
+        assert_eq!(reads, [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_non_empty_range_below_zero_is_an_error() {
+        let body = SpecExpr::reduce(
+            ReduceOp::Sum,
+            "k",
+            IndexExpr::var("i") - IndexExpr::int(1),
+            IndexExpr::int(1),
+            SpecExpr::int(1),
+        );
+        let specs = vec![OutputSpec {
+            array: "out".to_string(),
+            shape: Shape::new(vec![1]),
+            vars: vec!["i".to_string()],
+            body,
+        }];
+        assert!(matches!(
+            unfold(&specs, &SpecEnv::default(), 0),
+            Err(SpecError::NegativeRangeStart { start: -1, .. })
+        ));
+    }
+
+    /// The number of input-element reads under `id`, counting shared nodes once per use.
+    fn input_reads(arena: &ExprArena, id: ExprId) -> usize {
+        use volta_expr::ExprNode;
+        match arena.node(id) {
+            ExprNode::InputElement { .. } => 1,
+            ExprNode::Add(a, b) => input_reads(arena, *a) + input_reads(arena, *b),
+            _ => 0,
+        }
     }
 }
