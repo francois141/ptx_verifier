@@ -36,14 +36,20 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
     out-of-shape read is 0 (convolution borders) instead of an error;
   - `NAME[i, j, ...] = expr;`: an output equation. Bodies use `+ - * /`,
     unary `-`, builtins (`exp`, `log`, `sqrt`, `abs`, `sign`, `min`, `max`)
-    and reductions `sum(k in 0..K, e)` / `max(k in 0..K, e)`. Bodies parse
-    directly into `SpecExpr` (`spec.rs`).
+    and reductions `sum(k in 0..K, e)` / `max(k in 0..K, e)`. A range's ends
+    are index expressions over dims and enclosing variables, so a scan's causal
+    sums read `sum(s in 0..t + 1, ...)` and `sum(r in s + 1..t + 1, ...)`; an
+    empty range is the identity (0, or -infinity for `max`), and a non-empty
+    one starting below 0 is an `unfold` error. Bodies parse directly into
+    `SpecExpr` (`spec.rs`).
 - **`instantiate.rs`**: `instantiate(parsed, dims)` resolves every dim to a
   concrete value, producing the `SpecEnv` and `OutputSpec`s `unfold` takes.
   Parsing and instantiation are separate, so one parsed spec serves many sizes.
 - **`spec.rs`**: the mathematical form of a spec: `OutputSpec` (an output
   array as a formula `SpecExpr` over other arrays, with `sum`/`max`
-  reductions), `Shape` and `SpecEnv`. `unfold` expands every output element
+  reductions over `start..end` `IndexExpr`s), `Shape` and `SpecEnv`. `unfold`
+  memoizes each reduction on its site and the values of the variables its body
+  and range read, then expands every output element
   into a `volta_expr::SymbolicOutputs`, using the same arena constructors the
   interpreter uses. The root re-exports these types and `unfold`
   (`volta_spec::unfold`).

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::spec::{Bound, IndexExpr, ReduceOp, SpecExpr};
+use crate::spec::{IndexExpr, ReduceOp, SpecExpr};
 use volta_common::Span;
 use volta_common::report::Locate;
 
@@ -18,14 +18,6 @@ pub enum ParseErrorKind {
         found: TokenKind,
     },
     UnknownFunction(String),
-    /// A reduction's (`sum`/`max`) range must start at the literal `0` -
-    /// `Reduce` in `crate::spec` only expresses `0..bound`, no
-    /// arbitrary start (see that module's docs).
-    ReductionRangeMustStartAtZero,
-    /// A `sum` bound (or an array dim reference) must be an integer
-    /// literal or a bare `dim` name - anything else can't become a
-    /// `Bound` (`Const`/`Named` only).
-    InvalidBound,
     /// `pow`'s exponent must be a non-negative integer literal - there is
     /// no general power node to lower an arbitrary exponent to.
     InvalidPowExponent,
@@ -39,16 +31,6 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "expected {}, found {}", expected, found)
             }
             ParseErrorKind::UnknownFunction(name) => write!(f, "unknown function '{}'", name),
-            ParseErrorKind::ReductionRangeMustStartAtZero => {
-                write!(
-                    f,
-                    "a reduction's range must start at 0, e.g. 'sum(k in 0..K, ...)' or 'max(k in 0..K, ...)'"
-                )
-            }
-            ParseErrorKind::InvalidBound => write!(
-                f,
-                "expected an integer literal or a dim name here, e.g. '0..K' or '0..16'"
-            ),
             ParseErrorKind::InvalidPowExponent => {
                 write!(
                     f,
@@ -340,8 +322,8 @@ impl Parser {
     fn parse_call(&mut self, name: &str) -> Result<SpecExpr, ParseError> {
         match name {
             "sum" => {
-                let (var, bound, body) = self.parse_reduction()?;
-                Ok(SpecExpr::reduce(ReduceOp::Sum, var, bound, body))
+                let (var, [start, end], body) = self.parse_reduction()?;
+                Ok(SpecExpr::reduce(ReduceOp::Sum, var, start, end, body))
             }
             "exp" => Ok(self.parse_unary_call()?.exp()),
             "log" => Ok(self.parse_unary_call()?.log()),
@@ -355,8 +337,8 @@ impl Parser {
             }
             "max" => {
                 if self.at_reduction_head() {
-                    let (var, bound, body) = self.parse_reduction()?;
-                    Ok(SpecExpr::reduce(ReduceOp::Max, var, bound, body))
+                    let (var, [start, end], body) = self.parse_reduction()?;
+                    Ok(SpecExpr::reduce(ReduceOp::Max, var, start, end, body))
                 } else {
                     let (a, b) = self.parse_binary_call()?;
                     Ok(a.max(b))
@@ -388,28 +370,20 @@ impl Parser {
             )
     }
 
-    /// Parse a reduction's argument list - `IDENT "in" expr ".." expr ","
+    /// Parse a reduction's argument list - `IDENT "in" index ".." index ","
     /// expr ")"` - shared by `sum` and `max`; `(` and the call name are
-    /// already consumed by the caller.
-    fn parse_reduction(&mut self) -> Result<(String, Bound, SpecExpr), ParseError> {
+    /// already consumed by the caller. The range's ends are index expressions,
+    /// so they may read dims and enclosing variables, e.g. `s + 1..t + 1`.
+    fn parse_reduction(&mut self) -> Result<(String, [IndexExpr; 2], SpecExpr), ParseError> {
         let (var, _) = self.eat_ident()?;
         self.eat_keyword("in")?;
-        let lo = self.parse_expr()?;
+        let start = self.parse_index_expr()?;
         self.expect(TokenKind::DotDot, "'..'")?;
-        let hi_span = self.peek().span;
-        let hi = self.parse_expr()?;
+        let end = self.parse_index_expr()?;
         self.expect(TokenKind::Comma, "','")?;
         let body = self.parse_expr()?;
-        let close = self.expect(TokenKind::RParen, "')'")?;
-        if !matches!(lo, SpecExpr::Int(0)) {
-            return Err(err_at(
-                close.span,
-                ParseErrorKind::ReductionRangeMustStartAtZero,
-            ));
-        }
-        let bound =
-            expr_to_bound(&hi).ok_or_else(|| err_at(hi_span, ParseErrorKind::InvalidBound))?;
-        Ok((var, bound, body))
+        self.expect(TokenKind::RParen, "')'")?;
+        Ok((var, [start, end], body))
     }
 
     fn parse_unary_call(&mut self) -> Result<SpecExpr, ParseError> {
@@ -477,16 +451,6 @@ impl Parser {
                 "an integer, a variable, or '(' (index expressions only allow +, -, *, and parens)",
             )),
         }
-    }
-}
-
-/// `SpecExpr::Int(n)` (n >= 0) or `SpecExpr::Var(name)` -> `Bound`;
-/// anything else can't become one (`Bound` is `Const`/`Named` only).
-fn expr_to_bound(e: &SpecExpr) -> Option<Bound> {
-    match e {
-        SpecExpr::Int(n) if *n >= 0 => Some(Bound::Const(*n as u64)),
-        SpecExpr::Var(name) => Some(Bound::Named(name.clone())),
-        _ => None,
     }
 }
 
@@ -652,21 +616,19 @@ mod tests {
     }
 
     #[test]
-    fn sum_range_must_start_at_zero() {
-        let err = parse_spec("dim N; array A[N];\nC[i] = sum(k in 1..N, A[k]);").unwrap_err();
-        assert!(matches!(
-            err.error,
-            ParseErrorKind::ReductionRangeMustStartAtZero
-        ));
+    fn a_range_may_start_and_end_at_index_expressions() {
+        let body = output_body("dim N; array A[N];\nC[i] = sum(k in i + 1..N, A[k]);");
+        let SpecExpr::Reduce { start, end, .. } = body else {
+            panic!("expected a reduction, got {body:?}");
+        };
+        assert!(matches!(start, IndexExpr::Add(..)));
+        assert!(matches!(end, IndexExpr::Var(name) if name == "N"));
     }
 
     #[test]
-    fn max_reduction_range_must_start_at_zero() {
-        let err = parse_spec("dim N; array A[N];\nC[i] = max(k in 1..N, A[k]);").unwrap_err();
-        assert!(matches!(
-            err.error,
-            ParseErrorKind::ReductionRangeMustStartAtZero
-        ));
+    fn a_range_end_must_be_an_index_expression() {
+        let err = parse_spec("dim N; array A[N];\nC[i] = max(k in 0..N / 2, A[k]);").unwrap_err();
+        assert!(matches!(err.error, ParseErrorKind::UnexpectedToken { .. }));
     }
 
     #[test]

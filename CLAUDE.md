@@ -183,7 +183,11 @@ Mathematical specs: an output array as a formula over other arrays
 `SymbolicOutputs` with the arena's own constructors, so a kernel checks
 against a spec exactly like against a second kernel (`volta verify`).
 `extract_expressions_from_spec(source, dims)` runs parse, instantiate and unfold
-in one call (every element; `ExtractError` names the failed stage).
+in one call (every element; `ExtractError` names the failed stage). A `sum`/`max`
+range is `start..end` over `IndexExpr`s of dims and enclosing variables
+(`sum(s in 0..t + 1, ...)`, a scan's causal sum); the memo keys each reduction on the
+variables its body and range read, an empty range is the identity, and a non-empty
+one below 0 is `SpecError::NegativeRangeStart`.
 
 ## Crate: volta_graph
 
