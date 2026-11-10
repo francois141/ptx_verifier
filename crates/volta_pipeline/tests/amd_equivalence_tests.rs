@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 
 use volta_amd_analysis::OutputType::F32;
-use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{ArrayDef, ArrayKind, Terminal, WorkgroupLaunch, analyze};
+use volta_amd_analysis::{ArrayDef, ArrayKind, WorkgroupLaunch};
 use volta_equivalence::check::EquivCheckOptions;
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 
@@ -13,11 +12,15 @@ mod common;
 use common::amd::{
     CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE as K_BASE,
     FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE,
-    amd_fixture, ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays, gemm_arrays,
+    amd_fixture, check_amd, check_amd_launch, ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays,
+    gemm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../volta_equivalence/tests/specs/matmul.spec");
 
+/// Kernel `kernel_name` of `source` (the fixture `file`) against `spec`'s `C = A @ B` at dims
+/// `[M, N, K]`, once its run verified.
 fn check_gemm(
+    file: &str,
     source: &str,
     kernel_name: &str,
     workitems: u32,
@@ -25,25 +28,10 @@ fn check_gemm(
     kernarg: &[u8],
     spec: &str,
 ) -> EquivalenceVerdict {
-    // Allocate A, B, and C for an M x K by K x N matrix product.
     let [m, n, k] = dims;
     let arrays = gemm_arrays(dims);
-    let launch = WorkgroupLaunch {
-        kernarg_address: 0x1000,
-        workgroup_size: (workitems, 1, 1),
-        workgroup_id: (0, 0, 0),
-        grid_size: (1, 1, 1),
-    };
-
-    // Execute the compiled fixture with its argument layout and workgroup size.
-    let kernel = parse_kernel(source, kernel_name).unwrap();
-    let result = analyze(&kernel, &launch, kernarg, &arrays).unwrap();
-    assert!(
-        matches!(&result.terminal, Terminal::Completed),
-        "{kernel_name} did not complete: {:?}",
-        result.terminal
-    );
-    let actual = result.symbolic_outputs.expect("completed GEMM outputs");
+    let actual =
+        check_amd(file, source, kernel_name, workitems, kernarg, &arrays).verified_outputs();
 
     // Derive the reference from the specification, independently of the kernel execution.
     let dims = HashMap::from([("M".into(), m), ("N".into(), n), ("K".into(), k)]);
@@ -63,7 +51,8 @@ fn check_matmul(input_bases: [u64; 2]) -> EquivalenceVerdict {
         .map(u64::to_le_bytes)
         .concat();
     check_gemm(
-        include_str!("../../volta_amd_analysis/tests/fixtures/matmul.s"),
+        "matmul.s",
+        amd_fixture!("matmul"),
         "matmul",
         64,
         [8, 8, 8],
@@ -100,7 +89,8 @@ fn amd_matmul_with_swapped_input_arguments_is_refuted() {
 fn amd_mfma_matmul_matches_its_specification() {
     let kernarg = [A_BASE, B_BASE, C_BASE].map(u64::to_le_bytes).concat();
     let verdict = check_gemm(
-        include_str!("../../volta_amd_analysis/tests/fixtures/mfma_matmul.s"),
+        "mfma_matmul.s",
+        amd_fixture!("mfma_matmul"),
         "mfma_matmul",
         256,
         [32, 32, 8],
@@ -120,6 +110,7 @@ fn amd_mfma_matmul_matches_its_specification() {
 fn check_ck_gemm(kernel: &str, dims: [i32; 3], input_bases: [u64; 2]) -> EquivalenceVerdict {
     let kernarg = ck_gemm_kernarg(input_bases[0], input_bases[1], C_BASE, dims);
     check_gemm(
+        "ck_gemm.s",
         amd_fixture!("ck_gemm"),
         kernel,
         128,
@@ -183,17 +174,15 @@ fn check_ck_fmha(
     };
 
     // Each invocation executes one workgroup; its input symbols retain global tensor indices.
-    let source = include_str!("../../volta_amd_analysis/tests/fixtures/ck_fmha.s");
-    let kernel = parse_kernel(source, CK_FMHA_KERNEL).unwrap();
-    let result = analyze(&kernel, &launch, kernarg, &arrays).unwrap();
-    assert!(
-        matches!(&result.terminal, Terminal::Completed),
-        "ck_fmha {workgroup_id:?} did not complete: {:?}",
-        result.terminal
-    );
-    let mut actual = result
-        .symbolic_outputs
-        .expect("completed attention outputs");
+    let mut actual = check_amd_launch(
+        "ck_fmha.s",
+        amd_fixture!("ck_fmha"),
+        CK_FMHA_KERNEL,
+        &launch,
+        kernarg,
+        &arrays,
+    )
+    .verified_outputs();
 
     // Require exactly this block's output slice before renumbering it for the local spec.
     let output_start = (u64::from(batch) * u64::from(heads) + u64::from(head)) * 4096;
@@ -288,22 +277,16 @@ fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
         len: u64::from(workitems),
         kind,
     });
-    let launch = WorkgroupLaunch {
-        kernarg_address: 0x1000,
-        workgroup_size: (workitems, 1, 1),
-        workgroup_id: (0, 0, 0),
-        grid_size: (1, 1, 1),
-    };
     let kernarg = [A_BASE, B_BASE].map(u64::to_le_bytes).concat();
-    let source = include_str!("../../volta_amd_analysis/tests/fixtures/softmax.s");
-    let kernel = parse_kernel(source, "softmax").unwrap();
-    let result = analyze(&kernel, &launch, &kernarg, &arrays).unwrap();
-    assert!(
-        matches!(&result.terminal, Terminal::Completed),
-        "softmax did not complete: {:?}",
-        result.terminal
-    );
-    let actual = result.symbolic_outputs.expect("completed softmax outputs");
+    let actual = check_amd(
+        "softmax.s",
+        amd_fixture!("softmax"),
+        "softmax",
+        workitems,
+        &kernarg,
+        &arrays,
+    )
+    .verified_outputs();
 
     // The reference defines each row's maximum and sum independently of the lane exchanges.
     let [rows, columns] = dims;

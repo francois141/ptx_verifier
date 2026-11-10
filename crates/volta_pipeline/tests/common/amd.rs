@@ -5,7 +5,8 @@ use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
     AnalysisResult, ArrayDef, ArrayKind, OutputType, WorkgroupLaunch, analyze,
 };
-use volta_graph_check::{GraphReport, check_graph};
+use volta_expr::SymbolicOutputs;
+use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
 use volta_viz::Outcome;
 
 use super::record_run;
@@ -31,6 +32,22 @@ pub struct AmdChecked {
     pub report: GraphReport,
 }
 
+impl AmdChecked {
+    /// The run's outputs, which a test may compare only once the graph check concluded
+    /// `Verified` (so the run completed), the rule every PTX kernel's outputs meet too.
+    pub fn verified_outputs(self) -> SymbolicOutputs {
+        let conclusion = self.report.conclusion();
+        assert_eq!(
+            conclusion,
+            GraphConclusion::Verified,
+            "the graph check did not verify the kernel"
+        );
+        self.analysis
+            .symbolic_outputs
+            .expect("a verified run completed, so its outputs read back")
+    }
+}
+
 /// Run `kernel` of `source` (the fixture `file`) on a workgroup of `workitems` work-items along
 /// X, with `kernarg` as its argument buffer, then check its graph; panics if the run cannot
 /// start.
@@ -42,14 +59,26 @@ pub fn check_amd(
     kernarg: &[u8],
     arrays: &[ArrayDef],
 ) -> AmdChecked {
-    let parsed = parse_kernel(source, kernel).unwrap_or_else(|e| panic!("{file}: {e}"));
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (workitems, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (1, 1, 1),
     };
-    let analysis = analyze(&parsed, &launch, kernarg, arrays)
+    check_amd_launch(file, source, kernel, &launch, kernarg, arrays)
+}
+
+/// `check_amd` for the workgroup `launch` selects.
+pub fn check_amd_launch(
+    file: &str,
+    source: &str,
+    kernel: &str,
+    launch: &WorkgroupLaunch,
+    kernarg: &[u8],
+    arrays: &[ArrayDef],
+) -> AmdChecked {
+    let parsed = parse_kernel(source, kernel).unwrap_or_else(|e| panic!("{file}: {e}"));
+    let analysis = analyze(&parsed, launch, kernarg, arrays)
         .unwrap_or_else(|e| panic!("{file}: analysis cannot start: {e}"));
     let report = check_graph(&analysis.graph);
     let outcome = Outcome::Executed {
