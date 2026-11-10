@@ -9,14 +9,14 @@ kernel kernel(a_t, b) -> out
   result: sbuf[3, 2] at (0, 128), 4 bytes each
   acc: psum[2, 3] at (0, 0), 4 bytes each
   staged: psum[3, 2] at (0, 0), 4 bytes each
-  x = mov(a_t)
-  y = mov(b)
-  acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)
-  acc = matmul(x[2:4, 0:2], y[2:4, 0:3], accumulate=True)
-  acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)
-  acc = matmul(x[2:4, 0:2], y[2:4, 0:3], accumulate=True)
+  x = dma(a_t)
+  y = dma(b)
+  acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)  # in for#0[0] > for#1[0]
+  acc = matmul(x[2:4, 0:2], y[2:4, 0:3], accumulate=True)  # in for#0[0] > for#1[1]
+  acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)  # in for#0[1] > for#2[0]
+  acc = matmul(x[2:4, 0:2], y[2:4, 0:3], accumulate=True)  # in for#0[1] > for#2[1]
   product = mov(acc)
-  product_t = transpose(product)
+  product_t = dma_transpose(product)
   staged = mov(product_t)
   result = mov(staged)
-  out = mov(result)
+  out = dma(result)

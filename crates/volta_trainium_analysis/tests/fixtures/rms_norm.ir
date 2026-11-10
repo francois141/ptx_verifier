@@ -7,9 +7,9 @@ kernel kernel(a, out)
   mean_sq: sbuf[4, 1]
   rstd: sbuf[4, 1]
   y: sbuf[4, 8]
-  x = mov(a)
+  x = dma(a)
   squares, sum_sq = square(x) reduce add
   mean_sq = add(multiply(sum_sq, 0.125), 0.000001)
   rstd = rsqrt(mean_sq)
   y = multiply(x, rstd)
-  out = mov(y)
+  out = dma(y)

@@ -1,0 +1,13 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[2, 4]
+  x.0.0: sbuf[2, 2]
+  double[0].y: sbuf[2, 2]
+  x.1.0: sbuf[2, 2]
+  double[1].y: sbuf[2, 2]
+  x.0.0 = dma(a[0:2, 0:2])  # in affine_range#0[0] > static_range#1[0]
+  double[0].y = multiply(x.0.0, 2)  # in affine_range#0[0] > static_range#1[0] > sequential_range#2[0] > no_reorder
+  out[0:2, 0:2] = dma(double[0].y)  # in affine_range#0[0] > static_range#1[0]
+  x.1.0 = dma(a[0:2, 2:4])  # in affine_range#0[1] > static_range#3[0]
+  double[1].y = multiply(x.1.0, 2)  # in affine_range#0[1] > static_range#3[0] > sequential_range#4[0] > no_reorder
+  out[0:2, 2:4] = dma(double[1].y)  # in affine_range#0[1] > static_range#3[0]

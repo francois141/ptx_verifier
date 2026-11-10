@@ -5,7 +5,7 @@ kernel kernel(a, b) -> kernel_out
   x: sbuf[2, 4]
   y: sbuf[2, 4]
   z: sbuf[2, 4]
-  x = mov(a)
-  y = mov(b)
+  x = dma(a)
+  y = dma(b)
   z = multiply(x, y)
-  kernel_out = mov(z)
+  kernel_out = dma(z)

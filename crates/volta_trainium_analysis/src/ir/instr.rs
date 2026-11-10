@@ -22,6 +22,7 @@ pub enum LoweredInstr {
     Mov {
         dst: TensorRegion,
         src: TensorRegion,
+        mover: Mover,
     },
     /// Every element of `dst` set to `value`.
     Memset { dst: TensorRegion, value: Scalar },
@@ -100,7 +101,16 @@ pub enum LoweredInstr {
     Transpose {
         dst: TensorRegion,
         data: TensorRegion,
+        mover: Mover,
     },
+}
+
+/// What moves a copy's or transpose's data: a DMA (`dma_copy`, `dma_transpose`, `nl.load`,
+/// `nl.store`) or a compute engine (`tensor_copy`, `nc_transpose`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mover {
+    Dma,
+    Engine,
 }
 
 /// A reduction of an instruction's elementwise result: each `res[p, 0]` the fold of

@@ -5,15 +5,15 @@ kernel kernel(x) -> kernel_out
   col_max: sbuf[2, 3]
   stats: sbuf[2, 2]
   norm: sbuf[2, 3]
-  scratch[0:2, 1:4] = mov(x)
-  col_max[0:2, 0:1] = reduce maximum(scratch[0:2, 1:2])
-  col_max[0:2, 1:2] = reduce maximum(scratch[0:2, 2:3])
-  col_max[0:2, 2:3] = reduce maximum(scratch[0:2, 3:4])
+  scratch[0:2, 1:4] = dma(x)
+  col_max[0:2, 0:1] = reduce maximum(scratch[0:2, 1:2])  # in for#0[0]
+  col_max[0:2, 1:2] = reduce maximum(scratch[0:2, 2:3])  # in for#0[1]
+  col_max[0:2, 2:3] = reduce maximum(scratch[0:2, 3:4])  # in for#0[2]
   stats[0:2, 0:1] = reduce maximum(col_max)
-  norm[0:2, 0:1] = subtract(scratch[0:2, 1:2], stats[0:2, 0:1])
-  norm[0:2, 1:2] = subtract(scratch[0:2, 2:3], stats[0:2, 0:1])
-  norm[0:2, 2:3] = subtract(scratch[0:2, 3:4], stats[0:2, 0:1])
+  norm[0:2, 0:1] = subtract(scratch[0:2, 1:2], stats[0:2, 0:1])  # in for#1[0]
+  norm[0:2, 1:2] = subtract(scratch[0:2, 2:3], stats[0:2, 0:1])  # in for#1[1]
+  norm[0:2, 2:3] = subtract(scratch[0:2, 3:4], stats[0:2, 0:1])  # in for#1[2]
   norm, stats[0:2, 1:2] = exp(norm) reduce add
   stats[0:2, 1:2] = reciprocal(stats[0:2, 1:2])
   scratch[0:2, 1:4] = multiply(norm, stats[0:2, 1:2])
-  kernel_out = mov(scratch[0:2, 1:4])
+  kernel_out = dma(scratch[0:2, 1:4])

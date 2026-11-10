@@ -49,6 +49,13 @@ fn the_gemm_relu_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// Each instruction's origin: its loops of every kind, outermost first and across a helper
+// call, a new loop id each time an inner loop is entered, and an enclosing no_reorder block.
+#[test]
+fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
+    common::check("loop_origins", "kernel", &[("a", &[2, 4]), ("out", &[2, 4])]);
+}
+
 #[test]
 fn the_tiled_copy_kernel_parses_lowers_and_runs_as_expected() {
     common::check("tiled_copy", "kernel", &[("a", &[8, 4]), ("out", &[8, 4])]);

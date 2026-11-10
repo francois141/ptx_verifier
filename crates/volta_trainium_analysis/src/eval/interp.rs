@@ -87,7 +87,7 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Vec<Write>, EvalError> {
         let mut writes = Vec::new();
         match instruction {
-            LoweredInstr::Mov { dst, src } => {
+            LoweredInstr::Mov { dst, src, .. } => {
                 let pairs = indices(instr, dst, &self.tensors)?.zip(src.shape.indices());
                 for (to, from) in pairs {
                     let value = self.tensors[src.tensor].read(
@@ -235,7 +235,7 @@ impl<'a> Interpreter<'a> {
                     writes.push(Write::at(dst, [partition, column], value));
                 }
             }
-            LoweredInstr::Transpose { dst, data } => {
+            LoweredInstr::Transpose { dst, data, .. } => {
                 for [p, f] in elements(data) {
                     let value = self.read(instr, data, [p, f])?;
                     writes.push(Write::at(dst, [f, p], value));
