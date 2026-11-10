@@ -25,11 +25,19 @@ impl Verdict {
     }
 }
 
-/// One kernel's graph-branch report and the assumptions its analysis made.
+/// One kernel's graph branch and the assumptions its analysis made.
 pub struct KernelEvidence<'a> {
     pub label: &'a str,
-    pub graph: &'a GraphReport,
+    pub graph: GraphBranch<'a>,
     pub assumptions: &'a [Assumption],
+}
+
+/// What the graph branch says about one kernel.
+#[derive(Debug, Clone, Copy)]
+pub enum GraphBranch<'a> {
+    Checked(&'a GraphReport),
+    /// The kernel's interpreter records no memory events, so race freedom is not established.
+    NotRecorded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +51,7 @@ pub struct Decision {
 
 /// Combine the equivalence branch's verdict with each kernel's graph report. ACCEPT needs a
 /// complete equivalence proof and every kernel `Verified` (a completed trace, every check
-/// passed); any refutation, index-set mismatch, failed check or deadlock is a REJECT;
+/// passed), so a kernel with no recorded graph is at best UNKNOWN; any refutation, index-set mismatch, failed check or deadlock is a REJECT;
 /// anything else is UNKNOWN.
 pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> Decision {
     let mut established = Vec::new();
@@ -83,7 +91,17 @@ pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> D
         )),
     }
     for k in kernels {
-        match k.graph.conclusion() {
+        let report = match k.graph {
+            GraphBranch::Checked(report) => report,
+            GraphBranch::NotRecorded => {
+                missing.push(format!(
+                    "{}: race freedom not checked: its interpreter records no memory events",
+                    k.label
+                ));
+                continue;
+            }
+        };
+        match report.conclusion() {
             GraphConclusion::Verified => {
                 established.push(format!("{}: every graph check passed", k.label))
             }

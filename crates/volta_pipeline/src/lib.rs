@@ -19,7 +19,7 @@ pub mod frontend;
 pub mod kernel;
 pub mod solve;
 
-pub use aggregate::{Decision, KernelEvidence, Verdict, decide};
+pub use aggregate::{Decision, GraphBranch, KernelEvidence, Verdict, decide};
 pub use equivalence::{Element, EquivalenceVerdict, check_equivalence, confirm_differences};
 pub use frontend::{Frontend, FrontendError, GraphEvidence, Isa, KernelRun, SolveError};
 pub use kernel::{KernelVerification, verify_kernel};
