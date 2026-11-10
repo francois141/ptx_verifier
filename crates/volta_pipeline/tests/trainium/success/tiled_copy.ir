@@ -3,7 +3,7 @@ kernel kernel(a, out)
   out: hbm[8, 4]
   x.0: sbuf[4, 4]
   x.1: sbuf[4, 4]
-  x.0 = mov(a[0:4, 0:4])
-  out[0:4, 0:4] = mov(x.0)
-  x.1 = mov(a[4:8, 0:4])
-  out[4:8, 0:4] = mov(x.1)
+  x.0 = dma(a[0:4, 0:4])  # in affine_range#0[0]
+  out[0:4, 0:4] = dma(x.0)  # in affine_range#0[0]
+  x.1 = dma(a[4:8, 0:4])  # in affine_range#0[1]
+  out[4:8, 0:4] = dma(x.1)  # in affine_range#0[1]

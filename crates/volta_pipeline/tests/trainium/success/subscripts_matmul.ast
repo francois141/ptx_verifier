@@ -1,16 +1,16 @@
 kernel kernel(a_t: [4, 2], b: [4, 3], out: [2, 3])
   staged: shared_hbm[2, 2, 5] of float32
-  dma_copy(dst=staged[0, :, 0:2], src=a_t[0:2, :])
-  dma_copy(dst=staged[0, :, 2:5], src=b[0:2, :])
-  dma_copy(dst=staged[1, :, 0:2], src=a_t[2:4, :])
-  dma_copy(dst=staged[1, :, 2:5], src=b[2:4, :])
+  dma_copy(dst=staged[0, :, 0:2], src=a_t[0:2, :])  # in for#0[0]
+  dma_copy(dst=staged[0, :, 2:5], src=b[0:2, :])  # in for#0[0]
+  dma_copy(dst=staged[1, :, 0:2], src=a_t[2:4, :])  # in for#0[1]
+  dma_copy(dst=staged[1, :, 2:5], src=b[2:4, :])  # in for#0[1]
   sb: sbuf[2, 2, 5] of float32
   acc: psum[2, 3] of float32
   memset(dst=acc, value=0)
-  dma_copy(dst=sb[:, 0, :], src=staged[0])
-  nc_matmul(dst=acc, moving=sb[:, 0, 2:5], stationary=sb[:, 0, 0:2])
-  dma_copy(dst=sb[:, 1, :], src=staged[1])
-  nc_matmul(dst=acc, moving=sb[:, 1, 2:5], stationary=sb[:, 1, 0:2])
+  dma_copy(dst=sb[:, 0, :], src=staged[0])  # in for#1[0]
+  nc_matmul(dst=acc, moving=sb[:, 0, 2:5], stationary=sb[:, 0, 0:2])  # in for#1[0]
+  dma_copy(dst=sb[:, 1, :], src=staged[1])  # in for#1[1]
+  nc_matmul(dst=acc, moving=sb[:, 1, 2:5], stationary=sb[:, 1, 0:2])  # in for#1[1]
   z: sbuf[2, 3] of float32
   tensor_copy(dst=z, src=acc)
   blocks: shared_hbm[1, 1, 2, 3] of float32

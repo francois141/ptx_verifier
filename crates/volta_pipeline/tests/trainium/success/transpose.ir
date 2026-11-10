@@ -4,7 +4,7 @@ kernel kernel(a, out)
   x: sbuf[2, 3]
   t: psum[3, 2]
   y: sbuf[3, 2]
-  x = mov(a)
+  x = dma(a)
   t = transpose(x)
   y = mov(t)
-  out = mov(y)
+  out = dma(y)
