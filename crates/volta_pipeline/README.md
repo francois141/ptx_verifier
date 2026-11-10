@@ -28,7 +28,8 @@ artifacts and never call each other or the stage.
     kernel's graph conclusion `Verified`;
   - **REJECT** on any refutation, failed graph check, or deadlock;
   - **UNKNOWN** otherwise (sampled check, unresolved obligations, aborted run,
-    unproven difference).
+    unproven difference, or a kernel whose interpreter records no graph:
+    `GraphBranch::NotRecorded`, as for NKI).
 
   The `Decision` carries the verdict, its evidence, and the union of the
   modeling assumptions the analyses ran under.
@@ -52,7 +53,8 @@ kernels from `tests/ptx/` through `verify_kernel` and asserts on the outcome.
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
   LDS. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
   swapped inputs.
-- `trainium_equivalence_tests.rs`: the NKI `matmul`, `gemm_relu` and `softmax`
+- `trainium_equivalence_tests.rs`: an NKI kernel proved equal to its spec is UNKNOWN
+  through `solve` and `decide`, its run recording no graph. The NKI `matmul`, `gemm_relu` and `softmax`
   fixtures against their `.spec` files beside them in the Trainium analysis crate,
   with `gemm_relu` against the unclamped product and `softmax` against the softmax
   of `-x` (a reversed `subtract`) as negative tests. Also the NKI samples' own

@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use volta_equivalence::check::EquivCheckOptions;
 use volta_expr::SymbolicOutputs;
-use volta_pipeline::{EquivalenceVerdict, check_equivalence};
+use volta_pipeline::{
+    EquivalenceVerdict, GraphEvidence, Isa, Solver, Spec, Verdict, check_equivalence,
+};
+use volta_ptx_analysis::AnalysisConfig;
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{
     Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
@@ -109,6 +112,45 @@ fn nki_matmul_matches_its_specification() {
             checked: 6,
             total: 6,
         }
+    );
+}
+
+// Test that an NKI kernel proved equal to its spec is not accepted, as its interpreter records no
+// event graph to establish race freedom.
+#[test]
+fn nki_kernel_equal_to_its_spec_is_unknown_without_race_evidence() {
+    let parsed = volta_spec::parse_spec(MATMUL_SPEC).unwrap();
+    let dims = HashMap::from([
+        ("M".to_string(), 2),
+        ("N".to_string(), 3),
+        ("K".to_string(), 4),
+    ]);
+    let spec = Spec::new(&parsed, &dims).unwrap();
+    let solver = Solver::Canonical(EquivCheckOptions::default());
+    let launch = AnalysisConfig::new((1, 1, 1));
+
+    let (run, solution) = Isa::Trainium
+        .frontend()
+        .solve(MATMUL, None, launch, &spec, &solver)
+        .unwrap();
+    assert!(matches!(run.graph, GraphEvidence::NotRecorded));
+    assert_eq!(
+        solution.verdict(),
+        EquivalenceVerdict::Equivalent {
+            checked: 6,
+            total: 6,
+        }
+    );
+
+    let decision = run.decide(&solution);
+    assert_eq!(decision.verdict, Verdict::Unknown);
+    assert!(
+        decision
+            .evidence
+            .iter()
+            .any(|e| e.contains("race freedom not checked")),
+        "{:?}",
+        decision.evidence
     );
 }
 

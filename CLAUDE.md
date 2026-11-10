@@ -864,8 +864,9 @@ The integration point: `verify_kernel(module, kernel, config)` (analysis stage
 claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
-and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
-anything else is UNKNOWN. Tests:
+and every kernel `Verified` (a kernel whose interpreter records no graph,
+`GraphBranch::NotRecorded`, as NKI's, is at best UNKNOWN); any refutation, failed check
+or deadlock is REJECT; anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches),
 `architecture_tests.rs` (the stage/branch boundaries),
 `amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
@@ -875,7 +876,8 @@ or change the softmax row width). CK attention checks two batches and two heads 
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
-`trainium_equivalence_tests.rs` checks the NKI `matmul`, 
+`trainium_equivalence_tests.rs` checks that an NKI kernel proved equal to its spec is
+UNKNOWN through `solve` and `decide` (no graph recorded), and checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
