@@ -1,0 +1,11 @@
+kernel kernel(a: [2, 4], out: [2, 4])
+  x.0.0: sbuf[2, 2] of a.dtype
+  dma_copy(dst=x.0.0, src=a[:, 0:2])  # in affine_range#0[0] > static_range#1[0]
+  double[0].y: sbuf[2, 2] of float32
+  tensor_scalar(data=x.0.0, dst=double[0].y, op0=nki.language.multiply, operand0=2)  # in affine_range#0[0] > static_range#1[0] > sequential_range#2[0] > no_reorder
+  dma_copy(dst=out[:, 0:2], src=double[0].y)  # in affine_range#0[0] > static_range#1[0]
+  x.1.0: sbuf[2, 2] of a.dtype
+  dma_copy(dst=x.1.0, src=a[:, 2:4])  # in affine_range#0[1] > static_range#3[0]
+  double[1].y: sbuf[2, 2] of float32
+  tensor_scalar(data=x.1.0, dst=double[1].y, op0=nki.language.multiply, operand0=2)  # in affine_range#0[1] > static_range#3[0] > sequential_range#4[0] > no_reorder
+  dma_copy(dst=out[:, 2:4], src=double[1].y)  # in affine_range#0[1] > static_range#3[0]

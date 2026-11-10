@@ -8,16 +8,16 @@ kernel kernel(a_t, b, out)
   z: sbuf[2, 3]
   blocks: hbm[1, 1, 2, 3]
   w: sbuf[2, 3]
-  staged[0, 0:2, 0:2] = mov(a_t[0:2, 0:2])
-  staged[0, 0:2, 2:5] = mov(b[0:2, 0:3])
-  staged[1, 0:2, 0:2] = mov(a_t[2:4, 0:2])
-  staged[1, 0:2, 2:5] = mov(b[2:4, 0:3])
+  staged[0, 0:2, 0:2] = dma(a_t[0:2, 0:2])  # in for#0[0]
+  staged[0, 0:2, 2:5] = dma(b[0:2, 0:3])  # in for#0[0]
+  staged[1, 0:2, 0:2] = dma(a_t[2:4, 0:2])  # in for#0[1]
+  staged[1, 0:2, 2:5] = dma(b[2:4, 0:3])  # in for#0[1]
   acc = memset(0)
-  sb[0:2, 0, 0:5] = mov(staged[0, 0:2, 0:5])
-  acc = matmul(sb[0:2, 0, 0:2], sb[0:2, 0, 2:5])
-  sb[0:2, 1, 0:5] = mov(staged[1, 0:2, 0:5])
-  acc = matmul(sb[0:2, 1, 0:2], sb[0:2, 1, 2:5])
+  sb[0:2, 0, 0:5] = dma(staged[0, 0:2, 0:5])  # in for#1[0]
+  acc = matmul(sb[0:2, 0, 0:2], sb[0:2, 0, 2:5])  # in for#1[0]
+  sb[0:2, 1, 0:5] = dma(staged[1, 0:2, 0:5])  # in for#1[1]
+  acc = matmul(sb[0:2, 1, 0:2], sb[0:2, 1, 2:5])  # in for#1[1]
   z = mov(acc)
-  blocks[0, 0, 0:2, 0:3] = mov(z)
-  w = mov(blocks[0, 0, 0:2, 0:3])
-  out = mov(w)
+  blocks[0, 0, 0:2, 0:3] = dma(z)
+  w = dma(blocks[0, 0, 0:2, 0:3])
+  out = dma(w)

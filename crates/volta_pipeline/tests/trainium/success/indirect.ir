@@ -5,8 +5,8 @@ kernel kernel(a, idx) -> out
   t: sbuf[32, 4]
   offsets: sbuf[32, 1]
   gathered: sbuf[32, 3]
-  t = mov(a)
-  offsets[0:16, 0:1] = mov(idx)
-  offsets[16:32, 0:1] = mov(idx)
+  t = dma(a)
+  offsets[0:16, 0:1] = dma(idx)  # in static_range#0[0]
+  offsets[16:32, 0:1] = dma(idx)  # in static_range#0[1]
   gathered = gather(t, offsets)
-  out = mov(gathered)
+  out = dma(gathered)

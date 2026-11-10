@@ -3,6 +3,6 @@ kernel kernel(a, out)
   out: hbm[2, 4]
   x: sbuf[2, 4]
   y: sbuf[2, 4]
-  x = mov(a)
+  x = dma(a)
   y = sigmoid(x)
-  out = mov(y)
+  out = dma(y)

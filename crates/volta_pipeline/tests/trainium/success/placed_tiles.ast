@@ -9,10 +9,10 @@ kernel kernel(a_t: [4, 2], b: [4, 3])
   staged: psum[3, 2] of float32 at (0, 0)
   dma_copy(dst=x, src=a_t)
   dma_copy(dst=y, src=b)
-  nc_matmul(accumulate=False, dst=acc, moving=y[0:2, :], stationary=x[0:2, :])
-  nc_matmul(accumulate=True, dst=acc, moving=y[2:4, :], stationary=x[2:4, :])
-  nc_matmul(accumulate=False, dst=acc, moving=y[0:2, :], stationary=x[0:2, :])
-  nc_matmul(accumulate=True, dst=acc, moving=y[2:4, :], stationary=x[2:4, :])
+  nc_matmul(accumulate=False, dst=acc, moving=y[0:2, :], stationary=x[0:2, :])  # in for#0[0] > for#1[0]
+  nc_matmul(accumulate=True, dst=acc, moving=y[2:4, :], stationary=x[2:4, :])  # in for#0[0] > for#1[1]
+  nc_matmul(accumulate=False, dst=acc, moving=y[0:2, :], stationary=x[0:2, :])  # in for#0[1] > for#2[0]
+  nc_matmul(accumulate=True, dst=acc, moving=y[2:4, :], stationary=x[2:4, :])  # in for#0[1] > for#2[1]
   tensor_copy(dst=product, engine=nki.isa.vector_engine, src=acc)
   dma_transpose(axes=(1, 0), dst=product_t, src=product)
   tensor_copy(dst=staged, src=product_t)

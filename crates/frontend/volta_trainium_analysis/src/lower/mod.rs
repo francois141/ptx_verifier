@@ -15,8 +15,8 @@ use crate::frontend::ast::{
 };
 use crate::ir::{
     Accumulation, ActivationFunc, ArithOp, Index, Initial, Layout, LoweredInstr, LoweredKernel,
-    Memory, Order, Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor, TensorId,
-    TensorRegion,
+    Memory, Mover, Order, Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor,
+    TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, PatternProblem, StatementError};
@@ -69,6 +69,7 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         .collect();
 
     let mut instructions = Vec::new();
+    let mut origins = Vec::new();
     for (index, statement) in kernel.body.iter().enumerate() {
         let at = |error| LowerError::Statement { index, error };
         match statement {
@@ -88,6 +89,7 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
             }
             Statement::Instruction(instruction) => {
                 instructions.push(lower_instruction(instruction, &scope).map_err(at)?);
+                origins.push(instruction.origin.clone());
             }
         }
     }
@@ -104,6 +106,7 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         params,
         tensors: scope.into_tensors(),
         instructions: IdVec::from_vec(instructions),
+        origins: IdVec::from_vec(origins),
         returned,
     })
 }
@@ -132,6 +135,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Mov {
                 dst: dst.region,
                 src: src.region,
+                mover: Mover::Dma,
             })
         }
 
@@ -150,6 +154,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Mov {
                 dst: dst.region,
                 src: src.region,
+                mover: Mover::Engine,
             })
         }
 
@@ -409,6 +414,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
                 data: data.region,
+                mover: Mover::Engine,
             })
         }
 
@@ -425,6 +431,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
                 data: data.region,
+                mover: Mover::Dma,
             })
         }
 
