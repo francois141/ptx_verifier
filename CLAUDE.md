@@ -478,7 +478,8 @@ is false there.
 Do not add unit tests or `tests.rs` modules: cover execution behavior
 through compiled fixtures in `amd/accepted_tests.rs` and `amd/rejected_tests.rs`.
 See the crate README for ISA references, test commands, and fixture regeneration,
-including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
+including the pinned CK Tile forward-attention instance in `ck_fmha.hip` and RMSNorm instance
+in `ck_rmsnorm2d.hip`.
 
 ## Crate: volta_trainium_analysis
 

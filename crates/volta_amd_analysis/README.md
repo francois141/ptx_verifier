@@ -178,3 +178,35 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
 The source supplies OCKL helpers as in `ck_gemm.hip`; `NDEBUG` matches CK's Release build.
 Fast exp2 and the denormal flag follow CK's [forward-attention build](https://github.com/ROCm/composable_kernel/blob/fc2862d712/example/ck_tile/01_fmha/CMakeLists.txt);
 the division flag permits reciprocal-based normalization.
+
+### Compiling the CK RMSNorm fixture
+
+`volta_pipeline/tests/amd/success/ck_rmsnorm2d.hip` instantiates CK Tile's one-pass forward RMSNorm at the same
+revision, in the block-per-row shape its
+[generator](https://github.com/ROCm/composable_kernel/blob/fc2862d712/example/ck_tile/10_rmsnorm2d/generate.py)
+lists under row length 1,024: 256 work-items in four waves, each work-item handling four
+elements of the row, with padding along the row. Its data is fp32, where CK's
+[host arguments](https://github.com/ROCm/composable_kernel/blob/fc2862d712/include/ck_tile/ops/rmsnorm2d/kernel/rmsnorm2d_fwd_kernel.hpp)
+document fp16 and bf16 inputs. It has no fused add, quantization or saved inverse RMS.
+The row count and length, the row strides and epsilon are kernel arguments.
+
+Use the attention fixture's Clang, CK checkout and HIP headers, and compile from the
+repository root:
+
+```sh
+clang++ -x hip -std=c++20 -fbracket-depth=1024 \
+  --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
+  --hip-path="$HIP_ROOT" -DNDEBUG -Wno-unknown-warning-option \
+  -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
+  -fno-hip-fp32-correctly-rounded-divide-sqrt -I "$CK_ROOT/include" \
+  -S crates/volta_pipeline/tests/amd/success/ck_rmsnorm2d.hip \
+  -o crates/volta_pipeline/tests/amd/success/ck_rmsnorm2d.s
+```
+
+The source supplies OCKL helpers as in `ck_gemm.hip`, and ROCm 7.0.0's
+[`rsqrtf`](https://github.com/ROCm/llvm-project/blob/rocm-7.0.0/amd/device-libs/ocml/src/rsqrtF.cl)
+as the device library defines it when denormals are flushed. CK's
+[RMSNorm build](https://github.com/ROCm/composable_kernel/blob/fc2862d712/example/ck_tile/10_rmsnorm2d/CMakeLists.txt)
+keeps denormals. This command flushes them, with the attention fixture's flag, so that `rsqrtf`
+is the instruction alone and the division by the row length is reciprocal-based; the analysis
+computes over the reals, which have no denormals.
