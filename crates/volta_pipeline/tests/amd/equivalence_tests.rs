@@ -6,8 +6,8 @@ use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind, WorkgroupLaunch};
 use volta_equivalence::check::EquivCheckOptions;
 use volta_pipeline::{
-    EquivalenceVerdict, KernelEvidence, Spec, Verdict, check_against_spec, check_equivalence,
-    decide,
+    EquivalenceVerdict, GraphBranch, KernelEvidence, Spec, Verdict, check_against_spec,
+    check_equivalence, decide,
 };
 
 use crate::common;
@@ -681,7 +681,7 @@ fn amd_ck_avgpool2d_with_outputs_beyond_cks_output_bound_is_rejected() {
     // The run's graph verified, so the unwritten outputs alone make the verdict a rejection.
     let kernel = KernelEvidence {
         label: "kernel",
-        graph: &report,
+        graph: GraphBranch::Checked(&report),
         assumptions: &assumptions,
     };
     assert_eq!(decide(&verdict, &[kernel]).verdict, Verdict::Reject);

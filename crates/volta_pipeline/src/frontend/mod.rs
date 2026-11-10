@@ -11,7 +11,7 @@ use volta_graph::EventGraph;
 use volta_graph_check::GraphReport;
 use volta_ptx_analysis::AnalysisConfig;
 
-use crate::aggregate::{Decision, KernelEvidence, decide};
+use crate::aggregate::{Decision, GraphBranch, KernelEvidence, decide};
 use crate::solve::{Solution, Solver, Spec, solve};
 
 // =========================================================================
@@ -145,16 +145,21 @@ impl KernelRun {
         )
     }
 
-    /// `decide` over `solution`, with the run's graph report as its kernel evidence if it has one.
+    /// `decide` over `solution` and the run's graph branch; a run without a graph is at best
+    /// UNKNOWN.
     pub fn decide(&self, solution: &Solution) -> Decision {
-        let kernels: Vec<KernelEvidence> = match &self.graph {
-            GraphEvidence::Checked { graph, report } => vec![KernelEvidence {
-                label: "kernel",
-                graph: report,
-                assumptions: &graph.provenance().assumptions,
-            }],
-            GraphEvidence::NotRecorded => Vec::new(),
+        let (graph, assumptions) = match &self.graph {
+            GraphEvidence::Checked { graph, report } => (
+                GraphBranch::Checked(report),
+                graph.provenance().assumptions.as_slice(),
+            ),
+            GraphEvidence::NotRecorded => (GraphBranch::NotRecorded, &[][..]),
         };
+        let kernels = [KernelEvidence {
+            label: "kernel",
+            graph,
+            assumptions,
+        }];
         decide(&solution.verdict(), &kernels)
     }
 }
