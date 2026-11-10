@@ -2,15 +2,15 @@ kernel kernel(a_t: [4, 2], b: [4, 3], out: [2, 3])
   acc: psum[2, 3] of float32
   memset(dst=acc, value=0)
   x.0: sbuf[2, 2] of a_t.dtype
-  dma_copy(dst=x.0, src=a_t[0:2, :])
+  dma_copy(dst=x.0, src=a_t[0:2, :])  # in for#0[0]
   y.0: sbuf[2, 3] of b.dtype
-  dma_copy(dst=y.0, src=b[0:2, :])
-  nc_matmul(dst=acc, moving=y.0, stationary=x.0)
+  dma_copy(dst=y.0, src=b[0:2, :])  # in for#0[0]
+  nc_matmul(dst=acc, moving=y.0, stationary=x.0)  # in for#0[0]
   x.1: sbuf[2, 2] of a_t.dtype
-  dma_copy(dst=x.1, src=a_t[2:4, :])
+  dma_copy(dst=x.1, src=a_t[2:4, :])  # in for#0[1]
   y.1: sbuf[2, 3] of b.dtype
-  dma_copy(dst=y.1, src=b[2:4, :])
-  nc_matmul(dst=acc, moving=y.1, stationary=x.1)
+  dma_copy(dst=y.1, src=b[2:4, :])  # in for#0[1]
+  nc_matmul(dst=acc, moving=y.1, stationary=x.1)  # in for#0[1]
   copies[0].0: sbuf[2, 3] of float32
   copies[1].1: sbuf[2, 3] of float32
   tensor_copy(dst=copies[0].0, src=acc)

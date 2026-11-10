@@ -10,14 +10,14 @@ kernel kernel(a, b, c) -> out
   forward: sbuf[2, 3]
   reversed: sbuf[2, 3]
   scaled: sbuf[2, 3]
-  x = mov(a)
-  row = mov(b)
+  x = dma(a)
+  row = dma(b)
   scale = memset(0)
-  scale = mov(c)
+  scale = dma(c)
   rows_b = mov(row.ap([[0, 2], [1, 3]], offset=0))
   forward = scan(acc = scale; acc = add(multiply(x, acc), rows_b))
   reversed = scan(acc = 1; acc = subtract(rows_b, subtract(acc, x)))
   scaled = exp(multiply(x, scale))
-  out[0:2, 0:3] = mov(forward)
-  out[0:2, 3:6] = mov(reversed)
-  out[0:2, 6:9] = mov(scaled)
+  out[0:2, 0:3] = dma(forward)
+  out[0:2, 3:6] = dma(reversed)
+  out[0:2, 6:9] = dma(scaled)

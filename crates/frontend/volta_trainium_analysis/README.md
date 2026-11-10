@@ -226,6 +226,17 @@ named after its index (`x.0`, `x.1`), so they stay distinct, while other names
 rebind as in Python (`n = n + i` accumulates, and the loop variable keeps its last
 value). The count is any compile-time integer, e.g. `seqlen_kv // 4`.
 
+Unrolling keeps program order, but how the compiler may reorder an instruction depends
+on where it was emitted, so each instruction carries an `ast::Origin`, which lowering
+keeps as `LoweredKernel::origins`: its enclosing loop iterations, outermost first and
+across helper calls (`LoopIteration`: a `LoopId` per execution of a `for`, so an inner
+loop is a new one each time it is entered, its `LoopKind` and the iteration index), and
+whether a `nl.no_reorder()` block encloses it (`Reordering`). `.ast` and `.ir` render
+it after the instruction (`# in affine_range#0[1] > static_range#3[0] > no_reorder`).
+A copy's or transpose's `ir::Mover` says whether a DMA (`dma_copy`, `dma_transpose`,
+`nl.load`/`nl.store`; `.ir`'s `dma`, `dma_transpose`) or a compute engine
+(`tensor_copy`, `nc_transpose`; `mov`, `transpose`) moves its data.
+
 A subscript such as `a[0:4, :]` or `qk[i, j, :, :]` names a rectangular region:
 each index is a slice, an omitted bound meaning the tensor's own edge, or an
 integer, which selects one position and drops the dimension, as in numpy;
@@ -431,6 +442,11 @@ each partition into a `(4, 1)` tile, `nisa.tensor_scalar` scales and biases it,
 tile of rows at a time: `nl.affine_range(2)` unrolls into two iterations, each
 with its own SBUF tile, copying `a[i * 4:(i + 1) * 4, :]` in and back out to the
 matching rows of `out`.
+
+`success/loop_origins.py` doubles a 2 x 4 tensor one column pair at a time
+under `affine_range` and `static_range`, through a helper looping over
+`sequential_range` in a `no_reorder` block: its `.ast` and `.ir` show every loop kind in
+an origin, the inner loop's new id on each entry, and the block across the call.
 
 `success/returned_output.py` multiplies two 2 x 4 tensors elementwise
 into `kernel_out`, an HBM tensor it allocates with `nl.shared_hbm` and returns.

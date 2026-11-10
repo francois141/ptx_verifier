@@ -10,12 +10,12 @@ kernel kernel(a_t, b, out)
   copies[0].0: sbuf[2, 3]
   copies[1].1: sbuf[2, 3]
   acc = memset(0)
-  x.0 = mov(a_t[0:2, 0:2])
-  y.0 = mov(b[0:2, 0:3])
-  acc = matmul(x.0, y.0)
-  x.1 = mov(a_t[2:4, 0:2])
-  y.1 = mov(b[2:4, 0:3])
-  acc = matmul(x.1, y.1)
+  x.0 = dma(a_t[0:2, 0:2])  # in for#0[0]
+  y.0 = dma(b[0:2, 0:3])  # in for#0[0]
+  acc = matmul(x.0, y.0)  # in for#0[0]
+  x.1 = dma(a_t[2:4, 0:2])  # in for#0[1]
+  y.1 = dma(b[2:4, 0:3])  # in for#0[1]
+  acc = matmul(x.1, y.1)  # in for#0[1]
   copies[0].0 = mov(acc)
   copies[1].1 = mov(copies[0].0)
-  out = mov(copies[1].1)
+  out = dma(copies[1].1)

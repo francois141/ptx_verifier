@@ -10,13 +10,13 @@ kernel kernel(x) -> kernel_out
   row_sum: sbuf[2, 1]
   inv_sum: sbuf[2, 1]
   result: sbuf[2, 4]
-  data = mov(x)
-  copy[0:2, 0, 0:2], chunk_max[0:2, 0:1] = multiply(data[0:2, 0:2], 1) reduce maximum
-  copy[0:2, 1, 0:2], chunk_max[0:2, 1:2] = multiply(data[0:2, 2:4], 1) reduce maximum
+  data = dma(x)
+  copy[0:2, 0, 0:2], chunk_max[0:2, 0:1] = multiply(data[0:2, 0:2], 1) reduce maximum  # in for#0[0]
+  copy[0:2, 1, 0:2], chunk_max[0:2, 1:2] = multiply(data[0:2, 2:4], 1) reduce maximum  # in for#0[1]
   neg_max = neg(reduce maximum(chunk_max))
-  exp_vals[0:2, 0:2], chunk_sum[0:2, 0:1] = exp(add(copy[0:2, 0, 0:2], neg_max)) reduce add
-  exp_vals[0:2, 2:4], chunk_sum[0:2, 1:2] = exp(add(copy[0:2, 1, 0:2], neg_max)) reduce add
+  exp_vals[0:2, 0:2], chunk_sum[0:2, 0:1] = exp(add(copy[0:2, 0, 0:2], neg_max)) reduce add  # in for#1[0]
+  exp_vals[0:2, 2:4], chunk_sum[0:2, 1:2] = exp(add(copy[0:2, 1, 0:2], neg_max)) reduce add  # in for#1[1]
   row_sum = reduce add(chunk_sum)
   inv_sum = reciprocal(row_sum)
   result = multiply(exp_vals, inv_sum)
-  kernel_out = mov(result)
+  kernel_out = dma(result)

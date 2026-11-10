@@ -655,7 +655,13 @@ body's arithmetic and emits the body once per index; the tiles an iteration
 declares take its index as a suffix (`x` becomes `x.0`, a name Python cannot
 write), so each iteration owns its own, while other names rebind as in Python (the
 loop variable keeps its last value). The count is any compile-time integer; a
-`for` over a tuple or list unrolls the same way.
+`for` over a tuple or list unrolls the same way. Each instruction keeps its
+`ast::Origin` (`LoweredKernel::origins`): its enclosing `LoopIteration`s (a `LoopId` per
+execution of a `for`, its `LoopKind`, the index), outermost first across helper calls,
+and whether `nl.no_reorder()` encloses it (`Reordering`), rendered after it in `.ast`
+and `.ir`; `ir::Mover` tells a DMA copy or transpose (`.ir`'s `dma`, `dma_transpose`)
+from a compute engine's (`mov`, `transpose`). `tests/fixtures/loop_origins.py` covers
+every loop kind, an inner loop entered twice and `no_reorder` across a helper call.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is

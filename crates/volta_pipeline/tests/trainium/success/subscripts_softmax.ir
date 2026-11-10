@@ -8,13 +8,13 @@ kernel kernel(x) -> kernel_out
   norm_buf: sbuf[2, 3]
   exp_vals: sbuf[2, 1, 3]
   result: sbuf[2, 3]
-  data = mov(x)
+  data = dma(x)
   stats[0:2, 0] = reduce maximum(data)
   norm = subtract(data, stats[0:2, 0])
-  norm_row[0, 0:2, 0:3] = mov(norm)
-  norm_buf = mov(norm_row[0, 0:2, 0:3])
+  norm_row[0, 0:2, 0:3] = dma(norm)
+  norm_buf = dma(norm_row[0, 0:2, 0:3])
   exp_vals[0:2, 0, 0:3] = exp(norm_buf)
   stats[0:2, 1] = reduce add(exp_vals[0:2, 0, 0:3])
   stats[0:2, 1] = reciprocal(stats[0:2, 1])
   result = multiply(exp_vals[0:2, 0, 0:3], stats[0:2, 1])
-  kernel_out = mov(result)
+  kernel_out = dma(result)

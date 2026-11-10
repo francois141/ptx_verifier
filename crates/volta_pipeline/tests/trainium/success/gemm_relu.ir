@@ -6,8 +6,8 @@ kernel kernel(a_t, b, out)
   y: sbuf[8, 4]
   acc: psum[4, 4]
   z: sbuf[4, 4]
-  x = mov(a_t)
-  y = mov(b)
+  x = dma(a_t)
+  y = dma(b)
   acc = matmul(x, y)
   z = relu(acc)
-  out = mov(z)
+  out = dma(z)

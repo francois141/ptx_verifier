@@ -7,9 +7,9 @@ kernel kernel(a, b) -> kernel_out
   row_sums[0].sums: sbuf[2, 1]
   row_sums[1].sums: sbuf[2, 1]
   total: sbuf[2, 1]
-  x = mov(a)
-  y = mov(b)
+  x = dma(a)
+  y = dma(b)
   row_sums[0].sums = reduce add(x)
   row_sums[1].sums = reduce add(y)
   total = add(row_sums[0].sums, row_sums[1].sums)
-  kernel_out = mov(total)
+  kernel_out = dma(total)
