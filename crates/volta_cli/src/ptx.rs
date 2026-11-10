@@ -9,7 +9,7 @@ use volta_common::report::{Report, locate_path, report_error};
 use volta_expr::SymbolicOutputs;
 use volta_graph::EventGraph;
 use volta_graph_check::GraphReport;
-use volta_pipeline::{KernelEvidence, verify_kernel};
+use volta_pipeline::{GraphBranch, KernelEvidence, verify_kernel};
 use volta_ptx_analysis::frontend::ascii::{AsAscii, AsciiChar};
 use volta_ptx_analysis::frontend::ast::Module;
 use volta_ptx_analysis::frontend::parse;
@@ -26,7 +26,7 @@ impl KernelSide {
     pub(crate) fn evidence(&self) -> KernelEvidence<'_> {
         KernelEvidence {
             label: self.label,
-            graph: &self.report,
+            graph: GraphBranch::Checked(&self.report),
             assumptions: &self.graph.provenance().assumptions,
         }
     }
