@@ -704,14 +704,16 @@ fn object_name(graph: &EventGraph, object: SyncObjectId) -> String {
         }
         SyncObjectKind::AsyncGroupWait { thread } => format!("cp.async groups t{}", thread.0),
         SyncObjectKind::BulkGroupWait { thread } => format!("bulk groups t{}", thread.0),
+        SyncObjectKind::Dependency { producer } => format!("dependency on i{}", producer.0),
     }
 }
 
-/// `t3` for a CTA thread, `w3` for a wave.
+/// `t3` for a CTA thread, `w3` for a wave, `i3` for an NKI instruction.
 fn thread_name(graph: &EventGraph, t: ThreadIx) -> String {
     match graph.provenance().unit {
         ThreadUnit::CtaThread => format!("t{}", t.0),
         ThreadUnit::Wave { .. } => format!("w{}", t.0),
+        ThreadUnit::Instruction => format!("i{}", t.0),
     }
 }
 
@@ -760,6 +762,7 @@ fn generation_kind(kind: GenerationKind) -> String {
             BulkWaitScope::SourceReads => format!("cp.async.bulk.wait_group.read {keep_pending}"),
             BulkWaitScope::Complete => format!("cp.async.bulk.wait_group {keep_pending}"),
         },
+        GenerationKind::Dependency => "instruction dependency".to_string(),
     }
 }
 

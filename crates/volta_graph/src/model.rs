@@ -275,6 +275,9 @@ pub enum SyncObjectKind {
     AsyncGroupWait { thread: ThreadIx },
     /// One thread's `cp.async.bulk.wait_group` completions.
     BulkGroupWait { thread: ThreadIx },
+    /// The completion of `producer`, an NKI instruction, that the instructions ordered after
+    /// it wait for (the semaphore the Neuron compiler would signal).
+    Dependency { producer: ThreadIx },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,6 +344,9 @@ pub enum GenerationKind {
         keep_pending: u32,
         scope: BulkWaitScope,
     },
+    /// A `Dependency` object's one generation: its producer's release, which every
+    /// instruction ordered after the producer resumes from.
+    Dependency,
 }
 
 /// What a `cp.async.bulk.wait_group` waits for: with `.read`, only that the
@@ -566,6 +572,9 @@ pub enum Assumption {
     EagerAsyncData,
     /// Only shared-memory (LDS) accesses are recorded: global memory is not checked.
     SharedMemoryOnly,
+    /// The Neuron compiler orders an NKI instruction after the latest earlier instruction
+    /// writing each location it reads, and orders nothing else.
+    NkiDataFlowOrderOnly,
 }
 
 impl Assumption {
@@ -595,6 +604,10 @@ impl Assumption {
                 "only shared-memory (LDS) accesses are recorded; global memory is not checked \
                  for races"
             }
+            Assumption::NkiDataFlowOrderOnly => {
+                "the Neuron compiler orders each NKI instruction after the latest earlier writer \
+                 of what it reads, and orders nothing else"
+            }
         }
     }
 }
@@ -607,6 +620,9 @@ pub enum ThreadUnit {
     /// One wave of `lanes` work-items issuing every instruction together: thread `w` is the
     /// wave of work-items `w * lanes` to `(w + 1) * lanes - 1`.
     Wave { lanes: u32 },
+    /// One NKI instruction: thread `i` is the kernel's `i`th lowered instruction, and
+    /// `block_dim` is `(instructions, 1, 1)`.
+    Instruction,
 }
 
 /// The launch, target and model the graph was produced under.
@@ -627,7 +643,7 @@ impl Provenance {
     pub fn threads(&self) -> u32 {
         let work_items = self.block_dim.0 * self.block_dim.1 * self.block_dim.2;
         match self.unit {
-            ThreadUnit::CtaThread => work_items,
+            ThreadUnit::CtaThread | ThreadUnit::Instruction => work_items,
             ThreadUnit::Wave { lanes } => work_items.div_ceil(lanes),
         }
     }

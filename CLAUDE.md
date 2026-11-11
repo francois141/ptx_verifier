@@ -245,6 +245,11 @@ crate-level docs in `lib.rs` are the contract.
   behavior the producer does not model, else `Error`). `Provenance`: launch, targets,
   `Assumption`s, per-instruction kind and source span. `SingleWorkgroupAnalyzed` records
   the selected AMD workgroup's coordinates without claiming cross-workgroup verification.
+  `ThreadUnit` says what a graph thread is: a CTA thread, an AMD wave, or one NKI
+  instruction (`Instruction`, `block_dim` the instruction count), ordered after another
+  by its `Dependency` object's one generation (`GraphBuilder::signal`, an `Arrival`
+  release completing it at once; each later instruction `resume`s from it), under the
+  ordering policy's `Assumption` (`NkiDataFlowOrderOnly`).
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
