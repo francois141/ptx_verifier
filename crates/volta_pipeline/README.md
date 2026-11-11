@@ -57,7 +57,12 @@ only inline unit tests of their internals.
   across two batches and two heads, executing workgroups separately and checking each
   output footprint; a wrong Q head stride must be refuted. CK RMSNorm checks every output
   of both rows of a 2 x 1,024 tensor and of a padded 1,000-element row against
-  `row_rms_norm.spec`; a wrong epsilon must be refuted. `just amd` runs them.
+  `row_rms_norm.spec`; a wrong epsilon must be refuted. CK average pooling checks every
+  output against `avg_pool2d_nhwc.spec` for unpadded, padded, dilated and two-workgroup
+  launches, each workgroup writing exactly its own outputs; the undivided sum and padding
+  on the other side must be refuted. A launch whose output is larger than its input must
+  be rejected: CK's output buffer bound drops four of its nine stores, and the spec check
+  reports those outputs as never written. `just amd` runs them.
 - `amd/graph_tests.rs`: LDS reuse and pending-read races in workgroup 0. CK GEMM compares
   one and three K tiles over the same LDS storage, and its main loop also verifies at
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading

@@ -903,6 +903,12 @@ CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute sw
 CK RMSNorm checks every output of both rows of a 2 x 1,024 tensor and of a padded 1,000-element
 row against `row_rms_norm.spec`, and refutes a wrong epsilon; `amd/graph_tests.rs` requires
 exactly one LDS write per wave.
+CK average pooling checks every output against `avg_pool2d_nhwc.spec` (a `padded` input) for
+unpadded, padded, dilated and two-workgroup launches, each workgroup writing exactly its own
+outputs, with arguments built as CK's host code builds them (`ck_avgpool2d_kernarg`). It
+refutes the undivided sum and padding on the other side. A launch whose output is larger than
+its input must be rejected: CK's output buffer bound drops four of its nine stores, and
+`check_against_spec` reports those outputs as never written (`IndexSetMismatch`).
 `trainium/equivalence_tests.rs` checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,

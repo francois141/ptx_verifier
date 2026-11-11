@@ -121,7 +121,8 @@ outcomes with different VCC masks, and rejection of varying LDS addresses and Na
 `amd/rejected_tests.rs` instead requires a specific lowering or execution error.
 Specification comparisons live in `amd/equivalence_tests.rs`, each kernel's graph
 concluding `Verified` first; CK RMSNorm (`ck_rmsnorm2d`) is checked there and in
-`amd/graph_tests.rs`, without a snapshot of its outputs. `examples/lean/rmsnorm_amd.json`
+`amd/graph_tests.rs`, without a snapshot of its outputs, and CK average pooling
+(`ck_avgpool2d`) there alone, also without one. `examples/lean/rmsnorm_amd.json`
 launches the same kernel through `volta solve`, listing the fields of CK's by-value argument
 struct as flat parameters; `volta_cli/tests/solve_tests.rs` requires that run to be accepted.
 `amd/grid_tests.rs` compares CK grid outputs with independent
@@ -203,6 +204,15 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
 
 Because `-nogpulib` omits ROCm's device library, `ck_avgpool2d.hip` defines the needed OCKL
 helpers inline, like `ck_gemm.hip`.
+
+The tests build the kernel's arguments as CK's host code does (`ck_avgpool2d_kernarg` in
+`volta_pipeline/tests/common/amd.rs`): the two tensor descriptors of
+[`MakeABGridDescriptor_A_M_K_B_M`](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/include/ck/tensor_operation/gpu/device/impl/device_pool2d_fwd_nhwc_nhwc.hpp),
+the window size, and the scale of 1 and output weight of 0 that `Invoker::Run` passes. That
+function gives the output tensor the input's height and width, which sizes the buffer that
+bounds the kernel's stores. When padding makes the output extend past that size, the stores
+beyond it are dropped; `amd/equivalence_tests.rs` requires such a launch to be rejected for
+the outputs it never writes.
 
 ### Compiling the CK attention fixture
 

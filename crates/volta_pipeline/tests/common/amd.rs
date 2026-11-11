@@ -483,3 +483,199 @@ pub fn ck_rmsnorm_kernarg(rows: i32, columns: i32, epsilon: f32) -> Vec<u8> {
     bytes.resize(104, 0);
     bytes
 }
+
+/// The `kernel_reduce_threadwise` entry `ck_avgpool2d.hip` compiles: 256 work-items, each
+/// averaging the window of one output element.
+pub const CK_AVGPOOL2D_KERNEL: &str = concat!(
+    "_ZN2ck24kernel_reduce_threadwiseINS_36GridwiseReduction_mk_to_m_threadwiseIfffiNS_16Tens",
+    "orDescriptorINS_5TupleIJNS_5EmbedINS3_IJiiiiEEES5_Lb0EEENS_11PassThroughIiEENS_3PadIiiiL",
+    "b0EEESA_S8_S8_NS4_INS3_IJiiEEESB_Lb0EEESC_S8_NS_23Merge_v2_magic_divisionIS5_EENSD_ISB_E",
+    "ENS_8RightPadIiiLb0EEESH_EEENS3_IJNS_8SequenceIJLi0EEEENSJ_IJLi1EEEENSJ_IJLi2EEEENSJ_IJL",
+    "i3EEEENSJ_IJLi4EEEENSJ_IJLi5EEEENSJ_IJLi6EEEENSJ_IJLi7EEEENSJ_IJLi8EEEENSJ_IJLi9ELi11ELi",
+    "13ELi14EEEENSJ_IJLi10ELi12EEEENSJ_IJLi15EEEENSJ_IJLi16EEEEEEENS3_IJNSJ_IJLi1ELi2ELi3ELi4",
+    "EEEESP_SQ_SR_SS_NSJ_IJLi9EEEENSJ_IJLi10ELi11EEEENSJ_IJLi12ELi13EEEENSJ_IJLi14EEEESV_SW_N",
+    "SJ_IJLi17EEEENSJ_IJLi18EEEEEEENSJ_IJLi17ELi18EEEExEENS2_INS3_IJS6_SE_SH_EEENS3_IJSK_SY_S",
+    "P_EEENS3_IJSY_SP_SQ_EEESQ_xEENS_6reduce3AddENS_16tensor_operation12element_wise11PassThr",
+    "oughENS1F_11UnaryDivideELNS_25InMemoryDataOperationEnumE0ELb0ELi256ELi1ELi1ELi0ELi1ELi1E",
+    "EELb0ELb1ELb0EfffiS17_S1B_S1G_S1H_EEvT7_T8_T9_T10_T5_PKT3_PKT6_S1O_PT4_PS1S_",
+);
+pub const AVGPOOL_INPUT_BASE: u64 = 0x10000;
+pub const AVGPOOL_OUTPUT_BASE: u64 = 0x20000;
+
+/// One launch of CK's 2D average pooling over NHWC tensors. Each pair is [height, width].
+#[derive(Clone, Copy, Debug)]
+pub struct AvgPool2d {
+    pub batch: i32,
+    pub channels: i32,
+    pub input: [i32; 2],
+    pub window: [i32; 2],
+    pub stride: [i32; 2],
+    pub dilation: [i32; 2],
+    /// Rows and columns of zeros before the input.
+    pub left_pad: [i32; 2],
+    /// Rows and columns of zeros after the input.
+    pub right_pad: [i32; 2],
+}
+
+impl AvgPool2d {
+    /// The output's [height, width]: how many window positions fit the padded input.
+    pub fn output(&self) -> [i32; 2] {
+        std::array::from_fn(|axis| {
+            let padded = self.input[axis] + self.left_pad[axis] + self.right_pad[axis];
+            let window_span = self.dilation[axis] * (self.window[axis] - 1) + 1;
+            (padded - window_span) / self.stride[axis] + 1
+        })
+    }
+
+    /// The number of output elements. Each work-item computes one.
+    pub fn output_len(&self) -> i32 {
+        let [height, width] = self.output();
+        self.batch * height * width * self.channels
+    }
+}
+
+/// The input and output tensors at the test addresses, in NHWC order without gaps.
+pub fn avgpool_arrays(pool: &AvgPool2d) -> [ArrayDef; 2] {
+    let [height, width] = pool.input;
+    let input_len = pool.batch * height * width * pool.channels;
+    [
+        ("input", AVGPOOL_INPUT_BASE, input_len, ArrayKind::Input),
+        (
+            "output",
+            AVGPOOL_OUTPUT_BASE,
+            pool.output_len(),
+            ArrayKind::Output(OutputType::F32),
+        ),
+    ]
+    .map(|(name, base, len, kind)| ArrayDef {
+        name: name.into(),
+        base,
+        len: len as u64,
+        kind,
+    })
+}
+
+/// CK's multiplier and shift for dividing by `divisor` with a multiplication, as
+/// `MagicDivision::CalculateMagicNumbers` computes them. CK stores both as `uint32_t` words.
+fn ck_magic_division(divisor: i32) -> [i32; 2] {
+    assert!(divisor > 0, "CK divides by tensor lengths");
+    let divisor = divisor as u64;
+    // The smallest shift whose power of two reaches the divisor.
+    let shift = divisor.next_power_of_two().trailing_zeros();
+    let multiplier = (((1 << shift) - divisor) << 32) / divisor + 1;
+    [multiplier as u32 as i32, shift as i32]
+}
+
+/// The fields of a CK `Merge` transform, which joins dimensions of `lengths` into one index:
+/// the lengths, a division multiplier and a shift for each, then the merged length.
+fn ck_merge(lengths: &[i32]) -> Vec<i32> {
+    let magic: Vec<[i32; 2]> = lengths.iter().map(|&l| ck_magic_division(l)).collect();
+    let mut fields = lengths.to_vec();
+    fields.extend(magic.iter().map(|&[multiplier, _]| multiplier));
+    fields.extend(magic.iter().map(|&[_, shift]| shift));
+    fields.push(lengths.iter().product());
+    fields
+}
+
+/// The fields of a CK `RightPad` transform that rounds `length` up to whole tiles of `tile`:
+/// the padded length, the length and the padding.
+fn ck_right_pad(length: i32, tile: i32) -> [i32; 3] {
+    let padded = (length + tile - 1) / tile * tile;
+    [padded, length, padded - length]
+}
+
+/// A CK tensor descriptor's bytes: its transforms' `fields`, its element count, then its
+/// 64-bit element space, the buffer size in elements that bounds the kernel's accesses. CK
+/// computes the space from the tensor's `lengths` and `strides`: one past its last element.
+fn ck_descriptor(fields: &[i32], elements: i32, lengths: [i32; 4], strides: [i32; 4]) -> Vec<u8> {
+    let last_element: i64 = lengths
+        .iter()
+        .zip(strides)
+        .map(|(&length, stride)| i64::from(length - 1) * i64::from(stride))
+        .sum();
+    let mut bytes: Vec<u8> = fields
+        .iter()
+        .chain([&elements])
+        .flat_map(|field| field.to_le_bytes())
+        .collect();
+    bytes.resize(bytes.len().next_multiple_of(8), 0);
+    bytes.extend((last_element + 1).to_le_bytes());
+    bytes
+}
+
+/// The arguments CK's `DevicePool2dFwd_NHWC_NHWC` passes its kernel for `pool`, as its host
+/// code lays them out: the input and output tensor descriptors by value, the window size to
+/// divide by, a scale of 1, the input, a weight of 0 for the output's old values, the output.
+pub fn ck_avgpool2d_kernarg(pool: &AvgPool2d) -> Vec<u8> {
+    let (n, c) = (pool.batch, pool.channels);
+    let [hi, wi] = pool.input;
+    let output = pool.output();
+    let [ho, wo] = output;
+    let [y, x] = pool.window;
+    // CK rounds the output elements (M) up to whole workgroups of 256 work-items, and the
+    // window positions (K) up to whole steps of one.
+    let m = ck_right_pad(n * ho * wo * c, 256);
+    let k = ck_right_pad(y * x, 1);
+
+    // The input descriptor maps an output element and a window position to an input element.
+    let input_lengths = [n, hi, wi, c];
+    let input_strides = [hi * wi * c, wi * c, c, 1];
+    let mut input_fields = Vec::new();
+    input_fields.extend(input_lengths);
+    input_fields.extend(input_strides);
+    // Zeros surround H and W. N and C pass through this step and the next.
+    input_fields.push(n);
+    for axis in 0..2 {
+        let (left, right) = (pool.left_pad[axis], pool.right_pad[axis]);
+        input_fields.extend([pool.input[axis] + left + right, left, right]);
+    }
+    input_fields.push(c);
+    // A window position and an output position, scaled by the dilation and the stride, index
+    // each padded axis.
+    input_fields.push(n);
+    for axis in 0..2 {
+        input_fields.extend([
+            pool.window[axis],
+            output[axis],
+            pool.dilation[axis],
+            pool.stride[axis],
+        ]);
+    }
+    input_fields.push(c);
+    input_fields.extend(ck_merge(&[n, ho, wo, c]));
+    input_fields.extend(ck_merge(&[y, x]));
+    input_fields.extend(m);
+    input_fields.extend(k);
+    let mut bytes = ck_descriptor(&input_fields, m[0] * k[0], input_lengths, input_strides);
+
+    // The output descriptor maps an output element to its offset. CK gives the output tensor
+    // the input's height and width here, so they size its element space.
+    let output_strides = [ho * wo * c, wo * c, c, 1];
+    let mut output_fields = Vec::new();
+    output_fields.extend(input_lengths);
+    output_fields.extend(output_strides);
+    output_fields.extend(ck_merge(&[n, ho, wo, c]));
+    output_fields.extend(m);
+    bytes.extend(ck_descriptor(
+        &output_fields,
+        m[0],
+        input_lengths,
+        output_strides,
+    ));
+
+    // The input operation has no fields. The window size follows at the next word.
+    bytes.resize(bytes.len() + 4, 0);
+    bytes.extend((y * x).to_le_bytes());
+    // The scale, padded to the pointers' alignment, then the input and a null index input.
+    bytes.extend(1.0_f32.to_le_bytes());
+    bytes.resize(bytes.len() + 4, 0);
+    bytes.extend(AVGPOOL_INPUT_BASE.to_le_bytes());
+    bytes.extend(0_u64.to_le_bytes());
+    // The weight of the output's old values, padded, then the output and a null index output.
+    bytes.extend(0.0_f32.to_le_bytes());
+    bytes.resize(bytes.len() + 4, 0);
+    bytes.extend(AVGPOOL_OUTPUT_BASE.to_le_bytes());
+    bytes.extend(0_u64.to_le_bytes());
+    assert_eq!(bytes.len(), 392, "the kernel's argument size");
+    bytes
+}
