@@ -175,6 +175,35 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
   -o crates/volta_pipeline/tests/amd/success/ck_gemm.s
 ```
 
+### Compiling the CK average-pooling fixture
+
+`volta_pipeline/tests/amd/success/ck_avgpool2d.hip` instantiates an fp32 2D average-pooling kernel
+from CK `rocm-7.0.0`. It takes the first `DevicePool2dFwd_NHWC_NHWC` configuration from CK's
+[pool2d instance list](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/library/src/tensor_operation_instance/gpu/pool2d_fwd/pool2d_fwd_instance_common.hpp)
+and specializes it to `float` data and `ReduceTensorOp::AVG`, matching CK's
+[fp32 average-pooling instances](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/library/src/tensor_operation_instance/gpu/pool2d_fwd/device_avg_pool2d_fwd_nhwc_f32_instance.cpp).
+
+Workgroups have 256 work-items, each computing one NHWC output element. A work-item loads its
+pooling window one input element at a time, sums the values, and divides by the window size. Tensor
+shapes, window dimensions, strides, dilations, and padding are passed as kernel arguments inside
+CK's tensor descriptors.
+
+Use Clang 21.1.8 with the GEMM fixture's CK headers (`CK_ROOT`) and HIP headers (`HIP_ROOT`), and
+compile from the repository root:
+
+```sh
+clang++ -x hip -std=c++20 -fbracket-depth=1024 \
+  --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
+  --hip-path="$HIP_ROOT" -DNDEBUG -Wno-unknown-warning-option \
+  -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
+  -fno-hip-fp32-correctly-rounded-divide-sqrt -I "$CK_ROOT/include" \
+  -S crates/volta_pipeline/tests/amd/success/ck_avgpool2d.hip \
+  -o crates/volta_pipeline/tests/amd/success/ck_avgpool2d.s
+```
+
+Because `-nogpulib` omits ROCm's device library, `ck_avgpool2d.hip` defines the needed OCKL
+helpers inline, like `ck_gemm.hip`.
+
 ### Compiling the CK attention fixture
 
 `volta_pipeline/tests/amd/success/ck_fmha.hip` instantiates CK Tile's fp32 forward-attention device entry at
