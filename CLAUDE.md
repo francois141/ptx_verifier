@@ -249,7 +249,8 @@ crate-level docs in `lib.rs` are the contract.
   instruction (`Instruction`, `block_dim` the instruction count), ordered after another
   by its `Dependency` object's one generation (`GraphBuilder::signal`, an `Arrival`
   release completing it at once; each later instruction `resume`s from it), under the
-  ordering policy's `Assumption` (`NkiDataFlowOrderOnly`).
+  ordering policy's `Assumption`s (`NkiDataFlowOrder`, and `NkiNoReorderInProgramOrder`
+  when `no_reorder` blocks are taken to run in program order).
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
@@ -663,7 +664,8 @@ loop variable keeps its last value). The count is any compile-time integer; a
 `for` over a tuple or list unrolls the same way. Each instruction keeps its
 `ast::Origin` (`LoweredKernel::origins`): its enclosing `LoopIteration`s (a `LoopId` per
 execution of a `for`, its `LoopKind`, the index), outermost first across helper calls,
-and whether `nl.no_reorder()` encloses it (`Reordering`), rendered after it in `.ast`
+and which `nl.no_reorder()` block encloses it (`Reordering::Forbidden { block }`, a
+`NoReorderId` per execution of the outermost block), rendered after it in `.ast`
 and `.ir`; `ir::Mover` tells a DMA copy or transpose (`.ir`'s `dma`, `dma_transpose`)
 from a compute engine's (`mov`, `transpose`). `success/loop_origins.py` covers
 every loop kind, an inner loop entered twice and `no_reorder` across a helper call.
@@ -679,14 +681,19 @@ thread per instruction, its `footprints` as accesses (an accumulation a read the
 write; each `Location` a disjoint range, HBM in `Global`, SBUF and PSUM in `Shared`), and
 a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler orders two
 instructions. The docs say only that it synchronizes "based on data dependencies", so
-the one policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrderOnly`), is the most
+the pipeline's policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrder`), is the most
 conservative: an instruction follows the latest earlier writer of each location it
 reads, unless they are in different iterations of one `affine_range`; write-after-write,
-write-after-read and reductions across `affine_range` iterations race.
+write-after-read and reductions across `affine_range` iterations race. The opt-in
+`DataFlowAndNoReorder` (adding `Assumption::NkiNoReorderInProgramOrder`) also orders each
+`no_reorder` block's instructions in program order, as the API page says it does, though
+the scheduling guide leaves open whether its edges are semaphores or scheduling hints; a
+block orders nothing against code outside it.
 `check_failure/` holds kernels that race under it (R0 `back_to_back_dmas`; R1
 `affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`;
-the `sequential_range` twins, which rewrite a tile without reading it between), each
-naming its verdict; `trainium/accepted_tests.rs` runs them in program order,
+the `sequential_range` twins, which rewrite a tile without reading it between; R0 and R1
+inside a `no_reorder` block, race free under the opt-in policy, and a rewrite across a
+block's boundary, racing under both), each naming its verdict; `trainium/accepted_tests.rs` runs them in program order,
 `trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
@@ -952,7 +959,7 @@ its input must be rejected: CK's output buffer bound drops four of its nine stor
 parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
 `common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
-graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrderOnly`, and
+graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrder`, and
 that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
@@ -995,7 +1002,9 @@ equivalence suites; the full `amd_tests` target also runs graph, grid and Lean t
 rewritten only by their readers and the attention samples v1 to v8a verify; each race
 fixture in `trainium/check_failure/` fails `MemoryConflict` with exactly its expected
 instruction pairs; v10 (PSUM banks reused), the tiled matmul tutorial and mamba
-(accumulating across `affine_range`) race. `just trainium` runs its accepted, rejected and
+(accumulating across `affine_range`) race. Under `DataFlowAndNoReorder` the `no_reorder`
+fixtures verify, and v10's only races pair `v_psum_t`, transposed before its block, with
+`qk_psum` over the same PSUM bytes inside it (R3). `just trainium` runs its accepted, rejected and
 equivalence suites.
 
 ### End-to-end tests (`tests/`)
