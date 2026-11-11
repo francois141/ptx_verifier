@@ -1,0 +1,6 @@
+0: read a[0..2, 4..6]; write x.0.0[0..4]
+1: read x.0.0[0..4]; write double[0].y[0..4]
+2: read double[0].y[0..4]; write out[0..2, 4..6]
+3: read a[2..4, 6..8]; write x.1.0[0..4]
+4: read x.1.0[0..4]; write double[1].y[0..4]
+5: read double[1].y[0..4]; write out[2..4, 6..8]
