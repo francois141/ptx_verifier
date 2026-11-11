@@ -14,11 +14,11 @@ use crate::common;
 
 use common::amd::{
     AmdChecked, AvgPool2d, CK_AVGPOOL2D_KERNEL, CK_FMHA_KERNEL, CK_GEMM_KERNEL,
-    CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL, FMHA_K_BASE as K_BASE, FMHA_Q_BASE as Q_BASE,
-    GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE, amd_fixture,
-    avgpool_arrays, avgpool_launch, check_amd, check_amd_launch, check_launch_file,
+    CK_GEMM_MAIN_LOOP_KERNEL, CK_GEMM_SIGMOID_KERNEL, CK_RMSNORM_KERNEL, FMHA_K_BASE as K_BASE,
+    FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE,
+    amd_fixture, avgpool_arrays, avgpool_launch, check_amd, check_amd_launch, check_launch_file,
     ck_avgpool2d_kernarg, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays,
-    fmha_launch, gemm_arrays, gemm_launch, rmsnorm_arrays,
+    fmha_launch, gemm_arrays, gemm_launch, gemm_sigmoid_launch, rmsnorm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
 
@@ -155,6 +155,12 @@ fn amd_ck_gemm_launch_file_matches_the_argument_builder() {
     check_launch_file("gemm_amd.json", &gemm_launch());
 }
 
+// Test that the fused GEMM-sigmoid launch file matches the argument builder.
+#[test]
+fn amd_ck_gemm_sigmoid_launch_file_matches_the_argument_builder() {
+    check_launch_file("gemm_sigmoid_amd.json", &gemm_sigmoid_launch());
+}
+
 // Test that swapping CK's equal-sized input arrays is refuted against the intended product.
 #[test]
 fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
@@ -162,6 +168,32 @@ fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
     assert!(
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+// Test that swapping the fused GEMM-sigmoid kernel's inputs is refuted in all 56 outputs off
+// the diagonal. A diagonal output keeps its dot product when A and B are exchanged.
+#[test]
+fn amd_ck_gemm_sigmoid_with_swapped_input_arguments_is_refuted() {
+    let kernarg = ck_gemm_kernarg(B_BASE, A_BASE, C_BASE, [8, 8, 8]);
+    let verdict = check_gemm(
+        "success/ck_gemm_sigmoid.s",
+        amd_fixture!("success/ck_gemm_sigmoid"),
+        CK_GEMM_SIGMOID_KERNEL,
+        128,
+        [8, 8, 8],
+        &kernarg,
+        include_str!("../../../volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"),
+    );
+    let off_diagonal = (0..64)
+        .filter(|index| index / 8 != index % 8)
+        .map(|index| ("C".to_string(), index))
+        .collect();
+    assert_eq!(
+        verdict,
+        EquivalenceVerdict::Refuted {
+            elements: off_diagonal
+        }
     );
 }
 

@@ -114,6 +114,26 @@ fn extracts_with_a_launch_file_and_tolerance() {
     assert!(lean.contains("≤ (0.001 : ℝ)"));
 }
 
+// Test that the fused GEMM-sigmoid launch states all 64 outputs within 1/1000 of sigmoid(A B).
+#[test]
+fn extracts_ck_gemm_sigmoid_with_a_tolerance() {
+    let dir = TestDir::new();
+    let out = dir.0.join("gemm_sigmoid.lean");
+    let output = extract(
+        &root().join("crates/volta_pipeline/tests/amd/success/ck_gemm_sigmoid.s"),
+        &out,
+    )
+    .arg("--config")
+    .arg(root().join("examples/lean/gemm_sigmoid_amd.json"))
+    .args(["--tolerance", "1/1000"])
+    .output()
+    .unwrap();
+    assert_status(&output, 0);
+    let lean = std::fs::read_to_string(out).unwrap();
+    assert_eq!(lean.matches(" : Prop :=").count(), 64);
+    assert_eq!(lean.matches("≤ (0.001 : ℝ)").count(), 64);
+}
+
 #[test]
 fn a_race_neither_creates_nor_overwrites_lean_output() {
     let dir = TestDir::new();

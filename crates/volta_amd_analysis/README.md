@@ -131,8 +131,14 @@ tensor descriptors. The AMD tests generate the GEMM, attention and average-pooli
 files from `ck_gemm_params`, `ck_fmha_params` and `ck_avgpool2d_params`, the labelled lists
 their own argument bytes come from, and fail when a file differs; `VOLTA_BLESS=1` rewrites
 the files. `volta_cli/tests/solve_tests.rs` requires the RMSNorm, `gemm_amd.json`,
-`fmha_amd.json` and `avgpool2d_amd.json` runs to be accepted. It requires two launches to be
-rejected:
+`fmha_amd.json` and `avgpool2d_amd.json` runs to be accepted. `gemm_sigmoid_amd.json` launches
+the fused GEMM-sigmoid kernel with the same arguments against `sigmoid_matmul_transposed.spec`.
+Its compiled sigmoid is not the formula exactly: it rescales by a rounded constant for large
+inputs. `volta solve` neither proves this launch equal nor finds a counterexample, so the
+solve tests require `UNKNOWN`, never `ACCEPT`. `volta_cli/tests/extract_tests.rs` requires
+`volta extract lean --tolerance 1/1000` to state each of the 64 outputs within that tolerance;
+these are proof obligations, not a proof. `amd/equivalence_tests.rs` requires the same kernel
+with A and B exchanged to be refuted. The solve tests require two launches to be rejected:
 `fmha_amd_swapped_qk.json`, which exchanges the query and key, for outputs that differ from
 the formula, and `avgpool2d_amd_larger_output.json`, whose 3 x 3 output extends past CK's
 output buffer bound, for the four outputs the kernel never writes. Each runs as

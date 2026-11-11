@@ -909,9 +909,9 @@ outputs, with arguments built as CK's host code builds them (`ck_avgpool2d_param
 refutes the undivided sum and padding on the other side. A launch whose output is larger than
 its input must be rejected: CK's output buffer bound drops four of its nine stores, and
 `check_against_spec` reports those outputs as never written (`IndexSetMismatch`). The
-`volta solve` launch files `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json` and
-`gemm_amd.json` are snapshots of the argument builders' labelled parameters
-(`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
+`volta solve` launch files `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json`,
+`gemm_amd.json` and `gemm_sigmoid_amd.json` are snapshots of the argument builders' labelled
+parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
 `common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 

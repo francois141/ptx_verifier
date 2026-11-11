@@ -71,6 +71,22 @@ fn solves_ck_gemm_from_its_launch_file() {
     );
 }
 
+// Test that the fused GEMM-sigmoid launch is not accepted as exactly equal to sigmoid(A B).
+// The solver neither proves equality nor finds a counterexample, so the verdict is UNKNOWN.
+#[test]
+fn leaves_ck_gemm_sigmoid_undecided_without_a_tolerance() {
+    check_solve(
+        "ck_gemm_sigmoid.s",
+        "gemm_sigmoid_amd.json",
+        &["--print-outputs", "0"],
+        2,
+        &[
+            "VERDICT: UNKNOWN",
+            "element(s) not proved equivalent and not refuted",
+        ],
+    );
+}
+
 // Test that the attention launch passes all graph checks and proves all 4,096 outputs.
 #[test]
 fn solves_ck_fmha_from_its_launch_file() {

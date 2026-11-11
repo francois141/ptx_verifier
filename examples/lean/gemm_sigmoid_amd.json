@@ -1,0 +1,39 @@
+{
+  "description": "CK GEMM of 8 x 8 fp32 matrices, C = sigmoid(A B) with B stored column-major, in one workgroup of two waves that pads the problem to its 64 x 64 x 64 block tile. The parameters are the fields of CK's by-value GridwiseGemm::Argument. The compiled sigmoid differs from the formula by a rounded constant for large inputs, so volta solve does not accept this launch. volta extract lean states it within a tolerance such as 1/1000. volta_pipeline's AMD tests generate this file; VOLTA_BLESS=1 rewrites it",
+  "kernel": "_ZN2ck27kernel_gemm_xdl_cshuffle_v3INS_28GridwiseGemm_xdl_cshuffle_v3INS_13tensor_layout4gemm8RowMajorENS3_11ColumnMajorES4_fffffNS_16tensor_operation12element_wise11PassThroughES8_NS7_7SigmoidELNS6_6device18GemmSpecializationE7ELi128ELi64ELi64ELi64ELi4ELi4ELi16ELi16ELi2ELi4ENS_8SequenceIJLi4ELi32ELi1EEEENSC_IJLi1ELi0ELi2EEEESE_Li2ELi2ELi2ELb0ELi0ESD_SE_SE_Li2ELi2ELi2ELb0ELi0ELi1ELi2ENSC_IJLi1ELi32ELi1ELi4EEEELi2ELNS_26BlockGemmPipelineSchedulerE0ELNS_24BlockGemmPipelineVersionE2EffLb0ELb0ELb0EEELb0ELNS_25InMemoryDataOperationEnumE0ELi1ELNS_10TailNumberE10EEEvNT_8ArgumentE",
+  "block": 128,
+  "arrays": [
+    {"name": "A", "kind": "in",  "dtype": "f32", "shape": [8, 8]},
+    {"name": "B", "kind": "in",  "dtype": "f32", "shape": [8, 8]},
+    {"name": "C", "kind": "out", "dtype": "f32", "shape": [8, 8]}
+  ],
+  "params": [
+    {"name": "BaseArgument vtable pointer, unread (low word, null)", "int": 0},
+    {"name": "BaseArgument vtable pointer, unread (high word, null)", "int": 0},
+    {"name": "p_workspace_ (low word, null)", "int": 0},
+    {"name": "p_workspace_ (high word, null)", "int": 0},
+    {"name": "M", "int": 8},
+    {"name": "N", "int": 8},
+    {"name": "K", "int": 8},
+    {"name": "StrideA", "int": 8},
+    {"name": "StrideB", "int": 8},
+    {"name": "StrideC", "int": 8},
+    {"name": "KBatch", "int": 1},
+    {"name": "MPadded", "int": 64},
+    {"name": "NPadded", "int": 64},
+    {"name": "KRead", "int": 8},
+    {"name": "KPadded", "int": 64},
+    {"name": "AK0", "int": 16},
+    {"name": "BK0", "int": 16},
+    {"name": "MBlock", "int": 1},
+    {"name": "NBlock", "int": 1},
+    {"name": "a_element_op_, b_element_op_, c_element_op_ (no fields) and padding", "int": 0},
+    {"name": "p_a_grid", "ptr": "A"},
+    {"name": "p_b_grid", "ptr": "B"},
+    {"name": "p_c_grid", "ptr": "C"},
+    {"name": "is_reduce (false) and padding", "int": 0},
+    {"name": "padding", "int": 0}
+  ],
+  "spec": "../../crates/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec",
+  "dims": {"M": 8, "N": 8, "K": 8}
+}

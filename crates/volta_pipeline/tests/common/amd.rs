@@ -321,6 +321,18 @@ macro_rules! ck_gemm_kernel {
 pub const CK_GEMM_KERNEL: &str = ck_gemm_kernel!("Lb0");
 /// The same instance with its K-block main loop enabled.
 pub const CK_GEMM_MAIN_LOOP_KERNEL: &str = ck_gemm_kernel!("Lb1");
+/// `CK_GEMM_KERNEL` with CK's `Sigmoid` as its C element operation.
+/// It replaces the third `PassThrough`, which shifts every later substitution index by one.
+pub const CK_GEMM_SIGMOID_KERNEL: &str = concat!(
+    "_ZN2ck27kernel_gemm_xdl_cshuffle_v3INS_28GridwiseGemm_xdl_cshuffle_v3INS_13tensor_layout4",
+    "gemm8RowMajorENS3_11ColumnMajorES4_fffffNS_16tensor_operation12element_wise11PassThrough",
+    "ES8_NS7_7SigmoidE",
+    "LNS6_6device18GemmSpecializationE7ELi128ELi64ELi64ELi64ELi4ELi4ELi16ELi16ELi2ELi4ENS_8",
+    "SequenceIJLi4ELi32ELi1EEEENSC_IJLi1ELi0ELi2EEEESE_Li2ELi2ELi2ELb0ELi0ESD_SE_SE_Li2ELi2",
+    "ELi2ELb0ELi0ELi1ELi2ENSC_IJLi1ELi32ELi1ELi4EEEELi2ELNS_26BlockGemmPipelineSchedulerE0ELNS_",
+    "24BlockGemmPipelineVersionE2EffLb0ELb0ELb0EEELb0ELNS_25InMemoryDataOperationEnumE0ELi1ELNS_",
+    "10TailNumberE10EEEvNT_8ArgumentE",
+);
 
 /// A named parameter used by the tests and generated launch files.
 #[derive(Clone, Debug)]
@@ -528,21 +540,23 @@ pub fn ck_gemm_kernarg(a: u64, b: u64, c: u64, dims: [i32; 3]) -> Vec<u8> {
     bytes
 }
 
-/// Create a `volta solve` launch for an 8 x 8 x 8 GEMM without a K-block main loop.
-pub fn gemm_launch() -> Launch {
+/// Create a launch of `kernel` for an 8 x 8 x 8 GEMM without a K-block main loop.
+/// `formula` and `note` complete the description, and `spec` states the formula.
+fn gemm_launch_of(kernel: &'static str, spec: &'static str, formula: &str, note: &str) -> Launch {
     let matrix = |name, kind| LaunchArray {
         name,
         kind,
         shape: vec![8, 8],
     };
     let matrices = [("A", GEMM_A_BASE), ("B", GEMM_B_BASE), ("C", GEMM_C_BASE)];
-    let description = "CK GEMM of 8 x 8 fp32 matrices, C = A B with B stored column-major, in \
-                       one workgroup of two waves that pads the problem to its 64 x 64 x 64 \
-                       block tile. The parameters are the fields of CK's by-value \
-                       GridwiseGemm::Argument. volta solve accepts this launch.";
+    let description = format!(
+        "CK GEMM of 8 x 8 fp32 matrices, {formula} with B stored column-major, in one workgroup \
+         of two waves that pads the problem to its 64 x 64 x 64 block tile. The parameters are \
+         the fields of CK's by-value GridwiseGemm::Argument. {note}"
+    );
     Launch {
-        description: description.into(),
-        kernel: Some(CK_GEMM_KERNEL),
+        description,
+        kernel: Some(kernel),
         workitems: 128,
         arrays: vec![
             matrix("A", ArrayKind::Input),
@@ -550,9 +564,31 @@ pub fn gemm_launch() -> Launch {
             matrix("C", ArrayKind::Output(OutputType::F32)),
         ],
         params: ck_gemm_params(matrices, [8, 8, 8]),
-        spec: "matmul_transposed.spec",
+        spec,
         dims: vec![("M", 8), ("N", 8), ("K", 8)],
     }
+}
+
+/// Create a `volta solve` launch for an 8 x 8 x 8 GEMM without a K-block main loop.
+pub fn gemm_launch() -> Launch {
+    gemm_launch_of(
+        CK_GEMM_KERNEL,
+        "matmul_transposed.spec",
+        "C = A B",
+        "volta solve accepts this launch.",
+    )
+}
+
+/// Create a launch for the same GEMM with CK's sigmoid applied to each output.
+pub fn gemm_sigmoid_launch() -> Launch {
+    gemm_launch_of(
+        CK_GEMM_SIGMOID_KERNEL,
+        "sigmoid_matmul_transposed.spec",
+        "C = sigmoid(A B)",
+        "The compiled sigmoid differs from the formula by a rounded constant for large inputs, \
+         so volta solve does not accept this launch. volta extract lean states it within a \
+         tolerance such as 1/1000.",
+    )
 }
 
 /// Entry point compiled from `ck_fmha.hip`.

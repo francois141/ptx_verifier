@@ -63,9 +63,9 @@ only inline unit tests of their internals.
   on the other side must be refuted. A launch whose output is larger than its input must
   be rejected: CK's output buffer bound drops four of its nine stores, and the spec check
   reports those outputs as never written. The `volta solve` launch files
-  `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json` and `gemm_amd.json` must equal the
-  argument builders' parameters for their launches (`VOLTA_BLESS=1` rewrites them).
-  `just amd` runs them.
+  `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json`, `gemm_amd.json` and
+  `gemm_sigmoid_amd.json` must equal the argument builders' parameters for their launches
+  (`VOLTA_BLESS=1` rewrites them). `just amd` runs them.
 - `amd/graph_tests.rs`: LDS reuse and pending-read races in workgroup 0. CK GEMM compares
   one and three K tiles over the same LDS storage, and its main loop also verifies at
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
