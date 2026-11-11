@@ -666,8 +666,13 @@ every loop kind, an inner loop entered twice and `no_reorder` across a helper ca
 then writes: a `Mode` (`Read`, `Write`, `Accumulate` for an adding `nc_matmul`), its
 tensor, a `Location` and merged runs. Placed tiles share their memory's location, by byte
 (`partition * PARTITION_STRIDE + byte`); any other tensor is its own, by element offset.
-A gather reads its whole `data` and `index` regions. The `.footprints` of
-`placed_tiles`, `access_patterns`, `indirect` and `loop_origins` snapshot them.
+A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
+snapshot them, as do those of `placed_tiles`, `access_patterns`, `indirect` and
+`loop_origins`.
+`tests/fixtures/races/` holds kernels meant to race (R0 `back_to_back_dmas`; R1
+`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`)
+beside `sequential_range` twins, each naming its intended verdict; until NKI runs record
+a graph, one test runs them in program order.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
@@ -700,8 +705,9 @@ restrictions of the hardware (partition offsets) are not checked. v3 to v8a and 
 parse, lower and run unmodified at `[128, 512]`.
 
 The fixtures live in `volta_pipeline/tests/trainium/` (paths below are relative to it):
-`success/` for the kernels `trainium/accepted_tests.rs` runs, `execution_error/` for the
-`*_errors.py` kernels `trainium/rejected_tests.rs` expects to fail.
+`success/` for the kernels `trainium/accepted_tests.rs` runs, `check_failure/` for the race
+fixtures `trainium/graph_tests.rs` rejects, `execution_error/` for the `*_errors.py` kernels
+`trainium/rejected_tests.rs` expects to fail.
 `success/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
 (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
 `success/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`

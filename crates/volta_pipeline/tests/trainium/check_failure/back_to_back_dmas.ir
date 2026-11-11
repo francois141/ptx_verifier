@@ -1,0 +1,7 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[1, 4]
+  x: sbuf[1, 4]
+  x = dma(a[0:1, 0:4])
+  x = dma(a[1:2, 0:4])
+  out = dma(x)
