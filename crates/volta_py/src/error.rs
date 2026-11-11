@@ -6,7 +6,7 @@ use pyo3::PyErr;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 
-use volta_common::Span;
+use volta_common::span::Span;
 use volta_graph_check::{Deadlock, Property, PropertySummary};
 use volta_pipeline::FrontendError;
 use volta_ptx_analysis::AnalysisError;
@@ -61,7 +61,7 @@ fn format_located(source: &str, title: &str, message: Option<&str>, span: Option
         text.push_str(": ");
         text.push_str(message);
     }
-    if let Some(Span(lo, _hi)) = span {
+    if let Some(Span { start: lo, .. }) = span {
         let (line, col, line_text) = locate(source, lo);
         text.push_str(&format!("\n  --> line {}, column {}\n", line, col));
         text.push_str(&format!("  | {}\n", line_text));

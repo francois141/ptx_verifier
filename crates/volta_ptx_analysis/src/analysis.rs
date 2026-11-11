@@ -195,7 +195,7 @@ fn provenance(
             span: program
                 .source_map
                 .instruction_span(id)
-                .map(|span| (span.0, span.1)),
+                .map(|span| (span.start, span.end)),
         })
         .collect();
     Provenance {

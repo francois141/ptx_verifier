@@ -4,8 +4,8 @@
 
 use std::fmt;
 
-use volta_common::Span;
 use volta_common::report::Locate;
+use volta_common::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
@@ -157,14 +157,14 @@ impl<'a> Lexer<'a> {
             let Some(b) = self.peek_byte() else {
                 tokens.push(Token {
                     kind: TokenKind::Eof,
-                    span: Span(start, start),
+                    span: Span::new(start, start),
                 });
                 break;
             };
             let kind = match b {
                 b'0'..=b'9' => self.lex_number().map_err(|e| Locate {
                     path: None,
-                    span: Some(Span(start, self.pos)),
+                    span: Some(Span::new(start, self.pos)),
                     error: e,
                 })?,
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_ident(),
@@ -219,14 +219,14 @@ impl<'a> Lexer<'a> {
                 other => {
                     return Err(Locate {
                         path: None,
-                        span: Some(Span(start, start + 1)),
+                        span: Some(Span::new(start, start + 1)),
                         error: LexErrorKind::UnexpectedChar(other as char),
                     });
                 }
             };
             tokens.push(Token {
                 kind,
-                span: Span(start, self.pos),
+                span: Span::new(start, self.pos),
             });
         }
         Ok(tokens)

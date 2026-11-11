@@ -11,7 +11,7 @@ use crate::frontend::ast::{
 };
 use crate::frontend::lex::DottedIdent;
 use id_collections::Id;
-use volta_common::Span;
+use volta_common::span::Span;
 
 use crate::ir::source_map::SourceMap;
 use crate::ir::symbols::{LabelScopeId, RegId, SpecialRegKind, SymbolTable};

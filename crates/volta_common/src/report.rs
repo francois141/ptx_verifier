@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use ansi_term::Color;
 use textwrap::{Options, WordSplitter, wrap};
 
-use crate::Span;
 use crate::file_cache::FileCache;
+use crate::span::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ByteIdx(usize);
@@ -250,7 +250,7 @@ pub fn report_error(
     )?;
 
     match (report.path, report.span) {
-        (Some(path), Some(Span(lo, hi))) => {
+        (Some(path), Some(Span { start: lo, end: hi })) => {
             let src = Lines::new(files.read_cached(path)?);
             let lo_line = src.line_idx(ByteIdx(lo));
             let lo_col = src.col_idx(lo_line, ByteIdx(lo));

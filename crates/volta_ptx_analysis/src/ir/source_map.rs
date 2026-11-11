@@ -2,7 +2,7 @@
 //! error reporting.
 
 use id_collections::IdVec;
-use volta_common::Span;
+use volta_common::span::Span;
 
 use crate::ir::InstrId;
 
@@ -43,10 +43,10 @@ mod tests {
         let id0 = InstrId::from_index(0);
         let id1 = InstrId::from_index(1);
 
-        map.record_instruction(id0, Some(Span(0, 10)));
+        map.record_instruction(id0, Some(Span::new(0, 10)));
         map.record_instruction(id1, None);
 
-        assert_eq!(map.instruction_span(id0), Some(Span(0, 10)));
+        assert_eq!(map.instruction_span(id0), Some(Span::new(0, 10)));
         assert_eq!(map.instruction_span(id1), None);
     }
 }

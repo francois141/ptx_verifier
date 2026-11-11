@@ -3,8 +3,8 @@
 Base utilities shared by the frontend, the analysis and the CLI. It depends on
 no other Volta crate.
 
-- **`Span`** (`lib.rs`): a source location as a `(low, high)` byte-offset pair.
-- **`Locate<E>`** (`lib.rs`): an error wrapper that adds an optional span and
+- **`Span`** (`span.rs`): a source location, the byte offsets `start..end`.
+- **`Locate<E>`** (`report.rs`): an error wrapper that adds an optional span and
   file path to an error kind `E`. Each crate defines an error kind enum and
   aliases `Locate<Kind>` as its error type. As an error travels up,
   `locate_span` and `locate_path` attach a span or path if none is set yet, so

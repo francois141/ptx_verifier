@@ -148,8 +148,8 @@ fn unknown_directives_must_be_rejected() {
     let span = error
         .span
         .expect("the diagnostic must locate the directive");
-    assert_eq!(span.0, source.find(directive).unwrap());
-    assert!(source[span.0..span.1].starts_with(directive));
+    assert_eq!(span.start, source.find(directive).unwrap());
+    assert!(source[span.start..span.end].starts_with(directive));
 }
 
 #[test]
