@@ -305,6 +305,9 @@ impl EventGraph {
                 ) | (
                     GenerationKind::BulkGroupWait { .. },
                     SyncObjectKind::BulkGroupWait { .. }
+                ) | (
+                    GenerationKind::Dependency,
+                    SyncObjectKind::Dependency { .. }
                 )
             );
             if !kind_ok {

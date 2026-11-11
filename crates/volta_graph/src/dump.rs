@@ -30,8 +30,10 @@ impl EventGraph {
             p.grid_dim.2,
             p.targets.join(",")
         )?;
-        if let ThreadUnit::Wave { lanes } = p.unit {
-            writeln!(out, "threads are waves of {lanes}")?;
+        match p.unit {
+            ThreadUnit::CtaThread => {}
+            ThreadUnit::Wave { lanes } => writeln!(out, "threads are waves of {lanes}")?,
+            ThreadUnit::Instruction => writeln!(out, "threads are instructions")?,
         }
         for a in &p.assumptions {
             writeln!(out, "assume {:?}", a)?;
@@ -53,6 +55,9 @@ impl EventGraph {
                 }
                 SyncObjectKind::BulkGroupWait { thread } => {
                     write!(out, "bulk-groups t{}", thread.0)?
+                }
+                SyncObjectKind::Dependency { producer } => {
+                    write!(out, "dependency t{}", producer.0)?
                 }
             }
             writeln!(
@@ -113,6 +118,7 @@ impl EventGraph {
                         BulkWaitScope::Complete => "complete",
                     }
                 )?,
+                GenerationKind::Dependency => write!(out, "dependency")?,
             }
             writeln!(
                 out,
