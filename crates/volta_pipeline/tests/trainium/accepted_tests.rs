@@ -74,6 +74,8 @@ fn the_race_fixtures_parse_lower_and_run_in_program_order() {
         ("affine_carried", rows(3)),
         ("sequential_carried", rows(3)),
         ("affine_vector_sum", rows(2)),
+        ("no_reorder_back_to_back_dmas", rows(2)),
+        ("no_reorder_boundary", rows(2)),
     ] {
         common::trainium::check(
             &format!("check_failure/{name}"),
@@ -85,6 +87,11 @@ fn the_race_fixtures_parse_lower_and_run_in_program_order() {
         "check_failure/affine_matmul_accumulate",
         "kernel",
         &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+    common::trainium::check(
+        "check_failure/no_reorder_affine",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[2, 4])],
     );
 }
 

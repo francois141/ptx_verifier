@@ -573,8 +573,12 @@ pub enum Assumption {
     /// Only shared-memory (LDS) accesses are recorded: global memory is not checked.
     SharedMemoryOnly,
     /// The Neuron compiler orders an NKI instruction after the latest earlier instruction
-    /// writing each location it reads, and orders nothing else.
-    NkiDataFlowOrderOnly,
+    /// writing each location it reads, except across `affine_range` iterations. NKI
+    /// instructions are ordered by nothing else no other assumption names.
+    NkiDataFlowOrder,
+    /// An NKI `no_reorder` block's instructions execute in program order (its edges are
+    /// hardware synchronization, not scheduling hints).
+    NkiNoReorderInProgramOrder,
 }
 
 impl Assumption {
@@ -604,9 +608,13 @@ impl Assumption {
                 "only shared-memory (LDS) accesses are recorded; global memory is not checked \
                  for races"
             }
-            Assumption::NkiDataFlowOrderOnly => {
+            Assumption::NkiDataFlowOrder => {
                 "the Neuron compiler orders each NKI instruction after the latest earlier writer \
-                 of what it reads, and orders nothing else"
+                 of what it reads, except across affine_range iterations; nothing else is \
+                 ordered unless another assumption says so"
+            }
+            Assumption::NkiNoReorderInProgramOrder => {
+                "the instructions of an NKI no_reorder block execute in program order"
             }
         }
     }

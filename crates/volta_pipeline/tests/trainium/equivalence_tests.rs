@@ -144,11 +144,7 @@ fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
 
     let decision = run.decide(&solution);
     assert_eq!(decision.verdict, Verdict::Accept, "{:?}", decision.evidence);
-    assert!(
-        decision
-            .assumptions
-            .contains(&Assumption::NkiDataFlowOrderOnly)
-    );
+    assert!(decision.assumptions.contains(&Assumption::NkiDataFlowOrder));
 }
 
 // Test that an NKI kernel whose two DMAs write one tile is rejected through the frontend, its

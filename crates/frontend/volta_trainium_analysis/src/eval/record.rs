@@ -2,7 +2,7 @@
 //! its accesses those of `footprints`, and a `Dependency` edge wherever the ordering policy
 //! says the Neuron compiler orders two instructions. `MemoryConflict` reports the rest.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use id_collections::IdVec;
@@ -12,23 +12,39 @@ use volta_graph::{
     ThreadIx, ThreadUnit,
 };
 
-use crate::ir::{InstrId, LoopKind, LoweredKernel, Memory, Origin};
+use crate::ir::{InstrId, LoopKind, LoweredKernel, Memory, NoReorderId, Origin, Reordering};
 
 use super::footprint::{Location, Mode, footprints};
 
 /// Which pairs of instructions the Neuron compiler is taken to order. The docs say only that
-/// it synchronizes "based on data dependencies", so each policy is an [`Assumption`].
+/// it synchronizes "based on data dependencies", so each policy records its [`Assumption`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderingPolicy {
     /// An instruction follows the latest earlier writer of each location it reads, unless the
     /// two are in different iterations of one `affine_range`; nothing else is ordered.
     DataFlowOnly,
+    /// `DataFlowOnly`, and each instruction of a `no_reorder` block also follows the block's
+    /// previous one: the API page's "execute in program order", which the scheduling guide
+    /// leaves open to be a scheduling hint only.
+    DataFlowAndNoReorder,
 }
 
 impl OrderingPolicy {
-    fn assumption(self) -> Assumption {
+    fn assumptions(self) -> Vec<Assumption> {
         match self {
-            OrderingPolicy::DataFlowOnly => Assumption::NkiDataFlowOrderOnly,
+            OrderingPolicy::DataFlowOnly => vec![Assumption::NkiDataFlowOrder],
+            OrderingPolicy::DataFlowAndNoReorder => vec![
+                Assumption::NkiDataFlowOrder,
+                Assumption::NkiNoReorderInProgramOrder,
+            ],
+        }
+    }
+
+    /// The `no_reorder` block whose program order `policy` keeps for an instruction at `origin`.
+    fn ordering_block(self, origin: &Origin) -> Option<NoReorderId> {
+        match (self, origin.reordering) {
+            (OrderingPolicy::DataFlowAndNoReorder, Reordering::Forbidden { block }) => Some(block),
+            (OrderingPolicy::DataFlowOnly, _) | (_, Reordering::Allowed) => None,
         }
     }
 }
@@ -46,7 +62,7 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
         unit: ThreadUnit::Instruction,
         grid_dim: (1, 1, 1),
         targets: vec!["nki".to_string()],
-        assumptions: vec![policy.assumption()],
+        assumptions: policy.assumptions(),
         instructions: kernel
             .instructions
             .values()
@@ -60,6 +76,7 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
     let mut locations = Locations::default();
     let mut writers: Vec<Writers> = Vec::new();
     let mut signals: IdVec<InstrId, GenerationId> = IdVec::new();
+    let mut block_tails: HashMap<NoReorderId, InstrId> = HashMap::new();
     for (instr, own) in accesses.iter() {
         let thread = ThreadIx(instr.0);
         let pc = ProgramPoint(instr.0);
@@ -73,10 +90,14 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
                 }
             }
         }
+        let origin = &kernel.origins[instr];
+        producers
+            .retain(|&producer| !in_different_affine_iterations(&kernel.origins[producer], origin));
+        if let Some(block) = policy.ordering_block(origin) {
+            producers.extend(block_tails.insert(block, instr));
+        }
         producers.sort();
         producers.dedup();
-        producers
-            .retain(|&producer| ordered(policy, &kernel.origins[producer], &kernel.origins[instr]));
         for producer in producers {
             graph.resume(thread, pc, signals[producer]);
         }
@@ -126,13 +147,6 @@ fn effects(mode: Mode) -> &'static [Effect] {
         Mode::Read => &[Effect::Read],
         Mode::Write => &[WRITE],
         Mode::Accumulate => &[Effect::Read, WRITE],
-    }
-}
-
-/// Whether `policy` orders an instruction at `later` after a dependency at `earlier`.
-fn ordered(policy: OrderingPolicy, earlier: &Origin, later: &Origin) -> bool {
-    match policy {
-        OrderingPolicy::DataFlowOnly => !in_different_affine_iterations(earlier, later),
     }
 }
 

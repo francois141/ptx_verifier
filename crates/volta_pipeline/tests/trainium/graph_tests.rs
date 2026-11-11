@@ -1,32 +1,41 @@
 //! NKI kernels' event graphs through the graph branch. Each instruction is a graph thread,
-//! ordered after another only where `OrderingPolicy::DataFlowOnly` says the Neuron compiler
-//! orders them: after the latest earlier writer of what it reads, outside different
-//! `affine_range` iterations. Race-free kernels must conclude `Verified`; racy ones must fail
-//! the memory-conflict check with exactly the expected pairs of instructions.
+//! ordered after another only where the `OrderingPolicy` says the Neuron compiler orders
+//! them. `DataFlowOnly`, the pipeline's: after the latest earlier writer of what it reads,
+//! outside different `affine_range` iterations. `DataFlowAndNoReorder` adds program order
+//! within each `no_reorder` block. Race-free kernels must conclude `Verified`; racy ones must
+//! fail the memory-conflict check with exactly the expected pairs of instructions.
 
 use std::collections::BTreeSet;
 
-use volta_graph::{EventGraph, EventId, ExecContext};
+use volta_graph::{Assumption, EventGraph, EventId, ExecContext};
 use volta_graph_check::domain::ConflictKind::{self, ReadWrite, WriteRead, WriteWrite};
 use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
 use volta_trainium_analysis::frontend::parse::{
     KernelCall, TileSizes, parse_kernel, parse_kernel_for_call,
 };
-use volta_trainium_analysis::{OrderingPolicy, lower_kernel, record_graph};
+use volta_trainium_analysis::{
+    InstrId, OrderingPolicy, Reordering, footprints, lower_kernel, record_graph,
+};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/trainium/");
 
 /// Each parameter's name and shape.
 type Shapes<'a> = &'a [(&'a str, &'a [u64])];
 
-/// Kernel `kernel` of fixture `<name>.py`, called with `shapes`, recorded and checked.
-fn check(name: &str, shapes: Shapes) -> (EventGraph, GraphReport) {
+/// Kernel `kernel` of fixture `<name>.py`, called with `shapes`, recorded under `policy`
+/// and checked.
+fn check_under(policy: OrderingPolicy, name: &str, shapes: Shapes) -> (EventGraph, GraphReport) {
     let source = std::fs::read_to_string(format!("{FIXTURES}{name}.py")).unwrap();
     let parsed = parse_kernel(&source, "kernel", shapes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let graph = record_graph(&lowered, OrderingPolicy::DataFlowOnly);
+    let graph = record_graph(&lowered, policy);
     let report = check_graph(&graph);
     (graph, report)
+}
+
+/// `check_under` the pipeline's policy, `DataFlowOnly`.
+fn check(name: &str, shapes: Shapes) -> (EventGraph, GraphReport) {
+    check_under(OrderingPolicy::DataFlowOnly, name, shapes)
 }
 
 /// The instruction an event belongs to (its graph thread).
@@ -50,7 +59,7 @@ fn conflicts(graph: &EventGraph, report: &GraphReport) -> BTreeSet<(u32, u32, Co
         .collect()
 }
 
-/// Race fixture `races/<name>.py` over `a` of `rows` rows of 4, `out` of one row fewer.
+/// Race fixture `check_failure/<name>.py` over `a` of `rows` rows of 4, `out` of one row fewer.
 fn check_race(name: &str, rows: u64) -> (EventGraph, GraphReport) {
     let shapes: [(&str, &[u64]); 2] = [("a", &[rows, 4]), ("out", &[rows - 1, 4])];
     check(&format!("check_failure/{name}"), &shapes)
@@ -301,4 +310,99 @@ fn nki_tutorials_accumulating_across_affine_range_iterations_race() {
     let source = sample("mamba_nki_kernels");
     let report = check_sample(&source, &[], "mamba_v1", &call);
     assert!(!report.memory_conflict.violations().is_empty());
+}
+
+// Test that a no_reorder block orders its own instructions under DataFlowAndNoReorder and
+// nothing under DataFlowOnly: two DMAs writing one tile in a block, and an affine_range's
+// iterations rewriting one tile in a block, race under DataFlowOnly and verify under the
+// opt-in policy, which records its assumption. A write before the block still races the
+// block's rewrite and read under both.
+#[test]
+fn nki_no_reorder_blocks_order_their_own_instructions_under_the_opt_in_policy() {
+    let rows: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("out", &[1, 4])];
+    let both: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("out", &[2, 4])];
+    for (name, shapes, data_flow_races) in [
+        (
+            "no_reorder_back_to_back_dmas",
+            &rows,
+            vec![(0, 1, WriteWrite), (0, 2, WriteRead)],
+        ),
+        (
+            "no_reorder_affine",
+            &both,
+            vec![(0, 2, WriteWrite), (1, 2, ReadWrite), (0, 3, WriteRead)],
+        ),
+    ] {
+        let name = format!("check_failure/{name}");
+        let (graph, report) = check(&name, shapes);
+        assert_eq!(
+            conflicts(&graph, &report),
+            BTreeSet::from_iter(data_flow_races),
+            "{name}"
+        );
+
+        let (graph, report) = check_under(OrderingPolicy::DataFlowAndNoReorder, &name, shapes);
+        assert_eq!(report.conclusion(), GraphConclusion::Verified, "{name}");
+        assert_eq!(
+            graph.provenance().assumptions,
+            [
+                Assumption::NkiDataFlowOrder,
+                Assumption::NkiNoReorderInProgramOrder
+            ]
+        );
+    }
+
+    for policy in [
+        OrderingPolicy::DataFlowOnly,
+        OrderingPolicy::DataFlowAndNoReorder,
+    ] {
+        let (graph, report) = check_under(policy, "check_failure/no_reorder_boundary", &rows);
+        assert_eq!(
+            conflicts(&graph, &report),
+            BTreeSet::from([(0, 1, WriteWrite), (0, 2, WriteRead)]),
+            "{policy:?}"
+        );
+    }
+}
+
+// Test that under DataFlowAndNoReorder attention v10's only races cross its no_reorder
+// block's boundary: `v_psum_t`, transposed before the block, and `qk_psum`, which the QK
+// matmuls inside it place over the same PSUM bytes (R3). A block orders nothing against
+// the instructions before it, so the reuse is unordered under either policy.
+#[test]
+fn nki_attention_v10_races_only_across_its_no_reorder_boundary_under_the_opt_in_policy() {
+    let kernels = sample("attention_kernels");
+    let tileable = kernels.replace("assert seqlen_q >= 512", "assert seqlen_q >= FMAX_MOVING");
+    let utils = sample("attention_kernel_utils");
+    let modules = [("attention_kernel_utils", utils.as_str())];
+    let reduced: &[u64] = &[4, 16];
+    let shapes = [("q", reduced), ("k", reduced), ("v", reduced)];
+    let dtypes = [("q", "bfloat16"), ("k", "bfloat16"), ("v", "bfloat16")];
+    let call = KernelCall {
+        dtypes: &dtypes,
+        tile_sizes: tiles(4, 8),
+        ..KernelCall::new(&shapes)
+    };
+    let parsed = parse_kernel_for_call(&tileable, &modules, "attn_fwd_v10", &call).unwrap();
+    let lowered = lower_kernel(&parsed).unwrap();
+    let graph = record_graph(&lowered, OrderingPolicy::DataFlowAndNoReorder);
+    let report = check_graph(&graph);
+
+    let pairs = conflicts(&graph, &report);
+    assert!(!pairs.is_empty());
+    let in_block = |i: u32| lowered.origins[InstrId(i)].reordering != Reordering::Allowed;
+    let tensors = |i: u32| -> Vec<&str> {
+        footprints(&lowered)[InstrId(i)]
+            .iter()
+            .map(|access| lowered.tensors[access.tensor].name.as_str())
+            .collect()
+    };
+    for &(earlier, later, kind) in &pairs {
+        assert!(
+            !in_block(earlier) && in_block(later),
+            "{earlier} -> {later} {kind:?}"
+        );
+        assert!(tensors(earlier).contains(&"v_psum_t"), "{earlier}");
+        assert!(tensors(later).contains(&"qk_psum"), "{later}");
+    }
 }

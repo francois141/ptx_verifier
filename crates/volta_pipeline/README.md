@@ -78,13 +78,16 @@ only inline unit tests of their internals.
   `trainium/rejected_tests.rs`: the error each rejected kernel must raise.
 - `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
   instruction, ordered only by data flow (`OrderingPolicy::DataFlowOnly`, recorded as
-  `Assumption::NkiDataFlowOrderOnly`): an instruction follows the latest earlier
+  `Assumption::NkiDataFlowOrder`): an instruction follows the latest earlier
   writer of what it reads, unless they are in different `affine_range` iterations.
   Fixtures written once or rewritten only by their readers verify, as do the
   attention samples v1 to v8a; each race fixture (`trainium/check_failure/`) fails
   `MemoryConflict` with exactly its expected instruction pairs, and v10 (PSUM banks
   reused), the tiled matmul tutorial and mamba (accumulating across `affine_range`
-  iterations) race.
+  iterations) race. Under the opt-in `DataFlowAndNoReorder`, which also orders each
+  `no_reorder` block's instructions, the `no_reorder` fixtures verify except one
+  rewriting a tile written before its block, and v10's only races pair `v_psum_t`, before
+  its block, with `qk_psum` over the same PSUM bytes inside it.
 - `trainium/equivalence_tests.rs`: an NKI kernel proved equal to its spec whose graph
   verifies is ACCEPT through `solve` and `decide`, citing the ordering assumption, and
   `check_failure/back_to_back_dmas.py` is rejected through the frontend. The NKI `matmul`, `gemm_relu` and `softmax`
