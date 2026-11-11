@@ -21,12 +21,11 @@ pub fn verify_kernel(
     kernel: Option<&str>,
     config: AnalysisConfig,
 ) -> Result<KernelVerification, AnalysisError> {
-
     info!(
         "[analysis] kernel '{}': computing the candidate execution and extracting its event graph",
         kernel.unwrap_or("(first entry)")
     );
-    
+
     let start = Instant::now();
     let analysis = analyze(module, kernel, config)?;
     info!(
