@@ -1,0 +1,5 @@
+0: read a[0..128]; write t[0..128]
+1: read idx[0..16]; write offsets[0..16]
+2: read idx[0..16]; write offsets[16..32]
+3: read t[0..128]; read offsets[0..32]; write gathered[0..96]
+4: read gathered[0..96]; write out[0..96]

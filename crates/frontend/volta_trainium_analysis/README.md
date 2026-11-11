@@ -319,6 +319,17 @@ accesses through two tiles placed over each other, inside or outside
 `nl.no_reorder()`, the docs do not say; that ordering is outside the check, like the
 asynchrony of DMAs.
 
+## Footprints
+
+`footprints(kernel)` gives each instruction's `Access`es, its reads in operand order
+then its writes, the locations an event graph's accesses will carry. Each is a `Mode`
+(`Read`, `Write`, or `Accumulate` for an `nc_matmul` that adds into `dst`), its tensor,
+a `Location` and ascending, disjoint, non-adjacent runs. Only `address=` puts two tensors
+over the same storage, so only placed tiles share a location, their memory, by byte
+(`partition * PARTITION_STRIDE + byte`); every other tensor is a location of its own, by
+row-major element offset. Footprints are static: a gather reads its whole `data` and
+`index` regions, a superset of the elements its offsets select.
+
 ## Fixtures
 
 This crate keeps no tests of its own: its fixtures live in
@@ -329,6 +340,10 @@ one call, giving each parameter's shape (`common::trainium::check(name, kernel, 
 or `check_importing` with the fixture modules it imports from), and
 `trainium/rejected_tests.rs` requires each error; the fixtures' own shape `assert`s check
 those shapes.
+Besides `.ast`, `.ir` and `.out`, `placed_tiles`, `access_patterns`, `indirect` and
+`loop_origins` (`common::trainium`'s `FOOTPRINTS`) have a
+`.footprints`: one line per instruction, a placed tile's runs as `p<partition>:<bytes>`,
+any other's as element offsets.
 
 `success/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at
