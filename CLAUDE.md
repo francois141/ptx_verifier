@@ -53,7 +53,7 @@ volta_equivalence  → volta_expr, volta_common (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
 volta_amd_analysis → volta_graph, volta_expr
-volta_trainium_analysis → volta_expr
+volta_trainium_analysis → volta_graph, volta_expr
 volta_graph_check  → volta_graph, volta_common
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -665,7 +665,7 @@ loop variable keeps its last value). The count is any compile-time integer; a
 execution of a `for`, its `LoopKind`, the index), outermost first across helper calls,
 and whether `nl.no_reorder()` encloses it (`Reordering`), rendered after it in `.ast`
 and `.ir`; `ir::Mover` tells a DMA copy or transpose (`.ir`'s `dma`, `dma_transpose`)
-from a compute engine's (`mov`, `transpose`). `tests/fixtures/loop_origins.py` covers
+from a compute engine's (`mov`, `transpose`). `success/loop_origins.py` covers
 every loop kind, an inner loop entered twice and `no_reorder` across a helper call.
 `footprints(kernel)` (`eval/footprint.rs`) gives each instruction's `Access`es, reads
 then writes: a `Mode` (`Read`, `Write`, `Accumulate` for an adding `nc_matmul`), its
@@ -674,10 +674,20 @@ tensor, a `Location` and merged runs. Placed tiles share their memory's location
 A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
 snapshot them, as do those of `placed_tiles`, `access_patterns`, `indirect` and
 `loop_origins`.
-`tests/fixtures/races/` holds kernels meant to race (R0 `back_to_back_dmas`; R1
-`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`)
-beside `sequential_range` twins, each naming its intended verdict; until NKI runs record
-a graph, one test runs them in program order.
+`record_graph(kernel, policy)` (`eval/record.rs`) is the kernel's event graph: a graph
+thread per instruction, its `footprints` as accesses (an accumulation a read then a
+write; each `Location` a disjoint range, HBM in `Global`, SBUF and PSUM in `Shared`), and
+a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler orders two
+instructions. The docs say only that it synchronizes "based on data dependencies", so
+the one policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrderOnly`), is the most
+conservative: an instruction follows the latest earlier writer of each location it
+reads, unless they are in different iterations of one `affine_range`; write-after-write,
+write-after-read and reductions across `affine_range` iterations race.
+`check_failure/` holds kernels that race under it (R0 `back_to_back_dmas`; R1
+`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`;
+the `sequential_range` twins, which rewrite a tile without reading it between), each
+naming its verdict; `trainium/accepted_tests.rs` runs them in program order,
+`trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
@@ -941,8 +951,9 @@ its input must be rejected: CK's output buffer bound drops four of its nine stor
 `gemm_amd.json` and `gemm_sigmoid_amd.json` are snapshots of the argument builders' labelled
 parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
 `common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
-`trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec is
-UNKNOWN through `solve` and `decide` (no graph recorded), and checks the NKI `matmul`, 
+`trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
+graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrderOnly`, and
+that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
@@ -980,7 +991,12 @@ equivalence comparisons, the Lean challenge, and the grid tests' individual work
 `amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
 to reject a completed kernel with an LDS race. `just amd` runs the accepted, rejected and
 equivalence suites; the full `amd_tests` target also runs graph, grid and Lean tests.
-`just trainium` runs its accepted, rejected and equivalence suites.
+`trainium/graph_tests.rs` checks NKI graphs under `DataFlowOnly`: fixtures written once or
+rewritten only by their readers and the attention samples v1 to v8a verify; each race
+fixture in `trainium/check_failure/` fails `MemoryConflict` with exactly its expected
+instruction pairs; v10 (PSUM banks reused), the tiled matmul tutorial and mamba
+(accumulating across `affine_range`) race. `just trainium` runs its accepted, rejected and
+equivalence suites.
 
 ### End-to-end tests (`tests/`)
 

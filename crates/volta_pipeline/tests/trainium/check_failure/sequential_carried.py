@@ -4,7 +4,8 @@ import nki.isa as nisa
 
 
 # affine_carried with a sequential_range: each iteration reads what the one before it
-# wrote, in order, so this is meant to be race free.
+# wrote, in order, but rewrites the tile after reading it: a race under DataFlowOnly,
+# which orders no write-after-read; race free if the compiler orders those.
 @nki.jit
 def kernel(a, out):
     assert a.shape == (3, 4)

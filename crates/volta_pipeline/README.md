@@ -28,7 +28,7 @@ artifacts and never call each other or the stage.
   - **REJECT** on any refutation, failed graph check, or deadlock;
   - **UNKNOWN** otherwise (sampled check, unresolved obligations, aborted run,
     unproven difference, or a kernel whose interpreter records no graph:
-    `GraphBranch::NotRecorded`, as for NKI).
+    `GraphBranch::NotRecorded`).
 
   The `Decision` carries the verdict, its evidence, and the union of the
   modeling assumptions the analyses ran under.
@@ -76,9 +76,18 @@ only inline unit tests of their internals.
   forms and symbolic outputs matching their `.ast`, `.ir` and `.out` files (and their
   hand-written `.expected`, which `VOLTA_BLESS` never rewrites);
   `trainium/rejected_tests.rs`: the error each rejected kernel must raise.
-- `trainium/equivalence_tests.rs`: an NKI kernel proved equal to its spec is UNKNOWN
-  through `solve` and `decide`, its run recording no graph. The NKI `matmul`, `gemm_relu` and
-  `softmax`
+- `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
+  instruction, ordered only by data flow (`OrderingPolicy::DataFlowOnly`, recorded as
+  `Assumption::NkiDataFlowOrderOnly`): an instruction follows the latest earlier
+  writer of what it reads, unless they are in different `affine_range` iterations.
+  Fixtures written once or rewritten only by their readers verify, as do the
+  attention samples v1 to v8a; each race fixture (`trainium/check_failure/`) fails
+  `MemoryConflict` with exactly its expected instruction pairs, and v10 (PSUM banks
+  reused), the tiled matmul tutorial and mamba (accumulating across `affine_range`
+  iterations) race.
+- `trainium/equivalence_tests.rs`: an NKI kernel proved equal to its spec whose graph
+  verifies is ACCEPT through `solve` and `decide`, citing the ordering assumption, and
+  `check_failure/back_to_back_dmas.py` is rejected through the frontend. The NKI `matmul`, `gemm_relu` and `softmax`
   fixtures against their `.spec` files beside them in `tests/trainium/success/`,
   with `gemm_relu` against the unclamped product and `softmax` against the softmax
   of `-x` (a reversed `subtract`) as negative tests. Also the NKI samples' own

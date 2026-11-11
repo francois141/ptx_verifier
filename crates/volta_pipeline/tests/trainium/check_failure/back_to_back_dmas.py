@@ -3,9 +3,9 @@ import nki.language as nl
 import nki.isa as nisa
 
 
-# R0: two DMAs write one tile back to back, then a third reads it. The compiler sees the
-# write-after-write on `x` and orders the DMAs, so this is meant to be race free; without
-# that ordering every kernel reusing a tile would race.
+# R0: two DMAs write one tile back to back, then a third reads it. Ordered only if the
+# compiler orders write-after-write, which the docs do not state: a race under
+# DataFlowOnly, where only the second DMA is the read's data-flow source.
 @nki.jit
 def kernel(a, out):
     assert a.shape == (2, 4)

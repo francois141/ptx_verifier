@@ -330,6 +330,29 @@ over the same storage, so only placed tiles share a location, their memory, by b
 row-major element offset. Footprints are static: a gather reads its whole `data` and
 `index` regions, a superset of the elements its offsets select.
 
+## Event graph
+
+`record_graph(kernel, policy)` (`eval/record.rs`) is the kernel's `volta_graph` event
+graph, for the graph branch's checks. NKI source has no synchronization: the Neuron
+compiler inserts semaphores "based on data dependencies", which the docs do not define.
+So each instruction is a graph thread (`ThreadUnit::Instruction`), its accesses those of
+`footprints` (an accumulation a read, then a write), and an `OrderingPolicy` says which
+earlier instructions the compiler orders it after: it resumes from each one's
+`Dependency` generation, then signals its own. `MemoryConflict` reports every conflicting
+pair no chain of dependencies orders.
+
+The one policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrderOnly`), is the most
+conservative under which a kernel can be correct at all: an instruction follows the
+latest earlier writer of each location it reads, unless the two are in different
+iterations of one `affine_range`, and nothing else is ordered. Writes after writes and
+writes after reads race, as does every reduction across `affine_range` iterations. A
+relaxation the docs or a compiled NEFF justify becomes another policy with its own
+assumption.
+
+Locations are disjoint address ranges, one per `Location` (`1 << 40` apart): HBM tensors
+in `Space::Global`, SBUF and PSUM in `Space::Shared`. Each run is one byte-range access;
+an element of an unplaced tensor is one byte.
+
 ## Fixtures
 
 This crate keeps no tests of its own: its fixtures live in
@@ -345,12 +368,13 @@ Besides `.ast`, `.ir` and `.out`, the race fixtures and `placed_tiles`,
 `.footprints`: one line per instruction, a placed tile's runs as `p<partition>:<bytes>`,
 any other's as element offsets.
 
-`check_failure/` holds kernels meant to race beside their ordered twins, each naming its
-intended verdict, for the race checks to come; until NKI runs record an event graph,
-`accepted_tests.rs` runs them in program order only. `back_to_back_dmas` is two DMAs
-writing one tile (R0, ordered by the compiler); `affine_overwrite` and `affine_carried`
-overwrite or carry a tile across `affine_range` iterations (R1), their
-`sequential_range` twins in order; `affine_vector_sum` sums rows into one tile with
+`check_failure/` holds kernels that race under `DataFlowOnly`, each naming its verdict and
+what would make it race free; `accepted_tests.rs` runs them in program order, and
+`trainium/graph_tests.rs` checks their graphs' conflicting pairs. `back_to_back_dmas` is
+two DMAs writing one tile (R0, ordered only if the compiler orders write-after-write);
+`affine_overwrite` and `affine_carried` overwrite or carry a tile across `affine_range`
+iterations (R1), their `sequential_range` twins in order but still rewriting the tile
+without reading it between; `affine_vector_sum` sums rows into one tile with
 `tensor_tensor`, as mamba does, and `affine_matmul_accumulate` accumulates matmuls into
 PSUM, the reduction the docs allow across `affine_range` iterations.
 

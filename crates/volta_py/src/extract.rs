@@ -37,8 +37,8 @@ pub struct LeanExtractionPy {
 /// absolute error bound such as "1/1000"; without it, propositions state exact equality.
 /// `equivalence=True` first checks exact equality with the canonical solver, as `solve` does,
 /// on the same run. Raises DataRaceError for detected races, DeadlockError for deadlocks, and
-/// VoltaError for other failed or incomplete graph checks or extraction failures. NKI
-/// extraction returns race_verified=None because its interpreter records no memory events.
+/// VoltaError for other failed or incomplete graph checks or extraction failures. A kernel
+/// whose run records no graph returns race_verified=None.
 #[pyfunction]
 #[pyo3(signature = (
     path, config=None, *, spec, kernel=None, dims=None, tolerance=None, equivalence=false
