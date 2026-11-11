@@ -2,8 +2,8 @@
 //! wave, as another `impl Interpreter`. The ALU operates on concrete words.
 
 use crate::ir::{
-    LoweredInstr, ScalarCmp64Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst, ScalarOp32, ScalarOp64,
-    ScalarShift64, ScalarSrc, ScalarSrc64, Sgpr,
+    ExecCopy, ExecOrder, LoweredInstr, ScalarCmp64Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst,
+    ScalarOp32, ScalarOp64, ScalarShift64, ScalarSrc, ScalarSrc64, Sgpr,
 };
 
 use super::wave::{LgkmInFlight, WaveId, WaveRegisters};
@@ -94,27 +94,36 @@ impl Interpreter<'_> {
                 let a = self.read_scalar64(wave, *src0)?;
                 let b = self.read_scalar64(wave, *src1)?;
                 let registers = &mut self.waves[wave].registers;
-                let value = match op {
-                    ScalarOp64::AndB64 => a & b,
-                    ScalarOp64::OrB64 => a | b,
-                    ScalarOp64::XorB64 => a ^ b,
-                    ScalarOp64::AndN2B64 => a & !b,
-                    ScalarOp64::OrN2B64 => a | !b,
-                    ScalarOp64::NandB64 => !(a & b),
-                    ScalarOp64::NorB64 => !(a | b),
-                    ScalarOp64::XnorB64 => !(a ^ b),
-                    ScalarOp64::CSelectB64 => {
-                        if registers.read_scc()? {
-                            a
-                        } else {
-                            b
-                        }
-                    }
-                };
+                let value = scalar_op64(registers, *op, a, b)?;
                 if *op != ScalarOp64::CSelectB64 {
                     registers.write_scc(value != 0);
                 }
                 self.write_scalar64(wave, *dst, value)
+            }
+            LoweredInstr::ExecOp64 {
+                op,
+                order,
+                copy,
+                dst,
+                src,
+            } => {
+                let saved = self.waves[wave].exec;
+                let src = self.read_scalar64(wave, *src)?;
+                let (a, b) = match order {
+                    ExecOrder::SrcExec => (src, saved),
+                    ExecOrder::ExecSrc => (saved, src),
+                };
+                let registers = &mut self.waves[wave].registers;
+                let exec = scalar_op64(registers, *op, a, b)?;
+                registers.write_scc(exec != 0);
+                let copied = match copy {
+                    ExecCopy::Saved => saved,
+                    ExecCopy::Written => exec,
+                };
+                // The destination is written first, so a rejected write leaves EXEC as it was.
+                self.write_scalar64(wave, *dst, copied)?;
+                self.waves[wave].exec = exec;
+                Ok(())
             }
             LoweredInstr::ShiftScalar64 {
                 op,
@@ -309,6 +318,32 @@ impl Interpreter<'_> {
             }
         }
     }
+}
+
+/// `a op b` over 64-bit words; a select reads SCC.
+fn scalar_op64(
+    registers: &WaveRegisters,
+    op: ScalarOp64,
+    a: u64,
+    b: u64,
+) -> Result<u64, EvalError> {
+    Ok(match op {
+        ScalarOp64::AndB64 => a & b,
+        ScalarOp64::OrB64 => a | b,
+        ScalarOp64::XorB64 => a ^ b,
+        ScalarOp64::AndN2B64 => a & !b,
+        ScalarOp64::OrN2B64 => a | !b,
+        ScalarOp64::NandB64 => !(a & b),
+        ScalarOp64::NorB64 => !(a | b),
+        ScalarOp64::XnorB64 => !(a ^ b),
+        ScalarOp64::CSelectB64 => {
+            if registers.read_scc()? {
+                a
+            } else {
+                b
+            }
+        }
+    })
 }
 
 /// `a op b` and the SCC it writes, `None` when the operation leaves SCC unchanged.

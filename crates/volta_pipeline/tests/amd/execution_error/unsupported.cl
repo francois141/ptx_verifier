@@ -29,10 +29,11 @@ __kernel void symbolic_select(__global const float *input, __global float *outpu
     output[i] = input[i] > 0.0f ? 1.0f : 2.0f;
 }
 
-// Only odd lanes store, requiring a change to the wave's active-lane mask.
+// Only lanes with a positive input store. The active-lane mask would come from the input
+// data, so it is not a concrete mask.
 __kernel void divergent_store(__global const float *input, __global float *output) {
     unsigned i = __builtin_amdgcn_workitem_id_x();
-    if (i & 1)
+    if (input[i] > 0.0f)
         output[i] = input[i];
 }
 

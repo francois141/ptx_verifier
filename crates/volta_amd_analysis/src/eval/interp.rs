@@ -197,6 +197,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AbsScalar32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
+            | LoweredInstr::ExecOp64 { .. }
             | LoweredInstr::ShiftScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
             | LoweredInstr::ScalarCmp64 { .. }
@@ -313,6 +314,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AbsScalar32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
+            | LoweredInstr::ExecOp64 { .. }
             | LoweredInstr::ShiftScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
             | LoweredInstr::ScalarCmp64 { .. }

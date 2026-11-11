@@ -258,6 +258,24 @@ pub enum ScalarOp64 {
     CSelectB64,
 }
 
+/// The operand order of a scalar operation that writes EXEC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecOrder {
+    /// `src op EXEC`.
+    SrcExec,
+    /// `EXEC op src`.
+    ExecSrc,
+}
+
+/// Which EXEC a scalar operation that writes EXEC copies to its destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecCopy {
+    /// EXEC as it was before the operation (`saveexec`).
+    Saved,
+    /// EXEC as the operation leaves it (`wrexec`).
+    Written,
+}
+
 /// A 64-bit scalar shift; the count uses its low six bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarShift64 {
@@ -735,6 +753,15 @@ pub enum LoweredInstr {
         src0: ScalarSrc64,
         src1: ScalarSrc64,
     },
+    /// `EXEC = op` over `src` and EXEC, in the order `order` gives; SCC is whether any lane stays
+    /// active. `dst` receives the EXEC that `copy` selects.
+    ExecOp64 {
+        op: ScalarOp64,
+        order: ExecOrder,
+        copy: ExecCopy,
+        dst: ScalarDst64,
+        src: ScalarSrc64,
+    },
     /// `dst = src op shift`; SCC is whether the result is nonzero.
     ShiftScalar64 {
         op: ScalarShift64,
@@ -965,6 +992,7 @@ impl LoweredInstr {
             Self::AbsScalar32 { .. } => "s_abs_i32",
             Self::ScalarOp32 { .. } => "scalar op",
             Self::ScalarOp64 { .. } => "scalar op (64-bit)",
+            Self::ExecOp64 { .. } => "scalar op (EXEC)",
             Self::ShiftScalar64 { .. } => "scalar shift (64-bit)",
             Self::ScalarCmp { .. } => "s_cmp",
             Self::ScalarCmp64 { .. } => "s_cmp (64-bit)",

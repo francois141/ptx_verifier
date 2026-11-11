@@ -609,6 +609,18 @@ fn the_exec_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test every scalar operation that writes EXEC, against the expected outputs in
+// saveexec_ops.out: the EXEC and SCC each one leaves from a source mask and the active lanes,
+// the old or new EXEC it copies, and then the compiler's own masking of a branch.
+#[test]
+fn the_saveexec_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/saveexec_ops",
+        // Each of the 64 work-items writes its results to a row of 80 words.
+        &[array_of("out", 0x10000, 64 * 80, ArrayKind::Output(U32))],
+    );
+}
+
 // Test f64 arithmetic, modifiers, constants, conversions, comparisons, moves and overlapping
 // registers. Check all 64 lanes against the expected outputs in f64_ops.out.
 #[test]

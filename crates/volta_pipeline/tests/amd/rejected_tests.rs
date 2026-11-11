@@ -7,8 +7,8 @@ use common::amd::{amd_fixture, array, array_of, check_amd_launch};
 use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    AnalysisError, AnalysisResult, ArrayKind, EvalError, InstrId, LdsLaneAccess, LdsRace,
-    LowerError, Terminal, WaveId, WorkgroupLaunch, analyze, analyze_grid,
+    AnalysisError, AnalysisResult, ArrayKind, EvalError, InstrId, LdsLaneAccess, LdsRace, Terminal,
+    WaveId, WorkgroupLaunch, analyze, analyze_grid,
 };
 
 // Test rejection of empty or overflowing grids and selected workgroups outside the grid.
@@ -351,10 +351,10 @@ fn selecting_between_constants_under_a_symbolic_condition_is_rejected() {
         },
     );
 }
-// Test that a store executed by only the odd lanes is rejected: the compiled code narrows EXEC
-// with `s_and_saveexec_b64`, whose write of EXEC is not supported.
+// Test that a store executed only where the input is positive is rejected: the mask the
+// compiled `s_and_saveexec_b64` reads holds symbolic comparisons, so EXEC would not be concrete.
 #[test]
-fn intra_wave_divergence_is_rejected() {
+fn data_dependent_divergence_is_rejected() {
     let arrays = [
         array("input", 0x10000, ArrayKind::Input),
         array("output", 0x20000, ArrayKind::Output(F32)),
@@ -366,9 +366,14 @@ fn intra_wave_divergence_is_rejected() {
         |result| {
             matches!(
                 result,
-                Err(AnalysisError::Lower(LowerError::Instruction { opcode, reason, .. }))
-                    if opcode == "s_and_saveexec_b64"
-                        && *reason == "unsupported EXEC write: only a 64-bit scalar destination may be exec"
+                Ok(AnalysisResult {
+                    terminal: Terminal::Aborted {
+                        error: EvalError::SymbolicVcc { lane: 0 },
+                        ..
+                    },
+                    symbolic_outputs: None,
+                    ..
+                })
             )
         },
     );

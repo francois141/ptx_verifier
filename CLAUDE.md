@@ -435,8 +435,9 @@ are read-only and outputs cannot be loaded. Global and buffer stores interpret
 invalid values abort at the store. `analyze` returns a completed run's written
 output elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`. `WaveState::exec` is the wave's concrete mask of
-active lanes, the same in every workgroup. A 64-bit scalar move or operation may write it;
-`v_cmpx` and `saveexec` instructions are rejected. Vector, memory and LDS instructions run in
+active lanes, the same in every workgroup. A 64-bit scalar move or operation may write it,
+as may the `saveexec` and `wrexec` operations (`ExecOp64`, sharing `scalar_op64`); `v_cmpx`
+is rejected. Vector, memory and LDS instructions run in
 the active lanes only, a comparison or carry mask has a clear bit for each inactive lane, and
 a DS read's destinations complete only in the lanes that ran it.
 Integer and bitwise operations require concrete words because
@@ -479,6 +480,7 @@ truncation toward zero, and clamping at each bound of the result's range.
 `exec_ops` checks each kind of instruction under a partial EXEC mask; its other kernels check a
 load that stays pending in lanes another completion skips and rejection of a grid whose
 workgroups differ in EXEC, and `amd/graph_tests.rs` counts its active lanes' LDS accesses.
+`saveexec_ops` checks every `saveexec` and `wrexec` opcode and a compiler-masked branch.
 Rejection tests (`amd/rejected_tests.rs`, over `amd/execution_error/` and the failing
 kernels of mixed `success/` files) assert the specific lowering or execution error instead
 of comparing outputs.

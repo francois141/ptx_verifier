@@ -34,7 +34,9 @@ with X advancing first, then Y, then Z, following
 Unsupported instructions and launch layouts return `EvalError`.
 
 EXEC is each wave's concrete mask of active lanes (CDNA4 §3.3). A 64-bit scalar move or
-operation may write it from concrete masks; `v_cmpx` and the `saveexec` instructions are rejected.
+operation may write it from concrete masks. So may the `saveexec` and `wrexec` operations
+(§12.3), which combine a source with EXEC through the same operations and copy the old or the
+new EXEC to their destination. `v_cmpx` is rejected.
 Vector, memory and LDS instructions run in the active lanes only: an inactive lane keeps its
 registers and accesses no memory. A comparison or a multiply-add carry writes its whole mask,
 with a clear bit for each inactive lane (§3.9). `v_readfirstlane_b32` reads the lowest active
@@ -108,6 +110,8 @@ and LDS accesses, lane exchanges, first-lane reads, EXEC branches and a multiply
 Its other kernels require a load to stay pending in lanes that another completion skips, and
 a grid run whose workgroups leave different lanes active to be rejected; `amd/graph_tests.rs`
 checks that only its active lanes' LDS accesses are recorded.
+`saveexec_ops` runs every `saveexec` and `wrexec` opcode on two masks that give each
+operation and operand order a different result, and a branch the compiler masks itself.
 `accvgpr` checks each source form; the bitwise fixtures check NOT results and scalar SCC.
 `lds_sync` includes a pending-read race and its waited control. `workgroup_ids` checks all
 three launch coordinates, including a disabled Y axis, and rejects invalid grid coordinates;
