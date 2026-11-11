@@ -201,7 +201,7 @@ def out_0 : Prop :=
     |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a_0 then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_0)))| ≤ (0.001 : ℝ)
 ```
 
-`result.proved` comes from Volta's final check, never from Claude. The check requires the proof to compile, to give each `VoltaChallenge.out_i` a theorem of exactly that type, to use no axioms beyond `propext`, `Classical.choice` and `Quot.sound`, and to pass `leanchecker`'s replay in Lean's kernel. See [volta_lean](crates/volta_lean) for details. A race in the kernel raises `volta.DataRaceError` and a deadlock `volta.DeadlockError` before any proof starts.
+`result.proved` comes from Volta's final check, never from Claude. The check requires the proof to compile, to give each `VoltaChallenge.out_i` a theorem of exactly that type, to use no axioms beyond `propext`, `Classical.choice` and `Quot.sound`, and to pass `leanchecker`'s replay in Lean's kernel. See [volta_lean](crates/backend/volta_lean) for details. A race in the kernel raises `volta.DataRaceError` and a deadlock `volta.DeadlockError` before any proof starts.
 
 With `verbose=True`, each step is printed as it happens, with the clock time and the time elapsed: the analysis and each of the ten graph checks, the equivalence verdict, the challenge generated and compiled, Claude Code starting the proof, every proof it writes and checks, and the final verdict. A last summary gives the total time, the agent's turns and time, the cost (Claude Code's estimate at API prices) and the tokens used. The same figures are on the result: `duration_seconds`, `turns`, `cost_usd` and `usage`.
 
@@ -321,9 +321,9 @@ Give Volta a kernel file. It automatically chooses how to read it from the file 
 
 | Your file | Volta reads it as | What you provide |
 | --- | --- | --- |
-| `kernel.ptx` | [NVIDIA PTX](crates/volta_ptx_analysis) | Thread layout, arrays, and kernel arguments |
-| `kernel.s` | [AMD gfx950 assembly](crates/volta_amd_analysis) | Workgroup size, arrays, and kernel arguments |
-| `kernel.py` | [AWS Trainium NKI](crates/volta_trainium_analysis) | Tensor shapes in the kernel itself |
+| `kernel.ptx` | [NVIDIA PTX](crates/frontend/volta_ptx_analysis) | Thread layout, arrays, and kernel arguments |
+| `kernel.s` | [AMD gfx950 assembly](crates/frontend/volta_amd_analysis) | Workgroup size, arrays, and kernel arguments |
+| `kernel.py` | [AWS Trainium NKI](crates/frontend/volta_trainium_analysis) | Tensor shapes in the kernel itself |
 
 The calls stay the same for every target: use `volta.solve(...)` to check the expected formula, or `volta.extract_lean(...)` to generate Lean proof obligations. On the CLI, use `volta solve` or `volta extract lean` followed by the file path.
 

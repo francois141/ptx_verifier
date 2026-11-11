@@ -20,7 +20,7 @@ use common::amd::{
     ck_avgpool2d_kernarg, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays,
     fmha_launch, gemm_arrays, gemm_launch, gemm_sigmoid_launch, rmsnorm_arrays,
 };
-const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
+const MATMUL_SPEC: &str = include_str!("../../../backend/volta_equivalence/tests/specs/matmul.spec");
 
 /// Kernel `kernel_name` of `source` (the fixture `file`) against `spec`'s `C = A @ B` at dims
 /// `[M, N, K]`, once its run verified.
@@ -121,7 +121,7 @@ fn check_ck_gemm(kernel: &str, dims: [i32; 3], input_bases: [u64; 2]) -> Equival
         128,
         dims.map(|d| d as u64),
         &kernarg,
-        include_str!("../../../volta_equivalence/tests/specs/matmul_transposed.spec"),
+        include_str!("../../../backend/volta_equivalence/tests/specs/matmul_transposed.spec"),
     )
 }
 
@@ -183,7 +183,7 @@ fn amd_ck_gemm_sigmoid_with_swapped_input_arguments_is_refuted() {
         128,
         [8, 8, 8],
         &kernarg,
-        include_str!("../../../volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"),
+        include_str!("../../../backend/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"),
     );
     let off_diagonal = (0..64)
         .filter(|index| index / 8 != index % 8)
@@ -251,7 +251,7 @@ fn check_ck_fmha(
         ("Batch".into(), u64::from(batch)),
         ("Head".into(), u64::from(head)),
     ]);
-    let spec = include_str!("../../../volta_equivalence/tests/specs/attention_batch_head.spec");
+    let spec = include_str!("../../../backend/volta_equivalence/tests/specs/attention_batch_head.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
     check_equivalence(
         &reference,
@@ -353,7 +353,7 @@ fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
     // The reference defines each row's maximum and sum independently of the lane exchanges.
     let [rows, columns] = dims;
     let dims = HashMap::from([("R".into(), rows), ("C".into(), columns)]);
-    let spec = include_str!("../../../volta_equivalence/tests/specs/row_softmax.spec");
+    let spec = include_str!("../../../backend/volta_equivalence/tests/specs/row_softmax.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
     check_equivalence(
         &reference,
@@ -433,7 +433,7 @@ fn check_ck_rmsnorm(rows: u32, row: u32, columns: u32, epsilon: f32) -> Equivale
         ("N".into(), u64::from(columns)),
         ("Row".into(), u64::from(row)),
     ]);
-    let spec = include_str!("../../../volta_equivalence/tests/specs/row_rms_norm.spec");
+    let spec = include_str!("../../../backend/volta_equivalence/tests/specs/row_rms_norm.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
     check_equivalence(
         &reference,
@@ -471,7 +471,7 @@ fn amd_ck_rmsnorm_with_wrong_epsilon_is_refuted() {
 }
 
 const AVG_POOL2D_SPEC: &str =
-    include_str!("../../../volta_equivalence/tests/specs/avg_pool2d_nhwc.spec");
+    include_str!("../../../backend/volta_equivalence/tests/specs/avg_pool2d_nhwc.spec");
 
 /// Run workgroup `workgroup` of CK's average pooling of `pool` and check its graph.
 fn launch_ck_avgpool2d(pool: &AvgPool2d, workgroup: u32) -> AmdChecked {

@@ -32,6 +32,6 @@
     {"name": "yr_stride", "int": 1024},
     {"name": "padding to the struct's 104 bytes", "int": 0}
   ],
-  "spec": "../../crates/volta_equivalence/tests/specs/row_rms_norm.spec",
+  "spec": "../../crates/backend/volta_equivalence/tests/specs/row_rms_norm.spec",
   "dims": {"M": 1, "N": 1024, "Row": 0}
 }

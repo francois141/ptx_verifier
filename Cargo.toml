@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/volta_*", "crates/frontend/*", "crates/backend/*"]
 resolver = "3"
 
 [workspace.package]
@@ -7,17 +7,17 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-volta_amd_analysis = { path = "./crates/volta_amd_analysis" }
+volta_amd_analysis = { path = "./crates/frontend/volta_amd_analysis" }
 volta_common = { path = "./crates/volta_common" }
-volta_equivalence = { path = "./crates/volta_equivalence" }
+volta_equivalence = { path = "./crates/backend/volta_equivalence" }
 volta_expr = { path = "./crates/volta_expr" }
 volta_graph = { path = "./crates/volta_graph" }
 volta_graph_check = { path = "./crates/volta_graph_check" }
-volta_lean = { path = "./crates/volta_lean" }
+volta_lean = { path = "./crates/backend/volta_lean" }
 volta_pipeline = { path = "./crates/volta_pipeline" }
-volta_ptx_analysis = { path = "./crates/volta_ptx_analysis" }
+volta_ptx_analysis = { path = "./crates/frontend/volta_ptx_analysis" }
 volta_spec = { path = "./crates/volta_spec" }
-volta_trainium_analysis = { path = "./crates/volta_trainium_analysis" }
+volta_trainium_analysis = { path = "./crates/frontend/volta_trainium_analysis" }
 volta_viz = { path = "./crates/volta_viz" }
 
 anyhow = "1.0"
