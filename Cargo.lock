@@ -765,6 +765,7 @@ dependencies = [
 name = "volta_py"
 version = "0.1.0"
 dependencies = [
+ "log",
  "pyo3",
  "volta_common",
  "volta_equivalence",
