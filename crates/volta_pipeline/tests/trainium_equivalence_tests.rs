@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use volta_equivalence::check::EquivCheckOptions;
 use volta_expr::SymbolicOutputs;
+use volta_graph::Assumption;
+use volta_graph_check::GraphConclusion;
 use volta_pipeline::{
     EquivalenceVerdict, GraphEvidence, Isa, Solver, Spec, Verdict, check_equivalence,
 };
@@ -115,10 +117,10 @@ fn nki_matmul_matches_its_specification() {
     );
 }
 
-// Test that an NKI kernel proved equal to its spec is not accepted, as its interpreter records no
-// event graph to establish race freedom.
+// Test that an NKI kernel proved equal to its spec is accepted once its event graph verifies,
+// relative to the assumption that the Neuron compiler orders only data flow.
 #[test]
-fn nki_kernel_equal_to_its_spec_is_unknown_without_race_evidence() {
+fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
     let parsed = volta_spec::parse_spec(MATMUL_SPEC).unwrap();
     let dims = HashMap::from([
         ("M".to_string(), 2),
@@ -133,7 +135,7 @@ fn nki_kernel_equal_to_its_spec_is_unknown_without_race_evidence() {
         .frontend()
         .solve(MATMUL, None, launch, &spec, &solver)
         .unwrap();
-    assert!(matches!(run.graph, GraphEvidence::NotRecorded));
+    assert!(matches!(run.graph, GraphEvidence::Checked { .. }));
     assert_eq!(
         solution.verdict(),
         EquivalenceVerdict::Equivalent {
@@ -143,15 +145,32 @@ fn nki_kernel_equal_to_its_spec_is_unknown_without_race_evidence() {
     );
 
     let decision = run.decide(&solution);
-    assert_eq!(decision.verdict, Verdict::Unknown);
+    assert_eq!(decision.verdict, Verdict::Accept, "{:?}", decision.evidence);
     assert!(
         decision
-            .evidence
-            .iter()
-            .any(|e| e.contains("race freedom not checked")),
-        "{:?}",
-        decision.evidence
+            .assumptions
+            .contains(&Assumption::NkiDataFlowOrderOnly)
     );
+}
+
+// Test that an NKI kernel whose two DMAs write one tile is rejected through the frontend, its
+// outputs computed in program order notwithstanding.
+#[test]
+fn nki_kernel_with_a_race_is_rejected() {
+    let source =
+        include_str!("../../volta_trainium_analysis/tests/fixtures/races/back_to_back_dmas.py");
+    let run = Isa::Trainium
+        .frontend()
+        .analyze(source, None, AnalysisConfig::new((1, 1, 1)))
+        .unwrap();
+    assert!(run.outputs.is_ok());
+    let GraphEvidence::Checked { report, .. } = &run.graph else {
+        panic!("an NKI run records its graph");
+    };
+    assert!(matches!(
+        report.conclusion(),
+        GraphConclusion::Rejected { .. }
+    ));
 }
 
 #[test]

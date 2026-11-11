@@ -3,8 +3,9 @@ import nki.language as nl
 import nki.isa as nisa
 
 
-# affine_overwrite with a sequential_range: its iterations run in order, so this is meant
-# to be race free.
+# affine_overwrite with a sequential_range: its iterations run in order, but nothing
+# reads the tile between rewrites: a race under DataFlowOnly, race free if the compiler
+# orders write-after-write.
 @nki.jit
 def kernel(a, out):
     assert a.shape == (2, 4)

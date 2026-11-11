@@ -60,8 +60,8 @@ fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
-// The race fixtures in `fixtures/races/`, each a kernel meant to race beside its ordered
-// twin; until NKI runs record an event graph they are checked in program order only.
+// The race fixtures in `fixtures/races/` run in program order; `volta_pipeline`'s
+// `trainium_graph_tests.rs` checks their event graphs' races.
 #[test]
 fn the_race_fixtures_parse_lower_and_run_in_program_order() {
     let rows = |count: u64| [("a", [count, 4]), ("out", [count - 1, 4])];

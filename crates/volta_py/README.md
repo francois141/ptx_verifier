@@ -28,7 +28,7 @@ assert v.equivalent and v.mismatches == []
   returns a `LeanExtraction` with `lean`, `statements`, `isa` and `race_verified`.
   Detected races raise `DataRaceError`, deadlocks raise `DeadlockError`, and other
   failed or incomplete graph checks raise `VoltaError` before any module is returned.
-  AMD and Trainium have no graph checks and return `race_verified=None`.
+  A kernel whose run records no graph returns `race_verified=None`.
   The propositions still need proofs. This replaces `solve(..., solver="lean")`.
 - `config.rs`: Python classes that wrap the Rust config types one to one
   (`Config`, `ArrayDef`, `ArrayKind`, `Param`), instead of the CLI's string

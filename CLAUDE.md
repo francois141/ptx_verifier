@@ -49,7 +49,7 @@ volta_equivalence  → volta_expr (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
 volta_amd_analysis → volta_expr (+ dev: volta_spec)
-volta_trainium_analysis → volta_expr
+volta_trainium_analysis → volta_graph, volta_expr
 volta_graph_check  → volta_graph
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -648,10 +648,20 @@ tensor, a `Location` and merged runs. Placed tiles share their memory's location
 A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
 snapshot them, as do those of `placed_tiles`, `access_patterns`, `indirect` and
 `loop_origins`.
-`tests/fixtures/races/` holds kernels meant to race (R0 `back_to_back_dmas`; R1
-`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`)
-beside `sequential_range` twins, each naming its intended verdict; until NKI runs record
-a graph, one test runs them in program order.
+`record_graph(kernel, policy)` (`eval/record.rs`) is the kernel's event graph: a graph
+thread per instruction, its `footprints` as accesses (an accumulation a read then a
+write; each `Location` a disjoint range, HBM in `Global`, SBUF and PSUM in `Shared`), and
+a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler orders two
+instructions. The docs say only that it synchronizes "based on data dependencies", so
+the one policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrderOnly`), is the most
+conservative: an instruction follows the latest earlier writer of each location it
+reads, unless they are in different iterations of one `affine_range`; write-after-write,
+write-after-read and reductions across `affine_range` iterations race.
+`tests/fixtures/races/` holds kernels that race under it (R0 `back_to_back_dmas`; R1
+`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`;
+the `sequential_range` twins, which rewrite a tile without reading it between), each
+naming its verdict; `kernels.rs` runs them in program order, `volta_pipeline`'s
+`trainium_graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
@@ -887,7 +897,7 @@ claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
 and every kernel `Verified` (a kernel whose interpreter records no graph,
-`GraphBranch::NotRecorded`, as NKI's, is at best UNKNOWN); any refutation, failed check
+`GraphBranch::NotRecorded`, is at best UNKNOWN); any refutation, failed check
 or deadlock is REJECT; anything else is UNKNOWN. Tests:
 `aggregation_tests.rs` (real kernels through both branches),
 `architecture_tests.rs` (the stage/branch boundaries),
@@ -898,8 +908,9 @@ or change the softmax row width). CK attention checks two batches and two heads 
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
-`trainium_equivalence_tests.rs` checks that an NKI kernel proved equal to its spec is
-UNKNOWN through `solve` and `decide` (no graph recorded), and checks the NKI `matmul`, 
+`trainium_equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
+graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrderOnly`, and
+that `races/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
@@ -933,7 +944,11 @@ call's `contents`, against `tensor_indirection.spec` (an index array) at its dri
 128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
 against one moved offset and the ungathered `data[:, i]`.
 The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
-checks LDS reuse within workgroup 0, including pending-read races. `just amd` and
+checks LDS reuse within workgroup 0, including pending-read races. `trainium_graph_tests.rs`
+checks NKI graphs under `DataFlowOnly`: fixtures written once or rewritten only by their
+readers and the attention samples v1 to v8a verify; each race fixture fails
+`MemoryConflict` with exactly its expected instruction pairs; v10 (PSUM banks reused), the
+tiled matmul tutorial and mamba (accumulating across `affine_range`) race. `just amd` and
 `just trainium` run them alongside the analysis crate's snapshot tests.
 
 ### End-to-end tests (`tests/`)
