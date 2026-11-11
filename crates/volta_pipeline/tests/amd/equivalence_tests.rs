@@ -16,8 +16,9 @@ use common::amd::{
     AmdChecked, AvgPool2d, CK_AVGPOOL2D_KERNEL, CK_FMHA_KERNEL, CK_GEMM_KERNEL,
     CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL, FMHA_K_BASE as K_BASE, FMHA_Q_BASE as Q_BASE,
     GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE, amd_fixture,
-    avgpool_arrays, check_amd, check_amd_launch, check_avgpool_launch_file, ck_avgpool2d_kernarg,
-    ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
+    avgpool_arrays, avgpool_launch, check_amd, check_amd_launch, check_launch_file,
+    ck_avgpool2d_kernarg, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays,
+    fmha_launch, gemm_arrays, rmsnorm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
 
@@ -267,6 +268,21 @@ fn amd_ck_fmha_with_wrong_head_stride_is_refuted() {
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a wrong-head read to be refuted, got {verdict:?}"
     );
+}
+
+// Test that both attention launch files match the argument builder for one batch and
+// one head. The negative launch swaps query and key to cause a mismatch with the attention
+// formula.
+#[test]
+fn amd_ck_fmha_launch_files_match_the_argument_builder() {
+    let accepted = fmha_launch(Q_BASE, K_BASE, "volta solve accepts this launch.");
+    check_launch_file("fmha_amd.json", &accepted);
+    let swapped = fmha_launch(
+        K_BASE,
+        Q_BASE,
+        "This launch passes K as the query and Q as the key, so volta solve rejects it.",
+    );
+    check_launch_file("fmha_amd_swapped_qk.json", &swapped);
 }
 
 fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
@@ -635,15 +651,12 @@ fn amd_ck_avgpool2d_launch_files_match_the_argument_builder() {
         right_pad: [1, 1],
         ..unpadded_pool(1, 3, [14, 14], [3, 3], [2, 2])
     };
-    check_avgpool_launch_file(
-        "avgpool2d_amd.json",
-        &padded,
-        "volta solve accepts this launch.",
-    );
-    check_avgpool_launch_file(
-        "avgpool2d_amd_larger_output.json",
+    let accepted = avgpool_launch(&padded, "volta solve accepts this launch.");
+    check_launch_file("avgpool2d_amd.json", &accepted);
+    let rejected = avgpool_launch(
         &larger_output_pool(),
         "CK sizes the output buffer from the input's height and width, five elements, so the \
          kernel drops four of its nine stores and volta solve rejects this launch.",
     );
+    check_launch_file("avgpool2d_amd_larger_output.json", &rejected);
 }

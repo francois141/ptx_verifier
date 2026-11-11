@@ -124,13 +124,18 @@ concluding `Verified` first; CK RMSNorm (`ck_rmsnorm2d`) is checked there and in
 `amd/graph_tests.rs`, without a snapshot of its outputs, and CK average pooling
 (`ck_avgpool2d`) there alone, also without one. `examples/lean/rmsnorm_amd.json`
 launches CK RMSNorm through `volta solve`, listing the fields of CK's by-value argument
-struct as flat parameters, and `avgpool2d_amd.json` launches CK average pooling, listing the
-words of its two by-value tensor descriptors. The AMD tests generate both average-pooling
-launch files from the pooling parameters with `ck_avgpool2d_params`, the list their own
+struct as flat parameters. `fmha_amd.json` launches CK attention over one batch and one head
+the same way, and `avgpool2d_amd.json` launches CK average pooling, listing the words of its
+two by-value tensor descriptors. The AMD tests generate the attention and average-pooling
+launch files from `ck_fmha_params` and `ck_avgpool2d_params`, the labelled lists their own
 argument bytes come from, and fail when a file differs; `VOLTA_BLESS=1` rewrites the files.
-`volta_cli/tests/solve_tests.rs` requires the RMSNorm and `avgpool2d_amd.json` runs to be
-accepted, and `avgpool2d_amd_larger_output.json`, whose 3 x 3 output extends past CK's output
-buffer bound, to be rejected for the four outputs the kernel never writes.
+`volta_cli/tests/solve_tests.rs` requires the RMSNorm, `fmha_amd.json` and
+`avgpool2d_amd.json` runs to be accepted. It requires two launches to be rejected:
+`fmha_amd_swapped_qk.json`, which exchanges the query and key, for outputs that differ from
+the formula, and `avgpool2d_amd_larger_output.json`, whose 3 x 3 output extends past CK's
+output buffer bound, for the four outputs the kernel never writes. Each runs as
+`volta solve crates/volta_pipeline/tests/amd/success/<kernel>.s --config examples/lean/<file>`;
+attention needs `--print-outputs 0`, since each of its output expressions holds a softmax row.
 `amd/grid_tests.rs` compares CK grid outputs with independent
 workgroup runs, checks that their stores do not overlap, and rejects differing control flow.
 Run the kernel and equivalence suites, then the graph and grid suites, from the repository root:

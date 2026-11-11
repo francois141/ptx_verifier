@@ -360,8 +360,160 @@ pub fn ck_gemm_kernarg(a: u64, b: u64, c: u64, dims: [i32; 3]) -> Vec<u8> {
     bytes
 }
 
-/// The `kentry` of the CK attention instance `ck_fmha.hip` compiles: four waves over a 64 x 64
-/// query/key tile.
+/// A named parameter used by the tests and generated launch files.
+#[derive(Clone, Debug)]
+pub struct LaunchParam {
+    pub name: String,
+    pub value: LaunchValue,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LaunchValue {
+    Int(i32),
+    Float(f32),
+    /// The tests use the array's base address. Launch files refer to it by name.
+    Ptr {
+        array: &'static str,
+        base: u64,
+    },
+}
+
+fn param(name: impl Into<String>, value: LaunchValue) -> LaunchParam {
+    LaunchParam {
+        name: name.into(),
+        value,
+    }
+}
+
+/// Encode a null 64-bit pointer as two zero words.
+fn null_pointer(name: &str) -> [LaunchParam; 2] {
+    ["low", "high"].map(|half| {
+        let name = format!("{name} ({half} word, null)");
+        param(name, LaunchValue::Int(0))
+    })
+}
+
+/// Pack parameters using the AMD frontend's layout. Align each value to its size.
+fn kernarg_bytes(params: &[LaunchParam]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for param in params {
+        let value = match param.value {
+            LaunchValue::Int(value) => value.to_le_bytes().to_vec(),
+            LaunchValue::Float(value) => value.to_le_bytes().to_vec(),
+            LaunchValue::Ptr { base, .. } => base.to_le_bytes().to_vec(),
+        };
+        bytes.resize(bytes.len().next_multiple_of(value.len()), 0);
+        bytes.extend(value);
+    }
+    bytes
+}
+
+/// One fp32 array of a launch file.
+pub struct LaunchArray {
+    pub name: &'static str,
+    pub kind: ArrayKind,
+    pub shape: Vec<i32>,
+}
+
+/// A CK launch for one workgroup of 256 work-items.
+pub struct Launch {
+    pub description: String,
+    /// Select the kernel when the fixture defines more than one.
+    pub kernel: Option<&'static str>,
+    /// Use the frontend's default array addresses, starting at 0x10000. Each base is rounded
+    /// up to a 64 KiB boundary. These addresses must match the pointer values in `params`.
+    pub arrays: Vec<LaunchArray>,
+    pub params: Vec<LaunchParam>,
+    /// The spec filename under `volta_equivalence/tests/specs/`.
+    pub spec: &'static str,
+    pub dims: Vec<(&'static str, u64)>,
+}
+
+impl Launch {
+    /// Render JSON with one array and one parameter per line.
+    pub fn render(&self) -> String {
+        let description = format!(
+            "{} volta_pipeline's AMD tests generate this file; VOLTA_BLESS=1 rewrites it",
+            self.description
+        );
+        let mut text = String::new();
+        writeln!(text, "{{").unwrap();
+        writeln!(text, r#"  "description": {description:?},"#).unwrap();
+        if let Some(kernel) = self.kernel {
+            writeln!(text, r#"  "kernel": "{kernel}","#).unwrap();
+        }
+        // Omitting the grid selects one workgroup. The AMD frontend runs workgroup 0.
+        writeln!(text, r#"  "block": 256,"#).unwrap();
+
+        // Align array names and kinds to keep the JSON readable.
+        writeln!(text, r#"  "arrays": ["#).unwrap();
+        let name_width = self.arrays.iter().map(|a| a.name.len()).max().unwrap_or(0) + 3;
+        for (position, array) in self.arrays.iter().enumerate() {
+            let name = format!(r#""{}","#, array.name);
+            let kind = match array.kind {
+                ArrayKind::Input => r#""in","#,
+                ArrayKind::Output(_) => r#""out","#,
+            };
+            let shape = &array.shape;
+            let comma = if position + 1 < self.arrays.len() {
+                ","
+            } else {
+                ""
+            };
+            let fields = format!(r#""name": {name:<name_width$} "kind": {kind:<6} "dtype": "f32""#);
+            writeln!(text, r#"    {{{fields}, "shape": {shape:?}}}{comma}"#).unwrap();
+        }
+        writeln!(text, "  ],").unwrap();
+
+        writeln!(text, r#"  "params": ["#).unwrap();
+        for (position, param) in self.params.iter().enumerate() {
+            let value = match param.value {
+                LaunchValue::Int(value) => format!(r#""int": {value}"#),
+                // Preserve the exact f32 value when the JSON reader parses it as f64.
+                LaunchValue::Float(value) => format!(r#""float": {:?}"#, f64::from(value)),
+                LaunchValue::Ptr { array, .. } => format!(r#""ptr": "{array}""#),
+            };
+            let comma = if position + 1 < self.params.len() {
+                ","
+            } else {
+                ""
+            };
+            writeln!(text, r#"    {{"name": {:?}, {value}}}{comma}"#, param.name).unwrap();
+        }
+        writeln!(text, "  ],").unwrap();
+
+        let specs = "../../crates/volta_equivalence/tests/specs";
+        writeln!(text, r#"  "spec": "{specs}/{}","#, self.spec).unwrap();
+        let dims: Vec<String> = self
+            .dims
+            .iter()
+            .map(|(name, value)| format!(r#""{name}": {value}"#))
+            .collect();
+        writeln!(text, r#"  "dims": {{{}}}"#, dims.join(", ")).unwrap();
+        writeln!(text, "}}").unwrap();
+        text
+    }
+}
+
+/// Check the generated launch against `examples/lean/<file>`.
+/// `VOLTA_BLESS=1` updates the file instead.
+pub fn check_launch_file(file: &str, launch: &Launch) {
+    let text = launch.render();
+    // Validate the generated JSON before comparing or saving it.
+    // Rust debug escaping can produce strings that JSON rejects.
+    if let Err(error) = volta_ptx_analysis::LaunchFile::from_json(&text) {
+        panic!("{file}: the generated launch file does not load: {error}");
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/lean")
+        .join(file);
+    if let Err(error) = expect_file(&path, &text) {
+        panic!("{file}: {error}");
+    }
+}
+
+/// Entry point compiled from `ck_fmha.hip`.
+/// The kernel uses four waves for a 64 x 64 query/key tile.
 pub const CK_FMHA_KERNEL: &str = concat!(
     "_ZN7ck_tile6kentryINS_8gfx950_tELi3ENS_13FmhaFwdKernelINS_23BlockFmhaPipelineQRKSVSINS_2",
     "4BlockFmhaPipelineProblemIffffffhffffNS_13TileFmhaShapeINS_8sequenceIJLi64ELi64ELi32ELi6",
@@ -394,30 +546,98 @@ pub fn fmha_arrays(len: u64) -> [ArrayDef; 4] {
     })
 }
 
-/// CK's arguments for contiguous [batch, head, sequence, dimension] tensors, 64 x 64 per head.
+/// A pointer parameter to the attention test array at `base`.
+fn fmha_pointer(base: u64) -> LaunchValue {
+    let array = match base {
+        FMHA_Q_BASE => "Q",
+        FMHA_K_BASE => "K",
+        FMHA_V_BASE => "V",
+        FMHA_O_BASE => "O",
+        _ => panic!("no attention test array at {base:#x}"),
+    };
+    LaunchValue::Ptr { array, base }
+}
+
+/// CK attention arguments for contiguous [batch, head, sequence, dimension] tensors.
+/// Each head is 64 x 64. `q` and `k` select the query and key arrays.
+pub fn ck_fmha_params(q: u64, k: u64, heads: i32) -> Vec<LaunchParam> {
+    let int = |name: String, value| param(name, LaunchValue::Int(value));
+    let tensors = ["q", "k", "v", "o"];
+    let mut params = vec![
+        param("q_ptr", fmha_pointer(q)),
+        param("k_ptr", fmha_pointer(k)),
+        param("v_ptr", fmha_pointer(FMHA_V_BASE)),
+        param("o_ptr", fmha_pointer(FMHA_O_BASE)),
+    ];
+    // A null sink pointer disables the optional sink.
+    params.extend(null_pointer("sink_ptr"));
+    for (name, value) in [
+        ("seqlen_q", 64),
+        ("seqlen_k", 64),
+        ("hdim_q", 64),
+        ("hdim_v", 64),
+        ("num_head_q", heads),
+        ("nhead_ratio_qk", 1),
+    ] {
+        params.push(int(name.into(), value));
+    }
+    // The kernel uses exp2, so multiply the formula's 1 / 8 scale by log2(e).
+    let scale = LaunchValue::Float(std::f32::consts::LOG2_E / 8.0);
+    params.push(param("scale_s", scale));
+    // Store row and head strides in elements.
+    params.extend(tensors.map(|tensor| int(format!("stride_{tensor}"), 64)));
+    params.extend(tensors.map(|tensor| int(format!("nhead_stride_{tensor}"), 4096)));
+    params.push(int("num_head_q_total".into(), 0));
+    params.push(int("head_start".into(), 0));
+    // Each batch contains all heads.
+    params.extend(tensors.map(|tensor| int(format!("batch_stride_{tensor}"), heads * 4096)));
+    // Align the cumulative sequence-length pointers and set them to null.
+    params.push(int("padding".into(), 0));
+    params.extend(null_pointer("cu_seqlen_q_ptr"));
+    params.extend(null_pointer("cu_seqlen_k_ptr"));
+    params
+}
+
+/// Pack CK attention's named parameters into kernel argument bytes.
 pub fn ck_fmha_kernarg(q: u64, k: u64, heads: i32) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    // The tensors, then a null sink pointer, which disables the optional sink.
-    for pointer in [q, k, FMHA_V_BASE, FMHA_O_BASE, 0] {
-        bytes.extend(pointer.to_le_bytes());
-    }
-    // seqlen_q, seqlen_k, hdim_q, hdim_v, num_head_q and nhead_ratio_qk.
-    for field in [64_i32, 64, 64, 64, heads, 1] {
-        bytes.extend(field.to_le_bytes());
-    }
-    // The fast-exp2 build takes the host's scale times log2(e), here for the formula's 1 / 8.
-    bytes.extend((std::f32::consts::LOG2_E / 8.0).to_le_bytes());
-    // Row and head strides of Q, K, V and O, then num_head_q_total and head_start.
-    for field in [64_i32, 64, 64, 64, 4096, 4096, 4096, 4096, 0, 0] {
-        bytes.extend(field.to_le_bytes());
-    }
-    // Each batch contains all heads, with strides measured in elements.
-    for _ in 0..4 {
-        bytes.extend((heads * 4096).to_le_bytes());
-    }
-    // Padding, then null cumulative sequence length pointers.
-    bytes.resize(144, 0);
+    let bytes = kernarg_bytes(&ck_fmha_params(q, k, heads));
+    assert_eq!(bytes.len(), 144, "the kernel's argument size");
     bytes
+}
+
+/// Create a `volta solve` launch for one batch and one head.
+/// `q` and `k` select the query and key arrays.
+pub fn fmha_launch(q: u64, k: u64, note: &str) -> Launch {
+    let input = |name| LaunchArray {
+        name,
+        kind: ArrayKind::Input,
+        shape: vec![1, 1, 64, 64],
+    };
+    let output = LaunchArray {
+        name: "O",
+        kind: ArrayKind::Output(OutputType::F32),
+        shape: vec![64, 64],
+    };
+    let description = format!(
+        "CK forward attention over one batch and one head of 64 x 64 fp32 tensors, in one \
+         workgroup of four waves, against softmax(Q K^T / 8) V. The parameters are the fields \
+         of CK's by-value FmhaFwdBatchModeKargs. {note}"
+    );
+    Launch {
+        description,
+        kernel: Some(CK_FMHA_KERNEL),
+        arrays: vec![input("Q"), input("K"), input("V"), output],
+        params: ck_fmha_params(q, k, 1),
+        spec: "attention_batch_head.spec",
+        dims: vec![
+            ("B", 1),
+            ("G", 1),
+            ("N", 64),
+            ("H", 64),
+            ("Batch", 0),
+            ("Head", 0),
+        ],
+    }
 }
 
 /// The `kentry` of the CK RMSNorm instance `ck_rmsnorm2d.hip` compiles: four waves normalizing
@@ -588,31 +808,6 @@ fn ck_magic_division(divisor: i32) -> [i32; 2] {
     [multiplier as u32 as i32, shift as i32]
 }
 
-/// One parameter of a launch file: a label for the reader and its value.
-#[derive(Clone, Debug)]
-pub struct LaunchParam {
-    pub name: String,
-    pub value: LaunchValue,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum LaunchValue {
-    Int(i32),
-    Float(f32),
-    /// The base address of a test array, which a launch file gives by the array's name.
-    Ptr {
-        array: &'static str,
-        base: u64,
-    },
-}
-
-fn param(name: impl Into<String>, value: LaunchValue) -> LaunchParam {
-    LaunchParam {
-        name: name.into(),
-        value,
-    }
-}
-
 /// `values` as fields, each labelled `what` and then its entry of `dims`.
 fn labelled(what: &str, dims: &[&str], values: &[i32]) -> Vec<(String, i32)> {
     dims.iter()
@@ -763,10 +958,7 @@ pub fn ck_avgpool2d_params(pool: &AvgPool2d) -> Vec<LaunchParam> {
     };
     params.push(param("alpha", LaunchValue::Float(1.0)));
     params.push(param("p_in", input));
-    for half in ["low", "high"] {
-        let name = format!("p_in_index ({half} word, null)");
-        params.push(param(name, LaunchValue::Int(0)));
-    }
+    params.extend(null_pointer("p_in_index"));
     // The weight of the output's old values, then the output and a null index output.
     let output = LaunchValue::Ptr {
         array: "output",
@@ -774,34 +966,19 @@ pub fn ck_avgpool2d_params(pool: &AvgPool2d) -> Vec<LaunchParam> {
     };
     params.push(param("beta", LaunchValue::Float(0.0)));
     params.push(param("p_out", output));
-    for half in ["low", "high"] {
-        let name = format!("p_out_index ({half} word, null)");
-        params.push(param(name, LaunchValue::Int(0)));
-    }
+    params.extend(null_pointer("p_out_index"));
     params
 }
 
-/// CK's argument bytes for `pool`: its parameters laid out as the shared AMD frontend lays out
-/// a launch file's, each at the next offset aligned to its size.
+/// Pack CK pooling's named parameters into kernel argument bytes.
 pub fn ck_avgpool2d_kernarg(pool: &AvgPool2d) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for param in ck_avgpool2d_params(pool) {
-        let value = match param.value {
-            LaunchValue::Int(value) => value.to_le_bytes().to_vec(),
-            LaunchValue::Float(value) => value.to_le_bytes().to_vec(),
-            LaunchValue::Ptr { base, .. } => base.to_le_bytes().to_vec(),
-        };
-        bytes.resize(bytes.len().next_multiple_of(value.len()), 0);
-        bytes.extend(value);
-    }
+    let bytes = kernarg_bytes(&ck_avgpool2d_params(pool));
     assert_eq!(bytes.len(), 392, "the kernel's argument size");
     bytes
 }
 
-/// The `volta solve` launch file of `pool`: its arrays, its parameters and the average-pooling
-/// spec at its dims. The description states the launch, then the sentence `note`.
-pub fn avgpool_launch_file(pool: &AvgPool2d, note: &str) -> String {
-    // The file names no grid: it launches one workgroup, the only one `volta solve` runs.
+/// Create a `volta solve` launch for pooling within one workgroup.
+pub fn avgpool_launch(pool: &AvgPool2d, note: &str) -> Launch {
     let outputs = pool.output_len();
     assert!(
         outputs <= 256,
@@ -814,69 +991,25 @@ pub fn avgpool_launch_file(pool: &AvgPool2d, note: &str) -> String {
         "CK average pooling of a {n} x {hi} x {wi} x {c} NHWC fp32 tensor into {ho} x {wo}: \
          windows {:?}, strides {:?}, dilations {:?}, zero padding {:?} before and {:?} after, \
          each as [height, width]. {note} The parameters are the words of CK's two by-value \
-         tensor descriptors, then its other kernel arguments. volta_pipeline's AMD tests \
-         generate this file; VOLTA_BLESS=1 rewrites it",
+         tensor descriptors, then its other kernel arguments.",
         pool.window, pool.stride, pool.dilation, pool.left_pad, pool.right_pad
     );
-
-    let mut text = String::new();
-    writeln!(text, "{{").unwrap();
-    writeln!(text, r#"  "description": {description:?},"#).unwrap();
-    writeln!(text, r#"  "block": 256,"#).unwrap();
-    // The arrays lie in this order at the frontend's default bases, the test addresses.
-    writeln!(text, r#"  "arrays": ["#).unwrap();
-    let input_shape = [n, hi, wi, c];
-    let output_shape = [n, ho, wo, c];
-    writeln!(
-        text,
-        r#"    {{"name": "input",  "kind": "in",  "dtype": "f32", "shape": {input_shape:?}}},"#
-    )
-    .unwrap();
-    writeln!(
-        text,
-        r#"    {{"name": "output", "kind": "out", "dtype": "f32", "shape": {output_shape:?}}}"#
-    )
-    .unwrap();
-    writeln!(text, "  ],").unwrap();
-
-    writeln!(text, r#"  "params": ["#).unwrap();
-    let params = ck_avgpool2d_params(pool);
-    for (position, param) in params.iter().enumerate() {
-        let value = match param.value {
-            LaunchValue::Int(value) => format!(r#""int": {value}"#),
-            LaunchValue::Float(value) => format!(r#""float": {value:?}"#),
-            LaunchValue::Ptr { array, .. } => format!(r#""ptr": "{array}""#),
-        };
-        let comma = if position + 1 < params.len() { "," } else { "" };
-        writeln!(text, r#"    {{"name": {:?}, {value}}}{comma}"#, param.name).unwrap();
-    }
-    writeln!(text, "  ],").unwrap();
-
-    let spec = "../../crates/volta_equivalence/tests/specs/avg_pool2d_nhwc.spec";
-    writeln!(text, r#"  "spec": "{spec}","#).unwrap();
-    let dims: Vec<String> = pool
-        .spec_dims()
-        .iter()
-        .map(|(name, value)| format!(r#""{name}": {value}"#))
-        .collect();
-    writeln!(text, r#"  "dims": {{{}}}"#, dims.join(", ")).unwrap();
-    writeln!(text, "}}").unwrap();
-    text
-}
-
-/// Compare `examples/lean/<file>` with the launch file of `pool` and `note`, or rewrite it
-/// under `VOLTA_BLESS=1`.
-pub fn check_avgpool_launch_file(file: &str, pool: &AvgPool2d, note: &str) {
-    let text = avgpool_launch_file(pool, note);
-    // The launch-file reader must load the text before it is compared or written: the
-    // renderer escapes strings as Rust does, which is JSON only for plain text.
-    if let Err(error) = volta_ptx_analysis::LaunchFile::from_json(&text) {
-        panic!("{file}: the generated launch file does not load: {error}");
-    }
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/lean")
-        .join(file);
-    if let Err(error) = expect_file(&path, &text) {
-        panic!("{file}: {error}");
+    let input = LaunchArray {
+        name: "input",
+        kind: ArrayKind::Input,
+        shape: vec![n, hi, wi, c],
+    };
+    let output = LaunchArray {
+        name: "output",
+        kind: ArrayKind::Output(OutputType::F32),
+        shape: vec![n, ho, wo, c],
+    };
+    Launch {
+        description,
+        kernel: None,
+        arrays: vec![input, output],
+        params: ck_avgpool2d_params(pool),
+        spec: "avg_pool2d_nhwc.spec",
+        dims: pool.spec_dims().to_vec(),
     }
 }

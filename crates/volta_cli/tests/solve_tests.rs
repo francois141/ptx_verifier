@@ -55,6 +55,39 @@ fn solves_ck_rmsnorm_from_its_launch_file() {
     );
 }
 
+// Test that the attention launch passes all graph checks and proves all 4,096 outputs.
+#[test]
+fn solves_ck_fmha_from_its_launch_file() {
+    check_solve(
+        "ck_fmha.s",
+        "fmha_amd.json",
+        // Each output expression holds a whole softmax row, so none is printed.
+        &["--print-outputs", "0"],
+        0,
+        &[
+            "kernel: every graph check passed",
+            "equivalence: all 4096 compared elements proved equivalent",
+            "VERDICT: ACCEPT",
+        ],
+    );
+}
+
+// Test that swapping query and key is rejected with a numeric counterexample.
+#[test]
+fn rejects_ck_fmha_launch_with_swapped_query_and_key() {
+    check_solve(
+        "ck_fmha.s",
+        "fmha_amd_swapped_qk.json",
+        // The first output row is enough to refute the launch.
+        &["--print-outputs", "0", "--sample", "64"],
+        1,
+        &[
+            "VERDICT: REJECT",
+            "element(s) refuted by a numeric counterexample",
+        ],
+    );
+}
+
 // Test that CK average pooling with 3 x 3 windows over a padded 14 x 14 input is accepted:
 // every graph check passes and all 147 outputs are proved equivalent to the spec.
 #[test]
