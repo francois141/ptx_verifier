@@ -1,6 +1,7 @@
 //! A fixture's kernel, checked against its expected renderings beside `tests/fixtures/<name>.py`:
-//! `<name>.ast` and `<name>.ir` the parsed and lowered kernel as `Display` renders them, and
-//! `<name>.out` its run's written elements. `VOLTA_BLESS=1` rewrites them, never `<name>.expected`:
+//! `<name>.ast` and `<name>.ir` the parsed and lowered kernel as `Display` renders them,
+//! `<name>.out` its run's written elements, and for `FOOTPRINTS` fixtures `<name>.footprints`
+//! each instruction's accesses. `VOLTA_BLESS=1` rewrites them, never `<name>.expected`:
 //! the written elements derived from the kernel's math, not from a run.
 
 use std::fmt::Write;
@@ -9,7 +10,22 @@ use std::path::{Path, PathBuf};
 use volta_trainium_analysis::LoweredKernel;
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel_for_call};
-use volta_trainium_analysis::{evaluate, lower_kernel};
+use volta_trainium_analysis::{
+    Access, Location, Mode, PARTITION_STRIDE, evaluate, footprints, lower_kernel,
+};
+
+/// The fixtures whose footprints are snapshotted, one per kind of location (placed tiles,
+/// access patterns, gathers, loops).
+const FOOTPRINTS: &[&str] = &[
+    "placed_tiles",
+    "access_patterns",
+    "indirect",
+    "loop_origins",
+];
+
+fn snapshots_footprints(name: &str) -> bool {
+    FOOTPRINTS.contains(&name)
+}
 
 /// Parse, lower and run kernel `kernel` of `tests/fixtures/<name>.py` for a call with
 /// parameter `shapes`, comparing each stage's result with its file; `.out` holds one
@@ -27,6 +43,12 @@ pub fn check_importing(name: &str, kernel: &str, modules: &[&str], shapes: &[(&s
 pub fn check_call(name: &str, kernel: &str, modules: &[&str], call: &KernelCall) {
     let fixture = fixtures().join(name);
     let (_, lowered) = lower_call(name, kernel, modules, call);
+    if snapshots_footprints(name) {
+        compare(
+            fixture.with_extension("footprints"),
+            render_footprints(&lowered),
+        );
+    }
 
     let outputs = evaluate(&lowered).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut rendered = String::new();
@@ -84,6 +106,41 @@ fn lower_call(
     compare(base.with_extension("ast"), parsed.to_string());
     compare(base.with_extension("ir"), lowered.to_string());
     (parsed, lowered)
+}
+
+/// One line per instruction: each access's mode, tensor and runs, a placed tile's as
+/// `p<partition>:<bytes>`, any other's as element offsets.
+fn render_footprints(kernel: &LoweredKernel) -> String {
+    let mut out = String::new();
+    for (instr, accesses) in footprints(kernel).iter() {
+        let rendered: Vec<String> = accesses
+            .iter()
+            .map(|access: &Access| {
+                let mode = match access.mode {
+                    Mode::Read => "read",
+                    Mode::Write => "write",
+                    Mode::Accumulate => "accumulate",
+                };
+                let runs: Vec<String> = access
+                    .runs
+                    .iter()
+                    .map(|run| match access.location {
+                        Location::Placed(_) => format!(
+                            "p{}:{}..{}",
+                            run.start / PARTITION_STRIDE,
+                            run.start % PARTITION_STRIDE,
+                            run.end - run.start / PARTITION_STRIDE * PARTITION_STRIDE
+                        ),
+                        Location::Elements(_) => format!("{}..{}", run.start, run.end),
+                    })
+                    .collect();
+                let name = &kernel.tensors[access.tensor].name;
+                format!("{mode} {name}[{}]", runs.join(", "))
+            })
+            .collect();
+        writeln!(out, "{}: {}", instr.0, rendered.join("; ")).unwrap();
+    }
+    out
 }
 
 /// The source of `tests/fixtures/<name>.py`.

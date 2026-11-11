@@ -636,6 +636,12 @@ and whether `nl.no_reorder()` encloses it (`Reordering`), rendered after it in `
 and `.ir`; `ir::Mover` tells a DMA copy or transpose (`.ir`'s `dma`, `dma_transpose`)
 from a compute engine's (`mov`, `transpose`). `tests/fixtures/loop_origins.py` covers
 every loop kind, an inner loop entered twice and `no_reorder` across a helper call.
+`footprints(kernel)` (`eval/footprint.rs`) gives each instruction's `Access`es, reads
+then writes: a `Mode` (`Read`, `Write`, `Accumulate` for an adding `nc_matmul`), its
+tensor, a `Location` and merged runs. Placed tiles share their memory's location, by byte
+(`partition * PARTITION_STRIDE + byte`); any other tensor is its own, by element offset.
+A gather reads its whole `data` and `index` regions. The `.footprints` of
+`placed_tiles`, `access_patterns`, `indirect` and `loop_origins` snapshot them.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
