@@ -3,7 +3,7 @@
 //! IndexExpr}`.
 
 use crate::spec::SpecExpr;
-use volta_common::Span;
+use volta_common::span::Span;
 
 /// A `dim NAME;` declaration: a named integer bound, resolved to a
 /// concrete `u64` at instantiation time (e.g. `--dim K=4096`).

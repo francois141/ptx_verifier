@@ -5,7 +5,8 @@ that decide whether the recorded candidate execution is free of data races,
 proxy and tensor-ordering hazards, and synchronization misuse. Seven are the
 algorithms of the Volta v2 design's data-race freedom check (Algorithms 1-7);
 three more enforce PTX ISA rules the design leaves out. The crate depends only
-on `volta_graph`. It never runs symbolic execution or equivalence checking.
+on `volta_graph` (and `volta_common`, for its logging macros). It never runs
+symbolic execution or equivalence checking.
 
 ## High-level logic
 
@@ -147,5 +148,5 @@ Prerequisites (`Property::prerequisites`): 1, 2, 3 and 10 need nothing; 4 and
 ## Tests
 
 `tests/` holds graph-level unit tests built with `GraphBuilder`. End-to-end PTX
-tests for each check live in `volta_pipeline/tests/<check>_tests.rs` and assert on
+tests for each check live in `volta_pipeline/tests/ptx/<check>_tests.rs` and assert on
 the check's typed witness.

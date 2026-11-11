@@ -26,11 +26,11 @@ amd.add_param(volta.Param.array_ptr("a"))
 amd.add_param(volta.Param.array_ptr("b"))
 amd.add_param(volta.Param.array_ptr("out"))
 
-result = volta.solve("crates/volta_amd_analysis/tests/fixtures/add.s", amd, spec=add_spec, dims={"N": 64})
+result = volta.solve("crates/volta_pipeline/tests/amd/success/add.s", amd, spec=add_spec, dims={"N": 64})
 print("AMD add:", result.verdict)
 
 # AWS Trainium NKI: the kernel's asserts give its 16 x 16 shapes, so it needs no config.
-result = volta.solve("crates/volta_trainium_analysis/tests/fixtures/add.py", spec=add_spec, dims={"N": 256})
+result = volta.solve("crates/volta_pipeline/tests/trainium/success/add.py", spec=add_spec, dims={"N": 256})
 print("NKI add:", result.verdict)
 
 # AMD sigmoid: each output within 1/1000 of the formula, as Lean propositions to prove.
@@ -43,7 +43,7 @@ sigmoid.add_param(volta.Param.array_ptr("a"))
 sigmoid.add_param(volta.Param.array_ptr("out"))
 
 result = volta.extract_lean(
-    "crates/volta_amd_analysis/tests/fixtures/sigmoid.s",
+    "crates/volta_pipeline/tests/amd/success/sigmoid.s",
     sigmoid,
     spec=sigmoid_spec,
     dims={"N": 64},

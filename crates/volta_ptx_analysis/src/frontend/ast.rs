@@ -7,7 +7,7 @@ use crate::frontend::instr::InstrKind;
 use crate::frontend::lex::DottedIdent;
 
 // Re-export Span from volta_common
-pub use volta_common::Span;
+pub use volta_common::span::Span;
 
 // =============================================================================
 // FromAscii Trait

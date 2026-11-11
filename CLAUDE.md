@@ -44,13 +44,13 @@ Direct dependencies of each crate:
 ```
 volta_cli          → volta_pipeline, volta_equivalence, volta_ptx_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
 volta_viz          → volta_graph_check, volta_graph, volta_expr
-volta_pipeline     → volta_ptx_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_expr (+ dev: volta_amd_analysis, volta_trainium_analysis, volta_spec, volta_viz)
-volta_equivalence  → volta_expr (+ dev: volta_spec)
+volta_pipeline     → volta_ptx_analysis, volta_amd_analysis, volta_trainium_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_spec, volta_expr, volta_common (+ dev: volta_viz)
+volta_equivalence  → volta_expr, volta_common (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
-volta_amd_analysis → volta_expr (+ dev: volta_spec)
+volta_amd_analysis → volta_graph, volta_expr
 volta_trainium_analysis → volta_graph, volta_expr
-volta_graph_check  → volta_graph
+volta_graph_check  → volta_graph, volta_common
 volta_graph        → volta_expr
 volta_expr         → (nothing)
 volta_common       → (nothing)
@@ -62,27 +62,33 @@ event graph (`volta_graph`) is the analysis's only contract with graph
 verification (`volta_graph_check`). The analysis runs no checker and no
 equivalence and depends on neither branch; only `volta_pipeline` composes the
 stage with the branches, and the two branches never depend on each other or on
-the stage (`volta_pipeline/tests/architecture_tests.rs` enforces both). Tests follow the
+the stage. Tests follow the
 split: `volta_equivalence`'s are spec-to-spec (`tests/spec_equivalence_tests.rs`
 over the `.spec` files in `tests/specs/`, and `tests/spec_identity_tests.rs`:
 one test per `tests/specs/equivalent/<case>_{lhs,rhs}.spec` identity;
-dev-dependency `volta_spec` only), while every PTX-driven test is end-to-end in
-`volta_pipeline/tests/` (kernels under `tests/ptx/`): `common::check` runs
+dev-dependency `volta_spec` only), while every kernel-driven test is end-to-end in
+`volta_pipeline/tests/`, one test target per ISA (`ptx_tests`, `amd_tests`,
+`trainium_tests`: `tests/<isa>/main.rs`, its suites as modules beside its kernels, each
+kernel in its outcome folder: `success/`, `check_failure/` (a graph check rejects it),
+`execution_error/` (lowering or execution rejects it, or it deadlocks), and PTX's
+`negative_equivalence/` and `soundness/`): `common::check` runs
 `volta_pipeline::verify_kernel`, race and deadlock tests assert on the failed
 property's typed witness, and every kernel run expected to complete must
 conclude `Verified` (not merely unrejected) before its symbolic outputs are
 compared with the kernel's `.out` file
-(`VOLTA_BLESS=1` rewrites them). `volta_ptx_analysis` keeps only its inline unit
+(`VOLTA_BLESS=1` rewrites them). The analysis crates keep only their inline unit
 tests of internals.
 
 ## Crate: volta_common
 
 **Path**: `crates/volta_common/`
 
-- `Span` - Source location (low + high byte offset)
+- `span::Span` - Source location (`start..end` byte offsets, built with `Span::new`)
 - `FileCache` - Caches file content to make sure we always use a consistent version of each file
 - `Locate<E>` - Error wrapper with optional location info (span + file path)
 - `report_error` - Produces an error message from a title, message, span, and file content. Extracts out and includes the code snippet at the given span in the given file content
+- `report::position` - A byte offset's 1-based line, column (in characters) and line text: `report_error`'s `path:line:column` header and `volta_py`'s error messages
+- `logging` - The `debug`/`info`/`trace`/`warn` macros every crate logs through: `log`'s own under the `logging` feature, else a stand-in that compiles its arguments in a dead branch, so log-only values still count as used
 - `run_log::RunLog` - Per-invocation log file (`<unix-seconds>-<pid>-<command>.log` under `--log-dir`, default `volta-logs/`), written by the `volta` binary; `tee` mirrors an `env_logger` target into it under its `logging` feature
 
 The pattern is to create an error kind type, and then an alias for `Locate` of that error kind. `locate_span` can be used to tag a `Locate` with a span if it does not already have one. `locate_path` can be used to tag a `Locate` with a path if it does not already have one.
@@ -259,7 +265,7 @@ reach. Other crates import from the root (`volta_ptx_analysis::AnalysisConfig`).
 
 The one public module (`volta_ptx_analysis::frontend::{parse, ast, ...}`): PTX
 text to a typed AST. It imports nothing else of the crate, nor `volta_expr`
-or `volta_graph` (`architecture_tests.rs` enforces it).
+or `volta_graph`.
 
 #### Lexer (`lex.rs`)
 
@@ -388,11 +394,11 @@ racing another thread's use of the object keeps its witness.
 - `write_op_counts(out, label, counts)` - the profile-table formatter `volta`
   prints
 
-### Logging (`logging.rs`)
+### Logging (`volta_common::logging`)
 
 Gated by the `logging` feature (`volta_ptx_analysis`, `volta_equivalence`,
-`volta_graph_check` and `volta_pipeline`, all passed through by `volta_cli`);
-without it the macros are no-op stubs. Wired at the decision points:
+`volta_graph_check` and `volta_pipeline`, each turning on `volta_common/logging`,
+all passed through by `volta_cli`); without it the macros log nothing. Wired at the decision points:
 barrier/warp-group fires (trace), deadlock (warn), launch config and
 completion stats (info) in `volta_ptx_analysis`; VC session recycles (info) and
 fraction-equality escalation (debug) in `volta_equivalence`; the stages at
@@ -433,8 +439,13 @@ are read-only and outputs cannot be loaded. Global and buffer stores interpret
 `F32` outputs as mathematical reals and require concrete words for `U32` outputs;
 invalid values abort at the store. `analyze` returns a completed run's written
 output elements as `SymbolicOutputs` and none for an aborted run.
-Unsupported instructions return `EvalError`. All lanes stay active; EXEC-changing
-instructions are rejected. Integer and bitwise operations require concrete words because
+Unsupported instructions return `EvalError`. `WaveState::exec` is the wave's concrete mask of
+active lanes, the same in every workgroup. A 64-bit scalar move or operation may write it,
+as may the `saveexec` and `wrexec` operations (`ExecOp64`, sharing `scalar_op64`); `v_cmpx`
+is rejected. Vector, memory and LDS instructions run in
+the active lanes only, a comparison or carry mask has a clear bit for each inactive lane, and
+a DS read's destinations complete only in the lanes that ran it.
+Integer and bitwise operations require concrete words because
 symbolic values are floats and do not represent bit patterns, so integer arithmetic and
 sign-mask tricks on symbolic values are rejected; floating-point arithmetic and transfers,
 including lane exchanges, remain supported. A select between two different constant words
@@ -449,15 +460,18 @@ each register holds one real expression, and either selector reads the same inli
 An f64 register pair holds one real expression or two concrete words that encode one. Reading
 a half as a word, or a pair whose halves no longer match, is rejected; conversions keep the
 exact real. F64 arithmetic, comparisons and conversions share one source reader and modifiers.
+F32 conversions read a concrete word as a signed or an unsigned integer, and truncate a concrete
+float toward zero, clamping it to the i32 or u32 range.
 Packed moves select one word from each source and reuse the 64-bit move execution,
 preserving concrete words and symbolic expressions unchanged. An inline constant must use the
 low-word selector, because the high word of its 64-bit source is not established.
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks (`SymbolicSgpr`).
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
-Kernel tests in `tests/kernels.rs` run each assembly fixture
-`tests/fixtures/<name>.s` through `analyze` (`tests/common::check_run`) and compare
-its symbolic outputs with `tests/fixtures/<name>.out` (`VOLTA_BLESS=1` rewrites it).
+Kernel tests in `volta_pipeline/tests/amd/accepted_tests.rs` run each assembly fixture
+`volta_pipeline/tests/amd/success/<name>.s` through `analyze` (`common::amd::check_run`)
+and, once its graph concludes `Verified`, compare its symbolic outputs with `<name>.out`
+beside it (`VOLTA_BLESS=1` rewrites it).
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
 The `vector_int_ops` fixture checks multiplication, bit counts, 64-bit and packed moves,
 and signed 64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
@@ -466,17 +480,25 @@ The `packed_float_ops` fixture checks paired arithmetic, selectors, negation and
 overlap against independently derived expressions.
 The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, comparisons and
 moves.
-Rejection fixtures assert the specific lowering or execution error instead of
-comparing outputs.
-`tests/lean_tests.rs` writes the sigmoid fixture's outputs against
-`tests/fixtures/sigmoid.spec` (dev-dependency `volta_spec`) as the Lean challenge
+`convert_ops` checks the f32 conversions in both signednesses: words with the sign bit set,
+truncation toward zero, and clamping at each bound of the result's range.
+`exec_ops` checks each kind of instruction under a partial EXEC mask; its other kernels check a
+load that stays pending in lanes another completion skips and rejection of a grid whose
+workgroups differ in EXEC, and `amd/graph_tests.rs` counts its active lanes' LDS accesses.
+`saveexec_ops` checks every `saveexec` and `wrexec` opcode and a compiler-masked branch.
+Rejection tests (`amd/rejected_tests.rs`, over `amd/execution_error/` and the failing
+kernels of mixed `success/` files) assert the specific lowering or execution error instead
+of comparing outputs.
+`volta_pipeline/tests/amd/lean_tests.rs` writes the sigmoid fixture's outputs against
+`amd/success/sigmoid.spec` as the Lean challenge
 `target/lean/sigmoid.lean` (`just extract-lean`): within `1/1000`, since the
 kernel's large-input branch rescales by f32(e^-64), and over the reals the exact equality
 is false there.
 Do not add unit tests or `tests.rs` modules: cover execution behavior
-through compiled fixtures in `tests/kernels.rs`.
+through compiled fixtures in `amd/accepted_tests.rs` and `amd/rejected_tests.rs`.
 See the crate README for ISA references, test commands, and fixture regeneration,
-including the pinned CK Tile forward-attention instance in `ck_fmha.hip`.
+including the pinned CK Tile forward-attention instance in `ck_fmha.hip` and RMSNorm instance
+in `ck_rmsnorm2d.hip`.
 
 ## Crate: volta_trainium_analysis
 
@@ -639,7 +661,7 @@ loop variable keeps its last value). The count is any compile-time integer; a
 execution of a `for`, its `LoopKind`, the index), outermost first across helper calls,
 and whether `nl.no_reorder()` encloses it (`Reordering`), rendered after it in `.ast`
 and `.ir`; `ir::Mover` tells a DMA copy or transpose (`.ir`'s `dma`, `dma_transpose`)
-from a compute engine's (`mov`, `transpose`). `tests/fixtures/loop_origins.py` covers
+from a compute engine's (`mov`, `transpose`). `success/loop_origins.py` covers
 every loop kind, an inner loop entered twice and `no_reorder` across a helper call.
 `footprints(kernel)` (`eval/footprint.rs`) gives each instruction's `Access`es, reads
 then writes: a `Mode` (`Read`, `Write`, `Accumulate` for an adding `nc_matmul`), its
@@ -657,11 +679,11 @@ the one policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrderOnly`), is the most
 conservative: an instruction follows the latest earlier writer of each location it
 reads, unless they are in different iterations of one `affine_range`; write-after-write,
 write-after-read and reductions across `affine_range` iterations race.
-`tests/fixtures/races/` holds kernels that race under it (R0 `back_to_back_dmas`; R1
+`check_failure/` holds kernels that race under it (R0 `back_to_back_dmas`; R1
 `affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`;
 the `sequential_range` twins, which rewrite a tile without reading it between), each
-naming its verdict; `kernels.rs` runs them in program order, `volta_pipeline`'s
-`trainium_graph_tests.rs` checks their conflicting instruction pairs.
+naming its verdict; `trainium/accepted_tests.rs` runs them in program order,
+`trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
@@ -693,27 +715,31 @@ applying any, so overlapping regions of one tile read old values. Region start
 restrictions of the hardware (partition offsets) are not checked. v3 to v8a and v10
 parse, lower and run unmodified at `[128, 512]`.
 
-`tests/fixtures/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
+The fixtures live in `volta_pipeline/tests/trainium/` (paths below are relative to it):
+`success/` for the kernels `trainium/accepted_tests.rs` runs, `check_failure/` for the race
+fixtures `trainium/graph_tests.rs` rejects, `execution_error/` for the `*_errors.py` kernels
+`trainium/rejected_tests.rs` expects to fail.
+`success/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
 (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
-`tests/fixtures/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`
-reading the `nc_matmul`'s PSUM tile directly. `tests/fixtures/rms_norm.py`
+`success/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`
+reading the `nc_matmul`'s PSUM tile directly. `success/rms_norm.py`
 normalizes each partition of a 4 x 8 tensor by `rsqrt(mean(x^2) + eps)` through
 `activation_reduce` and two `tensor_scalar`s, the second broadcasting a
-`[4, 1]` tile. `tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor
+`[4, 1]` tile. `success/tiled_copy.py` copies an 8 x 4 tensor
 through SBUF one `(4, 4)` tile of rows at a time, over an unrolled
-`nl.affine_range(2)`. `tests/fixtures/returned_output.py` multiplies two 2 x 4
+`nl.affine_range(2)`. `success/returned_output.py` multiplies two 2 x 4
 tensors into a `kernel_out` it allocates and returns.
-`tests/fixtures/call_shapes.py` opens like the attention kernels (shape
+`success/call_shapes.py` opens like the attention kernels (shape
 unpacking, an alias, chained and `<=`/`>=` asserts, `nl.tile_size.pmax`) and adds
-2 x 4 tensors one `(rows, cols // 2)` tile at a time; `tests/kernels.rs` passes
-each fixture's call shapes. `tests/fixtures/softmax.py` is `softmax_isa`'s body
-inline over a 2 x 3 tile, checked against `softmax.spec`. `tests/fixtures/matmul.spec` and `gemm_relu.spec` state those
+2 x 4 tensors one `(rows, cols // 2)` tile at a time; `trainium/accepted_tests.rs` passes
+each fixture's call shapes. `success/softmax.py` is `softmax_isa`'s body
+inline over a 2 x 3 tile, checked against `softmax.spec`. `success/matmul.spec` and `gemm_relu.spec` state those
 kernels' math over their own array names (`a_t` being A transposed);
-`volta_pipeline`'s `trainium_equivalence_tests.rs` checks the kernels against them,
+`volta_pipeline`'s `trainium/equivalence_tests.rs` checks the kernels against them,
 and `softmax` against the softmax of `-x` (a reversed `subtract`) as a negative test.
-`tests/fixtures/attention.spec` is the NKI attention samples' reference, their
+`success/attention.spec` is the NKI attention samples' reference, their
 `numpy_attention` in their layout (`q`, `k`, `v` as `[D, N]`, `kernel_out` as `[N, D]`).
-`tests/fixtures/nki_samples/` vendors the samples' `attention_kernels.py` and
+`success/nki_samples/` vendors the samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified (nki-samples `ef43bf3`, MIT-0), and the other
 tutorials' kernel files likewise, each with a `.spec` of its reference
 (`tensor_addition_nki_kernels.py`, `tensor_addition.spec`;
@@ -722,46 +748,46 @@ tutorials' kernel files likewise, each with a `.spec` of its reference
 `average_pool2d_nki_kernels.py`, `average_pool2d.spec`; `mamba_nki_kernels.py`,
 `mamba.spec`, its scan unrolled into causal sums; `tensor_indirection_nki_kernels.py`,
 `tensor_indirection.spec`, its offsets an index array);
-`attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::check_lowering`, no
-`.out`), and `trainium_equivalence_tests.rs` proves v2 equal to `attention.spec`
+`attn_fwd_v2.ast`/`.ir` snapshot v2 at 128 x 128 (`common::trainium::check_lowering`, no
+`.out`), and `trainium/equivalence_tests.rs` proves v2 equal to `attention.spec`
 on its first output row (all 16,384 outputs in an ignored test) and refutes it
 against attention with `q` and `k` swapped; v1 likewise, and v1 against v2 kernel to
-kernel. `tests/fixtures/language_api.py` covers the tile-returning API on 2 x 2
-inputs. `tests/fixtures/accumulate.py` accumulates `matmul.py`'s product over two
+kernel. `success/language_api.py` covers the tile-returning API on 2 x 2
+inputs. `success/accumulate.py` accumulates `matmul.py`'s product over two
 contraction chunks into `nl.zeros` (its `.expected` is `matmul.expected`).
-`tests/fixtures/regions_softmax.py` and `regions_matmul.py` compute `softmax.py`'s
+`success/regions_softmax.py` and `regions_matmul.py` compute `softmax.py`'s
 and `matmul.py`'s math with every operand of every instruction a region of a wider
 tile (their `.expected` files are those fixtures').
-`tests/fixtures/subscripts_softmax.py` and `subscripts_matmul.py` compute the same math
+`success/subscripts_softmax.py` and `subscripts_matmul.py` compute the same math
 through integer and partial subscripts, 3-D tiles and 3-D/4-D HBM tensors, as v3 and v4
 stage theirs (again `softmax.expected` and `matmul.expected`).
-`tests/fixtures/fused_softmax.py` is softmax as v8 fuses it, over two column chunks:
+`success/fused_softmax.py` is softmax as v8 fuses it, over two column chunks:
 `tensor_scalar_reduce` maxima, `tensor_reduce` with `negate=True`, and `activation`
 with a `bias` and a `reset_reduce` sum (a hand-written `.expected`; `volta_pipeline`
 proves it equal to `softmax.spec`).
-`tests/fixtures/pipelined_scale.py` doubles a tensor as v10 schedules its work: an
+`success/pipelined_scale.py` doubles a tensor as v10 schedules its work: an
 allocator class sizing tiles from the call's `bfloat16` dtype, a buffers object, and
 guarded stages software-pipelined over `range(0, count + 2)` in `nl.no_reorder()`
-(`common::check_call`; a hand-written `.expected`).
-`tests/fixtures/placed_tiles.py` is `matmul.py`'s product transposed with every tile
+(`common::trainium::check_call`; a hand-written `.expected`).
+`success/placed_tiles.py` is `matmul.py`'s product transposed with every tile
 placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (so
 `accumulate=False` must overwrite), `engine=` and `dma_transpose` (a hand-written
 `.expected`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
 column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `MixedAllocation`, and a tile past the end of PSUM.
-`tests/fixtures/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
+`success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
 `PatternProblem` a tile or HBM view can hit and a `tensor_reduce` over a leading axis.
-`tests/fixtures/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
+`success/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
 ops reversed, from `1.0`, and applies `activation`'s `scale` (a hand-written `.expected`);
 a test widens its parsed broadcast past its row's shape (`BroadcastShape`).
-`tests/fixtures/indirect.py` gathers three columns, one offset repeated, over two
+`success/indirect.py` gathers three columns, one offset repeated, over two
 16-partition groups on `nisa.engine.scalar` from a call's `contents` (an `.expected`
 computed from `a[p, idx[i]]`); `indirect_errors.py`'s kernels must fail, one per
 `IndirectReadings`/`IndirectOffset` case and lowering's indirection errors.
-`tests/fixtures/helper_call.py` calls
-`helpers.py`'s `row_sums` twice (`common::check_importing`); both modules hold
+`success/helper_call.py` calls
+`helpers.py`'s `row_sums` twice (`common::trainium::check_importing`); both modules hold
 unreached code (a conditional expression, a dict, f-strings) that is never parsed.
 
 ## Crate: volta_graph_check
@@ -775,7 +801,8 @@ module each, each callable on an `EventGraph` in
 isolation with explicitly passed certificates, each with its algorithm and
 contract (PASS/FAIL/UNKNOWN meaning) in its module docs. Every check returns
 `PropertyResult<E, V> = Pass(evidence) | Fail(witnesses) | Unknown(unresolved)`;
-none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
+none turns an unsupported case into `Pass`. Depends only on `volta_graph` (and
+`volta_common`, for its logging macros).
 
 | #  | `Property`             | Algorithm   | Module                                |
 |----|------------------------|-------------|---------------------------------------|
@@ -897,20 +924,22 @@ claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
 and every kernel `Verified` (a kernel whose interpreter records no graph,
-`GraphBranch::NotRecorded`, is at best UNKNOWN); any refutation, failed check
-or deadlock is REJECT; anything else is UNKNOWN. Tests:
-`aggregation_tests.rs` (real kernels through both branches),
-`architecture_tests.rs` (the stage/branch boundaries),
-`amd_equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
+`GraphBranch::NotRecorded`, is at best UNKNOWN); any refutation, failed check or
+deadlock is REJECT; anything else is UNKNOWN. Tests:
+`ptx/aggregation_tests.rs` (real kernels through both branches),
+`amd/equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
 and softmax against their formulas, accounting for CK's column-major B and softmax at
 several workgroup sizes; negative tests swap matmul inputs or attention's query and key,
 or change the softmax row width). CK attention checks two batches and two heads on grid
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
-`trainium_equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
+CK RMSNorm checks every output of both rows of a 2 x 1,024 tensor and of a padded 1,000-element
+row against `row_rms_norm.spec`, and refutes a wrong epsilon; `amd/graph_tests.rs` requires
+exactly one LDS write per wave.
+`trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
 graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrderOnly`, and
-that `races/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
+that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
@@ -943,17 +972,24 @@ its scan restarted each tile; the tensor_indirection tutorial's kernel, its offs
 call's `contents`, against `tensor_indirection.spec` (an index array) at its driver's
 128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
 against one moved offset and the ungathered `data[:, i]`.
-The equivalence tests check functional equivalence only; `amd_graph_tests.rs` separately
-checks LDS reuse within workgroup 0, including pending-read races. `trainium_graph_tests.rs`
-checks NKI graphs under `DataFlowOnly`: fixtures written once or rewritten only by their
-readers and the attention samples v1 to v8a verify; each race fixture fails
-`MemoryConflict` with exactly its expected instruction pairs; v10 (PSUM banks reused), the
-tiled matmul tutorial and mamba (accumulating across `affine_range`) race. `just amd` and
-`just trainium` run them alongside the analysis crate's snapshot tests.
+AMD output checks require the same run's graph to conclude `Verified`: snapshots,
+equivalence comparisons, the Lean challenge, and the grid tests' individual workgroup runs.
+`amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
+to reject a completed kernel with an LDS race. `just amd` runs the accepted, rejected and
+equivalence suites; the full `amd_tests` target also runs graph, grid and Lean tests.
+`trainium/graph_tests.rs` checks NKI graphs under `DataFlowOnly`: fixtures written once or
+rewritten only by their readers and the attention samples v1 to v8a verify; each race
+fixture in `trainium/check_failure/` fails `MemoryConflict` with exactly its expected
+instruction pairs; v10 (PSUM banks reused), the tiled matmul tutorial and mamba
+(accumulating across `affine_range`) race. `just trainium` runs its accepted, rejected and
+equivalence suites.
 
 ### End-to-end tests (`tests/`)
 
-Every PTX-driven test of the workspace. Besides the two above, each suite runs
+Every kernel-driven test of the workspace, in three test targets, `ptx_tests`,
+`amd_tests` and `trainium_tests` (`tests/<isa>/main.rs`, one module per suite). The AMD and
+NKI suites are those above; `common::amd` and `common::trainium` hold their helpers. Each
+PTX suite, a module of `tests/ptx/`, runs
 PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
 `common::run_kernel`):
 
@@ -982,9 +1018,6 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
 - `graph_tests.rs` - the event graph the analysis stage records, no checker.
 - `negative_equivalence_tests.rs` - kernel pairs differing in one semantic
   detail, each `Verified`, must not be proved equivalent.
-- `false_positive_tests.rs` - kernels Volta still verifies although they race or
-  are undefined (`tests/ptx/false_positive/`); each fails until Volta stops
-  concluding `Verified` on it.
 - `soundness_tests.rs` - soundness regressions; the unknown-directive case
   requires a located `InvalidDirective` and verifies empty/known-pragma controls.
   The return case requires a zero-operand arity error for `ret 123;` and
@@ -1001,8 +1034,9 @@ PTX kernels from `tests/ptx/` through `verify_kernel` (`common::check` /
 Every suite reaches the analysis through `common` (`verify`, `analyze_only`,
 `check`, `run_kernel`), whose `parse` returns a `Ptx` (module + source text +
 test file name). With `VOLTA_VIZ_DIR` set, each of them records the run into
-that `volta_viz` store, keyed `<suite>/<test>[~<n>]` (libtest names each test's
-thread after it; `n` counts the test's runs).
+that `volta_viz` store, keyed `<suite>/<test>[~<n>]`, the suite being the ISA and the
+test's module (`ptx_accepted_tests`; libtest names each test's thread after its path; `n`
+counts the test's runs).
 
 ## Crate: volta_equivalence
 
@@ -1012,7 +1046,8 @@ thread after it; `n` counts the test's runs).
 `attention_batch_head.spec` selects one batch/head from global BHSD inputs and returns its local output slice.
 
 Everything after VC extraction: takes two `SymbolicOutputs` and decides them
-element by element. Depends only on `volta_expr`, so it checks expressions
+element by element. Depends only on `volta_expr` (and `volta_common`, for its
+logging macros), so it checks expressions
 from any producer - in memory, from a `.vcdump`, or from `.vexpr` text.
 
 ### Output checking (`check.rs`)

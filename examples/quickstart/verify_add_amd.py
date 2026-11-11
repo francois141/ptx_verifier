@@ -12,7 +12,7 @@ for name, base, kind in (
     config.add_param(volta.Param.array_ptr(name))
 
 result = volta.solve(
-    "crates/volta_amd_analysis/tests/fixtures/add.s",
+    "crates/volta_pipeline/tests/amd/success/add.s",
     config,
     spec=spec,
     dims={"N": size},

@@ -18,7 +18,6 @@ pub mod equivalence;
 pub mod extract;
 pub mod frontend;
 pub mod kernel;
-mod logging;
 pub mod solve;
 
 pub use aggregate::{Decision, GraphBranch, KernelEvidence, Verdict, decide};

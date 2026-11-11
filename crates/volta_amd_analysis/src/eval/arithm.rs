@@ -596,9 +596,17 @@ pub(super) fn evaluate_unary_op(
             let reversed = non_symbolic_word(arena)?.reverse_bits();
             arena.int(i64::from(reversed))
         }
+        UnaryOp::CvtF32I32 => {
+            let value = Real::from_i64(i64::from(non_symbolic_word(arena)? as i32));
+            arena.real(value)
+        }
         UnaryOp::CvtF32U32 => {
             let value = Real::from_i64(i64::from(non_symbolic_word(arena)?));
             arena.real(value)
+        }
+        UnaryOp::CvtI32F32 => {
+            let truncated = truncate_to_i32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
+            arena.int(i64::from(truncated as u32))
         }
         UnaryOp::CvtU32F32 => {
             let truncated = truncate_to_u32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
@@ -617,10 +625,13 @@ pub(super) fn evaluate_unary_op(
 
 fn unary_operand_type(op: UnaryOp) -> OperandType {
     match op {
-        UnaryOp::Mov32 | UnaryOp::Not32 | UnaryOp::BfRev32 | UnaryOp::CvtF32U32 => {
-            OperandType::Word
-        }
-        UnaryOp::CvtU32F32
+        UnaryOp::Mov32
+        | UnaryOp::Not32
+        | UnaryOp::BfRev32
+        | UnaryOp::CvtF32I32
+        | UnaryOp::CvtF32U32 => OperandType::Word,
+        UnaryOp::CvtI32F32
+        | UnaryOp::CvtU32F32
         | UnaryOp::RcpIflagF32
         | UnaryOp::Exp2F32
         | UnaryOp::Log2F32

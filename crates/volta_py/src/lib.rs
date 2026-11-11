@@ -8,6 +8,7 @@ mod analyze;
 mod config;
 mod error;
 mod extract;
+mod logging;
 mod solve;
 mod verify;
 
@@ -16,6 +17,8 @@ use error::{DataRaceError, DeadlockError, VoltaError};
 
 #[pymodule]
 fn volta(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    logging::install();
+
     m.add_class::<ConfigPy>()?;
     m.add_class::<ArrayDefPy>()?;
     m.add_class::<ArrayKindPy>()?;

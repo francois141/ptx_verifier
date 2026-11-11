@@ -343,7 +343,7 @@ impl From<LexerError> for ParseError {
     fn from(e: LexerError) -> Self {
         Locate {
             path: None,
-            span: Some(Span(e.0, e.0 + 1)),
+            span: Some(Span::new(e.0, e.0 + 1)),
             error: ParseErrorKind::LexerError(e),
         }
     }
@@ -363,7 +363,7 @@ impl<'a> Parser<'a> {
     /// Peek at the current token and its span without consuming it.
     fn peek(&mut self) -> Result<Option<(Span, &Token)>, LexerError> {
         match self.lexer.peek() {
-            Some(Ok((start, tok, end))) => Ok(Some((Span(*start, *end), tok))),
+            Some(Ok((start, tok, end))) => Ok(Some((Span::new(*start, *end), tok))),
             Some(Err(e)) => Err(*e),
             None => Ok(None),
         }
@@ -377,7 +377,7 @@ impl<'a> Parser<'a> {
     /// Consume and return the current token with its span.
     fn next(&mut self) -> Result<Option<(Span, Token)>, LexerError> {
         match self.lexer.next() {
-            Some(Ok((start, tok, end))) => Ok(Some((Span(start, end), tok))),
+            Some(Ok((start, tok, end))) => Ok(Some((Span::new(start, end), tok))),
             Some(Err(e)) => Err(e),
             None => Ok(None),
         }
@@ -679,7 +679,7 @@ impl<'a> Parser<'a> {
     /// For top-level declarations that don't support comma-separated names.
     fn parse_var_decl(&mut self, linkage: Linkage) -> Result<VarDecl, ParseError> {
         // Get start span
-        let start = self.peek()?.map(|(s, _)| s.0).unwrap_or(0);
+        let start = self.peek()?.map(|(s, _)| s.start).unwrap_or(0);
 
         // Parse state space
         let (space, space_qualifier) = self.parse_state_space()?;
@@ -700,13 +700,13 @@ impl<'a> Parser<'a> {
         let init = self.parse_initializer()?;
 
         // Get end span from semicolon
-        let end = self.peek()?.map(|(s, _)| s.1).unwrap_or(start);
+        let end = self.peek()?.map(|(s, _)| s.end).unwrap_or(start);
 
         // Consume semicolon
         self.expect(Token::Semicolon)?;
 
         Ok(VarDecl {
-            span: Span(start, end),
+            span: Span::new(start, end),
             linkage,
             space,
             space_qualifier,
@@ -723,7 +723,7 @@ impl<'a> Parser<'a> {
     /// e.g., `.reg .s32 a, b, c;` expands to three VarDecls sharing the same type.
     fn parse_var_decls(&mut self, linkage: Linkage) -> Result<Vec<VarDecl>, ParseError> {
         // Get start span before parsing state space
-        let start = self.peek()?.map(|(s, _)| s.0).unwrap_or(0);
+        let start = self.peek()?.map(|(s, _)| s.start).unwrap_or(0);
 
         // Parse state space
         let (space, space_qualifier) = self.parse_state_space()?;
@@ -753,12 +753,12 @@ impl<'a> Parser<'a> {
             // Check for comma (more names) or semicolon (end)
             let (end, done) = match self.peek()? {
                 Some((span, Token::Comma)) => {
-                    let end = span.1;
+                    let end = span.end;
                     self.next().unwrap(); // consume comma, continue parsing names
                     (end, false)
                 }
                 Some((span, Token::Semicolon)) => {
-                    let end = span.1;
+                    let end = span.end;
                     self.next().unwrap(); // consume semicolon, done
                     (end, true)
                 }
@@ -775,7 +775,7 @@ impl<'a> Parser<'a> {
             };
 
             decls.push(VarDecl {
-                span: Span(start, end),
+                span: Span::new(start, end),
                 linkage,
                 space,
                 space_qualifier,
@@ -1087,7 +1087,7 @@ impl<'a> Parser<'a> {
     /// Parse a single parameter.
     fn parse_parameter(&mut self) -> Result<Parameter, ParseError> {
         // Get start span
-        let start = self.peek()?.map(|(s, _)| s.0).unwrap_or(0);
+        let start = self.peek()?.map(|(s, _)| s.start).unwrap_or(0);
 
         let (space, _) = self.parse_state_space()?;
         let align = self.parse_align()?;
@@ -1096,20 +1096,20 @@ impl<'a> Parser<'a> {
         let (name_span, name) = self.parse_ident_with_span()?;
 
         // Parse array dimensions for byte arrays
-        let mut end = name_span.1;
+        let mut end = name_span.end;
         let mut array_dims = Vec::new();
         while self.peek_tok()? == Some(&Token::LeftBracket) {
             self.next().unwrap();
             let size = self.parse_int_literal()? as u32;
             if let Some((span, _)) = self.peek()? {
-                end = span.1;
+                end = span.end;
             }
             self.expect(Token::RightBracket)?;
             array_dims.push(size);
         }
 
         Ok(Parameter {
-            span: Span(start, end),
+            span: Span::new(start, end),
             space,
             align,
             ty,
@@ -1299,17 +1299,17 @@ impl<'a> Parser<'a> {
     /// Parse an instruction statement (with optional predicate).
     fn parse_instruction_stmt(&mut self) -> Result<Statement, ParseError> {
         // Get start span (from predicate or opcode)
-        let start = self.peek()?.map(|(s, _)| s.0).unwrap_or(0);
+        let start = self.peek()?.map(|(s, _)| s.start).unwrap_or(0);
 
         let predicate = self.parse_predicate()?;
         let op = self.parse_instruction_op()?;
 
         // Get end span from semicolon
-        let end = self.peek()?.map(|(s, _)| s.1).unwrap_or(start);
+        let end = self.peek()?.map(|(s, _)| s.end).unwrap_or(start);
         self.expect(Token::Semicolon)?;
 
         Ok(Statement::Instruction(Instruction {
-            span: Span(start, end),
+            span: Span::new(start, end),
             predicate,
             op,
         }))
@@ -1711,13 +1711,13 @@ impl<'a> Parser<'a> {
         ) {
             return err_at(name_span, ParseErrorKind::InvalidDirective(name));
         }
-        let start = name_span.0;
+        let start = name_span.start;
 
         // Collect arguments until semicolon
         let mut arguments = Vec::new();
         let mut end = start;
         while let Some((span, tok)) = self.next()? {
-            end = span.1;
+            end = span.end;
             if tok == Token::Semicolon {
                 break;
             }
@@ -1726,13 +1726,13 @@ impl<'a> Parser<'a> {
 
         if self.peek_tok()? == Some(&Token::Semicolon) {
             if let Some((span, _)) = self.peek()? {
-                end = span.1;
+                end = span.end;
             }
             self.next().unwrap();
         }
 
         Ok(Directive {
-            span: Span(start, end),
+            span: Span::new(start, end),
             name,
             arguments,
         })
@@ -1743,7 +1743,7 @@ impl<'a> Parser<'a> {
     /// completely to find its end.
     fn parse_loc_directive(&mut self) -> Result<Directive, ParseError> {
         let (start, name) = match self.next()? {
-            Some((span, Token::DottedIdent(DottedIdent::Simple(s)))) => (span.0, s),
+            Some((span, Token::DottedIdent(DottedIdent::Simple(s)))) => (span.start, s),
             _ => unreachable!("parse_loc_directive requires a leading .loc token"),
         };
 
@@ -1753,7 +1753,7 @@ impl<'a> Parser<'a> {
             let Some((span, tok)) = p.next()? else {
                 return err(ParseErrorKind::UnexpectedEof);
             };
-            end = span.1;
+            end = span.end;
             arguments.push(tok);
             Ok(())
         };
@@ -1781,7 +1781,7 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Directive {
-            span: Span(start, end),
+            span: Span::new(start, end),
             name,
             arguments,
         })

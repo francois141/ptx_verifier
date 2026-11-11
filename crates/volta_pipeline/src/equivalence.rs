@@ -2,13 +2,12 @@
 
 use std::time::Instant;
 
+use volta_common::logging::info;
 use volta_equivalence::check::{
     EquivCheckOptions, EquivCheckReport, EquivOutcome, check_output_equivalence_with,
 };
 use volta_equivalence::numeric::verify_verdict;
 use volta_expr::SymbolicOutputs;
-
-use crate::logging::info;
 
 /// An output element: its array and index.
 pub type Element = (String, u64);

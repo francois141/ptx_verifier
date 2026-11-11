@@ -30,6 +30,10 @@ assert v.equivalent and v.mismatches == []
   failed or incomplete graph checks raise `VoltaError` before any module is returned.
   A kernel whose run records no graph returns `race_verified=None`.
   The propositions still need proofs. This replaces `solve(..., solver="lean")`.
+- `logging.rs`: the native module forwards the Rust crates' info-level logs
+  (`[analysis]`, `[graph]` with each of the ten checks, `[equivalence]`) to Python's
+  `logging`, under the logger its target names (`volta_graph_check.suite`), so
+  `logging.basicConfig(level=logging.INFO)` shows each stage.
 - `config.rs`: Python classes that wrap the Rust config types one to one
   (`Config`, `ArrayDef`, `ArrayKind`, `Param`), instead of the CLI's string
   mini-language (`"x:0x10000:4:128:in"`).

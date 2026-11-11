@@ -5,10 +5,10 @@ edition.workspace = true
 
 [features]
 default = []
-logging = ["dep:log"]  # Full logging when enabled
+logging = ["volta_common/logging"]  # Full logging when enabled
 
 [dependencies]
-log = { workspace = true, optional = true }
+volta_common.workspace = true
 volta_expr.workspace = true
 
 bincode.workspace = true

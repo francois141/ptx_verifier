@@ -33,17 +33,22 @@ pub(crate) struct WaveState {
     pub pc: InstrId,
     pub registers: WaveRegisters,
     pub status: Status,
+    /// EXEC: the lanes that run vector, memory and LDS instructions, one bit per lane. Scalar
+    /// instructions and branches run whatever it holds (CDNA4 §3.3). It is a concrete mask,
+    /// the same in every workgroup of the run.
+    pub exec: u64,
     /// The instructions `lgkmcnt` counts that no wait has completed, oldest first.
     pub lgkm_in_flight: VecDeque<LgkmInFlight>,
 }
 
 impl WaveState {
-    /// A ready wave at the kernel's first instruction.
+    /// A ready wave at the kernel's first instruction, with every lane active.
     pub fn new(registers: WaveRegisters) -> Self {
         Self {
             pc: InstrId(0),
             registers,
             status: Status::Ready,
+            exec: u64::MAX,
             lgkm_in_flight: VecDeque::new(),
         }
     }
@@ -52,9 +57,13 @@ impl WaveState {
 /// An instruction `lgkmcnt` counts, in flight, with the destinations pending until it completes.
 #[derive(Debug)]
 pub(crate) enum LgkmInFlight {
-    /// A DS instruction, the event graph's `op`: a read's or lane exchange's destinations,
-    /// pending in every lane; none for a write.
-    Ds { op: AsyncOpId, dst: Vec<Vgpr> },
+    /// A DS instruction, the event graph's `op`. A read's or lane exchange's destinations `dst`
+    /// are pending in `lanes`, the lanes that ran it; a write has no destinations.
+    Ds {
+        op: AsyncOpId,
+        dst: Vec<Vgpr>,
+        lanes: u64,
+    },
     /// A scalar load.
     Scalar { dst: Vec<Sgpr> },
 }
@@ -88,8 +97,7 @@ enum ScalarValue {
     LaneMask(Box<[ExprId]>),
 }
 
-/// Register storage for one CDNA4 wave. EXEC is not stored: no supported instruction writes
-/// it, so every lane of the full waves Volta launches stays active.
+/// Register storage for one CDNA4 wave, apart from EXEC, which `WaveState` holds.
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
     scalar: [ScalarValue; 102], // Scalar registers are shared by the wave.
@@ -1117,8 +1125,8 @@ impl WaveRegisters {
     }
 
     /// Wait until at most `outstanding` `vmcnt` loads are in flight per lane. Loads return in
-    /// issue order, so the most recent stay pending; counting no stores keeps more loads pending
-    /// than the hardware does.
+    /// issue order, so the most recent stay pending; counting neither stores nor the loads EXEC
+    /// kept from a lane keeps more loads pending than the hardware does.
     pub(super) fn finish_vm_loads(&mut self, outstanding: usize) {
         for lane in 0..self.vector.len() {
             let completed: Vec<Vec<Vgpr>> = match self.vector.get_mut(lane) {
@@ -1134,9 +1142,10 @@ impl WaveRegisters {
         }
     }
 
-    /// A completed DS read or lane exchange makes `dst` readable in every lane.
-    pub(super) fn finish_ds_load(&mut self, dst: &[Vgpr]) {
-        for lane in 0..self.vector.len() {
+    /// A completed DS read or lane exchange makes `dst` readable in `lanes`, the lanes that ran
+    /// it. In another lane, `dst` may be pending on a load this completion does not cover.
+    pub(super) fn finish_ds_load(&mut self, dst: &[Vgpr], lanes: u64) {
+        for lane in active_lanes(lanes) {
             for &reg in dst {
                 self.finish_slot(vector_slot(lane, reg));
             }
@@ -1181,4 +1190,9 @@ pub(super) fn f32_from_bits(arena: &mut ExprArena, bits: u32) -> Option<ExprId> 
 /// Whether `lane`'s bit of a 64-bit lane mask is set.
 pub(super) fn lane_bit(mask: u64, lane: usize) -> bool {
     (mask >> lane) & 1 == 1
+}
+
+/// The lanes whose bit of `mask` is set, in lane order.
+pub(super) fn active_lanes(mask: u64) -> impl Iterator<Item = usize> {
+    (0..64).filter(move |&lane| lane_bit(mask, lane))
 }

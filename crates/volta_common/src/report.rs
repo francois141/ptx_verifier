@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use ansi_term::Color;
 use textwrap::{Options, WordSplitter, wrap};
 
-use crate::Span;
 use crate::file_cache::FileCache;
+use crate::span::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ByteIdx(usize);
@@ -78,6 +78,33 @@ impl<'a> Lines<'a> {
         let line_start = self.line_starts[line_idx.0];
         byte_idx.0 - line_start.0
     }
+
+    fn position(&self, byte_idx: ByteIdx) -> Position<'a> {
+        let line_idx = self.line_idx(byte_idx);
+        let line_start = self.line_starts[line_idx.0].0;
+        let chars_before = self.content[line_start..]
+            .char_indices()
+            .take_while(|&(offset, _)| line_start + offset < byte_idx.0)
+            .count();
+        Position {
+            line: line_idx.0 + 1,
+            column: chars_before + 1,
+            line_text: self.line(line_idx),
+        }
+    }
+}
+
+/// Where a byte offset falls in a text: its 1-based line and 1-based column, counted in
+/// characters as editors count them, and the text of that line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Position<'a> {
+    pub line: usize,
+    pub column: usize,
+    pub line_text: &'a str,
+}
+
+pub fn position(content: &str, offset: usize) -> Position<'_> {
+    Lines::new(content).position(ByteIdx(offset))
 }
 
 fn line_digits(src: &Lines) -> usize {
@@ -250,10 +277,9 @@ pub fn report_error(
     )?;
 
     match (report.path, report.span) {
-        (Some(path), Some(Span(lo, hi))) => {
+        (Some(path), Some(Span { start: lo, end: hi })) => {
             let src = Lines::new(files.read_cached(path)?);
-            let lo_line = src.line_idx(ByteIdx(lo));
-            let lo_col = src.col_idx(lo_line, ByteIdx(lo));
+            let start = src.position(ByteIdx(lo));
 
             writeln!(
                 dest,
@@ -261,8 +287,8 @@ pub fn report_error(
                 path_style.paint(format!(
                     "{}:{}:{}",
                     path.display(),
-                    lo_line.0 + 1,
-                    lo_col + 1
+                    start.line,
+                    start.column
                 ))
             )?;
 

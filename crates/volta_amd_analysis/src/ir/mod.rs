@@ -168,11 +168,13 @@ pub enum ScalarSrc64 {
     Const(u64),
 }
 
-/// A 64-bit scalar ALU destination. EXEC is never written, so every lane stays active.
+/// A 64-bit scalar ALU destination: an aligned SGPR pair, VCC, or EXEC, the wave's mask of
+/// active lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarDst64 {
     Sgprs([Sgpr; 2]),
     Vcc,
+    Exec,
 }
 
 /// A lane mask that selects or receives one bit per lane: VCC or an aligned SGPR pair.
@@ -254,6 +256,24 @@ pub enum ScalarOp64 {
     XnorB64,
     /// `SCC ? src0 : src1`; SCC is unchanged.
     CSelectB64,
+}
+
+/// The operand order of a scalar operation that writes EXEC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecOrder {
+    /// `src op EXEC`.
+    SrcExec,
+    /// `EXEC op src`.
+    ExecSrc,
+}
+
+/// Which EXEC a scalar operation that writes EXEC copies to its destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecCopy {
+    /// EXEC as it was before the operation (`saveexec`).
+    Saved,
+    /// EXEC as the operation leaves it (`wrexec`).
+    Written,
 }
 
 /// A 64-bit scalar shift; the count uses its low six bits.
@@ -606,8 +626,8 @@ pub enum Vop3BinOp {
     MbcntHiU32,
 }
 
-/// A VOP1 operation of one source: the f32 ops and the conversion to u32 read it as an f32,
-/// the others as a word.
+/// A VOP1 operation of one source: the f32 ops and the conversions to integers read it as an
+/// f32, the others as a word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Mov32,
@@ -615,8 +635,12 @@ pub enum UnaryOp {
     Not32,
     /// The source's 32 bits in reverse order.
     BfRev32,
+    /// The i32 source as an f32.
+    CvtF32I32,
     /// The u32 source as an f32.
     CvtF32U32,
+    /// The f32 source truncated toward zero and clamped to the i32 range.
+    CvtI32F32,
     /// The f32 source truncated toward zero and clamped to the u32 range.
     CvtU32F32,
     /// `1 / src`, the reciprocal integer division expansions use.
@@ -729,6 +753,15 @@ pub enum LoweredInstr {
         src0: ScalarSrc64,
         src1: ScalarSrc64,
     },
+    /// `EXEC = op` over `src` and EXEC, in the order `order` gives; SCC is whether any lane stays
+    /// active. `dst` receives the EXEC that `copy` selects.
+    ExecOp64 {
+        op: ScalarOp64,
+        order: ExecOrder,
+        copy: ExecCopy,
+        dst: ScalarDst64,
+        src: ScalarSrc64,
+    },
     /// `dst = src op shift`; SCC is whether the result is nonzero.
     ShiftScalar64 {
         op: ScalarShift64,
@@ -761,7 +794,7 @@ pub enum LoweredInstr {
     },
     /// Waits until every wave of the workgroup that has not exited reaches a barrier.
     Barrier,
-    /// Copy the first active lane's value, lane 0's, into an SGPR.
+    /// Copy the lowest active lane's value into an SGPR, or lane 0's when no lane is active.
     ReadFirstLane {
         dst: Sgpr,
         src: Vgpr,
@@ -959,6 +992,7 @@ impl LoweredInstr {
             Self::AbsScalar32 { .. } => "s_abs_i32",
             Self::ScalarOp32 { .. } => "scalar op",
             Self::ScalarOp64 { .. } => "scalar op (64-bit)",
+            Self::ExecOp64 { .. } => "scalar op (EXEC)",
             Self::ShiftScalar64 { .. } => "scalar shift (64-bit)",
             Self::ScalarCmp { .. } => "s_cmp",
             Self::ScalarCmp64 { .. } => "s_cmp (64-bit)",

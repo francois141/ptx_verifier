@@ -93,7 +93,7 @@ for name, base, kind in (
     config.add_param(volta.Param.array_ptr(name))
 
 result = volta.solve(
-    "crates/volta_amd_analysis/tests/fixtures/add.s",
+    "crates/volta_pipeline/tests/amd/success/add.s",
     config,
     spec=spec,
     dims={"N": size},
@@ -125,7 +125,7 @@ spec = "dim N; array a[N]; array b[N]; array out[N]; out[i] = a[i] + b[i];"
 
 # Trainium reads the 16 x 16 tensor shapes from the kernel, so no config is needed.
 result = volta.solve(
-    "crates/volta_trainium_analysis/tests/fixtures/add.py",
+    "crates/volta_pipeline/tests/trainium/success/add.py",
     spec=spec,
     dims={"N": 256},
 )
@@ -146,7 +146,7 @@ AWS Trainium NKI: ACCEPT; race checks: None
 
 ## Sigmoid to Lean
 
-Use `volta.extract_lean(...)` to turn a kernel and its expected formula into Lean propositions. This [script](examples/lean/extract_sigmoid.py) reads the eight-element [Trainium sigmoid kernel](crates/volta_trainium_analysis/tests/fixtures/sigmoid.py). Each proposition asks you to prove that the kernel's output is within **epsilon** of `1 / (1 + exp(-a[i]))`. The kernel declares its tensor shapes, so no launch configuration is needed.
+Use `volta.extract_lean(...)` to turn a kernel and its expected formula into Lean propositions. This [script](examples/lean/extract_sigmoid.py) reads the eight-element [Trainium sigmoid kernel](crates/volta_pipeline/tests/trainium/success/sigmoid.py). Each proposition asks you to prove that the kernel's output is within **epsilon** of `1 / (1 + exp(-a[i]))`. The kernel declares its tensor shapes, so no launch configuration is needed.
 
 ```python
 from pathlib import Path
@@ -156,7 +156,7 @@ import volta
 epsilon = "1/1000"  # Maximum absolute error per output: 0.001.
 
 result = volta.extract_lean(
-    "crates/volta_trainium_analysis/tests/fixtures/sigmoid.py",
+    "crates/volta_pipeline/tests/trainium/success/sigmoid.py",
     spec="dim N; array a[N]; array out[N]; out[i] = 1 / (1 + exp(-a[i]));",
     dims={"N": 8},
     tolerance=epsilon,
@@ -181,7 +181,7 @@ The equivalent CLI command is:
 ```bash
 mkdir -p target/lean
 cargo run --release -p volta_cli -- extract lean \
-  crates/volta_trainium_analysis/tests/fixtures/sigmoid.py \
+  crates/volta_pipeline/tests/trainium/success/sigmoid.py \
   --spec examples/lean/sigmoid.spec --dim N=8 \
   --tolerance 1/1000 \
   --output target/lean/sigmoid_nki.lean

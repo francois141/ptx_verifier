@@ -2,8 +2,6 @@
 //! and one candidate symbolic execution (`eval`), producing `volta_expr` expressions (which
 //! `volta_equivalence` checks) and a `volta_graph` event graph (which the graph checks consume).
 
-mod logging;
-
 pub mod frontend;
 
 mod analysis;

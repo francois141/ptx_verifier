@@ -79,11 +79,14 @@ fn lower_instruction(
     labels: &BTreeMap<String, usize>,
 ) -> Result<LoweredInstr, &'static str> {
     use LoweredInstr::*;
+    use ir::ExecCopy::{Saved, Written};
+    use ir::ExecOrder::{ExecSrc, SrcExec};
 
-    // These instructions change which lanes execute; this interpreter keeps full waves active.
+    // These comparisons write EXEC as well as their mask. Only scalar instructions, which read
+    // concrete masks, may change the active lanes.
     let opcode = instruction.opcode.as_str();
-    if opcode.starts_with("v_cmpx_") || (opcode.starts_with("s_") && opcode.contains("saveexec")) {
-        return Err("EXEC changes are unsupported: intra-wave divergence is not modeled");
+    if opcode.starts_with("v_cmpx_") {
+        return Err("unsupported EXEC write: only scalar instructions may write exec");
     }
 
     match (opcode, instruction.operands.as_slice()) {
@@ -146,6 +149,43 @@ fn lower_instruction(
         ("s_nor_b64", operands) => lower_scalar_op64(ir::ScalarOp64::NorB64, operands),
         ("s_xnor_b64", operands) => lower_scalar_op64(ir::ScalarOp64::XnorB64, operands),
         ("s_cselect_b64", operands) => lower_scalar_op64(ir::ScalarOp64::CSelectB64, operands),
+        ("s_and_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::AndB64, SrcExec, Saved, operands)
+        }
+        ("s_or_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::OrB64, SrcExec, Saved, operands)
+        }
+        ("s_xor_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::XorB64, SrcExec, Saved, operands)
+        }
+        ("s_andn2_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::AndN2B64, SrcExec, Saved, operands)
+        }
+        ("s_orn2_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::OrN2B64, SrcExec, Saved, operands)
+        }
+        ("s_nand_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::NandB64, SrcExec, Saved, operands)
+        }
+        ("s_nor_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::NorB64, SrcExec, Saved, operands)
+        }
+        ("s_xnor_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::XnorB64, SrcExec, Saved, operands)
+        }
+        // `!src & EXEC` and `!src | EXEC` are the N2 operations with EXEC as the first operand.
+        ("s_andn1_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::AndN2B64, ExecSrc, Saved, operands)
+        }
+        ("s_orn1_saveexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::OrN2B64, ExecSrc, Saved, operands)
+        }
+        ("s_andn1_wrexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::AndN2B64, ExecSrc, Written, operands)
+        }
+        ("s_andn2_wrexec_b64", operands) => {
+            lower_exec_op64(ir::ScalarOp64::AndN2B64, SrcExec, Written, operands)
+        }
         ("s_lshl_b64", operands) => lower_scalar_shift64(ir::ScalarShift64::LShlB64, operands),
         ("s_lshr_b64", operands) => lower_scalar_shift64(ir::ScalarShift64::LShrB64, operands),
         ("s_ashr_i64", operands) => lower_scalar_shift64(ir::ScalarShift64::AShrI64, operands),
@@ -315,7 +355,9 @@ fn lower_instruction(
             ),
         }),
         ("v_bfrev_b32_e32", operands) => lower_unary_op(ir::UnaryOp::BfRev32, operands),
+        ("v_cvt_f32_i32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32I32, operands),
         ("v_cvt_f32_u32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32U32, operands),
+        ("v_cvt_i32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtI32F32, operands),
         ("v_cvt_u32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtU32F32, operands),
         ("v_rcp_iflag_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpIflagF32, operands),
         ("v_exp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::Exp2F32, operands),
@@ -1093,6 +1135,29 @@ fn lower_scalar_op64(
     })
 }
 
+/// A scalar operation that writes EXEC (CDNA4 §12.3). Its destination receives a copy of EXEC,
+/// so it is an SGPR pair or VCC.
+fn lower_exec_op64(
+    op: ir::ScalarOp64,
+    order: ir::ExecOrder,
+    copy: ir::ExecCopy,
+    operands: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let [dst, src] = operands else {
+        return Err("unsupported operand count");
+    };
+    if matches!(dst, Operand::Exec) {
+        return Err("expected an aligned SGPR pair or vcc destination");
+    }
+    Ok(LoweredInstr::ExecOp64 {
+        op,
+        order,
+        copy,
+        dst: scalar_dst64(dst)?,
+        src: scalar_source64(src)?,
+    })
+}
+
 fn lower_scalar_shift64(
     op: ir::ScalarShift64,
     operands: &[Operand],
@@ -1210,14 +1275,14 @@ fn scalar_source64_and_word(
     Ok((src, word))
 }
 
-/// EXEC is never a destination, so every lane of a full wave stays active.
+/// A 64-bit scalar destination: an aligned SGPR pair, VCC or EXEC.
 fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
     match operand {
-        Operand::Exec => Err("EXEC changes are unsupported: intra-wave divergence is not modeled"),
+        Operand::Exec => Ok(ScalarDst64::Exec),
         Operand::Vcc => Ok(ScalarDst64::Vcc),
         _ => sgprs(operand)
             .map(ScalarDst64::Sgprs)
-            .ok_or("expected an aligned SGPR pair or vcc destination"),
+            .ok_or("expected an aligned SGPR pair, vcc or exec destination"),
     }
 }
 

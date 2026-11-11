@@ -11,7 +11,7 @@ use crate::eval::interp::{
 use crate::eval::value::{MbarrierId, Value};
 use crate::eval::{ThreadId, WARP_SIZE};
 use crate::ir::{BarrierAlignment, InstrId, LoweredInstr, Operand};
-use crate::logging::trace;
+use volta_common::logging::trace;
 
 impl<'p> Interpreter<'p> {
     pub(in crate::eval) fn next_ready(&self) -> Option<ThreadId> {

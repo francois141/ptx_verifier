@@ -2,13 +2,13 @@
 name = "volta_pipeline"
 version.workspace = true
 edition.workspace = true
+autotests = false
 
 [features]
 default = []
-logging = ["dep:log"]  # Full logging when enabled
+logging = ["volta_common/logging"]  # Full logging when enabled
 
 [dependencies]
-log = { workspace = true, optional = true }
 rug.workspace = true
 volta_amd_analysis.workspace = true
 volta_common.workspace = true
@@ -23,3 +23,15 @@ volta_trainium_analysis.workspace = true
 [dev-dependencies]
 volta_trainium_analysis.workspace = true
 volta_viz.workspace = true
+
+[[test]]
+name = "ptx_tests"
+path = "tests/ptx/main.rs"
+
+[[test]]
+name = "amd_tests"
+path = "tests/amd/main.rs"
+
+[[test]]
+name = "trainium_tests"
+path = "tests/trainium/main.rs"

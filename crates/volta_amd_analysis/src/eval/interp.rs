@@ -25,7 +25,8 @@ use super::lds::{Lds, LdsLaneAccess, LdsRace};
 use super::mfma::execute_mfma_16x16x4_f32;
 use super::scalar::KernargBuffer;
 use super::wave::{
-    LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, concrete_word,
+    LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, active_lanes,
+    concrete_word, lane_bit,
 };
 
 /// The selected workgroup's symbolic state: one `WaveState` per wave, holding registers whose
@@ -196,6 +197,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AbsScalar32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
+            | LoweredInstr::ExecOp64 { .. }
             | LoweredInstr::ShiftScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
             | LoweredInstr::ScalarCmp64 { .. }
@@ -245,11 +247,13 @@ impl<'a> Interpreter<'a> {
 
         // Execute once while rejecting workgroup-dependent reads; undo it if one occurs.
         let issued = self.waves[wave].lgkm_in_flight.len();
+        let exec = self.waves[wave].exec;
         self.waves[wave].registers.begin_undoable();
         match self.execute_value(wave, instruction) {
             Err(EvalError::DependsOnWorkgroup) => {
                 self.waves[wave].registers.undo_execution();
                 self.waves[wave].lgkm_in_flight.truncate(issued);
+                self.waves[wave].exec = exec;
             }
             result => {
                 self.waves[wave].registers.commit();
@@ -272,11 +276,15 @@ impl<'a> Interpreter<'a> {
             return self.execute_value(wave, instruction);
         }
         let mut results = Vec::with_capacity(self.workgroups);
+        let exec = self.waves[wave].exec;
+        let mut exec_written = None;
         for workgroup in 0..self.workgroups {
             let issued = self.waves[wave].lgkm_in_flight.len();
             self.waves[wave].registers.begin_workgroup(workgroup);
             self.global.select(Some(workgroup));
             self.lds.select(workgroup);
+            // Each workgroup starts from the same EXEC, as it does from the same registers.
+            self.waves[wave].exec = exec;
             let outcome = self.execute_value(wave, instruction);
             self.global.select(None);
             self.lds.select(0);
@@ -285,6 +293,11 @@ impl<'a> Interpreter<'a> {
                 self.waves[wave].lgkm_in_flight.truncate(issued);
             }
             outcome?;
+            // The run keeps one EXEC, so every workgroup must leave the same lanes active.
+            let written = self.waves[wave].exec;
+            if *exec_written.get_or_insert(written) != written {
+                return Err(EvalError::DependsOnWorkgroup);
+            }
             results.push(writes);
         }
         self.waves[wave].registers.combine(&self.arena, results);
@@ -301,6 +314,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AbsScalar32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
+            | LoweredInstr::ExecOp64 { .. }
             | LoweredInstr::ShiftScalar64 { .. }
             | LoweredInstr::ScalarCmp { .. }
             | LoweredInstr::ScalarCmp64 { .. }
@@ -331,6 +345,11 @@ impl<'a> Interpreter<'a> {
             } => self.write_comparison(wave, *dst, |arena, registers, lane| {
                 evaluate_cmp_f64(arena, registers, lane, *op, *src0, *src1)
             }),
+            LoweredInstr::Cmp { op, src0, src1 } => {
+                self.write_comparison(wave, LaneMask::Vcc, |arena, registers, lane| {
+                    evaluate_cmp(arena, registers, lane, *op, *src0, *src1)
+                })
+            }
             LoweredInstr::MadU64U32 {
                 dst,
                 carry,
@@ -338,6 +357,7 @@ impl<'a> Interpreter<'a> {
                 src1,
                 src2,
             } => self.execute_mad_u64_u32(wave, *dst, *carry, *src0, *src1, *src2),
+            // A matrix multiply runs in every lane, whatever EXEC holds (CDNA4 §7.1).
             LoweredInstr::Mfma16x16x4F32 {
                 dst,
                 src_a,
@@ -358,13 +378,13 @@ impl<'a> Interpreter<'a> {
                 src,
                 offset,
             } => self.execute_ds_bpermute(wave, *dst, *addr, *src, *offset),
-            // EXEC holds every lane: launches are full waves and no supported instruction writes it.
+            // Only the active lanes run these instructions. An inactive lane keeps its registers
+            // and accesses no memory (CDNA4 §3.3).
             LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
             | LoweredInstr::Vop3BinOp { .. }
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::Mov64 { .. }
-            | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
@@ -380,7 +400,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::BufferLoad { .. }
             | LoweredInstr::BufferStore { .. }
             | LoweredInstr::DsRead { .. } => {
-                for lane in 0..64 {
+                for lane in active_lanes(self.waves[wave].exec) {
                     self.execute_lane(wave, lane, instruction)?;
                 }
                 Ok(())
@@ -403,8 +423,8 @@ impl<'a> Interpreter<'a> {
         let mut ds_ops = Vec::new();
         for instruction in state.lgkm_in_flight.drain(..completed) {
             match instruction {
-                LgkmInFlight::Ds { op, dst } => {
-                    state.registers.finish_ds_load(&dst);
+                LgkmInFlight::Ds { op, dst, lanes } => {
+                    state.registers.finish_ds_load(&dst, lanes);
                     ds_ops.push(op);
                 }
                 LgkmInFlight::Scalar { dst } => state.registers.finish_scalar_load(&dst),
@@ -437,7 +457,7 @@ impl<'a> Interpreter<'a> {
         taken.ok_or(EvalError::DependsOnWorkgroup)
     }
 
-    /// Every lane is active, so EXEC is never zero.
+    /// Whether `condition` holds for `wave`, with SCC and VCC read in the viewed workgroup.
     fn branch_taken(&self, wave: WaveId, condition: BranchCondition) -> Result<bool, EvalError> {
         let registers = &self.waves[wave].registers;
         match condition {
@@ -445,13 +465,13 @@ impl<'a> Interpreter<'a> {
             BranchCondition::Scc1 => registers.read_scc(),
             BranchCondition::VccNz => Ok(registers.read_vcc_mask(&self.arena)? != 0),
             BranchCondition::VccZ => Ok(registers.read_vcc_mask(&self.arena)? == 0),
-            BranchCondition::ExecZ => Ok(false),
-            BranchCondition::ExecNz => Ok(true),
+            BranchCondition::ExecZ => Ok(self.waves[wave].exec == 0),
+            BranchCondition::ExecNz => Ok(self.waves[wave].exec != 0),
         }
     }
 
-    /// Every lane's result is computed before `dst` and `carry` are written, as either may
-    /// overlap a source.
+    /// Every active lane's result is computed before `dst` and `carry` are written, as either
+    /// may overlap a source.
     fn execute_mad_u64_u32(
         &mut self,
         wave: WaveId,
@@ -461,11 +481,14 @@ impl<'a> Interpreter<'a> {
         src1: Vop3Src,
         src2: [Vgpr; 2],
     ) -> Result<(), EvalError> {
+        let exec = self.waves[wave].exec;
         let registers = &mut self.waves[wave].registers;
 
         let mut results = Vec::with_capacity(64);
+        // The carry mask is fully written, as VCC is: an inactive lane's bit stays clear
+        // (CDNA4 §3.9).
         let mut carries = 0u64;
-        for lane in 0..64 {
+        for lane in active_lanes(exec) {
             let a = registers.read_src(&mut self.arena, lane, src0)?;
             let b = registers.read_src(&mut self.arena, lane, src1)?;
             let addend_low = registers.read_vgpr(lane, src2[0])?;
@@ -482,10 +505,10 @@ impl<'a> Interpreter<'a> {
             if result >> 64 != 0 {
                 carries |= 1 << lane;
             }
-            results.push(result as u64);
+            results.push((lane, result as u64));
         }
 
-        for (lane, result) in results.into_iter().enumerate() {
+        for (lane, result) in results {
             let low = self.arena.int(i64::from(result as u32));
             let high = self.arena.int(i64::from((result >> 32) as u32));
             registers.write_vgpr(lane, dst[0], low)?;
@@ -494,16 +517,25 @@ impl<'a> Interpreter<'a> {
         registers.write_sgpr_pair(&mut self.arena, carry, carries)
     }
 
-    /// Evaluate a comparison in every lane before writing `dst`, which may overlap a source.
+    /// Evaluate a comparison in every active lane before writing `dst`, which may overlap a
+    /// source.
     fn write_comparison(
         &mut self,
         wave: WaveId,
         dst: LaneMask,
         evaluate: impl Fn(&mut ExprArena, &WaveRegisters, usize) -> Result<ExprId, EvalError>,
     ) -> Result<(), EvalError> {
+        let exec = self.waves[wave].exec;
         let registers = &mut self.waves[wave].registers;
         let conditions = (0..64)
-            .map(|lane| evaluate(&mut self.arena, registers, lane))
+            .map(|lane| {
+                if lane_bit(exec, lane) {
+                    evaluate(&mut self.arena, registers, lane)
+                } else {
+                    // The mask is fully written: an inactive lane's bit is clear (CDNA4 §3.9).
+                    Ok(self.arena.bool_val(false))
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?;
         registers.write_lane_mask(&mut self.arena, dst, &conditions)
     }
@@ -558,10 +590,6 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::CvtFromF64 { op, dst, src } => {
                 let result = evaluate_cvt_from_f64(&mut self.arena, registers, lane, *op, *src)?;
                 registers.write_vgpr(lane, *dst, result)
-            }
-            LoweredInstr::Cmp { op, src0, src1 } => {
-                let condition = evaluate_cmp(&mut self.arena, registers, lane, *op, *src0, *src1)?;
-                registers.write_vcc(lane, condition)
             }
             LoweredInstr::CndMask32 { dst, src0, src1 } => {
                 let result = evaluate_cndmask(&mut self.arena, registers, lane, *src0, *src1)?;
@@ -643,8 +671,8 @@ impl<'a> Interpreter<'a> {
         Ok(u64::from(base) + u64::from(offset))
     }
 
-    /// Store every lane's accesses, lane after lane and each lane's in order. Two lanes storing
-    /// one word in one instruction land in no specified order, so that is a race.
+    /// Store every active lane's accesses, lane after lane and each lane's in order. Two lanes
+    /// storing one word in one instruction land in no specified order, so that is a race.
     pub(super) fn ds_write(
         &mut self,
         wave: WaveId,
@@ -653,7 +681,7 @@ impl<'a> Interpreter<'a> {
     ) -> Result<(), EvalError> {
         let pc = self.waves[wave].pc;
         let mut writers: BTreeMap<u32, LdsLaneAccess> = BTreeMap::new();
-        for lane in 0..64 {
+        for lane in active_lanes(self.waves[wave].exec) {
             let access = LdsLaneAccess { wave, lane, pc };
             for (offset, data) in accesses.accesses() {
                 let start_address = self.lds_address(wave, lane, address_reg, offset)?;

@@ -3,8 +3,8 @@
 //! structure (score polys, softmax denominators) is free after the first.
 
 use crate::canon::{CanonError, Session};
-use crate::logging::info;
 
+use volta_common::logging::info;
 use volta_expr::{ExprArena, ExprId};
 
 /// Errors from equivalence checking.

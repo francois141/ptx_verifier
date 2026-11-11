@@ -2,8 +2,9 @@
 
 The equivalence branch: given two `SymbolicOutputs` (two kernels, or a kernel
 and an unfolded spec), decide element by element whether they compute the same
-value. It depends only on `volta_expr`, so its inputs can come from any
-producer: in memory, a `.vcdump`, or `.vexpr` text.
+value. It depends only on `volta_expr` (and `volta_common`, for its logging
+macros), so its inputs can come from any producer: in memory, a `.vcdump`, or
+`.vexpr` text.
 
 ## High-level logic
 

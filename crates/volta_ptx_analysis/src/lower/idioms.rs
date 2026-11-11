@@ -7,7 +7,7 @@ use crate::frontend::ast::{
 };
 use crate::frontend::instr::InstrKind;
 use crate::frontend::instr_parse::parse_instruction;
-use volta_common::Span;
+use volta_common::span::Span;
 
 use crate::ir::symbols::RegId;
 

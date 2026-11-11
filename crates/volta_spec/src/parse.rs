@@ -5,8 +5,8 @@
 use std::fmt;
 
 use crate::spec::{IndexExpr, ReduceOp, SpecExpr};
-use volta_common::Span;
 use volta_common::report::Locate;
+use volta_common::span::Span;
 
 use crate::ast::{ArrayDecl, DimDecl, Elements, OutputDecl, Padding, ParamDecl, ParsedSpec};
 use crate::lex::{Lexer, Token, TokenKind};
@@ -354,7 +354,10 @@ impl Parser {
                 let (base, exp) = self.parse_binary_call()?;
                 desugar_pow(base, &exp).ok_or_else(|| {
                     // Best-effort span: the whole call's argument list.
-                    let span = Span(self.tokens[exp_span_start].span.0, self.peek().span.0);
+                    let span = Span::new(
+                        self.tokens[exp_span_start].span.start,
+                        self.peek().span.start,
+                    );
                     err_at(span, ParseErrorKind::InvalidPowExponent)
                 })
             }
