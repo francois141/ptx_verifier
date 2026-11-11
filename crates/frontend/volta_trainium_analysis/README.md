@@ -334,16 +334,25 @@ row-major element offset. Footprints are static: a gather reads its whole `data`
 
 This crate keeps no tests of its own: its fixtures live in
 `volta_pipeline/tests/trainium/`, and the paths below are relative to it. `success/` holds
-the kernels expected to run and `execution_error/` the `*_errors.py` kernels the analysis
-must reject. `volta_pipeline`'s `trainium/accepted_tests.rs` runs each success fixture for
+the kernels expected to run, `check_failure/` the race fixtures, and `execution_error/` the
+`*_errors.py` kernels the analysis must reject. `volta_pipeline`'s `trainium/accepted_tests.rs` runs each success fixture for
 one call, giving each parameter's shape (`common::trainium::check(name, kernel, shapes)`,
 or `check_importing` with the fixture modules it imports from), and
 `trainium/rejected_tests.rs` requires each error; the fixtures' own shape `assert`s check
 those shapes.
-Besides `.ast`, `.ir` and `.out`, `placed_tiles`, `access_patterns`, `indirect` and
-`loop_origins` (`common::trainium`'s `FOOTPRINTS`) have a
+Besides `.ast`, `.ir` and `.out`, the race fixtures and `placed_tiles`,
+`access_patterns`, `indirect` and `loop_origins` (`common::trainium`'s `FOOTPRINTS`) have a
 `.footprints`: one line per instruction, a placed tile's runs as `p<partition>:<bytes>`,
 any other's as element offsets.
+
+`check_failure/` holds kernels meant to race beside their ordered twins, each naming its
+intended verdict, for the race checks to come; until NKI runs record an event graph,
+`accepted_tests.rs` runs them in program order only. `back_to_back_dmas` is two DMAs
+writing one tile (R0, ordered by the compiler); `affine_overwrite` and `affine_carried`
+overwrite or carry a tile across `affine_range` iterations (R1), their
+`sequential_range` twins in order; `affine_vector_sum` sums rows into one tile with
+`tensor_tensor`, as mamba does, and `affine_matmul_accumulate` accumulates matmuls into
+PSUM, the reduction the docs allow across `affine_range` iterations.
 
 `success/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at

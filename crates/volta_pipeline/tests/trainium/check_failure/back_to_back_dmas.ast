@@ -1,0 +1,5 @@
+kernel kernel(a: [2, 4], out: [1, 4])
+  x: sbuf[1, 4] of a.dtype
+  dma_copy(dst=x, src=a[0:1, :])
+  dma_copy(dst=x, src=a[1:2, :])
+  dma_copy(dst=out, src=x)

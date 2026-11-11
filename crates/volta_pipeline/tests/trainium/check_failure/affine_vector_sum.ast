@@ -1,0 +1,10 @@
+kernel kernel(a: [2, 4], out: [1, 4])
+  acc: sbuf[1, 4] of float32
+  memset(dst=acc, value=0)
+  row.0: sbuf[1, 4] of a.dtype
+  dma_copy(dst=row.0, src=a[0:1, :])  # in affine_range#0[0]
+  tensor_tensor(data1=acc, data2=row.0, dst=acc, op=nki.language.add)  # in affine_range#0[0]
+  row.1: sbuf[1, 4] of a.dtype
+  dma_copy(dst=row.1, src=a[1:2, :])  # in affine_range#0[1]
+  tensor_tensor(data1=acc, data2=row.1, dst=acc, op=nki.language.add)  # in affine_range#0[1]
+  dma_copy(dst=out, src=acc)

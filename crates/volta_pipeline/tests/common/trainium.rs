@@ -14,8 +14,8 @@ use volta_trainium_analysis::{
     Access, Location, Mode, PARTITION_STRIDE, evaluate, footprints, lower_kernel,
 };
 
-/// The fixtures whose footprints are snapshotted, one per kind of location (placed tiles,
-/// access patterns, gathers, loops).
+/// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`), and
+/// one per kind of location (placed tiles, access patterns, gathers, loops).
 const FOOTPRINTS: &[&str] = &[
     "success/placed_tiles",
     "success/access_patterns",
@@ -24,7 +24,7 @@ const FOOTPRINTS: &[&str] = &[
 ];
 
 fn snapshots_footprints(name: &str) -> bool {
-    FOOTPRINTS.contains(&name)
+    name.starts_with("check_failure/") || FOOTPRINTS.contains(&name)
 }
 
 /// Parse, lower and run kernel `kernel` of `tests/trainium/<name>.py` for a call with

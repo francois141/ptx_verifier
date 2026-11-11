@@ -62,6 +62,32 @@ fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// The race fixtures in `check_failure/`, each a kernel meant to race beside its ordered twin;
+// until NKI runs record an event graph they are checked in program order only.
+#[test]
+fn the_race_fixtures_parse_lower_and_run_in_program_order() {
+    let rows = |count: u64| [("a", [count, 4]), ("out", [count - 1, 4])];
+    for (name, [a, out]) in [
+        ("back_to_back_dmas", rows(2)),
+        ("affine_overwrite", rows(2)),
+        ("sequential_overwrite", rows(2)),
+        ("affine_carried", rows(3)),
+        ("sequential_carried", rows(3)),
+        ("affine_vector_sum", rows(2)),
+    ] {
+        common::trainium::check(
+            &format!("check_failure/{name}"),
+            "kernel",
+            &[(a.0, &a.1), (out.0, &out.1)],
+        );
+    }
+    common::trainium::check(
+        "check_failure/affine_matmul_accumulate",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+}
+
 #[test]
 fn the_tiled_copy_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
