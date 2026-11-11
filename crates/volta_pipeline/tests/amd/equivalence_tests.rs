@@ -16,8 +16,8 @@ use common::amd::{
     AmdChecked, AvgPool2d, CK_AVGPOOL2D_KERNEL, CK_FMHA_KERNEL, CK_GEMM_KERNEL,
     CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL, FMHA_K_BASE as K_BASE, FMHA_Q_BASE as Q_BASE,
     GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE, amd_fixture,
-    avgpool_arrays, check_amd, check_amd_launch, ck_avgpool2d_kernarg, ck_fmha_kernarg,
-    ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
+    avgpool_arrays, check_amd, check_amd_launch, check_avgpool_launch_file, ck_avgpool2d_kernarg,
+    ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
 
@@ -436,24 +436,10 @@ fn launch_ck_avgpool2d(pool: &AvgPool2d, workgroup: u32) -> AmdChecked {
 
 /// The dims of `avg_pool2d_nhwc.spec` for `pool`.
 fn avgpool2d_dims(pool: &AvgPool2d) -> HashMap<String, u64> {
-    let [output_height, output_width] = pool.output();
-    let dims = [
-        ("N", pool.batch),
-        ("H", pool.input[0]),
-        ("W", pool.input[1]),
-        ("C", pool.channels),
-        ("HOUT", output_height),
-        ("WOUT", output_width),
-        ("KH", pool.window[0]),
-        ("KW", pool.window[1]),
-        ("SH", pool.stride[0]),
-        ("SW", pool.stride[1]),
-        ("DH", pool.dilation[0]),
-        ("DW", pool.dilation[1]),
-        ("PH", pool.left_pad[0]),
-        ("PW", pool.left_pad[1]),
-    ];
-    HashMap::from(dims.map(|(name, value)| (name.to_string(), value as u64)))
+    HashMap::from(
+        pool.spec_dims()
+            .map(|(name, value)| (name.to_string(), value)),
+    )
 }
 
 /// Check one workgroup of CK's average pooling of `launched` against `spec` at the parameters
@@ -517,6 +503,16 @@ fn unpadded_pool(
         dilation: [1, 1],
         left_pad: [0, 0],
         right_pad: [0, 0],
+    }
+}
+
+/// A launch whose 3 x 3 output is larger than its 2 x 2 input: 2 x 2 windows, stride 1 and
+/// one row and column of padding on each side.
+fn larger_output_pool() -> AvgPool2d {
+    AvgPool2d {
+        left_pad: [1, 1],
+        right_pad: [1, 1],
+        ..unpadded_pool(1, 1, [2, 2], [2, 2], [1, 1])
     }
 }
 
@@ -599,11 +595,7 @@ fn amd_ck_avgpool2d_with_padding_on_the_other_side_is_refuted() {
 // so the kernel's stores of outputs 5 to 8 fall outside the buffer and are dropped.
 #[test]
 fn amd_ck_avgpool2d_with_outputs_beyond_cks_output_bound_is_rejected() {
-    let pool = AvgPool2d {
-        left_pad: [1, 1],
-        right_pad: [1, 1],
-        ..unpadded_pool(1, 1, [2, 2], [2, 2], [1, 1])
-    };
+    let pool = larger_output_pool();
     assert_eq!(pool.output_len(), 9);
     let checked = launch_ck_avgpool2d(&pool, 0);
     let report = checked.report.clone();
@@ -631,4 +623,27 @@ fn amd_ck_avgpool2d_with_outputs_beyond_cks_output_bound_is_rejected() {
         assumptions: &assumptions,
     };
     assert_eq!(decide(&verdict, &[kernel]).verdict, Verdict::Reject);
+}
+
+// Test that the `volta solve` launch files in `examples/lean/` hold the argument builder's
+// parameters for their launches: 3 x 3 windows with stride 2 over a padded 14 x 14 input, and
+// the launch whose output is larger than its input. `VOLTA_BLESS=1` rewrites the files.
+#[test]
+fn amd_ck_avgpool2d_launch_files_match_the_argument_builder() {
+    let padded = AvgPool2d {
+        left_pad: [1, 1],
+        right_pad: [1, 1],
+        ..unpadded_pool(1, 3, [14, 14], [3, 3], [2, 2])
+    };
+    check_avgpool_launch_file(
+        "avgpool2d_amd.json",
+        &padded,
+        "volta solve accepts this launch.",
+    );
+    check_avgpool_launch_file(
+        "avgpool2d_amd_larger_output.json",
+        &larger_output_pool(),
+        "CK sizes the output buffer from the input's height and width, five elements, so the \
+         kernel drops four of its nine stores and volta solve rejects this launch.",
+    );
 }

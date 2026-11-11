@@ -532,6 +532,28 @@ impl AvgPool2d {
         let [height, width] = self.output();
         self.batch * height * width * self.channels
     }
+
+    /// The dims of `avg_pool2d_nhwc.spec` for this launch, in the spec's order.
+    pub fn spec_dims(&self) -> [(&'static str, u64); 14] {
+        let [output_height, output_width] = self.output();
+        [
+            ("N", self.batch),
+            ("H", self.input[0]),
+            ("W", self.input[1]),
+            ("C", self.channels),
+            ("HOUT", output_height),
+            ("WOUT", output_width),
+            ("KH", self.window[0]),
+            ("KW", self.window[1]),
+            ("SH", self.stride[0]),
+            ("SW", self.stride[1]),
+            ("DH", self.dilation[0]),
+            ("DW", self.dilation[1]),
+            ("PH", self.left_pad[0]),
+            ("PW", self.left_pad[1]),
+        ]
+        .map(|(name, value)| (name, value as u64))
+    }
 }
 
 /// The input and output tensors at the test addresses, in NHWC order without gaps.
@@ -566,116 +588,295 @@ fn ck_magic_division(divisor: i32) -> [i32; 2] {
     [multiplier as u32 as i32, shift as i32]
 }
 
-/// The fields of a CK `Merge` transform, which joins dimensions of `lengths` into one index:
-/// the lengths, a division multiplier and a shift for each, then the merged length.
-fn ck_merge(lengths: &[i32]) -> Vec<i32> {
+/// One parameter of a launch file: a label for the reader and its value.
+#[derive(Clone, Debug)]
+pub struct LaunchParam {
+    pub name: String,
+    pub value: LaunchValue,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LaunchValue {
+    Int(i32),
+    Float(f32),
+    /// The base address of a test array, which a launch file gives by the array's name.
+    Ptr {
+        array: &'static str,
+        base: u64,
+    },
+}
+
+fn param(name: impl Into<String>, value: LaunchValue) -> LaunchParam {
+    LaunchParam {
+        name: name.into(),
+        value,
+    }
+}
+
+/// `values` as fields, each labelled `what` and then its entry of `dims`.
+fn labelled(what: &str, dims: &[&str], values: &[i32]) -> Vec<(String, i32)> {
+    dims.iter()
+        .zip(values)
+        .map(|(dim, &value)| (format!("{what} {dim}"), value))
+        .collect()
+}
+
+/// The fields of a CK `Merge` transform, which joins the dimensions `dims` into the index
+/// `index`: their lengths, a division multiplier and a shift for each, then the merged length.
+fn ck_merge(index: &str, dims: &[&str], lengths: &[i32]) -> Vec<(String, i32)> {
     let magic: Vec<[i32; 2]> = lengths.iter().map(|&l| ck_magic_division(l)).collect();
-    let mut fields = lengths.to_vec();
-    fields.extend(magic.iter().map(|&[multiplier, _]| multiplier));
-    fields.extend(magic.iter().map(|&[_, shift]| shift));
-    fields.push(lengths.iter().product());
+    let multipliers: Vec<i32> = magic.iter().map(|&[multiplier, _]| multiplier).collect();
+    let shifts: Vec<i32> = magic.iter().map(|&[_, shift]| shift).collect();
+    let merge = format!("merge {index}:");
+    let mut fields = labelled(&format!("{merge} length"), dims, lengths);
+    fields.extend(labelled(
+        &format!("{merge} division multiplier for"),
+        dims,
+        &multipliers,
+    ));
+    fields.extend(labelled(
+        &format!("{merge} division shift for"),
+        dims,
+        &shifts,
+    ));
+    let merged = format!("{merge} merged length {}", dims.join(" * "));
+    fields.push((merged, lengths.iter().product()));
     fields
 }
 
-/// The fields of a CK `RightPad` transform that rounds `length` up to whole tiles of `tile`:
-/// the padded length, the length and the padding.
-fn ck_right_pad(length: i32, tile: i32) -> [i32; 3] {
+/// The fields of a CK `RightPad` transform that rounds the index `index`, of `length`, up to
+/// whole tiles of `tile`: the padded length, the length and the padding.
+fn ck_right_pad(index: &str, length: i32, tile: i32) -> [(String, i32); 3] {
     let padded = (length + tile - 1) / tile * tile;
-    [padded, length, padded - length]
+    [
+        (
+            format!("{index} rounded up to a multiple of {tile}"),
+            padded,
+        ),
+        (index.to_string(), length),
+        (format!("{index} padding"), padded - length),
+    ]
 }
 
-/// A CK tensor descriptor's bytes: its transforms' `fields`, its element count, then its
-/// 64-bit element space, the buffer size in elements that bounds the kernel's accesses. CK
-/// computes the space from the tensor's `lengths` and `strides`: one past its last element.
-fn ck_descriptor(fields: &[i32], elements: i32, lengths: [i32; 4], strides: [i32; 4]) -> Vec<u8> {
+/// The fields that end a CK tensor descriptor: its element count, padding, then its 64-bit
+/// element space as two words. The space is the buffer size in elements that bounds the
+/// kernel's accesses: one past the last element of a tensor of `lengths` and `strides`.
+fn ck_descriptor_end(elements: i32, lengths: [i32; 4], strides: [i32; 4]) -> [(String, i32); 4] {
     let last_element: i64 = lengths
         .iter()
         .zip(strides)
         .map(|(&length, stride)| i64::from(length - 1) * i64::from(stride))
         .sum();
-    let mut bytes: Vec<u8> = fields
-        .iter()
-        .chain([&elements])
-        .flat_map(|field| field.to_le_bytes())
-        .collect();
-    bytes.resize(bytes.len().next_multiple_of(8), 0);
-    bytes.extend((last_element + 1).to_le_bytes());
-    bytes
+    let space = last_element + 1;
+    [
+        ("element count".into(), elements),
+        ("padding".into(), 0),
+        ("element space (low word)".into(), space as i32),
+        ("element space (high word)".into(), (space >> 32) as i32),
+    ]
 }
 
-/// The arguments CK's `DevicePool2dFwd_NHWC_NHWC` passes its kernel for `pool`, as its host
-/// code lays them out: the input and output tensor descriptors by value, the window size to
-/// divide by, a scale of 1, the input, a weight of 0 for the output's old values, the output.
-pub fn ck_avgpool2d_kernarg(pool: &AvgPool2d) -> Vec<u8> {
+/// The parameters CK's `DevicePool2dFwd_NHWC_NHWC` passes its kernel for `pool`, in the order
+/// its host code lays them out: the words of the input and output tensor descriptors, the
+/// window size to divide by, a scale of 1, the input, a weight of 0 for the output's old
+/// values, then the output.
+pub fn ck_avgpool2d_params(pool: &AvgPool2d) -> Vec<LaunchParam> {
     let (n, c) = (pool.batch, pool.channels);
     let [hi, wi] = pool.input;
-    let output = pool.output();
-    let [ho, wo] = output;
+    let [ho, wo] = pool.output();
     let [y, x] = pool.window;
     // CK rounds the output elements (M) up to whole workgroups of 256 work-items, and the
     // window positions (K) up to whole steps of one.
-    let m = ck_right_pad(n * ho * wo * c, 256);
-    let k = ck_right_pad(y * x, 1);
+    let m = ck_right_pad("M", n * ho * wo * c, 256);
+    let k = ck_right_pad("K", y * x, 1);
+    let (padded_m, padded_k) = (m[0].1, k[0].1);
 
     // The input descriptor maps an output element and a window position to an input element.
     let input_lengths = [n, hi, wi, c];
     let input_strides = [hi * wi * c, wi * c, c, 1];
-    let mut input_fields = Vec::new();
-    input_fields.extend(input_lengths);
-    input_fields.extend(input_strides);
+    let input_dims = ["N", "Hi", "Wi", "C"];
+    let mut input_fields = labelled("tensor length", &input_dims, &input_lengths);
+    input_fields.extend(labelled("tensor stride", &input_dims, &input_strides));
     // Zeros surround H and W. N and C pass through this step and the next.
-    input_fields.push(n);
-    for axis in 0..2 {
+    input_fields.push(("pass-through N".into(), n));
+    for (axis, dim) in ["H", "W"].into_iter().enumerate() {
         let (left, right) = (pool.left_pad[axis], pool.right_pad[axis]);
-        input_fields.extend([pool.input[axis] + left + right, left, right]);
+        input_fields.push((format!("padded {dim}i"), pool.input[axis] + left + right));
+        input_fields.push((format!("left pad {dim}"), left));
+        input_fields.push((format!("right pad {dim}"), right));
     }
-    input_fields.push(c);
+    input_fields.push(("pass-through C".into(), c));
     // A window position and an output position, scaled by the dilation and the stride, index
     // each padded axis.
-    input_fields.push(n);
-    for axis in 0..2 {
-        input_fields.extend([
-            pool.window[axis],
-            output[axis],
-            pool.dilation[axis],
-            pool.stride[axis],
-        ]);
+    input_fields.push(("pass-through N".into(), n));
+    for (axis, [window, dim]) in [["Y", "H"], ["X", "W"]].into_iter().enumerate() {
+        input_fields.push((format!("window {window}"), pool.window[axis]));
+        input_fields.push((format!("output {dim}o"), [ho, wo][axis]));
+        input_fields.push((format!("dilation {dim}"), pool.dilation[axis]));
+        input_fields.push((format!("stride {dim}"), pool.stride[axis]));
     }
-    input_fields.push(c);
-    input_fields.extend(ck_merge(&[n, ho, wo, c]));
-    input_fields.extend(ck_merge(&[y, x]));
-    input_fields.extend(m);
+    input_fields.push(("pass-through C".into(), c));
+    let output_dims = ["N", "Ho", "Wo", "C"];
+    input_fields.extend(ck_merge("M", &output_dims, &[n, ho, wo, c]));
+    input_fields.extend(ck_merge("K", &["Y", "X"], &[y, x]));
+    input_fields.extend(m.clone());
     input_fields.extend(k);
-    let mut bytes = ck_descriptor(&input_fields, m[0] * k[0], input_lengths, input_strides);
+    input_fields.extend(ck_descriptor_end(
+        padded_m * padded_k,
+        input_lengths,
+        input_strides,
+    ));
 
     // The output descriptor maps an output element to its offset. CK gives the output tensor
     // the input's height and width here, so they size its element space.
     let output_strides = [ho * wo * c, wo * c, c, 1];
-    let mut output_fields = Vec::new();
-    output_fields.extend(input_lengths);
-    output_fields.extend(output_strides);
-    output_fields.extend(ck_merge(&[n, ho, wo, c]));
+    let ck_dims = ["N", "H (CK passes Hi)", "W (CK passes Wi)", "C"];
+    let mut output_fields = labelled("tensor length", &ck_dims, &input_lengths);
+    output_fields.extend(labelled("tensor stride", &output_dims, &output_strides));
+    output_fields.extend(ck_merge("M", &output_dims, &[n, ho, wo, c]));
     output_fields.extend(m);
-    bytes.extend(ck_descriptor(
-        &output_fields,
-        m[0],
-        input_lengths,
-        output_strides,
-    ));
+    output_fields.extend(ck_descriptor_end(padded_m, input_lengths, output_strides));
 
+    // Each descriptor field is one 32-bit parameter, labelled with the kernel argument it
+    // belongs to.
+    let mut params = Vec::new();
+    for (argument, fields) in [
+        ("in_grid_desc_m_k", input_fields),
+        ("out_grid_desc_m", output_fields),
+    ] {
+        for (name, value) in fields {
+            let name = format!("{argument}: {name}");
+            params.push(param(name, LaunchValue::Int(value)));
+        }
+    }
     // The input operation has no fields. The window size follows at the next word.
-    bytes.resize(bytes.len() + 4, 0);
-    bytes.extend((y * x).to_le_bytes());
-    // The scale, padded to the pointers' alignment, then the input and a null index input.
-    bytes.extend(1.0_f32.to_le_bytes());
-    bytes.resize(bytes.len() + 4, 0);
-    bytes.extend(AVGPOOL_INPUT_BASE.to_le_bytes());
-    bytes.extend(0_u64.to_le_bytes());
-    // The weight of the output's old values, padded, then the output and a null index output.
-    bytes.extend(0.0_f32.to_le_bytes());
-    bytes.resize(bytes.len() + 4, 0);
-    bytes.extend(AVGPOOL_OUTPUT_BASE.to_le_bytes());
-    bytes.extend(0_u64.to_le_bytes());
+    let divider = "acc_elementwise_op: divider, the window size";
+    params.push(param(
+        "in_elementwise_op (no fields) and padding",
+        LaunchValue::Int(0),
+    ));
+    params.push(param(divider, LaunchValue::Int(y * x)));
+    // The scale, then the input and a null index input. A pointer aligns itself to 8 bytes.
+    let input = LaunchValue::Ptr {
+        array: "input",
+        base: AVGPOOL_INPUT_BASE,
+    };
+    params.push(param("alpha", LaunchValue::Float(1.0)));
+    params.push(param("p_in", input));
+    for half in ["low", "high"] {
+        let name = format!("p_in_index ({half} word, null)");
+        params.push(param(name, LaunchValue::Int(0)));
+    }
+    // The weight of the output's old values, then the output and a null index output.
+    let output = LaunchValue::Ptr {
+        array: "output",
+        base: AVGPOOL_OUTPUT_BASE,
+    };
+    params.push(param("beta", LaunchValue::Float(0.0)));
+    params.push(param("p_out", output));
+    for half in ["low", "high"] {
+        let name = format!("p_out_index ({half} word, null)");
+        params.push(param(name, LaunchValue::Int(0)));
+    }
+    params
+}
+
+/// CK's argument bytes for `pool`: its parameters laid out as the shared AMD frontend lays out
+/// a launch file's, each at the next offset aligned to its size.
+pub fn ck_avgpool2d_kernarg(pool: &AvgPool2d) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for param in ck_avgpool2d_params(pool) {
+        let value = match param.value {
+            LaunchValue::Int(value) => value.to_le_bytes().to_vec(),
+            LaunchValue::Float(value) => value.to_le_bytes().to_vec(),
+            LaunchValue::Ptr { base, .. } => base.to_le_bytes().to_vec(),
+        };
+        bytes.resize(bytes.len().next_multiple_of(value.len()), 0);
+        bytes.extend(value);
+    }
     assert_eq!(bytes.len(), 392, "the kernel's argument size");
     bytes
+}
+
+/// The `volta solve` launch file of `pool`: its arrays, its parameters and the average-pooling
+/// spec at its dims. The description states the launch, then the sentence `note`.
+pub fn avgpool_launch_file(pool: &AvgPool2d, note: &str) -> String {
+    // The file names no grid: it launches one workgroup, the only one `volta solve` runs.
+    let outputs = pool.output_len();
+    assert!(
+        outputs <= 256,
+        "a launch file holds one workgroup of 256 outputs, not {outputs}"
+    );
+    let (n, c) = (pool.batch, pool.channels);
+    let [hi, wi] = pool.input;
+    let [ho, wo] = pool.output();
+    let description = format!(
+        "CK average pooling of a {n} x {hi} x {wi} x {c} NHWC fp32 tensor into {ho} x {wo}: \
+         windows {:?}, strides {:?}, dilations {:?}, zero padding {:?} before and {:?} after, \
+         each as [height, width]. {note} The parameters are the words of CK's two by-value \
+         tensor descriptors, then its other kernel arguments. volta_pipeline's AMD tests \
+         generate this file; VOLTA_BLESS=1 rewrites it",
+        pool.window, pool.stride, pool.dilation, pool.left_pad, pool.right_pad
+    );
+
+    let mut text = String::new();
+    writeln!(text, "{{").unwrap();
+    writeln!(text, r#"  "description": {description:?},"#).unwrap();
+    writeln!(text, r#"  "block": 256,"#).unwrap();
+    // The arrays lie in this order at the frontend's default bases, the test addresses.
+    writeln!(text, r#"  "arrays": ["#).unwrap();
+    let input_shape = [n, hi, wi, c];
+    let output_shape = [n, ho, wo, c];
+    writeln!(
+        text,
+        r#"    {{"name": "input",  "kind": "in",  "dtype": "f32", "shape": {input_shape:?}}},"#
+    )
+    .unwrap();
+    writeln!(
+        text,
+        r#"    {{"name": "output", "kind": "out", "dtype": "f32", "shape": {output_shape:?}}}"#
+    )
+    .unwrap();
+    writeln!(text, "  ],").unwrap();
+
+    writeln!(text, r#"  "params": ["#).unwrap();
+    let params = ck_avgpool2d_params(pool);
+    for (position, param) in params.iter().enumerate() {
+        let value = match param.value {
+            LaunchValue::Int(value) => format!(r#""int": {value}"#),
+            LaunchValue::Float(value) => format!(r#""float": {value:?}"#),
+            LaunchValue::Ptr { array, .. } => format!(r#""ptr": "{array}""#),
+        };
+        let comma = if position + 1 < params.len() { "," } else { "" };
+        writeln!(text, r#"    {{"name": {:?}, {value}}}{comma}"#, param.name).unwrap();
+    }
+    writeln!(text, "  ],").unwrap();
+
+    let spec = "../../crates/volta_equivalence/tests/specs/avg_pool2d_nhwc.spec";
+    writeln!(text, r#"  "spec": "{spec}","#).unwrap();
+    let dims: Vec<String> = pool
+        .spec_dims()
+        .iter()
+        .map(|(name, value)| format!(r#""{name}": {value}"#))
+        .collect();
+    writeln!(text, r#"  "dims": {{{}}}"#, dims.join(", ")).unwrap();
+    writeln!(text, "}}").unwrap();
+    text
+}
+
+/// Compare `examples/lean/<file>` with the launch file of `pool` and `note`, or rewrite it
+/// under `VOLTA_BLESS=1`.
+pub fn check_avgpool_launch_file(file: &str, pool: &AvgPool2d, note: &str) {
+    let text = avgpool_launch_file(pool, note);
+    // The launch-file reader must load the text before it is compared or written: the
+    // renderer escapes strings as Rust does, which is JSON only for plain text.
+    if let Err(error) = volta_ptx_analysis::LaunchFile::from_json(&text) {
+        panic!("{file}: the generated launch file does not load: {error}");
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/lean")
+        .join(file);
+    if let Err(error) = expect_file(&path, &text) {
+        panic!("{file}: {error}");
+    }
 }

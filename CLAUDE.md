@@ -905,10 +905,12 @@ row against `row_rms_norm.spec`, and refutes a wrong epsilon; `amd/graph_tests.r
 exactly one LDS write per wave.
 CK average pooling checks every output against `avg_pool2d_nhwc.spec` (a `padded` input) for
 unpadded, padded, dilated and two-workgroup launches, each workgroup writing exactly its own
-outputs, with arguments built as CK's host code builds them (`ck_avgpool2d_kernarg`). It
+outputs, with arguments built as CK's host code builds them (`ck_avgpool2d_params`). It
 refutes the undivided sum and padding on the other side. A launch whose output is larger than
 its input must be rejected: CK's output buffer bound drops four of its nine stores, and
-`check_against_spec` reports those outputs as never written (`IndexSetMismatch`).
+`check_against_spec` reports those outputs as never written (`IndexSetMismatch`). The
+`volta solve` launch files `examples/lean/avgpool2d_amd*.json` are snapshots of the same
+parameters for two launches (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,

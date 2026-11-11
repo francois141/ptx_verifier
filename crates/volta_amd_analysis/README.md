@@ -123,8 +123,14 @@ Specification comparisons live in `amd/equivalence_tests.rs`, each kernel's grap
 concluding `Verified` first; CK RMSNorm (`ck_rmsnorm2d`) is checked there and in
 `amd/graph_tests.rs`, without a snapshot of its outputs, and CK average pooling
 (`ck_avgpool2d`) there alone, also without one. `examples/lean/rmsnorm_amd.json`
-launches the same kernel through `volta solve`, listing the fields of CK's by-value argument
-struct as flat parameters; `volta_cli/tests/solve_tests.rs` requires that run to be accepted.
+launches CK RMSNorm through `volta solve`, listing the fields of CK's by-value argument
+struct as flat parameters, and `avgpool2d_amd.json` launches CK average pooling, listing the
+words of its two by-value tensor descriptors. The AMD tests generate both average-pooling
+launch files from the pooling parameters with `ck_avgpool2d_params`, the list their own
+argument bytes come from, and fail when a file differs; `VOLTA_BLESS=1` rewrites the files.
+`volta_cli/tests/solve_tests.rs` requires the RMSNorm and `avgpool2d_amd.json` runs to be
+accepted, and `avgpool2d_amd_larger_output.json`, whose 3 x 3 output extends past CK's output
+buffer bound, to be rejected for the four outputs the kernel never writes.
 `amd/grid_tests.rs` compares CK grid outputs with independent
 workgroup runs, checks that their stores do not overlap, and rejects differing control flow.
 Run the kernel and equivalence suites, then the graph and grid suites, from the repository root:
@@ -205,7 +211,7 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
 Because `-nogpulib` omits ROCm's device library, `ck_avgpool2d.hip` defines the needed OCKL
 helpers inline, like `ck_gemm.hip`.
 
-The tests build the kernel's arguments as CK's host code does (`ck_avgpool2d_kernarg` in
+The tests build the kernel's arguments as CK's host code does (`ck_avgpool2d_params` in
 `volta_pipeline/tests/common/amd.rs`): the two tensor descriptors of
 [`MakeABGridDescriptor_A_M_K_B_M`](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/include/ck/tensor_operation/gpu/device/impl/device_pool2d_fwd_nhwc_nhwc.hpp),
 the window size, and the scale of 1 and output weight of 0 that `Invoker::Run` passes. That
