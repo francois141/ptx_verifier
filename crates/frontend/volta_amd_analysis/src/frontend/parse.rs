@@ -251,7 +251,7 @@ mod tests {
     use super::*;
     use Operand::{Imm, Reg, Wait};
 
-    const COPY: &str = include_str!("../../../volta_pipeline/tests/amd/success/copy.s");
+    const COPY: &str = include_str!("../../../../volta_pipeline/tests/amd/success/copy.s");
 
     fn sgpr(first: u32, last: u32) -> Operand {
         Reg {

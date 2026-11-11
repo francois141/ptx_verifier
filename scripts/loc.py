@@ -25,6 +25,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ROOTS = ("crates", "scripts")
 SKIPPED_DIRS = frozenset({"target", ".venv", "__pycache__", ".pytest_cache", ".git"})
+# Folders of `crates/` that group crates rather than being one.
+CRATE_GROUPS = frozenset({"frontend", "backend"})
 
 
 class Language(enum.Enum):
@@ -128,7 +130,11 @@ def walk(root: Path) -> Iterator[Path]:
 
 def component_of(relative: Path) -> str:
     parts = relative.parts
-    return parts[1] if parts[0] == "crates" and len(parts) > 2 else parts[0]
+    if parts[0] != "crates" or len(parts) <= 2:
+        return parts[0]
+    if parts[1] in CRATE_GROUPS and len(parts) > 3:
+        return parts[2]
+    return parts[1]
 
 
 def role_of(path: Path) -> Role:

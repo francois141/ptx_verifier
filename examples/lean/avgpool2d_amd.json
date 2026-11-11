@@ -101,6 +101,6 @@
     {"name": "p_out_index (low word, null)", "int": 0},
     {"name": "p_out_index (high word, null)", "int": 0}
   ],
-  "spec": "../../crates/volta_equivalence/tests/specs/avg_pool2d_nhwc.spec",
+  "spec": "../../crates/backend/volta_equivalence/tests/specs/avg_pool2d_nhwc.spec",
   "dims": {"N": 1, "H": 14, "W": 14, "C": 3, "HOUT": 7, "WOUT": 7, "KH": 3, "KW": 3, "SH": 2, "SW": 2, "DH": 1, "DW": 1, "PH": 1, "PW": 1}
 }

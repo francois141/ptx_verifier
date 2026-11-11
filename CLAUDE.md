@@ -28,13 +28,15 @@ crates/
 ├── volta_spec/       # Specs (.spec language -> mathematical form -> SymbolicOutputs)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
-├── volta_ptx_analysis/ # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
-├── volta_amd_analysis/ # AMD kernel analysis
-├── volta_trainium_analysis/ # Trainium (NKI) kernel analysis
-├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
+├── frontend/         # One analysis per accelerator
+│   ├── volta_ptx_analysis/ # PTX frontend (lexer, parser) and abstract interpreter (PTX -> expressions + event graph)
+│   ├── volta_amd_analysis/ # AMD kernel analysis
+│   └── volta_trainium_analysis/ # Trainium (NKI) kernel analysis
+├── backend/          # The two solvers
+│   ├── volta_equivalence/ # Equivalence checking of expressions (decision procedure, VC dumps)
+│   └── volta_lean/   # Lean proofs of extracted obligations (acceptance check, agent tools over MCP, Claude Code prover)
 ├── volta_pipeline/   # Analysis -> {equivalence, graph} branches -> ACCEPT/REJECT/UNKNOWN; every end-to-end PTX test
 ├── volta_viz/        # Event-graph viewer (run store -> one self-contained HTML page)
-├── volta_lean/       # Lean proofs of extracted obligations (acceptance check, agent tools over MCP, Claude Code prover)
 └── volta_cli/        # Command-line interface
 ```
 
@@ -250,7 +252,7 @@ crate-level docs in `lib.rs` are the contract.
 
 ## Crate: volta_ptx_analysis
 
-**Path**: `crates/volta_ptx_analysis/`
+**Path**: `crates/frontend/volta_ptx_analysis/`
 
 Every module but `frontend` is private: `lib.rs` re-exports the whole API (`analyze`,
 `AnalysisResult`, `AnalysisParts`, `AnalysisError`, `write_op_counts`, the
@@ -406,7 +408,7 @@ verdict, duration) in `check_graph`. `cargo run -p volta_cli
 
 ## Crate: volta_amd_analysis
 
-**Path**: `crates/volta_amd_analysis/`
+**Path**: `crates/frontend/volta_amd_analysis/`
 
 AMD kernel analysis. The module layout separates assembly syntax (`frontend`),
 lowering (`lower`), the instruction representation (`ir`), and symbolic execution (`eval`).
@@ -499,7 +501,7 @@ in `ck_rmsnorm2d.hip`, and CK's fp32 average-pooling instance in `ck_avgpool2d.h
 
 ## Crate: volta_trainium_analysis
 
-**Path**: `crates/volta_trainium_analysis/`
+**Path**: `crates/frontend/volta_trainium_analysis/`
 
 AWS Trainium kernel analysis. Its input is an NKI kernel (a `@nki.jit` Python
 function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
@@ -1011,7 +1013,7 @@ counts the test's runs).
 
 ## Crate: volta_equivalence
 
-**Path**: `crates/volta_equivalence/`
+**Path**: `crates/backend/volta_equivalence/`
 
 `tests/specs/matmul_transposed.spec` stores B as `[N, K]` for `B[j, k]`, including rectangular operands.
 `attention_batch_head.spec` selects one batch/head from global BHSD inputs and returns its local output slice.
@@ -1100,7 +1102,7 @@ The paper's canonicalizer, in Rust:
 
 ## Crate: volta_lean
 
-**Path**: `crates/volta_lean/`
+**Path**: `crates/backend/volta_lean/`
 
 Lean proofs of a `challenge.lean` (`extract_lean`'s module, taken as text, so the crate
 depends only on `volta_common`; `volta_py`'s `prove_lean` composes the two). Every module

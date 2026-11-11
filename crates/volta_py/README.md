@@ -116,7 +116,7 @@ The same lines go to Python's `logging` (as `INFO`) whether or not `verbose` is 
 
 An existing `proof.lean` in `output_dir` is the agent's starting point. To recheck a proof
 without the agent, call `volta.check_lean_proof(output_dir)`. See
-[volta_lean](../volta_lean) for the agent's tools and what the check accepts.
+[volta_lean](../backend/volta_lean) for the agent's tools and what the check accepts.
 
 [examples/lean/prove_sigmoid_amd.py](../../examples/lean/prove_sigmoid_amd.py) proves the
 AMD sigmoid over 4096 elements.
