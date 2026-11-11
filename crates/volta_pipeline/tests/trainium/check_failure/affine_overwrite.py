@@ -4,9 +4,8 @@ import nki.isa as nisa
 
 
 # R1: each iteration of an affine_range overwrites one tile declared outside the loop, a
-# write-after-write between iterations the loop promises do not depend on each other, so
-# this is meant to race. Program order leaves the last row; sequential_overwrite is its
-# ordered twin.
+# write-after-write between iterations the loop promises do not depend on each other: a
+# race. Program order leaves the last row; sequential_overwrite is its twin.
 @nki.jit
 def kernel(a, out):
     assert a.shape == (2, 4)
