@@ -1,0 +1,8 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[2, 4]
+  x: sbuf[1, 4]
+  x = dma(a[0:1, 0:4])  # in affine_range#0[0] > no_reorder#0
+  out[0:1, 0:4] = dma(x)  # in affine_range#0[0] > no_reorder#0
+  x = dma(a[1:2, 0:4])  # in affine_range#0[1] > no_reorder#0
+  out[1:2, 0:4] = dma(x)  # in affine_range#0[1] > no_reorder#0

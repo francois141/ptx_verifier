@@ -1,0 +1,6 @@
+kernel kernel(a: [2, 4], out: [2, 4])
+  x: sbuf[1, 4] of a.dtype
+  dma_copy(dst=x, src=a[0:1, :])  # in affine_range#0[0] > no_reorder#0
+  dma_copy(dst=out[0:1, :], src=x)  # in affine_range#0[0] > no_reorder#0
+  dma_copy(dst=x, src=a[1:2, :])  # in affine_range#0[1] > no_reorder#0
+  dma_copy(dst=out[1:2, :], src=x)  # in affine_range#0[1] > no_reorder#0

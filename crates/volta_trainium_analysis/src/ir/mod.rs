@@ -8,7 +8,7 @@ mod kernel;
 mod scalar;
 mod tensor;
 
-pub use crate::frontend::ast::{LoopId, LoopIteration, LoopKind, Origin, Reordering};
+pub use crate::frontend::ast::{LoopId, LoopIteration, LoopKind, NoReorderId, Origin, Reordering};
 pub use activation::ActivationFunc;
 pub use arith::ArithOp;
 pub use instr::{Accumulation, InstrId, LoweredInstr, Mover, Order, Reduction, Sign};
