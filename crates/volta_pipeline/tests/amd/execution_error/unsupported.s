@@ -494,15 +494,14 @@ __clang_ocl_kern_imp_symbolic_select:
 	.p2align	8
 	.type	divergent_store,@function
 divergent_store:
-	v_and_b32_e32 v1, 1, v0
-	v_cmp_eq_u32_e32 vcc, 1, v1
-	s_and_saveexec_b64 s[2:3], vcc
-	s_cbranch_execz .LBB10_2
 	s_load_dwordx4 s[0:3], s[0:1], 0x0
 	v_lshlrev_b32_e32 v0, 2, v0
 	s_waitcnt lgkmcnt(0)
 	global_load_dword v1, v0, s[0:1]
 	s_waitcnt vmcnt(0)
+	v_cmp_lt_f32_e32 vcc, 0, v1
+	s_and_saveexec_b64 s[0:1], vcc
+	s_cbranch_execz .LBB10_2
 	global_store_dword v0, v1, s[2:3]
 .LBB10_2:
 	s_endpgm
@@ -567,17 +566,16 @@ divergent_store:
 __clang_ocl_kern_imp_divergent_store:
 	s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)
 	v_and_b32_e32 v4, 0x3ff, v31
-	v_and_b32_e32 v5, 1, v4
-	v_cmp_eq_u32_e32 vcc, 1, v5
+	v_mov_b32_e32 v5, 0
+	v_lshlrev_b32_e32 v4, 2, v4
+	v_lshl_add_u64 v[0:1], v[0:1], 0, v[4:5]
+	global_load_dword v0, v[0:1], off
+	s_waitcnt vmcnt(0)
+	v_cmp_lt_f32_e32 vcc, 0, v0
 	s_and_saveexec_b64 s[0:1], vcc
 	s_cbranch_execz .LBB11_2
-	v_lshlrev_b32_e32 v4, 2, v4
-	v_mov_b32_e32 v5, 0
-	v_lshl_add_u64 v[0:1], v[0:1], 0, v[4:5]
-	global_load_dword v6, v[0:1], off
-	v_lshl_add_u64 v[0:1], v[2:3], 0, v[4:5]
-	s_waitcnt vmcnt(0)
-	global_store_dword v[0:1], v6, off
+	v_lshl_add_u64 v[2:3], v[2:3], 0, v[4:5]
+	global_store_dword v[2:3], v0, off
 .LBB11_2:
 	s_or_b64 exec, exec, s[0:1]
 	s_waitcnt vmcnt(0)
@@ -923,7 +921,7 @@ f64_nan_constant:
 	s_waitcnt lgkmcnt(0)
 	global_load_dword v2, v0, s[0:1]
 	s_waitcnt vmcnt(0)
-	v_add_f32_e32 v1, v2, v1
+	v_add_f32_e32 v1, v1, v2
 	global_store_dword v0, v1, s[2:3]
 	s_endpgm
 	.section	.rodata,"a",@progbits
@@ -995,7 +993,7 @@ __clang_ocl_kern_imp_f64_nan_constant:
 	;;#ASMEND
 	global_load_dword v0, v[0:1], off
 	s_waitcnt vmcnt(0)
-	v_add_f32_e32 v6, v0, v6
+	v_add_f32_e32 v6, v6, v0
 	v_lshl_add_u64 v[0:1], v[2:3], 0, v[4:5]
 	global_store_dword v[0:1], v6, off
 	s_waitcnt vmcnt(0)

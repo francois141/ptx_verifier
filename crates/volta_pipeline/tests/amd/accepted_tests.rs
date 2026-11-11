@@ -5,8 +5,8 @@
 use crate::common;
 
 use common::amd::{
-    AmdChecked, CK_GEMM_KERNEL, amd_fixture, array, array_of, check_amd, check_amd_launch,
-    ck_gemm_kernarg,
+    AmdChecked, CK_GEMM_KERNEL, CK_GEMM_SIGMOID_KERNEL, amd_fixture, array, array_of, check_amd,
+    check_amd_launch, ck_gemm_kernarg,
 };
 use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::ast::Operand;
@@ -609,6 +609,18 @@ fn the_exec_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test every scalar operation that writes EXEC, against the expected outputs in
+// saveexec_ops.out: the EXEC and SCC each one leaves from a source mask and the active lanes,
+// the old or new EXEC it copies, and then the compiler's own masking of a branch.
+#[test]
+fn the_saveexec_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/saveexec_ops",
+        // Each of the 64 work-items writes its results to a row of 80 words.
+        &[array_of("out", 0x10000, 64 * 80, ArrayKind::Output(U32))],
+    );
+}
+
 // Test f64 arithmetic, modifiers, constants, conversions, comparisons, moves and overlapping
 // registers. Check all 64 lanes against the expected outputs in f64_ops.out.
 #[test]
@@ -623,24 +635,6 @@ fn the_f64_ops_kernel_writes_its_expected_outputs() {
     let mut kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
     kernarg.extend(1.5_f64.to_bits().to_le_bytes());
     common::amd::check_run_kernel("success/f64_ops", "f64_ops", 64, &kernarg, &arrays);
-}
-
-/// `CK_GEMM_KERNEL` with the C element op `$op`, mangled, in place of the third `PassThrough`,
-/// which shifts every later substitution index by one.
-macro_rules! ck_gemm_kernel_with_c_op {
-    ($op:literal) => {
-        concat!(
-            "_ZN2ck27kernel_gemm_xdl_cshuffle_v3INS_28GridwiseGemm_xdl_cshuffle_v3INS_13tensor_layout4",
-            "gemm8RowMajorENS3_11ColumnMajorES4_fffffNS_16tensor_operation12element_wise11PassThrough",
-            "ES8_",
-            $op,
-            "LNS6_6device18GemmSpecializationE7ELi128ELi64ELi64ELi64ELi4ELi4ELi16ELi16ELi2ELi4ENS_8",
-            "SequenceIJLi4ELi32ELi1EEEENSC_IJLi1ELi0ELi2EEEESE_Li2ELi2ELi2ELb0ELi0ESD_SE_SE_Li2ELi2",
-            "ELi2ELb0ELi0ELi1ELi2ENSC_IJLi1ELi32ELi1ELi4EEEELi2ELNS_26BlockGemmPipelineSchedulerE0ELNS_",
-            "24BlockGemmPipelineVersionE2EffLb0ELb0ELb0EEELb0ELNS_25InMemoryDataOperationEnumE0ELi1ELNS_",
-            "10TailNumberE10EEEvNT_8ArgumentE",
-        )
-    };
 }
 
 /// Run a `ck_gemm.hip`-style instance on an 8 x 8 x 8 problem.
@@ -668,10 +662,7 @@ fn the_ck_gemm_kernel_writes_its_expected_outputs() {
 // SGPR lane masks and selects a negated source on them.
 #[test]
 fn the_ck_gemm_sigmoid_kernel_writes_its_expected_outputs() {
-    check_ck_gemm(
-        "success/ck_gemm_sigmoid",
-        ck_gemm_kernel_with_c_op!("NS7_7SigmoidE"),
-    );
+    check_ck_gemm("success/ck_gemm_sigmoid", CK_GEMM_SIGMOID_KERNEL);
 }
 
 // Test that each output sums 25 adjacent input values weighted by the shared filter.

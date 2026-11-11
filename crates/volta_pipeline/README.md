@@ -55,11 +55,21 @@ only inline unit tests of their internals.
   for CK's column-major B. Each kernel's graph must conclude `Verified` before its
   outputs are compared, as for PTX kernels. CK attention checks all 16,384 outputs
   across two batches and two heads, executing workgroups separately and checking each
-  output footprint; a wrong Q head stride must be refuted. `just amd` runs them.
+  output footprint; a wrong Q head stride must be refuted. CK RMSNorm checks every output
+  of both rows of a 2 x 1,024 tensor and of a padded 1,000-element row against
+  `row_rms_norm.spec`; a wrong epsilon must be refuted. CK average pooling checks every
+  output against `avg_pool2d_nhwc.spec` for unpadded, padded, dilated and two-workgroup
+  launches, each workgroup writing exactly its own outputs; the undivided sum and padding
+  on the other side must be refuted. A launch whose output is larger than its input must
+  be rejected: CK's output buffer bound drops four of its nine stores, and the spec check
+  reports those outputs as never written. The `volta solve` launch files
+  `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json`, `gemm_amd.json` and
+  `gemm_sigmoid_amd.json` must equal the argument builders' parameters for their launches
+  (`VOLTA_BLESS=1` rewrites them). `just amd` runs them.
 - `amd/graph_tests.rs`: LDS reuse and pending-read races in workgroup 0. CK GEMM compares
   one and three K tiles over the same LDS storage, and its main loop also verifies at
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
-  LDS. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
+  LDS, and CK RMSNorm with exactly one LDS write per wave. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
   swapped inputs. The snapshot helper must reject a completed kernel with an LDS race.
 - `trainium/accepted_tests.rs`: NKI fixtures expected to run, their parsed and lowered
   forms and symbolic outputs matching their `.ast`, `.ir` and `.out` files (and their

@@ -435,8 +435,9 @@ are read-only and outputs cannot be loaded. Global and buffer stores interpret
 invalid values abort at the store. `analyze` returns a completed run's written
 output elements as `SymbolicOutputs` and none for an aborted run.
 Unsupported instructions return `EvalError`. `WaveState::exec` is the wave's concrete mask of
-active lanes, the same in every workgroup. A 64-bit scalar move or operation may write it;
-`v_cmpx` and `saveexec` instructions are rejected. Vector, memory and LDS instructions run in
+active lanes, the same in every workgroup. A 64-bit scalar move or operation may write it,
+as may the `saveexec` and `wrexec` operations (`ExecOp64`, sharing `scalar_op64`); `v_cmpx`
+is rejected. Vector, memory and LDS instructions run in
 the active lanes only, a comparison or carry mask has a clear bit for each inactive lane, and
 a DS read's destinations complete only in the lanes that ran it.
 Integer and bitwise operations require concrete words because
@@ -479,6 +480,7 @@ truncation toward zero, and clamping at each bound of the result's range.
 `exec_ops` checks each kind of instruction under a partial EXEC mask; its other kernels check a
 load that stays pending in lanes another completion skips and rejection of a grid whose
 workgroups differ in EXEC, and `amd/graph_tests.rs` counts its active lanes' LDS accesses.
+`saveexec_ops` checks every `saveexec` and `wrexec` opcode and a compiler-masked branch.
 Rejection tests (`amd/rejected_tests.rs`, over `amd/execution_error/` and the failing
 kernels of mixed `success/` files) assert the specific lowering or execution error instead
 of comparing outputs.
@@ -491,7 +493,7 @@ Do not add unit tests or `tests.rs` modules: cover execution behavior
 through compiled fixtures in `amd/accepted_tests.rs` and `amd/rejected_tests.rs`.
 See the crate README for ISA references, test commands, and fixture regeneration,
 including the pinned CK Tile forward-attention instance in `ck_fmha.hip` and RMSNorm instance
-in `ck_rmsnorm2d.hip`.
+in `ck_rmsnorm2d.hip`, and CK's fp32 average-pooling instance in `ck_avgpool2d.hip`.
 
 ## Crate: volta_trainium_analysis
 
@@ -898,6 +900,19 @@ or change the softmax row width). CK attention checks two batches and two heads 
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
+CK RMSNorm checks every output of both rows of a 2 x 1,024 tensor and of a padded 1,000-element
+row against `row_rms_norm.spec`, and refutes a wrong epsilon; `amd/graph_tests.rs` requires
+exactly one LDS write per wave.
+CK average pooling checks every output against `avg_pool2d_nhwc.spec` (a `padded` input) for
+unpadded, padded, dilated and two-workgroup launches, each workgroup writing exactly its own
+outputs, with arguments built as CK's host code builds them (`ck_avgpool2d_params`). It
+refutes the undivided sum and padding on the other side. A launch whose output is larger than
+its input must be rejected: CK's output buffer bound drops four of its nine stores, and
+`check_against_spec` reports those outputs as never written (`IndexSetMismatch`). The
+`volta solve` launch files `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json`,
+`gemm_amd.json` and `gemm_sigmoid_amd.json` are snapshots of the argument builders' labelled
+parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
+`common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,

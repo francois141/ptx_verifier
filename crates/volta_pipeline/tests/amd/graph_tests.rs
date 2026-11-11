@@ -18,9 +18,9 @@ use volta_graph_check::{GraphConclusion, PropertyResult};
 
 use common::Side;
 use common::amd::{
-    AmdChecked, CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE, FMHA_Q_BASE,
-    GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, amd_fixture, check_amd, ck_fmha_kernarg,
-    ck_gemm_kernarg, fmha_arrays, gemm_arrays,
+    AmdChecked, CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL,
+    FMHA_K_BASE, FMHA_Q_BASE, GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, amd_fixture, check_amd,
+    ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
 };
 
 /// Two waves over 128-word `input` and `output` arrays, the kernel's two pointer arguments.
@@ -192,6 +192,43 @@ fn ck_fmha_lds_accesses_from_all_waves_are_ordered() {
     }
     let waves = BTreeSet::from([0, 1, 2, 3]);
     assert_eq!((writers, readers), (waves.clone(), waves));
+}
+
+// Test that CK RMSNorm's four waves share their sums of squares through LDS and that the
+// execution verifies. Only lane 0 of each wave stores its wave's sum, so the graph must hold
+// exactly four LDS writes, one per wave, and reads from every wave.
+#[test]
+fn ck_rmsnorm_lds_accesses_from_all_waves_are_ordered() {
+    let run = check_amd(
+        "success/ck_rmsnorm2d.s",
+        amd_fixture!("success/ck_rmsnorm2d"),
+        CK_RMSNORM_KERNEL,
+        256,
+        &ck_rmsnorm_kernarg(1, 1024, 1.0 / 1_048_576.0),
+        &rmsnorm_arrays(1, 1024),
+    );
+    assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
+
+    // Collect the waves whose DS effects write and read LDS, and count the written words.
+    let graph = &run.analysis.graph;
+    let mut writers = Vec::new();
+    let mut readers = BTreeSet::new();
+    for (event, ev) in graph.events().iter() {
+        if let EventKind::Access(access) = ev.kind
+            && graph.access(access).space == Space::Shared
+        {
+            let side = common::side(graph, event);
+            match side.mode {
+                Write => writers.push(side.thread),
+                Read => {
+                    readers.insert(side.thread);
+                }
+            }
+        }
+    }
+    writers.sort();
+    assert_eq!(writers, [0, 1, 2, 3]);
+    assert_eq!(readers, BTreeSet::from([0, 1, 2, 3]));
 }
 
 // Test that a barrier alone leaves an LDS read racing another wave's overwrite, while a
