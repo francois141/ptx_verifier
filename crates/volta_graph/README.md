@@ -91,8 +91,9 @@ SyncObject ──has many──► Generation ◄──contributions── Contr
 - A `SyncObject` (`SyncObjectKind`) is one thing threads synchronize on: a
   named barrier `bar 0..15`, **one lifetime** of an mbarrier (a re-init
   creates a new object), the warp collectives of one warp, the
-  warpgroup collectives of one warpgroup, or one thread's `cp.async` wait
-  groups.
+  warpgroup collectives of one warpgroup, one thread's `cp.async` wait
+  groups, or the `Dependency` of one NKI instruction (the semaphore the Neuron
+  compiler would signal when it finishes).
 - A `Generation` is one round of that object: a named barrier's k-th firing, an
   mbarrier's k-th phase, one warp op instance. It stores its `index`, its
   `kind` (`GenerationKind`), its `contributions`, its `releases` (the `Resume`
@@ -120,6 +121,10 @@ Special generation kinds:
   `Exit` (they leave after). `ordering` is `Synchronizing` only for
   `bar.warp.sync`, which orders its members' memory. Every other collective is
   `ExecutionOnly`: the lanes wait for each other, nothing more.
+- `Dependency`: a `Dependency` object's one generation. Its producer
+  instruction's `Arrival { Release }` completes it at once, and each instruction
+  ordered after the producer resumes from it. No check matches it by kind: it
+  orders through `G0` and `G_HB` like any release.
 
 ### Asynchronous operations
 
@@ -148,7 +153,10 @@ or a thread's `cp.async.wait_group`.
   valid.
 - `Provenance` records the kernel, launch dims, targets, the `Assumption`s the
   analysis ran under (structured CTA, single CTA analyzed, Sync', eager async
-  data, ...) so verdicts can cite them.
+  data, the NKI ordering policy, ...) so verdicts can cite them. Its
+  `ThreadUnit` says what a graph thread is: a CTA thread, an AMD wave of
+  `lanes`, or one NKI instruction (`Instruction`, with `block_dim` the
+  instruction count).
 
 ## How the graph is built
 
@@ -178,6 +186,7 @@ calls:
 | `cp.async` + `cp.async.wait_group` | `async_issue` + effects; the wait opens an `AsyncGroupWait` generation, `track`s the completed ops, completes it, resumes the thread |
 | fences                             | `fence(t, pc, FenceKind)`                                        |
 | `tcgen05.alloc/dealloc/relinquish` | `tmem_alloc` / `tmem_dealloc` / `tmem_relinquish`                |
+| NKI instruction (Trainium)         | `resume` from each producer's `Dependency`, its accesses, then `signal` (its own `Dependency`, released and complete) and `exit` |
 | thread exits                       | `exit`                                                           |
 | end of run                         | `finish(Terminal)`                                               |
 

@@ -365,6 +365,21 @@ impl GraphBuilder {
         self.open_generation(id, index, kind)
     }
 
+    /// `thread`, an NKI instruction, releases everything before it at `pc` to the instructions
+    /// ordered after it: its `Dependency` generation, complete once it contributes.
+    pub fn signal(&mut self, thread: ThreadIx, pc: ProgramPoint) -> GenerationId {
+        let object = self.sync_object(SyncObjectKind::Dependency { producer: thread });
+        let generation = self.open_generation(object, 0, GenerationKind::Dependency);
+        let release = ContributionKind::Arrival {
+            count: 1,
+            expect_tx: 0,
+            ordering: ArrivalOrdering::Release,
+        };
+        self.contribute(thread, pc, generation, release);
+        self.complete_generation(generation, GenerationEvidence::default());
+        generation
+    }
+
     /// `thread` arrives at named barrier `id` at `pc`, joining the generation its arrivals form.
     /// The arrival that opens a generation gives the `arrivals` it fires on.
     pub fn barrier_arrive(
