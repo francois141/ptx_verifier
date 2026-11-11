@@ -900,6 +900,9 @@ or change the softmax row width). CK attention checks two batches and two heads 
 (2, 1, 2), all 16,384 outputs with exact per-workgroup footprints, and rejects a wrong Q head
 stride. Workgroups run separately; cross-workgroup races are not checked.
 CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute swapped inputs.
+CK RMSNorm checks every output of both rows of a 2 x 1,024 tensor and of a padded 1,000-element
+row against `row_rms_norm.spec`, and refutes a wrong epsilon; `amd/graph_tests.rs` requires
+exactly one LDS write per wave.
 `trainium/equivalence_tests.rs` checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,

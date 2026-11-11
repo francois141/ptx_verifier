@@ -419,3 +419,67 @@ pub fn ck_fmha_kernarg(q: u64, k: u64, heads: i32) -> Vec<u8> {
     bytes.resize(144, 0);
     bytes
 }
+
+/// The `kentry` of the CK RMSNorm instance `ck_rmsnorm2d.hip` compiles: four waves normalizing
+/// one row of up to 1,024 elements.
+pub const CK_RMSNORM_KERNEL: &str = concat!(
+    "_ZN7ck_tile6kentryILi1ENS_12Rmsnorm2dFwdINS_27Rmsnorm2dFwdPipelineOnePassINS_27Rmsnorm2d",
+    "FwdPipelineProblemIffffffffNS_19Generic2dBlockShapeINS_8sequenceIJLi1ELi1024EEEENS5_IJLi",
+    "1ELi256EEEENS5_IJLi1ELi1EEEEEENS_18Rmsnorm2dFwdTraitsILb1ELb0ELb0ELb0ELNS_21Rmsnorm2dFus",
+    "edAddEnumE0ELNS_23Rmsnorm2dFusedQuantEnumE0ELNS_22Rmsnorm2dSensitiveEnumE0EEEEENS_33Rmsn",
+    "orm2dFwdPipelineDefaultPolicyEEENS_17Default2DEpilogueINS_24Default2DEpilogueProblemIffL",
+    "b0ELb1ELb0EEEvEEEEJNSM_5KargsEEEEvDpT1_",
+);
+pub const RMSNORM_X_BASE: u64 = 0x10000;
+pub const RMSNORM_GAMMA_BASE: u64 = 0x20000;
+pub const RMSNORM_Y_BASE: u64 = 0x30000;
+
+/// X and Y at the test addresses, each `rows` contiguous rows of `columns` elements, and gamma
+/// with one element per column.
+pub fn rmsnorm_arrays(rows: u64, columns: u64) -> [ArrayDef; 3] {
+    [
+        ("x", RMSNORM_X_BASE, rows * columns, ArrayKind::Input),
+        ("gamma", RMSNORM_GAMMA_BASE, columns, ArrayKind::Input),
+        (
+            "y",
+            RMSNORM_Y_BASE,
+            rows * columns,
+            ArrayKind::Output(OutputType::F32),
+        ),
+    ]
+    .map(|(name, base, len, kind)| ArrayDef {
+        name: name.into(),
+        base,
+        len,
+        kind,
+    })
+}
+
+/// CK's `Rmsnorm2dFwd::Kargs` for `rows` contiguous rows of `columns` elements normalized with
+/// `epsilon`. The tensors this instance does not use have null pointers.
+pub fn ck_rmsnorm_kernarg(rows: i32, columns: i32, epsilon: f32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    // p_x, p_x_residual, p_sm_scale and p_gamma, then p_y, p_y_residual, p_y_scale, p_invRms
+    // and p_y_unquant.
+    for pointer in [
+        RMSNORM_X_BASE,
+        0,
+        0,
+        RMSNORM_GAMMA_BASE,
+        RMSNORM_Y_BASE,
+        0,
+        0,
+        0,
+        0,
+    ] {
+        bytes.extend(pointer.to_le_bytes());
+    }
+    bytes.extend(epsilon.to_le_bytes());
+    // m and n, then the row strides of X, the X residual, Y and the Y residual.
+    for field in [rows, columns, columns, columns, columns, columns] {
+        bytes.extend(field.to_le_bytes());
+    }
+    // Padding to the struct's eight-byte alignment.
+    bytes.resize(104, 0);
+    bytes
+}

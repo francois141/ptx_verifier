@@ -55,11 +55,13 @@ only inline unit tests of their internals.
   for CK's column-major B. Each kernel's graph must conclude `Verified` before its
   outputs are compared, as for PTX kernels. CK attention checks all 16,384 outputs
   across two batches and two heads, executing workgroups separately and checking each
-  output footprint; a wrong Q head stride must be refuted. `just amd` runs them.
+  output footprint; a wrong Q head stride must be refuted. CK RMSNorm checks every output
+  of both rows of a 2 x 1,024 tensor and of a padded 1,000-element row against
+  `row_rms_norm.spec`; a wrong epsilon must be refuted. `just amd` runs them.
 - `amd/graph_tests.rs`: LDS reuse and pending-read races in workgroup 0. CK GEMM compares
   one and three K tiles over the same LDS storage, and its main loop also verifies at
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
-  LDS. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
+  LDS, and CK RMSNorm with exactly one LDS write per wave. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
   swapped inputs. The snapshot helper must reject a completed kernel with an LDS race.
 - `trainium/accepted_tests.rs`: NKI fixtures expected to run, their parsed and lowered
   forms and symbolic outputs matching their `.ast`, `.ir` and `.out` files (and their

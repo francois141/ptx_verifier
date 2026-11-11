@@ -10,10 +10,10 @@ use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 use crate::common;
 
 use common::amd::{
-    CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE as K_BASE,
-    FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE,
-    amd_fixture, check_amd, check_amd_launch, ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays,
-    gemm_arrays,
+    CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL,
+    FMHA_K_BASE as K_BASE, FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE,
+    GEMM_C_BASE as C_BASE, amd_fixture, check_amd, check_amd_launch, ck_fmha_kernarg,
+    ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
 
@@ -323,6 +323,85 @@ fn amd_softmax_matches_its_specification() {
 #[test]
 fn amd_softmax_with_wrong_row_width_is_refuted() {
     let verdict = check_softmax(128, [16, 8]);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+/// The specification's epsilon, 2^-20, which an f32 holds exactly.
+const RMSNORM_EPSILON: f32 = 1.0 / 1_048_576.0;
+
+/// Check one row's full output footprint and its values against the RMSNorm formula. The kernel
+/// normalizes row `row` of `rows` rows of `columns` elements with `epsilon`.
+fn check_ck_rmsnorm(rows: u32, row: u32, columns: u32, epsilon: f32) -> EquivalenceVerdict {
+    let arrays = rmsnorm_arrays(u64::from(rows), u64::from(columns));
+    let kernarg = ck_rmsnorm_kernarg(rows as i32, columns as i32, epsilon);
+    // CK launches one workgroup of four waves per row, along X.
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (256, 1, 1),
+        workgroup_id: (row, 0, 0),
+        grid_size: (rows, 1, 1),
+    };
+    let mut actual = check_amd_launch(
+        "success/ck_rmsnorm2d.s",
+        amd_fixture!("success/ck_rmsnorm2d"),
+        CK_RMSNORM_KERNEL,
+        &launch,
+        &kernarg,
+        &arrays,
+    )
+    .verified_outputs();
+
+    // Require exactly this row's output slice before renumbering it for the local spec.
+    let output_start = u64::from(row) * u64::from(columns);
+    assert_eq!(actual.outputs.len(), 1);
+    let (name, elements) = &mut actual.outputs[0];
+    assert_eq!(name.as_str(), "y");
+    assert_eq!(elements.len(), columns as usize);
+    for (local, (index, _)) in elements.iter_mut().enumerate() {
+        assert_eq!(*index, output_start + local as u64, "row {row}");
+        *index -= output_start;
+    }
+
+    // The reference selects the row independently of CK's strides and its reduction order.
+    let dims = HashMap::from([
+        ("M".into(), u64::from(rows)),
+        ("N".into(), u64::from(columns)),
+        ("Row".into(), u64::from(row)),
+    ]);
+    let spec = include_str!("../../../volta_equivalence/tests/specs/row_rms_norm.spec");
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    check_equivalence(
+        &reference,
+        &actual,
+        &["y".into()],
+        &EquivCheckOptions::default(),
+    )
+    .0
+}
+
+// Test every output of both rows of a 2 x 1,024 tensor, one workgroup at a time, and of a
+// 1,000-element row, whose last 24 columns the kernel masks as padding.
+#[test]
+fn amd_ck_rmsnorm_rows_match_their_specification() {
+    for (rows, row, columns) in [(2, 0, 1024), (2, 1, 1024), (1, 0, 1000)] {
+        assert_eq!(
+            check_ck_rmsnorm(rows, row, columns, RMSNORM_EPSILON),
+            EquivalenceVerdict::Equivalent {
+                checked: u64::from(columns),
+                total: u64::from(columns),
+            },
+            "row {row} of {rows}, {columns} columns"
+        );
+    }
+}
+
+// Test that a kernel run with twice the specification's epsilon is refuted.
+#[test]
+fn amd_ck_rmsnorm_with_wrong_epsilon_is_refuted() {
+    let verdict = check_ck_rmsnorm(1, 0, 1024, 2.0 * RMSNORM_EPSILON);
     assert!(
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
