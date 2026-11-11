@@ -30,7 +30,7 @@ use crate::ir::{
     BarrierAlignment, BinOp, Clamp, CpAsyncSrcSize, InstrId, LoweredInstr, LoweredProgram,
     MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, TensormapFence,
 };
-use crate::logging::{info, warn};
+use volta_common::logging::{info, warn};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
     AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierWait, EventGraph, FenceKind,

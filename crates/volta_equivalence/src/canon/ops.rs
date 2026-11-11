@@ -4,10 +4,11 @@
 
 use std::collections::HashMap;
 
+use volta_common::logging::debug;
+
 use super::arena::{Poly, PolyId, Rat, Term, TermId};
 use super::coeff::Coeff;
 use super::{CanonError, Session};
-use crate::logging::debug;
 
 /// A polynomial value: interned (shared) or transient (exclusively owned).
 #[derive(Debug, Clone)]

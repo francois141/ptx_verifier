@@ -2,12 +2,11 @@
 
 use std::time::Instant;
 
+use volta_common::logging::info;
 use volta_graph::Terminal;
 use volta_graph_check::{GraphReport, check_graph};
 use volta_ptx_analysis::frontend::ast::Module;
 use volta_ptx_analysis::{AnalysisConfig, AnalysisError, AnalysisResult, analyze};
-
-use crate::logging::info;
 
 /// A kernel's analysis artifacts and its graph branch's report.
 pub struct KernelVerification {

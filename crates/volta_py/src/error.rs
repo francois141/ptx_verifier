@@ -6,6 +6,7 @@ use pyo3::PyErr;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 
+use volta_common::report::{Position, position};
 use volta_common::span::Span;
 use volta_graph_check::{Deadlock, Property, PropertySummary};
 use volta_pipeline::FrontendError;
@@ -31,27 +32,6 @@ create_exception!(
     "A thread can be blocked forever: no barrier or warp group releases it."
 );
 
-/// Resolve a byte offset to a 1-based (line, column) and that line's text.
-fn locate(source: &str, offset: usize) -> (usize, usize, &str) {
-    let mut line = 1;
-    let mut col = 1;
-    let mut line_start = 0;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-            line_start = i + 1;
-        } else {
-            col += 1;
-        }
-    }
-    let line_text = source[line_start..].lines().next().unwrap_or("");
-    (line, col, line_text)
-}
-
 /// Render a title + message + optional span into `parse_error_to_py`'s
 /// plain-text "line N, col M" + source line + caret format, against the
 /// in-memory source the span indexes into.
@@ -62,10 +42,14 @@ fn format_located(source: &str, title: &str, message: Option<&str>, span: Option
         text.push_str(message);
     }
     if let Some(Span { start: lo, .. }) = span {
-        let (line, col, line_text) = locate(source, lo);
-        text.push_str(&format!("\n  --> line {}, column {}\n", line, col));
+        let Position {
+            line,
+            column,
+            line_text,
+        } = position(source, lo);
+        text.push_str(&format!("\n  --> line {}, column {}\n", line, column));
         text.push_str(&format!("  | {}\n", line_text));
-        text.push_str(&format!("  | {}^", " ".repeat(col.saturating_sub(1))));
+        text.push_str(&format!("  | {}^", " ".repeat(column.saturating_sub(1))));
     }
     text
 }

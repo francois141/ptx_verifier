@@ -3,6 +3,10 @@ name = "volta_common"
 version.workspace = true
 edition.workspace = true
 
+[features]
+logging = ["dep:log"]
+
 [dependencies]
 ansi_term.workspace = true
+log = { workspace = true, optional = true }
 textwrap.workspace = true

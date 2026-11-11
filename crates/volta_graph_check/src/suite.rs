@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use std::fmt;
 
+use volta_common::logging::info;
 use volta_graph::{BlockedThread, EventGraph, EventId, Terminal};
 
 use crate::allocation_order::{
@@ -21,7 +22,6 @@ use crate::allocation_permit::{
 use crate::barrier_epoch::{
     EpochResult, EpochViolation, check_mbarrier_epochs, check_named_barrier_epochs,
 };
-use crate::logging::info;
 use crate::mbarrier_ordering::{
     MbarrierOrderingResult, PhaseBalanceViolation, check_mbarrier_ordering,
 };

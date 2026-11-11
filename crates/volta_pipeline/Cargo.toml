@@ -6,10 +6,9 @@ autotests = false
 
 [features]
 default = []
-logging = ["dep:log"]  # Full logging when enabled
+logging = ["volta_common/logging"]  # Full logging when enabled
 
 [dependencies]
-log = { workspace = true, optional = true }
 rug.workspace = true
 volta_amd_analysis.workspace = true
 volta_common.workspace = true

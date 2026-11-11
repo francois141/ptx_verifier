@@ -12,7 +12,7 @@ use crate::eval::value::Value;
 use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
-use crate::logging::warn;
+use volta_common::logging::warn;
 use volta_expr::{ExprId, Real};
 
 /// Which 16-bit half of a `.b32` funnel-shift operand to read.

@@ -687,6 +687,7 @@ name = "volta_common"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
+ "log",
  "textwrap",
 ]
 
@@ -696,10 +697,10 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "id_collections",
- "log",
  "rug",
  "serde",
  "stacker",
+ "volta_common",
  "volta_expr",
  "volta_spec",
 ]
@@ -726,7 +727,7 @@ dependencies = [
 name = "volta_graph_check"
 version = "0.1.0"
 dependencies = [
- "log",
+ "volta_common",
  "volta_expr",
  "volta_graph",
 ]
@@ -735,7 +736,6 @@ dependencies = [
 name = "volta_pipeline"
 version = "0.1.0"
 dependencies = [
- "log",
  "rug",
  "volta_amd_analysis",
  "volta_common",
@@ -754,7 +754,6 @@ name = "volta_ptx_analysis"
 version = "0.1.0"
 dependencies = [
  "id_collections",
- "log",
  "serde",
  "serde_json",
  "volta_common",

@@ -6,13 +6,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::frontend::ast::{Function, Module, TopLevelItem, VarDecl};
+use volta_common::logging::info;
 use volta_expr::{ExprArena, SymbolicOutputs};
 use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance, ThreadUnit};
 
 use crate::config::AnalysisConfig;
 use crate::eval::{EvalError, Interpreter, OutputsUnavailable, RunArtifacts, Stats};
 use crate::ir::LoweredProgram;
-use crate::logging::info;
 use crate::lower::{LowerError, lower_function};
 
 /// Errors that prevent the candidate execution from starting at all.

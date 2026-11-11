@@ -2,8 +2,6 @@
 //! (`canon`, wrapped by `equiv`), the f64 oracle (`numeric`), per-element
 //! output checking (`check`) and the `.vcdump` format (`vc_dump`).
 
-mod logging;
-
 pub mod canon;
 pub mod check;
 pub mod equiv;

@@ -45,12 +45,12 @@ Direct dependencies of each crate:
 volta_cli          → volta_pipeline, volta_equivalence, volta_ptx_analysis, volta_graph_check, volta_graph, volta_viz, volta_spec, volta_expr, volta_common
 volta_viz          → volta_graph_check, volta_graph, volta_expr
 volta_pipeline     → volta_ptx_analysis, volta_amd_analysis, volta_trainium_analysis, volta_equivalence, volta_graph_check, volta_graph, volta_spec, volta_expr, volta_common (+ dev: volta_viz)
-volta_equivalence  → volta_expr (+ dev: volta_spec)
+volta_equivalence  → volta_expr, volta_common (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
 volta_amd_analysis → volta_graph, volta_expr
 volta_trainium_analysis → volta_expr
-volta_graph_check  → volta_graph
+volta_graph_check  → volta_graph, volta_common
 volta_graph        → volta_expr
 volta_expr         → (nothing)
 volta_common       → (nothing)
@@ -83,10 +83,12 @@ tests of internals.
 
 **Path**: `crates/volta_common/`
 
-- `Span` - Source location (low + high byte offset)
+- `span::Span` - Source location (`start..end` byte offsets, built with `Span::new`)
 - `FileCache` - Caches file content to make sure we always use a consistent version of each file
 - `Locate<E>` - Error wrapper with optional location info (span + file path)
 - `report_error` - Produces an error message from a title, message, span, and file content. Extracts out and includes the code snippet at the given span in the given file content
+- `report::position` - A byte offset's 1-based line, column (in characters) and line text: `report_error`'s `path:line:column` header and `volta_py`'s error messages
+- `logging` - The `debug`/`info`/`trace`/`warn` macros every crate logs through: `log`'s own under the `logging` feature, else a stand-in that compiles its arguments in a dead branch, so log-only values still count as used
 - `run_log::RunLog` - Per-invocation log file (`<unix-seconds>-<pid>-<command>.log` under `--log-dir`, default `volta-logs/`), written by the `volta` binary; `tee` mirrors an `env_logger` target into it under its `logging` feature
 
 The pattern is to create an error kind type, and then an alias for `Locate` of that error kind. `locate_span` can be used to tag a `Locate` with a span if it does not already have one. `locate_path` can be used to tag a `Locate` with a path if it does not already have one.
@@ -387,11 +389,11 @@ racing another thread's use of the object keeps its witness.
 - `write_op_counts(out, label, counts)` - the profile-table formatter `volta`
   prints
 
-### Logging (`logging.rs`)
+### Logging (`volta_common::logging`)
 
 Gated by the `logging` feature (`volta_ptx_analysis`, `volta_equivalence`,
-`volta_graph_check` and `volta_pipeline`, all passed through by `volta_cli`);
-without it the macros are no-op stubs. Wired at the decision points:
+`volta_graph_check` and `volta_pipeline`, each turning on `volta_common/logging`,
+all passed through by `volta_cli`); without it the macros log nothing. Wired at the decision points:
 barrier/warp-group fires (trace), deadlock (warn), launch config and
 completion stats (info) in `volta_ptx_analysis`; VC session recycles (info) and
 fraction-equality escalation (debug) in `volta_equivalence`; the stages at
@@ -751,7 +753,8 @@ module each, each callable on an `EventGraph` in
 isolation with explicitly passed certificates, each with its algorithm and
 contract (PASS/FAIL/UNKNOWN meaning) in its module docs. Every check returns
 `PropertyResult<E, V> = Pass(evidence) | Fail(witnesses) | Unknown(unresolved)`;
-none turns an unsupported case into `Pass`. Depends only on `volta_graph`.
+none turns an unsupported case into `Pass`. Depends only on `volta_graph` (and
+`volta_common`, for its logging macros).
 
 | #  | `Property`             | Algorithm   | Module                                |
 |----|------------------------|-------------|---------------------------------------|
@@ -984,7 +987,8 @@ counts the test's runs).
 `attention_batch_head.spec` selects one batch/head from global BHSD inputs and returns its local output slice.
 
 Everything after VC extraction: takes two `SymbolicOutputs` and decides them
-element by element. Depends only on `volta_expr`, so it checks expressions
+element by element. Depends only on `volta_expr` (and `volta_common`, for its
+logging macros), so it checks expressions
 from any producer - in memory, from a `.vcdump`, or from `.vexpr` text.
 
 ### Output checking (`check.rs`)
