@@ -85,6 +85,12 @@ Inline constants follow its [packed-to-scalar regression](https://github.com/llv
 The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
 unbalanced and extra-quoted arguments are rejected.
 
+Kernel selection requires one matching entry label and one matching descriptor
+block. Entry names may be bare or quoted, with whitespace before the colon.
+Repeated definitions are rejected, including inline labels; a selected entry must
+occupy its own line so no inline instruction is dropped. Distinct kernel names
+remain selectable.
+
 ## Tests
 
 This crate keeps only inline unit tests; its kernels are tested end to end in
