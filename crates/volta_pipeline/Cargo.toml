@@ -2,6 +2,7 @@
 name = "volta_pipeline"
 version.workspace = true
 edition.workspace = true
+autotests = false
 
 [features]
 default = []
@@ -23,3 +24,15 @@ volta_trainium_analysis.workspace = true
 [dev-dependencies]
 volta_trainium_analysis.workspace = true
 volta_viz.workspace = true
+
+[[test]]
+name = "ptx_tests"
+path = "tests/ptx/main.rs"
+
+[[test]]
+name = "amd_tests"
+path = "tests/amd/main.rs"
+
+[[test]]
+name = "trainium_tests"
+path = "tests/trainium/main.rs"

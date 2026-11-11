@@ -147,5 +147,5 @@ Prerequisites (`Property::prerequisites`): 1, 2, 3 and 10 need nothing; 4 and
 ## Tests
 
 `tests/` holds graph-level unit tests built with `GraphBuilder`. End-to-end PTX
-tests for each check live in `volta_pipeline/tests/<check>_tests.rs` and assert on
+tests for each check live in `volta_pipeline/tests/ptx/<check>_tests.rs` and assert on
 the check's typed witness.

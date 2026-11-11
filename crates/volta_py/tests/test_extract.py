@@ -28,9 +28,9 @@ def add_config(size):
     "path,size,isa,race_verified",
     [
         ("examples/quickstart/add.ptx", 128, "NVIDIA PTX", True),
-        ("crates/volta_amd_analysis/tests/fixtures/add.s", 64, "AMD gfx950", True),
+        ("crates/volta_pipeline/tests/amd/success/add.s", 64, "AMD gfx950", True),
         (
-            "crates/volta_trainium_analysis/tests/fixtures/add.py",
+            "crates/volta_pipeline/tests/trainium/success/add.py",
             256,
             "AWS Trainium NKI",
             None,
@@ -112,7 +112,7 @@ def test_missing_output_indices_fail_extraction():
 def test_invalid_tolerance_fails_extraction(tolerance):
     with pytest.raises(volta.VoltaError, match="tolerance"):
         volta.extract_lean(
-            ROOT / "crates/volta_trainium_analysis/tests/fixtures/add.py",
+            ROOT / "crates/volta_pipeline/tests/trainium/success/add.py",
             spec=ADD_SPEC,
             dims={"N": 256},
             tolerance=tolerance,
@@ -122,7 +122,7 @@ def test_invalid_tolerance_fails_extraction(tolerance):
 def test_solve_no_longer_selects_the_lean_exporter():
     with pytest.raises(TypeError, match="solver"):
         volta.solve(
-            ROOT / "crates/volta_trainium_analysis/tests/fixtures/add.py",
+            ROOT / "crates/volta_pipeline/tests/trainium/success/add.py",
             spec=ADD_SPEC,
             dims={"N": 256},
             solver="lean",

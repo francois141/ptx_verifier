@@ -9,7 +9,7 @@ test: test-rust test-python
 test-rust:
     cargo test --release --workspace --no-fail-fast -- --test-threads 16 --color always
 
-# volta_pipeline's tests (PTX kernels through the analysis stage and graph branch)
+# volta_pipeline's tests (PTX, AMD and Trainium kernels through the analysis stage and both branches)
 all:
     cargo test --release -p volta_pipeline -- --test-threads 16 --color always
 
@@ -54,18 +54,18 @@ loc *args:
 
 # Check AMD kernel outputs, expected rejections, and functional equivalence
 amd:
-    @cargo test -q -p volta_amd_analysis --test kernels -- --test-threads=1 >/dev/null
-    @cargo test -q -p volta_pipeline --test amd_equivalence_tests -- --test-threads=1
+    @cargo test -q -p volta_pipeline --test amd_tests -- --test-threads=1 accepted_tests:: rejected_tests:: >/dev/null
+    @cargo test -q -p volta_pipeline --test amd_tests -- --test-threads=1 equivalence_tests::
 
 # Write the AMD sigmoid kernel's Lean challenge to target/lean/sigmoid.lean
 extract-lean:
-    @cargo test -q -p volta_amd_analysis --test lean_tests >/dev/null
+    @cargo test -q -p volta_pipeline --test amd_tests -- lean_tests:: >/dev/null
     @echo "Wrote target/lean/sigmoid.lean"
 
-# Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them), and their functional equivalence with their specs (in release: v2 against attention takes seconds there, a minute in debug)
+# Check the Trainium kernels' parsed and lowered forms and symbolic outputs against their .ast, .ir and .out files (VOLTA_BLESS=1 rewrites them), their expected rejections, and their functional equivalence with their specs (in release: v2 against attention takes seconds there, a minute in debug)
 trainium:
-    cargo test -q -p volta_trainium_analysis
-    cargo test -q --release -p volta_pipeline --test trainium_equivalence_tests
+    cargo test -q -p volta_pipeline --test trainium_tests -- accepted_tests:: rejected_tests::
+    cargo test -q --release -p volta_pipeline --test trainium_tests -- equivalence_tests::
 
 external:
     python3 external/races.py

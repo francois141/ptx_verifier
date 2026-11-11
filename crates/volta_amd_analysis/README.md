@@ -75,8 +75,14 @@ unbalanced and extra-quoted arguments are rejected.
 
 ## Tests
 
-Kernel tests in `tests/kernels.rs` parse, lower, and execute compiled assembly
-fixtures, then compare their symbolic outputs with the corresponding `.out` files.
+This crate keeps only inline unit tests; its kernels are tested end to end in
+`volta_pipeline`, from the fixtures in `volta_pipeline/tests/amd/`: `success/` holds the
+kernels expected to complete and `execution_error/` those the analysis must reject
+(`unsupported`, `lds_race`). A file holding kernels of both kinds (one `.cl` compiles to
+one `.s`) sits in `success/`, and its tests name the failing kernels.
+
+`amd/accepted_tests.rs` parses, lowers, and executes the compiled assembly fixtures,
+then compares their symbolic outputs with the corresponding `.out` files.
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
 The `vector_int_ops` fixture checks multiplication, bit counts, 64-bit and packed moves,
 and signed 64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
@@ -91,19 +97,19 @@ three launch coordinates, including a disabled Y axis, and rejects invalid grid 
 a grid run over all its workgroups must match a run of each workgroup alone and report
 duplicate stores. It also checks integer data through LDS and lane exchange, uniform branch
 outcomes with different VCC masks, and rejection of varying LDS addresses and NaN operands.
-Rejection fixtures instead require a specific lowering or execution error.
-Specification comparisons live in `volta_pipeline/tests/amd_equivalence_tests.rs`.
-`volta_pipeline/tests/amd_grid_tests.rs` compares CK grid outputs with independent workgroup
-runs, checks that their stores do not overlap, and rejects differing control flow.
+`amd/rejected_tests.rs` instead requires a specific lowering or execution error.
+Specification comparisons live in `amd/equivalence_tests.rs`, each kernel's graph
+concluding `Verified` first. `amd/grid_tests.rs` compares CK grid outputs with independent
+workgroup runs, checks that their stores do not overlap, and rejects differing control flow.
 Run the kernel and equivalence suites, then the graph and grid suites, from the repository root:
 
 ```sh
 just amd
-cargo test -p volta_pipeline --test amd_graph_tests --test amd_grid_tests
+cargo test -p volta_pipeline --test amd_tests -- graph_tests:: grid_tests::
 ```
 
-`tests/lean_tests.rs` states the sigmoid fixture's outputs against
-`tests/fixtures/sigmoid.spec` (`1 / (1 + exp(-a[i]))`) as a Lean challenge and writes it to
+`amd/lean_tests.rs` states the sigmoid fixture's outputs against
+`success/sigmoid.spec` (`1 / (1 + exp(-a[i]))`) as a Lean challenge and writes it to
 `target/lean/sigmoid.lean` (`just extract-lean`). Each element is claimed within
 `1/1000`, not equal: above `a > 87.34` the kernel rescales by the f32 constant nearest
 `e^-64`, so over the reals the exact equality is false there.
@@ -115,10 +121,10 @@ using the same `ds_bpermute` [shuffle builtin](https://github.com/ROCm/composabl
 
 ### Regenerating the copy fixture
 
-`tests/fixtures/copy.cl` is `out[i] = in[i]`, one element per workitem, and
+`volta_pipeline/tests/amd/success/copy.cl` is `out[i] = in[i]`, one element per workitem, and
 `copy.s` is the assembly Homebrew clang 21.1.8 produced for it for gfx950
 (MI355X). Apple's clang lacks the AMDGPU target; use LLVM's clang (Homebrew
-`llvm@21` on macOS). Regenerate it from `tests/fixtures/` with:
+`llvm@21` on macOS). Regenerate it from that directory with:
 
 ```sh
 clang -x cl -cl-std=CL1.2 --target=amdgcn-amd-amdhsa -mcpu=gfx950 -nogpulib \
@@ -140,13 +146,13 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
   --hip-path="$HIP_ROOT" -DNDEBUG -Wno-unknown-warning-option \
   -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
   -fno-hip-fp32-correctly-rounded-divide-sqrt -I "$CK_ROOT/include" \
-  -S crates/volta_amd_analysis/tests/fixtures/ck_gemm.hip \
-  -o crates/volta_amd_analysis/tests/fixtures/ck_gemm.s
+  -S crates/volta_pipeline/tests/amd/success/ck_gemm.hip \
+  -o crates/volta_pipeline/tests/amd/success/ck_gemm.s
 ```
 
 ### Compiling the CK attention fixture
 
-`tests/fixtures/ck_fmha.hip` instantiates CK Tile's fp32 forward-attention device entry at
+`volta_pipeline/tests/amd/success/ck_fmha.hip` instantiates CK Tile's fp32 forward-attention device entry at
 revision [`fc2862d712`](https://github.com/ROCm/composable_kernel/blob/fc2862d712/example/ck_tile/01_fmha/codegen/ops/fmha_fwd.py):
 a 64 x 64 query/key tile, head dimension 64, row-major V and 256 work-items,
 without masking, padding, bias, dropout or auxiliary outputs.
@@ -165,8 +171,8 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
   -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
   -fno-hip-fp32-correctly-rounded-divide-sqrt \
   -I "$CK_ROOT/include" -I "$CK_ROOT/example/ck_tile/01_fmha" \
-  -S crates/volta_amd_analysis/tests/fixtures/ck_fmha.hip \
-  -o crates/volta_amd_analysis/tests/fixtures/ck_fmha.s
+  -S crates/volta_pipeline/tests/amd/success/ck_fmha.hip \
+  -o crates/volta_pipeline/tests/amd/success/ck_fmha.s
 ```
 
 The source supplies OCKL helpers as in `ck_gemm.hip`; `NDEBUG` matches CK's Release build.

@@ -1,12 +1,13 @@
 //! Helpers shared by the end-to-end test crates: PTX loading, parsing, launch
 //! configs, running a kernel through `volta_pipeline::verify_kernel` (the
 //! analysis stage, then the graph branch), and output rendering; [`amd`] does the same for AMD
-//! kernels. With `VOLTA_VIZ_DIR` set (`just viz`), every kernel run is also recorded for the
-//! graph viewer.
+//! kernels and [`trainium`] for NKI kernels. With `VOLTA_VIZ_DIR` set (`just viz`), every
+//! kernel run is also recorded for the graph viewer.
 
 #![allow(dead_code)]
 
 pub mod amd;
+pub mod trainium;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -94,8 +95,9 @@ fn record(ptx: &Ptx, outcome: Outcome) {
 }
 
 /// With `VOLTA_VIZ_DIR` set, write the run of `source` (read from `file`) into that store for
-/// `volta viz`, keyed by the test binary, the test (libtest names each test's thread after it)
-/// and the run's position in the test: a fresh thread per test restarts the count.
+/// `volta viz`, keyed by the suite (the ISA's test binary and the test's module, e.g.
+/// `ptx_accepted_tests`), the test (libtest names each test's thread after its path) and the
+/// run's position in the test: a fresh thread per test restarts the count.
 fn record_run(file: Option<&str>, source: &str, outcome: Outcome) {
     let Some(dir) = std::env::var_os("VOLTA_VIZ_DIR") else {
         return;
@@ -107,12 +109,16 @@ fn record_run(file: Option<&str>, source: &str, outcome: Outcome) {
         runs.set(runs.get() + 1);
         runs.get()
     });
+    let thread = std::thread::current();
+    let path = thread.name().unwrap_or("unnamed");
+    let isa = env!("CARGO_CRATE_NAME").trim_end_matches("_tests");
+    let (suite, test) = match path.split_once("::") {
+        Some((module, test)) => (format!("{isa}_{module}"), test),
+        None => (env!("CARGO_CRATE_NAME").to_string(), path),
+    };
     let id = RunId {
-        suite: env!("CARGO_CRATE_NAME").to_string(),
-        test: std::thread::current()
-            .name()
-            .unwrap_or("unnamed")
-            .to_string(),
+        suite,
+        test: test.to_string(),
         ordinal: NonZeroU32::new(ordinal).expect("the count starts at 1"),
     };
     let run = Run {

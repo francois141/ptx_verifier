@@ -659,10 +659,8 @@ name = "volta_amd_analysis"
 version = "0.1.0"
 dependencies = [
  "id_collections",
- "rug",
  "volta_expr",
  "volta_graph",
- "volta_spec",
 ]
 
 [[package]]

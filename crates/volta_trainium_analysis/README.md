@@ -310,11 +310,16 @@ asynchrony of DMAs.
 
 ## Fixtures
 
-`tests/kernels.rs` runs each fixture for one call, giving each parameter's shape
-(`common::check(name, kernel, shapes)`, or `check_importing` with the fixture
-modules it imports from); the fixtures' own shape `assert`s check those shapes.
+This crate keeps no tests of its own: its fixtures live in
+`volta_pipeline/tests/trainium/`, and the paths below are relative to it. `success/` holds
+the kernels expected to run and `execution_error/` the `*_errors.py` kernels the analysis
+must reject. `volta_pipeline`'s `trainium/accepted_tests.rs` runs each success fixture for
+one call, giving each parameter's shape (`common::trainium::check(name, kernel, shapes)`,
+or `check_importing` with the fixture modules it imports from), and
+`trainium/rejected_tests.rs` requires each error; the fixtures' own shape `assert`s check
+those shapes.
 
-`tests/fixtures/nki_samples/` holds the NKI samples' `attention_kernels.py` and
+`success/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at
 `ef43bf3` (`src/nki_samples/tutorials/attention_fwd_performance/`, MIT No
 Attribution), and the other tutorials' kernel files the same way, each with a
@@ -327,20 +332,20 @@ Attribution), and the other tutorials' kernel files the same way, each with a
 window) and `mamba_nki_kernels.py` (`mamba.spec`, `mamba_torch.py`'s `mamba_layer`, its
 scan unrolled into causal sums) and `tensor_indirection_nki_kernels.py`
 (`tensor_indirection.spec`, `data[:, index[0]]`, its index an index array). `attn_fwd_v2.ast` and `.ir` are v2's parsed and lowered forms at the
-128 x 128 size it asserts (`common::check_lowering`, no `.out`: its outputs are
+128 x 128 size it asserts (`common::trainium::check_lowering`, no `.out`: its outputs are
 checked against `attention.spec` instead).
 
-`tests/fixtures/language_api.py` calls each tile-returning `nki.language` function
+`success/language_api.py` calls each tile-returning `nki.language` function
 on 2 x 2 inputs: a row max of `a.T @ b`, a reciprocal of row sums of `exp(a)`, and
 a transpose through PSUM, stored with `nl.store`. `attn_fwd_v1.ast` and `.ir`
 snapshot v1, whose lowered form is v2's algorithm.
 
-`tests/fixtures/accumulate.py` computes `matmul.py`'s product with its contraction
+`success/accumulate.py` computes `matmul.py`'s product with its contraction
 split in two chunks of rows over a `range(2)` loop, accumulated into an
 `nl.zeros` PSUM tile, so its `.expected` is `matmul.expected`; it then copies the
 result through a list of two tiles built with `.append`.
 
-`tests/fixtures/regions_softmax.py` and `regions_matmul.py` compute `softmax.py`'s
+`success/regions_softmax.py` and `regions_matmul.py` compute `softmax.py`'s
 and `matmul.py`'s math with every operand a region of a wider tile, so their
 `.expected` files are those fixtures'. Between them every instruction takes a
 region: the softmax's input sits in the middle columns of a scratch tile and is
@@ -350,7 +355,7 @@ SBUF tile, its contraction runs in two partition chunks accumulated into a
 `memset` region of a wider PSUM tile, and its result is transposed there and back
 through regions.
 
-`tests/fixtures/subscripts_softmax.py` and `subscripts_matmul.py` compute the same
+`success/subscripts_softmax.py` and `subscripts_matmul.py` compute the same
 two fixtures' math through integer and partial subscripts and N-D tiles, so their
 `.expected` files are again `softmax.expected` and `matmul.expected`: the softmax
 writes its statistics to `stats[:, 0]` and `stats[:, 1]`, stores an intermediate as
@@ -359,40 +364,40 @@ a `(rows, 1, cols)` tile; the matmul stages each contraction chunk at `staged[i]
 HBM and `sb[:, i, :]` of a 3-D SBUF tile, multiplies `sb[:, i, 0:rows]` by
 `sb[:, i, rows:]`, and stores through a 4-D HBM tensor, as v3 and v4 do.
 
-`tests/fixtures/fused_softmax.py` computes softmax over a 2 x 4 tile as v8 does, in
+`success/fused_softmax.py` computes softmax over a 2 x 4 tile as v8 does, in
 two chunks of columns: `tensor_scalar_reduce` (a multiply by `1.0`) takes each
 chunk's max, `tensor_reduce` with `negate=True` folds them into the negated row max,
 and `activation` exponentiates each chunk with that as its `bias` and a
 `reset_reduce` sum; its `.expected` is written out by hand, and `volta_pipeline`
 proves it equal to `softmax.spec`.
 
-`tests/fixtures/pipelined_scale.py` doubles a 6 x 4 tensor as v10 schedules its
+`success/pipelined_scale.py` doubles a 6 x 4 tensor as v10 schedules its
 work: an allocator class sizing two tiles from the call's `bfloat16` dtype, a buffers
 object, and three stages, each skipping the tile indices outside the tensor, called
 in a software-pipelined `range(0, count + 2)` inside `with nl.no_reorder()` (its
 `.expected` is hand-written).
-`tests/fixtures/placed_tiles.py` computes `matmul.py`'s product transposed with every
+`success/placed_tiles.py` computes `matmul.py`'s product transposed with every
 tile placed by `address=`, including a PSUM tile placed over the accumulator once it
 is dead: `accumulate=(i != 0)` over two contraction chunks, twice, so the second
 pass's `accumulate=False` must overwrite the first's sum, then `engine=` copies and a
 `dma_transpose` (a hand-written `.expected`, `matmul.expected` transposed).
-`tests/fixtures/placement_errors.py` holds kernels `tests/kernels.rs` expects to fail:
+`execution_error/placement_errors.py` holds kernels `trainium/rejected_tests.rs` expects to fail:
 a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
 (`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM, a
 kernel placing only some tiles, and a tile past the end of PSUM.
-`tests/fixtures/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
+`success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);
 `pattern_errors.py`'s kernels must fail to lower: a tile view whose first step is not
 the free size, one leaving its partition, one past its tensor's end, and a
 `tensor_reduce` over a leading axis.
-`tests/fixtures/scan.py` scans each row of a 2 x 3 tile with a one-partition row
+`success/scan.py` scans each row of a 2 x 3 tile with a one-partition row
 `nl.broadcast_to` both partitions, from a `[2, 1]` tile (`acc = a * acc + b`) and from
 `1.0` with both ops reversed (`acc = b - (acc - a)`), and takes `exp(a * c)` through
 `activation`'s `scale`, its `scale` tile an `nl.zeros` without a `buffer` (a
 hand-written `.expected`); a test widens its parsed broadcast to a shape its row
 cannot take, which lowering rejects (`StatementError::BroadcastShape`).
-`tests/fixtures/indirect.py` gathers three columns, one offset repeated, of each of a
+`success/indirect.py` gathers three columns, one offset repeated, of each of a
 32-row tile's two 16-partition groups on `nisa.engine.scalar`, its index replicated
 across them from a call's `contents` (an `.expected` computed from `a[p, idx[i]]`);
 `indirect_errors.py`'s kernels must fail: groups holding different offsets
@@ -400,62 +405,62 @@ across them from a call's `contents` (an `.expected` computed from `a[p, idx[i]]
 lowering a gather on `gpsimd`, a scatter, a `num_elem` beyond the index's 16 per
 column, partitions short of a group and an index of other partitions; a call's
 `contents` of the wrong length, given twice or for a non-tensor are parse errors.
-`tests/fixtures/helper_call.py` imports `row_sums` from `tests/fixtures/helpers.py`
+`success/helper_call.py` imports `row_sums` from `success/helpers.py`
 and calls it twice, by default and by keyword argument; `row_sums` builds its
 `[partitions, 1]` shape with `list`, a `for` over its `axes` and an item write, as
 `softmax_isa` does. Both modules also hold code no call reaches, using syntax the
 subset lacks (a conditional expression, a dict, an f-string as a value), which is
 never parsed.
 
-`tests/fixtures/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
+`success/add.py` adds two 16 x 16 tensors elementwise: it copies `a`
 and `b` from HBM into SBUF tiles (`nisa.dma_copy`), adds the tiles
 (`nisa.tensor_tensor` with `op=nl.add`), and copies the sum back to `out` in
 HBM.
 
-`tests/fixtures/gemm_relu.py` computes `relu(a_t.T @ b)`: the activation reads
+`success/gemm_relu.py` computes `relu(a_t.T @ b)`: the activation reads
 the matmul's PSUM tile directly, fusing the move to SBUF with the relu
 instead of a separate `tensor_copy`.
 
-`tests/fixtures/rms_norm.py` normalizes each partition of a 4 x 8 tensor by
+`success/rms_norm.py` normalizes each partition of a 4 x 8 tensor by
 `rsqrt(mean(x^2) + eps)`: `nisa.activation_reduce` squares the tile and sums
 each partition into a `(4, 1)` tile, `nisa.tensor_scalar` scales and biases it,
 `nisa.activation` takes its reciprocal square root, and a second
 `nisa.tensor_scalar` broadcasts that `(4, 1)` tile back across the free axis.
 
-`tests/fixtures/tiled_copy.py` copies an 8 x 4 tensor through SBUF one `(4, 4)`
+`success/tiled_copy.py` copies an 8 x 4 tensor through SBUF one `(4, 4)`
 tile of rows at a time: `nl.affine_range(2)` unrolls into two iterations, each
 with its own SBUF tile, copying `a[i * 4:(i + 1) * 4, :]` in and back out to the
 matching rows of `out`.
 
-`tests/fixtures/returned_output.py` multiplies two 2 x 4 tensors elementwise
+`success/returned_output.py` multiplies two 2 x 4 tensors elementwise
 into `kernel_out`, an HBM tensor it allocates with `nl.shared_hbm` and returns.
 
-`tests/fixtures/call_shapes.py` opens like the attention kernels: it unpacks
+`success/call_shapes.py` opens like the attention kernels: it unpacks
 `a.shape` into `rows, cols`, aliases `width = cols`, reads `nl.tile_size.pmax`
 and checks chained, `<=` and `>=` `assert`s. It then adds two 2 x 4 tensors one
 `(rows, cols // 2)` tile of columns at a time.
 
-`tests/fixtures/softmax.py` is `attention_kernel_utils.softmax_isa`'s body
+`success/softmax.py` is `attention_kernel_utils.softmax_isa`'s body
 written inline over a 2 x 3 tile: a `tensor_reduce` max, a `tensor_scalar`
 subtract of that `[2, 1]` row max, `activation` with `nl.exp`, a `tensor_reduce`
-sum, `reciprocal` and a `tensor_scalar` multiply. `tests/fixtures/softmax.spec`
+sum, `reciprocal` and a `tensor_scalar` multiply. `success/softmax.spec`
 states softmax along each row.
 
-`tests/fixtures/matmul.spec` and `tests/fixtures/gemm_relu.spec` state the
+`success/matmul.spec` and `success/gemm_relu.spec` state the
 `matmul` and `gemm_relu` kernels' math over the kernels' own array names, with
 `a_t` as A transposed (`[K, M]`), the layout `nc_matmul`'s stationary operand
-takes. `volta_pipeline`'s `trainium_equivalence_tests.rs` checks each kernel
+takes. `volta_pipeline`'s `trainium/equivalence_tests.rs` checks each kernel
 against its spec by the decision procedure rather than by text, and `gemm_relu`
 against `matmul.spec` (the product without the clamp) as a negative test.
 They also check `softmax` against `softmax.spec`, and, as a negative test,
 against the softmax of `-x`, which a `subtract` with its operands reversed would
-compute. `just trainium` runs them, in release, with this crate's tests.
+compute. `just trainium` runs them, in release, after the fixture suites.
 
-`tests/fixtures/attention.spec` is the reference for the NKI attention samples
+`success/attention.spec` is the reference for the NKI attention samples
 (`attention_fwd_v1` onward): `numpy_attention` from their `test_attention.py`
 transcribed, in their layout, with `q`, `k` and `v` as `[D, N]` (head dimension
 by sequence length) and the kernels' `kernel_out` as `[N, D]`. In
-`volta_pipeline`'s `trainium_equivalence_tests.rs`, v2, read
+`volta_pipeline`'s `trainium/equivalence_tests.rs`, v2, read
 from its own file with `softmax_isa` inlined, is proved equal to it on the first row
 of 128 outputs by default and on all 16,384 by an ignored test (about a minute in
 release), and attention with `q` and `k` swapped is refuted. v1 is proved equal to
