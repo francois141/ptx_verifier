@@ -53,7 +53,37 @@ fn the_gemm_relu_kernel_parses_lowers_and_runs_as_expected() {
 // call, a new loop id each time an inner loop is entered, and an enclosing no_reorder block.
 #[test]
 fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
-    common::check("loop_origins", "kernel", &[("a", &[2, 4]), ("out", &[2, 4])]);
+    common::check(
+        "loop_origins",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
+// The race fixtures in `fixtures/races/`, each a kernel meant to race beside its ordered
+// twin; until NKI runs record an event graph they are checked in program order only.
+#[test]
+fn the_race_fixtures_parse_lower_and_run_in_program_order() {
+    let rows = |count: u64| [("a", [count, 4]), ("out", [count - 1, 4])];
+    for (name, [a, out]) in [
+        ("back_to_back_dmas", rows(2)),
+        ("affine_overwrite", rows(2)),
+        ("sequential_overwrite", rows(2)),
+        ("affine_carried", rows(3)),
+        ("sequential_carried", rows(3)),
+        ("affine_vector_sum", rows(2)),
+    ] {
+        common::check(
+            &format!("races/{name}"),
+            "kernel",
+            &[(a.0, &a.1), (out.0, &out.1)],
+        );
+    }
+    common::check(
+        "races/affine_matmul_accumulate",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
 }
 
 #[test]

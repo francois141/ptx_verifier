@@ -335,10 +335,19 @@ row-major element offset. Footprints are static: a gather reads its whole `data`
 `tests/kernels.rs` runs each fixture for one call, giving each parameter's shape
 (`common::check(name, kernel, shapes)`, or `check_importing` with the fixture
 modules it imports from); the fixtures' own shape `assert`s check those shapes.
-Besides `.ast`, `.ir` and `.out`, `placed_tiles`, `access_patterns`, `indirect` and
-`loop_origins` (`common::FOOTPRINTS`) have a
+Besides `.ast`, `.ir` and `.out`, the race fixtures and `placed_tiles`,
+`access_patterns`, `indirect` and `loop_origins` (`common::FOOTPRINTS`) have a
 `.footprints`: one line per instruction, a placed tile's runs as `p<partition>:<bytes>`,
 any other's as element offsets.
+
+`tests/fixtures/races/` holds kernels meant to race beside their ordered twins, each
+naming its intended verdict, for the race checks to come; until NKI runs record an
+event graph, `kernels.rs` runs them in program order only. `back_to_back_dmas` is two DMAs
+writing one tile (R0, ordered by the compiler); `affine_overwrite` and `affine_carried`
+overwrite or carry a tile across `affine_range` iterations (R1), their
+`sequential_range` twins in order; `affine_vector_sum` sums rows into one tile with
+`tensor_tensor`, as mamba does, and `affine_matmul_accumulate` accumulates matmuls into
+PSUM, the reduction the docs allow across `affine_range` iterations.
 
 `tests/fixtures/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at

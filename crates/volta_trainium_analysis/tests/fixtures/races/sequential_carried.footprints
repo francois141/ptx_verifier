@@ -1,0 +1,5 @@
+0: read a[0..4]; write x[0..4]
+1: read x[0..4]; write out[0..4]
+2: read a[4..8]; write x[0..4]
+3: read x[0..4]; write out[4..8]
+4: read a[8..12]; write x[0..4]

@@ -640,8 +640,13 @@ every loop kind, an inner loop entered twice and `no_reorder` across a helper ca
 then writes: a `Mode` (`Read`, `Write`, `Accumulate` for an adding `nc_matmul`), its
 tensor, a `Location` and merged runs. Placed tiles share their memory's location, by byte
 (`partition * PARTITION_STRIDE + byte`); any other tensor is its own, by element offset.
-A gather reads its whole `data` and `index` regions. The `.footprints` of
-`placed_tiles`, `access_patterns`, `indirect` and `loop_origins` snapshot them.
+A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
+snapshot them, as do those of `placed_tiles`, `access_patterns`, `indirect` and
+`loop_origins`.
+`tests/fixtures/races/` holds kernels meant to race (R0 `back_to_back_dmas`; R1
+`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`)
+beside `sequential_range` twins, each naming its intended verdict; until NKI runs record
+a graph, one test runs them in program order.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
