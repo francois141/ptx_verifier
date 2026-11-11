@@ -121,7 +121,10 @@ outcomes with different VCC masks, and rejection of varying LDS addresses and Na
 `amd/rejected_tests.rs` instead requires a specific lowering or execution error.
 Specification comparisons live in `amd/equivalence_tests.rs`, each kernel's graph
 concluding `Verified` first; CK RMSNorm (`ck_rmsnorm2d`) is checked there and in
-`amd/graph_tests.rs`, without a snapshot of its outputs. `amd/grid_tests.rs` compares CK grid outputs with independent
+`amd/graph_tests.rs`, without a snapshot of its outputs. `examples/lean/rmsnorm_amd.json`
+launches the same kernel through `volta solve`, listing the fields of CK's by-value argument
+struct as flat parameters; `volta_cli/tests/solve_tests.rs` requires that run to be accepted.
+`amd/grid_tests.rs` compares CK grid outputs with independent
 workgroup runs, checks that their stores do not overlap, and rejects differing control flow.
 Run the kernel and equivalence suites, then the graph and grid suites, from the repository root:
 
