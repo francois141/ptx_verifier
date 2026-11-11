@@ -1,8 +1,11 @@
 //! AMD gfx950 assembly: `volta_amd_analysis` runs workgroup 0 of the kernel, then the graph
 //! branch's checks run over the event graph it records (its LDS accesses, waits and barriers).
 
+use std::time::Instant;
+
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{ArrayDef, ArrayKind, OutputType, Terminal, WorkgroupLaunch, analyze};
+use volta_common::logging::info;
 use volta_graph_check::check_graph;
 use volta_ptx_analysis::{AnalysisConfig, ParamValue};
 
@@ -32,10 +35,31 @@ impl Frontend for AmdFrontend {
         })?;
 
         let (workgroup, kernarg, arrays) = workgroup_launch(&launch)?;
+        let (x, y, z) = workgroup.workgroup_size;
+        info!(
+            "[analysis] AMD kernel '{name}': running workgroup 0 ({x}x{y}x{z} work-items) and \
+             extracting its event graph"
+        );
+        let start = Instant::now();
         let result = analyze(&parsed, &workgroup, &kernarg, &arrays)
             .map_err(|e| FrontendError::Analysis(e.to_string()))?;
+        info!(
+            "[analysis] event graph extracted in {:.3}s: {} events, run {}",
+            start.elapsed().as_secs_f64(),
+            result.graph.events().len(),
+            match &result.terminal {
+                Terminal::Completed => "completed",
+                Terminal::Aborted { .. } => "aborted",
+            }
+        );
 
+        info!("[graph] running the graph checks");
+        let start = Instant::now();
         let report = check_graph(&result.graph);
+        info!(
+            "[graph] checks done in {:.3}s",
+            start.elapsed().as_secs_f64()
+        );
         let outputs = result
             .symbolic_outputs
             .ok_or_else(|| match &result.terminal {

@@ -11,13 +11,13 @@
 
 <p align="center">
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust-2024-f97316?style=flat-square" alt="Rust edition 2024"></a>
-  <a href="#sigmoid-to-lean"><img src="https://img.shields.io/badge/Lean-4-2563eb?style=flat-square" alt="Lean 4"></a>
+  <a href="#prove-sigmoid-in-lean"><img src="https://img.shields.io/badge/Lean-4-2563eb?style=flat-square" alt="Lean 4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-65a30d?style=flat-square" alt="MIT license"></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Python quick start</a> ·
-  <a href="#sigmoid-to-lean">Sigmoid to Lean</a> ·
+  <a href="#prove-sigmoid-in-lean">Prove sigmoid in Lean</a> ·
   <a href="#frontends">Frontends</a>
 </p>
 
@@ -28,9 +28,26 @@
 
 ## Quick start
 
-With Rust and [uv](https://docs.astral.sh/uv/) installed, run from the repository root. No accelerator is needed.
+### Install
 
-Each example checks `out[i] = a[i] + b[i]` for one kernel and asserts its expected verdict and race-check status.
+Rust and [uv](https://docs.astral.sh/uv/) are all the examples below need. The rest is only for [proving in Lean](#prove-sigmoid-in-lean): Lean, a Mathlib project in `~/mathlib-project` (`lake exe cache get` downloads Mathlib's prebuilt files, a few GB, instead of building it for hours) and Claude Code.
+
+```bash
+# Rust and uv
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && . "$HOME/.cargo/env"
+curl -LsSf https://astral.sh/uv/install.sh | sh && . "$HOME/.local/bin/env"
+
+# Lean solver only: Lean (elan), a Mathlib project, and Claude Code
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh && . "$HOME/.elan/env"
+(cd ~ && lake +leanprover-community/mathlib4:lean-toolchain new mathlib-project math)
+(cd ~/mathlib-project && lake exe cache get)
+curl -fsSL https://claude.ai/install.sh | bash
+claude  # Log in once, then exit.
+```
+
+Run each example from the repository root. No accelerator is needed.
+
+Each example checks `out[i] = a[i] + b[i]` for one kernel and prints its verdict and race-check status.
 
 ### NVIDIA PTX
 
@@ -56,9 +73,6 @@ for name, base, kind in (
     config.add_param(volta.Param.array_ptr(name))
 
 result = volta.solve("examples/quickstart/add.ptx", config, spec=spec, dims={"N": size})
-
-assert result.verdict == "ACCEPT", result.evidence
-assert result.race_verified is True
 
 print(f"{result.isa}: {result.verdict}; race checks: {result.race_verified}")
 ```
@@ -98,8 +112,6 @@ result = volta.solve(
     spec=spec,
     dims={"N": size},
 )
-assert result.verdict == "ACCEPT", result.evidence
-assert result.race_verified is None
 
 print(f"{result.isa}: {result.verdict}; race checks: {result.race_verified}")
 ```
@@ -107,7 +119,7 @@ print(f"{result.isa}: {result.verdict}; race checks: {result.race_verified}")
 Expected output:
 
 ```text
-AMD gfx950: ACCEPT; race checks: None
+AMD gfx950: ACCEPT; race checks: True
 ```
 
 ### AWS Trainium NKI
@@ -130,9 +142,6 @@ result = volta.solve(
     dims={"N": 256},
 )
 
-assert result.verdict == "ACCEPT", result.evidence
-assert result.race_verified is None
-
 print(f"{result.isa}: {result.verdict}; race checks: {result.race_verified}")
 ```
 
@@ -142,57 +151,66 @@ Expected output:
 AWS Trainium NKI: ACCEPT; race checks: None
 ```
 
-`volta.solve` selects the frontend by file extension and uses the Fast Canonical Solver by default. `result.outputs` contains the extracted expressions, `result.verdict` is `ACCEPT`, `REJECT`, or `UNKNOWN`, and `result.evidence` explains the decision. Race checks currently run only for PTX; `None` means the AMD and Trainium frontends do not check race freedom.
+`volta.solve` selects the frontend by file extension and uses the Fast Canonical Solver by default. `result.outputs` contains the extracted expressions, `result.verdict` is `ACCEPT`, `REJECT`, or `UNKNOWN`, and `result.evidence` explains the decision. Race checks run for PTX and AMD (for AMD, over one workgroup's LDS accesses and barriers); `None` means the Trainium frontend does not check race freedom.
 
-## Sigmoid to Lean
+## Prove sigmoid in Lean
 
-Use `volta.extract_lean(...)` to turn a kernel and its expected formula into Lean propositions. This [script](examples/lean/extract_sigmoid.py) reads the eight-element [Trainium sigmoid kernel](crates/volta_pipeline/tests/trainium/success/sigmoid.py). Each proposition asks you to prove that the kernel's output is within **epsilon** of `1 / (1 + exp(-a[i]))`. The kernel declares its tensor shapes, so no launch configuration is needed.
+`volta.prove_lean(...)` turns a kernel and its expected formula into Lean propositions, one per output, and has [Claude Code](https://claude.com/claude-code) prove them. This [script](examples/lean/prove_sigmoid_amd.py) proves the [AMD sigmoid kernel](examples/lean/sigmoid_4096.cl) over **4096 elements**: one workgroup of 1024 work-items, each computing four outputs. Volta runs the kernel's [gfx950 assembly](examples/lean/sigmoid_4096.s), checks its event graph, and writes 4096 propositions to `challenge.lean`. Claude Code then writes `proof.lean` until Volta's own check accepts it.
+
+It needs the Lean part of [Install](#install): the Mathlib project, passed as `VOLTA_LEAN_PROJECT` (or `lean_project=`), and Claude Code, logged in. Claude Code runs on your login, so no API key is needed.
 
 ```python
-from pathlib import Path
-
 import volta
 
-epsilon = "1/1000"  # Maximum absolute error per output: 0.001.
+spec = "dim N; array a[N]; array out[N]; out[i] = 1 / (1 + exp(-a[i]));"
+size = 4096
+config = volta.Config(block=(1024, 1, 1))  # One workgroup; each work-item computes four outputs.
+for name, base, kind in (
+    ("a", 0x10000, volta.ArrayKind.Input),
+    ("out", 0x20000, volta.ArrayKind.Output),
+):
+    config.add_array(volta.ArrayDef(name, base, 4, size, kind))
+    config.add_param(volta.Param.array_ptr(name))
 
-result = volta.extract_lean(
-    "crates/volta_pipeline/tests/trainium/success/sigmoid.py",
-    spec="dim N; array a[N]; array out[N]; out[i] = 1 / (1 + exp(-a[i]));",
-    dims={"N": 8},
-    tolerance=epsilon,
+result = volta.prove_lean(
+    "examples/lean/sigmoid_4096.s",
+    config,
+    spec=spec,
+    dims={"N": size},
+    tolerance="1/1000",
+    output_dir="target/lean/sigmoid_amd_4096",
+    verbose=True,  # Print each step, then the time and cost.
 )
 
-output = Path("target/lean/sigmoid_nki.lean")
-
-output.parent.mkdir(parents=True, exist_ok=True)
-output.write_text(result.lean, encoding="utf-8")
-
-print(f"Wrote {output}")
+print(f"{result.isa}: {result.proved_statements} of {result.statements} statements proved")
+print(f"Proof: {result.proof}")
 ```
 
-Change `epsilon` to choose the allowed error: `"1/1000"` permits an absolute difference of at most `0.001` for each output; `"1/1000000"` tightens that bound to `0.000001`. Pass it as a nonnegative rational string through `tolerance=epsilon`. The generated claim is `|kernel_output - expected_output| ≤ epsilon`, under Volta's real-number model. Omit `tolerance` (or use `None`) to request exact equality.
+Run it from the repository root:
 
 ```bash
-uv run python examples/lean/extract_sigmoid.py
+VOLTA_LEAN_PROJECT=~/mathlib-project uv run --package volta python examples/lean/prove_sigmoid_amd.py
 ```
 
-The equivalent CLI command is:
+The tolerance is required. For inputs above 87.34, the compiled kernel computes `exp(64 - a)` and scales it by the f32 rounding of `e^-64`, so over the reals its output is close to `1 / (1 + exp(-a))` but not equal to it. Each proposition states exactly that:
 
-```bash
-mkdir -p target/lean
-cargo run --release -p volta_cli -- extract lean \
-  crates/volta_pipeline/tests/trainium/success/sigmoid.py \
-  --spec examples/lean/sigmoid.spec --dim N=8 \
-  --tolerance 1/1000 \
-  --output target/lean/sigmoid_nki.lean
+```lean
+def out_0 : Prop :=
+  ∀ (a_0 : ℝ),
+    let x0 := Real.exp (if (87.3365478515625 : ℝ) < a_0 then (64 : ℝ) - a_0 else -a_0)
+    |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a_0 then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_0)))| ≤ (0.001 : ℝ)
 ```
 
-Extraction raises `volta.DataRaceError` for detected races and `volta.DeadlockError` for deadlocks. Other failed or incomplete PTX graph checks raise `volta.VoltaError`. The CLI exits with an error and leaves the Lean output file untouched on these failures. AMD and Trainium extraction returns `race_verified=None` because those frontends do not check races.
+`result.proved` comes from Volta's final check, never from Claude. The check requires the proof to compile, to give each `VoltaChallenge.out_i` a theorem of exactly that type, to use no axioms beyond `propext`, `Classical.choice` and `Quot.sound`, and to pass `leanchecker`'s replay in Lean's kernel. See [volta_lean](crates/volta_lean) for details. A race in the kernel raises `volta.DataRaceError` and a deadlock `volta.DeadlockError` before any proof starts.
 
-This writes `target/lean/sigmoid_nki.lean`: a complete module containing eight propositions. Open it below.
+With `verbose=True`, each step is printed as it happens, with the clock time and the time elapsed: the analysis and each of the ten graph checks, the equivalence verdict, the challenge generated and compiled, Claude Code starting the proof, every proof it writes and checks, and the final verdict. A last summary gives the total time, the agent's turns and time, the cost (Claude Code's estimate at API prices) and the tokens used. The same figures are on the result: `duration_seconds`, `turns`, `cost_usd` and `usage`.
+
+The script writes `challenge.lean`, `proof.lean` and Claude's `transcript.jsonl` to `target/lean/sigmoid_amd_4096`. A previous run took about six minutes, most of it spent importing Mathlib and checking the proof. To write the propositions without proving them, call `volta.extract_lean(...)` with the same arguments (no `output_dir`); it returns the module as `result.lean`.
 
 <details>
-<summary><strong>Open generated sigmoid_nki.lean</strong></summary>
+<summary><strong>Open the challenge.lean Volta writes</strong></summary>
+
+One definition per output, `out_0` to `out_4095`, each over its own input `a_i`. Claude must prove every one of them, and may not edit this file.
 
 ```lean
 import Mathlib
@@ -210,46 +228,89 @@ namespace VoltaChallenge
 /-- `out[0]` -/
 def out_0 : Prop :=
   ∀ (a_0 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_0)))| ≤ (0.001 : ℝ)
+    let x0 := Real.exp (if (87.3365478515625 : ℝ) < a_0 then (64 : ℝ) - a_0 else -a_0)
+    |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a_0 then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_0)))| ≤ (0.001 : ℝ)
 
 /-- `out[1]` -/
 def out_1 : Prop :=
   ∀ (a_1 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_1))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_1)))| ≤ (0.001 : ℝ)
+    let x0 := Real.exp (if (87.3365478515625 : ℝ) < a_1 then (64 : ℝ) - a_1 else -a_1)
+    |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a_1 then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_1)))| ≤ (0.001 : ℝ)
 
 /-- `out[2]` -/
 def out_2 : Prop :=
   ∀ (a_2 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_2))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_2)))| ≤ (0.001 : ℝ)
+    let x0 := Real.exp (if (87.3365478515625 : ℝ) < a_2 then (64 : ℝ) - a_2 else -a_2)
+    |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a_2 then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_2)))| ≤ (0.001 : ℝ)
 
-/-- `out[3]` -/
-def out_3 : Prop :=
-  ∀ (a_3 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_3))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_3)))| ≤ (0.001 : ℝ)
+-- ... out_3 to out_4094, the same statement over a_3 to a_4094 ...
 
-/-- `out[4]` -/
-def out_4 : Prop :=
-  ∀ (a_4 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_4))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_4)))| ≤ (0.001 : ℝ)
-
-/-- `out[5]` -/
-def out_5 : Prop :=
-  ∀ (a_5 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_5))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_5)))| ≤ (0.001 : ℝ)
-
-/-- `out[6]` -/
-def out_6 : Prop :=
-  ∀ (a_6 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_6))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_6)))| ≤ (0.001 : ℝ)
-
-/-- `out[7]` -/
-def out_7 : Prop :=
-  ∀ (a_7 : ℝ),
-    |((1 : ℝ) + Real.exp (-a_7))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_7)))| ≤ (0.001 : ℝ)
+/-- `out[4095]` -/
+def out_4095 : Prop :=
+  ∀ (a_4095 : ℝ),
+    let x0 := Real.exp (if (87.3365478515625 : ℝ) < a_4095 then (64 : ℝ) - a_4095 else -a_4095)
+    |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a_4095 then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a_4095)))| ≤ (0.001 : ℝ)
 
 end VoltaChallenge
 
 end
+```
+
+</details>
+
+<details>
+<summary><strong>Open a proof.lean written by Claude Code</strong></summary>
+
+Claude proves one general lemma, `key`, and states every output as an instance of it.
+
+```lean
+import challenge
+
+namespace VoltaProofs
+
+theorem aux (x y : ℝ) (hx0 : 0 ≤ x) (hx : x ≤ 0.001) (hy0 : 0 ≤ y) (hy : y ≤ 0.001) :
+    |(1 + x)⁻¹ - (1 : ℝ) / (1 + y)| ≤ 0.001 := by
+  have h1 : (1 + x) ≠ 0 := by positivity
+  have h2 : (1 + y) ≠ 0 := by positivity
+  rw [one_div, inv_sub_inv h1 h2, abs_le]
+  have hp : 0 < (1 + x) * (1 + y) := by positivity
+  constructor
+  · rw [le_div_iff₀ hp]; nlinarith [mul_nonneg hx0 hy0]
+  · rw [div_le_iff₀ hp]; nlinarith [mul_nonneg hx0 hy0]
+
+theorem key : ∀ (a : ℝ),
+    let x0 := Real.exp (if (87.3365478515625 : ℝ) < a then (64 : ℝ) - a else -a)
+    |((1 : ℝ) + (if (87.3365478515625 : ℝ) < a then (3330985 / 2 ^ 114 : ℝ) * x0 else x0))⁻¹ - ((1 : ℝ) / ((1 : ℝ) + Real.exp (-a)))| ≤ (0.001 : ℝ) := by
+  intro a
+  dsimp only
+  by_cases h : (87.3365478515625 : ℝ) < a
+  · rw [if_pos h, if_pos h]
+    have he1 : Real.exp (64 - a) ≤ 1 := Real.exp_le_one_iff.mpr (by linarith)
+    have hep : 0 < Real.exp (64 - a) := Real.exp_pos _
+    have hc : (3330985 / 2 ^ 114 : ℝ) ≤ 0.001 := by norm_num
+    have hc0 : (0 : ℝ) ≤ (3330985 / 2 ^ 114 : ℝ) := by norm_num
+    have hx : (3330985 / 2 ^ 114 : ℝ) * Real.exp (64 - a) ≤ 0.001 :=
+      (mul_le_of_le_one_right hc0 he1).trans hc
+    have hx0 : 0 ≤ (3330985 / 2 ^ 114 : ℝ) * Real.exp (64 - a) := by positivity
+    have hea : Real.exp a = Real.exp (a / 4) ^ 4 := by
+      rw [← Real.exp_nat_mul]; congr 1; push_cast; ring
+    have he4 : 1 + a / 4 ≤ Real.exp (a / 4) := by linarith [Real.add_one_le_exp (a / 4)]
+    have he22 : 22 ≤ Real.exp (a / 4) := by linarith
+    have he2 : 484 ≤ Real.exp (a / 4) ^ 2 := by nlinarith
+    have he1000 : 1000 ≤ Real.exp a := by rw [hea]; nlinarith
+    have hy : Real.exp (-a) ≤ 0.001 := by
+      rw [Real.exp_neg, inv_le_comm₀ (Real.exp_pos a) (by norm_num)]
+      norm_num; linarith
+    exact aux _ _ hx0 hx (Real.exp_pos _).le hy
+  · rw [if_neg h, if_neg h, one_div, sub_self, abs_zero]
+    norm_num
+
+theorem out_0 : VoltaChallenge.out_0 := key
+theorem out_1 : VoltaChallenge.out_1 := key
+-- ... one line per output ...
+theorem out_4095 : VoltaChallenge.out_4095 := key
+
+end VoltaProofs
 ```
 
 </details>
