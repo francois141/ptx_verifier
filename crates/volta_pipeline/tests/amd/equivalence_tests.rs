@@ -313,12 +313,16 @@ fn amd_ck_fmha_with_wrong_head_stride_is_refuted() {
 // formula.
 #[test]
 fn amd_ck_fmha_launch_files_match_the_argument_builder() {
-    let accepted = fmha_launch(Q_BASE, K_BASE, "volta solve accepts this launch.");
+    let accepted = fmha_launch(
+        Q_BASE,
+        K_BASE,
+        "CK attention over one batch and one head of 64 x 64 fp32 tensors.",
+    );
     check_launch_file("fmha_amd.json", &accepted);
     let swapped = fmha_launch(
         K_BASE,
         Q_BASE,
-        "This launch passes K as the query and Q as the key, so volta solve rejects it.",
+        "CK attention over one batch and one head, with query and key swapped.",
     );
     check_launch_file("fmha_amd_swapped_qk.json", &swapped);
 }
@@ -689,12 +693,11 @@ fn amd_ck_avgpool2d_launch_files_match_the_argument_builder() {
         right_pad: [1, 1],
         ..unpadded_pool(1, 3, [14, 14], [3, 3], [2, 2])
     };
-    let accepted = avgpool_launch(&padded, "volta solve accepts this launch.");
+    let accepted = avgpool_launch(&padded, "CK average pooling in NHWC layout with padding.");
     check_launch_file("avgpool2d_amd.json", &accepted);
     let rejected = avgpool_launch(
         &larger_output_pool(),
-        "CK sizes the output buffer from the input's height and width, five elements, so the \
-         kernel drops four of its nine stores and volta solve rejects this launch.",
+        "CK average pooling with padding that makes the output exceed CK's buffer bound.",
     );
     check_launch_file("avgpool2d_amd_larger_output.json", &rejected);
 }
