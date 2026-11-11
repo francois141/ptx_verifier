@@ -1,7 +1,6 @@
-//! AMD kernels of `tests/amd/`: run through the analysis stage and compared with their `.out`
-//! files (one `array[index] = expr` line per written element, as for PTX; `VOLTA_BLESS=1`
-//! rewrites them), or through the graph branch as well, recorded for the graph viewer like the
-//! PTX runs.
+//! AMD test helpers require a verified graph before returning outputs for snapshots, specs or
+//! Lean export. Snapshot files contain one `array[index] = expr` line; `VOLTA_BLESS=1` rewrites
+//! them. `check_amd` also records runs for the graph viewer.
 
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
@@ -116,8 +115,8 @@ pub fn array_of(name: &str, base: u64, len: u64, kind: ArrayKind) -> ArrayDef {
 }
 
 /// Run the kernel `tests/amd/<name>.s` is named after (its file stem) on one wave, with `arrays` in global memory
-/// and their bases as the kernel's pointer arguments, in order, and compare its outputs with
-/// `<name>.out`.
+/// and their bases as the kernel's pointer arguments, in order. Once its graph verifies, compare
+/// its outputs with `<name>.out`.
 pub fn check_run(name: &str, arrays: &[ArrayDef]) {
     check_run_on(name, WORKITEMS, arrays);
 }
@@ -127,7 +126,8 @@ pub fn check_run_on(name: &str, workitems: u32, arrays: &[ArrayDef]) {
     check_run_kernel(name, kernel_of(name), workitems, &kernarg(arrays), arrays);
 }
 
-/// The symbolic outputs `check_run` compares, of fixture `name`'s kernel on one wave.
+/// The symbolic outputs `check_run` compares, of fixture `name`'s kernel on one wave, once its
+/// graph verifies.
 pub fn outputs(name: &str, arrays: &[ArrayDef]) -> Result<SymbolicOutputs, String> {
     run_outputs(name, kernel_of(name), WORKITEMS, &kernarg(arrays), arrays)
 }
@@ -142,7 +142,8 @@ fn kernarg(arrays: &[ArrayDef]) -> Vec<u8> {
 }
 
 /// Run kernel `kernel` of `tests/amd/<fixture>.s` on a workgroup of `workitems` work-items
-/// along X, with `kernarg` as its argument buffer, and compare its outputs with `<fixture>.out`.
+/// along X, with `kernarg` as its argument buffer. Once its graph verifies, compare its outputs
+/// with `<fixture>.out`.
 pub fn check_run_kernel(
     fixture: &str,
     kernel: &str,
@@ -246,6 +247,13 @@ fn run_outputs(
         return Err(format!(
             "wave {} aborted at instruction {} ({}): {error}",
             wave.0, pc.0, kernel.instructions[pc.0 as usize].opcode
+        ));
+    }
+    // Reject unverified runs before their outputs can be compared or blessed.
+    let conclusion = check_graph(&result.graph).conclusion();
+    if conclusion != GraphConclusion::Verified {
+        return Err(format!(
+            "the graph check did not verify the kernel: {conclusion:?}"
         ));
     }
     result.symbolic_outputs.ok_or("no symbolic outputs".into())

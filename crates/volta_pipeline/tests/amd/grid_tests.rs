@@ -1,12 +1,12 @@
-//! One run over every workgroup of a launch grid, checked against runs of each workgroup
-//! alone: the same output elements with equivalent values, no element stored twice, and an
-//! event graph whose LDS accesses verify for every workgroup.
+//! One run over every workgroup of a launch grid, checked against verified runs of each
+//! workgroup alone: the same output elements with equivalent values, no element stored twice,
+//! and an event graph whose LDS accesses verify for every workgroup.
 
 use crate::common;
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    ArrayDef, ArrayKind, EvalError, OutputType, Terminal, WorkgroupLaunch, analyze, analyze_grid,
+    ArrayDef, ArrayKind, EvalError, OutputType, Terminal, WorkgroupLaunch, analyze_grid,
 };
 use volta_equivalence::check::EquivCheckOptions;
 use volta_graph_check::{GraphConclusion, check_graph};
@@ -14,7 +14,7 @@ use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 
 use common::amd::{
     CK_FMHA_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE, FMHA_Q_BASE, amd_fixture,
-    ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays,
+    check_amd_launch, ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays,
 };
 
 /// A one-dimensional grid of `grid` workgroups of `workitems` work-items, selecting `workgroup`.
@@ -53,7 +53,8 @@ fn ck_gemm_launch(dims: [i32; 3]) -> (Vec<u8>, [ArrayDef; 3], u32) {
 #[test]
 fn ck_gemm_grid_run_matches_each_tile_run() {
     let (kernarg, arrays, tiles) = ck_gemm_launch([160, 40, 192]);
-    let kernel = parse_kernel(amd_fixture!("success/ck_gemm"), CK_GEMM_MAIN_LOOP_KERNEL).unwrap();
+    let source = amd_fixture!("success/ck_gemm");
+    let kernel = parse_kernel(source, CK_GEMM_MAIN_LOOP_KERNEL).unwrap();
     let grid = analyze_grid(&kernel, &launch(tiles, 0, 128), &kernarg, &arrays).unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
     assert!(grid.conflicts.is_empty(), "{:?}", grid.conflicts);
@@ -62,19 +63,19 @@ fn ck_gemm_grid_run_matches_each_tile_run() {
         GraphConclusion::Verified
     );
 
-    // Compare each tile with a run that selects it: equal footprints and equivalent values.
+    // Compare each tile with a verified run that selects it: equal footprints and equivalent
+    // values.
     let mut written = Vec::new();
     for (index, (id, outputs)) in grid.workgroups.iter().enumerate() {
-        let alone = analyze(
-            &kernel,
+        let expected = check_amd_launch(
+            "success/ck_gemm.s",
+            source,
+            CK_GEMM_MAIN_LOOP_KERNEL,
             &launch(tiles, index as u32, 128),
             &kernarg,
             &arrays,
-        );
-        let expected = alone
-            .unwrap()
-            .symbolic_outputs
-            .expect("the tile's run completes");
+        )
+        .verified_outputs();
         let verdict = check_equivalence(
             &expected,
             outputs,
@@ -118,7 +119,8 @@ fn ck_gemm_tile_map_branch_depends_on_the_workgroup() {
 fn ck_fmha_grid_run_matches_each_head_run() {
     let kernarg = ck_fmha_kernarg(FMHA_Q_BASE, FMHA_K_BASE, 2);
     let arrays = fmha_arrays(2 * 4096);
-    let kernel = parse_kernel(amd_fixture!("success/ck_fmha"), CK_FMHA_KERNEL).unwrap();
+    let source = amd_fixture!("success/ck_fmha");
+    let kernel = parse_kernel(source, CK_FMHA_KERNEL).unwrap();
     let grid = analyze_grid(&kernel, &launch(2, 0, 256), &kernarg, &arrays).unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
     assert!(grid.conflicts.is_empty(), "{:?}", grid.conflicts);
@@ -129,11 +131,15 @@ fn ck_fmha_grid_run_matches_each_head_run() {
     assert_eq!(grid.workgroups.len(), 2);
 
     for (index, (id, outputs)) in grid.workgroups.iter().enumerate() {
-        let alone = analyze(&kernel, &launch(2, index as u32, 256), &kernarg, &arrays);
-        let expected = alone
-            .unwrap()
-            .symbolic_outputs
-            .expect("the head's run completes");
+        let expected = check_amd_launch(
+            "success/ck_fmha.s",
+            source,
+            CK_FMHA_KERNEL,
+            &launch(2, index as u32, 256),
+            &kernarg,
+            &arrays,
+        )
+        .verified_outputs();
         let options = EquivCheckOptions {
             sample: 64,
             ..EquivCheckOptions::default()

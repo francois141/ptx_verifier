@@ -43,8 +43,9 @@ module filter such as `-- equivalence_tests::` to run one suite. The analysis cr
 only inline unit tests of their internals.
 
 - `ptx/aggregation_tests.rs`: real kernels through both branches and `decide`.
-- `amd/accepted_tests.rs`: AMD fixtures expected to complete, their symbolic outputs
-  matching their `.out` files, and the launch and grid behavior around them;
+- `amd/accepted_tests.rs`: AMD fixtures expected to complete and verify, their symbolic
+  outputs matching their `.out` files once the graph concludes `Verified`, and the launch
+  and grid behavior around them;
   `amd/rejected_tests.rs`: the lowering or execution error each rejected kernel must
   raise; `amd/lean_tests.rs`: the sigmoid kernel stated against its spec as a Lean
   challenge, written to `target/lean/sigmoid.lean` (`just extract-lean`).
@@ -59,7 +60,7 @@ only inline unit tests of their internals.
   one and three K tiles over the same LDS storage, and its main loop also verifies at
   K=200 and 64 x 64 x 256. CK attention verifies with all four waves writing and reading
   LDS. CK GEMM's equivalence tests check all 1,600 outputs at M=N=40, K=192 and refute
-  swapped inputs.
+  swapped inputs. The snapshot helper must reject a completed kernel with an LDS race.
 - `trainium/accepted_tests.rs`: NKI fixtures expected to run, their parsed and lowered
   forms and symbolic outputs matching their `.ast`, `.ir` and `.out` files (and their
   hand-written `.expected`, which `VOLTA_BLESS` never rewrites);

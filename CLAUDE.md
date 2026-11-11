@@ -464,7 +464,8 @@ scalar instructions reject symbolic masks (`SymbolicSgpr`).
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
 Kernel tests in `volta_pipeline/tests/amd/accepted_tests.rs` run each assembly fixture
 `volta_pipeline/tests/amd/success/<name>.s` through `analyze` (`common::amd::check_run`)
-and compare its symbolic outputs with `<name>.out` beside it (`VOLTA_BLESS=1` rewrites it).
+and, once its graph concludes `Verified`, compare its symbolic outputs with `<name>.out`
+beside it (`VOLTA_BLESS=1` rewrites it).
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
 The `vector_int_ops` fixture checks multiplication, bit counts, 64-bit and packed moves,
 and signed 64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
@@ -930,12 +931,12 @@ its scan restarted each tile; the tensor_indirection tutorial's kernel, its offs
 call's `contents`, against `tensor_indirection.spec` (an index array) at its driver's
 128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
 against one moved offset and the ungathered `data[:, i]`.
-The AMD equivalence tests compare outputs only once a kernel's graph concludes
-`Verified`, as for PTX; `amd/graph_tests.rs` separately checks LDS reuse within
-workgroup 0, including pending-read races. `just amd` and `just trainium` run them
-alongside the fixture suites (`amd/accepted_tests.rs`, `amd/rejected_tests.rs`,
-`trainium/accepted_tests.rs`, `trainium/rejected_tests.rs`; `amd/lean_tests.rs` writes
-the AMD Lean challenge).
+AMD output checks require the same run's graph to conclude `Verified`: snapshots,
+equivalence comparisons, the Lean challenge, and the grid tests' individual workgroup runs.
+`amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
+to reject a completed kernel with an LDS race. `just amd` runs the accepted, rejected and
+equivalence suites; the full `amd_tests` target also runs graph, grid and Lean tests.
+`just trainium` runs its accepted, rejected and equivalence suites.
 
 ### End-to-end tests (`tests/`)
 

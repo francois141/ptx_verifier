@@ -1,17 +1,21 @@
-//! AMD kernels expected to complete: each fixture kernel's symbolic outputs, compared with
-//! `amd/success/<name>.out`, and the launch and grid behavior around them.
+//! AMD kernels expected to complete and verify: each fixture kernel's symbolic outputs, compared
+//! with `amd/success/<name>.out`, and the launch and grid behavior around them. Every test reads
+//! a run's outputs only once the graph check concludes `Verified`.
 
 use crate::common;
 
-use common::amd::{CK_GEMM_KERNEL, array, array_of, ck_gemm_kernarg};
+use common::amd::{
+    AmdChecked, CK_GEMM_KERNEL, amd_fixture, array, array_of, check_amd, check_amd_launch,
+    ck_gemm_kernarg,
+};
 use volta_amd_analysis::OutputType::{F32, U32};
-use volta_amd_analysis::frontend::ast::{Kernel, Operand};
+use volta_amd_analysis::frontend::ast::Operand;
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    AnalysisError, AnalysisResult, ArrayKind, EvalError, InstrId, StoreConflict, Terminal, WaveId,
-    WorkgroupLaunch, analyze, analyze_grid,
+    ArrayKind, EvalError, InstrId, StoreConflict, Terminal, WaveId, WorkgroupLaunch, analyze_grid,
 };
 use volta_expr::SymbolicOutputs;
+use volta_graph_check::{GraphConclusion, check_graph};
 
 // Test nonzero X/Y/Z coordinates in every lane, including descriptors with unused axes.
 #[test]
@@ -23,7 +27,7 @@ fn workgroup_ids_follow_the_kernel_descriptor() {
         ("workgroup_xyz", &[2, 3, 5]),
     ];
     for (name, expected) in cases {
-        let actual = run_workgroup_id_kernel(name).symbolic_outputs.unwrap();
+        let actual = run_workgroup_id_kernel(name).verified_outputs();
         assert_eq!(actual.outputs.len(), 1);
         let (array, elements) = &actual.outputs[0];
         assert_eq!(array, "out");
@@ -44,25 +48,32 @@ fn workgroup_ids_follow_the_kernel_descriptor() {
 // Test that graph metadata identifies the selected workgroup and the full launch grid.
 #[test]
 fn workgroup_graph_records_selected_launch() {
-    let result = run_workgroup_id_kernel("workgroup_xyz");
-    let provenance = result.graph.provenance();
+    let run = run_workgroup_id_kernel("workgroup_xyz");
+    let provenance = run.analysis.graph.provenance();
     assert_eq!(provenance.grid_dim, (3, 4, 6));
     assert!(provenance.assumes(volta_graph::Assumption::SingleWorkgroupAnalyzed { id: (2, 3, 5) }));
 }
 
-/// Run a coordinate fixture in workgroup (2, 3, 5) with room for all three coordinates per lane.
-fn run_workgroup_id_kernel(name: &str) -> AnalysisResult {
+/// Run a coordinate fixture in workgroup (2, 3, 5) with room for all three coordinates per lane,
+/// and check its graph.
+fn run_workgroup_id_kernel(name: &str) -> AmdChecked {
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (64, 1, 1),
         workgroup_id: (2, 3, 5),
         grid_size: (3, 4, 6),
     };
-    let kernel = parse_kernel(include_str!("success/workgroup_ids.s"), name).unwrap();
     let out = array_of("out", 0x10000, 3 * 64, ArrayKind::Output(U32));
-    let result = analyze(&kernel, &launch, &out.base.to_le_bytes(), &[out]).unwrap();
-    assert_eq!(result.terminal, Terminal::Completed, "{name}");
-    result
+    let run = check_amd_launch(
+        "success/workgroup_ids.s",
+        amd_fixture!("success/workgroup_ids"),
+        name,
+        &launch,
+        &out.base.to_le_bytes(),
+        std::slice::from_ref(&out),
+    );
+    assert_eq!(run.analysis.terminal, Terminal::Completed, "{name}");
+    run
 }
 
 // Test that one run over a 2 x 2 x 2 grid gives every workgroup the coordinates a run of that
@@ -76,7 +87,8 @@ fn a_grid_run_gives_each_workgroup_its_own_outputs() {
         workgroup_id,
         grid_size,
     };
-    let kernel = parse_kernel(include_str!("success/workgroup_ids.s"), "workgroup_xyz").unwrap();
+    let source = amd_fixture!("success/workgroup_ids");
+    let kernel = parse_kernel(source, "workgroup_xyz").unwrap();
     let out = array_of("out", 0x10000, 3 * 64, ArrayKind::Output(U32));
     let arrays = std::slice::from_ref(&out);
     let kernarg = out.base.to_le_bytes();
@@ -89,12 +101,24 @@ fn a_grid_run_gives_each_workgroup_its_own_outputs() {
     )
     .unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
+    assert_eq!(
+        check_graph(&grid.graph).conclusion(),
+        GraphConclusion::Verified
+    );
     assert_eq!(grid.workgroups.len(), 8);
 
-    // Each workgroup's stored words must equal those of a run that selects it.
+    // Each workgroup's stored words must equal those of a verified run that selects it.
     for (id, outputs) in &grid.workgroups {
-        let alone = analyze(&kernel, &launch(*id), &kernarg, arrays).unwrap();
-        let expected = alone.symbolic_outputs.unwrap();
+        let file = "success/workgroup_ids.s";
+        let alone = check_amd_launch(
+            file,
+            source,
+            "workgroup_xyz",
+            &launch(*id),
+            &kernarg,
+            arrays,
+        );
+        let expected = alone.verified_outputs();
         assert_eq!(output_words(outputs), output_words(&expected), "{id:?}");
     }
 
@@ -137,6 +161,10 @@ fn grid_lds_words_keep_their_integer_bits() {
     let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
     let grid = analyze_grid(&kernel, &launch, &kernarg, &arrays).unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
+    assert_eq!(
+        check_graph(&grid.graph).conclusion(),
+        GraphConclusion::Verified
+    );
     assert_eq!(grid.workgroups.len(), 2);
     assert!(grid.conflicts.is_empty());
 
@@ -183,6 +211,10 @@ fn grid_branches_compare_taken_paths_not_individual_vcc_bits() {
     let out = array_of("out", 0x10000, 128, ArrayKind::Output(U32));
     let grid = analyze_grid(&kernel, &launch, &out.base.to_le_bytes(), &[out]).unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
+    assert_eq!(
+        check_graph(&grid.graph).conclusion(),
+        GraphConclusion::Verified
+    );
     assert_eq!(grid.workgroups.len(), 2);
     assert!(grid.conflicts.is_empty());
     for (id, outputs) in &grid.workgroups {
@@ -408,13 +440,8 @@ fn the_scalar_ops_kernel_writes_its_expected_outputs() {
 }
 
 /// Launch the scalar fixture with concrete arithmetic operands, comparison
-/// words and loop count.
-fn run_scalar_ops(
-    kernel: &Kernel,
-    signed: [i32; 2],
-    words: [u64; 3],
-    count: i32,
-) -> Result<AnalysisResult, AnalysisError> {
+/// words and loop count, and check its graph.
+fn run_scalar_ops(signed: [i32; 2], words: [u64; 3], count: i32) -> AmdChecked {
     let out = 0x10000_u64;
     let mut kernarg = out.to_le_bytes().to_vec();
     for value in signed {
@@ -424,24 +451,20 @@ fn run_scalar_ops(
         kernarg.extend(value.to_le_bytes());
     }
     kernarg.extend(count.to_le_bytes());
-    analyze(
-        kernel,
-        &WorkgroupLaunch {
-            kernarg_address: 0x1000,
-            workgroup_size: (64, 1, 1),
-            workgroup_id: (0, 0, 0),
-            grid_size: (1, 1, 1),
-        },
+    check_amd(
+        "success/scalar_ops.s",
+        amd_fixture!("success/scalar_ops"),
+        "scalar_ops",
+        64,
         &kernarg,
         &[array_of("out", out, 64 * 8, ArrayKind::Output(U32))],
     )
 }
 
-/// Check all six written words in every lane's row, with no extra output
+/// Check all six written words in every lane's row of a verified run, with no extra output
 /// elements.
-fn assert_scalar_rows(result: AnalysisResult, expected: [u32; 6]) {
-    assert_eq!(result.terminal, Terminal::Completed);
-    let outputs = result.symbolic_outputs.unwrap();
+fn assert_scalar_rows(run: AmdChecked, expected: [u32; 6]) {
+    let outputs = run.verified_outputs();
     assert_eq!(outputs.outputs.len(), 1);
     assert_eq!(outputs.outputs[0].0, "out");
     assert_eq!(outputs.outputs[0].1.len(), 64 * 6);
@@ -495,10 +518,7 @@ fn scalar_ops_handles_boundary_arguments() {
             [u32::MAX, 0, 0xffff_fff8, 1, 0, 693],
         ),
     ] {
-        assert_scalar_rows(
-            run_scalar_ops(&kernel, signed, words, count).unwrap(),
-            expected,
-        );
+        assert_scalar_rows(run_scalar_ops(signed, words, count), expected);
     }
 }
 

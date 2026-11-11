@@ -3,7 +3,7 @@
 
 use crate::common;
 
-use common::amd::{array, array_of};
+use common::amd::{amd_fixture, array, array_of, check_amd_launch};
 use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
@@ -99,7 +99,8 @@ fn grid_runs_reject_different_lds_addresses() {
 // its workgroups leave different lanes active.
 #[test]
 fn grid_runs_reject_different_active_lanes() {
-    let kernel = parse_kernel(include_str!("success/exec_ops.s"), "workgroup_exec").unwrap();
+    let source = amd_fixture!("success/exec_ops");
+    let kernel = parse_kernel(source, "workgroup_exec").unwrap();
     let launch = WorkgroupLaunch {
         kernarg_address: 0x1000,
         workgroup_size: (64, 1, 1),
@@ -109,15 +110,16 @@ fn grid_runs_reject_different_active_lanes() {
     let out = array("out", 0x10000, ArrayKind::Output(U32));
     let arrays = std::slice::from_ref(&out);
     let kernarg = out.base.to_le_bytes();
-    // Workgroup 0 runs the second move in no lane, and workgroup 1 runs it in every lane.
+    // Workgroup 0 runs the second move in no lane, and workgroup 1 runs it in every lane. Each
+    // run's outputs are read once its graph verifies.
     for (group, word) in [(0, 7), (1, 9)] {
         let selected = WorkgroupLaunch {
             workgroup_id: (group, 0, 0),
             ..launch
         };
-        let alone = analyze(&kernel, &selected, &kernarg, arrays).unwrap();
-        assert_eq!(alone.terminal, Terminal::Completed);
-        let outputs = alone.symbolic_outputs.unwrap();
+        let file = "success/exec_ops.s";
+        let alone = check_amd_launch(file, source, "workgroup_exec", &selected, &kernarg, arrays);
+        let outputs = alone.verified_outputs();
         for lane in 0..64 {
             let stored = outputs
                 .element("out", lane)

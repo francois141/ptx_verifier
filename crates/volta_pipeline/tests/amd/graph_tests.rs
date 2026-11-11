@@ -224,6 +224,25 @@ fn lds_reads_must_complete_before_the_reuse_barrier() {
     );
 }
 
+// Test that a completed kernel with an LDS race cannot supply snapshot outputs. The helper
+// must reject its graph before reading or blessing an expected-output file.
+#[test]
+#[should_panic(expected = "the graph check did not verify the kernel: Rejected")]
+fn snapshots_reject_completed_kernels_with_lds_races() {
+    let arrays = [
+        common::amd::array_of("input", 0x10000, 128, Input),
+        common::amd::array_of("output", 0x20000, 128, Output(F32)),
+    ];
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    common::amd::check_run_kernel(
+        "success/lds_sync",
+        "read_pending_across_reuse_barrier",
+        128,
+        &kernarg,
+        &arrays,
+    );
+}
+
 // Test that only the active lanes' LDS accesses enter the graph. `exec_ops` writes a word from
 // every lane, from each odd lane and from lane 5 alone, and reads one from every lane twice and
 // from each odd lane. The graph must hold exactly those accesses and verify.
@@ -234,15 +253,24 @@ fn only_active_lanes_access_lds() {
         ("out", 0x20000, 64 * 32, Output(U32)),
         ("floats", 0x30000, 64, Output(F32)),
     ]
-    .map(|(name, base, len, kind): (&str, u64, u64, ArrayKind)| ArrayDef {
-        name: name.into(),
-        base,
-        len,
-        kind,
-    });
+    .map(
+        |(name, base, len, kind): (&str, u64, u64, ArrayKind)| ArrayDef {
+            name: name.into(),
+            base,
+            len,
+            kind,
+        },
+    );
     let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
     let source = amd_fixture!("success/exec_ops");
-    let run = check_amd("success/exec_ops.s", source, "exec_ops", 64, &kernarg, &arrays);
+    let run = check_amd(
+        "success/exec_ops.s",
+        source,
+        "exec_ops",
+        64,
+        &kernarg,
+        &arrays,
+    );
     assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
 
     // Count the LDS words written and read across the wave's DS instructions.

@@ -92,7 +92,7 @@ kernels expected to complete and `execution_error/` those the analysis must reje
 one `.s`) sits in `success/`, and its tests name the failing kernels.
 
 `amd/accepted_tests.rs` parses, lowers, and executes the compiled assembly fixtures,
-then compares their symbolic outputs with the corresponding `.out` files.
+then requires the graph to conclude `Verified` before comparing outputs with the `.out` files.
 The `scalar_ops` fixture checks signed arithmetic, 64-bit comparisons and uniform loop branches.
 The `vector_int_ops` fixture checks multiplication, bit counts, 64-bit and packed moves,
 and signed 64-bit comparisons against a literal bound. `compare64_ops` checks every 64-bit integer comparison
