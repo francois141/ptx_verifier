@@ -7,7 +7,10 @@ mod eval;
 mod ir;
 mod lower;
 
-pub use eval::{Access, EvalError, Location, Mode, PARTITION_STRIDE, evaluate, footprints};
+pub use eval::{
+    Access, EvalError, Location, Mode, OrderingPolicy, PARTITION_STRIDE, evaluate, footprints,
+    record_graph,
+};
 pub use ir::{
     ActivationFunc, ArithOp, Index, Initial, InstrId, LoopId, LoopIteration, LoopKind,
     LoweredInstr, LoweredKernel, Memory, Mover, Origin, Reordering, ScalarOperand, ScalarStep,
