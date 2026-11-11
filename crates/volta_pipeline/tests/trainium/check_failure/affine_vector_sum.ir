@@ -1,0 +1,12 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[1, 4]
+  acc: sbuf[1, 4]
+  row.0: sbuf[1, 4]
+  row.1: sbuf[1, 4]
+  acc = memset(0)
+  row.0 = dma(a[0:1, 0:4])  # in affine_range#0[0]
+  acc = add(acc, row.0)  # in affine_range#0[0]
+  row.1 = dma(a[1:2, 0:4])  # in affine_range#0[1]
+  acc = add(acc, row.1)  # in affine_range#0[1]
+  out = dma(acc)

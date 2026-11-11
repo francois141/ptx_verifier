@@ -1,0 +1,9 @@
+kernel kernel(a, out)
+  a: hbm[3, 4]
+  out: hbm[2, 4]
+  x: sbuf[1, 4]
+  x = dma(a[0:1, 0:4])
+  out[0:1, 0:4] = dma(x)  # in sequential_range#0[0]
+  x = dma(a[1:2, 0:4])  # in sequential_range#0[0]
+  out[1:2, 0:4] = dma(x)  # in sequential_range#0[1]
+  x = dma(a[2:3, 0:4])  # in sequential_range#0[1]
