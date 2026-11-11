@@ -121,9 +121,29 @@ outcomes with different VCC masks, and rejection of varying LDS addresses and Na
 `amd/rejected_tests.rs` instead requires a specific lowering or execution error.
 Specification comparisons live in `amd/equivalence_tests.rs`, each kernel's graph
 concluding `Verified` first; CK RMSNorm (`ck_rmsnorm2d`) is checked there and in
-`amd/graph_tests.rs`, without a snapshot of its outputs. `examples/lean/rmsnorm_amd.json`
-launches the same kernel through `volta solve`, listing the fields of CK's by-value argument
-struct as flat parameters; `volta_cli/tests/solve_tests.rs` requires that run to be accepted.
+`amd/graph_tests.rs`, without a snapshot of its outputs, and CK average pooling
+(`ck_avgpool2d`) there alone, also without one. `examples/lean/rmsnorm_amd.json`
+launches CK RMSNorm through `volta solve`, listing the fields of CK's by-value argument
+struct as flat parameters. `gemm_amd.json` launches CK GEMM on an 8 x 8 x 8 problem and
+`fmha_amd.json` CK attention over one batch and one head the same way, and
+`avgpool2d_amd.json` launches CK average pooling, listing the words of its two by-value
+tensor descriptors. The AMD tests generate the GEMM, attention and average-pooling launch
+files from `ck_gemm_params`, `ck_fmha_params` and `ck_avgpool2d_params`, the labelled lists
+their own argument bytes come from, and fail when a file differs; `VOLTA_BLESS=1` rewrites
+the files. `volta_cli/tests/solve_tests.rs` requires the RMSNorm, `gemm_amd.json`,
+`fmha_amd.json` and `avgpool2d_amd.json` runs to be accepted. `gemm_sigmoid_amd.json` launches
+the fused GEMM-sigmoid kernel with the same arguments against `sigmoid_matmul_transposed.spec`.
+Its compiled sigmoid is not the formula exactly: it rescales by a rounded constant for large
+inputs. `volta solve` neither proves this launch equal nor finds a counterexample, so the
+solve tests require `UNKNOWN`, never `ACCEPT`. `volta_cli/tests/extract_tests.rs` requires
+`volta extract lean --tolerance 1/1000` to state each of the 64 outputs within that tolerance;
+these are proof obligations, not a proof. `amd/equivalence_tests.rs` requires the same kernel
+with A and B exchanged to be refuted. The solve tests require two launches to be rejected:
+`fmha_amd_swapped_qk.json`, which exchanges the query and key, for outputs that differ from
+the formula, and `avgpool2d_amd_larger_output.json`, whose 3 x 3 output extends past CK's
+output buffer bound, for the four outputs the kernel never writes. Each runs as
+`volta solve crates/volta_pipeline/tests/amd/success/<kernel>.s --config examples/lean/<file>`;
+attention needs `--print-outputs 0`, since each of its output expressions holds a softmax row.
 `amd/grid_tests.rs` compares CK grid outputs with independent
 workgroup runs, checks that their stores do not overlap, and rejects differing control flow.
 Run the kernel and equivalence suites, then the graph and grid suites, from the repository root:
@@ -174,6 +194,44 @@ clang++ -x hip -std=c++20 -fbracket-depth=1024 \
   -S crates/volta_pipeline/tests/amd/success/ck_gemm.hip \
   -o crates/volta_pipeline/tests/amd/success/ck_gemm.s
 ```
+
+### Compiling the CK average-pooling fixture
+
+`volta_pipeline/tests/amd/success/ck_avgpool2d.hip` instantiates an fp32 2D average-pooling kernel
+from CK `rocm-7.0.0`. It takes the first `DevicePool2dFwd_NHWC_NHWC` configuration from CK's
+[pool2d instance list](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/library/src/tensor_operation_instance/gpu/pool2d_fwd/pool2d_fwd_instance_common.hpp)
+and specializes it to `float` data and `ReduceTensorOp::AVG`, matching CK's
+[fp32 average-pooling instances](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/library/src/tensor_operation_instance/gpu/pool2d_fwd/device_avg_pool2d_fwd_nhwc_f32_instance.cpp).
+
+Workgroups have 256 work-items, each computing one NHWC output element. A work-item loads its
+pooling window one input element at a time, sums the values, and divides by the window size. Tensor
+shapes, window dimensions, strides, dilations, and padding are passed as kernel arguments inside
+CK's tensor descriptors.
+
+Use Clang 21.1.8 with the GEMM fixture's CK headers (`CK_ROOT`) and HIP headers (`HIP_ROOT`), and
+compile from the repository root:
+
+```sh
+clang++ -x hip -std=c++20 -fbracket-depth=1024 \
+  --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
+  --hip-path="$HIP_ROOT" -DNDEBUG -Wno-unknown-warning-option \
+  -O3 -g0 -fno-verbose-asm -fgpu-flush-denormals-to-zero \
+  -fno-hip-fp32-correctly-rounded-divide-sqrt -I "$CK_ROOT/include" \
+  -S crates/volta_pipeline/tests/amd/success/ck_avgpool2d.hip \
+  -o crates/volta_pipeline/tests/amd/success/ck_avgpool2d.s
+```
+
+Because `-nogpulib` omits ROCm's device library, `ck_avgpool2d.hip` defines the needed OCKL
+helpers inline, like `ck_gemm.hip`.
+
+The tests build the kernel's arguments as CK's host code does (`ck_avgpool2d_params` in
+`volta_pipeline/tests/common/amd.rs`): the two tensor descriptors of
+[`MakeABGridDescriptor_A_M_K_B_M`](https://github.com/ROCm/composable_kernel/blob/rocm-7.0.0/include/ck/tensor_operation/gpu/device/impl/device_pool2d_fwd_nhwc_nhwc.hpp),
+the window size, and the scale of 1 and output weight of 0 that `Invoker::Run` passes. That
+function gives the output tensor the input's height and width, which sizes the buffer that
+bounds the kernel's stores. When padding makes the output extend past that size, the stores
+beyond it are dropped; `amd/equivalence_tests.rs` requires such a launch to be rejected for
+the outputs it never writes.
 
 ### Compiling the CK attention fixture
 

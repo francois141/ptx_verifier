@@ -498,7 +498,7 @@ Do not add unit tests or `tests.rs` modules: cover execution behavior
 through compiled fixtures in `amd/accepted_tests.rs` and `amd/rejected_tests.rs`.
 See the crate README for ISA references, test commands, and fixture regeneration,
 including the pinned CK Tile forward-attention instance in `ck_fmha.hip` and RMSNorm instance
-in `ck_rmsnorm2d.hip`.
+in `ck_rmsnorm2d.hip`, and CK's fp32 average-pooling instance in `ck_avgpool2d.hip`.
 
 ## Crate: volta_trainium_analysis
 
@@ -937,6 +937,16 @@ CK GEMM's main-loop tests check all 1,600 outputs at M=N=40, K=192 and refute sw
 CK RMSNorm checks every output of both rows of a 2 x 1,024 tensor and of a padded 1,000-element
 row against `row_rms_norm.spec`, and refutes a wrong epsilon; `amd/graph_tests.rs` requires
 exactly one LDS write per wave.
+CK average pooling checks every output against `avg_pool2d_nhwc.spec` (a `padded` input) for
+unpadded, padded, dilated and two-workgroup launches, each workgroup writing exactly its own
+outputs, with arguments built as CK's host code builds them (`ck_avgpool2d_params`). It
+refutes the undivided sum and padding on the other side. A launch whose output is larger than
+its input must be rejected: CK's output buffer bound drops four of its nine stores, and
+`check_against_spec` reports those outputs as never written (`IndexSetMismatch`). The
+`volta solve` launch files `examples/lean/avgpool2d_amd*.json`, `fmha_amd*.json`,
+`gemm_amd.json` and `gemm_sigmoid_amd.json` are snapshots of the argument builders' labelled
+parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
+`common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
 graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrderOnly`, and
 that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 

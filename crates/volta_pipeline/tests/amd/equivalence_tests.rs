@@ -5,15 +5,20 @@ use std::collections::HashMap;
 use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind, WorkgroupLaunch};
 use volta_equivalence::check::EquivCheckOptions;
-use volta_pipeline::{EquivalenceVerdict, check_equivalence};
+use volta_pipeline::{
+    EquivalenceVerdict, GraphBranch, KernelEvidence, Spec, Verdict, check_against_spec,
+    check_equivalence, decide,
+};
 
 use crate::common;
 
 use common::amd::{
-    CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL,
-    FMHA_K_BASE as K_BASE, FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE,
-    GEMM_C_BASE as C_BASE, amd_fixture, check_amd, check_amd_launch, ck_fmha_kernarg,
-    ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
+    AmdChecked, AvgPool2d, CK_AVGPOOL2D_KERNEL, CK_FMHA_KERNEL, CK_GEMM_KERNEL,
+    CK_GEMM_MAIN_LOOP_KERNEL, CK_GEMM_SIGMOID_KERNEL, CK_RMSNORM_KERNEL, FMHA_K_BASE as K_BASE,
+    FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE,
+    amd_fixture, avgpool_arrays, avgpool_launch, check_amd, check_amd_launch, check_launch_file,
+    ck_avgpool2d_kernarg, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays,
+    fmha_launch, gemm_arrays, gemm_launch, gemm_sigmoid_launch, rmsnorm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
 
@@ -144,6 +149,18 @@ fn amd_ck_gemm_main_loop_matches_its_specification() {
     );
 }
 
+// Test that the GEMM launch file matches the argument builder for its 8 x 8 x 8 launch.
+#[test]
+fn amd_ck_gemm_launch_file_matches_the_argument_builder() {
+    check_launch_file("gemm_amd.json", &gemm_launch());
+}
+
+// Test that the fused GEMM-sigmoid launch file matches the argument builder.
+#[test]
+fn amd_ck_gemm_sigmoid_launch_file_matches_the_argument_builder() {
+    check_launch_file("gemm_sigmoid_amd.json", &gemm_sigmoid_launch());
+}
+
 // Test that swapping CK's equal-sized input arrays is refuted against the intended product.
 #[test]
 fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
@@ -151,6 +168,32 @@ fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
     assert!(
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+// Test that swapping the fused GEMM-sigmoid kernel's inputs is refuted in all 56 outputs off
+// the diagonal. A diagonal output keeps its dot product when A and B are exchanged.
+#[test]
+fn amd_ck_gemm_sigmoid_with_swapped_input_arguments_is_refuted() {
+    let kernarg = ck_gemm_kernarg(B_BASE, A_BASE, C_BASE, [8, 8, 8]);
+    let verdict = check_gemm(
+        "success/ck_gemm_sigmoid.s",
+        amd_fixture!("success/ck_gemm_sigmoid"),
+        CK_GEMM_SIGMOID_KERNEL,
+        128,
+        [8, 8, 8],
+        &kernarg,
+        include_str!("../../../volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"),
+    );
+    let off_diagonal = (0..64)
+        .filter(|index| index / 8 != index % 8)
+        .map(|index| ("C".to_string(), index))
+        .collect();
+    assert_eq!(
+        verdict,
+        EquivalenceVerdict::Refuted {
+            elements: off_diagonal
+        }
     );
 }
 
@@ -263,6 +306,25 @@ fn amd_ck_fmha_with_wrong_head_stride_is_refuted() {
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a wrong-head read to be refuted, got {verdict:?}"
     );
+}
+
+// Test that both attention launch files match the argument builder for one batch and
+// one head. The negative launch swaps query and key to cause a mismatch with the attention
+// formula.
+#[test]
+fn amd_ck_fmha_launch_files_match_the_argument_builder() {
+    let accepted = fmha_launch(
+        Q_BASE,
+        K_BASE,
+        "CK attention over one batch and one head of 64 x 64 fp32 tensors.",
+    );
+    check_launch_file("fmha_amd.json", &accepted);
+    let swapped = fmha_launch(
+        K_BASE,
+        Q_BASE,
+        "CK attention over one batch and one head, with query and key swapped.",
+    );
+    check_launch_file("fmha_amd_swapped_qk.json", &swapped);
 }
 
 fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
@@ -406,4 +468,236 @@ fn amd_ck_rmsnorm_with_wrong_epsilon_is_refuted() {
         matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
         "expected a confirmed difference, got {verdict:?}"
     );
+}
+
+const AVG_POOL2D_SPEC: &str =
+    include_str!("../../../volta_equivalence/tests/specs/avg_pool2d_nhwc.spec");
+
+/// Run workgroup `workgroup` of CK's average pooling of `pool` and check its graph.
+fn launch_ck_avgpool2d(pool: &AvgPool2d, workgroup: u32) -> AmdChecked {
+    // CK launches one workgroup of 256 work-items along X for every 256 output elements.
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (256, 1, 1),
+        workgroup_id: (workgroup, 0, 0),
+        grid_size: ((pool.output_len() as u32).div_ceil(256), 1, 1),
+    };
+    check_amd_launch(
+        "success/ck_avgpool2d.s",
+        amd_fixture!("success/ck_avgpool2d"),
+        CK_AVGPOOL2D_KERNEL,
+        &launch,
+        &ck_avgpool2d_kernarg(pool),
+        &avgpool_arrays(pool),
+    )
+}
+
+/// The dims of `avg_pool2d_nhwc.spec` for `pool`.
+fn avgpool2d_dims(pool: &AvgPool2d) -> HashMap<String, u64> {
+    HashMap::from(
+        pool.spec_dims()
+            .map(|(name, value)| (name.to_string(), value)),
+    )
+}
+
+/// Check one workgroup of CK's average pooling of `launched` against `spec` at the parameters
+/// of `specified`. The kernel must write exactly the outputs that workgroup's work-items own.
+fn check_ck_avgpool2d(
+    launched: &AvgPool2d,
+    workgroup: u32,
+    spec: &str,
+    specified: &AvgPool2d,
+) -> EquivalenceVerdict {
+    let actual = launch_ck_avgpool2d(launched, workgroup).verified_outputs();
+
+    // The reference states every output from the pooling parameters, not CK's descriptors.
+    let dims = avgpool2d_dims(specified);
+    let mut reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+
+    // Work-item i of a workgroup owns output 256 * workgroup + i: keep those of the reference.
+    let first = 256 * u64::from(workgroup);
+    for (_, elements) in &mut reference.outputs {
+        elements.retain(|(index, _)| (first..first + 256).contains(index));
+    }
+    check_equivalence(
+        &reference,
+        &actual,
+        &["output".into()],
+        &EquivCheckOptions::default(),
+    )
+    .0
+}
+
+/// Require each workgroup of `pool`'s launch to write its outputs, all equal to the formula's.
+fn assert_ck_avgpool2d_matches(pool: &AvgPool2d) {
+    let outputs = pool.output_len() as u64;
+    for workgroup in 0..outputs.div_ceil(256) {
+        let owned = (outputs - 256 * workgroup).min(256);
+        assert_eq!(
+            check_ck_avgpool2d(pool, workgroup as u32, AVG_POOL2D_SPEC, pool),
+            EquivalenceVerdict::Equivalent {
+                checked: owned,
+                total: owned,
+            },
+            "workgroup {workgroup} of {pool:?}"
+        );
+    }
+}
+
+/// A launch without padding or dilation.
+fn unpadded_pool(
+    batch: i32,
+    channels: i32,
+    input: [i32; 2],
+    window: [i32; 2],
+    stride: [i32; 2],
+) -> AvgPool2d {
+    AvgPool2d {
+        batch,
+        channels,
+        input,
+        window,
+        stride,
+        dilation: [1, 1],
+        left_pad: [0, 0],
+        right_pad: [0, 0],
+    }
+}
+
+/// A launch whose 3 x 3 output is larger than its 2 x 2 input: 2 x 2 windows, stride 1 and
+/// one row and column of padding on each side.
+fn larger_output_pool() -> AvgPool2d {
+    AvgPool2d {
+        left_pad: [1, 1],
+        right_pad: [1, 1],
+        ..unpadded_pool(1, 1, [2, 2], [2, 2], [1, 1])
+    }
+}
+
+// Test every output of three unpadded launches: disjoint 2 x 2 windows whose 18 outputs fill
+// part of a workgroup, overlapping 3 x 2 windows, and 450 outputs across two workgroups.
+#[test]
+fn amd_ck_avgpool2d_matches_its_specification() {
+    for pool in [
+        unpadded_pool(1, 2, [6, 6], [2, 2], [2, 2]),
+        // Lengths that are not powers of two give CK's division multipliers distinct values.
+        unpadded_pool(2, 3, [7, 9], [3, 2], [2, 1]),
+        unpadded_pool(1, 5, [10, 12], [2, 3], [1, 1]),
+    ] {
+        assert_ck_avgpool2d_matches(&pool);
+    }
+}
+
+// Test every output where windows reach into the zero padding or skip elements: 3 x 3 windows
+// over one row and column of padding on each side, 2 x 2 windows dilated by 2, and padding
+// that differs before and after the input.
+#[test]
+fn amd_ck_avgpool2d_with_padding_and_dilation_matches_its_specification() {
+    let padded = AvgPool2d {
+        left_pad: [1, 1],
+        right_pad: [1, 1],
+        ..unpadded_pool(1, 3, [5, 6], [3, 3], [2, 2])
+    };
+    let dilated = AvgPool2d {
+        window: [2, 2],
+        stride: [1, 1],
+        dilation: [2, 2],
+        ..padded
+    };
+    let uneven = AvgPool2d {
+        left_pad: [1, 0],
+        right_pad: [0, 2],
+        ..unpadded_pool(2, 2, [4, 5], [2, 3], [1, 2])
+    };
+    for pool in [padded, dilated, uneven] {
+        assert_ck_avgpool2d_matches(&pool);
+    }
+}
+
+// Test that the kernel is refuted against the window sum without its division.
+#[test]
+fn amd_ck_avgpool2d_against_the_undivided_sum_is_refuted() {
+    let undivided = AVG_POOL2D_SPEC.replace("/ (KH * KW)", "");
+    assert_ne!(undivided, AVG_POOL2D_SPEC);
+    let pool = unpadded_pool(1, 2, [6, 6], [2, 2], [2, 2]);
+    let verdict = check_ck_avgpool2d(&pool, 0, &undivided, &pool);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+// Test that padding before the input is refuted against a formula that pads after it. Both
+// have 6 x 6 outputs, but each window lies one row and one column apart.
+#[test]
+fn amd_ck_avgpool2d_with_padding_on_the_other_side_is_refuted() {
+    let launched = AvgPool2d {
+        left_pad: [1, 1],
+        ..unpadded_pool(1, 2, [6, 6], [2, 2], [1, 1])
+    };
+    let specified = AvgPool2d {
+        left_pad: [0, 0],
+        right_pad: [1, 1],
+        ..launched
+    };
+    assert_eq!(launched.output(), specified.output());
+    let verdict = check_ck_avgpool2d(&launched, 0, AVG_POOL2D_SPEC, &specified);
+    assert!(
+        matches!(&verdict, EquivalenceVerdict::Refuted { elements } if !elements.is_empty()),
+        "expected a confirmed difference, got {verdict:?}"
+    );
+}
+
+// Test that a launch whose 3 x 3 output is larger than its 2 x 2 input is rejected. CK sizes
+// the output buffer as if the output had the input's height and width, here five elements,
+// so the kernel's stores of outputs 5 to 8 fall outside the buffer and are dropped.
+#[test]
+fn amd_ck_avgpool2d_with_outputs_beyond_cks_output_bound_is_rejected() {
+    let pool = larger_output_pool();
+    assert_eq!(pool.output_len(), 9);
+    let checked = launch_ck_avgpool2d(&pool, 0);
+    let report = checked.report.clone();
+    let assumptions = checked.analysis.graph.provenance().assumptions.clone();
+    let mut actual = checked.verified_outputs();
+
+    // The formula defines all nine outputs, so the comparison names the four never written.
+    let parsed = volta_spec::parse_spec(AVG_POOL2D_SPEC).unwrap();
+    let spec = Spec::new(&parsed, &avgpool2d_dims(&pool)).unwrap();
+    let (verdict, _) =
+        check_against_spec(&mut actual, &spec, &EquivCheckOptions::default()).unwrap();
+    assert_eq!(
+        verdict,
+        EquivalenceVerdict::IndexSetMismatch {
+            array: "output".into(),
+            unwritten: vec![5, 6, 7, 8],
+            unexpected: vec![],
+        }
+    );
+
+    // The run's graph verified, so the unwritten outputs alone make the verdict a rejection.
+    let kernel = KernelEvidence {
+        label: "kernel",
+        graph: GraphBranch::Checked(&report),
+        assumptions: &assumptions,
+    };
+    assert_eq!(decide(&verdict, &[kernel]).verdict, Verdict::Reject);
+}
+
+// Test that the `volta solve` launch files in `examples/lean/` hold the argument builder's
+// parameters for their launches: 3 x 3 windows with stride 2 over a padded 14 x 14 input, and
+// the launch whose output is larger than its input. `VOLTA_BLESS=1` rewrites the files.
+#[test]
+fn amd_ck_avgpool2d_launch_files_match_the_argument_builder() {
+    let padded = AvgPool2d {
+        left_pad: [1, 1],
+        right_pad: [1, 1],
+        ..unpadded_pool(1, 3, [14, 14], [3, 3], [2, 2])
+    };
+    let accepted = avgpool_launch(&padded, "CK average pooling in NHWC layout with padding.");
+    check_launch_file("avgpool2d_amd.json", &accepted);
+    let rejected = avgpool_launch(
+        &larger_output_pool(),
+        "CK average pooling with padding that makes the output exceed CK's buffer bound.",
+    );
+    check_launch_file("avgpool2d_amd_larger_output.json", &rejected);
 }

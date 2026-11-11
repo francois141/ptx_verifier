@@ -1,132 +1,37 @@
 {
-  "description": "CK RMSNorm over one row of 1,024 fp32 elements, four waves; the parameters are the fields of CK's by-value Rmsnorm2dFwd::Kargs in order",
+  "description": "CK RMSNorm over one row of 1,024 fp32 elements.",
   "kernel": "_ZN7ck_tile6kentryILi1ENS_12Rmsnorm2dFwdINS_27Rmsnorm2dFwdPipelineOnePassINS_27Rmsnorm2dFwdPipelineProblemIffffffffNS_19Generic2dBlockShapeINS_8sequenceIJLi1ELi1024EEEENS5_IJLi1ELi256EEEENS5_IJLi1ELi1EEEEEENS_18Rmsnorm2dFwdTraitsILb1ELb0ELb0ELb0ELNS_21Rmsnorm2dFusedAddEnumE0ELNS_23Rmsnorm2dFusedQuantEnumE0ELNS_22Rmsnorm2dSensitiveEnumE0EEEEENS_33Rmsnorm2dFwdPipelineDefaultPolicyEEENS_17Default2DEpilogueINS_24Default2DEpilogueProblemIffLb0ELb1ELb0EEEvEEEEJNSM_5KargsEEEEvDpT1_",
   "block": 256,
   "arrays": [
-    {
-      "name": "x",
-      "kind": "in",
-      "dtype": "f32",
-      "shape": [
-        1,
-        1024
-      ]
-    },
-    {
-      "name": "gamma",
-      "kind": "in",
-      "dtype": "f32",
-      "shape": [
-        1024
-      ]
-    },
-    {
-      "name": "y",
-      "kind": "out",
-      "dtype": "f32",
-      "shape": [
-        1024
-      ]
-    }
+    {"name": "x",     "kind": "in",  "dtype": "f32", "shape": [1, 1024]},
+    {"name": "gamma", "kind": "in",  "dtype": "f32", "shape": [1024]},
+    {"name": "y",     "kind": "out", "dtype": "f32", "shape": [1024]}
   ],
   "params": [
-    {
-      "name": "p_x",
-      "ptr": "x"
-    },
-    {
-      "name": "p_x_residual (low word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_x_residual (high word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_sm_scale (low word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_sm_scale (high word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_gamma",
-      "ptr": "gamma"
-    },
-    {
-      "name": "p_y",
-      "ptr": "y"
-    },
-    {
-      "name": "p_y_residual (low word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_y_residual (high word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_y_scale (low word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_y_scale (high word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_invRms (low word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_invRms (high word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_y_unquant (low word, null)",
-      "int": 0
-    },
-    {
-      "name": "p_y_unquant (high word, null)",
-      "int": 0
-    },
-    {
-      "name": "epsilon (2^-20)",
-      "float": 9.5367431640625e-07
-    },
-    {
-      "name": "m",
-      "int": 1
-    },
-    {
-      "name": "n",
-      "int": 1024
-    },
-    {
-      "name": "x_stride",
-      "int": 1024
-    },
-    {
-      "name": "xr_stride",
-      "int": 1024
-    },
-    {
-      "name": "y_stride",
-      "int": 1024
-    },
-    {
-      "name": "yr_stride",
-      "int": 1024
-    },
-    {
-      "name": "padding to the struct's 104 bytes",
-      "int": 0
-    }
+    {"name": "p_x", "ptr": "x"},
+    {"name": "p_x_residual (low word, null)", "int": 0},
+    {"name": "p_x_residual (high word, null)", "int": 0},
+    {"name": "p_sm_scale (low word, null)", "int": 0},
+    {"name": "p_sm_scale (high word, null)", "int": 0},
+    {"name": "p_gamma", "ptr": "gamma"},
+    {"name": "p_y", "ptr": "y"},
+    {"name": "p_y_residual (low word, null)", "int": 0},
+    {"name": "p_y_residual (high word, null)", "int": 0},
+    {"name": "p_y_scale (low word, null)", "int": 0},
+    {"name": "p_y_scale (high word, null)", "int": 0},
+    {"name": "p_invRms (low word, null)", "int": 0},
+    {"name": "p_invRms (high word, null)", "int": 0},
+    {"name": "p_y_unquant (low word, null)", "int": 0},
+    {"name": "p_y_unquant (high word, null)", "int": 0},
+    {"name": "epsilon (2^-20)", "float": 9.5367431640625e-07},
+    {"name": "m", "int": 1},
+    {"name": "n", "int": 1024},
+    {"name": "x_stride", "int": 1024},
+    {"name": "xr_stride", "int": 1024},
+    {"name": "y_stride", "int": 1024},
+    {"name": "yr_stride", "int": 1024},
+    {"name": "padding to the struct's 104 bytes", "int": 0}
   ],
   "spec": "../../crates/volta_equivalence/tests/specs/row_rms_norm.spec",
-  "dims": {
-    "M": 1,
-    "N": 1024,
-    "Row": 0
-  }
+  "dims": {"M": 1, "N": 1024, "Row": 0}
 }
