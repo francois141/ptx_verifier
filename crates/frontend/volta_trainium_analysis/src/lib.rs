@@ -13,7 +13,7 @@ pub use eval::{
 };
 pub use ir::{
     ActivationFunc, ArithOp, Index, Initial, InstrId, LoopId, LoopIteration, LoopKind,
-    LoweredInstr, LoweredKernel, Memory, Mover, Origin, Reordering, ScalarOperand, ScalarStep,
-    Shape, Tensor, TensorId, TensorRegion,
+    LoweredInstr, LoweredKernel, Memory, Mover, NoReorderId, Origin, Reordering, ScalarOperand,
+    ScalarStep, Shape, Tensor, TensorId, TensorRegion,
 };
 pub use lower::{LowerError, PatternProblem, StatementError, lower_kernel};

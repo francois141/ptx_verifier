@@ -231,8 +231,10 @@ on where it was emitted, so each instruction carries an `ast::Origin`, which low
 keeps as `LoweredKernel::origins`: its enclosing loop iterations, outermost first and
 across helper calls (`LoopIteration`: a `LoopId` per execution of a `for`, so an inner
 loop is a new one each time it is entered, its `LoopKind` and the iteration index), and
-whether a `nl.no_reorder()` block encloses it (`Reordering`). `.ast` and `.ir` render
-it after the instruction (`# in affine_range#0[1] > static_range#3[0] > no_reorder`).
+which `nl.no_reorder()` block encloses it (`Reordering::Forbidden { block }`, a
+`NoReorderId` per execution of the outermost block, so a helper's block entered twice is
+two blocks). `.ast` and `.ir` render it after the instruction
+(`# in affine_range#0[1] > static_range#3[0] > no_reorder#0`).
 A copy's or transpose's `ir::Mover` says whether a DMA (`dma_copy`, `dma_transpose`,
 `nl.load`/`nl.store`; `.ir`'s `dma`, `dma_transpose`) or a compute engine
 (`tensor_copy`, `nc_transpose`; `mov`, `transpose`) moves its data.
@@ -341,13 +343,21 @@ earlier instructions the compiler orders it after: it resumes from each one's
 `Dependency` generation, then signals its own. `MemoryConflict` reports every conflicting
 pair no chain of dependencies orders.
 
-The one policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrderOnly`), is the most
-conservative under which a kernel can be correct at all: an instruction follows the
-latest earlier writer of each location it reads, unless the two are in different
-iterations of one `affine_range`, and nothing else is ordered. Writes after writes and
-writes after reads race, as does every reduction across `affine_range` iterations. A
-relaxation the docs or a compiled NEFF justify becomes another policy with its own
-assumption.
+Each policy records the `Assumption`s it rests on. `DataFlowOnly`
+(`Assumption::NkiDataFlowOrder`), the pipeline's, is the most conservative under which a
+kernel can be correct at all: an instruction follows the latest earlier writer of each
+location it reads, unless the two are in different iterations of one `affine_range`, and
+nothing else is ordered. Writes after writes and writes after reads race, as does every
+reduction across `affine_range` iterations.
+
+`DataFlowAndNoReorder` adds `Assumption::NkiNoReorderInProgramOrder`: each instruction of
+a `no_reorder` block also follows the block's previous one, so the block runs in program
+order, its loops' iterations included. The API page says the block guarantees operations
+"execute in program order"; the scheduling guide says only that it inserts "dependency
+edges between every instruction", without saying whether they are hardware semaphores or
+scheduling hints, so this level is opt-in. A block orders nothing against the
+instructions before or after it. A further relaxation the docs or a compiled NEFF justify
+becomes another policy with its own assumption.
 
 Locations are disjoint address ranges, one per `Location` (`1 << 40` apart): HBM tensors
 in `Space::Global`, SBUF and PSUM in `Space::Shared`. Each run is one byte-range access;
@@ -377,6 +387,9 @@ iterations (R1), their `sequential_range` twins in order but still rewriting the
 without reading it between; `affine_vector_sum` sums rows into one tile with
 `tensor_tensor`, as mamba does, and `affine_matmul_accumulate` accumulates matmuls into
 PSUM, the reduction the docs allow across `affine_range` iterations.
+`no_reorder_back_to_back_dmas` and `no_reorder_affine` put R0 and R1 inside a
+`no_reorder` block, race free under `DataFlowAndNoReorder`; `no_reorder_boundary` rewrites
+inside a block a tile written before it, a race under both policies.
 
 `success/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at

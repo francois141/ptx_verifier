@@ -210,8 +210,13 @@ impl LoopKind {
 pub enum Reordering {
     #[default]
     Allowed,
-    Forbidden,
+    /// Inside `block`, the outermost `nl.no_reorder()` enclosing the instruction.
+    Forbidden { block: NoReorderId },
 }
+
+/// One execution of a `with nl.no_reorder():` block, numbered in the order entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NoReorderId(pub u32);
 
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -220,8 +225,8 @@ impl fmt::Display for Origin {
             .iter()
             .map(|l| format!("{}#{}[{}]", l.kind.name(), l.loop_id.0, l.index))
             .collect();
-        if self.reordering == Reordering::Forbidden {
-            parts.push("no_reorder".into());
+        if let Reordering::Forbidden { block } = self.reordering {
+            parts.push(format!("no_reorder#{}", block.0));
         }
         match parts.is_empty() {
             true => Ok(()),

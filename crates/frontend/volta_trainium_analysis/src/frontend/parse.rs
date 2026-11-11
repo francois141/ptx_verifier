@@ -8,8 +8,8 @@ use std::num::NonZeroU64;
 
 use super::ast::{
     Address, Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, LoopId, LoopIteration, LoopKind,
-    Operand, Origin, Param, Partitions, RegionProblem, Reordering, Scalar, Statement, Subscript,
-    TensorName, TileDecl, TileShape, kept_extents, resolve_region,
+    NoReorderId, Operand, Origin, Param, Partitions, RegionProblem, Reordering, Scalar, Statement,
+    Subscript, TensorName, TileDecl, TileShape, kept_extents, resolve_region,
 };
 use super::error::{ParseError, ShapeProblem, bail};
 use super::lex::CmpOp;
@@ -314,6 +314,8 @@ struct Trace<'p> {
     origin: Origin,
     /// The `for` statements executed so far, which number the next one.
     loops_entered: u32,
+    /// The outermost `no_reorder` blocks entered so far, which number the next one.
+    no_reorders_entered: u32,
 }
 
 /// A declared tensor's extents, whether it is in device memory, and its dtype's
@@ -388,6 +390,7 @@ fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, Pa
         depth: 0,
         origin: Origin::default(),
         loops_entered: 0,
+        no_reorders_entered: 0,
     };
     let mut frame = Frame::new(MAIN, &function, String::new(), None);
 
@@ -1714,7 +1717,11 @@ fn statement(stmt: Stmt, trace: &mut Trace, frame: &mut Frame) -> Result<Flow, P
         } => {
             no_reorder(context, trace, frame, line)?;
             let enclosing = trace.origin.reordering;
-            trace.origin.reordering = Reordering::Forbidden;
+            if enclosing == Reordering::Allowed {
+                let block = NoReorderId(trace.no_reorders_entered);
+                trace.no_reorders_entered += 1;
+                trace.origin.reordering = Reordering::Forbidden { block };
+            }
             let flow = block(&body, trace, frame);
             trace.origin.reordering = enclosing;
             return flow;
