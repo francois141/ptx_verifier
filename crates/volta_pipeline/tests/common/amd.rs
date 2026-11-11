@@ -322,44 +322,6 @@ pub const CK_GEMM_KERNEL: &str = ck_gemm_kernel!("Lb0");
 /// The same instance with its K-block main loop enabled.
 pub const CK_GEMM_MAIN_LOOP_KERNEL: &str = ck_gemm_kernel!("Lb1");
 
-/// The kernel's `GridwiseGemm::Argument` for dimensions [M, N, K], as CK's host constructor
-/// lays it out: a vtable pointer and a workspace pointer, the `Problem`'s fifteen `index_t`s
-/// padded to the 64 x 64 x 64 block tile, the three empty element ops, then the pointers.
-pub fn ck_gemm_kernarg(a: u64, b: u64, c: u64, dims: [i32; 3]) -> Vec<u8> {
-    let [m, n, k] = dims;
-    let [mpadded, npadded, kpadded] = dims.map(|d| (d + 63) / 64 * 64);
-    let kread = (k + 3) / 4 * 4;
-    let problem: [i32; 15] = [
-        // M, N, K.
-        m,
-        n,
-        k,
-        // StrideA (row-major), StrideB (column-major), StrideC (row-major).
-        k,
-        k,
-        n,
-        1, // KBatch
-        mpadded,
-        npadded,
-        kread,
-        kpadded,
-        // AK0 and BK0 divide KPadded by K1.
-        kpadded / 4,
-        kpadded / 4,
-        // MBlock and NBlock.
-        mpadded / 64,
-        npadded / 64,
-    ];
-    let mut bytes = vec![0u8; 16];
-    bytes.extend(problem.iter().flat_map(|field| field.to_le_bytes()));
-    bytes.resize(80, 0);
-    for pointer in [a, b, c] {
-        bytes.extend(pointer.to_le_bytes());
-    }
-    bytes.resize(112, 0); // is_reduce = false, then padding.
-    bytes
-}
-
 /// A named parameter used by the tests and generated launch files.
 #[derive(Clone, Debug)]
 pub struct LaunchParam {
@@ -415,11 +377,13 @@ pub struct LaunchArray {
     pub shape: Vec<i32>,
 }
 
-/// A CK launch for one workgroup of 256 work-items.
+/// A CK launch for one workgroup.
 pub struct Launch {
     pub description: String,
     /// Select the kernel when the fixture defines more than one.
     pub kernel: Option<&'static str>,
+    /// The number of work-items in the workgroup.
+    pub workitems: u32,
     /// Use the frontend's default array addresses, starting at 0x10000. Each base is rounded
     /// up to a 64 KiB boundary. These addresses must match the pointer values in `params`.
     pub arrays: Vec<LaunchArray>,
@@ -443,7 +407,7 @@ impl Launch {
             writeln!(text, r#"  "kernel": "{kernel}","#).unwrap();
         }
         // Omitting the grid selects one workgroup. The AMD frontend runs workgroup 0.
-        writeln!(text, r#"  "block": 256,"#).unwrap();
+        writeln!(text, r#"  "block": {},"#, self.workitems).unwrap();
 
         // Align array names and kinds to keep the JSON readable.
         writeln!(text, r#"  "arrays": ["#).unwrap();
@@ -509,6 +473,85 @@ pub fn check_launch_file(file: &str, launch: &Launch) {
         .join(file);
     if let Err(error) = expect_file(&path, &text) {
         panic!("{file}: {error}");
+    }
+}
+
+/// Build CK GEMM arguments for dimensions [M, N, K].
+/// `matrices` lists A, B and C in order, with each array's name and address.
+pub fn ck_gemm_params(matrices: [(&'static str, u64); 3], dims: [i32; 3]) -> Vec<LaunchParam> {
+    let [m, n, k] = dims;
+    // Round each dimension up to the kernel's 64 x 64 x 64 tile.
+    let [mpadded, npadded, kpadded] = dims.map(|d| (d + 63) / 64 * 64);
+    let kread = (k + 3) / 4 * 4;
+    // The kernel never reads `BaseArgument`'s vtable and workspace pointers.
+    let mut params = Vec::new();
+    params.extend(null_pointer("BaseArgument vtable pointer, unread"));
+    params.extend(null_pointer("p_workspace_"));
+    for (name, value) in [
+        ("M", m),
+        ("N", n),
+        ("K", k),
+        // A and C are row-major. B is column-major.
+        ("StrideA", k),
+        ("StrideB", k),
+        ("StrideC", n),
+        ("KBatch", 1),
+        ("MPadded", mpadded),
+        ("NPadded", npadded),
+        ("KRead", kread),
+        ("KPadded", kpadded),
+        // AK0 and BK0 count groups of four elements in padded K.
+        ("AK0", kpadded / 4),
+        ("BK0", kpadded / 4),
+        ("MBlock", mpadded / 64),
+        ("NBlock", npadded / 64),
+    ] {
+        params.push(param(name, LaunchValue::Int(value)));
+    }
+    // Reserve one word for the three empty operation objects and padding.
+    let element_ops = "a_element_op_, b_element_op_, c_element_op_ (no fields) and padding";
+    params.push(param(element_ops, LaunchValue::Int(0)));
+    let pointers = ["p_a_grid", "p_b_grid", "p_c_grid"];
+    for (name, (array, base)) in pointers.into_iter().zip(matrices) {
+        params.push(param(name, LaunchValue::Ptr { array, base }));
+    }
+    params.push(param("is_reduce (false) and padding", LaunchValue::Int(0)));
+    params.push(param("padding", LaunchValue::Int(0)));
+    params
+}
+
+/// Pack CK GEMM's named parameters into kernel argument bytes.
+pub fn ck_gemm_kernarg(a: u64, b: u64, c: u64, dims: [i32; 3]) -> Vec<u8> {
+    // Packing uses addresses only. Array names do not affect these bytes.
+    let bytes = kernarg_bytes(&ck_gemm_params([("A", a), ("B", b), ("C", c)], dims));
+    assert_eq!(bytes.len(), 112, "the kernel's argument size");
+    bytes
+}
+
+/// Create a `volta solve` launch for an 8 x 8 x 8 GEMM without a K-block main loop.
+pub fn gemm_launch() -> Launch {
+    let matrix = |name, kind| LaunchArray {
+        name,
+        kind,
+        shape: vec![8, 8],
+    };
+    let matrices = [("A", GEMM_A_BASE), ("B", GEMM_B_BASE), ("C", GEMM_C_BASE)];
+    let description = "CK GEMM of 8 x 8 fp32 matrices, C = A B with B stored column-major, in \
+                       one workgroup of two waves that pads the problem to its 64 x 64 x 64 \
+                       block tile. The parameters are the fields of CK's by-value \
+                       GridwiseGemm::Argument. volta solve accepts this launch.";
+    Launch {
+        description: description.into(),
+        kernel: Some(CK_GEMM_KERNEL),
+        workitems: 128,
+        arrays: vec![
+            matrix("A", ArrayKind::Input),
+            matrix("B", ArrayKind::Input),
+            matrix("C", ArrayKind::Output(OutputType::F32)),
+        ],
+        params: ck_gemm_params(matrices, [8, 8, 8]),
+        spec: "matmul_transposed.spec",
+        dims: vec![("M", 8), ("N", 8), ("K", 8)],
     }
 }
 
@@ -626,6 +669,7 @@ pub fn fmha_launch(q: u64, k: u64, note: &str) -> Launch {
     Launch {
         description,
         kernel: Some(CK_FMHA_KERNEL),
+        workitems: 256,
         arrays: vec![input("Q"), input("K"), input("V"), output],
         params: ck_fmha_params(q, k, 1),
         spec: "attention_batch_head.spec",
@@ -1007,6 +1051,7 @@ pub fn avgpool_launch(pool: &AvgPool2d, note: &str) -> Launch {
     Launch {
         description,
         kernel: None,
+        workitems: 256,
         arrays: vec![input, output],
         params: ck_avgpool2d_params(pool),
         spec: "avg_pool2d_nhwc.spec",

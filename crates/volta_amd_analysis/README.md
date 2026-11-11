@@ -124,13 +124,15 @@ concluding `Verified` first; CK RMSNorm (`ck_rmsnorm2d`) is checked there and in
 `amd/graph_tests.rs`, without a snapshot of its outputs, and CK average pooling
 (`ck_avgpool2d`) there alone, also without one. `examples/lean/rmsnorm_amd.json`
 launches CK RMSNorm through `volta solve`, listing the fields of CK's by-value argument
-struct as flat parameters. `fmha_amd.json` launches CK attention over one batch and one head
-the same way, and `avgpool2d_amd.json` launches CK average pooling, listing the words of its
-two by-value tensor descriptors. The AMD tests generate the attention and average-pooling
-launch files from `ck_fmha_params` and `ck_avgpool2d_params`, the labelled lists their own
-argument bytes come from, and fail when a file differs; `VOLTA_BLESS=1` rewrites the files.
-`volta_cli/tests/solve_tests.rs` requires the RMSNorm, `fmha_amd.json` and
-`avgpool2d_amd.json` runs to be accepted. It requires two launches to be rejected:
+struct as flat parameters. `gemm_amd.json` launches CK GEMM on an 8 x 8 x 8 problem and
+`fmha_amd.json` CK attention over one batch and one head the same way, and
+`avgpool2d_amd.json` launches CK average pooling, listing the words of its two by-value
+tensor descriptors. The AMD tests generate the GEMM, attention and average-pooling launch
+files from `ck_gemm_params`, `ck_fmha_params` and `ck_avgpool2d_params`, the labelled lists
+their own argument bytes come from, and fail when a file differs; `VOLTA_BLESS=1` rewrites
+the files. `volta_cli/tests/solve_tests.rs` requires the RMSNorm, `gemm_amd.json`,
+`fmha_amd.json` and `avgpool2d_amd.json` runs to be accepted. It requires two launches to be
+rejected:
 `fmha_amd_swapped_qk.json`, which exchanges the query and key, for outputs that differ from
 the formula, and `avgpool2d_amd_larger_output.json`, whose 3 x 3 output extends past CK's
 output buffer bound, for the four outputs the kernel never writes. Each runs as

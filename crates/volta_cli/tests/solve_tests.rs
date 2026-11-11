@@ -55,6 +55,22 @@ fn solves_ck_rmsnorm_from_its_launch_file() {
     );
 }
 
+// Test that the GEMM launch passes all graph checks and proves all 64 outputs.
+#[test]
+fn solves_ck_gemm_from_its_launch_file() {
+    check_solve(
+        "ck_gemm.s",
+        "gemm_amd.json",
+        &[],
+        0,
+        &[
+            "kernel: every graph check passed",
+            "equivalence: all 64 compared elements proved equivalent",
+            "VERDICT: ACCEPT",
+        ],
+    );
+}
+
 // Test that the attention launch passes all graph checks and proves all 4,096 outputs.
 #[test]
 fn solves_ck_fmha_from_its_launch_file() {

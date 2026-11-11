@@ -18,7 +18,7 @@ use common::amd::{
     GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE, amd_fixture,
     avgpool_arrays, avgpool_launch, check_amd, check_amd_launch, check_launch_file,
     ck_avgpool2d_kernarg, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays,
-    fmha_launch, gemm_arrays, rmsnorm_arrays,
+    fmha_launch, gemm_arrays, gemm_launch, rmsnorm_arrays,
 };
 const MATMUL_SPEC: &str = include_str!("../../../volta_equivalence/tests/specs/matmul.spec");
 
@@ -147,6 +147,12 @@ fn amd_ck_gemm_main_loop_matches_its_specification() {
             total: 1600,
         }
     );
+}
+
+// Test that the GEMM launch file matches the argument builder for its 8 x 8 x 8 launch.
+#[test]
+fn amd_ck_gemm_launch_file_matches_the_argument_builder() {
+    check_launch_file("gemm_amd.json", &gemm_launch());
 }
 
 // Test that swapping CK's equal-sized input arrays is refuted against the intended product.
