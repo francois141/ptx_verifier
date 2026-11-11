@@ -85,6 +85,12 @@ Inline constants follow its [packed-to-scalar regression](https://github.com/llv
 The `.amdgcn_target` directive requires exactly one quoted string. Unquoted,
 unbalanced and extra-quoted arguments are rejected.
 
+Target strings may include `xnack` and `sramecc` selections once each, in either
+order. Unknown, repeated, conflicting or empty feature fields are rejected.
+This validates target-ID syntax and preserves the accepted string. Execution
+retains the interpreter's existing feature-mode assumptions, including
+XNACK-disabled scalar memory.
+
 ## Tests
 
 This crate keeps only inline unit tests; its kernels are tested end to end in
