@@ -450,6 +450,8 @@ each register holds one real expression, and either selector reads the same inli
 An f64 register pair holds one real expression or two concrete words that encode one. Reading
 a half as a word, or a pair whose halves no longer match, is rejected; conversions keep the
 exact real. F64 arithmetic, comparisons and conversions share one source reader and modifiers.
+F32 conversions read a concrete word as a signed or an unsigned integer, and truncate a concrete
+float toward zero, clamping it to the i32 or u32 range.
 Packed moves select one word from each source and reuse the 64-bit move execution,
 preserving concrete words and symbolic expressions unchanged. An inline constant must use the
 low-word selector, because the high word of its 64-bit source is not established.
@@ -467,6 +469,8 @@ The `packed_float_ops` fixture checks paired arithmetic, selectors, negation and
 overlap against independently derived expressions.
 The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, comparisons and
 moves.
+`convert_ops` checks the f32 conversions in both signednesses: words with the sign bit set,
+truncation toward zero, and clamping at each bound of the result's range.
 Rejection tests (`amd/rejected_tests.rs`, over `amd/execution_error/` and the failing
 kernels of mixed `success/` files) assert the specific lowering or execution error instead
 of comparing outputs.

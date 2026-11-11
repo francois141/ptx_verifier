@@ -535,6 +535,20 @@ fn the_compare64_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test the conversions between f32 and 32-bit integers in both signednesses: words with the
+// sign bit set, from a VGPR and an SGPR, and floats that truncate toward zero or clamp at each
+// bound of the result's range.
+#[test]
+fn the_convert_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/convert_ops",
+        &[
+            array_of("floats", 0x10000, 64 * 4, ArrayKind::Output(F32)),
+            array_of("words", 0x20000, 64 * 4, ArrayKind::Output(U32)),
+        ],
+    );
+}
+
 // Test the scalar ALU results and the SCC each one leaves, every scalar comparison in both
 // operand orders, bit comparisons, branches on VCC and EXEC, and 64-bit literal sources.
 #[test]
