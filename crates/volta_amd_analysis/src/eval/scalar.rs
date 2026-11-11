@@ -176,8 +176,16 @@ impl Interpreter<'_> {
                 Ok(())
             }
             LoweredInstr::ReadFirstLane { dst, src } => {
+                // The source lane is the lowest active one, or lane 0 when none is active
+                // (CDNA4 §12.8).
+                let exec = self.waves[wave].exec;
+                let lane = if exec == 0 {
+                    0
+                } else {
+                    exec.trailing_zeros() as usize
+                };
                 let registers = &mut self.waves[wave].registers;
-                let value = registers.read_vgpr(0, *src)?;
+                let value = registers.read_vgpr(lane, *src)?;
                 registers.write_sgpr(*dst, value)
             }
             LoweredInstr::Nop => Ok(()),
@@ -272,17 +280,19 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// EXEC holds every lane of the wave.
+    /// A 64-bit source's concrete value. A mask that holds a symbolic comparison is rejected,
+    /// which keeps every value written to EXEC concrete.
     fn read_scalar64(&self, wave: WaveId, src: ScalarSrc64) -> Result<u64, EvalError> {
         let registers = &self.waves[wave].registers;
         match src {
             ScalarSrc64::Sgprs(pair) => registers.read_sgpr_pair(&self.arena, pair),
             ScalarSrc64::Vcc => registers.read_vcc_mask(&self.arena),
-            ScalarSrc64::Exec => Ok(u64::MAX),
+            ScalarSrc64::Exec => Ok(self.waves[wave].exec),
             ScalarSrc64::Const(value) => Ok(value),
         }
     }
 
+    /// Write `value` to a 64-bit destination; in EXEC, it is the wave's new set of active lanes.
     fn write_scalar64(
         &mut self,
         wave: WaveId,
@@ -293,6 +303,10 @@ impl Interpreter<'_> {
         match dst {
             ScalarDst64::Sgprs(pair) => registers.write_sgpr_pair(&mut self.arena, pair, value),
             ScalarDst64::Vcc => registers.write_vcc_mask(&mut self.arena, value),
+            ScalarDst64::Exec => {
+                self.waves[wave].exec = value;
+                Ok(())
+            }
         }
     }
 }

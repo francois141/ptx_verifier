@@ -80,10 +80,11 @@ fn lower_instruction(
 ) -> Result<LoweredInstr, &'static str> {
     use LoweredInstr::*;
 
-    // These instructions change which lanes execute; this interpreter keeps full waves active.
+    // These instructions write EXEC from a comparison, or while saving it to an SGPR pair. Only
+    // a 64-bit scalar instruction with EXEC as its destination may change the active lanes.
     let opcode = instruction.opcode.as_str();
     if opcode.starts_with("v_cmpx_") || (opcode.starts_with("s_") && opcode.contains("saveexec")) {
-        return Err("EXEC changes are unsupported: intra-wave divergence is not modeled");
+        return Err("unsupported EXEC write: only a 64-bit scalar destination may be exec");
     }
 
     match (opcode, instruction.operands.as_slice()) {
@@ -1212,14 +1213,14 @@ fn scalar_source64_and_word(
     Ok((src, word))
 }
 
-/// EXEC is never a destination, so every lane of a full wave stays active.
+/// A 64-bit scalar destination: an aligned SGPR pair, VCC or EXEC.
 fn scalar_dst64(operand: &Operand) -> Result<ScalarDst64, &'static str> {
     match operand {
-        Operand::Exec => Err("EXEC changes are unsupported: intra-wave divergence is not modeled"),
+        Operand::Exec => Ok(ScalarDst64::Exec),
         Operand::Vcc => Ok(ScalarDst64::Vcc),
         _ => sgprs(operand)
             .map(ScalarDst64::Sgprs)
-            .ok_or("expected an aligned SGPR pair or vcc destination"),
+            .ok_or("expected an aligned SGPR pair, vcc or exec destination"),
     }
 }
 

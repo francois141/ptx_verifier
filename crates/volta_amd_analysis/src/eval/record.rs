@@ -11,7 +11,7 @@ use crate::ir::{InstrId, LaneReg, LoweredInstr};
 
 use super::EvalError;
 use super::interp::Interpreter;
-use super::wave::WaveId;
+use super::wave::{WaveId, active_lanes};
 
 /// Graph threads are waves (`ThreadUnit::Wave`).
 fn thread(wave: WaveId) -> ThreadIx {
@@ -62,17 +62,18 @@ impl Interpreter<'_> {
         Ok(op)
     }
 
-    /// The LDS words the instruction accesses in every lane, in lane order. A lane exchange
-    /// accesses no LDS memory.
+    /// The LDS words the instruction accesses in every active lane, in lane order. A lane
+    /// exchange accesses no LDS memory.
     fn ds_words(
         &self,
         wave: WaveId,
         instruction: &LoweredInstr,
     ) -> Result<Vec<LdsWord>, EvalError> {
+        let exec = self.waves[wave].exec;
         let mut words = Vec::new();
         match *instruction {
             LoweredInstr::DsWrite { addr, accesses } => {
-                for lane in 0..64 {
+                for lane in active_lanes(exec) {
                     for (offset, data) in accesses.accesses() {
                         let start = self.lds_address(wave, lane, addr, offset)?;
                         let regs = data.regs();
@@ -87,7 +88,7 @@ impl Interpreter<'_> {
                 }
             }
             LoweredInstr::DsRead { addr, accesses } => {
-                for lane in 0..64 {
+                for lane in active_lanes(exec) {
                     for (offset, destination) in accesses.accesses() {
                         let start = self.lds_address(wave, lane, addr, offset)?;
                         let count = destination.regs().len() as u32;

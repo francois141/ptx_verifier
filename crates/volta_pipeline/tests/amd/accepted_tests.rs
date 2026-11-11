@@ -571,6 +571,24 @@ fn the_scalar_alu_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+/// Each work-item writes its results to a row of 32 words.
+const EXEC_OPS_ROW: u64 = 32;
+
+// Test instructions that run while EXEC holds only some lanes, against the expected outputs in
+// exec_ops.out: an inactive lane keeps its registers and writes no memory, its bit is clear in
+// a comparison or carry mask, and EXEC branches and first-lane reads follow the mask.
+#[test]
+fn the_exec_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/exec_ops",
+        &[
+            array("input", 0x10000, ArrayKind::Input),
+            array_of("out", 0x20000, 64 * EXEC_OPS_ROW, ArrayKind::Output(U32)),
+            array("floats", 0x30000, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test f64 arithmetic, modifiers, constants, conversions, comparisons, moves and overlapping
 // registers. Check all 64 lanes against the expected outputs in f64_ops.out.
 #[test]

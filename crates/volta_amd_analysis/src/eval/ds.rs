@@ -4,11 +4,11 @@
 
 use crate::ir::{InstrId, LoweredInstr, Vgpr};
 
-use super::wave::{LgkmInFlight, LoadCounter, WaveId};
+use super::wave::{LgkmInFlight, LoadCounter, WaveId, active_lanes, lane_bit};
 use super::{EvalError, Interpreter};
 
 impl Interpreter<'_> {
-    /// Issue the DS instruction at `pc` for every lane of `wave`, in flight until a wait
+    /// Issue the DS instruction at `pc` for the active lanes of `wave`, in flight until a wait
     /// completes it. Its words enter the event graph before any lane runs, so an access the run
     /// rejects still appears in the graph.
     pub(super) fn execute_ds(
@@ -29,13 +29,15 @@ impl Interpreter<'_> {
             LoweredInstr::DsWrite { .. } => Vec::new(),
             _ => unreachable!("only DS instructions are issued to the LDS"),
         };
+        let lanes = self.waves[wave].exec;
         self.waves[wave]
             .lgkm_in_flight
-            .push_back(LgkmInFlight::Ds { op, dst });
+            .push_back(LgkmInFlight::Ds { op, dst, lanes });
         Ok(())
     }
 
-    /// Gather register values across the wave, pending until an LGKM wait completes the exchange.
+    /// Gather register values across the wave's active lanes, pending until an LGKM wait
+    /// completes the exchange.
     pub(super) fn execute_ds_bpermute(
         &mut self,
         wave: WaveId,
@@ -44,18 +46,25 @@ impl Interpreter<'_> {
         src: Vgpr,
         offset: u16,
     ) -> Result<(), EvalError> {
+        let exec = self.waves[wave].exec;
         let registers = &mut self.waves[wave].registers;
         let mut values = Vec::with_capacity(64);
 
         // Read every source before changing destinations, which may overlap `addr` or `src`.
-        for lane in 0..64 {
+        for lane in active_lanes(exec) {
             let address = registers.read_concrete_address_vgpr(&self.arena, lane, addr)?;
             // CDNA4 §12.12: bits [7:2] select the source lane; no LDS memory is accessed.
             let source_lane = ((address.wrapping_add(u32::from(offset)) >> 2) & 63) as usize;
-            values.push(registers.read_vgpr(source_lane, src)?);
+            // EXEC applies to the source read as well: an inactive source lane delivers 0.
+            let value = if lane_bit(exec, source_lane) {
+                registers.read_vgpr(source_lane, src)?
+            } else {
+                self.arena.int(0)
+            };
+            values.push((lane, value));
         }
 
-        for (lane, value) in values.into_iter().enumerate() {
+        for (lane, value) in values {
             registers.start_vector_load(lane, &[dst], &[value], LoadCounter::Lgkm)?;
         }
         Ok(())

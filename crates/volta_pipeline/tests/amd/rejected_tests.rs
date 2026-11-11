@@ -95,6 +95,46 @@ fn grid_runs_reject_different_lds_addresses() {
     ));
     assert!(grid.workgroups.is_empty());
 }
+// Test that each workgroup alone runs with its own EXEC, and that a grid run is rejected when
+// its workgroups leave different lanes active.
+#[test]
+fn grid_runs_reject_different_active_lanes() {
+    let kernel = parse_kernel(include_str!("success/exec_ops.s"), "workgroup_exec").unwrap();
+    let launch = WorkgroupLaunch {
+        kernarg_address: 0x1000,
+        workgroup_size: (64, 1, 1),
+        workgroup_id: (0, 0, 0),
+        grid_size: (2, 1, 1),
+    };
+    let out = array("out", 0x10000, ArrayKind::Output(U32));
+    let arrays = std::slice::from_ref(&out);
+    let kernarg = out.base.to_le_bytes();
+    // Workgroup 0 runs the second move in no lane, and workgroup 1 runs it in every lane.
+    for (group, word) in [(0, 7), (1, 9)] {
+        let selected = WorkgroupLaunch {
+            workgroup_id: (group, 0, 0),
+            ..launch
+        };
+        let alone = analyze(&kernel, &selected, &kernarg, arrays).unwrap();
+        assert_eq!(alone.terminal, Terminal::Completed);
+        let outputs = alone.symbolic_outputs.unwrap();
+        for lane in 0..64 {
+            let stored = outputs
+                .element("out", lane)
+                .and_then(|id| outputs.arena.as_int_const(id));
+            assert_eq!(stored, Some(word), "workgroup {group}, out[{lane}]");
+        }
+    }
+    let grid = analyze_grid(&kernel, &launch, &kernarg, arrays).unwrap();
+    assert!(matches!(
+        grid.terminal,
+        Terminal::Aborted {
+            error: EvalError::DependsOnWorkgroup,
+            ..
+        }
+    ));
+    assert!(grid.workgroups.is_empty());
+}
 // Test that a later workgroup's NaN source is rejected before multiplication by zero can fold.
 #[test]
 fn grid_runs_do_not_hide_nan_sources_in_later_workgroups() {
@@ -309,7 +349,8 @@ fn selecting_between_constants_under_a_symbolic_condition_is_rejected() {
         },
     );
 }
-// Test that a store executed by only the odd lanes is rejected for changing EXEC.
+// Test that a store executed by only the odd lanes is rejected: the compiled code narrows EXEC
+// with `s_and_saveexec_b64`, whose write of EXEC is not supported.
 #[test]
 fn intra_wave_divergence_is_rejected() {
     let arrays = [
@@ -325,7 +366,34 @@ fn intra_wave_divergence_is_rejected() {
                 result,
                 Err(AnalysisError::Lower(LowerError::Instruction { opcode, reason, .. }))
                     if opcode == "s_and_saveexec_b64"
-                        && *reason == "EXEC changes are unsupported: intra-wave divergence is not modeled"
+                        && *reason == "unsupported EXEC write: only a 64-bit scalar destination may be exec"
+            )
+        },
+    );
+}
+// Test that a register stays pending in the odd lanes, whose global load is in flight, when a
+// wait completes the even lanes' LDS read into it: reading it in lane 1 is rejected.
+#[test]
+fn a_load_stays_pending_in_lanes_that_skipped_a_completed_read() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output(F32)),
+    ];
+    common::amd::check_rejected_kernel(
+        "success/exec_ops",
+        "pending_in_other_lanes",
+        &arrays,
+        |result| {
+            matches!(
+                result,
+                Ok(AnalysisResult {
+                    terminal: Terminal::Aborted {
+                        error: EvalError::PendingVgpr { lane: 1, .. },
+                        ..
+                    },
+                    symbolic_outputs: None,
+                    ..
+                })
             )
         },
     );

@@ -46,8 +46,8 @@ pub enum EvalError {
     UnsupportedInstruction,
     MissingEndPgm,
     Launch { message: String },
-    /// A read of a value that differs between the launch's workgroups, where one shared value
-    /// is required: a branch condition, an LDS access, or any read without a selected workgroup.
+    /// A value that differs between the launch's workgroups, where one shared value is required:
+    /// a branch condition, EXEC, an LDS access, or any read without a selected workgroup.
     DependsOnWorkgroup,
 }
 

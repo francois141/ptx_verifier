@@ -9,7 +9,7 @@ use crate::common;
 use std::collections::BTreeSet;
 
 use volta_amd_analysis::ArrayKind::{Input, Output};
-use volta_amd_analysis::OutputType::F32;
+use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::{ArrayDef, ArrayKind};
 use volta_graph::AccessMode::{Read, Write};
 use volta_graph::{AsyncOpKind, EventKind, GenerationKind, Space};
@@ -222,4 +222,41 @@ fn lds_reads_must_complete_before_the_reuse_barrier() {
         "expected wave 0's pending LDS read to race wave 1's overwrite: {:?}",
         run.report.memory_conflict
     );
+}
+
+// Test that only the active lanes' LDS accesses enter the graph. `exec_ops` writes a word from
+// every lane, from each odd lane and from lane 5 alone, and reads one from every lane twice and
+// from each odd lane. The graph must hold exactly those accesses and verify.
+#[test]
+fn only_active_lanes_access_lds() {
+    let arrays = [
+        ("input", 0x10000, 64, Input),
+        ("out", 0x20000, 64 * 32, Output(U32)),
+        ("floats", 0x30000, 64, Output(F32)),
+    ]
+    .map(|(name, base, len, kind): (&str, u64, u64, ArrayKind)| ArrayDef {
+        name: name.into(),
+        base,
+        len,
+        kind,
+    });
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    let source = amd_fixture!("success/exec_ops");
+    let run = check_amd("success/exec_ops.s", source, "exec_ops", 64, &kernarg, &arrays);
+    assert_eq!(run.report.conclusion(), GraphConclusion::Verified);
+
+    // Count the LDS words written and read across the wave's DS instructions.
+    let graph = &run.analysis.graph;
+    let (mut writes, mut reads) = (0, 0);
+    for (event, ev) in graph.events().iter() {
+        if let EventKind::Access(access) = ev.kind
+            && graph.access(access).space == Space::Shared
+        {
+            match common::side(graph, event).mode {
+                Write => writes += 1,
+                Read => reads += 1,
+            }
+        }
+    }
+    assert_eq!((writes, reads), (64 + 32 + 1, 64 + 64 + 32));
 }

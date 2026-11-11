@@ -23,7 +23,8 @@ concrete X/Y/Z workgroup ID within nonzero grid dimensions; `analyze` executes o
 workgroup. `analyze_grid` runs every workgroup along one shared control flow, keeping each
 workgroup's concrete words and real expressions in its registers and LDS. Instructions that
 read differing values run once per workgroup, using the same evaluators as `analyze`.
-Different branch outcomes or LDS access addresses abort the run with `DependsOnWorkgroup`.
+Different branch outcomes, active lanes or LDS access addresses abort the run with
+`DependsOnWorkgroup`.
 The shared event graph records the LDS accesses and synchronization common to every workgroup;
 written output values are exported separately for each workgroup. Duplicate output stores
 across workgroups are reported separately from the LDS graph checks.
@@ -32,7 +33,14 @@ with X advancing first, then Y, then Z, following
 [AMD's execution model](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html#hierarchical-thread-model).
 Unsupported instructions and launch layouts return `EvalError`.
 
-All lanes of a wave stay active; instructions that change EXEC are rejected.
+EXEC is each wave's concrete mask of active lanes (CDNA4 §3.3). A 64-bit scalar move or
+operation may write it from concrete masks; `v_cmpx` and the `saveexec` instructions are rejected.
+Vector, memory and LDS instructions run in the active lanes only: an inactive lane keeps its
+registers and accesses no memory. A comparison or a multiply-add carry writes its whole mask,
+with a clear bit for each inactive lane (§3.9). `v_readfirstlane_b32` reads the lowest active
+lane, or lane 0 when none is active; a lane exchange delivers 0 from an inactive source lane;
+matrix multiplies run in every lane (§7.1). A DS read's or lane exchange's destinations
+complete only in the lanes that ran it.
 Integer and bitwise operations require concrete words: symbolic values are floats and
 represent the math, not bit patterns. This rejects integer arithmetic on symbolic values and
 sign-mask tricks for negation and absolute value; floating-point arithmetic and transfers,
@@ -95,6 +103,11 @@ The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, 
 moves.
 `convert_ops` checks the f32 conversions in both signednesses: words with the sign bit set,
 truncation toward zero, and clamping at each bound of the result's range.
+`exec_ops` runs each kind of instruction under a partial EXEC mask: moves, comparisons, global
+and LDS accesses, lane exchanges, first-lane reads, EXEC branches and a multiply-add carry.
+Its other kernels require a load to stay pending in lanes that another completion skips, and
+a grid run whose workgroups leave different lanes active to be rejected; `amd/graph_tests.rs`
+checks that only its active lanes' LDS accesses are recorded.
 `accvgpr` checks each source form; the bitwise fixtures check NOT results and scalar SCC.
 `lds_sync` includes a pending-read race and its waited control. `workgroup_ids` checks all
 three launch coordinates, including a disabled Y axis, and rejects invalid grid coordinates;

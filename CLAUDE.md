@@ -434,8 +434,12 @@ are read-only and outputs cannot be loaded. Global and buffer stores interpret
 `F32` outputs as mathematical reals and require concrete words for `U32` outputs;
 invalid values abort at the store. `analyze` returns a completed run's written
 output elements as `SymbolicOutputs` and none for an aborted run.
-Unsupported instructions return `EvalError`. All lanes stay active; EXEC-changing
-instructions are rejected. Integer and bitwise operations require concrete words because
+Unsupported instructions return `EvalError`. `WaveState::exec` is the wave's concrete mask of
+active lanes, the same in every workgroup. A 64-bit scalar move or operation may write it;
+`v_cmpx` and `saveexec` instructions are rejected. Vector, memory and LDS instructions run in
+the active lanes only, a comparison or carry mask has a clear bit for each inactive lane, and
+a DS read's destinations complete only in the lanes that ran it.
+Integer and bitwise operations require concrete words because
 symbolic values are floats and do not represent bit patterns, so integer arithmetic and
 sign-mask tricks on symbolic values are rejected; floating-point arithmetic and transfers,
 including lane exchanges, remain supported. A select between two different constant words
@@ -471,6 +475,9 @@ The `f64_ops` fixture checks f64 arithmetic, modifiers, constants, conversions, 
 moves.
 `convert_ops` checks the f32 conversions in both signednesses: words with the sign bit set,
 truncation toward zero, and clamping at each bound of the result's range.
+`exec_ops` checks each kind of instruction under a partial EXEC mask; its other kernels check a
+load that stays pending in lanes another completion skips and rejection of a grid whose
+workgroups differ in EXEC, and `amd/graph_tests.rs` counts its active lanes' LDS accesses.
 Rejection tests (`amd/rejected_tests.rs`, over `amd/execution_error/` and the failing
 kernels of mixed `success/` files) assert the specific lowering or execution error instead
 of comparing outputs.

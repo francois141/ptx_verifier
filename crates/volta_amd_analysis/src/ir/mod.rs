@@ -168,11 +168,13 @@ pub enum ScalarSrc64 {
     Const(u64),
 }
 
-/// A 64-bit scalar ALU destination. EXEC is never written, so every lane stays active.
+/// A 64-bit scalar ALU destination: an aligned SGPR pair, VCC, or EXEC, the wave's mask of
+/// active lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarDst64 {
     Sgprs([Sgpr; 2]),
     Vcc,
+    Exec,
 }
 
 /// A lane mask that selects or receives one bit per lane: VCC or an aligned SGPR pair.
@@ -765,7 +767,7 @@ pub enum LoweredInstr {
     },
     /// Waits until every wave of the workgroup that has not exited reaches a barrier.
     Barrier,
-    /// Copy the first active lane's value, lane 0's, into an SGPR.
+    /// Copy the lowest active lane's value into an SGPR, or lane 0's when no lane is active.
     ReadFirstLane {
         dst: Sgpr,
         src: Vgpr,
