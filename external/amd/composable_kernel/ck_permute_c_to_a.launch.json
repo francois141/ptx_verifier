@@ -1,0 +1,15 @@
+{
+  "description": "A model of CK Tile's PermuteWarpGemmCToA loop (5a74dec): lane 0 reads 16 input words where 4 are its own and writes 32 output words where 8 are.",
+  "kernel": "ck_permute_c_to_a",
+  "block": 64,
+  "arrays": [
+    {"name": "in",  "kind": "in",  "dtype": "f32", "shape": [16]},
+    {"name": "out", "kind": "out", "dtype": "f32", "shape": [32]}
+  ],
+  "params": [
+    {"name": "in", "ptr": "in"},
+    {"name": "out", "ptr": "out"}
+  ],
+  "spec": "ck_permute_c_to_a.spec",
+  "dims": {"N": 4, "COPIES": 2}
+}

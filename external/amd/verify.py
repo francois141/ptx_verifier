@@ -155,6 +155,9 @@ CASES = (
         "activations_no_fast_math/ck_leaky_relu",
         Prove(),
     ),
+    # A model of PermuteWarpGemmCToA's loop, which runs four times past its buffers.
+    Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
+    Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),
     Case("ck_gemm_sigmoid", "ck_gemm_sigmoid", Prove("1/1000")),
 )
 

@@ -1,0 +1,15 @@
+{
+  "description": "The PermuteWarpGemmCToA model with upstream's loop bound (n_out / 4, rocm-libraries#15011): lane 0 writes only its 8 output words.",
+  "kernel": "ck_permute_c_to_a_fixed",
+  "block": 64,
+  "arrays": [
+    {"name": "in",  "kind": "in",  "dtype": "f32", "shape": [16]},
+    {"name": "out", "kind": "out", "dtype": "f32", "shape": [32]}
+  ],
+  "params": [
+    {"name": "in", "ptr": "in"},
+    {"name": "out", "ptr": "out"}
+  ],
+  "spec": "ck_permute_c_to_a.spec",
+  "dims": {"N": 4, "COPIES": 2}
+}
