@@ -10,4 +10,4 @@ mod tensor;
 pub use error::EvalError;
 pub use footprint::{Access, Location, Mode, PARTITION_STRIDE, footprints};
 pub use interp::evaluate;
-pub use record::{OrderingPolicy, record_graph};
+pub use record::{NoReorder, OrderingPolicy, PlacedTiles, WriteAfterWrite, record_graph};

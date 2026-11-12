@@ -1,26 +1,44 @@
 //! NKI kernels' event graphs through the graph branch. Each instruction is a graph thread,
 //! ordered after another only where the `OrderingPolicy` says the Neuron compiler orders
-//! them. `DataFlowOnly`, the pipeline's: after the latest earlier writer of what it reads,
-//! outside different `affine_range` iterations. `DataFlowAndNoReorder` adds program order
-//! within each `no_reorder` block. Race-free kernels must conclude `Verified`; racy ones must
-//! fail the memory-conflict check with exactly the expected pairs of instructions.
+//! them. Every policy orders read after write and write after read outside different
+//! `affine_range` iterations; `BASELINE`, the pipeline's, nothing more. The others order
+//! write after write, hazards through placed tiles' shared bytes, or `no_reorder` blocks in
+//! program order. Race-free kernels must conclude `Verified`; racy ones must fail the
+//! memory-conflict check with exactly the expected pairs of instructions.
 
 use std::collections::BTreeSet;
+use std::fmt::Write;
 
 use volta_graph::{Assumption, EventGraph, EventId, ExecContext};
 use volta_graph_check::domain::ConflictKind::{self, ReadWrite, WriteRead, WriteWrite};
 use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
 use volta_trainium_analysis::frontend::parse::{
-    KernelCall, TileSizes, parse_kernel, parse_kernel_for_call,
+    Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call,
 };
 use volta_trainium_analysis::{
-    InstrId, OrderingPolicy, Reordering, footprints, lower_kernel, record_graph,
+    InstrId, LoweredKernel, NoReorder, OrderingPolicy, PlacedTiles, Reordering, WriteAfterWrite,
+    footprints, lower_kernel, record_graph,
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/trainium/");
 
 /// Each parameter's name and shape.
 type Shapes<'a> = &'a [(&'a str, &'a [u64])];
+
+const WAW: OrderingPolicy = OrderingPolicy {
+    write_after_write: WriteAfterWrite::Ordered,
+    ..OrderingPolicy::BASELINE
+};
+
+const BY_ADDRESS: OrderingPolicy = OrderingPolicy {
+    placed_tiles: PlacedTiles::ByAddress,
+    ..OrderingPolicy::BASELINE
+};
+
+const NO_REORDER: OrderingPolicy = OrderingPolicy {
+    no_reorder: NoReorder::ProgramOrder,
+    ..OrderingPolicy::BASELINE
+};
 
 /// Kernel `kernel` of fixture `<name>.py`, called with `shapes`, recorded under `policy`
 /// and checked.
@@ -33,9 +51,9 @@ fn check_under(policy: OrderingPolicy, name: &str, shapes: Shapes) -> (EventGrap
     (graph, report)
 }
 
-/// `check_under` the pipeline's policy, `DataFlowOnly`.
+/// `check_under` the pipeline's policy, `BASELINE`.
 fn check(name: &str, shapes: Shapes) -> (EventGraph, GraphReport) {
-    check_under(OrderingPolicy::DataFlowOnly, name, shapes)
+    check_under(OrderingPolicy::BASELINE, name, shapes)
 }
 
 /// The instruction an event belongs to (its graph thread).
@@ -59,20 +77,22 @@ fn conflicts(graph: &EventGraph, report: &GraphReport) -> BTreeSet<(u32, u32, Co
         .collect()
 }
 
-/// Race fixture `check_failure/<name>.py` over `a` of `rows` rows of 4, `out` of one row fewer.
-fn check_race(name: &str, rows: u64) -> (EventGraph, GraphReport) {
+/// Race fixture `check_failure/<name>.py` over `a` of `rows` rows of 4, `out` of one row
+/// fewer, under `policy`.
+fn check_race_under(policy: OrderingPolicy, name: &str, rows: u64) -> (EventGraph, GraphReport) {
     let shapes: [(&str, &[u64]); 2] = [("a", &[rows, 4]), ("out", &[rows - 1, 4])];
-    check(&format!("check_failure/{name}"), &shapes)
+    check_under(policy, &format!("check_failure/{name}"), &shapes)
 }
 
-// Test that kernels whose every reuse of a location is read-after-write verify: each tile
-// is written once, or rewritten only by an instruction that reads it first.
+// Test that kernels whose every reuse of a location is read or rewritten in order verify:
+// each tile is written once, or rewritten after its readers, sequential_carried across the
+// iterations of a sequential_range.
 #[test]
-fn nki_kernels_ordered_by_data_flow_are_verified() {
+fn nki_kernels_rewriting_tiles_only_after_reading_them_are_verified() {
     let matmul: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])];
     let pair: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("b", &[2, 4])];
     let softmax: [(&str, &[u64]); 1] = [("x", &[2, 3])];
-    let kernels: [(&str, Shapes); 15] = [
+    let kernels: [(&str, Shapes); 17] = [
         (
             "add",
             &[("a", &[16, 16]), ("b", &[16, 16]), ("out", &[16, 16])],
@@ -94,6 +114,8 @@ fn nki_kernels_ordered_by_data_flow_are_verified() {
         ("subscripts_softmax", &softmax),
         ("fused_softmax", &[("x", &[2, 4])]),
         ("access_patterns", &[("a", &[2, 6])]),
+        ("placed_tiles", &[("a_t", &[4, 2]), ("b", &[4, 3])]),
+        ("sequential_carried", &[("a", &[3, 4]), ("out", &[2, 4])]),
     ];
     for (name, shapes) in kernels {
         let (graph, report) = check(&format!("success/{name}"), shapes);
@@ -103,97 +125,119 @@ fn nki_kernels_ordered_by_data_flow_are_verified() {
             "{name}: {:?}",
             conflicts(&graph, &report)
         );
+        assert_eq!(
+            graph.provenance().assumptions,
+            [
+                Assumption::NkiReadAfterWriteOrder,
+                Assumption::NkiWriteAfterReadOrder
+            ]
+        );
     }
 }
 
-// Test that two DMAs writing one tile race with each other, and the first with the read
-// after them: only the second is the read's data-flow source (R0). In a sequential_range or
-// an affine_range alike, a tile rewritten each iteration races the same way.
+// Test that two writes to one tile with no read between them race with each other, and the
+// first with the read after them (R0), back to back or in a sequential_range, and are ordered
+// once the policy orders write after write; across affine_range iterations they race anyway.
 #[test]
-fn nki_writes_to_one_tile_without_data_flow_between_them_race() {
+fn nki_writes_to_one_tile_without_a_read_between_them_race_unless_write_after_write_is_ordered() {
+    let races = BTreeSet::from([(0, 1, WriteWrite), (0, 2, WriteRead)]);
     for name in [
         "back_to_back_dmas",
         "affine_overwrite",
         "sequential_overwrite",
     ] {
-        let (graph, report) = check_race(name, 2);
+        let (graph, report) = check_race_under(OrderingPolicy::BASELINE, name, 2);
+        assert_eq!(conflicts(&graph, &report), races, "{name}");
+
+        let (graph, report) = check_race_under(WAW, name, 2);
+        if name == "affine_overwrite" {
+            assert_eq!(conflicts(&graph, &report), races, "{name}");
+        } else {
+            assert_eq!(report.conclusion(), GraphConclusion::Verified, "{name}");
+            assert!(
+                graph
+                    .provenance()
+                    .assumes(Assumption::NkiWriteAfterWriteOrder)
+            );
+        }
+    }
+}
+
+// Test that a value carried through a rewritten tile across affine_range iterations races
+// under every policy: each iteration's read of what the previous one wrote, and its rewrite
+// of what the previous one read and wrote, are unordered (R1). sequential_carried, its twin,
+// verifies.
+#[test]
+fn nki_values_carried_across_affine_range_iterations_race_under_every_policy() {
+    for policy in OrderingPolicy::ALL {
+        let (graph, report) = check_race_under(policy, "affine_carried", 3);
         assert_eq!(
             conflicts(&graph, &report),
-            BTreeSet::from([(0, 1, WriteWrite), (0, 2, WriteRead)]),
-            "{name}"
+            BTreeSet::from([
+                (0, 3, WriteRead),
+                (0, 4, WriteWrite),
+                (1, 4, ReadWrite),
+                (2, 3, WriteRead),
+                (2, 4, WriteWrite),
+            ]),
+            "{policy:?}"
         );
     }
 }
 
-// Test that a value carried through a rewritten tile races its rewrites (write after read and
-// write after write) in a sequential_range, and in an affine_range also the read of the value
-// the previous iteration wrote, as the iterations' data flow gives no order (R1).
+// Test that accumulating into one tile across affine_range iterations races under every
+// policy, with an add as mamba accumulates and with an nc_matmul into PSUM alike: a reduction
+// is ordinary reads and writes, and the second iteration's read of the first's result is
+// unordered.
 #[test]
-fn nki_values_carried_across_loop_iterations_race() {
-    let rewrites = [
-        (0, 2, WriteWrite),
-        (1, 2, ReadWrite),
-        (0, 3, WriteRead),
-        (0, 4, WriteWrite),
-        (1, 4, ReadWrite),
-        (2, 4, WriteWrite),
-        (3, 4, ReadWrite),
-    ];
-    let (graph, report) = check_race("sequential_carried", 3);
-    assert_eq!(conflicts(&graph, &report), BTreeSet::from(rewrites));
+fn nki_accumulations_across_affine_range_iterations_race_under_every_policy() {
+    let matmul: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])];
+    for policy in OrderingPolicy::ALL {
+        let (graph, report) = check_race_under(policy, "affine_vector_sum", 2);
+        assert_eq!(
+            conflicts(&graph, &report),
+            BTreeSet::from([
+                (0, 4, WriteRead),
+                (0, 4, WriteWrite),
+                (2, 4, WriteRead),
+                (2, 4, ReadWrite),
+                (2, 4, WriteWrite),
+                (0, 5, WriteRead),
+                (2, 5, WriteRead),
+            ]),
+            "{policy:?}"
+        );
 
-    let (graph, report) = check_race("affine_carried", 3);
-    let mut affine = BTreeSet::from(rewrites);
-    affine.insert((2, 3, WriteRead));
-    assert_eq!(conflicts(&graph, &report), affine);
+        let (graph, report) =
+            check_under(policy, "check_failure/affine_matmul_accumulate", &matmul);
+        assert_eq!(
+            conflicts(&graph, &report),
+            BTreeSet::from([
+                (0, 6, WriteRead),
+                (0, 6, WriteWrite),
+                (3, 6, WriteRead),
+                (3, 6, ReadWrite),
+                (3, 6, WriteWrite),
+                (0, 7, WriteRead),
+                (3, 7, WriteRead),
+            ]),
+            "{policy:?}"
+        );
+    }
 }
 
-// Test that accumulating into one tile across affine_range iterations races, with an add as
-// mamba accumulates and with an nc_matmul into PSUM alike: a reduction is ordinary reads and
-// writes, and the second iteration's read of the first's result is unordered.
+// Test that a memset its tile's next writer overwrites unread races that write and the reads
+// after it, as in scan.py's `scale`, until the policy orders write after write.
 #[test]
-fn nki_accumulations_across_affine_range_iterations_race() {
-    let (graph, report) = check_race("affine_vector_sum", 2);
-    assert_eq!(
-        conflicts(&graph, &report),
-        BTreeSet::from([
-            (0, 4, WriteRead),
-            (0, 4, WriteWrite),
-            (2, 4, WriteRead),
-            (2, 4, ReadWrite),
-            (2, 4, WriteWrite),
-            (0, 5, WriteRead),
-            (2, 5, WriteRead),
-        ])
-    );
-
-    let shapes: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])];
-    let (graph, report) = check("check_failure/affine_matmul_accumulate", &shapes);
-    assert_eq!(
-        conflicts(&graph, &report),
-        BTreeSet::from([
-            (0, 6, WriteRead),
-            (0, 6, WriteWrite),
-            (3, 6, WriteRead),
-            (3, 6, ReadWrite),
-            (3, 6, WriteWrite),
-            (0, 7, WriteRead),
-            (3, 7, WriteRead),
-        ])
-    );
-}
-
-// Test that a memset its tile's next writer overwrites unread races that write, as in
-// scan.py's `scale`: nothing reads the memset, so no data flow orders the two.
-#[test]
-fn nki_an_overwritten_unread_memset_races_its_overwrite() {
+fn nki_an_overwritten_unread_memset_races_unless_write_after_write_is_ordered() {
     let shapes: [(&str, &[u64]); 3] = [("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])];
     let (graph, report) = check("success/scan", &shapes);
-    assert!(
-        conflicts(&graph, &report).contains(&(2, 3, WriteWrite)),
-        "{:?}",
-        conflicts(&graph, &report)
+    assert_eq!(
+        conflicts(&graph, &report),
+        BTreeSet::from([(2, 3, WriteWrite), (2, 5, WriteRead), (2, 7, WriteRead)])
     );
+    let (_, report) = check_under(WAW, "success/scan", &shapes);
+    assert_eq!(report.conclusion(), GraphConclusion::Verified);
 }
 
 const SAMPLES: &str = concat!(
@@ -205,17 +249,16 @@ fn sample(file: &str) -> String {
     std::fs::read_to_string(format!("{SAMPLES}{file}.py")).unwrap()
 }
 
-/// Sample `kernel` of `source` for `call`, recorded and checked.
-fn check_sample(
+/// Sample `kernel` of `source` for `call`, lowered.
+fn lower_sample(
     source: &str,
     modules: &[(&str, &str)],
     kernel: &str,
     call: &KernelCall,
-) -> GraphReport {
+) -> LoweredKernel {
     let parsed = parse_kernel_for_call(source, modules, kernel, call)
         .unwrap_or_else(|e| panic!("{kernel}: {e}"));
-    let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{kernel}: {e}"));
-    check_graph(&record_graph(&lowered, OrderingPolicy::DataFlowOnly))
+    lower_kernel(&parsed).unwrap_or_else(|e| panic!("{kernel}: {e}"))
 }
 
 const fn tiles(pmax: u64, gemm_moving_fmax: u64) -> TileSizes {
@@ -227,26 +270,49 @@ const fn tiles(pmax: u64, gemm_moving_fmax: u64) -> TileSizes {
     }
 }
 
-// Test that the attention samples v1 to v8a verify, each tile written once or rewritten only
-// by its own readers, and that v10 races: it reuses PSUM banks (`address=` tiles) across its
-// pipelined QK matmuls with no data flow between the reuses. v3 to v10 run at reduced tile
-// sizes, their `seqlen_q >= 512` asserts stated as `>= FMAX_MOVING`.
-#[test]
-fn nki_attention_samples_verify_except_v10_reusing_psum_banks() {
+/// The attention samples' file, its `seqlen_q >= 512` asserts stated as `>= FMAX_MOVING`,
+/// and its utilities module.
+fn attention_sources() -> (String, String) {
     let kernels = sample("attention_kernels");
     let tileable = kernels.replace("assert seqlen_q >= 512", "assert seqlen_q >= FMAX_MOVING");
-    let utils = sample("attention_kernel_utils");
-    let modules = [("attention_kernel_utils", utils.as_str())];
+    (tileable, sample("attention_kernel_utils"))
+}
 
+/// Tiled attention `kernel` (v3 to v10) at `[4, 16]` with tile sizes 4 x 8, lowered.
+fn tiled_attention(kernel: &str) -> LoweredKernel {
+    let (tileable, utils) = attention_sources();
+    let modules = [("attention_kernel_utils", utils.as_str())];
+    let reduced: &[u64] = &[4, 16];
+    let shapes = [("q", reduced), ("k", reduced), ("v", reduced)];
+    let dtype = if kernel == "attn_fwd_v10" {
+        "bfloat16"
+    } else {
+        "float32"
+    };
+    let dtypes = [("q", dtype), ("k", dtype), ("v", dtype)];
+    let call = KernelCall {
+        dtypes: &dtypes,
+        tile_sizes: tiles(4, 8),
+        ..KernelCall::new(&shapes)
+    };
+    lower_sample(&tileable, &modules, kernel, &call)
+}
+
+// Test that the attention samples v1 to v8a verify, each tile written once or rewritten only
+// after its readers. v10 races, as its `address=` tiles `v_psum_t` and `qk_psum` share PSUM
+// bytes, until the policy orders hazards through placed tiles' shared bytes.
+#[test]
+fn nki_attention_samples_verify_except_v10_unless_hazards_are_tracked_by_address() {
+    let (kernels, utils) = attention_sources();
+    let modules = [("attention_kernel_utils", utils.as_str())];
     let full: &[u64] = &[128, 128];
     let shapes = [("q", full), ("k", full), ("v", full)];
     for kernel in ["attn_fwd_v1", "attn_fwd_v2"] {
-        let report = check_sample(&kernels, &modules, kernel, &KernelCall::new(&shapes));
+        let lowered = lower_sample(&kernels, &modules, kernel, &KernelCall::new(&shapes));
+        let report = check_graph(&record_graph(&lowered, OrderingPolicy::BASELINE));
         assert_eq!(report.conclusion(), GraphConclusion::Verified, "{kernel}");
     }
 
-    let reduced: &[u64] = &[4, 16];
-    let shapes = [("q", reduced), ("k", reduced), ("v", reduced)];
     for kernel in [
         "attn_fwd_v3",
         "attn_fwd_v4",
@@ -255,34 +321,61 @@ fn nki_attention_samples_verify_except_v10_reusing_psum_banks() {
         "attn_fwd_v7",
         "attn_fwd_v8",
         "attn_fwd_v8a",
-        "attn_fwd_v10",
     ] {
-        let dtype = if kernel == "attn_fwd_v10" {
-            "bfloat16"
-        } else {
-            "float32"
-        };
-        let dtypes = [("q", dtype), ("k", dtype), ("v", dtype)];
-        let call = KernelCall {
-            dtypes: &dtypes,
-            tile_sizes: tiles(4, 8),
-            ..KernelCall::new(&shapes)
-        };
-        let report = check_sample(&tileable, &modules, kernel, &call);
-        let verified = report.conclusion() == GraphConclusion::Verified;
-        assert_eq!(verified, kernel != "attn_fwd_v10", "{kernel}");
-        assert_eq!(
-            report.memory_conflict.violations().is_empty(),
-            verified,
-            "{kernel}"
-        );
+        let report = check_graph(&record_graph(
+            &tiled_attention(kernel),
+            OrderingPolicy::BASELINE,
+        ));
+        assert_eq!(report.conclusion(), GraphConclusion::Verified, "{kernel}");
+    }
+
+    let v10 = tiled_attention("attn_fwd_v10");
+    let report = check_graph(&record_graph(&v10, OrderingPolicy::BASELINE));
+    assert!(!report.memory_conflict.violations().is_empty());
+    let graph = record_graph(&v10, BY_ADDRESS);
+    assert_eq!(check_graph(&graph).conclusion(), GraphConclusion::Verified);
+    assert!(
+        graph
+            .provenance()
+            .assumes(Assumption::NkiHazardsByPlacedAddress)
+    );
+}
+
+// Test that attention v10's races, with or without its no_reorder block in program order,
+// all pair `v_psum_t`, transposed before the block, with `qk_psum`, which the QK matmuls
+// inside it place over the same PSUM bytes (R3): every reuse within one tensor is ordered,
+// and the block orders nothing against the instructions before it.
+#[test]
+fn nki_attention_v10_races_only_between_tiles_placed_over_the_same_bytes() {
+    let lowered = tiled_attention("attn_fwd_v10");
+    let accesses = footprints(&lowered);
+    let in_block = |i: u32| lowered.origins[InstrId(i)].reordering != Reordering::Allowed;
+    let tensors = |i: u32| -> Vec<&str> {
+        accesses[InstrId(i)]
+            .iter()
+            .map(|access| lowered.tensors[access.tensor].name.as_str())
+            .collect()
+    };
+    for policy in [OrderingPolicy::BASELINE, NO_REORDER] {
+        let graph = record_graph(&lowered, policy);
+        let pairs = conflicts(&graph, &check_graph(&graph));
+        assert!(!pairs.is_empty(), "{policy:?}");
+        for &(earlier, later, kind) in &pairs {
+            assert!(
+                !in_block(earlier) && in_block(later),
+                "{policy:?}: {earlier} -> {later} {kind:?}"
+            );
+            assert!(tensors(earlier).contains(&"v_psum_t"), "{earlier}");
+            assert!(tensors(later).contains(&"qk_psum"), "{later}");
+        }
     }
 }
 
-// Test that the tutorials accumulating inside an affine_range race: the tiled matmul's
-// nc_matmuls into one PSUM tile, and mamba's tensor_tensor adds into `scanC_accum`.
+// Test that the tutorials accumulating inside an affine_range race under every policy: the
+// tiled matmul's nc_matmuls into one PSUM tile, and mamba's tensor_tensor adds into
+// `scanC_accum`.
 #[test]
-fn nki_tutorials_accumulating_across_affine_range_iterations_race() {
+fn nki_tutorials_accumulating_across_affine_range_iterations_race_under_every_policy() {
     let (lhs_t, rhs): (&[u64], &[u64]) = (&[8, 4], &[8, 8]);
     let shapes = [("lhsT", lhs_t), ("rhs", rhs)];
     let call = KernelCall {
@@ -290,8 +383,7 @@ fn nki_tutorials_accumulating_across_affine_range_iterations_race() {
         ..KernelCall::new(&shapes)
     };
     let source = sample("matrix_multiplication_nki_kernels");
-    let report = check_sample(&source, &[], "nki_matmul_tiled_", &call);
-    assert!(!report.memory_conflict.violations().is_empty());
+    let matmul = lower_sample(&source, &[], "nki_matmul_tiled_", &call);
 
     let (sequence, a, by_state): (&[u64], &[u64], &[u64]) = (&[2, 128, 8], &[128, 2], &[2, 2, 8]);
     let shapes = [
@@ -308,20 +400,30 @@ fn nki_tutorials_accumulating_across_affine_range_iterations_race() {
         ..KernelCall::new(&shapes)
     };
     let source = sample("mamba_nki_kernels");
-    let report = check_sample(&source, &[], "mamba_v1", &call);
-    assert!(!report.memory_conflict.violations().is_empty());
+    let mamba = lower_sample(&source, &[], "mamba_v1", &call);
+
+    for policy in OrderingPolicy::ALL {
+        for kernel in [&matmul, &mamba] {
+            let report = check_graph(&record_graph(kernel, policy));
+            assert!(
+                !report.memory_conflict.violations().is_empty(),
+                "{}: {policy:?}",
+                kernel.name
+            );
+        }
+    }
 }
 
-// Test that a no_reorder block orders its own instructions under DataFlowAndNoReorder and
-// nothing under DataFlowOnly: two DMAs writing one tile in a block, and an affine_range's
-// iterations rewriting one tile in a block, race under DataFlowOnly and verify under the
-// opt-in policy, which records its assumption. A write before the block still races the
-// block's rewrite and read under both.
+// Test that a no_reorder block orders its own instructions when the policy keeps blocks in
+// program order, and nothing otherwise: two DMAs writing one tile in a block, and an
+// affine_range's iterations rewriting one tile in a block, race under BASELINE and verify
+// under NO_REORDER, which records its assumption. A write before the block still races the
+// block's rewrite and read, until write after write is ordered.
 #[test]
-fn nki_no_reorder_blocks_order_their_own_instructions_under_the_opt_in_policy() {
+fn nki_no_reorder_blocks_order_their_own_instructions_when_the_policy_keeps_them() {
     let rows: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("out", &[1, 4])];
     let both: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("out", &[2, 4])];
-    for (name, shapes, data_flow_races) in [
+    for (name, shapes, races) in [
         (
             "no_reorder_back_to_back_dmas",
             &rows,
@@ -337,25 +439,23 @@ fn nki_no_reorder_blocks_order_their_own_instructions_under_the_opt_in_policy() 
         let (graph, report) = check(&name, shapes);
         assert_eq!(
             conflicts(&graph, &report),
-            BTreeSet::from_iter(data_flow_races),
+            BTreeSet::from_iter(races),
             "{name}"
         );
 
-        let (graph, report) = check_under(OrderingPolicy::DataFlowAndNoReorder, &name, shapes);
+        let (graph, report) = check_under(NO_REORDER, &name, shapes);
         assert_eq!(report.conclusion(), GraphConclusion::Verified, "{name}");
         assert_eq!(
             graph.provenance().assumptions,
             [
-                Assumption::NkiDataFlowOrder,
+                Assumption::NkiReadAfterWriteOrder,
+                Assumption::NkiWriteAfterReadOrder,
                 Assumption::NkiNoReorderInProgramOrder
             ]
         );
     }
 
-    for policy in [
-        OrderingPolicy::DataFlowOnly,
-        OrderingPolicy::DataFlowAndNoReorder,
-    ] {
+    for policy in [OrderingPolicy::BASELINE, NO_REORDER] {
         let (graph, report) = check_under(policy, "check_failure/no_reorder_boundary", &rows);
         assert_eq!(
             conflicts(&graph, &report),
@@ -363,46 +463,318 @@ fn nki_no_reorder_blocks_order_their_own_instructions_under_the_opt_in_policy() 
             "{policy:?}"
         );
     }
+    let (_, report) = check_under(WAW, "check_failure/no_reorder_boundary", &rows);
+    assert_eq!(report.conclusion(), GraphConclusion::Verified);
 }
 
-// Test that under DataFlowAndNoReorder attention v10's only races cross its no_reorder
-// block's boundary: `v_psum_t`, transposed before the block, and `qk_psum`, which the QK
-// matmuls inside it place over the same PSUM bytes (R3). A block orders nothing against
-// the instructions before it, so the reuse is unordered under either policy.
-#[test]
-fn nki_attention_v10_races_only_across_its_no_reorder_boundary_under_the_opt_in_policy() {
-    let kernels = sample("attention_kernels");
-    let tileable = kernels.replace("assert seqlen_q >= 512", "assert seqlen_q >= FMAX_MOVING");
-    let utils = sample("attention_kernel_utils");
+/// One kernel of the policy table: its fixture or sample and its lowered form.
+struct Probe {
+    label: String,
+    kernel: LoweredKernel,
+}
+
+fn probe_fixture(name: &str, call: &KernelCall) -> Probe {
+    let source = std::fs::read_to_string(format!("{FIXTURES}{name}.py")).unwrap();
+    let parsed = parse_kernel_for_call(&source, &[], "kernel", call)
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    Probe {
+        label: name.to_string(),
+        kernel: lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}")),
+    }
+}
+
+fn probe_sample(
+    file: &str,
+    source: &str,
+    modules: &[(&str, &str)],
+    kernel: &str,
+    call: &KernelCall,
+) -> Probe {
+    Probe {
+        label: format!("{file}::{kernel}"),
+        kernel: lower_sample(source, modules, kernel, call),
+    }
+}
+
+/// Every NKI fixture and sample this suite has, at the shapes its other tests call it with.
+fn probes() -> Vec<Probe> {
+    let mut probes = Vec::new();
+    let matmul: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])];
+    let pair: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("b", &[2, 4])];
+    let softmax: [(&str, &[u64]); 1] = [("x", &[2, 3])];
+    let tile: &[u64] = &[2, 2];
+    let language_api: [(&str, &[u64]); 5] = [
+        ("a", tile),
+        ("b", tile),
+        ("mx", &[2, 1]),
+        ("rs", &[2, 1]),
+        ("tr", tile),
+    ];
+    let fixtures: [(&str, Shapes); 22] = [
+        (
+            "add",
+            &[("a", &[16, 16]), ("b", &[16, 16]), ("out", &[16, 16])],
+        ),
+        ("sigmoid", &[("a", &[2, 4]), ("out", &[2, 4])]),
+        ("transpose", &[("a", &[2, 3]), ("out", &[3, 2])]),
+        ("matmul", &matmul),
+        (
+            "gemm_relu",
+            &[("a_t", &[8, 4]), ("b", &[8, 4]), ("out", &[4, 4])],
+        ),
+        ("loop_origins", &[("a", &[2, 4]), ("out", &[2, 4])]),
+        ("tiled_copy", &[("a", &[8, 4]), ("out", &[8, 4])]),
+        ("rms_norm", &[("a", &[4, 8]), ("out", &[4, 8])]),
+        ("returned_output", &pair),
+        ("call_shapes", &pair),
+        ("softmax", &softmax),
+        ("language_api", &language_api),
+        ("accumulate", &matmul),
+        ("regions_softmax", &softmax),
+        ("regions_matmul", &matmul),
+        ("subscripts_softmax", &softmax),
+        ("subscripts_matmul", &matmul),
+        ("fused_softmax", &[("x", &[2, 4])]),
+        ("placed_tiles", &[("a_t", &[4, 2]), ("b", &[4, 3])]),
+        ("access_patterns", &[("a", &[2, 6])]),
+        ("scan", &[("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])]),
+        ("sequential_carried", &[("a", &[3, 4]), ("out", &[2, 4])]),
+    ];
+    for (name, shapes) in fixtures {
+        probes.push(probe_fixture(
+            &format!("success/{name}"),
+            &KernelCall::new(shapes),
+        ));
+    }
+    let pipelined = KernelCall {
+        dtypes: &[("a", "bfloat16")],
+        ..KernelCall::new(&[("a", &[6, 4])])
+    };
+    probes.push(probe_fixture("success/pipelined_scale", &pipelined));
+    let offsets: [u64; 16] = [3, 0, 3, 1, 2, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2];
+    let indirect = KernelCall {
+        contents: &[("idx", &offsets)],
+        ..KernelCall::new(&[("a", &[32, 4]), ("idx", &[16, 1])])
+    };
+    probes.push(probe_fixture("success/indirect", &indirect));
+
+    let rows = |count: u64| [("a", [count, 4]), ("out", [count - 1, 4])];
+    for (name, [a, out]) in [
+        ("back_to_back_dmas", rows(2)),
+        ("affine_overwrite", rows(2)),
+        ("sequential_overwrite", rows(2)),
+        ("affine_carried", rows(3)),
+        ("affine_vector_sum", rows(2)),
+        ("no_reorder_back_to_back_dmas", rows(2)),
+        ("no_reorder_boundary", rows(2)),
+    ] {
+        let shapes = [(a.0, a.1.as_slice()), (out.0, out.1.as_slice())];
+        probes.push(probe_fixture(
+            &format!("check_failure/{name}"),
+            &KernelCall::new(&shapes),
+        ));
+    }
+    probes.push(probe_fixture(
+        "check_failure/affine_matmul_accumulate",
+        &KernelCall::new(&matmul),
+    ));
+    probes.push(probe_fixture(
+        "check_failure/no_reorder_affine",
+        &KernelCall::new(&[("a", &[2, 4]), ("out", &[2, 4])]),
+    ));
+
+    let (kernels, utils) = attention_sources();
     let modules = [("attention_kernel_utils", utils.as_str())];
-    let reduced: &[u64] = &[4, 16];
-    let shapes = [("q", reduced), ("k", reduced), ("v", reduced)];
-    let dtypes = [("q", "bfloat16"), ("k", "bfloat16"), ("v", "bfloat16")];
+    let full: &[u64] = &[128, 128];
+    let shapes = [("q", full), ("k", full), ("v", full)];
+    for kernel in ["attn_fwd_v1", "attn_fwd_v2"] {
+        let call = KernelCall::new(&shapes);
+        probes.push(probe_sample("attention", &kernels, &modules, kernel, &call));
+    }
+    for kernel in [
+        "attn_fwd_v3",
+        "attn_fwd_v4",
+        "attn_fwd_v5",
+        "attn_fwd_v6",
+        "attn_fwd_v7",
+        "attn_fwd_v8",
+        "attn_fwd_v8a",
+        "attn_fwd_v10",
+    ] {
+        probes.push(Probe {
+            label: format!("attention::{kernel}"),
+            kernel: tiled_attention(kernel),
+        });
+    }
+
+    let add: &[u64] = &[128, 512];
+    let shapes = [("a_input", add), ("b_input", add)];
     let call = KernelCall {
-        dtypes: &dtypes,
-        tile_sizes: tiles(4, 8),
+        dtypes: &[("a_input", "float32"), ("b_input", "float32")],
         ..KernelCall::new(&shapes)
     };
-    let parsed = parse_kernel_for_call(&tileable, &modules, "attn_fwd_v10", &call).unwrap();
-    let lowered = lower_kernel(&parsed).unwrap();
-    let graph = record_graph(&lowered, OrderingPolicy::DataFlowAndNoReorder);
-    let report = check_graph(&graph);
+    let source = sample("tensor_addition_nki_kernels");
+    probes.push(probe_sample(
+        "tensor_addition",
+        &source,
+        &[],
+        "nki_tensor_add",
+        &call,
+    ));
 
-    let pairs = conflicts(&graph, &report);
-    assert!(!pairs.is_empty());
-    let in_block = |i: u32| lowered.origins[InstrId(i)].reordering != Reordering::Allowed;
-    let tensors = |i: u32| -> Vec<&str> {
-        footprints(&lowered)[InstrId(i)]
-            .iter()
-            .map(|access| lowered.tensors[access.tensor].name.as_str())
-            .collect()
+    let source = sample("matrix_multiplication_nki_kernels");
+    let basic = KernelCall::new(&[("lhsT", &[128, 64]), ("rhs", &[128, 512])]);
+    probes.push(probe_sample(
+        "matrix_multiplication",
+        &source,
+        &[],
+        "nki_matmul_basic_",
+        &basic,
+    ));
+    let tiled = KernelCall {
+        tile_sizes: tiles(2, 4),
+        ..KernelCall::new(&[("lhsT", &[16, 32]), ("rhs", &[16, 8])])
     };
-    for &(earlier, later, kind) in &pairs {
-        assert!(
-            !in_block(earlier) && in_block(later),
-            "{earlier} -> {later} {kind:?}"
-        );
-        assert!(tensors(earlier).contains(&"v_psum_t"), "{earlier}");
-        assert!(tensors(later).contains(&"qk_psum"), "{later}");
+    for kernel in [
+        "nki_matmul_tiled_",
+        "nki_matmul_hoist_load_",
+        "nki_matmul_block_free_dimension_",
+        "nki_matmul_fully_optimized_",
+    ] {
+        probes.push(probe_sample(
+            "matrix_multiplication",
+            &source,
+            &[],
+            kernel,
+            &tiled,
+        ));
     }
+
+    let source = sample("transpose2d_nki_kernels");
+    let shape_2d = [3, 4];
+    let constants = [("shape2D", Constant::Ints(&shape_2d))];
+    let call = KernelCall {
+        dtypes: &[("in_tensor", "float32")],
+        constants: &constants,
+        ..KernelCall::new(&[("in_tensor", &[5, 12])])
+    };
+    probes.push(probe_sample(
+        "transpose2d",
+        &source,
+        &[],
+        "tensor_transpose2D_kernel_",
+        &call,
+    ));
+
+    let source = sample("average_pool2d_nki_kernels");
+    let constants = [("pool_size", Constant::Int(2))];
+    let call = KernelCall {
+        dtypes: &[("in_tensor", "float32")],
+        constants: &constants,
+        ..KernelCall::new(&[("in_tensor", &[2, 6, 6])])
+    };
+    probes.push(probe_sample(
+        "average_pool2d",
+        &source,
+        &[],
+        "tensor_avgpool_kernel",
+        &call,
+    ));
+
+    let source = sample("mamba_nki_kernels").replace(
+        "seq_len_fsize = 512\n",
+        "seq_len_fsize = nl.tile_size.gemm_moving_fmax\n",
+    );
+    let (sequence, a, by_state): (&[u64], &[u64], &[u64]) = (&[2, 128, 8], &[128, 2], &[2, 2, 8]);
+    let shapes = [
+        ("delta", sequence),
+        ("u", sequence),
+        ("A", a),
+        ("B", by_state),
+        ("C", by_state),
+    ];
+    let dtypes = ["delta", "u", "A", "B", "C"].map(|param| (param, "float32"));
+    let call = KernelCall {
+        dtypes: &dtypes,
+        tile_sizes: tiles(64, 4),
+        ..KernelCall::new(&shapes)
+    };
+    for kernel in ["mamba_v1", "mamba_v2", "mamba_v3"] {
+        probes.push(probe_sample("mamba", &source, &[], kernel, &call));
+    }
+
+    let source = sample("tensor_indirection_nki_kernels");
+    let offsets: Vec<u64> = (0..32).map(|i| (i * 7) % 64).collect();
+    let call = KernelCall {
+        contents: &[("index_tensor", &offsets)],
+        ..KernelCall::new(&[("index_tensor", &[1, 32]), ("data_tensor", &[128, 64])])
+    };
+    probes.push(probe_sample(
+        "tensor_indirection",
+        &source,
+        &[],
+        "tensor_indirection_kernel",
+        &call,
+    ));
+    probes
+}
+
+/// A policy's column heading: what it orders beyond read after write and write after read.
+fn heading(policy: OrderingPolicy) -> String {
+    let mut parts = Vec::new();
+    if policy.write_after_write == WriteAfterWrite::Ordered {
+        parts.push("waw");
+    }
+    if policy.placed_tiles == PlacedTiles::ByAddress {
+        parts.push("addr");
+    }
+    if policy.no_reorder == NoReorder::ProgramOrder {
+        parts.push("nr");
+    }
+    if parts.is_empty() {
+        "base".to_string()
+    } else {
+        parts.join("+")
+    }
+}
+
+// Test each NKI kernel's verdict under every ordering policy against `ordering_policies.txt`
+// (`VOLTA_BLESS=1` rewrites it): which kernels each assumption about the Neuron compiler
+// would let through.
+#[test]
+fn nki_verdicts_under_each_ordering_policy_match_the_table() {
+    let mut table = String::from(
+        "# Each NKI kernel's graph under each OrderingPolicy: ok (Verified) or its number of\n\
+         # conflicting access pairs. Every policy orders read after write and write after read\n\
+         # outside affine_range iterations (base); a column adds write after write (waw),\n\
+         # hazards through placed tiles' shared bytes (addr), or no_reorder blocks in program\n\
+         # order (nr).\n",
+    );
+    let headings: Vec<String> = OrderingPolicy::ALL.into_iter().map(heading).collect();
+    writeln!(
+        table,
+        "{:56}{}",
+        "kernel",
+        headings
+            .iter()
+            .map(|h| format!("{h:>12}"))
+            .collect::<String>()
+    )
+    .unwrap();
+    for probe in probes() {
+        write!(table, "{:56}", probe.label).unwrap();
+        for policy in OrderingPolicy::ALL {
+            let report = check_graph(&record_graph(&probe.kernel, policy));
+            let cell = match report.conclusion() {
+                GraphConclusion::Verified => "ok".to_string(),
+                _ => report.memory_conflict.violations().len().to_string(),
+            };
+            write!(table, "{cell:>12}").unwrap();
+        }
+        writeln!(table).unwrap();
+    }
+    crate::common::trainium::compare(
+        crate::common::trainium::fixtures().join("ordering_policies.txt"),
+        table,
+    );
 }

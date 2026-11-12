@@ -3,9 +3,8 @@ import nki.language as nl
 import nki.isa as nisa
 
 
-# back_to_back_dmas inside a no_reorder block: a write-after-write race under
-# DataFlowOnly, ordered under DataFlowAndNoReorder, where the block's instructions run
-# in program order.
+# back_to_back_dmas inside a no_reorder block: a write-after-write race, ordered if the
+# policy keeps no_reorder blocks in program order (or orders write-after-write).
 @nki.jit
 def kernel(a, out):
     assert a.shape == (2, 4)

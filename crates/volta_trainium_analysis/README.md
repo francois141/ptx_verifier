@@ -343,21 +343,29 @@ earlier instructions the compiler orders it after: it resumes from each one's
 `Dependency` generation, then signals its own. `MemoryConflict` reports every conflicting
 pair no chain of dependencies orders.
 
-Each policy records the `Assumption`s it rests on. `DataFlowOnly`
-(`Assumption::NkiDataFlowOrder`), the pipeline's, is the most conservative under which a
-kernel can be correct at all: an instruction follows the latest earlier writer of each
-location it reads, unless the two are in different iterations of one `affine_range`, and
-nothing else is ordered. Writes after writes and writes after reads race, as does every
-reduction across `affine_range` iterations.
+A policy is three independent choices, each adding an `Assumption` the graph records; every
+policy orders read after write (`Assumption::NkiReadAfterWriteOrder`: an instruction follows
+the latest earlier writer of each location it reads) and write after read
+(`NkiWriteAfterReadOrder`: it follows every earlier reader of each location it writes), unless
+the two are in different iterations of one `affine_range`, which declares its iterations
+independent. So every reduction across `affine_range` iterations races under every policy.
+`OrderingPolicy::BASELINE`, the pipeline's, adds nothing more:
 
-`DataFlowAndNoReorder` adds `Assumption::NkiNoReorderInProgramOrder`: each instruction of
-a `no_reorder` block also follows the block's previous one, so the block runs in program
-order, its loops' iterations included. The API page says the block guarantees operations
-"execute in program order"; the scheduling guide says only that it inserts "dependency
-edges between every instruction", without saying whether they are hardware semaphores or
-scheduling hints, so this level is opt-in. A block orders nothing against the
-instructions before or after it. A further relaxation the docs or a compiled NEFF justify
-becomes another policy with its own assumption.
+- `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`): a write also follows the latest
+  earlier writer of what it writes. Without it, two writes with no read between them race;
+  with a read between, read after write and write after read order them already.
+- `PlacedTiles::ByAddress` (`NkiHazardsByPlacedAddress`): the compiler tracks those hazards
+  through the bytes `address=` tiles share. `ByTensor`, the baseline, orders only accesses
+  through one tensor, as the Direct Allocation Guide warns its race checking is limited.
+- `NoReorder::ProgramOrder` (`NkiNoReorderInProgramOrder`): each instruction of a
+  `no_reorder` block also follows the block's previous one, its loops' iterations included.
+  The API page says the block guarantees operations "execute in program order"; the
+  scheduling guide says only that it inserts "dependency edges between every instruction",
+  without saying whether they are hardware semaphores or scheduling hints. A block orders
+  nothing against the instructions before or after it.
+
+`OrderingPolicy::ALL` lists the eight combinations; `volta_pipeline`'s
+`trainium/ordering_policies.txt` tabulates every NKI kernel's verdict under each.
 
 Locations are disjoint address ranges, one per `Location` (`1 << 40` apart): HBM tensors
 in `Space::Global`, SBUF and PSUM in `Space::Shared`. Each run is one byte-range access;
@@ -373,23 +381,25 @@ one call, giving each parameter's shape (`common::trainium::check(name, kernel, 
 or `check_importing` with the fixture modules it imports from), and
 `trainium/rejected_tests.rs` requires each error; the fixtures' own shape `assert`s check
 those shapes.
-Besides `.ast`, `.ir` and `.out`, the race fixtures and `placed_tiles`,
+Besides `.ast`, `.ir` and `.out`, the race fixtures and `sequential_carried`, `placed_tiles`,
 `access_patterns`, `indirect` and `loop_origins` (`common::trainium`'s `FOOTPRINTS`) have
 a `.footprints`: one line per instruction, a placed tile's runs as `p<partition>:<bytes>`,
 any other's as element offsets.
 
-`check_failure/` holds kernels that race under `DataFlowOnly`, each naming its verdict and
-what would make it race free; `accepted_tests.rs` runs them in program order, and
-`trainium/graph_tests.rs` checks their graphs' conflicting pairs. `back_to_back_dmas` is
-two DMAs writing one tile (R0, ordered only if the compiler orders write-after-write);
-`affine_overwrite` and `affine_carried` overwrite or carry a tile across `affine_range`
-iterations (R1), their `sequential_range` twins in order but still rewriting the tile
-without reading it between; `affine_vector_sum` sums rows into one tile with
+`check_failure/` holds kernels that race under `BASELINE`, each naming what would make it
+race free; `accepted_tests.rs` runs them in program order, and `trainium/graph_tests.rs`
+checks their graphs' conflicting pairs. `back_to_back_dmas` is two DMAs writing one tile
+(R0, ordered only if the compiler orders write after write), as is `sequential_overwrite`
+over a `sequential_range`'s iterations; `affine_overwrite` and `affine_carried` overwrite
+or carry a tile across `affine_range` iterations (R1), racing under every policy, while
+`success/sequential_carried`, the latter's `sequential_range` twin, is ordered by read
+after write and write after read; `affine_vector_sum` sums rows into one tile with
 `tensor_tensor`, as mamba does, and `affine_matmul_accumulate` accumulates matmuls into
 PSUM, the reduction the docs allow across `affine_range` iterations.
 `no_reorder_back_to_back_dmas` and `no_reorder_affine` put R0 and R1 inside a
-`no_reorder` block, race free under `DataFlowAndNoReorder`; `no_reorder_boundary` rewrites
-inside a block a tile written before it, a race under both policies.
+`no_reorder` block, race free once blocks run in program order; `no_reorder_boundary`
+rewrites inside a block a tile written before it, a race unless write after write is
+ordered.
 
 `success/nki_samples/` holds the NKI samples' `attention_kernels.py` and
 `attention_kernel_utils.py` unmodified, from `aws-neuron/nki-samples` at
