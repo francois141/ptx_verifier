@@ -2,16 +2,19 @@
 //! `<name>.ast` and `<name>.ir` the parsed and lowered kernel as `Display` renders them,
 //! `<name>.out` its run's written elements, and for `FOOTPRINTS` fixtures `<name>.footprints`
 //! each instruction's accesses. `VOLTA_BLESS=1` rewrites them, never `<name>.expected`:
-//! the written elements derived from the kernel's math, not from a run.
+//! the written elements derived from the kernel's math, not from a run. Before its outputs
+//! are compared, a `success/` fixture's graph must be `Verified` under
+//! `OrderingPolicy::BASELINE`, and a `check_failure/` fixture's `Rejected`.
 
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use volta_trainium_analysis::LoweredKernel;
+use volta_graph_check::{GraphConclusion, check_graph};
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel_for_call};
 use volta_trainium_analysis::{
-    Access, Location, Mode, PARTITION_STRIDE, Reducer, evaluate, footprints, lower_kernel,
+    Access, Location, LoweredKernel, Mode, OrderingPolicy, PARTITION_STRIDE, Reducer, evaluate,
+    footprints, lower_kernel, record_graph,
 };
 
 /// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`),
@@ -54,6 +57,13 @@ pub fn check_call(name: &str, kernel: &str, modules: &[&str], call: &KernelCall)
         );
     }
 
+    let conclusion = check_graph(&record_graph(&lowered, OrderingPolicy::BASELINE)).conclusion();
+    match (Folder::of(name), &conclusion) {
+        (Folder::Success, GraphConclusion::Verified)
+        | (Folder::CheckFailure, GraphConclusion::Rejected { .. }) => {}
+        (folder, conclusion) => panic!("{name}: a {folder:?} fixture concluded {conclusion:?}"),
+    }
+
     let outputs = evaluate(&lowered).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut rendered = String::new();
     for (array, elements) in &outputs.outputs {
@@ -64,6 +74,24 @@ pub fn check_call(name: &str, kernel: &str, modules: &[&str], call: &KernelCall)
     }
     compare(fixture.with_extension("out"), rendered.clone());
     compare_with_expected(fixture.with_extension("expected"), &rendered);
+}
+
+/// The outcome folder a fixture is in, which fixes the graph conclusion `check_call` requires
+/// under `OrderingPolicy::BASELINE`.
+#[derive(Debug, Clone, Copy)]
+enum Folder {
+    Success,
+    CheckFailure,
+}
+
+impl Folder {
+    fn of(name: &str) -> Folder {
+        match name.split('/').next() {
+            Some("success") => Folder::Success,
+            Some("check_failure") => Folder::CheckFailure,
+            _ => panic!("{name}: checked fixtures live in success/ or check_failure/"),
+        }
+    }
 }
 
 /// Parse and lower kernel `kernel` of `tests/trainium/<name>.py`, which imports from

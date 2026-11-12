@@ -253,12 +253,12 @@ fn nki_accumulations_across_affine_range_iterations_commute_where_the_policy_exe
 #[test]
 fn nki_an_overwritten_unread_memset_races_unless_write_after_write_is_ordered() {
     let shapes: [(&str, &[u64]); 3] = [("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])];
-    let (graph, report) = check("success/scan", &shapes);
+    let (graph, report) = check("check_failure/scan", &shapes);
     assert_eq!(
         conflicts(&graph, &report),
         BTreeSet::from([(2, 3, WriteWrite), (2, 5, WriteRead), (2, 7, WriteRead)])
     );
-    let (_, report) = check_under(WAW, "success/scan", &shapes);
+    let (_, report) = check_under(WAW, "check_failure/scan", &shapes);
     assert_eq!(report.conclusion(), GraphConclusion::Verified);
 }
 
@@ -539,7 +539,7 @@ fn probes() -> Vec<Probe> {
         ("rs", &[2, 1]),
         ("tr", tile),
     ];
-    let fixtures: [(&str, Shapes); 22] = [
+    let fixtures: [(&str, Shapes); 21] = [
         (
             "add",
             &[("a", &[16, 16]), ("b", &[16, 16]), ("out", &[16, 16])],
@@ -566,7 +566,6 @@ fn probes() -> Vec<Probe> {
         ("fused_softmax", &[("x", &[2, 4])]),
         ("placed_tiles", &[("a_t", &[4, 2]), ("b", &[4, 3])]),
         ("access_patterns", &[("a", &[2, 6])]),
-        ("scan", &[("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])]),
         ("sequential_carried", &[("a", &[3, 4]), ("out", &[2, 4])]),
     ];
     for (name, shapes) in fixtures {
@@ -617,6 +616,10 @@ fn probes() -> Vec<Probe> {
     probes.push(probe_fixture(
         "check_failure/no_reorder_affine",
         &KernelCall::new(&[("a", &[2, 4]), ("out", &[2, 4])]),
+    ));
+    probes.push(probe_fixture(
+        "check_failure/scan",
+        &KernelCall::new(&[("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])]),
     ));
 
     let (kernels, utils) = attention_sources();
