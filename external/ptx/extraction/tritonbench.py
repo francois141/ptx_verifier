@@ -4,18 +4,18 @@
 # ///
 """Compile the TritonBench-G kernels to PTX for Blackwell (sm_100a).
 
-    uv run external/extraction/tritonbench.py                   # the files of `SIZES`
-    uv run external/extraction/tritonbench.py add_example.py    # some files (names or paths)
-    uv run external/extraction/tritonbench.py --jobs 2 --timeout 600
+    uv run external/ptx/extraction/tritonbench.py                   # the files of `SIZES`
+    uv run external/ptx/extraction/tritonbench.py add_example.py    # some files (names or paths)
+    uv run external/ptx/extraction/tritonbench.py --jobs 2 --timeout 600
 
 Each file's own test code runs unchanged as `__main__`, and every Triton launch
 it makes is compiled instead of run (`triton_capture.py`). A file of `SIZES`
 records only the launches of its sizes, each called through the file's own
 wrapper after its test code ran, and each becomes a Volta launch file
-`<kernel>.<size>.launch.json` under `external/tritonbench/<file stem>/`; for
+`<kernel>.<size>.launch.json` under `external/ptx/tritonbench/<file stem>/`; for
 any other file, up to three of its test code's launches, smallest first,
 become `<kernel>.<i>.launch.json`. `--summary` (by default
-`external/output/tritonbench_extraction.csv`) says how each file went.
+`external/ptx/output/tritonbench_extraction.csv`) says how each file went.
 """
 
 from pathlib import Path

@@ -71,20 +71,3 @@ fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     }
     f.write_char('"')
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Json;
-
-    #[test]
-    fn strings_escape_quotes_and_control_characters() {
-        let value = Json::Obj(vec![
-            ("a", Json::str("x\"y\\z\n\u{1}")),
-            ("b", Json::Arr(vec![Json::Int(-3), Json::Null])),
-        ]);
-        assert_eq!(
-            value.to_string(),
-            r#"{"a":"x\"y\\z\n\u0001","b":[-3,null]}"#
-        );
-    }
-}

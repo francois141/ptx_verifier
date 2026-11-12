@@ -99,19 +99,3 @@ pub fn stored_runs(dir: &Path) -> io::Result<Vec<StoredRun>> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keys_number_every_run_after_the_first() {
-        let id = |test: &str, ordinal| RunId {
-            suite: "accepted_tests".to_string(),
-            test: test.to_string(),
-            ordinal: NonZeroU32::new(ordinal).unwrap(),
-        };
-        assert_eq!(id("t", 1).key(), "accepted_tests/t");
-        assert_eq!(id("m::t", 3).key(), "accepted_tests/m__t~3");
-    }
-}

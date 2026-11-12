@@ -20,7 +20,8 @@ use common::Side;
 use common::amd::{
     AmdChecked, CK_FMHA_KERNEL, CK_GEMM_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, CK_RMSNORM_KERNEL,
     FMHA_K_BASE, FMHA_Q_BASE, GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, amd_fixture, check_amd,
-    ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays, rmsnorm_arrays,
+    ck_fixture, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays, gemm_arrays,
+    rmsnorm_arrays,
 };
 
 /// Two waves over 128-word `input` and `output` arrays, the kernel's two pointer arguments.
@@ -103,8 +104,8 @@ fn lds_accesses_no_wait_and_barrier_order_race() {
 fn run_ck_gemm(kernel: &str, dims: [i32; 3]) -> AmdChecked {
     let arrays = gemm_arrays(dims.map(|d| d as u64));
     check_amd(
-        "success/ck_gemm.s",
-        amd_fixture!("success/ck_gemm"),
+        "ck_gemm.s",
+        ck_fixture!("ck_gemm"),
         kernel,
         128,
         &ck_gemm_kernarg(GEMM_A_BASE, GEMM_B_BASE, GEMM_C_BASE, dims),
@@ -165,8 +166,8 @@ fn ck_gemm_main_loop_lds_accesses_verify_at_other_sizes() {
 #[test]
 fn ck_fmha_lds_accesses_from_all_waves_are_ordered() {
     let run = check_amd(
-        "success/ck_fmha.s",
-        amd_fixture!("success/ck_fmha"),
+        "ck_fmha.s",
+        ck_fixture!("ck_fmha"),
         CK_FMHA_KERNEL,
         256,
         &ck_fmha_kernarg(FMHA_Q_BASE, FMHA_K_BASE, 1),
@@ -200,8 +201,8 @@ fn ck_fmha_lds_accesses_from_all_waves_are_ordered() {
 #[test]
 fn ck_rmsnorm_lds_accesses_from_all_waves_are_ordered() {
     let run = check_amd(
-        "success/ck_rmsnorm2d.s",
-        amd_fixture!("success/ck_rmsnorm2d"),
+        "ck_rmsnorm2d.s",
+        ck_fixture!("ck_rmsnorm2d"),
         CK_RMSNORM_KERNEL,
         256,
         &ck_rmsnorm_kernarg(1, 1024, 1.0 / 1_048_576.0),

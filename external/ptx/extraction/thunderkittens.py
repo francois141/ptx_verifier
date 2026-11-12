@@ -3,9 +3,9 @@
 # ///
 """Compile ThunderKittens' educational GEMM tutorial to PTX for Blackwell (sm_100a).
 
-    uv run external/extraction/thunderkittens.py                 # every level, 01-09
-    uv run external/extraction/thunderkittens.py 6 7             # levels 06 and 07
-    uv run external/extraction/thunderkittens.py --tutorial educational_h100
+    uv run external/ptx/extraction/thunderkittens.py                 # every level, 01-09
+    uv run external/ptx/extraction/thunderkittens.py 6 7             # levels 06 and 07
+    uv run external/ptx/extraction/thunderkittens.py --tutorial educational_h100
 
 Each level is built with the tutorial's own Makefile (`make ptx`, so the
 flags and the architecture are those of `kernels/common.mk`), which needs
@@ -13,7 +13,7 @@ flags and the architecture are those of `kernels/common.mk`), which needs
 GPU is needed; without one on the PATH (macOS) the script builds an image
 with the CUDA toolkit once, runs itself in a container and copies the PTX
 out (`--backend`). The PTX lands in `<out>/<tutorial>/level_NN.ptx` (by
-default `external/thunderkittens/`), beside a `.json` summary of what the PTX
+default `external/ptx/thunderkittens/`), beside a `.json` summary of what the PTX
 itself states about its kernels' launch; the launch files there are kept.
 """
 
@@ -122,7 +122,7 @@ def compile_in_docker(tutorial: str, levels: list[str], out: Path) -> None:
     docker("create", "--name", container, DOCKER_IMAGE, *command, quiet=True)
     try:
         with tempfile.TemporaryDirectory() as staging:
-            # `docker cp` creates no parent directories, so `/work` mirrors `external/` whole.
+            # `docker cp` creates no parent directories, so `/work` mirrors `external/ptx/` whole.
             staged = Path(staging)
             (staged / script.parent.name).mkdir()
             shutil.copy(script, staged / script.parent.name)
@@ -151,7 +151,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not (GEMM_DIR / args.tutorial).is_dir():
-        sys.exit(f"no {GEMM_DIR / args.tutorial}: run `git submodule update --init external/sources/ThunderKittens`")
+        sys.exit(f"no {GEMM_DIR / args.tutorial}: run `git submodule update --init external/ptx/sources/ThunderKittens`")
     available = levels_of(args.tutorial)
     levels = [parse_level(level, available) for level in args.levels] or available
     backend = args.backend

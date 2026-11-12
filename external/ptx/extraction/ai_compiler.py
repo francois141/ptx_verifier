@@ -4,13 +4,13 @@
 # ///
 """Extract the AI compiler's PTX kernels and write their Volta launch files.
 
-    uv run external/extraction/ai_compiler.py                  # every kernel
-    uv run external/extraction/ai_compiler.py Softmax sm_89    # those whose path contains every word
+    uv run external/ptx/extraction/ai_compiler.py                  # every kernel
+    uv run external/ptx/extraction/ai_compiler.py Softmax sm_89    # those whose path contains every word
 
 The AI compiler (`sources/triton_ai_compiler`, a submodule) writes PTX for a
 Triton kernel of PTX Gym (its `ptx_gym` submodule) in place of Triton's. Each
 of its results, `compiler_results/<target>/<operator>/<stem>.ptx` beside a
-`<stem>.result.json`, is copied to `external/ai_compiler/<target>/<operator>/`
+`<stem>.result.json`, is copied to `external/ptx/ai_compiler/<target>/<operator>/`
 with a launch file `<stem>.<size>.launch.json`: PTX Gym's problem for the
 operator (`OPERATORS`, from its `get_random_input` and `forward_triton`), the
 grid of the tuning configuration the PTX was measured with, the result's
@@ -454,7 +454,7 @@ def main() -> int:
     parser.add_argument("words", nargs="*", help="extract only the results whose path contains every word")
     args = parser.parse_args()
     if not RESULTS.is_dir():
-        sys.exit(f"no {RESULTS}: run `git submodule update --init external/sources/triton_ai_compiler`")
+        sys.exit(f"no {RESULTS}: run `git submodule update --init external/ptx/sources/triton_ai_compiler`")
 
     ptxs = [
         p for p in sorted(RESULTS.glob("*/*/*.ptx"))
@@ -478,7 +478,7 @@ def main() -> int:
         size, launch = launch_file(ptx, operator, target, Result.load(ptx.with_suffix(".result.json")))
         (dest / f"{ptx.stem}.{size}.launch.json").write_text(render(launch))
         print(f"{ptx.relative_to(RESULTS)} -> {(dest / ptx.stem).relative_to(EXTERNAL_ROOT)}.{size}.launch.json")
-    print(f"extracted {len(ptxs)} kernels to {OUT.relative_to(EXTERNAL_ROOT.parent)}/")
+    print(f"extracted {len(ptxs)} kernels to {OUT.relative_to(EXTERNAL_ROOT.parent.parent)}/")
     return 0
 
 

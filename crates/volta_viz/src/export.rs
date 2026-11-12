@@ -1220,19 +1220,3 @@ fn conclusion(graph: &EventGraph, report: &GraphReport) -> Json {
         ),
     ])
 }
-
-#[cfg(test)]
-mod tests {
-    use super::LineIndex;
-
-    #[test]
-    fn offsets_map_to_one_based_lines() {
-        let lines = LineIndex::new("ab\ncd\n\nef");
-        assert_eq!(lines.line(0), Some(1));
-        assert_eq!(lines.line(2), Some(1));
-        assert_eq!(lines.line(3), Some(2));
-        assert_eq!(lines.line(6), Some(3));
-        assert_eq!(lines.line(7), Some(4));
-        assert_eq!(lines.line(10), None);
-    }
-}

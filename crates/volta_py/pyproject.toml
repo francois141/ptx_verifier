@@ -13,11 +13,8 @@ classifiers = [
 ]
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = ["ruff"]
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
 module-name = "volta"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

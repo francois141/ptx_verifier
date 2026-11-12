@@ -5,8 +5,8 @@
 use crate::common;
 
 use common::amd::{
-    AmdChecked, CK_GEMM_KERNEL, CK_GEMM_SIGMOID_KERNEL, amd_fixture, array, array_of, check_amd,
-    check_amd_launch, ck_gemm_kernarg,
+    AmdChecked, CK_FIXTURES, CK_GEMM_KERNEL, CK_GEMM_SIGMOID_KERNEL, amd_fixture, array, array_of,
+    check_amd, check_amd_launch, ck_gemm_kernarg,
 };
 use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::ast::Operand;
@@ -655,14 +655,17 @@ fn check_ck_gemm(fixture: &str, kernel: &str) {
 
 #[test]
 fn the_ck_gemm_kernel_writes_its_expected_outputs() {
-    check_ck_gemm("success/ck_gemm", CK_GEMM_KERNEL);
+    check_ck_gemm(&format!("{CK_FIXTURES}/ck_gemm"), CK_GEMM_KERNEL);
 }
 
 // Test the fused sigmoid epilogue: its exp's underflow guard compares symbolic accumulators into
 // SGPR lane masks and selects a negated source on them.
 #[test]
 fn the_ck_gemm_sigmoid_kernel_writes_its_expected_outputs() {
-    check_ck_gemm("success/ck_gemm_sigmoid", CK_GEMM_SIGMOID_KERNEL);
+    check_ck_gemm(
+        &format!("{CK_FIXTURES}/ck_gemm_sigmoid"),
+        CK_GEMM_SIGMOID_KERNEL,
+    );
 }
 
 // Test that each output sums 25 adjacent input values weighted by the shared filter.

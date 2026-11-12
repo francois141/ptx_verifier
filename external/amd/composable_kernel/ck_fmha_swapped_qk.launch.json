@@ -42,6 +42,6 @@
     {"name": "cu_seqlen_k_ptr (low word, null)", "int": 0},
     {"name": "cu_seqlen_k_ptr (high word, null)", "int": 0}
   ],
-  "spec": "../../crates/backend/volta_equivalence/tests/specs/attention_batch_head.spec",
+  "spec": "../../../crates/backend/volta_equivalence/tests/specs/attention_batch_head.spec",
   "dims": {"B": 1, "G": 1, "N": 64, "H": 64, "Batch": 0, "Head": 0}
 }

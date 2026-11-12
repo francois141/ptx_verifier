@@ -13,8 +13,8 @@ use volta_graph_check::{GraphConclusion, check_graph};
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 
 use common::amd::{
-    CK_FMHA_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE, FMHA_Q_BASE, amd_fixture,
-    check_amd_launch, ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays,
+    CK_FMHA_KERNEL, CK_GEMM_MAIN_LOOP_KERNEL, FMHA_K_BASE, FMHA_Q_BASE, check_amd_launch,
+    ck_fixture, ck_fmha_kernarg, ck_gemm_kernarg, fmha_arrays,
 };
 
 /// A one-dimensional grid of `grid` workgroups of `workitems` work-items, selecting `workgroup`.
@@ -53,7 +53,7 @@ fn ck_gemm_launch(dims: [i32; 3]) -> (Vec<u8>, [ArrayDef; 3], u32) {
 #[test]
 fn ck_gemm_grid_run_matches_each_tile_run() {
     let (kernarg, arrays, tiles) = ck_gemm_launch([160, 40, 192]);
-    let source = amd_fixture!("success/ck_gemm");
+    let source = ck_fixture!("ck_gemm");
     let kernel = parse_kernel(source, CK_GEMM_MAIN_LOOP_KERNEL).unwrap();
     let grid = analyze_grid(&kernel, &launch(tiles, 0, 128), &kernarg, &arrays).unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
@@ -68,7 +68,7 @@ fn ck_gemm_grid_run_matches_each_tile_run() {
     let mut written = Vec::new();
     for (index, (id, outputs)) in grid.workgroups.iter().enumerate() {
         let expected = check_amd_launch(
-            "success/ck_gemm.s",
+            "ck_gemm.s",
             source,
             CK_GEMM_MAIN_LOOP_KERNEL,
             &launch(tiles, index as u32, 128),
@@ -97,7 +97,7 @@ fn ck_gemm_grid_run_matches_each_tile_run() {
 #[test]
 fn ck_gemm_tile_map_branch_depends_on_the_workgroup() {
     let (kernarg, arrays, tiles) = ck_gemm_launch([144, 144, 192]);
-    let kernel = parse_kernel(amd_fixture!("success/ck_gemm"), CK_GEMM_MAIN_LOOP_KERNEL).unwrap();
+    let kernel = parse_kernel(ck_fixture!("ck_gemm"), CK_GEMM_MAIN_LOOP_KERNEL).unwrap();
     let grid = analyze_grid(&kernel, &launch(tiles, 0, 128), &kernarg, &arrays).unwrap();
     assert!(
         matches!(
@@ -119,7 +119,7 @@ fn ck_gemm_tile_map_branch_depends_on_the_workgroup() {
 fn ck_fmha_grid_run_matches_each_head_run() {
     let kernarg = ck_fmha_kernarg(FMHA_Q_BASE, FMHA_K_BASE, 2);
     let arrays = fmha_arrays(2 * 4096);
-    let source = amd_fixture!("success/ck_fmha");
+    let source = ck_fixture!("ck_fmha");
     let kernel = parse_kernel(source, CK_FMHA_KERNEL).unwrap();
     let grid = analyze_grid(&kernel, &launch(2, 0, 256), &kernarg, &arrays).unwrap();
     assert_eq!(grid.terminal, Terminal::Completed);
@@ -132,7 +132,7 @@ fn ck_fmha_grid_run_matches_each_head_run() {
 
     for (index, (id, outputs)) in grid.workgroups.iter().enumerate() {
         let expected = check_amd_launch(
-            "success/ck_fmha.s",
+            "ck_fmha.s",
             source,
             CK_FMHA_KERNEL,
             &launch(2, index as u32, 256),

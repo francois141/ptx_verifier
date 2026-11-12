@@ -1,9 +1,9 @@
 [submodule "external/TritonBench"]
-	path = external/sources/TritonBench
+	path = external/ptx/sources/TritonBench
 	url = https://github.com/thunlp/TritonBench.git
 [submodule "external/ThunderKittens"]
-	path = external/sources/ThunderKittens
+	path = external/ptx/sources/ThunderKittens
 	url = https://github.com/HazyResearch/ThunderKittens.git
 [submodule "external/sources/triton_ai_compiler"]
-	path = external/sources/triton_ai_compiler
+	path = external/ptx/sources/triton_ai_compiler
 	url = https://github.com/francois141/triton_ai_compiler.git

@@ -154,11 +154,8 @@ logging.basicConfig(level=logging.INFO)
 | `error.rs`   | Rust errors to Python exceptions.                             |
 | `logging.rs` | Rust logs to Python's `logging`.                              |
 
-## Build and test
+## Build
 
 ```sh
-just test    # includes: uv run --reinstall-package volta pytest crates/volta_py
+uv run --reinstall-package volta python script.py   # rebuild the extension, then run the script
 ```
-
-The tests are in `tests/` (`test_analyze.py`, `test_verify.py`, `test_extract.py`; shared
-kernels in `kernels.py`). The Lean proof check is tested in `volta_lean`.

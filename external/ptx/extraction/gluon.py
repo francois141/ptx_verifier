@@ -4,19 +4,19 @@
 # ///
 """Compile the 14 Gluon tutorials of Triton 3.9.0 to PTX for Blackwell (sm_100a).
 
-    uv run external/extraction/gluon.py                      # every tutorial
-    uv run external/extraction/gluon.py 06-tcgen05.py        # some tutorials (names or paths)
-    uv run external/extraction/gluon.py --jobs 2 --timeout 600
+    uv run external/ptx/extraction/gluon.py                      # every tutorial
+    uv run external/ptx/extraction/gluon.py 06-tcgen05.py        # some tutorials (names or paths)
+    uv run external/ptx/extraction/gluon.py --jobs 2 --timeout 600
 
 The tutorials (`python/tutorials/gluon/` at `TRITON_TAG`) are downloaded once
-into `external/sources/gluon/<tag>/`. Each runs as a module, not as
+into `external/ptx/sources/gluon/<tag>/`. Each runs as a module, not as
 `__main__` (whose benchmarks launch GPU-sized problems), and then the calls of
 its `SIZES`, each a call of the tutorial's own test or wrapper at a size small
 enough for Volta, in its namespace; every launch is compiled instead of run
 (`triton_capture.py`) and becomes a Volta launch file
-`<kernel>.<size>.launch.json` under `external/gluon/<tutorial stem>/`. Host
+`<kernel>.<size>.launch.json` under `external/ptx/gluon/<tutorial stem>/`. Host
 tensor descriptors become their TMA maps; 05-wgmma is Hopper-only and compiles
-for sm_90a. `--summary` (by default `external/output/gluon_extraction.csv`)
+for sm_90a. `--summary` (by default `external/ptx/output/gluon_extraction.csv`)
 says how each tutorial went, including the launches no launch file can express
 (clusters of CTAs).
 """

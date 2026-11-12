@@ -3,9 +3,9 @@
 # ///
 """Download or compile TileLang 0.1.11's example kernels to PTX for Blackwell (sm_100a).
 
-    uv run external/extraction/tilelang_kernels.py                     # every kernel
-    uv run external/extraction/tilelang_kernels.py warp_specialize     # one example directory's kernels
-    uv run external/extraction/tilelang_kernels.py gemv --backend docker
+    uv run external/ptx/extraction/tilelang_kernels.py                     # every kernel
+    uv run external/ptx/extraction/tilelang_kernels.py warp_specialize     # one example directory's kernels
+    uv run external/ptx/extraction/tilelang_kernels.py gemv --backend docker
 
 Most kernels are sentryward's corpus (https://github.com/gpu-verifier/sentryward)
 at a pinned commit, compiled from TileLang at `TILELANG_COMMIT` (its v0.1.11 tag)
@@ -15,7 +15,7 @@ configuration the example's `main()` runs, through TileLang's own PTX export;
 compiling needs nvcc, so without TileLang and nvcc (macOS) the script builds an
 image with both once, runs itself in a container and copies the PTX out
 (`--backend`). Every PTX lands in `<out>/<example>/<stem>.ptx` (by default
-`external/tilelang/`), beside a `.json` naming its source and the kernels it
+`external/ptx/tilelang/`), beside a `.json` naming its source and the kernels it
 defines (and, for a compiled one, its configuration and launch: grid, block,
 dynamic shared memory and parameters in the kernel's own order); the launch
 files there are kept.

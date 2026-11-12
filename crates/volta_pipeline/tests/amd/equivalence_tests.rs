@@ -17,10 +17,11 @@ use common::amd::{
     CK_GEMM_MAIN_LOOP_KERNEL, CK_GEMM_SIGMOID_KERNEL, CK_RMSNORM_KERNEL, FMHA_K_BASE as K_BASE,
     FMHA_Q_BASE as Q_BASE, GEMM_A_BASE as A_BASE, GEMM_B_BASE as B_BASE, GEMM_C_BASE as C_BASE,
     amd_fixture, avgpool_arrays, avgpool_launch, check_amd, check_amd_launch, check_launch_file,
-    ck_avgpool2d_kernarg, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg, fmha_arrays,
-    fmha_launch, gemm_arrays, gemm_launch, gemm_sigmoid_launch, rmsnorm_arrays,
+    ck_avgpool2d_kernarg, ck_fixture, ck_fmha_kernarg, ck_gemm_kernarg, ck_rmsnorm_kernarg,
+    fmha_arrays, fmha_launch, gemm_arrays, gemm_launch, gemm_sigmoid_launch, rmsnorm_arrays,
 };
-const MATMUL_SPEC: &str = include_str!("../../../backend/volta_equivalence/tests/specs/matmul.spec");
+const MATMUL_SPEC: &str =
+    include_str!("../../../backend/volta_equivalence/tests/specs/matmul.spec");
 
 /// Kernel `kernel_name` of `source` (the fixture `file`) against `spec`'s `C = A @ B` at dims
 /// `[M, N, K]`, once its run verified.
@@ -115,8 +116,8 @@ fn amd_mfma_matmul_matches_its_specification() {
 fn check_ck_gemm(kernel: &str, dims: [i32; 3], input_bases: [u64; 2]) -> EquivalenceVerdict {
     let kernarg = ck_gemm_kernarg(input_bases[0], input_bases[1], C_BASE, dims);
     check_gemm(
-        "success/ck_gemm.s",
-        amd_fixture!("success/ck_gemm"),
+        "ck_gemm.s",
+        ck_fixture!("ck_gemm"),
         kernel,
         128,
         dims.map(|d| d as u64),
@@ -152,13 +153,13 @@ fn amd_ck_gemm_main_loop_matches_its_specification() {
 // Test that the GEMM launch file matches the argument builder for its 8 x 8 x 8 launch.
 #[test]
 fn amd_ck_gemm_launch_file_matches_the_argument_builder() {
-    check_launch_file("gemm_amd.json", &gemm_launch());
+    check_launch_file("ck_gemm.launch.json", &gemm_launch());
 }
 
 // Test that the fused GEMM-sigmoid launch file matches the argument builder.
 #[test]
 fn amd_ck_gemm_sigmoid_launch_file_matches_the_argument_builder() {
-    check_launch_file("gemm_sigmoid_amd.json", &gemm_sigmoid_launch());
+    check_launch_file("ck_gemm_sigmoid.launch.json", &gemm_sigmoid_launch());
 }
 
 // Test that swapping CK's equal-sized input arrays is refuted against the intended product.
@@ -177,13 +178,15 @@ fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
 fn amd_ck_gemm_sigmoid_with_swapped_input_arguments_is_refuted() {
     let kernarg = ck_gemm_kernarg(B_BASE, A_BASE, C_BASE, [8, 8, 8]);
     let verdict = check_gemm(
-        "success/ck_gemm_sigmoid.s",
-        amd_fixture!("success/ck_gemm_sigmoid"),
+        "ck_gemm_sigmoid.s",
+        ck_fixture!("ck_gemm_sigmoid"),
         CK_GEMM_SIGMOID_KERNEL,
         128,
         [8, 8, 8],
         &kernarg,
-        include_str!("../../../backend/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"),
+        include_str!(
+            "../../../backend/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"
+        ),
     );
     let off_diagonal = (0..64)
         .filter(|index| index / 8 != index % 8)
@@ -218,8 +221,8 @@ fn check_ck_fmha(
 
     // Each invocation executes one workgroup; its input symbols retain global tensor indices.
     let mut actual = check_amd_launch(
-        "success/ck_fmha.s",
-        amd_fixture!("success/ck_fmha"),
+        "ck_fmha.s",
+        ck_fixture!("ck_fmha"),
         CK_FMHA_KERNEL,
         &launch,
         kernarg,
@@ -251,7 +254,8 @@ fn check_ck_fmha(
         ("Batch".into(), u64::from(batch)),
         ("Head".into(), u64::from(head)),
     ]);
-    let spec = include_str!("../../../backend/volta_equivalence/tests/specs/attention_batch_head.spec");
+    let spec =
+        include_str!("../../../backend/volta_equivalence/tests/specs/attention_batch_head.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
     check_equivalence(
         &reference,
@@ -318,13 +322,13 @@ fn amd_ck_fmha_launch_files_match_the_argument_builder() {
         K_BASE,
         "CK attention over one batch and one head of 64 x 64 fp32 tensors.",
     );
-    check_launch_file("fmha_amd.json", &accepted);
+    check_launch_file("ck_fmha.launch.json", &accepted);
     let swapped = fmha_launch(
         K_BASE,
         Q_BASE,
         "CK attention over one batch and one head, with query and key swapped.",
     );
-    check_launch_file("fmha_amd_swapped_qk.json", &swapped);
+    check_launch_file("ck_fmha_swapped_qk.launch.json", &swapped);
 }
 
 fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
@@ -407,8 +411,8 @@ fn check_ck_rmsnorm(rows: u32, row: u32, columns: u32, epsilon: f32) -> Equivale
         grid_size: (rows, 1, 1),
     };
     let mut actual = check_amd_launch(
-        "success/ck_rmsnorm2d.s",
-        amd_fixture!("success/ck_rmsnorm2d"),
+        "ck_rmsnorm2d.s",
+        ck_fixture!("ck_rmsnorm2d"),
         CK_RMSNORM_KERNEL,
         &launch,
         &kernarg,
@@ -483,8 +487,8 @@ fn launch_ck_avgpool2d(pool: &AvgPool2d, workgroup: u32) -> AmdChecked {
         grid_size: ((pool.output_len() as u32).div_ceil(256), 1, 1),
     };
     check_amd_launch(
-        "success/ck_avgpool2d.s",
-        amd_fixture!("success/ck_avgpool2d"),
+        "ck_avgpool2d.s",
+        ck_fixture!("ck_avgpool2d"),
         CK_AVGPOOL2D_KERNEL,
         &launch,
         &ck_avgpool2d_kernarg(pool),
@@ -683,8 +687,8 @@ fn amd_ck_avgpool2d_with_outputs_beyond_cks_output_bound_is_rejected() {
     assert_eq!(decide(&verdict, &[kernel]).verdict, Verdict::Reject);
 }
 
-// Test that the `volta solve` launch files in `examples/lean/` hold the argument builder's
-// parameters for their launches: 3 x 3 windows with stride 2 over a padded 14 x 14 input, and
+// Test that the `volta solve` launch files in `external/amd/composable_kernel/` hold the
+// argument builder's parameters for their launches: 3 x 3 windows with stride 2 over a padded 14 x 14 input, and
 // the launch whose output is larger than its input. `VOLTA_BLESS=1` rewrites the files.
 #[test]
 fn amd_ck_avgpool2d_launch_files_match_the_argument_builder() {
@@ -694,10 +698,10 @@ fn amd_ck_avgpool2d_launch_files_match_the_argument_builder() {
         ..unpadded_pool(1, 3, [14, 14], [3, 3], [2, 2])
     };
     let accepted = avgpool_launch(&padded, "CK average pooling in NHWC layout with padding.");
-    check_launch_file("avgpool2d_amd.json", &accepted);
+    check_launch_file("ck_avgpool2d.launch.json", &accepted);
     let rejected = avgpool_launch(
         &larger_output_pool(),
         "CK average pooling with padding that makes the output exceed CK's buffer bound.",
     );
-    check_launch_file("avgpool2d_amd_larger_output.json", &rejected);
+    check_launch_file("ck_avgpool2d_larger_output.launch.json", &rejected);
 }

@@ -74,5 +74,4 @@ kind, and keyboard navigation (`?` lists the keys).
 ## Dependencies
 
 `volta_graph` (the graph), `volta_graph_check` (findings, pipeline edges) and
-`volta_expr` (rendering stored values). `tests/viewer_tests.rs` covers export
-and page assembly.
+`volta_expr` (rendering stored values).

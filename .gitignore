@@ -9,11 +9,12 @@
 
 # Configuration files
 .venv
+/.env
 
 # External kernels: PTX and metadata from `just setup`, CSVs from `just external`; only launch files are tracked
 /external/**/*.ptx
 /external/**/*.json
 !/external/**/*.launch.json
-/external/output/
-# The Gluon tutorials, downloaded by `external/extraction/gluon.py`
-/external/sources/gluon/
+/external/ptx/output/
+# The Gluon tutorials, downloaded by `external/ptx/extraction/gluon.py`
+/external/ptx/sources/gluon/

@@ -1,8 +1,8 @@
 """Check the external kernels for data races with Volta, one framework after the other.
 
-    python3 external/races.py                               # every framework
-    python3 external/races.py --framework thunderkittens    # one of `FRAMEWORKS`
-    python3 external/races.py --framework tritonbench -k add_example --timeout 300
+    python3 external/ptx/races.py                               # every framework
+    python3 external/ptx/races.py --framework thunderkittens    # one of `FRAMEWORKS`
+    python3 external/ptx/races.py --framework tritonbench -k add_example --timeout 300
 
 Builds the release `volta` CLI, then analyzes each launch file
 `<framework>/**/<stem>.<case>.launch.json`, in name order, with
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 EXTERNAL_ROOT = Path(__file__).resolve().parent
-REPO_ROOT = EXTERNAL_ROOT.parent
+REPO_ROOT = EXTERNAL_ROOT.parent.parent
 OUTPUT_DIR = EXTERNAL_ROOT / "output"
 VOLTA = REPO_ROOT / "target" / "release" / "volta"
 

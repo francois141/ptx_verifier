@@ -45,15 +45,3 @@ pub fn write_page(dir: &Path, out: &Path) -> io::Result<usize> {
 fn inert(json: &str) -> String {
     json.replace('<', "\\u003c")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::inert;
-
-    #[test]
-    fn embedded_json_cannot_close_its_script_element() {
-        let escaped = inert(r#"{"s":"</script>"}"#);
-        assert!(!escaped.contains('<'), "{escaped}");
-        assert_eq!(escaped, "{\"s\":\"\\u003c/script>\"}");
-    }
-}

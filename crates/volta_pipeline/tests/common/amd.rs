@@ -32,6 +32,25 @@ macro_rules! amd_fixture {
 #[allow(unused_imports)]
 pub(crate) use amd_fixture;
 
+/// The source text of the Composable Kernel fixture `external/amd/composable_kernel/<name>.s`.
+#[allow(unused_macros)]
+macro_rules! ck_fixture {
+    ($name:literal) => {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../external/amd/composable_kernel/",
+            $name,
+            ".s"
+        ))
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use ck_fixture;
+
+/// `external/amd/composable_kernel/`, where the Python checks also run the CK fixtures, as a
+/// fixture name prefix relative to `tests/amd/`.
+pub const CK_FIXTURES: &str = "../../../../external/amd/composable_kernel";
+
 /// One AMD kernel through the analysis stage and the graph branch.
 pub struct AmdChecked {
     pub analysis: AnalysisResult,
@@ -455,7 +474,7 @@ impl Launch {
         }
         writeln!(text, "  ],").unwrap();
 
-        let specs = "../../crates/backend/volta_equivalence/tests/specs";
+        let specs = "../../../crates/backend/volta_equivalence/tests/specs";
         writeln!(text, r#"  "spec": "{specs}/{}","#, self.spec).unwrap();
         let dims: Vec<String> = self
             .dims
@@ -468,7 +487,7 @@ impl Launch {
     }
 }
 
-/// Check the generated launch against `examples/lean/<file>`.
+/// Check the generated launch against `external/amd/composable_kernel/<file>`.
 /// `VOLTA_BLESS=1` updates the file instead.
 pub fn check_launch_file(file: &str, launch: &Launch) {
     let text = launch.render();
@@ -478,7 +497,7 @@ pub fn check_launch_file(file: &str, launch: &Launch) {
         panic!("{file}: the generated launch file does not load: {error}");
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/lean")
+        .join("../../external/amd/composable_kernel")
         .join(file);
     if let Err(error) = expect_file(&path, &text) {
         panic!("{file}: {error}");
