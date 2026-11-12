@@ -1,0 +1,33 @@
+{
+  "description": "Control: keep the Clamp temporary as int; x=300 remains 300.",
+  "kernel": "ck_clamp_fixed",
+  "block": 64,
+  "arrays": [
+    {
+      "name": "out",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        64
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "out",
+      "ptr": "out"
+    },
+    {
+      "name": "clamp.floor_",
+      "float": -1000
+    },
+    {
+      "name": "clamp.ceil_",
+      "float": 1000
+    }
+  ],
+  "spec": "ck_clamp.spec",
+  "dims": {
+    "N": 64
+  }
+}

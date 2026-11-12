@@ -60,7 +60,7 @@ pub enum LeanError {
     /// Two inputs that would become the same Lean variable (a parameter `a_0` and `a[0]`).
     DuplicateName(String),
 
-    /// A node with no real-number meaning: bitwise ops, infinities, undefined values.
+    /// A node Lean is not given: bitwise ops, roundings, infinities, undefined values.
     Unsupported {
         side: Side,
         array: String,
@@ -511,7 +511,8 @@ fn render_node(
         | BitXor(..)
         | Shl(..)
         | Shr(..)
-        | LShr(..) => {
+        | LShr(..)
+        | Trunc(_) => {
             return Err(element.unsupported(node));
         }
 

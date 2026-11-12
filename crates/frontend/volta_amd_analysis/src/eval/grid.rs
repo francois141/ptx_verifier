@@ -126,6 +126,10 @@ impl Copier<'_> {
                 let a = self.expr(a);
                 self.target.sign(a)
             }
+            ExprNode::Trunc(a) => {
+                let a = self.expr(a);
+                self.target.trunc(a)
+            }
             ExprNode::BitAnd(a, b) => {
                 let (a, b) = self.pair(a, b);
                 self.target.bit_and(a, b)

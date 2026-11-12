@@ -653,6 +653,8 @@ pub enum UnaryOp {
     SqrtF32,
     /// `1 / sqrt(src)`.
     RsqF32,
+    /// The f32 source rounded toward zero, as an f32.
+    TruncF32,
 }
 
 /// The relation tested between two ordered values.

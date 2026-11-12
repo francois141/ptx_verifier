@@ -1,0 +1,33 @@
+{
+  "description": "CK Clamp<int,int>(300), bounds [-1000,1000]: int8 temporary gives 44 instead of 300.",
+  "kernel": "ck_clamp",
+  "block": 64,
+  "arrays": [
+    {
+      "name": "out",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        64
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "out",
+      "ptr": "out"
+    },
+    {
+      "name": "clamp.floor_",
+      "float": -1000
+    },
+    {
+      "name": "clamp.ceil_",
+      "float": 1000
+    }
+  ],
+  "spec": "ck_clamp.spec",
+  "dims": {
+    "N": 64
+  }
+}

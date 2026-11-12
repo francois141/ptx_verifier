@@ -111,6 +111,7 @@ fn eval_inner(
         ExprNode::Log(a) => ev(*a, memo)?.ln(),
         ExprNode::Sqrt(a) => ev(*a, memo)?.sqrt(),
         ExprNode::Rcp(a) => 1.0 / ev(*a, memo)?,
+        ExprNode::Trunc(a) => ev(*a, memo)?.trunc(),
 
         ExprNode::Max(a, b) => ev(*a, memo)?.max(ev(*b, memo)?),
         ExprNode::Min(a, b) => ev(*a, memo)?.min(ev(*b, memo)?),

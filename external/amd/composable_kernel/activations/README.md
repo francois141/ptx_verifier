@@ -21,6 +21,8 @@ runs: Claude Code writes each proof into `target/lean/<case>/`.
 | `ck_fast_gelu_asm_fixed` | `FastGeluAsm`, scratch `"=&v"` | ACCEPT | |
 | `ck_unary_abs` | `UnaryAbs` | ACCEPT | |
 | `ck_neg` | `Neg` | ACCEPT | |
+| `ck_clamp` | `Clamp<int, int>` (-1000, 1000) on 300 | REJECT | its `const int8_t& a = x` truncates 300 to 44 before clamping |
+| `ck_clamp_fixed` | that body with `int` for `int8_t` | ACCEPT | |
 | `ck_hardswish` | legacy `AddHardswish` | proved in Lean | the canonical solver gives UNKNOWN: it cannot match the `select` with the spec's `max` |
 
 ## Compiling

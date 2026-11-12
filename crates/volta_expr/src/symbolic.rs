@@ -131,6 +131,14 @@ impl Real {
         matches!(self.repr(), RealRepr::Rational(q) if q.cmp0() == std::cmp::Ordering::Equal)
     }
 
+    /// A finite real rounded toward zero; an infinity is its own rounding.
+    pub fn trunc(&self) -> Real {
+        match self.repr() {
+            RealRepr::Rational(q) => Real::from_rational(q.clone().trunc()),
+            _ => self.clone(),
+        }
+    }
+
     pub fn is_one(&self) -> bool {
         matches!(self.repr(), RealRepr::Rational(q) if *q == 1)
     }
@@ -380,6 +388,8 @@ pub enum ExprNode {
     Abs(ExprId),
     /// Sign: -1 / 0 / +1 depending on a's sign.
     Sign(ExprId),
+    /// `a` rounded toward zero (`truncf`).
+    Trunc(ExprId),
 
     // =====================================================================
     // Bitwise operations
@@ -482,6 +492,7 @@ impl ExprNode {
             | ExprNode::Rcp(a)
             | ExprNode::Abs(a)
             | ExprNode::Sign(a)
+            | ExprNode::Trunc(a)
             | ExprNode::BitNot(a)
             | ExprNode::Not(a)
             | ExprNode::ToFloat(a)
@@ -1037,6 +1048,18 @@ impl ExprArena {
         self.push(ExprNode::Sign(a))
     }
 
+    /// `a` rounded toward zero: exact on a constant, the identity on an integer-valued node.
+    pub fn trunc(&mut self, a: ExprId) -> ExprId {
+        match self.node(a) {
+            ExprNode::RealConst(x) => {
+                let rounded = x.trunc();
+                self.real(rounded)
+            }
+            ExprNode::IntConst(_) | ExprNode::Trunc(_) | ExprNode::ToFloat(_) => a,
+            _ => self.push(ExprNode::Trunc(a)),
+        }
+    }
+
     /// Fused multiply-add with constant folding: a * b + c, exact in the rationals. Folds iff
     /// `mul` then `add` would, to the same value, so fused and written-out forms cannot diverge.
     pub fn fma(&mut self, a: ExprId, b: ExprId, c: ExprId) -> ExprId {
@@ -1536,6 +1559,11 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
+            ExprNode::Trunc(a) => {
+                write!(f, "trunc(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ")")
+            }
             ExprNode::BitAnd(a, b) => {
                 write!(f, "(")?;
                 self.fmt_expr(*a, f)?;
@@ -1845,6 +1873,7 @@ fn structurally_equal_inner(
         | (Sqrt(a1), Sqrt(b1))
         | (Rcp(a1), Rcp(b1))
         | (Abs(a1), Abs(b1))
+        | (Trunc(a1), Trunc(b1))
         | (BitNot(a1), BitNot(b1))
         | (Not(a1), Not(b1))
         | (ToFloat(a1), ToFloat(b1)) => structurally_equal(a_arena, *a1, b_arena, *b1),

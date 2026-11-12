@@ -115,6 +115,8 @@ CASES = (
     ),
     Case("activations/ck_unary_abs", "activations/ck_unary_abs", Solve("ACCEPT")),
     Case("activations/ck_neg", "activations/ck_neg", Solve("ACCEPT")),
+    Case("activations/ck_clamp", "activations/ck_clamp", Solve("REJECT")),
+    Case("activations/ck_clamp_fixed", "activations/ck_clamp", Solve("ACCEPT")),
     # AddHardswish's select, which the canonical solver cannot match with the spec's min and max.
     Case("activations/ck_hardswish", "activations/ck_hardswish", Prove()),
     # The same ops without -ffast-math, whose exp keeps its range reduction.

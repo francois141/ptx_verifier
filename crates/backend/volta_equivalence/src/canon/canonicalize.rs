@@ -182,6 +182,7 @@ impl Session {
             ExprNode::Sqrt(a) => self.uninterp1(side, arena, UninterpOp::Sqrt, *a),
             ExprNode::Abs(a) => self.uninterp1(side, arena, UninterpOp::Abs, *a),
             ExprNode::Sign(a) => self.uninterp1(side, arena, UninterpOp::Sign, *a),
+            ExprNode::Trunc(a) => self.uninterp1(side, arena, UninterpOp::Trunc, *a),
             ExprNode::BitAnd(a, b) => self.uninterp2(side, arena, UninterpOp::BitAnd, *a, *b),
             ExprNode::BitOr(a, b) => self.uninterp2(side, arena, UninterpOp::BitOr, *a, *b),
             ExprNode::BitXor(a, b) => self.uninterp2(side, arena, UninterpOp::BitXor, *a, *b),

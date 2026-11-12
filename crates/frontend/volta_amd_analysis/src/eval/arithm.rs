@@ -645,6 +645,7 @@ pub(super) fn evaluate_unary_op(
             let root = arena.sqrt(a);
             arena.rcp(root)
         }
+        UnaryOp::TruncF32 => arena.trunc(a),
     })
 }
 
@@ -662,7 +663,8 @@ fn unary_operand_type(op: UnaryOp) -> OperandType {
         | UnaryOp::Log2F32
         | UnaryOp::RcpF32
         | UnaryOp::SqrtF32
-        | UnaryOp::RsqF32 => OperandType::F32,
+        | UnaryOp::RsqF32
+        | UnaryOp::TruncF32 => OperandType::F32,
     }
 }
 

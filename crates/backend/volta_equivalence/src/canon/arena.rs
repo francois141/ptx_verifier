@@ -75,6 +75,7 @@ pub enum UninterpOp {
     Abs,
     Sign,
     Rem,
+    Trunc,
     BitAnd,
     BitOr,
     BitXor,
