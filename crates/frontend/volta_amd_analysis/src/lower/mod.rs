@@ -74,7 +74,37 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
     })
 }
 
+/// What lowering reports for an opcode it does not know.
+const UNKNOWN_OPCODE: &str = "unsupported instruction";
+
+/// Inline asm may leave a VOP1, VOP2 or VOPC instruction's encoding to the assembler, which takes
+/// the 32-bit one when the operands fit it and the 64-bit one otherwise. Both compute the same, so
+/// an unsuffixed opcode no arm names is lowered in the first encoding that fits.
 fn lower_instruction(
+    instruction: &Instruction,
+    labels: &BTreeMap<String, usize>,
+) -> Result<LoweredInstr, &'static str> {
+    let lowered = lower_as_written(instruction, labels);
+
+    if encoding_undefined(&instruction.opcode) && matches!(lowered, Err(UNKNOWN_OPCODE)) {
+        let encoded = |suffix: &str| Instruction {
+            opcode: format!("{}{suffix}", instruction.opcode),
+            operands: instruction.operands.clone(),
+        };
+
+        return lower_as_written(&encoded("_e32"), labels)
+            .or_else(|_| lower_as_written(&encoded("_e64"), labels));
+    }
+
+    lowered
+}
+
+/// Whether `opcode` is a vector opcode written without an `_e32` or `_e64` encoding suffix.
+fn encoding_undefined(opcode: &str) -> bool {
+    opcode.starts_with("v_") && !opcode.ends_with("_e32") && !opcode.ends_with("_e64")
+}
+
+fn lower_as_written(
     instruction: &Instruction,
     labels: &BTreeMap<String, usize>,
 ) -> Result<LoweredInstr, &'static str> {
@@ -365,6 +395,12 @@ fn lower_instruction(
         ("v_rcp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpF32, operands),
         ("v_sqrt_f32_e32", operands) => lower_unary_op(ir::UnaryOp::SqrtF32, operands),
         ("v_rsq_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RsqF32, operands),
+        ("v_add_f32_e64", operands) => lower_bin_op(ir::BinOp::AddF32, operands),
+        ("v_sub_f32_e64", operands) => lower_bin_op(ir::BinOp::SubF32, operands),
+        ("v_subrev_f32_e64", operands) => lower_bin_op(ir::BinOp::SubRevF32, operands),
+        ("v_mul_f32_e64", operands) => lower_bin_op(ir::BinOp::MulF32, operands),
+        ("v_min_f32_e64", operands) => lower_bin_op(ir::BinOp::MinF32, operands),
+        ("v_max_f32_e64", operands) => lower_bin_op(ir::BinOp::MaxF32, operands),
         ("v_cmp_lt_f32_e32", operands) => lower_cmp(ir::CmpOp::LtF32, operands),
         ("v_cmp_le_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
         ("v_cmp_eq_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
@@ -675,7 +711,7 @@ fn lower_instruction(
             | "s_endpgm",
             _,
         ) => Err("unsupported operand count"),
-        _ => Err("unsupported instruction"),
+        _ => Err(UNKNOWN_OPCODE),
     }
 }
 
@@ -691,6 +727,7 @@ fn lower_scalar_load(
     })
 }
 
+/// Either encoding: each source is a register or a constant, with any input modifiers.
 fn lower_bin_op(op: ir::BinOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
     let [dst, src0, src1] = operands else {
         return Err("unsupported operand count");
@@ -698,8 +735,19 @@ fn lower_bin_op(op: ir::BinOp, operands: &[Operand]) -> Result<LoweredInstr, &'s
     Ok(LoweredInstr::BinOp {
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-        src0: first_source(src0)?,
-        src1: vgpr(src1).ok_or("expected one VGPR second source")?,
+        src0: bin_op_source(src0).ok_or("expected a VGPR, an SGPR or a constant first source")?,
+        src1: bin_op_source(src1).ok_or("expected a VGPR, an SGPR or a constant second source")?,
+    })
+}
+
+/// A source with its input modifiers; a 32-bit literal is its bits, as an inline constant is.
+fn bin_op_source(operand: &Operand) -> Option<ModifiedSrc> {
+    modified_src(operand).or_else(|| {
+        constant(operand).map(|bits| ModifiedSrc {
+            src: Vop3Src::Inline(bits),
+            abs: false,
+            neg: false,
+        })
     })
 }
 

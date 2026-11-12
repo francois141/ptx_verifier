@@ -59,17 +59,21 @@ pub(super) fn evaluate_bin_op(
     registers: &WaveRegisters,
     lane: usize,
     op: BinOp,
-    src0: Src0,
-    src1: Vgpr,
+    src0: ModifiedSrc,
+    src1: ModifiedSrc,
 ) -> Result<ExprId, EvalError> {
     let (a, b) = match operand_type(op) {
+        // Input modifiers are defined for floats only.
+        OperandType::Word if src0.is_modified() || src1.is_modified() => {
+            return Err(EvalError::UnsupportedInstruction);
+        }
         OperandType::Word => (
-            registers.read_src0(arena, lane, src0)?,
-            registers.read_vgpr(lane, src1)?,
+            registers.read_src(arena, lane, src0.src)?,
+            registers.read_src(arena, lane, src1.src)?,
         ),
         OperandType::F32 => (
-            registers.read_f32_src0(arena, lane, src0)?,
-            registers.read_f32(arena, lane, src1)?,
+            registers.read_modified_src(arena, lane, src0)?,
+            registers.read_modified_src(arena, lane, src1)?,
         ),
     };
     if let Some(result) = sign_bit_op(arena, op, a, b) {

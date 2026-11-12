@@ -799,12 +799,13 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: Vgpr,
     },
-    /// `dst = src0 op src1` in each lane.
+    /// `dst = src0 op src1` in each lane, in either encoding. Only f32 operations take input
+    /// modifiers.
     BinOp {
         op: BinOp,
         dst: Vgpr,
-        src0: Src0,
-        src1: Vgpr,
+        src0: ModifiedSrc,
+        src1: ModifiedSrc,
     },
     /// `dst = op(src0, src1, src2)` in each lane.
     TernaryOp {
