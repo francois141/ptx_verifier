@@ -83,14 +83,24 @@ fn the_race_fixtures_parse_lower_and_run_in_program_order() {
         );
     }
     common::trainium::check(
-        "check_failure/affine_matmul_accumulate",
+        "check_failure/affine_matmul_partial_read",
         "kernel",
-        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[4, 3])],
     );
     common::trainium::check(
         "check_failure/no_reorder_affine",
         "kernel",
         &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
+// An affine_range's nc_matmuls accumulating into one PSUM tile, the reduction the docs allow.
+#[test]
+fn the_affine_matmul_accumulate_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/affine_matmul_accumulate",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
     );
 }
 

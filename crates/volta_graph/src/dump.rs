@@ -212,9 +212,9 @@ impl EventGraph {
                             AccessMode::Write => "write",
                         },
                         match a.ordering {
-                            OrderingKind::Ordinary => "ordinary",
-                            OrderingKind::Atomic => "atomic",
-                            OrderingKind::Reduction => "reduction",
+                            OrderingKind::Ordinary => "ordinary".to_string(),
+                            OrderingKind::Atomic => "atomic".to_string(),
+                            OrderingKind::Reduction(op) => format!("reduction({})", op.name()),
                         },
                         match a.proxy {
                             Proxy::Generic => "generic",

@@ -137,13 +137,34 @@ pub enum AccessMode {
     Write,
 }
 
-/// The memory-model kind of an effect. The analysis rejects atomics and reductions, so it only
-/// records `Ordinary`; checkers must not apply non-atomic rules to the others.
+/// The memory-model kind of an effect. The PTX and AMD analyses reject atomics and reductions,
+/// so they only record `Ordinary`; checkers must not apply non-atomic rules to the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderingKind {
     Ordinary,
     Atomic,
-    Reduction,
+    /// A read-modify-write folding a value into its footprint with `op`, which the hardware or
+    /// compiler performs one at a time: two reductions with one `op` commute, so their order
+    /// does not matter. It is a write for every other effect.
+    Reduction(ReductionOp),
+}
+
+/// The associative and commutative operation of a reduction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReductionOp {
+    Add,
+    Multiply,
+    Maximum,
+}
+
+impl ReductionOp {
+    pub fn name(self) -> &'static str {
+        match self {
+            ReductionOp::Add => "add",
+            ReductionOp::Multiply => "multiply",
+            ReductionOp::Maximum => "maximum",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -584,6 +605,11 @@ pub enum Assumption {
     /// The Neuron compiler tracks those hazards through the bytes `address=` tiles share,
     /// not only within one tensor.
     NkiHazardsByPlacedAddress,
+    /// `nc_matmul` accumulations into one location in different iterations of an
+    /// `affine_range` run one at a time, in some order (the docs' associative reductions).
+    NkiMatmulAccumulationsCommute,
+    /// So do `tensor_tensor` accumulations under an associative and commutative op.
+    NkiAssociativeReductionsCommute,
     /// An NKI `no_reorder` block's instructions execute in program order (its edges are
     /// hardware synchronization, not scheduling hints).
     NkiNoReorderInProgramOrder,
@@ -630,6 +656,14 @@ impl Assumption {
             }
             Assumption::NkiHazardsByPlacedAddress => {
                 "the Neuron compiler tracks NKI hazards through the bytes address= tiles share"
+            }
+            Assumption::NkiMatmulAccumulationsCommute => {
+                "nc_matmul accumulations into one location across affine_range iterations run \
+                 one at a time, in some order"
+            }
+            Assumption::NkiAssociativeReductionsCommute => {
+                "tensor_tensor accumulations under an associative op across affine_range \
+                 iterations run one at a time, in some order"
             }
             Assumption::NkiNoReorderInProgramOrder => {
                 "the instructions of an NKI no_reorder block execute in program order"

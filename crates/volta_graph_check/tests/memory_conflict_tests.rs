@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use common::*;
 use volta_graph::{
-    AccessMode, AsyncOpKind, EventGraph, EventId, ExecContext, Footprint, MemAccess, OperandRole,
-    OrderingKind, Parity, Proxy, Space, SyncObjectKind,
+    AccessMode, AsyncOpKind, Effect, EventGraph, EventId, ExecContext, Footprint, MemAccess,
+    OperandRole, OrderingKind, OrdinaryAccess, Parity, Proxy, ReductionOp, Space, SyncObjectKind,
 };
 use volta_graph_check::domain::{ByteLocation, ConflictKind};
 use volta_graph_check::memory_conflict::{MemoryConflictResult, check_memory_conflicts};
@@ -255,6 +255,53 @@ fn atomic_effects_are_outside_the_contract() {
         panic!("{result:?}");
     };
     assert!(u.reason.contains("contract"), "{u:?}");
+}
+
+/// `thread` folds into 4 shared bytes at `addr` with `op`, unordered with every other thread.
+fn reduce(s: &mut Scenario, thread: u32, addr: u64, op: ReductionOp) -> EventId {
+    let access = OrdinaryAccess {
+        space: Space::Shared,
+        footprint: Footprint::Bytes { addr, width: 4 },
+        proxy: Proxy::Generic,
+        role: OperandRole::Plain,
+        effect: Effect::Reduce(op),
+    };
+    s.b.ordinary_thread_access(t(thread), PC, access)
+}
+
+#[test]
+fn unordered_reductions_with_one_operation_commute() {
+    let mut s = Scenario::new(3);
+    for thread in 0..3 {
+        reduce(&mut s, thread, 0x10, ReductionOp::Add);
+    }
+    let (g, _) = s.completed(3);
+    assert!(matches!(check(&g), PropertyResult::Pass(ref e) if e.effects == 3));
+}
+
+#[test]
+fn unordered_reductions_with_different_operations_conflict() {
+    let mut s = Scenario::new(2);
+    let add = reduce(&mut s, 0, 0x10, ReductionOp::Add);
+    let max = reduce(&mut s, 1, 0x10, ReductionOp::Maximum);
+    let (g, _) = s.completed(2);
+    let result = check(&g);
+    assert_eq!(pairs(&result), BTreeSet::from([(add, max)]));
+    assert_eq!(result.violations()[0].kind, ConflictKind::WriteWrite);
+}
+
+#[test]
+fn a_reduction_conflicts_with_an_unordered_read_or_write() {
+    let mut s = Scenario::new(3);
+    let add = reduce(&mut s, 0, 0x10, ReductionOp::Add);
+    let read = s.read(1, 0x10);
+    let write = s.write(2, 0x12, 7);
+    let (g, _) = s.completed(3);
+    let result = check(&g);
+    assert_eq!(
+        pairs(&result),
+        BTreeSet::from([(add, read), (add, write), (read, write)])
+    );
 }
 
 #[test]

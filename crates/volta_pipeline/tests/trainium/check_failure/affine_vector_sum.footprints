@@ -1,6 +1,6 @@
 0: write acc[0..4]
 1: read a[0..4]; write row.0[0..4]
-2: read acc[0..4]; read row.0[0..4]; write acc[0..4]
+2: read row.0[0..4]; accumulate(add) acc[0..4]
 3: read a[4..8]; write row.1[0..4]
-4: read acc[0..4]; read row.1[0..4]; write acc[0..4]
+4: read row.1[0..4]; accumulate(add) acc[0..4]
 5: read acc[0..4]; write out[0..4]
