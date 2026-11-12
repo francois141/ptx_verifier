@@ -53,6 +53,19 @@ pub enum EvalError {
     ElementCountOverflow { instr: InstrId, tensor: String },
 }
 
+impl EvalError {
+    /// The instruction the run stopped at.
+    pub fn instr(&self) -> InstrId {
+        match self {
+            Self::UninitializedRead { instr, .. }
+            | Self::ClobberedRead { instr, .. }
+            | Self::IndirectOffset { instr, .. }
+            | Self::IndirectReadings { instr, .. }
+            | Self::ElementCountOverflow { instr, .. } => *instr,
+        }
+    }
+}
+
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

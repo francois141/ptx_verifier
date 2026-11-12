@@ -7,7 +7,7 @@ use volta_graph_check::check_graph;
 use volta_ptx_analysis::AnalysisConfig;
 use volta_trainium_analysis::frontend::error::ParseError;
 use volta_trainium_analysis::frontend::parse::{asserted_shapes, parse_kernel};
-use volta_trainium_analysis::{OrderingPolicy, evaluate, lower_kernel, record_graph};
+use volta_trainium_analysis::{Execution, OrderingPolicy, evaluate, lower_kernel, record_graph};
 
 use super::{Frontend, FrontendError, GraphEvidence, KernelRun, only_kernel};
 
@@ -48,10 +48,11 @@ impl Frontend for NkiFrontend {
         let lowered = lower_kernel(&parsed)
             .map_err(|e| FrontendError::Analysis(format!("lowering failed: {e}")))?;
 
-        let graph = record_graph(&lowered, OrderingPolicy::BASELINE);
+        let outputs = evaluate(&lowered);
+        let graph = record_graph(&lowered, OrderingPolicy::BASELINE, &Execution::of(&outputs));
         let report = check_graph(&graph);
         Ok(KernelRun {
-            outputs: evaluate(&lowered).map_err(|e| e.to_string()),
+            outputs: outputs.map_err(|e| e.to_string()),
             graph: GraphEvidence::Checked {
                 graph: Box::new(graph),
                 report: Box::new(report),
