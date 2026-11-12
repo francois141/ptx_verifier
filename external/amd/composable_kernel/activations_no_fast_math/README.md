@@ -2,7 +2,7 @@
 
 The activation ops of `../activations/` (CK pin `5a74dec`), from the same sources, specs and
 launch files, compiled without `-ffast-math`. `just amd_activations` runs both folders' cases
-through `../../verify.py`.
+through `../../verify.py`, and `just activation_lean` those proved in Lean.
 
 Without `-ffast-math`, `max` and `min` first canonicalize NaNs (`v_max_f32 x, x`, and
 `v_max_f32_e64` for ClippedRelu's bounds in SGPRs), and `exp` keeps its range reduction:
@@ -16,6 +16,9 @@ asm, so its assembly is the same as with `-ffast-math`.
 | `ck_clipped_relu` | `ClippedRelu` (0, 1) | ACCEPT | |
 | `ck_fast_gelu_asm` | `FastGeluAsm` | REJECT | ROCm/composable_kernel#3763, as in `../activations/` |
 | `ck_fast_gelu_asm_fixed` | `FastGeluAsm`, scratch `"=&v"` | ACCEPT | |
+| `ck_clamp` | `Clamp<int, int>` (-1000, 1000) on 300 | REJECT | its `const int8_t& a = x` truncates 300 to 44 before clamping |
+| `ck_clamp_fixed` | that body with `int` for `int8_t` | ACCEPT | |
+| `ck_leaky_relu` | `LeakyRelu` (alpha 0.01f) | proved in Lean | the canonical solver gives UNKNOWN: it cannot match the `select` with the spec's `max` and `min` |
 
 The ops that call `exp` are not here: its overflow branch is `+inf`, a constant the canonical
 solver rejects, and past its bounds the range-reduced `exp` is not `e^x` over the reals either.

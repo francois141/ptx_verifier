@@ -3,19 +3,23 @@
     uv run --reinstall-package volta --package volta python external/amd/verify.py \
         [--verbose] [PREFIX]
 
-A PREFIX runs only the cases whose launch file starts with it (`activations`). Each case is a
+A PREFIX runs only the cases whose launch file starts with it (`activations`), and `--checker`
+only those the canonical solver (`solver`) or Lean (`lean`) decides. Each case is a
 kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a launch file
 `composable_kernel/<case>.launch.json` naming its spec, CK's activations under
 `composable_kernel/activations*/`. Each case prints one line when it finishes: PASS if its
 kernel verified (ACCEPT, or every output proved in Lean), else FAIL, noting when a verdict
 other than ACCEPT is the case's expected one, such as a known bug's REJECT. `--verbose` also
-prints Volta's log of each case as it runs, then a summary. CK's fused GEMM-sigmoid is not
-exactly its formula over the reals (its exp rescales by f32(e^-64) past the underflow bound),
-so it is verified in Lean within a tolerance instead, with no canonical solver: Claude Code
-writes the proof into `target/lean/<case>/`, which later runs recheck without the agent while
-the challenge is unchanged. That case needs Claude Code and `$VOLTA_LEAN_PROJECT`, a Lake
-project with Mathlib built, which the environment or the repository's untracked `.env` (a
-`VOLTA_LEAN_PROJECT=<path>` line) gives. The exit status is 1 if any case's verdict is not its
+prints Volta's log of each case as it runs, then a summary.
+
+Some cases are verified in Lean instead, with no canonical solver. CK's fused GEMM-sigmoid is not
+exactly its formula over the reals (its exp rescales by f32(e^-64) past the underflow bound), so
+it is proved within a tolerance. The activations that compile to a select the canonical solver
+cannot match with their spec's `min` and `max` are proved equal. Claude Code writes each proof
+into `target/lean/<case>/`, which later runs recheck without the agent while the challenge is
+unchanged. These cases need Claude Code and `$VOLTA_LEAN_PROJECT`, a Lake project with Mathlib
+built, which the environment or the repository's untracked `.env` (a `VOLTA_LEAN_PROJECT=<path>`
+line) gives. The exit status is 1 if any case's verdict is not its
 expected one.
 """
 
@@ -53,9 +57,12 @@ class Solve:
 
 @dataclass(frozen=True)
 class Prove:
-    """Every output must be proved in Lean within `tolerance` of the spec."""
+    """Every output must be proved in Lean equal to the spec, or within `tolerance` of it."""
 
-    tolerance: str
+    tolerance: str | None = None
+
+    def claim(self) -> str:
+        return "exactly" if self.tolerance is None else f"within {self.tolerance}"
 
 
 @dataclass(frozen=True)
@@ -64,10 +71,13 @@ class Case:
     kernel: str
     check: Solve | Prove
 
+    def checker(self) -> str:
+        return "solver" if isinstance(self.check, Solve) else "lean"
+
     def describe(self) -> str:
         if isinstance(self.check, Solve):
             return f"canonical solver, expecting {self.check.expected}"
-        return f"Lean proof within {self.check.tolerance}"
+        return f"Lean proof {self.check.claim()}"
 
 
 @dataclass(frozen=True)
@@ -105,6 +115,8 @@ CASES = (
     ),
     Case("activations/ck_unary_abs", "activations/ck_unary_abs", Solve("ACCEPT")),
     Case("activations/ck_neg", "activations/ck_neg", Solve("ACCEPT")),
+    # AddHardswish's select, which the canonical solver cannot match with the spec's min and max.
+    Case("activations/ck_hardswish", "activations/ck_hardswish", Prove()),
     # The same ops without -ffast-math, whose exp keeps its range reduction.
     Case(
         "activations_no_fast_math/ck_relu",
@@ -125,6 +137,23 @@ CASES = (
         "activations_no_fast_math/ck_fast_gelu_asm_fixed",
         "activations_no_fast_math/ck_fast_gelu_asm",
         Solve("ACCEPT"),
+    ),
+    # Clamp<int, int> clamps through an int8_t reference, so 300 becomes 44.
+    Case(
+        "activations_no_fast_math/ck_clamp",
+        "activations_no_fast_math/ck_clamp",
+        Solve("REJECT"),
+    ),
+    Case(
+        "activations_no_fast_math/ck_clamp_fixed",
+        "activations_no_fast_math/ck_clamp",
+        Solve("ACCEPT"),
+    ),
+    # LeakyRelu's select between x and alpha x, likewise.
+    Case(
+        "activations_no_fast_math/ck_leaky_relu",
+        "activations_no_fast_math/ck_leaky_relu",
+        Prove(),
     ),
     Case("ck_gemm_sigmoid", "ck_gemm_sigmoid", Prove("1/1000")),
 )
@@ -206,7 +235,7 @@ def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> Outcome:
             recheck = volta.check_lean_proof(directory)
             if recheck.proved:
                 detail = f"{recheck.proved_statements} of {recheck.statements} proved in Lean"
-                detail += f" within {check.tolerance} (rechecked {directory})"
+                detail += f" {check.claim()} (rechecked {directory})"
                 return Outcome(True, True, detail)
 
     LOG.info("[lean] proving with Claude Code into %s", directory)
@@ -214,7 +243,7 @@ def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> Outcome:
         kernel, launch.config, output_dir=directory, equivalence=False, **arguments
     )
     detail = f"{result.proved_statements} of {result.statements} proved in Lean"
-    detail += f" within {check.tolerance} (proof {result.proof})"
+    detail += f" {check.claim()} (proof {result.proof})"
     return Outcome(result.proved, result.proved, detail)
 
 
@@ -245,6 +274,11 @@ def main() -> int:
         help="run only the cases whose launch file starts with it",
     )
     parser.add_argument(
+        "--checker",
+        choices=("solver", "lean"),
+        help="run only the cases the canonical solver or Lean decides",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="print Volta's log of each case"
     )
     args = parser.parse_args()
@@ -262,6 +296,8 @@ def main() -> int:
     results = []
     for case in CASES:
         if not case.launch.startswith(prefix):
+            continue
+        if args.checker and case.checker() != args.checker:
             continue
         if args.verbose:
             print(f"\n== {case.launch}: {case.describe()}", flush=True)

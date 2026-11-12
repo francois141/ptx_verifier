@@ -5,7 +5,8 @@ elements, one per work-item of one 64-work-item workgroup. Every case is a kerne
 `<kernel>.hip`/`.s`, a launch file `<case>.launch.json` and, where the spec language can state
 it, a spec. Parameterized ops are constructed on the host and passed by value, as CK does; the
 launch files give CK's default parameters as exact f32 values. `just amd_activations` runs
-them through `../../verify.py`.
+them through `../../verify.py`, except the cases proved in Lean, which `just activation_lean`
+runs: Claude Code writes each proof into `target/lean/<case>/`.
 
 | Case | CK op | Verdict | Why |
 |------|-------|---------|-----|
@@ -20,6 +21,7 @@ them through `../../verify.py`.
 | `ck_fast_gelu_asm_fixed` | `FastGeluAsm`, scratch `"=&v"` | ACCEPT | |
 | `ck_unary_abs` | `UnaryAbs` | ACCEPT | |
 | `ck_neg` | `Neg` | ACCEPT | |
+| `ck_hardswish` | legacy `AddHardswish` | proved in Lean | the canonical solver gives UNKNOWN: it cannot match the `select` with the spec's `max` |
 
 ## Compiling
 
@@ -27,8 +29,10 @@ them through `../../verify.py`.
 ROCm 7.0.0's device-libs (`amd/device-libs/ocml/src`) define them, with the finite-only and
 unsafe-math controls hipcc links under `-ffast-math`. `-ffast-math` is what lowers `exp` to
 `v_exp_f32` and divisions to `v_rcp_f32`; without it `exp` keeps its range reduction. It does
-not change `FastGeluAsm`'s register allocation. With Clang 21.1.8, that CK checkout (`CK_ROOT`)
-and the HIP 7.0.2 headers (`HIP_ROOT`), from this directory:
+not change `FastGeluAsm`'s register allocation. The legacy CK header of `ck_hardswish.hip`
+needs `ck/config.h`, generated from `config.h.in` as CK's CMake does for gfx950 (all data types,
+`CK_USE_XDL`, `CK_USE_OCP_FP8`, `CK_USE_NATIVE_MX_SUPPORT`). With Clang 21.1.8, that CK checkout
+(`CK_ROOT`) and the HIP 7.0.2 headers (`HIP_ROOT`), from this directory:
 
 ```sh
 for hip in *.hip; do

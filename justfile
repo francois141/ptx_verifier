@@ -119,7 +119,12 @@ composable *args:
 # `--verbose` prints each case's log.
 # Check CK's activation ops, compiled with and without -ffast-math, against their specs
 amd_activations *args:
-    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} activations
+    uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} activations
+
+# `--verbose` prints each case's log.
+# Prove in Lean the activation ops the canonical solver cannot decide; needs $VOLTA_LEAN_PROJECT and Claude Code
+activation_lean *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py --checker lean {{args}} activations
 
 # ===== Trainium ===============================================================
 

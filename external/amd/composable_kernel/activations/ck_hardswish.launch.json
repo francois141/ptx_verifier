@@ -1,0 +1,17 @@
+{
+  "description": "CK's AddHardswish on 64 pairs of fp32 elements, one pair per work-item.",
+  "kernel": "ck_hardswish",
+  "block": 64,
+  "arrays": [
+    {"name": "x0", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "x1", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x0", "ptr": "x0"},
+    {"name": "x1", "ptr": "x1"},
+    {"name": "y", "ptr": "y"}
+  ],
+  "spec": "ck_hardswish.spec",
+  "dims": {"N": 64}
+}
