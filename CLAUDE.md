@@ -713,10 +713,12 @@ edges are semaphores or scheduling hints; a block orders nothing against code ou
 `affine_carried`, racing under every policy; R8 `affine_matmul_partial_read`, reading a PSUM
 accumulator inside the loop, racing under every policy; R0 and R1 inside a `no_reorder`
 block, race free once blocks run in program order, and a rewrite across a block's
-boundary, ordered by write after write), each naming what would make it race free;
+boundary, ordered by write after write; `scan`, whose `nl.zeros` tile a DMA overwrites unread,
+ordered by write after write), each naming what would make it race free;
 `success/sequential_carried`, `affine_carried`'s twin in a `sequential_range`,
 `success/affine_matmul_accumulate`, the docs' matmul reduction, and
-`success/affine_vector_sum`, mamba's add accumulation, are race free; `trainium/accepted_tests.rs` runs them in program order,
+`success/affine_vector_sum`, mamba's add accumulation, are race free; `trainium/accepted_tests.rs` runs them in program order, requiring a `success/`
+fixture's graph to be `Verified` under `BASELINE` and a `check_failure/` one's `Rejected`,
 `trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
@@ -813,8 +815,9 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
 `PatternProblem` a tile or HBM view can hit and a `tensor_reduce` over a leading axis.
-`success/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
+`check_failure/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
 ops reversed, from `1.0`, and applies `activation`'s `scale` (a hand-written `.expected`);
+its `scale` memset, overwritten unread by a DMA, races unless write after write is ordered;
 a test widens its parsed broadcast past its row's shape (`BroadcastShape`).
 `success/indirect.py` gathers three columns, one offset repeated, over two
 16-partition groups on `nisa.engine.scalar` from a call's `contents` (an `.expected`

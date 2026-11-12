@@ -296,10 +296,11 @@ fn the_access_patterns_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check("success/access_patterns", "kernel", &[("a", &[2, 6])]);
 }
 
+// Its `scale` memset, overwritten unread, races under the baseline; it runs in program order.
 #[test]
 fn the_scan_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
-        "success/scan",
+        "check_failure/scan",
         "kernel",
         &[("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])],
     );
