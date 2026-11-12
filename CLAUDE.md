@@ -680,7 +680,7 @@ tensor, a `Location` and merged runs. Placed tiles share their memory's location
 (`partition * PARTITION_STRIDE + byte`); any other tensor is its own, by element offset.
 A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
 snapshot them, as do those of `sequential_carried`, `affine_matmul_accumulate`,
-`placed_tiles`, `access_patterns`, `indirect` and `loop_origins`.
+`affine_vector_sum`, `placed_tiles`, `access_patterns`, `indirect` and `loop_origins`.
 `record_graph(kernel, policy)` (`eval/record.rs`) is the kernel's event graph: a graph
 thread per instruction, its `footprints` as accesses (an accumulation the policy exempts a
 `Reduction` effect, any other a read then a write; each `Location` a disjoint range, HBM in
@@ -694,9 +694,11 @@ the two are in different iterations of one `affine_range`. There, as the `affine
 exempt "associative reductions", `nc_matmul` accumulations commute instead
 (`NkiMatmulAccumulationsCommute`, every policy): each is a `Reduction(Add)`, a later access
 follows every reduction since the last ordinary write, and a read of a partial sum inside
-the loop still races (R8). `Reductions::Associative` (`NkiAssociativeReductionsCommute`)
-extends this to `tensor_tensor` accumulations. `OrderingPolicy::BASELINE`, the
-pipeline's, tracks them by address (`PlacedTiles::ByAddress`, `NkiHazardsByPlacedAddress`:
+the loop still races (R8). `Reductions::MatmulAndAdd` (`NkiTensorTensorAddsCommute`)
+extends this to `tensor_tensor` add accumulations; `Reductions::Matmul` does not.
+`OrderingPolicy::BASELINE`, the pipeline's, takes exactly the assumptions some AWS sample
+needs (the crate README's Assumptions section lists each with its evidence): it lets
+`tensor_tensor` adds commute (mamba) and tracks hazards by address (`PlacedTiles::ByAddress`, `NkiHazardsByPlacedAddress`:
 through the bytes `address=` tiles share, as the compiler must for its own reuse of on-chip
 memory across tensors, and as v10, AWS's direct-allocation sample, relies on) and orders
 nothing more. `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`) also orders a write
@@ -708,13 +710,13 @@ edges are semaphores or scheduling hints; a block orders nothing against code ou
 `OrderingPolicy::ALL` is the sixteen combinations.
 `check_failure/` holds kernels that race under `BASELINE` (R0 `back_to_back_dmas` and its
 `sequential_overwrite` twin, ordered by write after write; R1 `affine_overwrite` and
-`affine_carried`, racing under every policy; `affine_vector_sum`, mamba's accumulation,
-race free under `Reductions::Associative`; R8 `affine_matmul_partial_read`, reading a PSUM
+`affine_carried`, racing under every policy; R8 `affine_matmul_partial_read`, reading a PSUM
 accumulator inside the loop, racing under every policy; R0 and R1 inside a `no_reorder`
 block, race free once blocks run in program order, and a rewrite across a block's
 boundary, ordered by write after write), each naming what would make it race free;
-`success/sequential_carried`, `affine_carried`'s twin in a `sequential_range`, and
-`success/affine_matmul_accumulate`, the docs' matmul reduction, are race free; `trainium/accepted_tests.rs` runs them in program order,
+`success/sequential_carried`, `affine_carried`'s twin in a `sequential_range`,
+`success/affine_matmul_accumulate`, the docs' matmul reduction, and
+`success/affine_vector_sum`, mamba's add accumulation, are race free; `trainium/accepted_tests.rs` runs them in program order,
 `trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
@@ -1028,8 +1030,8 @@ attention samples v1 to v10, verify; each race fixture in `trainium/check_failur
 them verify once write after write is ordered; with hazards tracked per tensor only, v10's
 races all pair `v_psum_t`, transposed before its `no_reorder` block, with `qk_psum` over the
 same PSUM bytes inside it (R2/R3); `nc_matmul` accumulations across `affine_range`
-iterations (the tiled matmul tutorials) verify under every policy, `tensor_tensor` ones
-(mamba) under `Reductions::Associative`, while a read of a partial sum and the other
+iterations (the tiled matmul tutorials) verify under every policy, `tensor_tensor` add ones
+(mamba) unless the policy is `Reductions::Matmul`, while a read of a partial sum and the other
 `affine_range` fixtures race under every policy. A table test checks every NKI fixture and
 sample under all sixteen policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
 rewrites it). `just trainium` runs its accepted, rejected and

@@ -4,8 +4,8 @@ import nki.isa as nisa
 
 
 # R1 and D3: an affine_range sums rows into one SBUF tile with a vector-engine add, as
-# mamba accumulates scanC_accum. Its iterations are unordered, so it races under any
-# ordering policy unless NKI's reduction exemption covers an associative tensor_tensor.
+# mamba accumulates scanC_accum. Its iterations are unordered, so it is race free only as
+# the baseline lets tensor_tensor add accumulations commute (Reductions::MatmulAndAdd).
 @nki.jit
 def kernel(a, out):
     assert a.shape == (2, 4)

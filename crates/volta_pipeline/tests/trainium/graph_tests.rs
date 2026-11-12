@@ -2,10 +2,10 @@
 //! ordered after another only where the `OrderingPolicy` says the Neuron compiler orders
 //! them. Every policy orders read after write and write after read outside different
 //! `affine_range` iterations, where `nc_matmul` accumulations commute instead; `BASELINE`, the
-//! pipeline's, tracks hazards by address, through the bytes placed tiles share, and orders
-//! nothing more. The others order write after write, track hazards per tensor only, order
-//! `no_reorder` blocks in program order, or let associative `tensor_tensor` accumulations
-//! commute too. Race-free kernels must conclude `Verified`; racy ones must fail the
+//! pipeline's, tracks hazards by address, through the bytes placed tiles share, lets
+//! `tensor_tensor` add accumulations commute too, and orders nothing more. The others order
+//! write after write, track hazards per tensor only, order `no_reorder` blocks in program
+//! order, or let only `nc_matmul` accumulations commute. Race-free kernels must conclude `Verified`; racy ones must fail the
 //! memory-conflict check with exactly the expected pairs of instructions.
 
 use std::collections::BTreeSet;
@@ -133,6 +133,7 @@ fn nki_kernels_rewriting_tiles_only_after_reading_them_are_verified() {
                 Assumption::NkiReadAfterWriteOrder,
                 Assumption::NkiWriteAfterReadOrder,
                 Assumption::NkiMatmulAccumulationsCommute,
+                Assumption::NkiTensorTensorAddsCommute,
                 Assumption::NkiHazardsByPlacedAddress
             ]
         );
@@ -191,13 +192,14 @@ fn nki_values_carried_across_affine_range_iterations_race_under_every_policy() {
 
 // Test that accumulations into one tile across affine_range iterations commute where the
 // policy says the docs' reduction exemption covers them: nc_matmuls into PSUM under every
-// policy, a tensor_tensor add as mamba accumulates only under `Reductions::Associative`. A
-// read of the partial sum inside the loop still races the other iteration's accumulation
+// policy, a tensor_tensor add as mamba accumulates unless the policy is `Reductions::Matmul`.
+// A read of the partial sum inside the loop still races the other iteration's accumulation
 // (R8) under every policy, while the accumulations themselves do not race.
 #[test]
 fn nki_accumulations_across_affine_range_iterations_commute_where_the_policy_exempts_them() {
     let matmul: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])];
     let partial: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[4, 3])];
+    let rows: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("out", &[1, 4])];
     for policy in OrderingPolicy::ALL {
         let (graph, report) = check_under(policy, "success/affine_matmul_accumulate", &matmul);
         assert_eq!(
@@ -220,13 +222,13 @@ fn nki_accumulations_across_affine_range_iterations_commute_where_the_policy_exe
             "{policy:?}"
         );
 
-        let (graph, report) = check_race_under(policy, "affine_vector_sum", 2);
-        if policy.reductions == Reductions::Associative {
+        let (graph, report) = check_under(policy, "success/affine_vector_sum", &rows);
+        if policy.reductions == Reductions::MatmulAndAdd {
             assert_eq!(report.conclusion(), GraphConclusion::Verified, "{policy:?}");
             assert!(
                 graph
                     .provenance()
-                    .assumes(Assumption::NkiAssociativeReductionsCommute)
+                    .assumes(Assumption::NkiTensorTensorAddsCommute)
             );
         } else {
             assert_eq!(
@@ -397,7 +399,7 @@ fn nki_attention_v10_races_only_between_tiles_placed_over_the_same_bytes() {
 
 // Test that the tutorials accumulating inside an affine_range verify where the policy exempts
 // their accumulations: the tiled matmul's nc_matmuls into one PSUM tile under every policy,
-// mamba's tensor_tensor adds into `scanC_accum` only under `Reductions::Associative`.
+// mamba's tensor_tensor adds into `scanC_accum` unless the policy is `Reductions::Matmul`.
 #[test]
 fn nki_tutorials_accumulating_across_affine_range_iterations_verify_where_exempted() {
     let (lhs_t, rhs): (&[u64], &[u64]) = (&[8, 4], &[8, 8]);
@@ -432,7 +434,7 @@ fn nki_tutorials_accumulating_across_affine_range_iterations_verify_where_exempt
         let report = check_graph(&record_graph(&mamba, policy));
         assert_eq!(
             report.conclusion() == GraphConclusion::Verified,
-            policy.reductions == Reductions::Associative,
+            policy.reductions == Reductions::MatmulAndAdd,
             "{policy:?}"
         );
     }
@@ -475,6 +477,7 @@ fn nki_no_reorder_blocks_order_their_own_instructions_when_the_policy_keeps_them
                 Assumption::NkiReadAfterWriteOrder,
                 Assumption::NkiWriteAfterReadOrder,
                 Assumption::NkiMatmulAccumulationsCommute,
+                Assumption::NkiTensorTensorAddsCommute,
                 Assumption::NkiHazardsByPlacedAddress,
                 Assumption::NkiNoReorderInProgramOrder
             ]
@@ -590,7 +593,6 @@ fn probes() -> Vec<Probe> {
         ("affine_overwrite", rows(2)),
         ("sequential_overwrite", rows(2)),
         ("affine_carried", rows(3)),
-        ("affine_vector_sum", rows(2)),
         ("no_reorder_back_to_back_dmas", rows(2)),
         ("no_reorder_boundary", rows(2)),
     ] {
@@ -600,6 +602,10 @@ fn probes() -> Vec<Probe> {
             &KernelCall::new(&shapes),
         ));
     }
+    probes.push(probe_fixture(
+        "success/affine_vector_sum",
+        &KernelCall::new(&[("a", &[2, 4]), ("out", &[1, 4])]),
+    ));
     probes.push(probe_fixture(
         "success/affine_matmul_accumulate",
         &KernelCall::new(&matmul),
@@ -761,8 +767,8 @@ fn heading(policy: OrderingPolicy) -> String {
     if policy.no_reorder == NoReorder::ProgramOrder {
         letters.push('n');
     }
-    if policy.reductions == Reductions::Associative {
-        letters.push('a');
+    if policy.reductions == Reductions::Matmul {
+        letters.push('m');
     }
     if letters.is_empty() {
         "base".to_string()
@@ -780,9 +786,10 @@ fn nki_verdicts_under_each_ordering_policy_match_the_table() {
         "# Each NKI kernel's graph under each OrderingPolicy: ok (Verified) or its number of\n\
          # conflicting access pairs. Every policy orders read after write and write after read\n\
          # outside affine_range iterations, by address through placed tiles' shared bytes, and\n\
-         # lets nc_matmul accumulations commute (base); a column's letters add write after\n\
-         # write (w), track hazards per tensor only (t), order no_reorder blocks in program\n\
-         # order (n), or let associative tensor_tensor accumulations commute too (a).\n",
+         # lets nc_matmul and tensor_tensor add accumulations commute (base); a column's\n\
+         # letters add write after write (w), track hazards per tensor only (t), order\n\
+         # no_reorder blocks in program order (n), or let only nc_matmul accumulations\n\
+         # commute (m).\n",
     );
     let headings: Vec<String> = OrderingPolicy::ALL.into_iter().map(heading).collect();
     writeln!(

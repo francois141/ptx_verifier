@@ -72,7 +72,6 @@ fn the_race_fixtures_parse_lower_and_run_in_program_order() {
         ("affine_overwrite", rows(2)),
         ("sequential_overwrite", rows(2)),
         ("affine_carried", rows(3)),
-        ("affine_vector_sum", rows(2)),
         ("no_reorder_back_to_back_dmas", rows(2)),
         ("no_reorder_boundary", rows(2)),
     ] {
@@ -91,6 +90,16 @@ fn the_race_fixtures_parse_lower_and_run_in_program_order() {
         "check_failure/no_reorder_affine",
         "kernel",
         &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
+// An affine_range's tensor_tensor adds accumulating into one SBUF tile, as mamba does.
+#[test]
+fn the_affine_vector_sum_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/affine_vector_sum",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[1, 4])],
     );
 }
 
