@@ -1,9 +1,9 @@
 # Each NKI kernel's graph under each OrderingPolicy: ok (Verified) or its number of
 # conflicting access pairs. Every policy orders read after write and write after read
-# outside affine_range iterations (base); a column adds write after write (waw),
-# hazards through placed tiles' shared bytes (addr), or no_reorder blocks in program
-# order (nr).
-kernel                                                          base         waw        addr    waw+addr          nr      waw+nr     addr+nr waw+addr+nr
+# outside affine_range iterations, by address through placed tiles' shared bytes
+# (base); a column adds write after write (waw), tracks hazards per tensor only
+# (tensor), or orders no_reorder blocks in program order (nr).
+kernel                                                          base         waw      tensor  waw+tensor          nr      waw+nr   tensor+nrwaw+tensor+nr
 success/add                                                       ok          ok          ok          ok          ok          ok          ok          ok
 success/sigmoid                                                   ok          ok          ok          ok          ok          ok          ok          ok
 success/transpose                                                 ok          ok          ok          ok          ok          ok          ok          ok
@@ -46,7 +46,7 @@ attention::attn_fwd_v6                                            ok          ok
 attention::attn_fwd_v7                                            ok          ok          ok          ok          ok          ok          ok          ok
 attention::attn_fwd_v8                                            ok          ok          ok          ok          ok          ok          ok          ok
 attention::attn_fwd_v8a                                           ok          ok          ok          ok          ok          ok          ok          ok
-attention::attn_fwd_v10                                          192         192          ok          ok         144         144          ok          ok
+attention::attn_fwd_v10                                           ok          ok         192         192          ok          ok         144         144
 tensor_addition::nki_tensor_add                                   ok          ok          ok          ok          ok          ok          ok          ok
 matrix_multiplication::nki_matmul_basic_                          ok          ok          ok          ok          ok          ok          ok          ok
 matrix_multiplication::nki_matmul_tiled_                        2912        2912        2912        2912        2912        2912        2912        2912

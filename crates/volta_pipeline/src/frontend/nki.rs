@@ -1,7 +1,7 @@
 //! AWS Trainium NKI: `volta_trainium_analysis` lowers the `@nki.jit` kernel and executes it.
 //! It is called with the parameter shapes its own `assert param.shape == (...)`s state, so it
 //! takes no launch. The graph branch checks the event graph of its instructions under
-//! `OrderingPolicy::BASELINE`: read after write and write after read within a tensor.
+//! `OrderingPolicy::BASELINE`: read after write and write after read, by address.
 
 use volta_graph_check::check_graph;
 use volta_ptx_analysis::AnalysisConfig;
