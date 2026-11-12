@@ -1,9 +1,9 @@
 //! NKI kernels' event graphs through the graph branch. Each instruction is a graph thread,
 //! ordered after another only where the `OrderingPolicy` says the Neuron compiler orders
 //! them. Every policy orders read after write and write after read outside different
-//! `affine_range` iterations; `BASELINE`, the pipeline's, nothing more. The others order
-//! write after write, hazards through placed tiles' shared bytes, or `no_reorder` blocks in
-//! program order. Race-free kernels must conclude `Verified`; racy ones must fail the
+//! `affine_range` iterations; `BASELINE`, the pipeline's, tracks them by address, through the
+//! bytes placed tiles share, and orders nothing more. The others order write after write,
+//! track hazards per tensor only, or order `no_reorder` blocks in program order. Race-free kernels must conclude `Verified`; racy ones must fail the
 //! memory-conflict check with exactly the expected pairs of instructions.
 
 use std::collections::BTreeSet;
@@ -30,8 +30,8 @@ const WAW: OrderingPolicy = OrderingPolicy {
     ..OrderingPolicy::BASELINE
 };
 
-const BY_ADDRESS: OrderingPolicy = OrderingPolicy {
-    placed_tiles: PlacedTiles::ByAddress,
+const BY_TENSOR: OrderingPolicy = OrderingPolicy {
+    placed_tiles: PlacedTiles::ByTensor,
     ..OrderingPolicy::BASELINE
 };
 
@@ -129,7 +129,8 @@ fn nki_kernels_rewriting_tiles_only_after_reading_them_are_verified() {
             graph.provenance().assumptions,
             [
                 Assumption::NkiReadAfterWriteOrder,
-                Assumption::NkiWriteAfterReadOrder
+                Assumption::NkiWriteAfterReadOrder,
+                Assumption::NkiHazardsByPlacedAddress
             ]
         );
     }
@@ -298,11 +299,11 @@ fn tiled_attention(kernel: &str) -> LoweredKernel {
     lower_sample(&tileable, &modules, kernel, &call)
 }
 
-// Test that the attention samples v1 to v8a verify, each tile written once or rewritten only
-// after its readers. v10 races, as its `address=` tiles `v_psum_t` and `qk_psum` share PSUM
-// bytes, until the policy orders hazards through placed tiles' shared bytes.
+// Test that the attention samples verify, each tile written once or rewritten only after its
+// readers, v10 because hazards are tracked by address: its `address=` tiles `v_psum_t` and
+// `qk_psum` share PSUM bytes, and tracked per tensor only they race.
 #[test]
-fn nki_attention_samples_verify_except_v10_unless_hazards_are_tracked_by_address() {
+fn nki_attention_samples_verify_v10_only_when_hazards_are_tracked_by_address() {
     let (kernels, utils) = attention_sources();
     let modules = [("attention_kernel_utils", utils.as_str())];
     let full: &[u64] = &[128, 128];
@@ -330,9 +331,9 @@ fn nki_attention_samples_verify_except_v10_unless_hazards_are_tracked_by_address
     }
 
     let v10 = tiled_attention("attn_fwd_v10");
-    let report = check_graph(&record_graph(&v10, OrderingPolicy::BASELINE));
+    let report = check_graph(&record_graph(&v10, BY_TENSOR));
     assert!(!report.memory_conflict.violations().is_empty());
-    let graph = record_graph(&v10, BY_ADDRESS);
+    let graph = record_graph(&v10, OrderingPolicy::BASELINE);
     assert_eq!(check_graph(&graph).conclusion(), GraphConclusion::Verified);
     assert!(
         graph
@@ -341,8 +342,8 @@ fn nki_attention_samples_verify_except_v10_unless_hazards_are_tracked_by_address
     );
 }
 
-// Test that attention v10's races, with or without its no_reorder block in program order,
-// all pair `v_psum_t`, transposed before the block, with `qk_psum`, which the QK matmuls
+// Test that attention v10's races with hazards tracked per tensor, with or without its
+// no_reorder block in program order, all pair `v_psum_t`, transposed before the block, with `qk_psum`, which the QK matmuls
 // inside it place over the same PSUM bytes (R3): every reuse within one tensor is ordered,
 // and the block orders nothing against the instructions before it.
 #[test]
@@ -356,7 +357,11 @@ fn nki_attention_v10_races_only_between_tiles_placed_over_the_same_bytes() {
             .map(|access| lowered.tensors[access.tensor].name.as_str())
             .collect()
     };
-    for policy in [OrderingPolicy::BASELINE, NO_REORDER] {
+    let by_tensor_in_order = OrderingPolicy {
+        no_reorder: NoReorder::ProgramOrder,
+        ..BY_TENSOR
+    };
+    for policy in [BY_TENSOR, by_tensor_in_order] {
         let graph = record_graph(&lowered, policy);
         let pairs = conflicts(&graph, &check_graph(&graph));
         assert!(!pairs.is_empty(), "{policy:?}");
@@ -450,6 +455,7 @@ fn nki_no_reorder_blocks_order_their_own_instructions_when_the_policy_keeps_them
             [
                 Assumption::NkiReadAfterWriteOrder,
                 Assumption::NkiWriteAfterReadOrder,
+                Assumption::NkiHazardsByPlacedAddress,
                 Assumption::NkiNoReorderInProgramOrder
             ]
         );
@@ -719,14 +725,14 @@ fn probes() -> Vec<Probe> {
     probes
 }
 
-/// A policy's column heading: what it orders beyond read after write and write after read.
+/// A policy's column heading: how it differs from `BASELINE`.
 fn heading(policy: OrderingPolicy) -> String {
     let mut parts = Vec::new();
     if policy.write_after_write == WriteAfterWrite::Ordered {
         parts.push("waw");
     }
-    if policy.placed_tiles == PlacedTiles::ByAddress {
-        parts.push("addr");
+    if policy.placed_tiles == PlacedTiles::ByTensor {
+        parts.push("tensor");
     }
     if policy.no_reorder == NoReorder::ProgramOrder {
         parts.push("nr");
@@ -746,9 +752,9 @@ fn nki_verdicts_under_each_ordering_policy_match_the_table() {
     let mut table = String::from(
         "# Each NKI kernel's graph under each OrderingPolicy: ok (Verified) or its number of\n\
          # conflicting access pairs. Every policy orders read after write and write after read\n\
-         # outside affine_range iterations (base); a column adds write after write (waw),\n\
-         # hazards through placed tiles' shared bytes (addr), or no_reorder blocks in program\n\
-         # order (nr).\n",
+         # outside affine_range iterations, by address through placed tiles' shared bytes\n\
+         # (base); a column adds write after write (waw), tracks hazards per tensor only\n\
+         # (tensor), or orders no_reorder blocks in program order (nr).\n",
     );
     let headings: Vec<String> = OrderingPolicy::ALL.into_iter().map(heading).collect();
     writeln!(
