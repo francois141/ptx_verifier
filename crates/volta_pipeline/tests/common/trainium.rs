@@ -15,9 +15,10 @@ use volta_trainium_analysis::{
 };
 
 /// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`),
-/// the race-free `sequential_carried` and `affine_matmul_accumulate`, and one per kind of
-/// location (placed tiles, access patterns, gathers, loops).
+/// the race-free `sequential_carried`, `affine_matmul_accumulate` and `affine_vector_sum`, and
+/// one per kind of location (placed tiles, access patterns, gathers, loops).
 const FOOTPRINTS: &[&str] = &[
+    "success/affine_vector_sum",
     "success/sequential_carried",
     "success/affine_matmul_accumulate",
     "success/placed_tiles",

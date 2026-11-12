@@ -1,10 +1,11 @@
 # Each NKI kernel's graph under each OrderingPolicy: ok (Verified) or its number of
 # conflicting access pairs. Every policy orders read after write and write after read
 # outside affine_range iterations, by address through placed tiles' shared bytes, and
-# lets nc_matmul accumulations commute (base); a column's letters add write after
-# write (w), track hazards per tensor only (t), order no_reorder blocks in program
-# order (n), or let associative tensor_tensor accumulations commute too (a).
-kernel                                                    base     w     t    wt     n    wn    tn   wtn     a    wa    ta   wta    na   wna   tna  wtna
+# lets nc_matmul and tensor_tensor add accumulations commute (base); a column's
+# letters add write after write (w), track hazards per tensor only (t), order
+# no_reorder blocks in program order (n), or let only nc_matmul accumulations
+# commute (m).
+kernel                                                    base     w     t    wt     n    wn    tn   wtn     m    wm    tm   wtm    nm   wnm   tnm  wtnm
 success/add                                                 ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 success/sigmoid                                             ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 success/transpose                                           ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
@@ -33,9 +34,9 @@ check_failure/back_to_back_dmas                              2    ok     2    ok
 check_failure/affine_overwrite                               2     2     2     2     2     2     2     2     2     2     2     2     2     2     2     2
 check_failure/sequential_overwrite                           2    ok     2    ok     2    ok     2    ok     2    ok     2    ok     2    ok     2    ok
 check_failure/affine_carried                                 5     5     5     5     5     5     5     5     5     5     5     5     5     5     5     5
-check_failure/affine_vector_sum                              7     7     7     7     7     7     7     7    ok    ok    ok    ok    ok    ok    ok    ok
 check_failure/no_reorder_back_to_back_dmas                   2    ok     2    ok    ok    ok    ok    ok     2    ok     2    ok    ok    ok    ok    ok
 check_failure/no_reorder_boundary                            2    ok     2    ok     2    ok     2    ok     2    ok     2    ok     2    ok     2    ok
+success/affine_vector_sum                                   ok    ok    ok    ok    ok    ok    ok    ok     7     7     7     7     7     7     7     7
 success/affine_matmul_accumulate                            ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 check_failure/affine_matmul_partial_read                     2     2     2     2     2     2     2     2     2     2     2     2     2     2     2     2
 check_failure/no_reorder_affine                              3     3     3     3    ok    ok    ok    ok     3     3     3     3    ok    ok    ok    ok
@@ -57,7 +58,7 @@ matrix_multiplication::nki_matmul_block_free_dimension_     ok    ok    ok    ok
 matrix_multiplication::nki_matmul_fully_optimized_          ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 transpose2d::tensor_transpose2D_kernel_                     ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 average_pool2d::tensor_avgpool_kernel                       ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
-mamba::mamba_v1                                             28    28    28    28    28    28    28    28    ok    ok    ok    ok    ok    ok    ok    ok
-mamba::mamba_v2                                             28    28    28    28    28    28    28    28    ok    ok    ok    ok    ok    ok    ok    ok
-mamba::mamba_v3                                           3076  3076  3076  3076  3076  3076  3076  3076    ok    ok    ok    ok    ok    ok    ok    ok
+mamba::mamba_v1                                             ok    ok    ok    ok    ok    ok    ok    ok    28    28    28    28    28    28    28    28
+mamba::mamba_v2                                             ok    ok    ok    ok    ok    ok    ok    ok    28    28    28    28    28    28    28    28
+mamba::mamba_v3                                             ok    ok    ok    ok    ok    ok    ok    ok  3076  3076  3076  3076  3076  3076  3076  3076
 tensor_indirection::tensor_indirection_kernel               ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok

@@ -117,7 +117,7 @@ fn nki_matmul_matches_its_specification() {
 
 // Test that an NKI kernel proved equal to its spec is accepted once its event graph verifies,
 // relative to the baseline assumptions: the Neuron compiler orders read after write and write
-// after read, tracked by address, and nc_matmul accumulations commute.
+// after read, tracked by address, and nc_matmul and tensor_tensor add accumulations commute.
 #[test]
 fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
     let parsed = volta_spec::parse_spec(MATMUL_SPEC).unwrap();
@@ -149,6 +149,7 @@ fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
         Assumption::NkiReadAfterWriteOrder,
         Assumption::NkiWriteAfterReadOrder,
         Assumption::NkiMatmulAccumulationsCommute,
+        Assumption::NkiTensorTensorAddsCommute,
         Assumption::NkiHazardsByPlacedAddress,
     ] {
         assert!(decision.assumptions.contains(&assumption), "{assumption:?}");

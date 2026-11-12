@@ -355,8 +355,9 @@ accumulating into one buffer: every policy records an adding `nc_matmul` as one
 commute with other `Reduction(Add)`s. The recorder keeps, per offset, the latest ordinary
 write and the reductions since, so a later read or write follows all of them, while a read
 of a partial sum inside the loop stays unordered with the other iterations' accumulations
-and races (R8). `OrderingPolicy::BASELINE`, the pipeline's, tracks hazards by address and
-orders nothing more:
+and races (R8). `OrderingPolicy::BASELINE`, the pipeline's, tracks hazards by address, lets
+`tensor_tensor` add accumulations commute too, and orders nothing more (see Assumptions
+below for why):
 
 - `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`): a write also follows the latest
   earlier writer of what it writes. Without it, two writes with no read between them race;
@@ -374,10 +375,11 @@ orders nothing more:
   scheduling guide says only that it inserts "dependency edges between every instruction",
   without saying whether they are hardware semaphores or scheduling hints. A block orders
   nothing against the instructions before or after it.
-- `Reductions::Associative` (`NkiAssociativeReductionsCommute`): `tensor_tensor`
-  accumulations under `add`, `multiply` or `maximum` commute too, as mamba's
-  `scanC_accum` needs. The docs say "associative reductions" but give only the matmul
-  example, so `Reductions::Matmul` is the baseline.
+- `Reductions::MatmulAndAdd` (`NkiTensorTensorAddsCommute`), the baseline's: a
+  `tensor_tensor` add whose `dst` is one of its operands' regions is a `Reduction(Add)` too,
+  as mamba's `scanC_accum` needs. `Reductions::Matmul` keeps it an ordinary read and write.
+  Accumulations under `multiply` or `maximum` are ordinary under both: no sample relies on
+  them commuting.
 
 `OrderingPolicy::ALL` lists the sixteen combinations; `volta_pipeline`'s
 `trainium/ordering_policies.txt` tabulates every NKI kernel's verdict under each.
@@ -385,6 +387,45 @@ orders nothing more:
 Locations are disjoint address ranges, one per `Location` (`1 << 40` apart): HBM tensors
 in `Space::Global`, SBUF and PSUM in `Space::Shared`. Each run is one byte-range access;
 an element of an unplaced tensor is one byte.
+
+## Assumptions
+
+Every verdict on an NKI kernel holds only under the assumptions below. The first table is
+what the Neuron compiler is taken to do: the docs say only that it synchronizes "based on
+data dependencies", so each is a named `Assumption` the event graph records, and the
+switchable ones are `OrderingPolicy` choices. Where the docs are silent, AWS's own samples
+are evidence: a sample that races without an assumption, and works, needs it. That is
+weaker than documentation (a racy kernel can pass tests by luck, and a sample shows only
+its own pattern), so the baseline takes exactly the assumptions some sample needs.
+
+| Assumption (`Assumption::`) | In `BASELINE` | Evidence |
+|---|---|---|
+| `NkiReadAfterWriteOrder`: an instruction follows the latest earlier writer of what it reads | always | The docs' "based on data dependencies"; no sample is correct without it |
+| `NkiWriteAfterReadOrder`: an instruction follows every earlier reader of what it writes | always | Attention v10 (its PSUM bank reuse); v1 to v8a and the tutorials pass without it |
+| Neither of the two across iterations of one `affine_range` | always | The `affine_range` docs: iterations have no loop-carried dependency |
+| `NkiMatmulAccumulationsCommute`: `nc_matmul` accumulations into one location run one at a time, in some order | always | The `affine_range` docs' example of an exempt associative reduction; the four tiled matmul tutorials |
+| `NkiTensorTensorAddsCommute`: so do `tensor_tensor` add accumulations | yes (`Reductions::MatmulAndAdd`) | The docs' "associative reductions"; mamba v1 to v3. Off: `Reductions::Matmul` |
+| `NkiHazardsByPlacedAddress`: hazards are tracked through the bytes `address=` tiles share | yes (`PlacedTiles::ByAddress`) | Attention v10 (`v_psum_t` and `qk_psum` share PSUM bank 0), and the compiler's own reuse of on-chip memory across tensors. Off: `ByTensor` |
+| `NkiWriteAfterWriteOrder`: a write follows the latest earlier writer of what it writes | no | None: no sample needs it. On: `WriteAfterWrite::Ordered` |
+| `NkiNoReorderInProgramOrder`: a `no_reorder` block's instructions run in program order | no | The API page says so, the scheduling guide leaves it open; no sample needs it. On: `NoReorder::ProgramOrder` |
+
+v10 is the only sample needing write-after-read and by-address tracking, and it has another
+explanation the policies do not model: a `no_reorder` block also ordered after the code
+before it. A compiled NEFF would settle all of these.
+
+The second table is how kernels are modelled, the same under every policy:
+
+| Modelling assumption | Effect |
+|---|---|
+| One core, one kernel instance | Races across cores or SPMD instances are not checked; `nl.program_id` is not supported |
+| Kernel arguments are distinct HBM tensors | An output aliasing an input is not modelled (R4) |
+| Instructions are unordered unless an assumption orders them | DMA asynchrony needs no model of its own |
+| An instruction reads all its operands before writing any | Overlapping `src` and `dst` regions of one instruction read old values (R5, not checked against the hardware) |
+| Unplaced tiles never overlap; a tile declared in a loop iteration is that iteration's | The compiler's own allocation is correct |
+| Footprints are static: a gather reads its whole `data` and `index` regions | Over-approximates, so it can only add conflicts |
+| Values are exact reals; `dtype` only sizes placed tiles | `bfloat16` rounding is not checked, and reordered reductions give equal values |
+| `sbuf_fmax_bytes` is a Trn2 partition's 192 KiB | Bounds placed SBUF tiles; the docs do not state it |
+| Hardware restrictions on region starts (partition offsets) | Not checked |
 
 ## Fixtures
 
@@ -397,7 +438,7 @@ or `check_importing` with the fixture modules it imports from), and
 `trainium/rejected_tests.rs` requires each error; the fixtures' own shape `assert`s check
 those shapes.
 Besides `.ast`, `.ir` and `.out`, the race fixtures and `sequential_carried`,
-`affine_matmul_accumulate`, `placed_tiles`,
+`affine_matmul_accumulate`, `affine_vector_sum`, `placed_tiles`,
 `access_patterns`, `indirect` and `loop_origins` (`common::trainium`'s `FOOTPRINTS`) have
 a `.footprints`: one line per instruction, a placed tile's runs as `p<partition>:<bytes>`,
 any other's as element offsets.
@@ -409,10 +450,11 @@ checks their graphs' conflicting pairs. `back_to_back_dmas` is two DMAs writing 
 over a `sequential_range`'s iterations; `affine_overwrite` and `affine_carried` overwrite
 or carry a tile across `affine_range` iterations (R1), racing under every policy, while
 `success/sequential_carried`, the latter's `sequential_range` twin, is ordered by read
-after write and write after read; `affine_vector_sum` sums rows into one tile with
-`tensor_tensor`, as mamba does, race free under `Reductions::Associative`, while
-`success/affine_matmul_accumulate` accumulates matmuls into PSUM, the reduction the docs
-allow across `affine_range` iterations, race free under every policy;
+after write and write after read; `success/affine_vector_sum` sums rows into one tile with
+`tensor_tensor`, as mamba does, race free unless only `nc_matmul` accumulations commute
+(`Reductions::Matmul`), and `success/affine_matmul_accumulate` accumulates matmuls into
+PSUM, the reduction the docs allow across `affine_range` iterations, race free under every
+policy;
 `affine_matmul_partial_read` also copies the accumulator out inside the loop, a read of a
 partial sum racing the other iteration's matmul (R8) under every policy.
 `no_reorder_back_to_back_dmas` and `no_reorder_affine` put R0 and R1 inside a
