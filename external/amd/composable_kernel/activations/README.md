@@ -18,6 +18,8 @@ them through `../../verify.py`.
 | `ck_fast_gelu` | `FastGelu` | ACCEPT | |
 | `ck_fast_gelu_asm` | `FastGeluAsm` | REJECT | ROCm/composable_kernel#3763: the asm's scratch register is `c2`'s, so the kernel computes `x / (1 + exp((x^2 c1 + x^2) x))` |
 | `ck_fast_gelu_asm_fixed` | `FastGeluAsm`, scratch `"=&v"` | ACCEPT | |
+| `ck_unary_abs` | `UnaryAbs` | ACCEPT | |
+| `ck_neg` | `Neg` | ACCEPT | |
 
 ## Compiling
 

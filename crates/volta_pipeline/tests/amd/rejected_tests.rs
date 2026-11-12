@@ -265,19 +265,15 @@ fn nan_float_outputs_are_rejected() {
     );
 }
 // Test that integer arithmetic and bitwise operations reject symbolic inputs,
-// because symbolic values are floats without known bits.
+// because symbolic values are floats without known bits. `symbolic_negation`'s
+// sign-bit XOR is not among them: it is exactly `-x`.
 #[test]
 fn integer_operations_on_symbolic_values_are_rejected() {
     let arrays = [
         array("input", 0x10000, ArrayKind::Input),
         array("output", 0x20000, ArrayKind::Output(F32)),
     ];
-    for kernel in [
-        "symbolic_shift",
-        "symbolic_negation",
-        "symbolic_add",
-        "symbolic_not",
-    ] {
+    for kernel in ["symbolic_shift", "symbolic_add", "symbolic_not"] {
         common::amd::check_rejected_kernel(
             "execution_error/unsupported",
             kernel,

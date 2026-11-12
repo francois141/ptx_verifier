@@ -72,6 +72,9 @@ pub(super) fn evaluate_bin_op(
             registers.read_f32(arena, lane, src1)?,
         ),
     };
+    if let Some(result) = sign_bit_op(arena, op, a, b) {
+        return Ok(result);
+    }
     // Integer operations need concrete words: a symbolic value is a float, without known bits.
     if matches!(operand_type(op), OperandType::Word) {
         concrete_words(arena, lane, [a, b])?;
@@ -506,6 +509,24 @@ fn bitop3(table: u8, a: u32, b: u32, c: u32) -> u32 {
             (table >> index) & 1 == 1
         })
         .fold(0, |result, bit| result | 1 << bit)
+}
+
+/// `x & 0x7fffffff` clears a float's sign bit and `x ^ 0x80000000` flips it, so for a
+/// symbolic f32 `x`, whose other bits are unknown, they are `|x|` and `-x` exactly.
+fn sign_bit_op(arena: &mut ExprArena, op: BinOp, a: ExprId, b: ExprId) -> Option<ExprId> {
+    let (mask, value) = match (concrete_word(arena, a), concrete_word(arena, b)) {
+        (Some(mask), None) => (mask, b),
+        (None, Some(mask)) => (mask, a),
+        _ => return None,
+    };
+    if matches!(arena.node(value), ExprNode::Undefined) {
+        return None;
+    }
+    match (op, mask) {
+        (BinOp::And32, 0x7fff_ffff) => Some(arena.abs(value)),
+        (BinOp::Xor32, 0x8000_0000) => Some(arena.neg(value)),
+        _ => None,
+    }
 }
 
 /// Read concrete words, rejecting operands whose bit patterns are unknown.
