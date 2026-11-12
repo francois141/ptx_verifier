@@ -733,6 +733,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "volta_lean"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "volta_common",
+]
+
+[[package]]
 name = "volta_pipeline"
 version = "0.1.0"
 dependencies = [
@@ -771,6 +781,7 @@ dependencies = [
  "volta_equivalence",
  "volta_expr",
  "volta_graph_check",
+ "volta_lean",
  "volta_pipeline",
  "volta_ptx_analysis",
  "volta_spec",

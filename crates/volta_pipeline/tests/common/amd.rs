@@ -455,7 +455,7 @@ impl Launch {
         }
         writeln!(text, "  ],").unwrap();
 
-        let specs = "../../crates/volta_equivalence/tests/specs";
+        let specs = "../../crates/backend/volta_equivalence/tests/specs";
         writeln!(text, r#"  "spec": "{specs}/{}","#, self.spec).unwrap();
         let dims: Vec<String> = self
             .dims

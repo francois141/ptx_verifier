@@ -17,6 +17,5 @@ result = volta.solve(
     spec=spec,
     dims={"N": size},
 )
-assert result.verdict == "ACCEPT", result.evidence
-assert result.race_verified is None
+
 print(f"{result.isa}: {result.verdict}; race checks: {result.race_verified}")

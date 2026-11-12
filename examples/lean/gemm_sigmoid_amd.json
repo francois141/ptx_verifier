@@ -34,6 +34,6 @@
     {"name": "is_reduce (false) and padding", "int": 0},
     {"name": "padding", "int": 0}
   ],
-  "spec": "../../crates/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec",
+  "spec": "../../crates/backend/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec",
   "dims": {"M": 8, "N": 8, "K": 8}
 }

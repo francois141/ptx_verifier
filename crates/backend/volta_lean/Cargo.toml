@@ -1,0 +1,15 @@
+[package]
+name = "volta_lean"
+version.workspace = true
+edition.workspace = true
+description = "Lean proofs of Volta's proof obligations: the acceptance check and a Claude Code prover"
+
+[features]
+default = []
+logging = ["volta_common/logging"]
+
+[dependencies]
+volta_common.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
