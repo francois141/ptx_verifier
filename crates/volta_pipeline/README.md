@@ -97,6 +97,8 @@ only inline unit tests of their internals.
   `nc_matmul` accumulations commute; `affine_matmul_partial_read`,
   reading the accumulator mid-loop, and the other `affine_range` fixtures race under every
   policy.
+  A run that aborts (`accumulate_uninitialized`) gives a graph ending `Aborted` at the
+  failing instruction, so the graph branch is inconclusive.
   `nki_verdicts_under_each_ordering_policy_match_the_table` checks every NKI fixture and
   sample under all sixteen policies against `trainium/ordering_policies.txt`
   (`VOLTA_BLESS=1` rewrites it), `ok` or the number of conflicting pairs.

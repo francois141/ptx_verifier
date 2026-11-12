@@ -11,15 +11,15 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use volta_graph::{Assumption, EventGraph, EventId, ExecContext};
+use volta_graph::{Assumption, EventGraph, EventId, ExecContext, Terminal, ThreadIx};
 use volta_graph_check::domain::ConflictKind::{self, ReadWrite, WriteRead, WriteWrite};
 use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
 use volta_trainium_analysis::frontend::parse::{
     Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call,
 };
 use volta_trainium_analysis::{
-    InstrId, LoweredKernel, NoReorder, OrderingPolicy, PlacedTiles, Reductions, Reordering,
-    WriteAfterWrite, footprints, lower_kernel, record_graph,
+    Execution, InstrId, LoweredKernel, NoReorder, OrderingPolicy, PlacedTiles, Reductions,
+    Reordering, WriteAfterWrite, evaluate, footprints, lower_kernel, record_graph,
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/trainium/");
@@ -48,9 +48,14 @@ fn check_under(policy: OrderingPolicy, name: &str, shapes: Shapes) -> (EventGrap
     let source = std::fs::read_to_string(format!("{FIXTURES}{name}.py")).unwrap();
     let parsed = parse_kernel(&source, "kernel", shapes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let graph = record_graph(&lowered, policy);
+    let graph = record(&lowered, policy);
     let report = check_graph(&graph);
     (graph, report)
+}
+
+/// `kernel`'s graph under `policy`, ending as its program-order run did.
+fn record(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGraph {
+    record_graph(kernel, policy, &Execution::of(&evaluate(kernel)))
 }
 
 /// `check_under` the pipeline's policy, `BASELINE`.
@@ -331,7 +336,7 @@ fn nki_attention_samples_verify_v10_only_when_hazards_are_tracked_by_address() {
     let shapes = [("q", full), ("k", full), ("v", full)];
     for kernel in ["attn_fwd_v1", "attn_fwd_v2"] {
         let lowered = lower_sample(&kernels, &modules, kernel, &KernelCall::new(&shapes));
-        let report = check_graph(&record_graph(&lowered, OrderingPolicy::BASELINE));
+        let report = check_graph(&record(&lowered, OrderingPolicy::BASELINE));
         assert_eq!(report.conclusion(), GraphConclusion::Verified, "{kernel}");
     }
 
@@ -344,17 +349,14 @@ fn nki_attention_samples_verify_v10_only_when_hazards_are_tracked_by_address() {
         "attn_fwd_v8",
         "attn_fwd_v8a",
     ] {
-        let report = check_graph(&record_graph(
-            &tiled_attention(kernel),
-            OrderingPolicy::BASELINE,
-        ));
+        let report = check_graph(&record(&tiled_attention(kernel), OrderingPolicy::BASELINE));
         assert_eq!(report.conclusion(), GraphConclusion::Verified, "{kernel}");
     }
 
     let v10 = tiled_attention("attn_fwd_v10");
-    let report = check_graph(&record_graph(&v10, BY_TENSOR));
+    let report = check_graph(&record(&v10, BY_TENSOR));
     assert!(!report.memory_conflict.violations().is_empty());
-    let graph = record_graph(&v10, OrderingPolicy::BASELINE);
+    let graph = record(&v10, OrderingPolicy::BASELINE);
     assert_eq!(check_graph(&graph).conclusion(), GraphConclusion::Verified);
     assert!(
         graph
@@ -383,7 +385,7 @@ fn nki_attention_v10_races_only_between_tiles_placed_over_the_same_bytes() {
         ..BY_TENSOR
     };
     for policy in [BY_TENSOR, by_tensor_in_order] {
-        let graph = record_graph(&lowered, policy);
+        let graph = record(&lowered, policy);
         let pairs = conflicts(&graph, &check_graph(&graph));
         assert!(!pairs.is_empty(), "{policy:?}");
         for &(earlier, later, kind) in &pairs {
@@ -428,10 +430,14 @@ fn nki_tutorials_accumulating_across_affine_range_iterations_verify_where_exempt
     let source = sample("mamba_nki_kernels");
     let mamba = lower_sample(&source, &[], "mamba_v1", &call);
 
+    let (matmul_run, mamba_run) = (
+        Execution::of(&evaluate(&matmul)),
+        Execution::of(&evaluate(&mamba)),
+    );
     for policy in OrderingPolicy::ALL {
-        let report = check_graph(&record_graph(&matmul, policy));
+        let report = check_graph(&record_graph(&matmul, policy, &matmul_run));
         assert_eq!(report.conclusion(), GraphConclusion::Verified, "{policy:?}");
-        let report = check_graph(&record_graph(&mamba, policy));
+        let report = check_graph(&record_graph(&mamba, policy, &mamba_run));
         assert_eq!(
             report.conclusion() == GraphConclusion::Verified,
             policy.reductions == Reductions::MatmulAndAdd,
@@ -496,20 +502,71 @@ fn nki_no_reorder_blocks_order_their_own_instructions_when_the_policy_keeps_them
     assert_eq!(report.conclusion(), GraphConclusion::Verified);
 }
 
+// Test that a run aborting at an instruction ends its graph there, as PTX's and AMD's do, so
+// the graph branch is inconclusive, not verified: `accumulate_uninitialized`, race free,
+// accumulates into unwritten PSUM at instruction 2.
+#[test]
+fn nki_graphs_of_aborted_runs_end_at_the_failing_instruction() {
+    let source =
+        std::fs::read_to_string(format!("{FIXTURES}execution_error/placement_errors.py")).unwrap();
+    let parsed = parse_kernel(
+        &source,
+        "accumulate_uninitialized",
+        &[("a_t", &[4, 2]), ("b", &[4, 3])],
+    )
+    .unwrap();
+    let graph = record(&lower_kernel(&parsed).unwrap(), OrderingPolicy::BASELINE);
+    assert!(
+        matches!(
+            graph.terminal(),
+            Terminal::Aborted {
+                thread: Some(ThreadIx(2)),
+                ..
+            }
+        ),
+        "{:?}",
+        graph.terminal()
+    );
+    let last = graph
+        .events()
+        .iter()
+        .map(|(id, _)| id)
+        .filter_map(|id| match graph.event(id).ctx {
+            ExecContext::Thread(thread) => Some(thread.0),
+            _ => None,
+        });
+    assert_eq!(last.max(), Some(2));
+    let conclusion = check_graph(&graph).conclusion();
+    assert!(
+        matches!(conclusion, GraphConclusion::Unknown { .. }),
+        "{conclusion:?}"
+    );
+}
+
 /// One kernel of the policy table: its fixture or sample and its lowered form.
 struct Probe {
     label: String,
     kernel: LoweredKernel,
+    execution: Execution,
+}
+
+impl Probe {
+    fn new(label: String, kernel: LoweredKernel) -> Probe {
+        let execution = Execution::of(&evaluate(&kernel));
+        Probe {
+            label,
+            kernel,
+            execution,
+        }
+    }
 }
 
 fn probe_fixture(name: &str, call: &KernelCall) -> Probe {
     let source = std::fs::read_to_string(format!("{FIXTURES}{name}.py")).unwrap();
     let parsed = parse_kernel_for_call(&source, &[], "kernel", call)
         .unwrap_or_else(|e| panic!("{name}: {e}"));
-    Probe {
-        label: name.to_string(),
-        kernel: lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}")),
-    }
+    let kernel = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
+    Probe::new(name.to_string(), kernel)
 }
 
 fn probe_sample(
@@ -519,10 +576,8 @@ fn probe_sample(
     kernel: &str,
     call: &KernelCall,
 ) -> Probe {
-    Probe {
-        label: format!("{file}::{kernel}"),
-        kernel: lower_sample(source, modules, kernel, call),
-    }
+    let lowered = lower_sample(source, modules, kernel, call);
+    Probe::new(format!("{file}::{kernel}"), lowered)
 }
 
 /// Every NKI fixture and sample this suite has, at the shapes its other tests call it with.
@@ -640,10 +695,10 @@ fn probes() -> Vec<Probe> {
         "attn_fwd_v8a",
         "attn_fwd_v10",
     ] {
-        probes.push(Probe {
-            label: format!("attention::{kernel}"),
-            kernel: tiled_attention(kernel),
-        });
+        probes.push(Probe::new(
+            format!("attention::{kernel}"),
+            tiled_attention(kernel),
+        ));
     }
 
     let add: &[u64] = &[128, 512];
@@ -808,7 +863,7 @@ fn nki_verdicts_under_each_ordering_policy_match_the_table() {
     for probe in probes() {
         write!(table, "{:56}", probe.label).unwrap();
         for policy in OrderingPolicy::ALL {
-            let report = check_graph(&record_graph(&probe.kernel, policy));
+            let report = check_graph(&record_graph(&probe.kernel, policy, &probe.execution));
             let cell = match report.conclusion() {
                 GraphConclusion::Verified => "ok".to_string(),
                 _ => report.memory_conflict.violations().len().to_string(),
