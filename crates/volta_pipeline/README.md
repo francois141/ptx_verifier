@@ -74,7 +74,9 @@ only inline unit tests of their internals.
   swapped inputs. The snapshot helper must reject a completed kernel with an LDS race.
 - `trainium/accepted_tests.rs`: NKI fixtures expected to run, their parsed and lowered
   forms and symbolic outputs matching their `.ast`, `.ir` and `.out` files (and their
-  hand-written `.expected`, which `VOLTA_BLESS` never rewrites);
+  hand-written `.expected`, which `VOLTA_BLESS` never rewrites), once the graph of a
+  `success/` fixture is `Verified` under `BASELINE` and that of a `check_failure/` one
+  `Rejected`;
   `trainium/rejected_tests.rs`: the error each rejected kernel must raise.
 - `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
   instruction, under `OrderingPolicy::BASELINE` (the frontend's) unless a test names

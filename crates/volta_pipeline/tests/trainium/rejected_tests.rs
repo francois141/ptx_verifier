@@ -78,7 +78,7 @@ fn a_placed_tile_past_the_end_of_its_buffer_is_an_error() {
 // widening the parsed copy's source to a shape `row` does not broadcast to.
 #[test]
 fn broadcasting_to_an_incompatible_shape_is_an_error() {
-    let source = common::trainium::source("success/scan");
+    let source = common::trainium::source("check_failure/scan");
     let shapes: [(&str, &[u64]); 3] = [("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])];
     let mut parsed = parse_kernel(&source, "kernel", &shapes).unwrap();
     let mut widened = 0;

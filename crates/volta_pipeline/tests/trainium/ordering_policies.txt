@@ -26,7 +26,6 @@ success/subscripts_matmul                                   ok    ok    ok    ok
 success/fused_softmax                                       ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 success/placed_tiles                                        ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 success/access_patterns                                     ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
-success/scan                                                 3    ok     3    ok     3    ok     3    ok     3    ok     3    ok     3    ok     3    ok
 success/sequential_carried                                  ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 success/pipelined_scale                                     ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 success/indirect                                            ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
@@ -40,6 +39,7 @@ success/affine_vector_sum                                   ok    ok    ok    ok
 success/affine_matmul_accumulate                            ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 check_failure/affine_matmul_partial_read                     2     2     2     2     2     2     2     2     2     2     2     2     2     2     2     2
 check_failure/no_reorder_affine                              3     3     3     3    ok    ok    ok    ok     3     3     3     3    ok    ok    ok    ok
+check_failure/scan                                           3    ok     3    ok     3    ok     3    ok     3    ok     3    ok     3    ok     3    ok
 attention::attn_fwd_v1                                      ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 attention::attn_fwd_v2                                      ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok
 attention::attn_fwd_v3                                      ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok    ok

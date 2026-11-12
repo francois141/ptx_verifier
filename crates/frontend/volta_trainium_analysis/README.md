@@ -436,7 +436,8 @@ the kernels expected to run, `check_failure/` the race fixtures, and `execution_
 one call, giving each parameter's shape (`common::trainium::check(name, kernel, shapes)`,
 or `check_importing` with the fixture modules it imports from), and
 `trainium/rejected_tests.rs` requires each error; the fixtures' own shape `assert`s check
-those shapes.
+those shapes. Before comparing outputs, `check` requires a `success/` fixture's event graph
+to be `Verified` under `OrderingPolicy::BASELINE`, and a `check_failure/` one's `Rejected`.
 Besides `.ast`, `.ir` and `.out`, the race fixtures and `sequential_carried`,
 `affine_matmul_accumulate`, `affine_vector_sum`, `placed_tiles`,
 `access_patterns`, `indirect` and `loop_origins` (`common::trainium`'s `FOOTPRINTS`) have
@@ -457,6 +458,8 @@ PSUM, the reduction the docs allow across `affine_range` iterations, race free u
 policy;
 `affine_matmul_partial_read` also copies the accumulator out inside the loop, a read of a
 partial sum racing the other iteration's matmul (R8) under every policy.
+`scan` (below) overwrites its `nl.zeros` tile `scale` with a DMA before any read: two
+writes with no read between them, race free only once write after write is ordered.
 `no_reorder_back_to_back_dmas` and `no_reorder_affine` put R0 and R1 inside a
 `no_reorder` block, race free once blocks run in program order; `no_reorder_boundary`
 rewrites inside a block a tile written before it, a race unless write after write is
@@ -534,7 +537,7 @@ through a tile view with an offset (a hand-written `.expected`);
 `pattern_errors.py`'s kernels must fail to lower: a tile view whose first step is not
 the free size, one leaving its partition, one past its tensor's end, and a
 `tensor_reduce` over a leading axis.
-`success/scan.py` scans each row of a 2 x 3 tile with a one-partition row
+`check_failure/scan.py` scans each row of a 2 x 3 tile with a one-partition row
 `nl.broadcast_to` both partitions, from a `[2, 1]` tile (`acc = a * acc + b`) and from
 `1.0` with both ops reversed (`acc = b - (acc - a)`), and takes `exp(a * c)` through
 `activation`'s `scale`, its `scale` tile an `nl.zeros` without a `buffer` (a
