@@ -41,7 +41,8 @@ pub enum WriteAfterWrite {
 pub enum PlacedTiles {
     /// Only accesses through the same tensor are ordered.
     ByTensor,
-    /// Accesses through any tensors over the same bytes are ordered.
+    /// Accesses through any tensors over the same bytes are ordered, as they must be for
+    /// the compiler's own reuse of on-chip memory across tensors.
     ByAddress,
 }
 
@@ -54,10 +55,10 @@ pub enum NoReorder {
 }
 
 impl OrderingPolicy {
-    /// The pipeline's policy: read after write and write after read within a tensor.
+    /// The pipeline's policy: read after write and write after read, by address.
     pub const BASELINE: OrderingPolicy = OrderingPolicy {
         write_after_write: WriteAfterWrite::Unordered,
-        placed_tiles: PlacedTiles::ByTensor,
+        placed_tiles: PlacedTiles::ByAddress,
         no_reorder: NoReorder::Unordered,
     };
 
@@ -73,9 +74,9 @@ impl OrderingPolicy {
                     WriteAfterWrite::Ordered
                 },
                 placed_tiles: if i & 2 == 0 {
-                    PlacedTiles::ByTensor
-                } else {
                     PlacedTiles::ByAddress
+                } else {
+                    PlacedTiles::ByTensor
                 },
                 no_reorder: if i & 4 == 0 {
                     NoReorder::Unordered

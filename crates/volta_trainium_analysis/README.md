@@ -349,14 +349,18 @@ the latest earlier writer of each location it reads) and write after read
 (`NkiWriteAfterReadOrder`: it follows every earlier reader of each location it writes), unless
 the two are in different iterations of one `affine_range`, which declares its iterations
 independent. So every reduction across `affine_range` iterations races under every policy.
-`OrderingPolicy::BASELINE`, the pipeline's, adds nothing more:
+`OrderingPolicy::BASELINE`, the pipeline's, tracks them by address and orders nothing more:
 
 - `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`): a write also follows the latest
   earlier writer of what it writes. Without it, two writes with no read between them race;
   with a read between, read after write and write after read order them already.
-- `PlacedTiles::ByAddress` (`NkiHazardsByPlacedAddress`): the compiler tracks those hazards
-  through the bytes `address=` tiles share. `ByTensor`, the baseline, orders only accesses
-  through one tensor, as the Direct Allocation Guide warns its race checking is limited.
+- `PlacedTiles::ByAddress` (`NkiHazardsByPlacedAddress`), the baseline's: the compiler
+  tracks those hazards through the bytes `address=` tiles share, as it must for its own
+  reuse of on-chip memory across tensors, and as v10, AWS's direct-allocation sample,
+  relies on. The docs do not state it; the Direct Allocation Guide's warning that the
+  compiler's race and lifetime checking is limited is read as not flagging a clobbered
+  tile, which the evaluator's `ClobberedRead` catches in program order. `ByTensor` orders
+  only accesses through one tensor and records no placement assumption.
 - `NoReorder::ProgramOrder` (`NkiNoReorderInProgramOrder`): each instruction of a
   `no_reorder` block also follows the block's previous one, its loops' iterations included.
   The API page says the block guarantees operations "execute in program order"; the

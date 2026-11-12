@@ -555,9 +555,9 @@ known), within 128 partitions of `sbuf_fmax_bytes` (SBUF) or 16 KiB (PSUM, eight
 banks). A kernel places all its on-chip tiles or none (`LowerError::MixedAllocation`).
 Placed tiles may overlap (v10's `v_psum_t` and `qk_psum`): `eval/alias.rs` pairs the
 overlapping tiles, a write through one clobbers the other's elements covering its bytes,
-and reading a clobbered element is `EvalError::ClobberedRead`. This is program order; how
-the compiler orders accesses through overlapping tiles is unstated in the docs and, like
-DMA asynchrony, outside the check.
+and reading a clobbered element is `EvalError::ClobberedRead`. This is program order; the
+graph branch takes the compiler to order accesses through overlapping tiles by address
+(`OrderingPolicy::BASELINE`'s `PlacedTiles::ByAddress`), which the docs do not state.
 
 A kernel's outputs are the arguments it writes and the tensor it returns: a
 final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
@@ -681,11 +681,13 @@ instructions. The docs say only that it synchronizes "based on data dependencies
 policy is three choices, each recorded as an `Assumption`. Every policy orders read after
 write (`NkiReadAfterWriteOrder`: after the latest earlier writer of what it reads) and write
 after read (`NkiWriteAfterReadOrder`: after every earlier reader of what it writes), unless
-the two are in different iterations of one `affine_range`; `OrderingPolicy::BASELINE`, the
-pipeline's, nothing more. `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`) also orders
-a write after the latest earlier writer; `PlacedTiles::ByAddress`
-(`NkiHazardsByPlacedAddress`) tracks hazards through the bytes `address=` tiles share rather
-than per tensor (`ByTensor`, the baseline); `NoReorder::ProgramOrder`
+the two are in different iterations of one `affine_range`. `OrderingPolicy::BASELINE`, the
+pipeline's, tracks them by address (`PlacedTiles::ByAddress`, `NkiHazardsByPlacedAddress`:
+through the bytes `address=` tiles share, as the compiler must for its own reuse of on-chip
+memory across tensors, and as v10, AWS's direct-allocation sample, relies on) and orders
+nothing more. `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`) also orders a write
+after the latest earlier writer; `PlacedTiles::ByTensor` tracks hazards per tensor only,
+recording no placement assumption; `NoReorder::ProgramOrder`
 (`NkiNoReorderInProgramOrder`) orders each `no_reorder` block's instructions in program
 order, as the API page says it does, though the scheduling guide leaves open whether its
 edges are semaphores or scheduling hints; a block orders nothing against code outside it.
@@ -962,8 +964,8 @@ its input must be rejected: CK's output buffer bound drops four of its nine stor
 parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
 `common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
-graph verifies is ACCEPT through `solve` and `decide`, citing `NkiReadAfterWriteOrder` and
-`NkiWriteAfterReadOrder`, and
+graph verifies is ACCEPT through `solve` and `decide`, citing `NkiReadAfterWriteOrder`,
+`NkiWriteAfterReadOrder` and `NkiHazardsByPlacedAddress`, and
 that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
@@ -1004,11 +1006,11 @@ to reject a completed kernel with an LDS race. `just amd` runs the accepted, rej
 equivalence suites; the full `amd_tests` target also runs graph, grid and Lean tests.
 `trainium/graph_tests.rs` checks NKI graphs under `BASELINE` unless a test names another
 policy: fixtures whose tiles are written once or rewritten after their readers, and the
-attention samples v1 to v8a, verify; each race fixture in `trainium/check_failure/` fails
+attention samples v1 to v10, verify; each race fixture in `trainium/check_failure/` fails
 `MemoryConflict` with exactly its expected instruction pairs; writes with no read between
-them verify once write after write is ordered; v10's races all pair `v_psum_t`, transposed
-before its `no_reorder` block, with `qk_psum` over the same PSUM bytes inside it (R3), and
-it verifies once hazards are tracked by address; the `affine_range` fixtures, the tiled
+them verify once write after write is ordered; with hazards tracked per tensor only, v10's
+races all pair `v_psum_t`, transposed before its `no_reorder` block, with `qk_psum` over the
+same PSUM bytes inside it (R2/R3); the `affine_range` fixtures, the tiled
 matmul tutorial and mamba race under every policy. A table test checks every NKI fixture and
 sample under all eight policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
 rewrites it). `just trainium` runs its accepted, rejected and
