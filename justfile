@@ -111,9 +111,15 @@ extract-lean:
     @echo "Wrote target/lean/sigmoid.lean"
 
 # The fused GEMM-sigmoid is verified in Lean instead of solved; it needs $VOLTA_LEAN_PROJECT and Claude Code.
-# Check the Composable Kernel examples in external/amd against their specs, printing each one's log
-composable:
-    uv run --reinstall-package volta --package volta python external/amd/verify.py
+# `--verbose` prints each case's log.
+# Check the Composable Kernel examples in external/amd against their specs
+composable *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}}
+
+# `--verbose` prints each case's log.
+# Check CK's activation ops, compiled with and without -ffast-math, against their specs
+amd_activations *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} activations
 
 # ===== Trainium ===============================================================
 

@@ -1,0 +1,15 @@
+{
+  "description": "CK Tile's FastGeluAsm (ROCm/composable_kernel#3763) on 64 fp32 elements, one per work-item. Its scratch register shares c2's at -O3, so the kernel computes x / (1 + exp((1 + c1) x^3)).",
+  "kernel": "ck_fast_gelu_asm",
+  "block": 64,
+  "arrays": [
+    {"name": "x", "kind": "in",  "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "ptr": "x"},
+    {"name": "y", "ptr": "y"}
+  ],
+  "spec": "ck_fast_gelu.spec",
+  "dims": {"N": 64}
+}

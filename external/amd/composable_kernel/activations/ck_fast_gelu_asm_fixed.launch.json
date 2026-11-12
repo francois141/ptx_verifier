@@ -1,0 +1,15 @@
+{
+  "description": "FastGeluAsm with the fix suggested in ROCm/composable_kernel#3763 (its scratch operand \"=&v\") on 64 fp32 elements, one per work-item.",
+  "kernel": "ck_fast_gelu_asm_fixed",
+  "block": 64,
+  "arrays": [
+    {"name": "x", "kind": "in",  "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "ptr": "x"},
+    {"name": "y", "ptr": "y"}
+  ],
+  "spec": "ck_fast_gelu.spec",
+  "dims": {"N": 64}
+}

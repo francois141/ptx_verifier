@@ -1,0 +1,16 @@
+{
+  "description": "CK Tile's Logistic with its default alpha = 1 on 64 fp32 elements, one per work-item.",
+  "kernel": "ck_logistic",
+  "block": 64,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "ptr": "x"},
+    {"name": "y", "ptr": "y"},
+    {"name": "op.alpha_", "float": 1.0}
+  ],
+  "spec": "ck_logistic.spec",
+  "dims": {"N": 64}
+}

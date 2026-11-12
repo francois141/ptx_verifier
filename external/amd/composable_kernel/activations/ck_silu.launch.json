@@ -1,0 +1,15 @@
+{
+  "description": "CK Tile's Silu on 64 fp32 elements, one per work-item.",
+  "kernel": "ck_silu",
+  "block": 64,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "ptr": "x"},
+    {"name": "y", "ptr": "y"}
+  ],
+  "spec": "ck_silu.spec",
+  "dims": {"N": 64}
+}

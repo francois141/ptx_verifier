@@ -1,19 +1,25 @@
 """Check the Composable Kernel examples against their specs, one after the other.
 
-    uv run --reinstall-package volta --package volta python external/amd/verify.py
+    uv run --reinstall-package volta --package volta python external/amd/verify.py \
+        [--verbose] [PREFIX]
 
-Each case is a kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
-launch file `composable_kernel/<case>.launch.json` naming its spec; Volta's log of each case
-prints as it runs. The canonical solver must reach each solved case's expected verdict. CK's
-fused GEMM-sigmoid is not exactly its formula over the reals (its exp rescales by f32(e^-64)
-past the underflow bound), so it is verified in Lean within a tolerance instead, with no
-canonical solver: Claude Code writes the proof into `target/lean/<case>/`, which later runs
-recheck without the agent while the challenge is unchanged. That case needs Claude Code and
-`$VOLTA_LEAN_PROJECT`, a Lake project with Mathlib built, which the environment or the
-repository's untracked `.env` (a `VOLTA_LEAN_PROJECT=<path>` line) gives. The exit status is 1
-if any case fails.
+A PREFIX runs only the cases whose launch file starts with it (`activations`). Each case is a
+kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a launch file
+`composable_kernel/<case>.launch.json` naming its spec, CK's activations under
+`composable_kernel/activations*/`. Each case prints one line when it finishes: PASS if its
+kernel verified (ACCEPT, or every output proved in Lean), else FAIL, noting when a verdict
+other than ACCEPT is the case's expected one, such as a known bug's REJECT. `--verbose` also
+prints Volta's log of each case as it runs, then a summary. CK's fused GEMM-sigmoid is not
+exactly its formula over the reals (its exp rescales by f32(e^-64) past the underflow bound),
+so it is verified in Lean within a tolerance instead, with no canonical solver: Claude Code
+writes the proof into `target/lean/<case>/`, which later runs recheck without the agent while
+the challenge is unchanged. That case needs Claude Code and `$VOLTA_LEAN_PROJECT`, a Lake
+project with Mathlib built, which the environment or the repository's untracked `.env` (a
+`VOLTA_LEAN_PROJECT=<path>` line) gives. The exit status is 1 if any case's verdict is not its
+expected one.
 """
 
+import argparse
 import json
 import logging
 import math
@@ -64,6 +70,15 @@ class Case:
         return f"Lean proof within {self.check.tolerance}"
 
 
+@dataclass(frozen=True)
+class Outcome:
+    """Whether the kernel verified, and whether that verdict is the case's expected one."""
+
+    verified: bool
+    expected: bool
+    detail: str
+
+
 CASES = (
     Case("ck_gemm", "ck_gemm", Solve("ACCEPT")),
     # Case("ck_fmha", "ck_fmha", Solve("ACCEPT")),
@@ -72,6 +87,43 @@ CASES = (
     Case("ck_avgpool2d", "ck_avgpool2d", Solve("ACCEPT")),
     # CK's output buffer bound drops four of the nine outputs' stores.
     Case("ck_avgpool2d_larger_output", "ck_avgpool2d", Solve("REJECT")),
+    Case("activations/ck_relu", "activations/ck_relu", Solve("ACCEPT")),
+    Case("activations/ck_clipped_relu", "activations/ck_clipped_relu", Solve("ACCEPT")),
+    Case("activations/ck_sigmoid", "activations/ck_sigmoid", Solve("ACCEPT")),
+    Case("activations/ck_logistic", "activations/ck_logistic", Solve("ACCEPT")),
+    Case("activations/ck_silu", "activations/ck_silu", Solve("ACCEPT")),
+    Case("activations/ck_swish", "activations/ck_swish", Solve("ACCEPT")),
+    Case("activations/ck_fast_gelu", "activations/ck_fast_gelu", Solve("ACCEPT")),
+    # ROCm/composable_kernel#3763: FastGeluAsm's scratch register shares an input's at -O3.
+    Case(
+        "activations/ck_fast_gelu_asm", "activations/ck_fast_gelu_asm", Solve("REJECT")
+    ),
+    Case(
+        "activations/ck_fast_gelu_asm_fixed",
+        "activations/ck_fast_gelu_asm",
+        Solve("ACCEPT"),
+    ),
+    # The same ops without -ffast-math, whose exp keeps its range reduction.
+    Case(
+        "activations_no_fast_math/ck_relu",
+        "activations_no_fast_math/ck_relu",
+        Solve("ACCEPT"),
+    ),
+    Case(
+        "activations_no_fast_math/ck_clipped_relu",
+        "activations_no_fast_math/ck_clipped_relu",
+        Solve("ACCEPT"),
+    ),
+    Case(
+        "activations_no_fast_math/ck_fast_gelu_asm",
+        "activations_no_fast_math/ck_fast_gelu_asm",
+        Solve("REJECT"),
+    ),
+    Case(
+        "activations_no_fast_math/ck_fast_gelu_asm_fixed",
+        "activations_no_fast_math/ck_fast_gelu_asm",
+        Solve("ACCEPT"),
+    ),
     Case("ck_gemm_sigmoid", "ck_gemm_sigmoid", Prove("1/1000")),
 )
 
@@ -115,18 +167,26 @@ def dims3(value: int | list[int]) -> tuple[int, int, int]:
     return tuple(dims + [1] * (3 - len(dims)))
 
 
-def solve(kernel: Path, launch: Launch, check: Solve) -> tuple[bool, str]:
+def solve(kernel: Path, launch: Launch, check: Solve) -> Outcome:
     result = volta.solve(
         kernel, launch.config, kernel=launch.kernel, spec=launch.spec, dims=launch.dims
     )
+    verified = result.verdict == "ACCEPT"
+    expected = result.verdict == check.expected
+    if not expected:
+        note = f" (expected {check.expected})"
+    elif not verified:
+        note = " (expected)"
+    else:
+        note = ""
     outputs = sum(len(elements) for _, elements in result.outputs)
-    detail = f"{result.verdict} by the canonical solver, {outputs} outputs"
-    if result.verdict != "ACCEPT" and result.evidence:
+    detail = f"{result.verdict}{note} by the canonical solver, {outputs} outputs"
+    if not verified and result.evidence:
         detail += f"; {result.evidence[0]}"
-    return result.verdict == check.expected, detail
+    return Outcome(verified, expected, detail)
 
 
-def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> tuple[bool, str]:
+def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> Outcome:
     directory = LEAN_DIR / case.launch
     arguments = {
         "kernel": launch.kernel,
@@ -144,17 +204,16 @@ def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> tuple[bool,
             recheck = volta.check_lean_proof(directory)
             if recheck.proved:
                 detail = f"{recheck.proved_statements} of {recheck.statements} proved in Lean"
-                return (
-                    True,
-                    f"{detail} within {check.tolerance} (rechecked {directory})",
-                )
+                detail += f" within {check.tolerance} (rechecked {directory})"
+                return Outcome(True, True, detail)
 
     LOG.info("[lean] proving with Claude Code into %s", directory)
     result = volta.prove_lean(
         kernel, launch.config, output_dir=directory, equivalence=False, **arguments
     )
     detail = f"{result.proved_statements} of {result.statements} proved in Lean"
-    return result.proved, f"{detail} within {check.tolerance} (proof {result.proof})"
+    detail += f" within {check.tolerance} (proof {result.proof})"
+    return Outcome(result.proved, result.proved, detail)
 
 
 def load_dotenv(path: Path) -> None:
@@ -167,9 +226,31 @@ def load_dotenv(path: Path) -> None:
             os.environ.setdefault(name.strip(), os.path.expanduser(value.strip()))
 
 
+def status(passed: bool) -> str:
+    """PASS in green or FAIL in red, uncolored unless stdout is a terminal."""
+    word, color = ("PASS", 32) if passed else ("FAIL", 31)
+    if not sys.stdout.isatty() or "NO_COLOR" in os.environ:
+        return word
+    return f"\033[{color}m{word}\033[0m"
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "prefix",
+        nargs="?",
+        default="",
+        help="run only the cases whose launch file starts with it",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="print Volta's log of each case"
+    )
+    args = parser.parse_args()
+    prefix = args.prefix
+
+    # Volta's Rust logs reach Python's `logging` at info level.
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.INFO if args.verbose else logging.WARNING,
         format="%(asctime)s  %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stdout,
@@ -178,29 +259,34 @@ def main() -> int:
 
     results = []
     for case in CASES:
-        print(f"\n== {case.launch}: {case.describe()}", flush=True)
+        if not case.launch.startswith(prefix):
+            continue
+        if args.verbose:
+            print(f"\n== {case.launch}: {case.describe()}", flush=True)
         kernel = CK_ROOT / f"{case.kernel}.s"
         launch = load_launch(CK_ROOT / f"{case.launch}.launch.json")
         start = time.monotonic()
         try:
             if isinstance(case.check, Solve):
-                passed, detail = solve(kernel, launch, case.check)
+                outcome = solve(kernel, launch, case.check)
             else:
-                passed, detail = prove(case, kernel, launch, case.check)
+                outcome = prove(case, kernel, launch, case.check)
         except volta.VoltaError as error:
-            passed, detail = False, f"{type(error).__name__}: {error}"
+            outcome = Outcome(False, False, f"{type(error).__name__}: {error}")
 
         seconds = time.monotonic() - start
-        line = (
-            f"{'PASS' if passed else 'FAIL'} {case.launch}: {detail} ({seconds:.1f}s)"
-        )
+        line = f"{status(outcome.verified)} {case.launch}: {outcome.detail} ({seconds:.1f}s)"
         print(line, flush=True)
-        results.append((passed, line))
+        results.append((outcome.expected, line))
 
-    print("\n== summary", flush=True)
-    for _, line in results:
-        print(line, flush=True)
-    return 0 if all(passed for passed, _ in results) else 1
+    if not results:
+        print(f"no case's launch file starts with {prefix!r}", flush=True)
+        return 1
+    if args.verbose:
+        print("\n== summary", flush=True)
+        for _, line in results:
+            print(line, flush=True)
+    return 0 if all(expected for expected, _ in results) else 1
 
 
 if __name__ == "__main__":
