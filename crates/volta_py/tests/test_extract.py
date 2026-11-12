@@ -33,7 +33,7 @@ def add_config(size):
             "crates/volta_pipeline/tests/trainium/success/add.py",
             256,
             "AWS Trainium NKI",
-            None,
+            True,
         ),
     ],
 )

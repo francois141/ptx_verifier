@@ -148,10 +148,10 @@ print(f"{result.isa}: {result.verdict}; race checks: {result.race_verified}")
 Expected output:
 
 ```text
-AWS Trainium NKI: ACCEPT; race checks: None
+AWS Trainium NKI: ACCEPT; race checks: True
 ```
 
-`volta.solve` selects the frontend by file extension and uses the Fast Canonical Solver by default. `result.outputs` contains the extracted expressions, `result.verdict` is `ACCEPT`, `REJECT`, or `UNKNOWN`, and `result.evidence` explains the decision. Race checks run for PTX and AMD (for AMD, over one workgroup's LDS accesses and barriers); `None` means the Trainium frontend does not check race freedom.
+`volta.solve` selects the frontend by file extension and uses the Fast Canonical Solver by default. `result.outputs` contains the extracted expressions, `result.verdict` is `ACCEPT`, `REJECT`, or `UNKNOWN`, and `result.evidence` explains the decision. Race checks run for every frontend: for AMD over one workgroup's LDS accesses and barriers, and for Trainium over one core's instructions, ordered where the Neuron compiler is assumed to order them (read after write and write after read, tracked by address, with `nc_matmul` accumulations commuting). `None` means the run recorded no event graph.
 
 ## Prove sigmoid in Lean
 
