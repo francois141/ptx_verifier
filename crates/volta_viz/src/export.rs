@@ -546,11 +546,10 @@ fn describe(graph: &EventGraph, arena: &ExprArena, id: EventId) -> (&'static str
             info.push((
                 "ordering",
                 match a.ordering {
-                    OrderingKind::Ordinary => "ordinary",
-                    OrderingKind::Atomic => "atomic",
-                    OrderingKind::Reduction => "reduction",
-                }
-                .to_string(),
+                    OrderingKind::Ordinary => "ordinary".to_string(),
+                    OrderingKind::Atomic => "atomic".to_string(),
+                    OrderingKind::Reduction(op) => format!("reduction({})", op.name()),
+                },
             ));
             info.push(("operand", format!("{:?}", a.role)));
             info.push(("attributed to", thread_name(graph, a.attributed)));
