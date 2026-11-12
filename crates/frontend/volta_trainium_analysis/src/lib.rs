@@ -8,8 +8,8 @@ mod ir;
 mod lower;
 
 pub use eval::{
-    Access, EvalError, Location, Mode, OrderingPolicy, PARTITION_STRIDE, evaluate, footprints,
-    record_graph,
+    Access, EvalError, Location, Mode, NoReorder, OrderingPolicy, PARTITION_STRIDE, PlacedTiles,
+    WriteAfterWrite, evaluate, footprints, record_graph,
 };
 pub use ir::{
     ActivationFunc, ArithOp, Index, Initial, InstrId, LoopId, LoopIteration, LoopKind,

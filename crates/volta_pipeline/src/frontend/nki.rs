@@ -1,7 +1,7 @@
 //! AWS Trainium NKI: `volta_trainium_analysis` lowers the `@nki.jit` kernel and executes it.
 //! It is called with the parameter shapes its own `assert param.shape == (...)`s state, so it
-//! takes no launch. The graph branch checks the event graph of its instructions, ordered only
-//! by data flow (`OrderingPolicy::DataFlowOnly`).
+//! takes no launch. The graph branch checks the event graph of its instructions under
+//! `OrderingPolicy::BASELINE`: read after write and write after read within a tensor.
 
 use volta_graph_check::check_graph;
 use volta_ptx_analysis::AnalysisConfig;
@@ -48,7 +48,7 @@ impl Frontend for NkiFrontend {
         let lowered = lower_kernel(&parsed)
             .map_err(|e| FrontendError::Analysis(format!("lowering failed: {e}")))?;
 
-        let graph = record_graph(&lowered, OrderingPolicy::DataFlowOnly);
+        let graph = record_graph(&lowered, OrderingPolicy::BASELINE);
         let report = check_graph(&graph);
         Ok(KernelRun {
             outputs: evaluate(&lowered).map_err(|e| e.to_string()),

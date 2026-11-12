@@ -1,0 +1,61 @@
+# Each NKI kernel's graph under each OrderingPolicy: ok (Verified) or its number of
+# conflicting access pairs. Every policy orders read after write and write after read
+# outside affine_range iterations (base); a column adds write after write (waw),
+# hazards through placed tiles' shared bytes (addr), or no_reorder blocks in program
+# order (nr).
+kernel                                                          base         waw        addr    waw+addr          nr      waw+nr     addr+nr waw+addr+nr
+success/add                                                       ok          ok          ok          ok          ok          ok          ok          ok
+success/sigmoid                                                   ok          ok          ok          ok          ok          ok          ok          ok
+success/transpose                                                 ok          ok          ok          ok          ok          ok          ok          ok
+success/matmul                                                    ok          ok          ok          ok          ok          ok          ok          ok
+success/gemm_relu                                                 ok          ok          ok          ok          ok          ok          ok          ok
+success/loop_origins                                              ok          ok          ok          ok          ok          ok          ok          ok
+success/tiled_copy                                                ok          ok          ok          ok          ok          ok          ok          ok
+success/rms_norm                                                  ok          ok          ok          ok          ok          ok          ok          ok
+success/returned_output                                           ok          ok          ok          ok          ok          ok          ok          ok
+success/call_shapes                                               ok          ok          ok          ok          ok          ok          ok          ok
+success/softmax                                                   ok          ok          ok          ok          ok          ok          ok          ok
+success/language_api                                              ok          ok          ok          ok          ok          ok          ok          ok
+success/accumulate                                                ok          ok          ok          ok          ok          ok          ok          ok
+success/regions_softmax                                           ok          ok          ok          ok          ok          ok          ok          ok
+success/regions_matmul                                            ok          ok          ok          ok          ok          ok          ok          ok
+success/subscripts_softmax                                        ok          ok          ok          ok          ok          ok          ok          ok
+success/subscripts_matmul                                         ok          ok          ok          ok          ok          ok          ok          ok
+success/fused_softmax                                             ok          ok          ok          ok          ok          ok          ok          ok
+success/placed_tiles                                              ok          ok          ok          ok          ok          ok          ok          ok
+success/access_patterns                                           ok          ok          ok          ok          ok          ok          ok          ok
+success/scan                                                       3          ok           3          ok           3          ok           3          ok
+success/sequential_carried                                        ok          ok          ok          ok          ok          ok          ok          ok
+success/pipelined_scale                                           ok          ok          ok          ok          ok          ok          ok          ok
+success/indirect                                                  ok          ok          ok          ok          ok          ok          ok          ok
+check_failure/back_to_back_dmas                                    2          ok           2          ok           2          ok           2          ok
+check_failure/affine_overwrite                                     2           2           2           2           2           2           2           2
+check_failure/sequential_overwrite                                 2          ok           2          ok           2          ok           2          ok
+check_failure/affine_carried                                       5           5           5           5           5           5           5           5
+check_failure/affine_vector_sum                                    7           7           7           7           7           7           7           7
+check_failure/no_reorder_back_to_back_dmas                         2          ok           2          ok          ok          ok          ok          ok
+check_failure/no_reorder_boundary                                  2          ok           2          ok           2          ok           2          ok
+check_failure/affine_matmul_accumulate                             7           7           7           7           7           7           7           7
+check_failure/no_reorder_affine                                    3           3           3           3          ok          ok          ok          ok
+attention::attn_fwd_v1                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v2                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v3                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v4                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v5                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v6                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v7                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v8                                            ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v8a                                           ok          ok          ok          ok          ok          ok          ok          ok
+attention::attn_fwd_v10                                          192         192          ok          ok         144         144          ok          ok
+tensor_addition::nki_tensor_add                                   ok          ok          ok          ok          ok          ok          ok          ok
+matrix_multiplication::nki_matmul_basic_                          ok          ok          ok          ok          ok          ok          ok          ok
+matrix_multiplication::nki_matmul_tiled_                        2912        2912        2912        2912        2912        2912        2912        2912
+matrix_multiplication::nki_matmul_hoist_load_                   2912        2912        2912        2912        2912        2912        2912        2912
+matrix_multiplication::nki_matmul_block_free_dimension_         2912        2912        2912        2912        2912        2912        2912        2912
+matrix_multiplication::nki_matmul_fully_optimized_              2912        2912        2912        2912        2912        2912        2912        2912
+transpose2d::tensor_transpose2D_kernel_                           ok          ok          ok          ok          ok          ok          ok          ok
+average_pool2d::tensor_avgpool_kernel                             ok          ok          ok          ok          ok          ok          ok          ok
+mamba::mamba_v1                                                   28          28          28          28          28          28          28          28
+mamba::mamba_v2                                                   28          28          28          28          28          28          28          28
+mamba::mamba_v3                                                 3076        3076        3076        3076        3076        3076        3076        3076
+tensor_indirection::tensor_indirection_kernel                     ok          ok          ok          ok          ok          ok          ok          ok

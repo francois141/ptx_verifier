@@ -4,8 +4,8 @@ import nki.isa as nisa
 
 
 # R1 and D3: an affine_range accumulates matmuls into one PSUM tile, the reduction the NKI
-# docs name as allowed across affine_range iterations. A race while accumulation is ordinary
-# reads and writes (DataFlowOnly). out = a_t.T @ b in two contraction chunks.
+# docs name as allowed across affine_range iterations. A race under any ordering policy,
+# accumulation being ordinary reads and writes. out = a_t.T @ b in two contraction chunks.
 @nki.jit
 def kernel(a_t, b, out):
     contraction, rows = a_t.shape
