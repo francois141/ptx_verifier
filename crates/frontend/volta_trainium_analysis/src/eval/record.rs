@@ -60,20 +60,22 @@ pub enum NoReorder {
 /// its independence, naming `nc_matmul` accumulating into one buffer as the example.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reductions {
-    /// `nc_matmul` accumulations, the docs' example.
+    /// `nc_matmul` accumulations only, the docs' example.
     Matmul,
-    /// Also `tensor_tensor` accumulations under an associative and commutative op.
-    Associative,
+    /// Also `tensor_tensor` add accumulations, as AWS's mamba tutorial relies on; other ops'
+    /// accumulations stay ordinary reads and writes, with no sample relying on them.
+    MatmulAndAdd,
 }
 
 impl OrderingPolicy {
     /// The pipeline's policy: read after write and write after read, by address, and
-    /// `nc_matmul` accumulations commuting.
+    /// `nc_matmul` and `tensor_tensor` add accumulations commuting; the assumptions AWS's
+    /// own samples need, and no others.
     pub const BASELINE: OrderingPolicy = OrderingPolicy {
         write_after_write: WriteAfterWrite::Unordered,
         placed_tiles: PlacedTiles::ByAddress,
         no_reorder: NoReorder::Unordered,
-        reductions: Reductions::Matmul,
+        reductions: Reductions::MatmulAndAdd,
     };
 
     /// Every combination of the four choices, `BASELINE` first.
@@ -98,9 +100,9 @@ impl OrderingPolicy {
                     NoReorder::ProgramOrder
                 },
                 reductions: if i & 8 == 0 {
-                    Reductions::Matmul
+                    Reductions::MatmulAndAdd
                 } else {
-                    Reductions::Associative
+                    Reductions::Matmul
                 },
             };
             i += 1;
@@ -114,6 +116,9 @@ impl OrderingPolicy {
             Assumption::NkiWriteAfterReadOrder,
             Assumption::NkiMatmulAccumulationsCommute,
         ];
+        if self.reductions == Reductions::MatmulAndAdd {
+            assumptions.push(Assumption::NkiTensorTensorAddsCommute);
+        }
         if self.write_after_write == WriteAfterWrite::Ordered {
             assumptions.push(Assumption::NkiWriteAfterWriteOrder);
         }
@@ -122,9 +127,6 @@ impl OrderingPolicy {
         }
         if self.no_reorder == NoReorder::ProgramOrder {
             assumptions.push(Assumption::NkiNoReorderInProgramOrder);
-        }
-        if self.reductions == Reductions::Associative {
-            assumptions.push(Assumption::NkiAssociativeReductionsCommute);
         }
         assumptions
     }
@@ -135,13 +137,10 @@ impl OrderingPolicy {
             (Mode::Read, _) => Touch::Read,
             (Mode::Write, _) => Touch::Write,
             (Mode::Accumulate(Reducer::Matmul), _) => Touch::Reduce(ReductionOp::Add),
-            (Mode::Accumulate(Reducer::Elementwise(op)), Reductions::Associative) => match op {
-                ArithOp::Add => Touch::Reduce(ReductionOp::Add),
-                ArithOp::Multiply => Touch::Reduce(ReductionOp::Multiply),
-                ArithOp::Maximum => Touch::Reduce(ReductionOp::Maximum),
-                ArithOp::Subtract => Touch::ReadWrite,
-            },
-            (Mode::Accumulate(Reducer::Elementwise(_)), Reductions::Matmul) => Touch::ReadWrite,
+            (Mode::Accumulate(Reducer::Elementwise(ArithOp::Add)), Reductions::MatmulAndAdd) => {
+                Touch::Reduce(ReductionOp::Add)
+            }
+            (Mode::Accumulate(Reducer::Elementwise(_)), _) => Touch::ReadWrite,
         }
     }
 

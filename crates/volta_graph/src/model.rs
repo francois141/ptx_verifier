@@ -608,8 +608,8 @@ pub enum Assumption {
     /// `nc_matmul` accumulations into one location in different iterations of an
     /// `affine_range` run one at a time, in some order (the docs' associative reductions).
     NkiMatmulAccumulationsCommute,
-    /// So do `tensor_tensor` accumulations under an associative and commutative op.
-    NkiAssociativeReductionsCommute,
+    /// So do `tensor_tensor` add accumulations (AWS's mamba tutorial relies on them).
+    NkiTensorTensorAddsCommute,
     /// An NKI `no_reorder` block's instructions execute in program order (its edges are
     /// hardware synchronization, not scheduling hints).
     NkiNoReorderInProgramOrder,
@@ -661,8 +661,8 @@ impl Assumption {
                 "nc_matmul accumulations into one location across affine_range iterations run \
                  one at a time, in some order"
             }
-            Assumption::NkiAssociativeReductionsCommute => {
-                "tensor_tensor accumulations under an associative op across affine_range \
+            Assumption::NkiTensorTensorAddsCommute => {
+                "tensor_tensor add accumulations into one location across affine_range \
                  iterations run one at a time, in some order"
             }
             Assumption::NkiNoReorderInProgramOrder => {
