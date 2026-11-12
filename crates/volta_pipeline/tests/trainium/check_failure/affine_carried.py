@@ -5,7 +5,7 @@ import nki.isa as nisa
 
 # R1: each iteration of an affine_range stores the tile the previous one loaded, a
 # read-after-write (and write-after-read) carried between iterations the loop promises
-# independent: a race under any ordering policy. sequential_carried is its twin.
+# independent: a race under any ordering policy. success/sequential_carried is its twin.
 @nki.jit
 def kernel(a, out):
     assert a.shape == (3, 4)

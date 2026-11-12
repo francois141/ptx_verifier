@@ -77,19 +77,24 @@ only inline unit tests of their internals.
   hand-written `.expected`, which `VOLTA_BLESS` never rewrites);
   `trainium/rejected_tests.rs`: the error each rejected kernel must raise.
 - `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
-  instruction, ordered only by data flow (`OrderingPolicy::DataFlowOnly`, recorded as
-  `Assumption::NkiDataFlowOrder`): an instruction follows the latest earlier
-  writer of what it reads, unless they are in different `affine_range` iterations.
-  Fixtures written once or rewritten only by their readers verify, as do the
-  attention samples v1 to v8a; each race fixture (`trainium/check_failure/`) fails
-  `MemoryConflict` with exactly its expected instruction pairs, and v10 (PSUM banks
-  reused), the tiled matmul tutorial and mamba (accumulating across `affine_range`
-  iterations) race. Under the opt-in `DataFlowAndNoReorder`, which also orders each
-  `no_reorder` block's instructions, the `no_reorder` fixtures verify except one
-  rewriting a tile written before its block, and v10's only races pair `v_psum_t`, before
-  its block, with `qk_psum` over the same PSUM bytes inside it.
+  instruction, under `OrderingPolicy::BASELINE` (the frontend's) unless a test names
+  another: read after write and write after read are ordered, within one tensor, unless
+  in different `affine_range` iterations (`Assumption::NkiReadAfterWriteOrder`,
+  `NkiWriteAfterReadOrder`). Fixtures whose tiles are written once or rewritten after their
+  readers verify, as do the attention samples v1 to v8a; each race fixture
+  (`trainium/check_failure/`) fails `MemoryConflict` with exactly its expected instruction
+  pairs. Two writes with no read between them (`back_to_back_dmas`,
+  `sequential_overwrite`, scan's memset) verify once write after write is ordered; v10,
+  whose races all pair `v_psum_t` before its `no_reorder` block with `qk_psum` over the
+  same PSUM bytes inside it, once hazards are tracked by address; the `no_reorder`
+  fixtures once blocks run in program order; and the `affine_range` fixtures, the tiled
+  matmul tutorial and mamba race under every policy.
+  `nki_verdicts_under_each_ordering_policy_match_the_table` checks every NKI fixture and
+  sample under all eight policies against `trainium/ordering_policies.txt`
+  (`VOLTA_BLESS=1` rewrites it), `ok` or the number of conflicting pairs.
 - `trainium/equivalence_tests.rs`: an NKI kernel proved equal to its spec whose graph
-  verifies is ACCEPT through `solve` and `decide`, citing the ordering assumption, and
+  verifies is ACCEPT through `solve` and `decide`, citing the baseline's two ordering
+  assumptions, and
   `check_failure/back_to_back_dmas.py` is rejected through the frontend. The NKI `matmul`, `gemm_relu` and `softmax`
   fixtures against their `.spec` files beside them in `tests/trainium/success/`,
   with `gemm_relu` against the unclamped product and `softmax` against the softmax

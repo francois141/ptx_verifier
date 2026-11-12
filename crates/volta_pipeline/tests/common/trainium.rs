@@ -14,9 +14,11 @@ use volta_trainium_analysis::{
     Access, Location, Mode, PARTITION_STRIDE, evaluate, footprints, lower_kernel,
 };
 
-/// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`), and
-/// one per kind of location (placed tiles, access patterns, gathers, loops).
+/// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`) and
+/// `sequential_carried`, the race-free twin of one, and one per kind of location (placed
+/// tiles, access patterns, gathers, loops).
 const FOOTPRINTS: &[&str] = &[
+    "success/sequential_carried",
     "success/placed_tiles",
     "success/access_patterns",
     "success/indirect",
@@ -149,7 +151,7 @@ pub fn source(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-fn fixtures() -> PathBuf {
+pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/trainium")
 }
 
@@ -165,7 +167,8 @@ fn compare_with_expected(expected_path: PathBuf, actual: &str) {
     );
 }
 
-fn compare(expected_path: PathBuf, actual: String) {
+/// `actual` against the file at `expected_path`; `VOLTA_BLESS=1` rewrites it.
+pub fn compare(expected_path: PathBuf, actual: String) {
     print!("{actual}");
 
     if std::env::var_os("VOLTA_BLESS").is_some_and(|v| v == "1") {
