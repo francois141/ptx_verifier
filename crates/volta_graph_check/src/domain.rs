@@ -1,12 +1,13 @@
 //! The memory domains the checks partition their obligations by (§1.3: "obligations are thus
 //! partitioned by memory domain, not opcode"):
 //!
-//! * `M`: the ordinary non-atomic effects on byte-addressed memory (global and shared),
-//!   synchronous or asynchronous, the shared-memory effects of `tcgen05` operations included.
-//!   Algorithms 3 and 4 range over it.
+//! * `M`: the non-atomic effects on byte-addressed memory (global and shared), synchronous or
+//!   asynchronous, the shared-memory effects of `tcgen05` operations included, and reductions
+//!   (writes that commute with reductions of the same operation). Algorithms 3 and 4 range
+//!   over it.
 //! * `A`: the Tensor Memory effects of `tcgen05` operations. Algorithms 5 and 7 range over it.
 //!
-//! Atomic and reduction effects belong to neither: the initial contract excludes them (§2).
+//! Atomic effects belong to neither: the initial contract excludes them (§2).
 
 use std::collections::HashSet;
 
@@ -52,7 +53,7 @@ pub struct TmemCell {
 
 /// Whether an effect belongs to `M`.
 pub fn in_m(access: &MemAccess) -> bool {
-    access.ordering == OrderingKind::Ordinary && access.space != Space::Tensor
+    access.ordering != OrderingKind::Atomic && access.space != Space::Tensor
 }
 
 /// The bytes some effect of `M` writes: no conflicting pair of `M` lies elsewhere.
@@ -65,9 +66,15 @@ pub fn written_bytes(graph: &EventGraph) -> HashSet<ByteLocation> {
         .collect()
 }
 
-/// Whether an effect is outside the initial contract (an atomic or a reduction).
+/// Whether an effect is outside the initial contract (an atomic).
 pub fn outside_contract(access: &MemAccess) -> bool {
-    access.ordering != OrderingKind::Ordinary
+    access.ordering == OrderingKind::Atomic
+}
+
+/// Whether two effects commute, so that no order between them is needed: reductions with
+/// one operation.
+pub fn commute(a: OrderingKind, b: OrderingKind) -> bool {
+    matches!((a, b), (OrderingKind::Reduction(x), OrderingKind::Reduction(y)) if x == y)
 }
 
 /// Whether `kind` is a `tcgen05` operation, whose Tensor Memory effects form `A`.

@@ -104,7 +104,7 @@ prerequisites did not pass is `Unknown`. No check turns an unsupported case into
 | 1  | `NamedBarrierEpoch`    | `barrier_epoch.rs`        | `G0`    | Is generation `k` of each named barrier separated from `k+1`? Every synchronization of `k` must reach the program predecessor of every contribution of `k+1` (Weft's criterion). |
 | 2  | `MbarrierEpoch`        | `barrier_epoch.rs`        | `G0`    | The same over mbarrier phases (pre-init = phase `-1`). A wait of phase `k+1` instead needs one release of `k` before it. |
 | 3  | `MbarrierOrdering`     | `mbarrier_ordering.rs`    | `G0`    | Does each phase's arrival/transaction count balance (`D = n_k`, `T = 0`), and is every `expect_tx` announcement ordered after an arrival of its phase? |
-| 4  | `MemoryConflict`       | `memory_conflict.rs`      | `G_HB`  | Is every overlapping pair of effects in domain `M` (global/shared) with a write ordered? A per-byte dominance forest reports each unordered pair once. |
+| 4  | `MemoryConflict`       | `memory_conflict.rs`      | `G_HB`  | Is every overlapping pair of effects in domain `M` (global/shared) with a write ordered, except two reductions with one operation, which commute? A per-byte dominance forest reports each unordered pair once. |
 | 5  | `ProxyOrder`           | `proxy_order.rs`          | `G_HB`  | Does every ordered generic/async cross-proxy pair have a covering fence (`fence.proxy.async`, or the implicit fence of an observed completion)? Does each tensor-map write reach a TMA's map read through a release/acquire pair? |
 | 6  | `TensorOrder`          | `tensor_order.rs`, `sync_search.rs` | `D`, `E_pipeline` | Is every conflicting Tensor Memory pair of distinct ops pipelined, or connected by a `D` path through a source-thread `before_thread_sync` (or tracking commit) and a target-thread `after_thread_sync`? (Algorithm 6, a 3-state DFS.) |
 | 7  | `ResourceLifetime`     | `resource_lifetime.rs`    | `G_HB`  | Is every TMEM use inside an allocation that is freed exactly once, with alloc -> use -> dealloc ordered? |
@@ -117,10 +117,11 @@ Prerequisites (`Property::prerequisites`): 1, 2, 3 and 10 need nothing; 4 and
 
 ### Supporting modules
 
-- `domain.rs`: the memory domains obligations are split by. `M` is ordinary
+- `domain.rs`: the memory domains obligations are split by. `M` is non-atomic
   global/shared effects, sync or async, including `tcgen05` shared-memory
-  operands. `A` is Tensor Memory effects of `tcgen05` ops. Atomics are in
-  neither; they are outside the contract.
+  operands and reductions. `A` is Tensor Memory effects of `tcgen05` ops. Atomics
+  are in neither; they are outside the contract. `commute`: two reductions with
+  one `ReductionOp`, which `MemoryConflict` never pairs.
 - `pipeline.rs`: `E_pipeline`, the pairs the PTX ISA (9.7.18.6.2) pipelines
   without explicit sync. These are same-thread `tcgen05.mma` chains on one
   accumulator, and same-warp `st->ld`, `st->st`, `ld->st` pairs separated by
@@ -149,4 +150,7 @@ Prerequisites (`Property::prerequisites`): 1, 2, 3 and 10 need nothing; 4 and
 
 `tests/` holds graph-level unit tests built with `GraphBuilder`. End-to-end PTX
 tests for each check live in `volta_pipeline/tests/ptx/<check>_tests.rs` and assert on
-the check's typed witness.
+the check's typed witness. `memory_conflict_tests.rs` covers the reduction rule: unordered
+reductions with one operation pass, with different operations conflict, and a reduction
+conflicts with an unordered read or write. NKI kernels exercise it end to end in
+`volta_pipeline/tests/trainium/graph_tests.rs`.

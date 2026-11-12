@@ -8,25 +8,27 @@ use std::ops::Range;
 use id_collections::IdVec;
 use volta_graph::{
     Assumption, Effect, EventGraph, Footprint, GenerationId, GraphBuilder, InstructionInfo,
-    OperandRole, OrdinaryAccess, ProgramPoint, Provenance, Proxy, Space, StoredValue, Terminal,
-    ThreadIx, ThreadUnit,
+    OperandRole, OrdinaryAccess, ProgramPoint, Provenance, Proxy, ReductionOp, Space, StoredValue,
+    Terminal, ThreadIx, ThreadUnit,
 };
 
 use crate::ir::{
-    InstrId, LoopKind, LoweredKernel, Memory, NoReorderId, Origin, Reordering, TensorId,
+    ArithOp, InstrId, LoopKind, LoweredKernel, Memory, NoReorderId, Origin, Reordering, TensorId,
 };
 
-use super::footprint::{Access, Location, Mode, footprints};
+use super::footprint::{Access, Location, Mode, Reducer, footprints};
 
 /// Which pairs of instructions the Neuron compiler is taken to order. The docs say only that
 /// it synchronizes "based on data dependencies", so each policy records its [`Assumption`]s.
 /// Read after write and write after read are always ordered, except across iterations of
-/// one `affine_range`, which declares them independent.
+/// one `affine_range`, which declares them independent; there, the reductions the policy
+/// names are instead performed one at a time in some order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrderingPolicy {
     pub write_after_write: WriteAfterWrite,
     pub placed_tiles: PlacedTiles,
     pub no_reorder: NoReorder,
+    pub reductions: Reductions,
 }
 
 /// Whether a write follows the latest earlier writer of what it writes.
@@ -54,19 +56,31 @@ pub enum NoReorder {
     ProgramOrder,
 }
 
+/// Which accumulations commute: the `affine_range` docs exempt "associative reductions" from
+/// its independence, naming `nc_matmul` accumulating into one buffer as the example.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reductions {
+    /// `nc_matmul` accumulations, the docs' example.
+    Matmul,
+    /// Also `tensor_tensor` accumulations under an associative and commutative op.
+    Associative,
+}
+
 impl OrderingPolicy {
-    /// The pipeline's policy: read after write and write after read, by address.
+    /// The pipeline's policy: read after write and write after read, by address, and
+    /// `nc_matmul` accumulations commuting.
     pub const BASELINE: OrderingPolicy = OrderingPolicy {
         write_after_write: WriteAfterWrite::Unordered,
         placed_tiles: PlacedTiles::ByAddress,
         no_reorder: NoReorder::Unordered,
+        reductions: Reductions::Matmul,
     };
 
-    /// Every combination of the three choices, `BASELINE` first.
-    pub const ALL: [OrderingPolicy; 8] = {
-        let mut all = [OrderingPolicy::BASELINE; 8];
+    /// Every combination of the four choices, `BASELINE` first.
+    pub const ALL: [OrderingPolicy; 16] = {
+        let mut all = [OrderingPolicy::BASELINE; 16];
         let mut i = 0;
-        while i < 8 {
+        while i < 16 {
             all[i] = OrderingPolicy {
                 write_after_write: if i & 1 == 0 {
                     WriteAfterWrite::Unordered
@@ -83,6 +97,11 @@ impl OrderingPolicy {
                 } else {
                     NoReorder::ProgramOrder
                 },
+                reductions: if i & 8 == 0 {
+                    Reductions::Matmul
+                } else {
+                    Reductions::Associative
+                },
             };
             i += 1;
         }
@@ -93,6 +112,7 @@ impl OrderingPolicy {
         let mut assumptions = vec![
             Assumption::NkiReadAfterWriteOrder,
             Assumption::NkiWriteAfterReadOrder,
+            Assumption::NkiMatmulAccumulationsCommute,
         ];
         if self.write_after_write == WriteAfterWrite::Ordered {
             assumptions.push(Assumption::NkiWriteAfterWriteOrder);
@@ -103,7 +123,26 @@ impl OrderingPolicy {
         if self.no_reorder == NoReorder::ProgramOrder {
             assumptions.push(Assumption::NkiNoReorderInProgramOrder);
         }
+        if self.reductions == Reductions::Associative {
+            assumptions.push(Assumption::NkiAssociativeReductionsCommute);
+        }
         assumptions
+    }
+
+    /// What an access of `mode` is to hazard tracking under the policy.
+    fn touch(self, mode: Mode) -> Touch {
+        match (mode, self.reductions) {
+            (Mode::Read, _) => Touch::Read,
+            (Mode::Write, _) => Touch::Write,
+            (Mode::Accumulate(Reducer::Matmul), _) => Touch::Reduce(ReductionOp::Add),
+            (Mode::Accumulate(Reducer::Elementwise(op)), Reductions::Associative) => match op {
+                ArithOp::Add => Touch::Reduce(ReductionOp::Add),
+                ArithOp::Multiply => Touch::Reduce(ReductionOp::Multiply),
+                ArithOp::Maximum => Touch::Reduce(ReductionOp::Maximum),
+                ArithOp::Subtract => Touch::ReadWrite,
+            },
+            (Mode::Accumulate(Reducer::Elementwise(_)), Reductions::Matmul) => Touch::ReadWrite,
+        }
     }
 
     /// The `no_reorder` block whose program order the policy keeps for an instruction at `origin`.
@@ -149,15 +188,16 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
 
         let mut producers: Vec<InstrId> = Vec::new();
         for access in own {
+            let touch = policy.touch(access.mode);
             let history = hazards.of(policy, access);
             for run in &access.runs {
-                if access.mode != Mode::Write {
-                    producers.extend(history.writers.overlapping(run));
+                if touch.reads() {
+                    producers.extend(history.writers.overlapping(run).flat_map(Written::all));
                 }
-                if access.mode != Mode::Read {
-                    producers.extend(history.readers.overlapping(run));
+                if touch.writes() {
+                    producers.extend(history.readers.overlapping(run).flatten());
                     if policy.write_after_write == WriteAfterWrite::Ordered {
-                        producers.extend(history.writers.overlapping(run));
+                        producers.extend(history.writers.overlapping(run).flat_map(Written::all));
                     }
                 }
             }
@@ -176,7 +216,7 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
 
         for access in own {
             let (space, base) = locations.place(kernel, access.location);
-            for &effect in effects(access.mode) {
+            for &effect in policy.touch(access.mode).effects() {
                 for run in &access.runs {
                     let width = u32::try_from(run.end - run.start).expect("a run fits in u32");
                     let footprint = Footprint::Bytes {
@@ -196,18 +236,36 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
         }
 
         for access in own {
+            let touch = policy.touch(access.mode);
             let history = hazards.of(policy, access);
             for run in &access.runs {
-                if access.mode != Mode::Read {
-                    if policy.write_after_write == WriteAfterWrite::Ordered {
-                        history
-                            .readers
-                            .forget(run, |reader| producers.binary_search(&reader).is_ok());
+                match touch {
+                    Touch::Read => {}
+                    Touch::Write | Touch::ReadWrite => {
+                        if policy.write_after_write == WriteAfterWrite::Ordered {
+                            history.readers.update(run, |readers| {
+                                readers.retain(|reader| producers.binary_search(reader).is_err())
+                            });
+                        }
+                        history.writers.update(run, |written| {
+                            *written = Written {
+                                last: Some(instr),
+                                reductions: Vec::new(),
+                            }
+                        });
                     }
-                    history.writers.paint(run.clone(), instr);
+                    Touch::Reduce(_) => {
+                        history
+                            .writers
+                            .update(run, |written| written.reductions.push(instr));
+                    }
                 }
-                if access.mode != Mode::Write {
-                    history.readers.add(run, instr);
+                if touch.reads() {
+                    history.readers.update(run, |readers| {
+                        if readers.last() != Some(&instr) {
+                            readers.push(instr)
+                        }
+                    });
                 }
             }
         }
@@ -219,13 +277,36 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
     graph.finish(Terminal::Completed)
 }
 
-/// What an access of `mode` does to each of its locations: an accumulation reads, then writes.
-fn effects(mode: Mode) -> &'static [Effect] {
-    const WRITE: Effect = Effect::Write(StoredValue::Opaque);
-    match mode {
-        Mode::Read => &[Effect::Read],
-        Mode::Write => &[WRITE],
-        Mode::Accumulate => &[Effect::Read, WRITE],
+/// What an access is to hazard tracking: a reduction commutes with reductions of its op,
+/// any other accumulation is a read, then a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Touch {
+    Read,
+    Write,
+    ReadWrite,
+    Reduce(ReductionOp),
+}
+
+impl Touch {
+    fn reads(self) -> bool {
+        self != Touch::Write
+    }
+
+    fn writes(self) -> bool {
+        self != Touch::Read
+    }
+
+    /// Its graph effects at each of its locations.
+    fn effects(self) -> &'static [Effect] {
+        const WRITE: Effect = Effect::Write(StoredValue::Opaque);
+        match self {
+            Touch::Read => &[Effect::Read],
+            Touch::Write => &[WRITE],
+            Touch::ReadWrite => &[Effect::Read, WRITE],
+            Touch::Reduce(ReductionOp::Add) => &[Effect::Reduce(ReductionOp::Add)],
+            Touch::Reduce(ReductionOp::Multiply) => &[Effect::Reduce(ReductionOp::Multiply)],
+            Touch::Reduce(ReductionOp::Maximum) => &[Effect::Reduce(ReductionOp::Maximum)],
+        }
     }
 }
 
@@ -285,8 +366,23 @@ struct Hazards {
 
 #[derive(Default)]
 struct History {
-    writers: Writers,
-    readers: Readers,
+    writers: Segments<Written>,
+    /// The readers a later write must follow.
+    readers: Segments<Vec<InstrId>>,
+}
+
+/// The writes a later access of an offset must follow: the latest ordinary write, and the
+/// reductions since, which no order chains.
+#[derive(Debug, Clone, Default)]
+struct Written {
+    last: Option<InstrId>,
+    reductions: Vec<InstrId>,
+}
+
+impl Written {
+    fn all(&self) -> impl Iterator<Item = InstrId> + '_ {
+        self.last.iter().chain(&self.reductions).copied()
+    }
 }
 
 impl Hazards {
@@ -308,54 +404,19 @@ impl Hazards {
     }
 }
 
-/// The latest instruction to write each offset of one location, as disjoint runs by start.
-#[derive(Default)]
-struct Writers(BTreeMap<u64, (u64, InstrId)>);
+/// A value per offset of one location, as disjoint segments by start; an offset never
+/// updated has none.
+struct Segments<V>(BTreeMap<u64, (u64, V)>);
 
-impl Writers {
-    /// The writers of the offsets in `run`.
-    fn overlapping(&self, run: &Range<u64>) -> impl Iterator<Item = InstrId> + '_ {
-        let before = self
-            .0
-            .range(..run.start)
-            .next_back()
-            .filter(|(_, (end, _))| *end > run.start);
-        before
-            .into_iter()
-            .chain(self.0.range(run.start..run.end))
-            .map(|(_, &(_, writer))| writer)
-    }
-
-    /// `writer` writes every offset in `run`.
-    fn paint(&mut self, run: Range<u64>, writer: InstrId) {
-        let covered: Vec<(u64, (u64, InstrId))> = self
-            .0
-            .range(..run.end)
-            .rev()
-            .take_while(|(_, (end, _))| *end > run.start)
-            .map(|(&start, &value)| (start, value))
-            .collect();
-        for (start, (end, previous)) in covered {
-            self.0.remove(&start);
-            if start < run.start {
-                self.0.insert(start, (run.start, previous));
-            }
-            if end > run.end {
-                self.0.insert(run.end, (end, previous));
-            }
-        }
-        self.0.insert(run.start, (run.end, writer));
+impl<V> Default for Segments<V> {
+    fn default() -> Self {
+        Segments(BTreeMap::new())
     }
 }
 
-/// The instructions to read each offset of one location that a later write must follow, as
-/// disjoint segments by start.
-#[derive(Default)]
-struct Readers(BTreeMap<u64, (u64, Vec<InstrId>)>);
-
-impl Readers {
-    /// The readers of the offsets in `run`.
-    fn overlapping(&self, run: &Range<u64>) -> impl Iterator<Item = InstrId> + '_ {
+impl<V: Clone + Default> Segments<V> {
+    /// The values of the segments overlapping `run`.
+    fn overlapping(&self, run: &Range<u64>) -> impl Iterator<Item = &V> + '_ {
         let before = self
             .0
             .range(..run.start)
@@ -364,45 +425,29 @@ impl Readers {
         before
             .into_iter()
             .chain(self.0.range(run.start..run.end))
-            .flat_map(|(_, (_, readers))| readers.iter().copied())
+            .map(|(_, (_, value))| value)
     }
 
-    /// `reader` reads every offset in `run`.
-    fn add(&mut self, run: &Range<u64>, reader: InstrId) {
+    /// Applies `f` to the value of every offset in `run`, the default where there is none.
+    fn update(&mut self, run: &Range<u64>, mut f: impl FnMut(&mut V)) {
         self.split(run.start);
         self.split(run.end);
         let mut gaps = Vec::new();
         let mut cursor = run.start;
-        for (&start, (end, readers)) in self.0.range_mut(run.start..run.end) {
+        for (&start, (end, value)) in self.0.range_mut(run.start..run.end) {
             if start > cursor {
                 gaps.push(cursor..start);
             }
-            if readers.last() != Some(&reader) {
-                readers.push(reader);
-            }
+            f(value);
             cursor = *end;
         }
         if cursor < run.end {
             gaps.push(cursor..run.end);
         }
         for gap in gaps {
-            self.0.insert(gap.start, (gap.end, vec![reader]));
-        }
-    }
-
-    /// Drops the readers of `run` that `ordered` says a write of it follows.
-    fn forget(&mut self, run: &Range<u64>, ordered: impl Fn(InstrId) -> bool) {
-        self.split(run.start);
-        self.split(run.end);
-        let mut emptied = Vec::new();
-        for (&start, (_, readers)) in self.0.range_mut(run.start..run.end) {
-            readers.retain(|&reader| !ordered(reader));
-            if readers.is_empty() {
-                emptied.push(start);
-            }
-        }
-        for start in emptied {
-            self.0.remove(&start);
+            let mut value = V::default();
+            f(&mut value);
+            self.0.insert(gap.start, (gap.end, value));
         }
     }
 
@@ -413,10 +458,10 @@ impl Readers {
             .range(..at)
             .next_back()
             .filter(|(_, (end, _))| *end > at)
-            .map(|(&start, (end, readers))| (start, *end, readers.clone()));
-        if let Some((start, end, readers)) = covering {
-            self.0.insert(start, (at, readers.clone()));
-            self.0.insert(at, (end, readers));
+            .map(|(&start, (end, value))| (start, *end, value.clone()));
+        if let Some((start, end, value)) = covering {
+            self.0.insert(start, (at, value.clone()));
+            self.0.insert(at, (end, value));
         }
     }
 }
