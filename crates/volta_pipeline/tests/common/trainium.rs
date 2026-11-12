@@ -11,14 +11,15 @@ use volta_trainium_analysis::LoweredKernel;
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel_for_call};
 use volta_trainium_analysis::{
-    Access, Location, Mode, PARTITION_STRIDE, evaluate, footprints, lower_kernel,
+    Access, Location, Mode, PARTITION_STRIDE, Reducer, evaluate, footprints, lower_kernel,
 };
 
-/// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`) and
-/// `sequential_carried`, the race-free twin of one, and one per kind of location (placed
-/// tiles, access patterns, gathers, loops).
+/// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`),
+/// the race-free `sequential_carried` and `affine_matmul_accumulate`, and one per kind of
+/// location (placed tiles, access patterns, gathers, loops).
 const FOOTPRINTS: &[&str] = &[
     "success/sequential_carried",
+    "success/affine_matmul_accumulate",
     "success/placed_tiles",
     "success/access_patterns",
     "success/indirect",
@@ -119,9 +120,12 @@ fn render_footprints(kernel: &LoweredKernel) -> String {
             .iter()
             .map(|access: &Access| {
                 let mode = match access.mode {
-                    Mode::Read => "read",
-                    Mode::Write => "write",
-                    Mode::Accumulate => "accumulate",
+                    Mode::Read => "read".to_string(),
+                    Mode::Write => "write".to_string(),
+                    Mode::Accumulate(Reducer::Matmul) => "accumulate(matmul)".to_string(),
+                    Mode::Accumulate(Reducer::Elementwise(op)) => {
+                        format!("accumulate({})", op.name())
+                    }
                 };
                 let runs: Vec<String> = access
                     .runs

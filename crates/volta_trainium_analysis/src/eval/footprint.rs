@@ -7,8 +7,8 @@ use std::ops::Range;
 use id_collections::IdVec;
 
 use crate::ir::{
-    Accumulation, Index, InstrId, LoweredInstr, LoweredKernel, Memory, Reduction, ScalarOperand,
-    ScalarStep, TensorId, TensorRegion,
+    Accumulation, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Memory, Reduction,
+    ScalarOperand, ScalarStep, TensorId, TensorRegion,
 };
 
 use super::alias;
@@ -32,9 +32,19 @@ pub enum Location {
 pub enum Mode {
     Read,
     Write,
+    /// Folds a value into each element: a read, then a write.
+    Accumulate(Reducer),
+}
+
+/// What an accumulation folds into its location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reducer {
     /// `nc_matmul`'s `dst` unless `accumulate=False`: it adds its product to each element
     /// (an element's first write overwrites under `accumulate=None`).
-    Accumulate,
+    Matmul,
+    /// A `tensor_tensor` whose `dst` is one of its operands' regions, under an associative
+    /// and commutative `op`: mamba's `acc = acc + x`.
+    Elementwise(ArithOp),
 }
 
 /// One operand's footprint.
@@ -82,11 +92,25 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             access(Mode::Read, index),
             access(Mode::Write, dst),
         ],
-        LoweredInstr::Arith { dst, lhs, rhs, .. } => vec![
-            access(Mode::Read, lhs),
-            access(Mode::Read, rhs),
-            access(Mode::Write, dst),
-        ],
+        LoweredInstr::Arith { op, dst, lhs, rhs } => {
+            let folded = match (op, dst) {
+                (ArithOp::Subtract, _) => None,
+                (_, dst) if dst == lhs => Some(rhs),
+                (_, dst) if dst == rhs => Some(lhs),
+                _ => None,
+            };
+            match folded {
+                Some(other) => vec![
+                    access(Mode::Read, other),
+                    access(Mode::Accumulate(Reducer::Elementwise(*op)), dst),
+                ],
+                None => vec![
+                    access(Mode::Read, lhs),
+                    access(Mode::Read, rhs),
+                    access(Mode::Write, dst),
+                ],
+            }
+        }
         LoweredInstr::Activation {
             dst,
             data,
@@ -140,7 +164,9 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
         } => {
             let mode = match accumulation {
                 Accumulation::Overwrite => Mode::Write,
-                Accumulation::FirstOverwrites | Accumulation::Accumulate => Mode::Accumulate,
+                Accumulation::FirstOverwrites | Accumulation::Accumulate => {
+                    Mode::Accumulate(Reducer::Matmul)
+                }
             };
             vec![
                 access(Mode::Read, stationary),
