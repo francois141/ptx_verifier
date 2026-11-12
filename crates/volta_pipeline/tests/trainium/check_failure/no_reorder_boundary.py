@@ -4,8 +4,8 @@ import nki.isa as nisa
 
 
 # A tile written before a no_reorder block and rewritten inside it: the block orders only
-# its own instructions, so the write before it races the rewrite and the read under
-# either policy.
+# its own instructions, so the write before it races the rewrite and the read unless the
+# policy orders write-after-write.
 @nki.jit
 def kernel(a, out):
     assert a.shape == (2, 4)

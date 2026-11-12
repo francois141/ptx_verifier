@@ -116,7 +116,8 @@ fn nki_matmul_matches_its_specification() {
 }
 
 // Test that an NKI kernel proved equal to its spec is accepted once its event graph verifies,
-// relative to the assumption that the Neuron compiler orders only data flow.
+// relative to the baseline assumptions that the Neuron compiler orders read after write and
+// write after read, and nothing more.
 #[test]
 fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
     let parsed = volta_spec::parse_spec(MATMUL_SPEC).unwrap();
@@ -144,11 +145,22 @@ fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
 
     let decision = run.decide(&solution);
     assert_eq!(decision.verdict, Verdict::Accept, "{:?}", decision.evidence);
-    assert!(decision.assumptions.contains(&Assumption::NkiDataFlowOrder));
+    for assumption in [
+        Assumption::NkiReadAfterWriteOrder,
+        Assumption::NkiWriteAfterReadOrder,
+    ] {
+        assert!(decision.assumptions.contains(&assumption), "{assumption:?}");
+    }
+    assert!(
+        !decision
+            .assumptions
+            .contains(&Assumption::NkiWriteAfterWriteOrder)
+    );
 }
 
-// Test that an NKI kernel whose two DMAs write one tile is rejected through the frontend, its
-// outputs computed in program order notwithstanding.
+// Test that an NKI kernel whose two DMAs write one tile with no read between them is rejected
+// through the frontend, whose baseline policy leaves write after write unordered, its outputs
+// computed in program order notwithstanding.
 #[test]
 fn nki_kernel_with_a_race_is_rejected() {
     let source = include_str!("check_failure/back_to_back_dmas.py");

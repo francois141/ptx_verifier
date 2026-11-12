@@ -249,8 +249,9 @@ crate-level docs in `lib.rs` are the contract.
   instruction (`Instruction`, `block_dim` the instruction count), ordered after another
   by its `Dependency` object's one generation (`GraphBuilder::signal`, an `Arrival`
   release completing it at once; each later instruction `resume`s from it), under the
-  ordering policy's `Assumption`s (`NkiDataFlowOrder`, and `NkiNoReorderInProgramOrder`
-  when `no_reorder` blocks are taken to run in program order).
+  ordering policy's `Assumption`s (`NkiReadAfterWriteOrder` and `NkiWriteAfterReadOrder`
+  always; `NkiWriteAfterWriteOrder`, `NkiHazardsByPlacedAddress` and
+  `NkiNoReorderInProgramOrder` as the policy adds them).
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
@@ -680,20 +681,26 @@ snapshot them, as do those of `placed_tiles`, `access_patterns`, `indirect` and
 thread per instruction, its `footprints` as accesses (an accumulation a read then a
 write; each `Location` a disjoint range, HBM in `Global`, SBUF and PSUM in `Shared`), and
 a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler orders two
-instructions. The docs say only that it synchronizes "based on data dependencies", so
-the pipeline's policy, `DataFlowOnly` (`Assumption::NkiDataFlowOrder`), is the most
-conservative: an instruction follows the latest earlier writer of each location it
-reads, unless they are in different iterations of one `affine_range`; write-after-write,
-write-after-read and reductions across `affine_range` iterations race. The opt-in
-`DataFlowAndNoReorder` (adding `Assumption::NkiNoReorderInProgramOrder`) also orders each
-`no_reorder` block's instructions in program order, as the API page says it does, though
-the scheduling guide leaves open whether its edges are semaphores or scheduling hints; a
-block orders nothing against code outside it.
-`check_failure/` holds kernels that race under it (R0 `back_to_back_dmas`; R1
-`affine_overwrite`, `affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`;
-the `sequential_range` twins, which rewrite a tile without reading it between; R0 and R1
-inside a `no_reorder` block, race free under the opt-in policy, and a rewrite across a
-block's boundary, racing under both), each naming its verdict; `trainium/accepted_tests.rs` runs them in program order,
+instructions. The docs say only that it synchronizes "based on data dependencies", so a
+policy is three choices, each recorded as an `Assumption`. Every policy orders read after
+write (`NkiReadAfterWriteOrder`: after the latest earlier writer of what it reads) and write
+after read (`NkiWriteAfterReadOrder`: after every earlier reader of what it writes), unless
+the two are in different iterations of one `affine_range`; `OrderingPolicy::BASELINE`, the
+pipeline's, nothing more. `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`) also orders
+a write after the latest earlier writer; `PlacedTiles::ByAddress`
+(`NkiHazardsByPlacedAddress`) tracks hazards through the bytes `address=` tiles share rather
+than per tensor (`ByTensor`, the baseline); `NoReorder::ProgramOrder`
+(`NkiNoReorderInProgramOrder`) orders each `no_reorder` block's instructions in program
+order, as the API page says it does, though the scheduling guide leaves open whether its
+edges are semaphores or scheduling hints; a block orders nothing against code outside it.
+`OrderingPolicy::ALL` is the eight combinations.
+`check_failure/` holds kernels that race under `BASELINE` (R0 `back_to_back_dmas` and its
+`sequential_overwrite` twin, ordered by write after write; R1 `affine_overwrite`,
+`affine_carried`, `affine_vector_sum`, `affine_matmul_accumulate`, racing under every
+policy; R0 and R1 inside a `no_reorder` block, race free once blocks run in program order,
+and a rewrite across a block's boundary, ordered by write after write), each naming what
+would make it race free, and `success/sequential_carried`, `affine_carried`'s twin in a
+`sequential_range`, is race free; `trainium/accepted_tests.rs` runs them in program order,
 `trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
@@ -959,7 +966,8 @@ its input must be rejected: CK's output buffer bound drops four of its nine stor
 parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
 `common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
 `trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
-graph verifies is ACCEPT through `solve` and `decide`, citing `NkiDataFlowOrder`, and
+graph verifies is ACCEPT through `solve` and `decide`, citing `NkiReadAfterWriteOrder` and
+`NkiWriteAfterReadOrder`, and
 that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
@@ -998,13 +1006,16 @@ equivalence comparisons, the Lean challenge, and the grid tests' individual work
 `amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
 to reject a completed kernel with an LDS race. `just amd` runs the accepted, rejected and
 equivalence suites; the full `amd_tests` target also runs graph, grid and Lean tests.
-`trainium/graph_tests.rs` checks NKI graphs under `DataFlowOnly`: fixtures written once or
-rewritten only by their readers and the attention samples v1 to v8a verify; each race
-fixture in `trainium/check_failure/` fails `MemoryConflict` with exactly its expected
-instruction pairs; v10 (PSUM banks reused), the tiled matmul tutorial and mamba
-(accumulating across `affine_range`) race. Under `DataFlowAndNoReorder` the `no_reorder`
-fixtures verify, and v10's only races pair `v_psum_t`, transposed before its block, with
-`qk_psum` over the same PSUM bytes inside it (R3). `just trainium` runs its accepted, rejected and
+`trainium/graph_tests.rs` checks NKI graphs under `BASELINE` unless a test names another
+policy: fixtures whose tiles are written once or rewritten after their readers, and the
+attention samples v1 to v8a, verify; each race fixture in `trainium/check_failure/` fails
+`MemoryConflict` with exactly its expected instruction pairs; writes with no read between
+them verify once write after write is ordered; v10's races all pair `v_psum_t`, transposed
+before its `no_reorder` block, with `qk_psum` over the same PSUM bytes inside it (R3), and
+it verifies once hazards are tracked by address; the `affine_range` fixtures, the tiled
+matmul tutorial and mamba race under every policy. A table test checks every NKI fixture and
+sample under all eight policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
+rewrites it). `just trainium` runs its accepted, rejected and
 equivalence suites.
 
 ### End-to-end tests (`tests/`)

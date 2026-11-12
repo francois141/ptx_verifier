@@ -3,8 +3,8 @@ import nki.language as nl
 import nki.isa as nisa
 
 
-# affine_overwrite inside a no_reorder block: its iterations race under DataFlowOnly, and
-# are ordered under DataFlowAndNoReorder, as the block orders every instruction under it,
+# affine_overwrite inside a no_reorder block: its iterations race unless the policy keeps
+# no_reorder blocks in program order, as the block then orders every instruction under it,
 # its loops' iterations included.
 @nki.jit
 def kernel(a, out):

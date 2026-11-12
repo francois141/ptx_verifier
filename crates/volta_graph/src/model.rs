@@ -572,10 +572,18 @@ pub enum Assumption {
     EagerAsyncData,
     /// Only shared-memory (LDS) accesses are recorded: global memory is not checked.
     SharedMemoryOnly,
-    /// The Neuron compiler orders an NKI instruction after the latest earlier instruction
-    /// writing each location it reads, except across `affine_range` iterations. NKI
-    /// instructions are ordered by nothing else no other assumption names.
-    NkiDataFlowOrder,
+    /// The Neuron compiler orders an NKI instruction after the latest earlier writer of each
+    /// location it reads (read after write), except across `affine_range` iterations.
+    NkiReadAfterWriteOrder,
+    /// The Neuron compiler orders an NKI instruction after every earlier reader of each
+    /// location it writes (write after read), except across `affine_range` iterations.
+    NkiWriteAfterReadOrder,
+    /// The Neuron compiler orders an NKI instruction after the latest earlier writer of each
+    /// location it writes (write after write), except across `affine_range` iterations.
+    NkiWriteAfterWriteOrder,
+    /// The Neuron compiler tracks those hazards through the bytes `address=` tiles share,
+    /// not only within one tensor.
+    NkiHazardsByPlacedAddress,
     /// An NKI `no_reorder` block's instructions execute in program order (its edges are
     /// hardware synchronization, not scheduling hints).
     NkiNoReorderInProgramOrder,
@@ -608,10 +616,20 @@ impl Assumption {
                 "only shared-memory (LDS) accesses are recorded; global memory is not checked \
                  for races"
             }
-            Assumption::NkiDataFlowOrder => {
+            Assumption::NkiReadAfterWriteOrder => {
                 "the Neuron compiler orders each NKI instruction after the latest earlier writer \
-                 of what it reads, except across affine_range iterations; nothing else is \
-                 ordered unless another assumption says so"
+                 of what it reads, except across affine_range iterations"
+            }
+            Assumption::NkiWriteAfterReadOrder => {
+                "the Neuron compiler orders each NKI instruction after every earlier reader of \
+                 what it writes, except across affine_range iterations"
+            }
+            Assumption::NkiWriteAfterWriteOrder => {
+                "the Neuron compiler orders each NKI instruction after the latest earlier writer \
+                 of what it writes, except across affine_range iterations"
+            }
+            Assumption::NkiHazardsByPlacedAddress => {
+                "the Neuron compiler tracks NKI hazards through the bytes address= tiles share"
             }
             Assumption::NkiNoReorderInProgramOrder => {
                 "the instructions of an NKI no_reorder block execute in program order"
