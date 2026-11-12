@@ -326,7 +326,8 @@ baseline policy assumes it does, by address (see Event graph).
 then its writes, the locations an event graph's accesses will carry. Each is a `Mode`
 (`Read`, `Write`, or `Accumulate(Reducer)`: `Matmul` for an `nc_matmul` that adds into
 `dst`, `Elementwise(op)` for a `tensor_tensor` whose `dst` is one of its operands' regions
-under an associative and commutative `op`, the other operand then its only read), its tensor,
+under `add`, `multiply` or `maximum`, the associative and commutative ops (an exhaustive
+`match`, so a new `ArithOp` needs a decision), the other operand then its only read), its tensor,
 a `Location` and ascending, disjoint, non-adjacent runs. Only `address=` puts two tensors
 over the same storage, so only placed tiles share a location, their memory, by byte
 (`partition * PARTITION_STRIDE + byte`); every other tensor is a location of its own, by
@@ -335,8 +336,11 @@ row-major element offset. Footprints are static: a gather reads its whole `data`
 
 ## Event graph
 
-`record_graph(kernel, policy)` (`eval/record.rs`) is the kernel's `volta_graph` event
-graph, for the graph branch's checks. NKI source has no synchronization: the Neuron
+`record_graph(kernel, policy, execution)` (`eval/record.rs`) is the kernel's `volta_graph`
+event graph, for the graph branch's checks. It ends as the kernel's program-order run did
+(`Execution::of(&evaluate(&kernel))`): an aborted run's graph stops after the failing
+instruction's accesses with `Terminal::Aborted`, as PTX's and AMD's do, so its checks are
+inconclusive unless a race already shows in the prefix. NKI source has no synchronization: the Neuron
 compiler inserts semaphores "based on data dependencies", which the docs do not define.
 So each instruction is a graph thread (`ThreadUnit::Instruction`), its accesses those of
 `footprints` (an accumulation a read, then a write), and an `OrderingPolicy` says which

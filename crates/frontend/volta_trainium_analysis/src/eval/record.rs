@@ -7,15 +7,16 @@ use std::ops::Range;
 
 use id_collections::IdVec;
 use volta_graph::{
-    Assumption, Effect, EventGraph, Footprint, GenerationId, GraphBuilder, InstructionInfo,
-    OperandRole, OrdinaryAccess, ProgramPoint, Provenance, Proxy, ReductionOp, Space, StoredValue,
-    Terminal, ThreadIx, ThreadUnit,
+    AbortCause, Assumption, Effect, EventGraph, Footprint, GenerationId, GraphBuilder,
+    InstructionInfo, OperandRole, OrdinaryAccess, ProgramPoint, Provenance, Proxy, ReductionOp,
+    Space, StoredValue, Terminal, ThreadIx, ThreadUnit,
 };
 
 use crate::ir::{
     ArithOp, InstrId, LoopKind, LoweredKernel, Memory, NoReorderId, Origin, Reordering, TensorId,
 };
 
+use super::EvalError;
 use super::footprint::{Access, Location, Mode, Reducer, footprints};
 
 /// Which pairs of instructions the Neuron compiler is taken to order. The docs say only that
@@ -153,11 +154,33 @@ impl OrderingPolicy {
     }
 }
 
+/// How the kernel's program-order run (`evaluate`) ended. The graph's trace ends the same
+/// way: an aborted run's stops at the instruction that failed, as PTX's and AMD's do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Execution {
+    Completed,
+    Aborted(EvalError),
+}
+
+impl Execution {
+    pub fn of<T>(run: &Result<T, EvalError>) -> Execution {
+        match run {
+            Ok(_) => Execution::Completed,
+            Err(error) => Execution::Aborted(error.clone()),
+        }
+    }
+}
+
 /// The spacing of locations' address ranges: above any placed byte (`128 << 32`).
 const LOCATION_STRIDE: u64 = 1 << 40;
 
-/// The event graph of `kernel`'s instructions under `policy`, in program order.
-pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGraph {
+/// The event graph of `kernel`'s instructions under `policy`, in program order, ending as
+/// `execution` did.
+pub fn record_graph(
+    kernel: &LoweredKernel,
+    policy: OrderingPolicy,
+    execution: &Execution,
+) -> EventGraph {
     let accesses = footprints(kernel);
     let instructions = kernel.instructions.len() as u32;
     let mut graph = GraphBuilder::new(Provenance {
@@ -232,6 +255,16 @@ pub fn record_graph(kernel: &LoweredKernel, policy: OrderingPolicy) -> EventGrap
                     graph.ordinary_thread_access(thread, pc, access);
                 }
             }
+        }
+        if let Execution::Aborted(error) = execution
+            && error.instr() == instr
+        {
+            return graph.finish(Terminal::Aborted {
+                thread: Some(thread),
+                pc: Some(pc),
+                cause: AbortCause::Error,
+                reason: error.to_string(),
+            });
         }
 
         for access in own {

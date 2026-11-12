@@ -675,13 +675,16 @@ every loop kind, an inner loop entered twice and `no_reorder` across a helper ca
 `footprints(kernel)` (`eval/footprint.rs`) gives each instruction's `Access`es, reads
 then writes: a `Mode` (`Read`, `Write`, `Accumulate(Reducer)`: an adding `nc_matmul`'s
 `Matmul`, or `Elementwise(op)` for a `tensor_tensor` whose `dst` is one of its operands'
-regions under an associative `op`, mamba's `acc = acc + x`), its
+regions under `add`, `multiply` or `maximum` (`accumulates`, an exhaustive match over
+`ArithOp`), mamba's `acc = acc + x`), its
 tensor, a `Location` and merged runs. Placed tiles share their memory's location, by byte
 (`partition * PARTITION_STRIDE + byte`); any other tensor is its own, by element offset.
 A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
 snapshot them, as do those of `sequential_carried`, `affine_matmul_accumulate`,
 `affine_vector_sum`, `placed_tiles`, `access_patterns`, `indirect` and `loop_origins`.
-`record_graph(kernel, policy)` (`eval/record.rs`) is the kernel's event graph: a graph
+`record_graph(kernel, policy, execution)` (`eval/record.rs`) is the kernel's event graph,
+ending as its program-order run did (`Execution::of(&evaluate(..))`: an aborted run's stops at
+the failing instruction, `Terminal::Aborted`, as PTX's and AMD's do): a graph
 thread per instruction, its `footprints` as accesses (an accumulation the policy exempts a
 `Reduction` effect, any other a read then a write; each `Location` a disjoint range, HBM in
 `Global`, SBUF and PSUM in `Shared`), and
@@ -1035,7 +1038,8 @@ races all pair `v_psum_t`, transposed before its `no_reorder` block, with `qk_ps
 same PSUM bytes inside it (R2/R3); `nc_matmul` accumulations across `affine_range`
 iterations (the tiled matmul tutorials) verify under every policy, `tensor_tensor` add ones
 (mamba) unless the policy is `Reductions::Matmul`, while a read of a partial sum and the other
-`affine_range` fixtures race under every policy. A table test checks every NKI fixture and
+`affine_range` fixtures race under every policy. A run that aborts
+gives a graph ending `Aborted` at the failing instruction, so its checks are inconclusive. A table test checks every NKI fixture and
 sample under all sixteen policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
 rewrites it). `just trainium` runs its accepted, rejected and
 equivalence suites.

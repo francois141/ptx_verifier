@@ -13,8 +13,8 @@ use volta_graph_check::{GraphConclusion, check_graph};
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel_for_call};
 use volta_trainium_analysis::{
-    Access, Location, LoweredKernel, Mode, OrderingPolicy, PARTITION_STRIDE, Reducer, evaluate,
-    footprints, lower_kernel, record_graph,
+    Access, Execution, Location, LoweredKernel, Mode, OrderingPolicy, PARTITION_STRIDE, Reducer,
+    evaluate, footprints, lower_kernel, record_graph,
 };
 
 /// The fixtures whose footprints are snapshotted: every race fixture (`check_failure/`),
@@ -57,14 +57,16 @@ pub fn check_call(name: &str, kernel: &str, modules: &[&str], call: &KernelCall)
         );
     }
 
-    let conclusion = check_graph(&record_graph(&lowered, OrderingPolicy::BASELINE)).conclusion();
+    let run = evaluate(&lowered);
+    let graph = record_graph(&lowered, OrderingPolicy::BASELINE, &Execution::of(&run));
+    let conclusion = check_graph(&graph).conclusion();
     match (Folder::of(name), &conclusion) {
         (Folder::Success, GraphConclusion::Verified)
         | (Folder::CheckFailure, GraphConclusion::Rejected { .. }) => {}
         (folder, conclusion) => panic!("{name}: a {folder:?} fixture concluded {conclusion:?}"),
     }
 
-    let outputs = evaluate(&lowered).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let outputs = run.unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut rendered = String::new();
     for (array, elements) in &outputs.outputs {
         for &(index, value) in elements {

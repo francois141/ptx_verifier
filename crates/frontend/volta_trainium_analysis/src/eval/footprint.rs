@@ -93,11 +93,14 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             access(Mode::Write, dst),
         ],
         LoweredInstr::Arith { op, dst, lhs, rhs } => {
-            let folded = match (op, dst) {
-                (ArithOp::Subtract, _) => None,
-                (_, dst) if dst == lhs => Some(rhs),
-                (_, dst) if dst == rhs => Some(lhs),
-                _ => None,
+            let folded = if !accumulates(*op) {
+                None
+            } else if dst == lhs {
+                Some(rhs)
+            } else if dst == rhs {
+                Some(lhs)
+            } else {
+                None
             };
             match folded {
                 Some(other) => vec![
@@ -177,6 +180,15 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
         LoweredInstr::Transpose { dst, data, .. } => {
             vec![access(Mode::Read, data), access(Mode::Write, dst)]
         }
+    }
+}
+
+/// Whether `dst = dst op x` folds `x` into `dst` associatively and commutatively. Listed per
+/// op, so a new `ArithOp` cannot become an accumulation without a decision.
+fn accumulates(op: ArithOp) -> bool {
+    match op {
+        ArithOp::Add | ArithOp::Multiply | ArithOp::Maximum => true,
+        ArithOp::Subtract => false,
     }
 }
 
