@@ -1,0 +1,20 @@
+{
+  "description": "CK's i4_to_f8x4 on the int4 word 0x675c1e93 in each of 64 work-items, each fp8 code stored as a float. It never shifts its high nibbles down, so b2 and b3 are 0.",
+  "kernel": "ck_i4_to_f8x4",
+  "block": 64,
+  "arrays": [
+    {"name": "b0", "kind": "out", "dtype": "f32", "shape": [64]},
+    {"name": "b1", "kind": "out", "dtype": "f32", "shape": [64]},
+    {"name": "b2", "kind": "out", "dtype": "f32", "shape": [64]},
+    {"name": "b3", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "q (0x675c1e93)", "int": 1734090387},
+    {"name": "b0", "ptr": "b0"},
+    {"name": "b1", "ptr": "b1"},
+    {"name": "b2", "ptr": "b2"},
+    {"name": "b3", "ptr": "b3"}
+  ],
+  "spec": "ck_i4_to_f8x4.spec",
+  "dims": {"N": 64}
+}

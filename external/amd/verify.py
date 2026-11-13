@@ -157,6 +157,9 @@ CASES = (
         "activations_no_fast_math/ck_leaky_relu",
         Prove(),
     ),
+    # i4_to_f8x4 converts its high nibbles unshifted, as zeros.
+    Case("ck_i4_to_f8x4", "ck_i4_to_f8x4", Solve("REJECT")),
+    Case("ck_i4_to_f8x4_fixed", "ck_i4_to_f8x4", Solve("ACCEPT")),
     # A model of PermuteWarpGemmCToA's loop, which runs four times past its buffers.
     Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
     Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),

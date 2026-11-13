@@ -65,7 +65,7 @@ fn operand(text: &str) -> Option<Operand> {
         if let Some(bits) = text.strip_prefix(prefix).and_then(|s| s.strip_suffix(']')) {
             let bits = bits
                 .split(',')
-                .map(|s| match s {
+                .map(|s| match s.trim() {
                     "0" => Some(false),
                     "1" => Some(true),
                     _ => None,

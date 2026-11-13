@@ -1,0 +1,20 @@
+{
+  "description": "i4_to_f8x4 with its high nibbles shifted down before conversion, as amd_assembly_i4_to_fp8x8 converts them, on the int4 word 0x675c1e93 in each of 64 work-items.",
+  "kernel": "ck_i4_to_f8x4_fixed",
+  "block": 64,
+  "arrays": [
+    {"name": "b0", "kind": "out", "dtype": "f32", "shape": [64]},
+    {"name": "b1", "kind": "out", "dtype": "f32", "shape": [64]},
+    {"name": "b2", "kind": "out", "dtype": "f32", "shape": [64]},
+    {"name": "b3", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "q (0x675c1e93)", "int": 1734090387},
+    {"name": "b0", "ptr": "b0"},
+    {"name": "b1", "ptr": "b1"},
+    {"name": "b2", "ptr": "b2"},
+    {"name": "b3", "ptr": "b3"}
+  ],
+  "spec": "ck_i4_to_f8x4.spec",
+  "dims": {"N": 64}
+}
