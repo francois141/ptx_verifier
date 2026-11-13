@@ -253,7 +253,9 @@ crate-level docs in `lib.rs` are the contract.
   release completing it at once; each later instruction `resume`s from it), under the
   ordering policy's `Assumption`s (`NkiReadAfterWriteOrder` and `NkiWriteAfterReadOrder`
   always; `NkiWriteAfterWriteOrder`, `NkiHazardsByPlacedAddress` and
-  `NkiNoReorderInProgramOrder` as the policy adds them).
+  `NkiNoReorderInProgramOrder` as the policy adds them) and four that bound what the check
+  covers, recorded under every policy (`SingleNkiInstance`, `NkiArgumentsDistinct`,
+  `NkiInstructionReadsBeforeWrites`, `NkiCompilerAllocation`).
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
@@ -692,7 +694,8 @@ a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler order
 instructions. The docs say only that it synchronizes "based on data dependencies", so a
 policy is four choices, each recorded as an `Assumption`. Every policy orders read after
 write (`NkiReadAfterWriteOrder`: after the latest earlier writer of what it reads) and write
-after read (`NkiWriteAfterReadOrder`: after every earlier reader of what it writes), unless
+after read (`NkiWriteAfterReadOrder`: after the readers of what it writes since its latest
+write), unless
 the two are in different iterations of one `affine_range`. There, as the `affine_range` docs
 exempt "associative reductions", `nc_matmul` accumulations commute instead
 (`NkiMatmulAccumulationsCommute`, every policy): each is a `Reduction(Add)`, a later access

@@ -171,6 +171,15 @@ impl Execution {
     }
 }
 
+/// What every NKI graph assumes of the kernel and its compilation, whatever the policy: the
+/// limits of what its race check covers.
+const MODELLING: [Assumption; 4] = [
+    Assumption::SingleNkiInstance,
+    Assumption::NkiArgumentsDistinct,
+    Assumption::NkiInstructionReadsBeforeWrites,
+    Assumption::NkiCompilerAllocation,
+];
+
 /// The spacing of locations' address ranges: above any placed byte (`128 << 32`).
 const LOCATION_STRIDE: u64 = 1 << 40;
 
@@ -189,7 +198,7 @@ pub fn record_graph(
         unit: ThreadUnit::Instruction,
         grid_dim: (1, 1, 1),
         targets: vec!["nki".to_string()],
-        assumptions: policy.assumptions(),
+        assumptions: [MODELLING.as_slice(), &policy.assumptions()].concat(),
         instructions: kernel
             .instructions
             .values()
@@ -274,11 +283,9 @@ pub fn record_graph(
                 match touch {
                     Touch::Read => {}
                     Touch::Write | Touch::ReadWrite => {
-                        if policy.write_after_write == WriteAfterWrite::Ordered {
-                            history.readers.update(run, |readers| {
-                                readers.retain(|reader| producers.binary_search(reader).is_err())
-                            });
-                        }
+                        history.readers.update(run, |readers| {
+                            readers.retain(|reader| producers.binary_search(reader).is_err())
+                        });
                         history.writers.update(run, |written| {
                             *written = Written {
                                 last: Some(instr),
@@ -399,7 +406,8 @@ struct Hazards {
 #[derive(Default)]
 struct History {
     writers: Segments<Written>,
-    /// The readers a later write must follow.
+    /// The readers a later write must follow: those since the latest write, and any earlier
+    /// one that write does not follow (in another `affine_range` iteration).
     readers: Segments<Vec<InstrId>>,
 }
 
