@@ -512,6 +512,7 @@ fn render_node(
         | Shl(..)
         | Shr(..)
         | LShr(..)
+        | RoundEven(_)
         | Trunc(_) => {
             return Err(element.unsupported(node));
         }

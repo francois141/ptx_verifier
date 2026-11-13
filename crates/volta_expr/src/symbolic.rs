@@ -131,6 +131,23 @@ impl Real {
         matches!(self.repr(), RealRepr::Rational(q) if q.cmp0() == std::cmp::Ordering::Equal)
     }
 
+    /// The integer nearest a finite real, ties to even; an infinity is its own rounding.
+    pub fn round_even(&self) -> Real {
+        let RealRepr::Rational(q) = self.repr() else {
+            return self.clone();
+        };
+        let floor = q.clone().floor();
+        let fraction = rug::Rational::from(q - &floor);
+        let half = rug::Rational::from((1, 2));
+        let round_up = match fraction.cmp(&half) {
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Equal => floor.numer().is_odd(),
+        };
+        let rounded = if round_up { floor + 1u32 } else { floor };
+        Real::from_rational(rounded)
+    }
+
     /// A finite real rounded toward zero; an infinity is its own rounding.
     pub fn trunc(&self) -> Real {
         match self.repr() {
@@ -388,6 +405,8 @@ pub enum ExprNode {
     Abs(ExprId),
     /// Sign: -1 / 0 / +1 depending on a's sign.
     Sign(ExprId),
+    /// The integer nearest `a`, ties to even (`rintf`).
+    RoundEven(ExprId),
     /// `a` rounded toward zero (`truncf`).
     Trunc(ExprId),
 
@@ -492,6 +511,7 @@ impl ExprNode {
             | ExprNode::Rcp(a)
             | ExprNode::Abs(a)
             | ExprNode::Sign(a)
+            | ExprNode::RoundEven(a)
             | ExprNode::Trunc(a)
             | ExprNode::BitNot(a)
             | ExprNode::Not(a)
@@ -1048,15 +1068,33 @@ impl ExprArena {
         self.push(ExprNode::Sign(a))
     }
 
+    /// The integer nearest `a`, ties to even: exact on a constant, the identity on an
+    /// integer-valued node.
+    pub fn round_even(&mut self, a: ExprId) -> ExprId {
+        self.round_with(a, Real::round_even, ExprNode::RoundEven)
+    }
+
     /// `a` rounded toward zero: exact on a constant, the identity on an integer-valued node.
     pub fn trunc(&mut self, a: ExprId) -> ExprId {
+        self.round_with(a, Real::trunc, ExprNode::Trunc)
+    }
+
+    fn round_with(
+        &mut self,
+        a: ExprId,
+        round: fn(&Real) -> Real,
+        node: fn(ExprId) -> ExprNode,
+    ) -> ExprId {
         match self.node(a) {
             ExprNode::RealConst(x) => {
-                let rounded = x.trunc();
+                let rounded = round(x);
                 self.real(rounded)
             }
-            ExprNode::IntConst(_) | ExprNode::Trunc(_) | ExprNode::ToFloat(_) => a,
-            _ => self.push(ExprNode::Trunc(a)),
+            ExprNode::IntConst(_)
+            | ExprNode::RoundEven(_)
+            | ExprNode::Trunc(_)
+            | ExprNode::ToFloat(_) => a,
+            _ => self.push(node(a)),
         }
     }
 
@@ -1559,6 +1597,11 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
+            ExprNode::RoundEven(a) => {
+                write!(f, "rint(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ")")
+            }
             ExprNode::Trunc(a) => {
                 write!(f, "trunc(")?;
                 self.fmt_expr(*a, f)?;
@@ -1873,6 +1916,7 @@ fn structurally_equal_inner(
         | (Sqrt(a1), Sqrt(b1))
         | (Rcp(a1), Rcp(b1))
         | (Abs(a1), Abs(b1))
+        | (RoundEven(a1), RoundEven(b1))
         | (Trunc(a1), Trunc(b1))
         | (BitNot(a1), BitNot(b1))
         | (Not(a1), Not(b1))

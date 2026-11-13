@@ -395,6 +395,7 @@ fn lower_as_written(
         ("v_rcp_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpF32, operands),
         ("v_sqrt_f32_e32", operands) => lower_unary_op(ir::UnaryOp::SqrtF32, operands),
         ("v_rsq_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RsqF32, operands),
+        ("v_rndne_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RndneF32, operands),
         ("v_trunc_f32_e32", operands) => lower_unary_op(ir::UnaryOp::TruncF32, operands),
         ("v_add_f32_e64", operands) => lower_bin_op(ir::BinOp::AddF32, operands),
         ("v_sub_f32_e64", operands) => lower_bin_op(ir::BinOp::SubF32, operands),

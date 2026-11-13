@@ -653,6 +653,8 @@ pub enum UnaryOp {
     SqrtF32,
     /// `1 / sqrt(src)`.
     RsqF32,
+    /// The integer nearest the f32 source, ties to even, as an f32.
+    RndneF32,
     /// The f32 source rounded toward zero, as an f32.
     TruncF32,
 }
