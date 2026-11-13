@@ -1,0 +1,6 @@
+Create a new IR here: the full expression language the frontends produce, without the
+constant folding and simplifications symbolic_simplified applies as it builds.
+
+Then add a lower.rs in the top-level src/ (beside outputs.rs) that lowers this IR to
+symbolic_simplified, and have volta_pipeline call it to lower the analyses' outputs
+before the equivalence branch.

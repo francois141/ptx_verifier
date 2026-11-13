@@ -8,3 +8,6 @@ id_collections.workspace = true
 rug.workspace = true
 serde.workspace = true
 stacker.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,97 @@
+volta-expr 1
+n0 = elem "in \"quoted\" \\ name" 7
+n1 = param "N"
+n2 = int -5
+n3 = real 1/3
+n4 = real inf
+n5 = real -inf
+n6 = real 1/202402253307310618352495346718917307049556649764142118356901358027430339567995346891960383701437124495187077864316811911389808737385793476867013399940738509921517424276566361364466907742093216341239767678472745068562007483424692698618103355649159556340810056512358769552333414615230502532186327508646006263307707741093494784
+n7 = bool true
+n8 = sym 42
+n9 = read "in \"quoted\" \\ name" n2
+n10 = discarded
+n11 = undefined
+n12 = neg n0
+n13 = exp n0
+n14 = log n0
+n15 = sqrt n0
+n16 = rcp n0
+n17 = abs n0
+n18 = sign n0
+n19 = erf n0
+n20 = rint n0
+n21 = trunc n0
+n22 = bitnot n0
+n23 = not n0
+n24 = tofloat n0
+n25 = add n0 n1
+n26 = sub n0 n1
+n27 = mul n0 n1
+n28 = div n0 n1
+n29 = rem n0 n1
+n30 = max n0 n1
+n31 = min n0 n1
+n32 = bitand n0 n1
+n33 = bitor n0 n1
+n34 = bitxor n0 n1
+n35 = shl n0 n1
+n36 = shr n0 n1
+n37 = lshr n0 n1
+n38 = eq n0 n1
+n39 = ne n0 n1
+n40 = lt n0 n1
+n41 = le n0 n1
+n42 = gt n0 n1
+n43 = ge n0 n1
+n44 = and n0 n1
+n45 = or n0 n1
+n46 = select n0 n1 n2
+n47 = fma n0 n1 n2
+out "out" 0 n0
+out "out" 1 n1
+out "out" 2 n2
+out "out" 3 n3
+out "out" 4 n4
+out "out" 5 n5
+out "out" 6 n6
+out "out" 7 n7
+out "out" 8 n8
+out "out" 9 n9
+out "out" 10 n10
+out "out" 11 n11
+out "out" 12 n12
+out "out" 13 n13
+out "out" 14 n14
+out "out" 15 n15
+out "out" 16 n16
+out "out" 17 n17
+out "out" 18 n18
+out "out" 19 n19
+out "out" 20 n20
+out "out" 21 n21
+out "out" 22 n22
+out "out" 23 n23
+out "out" 24 n24
+out "out" 25 n25
+out "out" 26 n26
+out "out" 27 n27
+out "out" 28 n28
+out "out" 29 n29
+out "out" 30 n30
+out "out" 31 n31
+out "out" 32 n32
+out "out" 33 n33
+out "out" 34 n34
+out "out" 35 n35
+out "out" 36 n36
+out "out" 37 n37
+out "out" 38 n38
+out "out" 39 n39
+out "out" 40 n40
+out "out" 41 n41
+out "out" 42 n42
+out "out" 43 n43
+out "out" 44 n44
+out "out" 45 n45
+out "out" 46 n46
+out "out" 47 n47

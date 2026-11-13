@@ -714,6 +714,7 @@ dependencies = [
  "id_collections",
  "rug",
  "serde",
+ "serde_json",
  "stacker",
 ]
 
