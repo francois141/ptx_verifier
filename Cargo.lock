@@ -659,6 +659,7 @@ name = "volta_amd_analysis"
 version = "0.1.0"
 dependencies = [
  "id_collections",
+ "volta_common",
  "volta_expr",
  "volta_graph",
 ]

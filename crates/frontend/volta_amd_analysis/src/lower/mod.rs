@@ -522,6 +522,9 @@ fn lower_as_written(
             src2: modified_src(src2)
                 .ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         }),
+        ("v_cvt_pk_fp8_f32", [dst, src0, src1, selectors @ ..]) => {
+            lower_cvt_pk_fp8_f32(dst, [src0, src1], selectors)
+        }
         // The VOP2 forms with a literal K: `fmaak` adds it, `fmamk` multiplies by it.
         ("v_fmaak_f32", [dst, src0, src1, k]) => Ok(FmaF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
@@ -752,6 +755,7 @@ fn lower_as_written(
             | "v_fmaak_f32"
             | "v_fmamk_f32"
             | "v_ldexp_f32"
+            | "v_cvt_pk_fp8_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
             | "global_load_dwordx3"
@@ -766,6 +770,29 @@ fn lower_as_written(
         ) => Err("unsupported operand count"),
         _ => Err(UNKNOWN_OPCODE),
     }
+}
+
+/// `op_sel` lists a selector per source, which must be clear for f32 sources, then the
+/// destination half.
+fn lower_cvt_pk_fp8_f32(
+    dst: &Operand,
+    srcs: [&Operand; 2],
+    selectors: &[Operand],
+) -> Result<LoweredInstr, &'static str> {
+    let half = match selectors {
+        [] => ir::WordHalf::Low,
+        [Operand::OpSel(bits)] => match bits.as_slice() {
+            [false, false, false] => ir::WordHalf::Low,
+            [false, false, true] => ir::WordHalf::High,
+            _ => return Err("expected op_sel to select only the destination half"),
+        },
+        _ => return Err("unsupported operand count"),
+    };
+    Ok(LoweredInstr::CvtPkFp8F32 {
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        srcs: [first_source(srcs[0])?, first_source(srcs[1])?],
+        half,
+    })
 }
 
 fn lower_scalar_load(

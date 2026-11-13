@@ -18,6 +18,8 @@ pub enum EvalError {
     SymbolicVcc { lane: usize },
     SymbolicWord { lane: usize },
     AmbiguousSelect { lane: usize },
+    /// An fp8 conversion of a symbolic f32, or of one that needs rounding to fp8.
+    UnmodeledFp8 { lane: usize },
     UnsupportedBufferResource { reason: &'static str },
     PartialBufferAccess { buffer_offset: u64 },
     LdsAccess { address: u64, size: u32 },
@@ -94,6 +96,13 @@ impl fmt::Display for EvalError {
                     f,
                     "lane {lane} selects between two constant words under a symbolic condition, \
                      which may encode floats or integers"
+                )
+            }
+            Self::UnmodeledFp8 { lane } => {
+                write!(
+                    f,
+                    "lane {lane} converts to fp8 an f32 that is symbolic or needs rounding; only \
+                     exact conversions are modelled"
                 )
             }
             Self::UnsupportedBufferResource { reason } => {

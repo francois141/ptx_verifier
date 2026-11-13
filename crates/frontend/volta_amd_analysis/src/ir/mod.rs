@@ -703,6 +703,13 @@ impl WordByte {
     }
 }
 
+/// A 16-bit half of a 32-bit word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordHalf {
+    Low,
+    High,
+}
+
 /// The relation tested between two ordered values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpPredicate {
@@ -962,6 +969,13 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
+    /// The two f32 sources as OCP E4M3 fp8 codes, `srcs[0]` in the low byte, written to `half`
+    /// of `dst`; the other half keeps its bits.
+    CvtPkFp8F32 {
+        dst: Vgpr,
+        srcs: [Src0; 2],
+        half: WordHalf,
+    },
     /// `dst = op(srcs)` in each lane, as one f64 value across the pair.
     F64 {
         dst: [Vgpr; 2],
@@ -1074,6 +1088,7 @@ impl LoweredInstr {
             Self::AccvgprRead32 { .. } => "v_accvgpr_read_b32",
             Self::FmaF32 { .. } => "v_fma_f32",
             Self::FmacF32 { .. } => "v_fmac_f32",
+            Self::CvtPkFp8F32 { .. } => "v_cvt_pk_fp8_f32",
             Self::F64 { .. } => "f64 op",
             Self::CvtToF64 { .. } => "v_cvt to f64",
             Self::CvtFromF64 { .. } => "v_cvt from f64",

@@ -6,6 +6,7 @@ use crate::frontend::ast::ScalarType;
 
 use crate::eval::error::{EvalError, EvalResult};
 use crate::ir::InstrId;
+pub use volta_common::float_bits::decode_e4m3_byte;
 use volta_expr::{ExprArena, ExprId};
 
 /// Read `e` at float/fp8 type `ty`: a concrete `IntConst` decodes at `ty`'s
@@ -67,26 +68,6 @@ pub fn f16_bits_to_f64(bits: u16) -> Option<f64> {
 pub fn bf16_bits_to_f64(bits: u16) -> Option<f64> {
     let v = f32::from_bits((bits as u32) << 16) as f64;
     if v.is_nan() { None } else { Some(v) }
-}
-
-/// Decode one `.e4m3` byte (bias 7, no infinity), or `None` for NaN
-/// (`0x7f`/`0xff`).
-pub fn decode_e4m3_byte(byte: u8) -> Option<f64> {
-    let sign = (byte >> 7) & 1;
-    let exponent = (byte >> 3) & 0xF;
-    let mantissa = (byte & 0x7) as i32;
-
-    if exponent == 0xF && mantissa == 0x7 {
-        return None;
-    }
-
-    let magnitude = if exponent == 0 {
-        mantissa as f64 * 2f64.powi(-9)
-    } else {
-        (1.0 + mantissa as f64 / 8.0) * 2f64.powi(exponent as i32 - 7)
-    };
-
-    Some(if sign == 1 { -magnitude } else { magnitude })
 }
 
 /// Decode one `.e5m2` byte (bias 15, IEEE-754-shaped with `±inf`), or `None`
@@ -241,50 +222,6 @@ mod tests {
             decode_packed_bits(0x3F80_0000_7FC0_0000, ScalarType::F32),
             None
         );
-    }
-
-    #[test]
-    fn test_decode_e4m3_zero() {
-        assert_eq!(decode_e4m3_byte(0x00), Some(0.0));
-        assert_eq!(decode_e4m3_byte(0x80), Some(-0.0));
-    }
-
-    #[test]
-    fn test_decode_e4m3_one_point_zero() {
-        assert_eq!(decode_e4m3_byte(0b0_0111_000), Some(1.0));
-    }
-
-    #[test]
-    fn test_decode_e4m3_negative() {
-        assert_eq!(decode_e4m3_byte(0b1_0111_000), Some(-1.0));
-    }
-
-    #[test]
-    fn test_decode_e4m3_max_finite_is_448() {
-        assert_eq!(decode_e4m3_byte(0b0_1111_110), Some(448.0));
-        assert_eq!(decode_e4m3_byte(0b1_1111_110), Some(-448.0));
-    }
-
-    #[test]
-    fn test_decode_e4m3_min_subnormal() {
-        assert_eq!(decode_e4m3_byte(0b0_0000_001), Some(2f64.powi(-9)));
-    }
-
-    #[test]
-    fn test_decode_e4m3_min_normal() {
-        assert_eq!(decode_e4m3_byte(0b0_0001_000), Some(2f64.powi(-6)));
-    }
-
-    #[test]
-    fn test_decode_e4m3_nan_bytes() {
-        assert_eq!(decode_e4m3_byte(0x7f), None);
-        assert_eq!(decode_e4m3_byte(0xff), None);
-    }
-
-    #[test]
-    fn test_decode_e4m3_exponent_all_ones_but_not_nan_is_finite() {
-        assert!(decode_e4m3_byte(0b0_1111_000).is_some());
-        assert!(decode_e4m3_byte(0b0_1111_101).is_some());
     }
 
     #[test]

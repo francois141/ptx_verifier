@@ -5,7 +5,7 @@ use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 use crate::ir::{
     BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, F64Op, F64Src, LaneMask, ModifiedSrc,
-    PackedF32Op, Signedness, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
+    PackedF32Op, Signedness, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src, WordHalf,
 };
 
 use super::EvalError;
@@ -678,6 +678,65 @@ pub(super) fn evaluate_ldexp_f32(
     let power = Real::from_f64(2f64.powi(exponent)).expect("a power of two is not a NaN");
     let scale = arena.real(power);
     Ok(arena.mul(value, scale))
+}
+
+/// `v_cvt_pk_fp8_f32` in `lane`: `dst`'s word with `half` replaced by the sources' fp8 codes.
+pub(super) fn evaluate_cvt_pk_fp8_f32(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    dst: Vgpr,
+    srcs: [Src0; 2],
+    half: WordHalf,
+) -> Result<ExprId, EvalError> {
+    let mut codes = [0; 2];
+    for (code, src) in codes.iter_mut().zip(srcs) {
+        let value = registers.read_f32_src0(arena, lane, src)?;
+        let ExprNode::RealConst(real) = arena.node(value) else {
+            return Err(EvalError::UnmodeledFp8 { lane });
+        };
+        *code = fp8_e4m3(real).ok_or(EvalError::UnmodeledFp8 { lane })?;
+    }
+    let old = registers.read_vgpr(lane, dst)?;
+    let old = word_bits(arena, old).ok_or(EvalError::SymbolicWord { lane })?;
+    let packed = u32::from(codes[0]) | (u32::from(codes[1]) << 8);
+    let word = match half {
+        WordHalf::Low => (old & 0xffff_0000) | packed,
+        WordHalf::High => (old & 0x0000_ffff) | (packed << 16),
+    };
+    Ok(arena.int(i64::from(word)))
+}
+
+/// A register's 32 bits: a concrete word, or a constant real that is exactly an f32.
+fn word_bits(arena: &ExprArena, value: ExprId) -> Option<u32> {
+    if let Some(word) = concrete_word(arena, value) {
+        return Some(word);
+    }
+    let ExprNode::RealConst(real) = arena.node(value) else {
+        return None;
+    };
+    let single = real.to_f64() as f32;
+    (Real::from_f64(f64::from(single)).ok()? == *real).then(|| single.to_bits())
+}
+
+/// The OCP E4M3 code of `value` (gfx950's fp8), rounding only magnitudes up to half the least
+/// subnormal, which round to zero; `None` for any other value that needs rounding. Zero has no
+/// sign over the reals, so it is +0.
+fn fp8_e4m3(value: &Real) -> Option<u8> {
+    let exact = |magnitude: f64| Real::from_f64(magnitude).expect("not a NaN");
+    let magnitude = value.abs();
+    let sign = if *value < Real::zero() { 0x80 } else { 0 };
+    if magnitude <= exact(2f64.powi(-10)) {
+        return Some(sign);
+    }
+    // Codes 0x01 to 0x7e: exponent field `e` and mantissa `m`; 0x7f is NaN.
+    (1..=0x7e_u8)
+        .find(|code| {
+            let decoded = volta_common::float_bits::decode_e4m3_byte(*code)
+                .expect("codes 0x01 through 0x7e are finite");
+            exact(decoded) == magnitude
+        })
+        .map(|code| sign | code)
 }
 
 fn unary_operand_type(op: UnaryOp) -> OperandType {
