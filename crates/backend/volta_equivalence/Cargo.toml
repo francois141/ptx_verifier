@@ -13,6 +13,7 @@ volta_expr.workspace = true
 
 bincode.workspace = true
 id_collections.workspace = true
+libm.workspace = true
 rug.workspace = true
 serde.workspace = true
 stacker.workspace = true

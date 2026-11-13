@@ -697,6 +697,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "id_collections",
+ "libm",
  "rug",
  "serde",
  "stacker",

@@ -393,6 +393,8 @@ pub enum ExprNode {
     Sqrt(ExprId),
     /// Reciprocal: 1/a
     Rcp(ExprId),
+    /// The error function: erf(a)
+    Erf(ExprId),
 
     // =====================================================================
     // Min/Max
@@ -511,6 +513,7 @@ impl ExprNode {
             | ExprNode::Rcp(a)
             | ExprNode::Abs(a)
             | ExprNode::Sign(a)
+            | ExprNode::Erf(a)
             | ExprNode::RoundEven(a)
             | ExprNode::Trunc(a)
             | ExprNode::BitNot(a)
@@ -1068,6 +1071,16 @@ impl ExprArena {
         self.push(ExprNode::Sign(a))
     }
 
+    /// The error function; `erf(0)` folds to 0, the one value it takes exactly at a rational.
+    pub fn erf(&mut self, a: ExprId) -> ExprId {
+        if let ExprNode::RealConst(x) = self.node(a)
+            && x.is_zero()
+        {
+            return a;
+        }
+        self.push(ExprNode::Erf(a))
+    }
+
     /// The integer nearest `a`, ties to even: exact on a constant, the identity on an
     /// integer-valued node.
     pub fn round_even(&mut self, a: ExprId) -> ExprId {
@@ -1597,6 +1610,11 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
+            ExprNode::Erf(a) => {
+                write!(f, "erf(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ")")
+            }
             ExprNode::RoundEven(a) => {
                 write!(f, "rint(")?;
                 self.fmt_expr(*a, f)?;
@@ -1916,6 +1934,7 @@ fn structurally_equal_inner(
         | (Sqrt(a1), Sqrt(b1))
         | (Rcp(a1), Rcp(b1))
         | (Abs(a1), Abs(b1))
+        | (Erf(a1), Erf(b1))
         | (RoundEven(a1), RoundEven(b1))
         | (Trunc(a1), Trunc(b1))
         | (BitNot(a1), BitNot(b1))

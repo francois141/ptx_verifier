@@ -335,6 +335,7 @@ impl Parser {
             "sqrt" => Ok(self.parse_unary_call()?.sqrt()),
             "abs" => Ok(self.parse_unary_call()?.abs()),
             "sign" => Ok(self.parse_unary_call()?.sign()),
+            "erf" => Ok(self.parse_unary_call()?.erf()),
             "tanh" => Ok(desugar_tanh(self.parse_unary_call()?)),
             "min" => {
                 let (a, b) = self.parse_binary_call()?;

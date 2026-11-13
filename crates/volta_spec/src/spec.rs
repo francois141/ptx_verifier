@@ -142,6 +142,7 @@ pub enum SpecExpr {
     Sqrt(Box<SpecExpr>),
     Abs(Box<SpecExpr>),
     Sign(Box<SpecExpr>),
+    Erf(Box<SpecExpr>),
     /// `op_{var=start}^{end-1} body`, unrolled into `end - start` terms combined by `op`
     /// (empty-range identity: `0` for `Sum`, `-infinity` for `Max`, as in `ExprArena::max`
     /// chains). The ends are index expressions over dims and enclosing variables.
@@ -200,6 +201,10 @@ impl SpecExpr {
 
     pub fn sign(self) -> Self {
         SpecExpr::Sign(Box::new(self))
+    }
+
+    pub fn erf(self) -> Self {
+        SpecExpr::Erf(Box::new(self))
     }
 
     pub fn reduce(
@@ -542,7 +547,8 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
         | SpecExpr::Log(a)
         | SpecExpr::Sqrt(a)
         | SpecExpr::Abs(a)
-        | SpecExpr::Sign(a) => {
+        | SpecExpr::Sign(a)
+        | SpecExpr::Erf(a) => {
             free_vars(a, out);
         }
         SpecExpr::Reduce {
@@ -743,6 +749,10 @@ fn eval(
         SpecExpr::Sign(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
             Ok(arena.sign(a))
+        }
+        SpecExpr::Erf(a) => {
+            let a = eval(a, env, bindings, arena, array_ids, memo)?;
+            Ok(arena.erf(a))
         }
         SpecExpr::Reduce {
             op,

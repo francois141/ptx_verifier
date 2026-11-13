@@ -126,6 +126,10 @@ impl Copier<'_> {
                 let a = self.expr(a);
                 self.target.sign(a)
             }
+            ExprNode::Erf(a) => {
+                let a = self.expr(a);
+                self.target.erf(a)
+            }
             ExprNode::RoundEven(a) => {
                 let a = self.expr(a);
                 self.target.round_even(a)
