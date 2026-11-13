@@ -153,7 +153,8 @@ or a thread's `cp.async.wait_group`.
   valid.
 - `Provenance` records the kernel, launch dims, targets, the `Assumption`s the
   analysis ran under (structured CTA, single CTA analyzed, Sync', eager async
-  data, the NKI ordering policy, ...) so verdicts can cite them. Its
+  data, the NKI ordering policy and the limits of the NKI model, ...) so verdicts can
+  cite them. Its
   `ThreadUnit` says what a graph thread is: a CTA thread, an AMD wave of
   `lanes`, or one NKI instruction (`Instruction`, with `block_dim` the
   instruction count).

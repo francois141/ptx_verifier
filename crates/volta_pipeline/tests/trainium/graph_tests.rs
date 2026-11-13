@@ -135,6 +135,10 @@ fn nki_kernels_rewriting_tiles_only_after_reading_them_are_verified() {
         assert_eq!(
             graph.provenance().assumptions,
             [
+                Assumption::SingleNkiInstance,
+                Assumption::NkiArgumentsDistinct,
+                Assumption::NkiInstructionReadsBeforeWrites,
+                Assumption::NkiCompilerAllocation,
                 Assumption::NkiReadAfterWriteOrder,
                 Assumption::NkiWriteAfterReadOrder,
                 Assumption::NkiMatmulAccumulationsCommute,
@@ -480,6 +484,10 @@ fn nki_no_reorder_blocks_order_their_own_instructions_when_the_policy_keeps_them
         assert_eq!(
             graph.provenance().assumptions,
             [
+                Assumption::SingleNkiInstance,
+                Assumption::NkiArgumentsDistinct,
+                Assumption::NkiInstructionReadsBeforeWrites,
+                Assumption::NkiCompilerAllocation,
                 Assumption::NkiReadAfterWriteOrder,
                 Assumption::NkiWriteAfterReadOrder,
                 Assumption::NkiMatmulAccumulationsCommute,

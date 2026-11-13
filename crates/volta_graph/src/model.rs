@@ -596,8 +596,9 @@ pub enum Assumption {
     /// The Neuron compiler orders an NKI instruction after the latest earlier writer of each
     /// location it reads (read after write), except across `affine_range` iterations.
     NkiReadAfterWriteOrder,
-    /// The Neuron compiler orders an NKI instruction after every earlier reader of each
-    /// location it writes (write after read), except across `affine_range` iterations.
+    /// The Neuron compiler orders an NKI instruction after the readers of each location it
+    /// writes since that location's latest write (write after read), except across
+    /// `affine_range` iterations.
     NkiWriteAfterReadOrder,
     /// The Neuron compiler orders an NKI instruction after the latest earlier writer of each
     /// location it writes (write after write), except across `affine_range` iterations.
@@ -613,6 +614,18 @@ pub enum Assumption {
     /// An NKI `no_reorder` block's instructions execute in program order (its edges are
     /// hardware synchronization, not scheduling hints).
     NkiNoReorderInProgramOrder,
+    /// One NeuronCore runs one instance of the NKI kernel: races between SPMD instances or
+    /// cores are not checked.
+    SingleNkiInstance,
+    /// An NKI kernel's arguments are distinct HBM tensors: an output aliasing an input is not
+    /// modelled.
+    NkiArgumentsDistinct,
+    /// An NKI instruction reads all its operands before writing any: overlapping source and
+    /// destination regions of one instruction are not checked against the hardware.
+    NkiInstructionReadsBeforeWrites,
+    /// The Neuron compiler's allocation is correct: unplaced tiles never overlap, and a tile
+    /// declared in a loop iteration is that iteration's own.
+    NkiCompilerAllocation,
 }
 
 impl Assumption {
@@ -647,8 +660,8 @@ impl Assumption {
                  of what it reads, except across affine_range iterations"
             }
             Assumption::NkiWriteAfterReadOrder => {
-                "the Neuron compiler orders each NKI instruction after every earlier reader of \
-                 what it writes, except across affine_range iterations"
+                "the Neuron compiler orders each NKI instruction after the readers of what it \
+                 writes since its latest write, except across affine_range iterations"
             }
             Assumption::NkiWriteAfterWriteOrder => {
                 "the Neuron compiler orders each NKI instruction after the latest earlier writer \
@@ -667,6 +680,22 @@ impl Assumption {
             }
             Assumption::NkiNoReorderInProgramOrder => {
                 "the instructions of an NKI no_reorder block execute in program order"
+            }
+            Assumption::SingleNkiInstance => {
+                "one NeuronCore runs one instance of the NKI kernel; races between SPMD \
+                 instances or cores are not checked"
+            }
+            Assumption::NkiArgumentsDistinct => {
+                "the NKI kernel's arguments are distinct HBM tensors; an output aliasing an input \
+                 is not modelled"
+            }
+            Assumption::NkiInstructionReadsBeforeWrites => {
+                "an NKI instruction reads all its operands before writing any; overlapping \
+                 source and destination regions of one instruction are not checked"
+            }
+            Assumption::NkiCompilerAllocation => {
+                "unplaced NKI tiles never overlap, and a tile declared in a loop iteration is \
+                 that iteration's own"
             }
         }
     }
