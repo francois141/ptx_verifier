@@ -659,6 +659,10 @@ pub enum UnaryOp {
     CvtF32I32,
     /// The u32 source as an f32.
     CvtF32U32,
+    /// The signed 4-bit integer in bits 3:0 of the source, divided by 16.
+    CvtOffF32I4,
+    /// One byte of the source as an unsigned integer, as an f32.
+    CvtF32Ubyte(WordByte),
     /// The f32 source truncated toward zero and clamped to the i32 range.
     CvtI32F32,
     /// The f32 source truncated toward zero and clamped to the u32 range.
@@ -677,6 +681,26 @@ pub enum UnaryOp {
     RndneF32,
     /// The f32 source rounded toward zero, as an f32.
     TruncF32,
+}
+
+/// A byte of a 32-bit word, from the least significant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WordByte {
+    B0,
+    B1,
+    B2,
+    B3,
+}
+
+impl WordByte {
+    pub fn shift(self) -> u32 {
+        match self {
+            WordByte::B0 => 0,
+            WordByte::B1 => 8,
+            WordByte::B2 => 16,
+            WordByte::B3 => 24,
+        }
+    }
 }
 
 /// The relation tested between two ordered values.

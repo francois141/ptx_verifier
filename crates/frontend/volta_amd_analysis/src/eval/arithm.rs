@@ -629,6 +629,18 @@ pub(super) fn evaluate_unary_op(
             let value = Real::from_i64(i64::from(non_symbolic_word(arena)?));
             arena.real(value)
         }
+        UnaryOp::CvtOffF32I4 => {
+            let nibble = i64::from(non_symbolic_word(arena)? & 0xf);
+            let signed = if nibble < 8 { nibble } else { nibble - 16 };
+            let value = Real::from_i64(signed)
+                .try_div(&Real::from_i64(16))
+                .expect("a nonzero integer divides any integer");
+            arena.real(value)
+        }
+        UnaryOp::CvtF32Ubyte(byte) => {
+            let value = (non_symbolic_word(arena)? >> byte.shift()) & 0xff;
+            arena.real(Real::from_i64(i64::from(value)))
+        }
         UnaryOp::CvtI32F32 => {
             let truncated = truncate_to_i32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
             arena.int(i64::from(truncated as u32))
@@ -656,7 +668,9 @@ fn unary_operand_type(op: UnaryOp) -> OperandType {
         | UnaryOp::Not32
         | UnaryOp::BfRev32
         | UnaryOp::CvtF32I32
-        | UnaryOp::CvtF32U32 => OperandType::Word,
+        | UnaryOp::CvtF32U32
+        | UnaryOp::CvtOffF32I4
+        | UnaryOp::CvtF32Ubyte(_) => OperandType::Word,
         UnaryOp::CvtI32F32
         | UnaryOp::CvtU32F32
         | UnaryOp::RcpIflagF32

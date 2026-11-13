@@ -386,6 +386,19 @@ fn lower_as_written(
         ("v_bfrev_b32_e32", operands) => lower_unary_op(ir::UnaryOp::BfRev32, operands),
         ("v_cvt_f32_i32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32I32, operands),
         ("v_cvt_f32_u32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtF32U32, operands),
+        ("v_cvt_off_f32_i4_e32", operands) => lower_unary_op(ir::UnaryOp::CvtOffF32I4, operands),
+        ("v_cvt_f32_ubyte0_e32", operands) => {
+            lower_unary_op(ir::UnaryOp::CvtF32Ubyte(ir::WordByte::B0), operands)
+        }
+        ("v_cvt_f32_ubyte1_e32", operands) => {
+            lower_unary_op(ir::UnaryOp::CvtF32Ubyte(ir::WordByte::B1), operands)
+        }
+        ("v_cvt_f32_ubyte2_e32", operands) => {
+            lower_unary_op(ir::UnaryOp::CvtF32Ubyte(ir::WordByte::B2), operands)
+        }
+        ("v_cvt_f32_ubyte3_e32", operands) => {
+            lower_unary_op(ir::UnaryOp::CvtF32Ubyte(ir::WordByte::B3), operands)
+        }
         ("v_cvt_i32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtI32F32, operands),
         ("v_cvt_u32_f32_e32", operands) => lower_unary_op(ir::UnaryOp::CvtU32F32, operands),
         ("v_rcp_iflag_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RcpIflagF32, operands),
