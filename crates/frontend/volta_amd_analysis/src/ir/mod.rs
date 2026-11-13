@@ -233,6 +233,8 @@ pub enum ScalarOp32 {
     LShrB32,
     /// The arithmetic `src0 >> src1`.
     AShrI32,
+    /// The field of `src0` at bit `src1[4:0]`, `src1[22:16]` bits wide.
+    BfeU32,
     /// `SCC ? src0 : src1`; SCC is unchanged.
     CSelectB32,
 }
@@ -553,6 +555,24 @@ pub enum BinOp {
     MaxF32,
 }
 
+/// A scalar operation of one 32-bit source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarUnaryOp32 {
+    /// `|src|`, signed; SCC is whether the result is nonzero.
+    AbsI32,
+    /// The source's 32 bits in reverse order; SCC is unchanged.
+    BRevB32,
+}
+
+impl ScalarUnaryOp32 {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AbsI32 => "s_abs_i32",
+            Self::BRevB32 => "s_brev_b32",
+        }
+    }
+}
+
 /// A VOP3 operation of three sources: the f32 ops read them as floats, the others as words.
 /// Shift counts and the field offset and width use their low five bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -740,8 +760,9 @@ pub enum LoweredInstr {
         dst: ScalarDst64,
         src: ScalarSrc64,
     },
-    /// `dst = |src|`, signed; SCC is whether the result is nonzero.
-    AbsScalar32 {
+    /// `dst = op src`.
+    ScalarUnary32 {
+        op: ScalarUnaryOp32,
         dst: Sgpr,
         src: ScalarSrc,
     },
@@ -994,7 +1015,7 @@ impl LoweredInstr {
             Self::ScalarLoad { .. } => "s_load",
             Self::MovScalar32 { .. } => "s_mov_b32",
             Self::MovScalar64 { .. } => "s_mov_b64",
-            Self::AbsScalar32 { .. } => "s_abs_i32",
+            Self::ScalarUnary32 { op, .. } => op.name(),
             Self::ScalarOp32 { .. } => "scalar op",
             Self::ScalarOp64 { .. } => "scalar op (64-bit)",
             Self::ExecOp64 { .. } => "scalar op (EXEC)",

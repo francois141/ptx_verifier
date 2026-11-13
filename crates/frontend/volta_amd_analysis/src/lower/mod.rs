@@ -128,10 +128,8 @@ fn lower_as_written(
             dst: scalar_dst64(dst)?,
             src: scalar_source64(src)?,
         }),
-        ("s_abs_i32", [dst, src]) => Ok(AbsScalar32 {
-            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
-            src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
-        }),
+        ("s_abs_i32", [dst, src]) => lower_scalar_unary32(ir::ScalarUnaryOp32::AbsI32, dst, src),
+        ("s_brev_b32", [dst, src]) => lower_scalar_unary32(ir::ScalarUnaryOp32::BRevB32, dst, src),
         // NOT shares XOR's concrete-word evaluation and nonzero-result SCC rule.
         ("s_not_b32", [dst, src]) => Ok(ScalarOp32 {
             op: ir::ScalarOp32::XorB32,
@@ -169,6 +167,7 @@ fn lower_as_written(
         ("s_lshl_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlB32, operands),
         ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
+        ("s_bfe_u32", operands) => lower_scalar_op32(ir::ScalarOp32::BfeU32, operands),
         ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
         ("s_and_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndB64, operands),
         ("s_or_b64", operands) => lower_scalar_op64(ir::ScalarOp64::OrB64, operands),
@@ -671,6 +670,7 @@ fn lower_as_written(
             | "s_movk_i32"
             | "s_mov_b64"
             | "s_abs_i32"
+            | "s_brev_b32"
             | "s_not_b32"
             | "s_not_b64"
             | "s_branch"
@@ -797,6 +797,18 @@ fn lower_unary_op(op: ir::UnaryOp, operands: &[Operand]) -> Result<LoweredInstr,
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
         src: first_source(src)?,
+    })
+}
+
+fn lower_scalar_unary32(
+    op: ir::ScalarUnaryOp32,
+    dst: &Operand,
+    src: &Operand,
+) -> Result<LoweredInstr, &'static str> {
+    Ok(LoweredInstr::ScalarUnary32 {
+        op,
+        dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+        src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
     })
 }
 

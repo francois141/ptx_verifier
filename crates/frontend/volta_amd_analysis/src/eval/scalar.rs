@@ -3,7 +3,7 @@
 
 use crate::ir::{
     ExecCopy, ExecOrder, LoweredInstr, ScalarCmp64Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst,
-    ScalarOp32, ScalarOp64, ScalarShift64, ScalarSrc, ScalarSrc64, Sgpr,
+    ScalarOp32, ScalarOp64, ScalarShift64, ScalarSrc, ScalarSrc64, ScalarUnaryOp32, Sgpr,
 };
 
 use super::wave::{LgkmInFlight, WaveId, WaveRegisters};
@@ -70,9 +70,13 @@ impl Interpreter<'_> {
                 let value = self.read_scalar64(wave, *src)?;
                 self.write_scalar64(wave, *dst, value)
             }
-            LoweredInstr::AbsScalar32 { dst, src } => {
-                let value = (self.read_scalar_word(wave, *src)? as i32).unsigned_abs();
-                self.write_scalar_word(wave, *dst, value, Some(value != 0))
+            LoweredInstr::ScalarUnary32 { op, dst, src } => {
+                let word = self.read_scalar_word(wave, *src)?;
+                let (value, scc) = match op {
+                    ScalarUnaryOp32::AbsI32 => ((word as i32).unsigned_abs(), Some(word != 0)),
+                    ScalarUnaryOp32::BRevB32 => (word.reverse_bits(), None),
+                };
+                self.write_scalar_word(wave, *dst, value, scc)
             }
             LoweredInstr::ScalarOp32 {
                 op,
@@ -404,6 +408,11 @@ fn scalar_op32(
         ScalarOp32::LShlB32 => scc_if_nonzero(a << (b & 31)),
         ScalarOp32::LShrB32 => scc_if_nonzero(a >> (b & 31)),
         ScalarOp32::AShrI32 => scc_if_nonzero(((a as i32) >> (b & 31)) as u32),
+        ScalarOp32::BfeU32 => {
+            let width = ((b >> 16) & 0x7f).min(32);
+            let mask = ((1_u64 << width) - 1) as u32;
+            scc_if_nonzero((a >> (b & 31)) & mask)
+        }
         ScalarOp32::CSelectB32 => (if registers.read_scc()? { a } else { b }, None),
     })
 }
