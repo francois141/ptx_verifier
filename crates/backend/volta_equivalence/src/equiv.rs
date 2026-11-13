@@ -2,7 +2,7 @@
 //! Use one `EquivSession` for many elements of a kernel pair, so shared
 //! structure (score polys, softmax denominators) is free after the first.
 
-use crate::canon::{CanonError, Session};
+use crate::canon::{CanonError, CoeffError, Session};
 
 use volta_common::logging::info;
 use volta_expr::{ExprArena, ExprId};
@@ -69,7 +69,8 @@ impl<'a> EquivSession<'a> {
     }
 
     /// Check whether `e1` (in the first arena) and `e2` (in the second)
-    /// are equivalent over the reals.
+    /// are equivalent over the reals. Coefficients that outgrow i128 leave the pair not shown
+    /// equal, as any pair outside the fragment is; the session restarts after one.
     pub fn check(&mut self, e1: ExprId, e2: ExprId) -> EquivResult<bool> {
         if self.recycle_terms != 0 && self.session.interned_terms() > self.recycle_terms {
             info!(
@@ -78,9 +79,17 @@ impl<'a> EquivSession<'a> {
             );
             self.session = Session::new();
         }
-        Ok(self
+        match self
             .session
-            .check_equivalent(self.arena1, e1, self.arena2, e2)?)
+            .check_equivalent(self.arena1, e1, self.arena2, e2)
+        {
+            Err(CanonError::Coeff(CoeffError::Overflow)) => {
+                info!("coefficient overflow: element not shown equal");
+                self.session = Session::new();
+                Ok(false)
+            }
+            result => Ok(result?),
+        }
     }
 }
 
