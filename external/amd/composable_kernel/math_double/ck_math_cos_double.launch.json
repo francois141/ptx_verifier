@@ -1,0 +1,14 @@
+{
+  "description": "Legacy CK's ck::math::cos<double> of 0 in each of 64 work-items. It calls itself, so the kernel stores nothing.",
+  "kernel": "ck_math_cos_double",
+  "block": 64,
+  "arrays": [
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "float": 0.0},
+    {"name": "y", "ptr": "y"}
+  ],
+  "spec": "cos.spec",
+  "dims": {"N": 64}
+}

@@ -171,6 +171,11 @@ CASES = (
     Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
     Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),
     Case("ck_gemm_sigmoid", "ck_gemm_sigmoid", Prove("1/1000")),
+    # Legacy CK's cos<double> calls itself, so its kernel compiles to a bare s_endpgm and
+    # writes none of its outputs.
+    Case(
+        "math_double/ck_math_cos_double", "math_double/ck_math_double", Solve("REJECT")
+    ),
 )
 
 
