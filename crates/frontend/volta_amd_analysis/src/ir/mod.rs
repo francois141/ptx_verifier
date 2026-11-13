@@ -875,6 +875,12 @@ pub enum LoweredInstr {
         dst: Vgpr,
         src: ModifiedSrc,
     },
+    /// `dst = src0 * 2^src1` in each lane, `src1` an i32.
+    LdexpF32 {
+        dst: Vgpr,
+        src0: ModifiedSrc,
+        src1: Vop3Src,
+    },
     /// Copy two selected source words into a VGPR pair in each lane.
     Mov64 {
         dst: [Vgpr; 2],
@@ -1055,6 +1061,7 @@ impl LoweredInstr {
             Self::TernaryOp { .. } => "vector op (3 sources)",
             Self::Vop3BinOp { .. } => "vector op (e64)",
             Self::UnaryOp { .. } => "vector op (1 source)",
+            Self::LdexpF32 { .. } => "v_ldexp_f32",
             Self::Mov64 { .. } => "vector move (64-bit)",
             Self::Cmp { .. } => "v_cmp",
             Self::Cmp64 { .. } => "v_cmp (64-bit)",

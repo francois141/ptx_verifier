@@ -663,6 +663,23 @@ pub(super) fn evaluate_unary_op(
     })
 }
 
+/// `src0 * 2^src1` in `lane`, for a concrete i32 exponent.
+pub(super) fn evaluate_ldexp_f32(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src0: ModifiedSrc,
+    src1: Vop3Src,
+) -> Result<ExprId, EvalError> {
+    let value = registers.read_modified_src(arena, lane, src0)?;
+    let exponent = registers.read_src(arena, lane, src1)?;
+    let exponent = concrete_word(arena, exponent).ok_or(EvalError::SymbolicWord { lane })? as i32;
+    // Every power of two in f64's range is exact; beyond it an f32 result is 0 or infinite.
+    let power = Real::from_f64(2f64.powi(exponent)).expect("a power of two is not a NaN");
+    let scale = arena.real(power);
+    Ok(arena.mul(value, scale))
+}
+
 fn unary_operand_type(op: UnaryOp) -> OperandType {
     match op {
         UnaryOp::Mov32

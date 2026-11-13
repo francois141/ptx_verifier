@@ -422,6 +422,13 @@ fn lower_as_written(
         ("v_mul_f32_e64", operands) => lower_bin_op(ir::BinOp::MulF32, operands),
         ("v_min_f32_e64", operands) => lower_bin_op(ir::BinOp::MinF32, operands),
         ("v_max_f32_e64", operands) => lower_bin_op(ir::BinOp::MaxF32, operands),
+        ("v_ldexp_f32", [dst, src0, src1]) => Ok(LdexpF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: modified_src(src0)
+                .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+            src1: vop3_src(src1)
+                .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+        }),
         ("v_cmp_lt_f32_e32", operands) => lower_cmp(ir::CmpOp::LtF32, operands),
         ("v_cmp_le_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
         ("v_cmp_eq_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
@@ -744,6 +751,7 @@ fn lower_as_written(
             | "v_fma_f32"
             | "v_fmaak_f32"
             | "v_fmamk_f32"
+            | "v_ldexp_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
             | "global_load_dwordx3"

@@ -16,8 +16,8 @@ use super::EvalError;
 use super::arithm::{
     evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp_f64, evaluate_cmp64,
     evaluate_cndmask, evaluate_cndmask_e64, evaluate_cvt_from_f64, evaluate_cvt_to_f64,
-    evaluate_f64_op, evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op,
-    evaluate_vop3_bin_op,
+    evaluate_f64_op, evaluate_ldexp_f32, evaluate_packed_f32, evaluate_ternary_op,
+    evaluate_unary_op, evaluate_vop3_bin_op,
 };
 use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
 use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
@@ -212,6 +212,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::TernaryOp { .. }
             | LoweredInstr::Vop3BinOp { .. }
             | LoweredInstr::UnaryOp { .. }
+            | LoweredInstr::LdexpF32 { .. }
             | LoweredInstr::Mov64 { .. }
             | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
@@ -384,6 +385,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::TernaryOp { .. }
             | LoweredInstr::Vop3BinOp { .. }
             | LoweredInstr::UnaryOp { .. }
+            | LoweredInstr::LdexpF32 { .. }
             | LoweredInstr::Mov64 { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
@@ -574,6 +576,10 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::UnaryOp { op, dst, src } => {
                 let result = evaluate_unary_op(&mut self.arena, registers, lane, *op, *src)?;
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::LdexpF32 { dst, src0, src1 } => {
+                let result = evaluate_ldexp_f32(&mut self.arena, registers, lane, *src0, *src1)?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::Mov64 { dst, src } => {
