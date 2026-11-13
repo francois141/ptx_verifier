@@ -1,0 +1,37 @@
+{
+  "description": "CK RMSNorm of an 8 x 64 fp32 tensor, workgroup 0 of 2, with the 256 threads Kernel::BlockSize() gives the tm=4, tn=16 shape. Waves 1-3 compute rows 1-6, so the workgroup writes rows 4-6, which belong to workgroup 1.",
+  "kernel": "ck_rmsnorm2d_rows",
+  "block": 256,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [8, 64]},
+    {"name": "gamma", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [8, 64]}
+  ],
+  "params": [
+    {"name": "p_x", "ptr": "x"},
+    {"name": "p_x_residual (low word, null)", "int": 0},
+    {"name": "p_x_residual (high word, null)", "int": 0},
+    {"name": "p_sm_scale (low word, null)", "int": 0},
+    {"name": "p_sm_scale (high word, null)", "int": 0},
+    {"name": "p_gamma", "ptr": "gamma"},
+    {"name": "p_y", "ptr": "y"},
+    {"name": "p_y_residual (low word, null)", "int": 0},
+    {"name": "p_y_residual (high word, null)", "int": 0},
+    {"name": "p_y_scale (low word, null)", "int": 0},
+    {"name": "p_y_scale (high word, null)", "int": 0},
+    {"name": "p_invRms (low word, null)", "int": 0},
+    {"name": "p_invRms (high word, null)", "int": 0},
+    {"name": "p_y_unquant (low word, null)", "int": 0},
+    {"name": "p_y_unquant (high word, null)", "int": 0},
+    {"name": "epsilon (2^-20)", "float": 9.5367431640625e-07},
+    {"name": "m", "int": 8},
+    {"name": "n", "int": 64},
+    {"name": "x_stride", "int": 64},
+    {"name": "xr_stride", "int": 64},
+    {"name": "y_stride", "int": 64},
+    {"name": "yr_stride", "int": 64},
+    {"name": "padding to the struct's 104 bytes", "int": 0}
+  ],
+  "spec": "ck_rmsnorm2d_rows.spec",
+  "dims": {"M": 4, "N": 64}
+}

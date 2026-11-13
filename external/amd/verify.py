@@ -165,6 +165,8 @@ CASES = (
     Case("ck_cast_tile_bf8_fixed", "ck_cast_tile_bf8", Solve("ACCEPT")),
     # BlockReduce2dCrossWarpSync keeps only lane 0's partial, so every row gets row 0's.
     Case("ck_reduce2d_cross_warp", "ck_reduce2d_cross_warp", Solve("REJECT")),
+    # Generic2dBlockShape gives 16-thread rows 4 waves, so workgroup 0 writes rows 0-6, not 0-3.
+    Case("ck_rmsnorm2d_rows", "ck_rmsnorm2d_rows", Solve("REJECT")),
     # A model of PermuteWarpGemmCToA's loop, which runs four times past its buffers.
     Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
     Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),
