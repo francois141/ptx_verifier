@@ -111,7 +111,7 @@ The same lines go to Python's `logging` (as `INFO`) whether or not `verbose` is 
 | `duration_seconds`                       | How long the agent's session took.                             |
 | `cost_usd`                               | Claude Code's estimate at API prices (a subscription is not billed per token). |
 | `usage`                                  | Token counts, as a dict.                                       |
-| `isa`, `race_verified`                   | The kernel's ISA, and `True` when its graph checks passed (`None` for NKI, which has none). |
+| `isa`, `race_verified`                   | The kernel's ISA, and `True` when its graph checks passed (`None` when the run records no graph). |
 | `equivalence`, `equivalence_evidence`    | The canonical solver's verdict and its evidence.               |
 
 An existing `proof.lean` in `output_dir` is the agent's starting point. To recheck a proof

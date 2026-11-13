@@ -53,7 +53,7 @@ volta_equivalence  → volta_expr, volta_common (+ dev: volta_spec)
 volta_spec         → volta_expr, volta_common
 volta_ptx_analysis → volta_graph, volta_expr, volta_common
 volta_amd_analysis → volta_graph, volta_expr
-volta_trainium_analysis → volta_expr
+volta_trainium_analysis → volta_graph, volta_expr
 volta_graph_check  → volta_graph, volta_common
 volta_graph        → volta_expr
 volta_expr         → (nothing)
@@ -223,7 +223,9 @@ crate-level docs in `lib.rs` are the contract.
   `ObjectInit`/`ObjectInval`, `TmemAlloc`/`TmemDealloc`/`TmemRelinquish`,
   `Exit`.
 - `MemAccess`: space (`Global`/`Shared`/`Tensor`; local memory is not
-  recorded), mode, `OrderingKind` (only `Ordinary` produced), proxy, canonical
+  recorded), mode, `OrderingKind` (`Ordinary`; NKI also records `Reduction(op)`, a
+  read-modify-write that commutes with reductions of the same `ReductionOp`, built from
+  `Effect::Reduce`), proxy, canonical
   `Footprint` (byte range, or TMEM lane x column rectangle), attributed
   thread, stored value for writes.
 - Sync objects (named barrier, mbarrier lifetime, warp/warpgroup collective,
@@ -245,6 +247,15 @@ crate-level docs in `lib.rs` are the contract.
   behavior the producer does not model, else `Error`). `Provenance`: launch, targets,
   `Assumption`s, per-instruction kind and source span. `SingleWorkgroupAnalyzed` records
   the selected AMD workgroup's coordinates without claiming cross-workgroup verification.
+  `ThreadUnit` says what a graph thread is: a CTA thread, an AMD wave, or one NKI
+  instruction (`Instruction`, `block_dim` the instruction count), ordered after another
+  by its `Dependency` object's one generation (`GraphBuilder::signal`, an `Arrival`
+  release completing it at once; each later instruction `resume`s from it), under the
+  ordering policy's `Assumption`s (`NkiReadAfterWriteOrder` and `NkiWriteAfterReadOrder`
+  always; `NkiWriteAfterWriteOrder`, `NkiHazardsByPlacedAddress` and
+  `NkiNoReorderInProgramOrder` as the policy adds them) and four that bound what the check
+  covers, recorded under every policy (`SingleNkiInstance`, `NkiArgumentsDistinct`,
+  `NkiInstructionReadsBeforeWrites`, `NkiCompilerAllocation`).
 - `EventGraph::validate` checks the representation invariants (every typed
   edge runs forward in trace order, so the relation is acyclic);
   `EventGraph::dump` is the deterministic `volta-graph 1` text form
@@ -552,9 +563,9 @@ known), within 128 partitions of `sbuf_fmax_bytes` (SBUF) or 16 KiB (PSUM, eight
 banks). A kernel places all its on-chip tiles or none (`LowerError::MixedAllocation`).
 Placed tiles may overlap (v10's `v_psum_t` and `qk_psum`): `eval/alias.rs` pairs the
 overlapping tiles, a write through one clobbers the other's elements covering its bytes,
-and reading a clobbered element is `EvalError::ClobberedRead`. This is program order; how
-the compiler orders accesses through overlapping tiles is unstated in the docs and, like
-DMA asynchrony, outside the check.
+and reading a clobbered element is `EvalError::ClobberedRead`. This is program order; the
+graph branch takes the compiler to order accesses through overlapping tiles by address
+(`OrderingPolicy::BASELINE`'s `PlacedTiles::ByAddress`), which the docs do not state.
 
 A kernel's outputs are the arguments it writes and the tensor it returns: a
 final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
@@ -655,7 +666,66 @@ body's arithmetic and emits the body once per index; the tiles an iteration
 declares take its index as a suffix (`x` becomes `x.0`, a name Python cannot
 write), so each iteration owns its own, while other names rebind as in Python (the
 loop variable keeps its last value). The count is any compile-time integer; a
-`for` over a tuple or list unrolls the same way.
+`for` over a tuple or list unrolls the same way. Each instruction keeps its
+`ast::Origin` (`LoweredKernel::origins`): its enclosing `LoopIteration`s (a `LoopId` per
+execution of a `for`, its `LoopKind`, the index), outermost first across helper calls,
+and which `nl.no_reorder()` block encloses it (`Reordering::Forbidden { block }`, a
+`NoReorderId` per execution of the outermost block), rendered after it in `.ast`
+and `.ir`; `ir::Mover` tells a DMA copy or transpose (`.ir`'s `dma`, `dma_transpose`)
+from a compute engine's (`mov`, `transpose`). `success/loop_origins.py` covers
+every loop kind, an inner loop entered twice and `no_reorder` across a helper call.
+`footprints(kernel)` (`eval/footprint.rs`) gives each instruction's `Access`es, reads
+then writes: a `Mode` (`Read`, `Write`, `Accumulate(Reducer)`: an adding `nc_matmul`'s
+`Matmul`, or `Elementwise(op)` for a `tensor_tensor` whose `dst` is one of its operands'
+regions under `add`, `multiply` or `maximum` (`accumulates`, an exhaustive match over
+`ArithOp`), mamba's `acc = acc + x`), its
+tensor, a `Location` and merged runs. Placed tiles share their memory's location, by byte
+(`partition * PARTITION_STRIDE + byte`); any other tensor is its own, by element offset.
+A gather reads its whole `data` and `index` regions. The race fixtures' `.footprints`
+snapshot them, as do those of `sequential_carried`, `affine_matmul_accumulate`,
+`affine_vector_sum`, `placed_tiles`, `access_patterns`, `indirect` and `loop_origins`.
+`record_graph(kernel, policy, execution)` (`eval/record.rs`) is the kernel's event graph,
+ending as its program-order run did (`Execution::of(&evaluate(..))`: an aborted run's stops at
+the failing instruction, `Terminal::Aborted`, as PTX's and AMD's do): a graph
+thread per instruction, its `footprints` as accesses (an accumulation the policy exempts a
+`Reduction` effect, any other a read then a write; each `Location` a disjoint range, HBM in
+`Global`, SBUF and PSUM in `Shared`), and
+a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler orders two
+instructions. The docs say only that it synchronizes "based on data dependencies", so a
+policy is four choices, each recorded as an `Assumption`. Every policy orders read after
+write (`NkiReadAfterWriteOrder`: after the latest earlier writer of what it reads) and write
+after read (`NkiWriteAfterReadOrder`: after the readers of what it writes since its latest
+write), unless
+the two are in different iterations of one `affine_range`. There, as the `affine_range` docs
+exempt "associative reductions", `nc_matmul` accumulations commute instead
+(`NkiMatmulAccumulationsCommute`, every policy): each is a `Reduction(Add)`, a later access
+follows every reduction since the last ordinary write, and a read of a partial sum inside
+the loop still races (R8). `Reductions::MatmulAndAdd` (`NkiTensorTensorAddsCommute`)
+extends this to `tensor_tensor` add accumulations; `Reductions::Matmul` does not.
+`OrderingPolicy::BASELINE`, the pipeline's, takes exactly the assumptions some AWS sample
+needs (the crate README's Assumptions section lists each with its evidence): it lets
+`tensor_tensor` adds commute (mamba) and tracks hazards by address (`PlacedTiles::ByAddress`, `NkiHazardsByPlacedAddress`:
+through the bytes `address=` tiles share, as the compiler must for its own reuse of on-chip
+memory across tensors, and as v10, AWS's direct-allocation sample, relies on) and orders
+nothing more. `WriteAfterWrite::Ordered` (`NkiWriteAfterWriteOrder`) also orders a write
+after the latest earlier writer; `PlacedTiles::ByTensor` tracks hazards per tensor only,
+recording no placement assumption; `NoReorder::ProgramOrder`
+(`NkiNoReorderInProgramOrder`) orders each `no_reorder` block's instructions in program
+order, as the API page says it does, though the scheduling guide leaves open whether its
+edges are semaphores or scheduling hints; a block orders nothing against code outside it.
+`OrderingPolicy::ALL` is the sixteen combinations.
+`check_failure/` holds kernels that race under `BASELINE` (R0 `back_to_back_dmas` and its
+`sequential_overwrite` twin, ordered by write after write; R1 `affine_overwrite` and
+`affine_carried`, racing under every policy; R8 `affine_matmul_partial_read`, reading a PSUM
+accumulator inside the loop, racing under every policy; R0 and R1 inside a `no_reorder`
+block, race free once blocks run in program order, and a rewrite across a block's
+boundary, ordered by write after write; `scan`, whose `nl.zeros` tile a DMA overwrites unread,
+ordered by write after write), each naming what would make it race free;
+`success/sequential_carried`, `affine_carried`'s twin in a `sequential_range`,
+`success/affine_matmul_accumulate`, the docs' matmul reduction, and
+`success/affine_vector_sum`, mamba's add accumulation, are race free; `trainium/accepted_tests.rs` runs them in program order, requiring a `success/`
+fixture's graph to be `Verified` under `BASELINE` and a `check_failure/` one's `Rejected`,
+`trainium/graph_tests.rs` checks their conflicting instruction pairs.
 
 A subscript is a rectangular region: per dimension an `ast::Subscript`, a slice or
 an integer index that drops the dimension (numpy's rule; `nl.ds(start, size)` is
@@ -688,8 +758,9 @@ restrictions of the hardware (partition offsets) are not checked. v3 to v8a and 
 parse, lower and run unmodified at `[128, 512]`.
 
 The fixtures live in `volta_pipeline/tests/trainium/` (paths below are relative to it):
-`success/` for the kernels `trainium/accepted_tests.rs` runs, `execution_error/` for the
-`*_errors.py` kernels `trainium/rejected_tests.rs` expects to fail.
+`success/` for the kernels `trainium/accepted_tests.rs` runs, `check_failure/` for the race
+fixtures `trainium/graph_tests.rs` rejects, `execution_error/` for the `*_errors.py` kernels
+`trainium/rejected_tests.rs` expects to fail.
 `success/add.py` adds two 16 x 16 HBM tensors through SBUF tiles
 (`dma_copy` in, `tensor_tensor` add, `dma_copy` out).
 `success/gemm_relu.py` computes `relu(a_t.T @ b)`, its `activation`
@@ -750,8 +821,9 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
 `PatternProblem` a tile or HBM view can hit and a `tensor_reduce` over a leading axis.
-`success/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
+`check_failure/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
 ops reversed, from `1.0`, and applies `activation`'s `scale` (a hand-written `.expected`);
+its `scale` memset, overwritten unread by a DMA, races unless write after write is ordered;
 a test widens its parsed broadcast past its row's shape (`BroadcastShape`).
 `success/indirect.py` gathers three columns, one offset repeated, over two
 16-partition groups on `nisa.engine.scalar` from a call's `contents` (an `.expected`
@@ -810,7 +882,7 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph` (and
   `tcgen05.st`->`ld`, `st`->`st`, `ld`->`st` pairs whose earlier op's
   `tcgen05.wait` releases the later op's issuer before its issue. Edges keep
   rule, roles and covered cells. No projection contains it.
-- `domain.rs` - the memory domains: `M` (ordinary global/shared effects, async
+- `domain.rs` - the memory domains: `M` (non-atomic global/shared effects, reductions and async
   ones and shared-memory `tcgen05` operands included; Algorithms 2-3) and `A`
   (Tensor Memory effects of `tcgen05` ops; Algorithms 5 and 7).
 - `barrier_epoch.rs` - Weft's separation criterion over `G0`: every
@@ -835,8 +907,9 @@ none turns an unsupported case into `Pass`. Depends only on `volta_graph` (and
   leaves it; a pass issues `MbarrierOrdering`.
 - `memory_conflict.rs` - every overlapping pair of `M` with a write ordered in
   `G_HB`; `Fail` lists all of `B` (a per-byte dominance forest finds each
-  unordered pair once, at its lowest byte); no benign equal-store exception;
-  atomics are outside the contract (`Unknown`); a pass issues
+  unordered pair once, at its lowest byte); no benign equal-store exception; two
+  reductions with one `ReductionOp` commute and are never a pair, while a reduction is a
+  write to any other effect; atomics are outside the contract (`Unknown`); a pass issues
   `MemoryConflictFree`.
 - `proxy_order.rs` - every ordered cross-proxy pair needs a covering fence:
   an explicit `fence.proxy.async` on either side's thread, or the implicit fence
@@ -894,8 +967,9 @@ The integration point: `verify_kernel(module, kernel, config)` (analysis stage
 claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
 evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
-and every kernel `Verified`; any refutation, failed check or deadlock is REJECT;
-anything else is UNKNOWN. Tests:
+and every kernel `Verified` (a kernel whose interpreter records no graph,
+`GraphBranch::NotRecorded`, is at best UNKNOWN); any refutation, failed check or
+deadlock is REJECT; anything else is UNKNOWN. Tests:
 `ptx/aggregation_tests.rs` (real kernels through both branches),
 `amd/equivalence_tests.rs` (compiled AMD matmul, MFMA matmul, CK GEMM, CK attention,
 and softmax against their formulas, accounting for CK's column-major B and softmax at
@@ -917,7 +991,10 @@ its input must be rejected: CK's output buffer bound drops four of its nine stor
 `gemm_amd.json` and `gemm_sigmoid_amd.json` are snapshots of the argument builders' labelled
 parameters (`ck_avgpool2d_params`, `ck_fmha_params`, `ck_gemm_params`), rendered by
 `common::amd::Launch` (`VOLTA_BLESS=1` rewrites them).
-`trainium/equivalence_tests.rs` checks the NKI `matmul`, 
+`trainium/equivalence_tests.rs` checks that an NKI kernel proved equal to its spec whose
+graph verifies is ACCEPT through `solve` and `decide`, citing `NkiReadAfterWriteOrder`,
+`NkiWriteAfterReadOrder` and `NkiHazardsByPlacedAddress`, and
+that `check_failure/back_to_back_dmas.py` is rejected through the frontend; it checks the NKI `matmul`, 
 `gemm_relu` and `softmax` fixtures against the `.spec` files beside them, with `gemm_relu` 
 against the unclamped product and `softmax` against the softmax of `-x` as negative tests,
 and the NKI samples' `attn_fwd_v1` and `attn_fwd_v2` against `attention.spec` and each
@@ -955,7 +1032,20 @@ equivalence comparisons, the Lean challenge, and the grid tests' individual work
 `amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
 to reject a completed kernel with an LDS race. `just amd` runs the accepted, rejected and
 equivalence suites; the full `amd_tests` target also runs graph, grid and Lean tests.
-`just trainium` runs its accepted, rejected and equivalence suites.
+`trainium/graph_tests.rs` checks NKI graphs under `BASELINE` unless a test names another
+policy: fixtures whose tiles are written once or rewritten after their readers, and the
+attention samples v1 to v10, verify; each race fixture in `trainium/check_failure/` fails
+`MemoryConflict` with exactly its expected instruction pairs; writes with no read between
+them verify once write after write is ordered; with hazards tracked per tensor only, v10's
+races all pair `v_psum_t`, transposed before its `no_reorder` block, with `qk_psum` over the
+same PSUM bytes inside it (R2/R3); `nc_matmul` accumulations across `affine_range`
+iterations (the tiled matmul tutorials) verify under every policy, `tensor_tensor` add ones
+(mamba) unless the policy is `Reductions::Matmul`, while a read of a partial sum and the other
+`affine_range` fixtures race under every policy. A run that aborts
+gives a graph ending `Aborted` at the failing instruction, so its checks are inconclusive. A table test checks every NKI fixture and
+sample under all sixteen policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
+rewrites it). `just trainium` runs its accepted, rejected and
+equivalence suites.
 
 ### End-to-end tests (`tests/`)
 

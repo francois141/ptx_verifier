@@ -20,9 +20,9 @@ kernel attn_fwd_v2(q, k, v) -> kernel_out
   v_t: sbuf[128, 128]
   attn_out: psum[128, 128]
   attn_out_sbuf: sbuf[128, 128]
-  q_sbuf = mov(q)
-  k_sbuf = mov(k)
-  v_sbuf = mov(v)
+  q_sbuf = dma(q)
+  k_sbuf = dma(k)
+  v_sbuf = dma(v)
   qk = matmul(q_sbuf, k_sbuf)
   qk_sbuf = mov(qk)
   softmax_isa[0].row_max = reduce maximum(qk_sbuf)
@@ -37,4 +37,4 @@ kernel attn_fwd_v2(q, k, v) -> kernel_out
   v_t = mov(v_t_psum)
   attn_out = matmul(scores_t, v_t)
   attn_out_sbuf = mov(attn_out)
-  kernel_out = mov(attn_out_sbuf)
+  kernel_out = dma(attn_out_sbuf)

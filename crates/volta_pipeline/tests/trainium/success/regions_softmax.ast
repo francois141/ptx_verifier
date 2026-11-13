@@ -3,15 +3,15 @@ kernel kernel(x: [2, 3])
   scratch: sbuf[2, 5] of float32
   dma_copy(dst=scratch[:, 1:4], src=x)
   col_max: sbuf[2, 3] of float32
-  tensor_reduce(axis=(1,), data=scratch[:, 1:2], dst=col_max[:, 0:1], op=nki.language.maximum)
-  tensor_reduce(axis=(1,), data=scratch[:, 2:3], dst=col_max[:, 1:2], op=nki.language.maximum)
-  tensor_reduce(axis=(1,), data=scratch[:, 3:4], dst=col_max[:, 2:3], op=nki.language.maximum)
+  tensor_reduce(axis=(1,), data=scratch[:, 1:2], dst=col_max[:, 0:1], op=nki.language.maximum)  # in for#0[0]
+  tensor_reduce(axis=(1,), data=scratch[:, 2:3], dst=col_max[:, 1:2], op=nki.language.maximum)  # in for#0[1]
+  tensor_reduce(axis=(1,), data=scratch[:, 3:4], dst=col_max[:, 2:3], op=nki.language.maximum)  # in for#0[2]
   stats: sbuf[2, 2] of float32
   tensor_reduce(axis=(1,), data=col_max[:, :], dst=stats[:, 0:1], op=nki.language.maximum)
   norm: sbuf[2, 3] of float32
-  tensor_tensor(data1=scratch[:, 1:2], data2=stats[:, 0:1], dst=norm[:, 0:1], op=nki.language.subtract)
-  tensor_tensor(data1=scratch[:, 2:3], data2=stats[:, 0:1], dst=norm[:, 1:2], op=nki.language.subtract)
-  tensor_tensor(data1=scratch[:, 3:4], data2=stats[:, 0:1], dst=norm[:, 2:3], op=nki.language.subtract)
+  tensor_tensor(data1=scratch[:, 1:2], data2=stats[:, 0:1], dst=norm[:, 0:1], op=nki.language.subtract)  # in for#1[0]
+  tensor_tensor(data1=scratch[:, 2:3], data2=stats[:, 0:1], dst=norm[:, 1:2], op=nki.language.subtract)  # in for#1[1]
+  tensor_tensor(data1=scratch[:, 3:4], data2=stats[:, 0:1], dst=norm[:, 2:3], op=nki.language.subtract)  # in for#1[2]
   activation_reduce(data=norm, dst=norm[:, :], op=nki.language.exp, reduce_op=nki.language.add, reduce_res=stats[:, 1:2])
   reciprocal(data=stats[:, 1:2], dst=stats[:, 1:2])
   tensor_scalar(data=norm, dst=scratch[:, 1:4], op0=nki.language.multiply, operand0=stats[:, 1:2])

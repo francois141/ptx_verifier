@@ -4,8 +4,8 @@
 use volta_equivalence::check::EquivCheckOptions;
 use volta_graph_check::{GraphConclusion, Property, Verdict as PropertyVerdict};
 use volta_pipeline::{
-    Decision, EquivalenceVerdict, KernelEvidence, KernelVerification, Verdict, check_equivalence,
-    decide, verify_kernel,
+    Decision, EquivalenceVerdict, GraphBranch, KernelEvidence, KernelVerification, Verdict,
+    check_equivalence, decide, verify_kernel,
 };
 use volta_ptx_analysis::frontend::ascii::AsAscii;
 use volta_ptx_analysis::frontend::ast::Module;
@@ -109,12 +109,12 @@ fn decide_pair(
     let kernels = [
         KernelEvidence {
             label: "reference",
-            graph: &a.graph,
+            graph: GraphBranch::Checked(&a.graph),
             assumptions: &a.analysis.graph.provenance().assumptions,
         },
         KernelEvidence {
             label: "optimized",
-            graph: &b.graph,
+            graph: GraphBranch::Checked(&b.graph),
             assumptions: &b.analysis.graph.provenance().assumptions,
         },
     ];

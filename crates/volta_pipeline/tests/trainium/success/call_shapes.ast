@@ -3,15 +3,15 @@ kernel kernel(a: [2, 4], b: [2, 4])
   x.0: sbuf[2, 2] of a.dtype
   y.0: sbuf[2, 2] of b.dtype
   z.0: sbuf[2, 2] of a.dtype
-  dma_copy(dst=x.0, src=a[:, 0:2])
-  dma_copy(dst=y.0, src=b[:, 0:2])
-  tensor_tensor(data1=x.0, data2=y.0, dst=z.0, op=nki.language.add)
-  dma_copy(dst=kernel_out[:, 0:2], src=z.0)
+  dma_copy(dst=x.0, src=a[:, 0:2])  # in affine_range#0[0]
+  dma_copy(dst=y.0, src=b[:, 0:2])  # in affine_range#0[0]
+  tensor_tensor(data1=x.0, data2=y.0, dst=z.0, op=nki.language.add)  # in affine_range#0[0]
+  dma_copy(dst=kernel_out[:, 0:2], src=z.0)  # in affine_range#0[0]
   x.1: sbuf[2, 2] of a.dtype
   y.1: sbuf[2, 2] of b.dtype
   z.1: sbuf[2, 2] of a.dtype
-  dma_copy(dst=x.1, src=a[:, 2:4])
-  dma_copy(dst=y.1, src=b[:, 2:4])
-  tensor_tensor(data1=x.1, data2=y.1, dst=z.1, op=nki.language.add)
-  dma_copy(dst=kernel_out[:, 2:4], src=z.1)
+  dma_copy(dst=x.1, src=a[:, 2:4])  # in affine_range#0[1]
+  dma_copy(dst=y.1, src=b[:, 2:4])  # in affine_range#0[1]
+  tensor_tensor(data1=x.1, data2=y.1, dst=z.1, op=nki.language.add)  # in affine_range#0[1]
+  dma_copy(dst=kernel_out[:, 2:4], src=z.1)  # in affine_range#0[1]
   return kernel_out

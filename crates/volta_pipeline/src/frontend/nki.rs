@@ -1,11 +1,13 @@
 //! AWS Trainium NKI: `volta_trainium_analysis` lowers the `@nki.jit` kernel and executes it.
 //! It is called with the parameter shapes its own `assert param.shape == (...)`s state, so it
-//! takes no launch; its interpreter records no memory events, so a run carries no race evidence.
+//! takes no launch. The graph branch checks the event graph of its instructions under
+//! `OrderingPolicy::BASELINE`: read after write and write after read, by address.
 
+use volta_graph_check::check_graph;
 use volta_ptx_analysis::AnalysisConfig;
 use volta_trainium_analysis::frontend::error::ParseError;
 use volta_trainium_analysis::frontend::parse::{asserted_shapes, parse_kernel};
-use volta_trainium_analysis::{evaluate, lower_kernel};
+use volta_trainium_analysis::{Execution, OrderingPolicy, evaluate, lower_kernel, record_graph};
 
 use super::{Frontend, FrontendError, GraphEvidence, KernelRun, only_kernel};
 
@@ -46,9 +48,15 @@ impl Frontend for NkiFrontend {
         let lowered = lower_kernel(&parsed)
             .map_err(|e| FrontendError::Analysis(format!("lowering failed: {e}")))?;
 
+        let outputs = evaluate(&lowered);
+        let graph = record_graph(&lowered, OrderingPolicy::BASELINE, &Execution::of(&outputs));
+        let report = check_graph(&graph);
         Ok(KernelRun {
-            outputs: evaluate(&lowered).map_err(|e| e.to_string()),
-            graph: GraphEvidence::NotRecorded,
+            outputs: outputs.map_err(|e| e.to_string()),
+            graph: GraphEvidence::Checked {
+                graph: Box::new(graph),
+                report: Box::new(report),
+            },
         })
     }
 }

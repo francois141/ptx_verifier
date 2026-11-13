@@ -51,6 +51,78 @@ fn the_gemm_relu_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// Each instruction's origin: its loops of every kind, outermost first and across a helper
+// call, a new loop id each time an inner loop is entered, and an enclosing no_reorder block.
+#[test]
+fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/loop_origins",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
+// The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their
+// event graphs' races.
+#[test]
+fn the_race_fixtures_parse_lower_and_run_in_program_order() {
+    let rows = |count: u64| [("a", [count, 4]), ("out", [count - 1, 4])];
+    for (name, [a, out]) in [
+        ("back_to_back_dmas", rows(2)),
+        ("affine_overwrite", rows(2)),
+        ("sequential_overwrite", rows(2)),
+        ("affine_carried", rows(3)),
+        ("no_reorder_back_to_back_dmas", rows(2)),
+        ("no_reorder_boundary", rows(2)),
+    ] {
+        common::trainium::check(
+            &format!("check_failure/{name}"),
+            "kernel",
+            &[(a.0, &a.1), (out.0, &out.1)],
+        );
+    }
+    common::trainium::check(
+        "check_failure/affine_matmul_partial_read",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[4, 3])],
+    );
+    common::trainium::check(
+        "check_failure/no_reorder_affine",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
+// An affine_range's tensor_tensor adds accumulating into one SBUF tile, as mamba does.
+#[test]
+fn the_affine_vector_sum_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/affine_vector_sum",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[1, 4])],
+    );
+}
+
+// An affine_range's nc_matmuls accumulating into one PSUM tile, the reduction the docs allow.
+#[test]
+fn the_affine_matmul_accumulate_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/affine_matmul_accumulate",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+}
+
+// The twin of `check_failure/affine_carried` whose iterations are in order.
+#[test]
+fn the_sequential_carried_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/sequential_carried",
+        "kernel",
+        &[("a", &[3, 4]), ("out", &[2, 4])],
+    );
+}
+
 #[test]
 fn the_tiled_copy_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
@@ -224,10 +296,11 @@ fn the_access_patterns_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check("success/access_patterns", "kernel", &[("a", &[2, 6])]);
 }
 
+// Its `scale` memset, overwritten unread, races under the baseline; it runs in program order.
 #[test]
 fn the_scan_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
-        "success/scan",
+        "check_failure/scan",
         "kernel",
         &[("a", &[2, 3]), ("b", &[1, 3]), ("c", &[2, 1])],
     );

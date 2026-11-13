@@ -10,8 +10,11 @@
 //! return B
 //! ```
 //!
-//! * `M` ([`crate::domain`]): the ordinary effects on global and shared memory, asynchronous
+//! * `M` ([`crate::domain`]): the non-atomic effects on global and shared memory, asynchronous
 //!   ones at their memory-effect events; Tensor Memory effects belong to Algorithm 5.
+//! * Two reductions with one operation (`OrderingKind::Reduction`) are never a pair: they
+//!   commute, so either order gives the same result. A reduction is a write to every other
+//!   effect, so an unordered read of a partial result is still a conflict.
 //!   `OVERLAP` intersects byte ranges in one space (one CTA, so one owner).
 //! * `R` is [`ValidatedGraph`]'s closure. Every edge runs forward in the trace, so of a pair
 //!   only the earlier effect can reach the later one. Equal values stored concurrently are
@@ -24,16 +27,17 @@
 //!   still exact: every unordered pair is found, each once, at its lowest shared byte.
 //! * `Pass`: `B = {}`; only then is [`MemoryConflictFree`] issued (Algorithm 4's
 //!   prerequisite). `Fail`: `B`, ordered by the later effect (at most [`CONFLICT_CAP`]
-//!   pairs are listed). `Unknown`: an atomic or reduction effect, outside the initial
-//!   contract (§2).
+//!   pairs are listed). `Unknown`: an atomic effect, outside the initial contract (§2).
 
 use std::collections::{HashMap, HashSet};
 
 use volta_graph::{
-    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext,
+    AccessMode, AsyncOpId, AsyncOpKind, EventGraph, EventId, EventKind, ExecContext, OrderingKind,
 };
 
-use crate::domain::{ByteLocation, ConflictKind, bytes, in_m, outside_contract, written_bytes};
+use crate::domain::{
+    ByteLocation, ConflictKind, bytes, commute, in_m, outside_contract, written_bytes,
+};
 use crate::relation::{HbView, ThreadPoint, ValidatedGraph, thread_points};
 use crate::result::{PropertyResult, Unresolved};
 
@@ -99,6 +103,7 @@ struct Node {
     event: EventId,
     actor: Actor,
     mode: AccessMode,
+    ordering: OrderingKind,
     children: Vec<usize>,
 }
 
@@ -161,6 +166,7 @@ pub fn check_memory_conflicts<'g>(
             while let Some(n) = unordered.pop() {
                 let earlier = &nodes[n];
                 if let Some(kind) = ConflictKind::of(earlier.mode, access.mode)
+                    && !commute(earlier.ordering, access.ordering)
                     && !same_wave_ds(graph, earlier.event, e)
                     && reported.insert((earlier.event, e))
                 {
@@ -181,6 +187,7 @@ pub fn check_memory_conflicts<'g>(
                 event: e,
                 actor,
                 mode: access.mode,
+                ordering: access.ordering,
                 children,
             });
             kept.push(node);

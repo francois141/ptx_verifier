@@ -6,8 +6,8 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, ArithOp, Initial, InstrId, Layout, LoweredInstr, Order, Reduction, ScalarOperand,
-    Selection, Sign, Tensor, TensorId, TensorRegion,
+    Accumulation, ArithOp, Initial, InstrId, Layout, LoweredInstr, Mover, Order, Origin, Reduction,
+    ScalarOperand, Selection, Sign, Tensor, TensorId, TensorRegion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,8 @@ pub struct LoweredKernel {
     pub params: Vec<TensorId>,
     pub tensors: IdVec<TensorId, Tensor>,
     pub instructions: IdVec<InstrId, LoweredInstr>,
+    /// Where each instruction was emitted, by the same ids as `instructions`.
+    pub origins: IdVec<InstrId, Origin>,
     /// The HBM tensor it allocates and returns, if any.
     pub returned: Option<TensorId>,
 }
@@ -91,12 +93,16 @@ impl fmt::Display for LoweredKernel {
             }
         }
 
-        for instruction in self.instructions.values() {
+        for (instr, instruction) in self.instructions.iter() {
             match instruction {
-                LoweredInstr::Mov { dst, src } => {
-                    writeln!(f, "  {} = mov({})", region(dst), region(src))?
+                LoweredInstr::Mov { dst, src, mover } => {
+                    let op = match mover {
+                        Mover::Dma => "dma",
+                        Mover::Engine => "mov",
+                    };
+                    write!(f, "  {} = {op}({})", region(dst), region(src))?
                 }
-                LoweredInstr::Arith { op, dst, lhs, rhs } => writeln!(
+                LoweredInstr::Arith { op, dst, lhs, rhs } => write!(
                     f,
                     "  {} = {}({}, {})",
                     region(dst),
@@ -120,9 +126,9 @@ impl fmt::Display for LoweredKernel {
                         data = format!("add({data}, {})", scalar(bias));
                     }
                     let expr = format!("{}({data})", func.name());
-                    writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
+                    write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
-                LoweredInstr::Gather { dst, data, index } => writeln!(
+                LoweredInstr::Gather { dst, data, index } => write!(
                     f,
                     "  {} = gather({}, {})",
                     region(dst),
@@ -130,7 +136,7 @@ impl fmt::Display for LoweredKernel {
                     region(index)
                 )?,
                 LoweredInstr::Memset { dst, value } => {
-                    writeln!(f, "  {} = memset({value})", region(dst))?
+                    write!(f, "  {} = memset({value})", region(dst))?
                 }
                 LoweredInstr::Reduce {
                     op,
@@ -140,8 +146,8 @@ impl fmt::Display for LoweredKernel {
                 } => {
                     let reduce = format!("reduce {}({})", op.name(), region(data));
                     match sign {
-                        Sign::Kept => writeln!(f, "  {} = {reduce}", region(dst))?,
-                        Sign::Negated => writeln!(f, "  {} = neg({reduce})", region(dst))?,
+                        Sign::Kept => write!(f, "  {} = {reduce}", region(dst))?,
+                        Sign::Negated => write!(f, "  {} = neg({reduce})", region(dst))?,
                     }
                 }
                 LoweredInstr::TensorScalar {
@@ -160,7 +166,7 @@ impl fmt::Display for LoweredKernel {
                     if let Some(step) = second {
                         expr = format!("{}({}, {})", step.op.name(), expr, scalar(&step.operand));
                     }
-                    writeln!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
+                    write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
                 LoweredInstr::Scan {
                     dst,
@@ -179,7 +185,7 @@ impl fmt::Display for LoweredKernel {
                     };
                     let step = applied(*op0, region(data0), "acc".to_string());
                     let step = applied(*op1, step, region(data1));
-                    writeln!(
+                    write!(
                         f,
                         "  {} = scan(acc = {}; acc = {step})",
                         region(dst),
@@ -197,7 +203,7 @@ impl fmt::Display for LoweredKernel {
                         Accumulation::Overwrite => ", accumulate=False",
                         Accumulation::Accumulate => ", accumulate=True",
                     };
-                    writeln!(
+                    write!(
                         f,
                         "  {} = matmul({}, {}{accumulate})",
                         region(dst),
@@ -205,10 +211,15 @@ impl fmt::Display for LoweredKernel {
                         region(moving)
                     )?
                 }
-                LoweredInstr::Transpose { dst, data } => {
-                    writeln!(f, "  {} = transpose({})", region(dst), region(data))?
+                LoweredInstr::Transpose { dst, data, mover } => {
+                    let op = match mover {
+                        Mover::Dma => "dma_transpose",
+                        Mover::Engine => "transpose",
+                    };
+                    write!(f, "  {} = {op}({})", region(dst), region(data))?
                 }
             }
+            writeln!(f, "{}", self.origins[instr])?;
         }
         Ok(())
     }

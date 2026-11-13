@@ -10,8 +10,8 @@ use crate::model::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOp, AsyncOpKind, BarrierArrivals, BulkWaitScope,
     Contribution, ContributionKind, Event, EventKind, ExecContext, FenceKind, Footprint,
     Generation, GenerationEvidence, GenerationKind, GroupFamily, MemAccess, OperandRole,
-    OrderingKind, Parity, Provenance, Proxy, Space, StoredValue, SyncObject, SyncObjectKind,
-    Terminal,
+    OrderingKind, Parity, Provenance, Proxy, ReductionOp, Space, StoredValue, SyncObject,
+    SyncObjectKind, Terminal,
 };
 
 /// Append-only construction of an [`EventGraph`] in trace order. It records what the producer
@@ -31,6 +31,8 @@ pub struct GraphBuilder {
 pub enum Effect {
     Read,
     Write(StoredValue),
+    /// A reduction into the footprint (`OrderingKind::Reduction`), its result opaque.
+    Reduce(ReductionOp),
 }
 
 /// An ordinary memory effect as the producer performs it: a [`MemAccess`] whose written value
@@ -146,14 +148,23 @@ impl GraphBuilder {
 
     /// The [`MemAccess`] of `access`, storing the value it writes.
     fn mem_access(&mut self, attributed: ThreadIx, access: OrdinaryAccess) -> MemAccess {
-        let (mode, value) = match access.effect {
-            Effect::Read => (AccessMode::Read, None),
-            Effect::Write(stored) => (AccessMode::Write, Some(self.value(stored))),
+        let (mode, ordering, value) = match access.effect {
+            Effect::Read => (AccessMode::Read, OrderingKind::Ordinary, None),
+            Effect::Write(stored) => (
+                AccessMode::Write,
+                OrderingKind::Ordinary,
+                Some(self.value(stored)),
+            ),
+            Effect::Reduce(op) => (
+                AccessMode::Write,
+                OrderingKind::Reduction(op),
+                Some(self.value(StoredValue::Opaque)),
+            ),
         };
         MemAccess {
             space: access.space,
             mode,
-            ordering: OrderingKind::Ordinary,
+            ordering,
             proxy: access.proxy,
             footprint: access.footprint,
             role: access.role,
@@ -363,6 +374,21 @@ impl GraphBuilder {
         };
         self.numbered.insert(object, (id, index + 1));
         self.open_generation(id, index, kind)
+    }
+
+    /// `thread`, an NKI instruction, releases everything before it at `pc` to the instructions
+    /// ordered after it: its `Dependency` generation, complete once it contributes.
+    pub fn signal(&mut self, thread: ThreadIx, pc: ProgramPoint) -> GenerationId {
+        let object = self.sync_object(SyncObjectKind::Dependency { producer: thread });
+        let generation = self.open_generation(object, 0, GenerationKind::Dependency);
+        let release = ContributionKind::Arrival {
+            count: 1,
+            expect_tx: 0,
+            ordering: ArrivalOrdering::Release,
+        };
+        self.contribute(thread, pc, generation, release);
+        self.complete_generation(generation, GenerationEvidence::default());
+        generation
     }
 
     /// `thread` arrives at named barrier `id` at `pc`, joining the generation its arrivals form.

@@ -7,9 +7,9 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use super::ast::{
-    Address, Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, Operand, Param, Partitions,
-    RegionProblem, Scalar, Statement, Subscript, TensorName, TileDecl, TileShape, kept_extents,
-    resolve_region,
+    Address, Bounds, Buffer, Dtype, HbmDecl, Instruction, Kernel, LoopId, LoopIteration, LoopKind,
+    NoReorderId, Operand, Origin, Param, Partitions, RegionProblem, Reordering, Scalar, Statement,
+    Subscript, TensorName, TileDecl, TileShape, kept_extents, resolve_region,
 };
 use super::error::{ParseError, ShapeProblem, bail};
 use super::lex::CmpOp;
@@ -310,6 +310,12 @@ struct Trace<'p> {
     /// How many times each helper function has been called, which names its tiles.
     calls: BTreeMap<String, u64>,
     depth: usize,
+    /// Where the next instruction is emitted, across helper calls.
+    origin: Origin,
+    /// The `for` statements executed so far, which number the next one.
+    loops_entered: u32,
+    /// The outermost `no_reorder` blocks entered so far, which number the next one.
+    no_reorders_entered: u32,
 }
 
 /// A declared tensor's extents, whether it is in device memory, and its dtype's
@@ -382,6 +388,9 @@ fn kernel(program: &Program, name: &str, call: &KernelCall) -> Result<Kernel, Pa
         body: Vec::new(),
         calls: BTreeMap::new(),
         depth: 0,
+        origin: Origin::default(),
+        loops_entered: 0,
+        no_reorders_entered: 0,
     };
     let mut frame = Frame::new(MAIN, &function, String::new(), None);
 
@@ -1707,7 +1716,15 @@ fn statement(stmt: Stmt, trace: &mut Trace, frame: &mut Frame) -> Result<Flow, P
             body,
         } => {
             no_reorder(context, trace, frame, line)?;
-            return block(&body, trace, frame);
+            let enclosing = trace.origin.reordering;
+            if enclosing == Reordering::Allowed {
+                let block = NoReorderId(trace.no_reorders_entered);
+                trace.no_reorders_entered += 1;
+                trace.origin.reordering = Reordering::Forbidden { block };
+            }
+            let flow = block(&body, trace, frame);
+            trace.origin.reordering = enclosing;
+            return flow;
         }
         Stmt::Return { line, value } => {
             let value = match value {
@@ -1721,7 +1738,7 @@ fn statement(stmt: Stmt, trace: &mut Trace, frame: &mut Frame) -> Result<Flow, P
 }
 
 /// `with nl.no_reorder():`, the only context the subset enters: its body runs in program
-/// order, as every instruction does here.
+/// order, as every instruction does here, and its instructions' origin forbids reordering.
 fn no_reorder(context: Expr, trace: &Trace, frame: &Frame, line: usize) -> Result<(), ParseError> {
     let Expr::Call(call) = context else {
         bail!(line, "`with` supports `nl.no_reorder()` only");
@@ -1746,14 +1763,22 @@ fn unroll(
     frame: &mut Frame,
     line: usize,
 ) -> Result<Flow, ParseError> {
-    let items = iterable_items(iterable, trace, frame, line)?;
+    let (items, kind) = iterable_items(iterable, trace, frame, line)?;
+    let loop_id = LoopId(trace.loops_entered);
+    trace.loops_entered += 1;
 
     let mut index = 0;
     // A list is iterated live, as in Python: the body may change it.
     while let Some(item) = items.get(trace, index) {
         frame.iterations.push(index as u64);
+        trace.origin.loops.push(LoopIteration {
+            loop_id,
+            kind,
+            index: index as u64,
+        });
         frame.locals.insert(var.clone(), item);
         let flow = block(body, trace, frame);
+        trace.origin.loops.pop();
         frame.iterations.pop();
         if let Flow::Return(value) = flow? {
             return Ok(Flow::Return(value));
@@ -1766,7 +1791,11 @@ fn unroll(
 /// The `nki.language` loop iterators. Each unrolls in order: `affine_range` declares
 /// its iterations independent, and `sequential_range` and `static_range` do not, but
 /// each runs the same iterations in program order.
-const LOOP_RANGES: [&str; 3] = ["affine_range", "sequential_range", "static_range"];
+const LOOP_RANGES: [(&str, LoopKind); 3] = [
+    ("affine_range", LoopKind::Affine),
+    ("sequential_range", LoopKind::Sequential),
+    ("static_range", LoopKind::Static),
+];
 
 /// What a `for` iterates over: an `nl` loop iterator's or `range([start,] stop)`'s
 /// integers, or a tuple's or list's items.
@@ -1794,19 +1823,23 @@ fn iterable_items(
     trace: &mut Trace,
     frame: &Frame,
     line: usize,
-) -> Result<Iterable, ParseError> {
+) -> Result<(Iterable, LoopKind), ParseError> {
     if let Expr::Call(call) = &iterable {
         let callee = frame.resolve(trace, &call.callee, line)?;
         let loop_range = callee
             .member_of(NKI_LANGUAGE)
-            .is_some_and(|member| LOOP_RANGES.contains(&member));
-        if loop_range || callee == Value::Builtin(Builtin::Range) {
-            return range(call.clone(), &callee, trace, frame, line);
+            .and_then(|member| LOOP_RANGES.iter().find(|(name, _)| *name == member));
+        let kind = match loop_range {
+            Some(&(_, kind)) => Some(kind),
+            None => (callee == Value::Builtin(Builtin::Range)).then_some(LoopKind::Python),
+        };
+        if let Some(kind) = kind {
+            return Ok((range(call.clone(), &callee, trace, frame, line)?, kind));
         }
     }
     match trace.evaluate(frame, iterable, line)? {
-        Value::Tuple(items) => Ok(Iterable::Tuple(items)),
-        Value::List(list) => Ok(Iterable::List(list)),
+        Value::Tuple(items) => Ok((Iterable::Tuple(items), LoopKind::Python)),
+        Value::List(list) => Ok((Iterable::List(list), LoopKind::Python)),
         other => bail!(
             line,
             "a loop must iterate over `nl.affine_range`, `nl.sequential_range` or \
@@ -2163,6 +2196,7 @@ fn zeros(
         operands: operands
             .map(|(keyword, operand)| (keyword.to_string(), operand))
             .into(),
+        origin: trace.origin.clone(),
     }));
     Ok(tile)
 }
@@ -2549,6 +2583,7 @@ fn tile_call(
     trace.body.push(Statement::Instruction(Instruction {
         opcode: opcode.into(),
         operands,
+        origin: trace.origin.clone(),
     }));
     Ok(name)
 }
@@ -2571,6 +2606,7 @@ fn store(call: &Call, trace: &mut Trace, frame: &Frame, line: usize) -> Result<(
     trace.body.push(Statement::Instruction(Instruction {
         opcode: "dma_copy".into(),
         operands,
+        origin: trace.origin.clone(),
     }));
     Ok(())
 }
@@ -2690,7 +2726,11 @@ fn instruction(
         operands.insert(keyword, operand);
     }
 
-    Ok(Instruction { opcode, operands })
+    Ok(Instruction {
+        opcode,
+        operands,
+        origin: trace.origin.clone(),
+    })
 }
 
 // =============================================================================

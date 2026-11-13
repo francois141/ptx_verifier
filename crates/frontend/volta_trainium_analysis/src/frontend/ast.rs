@@ -159,6 +159,80 @@ pub struct Instruction {
     pub opcode: String,
     /// Operands by keyword: the parser rejects positional ones, so each role is explicit.
     pub operands: BTreeMap<String, Operand>,
+    pub origin: Origin,
+}
+
+/// The unrolled loops and scheduling block an instruction was emitted in. Unrolling keeps
+/// program order, but how the compiler may reorder an instruction depends on these.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Origin {
+    /// The enclosing loop iterations, outermost first, across helper calls.
+    pub loops: Vec<LoopIteration>,
+    pub reordering: Reordering,
+}
+
+/// One iteration of one execution of a `for` statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopIteration {
+    pub loop_id: LoopId,
+    pub kind: LoopKind,
+    pub index: u64,
+}
+
+/// One execution of a `for` statement: an inner loop is a new one each time it is entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LoopId(pub u32);
+
+/// What a `for` iterates over. Only `affine_range` declares its iterations independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopKind {
+    Affine,
+    Sequential,
+    Static,
+    /// Python's `range`, or a tuple's or list's items.
+    Python,
+}
+
+impl LoopKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Affine => "affine_range",
+            Self::Sequential => "sequential_range",
+            Self::Static => "static_range",
+            Self::Python => "for",
+        }
+    }
+}
+
+/// Whether the compiler's scheduler may reorder an instruction: `nl.no_reorder()` forbids
+/// it for every instruction its block emits, in helper calls too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reordering {
+    #[default]
+    Allowed,
+    /// Inside `block`, the outermost `nl.no_reorder()` enclosing the instruction.
+    Forbidden { block: NoReorderId },
+}
+
+/// One execution of a `with nl.no_reorder():` block, numbered in the order entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NoReorderId(pub u32);
+
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut parts: Vec<String> = self
+            .loops
+            .iter()
+            .map(|l| format!("{}#{}[{}]", l.kind.name(), l.loop_id.0, l.index))
+            .collect();
+        if let Reordering::Forbidden { block } = self.reordering {
+            parts.push(format!("no_reorder#{}", block.0));
+        }
+        match parts.is_empty() {
+            true => Ok(()),
+            false => write!(f, "  # in {}", parts.join(" > ")),
+        }
+    }
 }
 
 /// One index of a subscript, as written: an integer, which selects one position and
@@ -342,7 +416,8 @@ impl fmt::Display for Statement {
                     .iter()
                     .map(|(keyword, operand)| format!("{keyword}={operand}"))
                     .collect();
-                write!(f, "{}({})", instruction.opcode, operands.join(", "))
+                write!(f, "{}({})", instruction.opcode, operands.join(", "))?;
+                write!(f, "{}", instruction.origin)
             }
         }
     }

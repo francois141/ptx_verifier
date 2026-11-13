@@ -137,13 +137,34 @@ pub enum AccessMode {
     Write,
 }
 
-/// The memory-model kind of an effect. The analysis rejects atomics and reductions, so it only
-/// records `Ordinary`; checkers must not apply non-atomic rules to the others.
+/// The memory-model kind of an effect. The PTX and AMD analyses reject atomics and reductions,
+/// so they only record `Ordinary`; checkers must not apply non-atomic rules to the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderingKind {
     Ordinary,
     Atomic,
-    Reduction,
+    /// A read-modify-write folding a value into its footprint with `op`, which the hardware or
+    /// compiler performs one at a time: two reductions with one `op` commute, so their order
+    /// does not matter. It is a write for every other effect.
+    Reduction(ReductionOp),
+}
+
+/// The associative and commutative operation of a reduction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReductionOp {
+    Add,
+    Multiply,
+    Maximum,
+}
+
+impl ReductionOp {
+    pub fn name(self) -> &'static str {
+        match self {
+            ReductionOp::Add => "add",
+            ReductionOp::Multiply => "multiply",
+            ReductionOp::Maximum => "maximum",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -275,6 +296,9 @@ pub enum SyncObjectKind {
     AsyncGroupWait { thread: ThreadIx },
     /// One thread's `cp.async.bulk.wait_group` completions.
     BulkGroupWait { thread: ThreadIx },
+    /// The completion of `producer`, an NKI instruction, that the instructions ordered after
+    /// it wait for (the semaphore the Neuron compiler would signal).
+    Dependency { producer: ThreadIx },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,6 +365,9 @@ pub enum GenerationKind {
         keep_pending: u32,
         scope: BulkWaitScope,
     },
+    /// A `Dependency` object's one generation: its producer's release, which every
+    /// instruction ordered after the producer resumes from.
+    Dependency,
 }
 
 /// What a `cp.async.bulk.wait_group` waits for: with `.read`, only that the
@@ -566,6 +593,39 @@ pub enum Assumption {
     EagerAsyncData,
     /// Only shared-memory (LDS) accesses are recorded: global memory is not checked.
     SharedMemoryOnly,
+    /// The Neuron compiler orders an NKI instruction after the latest earlier writer of each
+    /// location it reads (read after write), except across `affine_range` iterations.
+    NkiReadAfterWriteOrder,
+    /// The Neuron compiler orders an NKI instruction after the readers of each location it
+    /// writes since that location's latest write (write after read), except across
+    /// `affine_range` iterations.
+    NkiWriteAfterReadOrder,
+    /// The Neuron compiler orders an NKI instruction after the latest earlier writer of each
+    /// location it writes (write after write), except across `affine_range` iterations.
+    NkiWriteAfterWriteOrder,
+    /// The Neuron compiler tracks those hazards through the bytes `address=` tiles share,
+    /// not only within one tensor.
+    NkiHazardsByPlacedAddress,
+    /// `nc_matmul` accumulations into one location in different iterations of an
+    /// `affine_range` run one at a time, in some order (the docs' associative reductions).
+    NkiMatmulAccumulationsCommute,
+    /// So do `tensor_tensor` add accumulations (AWS's mamba tutorial relies on them).
+    NkiTensorTensorAddsCommute,
+    /// An NKI `no_reorder` block's instructions execute in program order (its edges are
+    /// hardware synchronization, not scheduling hints).
+    NkiNoReorderInProgramOrder,
+    /// One NeuronCore runs one instance of the NKI kernel: races between SPMD instances or
+    /// cores are not checked.
+    SingleNkiInstance,
+    /// An NKI kernel's arguments are distinct HBM tensors: an output aliasing an input is not
+    /// modelled.
+    NkiArgumentsDistinct,
+    /// An NKI instruction reads all its operands before writing any: overlapping source and
+    /// destination regions of one instruction are not checked against the hardware.
+    NkiInstructionReadsBeforeWrites,
+    /// The Neuron compiler's allocation is correct: unplaced tiles never overlap, and a tile
+    /// declared in a loop iteration is that iteration's own.
+    NkiCompilerAllocation,
 }
 
 impl Assumption {
@@ -595,6 +655,48 @@ impl Assumption {
                 "only shared-memory (LDS) accesses are recorded; global memory is not checked \
                  for races"
             }
+            Assumption::NkiReadAfterWriteOrder => {
+                "the Neuron compiler orders each NKI instruction after the latest earlier writer \
+                 of what it reads, except across affine_range iterations"
+            }
+            Assumption::NkiWriteAfterReadOrder => {
+                "the Neuron compiler orders each NKI instruction after the readers of what it \
+                 writes since its latest write, except across affine_range iterations"
+            }
+            Assumption::NkiWriteAfterWriteOrder => {
+                "the Neuron compiler orders each NKI instruction after the latest earlier writer \
+                 of what it writes, except across affine_range iterations"
+            }
+            Assumption::NkiHazardsByPlacedAddress => {
+                "the Neuron compiler tracks NKI hazards through the bytes address= tiles share"
+            }
+            Assumption::NkiMatmulAccumulationsCommute => {
+                "nc_matmul accumulations into one location across affine_range iterations run \
+                 one at a time, in some order"
+            }
+            Assumption::NkiTensorTensorAddsCommute => {
+                "tensor_tensor add accumulations into one location across affine_range \
+                 iterations run one at a time, in some order"
+            }
+            Assumption::NkiNoReorderInProgramOrder => {
+                "the instructions of an NKI no_reorder block execute in program order"
+            }
+            Assumption::SingleNkiInstance => {
+                "one NeuronCore runs one instance of the NKI kernel; races between SPMD \
+                 instances or cores are not checked"
+            }
+            Assumption::NkiArgumentsDistinct => {
+                "the NKI kernel's arguments are distinct HBM tensors; an output aliasing an input \
+                 is not modelled"
+            }
+            Assumption::NkiInstructionReadsBeforeWrites => {
+                "an NKI instruction reads all its operands before writing any; overlapping \
+                 source and destination regions of one instruction are not checked"
+            }
+            Assumption::NkiCompilerAllocation => {
+                "unplaced NKI tiles never overlap, and a tile declared in a loop iteration is \
+                 that iteration's own"
+            }
         }
     }
 }
@@ -607,6 +709,9 @@ pub enum ThreadUnit {
     /// One wave of `lanes` work-items issuing every instruction together: thread `w` is the
     /// wave of work-items `w * lanes` to `(w + 1) * lanes - 1`.
     Wave { lanes: u32 },
+    /// One NKI instruction: thread `i` is the kernel's `i`th lowered instruction, and
+    /// `block_dim` is `(instructions, 1, 1)`.
+    Instruction,
 }
 
 /// The launch, target and model the graph was produced under.
@@ -627,7 +732,7 @@ impl Provenance {
     pub fn threads(&self) -> u32 {
         let work_items = self.block_dim.0 * self.block_dim.1 * self.block_dim.2;
         match self.unit {
-            ThreadUnit::CtaThread => work_items,
+            ThreadUnit::CtaThread | ThreadUnit::Instruction => work_items,
             ThreadUnit::Wave { lanes } => work_items.div_ceil(lanes),
         }
     }

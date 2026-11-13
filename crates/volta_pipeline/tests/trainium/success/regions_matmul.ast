@@ -4,8 +4,8 @@ kernel kernel(a_t: [4, 2], b: [4, 3], out: [2, 3])
   dma_copy(dst=ab[:, 2:5], src=b)
   acc: psum[2, 5] of float32
   memset(dst=acc[:, 1:4], value=0)
-  nc_matmul(dst=acc[:, 1:4], moving=ab[0:2, 2:5], stationary=ab[0:2, 0:2])
-  nc_matmul(dst=acc[:, 1:4], moving=ab[2:4, 2:5], stationary=ab[2:4, 0:2])
+  nc_matmul(dst=acc[:, 1:4], moving=ab[0:2, 2:5], stationary=ab[0:2, 0:2])  # in for#0[0]
+  nc_matmul(dst=acc[:, 1:4], moving=ab[2:4, 2:5], stationary=ab[2:4, 0:2])  # in for#0[1]
   z: sbuf[2, 3] of float32
   tensor_copy(dst=z, src=acc[:, 1:4])
   z_t: psum[3, 3] of float32

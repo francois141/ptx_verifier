@@ -4,7 +4,12 @@ use std::collections::HashMap;
 
 use volta_equivalence::check::EquivCheckOptions;
 use volta_expr::SymbolicOutputs;
-use volta_pipeline::{EquivalenceVerdict, check_equivalence};
+use volta_graph::Assumption;
+use volta_graph_check::GraphConclusion;
+use volta_pipeline::{
+    EquivalenceVerdict, GraphEvidence, Isa, Solver, Spec, Verdict, check_equivalence,
+};
+use volta_ptx_analysis::AnalysisConfig;
 use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{
     Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
@@ -108,6 +113,72 @@ fn nki_matmul_matches_its_specification() {
             total: 6,
         }
     );
+}
+
+// Test that an NKI kernel proved equal to its spec is accepted once its event graph verifies,
+// relative to the baseline assumptions: the Neuron compiler orders read after write and write
+// after read, tracked by address, and nc_matmul and tensor_tensor add accumulations commute.
+#[test]
+fn nki_kernel_equal_to_its_spec_and_race_free_is_accepted() {
+    let parsed = volta_spec::parse_spec(MATMUL_SPEC).unwrap();
+    let dims = HashMap::from([
+        ("M".to_string(), 2),
+        ("N".to_string(), 3),
+        ("K".to_string(), 4),
+    ]);
+    let spec = Spec::new(&parsed, &dims).unwrap();
+    let solver = Solver::Canonical(EquivCheckOptions::default());
+    let launch = AnalysisConfig::new((1, 1, 1));
+
+    let (run, solution) = Isa::Trainium
+        .frontend()
+        .solve(MATMUL, None, launch, &spec, &solver)
+        .unwrap();
+    assert!(matches!(run.graph, GraphEvidence::Checked { .. }));
+    assert_eq!(
+        solution.verdict(),
+        EquivalenceVerdict::Equivalent {
+            checked: 6,
+            total: 6,
+        }
+    );
+
+    let decision = run.decide(&solution);
+    assert_eq!(decision.verdict, Verdict::Accept, "{:?}", decision.evidence);
+    for assumption in [
+        Assumption::NkiReadAfterWriteOrder,
+        Assumption::NkiWriteAfterReadOrder,
+        Assumption::NkiMatmulAccumulationsCommute,
+        Assumption::NkiTensorTensorAddsCommute,
+        Assumption::NkiHazardsByPlacedAddress,
+    ] {
+        assert!(decision.assumptions.contains(&assumption), "{assumption:?}");
+    }
+    assert!(
+        !decision
+            .assumptions
+            .contains(&Assumption::NkiWriteAfterWriteOrder)
+    );
+}
+
+// Test that an NKI kernel whose two DMAs write one tile with no read between them is rejected
+// through the frontend, whose baseline policy leaves write after write unordered, its outputs
+// computed in program order notwithstanding.
+#[test]
+fn nki_kernel_with_a_race_is_rejected() {
+    let source = include_str!("check_failure/back_to_back_dmas.py");
+    let run = Isa::Trainium
+        .frontend()
+        .analyze(source, None, AnalysisConfig::new((1, 1, 1)))
+        .unwrap();
+    assert!(run.outputs.is_ok());
+    let GraphEvidence::Checked { report, .. } = &run.graph else {
+        panic!("an NKI run records its graph");
+    };
+    assert!(matches!(
+        report.conclusion(),
+        GraphConclusion::Rejected { .. }
+    ));
 }
 
 #[test]

@@ -27,7 +27,8 @@ artifacts and never call each other or the stage.
     kernel's graph conclusion `Verified`;
   - **REJECT** on any refutation, failed graph check, or deadlock;
   - **UNKNOWN** otherwise (sampled check, unresolved obligations, aborted run,
-    unproven difference).
+    unproven difference, or a kernel whose interpreter records no graph:
+    `GraphBranch::NotRecorded`).
 
   The `Decision` carries the verdict, its evidence, and the union of the
   modeling assumptions the analyses ran under.
@@ -73,9 +74,38 @@ only inline unit tests of their internals.
   swapped inputs. The snapshot helper must reject a completed kernel with an LDS race.
 - `trainium/accepted_tests.rs`: NKI fixtures expected to run, their parsed and lowered
   forms and symbolic outputs matching their `.ast`, `.ir` and `.out` files (and their
-  hand-written `.expected`, which `VOLTA_BLESS` never rewrites);
+  hand-written `.expected`, which `VOLTA_BLESS` never rewrites), once the graph of a
+  `success/` fixture is `Verified` under `BASELINE` and that of a `check_failure/` one
+  `Rejected`;
   `trainium/rejected_tests.rs`: the error each rejected kernel must raise.
-- `trainium/equivalence_tests.rs`: the NKI `matmul`, `gemm_relu` and `softmax`
+- `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
+  instruction, under `OrderingPolicy::BASELINE` (the frontend's) unless a test names
+  another: read after write and write after read are ordered, by address through the bytes
+  placed tiles share, unless in different `affine_range` iterations, where `nc_matmul` and
+  `tensor_tensor` add accumulations commute instead (`Assumption::NkiReadAfterWriteOrder`,
+  `NkiWriteAfterReadOrder`, `NkiMatmulAccumulationsCommute`, `NkiTensorTensorAddsCommute`,
+  `NkiHazardsByPlacedAddress`; `volta_trainium_analysis`'s README lists each assumption's
+  evidence). Fixtures whose tiles are written once or rewritten after
+  their readers verify, as do the attention samples v1 to v10; each race fixture
+  (`trainium/check_failure/`) fails `MemoryConflict` with exactly its expected instruction
+  pairs. Two writes with no read between them (`back_to_back_dmas`,
+  `sequential_overwrite`, scan's memset) verify once write after write is ordered; v10
+  races once hazards are tracked per tensor only, all its races pairing `v_psum_t` before
+  its `no_reorder` block with `qk_psum` over the same PSUM bytes inside it; the `no_reorder`
+  fixtures once blocks run in program order; `affine_matmul_accumulate` and the tiled
+  matmul tutorials verify under every policy, mamba and `affine_vector_sum` unless only
+  `nc_matmul` accumulations commute; `affine_matmul_partial_read`,
+  reading the accumulator mid-loop, and the other `affine_range` fixtures race under every
+  policy.
+  A run that aborts (`accumulate_uninitialized`) gives a graph ending `Aborted` at the
+  failing instruction, so the graph branch is inconclusive.
+  `nki_verdicts_under_each_ordering_policy_match_the_table` checks every NKI fixture and
+  sample under all sixteen policies against `trainium/ordering_policies.txt`
+  (`VOLTA_BLESS=1` rewrites it), `ok` or the number of conflicting pairs.
+- `trainium/equivalence_tests.rs`: an NKI kernel proved equal to its spec whose graph
+  verifies is ACCEPT through `solve` and `decide`, citing the baseline's five ordering
+  assumptions, and
+  `check_failure/back_to_back_dmas.py` is rejected through the frontend. The NKI `matmul`, `gemm_relu` and `softmax`
   fixtures against their `.spec` files beside them in `tests/trainium/success/`,
   with `gemm_relu` against the unclamped product and `softmax` against the softmax
   of `-x` (a reversed `subtract`) as negative tests. Also the NKI samples' own

@@ -2,13 +2,13 @@ kernel kernel(a: [6, 4])
   out: shared_hbm[6, 4] of a.dtype
   tiles: sbuf[2, 2, 4] of a.dtype
   scaled: sbuf[2, 2, 4] of float32
-  dma_copy(dst=tiles[:, 0, :], src=a[0:2, :])
-  tensor_scalar(data=tiles[:, 0, :], dst=scaled[:, 0, :], op0=nki.language.multiply, operand0=2)
-  dma_copy(dst=tiles[:, 1, :], src=a[2:4, :])
-  dma_copy(dst=out[0:2, :], src=scaled[:, 0, :])
-  tensor_scalar(data=tiles[:, 1, :], dst=scaled[:, 1, :], op0=nki.language.multiply, operand0=2)
-  dma_copy(dst=tiles[:, 0, :], src=a[4:6, :])
-  dma_copy(dst=out[2:4, :], src=scaled[:, 1, :])
-  tensor_scalar(data=tiles[:, 0, :], dst=scaled[:, 0, :], op0=nki.language.multiply, operand0=2)
-  dma_copy(dst=out[4:6, :], src=scaled[:, 0, :])
+  dma_copy(dst=tiles[:, 0, :], src=a[0:2, :])  # in for#2[0] > no_reorder#0
+  tensor_scalar(data=tiles[:, 0, :], dst=scaled[:, 0, :], op0=nki.language.multiply, operand0=2)  # in for#2[1] > no_reorder#0
+  dma_copy(dst=tiles[:, 1, :], src=a[2:4, :])  # in for#2[1] > no_reorder#0
+  dma_copy(dst=out[0:2, :], src=scaled[:, 0, :])  # in for#2[2] > no_reorder#0
+  tensor_scalar(data=tiles[:, 1, :], dst=scaled[:, 1, :], op0=nki.language.multiply, operand0=2)  # in for#2[2] > no_reorder#0
+  dma_copy(dst=tiles[:, 0, :], src=a[4:6, :])  # in for#2[2] > no_reorder#0
+  dma_copy(dst=out[2:4, :], src=scaled[:, 1, :])  # in for#2[3] > no_reorder#0
+  tensor_scalar(data=tiles[:, 0, :], dst=scaled[:, 0, :], op0=nki.language.multiply, operand0=2)  # in for#2[3] > no_reorder#0
+  dma_copy(dst=out[4:6, :], src=scaled[:, 0, :])  # in for#2[4] > no_reorder#0
   return out

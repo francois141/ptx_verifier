@@ -22,6 +22,7 @@ pub enum LoweredInstr {
     Mov {
         dst: TensorRegion,
         src: TensorRegion,
+        mover: Mover,
     },
     /// Every element of `dst` set to `value`.
     Memset { dst: TensorRegion, value: Scalar },
@@ -100,7 +101,46 @@ pub enum LoweredInstr {
     Transpose {
         dst: TensorRegion,
         data: TensorRegion,
+        mover: Mover,
     },
+}
+
+impl LoweredInstr {
+    /// The `nki.isa` instruction it lowers from (`activation` and `reciprocal` alike).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            LoweredInstr::Mov {
+                mover: Mover::Dma, ..
+            } => "dma_copy",
+            LoweredInstr::Mov {
+                mover: Mover::Engine,
+                ..
+            } => "tensor_copy",
+            LoweredInstr::Memset { .. } => "memset",
+            LoweredInstr::Gather { .. } => "tensor_copy (indirect)",
+            LoweredInstr::Arith { .. } => "tensor_tensor",
+            LoweredInstr::Activation { .. } => "activation",
+            LoweredInstr::Reduce { .. } => "tensor_reduce",
+            LoweredInstr::TensorScalar { .. } => "tensor_scalar",
+            LoweredInstr::Scan { .. } => "tensor_tensor_scan",
+            LoweredInstr::Matmul { .. } => "nc_matmul",
+            LoweredInstr::Transpose {
+                mover: Mover::Dma, ..
+            } => "dma_transpose",
+            LoweredInstr::Transpose {
+                mover: Mover::Engine,
+                ..
+            } => "nc_transpose",
+        }
+    }
+}
+
+/// What moves a copy's or transpose's data: a DMA (`dma_copy`, `dma_transpose`, `nl.load`,
+/// `nl.store`) or a compute engine (`tensor_copy`, `nc_transpose`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mover {
+    Dma,
+    Engine,
 }
 
 /// A reduction of an instruction's elementwise result: each `res[p, 0]` the fold of
