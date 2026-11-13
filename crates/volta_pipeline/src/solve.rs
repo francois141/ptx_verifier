@@ -8,7 +8,7 @@ use std::fmt;
 use rug::Rational;
 use volta_equivalence::check::{EquivCheckOptions, EquivCheckReport};
 use volta_expr::SymbolicOutputs;
-use volta_expr::lean::{Claim, to_lean};
+use volta_lean::{Claim, to_lean};
 use volta_spec::{InstantiateErrorKind, OutputSpec, ParsedSpec, SpecEnv, SpecError};
 
 use crate::equivalence::{EquivalenceVerdict, check_equivalence};

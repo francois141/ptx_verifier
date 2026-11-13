@@ -9,9 +9,9 @@ use std::fmt::{self, Write as _};
 
 use rug::{Integer, Rational};
 
-use crate::outputs::SymbolicOutputs;
-use crate::symbolic::{ExprArena, ExprId, ExprNode, RealRepr};
-use crate::text::op_name;
+use volta_expr::SymbolicOutputs;
+use volta_expr::symbolic::{ExprArena, ExprId, ExprNode, RealRepr};
+use volta_expr::text::op_name;
 
 /// What each statement claims of a candidate value `c` and its baseline value `b`.
 #[derive(Debug, Clone, PartialEq, Eq)]

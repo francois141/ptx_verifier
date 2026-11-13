@@ -9,6 +9,8 @@ default = []
 logging = ["volta_common/logging"]
 
 [dependencies]
+volta_expr.workspace = true
+rug.workspace = true
 volta_common.workspace = true
 regex.workspace = true
 serde.workspace = true

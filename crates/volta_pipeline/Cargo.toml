@@ -16,6 +16,7 @@ volta_equivalence.workspace = true
 volta_expr.workspace = true
 volta_graph.workspace = true
 volta_graph_check.workspace = true
+volta_lean.workspace = true
 volta_ptx_analysis.workspace = true
 volta_spec.workspace = true
 volta_trainium_analysis.workspace = true

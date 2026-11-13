@@ -739,9 +739,11 @@ name = "volta_lean"
 version = "0.1.0"
 dependencies = [
  "regex",
+ "rug",
  "serde",
  "serde_json",
  "volta_common",
+ "volta_expr",
 ]
 
 [[package]]
@@ -755,6 +757,7 @@ dependencies = [
  "volta_expr",
  "volta_graph",
  "volta_graph_check",
+ "volta_lean",
  "volta_ptx_analysis",
  "volta_spec",
  "volta_trainium_analysis",

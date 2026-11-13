@@ -1,10 +1,11 @@
-//! Lean proofs of the obligations Volta states as a `challenge.lean` module: the acceptance
+//! Generate Lean obligations from symbolic outputs (`to_lean`) and prove them: the acceptance
 //! check of a `proof.lean` against it (`Workspace::check`), the tools a proving agent works
 //! through (`Tool`), served over MCP (`serve_stdio`), and a Claude Code agent that writes the
 //! proof (`prove`). Every module is private; this root re-exports the whole API.
 
 mod claude_code;
 mod error;
+mod extract;
 mod library;
 mod mcp;
 mod process;
@@ -17,6 +18,7 @@ mod workspace;
 
 pub use claude_code::{AgentRun, ClaudeCode, ToolServer, Usage, find_claude};
 pub use error::Error;
+pub use extract::{Claim, LeanError, Side, to_lean};
 pub use mcp::{SERVER_NAME, serve, serve_stdio};
 pub use progress::{Observer, Progress};
 pub use prove::{DEFAULT_MODEL, LeanProof, TRANSCRIPT, check_lean_proof, prove, skeleton};

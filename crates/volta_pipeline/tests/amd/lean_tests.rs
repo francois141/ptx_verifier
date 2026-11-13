@@ -11,7 +11,7 @@ use common::amd::array;
 use rug::Rational;
 use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind};
-use volta_expr::lean::{Claim, to_lean};
+use volta_lean::{Claim, to_lean};
 use volta_spec::extract_expressions_from_spec;
 
 /// Within 1/1000 rather than equal: past `a > 87.34` the kernel rescales by f32(e^-64), not e^-64.

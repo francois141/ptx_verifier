@@ -129,7 +129,7 @@ fn spell(node: &ExprNode) -> (&'static str, Vec<Operand>) {
 }
 
 /// The name a node's operation is written with.
-pub(crate) fn op_name(node: &ExprNode) -> &'static str {
+pub fn op_name(node: &ExprNode) -> &'static str {
     spell(node).0
 }
 
