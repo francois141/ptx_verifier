@@ -15,7 +15,7 @@ use crate::ir::{
 use super::EvalError;
 use super::arithm::{
     evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp_f64, evaluate_cmp64,
-    evaluate_cndmask, evaluate_cndmask_e64, evaluate_cvt_from_f64, evaluate_cvt_pk_fp8_f32,
+    evaluate_cndmask, evaluate_cndmask_e64, evaluate_cvt_from_f64, evaluate_cvt_pk_f8_f32,
     evaluate_cvt_to_f64, evaluate_f64_op, evaluate_ldexp_f32, evaluate_packed_f32,
     evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
 };
@@ -221,7 +221,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
-            | LoweredInstr::CvtPkFp8F32 { .. }
+            | LoweredInstr::CvtPkF8F32 { .. }
             | LoweredInstr::F64 { .. }
             | LoweredInstr::CvtToF64 { .. }
             | LoweredInstr::CvtFromF64 { .. }
@@ -394,7 +394,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
-            | LoweredInstr::CvtPkFp8F32 { .. }
+            | LoweredInstr::CvtPkF8F32 { .. }
             | LoweredInstr::F64 { .. }
             | LoweredInstr::CvtToF64 { .. }
             | LoweredInstr::CvtFromF64 { .. }
@@ -633,9 +633,21 @@ impl<'a> Interpreter<'a> {
                 let result = self.arena.fma(a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }
-            LoweredInstr::CvtPkFp8F32 { dst, srcs, half } => {
-                let result =
-                    evaluate_cvt_pk_fp8_f32(&mut self.arena, registers, lane, *dst, *srcs, *half)?;
+            LoweredInstr::CvtPkF8F32 {
+                format,
+                dst,
+                srcs,
+                half,
+            } => {
+                let result = evaluate_cvt_pk_f8_f32(
+                    &mut self.arena,
+                    registers,
+                    lane,
+                    *format,
+                    *dst,
+                    *srcs,
+                    *half,
+                )?;
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::FmacF32 { dst, src0, src1 } => {

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use id_collections::IdVec;
+use volta_common::float_bits::F8Format;
 
 use crate::frontend::ast::{Counter, Instruction, Kernel, Operand, RegFile};
 use crate::ir::{
@@ -523,7 +524,10 @@ fn lower_as_written(
                 .ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         }),
         ("v_cvt_pk_fp8_f32", [dst, src0, src1, selectors @ ..]) => {
-            lower_cvt_pk_fp8_f32(dst, [src0, src1], selectors)
+            lower_cvt_pk_f8_f32(F8Format::E4M3, dst, [src0, src1], selectors)
+        }
+        ("v_cvt_pk_bf8_f32", [dst, src0, src1, selectors @ ..]) => {
+            lower_cvt_pk_f8_f32(F8Format::E5M2, dst, [src0, src1], selectors)
         }
         // The VOP2 forms with a literal K: `fmaak` adds it, `fmamk` multiplies by it.
         ("v_fmaak_f32", [dst, src0, src1, k]) => Ok(FmaF32 {
@@ -756,6 +760,7 @@ fn lower_as_written(
             | "v_fmamk_f32"
             | "v_ldexp_f32"
             | "v_cvt_pk_fp8_f32"
+            | "v_cvt_pk_bf8_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
             | "global_load_dwordx3"
@@ -774,7 +779,8 @@ fn lower_as_written(
 
 /// `op_sel` lists a selector per source, which must be clear for f32 sources, then the
 /// destination half.
-fn lower_cvt_pk_fp8_f32(
+fn lower_cvt_pk_f8_f32(
+    format: F8Format,
     dst: &Operand,
     srcs: [&Operand; 2],
     selectors: &[Operand],
@@ -788,7 +794,8 @@ fn lower_cvt_pk_fp8_f32(
         },
         _ => return Err("unsupported operand count"),
     };
-    Ok(LoweredInstr::CvtPkFp8F32 {
+    Ok(LoweredInstr::CvtPkF8F32 {
+        format,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
         srcs: [first_source(srcs[0])?, first_source(srcs[1])?],
         half,

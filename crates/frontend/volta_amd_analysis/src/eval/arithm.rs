@@ -1,6 +1,7 @@
 //! Vector ALU arithmetic: the value of a unary, binary, ternary or comparison operation in one
 //! lane.
 
+use volta_common::float_bits::{F8Format, decode_e4m3_byte, decode_e5m2_byte};
 use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 use crate::ir::{
@@ -680,11 +681,13 @@ pub(super) fn evaluate_ldexp_f32(
     Ok(arena.mul(value, scale))
 }
 
-/// `v_cvt_pk_fp8_f32` in `lane`: `dst`'s word with `half` replaced by the sources' fp8 codes.
-pub(super) fn evaluate_cvt_pk_fp8_f32(
+/// `v_cvt_pk_{fp8,bf8}_f32` in `lane`: `dst`'s word with `half` replaced by the sources'
+/// `format` codes.
+pub(super) fn evaluate_cvt_pk_f8_f32(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
     lane: usize,
+    format: F8Format,
     dst: Vgpr,
     srcs: [Src0; 2],
     half: WordHalf,
@@ -695,7 +698,7 @@ pub(super) fn evaluate_cvt_pk_fp8_f32(
         let ExprNode::RealConst(real) = arena.node(value) else {
             return Err(EvalError::UnmodeledFp8 { lane });
         };
-        *code = fp8_e4m3(real).ok_or(EvalError::UnmodeledFp8 { lane })?;
+        *code = f8_code(format, real).ok_or(EvalError::UnmodeledFp8 { lane })?;
     }
     let old = registers.read_vgpr(lane, dst)?;
     let old = word_bits(arena, old).ok_or(EvalError::SymbolicWord { lane })?;
@@ -719,21 +722,24 @@ fn word_bits(arena: &ExprArena, value: ExprId) -> Option<u32> {
     (Real::from_f64(f64::from(single)).ok()? == *real).then(|| single.to_bits())
 }
 
-/// The OCP E4M3 code of `value` (gfx950's fp8), rounding only magnitudes up to half the least
-/// subnormal, which round to zero; `None` for any other value that needs rounding. Zero has no
-/// sign over the reals, so it is +0.
-fn fp8_e4m3(value: &Real) -> Option<u8> {
+/// The `format` code of `value`, rounding only magnitudes up to half the least subnormal,
+/// which round to zero; `None` for any other value that needs rounding. Zero has no sign over
+/// the reals, so it is +0.
+fn f8_code(format: F8Format, value: &Real) -> Option<u8> {
     let exact = |magnitude: f64| Real::from_f64(magnitude).expect("not a NaN");
     let magnitude = value.abs();
     let sign = if *value < Real::zero() { 0x80 } else { 0 };
-    if magnitude <= exact(2f64.powi(-10)) {
+    // The positive finite codes run from the least subnormal, 0x01, to the largest finite one.
+    let (least_subnormal, largest_finite, decode): (_, u8, fn(u8) -> Option<f64>) = match format {
+        F8Format::E4M3 => (2f64.powi(-9), 0x7e, decode_e4m3_byte),
+        F8Format::E5M2 => (2f64.powi(-16), 0x7b, decode_e5m2_byte),
+    };
+    if magnitude <= exact(least_subnormal / 2.0) {
         return Some(sign);
     }
-    // Codes 0x01 to 0x7e: exponent field `e` and mantissa `m`; 0x7f is NaN.
-    (1..=0x7e_u8)
+    (1..=largest_finite)
         .find(|code| {
-            let decoded = volta_common::float_bits::decode_e4m3_byte(*code)
-                .expect("codes 0x01 through 0x7e are finite");
+            let decoded = decode(*code).expect("codes up to the largest finite one are finite");
             exact(decoded) == magnitude
         })
         .map(|code| sign | code)

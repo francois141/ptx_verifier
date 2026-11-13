@@ -1,5 +1,12 @@
 //! Concrete floating-point format decoding shared by accelerator frontends.
 
+/// The OCP 8-bit float formats: E4M3 (no infinity; AMD's `fp8`) and E5M2 (AMD's `bf8`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum F8Format {
+    E4M3,
+    E5M2,
+}
+
 /// Decode one `.e4m3` byte (bias 7, no infinity), or `None` for NaN
 /// (`0x7f`/`0xff`).
 pub fn decode_e4m3_byte(byte: u8) -> Option<f64> {
@@ -15,6 +22,23 @@ pub fn decode_e4m3_byte(byte: u8) -> Option<f64> {
         mantissa as f64 * 2f64.powi(-9)
     } else {
         (1.0 + mantissa as f64 / 8.0) * 2f64.powi(exponent as i32 - 7)
+    };
+
+    Some(if sign == 1 { -magnitude } else { magnitude })
+}
+
+/// Decode one OCP `.e5m2` byte (bias 15, IEEE-style infinities), or `None` for NaN
+/// (`0x7d`-`0x7f`/`0xfd`-`0xff`).
+pub fn decode_e5m2_byte(byte: u8) -> Option<f64> {
+    let sign = (byte >> 7) & 1;
+    let exponent = (byte >> 2) & 0x1F;
+    let mantissa = (byte & 0x3) as i32;
+
+    let magnitude = match (exponent, mantissa) {
+        (0x1F, 0) => f64::INFINITY,
+        (0x1F, _) => return None,
+        (0, _) => mantissa as f64 * 2f64.powi(-16),
+        _ => (1.0 + mantissa as f64 / 4.0) * 2f64.powi(exponent as i32 - 15),
     };
 
     Some(if sign == 1 { -magnitude } else { magnitude })

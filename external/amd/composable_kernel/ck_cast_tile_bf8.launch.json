@@ -1,0 +1,15 @@
+{
+  "description": "CK Tile's cast_tile<bf8_t> of 1.0 in each of 64 work-items, the code stored as a float. It encodes with the E4M3 instruction, so b holds the fp8 code 56 (0x38).",
+  "kernel": "ck_cast_tile_bf8",
+  "block": 64,
+  "arrays": [
+    {"name": "b", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "float": 1.0},
+    {"name": "y", "float": -2.0},
+    {"name": "b", "ptr": "b"}
+  ],
+  "spec": "ck_cast_tile_bf8.spec",
+  "dims": {"N": 64}
+}

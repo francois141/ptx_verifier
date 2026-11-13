@@ -1,0 +1,14 @@
+{
+  "description": "The bf8 (E5M2) conversion cast_tile<bf8_t> should use, of 1.0 in each of 64 work-items.",
+  "kernel": "ck_cast_tile_bf8_fixed",
+  "block": 64,
+  "arrays": [
+    {"name": "b", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "x", "float": 1.0},
+    {"name": "b", "ptr": "b"}
+  ],
+  "spec": "ck_cast_tile_bf8.spec",
+  "dims": {"N": 64}
+}

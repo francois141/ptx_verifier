@@ -160,6 +160,9 @@ CASES = (
     # i4_to_f8x4 converts its high nibbles unshifted, as zeros.
     Case("ck_i4_to_f8x4", "ck_i4_to_f8x4", Solve("REJECT")),
     Case("ck_i4_to_f8x4_fixed", "ck_i4_to_f8x4", Solve("ACCEPT")),
+    # cast_tile<bf8_t> encodes with the fp8 (E4M3) instruction.
+    Case("ck_cast_tile_bf8", "ck_cast_tile_bf8", Solve("REJECT")),
+    Case("ck_cast_tile_bf8_fixed", "ck_cast_tile_bf8", Solve("ACCEPT")),
     # A model of PermuteWarpGemmCToA's loop, which runs four times past its buffers.
     Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
     Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),

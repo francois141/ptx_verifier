@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use id_collections::{IdVec, id_type};
+use volta_common::float_bits::F8Format;
 
 /// An instruction's position in its kernel body.
 #[id_type]
@@ -969,9 +970,10 @@ pub enum LoweredInstr {
         src0: Src0,
         src1: Vgpr,
     },
-    /// The two f32 sources as OCP E4M3 fp8 codes, `srcs[0]` in the low byte, written to `half`
-    /// of `dst`; the other half keeps its bits.
-    CvtPkFp8F32 {
+    /// The two f32 sources as `format` codes, `srcs[0]` in the low byte, written to `half` of
+    /// `dst`; the other half keeps its bits.
+    CvtPkF8F32 {
+        format: F8Format,
         dst: Vgpr,
         srcs: [Src0; 2],
         half: WordHalf,
@@ -1088,7 +1090,10 @@ impl LoweredInstr {
             Self::AccvgprRead32 { .. } => "v_accvgpr_read_b32",
             Self::FmaF32 { .. } => "v_fma_f32",
             Self::FmacF32 { .. } => "v_fmac_f32",
-            Self::CvtPkFp8F32 { .. } => "v_cvt_pk_fp8_f32",
+            Self::CvtPkF8F32 { format, .. } => match format {
+                F8Format::E4M3 => "v_cvt_pk_fp8_f32",
+                F8Format::E5M2 => "v_cvt_pk_bf8_f32",
+            },
             Self::F64 { .. } => "f64 op",
             Self::CvtToF64 { .. } => "v_cvt to f64",
             Self::CvtFromF64 { .. } => "v_cvt from f64",
