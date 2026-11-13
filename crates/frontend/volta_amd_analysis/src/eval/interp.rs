@@ -489,36 +489,44 @@ impl<'a> Interpreter<'a> {
         let registers = &mut self.waves[wave].registers;
 
         let mut results = Vec::with_capacity(64);
-        // The carry mask is fully written, as VCC is: an inactive lane's bit stays clear
-        // (CDNA4 §3.9).
-        let mut carries = 0u64;
         for lane in active_lanes(exec) {
             let a = registers.read_src(&mut self.arena, lane, src0)?;
             let b = registers.read_src(&mut self.arena, lane, src1)?;
             let addend_low = registers.read_vgpr(lane, src2[0])?;
             let addend_high = registers.read_vgpr(lane, src2[1])?;
 
-            let non_symbolic_word =
+            let word =
                 |value| concrete_word(&self.arena, value).ok_or(EvalError::SymbolicWord { lane });
-            let a = u128::from(non_symbolic_word(a)?);
-            let b = u128::from(non_symbolic_word(b)?);
-            let addend = u128::from(non_symbolic_word(addend_low)?)
-                | (u128::from(non_symbolic_word(addend_high)?) << 32);
-
-            let result = a * b + addend;
-            if result >> 64 != 0 {
-                carries |= 1 << lane;
-            }
-            results.push((lane, result as u64));
+            let product_plus_low =
+                u128::from(word(a)?) * u128::from(word(b)?) + u128::from(word(addend_low)?);
+            // The low result word depends on the low words alone, so a compiler may leave
+            // another value in the addend's high register when it uses only the low word.
+            let sum = concrete_word(&self.arena, addend_high)
+                .map(|high| product_plus_low + (u128::from(high) << 32));
+            results.push((lane, product_plus_low as u32, sum));
         }
 
-        for (lane, result) in results {
-            let low = self.arena.int(i64::from(result as u32));
-            let high = self.arena.int(i64::from((result >> 32) as u32));
+        // The carry mask is fully written, as VCC is: an inactive lane's bit stays clear
+        // (CDNA4 §3.9). It is unknown if any active lane's carry is.
+        let carries = results.iter().try_fold(0u64, |mask, (lane, _, sum)| {
+            sum.map(|sum| mask | u64::from(sum >> 64 != 0) << lane)
+        });
+
+        for (lane, low, sum) in results {
+            let low = self.arena.int(i64::from(low));
             registers.write_vgpr(lane, dst[0], low)?;
-            registers.write_vgpr(lane, dst[1], high)?;
+            match sum {
+                Some(sum) => {
+                    let high = self.arena.int(i64::from((sum >> 32) as u32));
+                    registers.write_vgpr(lane, dst[1], high)?;
+                }
+                None => registers.write_unknown_vgpr(lane, dst[1])?,
+            }
         }
-        registers.write_sgpr_pair(&mut self.arena, carry, carries)
+        match carries {
+            Some(carries) => registers.write_sgpr_pair(&mut self.arena, carry, carries),
+            None => registers.write_unknown_sgpr_pair(carry),
+        }
     }
 
     /// Evaluate a comparison in every active lane before writing `dst`, which may overlap a

@@ -647,6 +647,20 @@ impl WaveRegisters {
         Ok(u64::from(low) | (u64::from(high) << 32))
     }
 
+    /// Overwrite an SGPR pair with a value the model does not know, so that reading it is an error.
+    pub fn write_unknown_sgpr_pair(&mut self, pair: [Sgpr; 2]) -> Result<(), EvalError> {
+        for reg in pair {
+            self.check_scalar_destination(reg)?;
+        }
+        for reg in pair {
+            self.set_scalar(
+                usize::from(reg.0),
+                ScalarValue::Word(RegValue::Uninitialized),
+            );
+        }
+        Ok(())
+    }
+
     pub fn write_sgpr_pair(
         &mut self,
         arena: &mut ExprArena,
@@ -968,6 +982,14 @@ impl WaveRegisters {
     pub fn write_vgpr(&mut self, lane: usize, reg: Vgpr, value: ExprId) -> Result<(), EvalError> {
         self.check_vector_destination(lane, reg)?;
         self.set_vector(lane, reg, VectorValue::Word(RegValue::Ready(value)));
+        Ok(())
+    }
+
+    /// Overwrite a vector register in one lane with a value the model does not know, so that
+    /// reading it is an error.
+    pub fn write_unknown_vgpr(&mut self, lane: usize, reg: Vgpr) -> Result<(), EvalError> {
+        self.check_vector_destination(lane, reg)?;
+        self.set_vector(lane, reg, VectorValue::Word(RegValue::Uninitialized));
         Ok(())
     }
 
