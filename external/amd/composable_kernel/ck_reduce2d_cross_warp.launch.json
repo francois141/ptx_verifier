@@ -1,0 +1,15 @@
+{
+  "description": "CK Tile's ReduceKernel summing each row of a 16 x 16 fp32 tensor, two waves along each row. Its cross-warp step keeps only lane 0's row, so every row gets row 0's sum.",
+  "kernel": "ck_reduce2d_cross_warp",
+  "block": 128,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [16, 16]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [16]}
+  ],
+  "params": [
+    {"name": "x", "ptr": "x"},
+    {"name": "y", "ptr": "y"}
+  ],
+  "spec": "ck_reduce2d_cross_warp.spec",
+  "dims": {"M": 16, "N": 16}
+}

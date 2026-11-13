@@ -163,6 +163,8 @@ CASES = (
     # cast_tile<bf8_t> encodes with the fp8 (E4M3) instruction.
     Case("ck_cast_tile_bf8", "ck_cast_tile_bf8", Solve("REJECT")),
     Case("ck_cast_tile_bf8_fixed", "ck_cast_tile_bf8", Solve("ACCEPT")),
+    # BlockReduce2dCrossWarpSync keeps only lane 0's partial, so every row gets row 0's.
+    Case("ck_reduce2d_cross_warp", "ck_reduce2d_cross_warp", Solve("REJECT")),
     # A model of PermuteWarpGemmCToA's loop, which runs four times past its buffers.
     Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
     Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),
