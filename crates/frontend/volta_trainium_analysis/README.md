@@ -351,7 +351,8 @@ pair no chain of dependencies orders.
 A policy is four independent choices, each adding an `Assumption` the graph records; every
 policy orders read after write (`Assumption::NkiReadAfterWriteOrder`: an instruction follows
 the latest earlier writer of each location it reads) and write after read
-(`NkiWriteAfterReadOrder`: it follows every earlier reader of each location it writes), unless
+(`NkiWriteAfterReadOrder`: it follows the readers of each location it writes since that
+location's latest write), unless
 the two are in different iterations of one `affine_range`, which declares its iterations
 independent. The `affine_range` docs exempt "associative reductions", naming `nc_matmul`
 accumulating into one buffer: every policy records an adding `nc_matmul` as one
@@ -405,7 +406,7 @@ its own pattern), so the baseline takes exactly the assumptions some sample need
 | Assumption (`Assumption::`) | In `BASELINE` | Evidence |
 |---|---|---|
 | `NkiReadAfterWriteOrder`: an instruction follows the latest earlier writer of what it reads | always | The docs' "based on data dependencies"; no sample is correct without it |
-| `NkiWriteAfterReadOrder`: an instruction follows every earlier reader of what it writes | always | Attention v10 (its PSUM bank reuse); v1 to v8a and the tutorials pass without it |
+| `NkiWriteAfterReadOrder`: an instruction follows the readers of what it writes since its latest write | always | Attention v10 (its PSUM bank reuse); v1 to v8a and the tutorials pass without it |
 | Neither of the two across iterations of one `affine_range` | always | The `affine_range` docs: iterations have no loop-carried dependency |
 | `NkiMatmulAccumulationsCommute`: `nc_matmul` accumulations into one location run one at a time, in some order | always | The `affine_range` docs' example of an exempt associative reduction; the four tiled matmul tutorials |
 | `NkiTensorTensorAddsCommute`: so do `tensor_tensor` add accumulations | yes (`Reductions::MatmulAndAdd`) | The docs' "associative reductions"; mamba v1 to v3. Off: `Reductions::Matmul` |
@@ -417,15 +418,18 @@ v10 is the only sample needing write-after-read and by-address tracking, and it 
 explanation the policies do not model: a `no_reorder` block also ordered after the code
 before it. A compiled NEFF would settle all of these.
 
-The second table is how kernels are modelled, the same under every policy:
+The second table is how kernels are modelled, the same under every policy. The four that
+limit what the race check covers are recorded in every NKI graph too (the recorder's
+`MODELLING`, ahead of the policy's), as AMD records `SingleWorkgroupAnalyzed`, so every
+verdict prints them; the rest only shape values, or only add conflicts.
 
 | Modelling assumption | Effect |
 |---|---|
-| One core, one kernel instance | Races across cores or SPMD instances are not checked; `nl.program_id` is not supported |
-| Kernel arguments are distinct HBM tensors | An output aliasing an input is not modelled (R4) |
+| One core, one kernel instance (`SingleNkiInstance`) | Races across cores or SPMD instances are not checked; `nl.program_id` is not supported |
+| Kernel arguments are distinct HBM tensors (`NkiArgumentsDistinct`) | An output aliasing an input is not modelled (R4) |
 | Instructions are unordered unless an assumption orders them | DMA asynchrony needs no model of its own |
-| An instruction reads all its operands before writing any | Overlapping `src` and `dst` regions of one instruction read old values (R5, not checked against the hardware) |
-| Unplaced tiles never overlap; a tile declared in a loop iteration is that iteration's | The compiler's own allocation is correct |
+| An instruction reads all its operands before writing any (`NkiInstructionReadsBeforeWrites`) | Overlapping `src` and `dst` regions of one instruction read old values (R5, not checked against the hardware) |
+| Unplaced tiles never overlap; a tile declared in a loop iteration is that iteration's (`NkiCompilerAllocation`) | The compiler's own allocation is correct |
 | Footprints are static: a gather reads its whole `data` and `index` regions | Over-approximates, so it can only add conflicts |
 | Values are exact reals; `dtype` only sizes placed tiles | `bfloat16` rounding is not checked, and reordered reductions give equal values |
 | `sbuf_fmax_bytes` is a Trn2 partition's 192 KiB | Bounds placed SBUF tiles; the docs do not state it |
