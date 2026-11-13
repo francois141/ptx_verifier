@@ -6,10 +6,13 @@ use std::path::PathBuf;
 
 use pyo3::prelude::*;
 use volta_equivalence::EquivCheckOptions;
-use volta_pipeline::{LeanExtractionError, Solver};
+use volta_pipeline::{
+    DEFAULT_LEAN_NAMESPACE, Isa, KernelRun, LeanProver, LeanSolution, Solution, SolveError, Solver,
+    Spec, claim,
+};
 
 use crate::config::ConfigPy;
-use crate::error::{graph_failure_to_py, other_error_to_py};
+use crate::error::{VoltaError, graph_failure_to_py, other_error_to_py};
 use crate::solve::{load_kernel, parse_spec, race_verified};
 
 #[pyclass(name = "LeanExtraction")]
@@ -45,6 +48,7 @@ pub struct LeanExtractionPy {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_lean(
+    py: Python<'_>,
     path: PathBuf,
     config: Option<&ConfigPy>,
     spec: &str,
@@ -53,28 +57,89 @@ pub fn extract_lean(
     tolerance: Option<&str>,
     equivalence: bool,
 ) -> PyResult<LeanExtractionPy> {
-    let spec = parse_spec(spec, dims)?;
-    let (isa, mut run) = load_kernel(&path, config, kernel)?;
-    let (verdict, evidence) = if equivalence {
-        let solver = Solver::Canonical(EquivCheckOptions::default());
-        let solution = run.solve(&spec, &solver).map_err(other_error_to_py)?;
-        let decision = run.decide(&solution);
-        (Some(decision.verdict.name().to_string()), decision.evidence)
-    } else {
-        (None, Vec::new())
+    let mut lean = LeanRun::new(path, config, spec, kernel, dims, equivalence)?;
+    let LeanSolution::Stated(challenge) = lean.solve(py, tolerance, None)? else {
+        unreachable!("the Lean solver proves nothing without a prover")
     };
-    let challenge = run.extract_lean(&spec, tolerance).map_err(|e| match e {
-        LeanExtractionError::Rejected { failed, deadlock } => {
-            graph_failure_to_py(&failed, deadlock.as_ref())
-        }
-        other => other_error_to_py(other),
-    })?;
     Ok(LeanExtractionPy {
-        isa: isa.name().to_string(),
-        race_verified: race_verified(&run),
-        verdict,
-        evidence,
+        isa: lean.isa.name().to_string(),
+        race_verified: race_verified(&lean.run),
+        verdict: lean.verdict,
+        evidence: lean.evidence,
         lean: challenge.module,
         statements: challenge.statements,
     })
+}
+
+/// One run of a kernel against a spec, and the canonical solver's verdict on it when asked for:
+/// what `extract_lean` and `prove_lean` hand to the Lean solver.
+pub(crate) struct LeanRun {
+    pub isa: Isa,
+    pub run: KernelRun,
+    spec: Spec,
+    /// `"ACCEPT"`, `"REJECT"` or `"UNKNOWN"` for exact equality, when `equivalence` asked for it.
+    pub verdict: Option<String>,
+    pub evidence: Vec<String>,
+}
+
+impl LeanRun {
+    pub(crate) fn new(
+        path: PathBuf,
+        config: Option<&ConfigPy>,
+        spec: &str,
+        kernel: Option<&str>,
+        dims: Option<HashMap<String, u64>>,
+        equivalence: bool,
+    ) -> PyResult<LeanRun> {
+        let spec = parse_spec(spec, dims)?;
+        let (isa, mut run) = load_kernel(&path, config, kernel)?;
+        let (verdict, evidence) = if equivalence {
+            let solver = Solver::Canonical(EquivCheckOptions::default());
+            let solution = run.solve(&spec, &solver).map_err(other_error_to_py)?;
+            let decision = run.decide(&solution);
+            (Some(decision.verdict.name().to_string()), decision.evidence)
+        } else {
+            (None, Vec::new())
+        };
+        Ok(LeanRun {
+            isa,
+            run,
+            spec,
+            verdict,
+            evidence,
+        })
+    }
+
+    /// The Lean solver's statements of the run, proved by `prover` when given; with the GIL
+    /// released, so the Rust logs forwarded to Python's `logging` reach it meanwhile.
+    pub(crate) fn solve(
+        &mut self,
+        py: Python<'_>,
+        tolerance: Option<&str>,
+        prover: Option<LeanProver>,
+    ) -> PyResult<LeanSolution> {
+        let solver = Solver::Lean {
+            claim: claim(tolerance).map_err(VoltaError::new_err)?,
+            namespace: DEFAULT_LEAN_NAMESPACE.to_string(),
+            prover,
+        };
+        let (run, spec) = (&mut self.run, &self.spec);
+        match py.detach(|| run.solve(spec, &solver)) {
+            Ok(Solution::Lean(LeanSolution::Stopped(verdict))) => {
+                let decision = self
+                    .run
+                    .decide(&Solution::Lean(LeanSolution::Stopped(verdict)));
+                Err(VoltaError::new_err(format!(
+                    "Lean extraction failed: {}",
+                    decision.evidence.join("; ")
+                )))
+            }
+            Ok(Solution::Lean(solution)) => Ok(solution),
+            Ok(Solution::Canonical { .. }) => unreachable!("the Lean solver gives Lean solutions"),
+            Err(SolveError::Rejected { failed, deadlock }) => {
+                Err(graph_failure_to_py(&failed, deadlock.as_ref()))
+            }
+            Err(e) => Err(other_error_to_py(format!("Lean extraction failed: {e}"))),
+        }
+    }
 }

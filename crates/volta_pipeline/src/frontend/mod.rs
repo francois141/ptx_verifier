@@ -8,7 +8,7 @@ use std::path::Path;
 use volta_common::span::Span;
 use volta_expr::SymbolicOutputs;
 use volta_graph::EventGraph;
-use volta_graph_check::GraphReport;
+use volta_graph_check::{Deadlock, GraphConclusion, GraphReport, PropertySummary};
 use volta_ptx_analysis::AnalysisConfig;
 
 use crate::aggregate::{Decision, KernelEvidence, decide};
@@ -109,7 +109,7 @@ pub trait Frontend {
         let mut run = self
             .analyze(source, kernel, launch)
             .map_err(SolveError::Frontend)?;
-        let solution = run.solve(spec, solver).map_err(SolveError::Spec)?;
+        let solution = run.solve(spec, solver)?;
         Ok((run, solution))
     }
 }
@@ -133,11 +133,21 @@ pub enum GraphEvidence {
 
 impl KernelRun {
     /// The run's outputs against `spec` by `solver`. The outputs are left as the run wrote them.
-    pub fn solve(
-        &mut self,
-        spec: &Spec,
-        solver: &Solver,
-    ) -> Result<Solution, volta_spec::SpecError> {
+    /// The Lean solver states nothing of a run whose recorded graph is not `Verified`, so no
+    /// prover works on a rejected kernel; runs of an ISA recording no graph claim no race freedom.
+    pub fn solve(&mut self, spec: &Spec, solver: &Solver) -> Result<Solution, SolveError> {
+        if let (Solver::Lean { .. }, GraphEvidence::Checked { report, .. }) = (solver, &self.graph)
+        {
+            match report.conclusion() {
+                GraphConclusion::Verified => {}
+                GraphConclusion::Rejected { failed, deadlock } => {
+                    return Err(SolveError::Rejected { failed, deadlock });
+                }
+                GraphConclusion::Unknown { reasons } => {
+                    return Err(SolveError::Incomplete(reasons));
+                }
+            }
+        }
         solve(
             self.outputs.as_mut().map_err(|why| why.as_str()),
             spec,
@@ -206,6 +216,15 @@ impl std::error::Error for FrontendError {}
 pub enum SolveError {
     Frontend(FrontendError),
     Spec(volta_spec::SpecError),
+    /// The graph branch rejected the run, so the Lean solver states nothing of it.
+    Rejected {
+        failed: Vec<PropertySummary>,
+        deadlock: Option<Deadlock>,
+    },
+    /// The graph branch left the run unverified, so the Lean solver states nothing of it.
+    Incomplete(Vec<String>),
+    /// The prover could not run (no Lean toolchain, no agent, an I/O failure).
+    Prover(volta_lean::Error),
 }
 
 impl fmt::Display for SolveError {
@@ -213,6 +232,26 @@ impl fmt::Display for SolveError {
         match self {
             Self::Frontend(e) => write!(f, "{e}"),
             Self::Spec(e) => write!(f, "building spec: {e}"),
+            Self::Rejected { failed, deadlock } => {
+                let reasons = deadlock
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "trace deadlocked with {} blocked thread(s)",
+                            d.blocked.len()
+                        )
+                    })
+                    .chain(failed.iter().map(|s| match s.findings.first() {
+                        Some(witness) => format!("{} failed: {witness}", s.property.name()),
+                        None => format!("{} failed", s.property.name()),
+                    }))
+                    .collect::<Vec<_>>();
+                write!(f, "graph verification REJECTED: {}", reasons.join("; "))
+            }
+            Self::Incomplete(reasons) => {
+                write!(f, "graph verification is UNKNOWN: {}", reasons.join("; "))
+            }
+            Self::Prover(e) => write!(f, "Lean prover: {e}"),
         }
     }
 }

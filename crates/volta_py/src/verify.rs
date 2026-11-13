@@ -3,13 +3,11 @@
 //! standing in for a second kernel, then run the usual equivalence pipeline.
 
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 
 use pyo3::prelude::*;
 
-use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
-use volta_equivalence::{EquivCheckOptions, EquivOutcome, check_output_equivalence_with};
-use volta_spec::unfold;
+use volta_equivalence::{EquivCheckOptions, EquivOutcome};
+use volta_pipeline::{EquivalenceVerdict, Spec, check_against_spec};
 
 use crate::analyze::{StatsPy, check_kernel, parse_module};
 use crate::config::ConfigPy;
@@ -56,22 +54,8 @@ pub fn verify(
     let parsed_spec = volta_spec::parse_spec(spec).map_err(|e| spec_parse_error_to_py(spec, &e))?;
 
     let dims = dims.unwrap_or_default();
-    let (env, specs) = volta_spec::instantiate(&parsed_spec, &dims).map_err(other_error_to_py)?;
-
-    // Every array the spec defines an output equation for, in
-    // declaration order - the arrays to check.
-    let mut check_arrays: Vec<String> = Vec::new();
-    for o in &parsed_spec.outputs {
-        if !check_arrays.contains(&o.array) {
-            check_arrays.push(o.array.clone());
-        }
-    }
-    if check_arrays.is_empty() {
-        return Err(VoltaError::new_err(
-            "spec declares no output equations to check",
-        ));
-    }
-    for name in &check_arrays {
+    let prepared_spec = Spec::new(&parsed_spec, &dims).map_err(other_error_to_py)?;
+    for name in prepared_spec.arrays() {
         if !config
             .0
             .arrays
@@ -88,32 +72,36 @@ pub fn verify(
     let mut kernel_output = check_kernel(py, &module, kernel, config.0.clone())?;
     let race_verified = kernel_output.unresolved.is_empty();
 
-    // `sample` also caps generation: truncate the kernel's elements to the
-    // ascending prefix `unfold` builds, so both sides pair (as in `cmd_verify`).
-    if sample > 0 {
-        for name in &check_arrays {
-            if let Some((_, elems)) = kernel_output
-                .exprs
-                .outputs
-                .iter_mut()
-                .find(|(n, _)| n == name)
-            {
-                elems.truncate(sample as usize);
-            }
-        }
-    }
-
-    let spec_output = unfold(&specs, &env, sample).map_err(other_error_to_py)?;
-
     let options = EquivCheckOptions {
         sample,
         verify_numeric,
-        recycle_terms: DEFAULT_RECYCLE_TERMS,
-        iterations: NonZeroUsize::MIN,
+        ..EquivCheckOptions::default()
     };
-    let report =
-        check_output_equivalence_with(&kernel_output.exprs, &spec_output, &check_arrays, &options)
-            .map_err(other_error_to_py)?;
+    let (verdict, report) = check_against_spec(&mut kernel_output.exprs, &prepared_spec, &options)
+        .map_err(other_error_to_py)?;
+    let report = match (verdict, report) {
+        (_, Some(report)) => report,
+        (EquivalenceVerdict::Failed { reason }, None) => {
+            return Err(VoltaError::new_err(reason));
+        }
+        (
+            EquivalenceVerdict::IndexSetMismatch {
+                array,
+                unwritten,
+                unexpected,
+            },
+            None,
+        ) => {
+            return Err(VoltaError::new_err(format!(
+                "output shape mismatch: array '{array}': unwritten indices {unwritten:?}, unexpected indices {unexpected:?}"
+            )));
+        }
+        (verdict, None) => {
+            return Err(VoltaError::new_err(format!(
+                "verification produced no report: {verdict:?}"
+            )));
+        }
+    };
 
     let (equivalent, mismatches) = match report.outcome {
         EquivOutcome::Equivalent => (true, Vec::new()),

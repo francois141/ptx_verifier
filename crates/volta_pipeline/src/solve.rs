@@ -1,17 +1,20 @@
 //! A kernel's outputs against a spec, by the caller's solver. Both solvers first require the
 //! kernel to write exactly the spec's elements; the canonical decision procedure then decides
-//! each element, while the Lean solver states each one for a prover instead.
+//! each element, while the Lean solver states each one, and proves them if given a prover.
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 
 use rug::Rational;
+use volta_common::logging::info;
 use volta_equivalence::check::{EquivCheckOptions, EquivCheckReport};
 use volta_expr::SymbolicOutputs;
-use volta_lean::{Claim, to_lean};
+use volta_lean::{Claim, ClaudeCode, LeanProof, ToolServer, to_lean};
 use volta_spec::{InstantiateErrorKind, OutputSpec, ParsedSpec, SpecEnv, SpecError};
 
 use crate::equivalence::{EquivalenceVerdict, check_equivalence};
+use crate::frontend::SolveError;
 
 /// The namespace of the Lean module the Lean solver writes, unless the caller names one.
 pub const DEFAULT_LEAN_NAMESPACE: &str = "VoltaChallenge";
@@ -22,9 +25,25 @@ pub enum Solver {
     /// The canonicalizing decision procedure of `volta_equivalence`, each claimed difference
     /// confirmed by the numeric oracle.
     Canonical(EquivCheckOptions),
-    /// Lean 4 statements of `claim` for every element, in namespace `namespace`, for a prover
-    /// to discharge.
-    Lean { claim: Claim, namespace: String },
+    /// Lean 4 statements of `claim` for every element, in namespace `namespace`, proved by
+    /// `prover` when given, else left to the caller.
+    Lean {
+        claim: Claim,
+        namespace: String,
+        prover: Option<LeanProver>,
+    },
+}
+
+/// A Claude Code agent proving the statements, with Volta's final check as the verdict.
+#[derive(Debug, Clone)]
+pub struct LeanProver {
+    /// Where `challenge.lean`, `proof.lean` and the agent's transcript go.
+    pub directory: PathBuf,
+    /// A Lake project with Mathlib built; `None` reads `$VOLTA_LEAN_PROJECT`.
+    pub project: Option<PathBuf>,
+    pub agent: ClaudeCode,
+    /// The command serving the proving tools to the agent.
+    pub server: ToolServer,
 }
 
 /// `Claim::Within` the rational `tolerance` (`1/1000`), or `Claim::Equal` without one.
@@ -150,9 +169,12 @@ pub fn check_against_spec(
         }
         written
     });
-    let (mut verdict, report) = check_equivalence(kernel, &baseline, &spec.arrays, options);
+    let (mut verdict, mut report) = check_equivalence(kernel, &baseline, &spec.arrays, options);
     if let Some(written) = written {
         kernel.outputs = written;
+    }
+    if let Some(report) = &mut report {
+        report.elements_total = untruncated;
     }
     if let EquivalenceVerdict::Equivalent { checked, total } = &mut verdict {
         *total = (*total).max(untruncated);
@@ -200,6 +222,11 @@ pub enum Solution {
 pub enum LeanSolution {
     /// Statements for a prover: whether the kernel matches the spec rests on their proofs.
     Stated(LeanChallenge),
+    /// Statements and the prover's attempt at them, which holds only if `proof.check.proved`.
+    Attempted {
+        challenge: LeanChallenge,
+        proof: Box<LeanProof>,
+    },
     /// No statements, for this verdict: no outputs, an index set mismatch, or an expression
     /// Lean cannot state.
     Stopped(EquivalenceVerdict),
@@ -224,6 +251,12 @@ impl Solution {
                     challenge.statements
                 ),
             },
+            Solution::Lean(LeanSolution::Attempted { proof, .. }) => EquivalenceVerdict::Failed {
+                reason: format!(
+                    "left to Lean: {} of {} statement(s) proved, a proof decide does not weigh",
+                    proof.check.proved_statements, proof.check.statements
+                ),
+            },
             Solution::Lean(LeanSolution::Stopped(verdict)) => verdict.clone(),
         }
     }
@@ -234,7 +267,7 @@ pub(crate) fn solve(
     outputs: Result<&mut SymbolicOutputs, &str>,
     spec: &Spec,
     solver: &Solver,
-) -> Result<Solution, SpecError> {
+) -> Result<Solution, SolveError> {
     let kernel = match outputs {
         Ok(kernel) => kernel,
         Err(why) => {
@@ -252,11 +285,52 @@ pub(crate) fn solve(
     };
     match solver {
         Solver::Canonical(options) => {
-            let (verdict, report) = check_against_spec(kernel, spec, options)?;
+            let (verdict, report) =
+                check_against_spec(kernel, spec, options).map_err(SolveError::Spec)?;
             Ok(Solution::Canonical { verdict, report })
         }
-        Solver::Lean { claim, namespace } => {
-            state_against_spec(kernel, spec, claim, namespace).map(Solution::Lean)
+        Solver::Lean {
+            claim,
+            namespace,
+            prover,
+        } => {
+            let stated =
+                state_against_spec(kernel, spec, claim, namespace).map_err(SolveError::Spec)?;
+            match (stated, prover) {
+                (LeanSolution::Stated(challenge), Some(prover)) => {
+                    prove(challenge, claim, prover).map(Solution::Lean)
+                }
+                (stated, _) => Ok(Solution::Lean(stated)),
+            }
         }
     }
+}
+
+fn prove(
+    challenge: LeanChallenge,
+    claim: &Claim,
+    prover: &LeanProver,
+) -> Result<LeanSolution, SolveError> {
+    let claimed = match claim {
+        Claim::Equal => "equal to".to_string(),
+        Claim::Within(tolerance) => format!("within {tolerance} of"),
+    };
+    info!(
+        "[lean] challenge generated: {} proof obligations, each output {claimed} the spec",
+        challenge.statements
+    );
+    // `prove` logs each step itself.
+    let proof = volta_lean::prove(
+        &challenge.module,
+        &prover.directory,
+        prover.project.as_deref(),
+        &prover.agent,
+        &prover.server,
+        &|_| {},
+    )
+    .map_err(SolveError::Prover)?;
+    Ok(LeanSolution::Attempted {
+        challenge,
+        proof: Box::new(proof),
+    })
 }

@@ -11,7 +11,10 @@ use volta_common::report::{Report, report_error};
 use volta_common::run_log;
 use volta_equivalence::EquivCheckOptions;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
-use volta_pipeline::{FrontendError, GraphEvidence, Isa, Solution, Solver};
+use volta_pipeline::{
+    DEFAULT_LEAN_NAMESPACE, FrontendError, GraphEvidence, Isa, LeanSolution, Solution, Solver,
+    claim,
+};
 use volta_ptx_analysis::LaunchFile;
 
 use crate::config::{LaunchArgs, launch_config};
@@ -220,13 +223,22 @@ fn cmd_run(args: KernelArgs, action: KernelAction, log: &mut run_log::RunLog) ->
     // Build the whole module only after the shared extraction guard accepts the run.
     // In particular, a rejected kernel must not create or overwrite an output file.
     let extracted = if let KernelAction::ExtractLean { tolerance, .. } = &action {
-        match run.extract_lean(
-            spec.as_ref().expect("extraction requires a spec"),
-            tolerance.as_deref(),
-        ) {
+        let stated = claim(tolerance.as_deref()).and_then(|claim| {
+            let solver = Solver::Lean {
+                claim,
+                namespace: DEFAULT_LEAN_NAMESPACE.to_string(),
+                prover: None,
+            };
+            let spec = spec.as_ref().expect("extraction requires a spec");
+            match run.solve(spec, &solver).map_err(|e| e.to_string())? {
+                Solution::Lean(LeanSolution::Stated(challenge)) => Ok(challenge),
+                solution => Err(run.decide(&solution).evidence.join("; ")),
+            }
+        });
+        match stated {
             Ok(challenge) => Some(challenge),
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("error: Lean extraction failed: {e}");
                 log.record(&format!("{command} {}: FAILED: {e}", file.display()));
                 return ExitCode::FAILURE;
             }
@@ -289,7 +301,7 @@ fn cmd_run(args: KernelArgs, action: KernelAction, log: &mut run_log::RunLog) ->
     let solution = match run.solve(&spec, &solver) {
         Ok(solution) => solution,
         Err(e) => {
-            eprintln!("error: building spec: {}", e);
+            eprintln!("error: {}", e);
             return ExitCode::FAILURE;
         }
     };

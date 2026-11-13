@@ -1,6 +1,6 @@
 //! `volta.prove_lean` and `volta.check_lean_proof`: `extract_lean`'s obligations proved in Lean
-//! by a Claude Code agent, and the check that accepts a proof (`volta_lean`). The work runs
-//! with the GIL released, so the Rust logs it forwards to Python's `logging` reach it meanwhile.
+//! by a Claude Code agent, the pipeline's Lean solver given a prover, and the check that
+//! accepts a proof (`volta_lean`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -8,12 +8,14 @@ use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
 use volta_common::logging::info;
-use volta_lean::{ClaudeCode, LeanCheck, Progress, ToolServer, Usage};
+use volta_lean::{ClaudeCode, LeanCheck, ToolServer, Usage};
+use volta_pipeline::{LeanProver, LeanSolution};
 
 use crate::config::ConfigPy;
 use crate::error::other_error_to_py;
-use crate::extract::extract_lean;
+use crate::extract::LeanRun;
 use crate::logging::StderrEcho;
+use crate::solve::race_verified;
 
 /// The Python that serves the proving tools to Claude Code, given a workspace file.
 const SERVE_TOOLS: &str = "import sys, volta; volta._serve_lean_tools(sys.argv[1])";
@@ -184,47 +186,36 @@ pub fn prove_lean(
         "[volta] {}: analysis, graph checks, equivalence check, Lean proof",
         path.display()
     );
-    let extraction = extract_lean(path, config, spec, kernel, dims, tolerance, equivalence)?;
-    info!("[analysis] {} kernel analyzed", extraction.isa);
-    if extraction.race_verified == Some(true) {
+    let mut lean = LeanRun::new(path, config, spec, kernel, dims, equivalence)?;
+    let race_verified = race_verified(&lean.run);
+    info!("[analysis] {} kernel analyzed", lean.isa.name());
+    if race_verified == Some(true) {
         info!("[graph] verified: every graph check passed");
     }
-    if let Some(verdict) = &extraction.verdict {
+    if let Some(verdict) = &lean.verdict {
         info!("[equivalence] {verdict} against the spec (exact equality)");
-        for line in &extraction.evidence {
+        for line in &lean.evidence {
             info!("[equivalence]   {line}");
         }
     }
-    let claim = tolerance.map_or("equal to".to_string(), |t| format!("within {t} of"));
-    info!(
-        "[lean] challenge generated: {} proof obligations, each output {claim} the spec",
-        extraction.statements
-    );
 
-    let server = ToolServer {
-        program: py.import("sys")?.getattr("executable")?.extract()?,
-        args: vec!["-c".to_string(), SERVE_TOOLS.to_string()],
+    let prover = LeanProver {
+        directory: output_dir,
+        project: Some(lean_project),
+        agent: ClaudeCode {
+            executable,
+            model: model.to_string(),
+            effort: effort.to_string(),
+            max_turns,
+        },
+        server: ToolServer {
+            program: py.import("sys")?.getattr("executable")?.extract()?,
+            args: vec!["-c".to_string(), SERVE_TOOLS.to_string()],
+        },
     };
-    let agent = ClaudeCode {
-        executable,
-        model: model.to_string(),
-        effort: effort.to_string(),
-        max_turns,
+    let LeanSolution::Attempted { proof, .. } = lean.solve(py, tolerance, Some(prover))? else {
+        unreachable!("the Lean solver proves what it states when given a prover")
     };
-    // `prove` logs each `Progress` itself, which the echo already prints.
-    let observer = |_: &Progress| {};
-    let proof = py
-        .detach(|| {
-            volta_lean::prove(
-                &extraction.lean,
-                &output_dir,
-                Some(&lean_project),
-                &agent,
-                &server,
-                &observer,
-            )
-        })
-        .map_err(other_error_to_py)?;
     for line in summary(&proof, started.elapsed()) {
         info!("{line}");
     }
@@ -241,10 +232,10 @@ pub fn prove_lean(
         cost_usd: proof.agent.cost_usd,
         usage: usage_dict(proof.agent.usage),
         transcript: proof.transcript,
-        isa: extraction.isa,
-        race_verified: extraction.race_verified,
-        equivalence: extraction.verdict,
-        equivalence_evidence: extraction.evidence,
+        isa: lean.isa.name().to_string(),
+        race_verified,
+        equivalence: lean.verdict,
+        equivalence_evidence: lean.evidence,
     })
 }
 
