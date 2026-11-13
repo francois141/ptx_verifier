@@ -495,6 +495,27 @@ fn lower_as_written(
             src2: modified_src(src2)
                 .ok_or("expected a VGPR, an SGPR or an inline constant third source")?,
         }),
+        // The VOP2 forms with a literal K: `fmaak` adds it, `fmamk` multiplies by it.
+        ("v_fmaak_f32", [dst, src0, src1, k]) => Ok(FmaF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: unmodified(vop3_from_src0(first_source(src0)?)),
+            src1: unmodified(Vop3Src::Vgpr(
+                vgpr(src1).ok_or("expected one VGPR second source")?,
+            )),
+            src2: unmodified(Vop3Src::Inline(
+                word(k).ok_or("expected a 32-bit literal K")?,
+            )),
+        }),
+        ("v_fmamk_f32", [dst, src0, k, src1]) => Ok(FmaF32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src0: unmodified(vop3_from_src0(first_source(src0)?)),
+            src1: unmodified(Vop3Src::Inline(
+                word(k).ok_or("expected a 32-bit literal K")?,
+            )),
+            src2: unmodified(Vop3Src::Vgpr(
+                vgpr(src1).ok_or("expected one VGPR second source")?,
+            )),
+        }),
         ("v_fmac_f32_e32", [dst, src0, src1]) => Ok(FmacF32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src0: first_source(src0)?,
@@ -701,6 +722,8 @@ fn lower_as_written(
             | "v_accvgpr_write_b32"
             | "v_accvgpr_read_b32"
             | "v_fma_f32"
+            | "v_fmaak_f32"
+            | "v_fmamk_f32"
             | "v_fmac_f32_e32"
             | "global_load_dword"
             | "global_load_dwordx3"
@@ -1688,6 +1711,23 @@ fn src0_from_vop3(src: Vop3Src) -> Src0 {
         Vop3Src::Vgpr(reg) => Src0::Vgpr(reg),
         Vop3Src::Sgpr(reg) => Src0::Sgpr(reg),
         Vop3Src::Inline(bits) => Src0::Const(bits),
+    }
+}
+
+/// A first source in a VOP3 slot; a literal's 32 bits are the operand, as an inline constant's.
+fn vop3_from_src0(src: Src0) -> Vop3Src {
+    match src {
+        Src0::Vgpr(reg) => Vop3Src::Vgpr(reg),
+        Src0::Sgpr(reg) => Vop3Src::Sgpr(reg),
+        Src0::Const(bits) => Vop3Src::Inline(bits),
+    }
+}
+
+fn unmodified(src: Vop3Src) -> ModifiedSrc {
+    ModifiedSrc {
+        src,
+        abs: false,
+        neg: false,
     }
 }
 
