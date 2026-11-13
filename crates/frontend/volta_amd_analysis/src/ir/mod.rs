@@ -869,11 +869,11 @@ pub enum LoweredInstr {
         src0: Vop3Src,
         src1: Vop3Src,
     },
-    /// `dst = op src` in each lane.
+    /// `dst = op src` in each lane; only an f32 operation's e64 form has input modifiers.
     UnaryOp {
         op: UnaryOp,
         dst: Vgpr,
-        src: Src0,
+        src: ModifiedSrc,
     },
     /// Copy two selected source words into a VGPR pair in each lane.
     Mov64 {

@@ -379,7 +379,7 @@ fn lower_as_written(
         ("v_not_b32_e64", [dst, src]) => Ok(UnaryOp {
             op: ir::UnaryOp::Not32,
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-            src: src0_from_vop3(
+            src: unmodified(
                 vop3_src(src).ok_or("expected a VGPR, an SGPR or an inline constant source")?,
             ),
         }),
@@ -409,6 +409,13 @@ fn lower_as_written(
         ("v_rsq_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RsqF32, operands),
         ("v_rndne_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RndneF32, operands),
         ("v_trunc_f32_e32", operands) => lower_unary_op(ir::UnaryOp::TruncF32, operands),
+        ("v_exp_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::Exp2F32, operands),
+        ("v_log_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::Log2F32, operands),
+        ("v_rcp_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::RcpF32, operands),
+        ("v_sqrt_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::SqrtF32, operands),
+        ("v_rsq_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::RsqF32, operands),
+        ("v_rndne_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::RndneF32, operands),
+        ("v_trunc_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::TruncF32, operands),
         ("v_add_f32_e64", operands) => lower_bin_op(ir::BinOp::AddF32, operands),
         ("v_sub_f32_e64", operands) => lower_bin_op(ir::BinOp::SubF32, operands),
         ("v_subrev_f32_e64", operands) => lower_bin_op(ir::BinOp::SubRevF32, operands),
@@ -832,7 +839,18 @@ fn lower_unary_op(op: ir::UnaryOp, operands: &[Operand]) -> Result<LoweredInstr,
     Ok(LoweredInstr::UnaryOp {
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-        src: first_source(src)?,
+        src: unmodified(vop3_from_src0(first_source(src)?)),
+    })
+}
+
+fn lower_unary_op_e64(op: ir::UnaryOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let [dst, src] = operands else {
+        return Err("unsupported operand count");
+    };
+    Ok(LoweredInstr::UnaryOp {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        src: modified_src(src).ok_or("expected a VGPR, an SGPR or an inline constant source")?,
     })
 }
 

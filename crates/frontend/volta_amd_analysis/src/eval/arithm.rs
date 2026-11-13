@@ -595,17 +595,18 @@ fn not32(arena: &mut ExprArena, value: ExprId) -> ExprId {
     arena.bit_xor(value, mask)
 }
 
-/// `op src` in `lane`, the source read as `op`'s operand type.
+/// `op src` in `lane`, the source read as `op`'s operand type, an f32 one after its input
+/// modifiers.
 pub(super) fn evaluate_unary_op(
     arena: &mut ExprArena,
     registers: &WaveRegisters,
     lane: usize,
     op: UnaryOp,
-    src: Src0,
+    src: ModifiedSrc,
 ) -> Result<ExprId, EvalError> {
     let a = match unary_operand_type(op) {
-        OperandType::Word => registers.read_src0(arena, lane, src)?,
-        OperandType::F32 => registers.read_f32_src0(arena, lane, src)?,
+        OperandType::Word => registers.read_src(arena, lane, src.src)?,
+        OperandType::F32 => registers.read_modified_src(arena, lane, src)?,
     };
 
     let non_symbolic_word =
