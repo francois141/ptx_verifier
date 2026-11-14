@@ -176,6 +176,12 @@ CASES = (
     Case(
         "math_double/ck_math_cos_double", "math_double/ck_math_double", Solve("REJECT")
     ),
+    # CK Tile's ck_tile::exp<double> does the same.
+    Case(
+        "math_double/ck_tile_exp_double",
+        "math_double/ck_tile_math_double",
+        Solve("REJECT"),
+    ),
 )
 
 
