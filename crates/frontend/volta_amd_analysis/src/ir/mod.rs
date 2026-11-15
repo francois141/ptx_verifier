@@ -826,6 +826,13 @@ pub enum LoweredInstr {
         src: ScalarSrc64,
         shift: ScalarSrc,
     },
+    /// `dst` is the field of `src` that `field` encodes (offset in bits 5:0, width in bits
+    /// 22:16), sign-extended from its top bit; SCC is whether the result is nonzero.
+    BfeI64Scalar {
+        dst: [Sgpr; 2],
+        src: ScalarSrc64,
+        field: ScalarSrc,
+    },
     ScalarCmp {
         op: ScalarCmpOp,
         src0: ScalarSrc,
@@ -1066,6 +1073,7 @@ impl LoweredInstr {
             Self::ScalarOp64 { .. } => "scalar op (64-bit)",
             Self::ExecOp64 { .. } => "scalar op (EXEC)",
             Self::ShiftScalar64 { .. } => "scalar shift (64-bit)",
+            Self::BfeI64Scalar { .. } => "s_bfe_i64",
             Self::ScalarCmp { .. } => "s_cmp",
             Self::ScalarCmp64 { .. } => "s_cmp (64-bit)",
             Self::BitCmpScalar64 { .. } => "s_bitcmp (64-bit)",

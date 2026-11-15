@@ -146,6 +146,15 @@ impl Interpreter<'_> {
                 registers.write_scc(value != 0);
                 registers.write_sgpr_pair(&mut self.arena, *dst, value)
             }
+            LoweredInstr::BfeI64Scalar { dst, src, field } => {
+                let value = bfe_i64(
+                    self.read_scalar64(wave, *src)?,
+                    self.read_scalar_word(wave, *field)?,
+                );
+                let registers = &mut self.waves[wave].registers;
+                registers.write_scc(value != 0);
+                registers.write_sgpr_pair(&mut self.arena, *dst, value)
+            }
             LoweredInstr::ScalarCmp { op, src0, src1 } => {
                 let a = self.read_scalar_word(wave, *src0)?;
                 let b = self.read_scalar_word(wave, *src1)?;
@@ -415,4 +424,18 @@ fn scalar_op32(
         }
         ScalarOp32::CSelectB32 => (if registers.read_scc()? { a } else { b }, None),
     })
+}
+
+/// The field of `value` at offset `field[5:0]` of width `field[22:16]`, sign-extended from its
+/// top bit (CDNA4 §12.1 `S_BFE_I64`): a field past bit 63 is the arithmetic shift.
+fn bfe_i64(value: u64, field: u32) -> u64 {
+    let (offset, width) = (field & 63, (field >> 16) & 0x7f);
+    let shifted = (value as i64) >> offset;
+    match width {
+        0 => 0,
+        // Moving the field to the top of the i64 and arithmetic-shifting it back copies its
+        // top bit, the field's sign, into every bit above the field.
+        1..64 => ((shifted << (64 - width)) >> (64 - width)) as u64,
+        _ => shifted as u64,
+    }
 }

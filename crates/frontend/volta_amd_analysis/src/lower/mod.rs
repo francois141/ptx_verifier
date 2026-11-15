@@ -169,6 +169,14 @@ fn lower_as_written(
         ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
         ("s_bfe_u32", operands) => lower_scalar_op32(ir::ScalarOp32::BfeU32, operands),
+        ("s_bfe_i64", [dst, src, field]) => {
+            let (src, field) = scalar_source64_and_word(src, field)?;
+            Ok(BfeI64Scalar {
+                dst: sgprs(dst).ok_or("expected an aligned SGPR destination pair")?,
+                src,
+                field,
+            })
+        }
         ("s_cselect_b32", operands) => lower_scalar_op32(ir::ScalarOp32::CSelectB32, operands),
         ("s_and_b64", operands) => lower_scalar_op64(ir::ScalarOp64::AndB64, operands),
         ("s_or_b64", operands) => lower_scalar_op64(ir::ScalarOp64::OrB64, operands),
@@ -742,6 +750,7 @@ fn lower_as_written(
             | "v_not_b32_e64"
             | "v_cndmask_b32_e64"
             | "v_mad_u64_u32"
+            | "s_bfe_i64"
             | "buffer_load_dword"
             | "buffer_load_dwordx2"
             | "buffer_load_dwordx3"
