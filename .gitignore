@@ -16,5 +16,7 @@
 /external/**/*.json
 !/external/**/*.launch.json
 /external/ptx/output/
+# `just benchmark`'s report
+/external/benchmark/report.md
 # The Gluon tutorials, downloaded by `external/ptx/extraction/gluon.py`
 /external/ptx/sources/gluon/
