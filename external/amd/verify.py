@@ -167,6 +167,8 @@ CASES = (
     Case("ck_reduce2d_cross_warp", "ck_reduce2d_cross_warp", Solve("REJECT")),
     # Generic2dBlockShape gives 16-thread rows 4 waves, so workgroup 0 writes rows 0-6, not 0-3.
     Case("ck_rmsnorm2d_rows", "ck_rmsnorm2d_rows", Solve("REJECT")),
+    # ImageToColumn copies vectors of 4 channels when a pixel has 3, so they straddle pixels.
+    Case("ck_img2col", "ck_img2col", Solve("REJECT")),
     # A model of PermuteWarpGemmCToA's loop, which runs four times past its buffers.
     Case("ck_permute_c_to_a", "ck_permute_c_to_a", Solve("REJECT")),
     Case("ck_permute_c_to_a_fixed", "ck_permute_c_to_a", Solve("ACCEPT")),

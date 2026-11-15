@@ -1,0 +1,15 @@
+{
+  "description": "CK Tile's ImageToColumn on a 4 x 4 image with 3 channels, a 2 x 2 window, stride 1 and no padding, copying vectors of 4: a vector that crosses into the next window row reads the wrong pixel.",
+  "kernel": "ck_img2col",
+  "block": 64,
+  "arrays": [
+    {"name": "image", "kind": "in", "dtype": "f32", "shape": [4, 4, 3]},
+    {"name": "columns", "kind": "out", "dtype": "f32", "shape": [3, 3, 2, 2, 3]}
+  ],
+  "params": [
+    {"name": "image", "ptr": "image"},
+    {"name": "columns", "ptr": "columns"}
+  ],
+  "spec": "ck_img2col.spec",
+  "dims": {"H": 4, "W": 4, "C": 3, "Ho": 3, "Wo": 3, "Y": 2, "X": 2}
+}

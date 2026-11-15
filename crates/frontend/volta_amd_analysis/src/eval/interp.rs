@@ -493,15 +493,19 @@ impl<'a> Interpreter<'a> {
             let a = registers.read_src(&mut self.arena, lane, src0)?;
             let b = registers.read_src(&mut self.arena, lane, src1)?;
             let addend_low = registers.read_vgpr(lane, src2[0])?;
-            let addend_high = registers.read_vgpr(lane, src2[1])?;
+            let addend_high = match registers.read_vgpr(lane, src2[1]) {
+                Err(EvalError::UninitializedVgpr { .. }) => None,
+                read => Some(read?),
+            };
 
             let word =
                 |value| concrete_word(&self.arena, value).ok_or(EvalError::SymbolicWord { lane });
             let product_plus_low =
                 u128::from(word(a)?) * u128::from(word(b)?) + u128::from(word(addend_low)?);
             // The low result word depends on the low words alone, so a compiler may leave
-            // another value in the addend's high register when it uses only the low word.
-            let sum = concrete_word(&self.arena, addend_high)
+            // another value, or none, in the addend's high register when it uses only the low word.
+            let sum = addend_high
+                .and_then(|high| concrete_word(&self.arena, high))
                 .map(|high| product_plus_low + (u128::from(high) << 32));
             results.push((lane, product_plus_low as u32, sum));
         }
