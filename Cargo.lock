@@ -716,6 +716,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stacker",
+ "volta_common",
 ]
 
 [[package]]

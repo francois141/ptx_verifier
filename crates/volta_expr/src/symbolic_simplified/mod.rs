@@ -5,6 +5,7 @@
 mod build;
 mod display;
 mod node;
+pub mod rewrite;
 pub mod text;
 
 pub use node::*;

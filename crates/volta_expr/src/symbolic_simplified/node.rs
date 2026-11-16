@@ -556,6 +556,62 @@ impl ExprNode {
         }
     }
 
+    /// This node with every child `c` replaced by `f(c)`.
+    pub fn map_children(&self, mut f: impl FnMut(ExprId) -> ExprId) -> ExprNode {
+        use ExprNode::*;
+        match self.clone() {
+            node @ (IntConst(_)
+            | RealConst(_)
+            | BoolConst(_)
+            | Symbol(_)
+            | ParamSymbol(_)
+            | InputElement { .. }
+            | Discarded
+            | Undefined) => node,
+            Neg(a) => Neg(f(a)),
+            Exp(a) => Exp(f(a)),
+            Log(a) => Log(f(a)),
+            Sqrt(a) => Sqrt(f(a)),
+            Rcp(a) => Rcp(f(a)),
+            Abs(a) => Abs(f(a)),
+            Sign(a) => Sign(f(a)),
+            Erf(a) => Erf(f(a)),
+            Gelu(a) => Gelu(f(a)),
+            RoundEven(a) => RoundEven(f(a)),
+            Trunc(a) => Trunc(f(a)),
+            BitNot(a) => BitNot(f(a)),
+            Not(a) => Not(f(a)),
+            ToFloat(a) => ToFloat(f(a)),
+            SymbolicRead { array, index } => SymbolicRead {
+                array,
+                index: f(index),
+            },
+            Add(a, b) => Add(f(a), f(b)),
+            Sub(a, b) => Sub(f(a), f(b)),
+            Mul(a, b) => Mul(f(a), f(b)),
+            Div(a, b) => Div(f(a), f(b)),
+            Rem(a, b) => Rem(f(a), f(b)),
+            Max(a, b) => Max(f(a), f(b)),
+            Min(a, b) => Min(f(a), f(b)),
+            BitAnd(a, b) => BitAnd(f(a), f(b)),
+            BitOr(a, b) => BitOr(f(a), f(b)),
+            BitXor(a, b) => BitXor(f(a), f(b)),
+            Shl(a, b) => Shl(f(a), f(b)),
+            Shr(a, b) => Shr(f(a), f(b)),
+            LShr(a, b) => LShr(f(a), f(b)),
+            Eq(a, b) => Eq(f(a), f(b)),
+            Ne(a, b) => Ne(f(a), f(b)),
+            Lt(a, b) => Lt(f(a), f(b)),
+            Le(a, b) => Le(f(a), f(b)),
+            Gt(a, b) => Gt(f(a), f(b)),
+            Ge(a, b) => Ge(f(a), f(b)),
+            And(a, b) => And(f(a), f(b)),
+            Or(a, b) => Or(f(a), f(b)),
+            Select(a, b, c) => Select(f(a), f(b), f(c)),
+            Fma(a, b, c) => Fma(f(a), f(b), f(c)),
+        }
+    }
+
     /// The `StringId` this node references, if any.
     pub fn string_id(&self) -> Option<StringId> {
         match self {
@@ -615,6 +671,13 @@ impl ExprArena {
     // -----------------------------------------------------------------
     // Lookup
     // -----------------------------------------------------------------
+
+    /// Push a copy of `id`'s node with its children remapped by `f`, unfolded
+    /// (as the `.vexpr` reader builds nodes); `id` itself is left in place.
+    pub fn rebuild(&mut self, id: ExprId, f: impl FnMut(ExprId) -> ExprId) -> ExprId {
+        let node = self.node(id).map_children(f);
+        self.push(node)
+    }
 
     /// Look up the node for a given id.
     pub fn node(&self, id: ExprId) -> &ExprNode {
