@@ -112,6 +112,11 @@ fn eval_inner(
         ExprNode::Sqrt(a) => ev(*a, memo)?.sqrt(),
         ExprNode::Rcp(a) => 1.0 / ev(*a, memo)?,
         ExprNode::Erf(a) => libm::erf(ev(*a, memo)?),
+        ExprNode::Gelu(x) => {
+            let x = ev(*x, memo)?;
+            let sqrt_2_over_pi = (2.0 / std::f64::consts::PI).sqrt();
+            0.5 * x * (1.0 + (sqrt_2_over_pi * (x + 0.044715 * x * x * x)).tanh())
+        }
         ExprNode::RoundEven(a) => ev(*a, memo)?.round_ties_even(),
         ExprNode::Trunc(a) => ev(*a, memo)?.trunc(),
 

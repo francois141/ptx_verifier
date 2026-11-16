@@ -216,6 +216,10 @@ impl Copier<'_> {
                 let c = self.expr(c);
                 self.target.fma(a, b, c)
             }
+            ExprNode::Gelu(x) => {
+                let x = self.expr(x);
+                self.target.gelu(x)
+            }
             ExprNode::SymbolicRead { array, index } => {
                 let index = self.expr(index);
                 self.target.symbolic_read(source.string(array), index)

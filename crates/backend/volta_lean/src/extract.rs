@@ -513,6 +513,7 @@ fn render_node(
         | Shr(..)
         | LShr(..)
         | Erf(_)
+        | Gelu(..)
         | RoundEven(_)
         | Trunc(_) => {
             return Err(element.unsupported(node));

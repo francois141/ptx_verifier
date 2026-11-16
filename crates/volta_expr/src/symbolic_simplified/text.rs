@@ -8,8 +8,8 @@ use std::io::{self, Write};
 
 use id_collections::Id;
 
-use crate::outputs::SymbolicOutputs;
 use super::{ExprArena, ExprId, ExprNode, Real, RealRepr, StringId, SymbolId};
+use crate::outputs::SymbolicOutputs;
 
 const HEADER: &str = "volta-expr 1";
 
@@ -41,6 +41,7 @@ const UNARY: &[(&str, Unary)] = &[
     ("abs", ExprNode::Abs),
     ("sign", ExprNode::Sign),
     ("erf", ExprNode::Erf),
+    ("gelu", ExprNode::Gelu),
     ("rint", ExprNode::RoundEven),
     ("trunc", ExprNode::Trunc),
     ("bitnot", ExprNode::BitNot),
@@ -97,6 +98,7 @@ fn spell(node: &ExprNode) -> (&'static str, Vec<Operand>) {
         Abs(a) => ("abs", vec![Child(*a)]),
         Sign(a) => ("sign", vec![Child(*a)]),
         Erf(a) => ("erf", vec![Child(*a)]),
+        Gelu(a) => ("gelu", vec![Child(*a)]),
         RoundEven(a) => ("rint", vec![Child(*a)]),
         Trunc(a) => ("trunc", vec![Child(*a)]),
         BitNot(a) => ("bitnot", vec![Child(*a)]),

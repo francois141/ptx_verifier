@@ -393,6 +393,9 @@ pub enum ExprNode {
     Rcp(ExprId),
     /// The error function: erf(a)
     Erf(ExprId),
+    /// PyTorch's tanh approximation of GELU (`torch.nn.GELU(approximate='tanh')`):
+    /// `x/2 * (1 + tanh(sqrt(2/pi) * (x + 0.044715*x^3)))`.
+    Gelu(ExprId),
 
     // =====================================================================
     // Min/Max
@@ -512,6 +515,7 @@ impl ExprNode {
             | ExprNode::Abs(a)
             | ExprNode::Sign(a)
             | ExprNode::Erf(a)
+            | ExprNode::Gelu(a)
             | ExprNode::RoundEven(a)
             | ExprNode::Trunc(a)
             | ExprNode::BitNot(a)
@@ -828,6 +832,7 @@ fn structurally_equal_inner(
         | (Rcp(a1), Rcp(b1))
         | (Abs(a1), Abs(b1))
         | (Erf(a1), Erf(b1))
+        | (Gelu(a1), Gelu(b1))
         | (RoundEven(a1), RoundEven(b1))
         | (Trunc(a1), Trunc(b1))
         | (BitNot(a1), BitNot(b1))

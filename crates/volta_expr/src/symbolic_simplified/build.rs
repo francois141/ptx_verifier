@@ -410,6 +410,16 @@ impl ExprArena {
         self.push(ExprNode::Erf(a))
     }
 
+    /// PyTorch's tanh approximation of GELU (see [`ExprNode::Gelu`]); `x = 0` folds to 0.
+    pub fn gelu(&mut self, x: ExprId) -> ExprId {
+        if let ExprNode::RealConst(v) = self.node(x)
+            && v.is_zero()
+        {
+            return x;
+        }
+        self.push(ExprNode::Gelu(x))
+    }
+
     /// The integer nearest `a`, ties to even: exact on a constant, the identity on an
     /// integer-valued node.
     pub fn round_even(&mut self, a: ExprId) -> ExprId {

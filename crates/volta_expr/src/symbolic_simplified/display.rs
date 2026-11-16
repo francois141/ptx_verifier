@@ -242,6 +242,11 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
+            ExprNode::Gelu(x) => {
+                write!(f, "gelu(")?;
+                self.fmt_expr(*x, f)?;
+                write!(f, ")")
+            }
             ExprNode::Fma(a, b, c) => {
                 write!(f, "fma(")?;
                 self.fmt_expr(*a, f)?;
