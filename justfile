@@ -54,10 +54,11 @@ viz out="target/volta-viz/volta-graphs.html":
 loc *args:
     python3 scripts/loc.py {{args}}
 
-# `--sizes N...` and `--isa ptx amd trainium` narrow it; the n = 8192 runs take about a minute each.
-# Time Volta on external/benchmark's matmul at each size on PTX, AMD and Trainium, writing external/benchmark/report.md
+# `--sizes K...` and `--isa ptx amd trainium` narrow it, `--no-lean` skips Lean (else $VOLTA_LEAN_PROJECT is needed).
+# Time Volta's canonical solver and Lean on external/benchmark's matmul tile at each K, writing external/benchmark/report.md
 benchmark *args:
     cargo build --release -q -p volta_cli
+    uv sync -q --reinstall-package volta
     python3 external/benchmark/benchmark.py {{args}}
 
 # ===== PTX ====================================================================
