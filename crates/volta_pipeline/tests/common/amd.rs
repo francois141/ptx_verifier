@@ -70,6 +70,7 @@ impl AmdChecked {
         self.analysis
             .symbolic_outputs
             .expect("a verified run completed, so its outputs read back")
+            .lower()
     }
 }
 
@@ -275,7 +276,10 @@ fn run_outputs(
             "the graph check did not verify the kernel: {conclusion:?}"
         ));
     }
-    result.symbolic_outputs.ok_or("no symbolic outputs".into())
+    result
+        .symbolic_outputs
+        .map(|outputs| outputs.lower())
+        .ok_or("no symbolic outputs".into())
 }
 
 /// Compare `actual` with the file at `path`, or rewrite the file under `VOLTA_BLESS=1`.

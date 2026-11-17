@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 
 use id_collections::IdVec;
-use volta_expr::{ExprArena, ExprId, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::{ExprArena, ExprId};
 use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
@@ -793,7 +794,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// The event graph and output elements, together with the arena holding their expressions.
-    pub(crate) fn finish(self, terminal: volta_graph::Terminal) -> (EventGraph, SymbolicOutputs) {
+    pub(crate) fn finish(self, terminal: volta_graph::Terminal) -> (EventGraph, FullOutputs) {
         (
             self.graph.finish(terminal),
             self.global.into_outputs(self.arena),

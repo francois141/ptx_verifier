@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use volta_expr::{ExprArena, ExprId, Real, StringId};
+use volta_expr::symbolic_full::{ExprArena, ExprId, Real, StringId};
 
 use crate::ir::{Index, Initial, InstrId, Tensor};
 

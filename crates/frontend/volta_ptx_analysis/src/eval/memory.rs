@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::eval::value::{MbarrierId, Value};
-use volta_expr::ExprId;
+use volta_expr::symbolic_full::ExprId;
 
 /// What kind of granule a `Reinterpret` error's colliding access found -
 /// used only to describe the collision in an error message.
@@ -515,7 +515,7 @@ impl Memory {
 mod tests {
     use super::*;
     use crate::eval::value::MbarrierId;
-    use volta_expr::ExprArena;
+    use volta_expr::symbolic_full::ExprArena;
 
     fn scalars(arena: &mut ExprArena, n: i64) -> Value {
         Value::Scalar(arena.int(n))

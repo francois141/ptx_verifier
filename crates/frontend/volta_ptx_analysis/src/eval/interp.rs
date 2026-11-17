@@ -31,7 +31,7 @@ use crate::ir::{
     MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, TensormapFence,
 };
 use volta_common::logging::{info, warn};
-use volta_expr::{ExprArena, ExprId, ExprNode, Real, StringId};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, StringId};
 use volta_graph::{
     AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierWait, EventGraph, FenceKind,
     GraphBuilder, GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
@@ -931,7 +931,8 @@ impl<'p> Interpreter<'p> {
                     self.write_reg(t, *dst, pair);
                 } else {
                     let fp8_sign_xor = |this: &mut Self, value: ExprId| {
-                        let ExprNode::BitXor(left, right) = this.arena.node(value).clone() else {
+                        let ExprNode::BitXor(left, right) = this.arena.value_node(value).clone()
+                        else {
                             return value;
                         };
                         let magnitude = if this.arena.as_int_const(left) == Some(128) {

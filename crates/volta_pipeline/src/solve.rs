@@ -159,7 +159,7 @@ pub fn check_against_spec(
         .filter(|(n, _)| spec.arrays.contains(n))
         .map(|(_, elems)| elems.len() as u64)
         .sum();
-    let baseline = volta_spec::unfold(&spec.outputs, &spec.env, options.sample)?;
+    let baseline = volta_spec::unfold(&spec.outputs, &spec.env, options.sample)?.lower();
     let written = (options.sample > 0).then(|| {
         let written = kernel.outputs.clone();
         for (name, elems) in &mut kernel.outputs {
@@ -193,7 +193,7 @@ pub fn state_against_spec(
     if let Some(mismatch) = spec.index_set_mismatch(kernel) {
         return Ok(LeanSolution::Stopped(mismatch));
     }
-    let baseline = volta_spec::unfold(&spec.outputs, &spec.env, 0)?;
+    let baseline = volta_spec::unfold(&spec.outputs, &spec.env, 0)?.lower();
     Ok(
         match to_lean(kernel, &baseline, &spec.arrays, claim, namespace) {
             Ok(module) => LeanSolution::Stated(LeanChallenge {

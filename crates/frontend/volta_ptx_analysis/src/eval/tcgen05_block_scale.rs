@@ -8,7 +8,7 @@ use crate::eval::interp::Interpreter;
 use crate::eval::tcgen05_mma::{InstructionDescriptor, KSelect, ReservedIdescBit, bits};
 use crate::eval::value::Value;
 use crate::ir::{InstrId, Operand};
-use volta_expr::ExprId;
+use volta_expr::symbolic_full::ExprId;
 use volta_graph::{AccessMode, AsyncOpId, OperandRole};
 
 /// Where `scale_A`'s factors sit in Tensor Memory (`idesc` bit 26).
@@ -163,7 +163,8 @@ impl<'p> Interpreter<'p> {
             };
             let same = |x: ExprId, y: ExprId| {
                 let value = self.arena.as_int_const(x);
-                x == y || (value.is_some() && value == self.arena.as_int_const(y))
+                self.arena.value(x) == self.arena.value(y)
+                    || (value.is_some() && value == self.arena.as_int_const(y))
             };
             if !bytes.iter().all(|&copy| same(copy, bytes[0])) {
                 return Err(EvalError::Unsupported {

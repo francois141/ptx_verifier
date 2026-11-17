@@ -3,7 +3,8 @@
 //! Arguments are laid out row-major in HBM, so their symbols and outputs use offsets.
 
 use id_collections::IdVec;
-use volta_expr::{ExprArena, ExprId, ExprNode, Real, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real};
 
 use crate::ir::{
     Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Order,
@@ -17,7 +18,7 @@ use super::tensor::{Clobber, TensorState};
 /// Run `kernel` and return, in parameter order, each argument it wrote, then the tensor it
 /// returns, each with its written elements by offset. An unwritten argument element holds
 /// its input symbol.
-pub fn evaluate(kernel: &LoweredKernel) -> Result<SymbolicOutputs, EvalError> {
+pub fn evaluate(kernel: &LoweredKernel) -> Result<FullOutputs, EvalError> {
     let mut interp = Interpreter::new(kernel);
     for (instr, instruction) in kernel.instructions.iter() {
         interp.step(instr, instruction)?;
@@ -270,7 +271,7 @@ impl<'a> Interpreter<'a> {
         let row = partition - partition % GROUP + column % GROUP;
         let value = self.read(instr, index, [row, column / GROUP])?;
         let [_, extent] = data.tile_extents();
-        let offset = match self.arena.node(value) {
+        let offset = match self.arena.value_node(value) {
             ExprNode::IntConst(value) => u64::try_from(*value).ok(),
             ExprNode::RealConst(value) => {
                 let rounded = value.to_f64();
@@ -412,7 +413,7 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    fn into_outputs(self, outputs: &[TensorId]) -> SymbolicOutputs {
+    fn into_outputs(self, outputs: &[TensorId]) -> FullOutputs {
         let outputs = outputs
             .iter()
             .map(|&output| {
@@ -421,7 +422,7 @@ impl<'a> Interpreter<'a> {
             })
             .filter(|(_, elements)| !elements.is_empty())
             .collect();
-        SymbolicOutputs {
+        FullOutputs {
             arena: self.arena,
             outputs,
         }

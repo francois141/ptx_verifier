@@ -7,7 +7,8 @@ use std::fmt;
 
 use crate::frontend::ast::{Function, Module, TopLevelItem, VarDecl};
 use volta_common::logging::info;
-use volta_expr::{ExprArena, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::ExprArena;
 use volta_graph::{Assumption, EventGraph, InstructionInfo, Provenance, ThreadUnit};
 
 use crate::config::AnalysisConfig;
@@ -56,7 +57,7 @@ impl From<EvalError> for AnalysisError {
 #[derive(Debug)]
 pub struct AnalysisResult {
     /// Holds the arena always; its outputs are empty unless `outputs` is `Ok`.
-    symbolic: SymbolicOutputs,
+    symbolic: FullOutputs,
     outputs: Result<(), OutputsUnavailable>,
     pub graph: EventGraph,
     pub stats: Stats,
@@ -70,7 +71,7 @@ impl AnalysisResult {
             Err(why) => (Vec::new(), Err(why)),
         };
         AnalysisResult {
-            symbolic: SymbolicOutputs {
+            symbolic: FullOutputs {
                 arena: run.arena,
                 outputs,
             },
@@ -82,7 +83,7 @@ impl AnalysisResult {
     }
 
     /// The equivalence-facing artifact, or why the execution produced none.
-    pub fn symbolic_outputs(&self) -> Result<&SymbolicOutputs, &OutputsUnavailable> {
+    pub fn symbolic_outputs(&self) -> Result<&FullOutputs, &OutputsUnavailable> {
         match &self.outputs {
             Ok(()) => Ok(&self.symbolic),
             Err(why) => Err(why),
@@ -112,7 +113,7 @@ impl AnalysisResult {
 /// An [`AnalysisResult`] taken apart.
 #[derive(Debug)]
 pub struct AnalysisParts {
-    pub outputs: Result<SymbolicOutputs, OutputsUnavailable>,
+    pub outputs: Result<FullOutputs, OutputsUnavailable>,
     pub graph: EventGraph,
     pub stats: Stats,
     pub op_counts: BTreeMap<&'static str, u64>,

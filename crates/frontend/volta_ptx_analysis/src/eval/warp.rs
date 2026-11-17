@@ -22,7 +22,7 @@ use crate::ir::symbols::{RegId, shared_operand_addr};
 use crate::ir::tcgen05::Tcgen05LdStShape;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
-use volta_expr::ExprId;
+use volta_expr::symbolic_full::ExprId;
 
 /// A dense matrix of expressions being assembled from lane fragments.
 struct Grid {
@@ -564,7 +564,7 @@ impl Interpreter<'_> {
     fn b16_halves(&self, t: ThreadId, pc: InstrId, v: Value) -> EvalResult<(ExprId, ExprId)> {
         match v {
             Value::Pair(lo, hi) => Ok((lo, hi)),
-            Value::Scalar(e) if e == self.undefined => Ok((e, e)),
+            Value::Scalar(e) if self.arena.value(e) == self.undefined => Ok((e, e)),
             _ => Err(EvalError::ValueKindMismatch {
                 thread: t,
                 pc,

@@ -119,7 +119,11 @@ fn a_grid_run_gives_each_workgroup_its_own_outputs() {
             arrays,
         );
         let expected = alone.verified_outputs();
-        assert_eq!(output_words(outputs), output_words(&expected), "{id:?}");
+        assert_eq!(
+            output_words(&outputs.lower()),
+            output_words(&expected),
+            "{id:?}"
+        );
     }
 
     // All eight workgroups store the same 192 elements, so each later one conflicts with the first.
@@ -226,7 +230,7 @@ fn grid_branches_compare_taken_paths_not_individual_vcc_bits() {
                 )
             })
             .collect();
-        assert_eq!(output_words(outputs), expected, "{id:?}");
+        assert_eq!(output_words(&outputs.lower()), expected, "{id:?}");
     }
 }
 

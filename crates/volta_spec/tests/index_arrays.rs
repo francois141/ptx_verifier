@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use volta_expr::{ExprNode, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::{ExprId, ExprNode};
 use volta_spec::{
     ExtractError, InstantiateErrorKind, SpecError, extract_expressions_from_spec_with_indices,
 };
@@ -11,7 +12,7 @@ fn extract(
     source: &str,
     dims: &[(&str, u64)],
     indices: &[(&str, &[i64])],
-) -> Result<SymbolicOutputs, ExtractError> {
+) -> Result<FullOutputs, ExtractError> {
     let dims = dims.iter().map(|&(d, v)| (d.to_string(), v)).collect();
     let indices = indices
         .iter()
@@ -21,8 +22,8 @@ fn extract(
 }
 
 /// The input elements each output reads, by offset, in output order.
-fn reads(outputs: &SymbolicOutputs) -> Vec<Vec<u64>> {
-    fn collect(outputs: &SymbolicOutputs, id: volta_expr::ExprId, out: &mut Vec<u64>) {
+fn reads(outputs: &FullOutputs) -> Vec<Vec<u64>> {
+    fn collect(outputs: &FullOutputs, id: ExprId, out: &mut Vec<u64>) {
         match outputs.arena.node(id) {
             ExprNode::InputElement { index, .. } => out.push(*index),
             ExprNode::Add(a, b) => {

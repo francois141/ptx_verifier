@@ -1,9 +1,26 @@
 //! One run's symbolic outputs: the hand-off between whatever produced the
-//! expressions (the interpreter, a spec) and whatever consumes them.
+//! expressions (the interpreter, a spec) and whatever consumes them, in the full
+//! language a producer builds and in the simplified one it lowers to.
 
 use id_collections::Id;
 
 use crate::symbolic::{ExprArena, ExprId};
+use crate::{lower, symbolic_full};
+
+/// The full arena a producer built plus, per output array, the written elements as
+/// `(index, root expression)` sorted by index.
+#[derive(Debug, Clone, Default)]
+pub struct FullOutputs {
+    pub arena: symbolic_full::ExprArena,
+    pub outputs: Vec<(String, Vec<(u64, symbolic_full::ExprId)>)>,
+}
+
+impl FullOutputs {
+    /// These outputs in the simplified language (see [`lower::lower`]).
+    pub fn lower(&self) -> SymbolicOutputs {
+        lower::lower(self)
+    }
+}
 
 /// The expression arena plus, per output array, the written elements as
 /// `(index, root expression)` sorted by index. Only written elements appear.

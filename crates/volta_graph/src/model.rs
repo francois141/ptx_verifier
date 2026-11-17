@@ -1,6 +1,6 @@
 //! The graph's node, edge and metadata types.
 
-use volta_expr::ExprId;
+use volta_expr::symbolic_full::ExprId;
 
 use crate::ids::{
     AccessId, AsyncOpId, EventId, GenerationId, ProgramPoint, SyncObjectId, ThreadIx, ValueId,

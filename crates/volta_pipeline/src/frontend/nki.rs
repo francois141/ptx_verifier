@@ -52,7 +52,9 @@ impl Frontend for NkiFrontend {
         let graph = record_graph(&lowered, OrderingPolicy::BASELINE, &Execution::of(&outputs));
         let report = check_graph(&graph);
         Ok(KernelRun {
-            outputs: outputs.map_err(|e| e.to_string()),
+            outputs: outputs
+                .map(|outputs| outputs.lower())
+                .map_err(|e| e.to_string()),
             graph: GraphEvidence::Checked {
                 graph: Box::new(graph),
                 report: Box::new(report),

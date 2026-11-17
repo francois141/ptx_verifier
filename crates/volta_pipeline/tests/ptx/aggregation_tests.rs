@@ -93,8 +93,8 @@ fn run(body: &str) -> KernelVerification {
 
 fn equivalence(a: &KernelVerification, b: &KernelVerification) -> EquivalenceVerdict {
     check_equivalence(
-        a.analysis.symbolic_outputs().unwrap(),
-        b.analysis.symbolic_outputs().unwrap(),
+        &a.analysis.symbolic_outputs().unwrap().lower(),
+        &b.analysis.symbolic_outputs().unwrap().lower(),
         &["out".to_string()],
         &EquivCheckOptions::default(),
     )

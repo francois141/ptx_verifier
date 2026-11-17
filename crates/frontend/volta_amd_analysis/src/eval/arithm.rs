@@ -1,8 +1,10 @@
 //! Vector ALU arithmetic: the value of a unary, binary, ternary or comparison operation in one
 //! lane.
 
+use std::num::NonZeroI64;
+
 use volta_common::float_bits::{F8Format, decode_e4m3_byte, decode_e5m2_byte};
-use volta_expr::{ExprArena, ExprId, ExprNode, Real, RealRepr};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, RealRepr};
 
 use crate::ir::{
     BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, F64Op, F64Src, LaneMask, ModifiedSrc,
@@ -524,7 +526,7 @@ fn sign_bit_op(arena: &mut ExprArena, op: BinOp, a: ExprId, b: ExprId) -> Option
         (None, Some(mask)) => (mask, a),
         _ => return None,
     };
-    if matches!(arena.node(value), ExprNode::Undefined) {
+    if matches!(arena.value_node(value), ExprNode::Undefined) {
         return None;
     }
     match (op, mask) {
@@ -634,9 +636,7 @@ pub(super) fn evaluate_unary_op(
         UnaryOp::CvtOffF32I4 => {
             let nibble = i64::from(non_symbolic_word(arena)? & 0xf);
             let signed = if nibble < 8 { nibble } else { nibble - 16 };
-            let value = Real::from_i64(signed)
-                .try_div(&Real::from_i64(16))
-                .expect("a nonzero integer divides any integer");
+            let value = Real::from_ratio(signed, NonZeroI64::new(16).expect("16 is nonzero"));
             arena.real(value)
         }
         UnaryOp::CvtF32Ubyte(byte) => {
@@ -695,7 +695,7 @@ pub(super) fn evaluate_cvt_pk_f8_f32(
     let mut codes = [0; 2];
     for (code, src) in codes.iter_mut().zip(srcs) {
         let value = registers.read_f32_src0(arena, lane, src)?;
-        let ExprNode::RealConst(real) = arena.node(value) else {
+        let ExprNode::RealConst(real) = arena.value_node(value) else {
             return Err(EvalError::UnmodeledFp8 { lane });
         };
         *code = f8_code(format, real).ok_or(EvalError::UnmodeledFp8 { lane })?;
@@ -715,7 +715,7 @@ fn word_bits(arena: &ExprArena, value: ExprId) -> Option<u32> {
     if let Some(word) = concrete_word(arena, value) {
         return Some(word);
     }
-    let ExprNode::RealConst(real) = arena.node(value) else {
+    let ExprNode::RealConst(real) = arena.value_node(value) else {
         return None;
     };
     let single = real.to_f64() as f32;
@@ -892,7 +892,7 @@ fn compare(
 
 /// A concrete real truncated toward zero and clamped to the u32 range; `None` when symbolic.
 fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
-    let ExprNode::RealConst(real) = arena.node(value) else {
+    let ExprNode::RealConst(real) = arena.value_node(value) else {
         return None;
     };
     Some(match real.repr() {
@@ -912,7 +912,7 @@ fn truncate_to_u32(arena: &ExprArena, value: ExprId) -> Option<u32> {
 
 /// A concrete real truncated toward zero and clamped to the i32 range; `None` when symbolic.
 fn truncate_to_i32(arena: &ExprArena, value: ExprId) -> Option<i32> {
-    let ExprNode::RealConst(real) = arena.node(value) else {
+    let ExprNode::RealConst(real) = arena.value_node(value) else {
         return None;
     };
     Some(match real.repr() {

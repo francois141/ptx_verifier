@@ -28,7 +28,7 @@ id_collections = { version = "1.0.1", features = ["serde"] }
 libm = "0.2.16"
 regex = "1.12"
 rug = { version = "1.30", default-features = false, features = ["rational", "serde"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 textwrap = "0.16.2"
 log = "0.4"

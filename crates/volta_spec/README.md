@@ -24,7 +24,7 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
 .spec text ──lex.rs──► tokens ──parse.rs──► ParsedSpec ──instantiate.rs──► (SpecEnv, Vec<OutputSpec>)
                                             (named dims)  (dim values,        │
                                                            e.g. --dim N=128)  ▼
-                                                              spec.rs: unfold ──► SymbolicOutputs
+                                                              spec.rs: unfold ──► FullOutputs
 ```
 
 - **`lex.rs`**: ASCII-only tokenizer.
@@ -57,12 +57,12 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
   `Shape` and `SpecEnv`. `unfold`
   memoizes each reduction on its site and the values of the variables its body
   and range read, then expands every output element
-  into a `volta_expr::SymbolicOutputs`, using the same arena constructors the
-  interpreter uses. The root re-exports these types and `unfold`
+  into a `volta_expr::FullOutputs`, using the same full arena constructors the
+  interpreter uses; callers `lower()` it for the equivalence branch. The root re-exports these types and `unfold`
   (`volta_spec::unfold`).
 
 `extract_expressions_from_spec(source, dims)` runs the whole pipeline: spec text
-and dim values in, `SymbolicOutputs` out (every element, no sampling);
+and dim values in, `FullOutputs` out (every element, no sampling);
 `extract_expressions_from_spec_with_indices(source, dims, indices)` takes the index
 arrays' integers too. Its
 `ExtractError` says which stage failed (`Parse`, `Instantiate`, `Unfold`).

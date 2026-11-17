@@ -1,7 +1,7 @@
 //! The event graph on its own: hand-built graphs, their representation invariants, the
 //! deterministic dump, and footprint overlap. No producer and no property checker involved.
 
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId};
 use volta_graph::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOpKind, BarrierArrivals, ContributionKind,
     EventKind, ExecContext, Footprint, GenerationEvidence, GenerationKind, GraphBuilder,

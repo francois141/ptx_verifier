@@ -1,15 +1,15 @@
 //! Mathematical specs: an output array as a formula over other arrays, unfolded into
-//! [`SymbolicOutputs`] with the same [`ExprArena`] constructors the interpreter uses, so a
+//! [`FullOutputs`] with the same [`ExprArena`] constructors the interpreter uses, so a
 //! kernel checks against a spec like against a second kernel. Bounds/indices are concrete.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use volta_expr::SymbolicOutputs;
-use volta_expr::{ExprArena, ExprId, NanError, StringId};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::{ExprArena, ExprId, NanError, StringId};
 
 /// A row-major shape flattening a multi-dimensional index into the flat element index of
-/// `InputElement` and `SymbolicOutputs::outputs` - the convention a kernel's own address
+/// `InputElement` and `FullOutputs::outputs` - the convention a kernel's own address
 /// arithmetic produces, so a spec's reads/writes line up with the interpreter's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shape(Vec<u64>);
@@ -44,7 +44,7 @@ impl Shape {
 
     /// Every multi-dim index in ascending flat order (so `unfold`'s
     /// per-array element list comes out sorted by index, matching
-    /// `SymbolicOutputs::outputs`'s contract).
+    /// `FullOutputs::outputs`'s contract).
     fn indices(&self) -> impl Iterator<Item = Vec<u64>> + '_ {
         (0..self.size()).map(move |mut flat| {
             let mut idx = vec![0u64; self.0.len()];
@@ -382,14 +382,10 @@ impl From<NanError> for SpecError {
     }
 }
 
-/// Unfold every `OutputSpec` into one `SymbolicOutputs` over one shared arena (repeated reads
+/// Unfold every `OutputSpec` into one `FullOutputs` over one shared arena (repeated reads
 /// share `InputElement` identity). `sample` keeps each array's first `sample` indices (0 =
 /// all), bounding construction too; sample the kernel's output identically so indices pair.
-pub fn unfold(
-    specs: &[OutputSpec],
-    env: &SpecEnv,
-    sample: u64,
-) -> Result<SymbolicOutputs, SpecError> {
+pub fn unfold(specs: &[OutputSpec], env: &SpecEnv, sample: u64) -> Result<FullOutputs, SpecError> {
     let mut arena = ExprArena::new();
     let mut array_ids: HashMap<String, StringId> = HashMap::new();
     let mut memo: ReduceMemo = HashMap::new();
@@ -423,7 +419,7 @@ pub fn unfold(
         }
         outputs.push((spec.array.clone(), elems));
     }
-    Ok(SymbolicOutputs { arena, outputs })
+    Ok(FullOutputs { arena, outputs })
 }
 
 /// Resolve a bare name in expression/index position: a bound variable (output index or
@@ -861,7 +857,7 @@ mod tests {
     /// unfolded tree must land on the matching arena node.
     #[test]
     fn transcendental_ops_unfold_to_the_matching_arena_node() {
-        use volta_expr::ExprNode;
+        use volta_expr::symbolic_full::ExprNode;
         let body = SpecExpr::index("A", vec![IndexExpr::var("i")])
             .exp()
             .log()
@@ -889,7 +885,7 @@ mod tests {
     /// the two rows must not share one.
     #[test]
     fn max_reduction_is_memoized_across_output_elements_that_share_its_bindings() {
-        use volta_expr::ExprNode;
+        use volta_expr::symbolic_full::ExprNode;
 
         let body = SpecExpr::index("A", vec![IndexExpr::var("i"), IndexExpr::var("k")])
             - SpecExpr::max_reduce(
@@ -990,7 +986,7 @@ mod tests {
 
     /// The number of input-element reads under `id`, counting shared nodes once per use.
     fn input_reads(arena: &ExprArena, id: ExprId) -> usize {
-        use volta_expr::ExprNode;
+        use volta_expr::symbolic_full::ExprNode;
         match arena.node(id) {
             ExprNode::InputElement { .. } => 1,
             ExprNode::Add(a, b) => input_reads(arena, *a) + input_reads(arena, *b),

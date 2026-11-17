@@ -3,7 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use volta_expr::{ExprArena, ExprId, StringId, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::{ExprArena, ExprId, StringId};
 
 use super::EvalError;
 use super::scalar::KernargBuffer;
@@ -169,12 +170,12 @@ impl GlobalMemory {
     }
 
     /// Export the first workgroup's output arrays with only their written elements.
-    pub fn into_outputs(self, arena: ExprArena) -> SymbolicOutputs {
+    pub fn into_outputs(self, arena: ExprArena) -> FullOutputs {
         let outputs = match self.written.first() {
             Some(written) => self.outputs_of(written, &arena),
             None => Vec::new(),
         };
-        SymbolicOutputs { arena, outputs }
+        FullOutputs { arena, outputs }
     }
 
     /// Each workgroup's output arrays with only their written elements.

@@ -17,7 +17,7 @@ use crate::ir::tcgen05::{
     Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, Tcgen05MmaScales,
 };
 use crate::ir::{InstrId, MemSpace, Operand};
-use volta_expr::{ExprId, Real};
+use volta_expr::symbolic_full::{ExprId, Real};
 use volta_graph::{AccessMode, AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
 impl<'p> Interpreter<'p> {

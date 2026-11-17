@@ -5,7 +5,7 @@ module, a kernel name and a launch configuration, symbolically executes **one
 CTA** under **one deterministic schedule**, and returns:
 
 - the **symbolic outputs**: every written output element as an expression over
-  the inputs (`volta_expr::SymbolicOutputs`), and
+  the inputs, unfolded (`volta_expr::FullOutputs`, which callers lower), and
 - the **event graph** of that execution (`volta_graph::EventGraph`): every
   memory effect, synchronization and async operation, in trace order.
 

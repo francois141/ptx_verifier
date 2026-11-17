@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use volta_expr::SymbolicOutputs;
+use volta_expr::FullOutputs;
 
 pub mod ast;
 pub mod instantiate;
@@ -45,7 +45,7 @@ impl std::error::Error for ExtractError {}
 pub fn extract_expressions_from_spec(
     source: &str,
     dims: &HashMap<String, u64>,
-) -> Result<SymbolicOutputs, ExtractError> {
+) -> Result<FullOutputs, ExtractError> {
     extract_expressions_from_spec_with_indices(source, dims, &HashMap::new())
 }
 
@@ -55,7 +55,7 @@ pub fn extract_expressions_from_spec_with_indices(
     source: &str,
     dims: &HashMap<String, u64>,
     indices: &HashMap<String, Vec<i64>>,
-) -> Result<SymbolicOutputs, ExtractError> {
+) -> Result<FullOutputs, ExtractError> {
     let parsed = parse_spec(source).map_err(ExtractError::Parse)?;
     let (env, specs) =
         instantiate_with_indices(&parsed, dims, indices).map_err(ExtractError::Instantiate)?;

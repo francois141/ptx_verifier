@@ -39,7 +39,9 @@ fn write_challenge(name: &str, arrays: &[ArrayDef], claim: &Claim) -> Result<Str
     let source =
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let dims = HashMap::from([("N".to_string(), u64::from(common::amd::WORKITEMS))]);
-    let baseline = extract_expressions_from_spec(&source, &dims).map_err(|e| e.to_string())?;
+    let baseline = extract_expressions_from_spec(&source, &dims)
+        .map_err(|e| e.to_string())?
+        .lower();
 
     let checked: Vec<String> = baseline.outputs.iter().map(|(a, _)| a.clone()).collect();
 

@@ -4,7 +4,7 @@ use id_collections::id_type;
 
 use crate::ir::symbols::RegId;
 use crate::ir::types::{RegClass, RegCounts};
-use volta_expr::ExprId;
+use volta_expr::symbolic_full::ExprId;
 
 /// Handle to one `mbarrier` object's state, which lives in an interpreter
 /// table; `Copy` and `ExprId`-sized, so `Value::Mbarrier` doesn't grow `Value`.

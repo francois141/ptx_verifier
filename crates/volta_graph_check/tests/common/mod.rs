@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId};
 use volta_graph::{
     AbortCause, AccessMode, ArrivalOrdering, Assumption, AsyncOpId, AsyncOpKind, BarrierArrivals,
     CollectiveSide, ContributionKind, EventGraph, EventId, FenceKind, Footprint,

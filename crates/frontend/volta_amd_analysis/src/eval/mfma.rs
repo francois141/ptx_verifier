@@ -1,7 +1,7 @@
 //! Matrix core instructions, which read their operands from every lane of a wave and write
 //! their result to every lane.
 
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId};
 
 use crate::ir::{LaneReg, LaneRegs, MfmaSrcC};
 

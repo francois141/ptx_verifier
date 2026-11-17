@@ -24,8 +24,8 @@ Volta is an abstract interpreter for NVIDIA PTX kernels, implementing the approa
 ```
 crates/
 ├── volta_common/     # Base utilities (spans, file caching, error reporting, run logs)
-├── volta_expr/       # Expression language (arena, SymbolicOutputs, .vexpr text format)
-├── volta_spec/       # Specs (.spec language -> mathematical form -> SymbolicOutputs)
+├── volta_expr/       # Expression language (full and simplified arenas, lowering, outputs, .vexpr text format)
+├── volta_spec/       # Specs (.spec language -> mathematical form -> FullOutputs)
 ├── volta_graph/      # Typed event graph of one candidate execution (model, builder, invariants, dump)
 ├── volta_graph_check/ # The seven graph checks of the Volta v2 design (Algorithms 1-7), allocation order and permit, mbarrier release order, and their suite
 ├── frontend/         # One analysis per accelerator
@@ -106,11 +106,29 @@ consumers (the decision procedure, the oracle). Depends on no other
 Volta crate. IDs: `ExprId`/`StringId`/`SymbolId` (`SymbolId::fresh()` draws
 from a process-global counter).
 
-### Symbolic Expressions (`symbolic.rs`)
+### Full expressions (`symbolic_full/`) and lowering (`lower.rs`)
+
+Every producer (the PTX, AMD and NKI interpreters, `volta_spec::unfold`) builds
+`symbolic_full`: its own `ExprArena`/`ExprId`/`ExprNode` (the simplified node
+kinds plus `Exp2`/`Log2`), whose constructors fold nothing, and returns a
+`FullOutputs`; the event graph stores full `ExprId`s. Each operation records
+its value (`value`/`value_node`): the constant, operand or input element
+lowering replaces it with, computed by lowering it over placeholders in a
+scratch arena, so it always agrees with `lower`. The interpreters decide on
+values (`as_i64`, `as_bool`, `is_undefined`, `value_node` where they inspect a
+kind). `lower(&FullOutputs) -> SymbolicOutputs` (`FullOutputs::lower`) rebuilds
+the reachable nodes with the simplified constructors, reusing each value;
+`volta_pipeline`, `volta_cli` and `volta_py` lower outputs before the
+equivalence branch, and every `.out` snapshot renders the lowered form.
+Each form's `node.rs` defines its own `Real`, `SymbolId` and `NanError` (the full
+`Real` does no arithmetic); lowering converts constants and gives each machine
+symbol a fresh simplified one.
+
+### Simplified expressions (`symbolic_simplified/`)
 
 Arena-allocated: nodes live in an `ExprArena`, referenced by copyable `ExprId`
 handles. Constructors constant-fold eagerly - **exactly**: float constants
-are `Real`s (arbitrary-precision rationals via `rug`, boxed, plus
+are `Real`s (arbitrary-precision rationals via `rug`, behind an `Arc`, plus
 `NegInf`/`PosInf`; NaN is rejected at every f64 ingestion point -
 `Real::from_f64`/`arena.float_from_f64` are fallible, NaN literals are a
 lowering error, NaN params a config validation error), so the fold algebra
@@ -138,9 +156,9 @@ real zero alike - anything/0) build unfolded nodes.
 ### Outputs (`outputs.rs`)
 
 `SymbolicOutputs { arena, outputs }`: one run's written output elements as
-`(index, root ExprId)` per array, sorted by index - the hand-off type
-(`AnalysisResult::symbolic_outputs`, `volta_spec::unfold`'s result, both sides of a
-`VcDump`, the checker's input). `validate()` bounds-checks every id;
+`(index, root ExprId)` per array, sorted by index - the hand-off type (the
+lowering of `AnalysisResult::symbolic_outputs` and of `volta_spec::unfold`'s
+`FullOutputs`, both sides of a `VcDump`, the checker's input). `validate()` bounds-checks every id;
 `element(array, index)` looks one up.
 
 ### Text format (`text.rs`, `.vexpr`)
@@ -190,7 +208,7 @@ named dims; `instantiate` gives the dims values; `spec.rs` holds the result.
 
 Mathematical specs: an output array as a formula over other arrays
 (`OutputSpec`, `SpecExpr`, `Shape`, `SpecEnv`), unfolded by `unfold` into a
-`SymbolicOutputs` with the arena's own constructors, so a kernel checks
+`FullOutputs` with the full arena's constructors (callers `lower()` it), so a kernel checks
 against a spec exactly like against a second kernel (`volta verify`).
 `extract_expressions_from_spec(source, dims)` runs parse, instantiate and unfold
 in one call (every element; `ExtractError` names the failed stage). A `sum`/`max`
@@ -1294,7 +1312,8 @@ Lowering (lower/) ──► LoweredProgram (resolved RegIds, InstrIds)
 Evaluator (eval/interp.rs) ──► Symbolic execution with N threads
     │                           (one candidate schedule, warp/tensor-core ops)
     ▼
-AnalysisResult ──► SymbolicOutputs (volta_expr) + EventGraph (volta_graph) + statistics
+AnalysisResult ──► FullOutputs (volta_expr) + EventGraph (volta_graph) + statistics
+    │                 (lowered to SymbolicOutputs before the equivalence branch)
     │                 (no verdict; outputs optionally via .vcdump or .vexpr files)
     ├──────────────────────────────┐
     ▼                              ▼

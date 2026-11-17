@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use volta_expr::ExprId;
+use volta_expr::symbolic_full::ExprId;
 
 use crate::ir::InstrId;
 

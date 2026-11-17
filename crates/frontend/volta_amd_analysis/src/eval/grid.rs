@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 
-use volta_expr::{ExprArena, ExprId, ExprNode, StringId, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, StringId};
 
 /// Copy the written output elements and the expressions they reference into their own arena.
 pub(crate) fn workgroup_outputs(
     arena: &ExprArena,
     outputs: &[(String, Vec<(u64, ExprId)>)],
-) -> SymbolicOutputs {
+) -> FullOutputs {
     let mut copier = Copier {
         source: arena,
         target: ExprArena::new(),
@@ -23,7 +24,7 @@ pub(crate) fn workgroup_outputs(
         }
         arrays.push((name.clone(), copied));
     }
-    SymbolicOutputs {
+    FullOutputs {
         arena: copier.target,
         outputs: arrays,
     }
@@ -98,9 +99,17 @@ impl Copier<'_> {
                 let a = self.expr(a);
                 self.target.exp(a)
             }
+            ExprNode::Exp2(a) => {
+                let a = self.expr(a);
+                self.target.exp2(a)
+            }
             ExprNode::Log(a) => {
                 let a = self.expr(a);
                 self.target.log(a)
+            }
+            ExprNode::Log2(a) => {
+                let a = self.expr(a);
+                self.target.log2(a)
             }
             ExprNode::Sqrt(a) => {
                 let a = self.expr(a);

@@ -41,7 +41,9 @@ fn check_gemm(
 
     // Derive the reference from the specification, independently of the kernel execution.
     let dims = HashMap::from([("M".into(), m), ("N".into(), n), ("K".into(), k)]);
-    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
+        .unwrap()
+        .lower();
 
     check_equivalence(
         &reference,
@@ -256,7 +258,9 @@ fn check_ck_fmha(
     ]);
     let spec =
         include_str!("../../../backend/volta_equivalence/tests/specs/attention_batch_head.spec");
-    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
+        .unwrap()
+        .lower();
     check_equivalence(
         &reference,
         &actual,
@@ -358,7 +362,9 @@ fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
     let [rows, columns] = dims;
     let dims = HashMap::from([("R".into(), rows), ("C".into(), columns)]);
     let spec = include_str!("../../../backend/volta_equivalence/tests/specs/row_softmax.spec");
-    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
+        .unwrap()
+        .lower();
     check_equivalence(
         &reference,
         &actual,
@@ -438,7 +444,9 @@ fn check_ck_rmsnorm(rows: u32, row: u32, columns: u32, epsilon: f32) -> Equivale
         ("Row".into(), u64::from(row)),
     ]);
     let spec = include_str!("../../../backend/volta_equivalence/tests/specs/row_rms_norm.spec");
-    let reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
+        .unwrap()
+        .lower();
     check_equivalence(
         &reference,
         &actual,
@@ -516,7 +524,9 @@ fn check_ck_avgpool2d(
 
     // The reference states every output from the pooling parameters, not CK's descriptors.
     let dims = avgpool2d_dims(specified);
-    let mut reference = volta_spec::extract_expressions_from_spec(spec, &dims).unwrap();
+    let mut reference = volta_spec::extract_expressions_from_spec(spec, &dims)
+        .unwrap()
+        .lower();
 
     // Work-item i of a workgroup owns output 256 * workgroup + i: keep those of the reference.
     let first = 256 * u64::from(workgroup);

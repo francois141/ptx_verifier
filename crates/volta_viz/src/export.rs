@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use volta_expr::ExprArena;
+use volta_expr::symbolic_full::ExprArena;
 use volta_graph::{
     AbortCause, AccessMode, ArrivalOrdering, AsyncOpId, BarrierArrivals, BlockedOn, BulkWaitScope,
     CollectiveSide, ContributionKind, EventGraph, EventId, EventKind, ExecContext, FenceKind,

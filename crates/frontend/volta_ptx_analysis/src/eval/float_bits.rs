@@ -7,7 +7,7 @@ use crate::frontend::ast::ScalarType;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::ir::InstrId;
 pub use volta_common::float_bits::decode_e4m3_byte;
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId};
 
 /// Read `e` at float/fp8 type `ty`: a concrete `IntConst` decodes at `ty`'s
 /// width (`0x3F800000` is 1.0). NaN is a loud error (not representable);

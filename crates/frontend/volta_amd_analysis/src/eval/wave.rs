@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use id_collections::id_type;
-use volta_expr::{ExprArena, ExprId, ExprNode};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode};
 use volta_graph::AsyncOpId;
 
 use crate::ir::{
@@ -511,6 +511,7 @@ impl WaveRegisters {
 /// Whether two expressions are the same value: one node, or equal constants, input elements
 /// or parameters, which separate executions create as separate nodes.
 fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+    let (a, b) = (arena.value(a), arena.value(b));
     if a == b {
         return true;
     }

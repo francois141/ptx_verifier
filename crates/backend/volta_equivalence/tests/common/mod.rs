@@ -37,7 +37,9 @@ pub fn unfold_spec(name: &str, src: &str, dims: &[(&str, u64)]) -> SymbolicOutpu
     let dims: HashMap<String, u64> = dims.iter().map(|&(d, v)| (d.to_string(), v)).collect();
     let (env, specs) = volta_spec::instantiate(&parsed, &dims)
         .unwrap_or_else(|e| panic!("{name}: instantiate: {e}"));
-    unfold(&specs, &env, 0).unwrap_or_else(|e| panic!("{name}: unfold: {e}"))
+    unfold(&specs, &env, 0)
+        .unwrap_or_else(|e| panic!("{name}: unfold: {e}"))
+        .lower()
 }
 
 /// The verdict along the reference's output arrays, after asserting that a

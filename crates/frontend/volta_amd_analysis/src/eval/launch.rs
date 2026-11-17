@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use id_collections::IdVec;
-use volta_expr::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId};
 
 use crate::ir::{LoweredKernel, Sgpr, Vgpr};
 

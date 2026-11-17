@@ -3,7 +3,8 @@
 
 use std::fmt;
 
-use volta_expr::{ExprArena, SymbolicOutputs};
+use volta_expr::FullOutputs;
+use volta_expr::symbolic_full::ExprArena;
 use volta_graph::{
     AbortCause, Assumption, EventGraph, InstructionInfo, ProgramPoint, Provenance, ThreadIx,
     ThreadUnit,
@@ -52,7 +53,7 @@ impl From<EvalError> for AnalysisError {
 pub struct AnalysisResult {
     pub terminal: Terminal,
     /// Written output values; absent if execution aborted.
-    pub symbolic_outputs: Option<SymbolicOutputs>,
+    pub symbolic_outputs: Option<FullOutputs>,
     /// The execution's event graph, one thread per wave: its LDS accesses as DS operations that
     /// `s_waitcnt lgkmcnt` completes, its `s_barrier` generations and its exits. Global memory
     /// accesses are not recorded.
@@ -106,7 +107,7 @@ pub struct GridAnalysis {
     /// The run's event graph, which every workgroup shares.
     pub graph: EventGraph,
     /// Each workgroup's coordinates and outputs, numbering X fastest; empty if the run aborted.
-    pub workgroups: Vec<((u32, u32, u32), SymbolicOutputs)>,
+    pub workgroups: Vec<((u32, u32, u32), FullOutputs)>,
     /// Every output element a later workgroup stores after an earlier one stored it.
     pub conflicts: Vec<StoreConflict>,
     /// The run's arena, which holds the graph's stored values.

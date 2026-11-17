@@ -56,7 +56,7 @@ pub(crate) fn run_kernel(
     } = verified.analysis.into_parts();
     Ok((
         KernelRun {
-            outputs,
+            outputs: outputs.map(|outputs| outputs.lower()),
             stats,
             op_counts,
         },

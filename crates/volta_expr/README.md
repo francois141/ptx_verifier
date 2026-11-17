@@ -6,7 +6,37 @@ checker consumes them. It depends on no other Volta crate, which is how
 `volta_ptx_analysis` (the producer) and `volta_equivalence` (the consumer) stay
 independent of each other.
 
-## Expressions (`symbolic.rs`)
+The language comes in two forms. Producers build `symbolic_full`: every
+operation exactly as executed, nothing folded. `lower` turns it into
+`symbolic_simplified` (also reachable as `symbolic` and from the crate root),
+the constant-folded form the backends decide.
+
+## Full expressions (`symbolic_full/`)
+
+`symbolic_full::ExprArena` has the simplified arena's constructors and node
+kinds, plus `Exp2` and `Log2`, but each constructor pushes its node as given.
+An operation also records its *value* (`value`, `value_node`): the constant,
+operand or input element lowering replaces it with, else the node itself.
+`value.rs` computes it by lowering the operation in a scratch arena, each
+operand standing in as its constant value or an opaque symbol, so a value
+always agrees with the lowering. Execution decides on values (`as_i64`,
+`as_bool`, `is_undefined`, ...): addresses, branches and modelled cases see
+the constants they computed, while the outputs keep every operation.
+
+## Lowering (`lower.rs`)
+
+`lower(&FullOutputs) -> SymbolicOutputs` (also `FullOutputs::lower`) rebuilds
+the nodes an output reaches, children first, with the simplified
+constructors. A node with a value takes its value's lowering, so no fold runs
+twice. Each input array keeps one string.
+Each language defines its own atoms (`Real`, `SymbolId`, `NanError`) in its
+`node.rs`: lowering converts a full constant to a simplified one and gives each
+machine symbol a fresh simplified one. `volta_pipeline` lowers every analysis's and spec's outputs before the
+equivalence branch; the event graph's stored values stay in the full arena.
+`tests/lower_tests.rs` checks that an operation stays as built while its value
+and its lowering follow the simplified folds.
+
+## Simplified expressions (`symbolic_simplified/`)
 
 Expressions are a **DAG in an arena**. `ExprArena` owns the nodes (and
 interned strings); an `ExprId` is a copyable handle into it. A value computed
@@ -20,9 +50,9 @@ does that.
 - **Operators**: arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `Fma`),
   transcendental (`Exp`, `Log`, `Sqrt`, `Rcp`), bitwise, comparisons, boolean,
   `Select`, `Min`, `Max`, `Abs`, conversions.
-- **Exact constants**: a float constant is a `Real`, an arbitrary-precision
-  rational (`rug`) or `±inf`. NaN is rejected at every f64 entry point. Floats
-  are modeled as reals, not IEEE values.
+- **Exact constants**: a float constant is a `Real` (behind an `Arc`), an
+  arbitrary-precision rational (`rug`) or `±inf`. NaN is rejected at every f64 entry point. Floats are modeled as
+  reals, not IEEE values.
 - **Eager, exact constant folding**: every constructor folds what it can,
   exactly over ℚ. Undefined forms (`inf - inf`, `0 * inf`, `x / 0`) stay
   unfolded, so the canonicalizer reports them instead of hiding them.
@@ -32,10 +62,11 @@ does that.
 
 ## Outputs (`outputs.rs`)
 
+`FullOutputs` is what a producer returns, `SymbolicOutputs` its lowering.
 `SymbolicOutputs { arena, outputs }` is the hand-off type: for each output
 array, the written elements as `(index, root ExprId)` pairs sorted by index.
 `validate()` bounds-checks every id, and `element(array, index)` looks one up.
-Both a kernel run and an unfolded spec produce this type, so a kernel can be
+Both a kernel run and an unfolded spec lower to this type, so a kernel can be
 checked against a spec exactly as against a second kernel.
 
 ## Text format (`text.rs`, `.vexpr`)

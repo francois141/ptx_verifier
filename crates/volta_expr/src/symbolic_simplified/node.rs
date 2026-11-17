@@ -1,6 +1,7 @@
 //! The expression language's values and nodes, and the arena that stores them.
 
 use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use id_collections::{IdVec, id_type};
@@ -44,15 +45,15 @@ impl std::error::Error for NanError {}
 
 /// An exact extended-real constant: an arbitrary-precision rational or ±infinity (no NaN). Finite
 /// f64s convert exactly, so folding coincides with the decision procedure's rational algebra.
-/// The repr is boxed so `Real` is one `NonNull` pointer and `ExprNode` stays 16 bytes.
+/// The repr is shared so `Real` is one pointer, `ExprNode` stays 16 bytes and clones are cheap.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub struct Real(Box<RealRepr>);
+pub struct Real(Arc<RealRepr>);
 
 /// The pointed-to representation of a [`Real`]; match via [`Real::repr`]. The variant order
 /// gives the derived `Ord` the extended-real order, and on the wire a serialized `Real` is
-/// exactly a serialized `RealRepr` (the newtype and `Box` layers are transparent).
+/// exactly a serialized `RealRepr` (the newtype and `Arc` layers are transparent).
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -64,10 +65,10 @@ pub enum RealRepr {
 
 impl Real {
     fn from_repr(repr: RealRepr) -> Real {
-        Real(Box::new(repr))
+        Real(Arc::new(repr))
     }
 
-    pub(super) fn pos_inf() -> Real {
+    pub(crate) fn pos_inf() -> Real {
         Real::from_repr(RealRepr::PosInf)
     }
 
@@ -666,6 +667,12 @@ impl ExprArena {
     /// Push a node into the arena and return its id.
     pub(crate) fn push(&mut self, node: ExprNode) -> ExprId {
         self.nodes.push(node)
+    }
+
+    /// Drop every node and string, keeping the allocations.
+    pub(crate) fn clear(&mut self) {
+        self.nodes.clear();
+        self.strings.clear();
     }
 
     // -----------------------------------------------------------------

@@ -277,7 +277,7 @@ pub fn run_kernel(
                 panic!("the graph check did not verify the kernel: {reasons:#?}");
             }
             Ok(Completed {
-                exprs,
+                exprs: exprs.lower(),
                 stats: parts.stats,
             })
         }
