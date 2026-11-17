@@ -1,4 +1,4 @@
-kernel kernel(a, b, out, sums, a_t, a_t3, carried)
+kernel kernel(a, b, out, sums, a_t, a_t3, carried, flipped)
   a: hbm[2, 4]
   b: hbm[2, 4]
   out: hbm[2, 4]
@@ -6,12 +6,14 @@ kernel kernel(a, b, out, sums, a_t, a_t3, carried)
   a_t: hbm[4, 2]
   a_t3: hbm[4, 1, 2]
   carried: hbm[2, 4]
+  flipped: hbm[2, 4]
   x: sbuf[2, 4]
   y: sbuf[2, 4]
   s: sbuf[2, 4]
   r: sbuf[2, 1]
   c: sbuf[2, 4]
   d: sbuf[2, 4]
+  u: sbuf[2, 4]
   t: sbuf[4, 2]
   t3: sbuf[4, 1, 2]
   x = dma(a)
@@ -22,6 +24,8 @@ kernel kernel(a, b, out, sums, a_t, a_t3, carried)
   sums = dma(r)
   d = cumulative(acc = r; acc = add(add(s, 0), acc))
   carried = dma(d)
+  u = subtract(1, multiply(s, 2))
+  flipped = dma(u)
   t = dma_transpose(a)
   a_t = dma(t)
   t3 = dma_transpose(a.ap([[4, 2], [1, 1], [1, 4]], offset=0))

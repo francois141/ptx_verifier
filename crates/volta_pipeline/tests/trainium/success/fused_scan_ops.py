@@ -5,10 +5,10 @@ import nki.isa as nisa
 
 # scalar_tensor_tensor (s = b - 2a, both ops' operand orders exercised, with a row-sum
 # reduction), tensor_scalar_cumulative (running row sums of s, then again from each row's
-# sum with load_reduce), and dma_transposes from HBM with their default axes: a 2-D one,
-# and a 3-D one whose middle dimension has extent 1.
+# sum with load_reduce), a tensor_scalar with reverse1, and dma_transposes from HBM with
+# their default axes: a 2-D one, and a 3-D one whose middle dimension has extent 1.
 @nki.jit
-def kernel(a, b, out, sums, a_t, a_t3, carried):
+def kernel(a, b, out, sums, a_t, a_t3, carried, flipped):
     assert a.shape == (2, 4)
     assert b.shape == (2, 4)
     x = nl.ndarray((2, 4), dtype=a.dtype, buffer=nl.sbuf)
@@ -44,6 +44,12 @@ def kernel(a, b, out, sums, a_t, a_t3, carried):
         reduce_cmd=nisa.reduce_cmd.load_reduce,
     )
     nisa.dma_copy(dst=carried, src=d)
+    # A tensor_scalar with its second step reversed: 1 - 2 * s.
+    u = nl.ndarray((2, 4), dtype=nl.float32, buffer=nl.sbuf)
+    nisa.tensor_scalar(
+        dst=u, data=s, op0=nl.multiply, operand0=2.0, op1=nl.subtract, operand1=1.0, reverse1=True
+    )
+    nisa.dma_copy(dst=flipped, src=u)
 
     t = nl.ndarray((4, 2), dtype=a.dtype, buffer=nl.sbuf)
     nisa.dma_transpose(dst=t, src=a)

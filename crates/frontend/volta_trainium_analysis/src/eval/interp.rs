@@ -215,7 +215,7 @@ impl<'a> Interpreter<'a> {
                         let mut value = self.read(instr, data, at)?;
                         for step in [Some(first), second.as_ref()].into_iter().flatten() {
                             let operand = self.scalar(instr, &step.operand, at)?;
-                            value = self.arith(step.op, value, operand);
+                            value = self.ordered((step.op, step.order), value, operand);
                         }
                         writes.push(Write::at(dst, at, value));
                         row.push(value);

@@ -7,7 +7,7 @@ use id_collections::IdVec;
 
 use super::{
     Accumulation, ArithOp, Descriptors, Initial, InstrId, Layout, LoweredInstr, Mover, Order,
-    Origin, Reduction, ScalarOperand, Selection, Sign, Tensor, TensorId, TensorRegion,
+    Origin, Reduction, ScalarOperand, ScalarStep, Selection, Sign, Tensor, TensorId, TensorRegion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,14 +159,17 @@ impl fmt::Display for LoweredKernel {
                     second,
                     reduce,
                 } => {
-                    let mut expr = format!(
-                        "{}({}, {})",
-                        first.op.name(),
-                        region(data),
-                        scalar(&first.operand)
-                    );
+                    let applied = |step: &ScalarStep, acc: String| {
+                        let operand = scalar(&step.operand);
+                        let [left, right] = match step.order {
+                            Order::Given => [acc, operand],
+                            Order::Reversed => [operand, acc],
+                        };
+                        format!("{}({left}, {right})", step.op.name())
+                    };
+                    let mut expr = applied(first, region(data));
                     if let Some(step) = second {
-                        expr = format!("{}({}, {})", step.op.name(), expr, scalar(&step.operand));
+                        expr = applied(step, expr);
                     }
                     write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }

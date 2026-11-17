@@ -80,6 +80,7 @@ fn the_fused_scan_ops_kernel_parses_lowers_and_runs_as_expected() {
             ("a_t", &[4, 2]),
             ("a_t3", &[4, 1, 2]),
             ("carried", &[2, 4]),
+            ("flipped", &[2, 4]),
         ],
     );
 }
