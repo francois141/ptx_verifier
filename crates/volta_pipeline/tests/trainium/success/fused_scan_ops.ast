@@ -1,4 +1,4 @@
-kernel kernel(a: [2, 4], b: [2, 4], out: [2, 4], sums: [2, 1], a_t: [4, 2])
+kernel kernel(a: [2, 4], b: [2, 4], out: [2, 4], sums: [2, 1], a_t: [4, 2], a_t3: [4, 1, 2])
   x: sbuf[2, 4] of a.dtype
   dma_copy(dst=x, src=a)
   y: sbuf[2, 4] of b.dtype
@@ -13,3 +13,6 @@ kernel kernel(a: [2, 4], b: [2, 4], out: [2, 4], sums: [2, 1], a_t: [4, 2])
   t: sbuf[4, 2] of a.dtype
   dma_transpose(dst=t, src=a)
   dma_copy(dst=a_t, src=t)
+  t3: sbuf[4, 1, 2] of a.dtype
+  dma_transpose(dst=t3, src=a.ap([[4, 2], [1, 1], [1, 4]], offset=0))
+  dma_copy(dst=a_t3, src=t3)

@@ -554,8 +554,9 @@ Lowering accepts sixteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
 `activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`
 (`LoweredInstr::ScalarTensorTensor`), `tensor_scalar_cumulative` (`LoweredInstr::Cumulative`),
-`reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)` or omitted, its
-source in any memory, the same `Transpose`) - drops
+`reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)`, or omitted to
+swap the ends of a region whose middle extents are 1, its source in any memory, the same
+`Transpose`) - drops
 an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unknown` (or the older
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
