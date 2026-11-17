@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::common::trainium::{parse_kernel, parse_kernel_for_call, parse_kernel_with_modules};
 use volta_equivalence::check::EquivCheckOptions;
 use volta_expr::SymbolicOutputs;
 use volta_graph::Assumption;
@@ -11,9 +12,7 @@ use volta_pipeline::{
 };
 use volta_ptx_analysis::AnalysisConfig;
 use volta_trainium_analysis::frontend::ast::Kernel;
-use volta_trainium_analysis::frontend::parse::{
-    Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call, parse_kernel_with_modules,
-};
+use volta_trainium_analysis::frontend::parse::{Constant, KernelCall, TileSizes};
 
 /// The inputs' dtype upstream's `test_attention.py` calls each tiled sample with:
 /// `bfloat16` for v10, whose allocator sizes its tiles by it, else `float32`.

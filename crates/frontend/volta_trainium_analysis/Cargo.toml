@@ -5,5 +5,7 @@ edition.workspace = true
 
 [dependencies]
 id_collections.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 volta_expr.workspace = true
 volta_graph.workspace = true

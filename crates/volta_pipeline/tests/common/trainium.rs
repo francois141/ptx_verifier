@@ -6,12 +6,19 @@
 //! are compared, a `success/` fixture's graph must be `Verified` under
 //! `OrderingPolicy::BASELINE`, and a `check_failure/` fixture's `Rejected`.
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use volta_graph_check::{GraphConclusion, check_graph};
-use volta_trainium_analysis::frontend::ast::Kernel;
-use volta_trainium_analysis::frontend::parse::{KernelCall, parse_kernel_for_call};
+use volta_trainium_analysis::frontend::ast::{
+    Dtype, HbmDecl, Instruction, Kernel, LoopId, LoopIteration, LoopKind, NoReorderId, Operand,
+    Origin, Reordering, Statement, TensorName, TileDecl,
+};
+use volta_trainium_analysis::frontend::error::ParseError;
+use volta_trainium_analysis::frontend::parse::{self, KernelCall};
+use volta_trainium_analysis::frontend::trace::Tracer;
 use volta_trainium_analysis::{
     Access, Execution, Location, LoweredKernel, Mode, OrderingPolicy, PARTITION_STRIDE, Reducer,
     evaluate, footprints, lower_kernel, record_graph,
@@ -133,8 +140,9 @@ fn lower_call(
         .map(|(name, source)| (name.as_str(), source.as_str()))
         .collect();
 
-    let parsed = parse_kernel_for_call(&source, &sources, kernel, call)
+    let parsed = parse::parse_kernel_for_call(&source, &sources, kernel, call)
         .unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert_traced_matches(&fixture.with_extension("py"), kernel, call, &parsed);
     let lowered = lower_kernel(&parsed).unwrap_or_else(|e| panic!("{name}: {e}"));
     let base = fixture.with_file_name(match kernel {
         "kernel" => name.rsplit('/').next().unwrap().to_string(),
@@ -143,6 +151,182 @@ fn lower_call(
     compare(base.with_extension("ast"), parsed.to_string());
     compare(base.with_extension("ir"), lowered.to_string());
     (parsed, lowered)
+}
+
+/// `parse_kernel` that also requires the kernel traced under CPython to match.
+pub fn parse_kernel(
+    source: &str,
+    name: &str,
+    shapes: &[(&str, &[u64])],
+) -> Result<Kernel, ParseError> {
+    parse_kernel_for_call(source, &[], name, &KernelCall::new(shapes))
+}
+
+/// `parse_kernel_with_modules` that also requires the kernel traced under CPython to match.
+pub fn parse_kernel_with_modules(
+    source: &str,
+    modules: &[(&str, &str)],
+    name: &str,
+    shapes: &[(&str, &[u64])],
+) -> Result<Kernel, ParseError> {
+    parse_kernel_for_call(source, modules, name, &KernelCall::new(shapes))
+}
+
+/// `parse_kernel_for_call` that also requires the kernel traced under CPython to match:
+/// `source` and `modules` are written to a fresh directory, each module as `<name>.py`.
+pub fn parse_kernel_for_call(
+    source: &str,
+    modules: &[(&str, &str)],
+    name: &str,
+    call: &KernelCall,
+) -> Result<Kernel, ParseError> {
+    static TRACES: AtomicUsize = AtomicUsize::new(0);
+    let parsed = parse::parse_kernel_for_call(source, modules, name, call)?;
+    let dir = std::env::temp_dir().join(format!(
+        "volta-trace-{}-{}",
+        std::process::id(),
+        TRACES.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("traced_kernel.py");
+    std::fs::write(&file, source).unwrap();
+    for (module, source) in modules {
+        std::fs::write(dir.join(format!("{module}.py")), source).unwrap();
+    }
+    assert_traced_matches(&file, name, call, &parsed);
+    std::fs::remove_dir_all(&dir).unwrap();
+    Ok(parsed)
+}
+
+/// Kernel `kernel` of `file` traced under CPython for `call` must be `parsed`, up to the
+/// names of the tensors it declares (all but the one it returns) and its plain Python
+/// loops, which the tracer cannot see and which order nothing (`LoopKind::Python`).
+pub fn assert_traced_matches(file: &Path, kernel: &str, call: &KernelCall, parsed: &Kernel) {
+    let traced = Tracer::from_env()
+        .trace(file, &[], kernel, call)
+        .unwrap_or_else(|e| panic!("{}: tracing `{kernel}`: {e}", file.display()));
+    let [parsed, traced] = [parsed, &traced].map(|kernel| canonical(kernel).to_string());
+    assert!(
+        parsed == traced,
+        "{}: `{kernel}` traced differs from parsed\n--- parsed\n{parsed}--- traced\n{traced}",
+        file.display()
+    );
+}
+
+/// `kernel` with its declared tensors but the returned one renamed `t0`, `t1`, ... in
+/// declaration order, its Python loops dropped, and its loops and `no_reorder` blocks
+/// renumbered in order of first appearance.
+fn canonical(kernel: &Kernel) -> Kernel {
+    let mut names = BTreeMap::new();
+    for statement in &kernel.body {
+        let declared = match statement {
+            Statement::Declare(tile) => &tile.name,
+            Statement::DeclareHbm(tensor) => &tensor.name,
+            Statement::Instruction(_) => continue,
+        };
+        if Some(declared) != kernel.returned.as_ref() {
+            let renamed = TensorName(format!("t{}", names.len()));
+            names.insert(declared.clone(), renamed);
+        }
+    }
+    let rename = |name: &TensorName| names.get(name).cloned().unwrap_or_else(|| name.clone());
+    let mut loop_ids = BTreeMap::new();
+    let mut blocks = BTreeMap::new();
+
+    let body = kernel
+        .body
+        .iter()
+        .map(|statement| match statement {
+            Statement::Declare(tile) => Statement::Declare(TileDecl {
+                name: rename(&tile.name),
+                dtype: rename_dtype(&tile.dtype, &rename),
+                ..tile.clone()
+            }),
+            Statement::DeclareHbm(tensor) => Statement::DeclareHbm(HbmDecl {
+                name: rename(&tensor.name),
+                dtype: rename_dtype(&tensor.dtype, &rename),
+                ..tensor.clone()
+            }),
+            Statement::Instruction(instruction) => {
+                let loops = instruction
+                    .origin
+                    .loops
+                    .iter()
+                    .filter(|iteration| iteration.kind != LoopKind::Python)
+                    .map(|iteration| {
+                        let next = LoopId(loop_ids.len() as u32);
+                        LoopIteration {
+                            loop_id: *loop_ids.entry(iteration.loop_id).or_insert(next),
+                            ..*iteration
+                        }
+                    })
+                    .collect();
+                let reordering = match instruction.origin.reordering {
+                    Reordering::Allowed => Reordering::Allowed,
+                    Reordering::Forbidden { block } => {
+                        let next = NoReorderId(blocks.len() as u32);
+                        Reordering::Forbidden {
+                            block: *blocks.entry(block).or_insert(next),
+                        }
+                    }
+                };
+                let operands = instruction
+                    .operands
+                    .iter()
+                    .map(|(keyword, operand)| (keyword.clone(), rename_operand(operand, &rename)))
+                    .collect();
+                Statement::Instruction(Instruction {
+                    opcode: instruction.opcode.clone(),
+                    operands,
+                    origin: Origin { loops, reordering },
+                })
+            }
+        })
+        .collect();
+    Kernel {
+        body,
+        ..kernel.clone()
+    }
+}
+
+fn rename_dtype(dtype: &Dtype, rename: &impl Fn(&TensorName) -> TensorName) -> Dtype {
+    match dtype {
+        Dtype::Of(tensor) => Dtype::Of(rename(tensor)),
+        Dtype::Named(name) => Dtype::Named(name.clone()),
+    }
+}
+
+fn rename_operand(operand: &Operand, rename: &impl Fn(&TensorName) -> TensorName) -> Operand {
+    match operand.clone() {
+        Operand::Tensor(tensor) => Operand::Tensor(rename(&tensor)),
+        Operand::Region { tensor, dims } => Operand::Region {
+            tensor: rename(&tensor),
+            dims,
+        },
+        Operand::Pattern {
+            tensor,
+            pattern,
+            offset,
+        } => Operand::Pattern {
+            tensor: rename(&tensor),
+            pattern,
+            offset,
+        },
+        Operand::Broadcast { tensor, shape } => Operand::Broadcast {
+            tensor: rename(&tensor),
+            shape,
+        },
+        Operand::Indirect {
+            tensor,
+            index,
+            count,
+        } => Operand::Indirect {
+            tensor: rename(&tensor),
+            index: rename(&index),
+            count,
+        },
+        other => other,
+    }
 }
 
 /// One line per instruction: each access's mode, tensor and runs, a placed tile's as
