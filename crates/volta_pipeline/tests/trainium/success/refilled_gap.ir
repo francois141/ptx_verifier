@@ -1,0 +1,16 @@
+kernel kernel(a_t, b, out)
+  a_t: hbm[4, 2]
+  b: hbm[4, 2]
+  out: hbm[2, 4]
+  x: sbuf[4, 2]
+  y: sbuf[4, 2]
+  acc: psum[2, 4]
+  z: sbuf[2, 4]
+  zeros: sbuf[2, 2]
+  x = dma(a_t)
+  y = dma(b)
+  acc[0:2, 0:2] = matmul(x, y)
+  z = mov(acc)
+  zeros = memset(0)
+  out[0:2, 0:2] = dma(z[0:2, 0:2])
+  out[0:2, 2:4] = dma(zeros)

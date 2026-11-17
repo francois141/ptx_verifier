@@ -10,7 +10,7 @@ pub enum EvalError {
     // Memory Errors
     // =========================================================================
     /// An element of a tile or of a kernel-allocated HBM tensor read before any
-    /// instruction wrote it.
+    /// instruction wrote it, whose value reaches an output.
     UninitializedRead {
         instr: InstrId,
         tensor: String,

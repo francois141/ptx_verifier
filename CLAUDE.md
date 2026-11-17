@@ -590,7 +590,7 @@ is defined only where they agree (else `EvalError::IndirectReadings`), and an of
 be a concrete integer below `data`'s free size (`EvalError::IndirectOffset`).
 
 `nc_matmul`'s `accumulate=` is `ir::Accumulation`: `False` overwrites `dst`, `True` adds
-to it (an unwritten element is an `UninitializedRead`), and `None`, the default,
+to it (an unwritten element is undefined), and `None`, the default,
 overwrites an element's first write and adds to later ones.
 
 `nl.ndarray(..., address=(partition, offset))` places an on-chip tile (`ast::Address`,
@@ -611,7 +611,8 @@ final `return t` of an HBM tensor it allocates with `nl.ndarray(...,
 buffer=nl.shared_hbm)` (any rank), its output array named `t`. Returning an
 argument or a tile is a lowering error. `ir::Initial` records what a tensor's
 unwritten elements hold: an argument's are input symbols, while a tile's or an
-allocated HBM tensor's are uninitialized, so reading one is `UninitializedRead`;
+allocated HBM tensor's are uninitialized: reading one gives a fresh `Undefined`, and the
+run is `UninitializedRead` at that read only if an output reaches it (as PTX's);
 `Initial::Integers` holds the integers a call gives an argument (`KernelCall::contents`,
 `ast::Param::contents`), as PTX's `IndexInput` with chosen values: a gather's offsets.
 
@@ -878,7 +879,7 @@ guarded stages software-pipelined over `range(0, count + 2)` in `nl.no_reorder()
 placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (so
 `accumulate=False` must overwrite), `engine=` and `dma_transpose` (a hand-written
 `.expected`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
-column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
+column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM copied out,
 `MixedAllocation`, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),
 `tensor_scalar_cumulative` (with `load_reduce`), a `tensor_scalar` with `reverse1` and
@@ -888,6 +889,8 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
 `success/dma_modes.py` covers `hwdge` DMAs, `engine.sync` and a placed `nc_matmul`.
+`success/refilled_gap.py` evicts a PSUM tile whose columns are not all written; no output
+reaches the unwritten ones.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per

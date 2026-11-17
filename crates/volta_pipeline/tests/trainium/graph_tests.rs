@@ -552,7 +552,7 @@ fn nki_no_reorder_blocks_order_their_own_instructions_when_the_policy_keeps_them
 
 // Test that a run aborting at an instruction ends its graph there, as PTX's and AMD's do, so
 // the graph branch is inconclusive, not verified: `accumulate_uninitialized`, race free,
-// accumulates into unwritten PSUM at instruction 2.
+// accumulates into unwritten PSUM at instruction 2 and copies the sums out.
 #[test]
 fn nki_graphs_of_aborted_runs_end_at_the_failing_instruction() {
     let source =
@@ -560,7 +560,7 @@ fn nki_graphs_of_aborted_runs_end_at_the_failing_instruction() {
     let parsed = parse_kernel(
         &source,
         "accumulate_uninitialized",
-        &[("a_t", &[4, 2]), ("b", &[4, 3])],
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
     )
     .unwrap();
     let graph = record(&lower_kernel(&parsed).unwrap(), OrderingPolicy::BASELINE);

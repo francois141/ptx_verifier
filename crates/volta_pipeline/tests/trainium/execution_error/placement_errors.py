@@ -20,13 +20,14 @@ def clobbered_read(a):
 
 
 @nki.jit
-def accumulate_uninitialized(a_t, b):
+def accumulate_uninitialized(a_t, b, out):
     x = nl.ndarray((4, 2), dtype=nl.float32, buffer=nl.sbuf, address=(0, 0))
     y = nl.ndarray((4, 3), dtype=nl.float32, buffer=nl.sbuf, address=(0, 32))
     acc = nl.ndarray((2, 3), dtype=nl.float32, buffer=nl.psum, address=(0, 0))
     nisa.dma_copy(dst=x, src=a_t)
     nisa.dma_copy(dst=y, src=b)
     nisa.nc_matmul(dst=acc, stationary=x, moving=y, accumulate=True)
+    nisa.dma_copy(dst=out, src=acc)
 
 
 @nki.jit

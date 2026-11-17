@@ -200,8 +200,8 @@ come from the call (`KernelCall::contents`, below); a symbolic one is that error
 scatter, `dst=t.indirect(...)`, is rejected.
 
 `nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
-`False` overwrites `dst`, `True` adds to it (an unwritten element is an
-`UninitializedRead`, as reading uninitialized PSUM is undefined), and `None`, the
+`False` overwrites `dst`, `True` adds to it (an unwritten element is undefined, so
+an output it reaches is an `UninitializedRead`), and `None`, the
 default, overwrites an element's first write and adds to later ones.
 `dma_transpose` with `axes=(1, 0)` is a 2-D transpose of one tile region into
 another, the same `Transpose` as `nc_transpose`; other `axes` are errors.
@@ -385,9 +385,11 @@ anywhere but the last statement is a parse error. The returned tensor's output
 array is named after it (`kernel_out` in the attention samples).
 
 Each tensor records what its unwritten elements hold (`ir::Initial`): an
-argument's are its input symbols, or the integers its call gives, while reading an
-unwritten element of a tile
-or of a kernel-allocated HBM tensor is an `EvalError::UninitializedRead`.
+argument's are its input symbols, or the integers its call gives, while an unwritten
+element of a tile or of a kernel-allocated HBM tensor reads a fresh `Undefined`. The
+run is an `EvalError::UninitializedRead`, at that read, only if an output reaches it, as
+PTX's: nkilib's conv3d evicts whole PSUM tiles, unwritten columns included, and refills
+those columns afterwards (`success/refilled_gap.py`).
 
 ## Placed tiles
 
@@ -652,7 +654,7 @@ pass's `accumulate=False` must overwrite the first's sum, then `engine=` copies 
 `dma_transpose` (a hand-written `.expected`, `matmul.expected` transposed).
 `execution_error/placement_errors.py` holds kernels `trainium/rejected_tests.rs` expects to fail:
 a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
-(`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM, a
+(`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM copied out, a
 kernel placing only some tiles, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` computes `b - 2a` with `scalar_tensor_tensor` (`reverse1`, a
 row-sum reduction), its running row sums with `tensor_scalar_cumulative` (from zero, and with
@@ -666,6 +668,8 @@ through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.
 `success/dma_modes.py` is `matmul.py`'s product through `hwdge` DMAs on the sync engine and a
 matmul with `tile_position`/`tile_size`.
+`success/refilled_gap.py` evicts a PSUM tile whose last columns no matmul wrote and copies
+out only its written ones, the rest from a zeroed tile (a hand-checked `.expected`).
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);
