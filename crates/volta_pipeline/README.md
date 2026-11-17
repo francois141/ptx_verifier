@@ -79,6 +79,11 @@ only inline unit tests of their internals.
   `success/` fixture is `Verified` under `BASELINE` and that of a `check_failure/` one
   `Rejected`;
   `trainium/rejected_tests.rs`: the error each rejected kernel must raise.
+  Every NKI kernel the accepted, graph and equivalence suites parse is also traced under
+  CPython (`common::trainium::assert_traced_matches`, through the `parse_kernel*`
+  wrappers in `common::trainium`), and the two kernels must agree up to declared
+  tensors' names and plain Python loops; so these suites need `$VOLTA_PYTHON` (a Python
+  with numpy, `just python-env`).
 - `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
   instruction, under `OrderingPolicy::BASELINE` (the frontend's) unless a test names
   another: read after write and write after read are ordered, by address through the bytes

@@ -808,6 +808,8 @@ name = "volta_trainium_analysis"
 version = "0.1.0"
 dependencies = [
  "id_collections",
+ "serde",
+ "serde_json",
  "volta_expr",
  "volta_graph",
 ]

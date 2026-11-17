@@ -624,6 +624,17 @@ is an `ast::Scalar`, a newtype whose constructor rejects non-finite values, so
 it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
 rational, since only f64-round-tripping reals print as decimals.
 
+`frontend::trace::Tracer` runs a kernel call under CPython instead (`tracer/trace.py`
+with a stand-in `nki` package, `python -I`), giving the same `ast::Kernel` from a JSON
+trace: every `nisa.<opcode>` call is recorded, tensors are named after their assignment
+targets, NKI loops and `no_reorder` blocks are recorded in each `Origin` (plain Python loops
+are not, which `in_different_affine_iterations` does not need), and a failure is a
+`KernelFailure` (`Unsupported`, `Kernel`, `Assertion`, `Python`) at its kernel line. Its
+interpreter is `$VOLTA_PYTHON` (else `python3`), which needs numpy (`just python-env`,
+`target/volta-python`). `volta_pipeline`'s `common::trainium` `parse_kernel*` wrappers
+trace every kernel the accepted, graph and equivalence suites parse and require it to
+match the parsed kernel up to declared tensors' names and Python loops.
+
 A kernel is parsed for one call: `parse_kernel(source, name, shapes)` takes each
 parameter's shape, as `@nki.jit` specializes a kernel per call (a missing,
 unknown, repeated or empty one is `ParseError::ParamShape`), and lowering takes
@@ -1388,6 +1399,7 @@ Global, shared, local, param memories are separate `Memory` instances, matching 
 ```sh
 just check # run linters
 just test  # run tests
+just python-env # make target/volta-python (numpy), the Python NKI kernels are traced with
 just viz   # record every volta_pipeline test run, write target/volta-viz/volta-graphs.html
 just loc   # count the lines of code, per crate and per language
 just extract-lean # write the AMD sigmoid Lean challenge, target/lean/sigmoid.lean

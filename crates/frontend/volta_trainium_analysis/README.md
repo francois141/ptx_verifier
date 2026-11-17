@@ -7,12 +7,50 @@ buffers (SBUF, PSUM) and computes on them with `nki.isa` instructions.
 
 The directories mirror the other analyses' stages:
 
-- `src/frontend/`: NKI source parsing.
+- `src/frontend/`: NKI source parsing, or tracing under CPython (`frontend::trace`).
+- `tracer/`: the tracer's Python: `trace.py` and the stand-in `nki` package.
 - `src/ir/`: the instruction representation used by execution.
 - `src/lower/`: conversion from parsed kernels to that representation.
 - `src/eval/`: symbolic execution.
 
 The frontend is public; the other stages are private.
+
+## Tracing under CPython
+
+`frontend::trace::Tracer::trace(file, search_path, kernel, call)` runs a kernel call
+under real Python and returns the same `ast::Kernel` that `parse_kernel_for_call` does,
+so lowering, execution and the graph are unchanged. The Rust parser reads a subset of
+Python; production libraries such as AWS's nki-library use far more (dataclasses, enums,
+conditional expressions, f-strings, relative imports), which the tracer gets for free,
+as NKI's own tracer does.
+
+`tracer/trace.py` (run as `python -I`, reading a JSON request on stdin) puts the stand-in
+`nki` package first on `sys.path`, imports the kernel's module (by its dotted name under
+the `search_path` root holding it, so relative imports resolve, else as a top-level
+module beside its own directory), calls the kernel with a `Tensor` for each parameter
+the call shapes, and prints the trace as JSON, which `frontend::trace` validates into an
+`ast::Kernel`. Kernel output goes to stderr, so `print` cannot corrupt it. The stand-in:
+
+- `nl.ndarray`, `nl.zeros` and the tile-returning functions declare tensors and emit
+  instructions exactly as the parser's rewrites do (the table above). A tensor is named
+  after its assignment target, read from the calling frame's position in its source
+  (`name=` overrides it), prefixed `function[call].` for each helper call it is declared
+  in and suffixed by each enclosing NKI loop's index, then `~n` if taken.
+- Calling any `nisa.<opcode>` records that instruction, its operands by keyword
+  (positionally only where the parser's `POSITIONAL` allows), for lowering to accept or
+  reject; any other `nl`/`nisa` member (`nl.add`, `nisa.engine.vector`) is a `Member`
+  passed by its dotted path. `nisa.get_nc_version()` is unsupported: which NeuronCore
+  Volta models is not decided.
+- `nl.affine_range`, `sequential_range` and `static_range` record each iteration in the
+  instructions' `Origin`, a new `LoopId` per loop entered; `nl.no_reorder()` numbers its
+  outermost block. Plain Python loops are not recorded: since each entry of an inner loop
+  is a new `LoopId`, `in_different_affine_iterations` reaches the same answer without them.
+- A kernel failure is a `KernelFailure`: `Unsupported` (NKI the stand-in does not model),
+  `Kernel` (NKI misused), `Assertion` or `Python`, at its innermost line of kernel code.
+
+`Tracer::from_env()` runs `$VOLTA_PYTHON`, else `python3`. Kernel modules import what
+they import, numpy for most, so that interpreter needs it: `just python-env` makes
+`target/volta-python`, which the `just` recipes export as `VOLTA_PYTHON`.
 
 ## The tile-returning `nki.language` API
 

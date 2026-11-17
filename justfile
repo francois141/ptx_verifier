@@ -2,6 +2,9 @@
 # the external kernels in external/<isa>/. `just --list` shows only the comment line right
 # above a recipe, so each recipe's one-line summary is its last comment line.
 
+# The interpreter NKI kernels are traced with (`volta_trainium_analysis`'s `Tracer`).
+export VOLTA_PYTHON := env("VOLTA_PYTHON", justfile_directory() / "target/volta-python/bin/python")
+
 # List the recipes
 help:
     @just --list --unsorted
@@ -9,12 +12,18 @@ help:
 # ===== Tests ==================================================================
 
 # Run every Rust unit and integration test of the workspace
-test:
+test: python-env
     cargo test --release --workspace --no-fail-fast -- --test-threads 16 --color always
 
 # Run volta_pipeline's end-to-end tests of every ISA (PTX, AMD and Trainium kernels)
-all:
+all: python-env
     cargo test --release -p volta_pipeline -- --test-threads 16 --color always
+
+# Kernel modules import numpy, so tracing one needs a Python that has it.
+# Create or update target/volta-python, the Python NKI kernels are traced with
+python-env:
+    uv venv -q --allow-existing --python ">=3.11" target/volta-python
+    uv pip install -q --python target/volta-python/bin/python "numpy>=2"
 
 # ===== Static checks and formatting ===========================================
 
@@ -26,9 +35,9 @@ check-rust:
     cargo check --workspace
     cargo clippy --workspace
 
-# Lint the Python bindings
+# Lint the Python bindings and the NKI tracer
 check-python:
-    uv run ruff check crates/volta_py
+    uv run ruff check crates/volta_py crates/frontend/volta_trainium_analysis/tracer
 
 # Format the Rust and Python sources in place
 format: format-rust format-python
@@ -37,15 +46,15 @@ format: format-rust format-python
 format-rust:
     cargo fmt --all
 
-# Format the Python bindings
+# Format the Python bindings and the NKI tracer
 format-python:
-    uv run ruff format crates/volta_py
+    uv run ruff format crates/volta_py crates/frontend/volta_trainium_analysis/tracer
 
 # ===== Tools ==================================================================
 
 # A failing test does not stop the page: it still shows the runs the test recorded.
 # Record the event graph of every volta_pipeline test run into one self-contained viewer page
-viz out="target/volta-viz/volta-graphs.html":
+viz out="target/volta-viz/volta-graphs.html": python-env
     rm -rf target/volta-viz/runs
     -VOLTA_VIZ_DIR="{{justfile_directory()}}/target/volta-viz/runs" cargo test --release --no-fail-fast -p volta_pipeline -- --test-threads 16
     cargo run --release -q -p volta_cli -- --no-log-file viz target/volta-viz/runs -o "{{out}}"
@@ -156,6 +165,6 @@ piecewise *args:
 
 # Release, since attention v2 against its spec takes a minute in debug; VOLTA_BLESS=1 rewrites the snapshots.
 # Check the Trainium kernels' .ast, .ir and .out snapshots, expected rejections and spec equivalence
-trainium:
+trainium: python-env
     cargo test -q -p volta_pipeline --test trainium_tests -- accepted_tests:: rejected_tests::
     cargo test -q --release -p volta_pipeline --test trainium_tests -- equivalence_tests::

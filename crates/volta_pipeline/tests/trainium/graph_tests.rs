@@ -11,12 +11,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+use crate::common::trainium::{parse_kernel, parse_kernel_for_call};
 use volta_graph::{Assumption, EventGraph, EventId, ExecContext, Terminal, ThreadIx};
 use volta_graph_check::domain::ConflictKind::{self, ReadWrite, WriteRead, WriteWrite};
 use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
-use volta_trainium_analysis::frontend::parse::{
-    Constant, KernelCall, TileSizes, parse_kernel, parse_kernel_for_call,
-};
+use volta_trainium_analysis::frontend::parse::{Constant, KernelCall, TileSizes};
 use volta_trainium_analysis::{
     Execution, InstrId, LoweredKernel, NoReorder, OrderingPolicy, PlacedTiles, Reductions,
     Reordering, WriteAfterWrite, evaluate, footprints, lower_kernel, record_graph,
