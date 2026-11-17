@@ -2,6 +2,8 @@
 //! of its operands, with values as expressions of an `ExprArena`.
 //! Arguments are laid out row-major in HBM, so their symbols and outputs use offsets.
 
+use std::collections::{HashMap, HashSet};
+
 use id_collections::IdVec;
 use volta_expr::FullOutputs;
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, Type};
@@ -17,7 +19,8 @@ use super::tensor::{Clobber, TensorState};
 
 /// Run `kernel` and return, in parameter order, each argument it wrote, then the tensor it
 /// returns, each with its written elements by offset. An unwritten argument element holds
-/// its input symbol.
+/// its input symbol; any other unwritten element reads `Undefined`, an error only once an
+/// output reaches it (as PTX's), since a kernel may evict a whole tile and refill its gaps.
 pub fn evaluate(kernel: &LoweredKernel) -> Result<FullOutputs, EvalError> {
     run(kernel, AliasReads::Reject)
 }
@@ -50,7 +53,39 @@ fn run(kernel: &LoweredKernel, alias_reads: AliasReads) -> Result<FullOutputs, E
         .copied()
         .chain(kernel.returned)
         .collect();
-    Ok(interp.into_outputs(&outputs))
+    let undefined_reads = std::mem::take(&mut interp.undefined_reads);
+    let outputs = interp.into_outputs(&outputs);
+    match first_undefined_reached(&outputs, &undefined_reads) {
+        Some(read) => Err(read.clone()),
+        None => Ok(outputs),
+    }
+}
+
+/// The uninitialized read, among `reads`, of the first `Undefined` an output reaches.
+fn first_undefined_reached<'r>(
+    outputs: &FullOutputs,
+    reads: &'r HashMap<ExprId, EvalError>,
+) -> Option<&'r EvalError> {
+    let mut seen = HashSet::new();
+    let mut stack: Vec<ExprId> = outputs
+        .outputs
+        .iter()
+        .flat_map(|(_, elements)| elements.iter().map(|&(_, root)| root))
+        .collect();
+    stack.reverse();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(read) = reads.get(&id) {
+            return Some(read);
+        }
+        outputs
+            .arena
+            .node(id)
+            .for_each_child(|child| stack.push(child));
+    }
+    None
 }
 
 struct Interpreter<'a> {
@@ -59,6 +94,8 @@ struct Interpreter<'a> {
     /// Each tensor's aliases: the tiles `address=` places over its bytes.
     aliases: IdVec<TensorId, Vec<TensorId>>,
     alias_reads: AliasReads,
+    /// Each `Undefined` an uninitialized read gave, and that read.
+    undefined_reads: HashMap<ExprId, EvalError>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -74,6 +111,7 @@ impl<'a> Interpreter<'a> {
             tensors: IdVec::from_vec(tensors),
             aliases: alias::aliases(&kernel.tensors),
             alias_reads,
+            undefined_reads: HashMap::new(),
         }
     }
 
@@ -121,11 +159,7 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::Mov { dst, src, .. } => {
                 let pairs = indices(instr, dst, &self.tensors)?.zip(src.shape.indices());
                 for (to, from) in pairs {
-                    let value = self.tensors[src.tensor].read(
-                        &mut self.arena,
-                        instr,
-                        &src.element(&from),
-                    )?;
+                    let value = self.element(instr, src.tensor, &src.element(&from))?;
                     writes.push(Write {
                         tensor: dst.tensor,
                         index: dst.element(&to),
@@ -349,7 +383,24 @@ impl<'a> Interpreter<'a> {
         [partition, free]: [u64; 2],
     ) -> Result<ExprId, EvalError> {
         let index = region.tile_index(partition, free);
-        self.tensors[region.tensor].read(&mut self.arena, instr, &index)
+        self.element(instr, region.tensor, &index)
+    }
+
+    /// The element at `index` of `tensor`: an uninitialized one is a fresh `Undefined`.
+    fn element(
+        &mut self,
+        instr: InstrId,
+        tensor: TensorId,
+        index: &Index,
+    ) -> Result<ExprId, EvalError> {
+        match self.tensors[tensor].read(&mut self.arena, instr, index) {
+            Err(read @ EvalError::UninitializedRead { .. }) => {
+                let undefined = self.arena.undefined();
+                self.undefined_reads.insert(undefined, read);
+                Ok(undefined)
+            }
+            value => value,
+        }
     }
 
     /// The offset into `data`'s free dimension that gathered `column` of `partition`
@@ -482,9 +533,7 @@ impl<'a> Interpreter<'a> {
                     Accumulation::FirstOverwrites => {
                         self.tensors[dst.tensor].written(instr, &index)?
                     }
-                    Accumulation::Accumulate => {
-                        Some(self.tensors[dst.tensor].read(&mut self.arena, instr, &index)?)
-                    }
+                    Accumulation::Accumulate => Some(self.element(instr, dst.tensor, &index)?),
                 };
                 let mut sum = match earlier {
                     Some(earlier) => earlier,

@@ -134,6 +134,17 @@ fn the_dma_modes_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// A tile evicted whole, gap included, then the gap refilled: the unwritten elements read
+// `Undefined`, which no output reaches.
+#[test]
+fn the_refilled_gap_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/refilled_gap",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 2]), ("out", &[2, 4])],
+    );
+}
+
 // The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their
 // event graphs' races.
 #[test]

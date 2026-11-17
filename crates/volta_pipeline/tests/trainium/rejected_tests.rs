@@ -40,7 +40,7 @@ fn reading_bytes_another_placed_tile_wrote_is_an_error() {
 }
 #[test]
 fn accumulating_into_unwritten_psum_is_an_error() {
-    let shapes: [(&str, &[u64]); 2] = [("a_t", &[4, 2]), ("b", &[4, 3])];
+    let shapes: [(&str, &[u64]); 3] = [("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])];
     let lowered = lowered_placement_error("accumulate_uninitialized", &shapes).unwrap();
     assert_eq!(
         evaluate(&lowered).unwrap_err(),
