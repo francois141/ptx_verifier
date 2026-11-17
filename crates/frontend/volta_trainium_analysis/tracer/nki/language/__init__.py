@@ -23,6 +23,9 @@ from .._trace import (
 sbuf = Member(f"{NKI_LANGUAGE}.sbuf")
 psum = Member(f"{NKI_LANGUAGE}.psum")
 shared_hbm = Member(f"{NKI_LANGUAGE}.shared_hbm")
+# HBM private to one core: with one program traced (`SingleNkiInstance`), as `shared_hbm`.
+private_hbm = Member(f"{NKI_LANGUAGE}.private_hbm")
+HBM = (shared_hbm, private_hbm)
 ON_CHIP = {sbuf: "sbuf", psum: "psum"}
 
 
@@ -75,7 +78,7 @@ tile_size = _TileSize()
 
 
 def ndarray(shape, dtype, buffer=sbuf, name=None, address=None):
-    if buffer == shared_hbm:
+    if buffer in HBM:
         if address is not None:
             raise KernelError("`address=` places on-chip tiles only, not an HBM tensor")
         return declare_hbm(shape, dtype, name or None)
@@ -83,7 +86,7 @@ def ndarray(shape, dtype, buffer=sbuf, name=None, address=None):
 
 
 def zeros(shape, dtype, buffer=sbuf, name=None):
-    if buffer == shared_hbm:
+    if buffer in HBM:
         raise KernelError(
             "`nl.zeros` allocates an on-chip tile only: `nl.sbuf` or `nl.psum`"
         )
@@ -95,7 +98,7 @@ def zeros(shape, dtype, buffer=sbuf, name=None):
 def _buffer(buffer):
     if buffer not in ON_CHIP:
         raise Unsupported(
-            f"a tensor's buffer must be `nl.sbuf`, `nl.psum` or `nl.shared_hbm`, not `{buffer!r}`"
+            f"a tensor's buffer must be `nl.sbuf`, `nl.psum`, `nl.shared_hbm` or `nl.private_hbm`, not `{buffer!r}`"
         )
     return ON_CHIP[buffer]
 

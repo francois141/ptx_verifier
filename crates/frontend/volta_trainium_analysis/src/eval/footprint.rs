@@ -147,6 +147,23 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             reduced(reduce),
         ]
         .concat(),
+        LoweredInstr::ScalarTensorTensor {
+            dst,
+            data,
+            operand0,
+            operand1,
+            reduce,
+            ..
+        } => [
+            vec![access(Mode::Read, data)],
+            scalars(&[Some(operand0)]),
+            vec![access(Mode::Read, operand1), access(Mode::Write, dst)],
+            reduced(reduce),
+        ]
+        .concat(),
+        LoweredInstr::Cumulative { dst, src, .. } => {
+            vec![access(Mode::Read, src), access(Mode::Write, dst)]
+        }
         LoweredInstr::Scan {
             dst,
             data0,

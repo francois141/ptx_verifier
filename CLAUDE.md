@@ -550,12 +550,14 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts fourteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+Lowering accepts sixteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
-`activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `reciprocal`, `nc_matmul`,
-`nc_transpose` and `dma_transpose` (`axes=(1, 0)` only, the same `Transpose`) - drops
-an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd` or `unknown` (or the older
-`nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`), and resolves
+`activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`
+(`LoweredInstr::ScalarTensorTensor`), `tensor_scalar_cumulative` (`LoweredInstr::Cumulative`),
+`reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)` or omitted, its
+source in any memory, the same `Transpose`) - drops
+an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unknown` (or the older
+`nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
 (`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`) for a variant whose
@@ -872,6 +874,8 @@ placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (
 `.expected`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
 column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `MixedAllocation`, and a tile past the end of PSUM.
+`success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),
+`tensor_scalar_cumulative` and an HBM-sourced `dma_transpose` with default `axes`.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per

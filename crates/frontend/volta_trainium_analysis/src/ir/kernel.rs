@@ -169,6 +169,40 @@ impl fmt::Display for LoweredKernel {
                     }
                     write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
+                LoweredInstr::ScalarTensorTensor {
+                    dst,
+                    data,
+                    op0,
+                    operand0,
+                    op1,
+                    operand1,
+                    reduce,
+                } => {
+                    let applied = |(op, order): (ArithOp, Order), first: String, second| {
+                        let [left, right] = match order {
+                            Order::Given => [first, second],
+                            Order::Reversed => [second, first],
+                        };
+                        format!("{}({left}, {right})", op.name())
+                    };
+                    let step = applied(*op0, region(data), scalar(operand0));
+                    let expr = applied(*op1, step, region(operand1));
+                    write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
+                }
+                LoweredInstr::Cumulative {
+                    dst,
+                    src,
+                    op0,
+                    imm0,
+                    op1,
+                } => write!(
+                    f,
+                    "  {} = cumulative(acc = {}({}, {imm0}); acc = {}(that, acc))",
+                    region(dst),
+                    op0.name(),
+                    region(src),
+                    op1.name()
+                )?,
                 LoweredInstr::Scan {
                     dst,
                     data0,

@@ -74,6 +74,28 @@ pub enum LoweredInstr {
         second: Option<ScalarStep>,
         reduce: Option<Reduction>,
     },
+    /// `dst = op1(op0(data, operand0), operand1)` elementwise over regions of one shape,
+    /// `operand0` broadcast like a `tensor_scalar` operand and each `Order` swapping its op's
+    /// operands (`reverse0`, `reverse1`), then the result's `reduce`: `scalar_tensor_tensor`.
+    ScalarTensorTensor {
+        dst: TensorRegion,
+        data: TensorRegion,
+        op0: (ArithOp, Order),
+        operand0: ScalarOperand,
+        op1: (ArithOp, Order),
+        operand1: TensorRegion,
+        reduce: Option<Reduction>,
+    },
+    /// Along each partition's free elements in order, `acc = op1(op0(src[p, i], imm0), acc)`
+    /// and `dst[p, i] = acc`, from `op1`'s identity (`reduce_cmd.reset_reduce`):
+    /// `tensor_scalar_cumulative`.
+    Cumulative {
+        dst: TensorRegion,
+        src: TensorRegion,
+        op0: ArithOp,
+        imm0: Scalar,
+        op1: ArithOp,
+    },
     /// Along each partition, `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])`
     /// over matrix regions of one shape, `initial` in place of `dst[p, -1]`; each
     /// `Order` says whether its data operand is the op's left operand as written.
@@ -124,6 +146,8 @@ impl LoweredInstr {
             LoweredInstr::Reduce { .. } => "tensor_reduce",
             LoweredInstr::TensorScalar { .. } => "tensor_scalar",
             LoweredInstr::Scan { .. } => "tensor_tensor_scan",
+            LoweredInstr::ScalarTensorTensor { .. } => "scalar_tensor_tensor",
+            LoweredInstr::Cumulative { .. } => "tensor_scalar_cumulative",
             LoweredInstr::Matmul { .. } => "nc_matmul",
             LoweredInstr::Transpose {
                 mover: Mover::Dma(_),

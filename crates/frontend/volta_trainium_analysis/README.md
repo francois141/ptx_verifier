@@ -61,6 +61,8 @@ the call shapes, and prints the trace as JSON, which `frontend::trace` validates
   integers. `nl.tile_size.psum_fmax` is a 2 KiB PSUM bank's 512 fp32 elements and
   `total_available_sbuf_size` is `sbuf_fmax_bytes`. Dtypes print as their bare names
   (`str(nl.float32)` is `float32`), as nkilib's allocator compares them.
+- `nl.private_hbm` tensors are HBM tensors like `nl.shared_hbm` ones: one traced program
+  is alone on its core (`SingleNkiInstance`).
 - `nki.isa.constants`, `nki.language.opcode`, `nki.dtype` and `nki.collectives` re-export the
   members of `nki.isa` and `nki.language` (collectives are unsupported when used).
 - `Tracer::stubbing(&["torch", ...])` replaces host-only modules a kernel's module imports
@@ -109,12 +111,19 @@ takes (see below); the docs' further `*index` tiles are unsupported.
 
 ## Instructions
 
-Lowering accepts fourteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+Lowering accepts sixteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
-`activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `reciprocal`, `nc_matmul`,
-`nc_transpose` and `dma_transpose`. An instruction's `engine=` (`nisa.engine.vector`,
-`scalar`, `gpsimd` or `unknown`, the compiler's choice, or the older
-`nisa.vector_engine`, `scalar_engine` and `gpsimd_engine`) is accepted and dropped,
+`activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`,
+`tensor_scalar_cumulative`, `reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose`.
+`scalar_tensor_tensor` is `LoweredInstr::ScalarTensorTensor`, the docs' `(data op0
+operand0) op1 operand1`, `reverse0`/`reverse1` swapping an op's operands, with an optional
+`reduce_op`/`reduce_res` row reduction. `tensor_scalar_cumulative` is
+`LoweredInstr::Cumulative`, along each partition `acc = op1(op0(src[i], imm0), acc)` and
+`dst[i] = acc` from `op1`'s identity (`reduce_cmd.reset_reduce` only, no `imm1`).
+`dma_transpose` reads a region in any memory, HBM included, its `axes` `(1, 0)` or omitted.
+An instruction's `engine=` (`nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unknown`,
+the compiler's choice, or the older `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`
+and `tensor_engine`) is accepted and dropped,
 since the engine does not change the result; only tensor indirection, which the docs
 run on the vector or scalar engine, rejects `gpsimd`. A DMA's `dge_mode=`
 (`nisa.dge_mode.unknown`, the default, or `none`, or their values 0 and 3 as nkilib writes
@@ -620,6 +629,9 @@ pass's `accumulate=False` must overwrite the first's sum, then `engine=` copies 
 a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
 (`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM, a
 kernel placing only some tiles, and a tile past the end of PSUM.
+`success/fused_scan_ops.py` computes `b - 2a` with `scalar_tensor_tensor` (`reverse1`, a
+row-sum reduction), its running row sums with `tensor_scalar_cumulative`, and `a`'s
+transpose with a `dma_transpose` from HBM with default `axes` (a generated `.expected`).
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);

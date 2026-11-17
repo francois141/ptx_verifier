@@ -30,14 +30,16 @@ const RESET_REDUCE: &str = "nki.isa.reduce_cmd.reset_reduce";
 /// The compute engines an instruction's `engine=` may pick, by `nki.isa` member;
 /// `engine.unknown` lets the compiler choose. Which engine runs an instruction does not
 /// change its result, but tensor indirection runs on the vector or scalar engine only.
-const ENGINES: [(&str, Option<Engine>); 7] = [
+const ENGINES: [(&str, Option<Engine>); 9] = [
     ("nki.isa.engine.vector", Some(Engine::Vector)),
     ("nki.isa.engine.scalar", Some(Engine::Scalar)),
     ("nki.isa.engine.gpsimd", Some(Engine::Gpsimd)),
+    ("nki.isa.engine.tensor", Some(Engine::Tensor)),
     ("nki.isa.engine.unknown", None),
     ("nki.isa.vector_engine", Some(Engine::Vector)),
     ("nki.isa.scalar_engine", Some(Engine::Scalar)),
     ("nki.isa.gpsimd_engine", Some(Engine::Gpsimd)),
+    ("nki.isa.tensor_engine", Some(Engine::Tensor)),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,7 @@ enum Engine {
     Vector,
     Scalar,
     Gpsimd,
+    Tensor,
 }
 
 /// The partitions tensor indirection on the vector and scalar engines reads one
@@ -336,6 +339,79 @@ fn lower_instruction(
             })
         }
 
+        "scalar_tensor_tensor" => {
+            let ([dst, data, op0, operand0, op1, operand1], optional) = operands_with_optional(
+                instruction,
+                &["dst", "data", "op0", "operand0", "op1", "operand1"],
+                &[
+                    "reverse0",
+                    "reverse1",
+                    "reduce_op",
+                    "reduce_res",
+                    "reduce_cmd",
+                ],
+            )?;
+            let [reverse0, reverse1, reduce_op, reduce_res, reduce_cmd] = optional;
+            if let Some(cmd) = reduce_cmd {
+                reset_reduce(cmd)?;
+            }
+            let [dst, data, operand1] = [
+                scope.tile(dst, "dst")?,
+                scope.tile(data, "data")?,
+                scope.tile(operand1, "operand1")?,
+            ];
+            same_shape(&dst, &data)?;
+            same_shape(&dst, &operand1)?;
+            let [partitions, _] = dst.region.tile_extents();
+            let reduce = match (reduce_op, reduce_res) {
+                (Some(op), Some(res)) => Some(reduction(op, res, &dst, scope)?),
+                (None, None) => None,
+                _ => {
+                    return Err(StatementError::UnpairedOperands {
+                        opcode: instruction.opcode.clone(),
+                        keywords: &["reduce_op", "reduce_res"],
+                    });
+                }
+            };
+            Ok(LoweredInstr::ScalarTensorTensor {
+                op0: (arith_op(op0)?, order(reverse0, "reverse0")?),
+                operand0: scalar_operand(operand0, "operand0", partitions, scope)?,
+                op1: (arith_op(op1)?, order(reverse1, "reverse1")?),
+                operand1: operand1.region,
+                reduce,
+                dst: dst.region,
+                data: data.region,
+            })
+        }
+
+        "tensor_scalar_cumulative" => {
+            let ([dst, src, op0, op1, imm0], [imm1, reduce_cmd]) = operands_with_optional(
+                instruction,
+                &["dst", "src", "op0", "op1", "imm0"],
+                &["imm1", "reduce_cmd"],
+            )?;
+            if let Some(cmd) = reduce_cmd {
+                reset_reduce(cmd)?;
+            }
+            if let Some(imm1) = imm1.filter(|imm1| **imm1 != Operand::None) {
+                return Err(StatementError::UnsupportedReduceCmd(imm1.clone()));
+            }
+            let [dst, src] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
+            same_shape(&dst, &src)?;
+            let imm0 = match imm0 {
+                Operand::Scalar(value) => *value,
+                Operand::Int(value) => Scalar::new(*value as f64).expect("an integer is finite"),
+                _ => return Err(StatementError::NotAScalar { keyword: "imm0" }),
+            };
+            Ok(LoweredInstr::Cumulative {
+                op0: arith_op(op0)?,
+                imm0,
+                op1: arith_op(op1)?,
+                dst: dst.region,
+                src: src.region,
+            })
+        }
+
         "tensor_tensor_scan" => {
             let ([dst, data0, data1, initial, op0, op1], [reverse0, reverse1]) =
                 operands_with_optional(
@@ -419,14 +495,18 @@ fn lower_instruction(
             })
         }
 
-        // A transpose the DMA engines perform, which is a 2-D one with `axes=(1, 0)`.
+        // A transpose the DMA engines perform, from a region in any memory into a tile: a
+        // 2-D one, `axes=(1, 0)` or omitted.
         "dma_transpose" => {
             let (instruction, descriptors) = without_dge_mode(instruction)?;
-            let [dst, src, axes] = operands(&instruction, &["dst", "src", "axes"])?;
-            if *axes != Operand::Ints(vec![1, 0]) {
-                return Err(StatementError::UnsupportedTransposeAxes(axes.clone()));
+            let ([dst, src], [axes]) =
+                operands_with_optional(&instruction, &["dst", "src"], &["axes"])?;
+            match axes {
+                None | Some(Operand::None) => {}
+                Some(Operand::Ints(axes)) if axes[..] == [1, 0] => {}
+                Some(axes) => return Err(StatementError::UnsupportedTransposeAxes(axes.clone())),
             }
-            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.region(src, "src")?];
             let [partitions, free] = data.matrix()?;
             dst.matrix()?;
             result_shape(&dst, Shape(vec![free, partitions]))?;
