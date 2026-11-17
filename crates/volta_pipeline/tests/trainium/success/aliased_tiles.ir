@@ -1,0 +1,7 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[2, 4]
+  x: sbuf[2, 4] at (0, 0), 4 bytes each
+  y: sbuf[2, 4] at (0, 0), 4 bytes each
+  x = dma(a)
+  out = dma(y)

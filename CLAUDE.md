@@ -599,8 +599,9 @@ overwrites an element's first write and adds to later ones.
 known), within 128 partitions of `sbuf_fmax_bytes` (SBUF) or 16 KiB (PSUM, eight 2 KiB
 banks). A kernel places all its on-chip tiles or none (`LowerError::MixedAllocation`).
 Placed tiles may overlap (v10's `v_psum_t` and `qk_psum`): `eval/alias.rs` pairs the
-overlapping tiles, a write through one clobbers the other's elements covering its bytes,
-and reading a clobbered element is `EvalError::ClobberedRead`. This is program order; the
+overlapping tiles, a write through one sets the other's element over exactly the same bytes
+to the value written and clobbers its others covering any of them, and reading a clobbered
+element is `EvalError::ClobberedRead`. This is program order; the
 graph branch takes the compiler to order accesses through overlapping tiles by address
 (`OrderingPolicy::BASELINE`'s `PlacedTiles::ByAddress`), which the docs do not state.
 
@@ -883,6 +884,7 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `axes`, 2-D and 3-D.
 `success/norm_ops.py` covers `nl.abs`, `nl.sqrt`, `keepdims` under `nl.max` and
 `tensor_partition_reduce`.
+`success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per

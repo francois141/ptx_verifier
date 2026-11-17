@@ -92,6 +92,17 @@ fn the_norm_ops_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// Two tiles placed over the same bytes with the same element size: a read through one sees a
+// write through the other.
+#[test]
+fn the_aliased_tiles_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/aliased_tiles",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
 // The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their
 // event graphs' races.
 #[test]

@@ -64,11 +64,18 @@ impl<'a> Interpreter<'a> {
             let tile = self.tensors[tensor].tensor();
             if let Some((partition, bytes)) = alias::element_bytes(tile, &index) {
                 for &other in &self.aliases[tensor] {
-                    for clobbered in
-                        alias::overlapping(self.tensors[other].tensor(), partition, &bytes)
-                    {
-                        let through = tile.name.clone();
-                        self.tensors[other].clobber(clobbered, Clobber { instr, through });
+                    let other_tile = self.tensors[other].tensor();
+                    for aliased in alias::overlapping(other_tile, partition, &bytes) {
+                        // An element over exactly these bytes now holds the value written,
+                        // as the hardware's memory does; one over part of them is garbage.
+                        let exact = alias::element_bytes(other_tile, &aliased)
+                            == Some((partition, bytes.clone()));
+                        if exact {
+                            self.tensors[other].write(aliased, value);
+                        } else {
+                            let through = tile.name.clone();
+                            self.tensors[other].clobber(aliased, Clobber { instr, through });
+                        }
                     }
                 }
             }
