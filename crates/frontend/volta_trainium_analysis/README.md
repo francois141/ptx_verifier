@@ -111,10 +111,14 @@ takes (see below); the docs' further `*index` tiles are unsupported.
 
 ## Instructions
 
-Lowering accepts sixteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+Lowering accepts seventeen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
 `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`,
-`tensor_scalar_cumulative`, `reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose`.
+`tensor_scalar_cumulative`, `tensor_partition_reduce`, `reciprocal`, `nc_matmul`,
+`nc_transpose` and `dma_transpose`. `tensor_partition_reduce` is
+`LoweredInstr::PartitionReduce`: each `dst[0, f]` folds `add` or `maximum` over `data`'s
+partitions at `f` (the docs give no output shape; nkilib reduces `[P, 1]` into `[1, 1]`).
+`tensor_reduce` takes `keepdims`; `nl.max` is `nl.maximum`, as nkilib passes it.
 `scalar_tensor_tensor` is `LoweredInstr::ScalarTensorTensor`, the docs' `(data op0
 operand0) op1 operand1`, `reverse0`/`reverse1` swapping an op's operands, with an optional
 `reduce_op`/`reduce_res` row reduction. `tensor_scalar_cumulative` is
@@ -136,7 +140,8 @@ them) is kept as `ir::Descriptors` (`.ir` renders `dma[dge_mode=none]`), which o
 graph's `OutOfBandDmas` reads; any other mode is `StatementError::UnsupportedDgeMode`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
-`nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity); a new member means a variant in the enum's
+`nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity, `nl.sqrt`, `nl.abs`); a new member
+means a variant in the enum's
 `ALL` array, not a case in lowering. Binary ops take their operands in NKI's
 order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
 operand`, so `nl.subtract` is `data - operand`.
@@ -639,6 +644,8 @@ row-sum reduction), its running row sums with `tensor_scalar_cumulative` (from z
 `load_reduce` from each row's sum), and `a`'s
 transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a generated
 `.expected`).
+`success/norm_ops.py` covers `nl.abs` and `nl.sqrt`, a `keepdims` `tensor_reduce` under
+`nl.max` and `tensor_partition_reduce`, as nkilib's foreach norms use them.
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);

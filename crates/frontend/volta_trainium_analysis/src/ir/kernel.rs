@@ -189,6 +189,13 @@ impl fmt::Display for LoweredKernel {
                     let expr = applied(*op1, step, region(operand1));
                     write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
+                LoweredInstr::PartitionReduce { op, dst, data } => write!(
+                    f,
+                    "  {} = reduce partitions {}({})",
+                    region(dst),
+                    op.name(),
+                    region(data)
+                )?,
                 LoweredInstr::Cumulative {
                     dst,
                     src,

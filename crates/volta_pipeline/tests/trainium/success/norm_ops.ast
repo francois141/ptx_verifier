@@ -1,0 +1,11 @@
+kernel kernel(a: [2, 4], out: [1, 1])
+  x: sbuf[2, 4] of a.dtype
+  dma_copy(dst=x, src=a)
+  activation(data=x, dst=x, op=nki.language.abs)
+  m: sbuf[2, 1] of float32
+  tensor_reduce(axis=1, data=x, dst=m, keepdims=True, op=nki.language.max)
+  total: sbuf[1, 1] of float32
+  tensor_partition_reduce(data=m, dst=total, op=nki.language.add)
+  root: sbuf[1, 1] of float32
+  activation(data=total, dst=root, op=nki.language.sqrt)
+  dma_copy(dst=out, src=root)

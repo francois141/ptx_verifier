@@ -106,6 +106,7 @@ POSITIONAL = {
         "reverse_pred",
     ),
     "nc_n_gather": ("dst", "data", "indices"),
+    "tensor_partition_reduce": ("dst", "op", "data"),
     "max8": ("dst", "src"),
 }
 

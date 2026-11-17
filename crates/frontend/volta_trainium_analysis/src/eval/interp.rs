@@ -218,6 +218,17 @@ impl<'a> Interpreter<'a> {
                     writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
                 }
             }
+            LoweredInstr::PartitionReduce { op, dst, data } => {
+                let [partitions, free] = data.tile_extents();
+                for element in 0..free {
+                    let mut values = Vec::new();
+                    for partition in 0..partitions {
+                        values.push(self.read(instr, data, [partition, element])?);
+                    }
+                    let reduced = self.fold(*op, values);
+                    writes.push(Write::at(dst, [0, element], reduced));
+                }
+            }
             LoweredInstr::Cumulative {
                 dst,
                 src,
@@ -356,6 +367,8 @@ impl<'a> Interpreter<'a> {
             ActivationFunc::Rsqrt => self.arena.rsqrt(Type::Real, x),
             ActivationFunc::Exp => self.arena.exp(Type::Real, x),
             ActivationFunc::Copy => x,
+            ActivationFunc::Sqrt => self.arena.sqrt(Type::Real, x),
+            ActivationFunc::Abs => self.arena.abs(Type::Real, x),
             ActivationFunc::Reciprocal => self.arena.rcp(Type::Real, x),
         }
     }

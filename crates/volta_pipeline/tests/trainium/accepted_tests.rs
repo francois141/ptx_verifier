@@ -81,6 +81,17 @@ fn the_fused_scan_ops_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// The activations abs and sqrt, tensor_reduce with keepdims under nl.max, and
+// tensor_partition_reduce.
+#[test]
+fn the_norm_ops_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/norm_ops",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[1, 1])],
+    );
+}
+
 // The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their
 // event graphs' races.
 #[test]
