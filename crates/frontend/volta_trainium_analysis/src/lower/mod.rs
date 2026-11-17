@@ -319,21 +319,26 @@ fn lower_instruction(
         }
 
         "tensor_scalar" => {
-            let ([dst, data, op0, operand0], [op1, operand1]) = operands_with_optional(
-                instruction,
-                &["dst", "data", "op0", "operand0"],
-                &["op1", "operand1"],
-            )?;
+            let ([dst, data, op0, operand0], [op1, operand1, reverse0, reverse1]) =
+                operands_with_optional(
+                    instruction,
+                    &["dst", "data", "op0", "operand0"],
+                    &["op1", "operand1", "reverse0", "reverse1"],
+                )?;
 
             let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
             same_shape(&dst, &data)?;
             let [partitions, _] = dst.region.tile_extents();
 
-            let first = scalar_step(op0, operand0, "operand0", partitions, scope)?;
+            let first = ScalarStep {
+                order: order(reverse0, "reverse0")?,
+                ..scalar_step(op0, operand0, "operand0", partitions, scope)?
+            };
             let second = match (op1, operand1) {
-                (Some(op), Some(operand)) => {
-                    Some(scalar_step(op, operand, "operand1", partitions, scope)?)
-                }
+                (Some(op), Some(operand)) => Some(ScalarStep {
+                    order: order(reverse1, "reverse1")?,
+                    ..scalar_step(op, operand, "operand1", partitions, scope)?
+                }),
                 (None, None) => None,
                 _ => {
                     return Err(StatementError::UnpairedOperands {
@@ -770,6 +775,7 @@ fn scalar_step(
     Ok(ScalarStep {
         op: arith_op(op)?,
         operand: scalar_operand(operand, keyword, partitions, scope)?,
+        order: Order::Given,
     })
 }
 

@@ -133,6 +133,7 @@ operand0) op1 operand1`, `reverse0`/`reverse1` swapping an op's operands, with a
 `dst[i] = acc` from `op1`'s identity (`reduce_cmd.reset_reduce`, the default) or from `imm1`
 (`load_reduce`, a literal or a `[partitions, 1]` tile), as nkilib's `cumsum` carries its sum
 across column tiles.
+`tensor_scalar` takes `reverse0`/`reverse1`, swapping a step's operands (`ScalarStep::order`).
 `dma_transpose` reads a region in any memory, HBM included, its `axes` `(1, 0)` or omitted;
 with the docs' default axes (`(1, 0)`, `(2, 1, 0)`, `(3, 1, 2, 0)`) it swaps the first and
 last dimensions of a region whose others all have extent 1, as nkilib's `rmsnorm_tkg`
@@ -655,7 +656,7 @@ a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
 kernel placing only some tiles, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` computes `b - 2a` with `scalar_tensor_tensor` (`reverse1`, a
 row-sum reduction), its running row sums with `tensor_scalar_cumulative` (from zero, and with
-`load_reduce` from each row's sum), and `a`'s
+`load_reduce` from each row's sum), `1 - 2s` by a `tensor_scalar` with `reverse1`, and `a`'s
 transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a generated
 `.expected`).
 `success/norm_ops.py` covers `nl.abs` and `nl.sqrt`, a `keepdims` `tensor_reduce` under

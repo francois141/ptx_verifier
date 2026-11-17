@@ -881,8 +881,8 @@ placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (
 column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `MixedAllocation`, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),
-`tensor_scalar_cumulative` (with `load_reduce`) and HBM-sourced `dma_transpose`s with default
-`axes`, 2-D and 3-D.
+`tensor_scalar_cumulative` (with `load_reduce`), a `tensor_scalar` with `reverse1` and
+HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `success/norm_ops.py` covers `nl.abs`, `nl.sqrt`, `keepdims` under `nl.max` and
 `tensor_partition_reduce`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
