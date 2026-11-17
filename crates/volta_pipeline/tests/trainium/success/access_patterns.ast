@@ -1,4 +1,4 @@
-kernel kernel(a: [2, 6])
+kernel kernel(a: [2, 6], prod: [2, 3, 2])
   out: shared_hbm[2, 6] of float32
   t: sbuf[2, 3, 2] of float32
   dma_copy(dst=t, src=a.ap([[6, 2], [1, 3], [3, 2]], offset=0))
@@ -6,4 +6,9 @@ kernel kernel(a: [2, 6])
   tensor_reduce(axis=(2,), data=t, dst=sums, op=nki.language.add)
   dma_copy(dst=out[:, 0:3], src=sums)
   dma_copy(dst=out[:, 3:6], src=t.ap([[6, 2], [2, 3]], offset=1))
+  acc: psum[2, 3, 2] of float32
+  nc_matmul(dst=acc, moving=t, stationary=t[:, 0, :])
+  staged: sbuf[2, 3, 2] of float32
+  tensor_copy(dst=staged, src=acc)
+  dma_copy(dst=prod, src=staged)
   return out

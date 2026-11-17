@@ -893,8 +893,8 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `success/refilled_gap.py` evicts a PSUM tile whose columns are not all written; no output
 reaches the unwritten ones.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
-`axis=(2,)` and copies out through a tile view with an offset (a hand-written
-`.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
+`axis=(2,)`, copies out through a tile view with an offset and multiplies by a matmul
+whose moving operand and result have two free dimensions (a hand-written `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
 `PatternProblem` a tile or HBM view can hit and a `tensor_reduce` over a leading axis.
 `check_failure/scan.py` scans a 2 x 3 tile with a broadcast row, from a tile and, both
 ops reversed, from `1.0`, and applies `activation`'s `scale` (a hand-written `.expected`);
