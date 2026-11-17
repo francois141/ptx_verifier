@@ -1,7 +1,8 @@
 """A stand-in for AWS's `nki` package that records the instructions a kernel call emits
 instead of compiling them, for Volta to verify. `trace.py` runs a kernel under it."""
 
-from . import isa as isa, language as language, typing as typing
+from . import collectives as collectives, dtype as dtype, isa as isa
+from . import language as language, typing as typing
 from ._trace import Member
 
 

@@ -6,8 +6,8 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, ArithOp, Initial, InstrId, Layout, LoweredInstr, Mover, Order, Origin, Reduction,
-    ScalarOperand, Selection, Sign, Tensor, TensorId, TensorRegion,
+    Accumulation, ArithOp, Descriptors, Initial, InstrId, Layout, LoweredInstr, Mover, Order,
+    Origin, Reduction, ScalarOperand, Selection, Sign, Tensor, TensorId, TensorRegion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +97,8 @@ impl fmt::Display for LoweredKernel {
             match instruction {
                 LoweredInstr::Mov { dst, src, mover } => {
                     let op = match mover {
-                        Mover::Dma => "dma",
+                        Mover::Dma(Descriptors::CompilerChosen) => "dma",
+                        Mover::Dma(Descriptors::OutOfBand) => "dma[dge_mode=none]",
                         Mover::Engine => "mov",
                     };
                     write!(f, "  {} = {op}({})", region(dst), region(src))?
@@ -213,7 +214,8 @@ impl fmt::Display for LoweredKernel {
                 }
                 LoweredInstr::Transpose { dst, data, mover } => {
                     let op = match mover {
-                        Mover::Dma => "dma_transpose",
+                        Mover::Dma(Descriptors::CompilerChosen) => "dma_transpose",
+                        Mover::Dma(Descriptors::OutOfBand) => "dma_transpose[dge_mode=none]",
                         Mover::Engine => "transpose",
                     };
                     write!(f, "  {} = {op}({})", region(dst), region(data))?

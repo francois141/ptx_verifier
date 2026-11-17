@@ -614,6 +614,10 @@ pub enum Assumption {
     /// An NKI `no_reorder` block's instructions execute in program order (its edges are
     /// hardware synchronization, not scheduling hints).
     NkiNoReorderInProgramOrder,
+    /// The Neuron compiler orders a DMA whose descriptors are generated out of band
+    /// (`dge_mode.none`) against the other DMAs it conflicts with, as it does compiler-chosen
+    /// DMAs; AWS's `gpsimd_topk` audit found it does not.
+    NkiOutOfBandDmasOrdered,
     /// One NeuronCore runs one instance of the NKI kernel: races between SPMD instances or
     /// cores are not checked.
     SingleNkiInstance,
@@ -680,6 +684,9 @@ impl Assumption {
             }
             Assumption::NkiNoReorderInProgramOrder => {
                 "the instructions of an NKI no_reorder block execute in program order"
+            }
+            Assumption::NkiOutOfBandDmasOrdered => {
+                "the Neuron compiler orders dge_mode.none DMAs against the other DMAs they                  conflict with"
             }
             Assumption::SingleNkiInstance => {
                 "one NeuronCore runs one instance of the NKI kernel; races between SPMD \

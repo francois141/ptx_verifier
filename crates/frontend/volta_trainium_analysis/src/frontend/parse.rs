@@ -111,6 +111,29 @@ pub struct KernelCall<'a> {
     /// tensor's offsets, which must be concrete to address another tensor.
     pub contents: &'a [(&'a str, &'a [u64])],
     pub tile_sizes: TileSizes,
+    /// What `nisa.get_nc_version()` returns; only the tracer reads it.
+    pub nc_version: NcVersion,
+}
+
+/// A NeuronCore generation, as `nisa.nc_version` names it: gen3 is Trn2's, gen4 Trn3's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NcVersion {
+    Gen2,
+    /// Trn2's, whose memory sizes `TileSizes::HARDWARE` and the PSUM bound are.
+    #[default]
+    Gen3,
+    Gen4,
+}
+
+impl NcVersion {
+    /// The `n` of `nc_version.gen<n>`.
+    pub fn generation(self) -> u32 {
+        match self {
+            Self::Gen2 => 2,
+            Self::Gen3 => 3,
+            Self::Gen4 => 4,
+        }
+    }
 }
 
 /// A kernel argument that is not a tensor, a Python value the kernel computes with.
@@ -141,6 +164,7 @@ impl<'a> KernelCall<'a> {
             constants: &[],
             contents: &[],
             tile_sizes: TileSizes::default(),
+            nc_version: NcVersion::default(),
         }
     }
 }

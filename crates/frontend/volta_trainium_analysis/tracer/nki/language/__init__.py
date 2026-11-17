@@ -2,8 +2,8 @@
 the tile-returning functions, each rewritten into a declaration and the one `nki.isa`
 instruction it lowers to. Any other member is a `Member` passed by its dotted path."""
 
-from . import _trace
-from ._trace import (
+from .. import _trace
+from .._trace import (
     NKI_LANGUAGE,
     Broadcast,
     KernelError,
@@ -53,7 +53,14 @@ def _member(function):
 
 
 class _TileSize:
+    # A partition's SBUF the allocator may use; Volta takes it to be the whole partition.
+    ALIASES = {"total_available_sbuf_size": "sbuf_fmax_bytes"}
+
+    # A PSUM bank's free size in fp32 elements: one of Volta's eight 2 KiB banks.
+    psum_fmax = 2048 // 4
+
     def __getattr__(self, name):
+        name = self.ALIASES.get(name, name)
         if name.startswith("__") or not hasattr(_trace.TRACE.tile_sizes, name):
             raise Unsupported(f"`nl.tile_size.{name}` is not supported")
         return getattr(_trace.TRACE.tile_sizes, name)
@@ -324,3 +331,21 @@ def _reject(unsupported, callee):
         raise Unsupported(
             f"`{callee}`'s {', '.join(sorted(unsupported))} is not supported"
         )
+
+
+# =============================================================================
+# The launch grid
+# =============================================================================
+# A traced call is one program launched without a grid (Volta's `SingleNkiInstance`).
+
+
+def program_ndim():
+    return 0
+
+
+def num_programs(axes=None):
+    return 1
+
+
+def program_id(axis=0):
+    return 0

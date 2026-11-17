@@ -106,8 +106,11 @@ only inline unit tests of their internals.
   A run that aborts (`accumulate_uninitialized`) gives a graph ending `Aborted` at the
   failing instruction, so the graph branch is inconclusive.
   `nki_verdicts_under_each_ordering_policy_match_the_table` checks every NKI fixture and
-  sample under all sixteen policies against `trainium/ordering_policies.txt`
+  sample under all thirty-two policies against `trainium/ordering_policies.txt`
   (`VOLTA_BLESS=1` rewrites it), `ok` or the number of conflicting pairs.
+  `nki_out_of_band_dmas_race_unless_the_policy_orders_them`: `check_failure/
+  out_of_band_dma_reload`'s `dge_mode.none` DMAs race under `BASELINE` and verify once
+  `OutOfBandDmas::Ordered` (recording `NkiOutOfBandDmasOrdered`).
 - `trainium/equivalence_tests.rs`: an NKI kernel proved equal to its spec whose graph
   verifies is ACCEPT through `solve` and `decide`, citing the baseline's five ordering
   assumptions, and

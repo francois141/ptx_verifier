@@ -17,8 +17,8 @@ use volta_graph_check::domain::ConflictKind::{self, ReadWrite, WriteRead, WriteW
 use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
 use volta_trainium_analysis::frontend::parse::{Constant, KernelCall, TileSizes};
 use volta_trainium_analysis::{
-    Execution, InstrId, LoweredKernel, NoReorder, OrderingPolicy, PlacedTiles, Reductions,
-    Reordering, WriteAfterWrite, evaluate, footprints, lower_kernel, record_graph,
+    Execution, InstrId, LoweredKernel, NoReorder, OrderingPolicy, OutOfBandDmas, PlacedTiles,
+    Reductions, Reordering, WriteAfterWrite, evaluate, footprints, lower_kernel, record_graph,
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/trainium/");
@@ -88,6 +88,32 @@ fn conflicts(graph: &EventGraph, report: &GraphReport) -> BTreeSet<(u32, u32, Co
 fn check_race_under(policy: OrderingPolicy, name: &str, rows: u64) -> (EventGraph, GraphReport) {
     let shapes: [(&str, &[u64]); 2] = [("a", &[rows, 4]), ("out", &[rows - 1, 4])];
     check_under(policy, &format!("check_failure/{name}"), &shapes)
+}
+
+// Test that a DMA with out-of-band descriptors (dge_mode.none) loading a tile races the
+// out-of-band DMAs copying it out, as AWS's gpsimd_topk audit found such DMAs unordered,
+// unless the policy orders them (recording NkiOutOfBandDmasOrdered).
+#[test]
+fn nki_out_of_band_dmas_race_unless_the_policy_orders_them() {
+    let shapes: [(&str, &[u64]); 2] = [("a", &[1, 4]), ("out", &[2, 4])];
+    let name = "check_failure/out_of_band_dma_reload";
+    let (graph, report) = check_under(OrderingPolicy::BASELINE, name, &shapes);
+    assert_eq!(
+        conflicts(&graph, &report),
+        BTreeSet::from([(0, 1, WriteRead), (0, 2, WriteRead)])
+    );
+
+    let ordered = OrderingPolicy {
+        out_of_band_dmas: OutOfBandDmas::Ordered,
+        ..OrderingPolicy::BASELINE
+    };
+    let (graph, report) = check_under(ordered, name, &shapes);
+    assert_eq!(report.conclusion(), GraphConclusion::Verified);
+    assert!(
+        graph
+            .provenance()
+            .assumes(Assumption::NkiOutOfBandDmasOrdered)
+    );
 }
 
 // Test that kernels whose every reuse of a location is read or rewritten in order verify:
@@ -664,6 +690,10 @@ fn probes() -> Vec<Probe> {
         ));
     }
     probes.push(probe_fixture(
+        "check_failure/out_of_band_dma_reload",
+        &KernelCall::new(&[("a", &[1, 4]), ("out", &[2, 4])]),
+    ));
+    probes.push(probe_fixture(
         "success/affine_vector_sum",
         &KernelCall::new(&[("a", &[2, 4]), ("out", &[1, 4])]),
     ));
@@ -835,6 +865,9 @@ fn heading(policy: OrderingPolicy) -> String {
     if policy.reductions == Reductions::Matmul {
         letters.push('m');
     }
+    if policy.out_of_band_dmas == OutOfBandDmas::Ordered {
+        letters.push('d');
+    }
     if letters.is_empty() {
         "base".to_string()
     } else {
@@ -853,8 +886,8 @@ fn nki_verdicts_under_each_ordering_policy_match_the_table() {
          # outside affine_range iterations, by address through placed tiles' shared bytes, and\n\
          # lets nc_matmul and tensor_tensor add accumulations commute (base); a column's\n\
          # letters add write after write (w), track hazards per tensor only (t), order\n\
-         # no_reorder blocks in program order (n), or let only nc_matmul accumulations\n\
-         # commute (m).\n",
+         # no_reorder blocks in program order (n), let only nc_matmul accumulations\n\
+         # commute (m), or order dge_mode.none DMAs against the DMAs they conflict with (d).\n",
     );
     let headings: Vec<String> = OrderingPolicy::ALL.into_iter().map(heading).collect();
     writeln!(

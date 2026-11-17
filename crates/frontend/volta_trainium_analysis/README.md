@@ -48,6 +48,23 @@ the call shapes, and prints the trace as JSON, which `frontend::trace` validates
   instructions' `Origin`, a new `LoopId` per loop entered; `nl.no_reorder()` numbers its
   outermost block. Plain Python loops are not recorded: since each entry of an inner loop
   is a new `LoopId`, `in_different_affine_iterations` reaches the same answer without them.
+- Tensors, regions and views have NKI's view methods (`NkiTensor`'s `slice`, `select`,
+  `reshape`, `reshape_dim`, `permute`, `flatten_dims`, `squeeze_dim`, `expand_dim`,
+  `broadcast`, `ap`, `get_pattern`, `is_contiguous`, `strides`, `offset`, ...), each an
+  element offset and `[step, count]` pairs over the base tensor's row-major layout, as the
+  NKI docs define a view, emitted as an `ast::Operand::Pattern`; on-chip, dimension 0 is the
+  partitions and stays first. `reshape` needs a contiguous view; reinterpreting bits
+  (`view(dtype)`), `rearrange` and runtime selects are unsupported. Subscripts take `...`.
+- Instructions take positional operands in the order AWS's `nki.isa` reference declares.
+- `nisa.get_nc_version()` is the call's `KernelCall::nc_version` (`NcVersion::Gen3`, Trn2's,
+  by default); `nisa.nc_version.gen<n>` compare by generation, with each other and with
+  integers. `nl.tile_size.psum_fmax` is a 2 KiB PSUM bank's 512 fp32 elements and
+  `total_available_sbuf_size` is `sbuf_fmax_bytes`. Dtypes print as their bare names
+  (`str(nl.float32)` is `float32`), as nkilib's allocator compares them.
+- `nki.isa.constants`, `nki.language.opcode`, `nki.dtype` and `nki.collectives` re-export the
+  members of `nki.isa` and `nki.language` (collectives are unsupported when used).
+- `Tracer::stubbing(&["torch", ...])` replaces host-only modules a kernel's module imports
+  but does not install with inert stubs; a stub reaching an operand is `Unsupported`.
 - A kernel failure is a `KernelFailure`: `Unsupported` (NKI the stand-in does not model),
   `Kernel` (NKI misused), `Assertion` or `Python`, at its innermost line of kernel code.
 
@@ -99,7 +116,10 @@ Lowering accepts fourteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
 `scalar`, `gpsimd` or `unknown`, the compiler's choice, or the older
 `nisa.vector_engine`, `scalar_engine` and `gpsimd_engine`) is accepted and dropped,
 since the engine does not change the result; only tensor indirection, which the docs
-run on the vector or scalar engine, rejects `gpsimd`. Their
+run on the vector or scalar engine, rejects `gpsimd`. A DMA's `dge_mode=`
+(`nisa.dge_mode.unknown`, the default, or `none`, or their values 0 and 3 as nkilib writes
+them) is kept as `ir::Descriptors` (`.ir` renders `dma[dge_mode=none]`), which only the
+graph's `OutOfBandDmas` reads; any other mode is `StatementError::UnsupportedDgeMode`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
 `nl.square`, `nl.rsqrt`, `nl.exp`); a new member means a variant in the enum's
@@ -389,7 +409,7 @@ earlier instructions the compiler orders it after: it resumes from each one's
 `Dependency` generation, then signals its own. `MemoryConflict` reports every conflicting
 pair no chain of dependencies orders.
 
-A policy is four independent choices, each adding an `Assumption` the graph records; every
+A policy is five independent choices, each adding an `Assumption` the graph records; every
 policy orders read after write (`Assumption::NkiReadAfterWriteOrder`: an instruction follows
 the latest earlier writer of each location it reads) and write after read
 (`NkiWriteAfterReadOrder`: it follows the readers of each location it writes since that
@@ -426,8 +446,16 @@ below for why):
   as mamba's `scanC_accum` needs. `Reductions::Matmul` keeps it an ordinary read and write.
   Accumulations under `multiply` or `maximum` are ordinary under both: no sample relies on
   them commuting.
+- `OutOfBandDmas::Ordered` (`NkiOutOfBandDmasOrdered`): a DMA whose descriptors are
+  generated out of band (`dge_mode.none`, `ir::Descriptors::OutOfBand`) follows the DMAs it
+  conflicts with as any other instruction does. The baseline's `Unordered` drops every
+  dependency between two DMAs at least one of which is out of band, as AWS's own
+  `gpsimd_topk` audit found: such a store is taken "off the GpSIMD engine, which is exactly
+  why nothing then orders that store against the phase-2 reload of the SAME private_hbm
+  region". DMAs against compute instructions keep their ordering: the audit says nothing of
+  them.
 
-`OrderingPolicy::ALL` lists the sixteen combinations; `volta_pipeline`'s
+`OrderingPolicy::ALL` lists the thirty-two combinations; `volta_pipeline`'s
 `trainium/ordering_policies.txt` tabulates every NKI kernel's verdict under each.
 
 Locations are disjoint address ranges, one per `Location` (`1 << 40` apart): HBM tensors
@@ -454,6 +482,13 @@ its own pattern), so the baseline takes exactly the assumptions some sample need
 | `NkiHazardsByPlacedAddress`: hazards are tracked through the bytes `address=` tiles share | yes (`PlacedTiles::ByAddress`) | Attention v10 (`v_psum_t` and `qk_psum` share PSUM bank 0), and the compiler's own reuse of on-chip memory across tensors. Off: `ByTensor` |
 | `NkiWriteAfterWriteOrder`: a write follows the latest earlier writer of what it writes | no | None: no sample needs it. On: `WriteAfterWrite::Ordered` |
 | `NkiNoReorderInProgramOrder`: a `no_reorder` block's instructions run in program order | no | The API page says so, the scheduling guide leaves it open; no sample needs it. On: `NoReorder::ProgramOrder` |
+| `NkiOutOfBandDmasOrdered`: a `dge_mode.none` DMA is ordered against the DMAs it conflicts with | no | Contradicted by nkilib's `experimental/topk/gpsimd_topk.py`, whose store/reload race (wrong token ids at 128 ranks) was fixed by leaving the mode to the compiler. On: `OutOfBandDmas::Ordered` |
+
+nkilib's comments also bear on `NkiHazardsByPlacedAddress`: `experimental/mla/glm/
+glm_indexer_topk.py` says "`close_scope` releases addresses but the compiler cannot see that
+the next scope's tensor aliases the previous one", so a DMA in flight read the next
+iteration's writes. That is evidence for `PlacedTiles::ByTensor` over the baseline's
+`ByAddress` for tiles nkilib's allocator places, not yet acted on.
 
 v10 is the only sample needing write-after-read and by-address tracking, and it has another
 explanation the policies do not model: a `no_reorder` block also ordered after the code
@@ -466,7 +501,7 @@ verdict prints them; the rest only shape values, or only add conflicts.
 
 | Modelling assumption | Effect |
 |---|---|
-| One core, one kernel instance (`SingleNkiInstance`) | Races across cores or SPMD instances are not checked; `nl.program_id` is not supported |
+| One core, one kernel instance (`SingleNkiInstance`) | Races across cores or SPMD instances are not checked; the tracer launches without a grid (`nl.program_ndim()` 0, `num_programs` 1, `program_id` 0) |
 | Kernel arguments are distinct HBM tensors (`NkiArgumentsDistinct`) | An output aliasing an input is not modelled (R4) |
 | Instructions are unordered unless an assumption orders them | DMA asynchrony needs no model of its own |
 | An instruction reads all its operands before writing any (`NkiInstructionReadsBeforeWrites`) | Overlapping `src` and `dst` regions of one instruction read old values (R5, not checked against the hardware) |
@@ -509,6 +544,9 @@ policy;
 partial sum racing the other iteration's matmul (R8) under every policy.
 `scan` (below) overwrites its `nl.zeros` tile `scale` with a DMA before any read: two
 writes with no read between them, race free only once write after write is ordered.
+`out_of_band_dma_reload` loads a row into a tile with a `dge_mode.none` DMA and copies it
+out with two more, the pattern of vllm-neuron's `_permute_one_token_nki`: race free only
+under `OutOfBandDmas::Ordered`.
 `no_reorder_back_to_back_dmas` and `no_reorder_affine` put R0 and R1 inside a
 `no_reorder` block, race free once blocks run in program order; `no_reorder_boundary`
 rewrites inside a block a tile written before it, a race unless write after write is

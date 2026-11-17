@@ -14,9 +14,9 @@ use crate::frontend::ast::{
     TensorName, resolve_region,
 };
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Index, Initial, Layout, LoweredInstr, LoweredKernel,
-    Memory, Mover, Order, Reduction, ScalarOperand, ScalarStep, Selection, Shape, Sign, Tensor,
-    TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Descriptors, Index, Initial, Layout, LoweredInstr,
+    LoweredKernel, Memory, Mover, Order, Reduction, ScalarOperand, ScalarStep, Selection, Shape,
+    Sign, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, PatternProblem, StatementError};
@@ -129,13 +129,14 @@ fn lower_instruction(
         // Data Movement
         // =====================================================================
         "dma_copy" => {
-            let [dst, src] = operands(instruction, &["dst", "src"])?;
+            let (instruction, descriptors) = without_dge_mode(instruction)?;
+            let [dst, src] = operands(&instruction, &["dst", "src"])?;
             let [dst, src] = [scope.region(dst, "dst")?, scope.region(src, "src")?];
             same_shape(&dst, &src)?;
             Ok(LoweredInstr::Mov {
                 dst: dst.region,
                 src: src.region,
-                mover: Mover::Dma,
+                mover: Mover::Dma(descriptors),
             })
         }
 
@@ -420,7 +421,8 @@ fn lower_instruction(
 
         // A transpose the DMA engines perform, which is a 2-D one with `axes=(1, 0)`.
         "dma_transpose" => {
-            let [dst, src, axes] = operands(instruction, &["dst", "src", "axes"])?;
+            let (instruction, descriptors) = without_dge_mode(instruction)?;
+            let [dst, src, axes] = operands(&instruction, &["dst", "src", "axes"])?;
             if *axes != Operand::Ints(vec![1, 0]) {
                 return Err(StatementError::UnsupportedTransposeAxes(axes.clone()));
             }
@@ -431,7 +433,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
                 data: data.region,
-                mover: Mover::Dma,
+                mover: Mover::Dma(descriptors),
             })
         }
 
@@ -442,6 +444,27 @@ fn lower_instruction(
 // =============================================================================
 // Operands
 // =============================================================================
+
+/// A DMA `instruction` without its `dge_mode=`, and how that mode generates its
+/// descriptors: `nisa.dge_mode.unknown` (the default) or `none`, also written as their
+/// values 0 and 3.
+fn without_dge_mode(
+    instruction: &Instruction,
+) -> Result<(Instruction, Descriptors), StatementError> {
+    let mut instruction = instruction.clone();
+    let descriptors = match instruction.operands.remove("dge_mode") {
+        None | Some(Operand::Int(0)) => Descriptors::CompilerChosen,
+        Some(Operand::Int(3)) => Descriptors::OutOfBand,
+        Some(Operand::Member(member)) if member == "nki.isa.dge_mode.unknown" => {
+            Descriptors::CompilerChosen
+        }
+        Some(Operand::Member(member)) if member == "nki.isa.dge_mode.none" => {
+            Descriptors::OutOfBand
+        }
+        Some(other) => return Err(StatementError::UnsupportedDgeMode(other)),
+    };
+    Ok((instruction, descriptors))
+}
 
 /// `instruction` without its `engine=`, which must name a compute engine if given, and
 /// the engine it names.

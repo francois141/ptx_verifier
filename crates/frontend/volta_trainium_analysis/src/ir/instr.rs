@@ -110,7 +110,8 @@ impl LoweredInstr {
     pub fn kind(&self) -> &'static str {
         match self {
             LoweredInstr::Mov {
-                mover: Mover::Dma, ..
+                mover: Mover::Dma(_),
+                ..
             } => "dma_copy",
             LoweredInstr::Mov {
                 mover: Mover::Engine,
@@ -125,7 +126,8 @@ impl LoweredInstr {
             LoweredInstr::Scan { .. } => "tensor_tensor_scan",
             LoweredInstr::Matmul { .. } => "nc_matmul",
             LoweredInstr::Transpose {
-                mover: Mover::Dma, ..
+                mover: Mover::Dma(_),
+                ..
             } => "dma_transpose",
             LoweredInstr::Transpose {
                 mover: Mover::Engine,
@@ -139,8 +141,34 @@ impl LoweredInstr {
 /// `nl.store`) or a compute engine (`tensor_copy`, `nc_transpose`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mover {
-    Dma,
+    Dma(Descriptors),
     Engine,
+}
+
+impl LoweredInstr {
+    /// How its DMA's descriptors are generated, if it is a DMA.
+    pub fn dma(&self) -> Option<Descriptors> {
+        match self {
+            LoweredInstr::Mov {
+                mover: Mover::Dma(descriptors),
+                ..
+            }
+            | LoweredInstr::Transpose {
+                mover: Mover::Dma(descriptors),
+                ..
+            } => Some(*descriptors),
+            _ => None,
+        }
+    }
+}
+
+/// How a DMA's descriptors are generated, from its `dge_mode=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Descriptors {
+    /// `dge_mode.unknown`, the default: the compiler picks the mode.
+    CompilerChosen,
+    /// `dge_mode.none`: pre-generated out of band, off the engines that would order them.
+    OutOfBand,
 }
 
 /// A reduction of an instruction's elementwise result: each `res[p, 0]` the fold of

@@ -91,6 +91,11 @@ fn the_race_fixtures_parse_lower_and_run_in_program_order() {
         "kernel",
         &[("a", &[2, 4]), ("out", &[2, 4])],
     );
+    common::trainium::check(
+        "check_failure/out_of_band_dma_reload",
+        "kernel",
+        &[("a", &[1, 4]), ("out", &[2, 4])],
+    );
 }
 
 // An affine_range's tensor_tensor adds accumulating into one SBUF tile, as mamba does.

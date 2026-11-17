@@ -28,13 +28,23 @@ const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tracer/trace.py");
 #[derive(Debug, Clone)]
 pub struct Tracer {
     python: PathBuf,
+    host_stubs: Vec<String>,
 }
 
 impl Tracer {
     pub fn new(python: impl Into<PathBuf>) -> Self {
         Self {
             python: python.into(),
+            host_stubs: Vec::new(),
         }
+    }
+
+    /// The tracer with each of `modules` (top-level names, e.g. `torch`) and its submodules
+    /// replaced by inert stubs: host-only imports of a kernel's module that are not
+    /// installed. Any stub reaching an instruction operand is `Unsupported`.
+    pub fn stubbing(mut self, modules: &[&str]) -> Self {
+        self.host_stubs = modules.iter().map(|module| module.to_string()).collect();
+        self
     }
 
     /// `$VOLTA_PYTHON`, else `python3` on the `PATH`.
@@ -52,7 +62,8 @@ impl Tracer {
         kernel: &str,
         call: &KernelCall,
     ) -> Result<Kernel, TraceError> {
-        let request = request(file, search_path, kernel, call);
+        let mut request = request(file, search_path, kernel, call);
+        request["host_stubs"] = json!(self.host_stubs);
         let output = self.run(&request)?;
         let response: Response = serde_json::from_slice(&output)
             .map_err(|error| TraceError::Malformed(error.to_string()))?;
@@ -112,6 +123,7 @@ fn request(file: &Path, search_path: &[PathBuf], kernel: &str, call: &KernelCall
         "dtypes": by_name(call.dtypes.iter().map(|&(name, dtype)| (name, json!(dtype))).collect()),
         "constants": by_name(call.constants.iter().map(|(name, c)| (*name, constant(c))).collect()),
         "contents": by_name(call.contents.iter().map(|&(name, items)| (name, json!(items))).collect()),
+        "nc_version": call.nc_version.generation(),
         "tile_sizes": {
             "pmax": sizes.pmax,
             "gemm_stationary_fmax": sizes.gemm_stationary_fmax,
