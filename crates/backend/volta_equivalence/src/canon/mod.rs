@@ -456,14 +456,15 @@ mod chain_perf_tests {
 
     #[test]
     fn test_chain_ops_linear() {
-        // A K-step fma accumulator chain must canonicalize in O(K) term ops.
+        // A K-step multiply-accumulate chain must canonicalize in O(K) term ops.
         let mut ar = ExprArena::new();
         let k = 1000u32;
         let mut acc = ar.float_from_f64(0.0).unwrap();
         for i in 0..k {
             let a = ar.param_symbol(format!("A[{}]", i));
             let b = ar.param_symbol(format!("B[{}]", i));
-            acc = ar.fma(a, b, acc);
+            let product = ar.mul(a, b);
+            acc = ar.add(product, acc);
         }
         let mut session = Session::new();
         let _ = session.canonicalize(Side::Reference, &ar, acc).unwrap();

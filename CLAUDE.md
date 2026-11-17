@@ -117,7 +117,9 @@ lowering replaces it with, computed by lowering it over placeholders in a
 scratch arena, so it always agrees with `lower`. The interpreters decide on
 values (`as_i64`, `as_bool`, `is_undefined`, `value_node` where they inspect a
 kind). `lower(&FullOutputs) -> SymbolicOutputs` (`FullOutputs::lower`) rebuilds
-the reachable nodes with the simplified constructors, reusing each value;
+the reachable nodes with the simplified constructors, reusing each value, and
+writes the full forms simplified lacks (`lower_fma`, `lower_rcp`, and `lower_exp2`/
+`lower_log2` with their float32 `log2(e)` factoring);
 `volta_pipeline`, `volta_cli` and `volta_py` lower outputs before the
 equivalence branch, and every `.out` snapshot renders the lowered form.
 Each form's `node.rs` defines its own `Real`, `SymbolId` and `NanError` (the full
@@ -133,7 +135,7 @@ are `Real`s (arbitrary-precision rationals via `rug`, behind an `Arc`, plus
 `Real::from_f64`/`arena.float_from_f64` are fallible, NaN literals are a
 lowering error, NaN params a config validation error), so the fold algebra
 and canon's rational algebra coincide by construction. Folds are exact on
-ℚ (div/rcp fold only fully-concrete quotients with a nonzero divisor -
+ℚ (div folds only fully-concrete quotients with a nonzero divisor -
 `x/0` and `0/symbolic` both stay unfolded, so a formally-zero
 denominator always reaches canon's loud division error); ±inf folds
 only the unambiguous extended-real forms (max/min absorption, neg,
@@ -146,8 +148,9 @@ real zero alike - anything/0) build unfolded nodes.
   comes only from launch-config names - PTX-source names are scoped and
   must not carry identity; values without a config binding are fresh
   machine `Symbol`s. `AnalysisConfig::validate` rejects ambiguous configs.
-- **Arithmetic**: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `Fma`
-- **Transcendental**: `Exp`, `Log`, `Sqrt`, `Rcp`
+- **Arithmetic**: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg` (no `Fma` or `Rcp`: lowering
+  writes them as `a * b + c` and `1 / a`, as it writes `Exp2`/`Log2` with `exp`/`log`)
+- **Transcendental**: `Exp`, `Log`, `Sqrt`
 - **Bitwise**: `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`, `LShr`
 - **Comparison**: `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge` (return boolean)
 - **Boolean**: `And`, `Or`, `Not`
@@ -164,13 +167,13 @@ lowering of `AnalysisResult::symbolic_outputs` and of `volta_spec::unfold`'s
 ### Text format (`text.rs`, `.vexpr`)
 
 A producer-neutral exchange format: `write_text`/`to_text` and
-`read_text`. Header `volta-expr 1`, then one node per line numbered densely
+`read_text`. Header `volta-expr 2`, then one node per line numbered densely
 from `n0`, children before parents (sharing preserved, so size is linear in
 the DAG), then `out "array" index nK` lines in ascending index order;
 `#` comments and blank lines allowed.
 
 ```
-volta-expr 1
+volta-expr 2
 n0 = elem "in" 0
 n1 = elem "in" 1
 n2 = add n0 n1
@@ -179,7 +182,7 @@ out "out" 0 n2
 
 Operations: `int`/`real`/`bool`/`sym`/`param "name"`/`elem "array" i`/
 `read "array" nK`/`discarded`/`undefined`, then the node names lowercased
-(`add`, `fma`, `select`, `bitand`, `lshr`, `tofloat`, ...). Reals are exact
+(`add`, `select`, `bitand`, `lshr`, `tofloat`, ...). Reals are exact
 (`p/q`, `inf`, `-inf`). Only nodes reachable from an output are written, so
 the interpreter's address/predicate scratch nodes drop out and the file is
 deterministic. Reading rebuilds nodes exactly as written (no constant

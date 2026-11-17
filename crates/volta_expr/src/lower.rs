@@ -180,11 +180,11 @@ pub(crate) fn lower_operation(
         Rem(a, b) => target.rem(child(a), child(b)),
         Neg(a) => target.neg(child(a)),
         Exp(a) => target.exp(child(a)),
-        Exp2(a) => target.exp2(child(a)),
+        Exp2(a) => lower_exp2(target, child(a)),
         Log(a) => target.log(child(a)),
-        Log2(a) => target.log2(child(a)),
+        Log2(a) => lower_log2(target, child(a)),
         Sqrt(a) => target.sqrt(child(a)),
-        Rcp(a) => target.rcp(child(a)),
+        Rcp(a) => lower_rcp(target, child(a)),
         Erf(a) => target.erf(child(a)),
         Gelu(a) => target.gelu(child(a)),
         Max(a, b) => target.max(child(a), child(b)),
@@ -211,7 +211,87 @@ pub(crate) fn lower_operation(
         Not(a) => target.not(child(a)),
         Select(c, t, e) => target.select(child(c), child(t), child(e)),
         ToFloat(a) => target.to_float(child(a)),
-        Fma(a, b, c) => target.fma(child(a), child(b), child(c)),
+        Fma(a, b, c) => lower_fma(target, child(a), child(b), child(c)),
         SymbolicRead { array, index } => target.symbolic_read(&strings[array], child(index)),
     })
+}
+
+/// `1 / a`, folding exactly as `div` does.
+fn lower_rcp(target: &mut simplified::ExprArena, a: simplified::ExprId) -> simplified::ExprId {
+    let one = target.real(simplified::Real::one());
+    target.div(one, a)
+}
+
+/// `a * b + c`, folding exactly as the product then the sum do.
+fn lower_fma(
+    target: &mut simplified::ExprArena,
+    a: simplified::ExprId,
+    b: simplified::ExprId,
+    c: simplified::ExprId,
+) -> simplified::ExprId {
+    let product = target.mul(a, b);
+    target.add(product, c)
+}
+
+/// `2^a` over the reals: `exp(a * ln 2)`, or `exp(v)` for the compilers' `exp(v)` idiom
+/// `2^(v * log2(e))`, which kernels spell with a float32 `log2(e)` (an `exp(v * 0.99999...)`
+/// over the reals) and is folded to the exact `exp(v)` it approximates.
+fn lower_exp2(target: &mut simplified::ExprArena, a: simplified::ExprId) -> simplified::ExprId {
+    if let Some(argument) = factor_log2e(target, a) {
+        return target.exp(argument);
+    }
+    let ln2 = ln2_f32(target);
+    let scaled = target.mul(a, ln2);
+    target.exp(scaled)
+}
+
+/// `log2(a)` over the reals, as `log(a) / ln 2`, the mirror of [`lower_exp2`].
+fn lower_log2(target: &mut simplified::ExprArena, a: simplified::ExprId) -> simplified::ExprId {
+    let log = target.log(a);
+    let ln2 = ln2_f32(target);
+    target.div(log, ln2)
+}
+
+/// `ln 2` as the exact reciprocal of float32's `log2(e)`: scaled exponentials then
+/// canonicalize exactly to a spec's `exp` form and `exp2(log2(x))` cancels, where an f64
+/// `ln 2` would leave ~1e-8 error.
+fn ln2_f32(target: &mut simplified::ExprArena) -> simplified::ExprId {
+    let log2e = simplified::Real::from_f64(f64::from(std::f64::consts::LOG2_E as f32))
+        .expect("log2(e) is not NaN");
+    target.real(log2e.try_recip().expect("log2(e) is nonzero"))
+}
+
+/// Pulls a `log2(e)`-ish constant (within float32 rounding) out of a `Mul`/`Add` chain,
+/// folding in each term's sign, so that `a == log2e * factor_log2e(a)`; `None` when no such
+/// factor exists.
+fn factor_log2e(
+    target: &mut simplified::ExprArena,
+    a: simplified::ExprId,
+) -> Option<simplified::ExprId> {
+    let log2e = std::f64::consts::LOG2_E;
+    let is_log2e_like = |value: f64| (value.abs() - log2e).abs() <= log2e * 1e-6;
+    match target.node(a).clone() {
+        simplified::ExprNode::Mul(l, r) => {
+            for (constant, other) in [(l, r), (r, l)] {
+                let simplified::ExprNode::RealConst(real) = target.node(constant) else {
+                    continue;
+                };
+                let value = real.to_f64();
+                if is_log2e_like(value) {
+                    return Some(if value < 0.0 {
+                        target.neg(other)
+                    } else {
+                        other
+                    });
+                }
+            }
+            None
+        }
+        simplified::ExprNode::Add(l, r) => {
+            let l_factored = factor_log2e(target, l)?;
+            let r_factored = factor_log2e(target, r)?;
+            Some(target.add(l_factored, r_factored))
+        }
+        _ => None,
+    }
 }

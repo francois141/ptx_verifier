@@ -76,17 +76,14 @@ impl<'a> Matcher<'a> {
         (scale, id)
     }
 
-    /// `k` of `x + k*x^3`: an `add` of the two terms, or an `fma` adding `x` to their product.
+    /// `k` of `x + k*x^3`, an `add` of the two terms.
     pub(super) fn cubic(self, id: ExprId, x: ExprId) -> Option<Rational> {
-        let cube = match *self.node(id) {
-            ExprNode::Add(a, b) => either(a, b, |linear, cube| {
-                self.monomial(cube, x).filter(|_| self.same(linear, x))
-            })?,
-            ExprNode::Fma(a, b, c) if self.same(c, x) => {
-                self.monomial(a, x)? * self.monomial(b, x)?
-            }
-            _ => return None,
+        let ExprNode::Add(a, b) = *self.node(id) else {
+            return None;
         };
+        let cube = either(a, b, |linear, cube| {
+            self.monomial(cube, x).filter(|_| self.same(linear, x))
+        })?;
 
         (cube.degree == 3).then_some(cube.coefficient)
     }

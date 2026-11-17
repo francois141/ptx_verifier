@@ -529,12 +529,6 @@ fn render_node(
         Log(a) => operands.call("Real.log", *a)?,
         Sqrt(a) => operands.call("Real.sqrt", *a)?,
 
-        Rcp(a) => Term::new(
-            TermType::Real,
-            Application,
-            format!("{}⁻¹", operands.real(*a)?.argument()),
-        ),
-
         Abs(a) => Term::new(
             TermType::Real,
             Compound,
@@ -605,15 +599,6 @@ fn render_node(
             Term::new(then_value.term_type, Compound, text)
         }
 
-        Fma(a, b, c) => {
-            let text = format!(
-                "{} * {} + {}",
-                operands.real(*a)?.operand(),
-                operands.real(*b)?.operand(),
-                operands.real(*c)?.operand()
-            );
-            Term::new(TermType::Real, Compound, text)
-        }
     })
 }
 

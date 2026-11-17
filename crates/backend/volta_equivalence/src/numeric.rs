@@ -105,12 +105,10 @@ fn eval_inner(
             (x as i64).wrapping_rem((y as i64).max(1)) as f64
         }
         ExprNode::Neg(a) => -ev(*a, memo)?,
-        ExprNode::Fma(a, b, c) => ev(*a, memo)? * ev(*b, memo)? + ev(*c, memo)?,
 
         ExprNode::Exp(a) => ev(*a, memo)?.exp(),
         ExprNode::Log(a) => ev(*a, memo)?.ln(),
         ExprNode::Sqrt(a) => ev(*a, memo)?.sqrt(),
-        ExprNode::Rcp(a) => 1.0 / ev(*a, memo)?,
         ExprNode::Erf(a) => libm::erf(ev(*a, memo)?),
         ExprNode::Gelu(x) => {
             let x = ev(*x, memo)?;

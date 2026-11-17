@@ -28,7 +28,9 @@ the constants they computed, while the outputs keep every operation.
 `lower(&FullOutputs) -> SymbolicOutputs` (also `FullOutputs::lower`) rebuilds
 the nodes an output reaches, children first, with the simplified
 constructors. A node with a value takes its value's lowering, so no fold runs
-twice. Each input array keeps one string.
+twice. The full forms the simplified language lacks are written out there: `fma` as
+`a * b + c`, `rcp` as `1 / a`, `exp2`/`log2` through `exp`/`log` (folding a float32
+`log2(e)` factor into the exact `exp` it approximates). Each input array keeps one string.
 Each language defines its own atoms (`Real`, `SymbolId`, `NanError`) in its
 `node.rs`: lowering converts a full constant to a simplified one and gives each
 machine symbol a fresh simplified one. `volta_pipeline` lowers every analysis's and spec's outputs before the
@@ -47,8 +49,8 @@ does that.
 
 - **Atoms**: `IntConst`, `RealConst(Real)`, `BoolConst`, `Symbol(SymbolId)`,
   `ParamSymbol(StringId)`, `InputElement { array, index }`, `Undefined`.
-- **Operators**: arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `Fma`),
-  transcendental (`Exp`, `Log`, `Sqrt`, `Rcp`), bitwise, comparisons, boolean,
+- **Operators**: arithmetic (`Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`),
+  transcendental (`Exp`, `Log`, `Sqrt`), bitwise, comparisons, boolean,
   `Select`, `Min`, `Max`, `Abs`, conversions.
 - **Exact constants**: a float constant is a `Real` (behind an `Arc`), an
   arbitrary-precision rational (`rug`) or `±inf`. NaN is rejected at every f64 entry point. Floats are modeled as
@@ -76,7 +78,7 @@ has one node per line, children before parents, sharing preserved, and only
 the nodes reachable from an output:
 
 ```
-volta-expr 1
+volta-expr 2
 n0 = elem "in" 0
 n1 = elem "in" 1
 n2 = add n0 n1

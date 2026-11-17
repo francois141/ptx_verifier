@@ -1,4 +1,4 @@
-volta-expr 1
+volta-expr 2
 n0 = elem "in \"quoted\" \\ name" 7
 n1 = param "N"
 n2 = int -5
@@ -15,38 +15,36 @@ n12 = neg n0
 n13 = exp n0
 n14 = log n0
 n15 = sqrt n0
-n16 = rcp n0
-n17 = abs n0
-n18 = sign n0
-n19 = erf n0
-n20 = rint n0
-n21 = trunc n0
-n22 = bitnot n0
-n23 = not n0
-n24 = tofloat n0
-n25 = add n0 n1
-n26 = sub n0 n1
-n27 = mul n0 n1
-n28 = div n0 n1
-n29 = rem n0 n1
-n30 = max n0 n1
-n31 = min n0 n1
-n32 = bitand n0 n1
-n33 = bitor n0 n1
-n34 = bitxor n0 n1
-n35 = shl n0 n1
-n36 = shr n0 n1
-n37 = lshr n0 n1
-n38 = eq n0 n1
-n39 = ne n0 n1
-n40 = lt n0 n1
-n41 = le n0 n1
-n42 = gt n0 n1
-n43 = ge n0 n1
-n44 = and n0 n1
-n45 = or n0 n1
-n46 = select n0 n1 n2
-n47 = fma n0 n1 n2
+n16 = abs n0
+n17 = sign n0
+n18 = erf n0
+n19 = rint n0
+n20 = trunc n0
+n21 = bitnot n0
+n22 = not n0
+n23 = tofloat n0
+n24 = add n0 n1
+n25 = sub n0 n1
+n26 = mul n0 n1
+n27 = div n0 n1
+n28 = rem n0 n1
+n29 = max n0 n1
+n30 = min n0 n1
+n31 = bitand n0 n1
+n32 = bitor n0 n1
+n33 = bitxor n0 n1
+n34 = shl n0 n1
+n35 = shr n0 n1
+n36 = lshr n0 n1
+n37 = eq n0 n1
+n38 = ne n0 n1
+n39 = lt n0 n1
+n40 = le n0 n1
+n41 = gt n0 n1
+n42 = ge n0 n1
+n43 = and n0 n1
+n44 = or n0 n1
+n45 = select n0 n1 n2
 out "out" 0 n0
 out "out" 1 n1
 out "out" 2 n2
@@ -93,5 +91,3 @@ out "out" 42 n42
 out "out" 43 n43
 out "out" 44 n44
 out "out" 45 n45
-out "out" 46 n46
-out "out" 47 n47

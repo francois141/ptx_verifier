@@ -36,7 +36,7 @@ const DUMP_MAGIC: &[u8; 8] = b"VOLTAVCD";
 /// A reader accepts its own major with a minor no newer than its own.
 // 2.0: removed the SignExtend/ZeroExtend/Truncate/ToInt ExprNode variants (shifting later
 // bincode tags) and replaced FloatConst(f64) with RealConst(Real), exact rationals on the wire.
-const DUMP_MAJOR: u16 = 2;
+const DUMP_MAJOR: u16 = 3;
 const DUMP_MINOR: u16 = 0;
 
 /// Write `dump` to `path`, creating or truncating the file.

@@ -272,41 +272,18 @@ fn real_const(arena: &ExprArena, e: ExprId) -> &Real {
     }
 }
 
-/// Division and reciprocal fold to the same exact rational: the fold algebra and canon's
-/// field algebra coincide by construction (else one value under two constants flips verdicts).
+/// Division folds to the exact rational: the fold algebra and canon's field algebra coincide
+/// by construction (else one value under two constants flips verdicts).
 #[test]
-fn div_and_rcp_fold_to_the_same_exact_rational() {
+fn div_folds_to_the_exact_rational() {
     let mut ar = ExprArena::new();
     let one = real_of(&mut ar, 1.0);
     let three = real_of(&mut ar, 3.0);
     let d = ar.div(one, three);
-    let three2 = real_of(&mut ar, 3.0);
-    let r = ar.rcp(three2);
     let third = Real::from_rational(rug::Rational::from((1, 3)));
     assert_eq!(real_const(&ar, d), &third);
-    assert_eq!(real_const(&ar, r), &third);
     // And distinct from the f64 approximation of 1/3.
     assert_ne!(real_const(&ar, d), &Real::from_f64(1.0 / 3.0).unwrap());
-}
-
-/// fma folds exactly as mul-then-add (one algebra, no fused rounding).
-#[test]
-fn fma_folds_exactly_as_mul_plus_add() {
-    let mut ar = ExprArena::new();
-    let (a, b, c) = (
-        real_of(&mut ar, 0.1),
-        real_of(&mut ar, 0.2),
-        real_of(&mut ar, 0.3),
-    );
-    let fused = ar.fma(a, b, c);
-    let prod = ar.mul(a, b);
-    let spelled = ar.add(prod, c);
-    assert_eq!(real_const(&ar, fused), real_const(&ar, spelled));
-    // The old f64 folds disagreed: mul_add rounds once, mul+add twice.
-    assert_ne!(
-        real_const(&ar, fused),
-        &Real::from_f64(0.1f64.mul_add(0.2, 0.3)).unwrap()
-    );
 }
 
 /// The exact sum of two f64 constants is not the f64 the hardware
@@ -350,11 +327,6 @@ fn division_by_concrete_zero_stays_symbolic() {
     let iz2 = ar.int(0);
     let e = ar.div(iz1, iz2);
     assert!(matches!(ar.node(e), ExprNode::Div(_, _)));
-
-    // rcp(0) stays symbolic as well.
-    let z4 = real_of(&mut ar, 0.0);
-    let e = ar.rcp(z4);
-    assert!(matches!(ar.node(e), ExprNode::Rcp(_)));
 }
 
 /// A zero *numerator* over a non-concrete divisor also stays unfolded, for either zero: folding
@@ -437,14 +409,10 @@ fn extended_real_folds() {
     assert!(matches!(ar.node(e), ExprNode::Sub(_, _)));
     let e = ar.mul(zero, pinf);
     assert!(matches!(ar.node(e), ExprNode::Mul(_, _)));
-    let e = ar.fma(zero, pinf, two);
-    assert!(matches!(ar.node(e), ExprNode::Fma(_, _, _)));
     let e = ar.div(pinf, pinf);
     assert!(matches!(ar.node(e), ExprNode::Div(_, _)));
     let e = ar.div(two, pinf);
     assert!(matches!(ar.node(e), ExprNode::Div(_, _)));
-    let e = ar.rcp(pinf);
-    assert!(matches!(ar.node(e), ExprNode::Rcp(_)));
 
     // Comparisons use the extended-real total order.
     let e = ar.lt(ninf, two);
@@ -458,8 +426,7 @@ fn extended_real_folds() {
 }
 
 /// The *integer* zero annihilates `0 * x` like the real zero except against a concrete infinity
-/// (0 * inf stays unfolded), in both operand orders and through fma's zero shortcut, including
-/// the mixed form with a non-real-constant addend that skips `try_fma`.
+/// (0 * inf stays unfolded), in both operand orders.
 #[test]
 fn integer_zero_times_infinity_stays_unfolded() {
     let mut ar = ExprArena::new();
@@ -479,22 +446,6 @@ fn integer_zero_times_infinity_stays_unfolded() {
     let two = real_of(&mut ar, 2.0);
     let e = ar.mul(iz, two);
     assert_eq!(ar.as_i64(e), Some(0));
-
-    // fma: an integer-zero multiplicand against an infinity stays
-    // unfolded rather than collapsing to the addend...
-    let c = real_of(&mut ar, 5.0);
-    let e = ar.fma(iz, pinf, c);
-    assert!(matches!(ar.node(e), ExprNode::Fma(_, _, _)));
-    let e = ar.fma(ninf, iz, c);
-    assert!(matches!(ar.node(e), ExprNode::Fma(_, _, _)));
-    // ...as does a real-zero * inf whose addend is an integer.
-    let rz = real_of(&mut ar, 0.0);
-    let ic = ar.int(5);
-    let e = ar.fma(rz, pinf, ic);
-    assert!(matches!(ar.node(e), ExprNode::Fma(_, _, _)));
-    // The zero shortcut itself is intact.
-    let e = ar.fma(iz, x, c);
-    assert_eq!(e, c);
 }
 
 /// The layout the arena's economics rest on, statically: `Real` is pointer-sized (a boxed repr

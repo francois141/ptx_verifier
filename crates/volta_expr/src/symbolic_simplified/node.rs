@@ -284,13 +284,6 @@ impl Real {
             _ => None,
         }
     }
-
-    /// Fused multiply-add `a * b + c`, defined exactly when multiplying
-    /// then adding is - by construction, `fma` folds iff `mul` + `add`
-    /// fold, and to the same value.
-    pub fn try_fma(&self, b: &Real, c: &Real) -> Option<Real> {
-        self.try_mul(b)?.try_add(c)
-    }
 }
 
 impl fmt::Display for Real {
@@ -390,8 +383,6 @@ pub enum ExprNode {
     Log(ExprId),
     /// Square root: sqrt(a)
     Sqrt(ExprId),
-    /// Reciprocal: 1/a
-    Rcp(ExprId),
     /// The error function: erf(a)
     Erf(ExprId),
     /// PyTorch's tanh approximation of GELU (`torch.nn.GELU(approximate='tanh')`):
@@ -473,8 +464,6 @@ pub enum ExprNode {
     // =====================================================================
     // Special
     // =====================================================================
-    /// Fused multiply-add: a * b + c
-    Fma(ExprId, ExprId, ExprId),
     /// Symbolic read `array[index]` from a launch-config input array at a symbolic index; once
     /// `index` becomes a concrete `i`, it resolves to the lazily materialized `InputElement`.
     SymbolicRead { array: StringId, index: ExprId },
@@ -512,7 +501,6 @@ impl ExprNode {
             | ExprNode::Exp(a)
             | ExprNode::Log(a)
             | ExprNode::Sqrt(a)
-            | ExprNode::Rcp(a)
             | ExprNode::Abs(a)
             | ExprNode::Sign(a)
             | ExprNode::Erf(a)
@@ -549,7 +537,7 @@ impl ExprNode {
                 f(*b);
             }
 
-            ExprNode::Select(a, b, c) | ExprNode::Fma(a, b, c) => {
+            ExprNode::Select(a, b, c) => {
                 f(*a);
                 f(*b);
                 f(*c);
@@ -573,7 +561,6 @@ impl ExprNode {
             Exp(a) => Exp(f(a)),
             Log(a) => Log(f(a)),
             Sqrt(a) => Sqrt(f(a)),
-            Rcp(a) => Rcp(f(a)),
             Abs(a) => Abs(f(a)),
             Sign(a) => Sign(f(a)),
             Erf(a) => Erf(f(a)),
@@ -609,7 +596,6 @@ impl ExprNode {
             And(a, b) => And(f(a), f(b)),
             Or(a, b) => Or(f(a), f(b)),
             Select(a, b, c) => Select(f(a), f(b), f(c)),
-            Fma(a, b, c) => Fma(f(a), f(b), f(c)),
         }
     }
 
@@ -899,7 +885,6 @@ fn structurally_equal_inner(
         | (Exp(a1), Exp(b1))
         | (Log(a1), Log(b1))
         | (Sqrt(a1), Sqrt(b1))
-        | (Rcp(a1), Rcp(b1))
         | (Abs(a1), Abs(b1))
         | (Erf(a1), Erf(b1))
         | (Gelu(a1), Gelu(b1))
@@ -910,7 +895,7 @@ fn structurally_equal_inner(
         | (ToFloat(a1), ToFloat(b1)) => structurally_equal(a_arena, *a1, b_arena, *b1),
 
         // Ternary ops
-        (Fma(a1, a2, a3), Fma(b1, b2, b3)) | (Select(a1, a2, a3), Select(b1, b2, b3)) => {
+        (Select(a1, a2, a3), Select(b1, b2, b3)) => {
             structurally_equal(a_arena, *a1, b_arena, *b1)
                 && structurally_equal(a_arena, *a2, b_arena, *b2)
                 && structurally_equal(a_arena, *a3, b_arena, *b3)

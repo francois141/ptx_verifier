@@ -14,7 +14,7 @@ const CUBIC_COEFFICIENT: f64 = 0.044_715;
 /// How far a kernel's constants may sit from PyTorch's: f32 rounding, products folded by hand.
 const RELATIVE_TOLERANCE: f64 = 1e-5;
 
-/// `x*0.5 * (tanh(w) + 1)` or `fma(x*0.5, tanh(w), x*0.5)`, with `tanh` in the
+/// `x*0.5 * (tanh(w) + 1)` or `x*0.5 * tanh(w) + x*0.5`, with `tanh` in the
 /// `(e^{2w} - 1) / (e^{2w} + 1)` form the analyses build and `2w = s * (x + k*x^3)`, `s/2`
 /// and `k` PyTorch's coefficients up to rounding: `Gelu(x)`. Returns that `x`.
 pub fn torch_gelu(arena: &ExprArena, id: ExprId) -> Option<ExprId> {
@@ -22,10 +22,14 @@ pub fn torch_gelu(arena: &ExprArena, id: ExprId) -> Option<ExprId> {
 
     let (half_x, exponent) = match *m.node(id) {
         ExprNode::Mul(a, b) => either(a, b, |half_x, sum| Some((half_x, one_plus_tanh(m, sum)?)))?,
-        ExprNode::Fma(half_x, t, c) => {
-            let exponent = m.tanh(t)?;
-            m.same(half_x, c).then_some((half_x, exponent))?
-        }
+        ExprNode::Add(a, b) => either(a, b, |product, c| {
+            let ExprNode::Mul(p, q) = *m.node(product) else {
+                return None;
+            };
+            either(p, q, |half_x, t| {
+                m.same(half_x, c).then_some((half_x, m.tanh(t)?))
+            })
+        })?,
         _ => return None,
     };
 

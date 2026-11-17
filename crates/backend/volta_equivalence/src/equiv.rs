@@ -175,19 +175,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fma_expansion() {
-        // fma(a, b, c) == a*b + c
-        let mut arena = ExprArena::new();
-        let a = arena.param_symbol("a");
-        let b = arena.param_symbol("b");
-        let c = arena.param_symbol("c");
-        let e1 = arena.fma(a, b, c);
-        let ab = arena.mul(a, b);
-        let e2 = arena.add(ab, c);
-        assert!(check_equivalent(&arena, e1, &arena, e2).unwrap());
-    }
-
-    #[test]
     fn test_softmax_normalization_equivalence() {
         // exp(a)/(exp(a)+exp(b)) == exp(a-M)/(exp(a-M)+exp(b-M)), M = max(a,b)
         let mut arena = ExprArena::new();

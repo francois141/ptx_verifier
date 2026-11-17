@@ -76,11 +76,6 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
-            ExprNode::Rcp(a) => {
-                write!(f, "rcp(")?;
-                self.fmt_expr(*a, f)?;
-                write!(f, ")")
-            }
             ExprNode::Max(a, b) => {
                 write!(f, "max(")?;
                 self.fmt_expr(*a, f)?;
@@ -245,15 +240,6 @@ impl ExprArena {
             ExprNode::Gelu(x) => {
                 write!(f, "gelu(")?;
                 self.fmt_expr(*x, f)?;
-                write!(f, ")")
-            }
-            ExprNode::Fma(a, b, c) => {
-                write!(f, "fma(")?;
-                self.fmt_expr(*a, f)?;
-                write!(f, ", ")?;
-                self.fmt_expr(*b, f)?;
-                write!(f, ", ")?;
-                self.fmt_expr(*c, f)?;
                 write!(f, ")")
             }
             ExprNode::SymbolicRead { array, index } => {

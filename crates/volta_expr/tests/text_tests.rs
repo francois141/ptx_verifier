@@ -34,7 +34,7 @@ fn only_nodes_reachable_from_outputs_are_written() {
     };
     assert_eq!(
         to_text(&exprs),
-        "volta-expr 1\nn0 = param \"x\"\nn1 = int 1\nn2 = add n0 n1\nout \"out\" 3 n2\n"
+        "volta-expr 2\nn0 = param \"x\"\nn1 = int 1\nn2 = add n0 n1\nout \"out\" 3 n2\n"
     );
 }
 
@@ -51,7 +51,7 @@ fn reals_are_written_exactly() {
 
 #[test]
 fn comments_and_blank_lines_are_ignored() {
-    let text = "# produced by hand\n\nvolta-expr 1\n  n0 = int 2  \n# done\nout \"o\" 0 n0\n";
+    let text = "# produced by hand\n\nvolta-expr 2\n  n0 = int 2  \n# done\nout \"o\" 0 n0\n";
     let exprs = read_text(text).unwrap();
     assert_eq!(
         exprs.arena.display_expr(exprs.element("o", 0).unwrap()),
@@ -70,22 +70,22 @@ fn rejects(text: &str, needle: &str) {
 #[test]
 fn malformed_input_is_rejected_with_its_line() {
     rejects("", "missing header");
-    rejects("volta-expr 2\n", "expected header");
-    rejects("volta-expr 1\nn1 = int 0\n", "expected node `n0`");
-    rejects("volta-expr 1\nn0 = add n0 n0\n", "not defined yet");
+    rejects("volta-expr 1\n", "expected header");
+    rejects("volta-expr 2\nn1 = int 0\n", "expected node `n0`");
+    rejects("volta-expr 2\nn0 = add n0 n0\n", "not defined yet");
     rejects(
-        "volta-expr 1\nn0 = frobnicate\n",
+        "volta-expr 2\nn0 = frobnicate\n",
         "unknown operation `frobnicate`",
     );
     rejects(
-        "volta-expr 1\nn0 = int 1\nn1 = add n0\n",
+        "volta-expr 2\nn0 = int 1\nn1 = add n0\n",
         "wrong operands for `add`",
     );
-    rejects("volta-expr 1\nn0 = int x\n", "invalid literal `x`");
-    rejects("volta-expr 1\nn0 = param \"open\n", "unterminated string");
+    rejects("volta-expr 2\nn0 = int x\n", "invalid literal `x`");
+    rejects("volta-expr 2\nn0 = param \"open\n", "unterminated string");
     rejects(
-        "volta-expr 1\nn0 = int 1\nout \"o\" 1 n0\nout \"o\" 0 n0\n",
+        "volta-expr 2\nn0 = int 1\nout \"o\" 1 n0\nout \"o\" 0 n0\n",
         "line 4: `o` elements must be listed in strictly ascending index order",
     );
-    rejects("volta-expr 1\nout \"o\" 0 n0\n", "not defined yet");
+    rejects("volta-expr 2\nout \"o\" 0 n0\n", "not defined yet");
 }

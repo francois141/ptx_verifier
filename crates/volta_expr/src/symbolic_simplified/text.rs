@@ -11,7 +11,7 @@ use id_collections::Id;
 use super::{ExprArena, ExprId, ExprNode, Real, RealRepr, StringId, SymbolId};
 use crate::outputs::SymbolicOutputs;
 
-const HEADER: &str = "volta-expr 1";
+const HEADER: &str = "volta-expr 2";
 
 /// A malformed `.vexpr` input, located by 1-based line number.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +37,6 @@ const UNARY: &[(&str, Unary)] = &[
     ("exp", ExprNode::Exp),
     ("log", ExprNode::Log),
     ("sqrt", ExprNode::Sqrt),
-    ("rcp", ExprNode::Rcp),
     ("abs", ExprNode::Abs),
     ("sign", ExprNode::Sign),
     ("erf", ExprNode::Erf),
@@ -73,7 +72,7 @@ const BINARY: &[(&str, Binary)] = &[
     ("or", ExprNode::Or),
 ];
 
-const TERNARY: &[(&str, Ternary)] = &[("select", ExprNode::Select), ("fma", ExprNode::Fma)];
+const TERNARY: &[(&str, Ternary)] = &[("select", ExprNode::Select)];
 
 /// The operation name and operands a node is written with. Exhaustive over
 /// `ExprNode`, so a new variant cannot be added without a text form.
@@ -94,7 +93,6 @@ fn spell(node: &ExprNode) -> (&'static str, Vec<Operand>) {
         Exp(a) => ("exp", vec![Child(*a)]),
         Log(a) => ("log", vec![Child(*a)]),
         Sqrt(a) => ("sqrt", vec![Child(*a)]),
-        Rcp(a) => ("rcp", vec![Child(*a)]),
         Abs(a) => ("abs", vec![Child(*a)]),
         Sign(a) => ("sign", vec![Child(*a)]),
         Erf(a) => ("erf", vec![Child(*a)]),
@@ -126,7 +124,6 @@ fn spell(node: &ExprNode) -> (&'static str, Vec<Operand>) {
         And(a, b) => ("and", vec![Child(*a), Child(*b)]),
         Or(a, b) => ("or", vec![Child(*a), Child(*b)]),
         Select(c, t, e) => ("select", vec![Child(*c), Child(*t), Child(*e)]),
-        Fma(a, b, c) => ("fma", vec![Child(*a), Child(*b), Child(*c)]),
     }
 }
 

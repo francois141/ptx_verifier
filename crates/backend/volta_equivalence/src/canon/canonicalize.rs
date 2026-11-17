@@ -140,18 +140,6 @@ impl Session {
                 let ra = self.canon_value(side, arena, *a)?;
                 self.rat_neg_v(ra)
             }
-            ExprNode::Fma(a, b, c) => {
-                let ra = self.canon_value(side, arena, *a)?;
-                let rb = self.canon_value(side, arena, *b)?;
-                let prod = self.rat_mul_v(ra, rb)?;
-                let rc = self.canon_value(side, arena, *c)?;
-                self.rat_add_v(prod, rc)
-            }
-            ExprNode::Rcp(a) => {
-                let ra = self.canon_value(side, arena, *a)?;
-                let one = RatV::from_rat(self.arena.rat_poly(self.arena.one));
-                self.rat_div_v(one, ra)
-            }
 
             // Exponential: a polynomial argument becomes a fused exp factor
             // (the argument itself must be interned - it is part of term
