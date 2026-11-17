@@ -1115,6 +1115,12 @@ its scan restarted each tile; the tensor_indirection tutorial's kernel, its offs
 call's `contents`, against `tensor_indirection.spec` (an index array) at its driver's
 128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
 against one moved offset and the ungathered `data[:, i]`.
+`trainium/nkilib_tests.rs` runs the bugs Volta found in nkilib (vendored unmodified at
+`ad2f1b9` in `external/trainium/nkilib/src/`) at their calls: `max_pooling_3d` (F7)
+`ClobberedRead`, `conv3d` (F9) `UninitializedRead`, `conv3d_bwd` `dx` (F11) and
+`conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
+`fixes.py`'s fix at import, and the fixed call is proved equal and race free under
+`WriteAfterWrite::Ordered`. `external/trainium/nkilib/README.md` explains each bug.
 AMD output checks require the same run's graph to conclude `Verified`: snapshots,
 equivalence comparisons, the Lean challenge, and the grid tests' individual workgroup runs.
 `amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
@@ -1132,8 +1138,8 @@ iterations (the tiled matmul tutorials) verify under every policy, `tensor_tenso
 `affine_range` fixtures race under every policy. A run that aborts
 gives a graph ending `Aborted` at the failing instruction, so its checks are inconclusive. A table test checks every NKI fixture and
 sample under all thirty-two policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
-rewrites it). `just trainium` runs its accepted, rejected and
-equivalence suites.
+rewrites it). `just trainium` runs its accepted, rejected,
+equivalence and nkilib suites.
 
 ### End-to-end tests (`tests/`)
 

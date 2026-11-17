@@ -8,4 +8,5 @@ mod common;
 mod accepted_tests;
 mod equivalence_tests;
 mod graph_tests;
+mod nkilib_tests;
 mod rejected_tests;
