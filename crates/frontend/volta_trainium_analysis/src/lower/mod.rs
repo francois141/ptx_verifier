@@ -264,8 +264,18 @@ fn lower_instruction(
         }
 
         "tensor_reduce" => {
-            let ([dst, data, op, axis], [negate]) =
-                operands_with_optional(instruction, &["dst", "data", "op", "axis"], &["negate"])?;
+            let ([dst, data, op, axis], [negate, keepdims]) = operands_with_optional(
+                instruction,
+                &["dst", "data", "op", "axis"],
+                &["negate", "keepdims"],
+            )?;
+            // Either way `dst` holds the result's elements per partition; `reduced_shape`
+            // accepts the kept axes as extents of 1 or dropped.
+            if !matches!(keepdims, None | Some(Operand::Bool(_))) {
+                return Err(StatementError::NotABool {
+                    keyword: "keepdims",
+                });
+            }
             let op = arith_op(op)?;
             let sign = match negate {
                 None | Some(Operand::Bool(false)) => Sign::Kept,
@@ -380,6 +390,31 @@ fn lower_instruction(
                 op1: (arith_op(op1)?, order(reverse1, "reverse1")?),
                 operand1: operand1.region,
                 reduce,
+                dst: dst.region,
+                data: data.region,
+            })
+        }
+
+        "tensor_partition_reduce" => {
+            let [dst, op, data] = operands(instruction, &["dst", "op", "data"])?;
+            let op = arith_op(op)?;
+            if !matches!(op, ArithOp::Add | ArithOp::Maximum) {
+                return Err(StatementError::UnsupportedArithOp(
+                    instruction.operands["op"].clone(),
+                ));
+            }
+            let [dst, data] = [scope.tile(dst, "dst")?, scope.tile(data, "data")?];
+            let [_, free] = data.region.tile_extents();
+            if dst.region.tile_extents() != [1, free] {
+                let (tensor, shape) = dst.described();
+                return Err(StatementError::ResultShape {
+                    tensor,
+                    shape,
+                    expected: Shape(vec![1, free]),
+                });
+            }
+            Ok(LoweredInstr::PartitionReduce {
+                op,
                 dst: dst.region,
                 data: data.region,
             })
@@ -676,9 +711,13 @@ fn language_member(operand: &Operand) -> Option<&str> {
     member.strip_prefix(NKI_LANGUAGE)?.strip_prefix('.')
 }
 
-/// A `nki.language` arithmetic function, e.g. `nl.add`.
+/// A `nki.language` arithmetic function, e.g. `nl.add`; `nl.max`, which nkilib's kernels
+/// pass as an op, is `nl.maximum`.
 fn arith_op(operand: &Operand) -> Result<ArithOp, StatementError> {
-    let name = language_member(operand);
+    let name = match language_member(operand) {
+        Some("max") => Some("maximum"),
+        name => name,
+    };
     ArithOp::ALL
         .into_iter()
         .find(|op| Some(op.name()) == name)

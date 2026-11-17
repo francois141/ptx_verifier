@@ -74,6 +74,14 @@ pub enum LoweredInstr {
         second: Option<ScalarStep>,
         reduce: Option<Reduction>,
     },
+    /// Each `dst[0, f]` the fold of `op` over `data`'s partitions at `f`, seeded with
+    /// partition 0's (`tensor_partition_reduce`; the docs give no output shape, and nkilib
+    /// reduces `[P, 1]` into `[1, 1]`).
+    PartitionReduce {
+        op: ArithOp,
+        dst: TensorRegion,
+        data: TensorRegion,
+    },
     /// `dst = op1(op0(data, operand0), operand1)` elementwise over regions of one shape,
     /// `operand0` broadcast like a `tensor_scalar` operand and each `Order` swapping its op's
     /// operands (`reverse0`, `reverse1`), then the result's `reduce`: `scalar_tensor_tensor`.
@@ -148,6 +156,7 @@ impl LoweredInstr {
             LoweredInstr::TensorScalar { .. } => "tensor_scalar",
             LoweredInstr::Scan { .. } => "tensor_tensor_scan",
             LoweredInstr::ScalarTensorTensor { .. } => "scalar_tensor_tensor",
+            LoweredInstr::PartitionReduce { .. } => "tensor_partition_reduce",
             LoweredInstr::Cumulative { .. } => "tensor_scalar_cumulative",
             LoweredInstr::Matmul { .. } => "nc_matmul",
             LoweredInstr::Transpose {

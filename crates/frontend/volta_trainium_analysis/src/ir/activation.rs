@@ -14,19 +14,25 @@ pub enum ActivationFunc {
     Exp,
     /// `x`: a copy through the activation engine.
     Copy,
+    /// `sqrt(x)`.
+    Sqrt,
+    /// `|x|`.
+    Abs,
     /// `rcp(x)`: `nisa.reciprocal`'s, not an `activation` function, so not in `ALL`.
     Reciprocal,
 }
 
 impl ActivationFunc {
     /// The functions `activation`'s `op` can name.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Sigmoid,
         Self::Relu,
         Self::Square,
         Self::Rsqrt,
         Self::Exp,
         Self::Copy,
+        Self::Sqrt,
+        Self::Abs,
     ];
 
     /// Its `nki.language` member: `nl.sigmoid` is `sigmoid`.
@@ -38,6 +44,8 @@ impl ActivationFunc {
             Self::Rsqrt => "rsqrt",
             Self::Exp => "exp",
             Self::Copy => "copy",
+            Self::Sqrt => "sqrt",
+            Self::Abs => "abs",
             Self::Reciprocal => "reciprocal",
         }
     }

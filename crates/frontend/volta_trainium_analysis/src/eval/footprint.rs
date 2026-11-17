@@ -161,6 +161,9 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             reduced(reduce),
         ]
         .concat(),
+        LoweredInstr::PartitionReduce { dst, data, .. } => {
+            vec![access(Mode::Read, data), access(Mode::Write, dst)]
+        }
         LoweredInstr::Cumulative {
             dst, src, initial, ..
         } => [

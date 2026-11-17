@@ -1,0 +1,1 @@
+out[0] = sqrt((max(max(max(abs(a[0]), abs(a[1])), abs(a[2])), abs(a[3])) + max(max(max(abs(a[4]), abs(a[5])), abs(a[6])), abs(a[7]))))

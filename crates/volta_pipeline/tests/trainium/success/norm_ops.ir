@@ -1,0 +1,13 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[1, 1]
+  x: sbuf[2, 4]
+  m: sbuf[2, 1]
+  total: sbuf[1, 1]
+  root: sbuf[1, 1]
+  x = dma(a)
+  x = abs(x)
+  m = reduce maximum(x)
+  total = reduce partitions add(m)
+  root = sqrt(total)
+  out = dma(root)

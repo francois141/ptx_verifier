@@ -550,11 +550,12 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts sixteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+Lowering accepts seventeen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
 `activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`
 (`LoweredInstr::ScalarTensorTensor`), `tensor_scalar_cumulative` (`LoweredInstr::Cumulative`,
-`reset_reduce` or `load_reduce` from `imm1`),
+`reset_reduce` or `load_reduce` from `imm1`), `tensor_partition_reduce`
+(`LoweredInstr::PartitionReduce`, `add` or `maximum` across partitions into `[1, F]`),
 `reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)`, or omitted to
 swap the ends of a region whose middle extents are 1, its source in any memory, the same
 `Transpose`) - drops
@@ -562,7 +563,8 @@ an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unkno
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
-(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`) for a variant whose
+(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, `nl.sqrt`, `nl.abs`;
+`nl.max` is taken as `nl.maximum`) for a variant whose
 `name()` matches, so a new function reaches lowering by joining that array and
 needs no arm of its own; any other member is a lowering error. Binary ops take
 NKI's operand order (`data1 op data2`, `data op operand`). `tensor_reduce` is
@@ -879,6 +881,8 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),
 `tensor_scalar_cumulative` (with `load_reduce`) and HBM-sourced `dma_transpose`s with default
 `axes`, 2-D and 3-D.
+`success/norm_ops.py` covers `nl.abs`, `nl.sqrt`, `keepdims` under `nl.max` and
+`tensor_partition_reduce`.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
