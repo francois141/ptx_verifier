@@ -433,7 +433,10 @@ class Tensor(Views):
         )
 
     def __getitem__(self, key):
-        return Region(self, subscript(expand(key, len(self.shape)))).checked()
+        keys = expand(key, len(self.shape))
+        if _stepped(keys):
+            return self.pattern_view()[keys]
+        return Region(self, subscript(keys)).checked()
 
     def ap(self, pattern, offset=0, **unsupported):
         if unsupported:
@@ -477,12 +480,17 @@ def expand(key, rank):
     return keys
 
 
+def _stepped(keys):
+    """Whether a subscript has a slice with a step, which only a view can take."""
+    return any(isinstance(item, slice) and item.step not in (None, 1) for item in keys)
+
+
 def subscript(key):
     keys = key if isinstance(key, tuple) else (key,)
     dims = []
     for item in keys:
         if isinstance(item, slice):
-            if item.step is not None:
+            if item.step not in (None, 1):
                 raise Unsupported("a tensor slice with a step is not supported")
             bounds = [
                 None if bound is None else non_negative(bound, "a slice bound")
@@ -547,6 +555,8 @@ class Region(Views):
     def __getitem__(self, key):
         """A region of this region: the two compose to one rectangle of the tensor."""
         kept = [i for i, sel in enumerate(self.selected) if sel[0] == "slice"]
+        if _stepped(expand(key, len(kept))):
+            return self.pattern_view()[key]
         inner = resolve(
             subscript(expand(key, len(kept))), [self.selected[i][2] for i in kept]
         )

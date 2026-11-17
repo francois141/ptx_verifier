@@ -559,7 +559,7 @@ Lowering accepts seventeen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)`, or omitted to
 swap the ends of a region whose middle extents are 1, its source in any memory, the same
 `Transpose`) - drops
-an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unknown` (or the older
+an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor`, `sync` (a DMA queue) or `unknown` (or the older
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
@@ -887,6 +887,7 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `tensor_partition_reduce`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
+`success/dma_modes.py` covers `hwdge` DMAs, `engine.sync` and a placed `nc_matmul`.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per

@@ -99,6 +99,7 @@ impl fmt::Display for LoweredKernel {
                     let op = match mover {
                         Mover::Dma(Descriptors::CompilerChosen) => "dma",
                         Mover::Dma(Descriptors::OutOfBand) => "dma[dge_mode=none]",
+                        Mover::Dma(Descriptors::Hardware) => "dma[dge_mode=hwdge]",
                         Mover::Engine => "mov",
                     };
                     write!(f, "  {} = {op}({})", region(dst), region(src))?
@@ -264,6 +265,7 @@ impl fmt::Display for LoweredKernel {
                     let op = match mover {
                         Mover::Dma(Descriptors::CompilerChosen) => "dma_transpose",
                         Mover::Dma(Descriptors::OutOfBand) => "dma_transpose[dge_mode=none]",
+                        Mover::Dma(Descriptors::Hardware) => "dma_transpose[dge_mode=hwdge]",
                         Mover::Engine => "transpose",
                     };
                     write!(f, "  {} = {op}({})", region(dst), region(data))?

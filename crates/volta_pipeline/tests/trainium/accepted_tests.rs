@@ -123,6 +123,16 @@ fn the_aliased_tiles_kernel_is_rejected_unless_aliases_are_shared() {
     assert_eq!(rendered, expected);
 }
 
+// matmul.py's product through hwdge DMAs on the sync engine and a placed matmul.
+#[test]
+fn the_dma_modes_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/dma_modes",
+        "kernel",
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("out", &[2, 3])],
+    );
+}
+
 // The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their
 // event graphs' races.
 #[test]
