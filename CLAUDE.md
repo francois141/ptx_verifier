@@ -816,7 +816,8 @@ size, with every other element in its starting partition
 parameters are rejected. A tile (`ast::TileShape`) has partitions and one or more free
 dimensions; instructions evaluate each tile region through its `[partitions, free]`
 view (`TensorRegion::tile_extents`/`tile_index`, other dimensions flattened
-row-major), and copies pair elements in row-major order. A whole tensor is a zero
+row-major), and copies pair elements in row-major order (a DMA's shapes need only agree
+once extent-1 dimensions are dropped). A whole tensor is a zero
 `start` with the tensor's own shape, which `.ir` renders as the bare name. The
 interpreter computes an instruction's writes (`Write`, by tensor index) before
 applying any, so overlapping regions of one tile read old values. Region start
@@ -891,7 +892,8 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `tensor_partition_reduce`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
-`success/dma_modes.py` covers `hwdge` DMAs, `engine.sync` and a placed `nc_matmul`.
+`success/dma_modes.py` covers `hwdge` DMAs, `engine.sync`, a placed `nc_matmul` and DMAs
+between a `[4, 1]` view and an indexed `[4]` column.
 `success/refilled_gap.py` evicts a PSUM tile whose columns are not all written; no output
 reaches the unwritten ones. `success/identity_transpose.py` transposes by `nc_matmul`'s
 transpose mode (`is_transpose=True`, `ir::MatmulPass`, its moving operand checked to be the

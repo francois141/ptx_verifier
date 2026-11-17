@@ -681,7 +681,9 @@ transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a gen
 through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.
 `success/dma_modes.py` is `matmul.py`'s product through `hwdge` DMAs on the sync engine and a
-matmul with `tile_position`/`tile_size`.
+matmul with `tile_position`/`tile_size`, its first operand loaded a column at a time from
+`[4, 1]` views into indexed `[4]` columns: a DMA's shapes need only agree once extent-1
+dimensions are dropped, as its elements move in row-major order (nkilib's depthwise_conv1d).
 `success/refilled_gap.py` evicts a PSUM tile whose last columns no matmul wrote and copies
 out only its written ones, the rest from a zeroed tile (a hand-checked `.expected`).
 `success/identity_transpose.py` transposes a 2 x 3 tile by the Tensor Engine's transpose
