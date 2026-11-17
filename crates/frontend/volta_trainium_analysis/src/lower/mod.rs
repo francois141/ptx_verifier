@@ -15,8 +15,8 @@ use crate::frontend::ast::{
 };
 use crate::ir::{
     Accumulation, ActivationFunc, ArithOp, Descriptors, Index, Initial, Layout, LoweredInstr,
-    LoweredKernel, Memory, Mover, Order, Reduction, ScalarOperand, ScalarStep, Selection, Shape,
-    Sign, Tensor, TensorId, TensorRegion,
+    LoweredKernel, MatmulPass, Memory, Mover, Order, Reduction, ScalarOperand, ScalarStep,
+    Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, PatternProblem, StatementError};
@@ -502,11 +502,21 @@ fn lower_instruction(
         "nc_matmul" => {
             // `tile_position` and `tile_size` place the matmul on part of the Tensor engine's
             // array, which does not change its product.
-            let ([dst, stationary, moving], [accumulate, _, _]) = operands_with_optional(
-                instruction,
-                &["dst", "stationary", "moving"],
-                &["accumulate", "tile_position", "tile_size"],
-            )?;
+            let ([dst, stationary, moving], [accumulate, is_transpose, _, _]) =
+                operands_with_optional(
+                    instruction,
+                    &["dst", "stationary", "moving"],
+                    &["accumulate", "is_transpose", "tile_position", "tile_size"],
+                )?;
+            let pass = match is_transpose {
+                None | Some(Operand::Bool(false)) => MatmulPass::Multiply,
+                Some(Operand::Bool(true)) => MatmulPass::Transpose,
+                Some(_) => {
+                    return Err(StatementError::NotABool {
+                        keyword: "is_transpose",
+                    });
+                }
+            };
             let accumulation = match accumulate {
                 None | Some(Operand::None) => Accumulation::FirstOverwrites,
                 Some(Operand::Bool(false)) => Accumulation::Overwrite,
@@ -541,6 +551,7 @@ fn lower_instruction(
                 stationary: stationary.region,
                 moving: moving.region,
                 accumulation,
+                pass,
             })
         }
 

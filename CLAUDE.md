@@ -893,7 +893,9 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
 `success/dma_modes.py` covers `hwdge` DMAs, `engine.sync` and a placed `nc_matmul`.
 `success/refilled_gap.py` evicts a PSUM tile whose columns are not all written; no output
-reaches the unwritten ones. `success/identity_transpose.py` transposes by a matmul against
+reaches the unwritten ones. `success/identity_transpose.py` transposes by `nc_matmul`'s
+transpose mode (`is_transpose=True`, `ir::MatmulPass`, its moving operand checked to be the
+identity, else `EvalError::NotIdentity`, as `transpose_errors.py` must fail) against
 `nl.shared_identity_matrix`.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)`, copies out through a tile view with an offset and multiplies by a matmul

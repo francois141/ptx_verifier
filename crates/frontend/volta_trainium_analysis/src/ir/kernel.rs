@@ -6,8 +6,9 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, ArithOp, Descriptors, Initial, InstrId, Layout, LoweredInstr, Mover, Order,
-    Origin, Reduction, ScalarOperand, ScalarStep, Selection, Sign, Tensor, TensorId, TensorRegion,
+    Accumulation, ArithOp, Descriptors, Initial, InstrId, Layout, LoweredInstr, MatmulPass, Mover,
+    Order, Origin, Reduction, ScalarOperand, ScalarStep, Selection, Sign, Tensor, TensorId,
+    TensorRegion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,15 +252,20 @@ impl fmt::Display for LoweredKernel {
                     stationary,
                     moving,
                     accumulation,
+                    pass,
                 } => {
                     let accumulate = match accumulation {
                         Accumulation::FirstOverwrites => "",
                         Accumulation::Overwrite => ", accumulate=False",
                         Accumulation::Accumulate => ", accumulate=True",
                     };
+                    let transpose = match pass {
+                        MatmulPass::Multiply => "",
+                        MatmulPass::Transpose => ", is_transpose=True",
+                    };
                     write!(
                         f,
-                        "  {} = matmul({}, {}{accumulate})",
+                        "  {} = matmul({}, {}{accumulate}{transpose})",
                         region(dst),
                         region(stationary),
                         region(moving)

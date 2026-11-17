@@ -4,7 +4,7 @@ kernel kernel(a: [2, 3], out: [3, 2])
   ident: sbuf[2, 2] of float32
   shared_identity_matrix(dst=ident)
   acc: psum[3, 2] of float32
-  nc_matmul(dst=acc, moving=ident, stationary=x)
+  nc_matmul(dst=acc, is_transpose=True, moving=ident, stationary=x)
   t: sbuf[3, 2] of float32
   tensor_copy(dst=t, src=acc)
   dma_copy(dst=out, src=t)

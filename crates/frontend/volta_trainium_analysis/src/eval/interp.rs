@@ -9,8 +9,8 @@ use volta_expr::FullOutputs;
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, Type};
 
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Order,
-    Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, MatmulPass,
+    Order, Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
 };
 
 use super::EvalError;
@@ -354,7 +354,13 @@ impl<'a> Interpreter<'a> {
                 stationary,
                 moving,
                 accumulation,
-            } => self.matmul(instr, dst, [stationary, moving], *accumulation, &mut writes)?,
+                pass,
+            } => {
+                if *pass == MatmulPass::Transpose {
+                    self.identity(instr, moving)?;
+                }
+                self.matmul(instr, dst, [stationary, moving], *accumulation, &mut writes)?
+            }
             LoweredInstr::Gather { dst, data, index } => {
                 for [partition, column] in elements(dst) {
                     let docs = self.offset(instr, index, data, [0, column])?;
@@ -521,6 +527,27 @@ impl<'a> Interpreter<'a> {
     /// Each `dst[row, column]` as the sum over `k` of `stationary[k, row] * moving[k, column]`,
     /// added to the element's value as `accumulation` says. `dst` is in PSUM and the
     /// operands in SBUF, so none alias.
+    /// Check that `region`'s `[partitions, free]` view holds the concrete identity.
+    fn identity(&mut self, instr: InstrId, region: &TensorRegion) -> Result<(), EvalError> {
+        for [p, f] in elements(region) {
+            let value = self.read(instr, region, [p, f])?;
+            let expected = Real::from_i64(i64::from(p == f));
+            let holds = match self.arena.node(value) {
+                ExprNode::IntConst(value) => Real::from_i64(*value) == expected,
+                ExprNode::RealConst(value) => *value == expected,
+                _ => false,
+            };
+            if !holds {
+                return Err(EvalError::NotIdentity {
+                    instr,
+                    tensor: self.tensors[region.tensor].name().to_owned(),
+                    index: region.tile_index(p, f),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn matmul(
         &mut self,
         instr: InstrId,

@@ -191,6 +191,7 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             stationary,
             moving,
             accumulation,
+            ..
         } => {
             let mode = match accumulation {
                 Accumulation::Overwrite => Mode::Write,
