@@ -6,7 +6,8 @@
 
 use rug::Rational;
 
-use super::patterns::{Matcher, constant_node, scaled_node};
+use super::node::{constant_node, scaled_node};
+use super::patterns::Matcher;
 use crate::{ExprArena, ExprId, ExprNode};
 
 /// `scale * max(x, 0) + coefficient * (exp(input_scale * min(x, 0)) - 1)`.

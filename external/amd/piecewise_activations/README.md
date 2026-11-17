@@ -8,13 +8,14 @@ writes it, in a header-free `<kernel>.hip` compiled to `<kernel>.s`; every case 
 A kernel compiles these activations to selects, which the canonical solver cannot match with a
 spec's `max` and `min`. One rewrite per activation in
 `crates/volta_expr/src/symbolic_simplified/rewrite/` turns the kernel's selects into its spec's
-form first. Constants that are not exact in float32 (PyTorch's `one_sixth`, SELU's `scale` and
-PyTorch's f32 product `alpha * scale`) appear in the launch files and specs as their exact f32
-values.
+form first. Constants that are not exact in float32 (LeakyReLU's 0.01, PyTorch's `one_sixth`,
+SELU's `scale` and PyTorch's f32 product `alpha * scale`) appear in the launch files and specs
+as their exact f32 values.
 
 | Case | Kernel | PyTorch op | Rewrite | Verdict |
 |------|--------|------------|---------|---------|
 | `hardtanh` | `hardtanh` | `Hardtanh` (-1, 1) | `hardtanh.rs` | ACCEPT |
+| `leaky_relu` | `leaky_relu` | `LeakyReLU` (0.01) | `leaky_relu.rs` | ACCEPT |
 | `hardsigmoid` | `hardsigmoid` | `Hardsigmoid` | `hardtanh.rs` | ACCEPT |
 | `hardswish` | `hardswish` | `Hardswish` | `hardtanh.rs` | ACCEPT |
 | `hardswish_fast` | `hardswish_fast` | `Hardswish`, `-ffast-math` (native `v_max`, `v_min`) | none | ACCEPT |

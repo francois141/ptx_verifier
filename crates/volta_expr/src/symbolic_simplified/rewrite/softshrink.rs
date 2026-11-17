@@ -4,7 +4,8 @@
 
 use rug::Rational;
 
-use super::patterns::{Matcher, constant_node};
+use super::node::constant_node;
+use super::patterns::Matcher;
 use crate::{ExprArena, ExprId};
 
 /// `max(x - lambd, 0) + min(x + lambd, 0)`.

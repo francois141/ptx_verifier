@@ -197,6 +197,12 @@ CASES = (
         AMD_ROOT,
     ),
     Case(
+        "piecewise_activations/leaky_relu",
+        "piecewise_activations/leaky_relu",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
         "piecewise_activations/hardsigmoid",
         "piecewise_activations/hardsigmoid",
         Solve("ACCEPT"),

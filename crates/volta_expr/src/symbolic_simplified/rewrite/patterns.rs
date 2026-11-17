@@ -8,7 +8,7 @@ use rug::Rational;
 use volta_common::commutative::either;
 use volta_common::monomial::Monomial;
 
-use crate::{ExprArena, ExprId, ExprNode, Real, RealRepr};
+use crate::{ExprArena, ExprId, ExprNode, RealRepr};
 
 /// A select on `x` against a constant `threshold`: `above` where `x` is above it, `below` where
 /// it is below. The comparison's strictness is dropped, so a rewrite of one must check that its
@@ -226,21 +226,4 @@ fn children(node: &ExprNode) -> Vec<ExprId> {
     let mut children = Vec::new();
     node.for_each_child(|c| children.push(c));
     children
-}
-
-/// `q` as a node: an integer constant when it is one, else a real.
-pub(super) fn constant_node(arena: &mut ExprArena, q: &Rational) -> ExprId {
-    match q.is_integer().then(|| q.numer().to_i64()).flatten() {
-        Some(i) => arena.int(i),
-        None => arena.real(Real::from_rational(q.clone())),
-    }
-}
-
-/// `c * e`, or `e` itself when `c` is 1.
-pub(super) fn scaled_node(arena: &mut ExprArena, c: &Rational, e: ExprId) -> ExprId {
-    if *c == 1 {
-        return e;
-    }
-    let c = constant_node(arena, c);
-    arena.mul(c, e)
 }

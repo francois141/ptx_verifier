@@ -6,6 +6,8 @@
 mod elu;
 pub mod gelu;
 mod hardtanh;
+mod leaky_relu;
+mod node;
 mod patterns;
 mod softshrink;
 
@@ -49,6 +51,9 @@ fn replacement(arena: &mut Cow<'_, ExprArena>, id: ExprId) -> Option<ExprId> {
         return Some(arena.to_mut().gelu(x));
     }
     if let Some(found) = hardtanh::hardtanh(arena, id) {
+        return Some(found.build(arena.to_mut()));
+    }
+    if let Some(found) = leaky_relu::leaky_relu(arena, id) {
         return Some(found.build(arena.to_mut()));
     }
     if let Some(found) = softshrink::softshrink(arena, id) {
