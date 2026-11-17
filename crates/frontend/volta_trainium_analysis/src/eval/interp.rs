@@ -224,10 +224,14 @@ impl<'a> Interpreter<'a> {
                 op0,
                 imm0,
                 op1,
+                initial,
             } => {
                 let [partitions, free] = dst.tile_extents();
                 for partition in 0..partitions {
-                    let mut acc = None;
+                    let mut acc = match initial {
+                        Some(initial) => Some(self.scalar(instr, initial, [partition, 0])?),
+                        None => None,
+                    };
                     for element in 0..free {
                         let at = [partition, element];
                         let x = self.read(instr, src, at)?;

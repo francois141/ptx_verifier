@@ -87,14 +87,15 @@ pub enum LoweredInstr {
         reduce: Option<Reduction>,
     },
     /// Along each partition's free elements in order, `acc = op1(op0(src[p, i], imm0), acc)`
-    /// and `dst[p, i] = acc`, from `op1`'s identity (`reduce_cmd.reset_reduce`):
-    /// `tensor_scalar_cumulative`.
+    /// and `dst[p, i] = acc`, from `initial` (`reduce_cmd.load_reduce`'s `imm1`) or else
+    /// `op1`'s identity (`reset_reduce`): `tensor_scalar_cumulative`.
     Cumulative {
         dst: TensorRegion,
         src: TensorRegion,
         op0: ArithOp,
         imm0: Scalar,
         op1: ArithOp,
+        initial: Option<ScalarOperand>,
     },
     /// Along each partition, `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])`
     /// over matrix regions of one shape, `initial` in place of `dst[p, -1]`; each

@@ -195,14 +195,21 @@ impl fmt::Display for LoweredKernel {
                     op0,
                     imm0,
                     op1,
-                } => write!(
-                    f,
-                    "  {} = cumulative(acc = {}({}, {imm0}); acc = {}(that, acc))",
-                    region(dst),
-                    op0.name(),
-                    region(src),
-                    op1.name()
-                )?,
+                    initial,
+                } => {
+                    let start = match initial {
+                        Some(initial) => format!("acc = {}; ", scalar(initial)),
+                        None => String::new(),
+                    };
+                    write!(
+                        f,
+                        "  {} = cumulative({start}acc = {}({}({}, {imm0}), acc))",
+                        region(dst),
+                        op1.name(),
+                        op0.name(),
+                        region(src),
+                    )?
+                }
                 LoweredInstr::Scan {
                     dst,
                     data0,

@@ -553,7 +553,8 @@ parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 Lowering accepts sixteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
 `activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`
-(`LoweredInstr::ScalarTensorTensor`), `tensor_scalar_cumulative` (`LoweredInstr::Cumulative`),
+(`LoweredInstr::ScalarTensorTensor`), `tensor_scalar_cumulative` (`LoweredInstr::Cumulative`,
+`reset_reduce` or `load_reduce` from `imm1`),
 `reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)`, or omitted to
 swap the ends of a region whose middle extents are 1, its source in any memory, the same
 `Transpose`) - drops
@@ -876,7 +877,8 @@ placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (
 column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM,
 `MixedAllocation`, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),
-`tensor_scalar_cumulative` and an HBM-sourced `dma_transpose` with default `axes`.
+`tensor_scalar_cumulative` (with `load_reduce`) and HBM-sourced `dma_transpose`s with default
+`axes`, 2-D and 3-D.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)` and copies out through a tile view with an offset (a hand-written
 `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per
