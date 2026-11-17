@@ -62,8 +62,8 @@ fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
-// scalar_tensor_tensor with a reduction and a reversed op, tensor_scalar_cumulative, and a
-// dma_transpose from HBM with default axes.
+// scalar_tensor_tensor with a reduction and a reversed op, tensor_scalar_cumulative, and
+// dma_transposes from HBM with default axes, one 3-D with a middle extent of 1.
 #[test]
 fn the_fused_scan_ops_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
@@ -75,6 +75,7 @@ fn the_fused_scan_ops_kernel_parses_lowers_and_runs_as_expected() {
             ("out", &[2, 4]),
             ("sums", &[2, 1]),
             ("a_t", &[4, 2]),
+            ("a_t3", &[4, 1, 2]),
         ],
     );
 }

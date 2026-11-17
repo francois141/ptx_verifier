@@ -120,7 +120,10 @@ operand0) op1 operand1`, `reverse0`/`reverse1` swapping an op's operands, with a
 `reduce_op`/`reduce_res` row reduction. `tensor_scalar_cumulative` is
 `LoweredInstr::Cumulative`, along each partition `acc = op1(op0(src[i], imm0), acc)` and
 `dst[i] = acc` from `op1`'s identity (`reduce_cmd.reset_reduce` only, no `imm1`).
-`dma_transpose` reads a region in any memory, HBM included, its `axes` `(1, 0)` or omitted.
+`dma_transpose` reads a region in any memory, HBM included, its `axes` `(1, 0)` or omitted;
+with the docs' default axes (`(1, 0)`, `(2, 1, 0)`, `(3, 1, 2, 0)`) it swaps the first and
+last dimensions of a region whose others all have extent 1, as nkilib's `rmsnorm_tkg`
+loads with.
 An instruction's `engine=` (`nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unknown`,
 the compiler's choice, or the older `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`
 and `tensor_engine`) is accepted and dropped,
@@ -631,7 +634,8 @@ a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
 kernel placing only some tiles, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` computes `b - 2a` with `scalar_tensor_tensor` (`reverse1`, a
 row-sum reduction), its running row sums with `tensor_scalar_cumulative`, and `a`'s
-transpose with a `dma_transpose` from HBM with default `axes` (a generated `.expected`).
+transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a generated
+`.expected`).
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);

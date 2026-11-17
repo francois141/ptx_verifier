@@ -4,10 +4,10 @@ import nki.isa as nisa
 
 
 # scalar_tensor_tensor (s = b - 2a, both ops' operand orders exercised, with a row-sum
-# reduction), tensor_scalar_cumulative (running row sums of s), and a dma_transpose from
-# HBM with its axes left to the (1, 0) default.
+# reduction), tensor_scalar_cumulative (running row sums of s), and dma_transposes from HBM
+# with their default axes: a 2-D one, and a 3-D one whose middle dimension has extent 1.
 @nki.jit
-def kernel(a, b, out, sums, a_t):
+def kernel(a, b, out, sums, a_t, a_t3):
     assert a.shape == (2, 4)
     assert b.shape == (2, 4)
     x = nl.ndarray((2, 4), dtype=a.dtype, buffer=nl.sbuf)
@@ -36,3 +36,7 @@ def kernel(a, b, out, sums, a_t):
     t = nl.ndarray((4, 2), dtype=a.dtype, buffer=nl.sbuf)
     nisa.dma_transpose(dst=t, src=a)
     nisa.dma_copy(dst=a_t, src=t)
+
+    t3 = nl.ndarray((4, 1, 2), dtype=a.dtype, buffer=nl.sbuf)
+    nisa.dma_transpose(dst=t3, src=a.ap([[4, 2], [1, 1], [1, 4]], offset=0))
+    nisa.dma_copy(dst=a_t3, src=t3)

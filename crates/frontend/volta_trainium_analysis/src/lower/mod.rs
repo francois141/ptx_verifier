@@ -495,21 +495,29 @@ fn lower_instruction(
             })
         }
 
-        // A transpose the DMA engines perform, from a region in any memory into a tile: a
-        // 2-D one, `axes=(1, 0)` or omitted.
+        // A transpose the DMA engines perform, from a region in any memory into a tile: a 2-D
+        // one (`axes=(1, 0)`), or with the default axes one swapping the ends of a region
+        // whose other dimensions have extent 1.
         "dma_transpose" => {
             let (instruction, descriptors) = without_dge_mode(instruction)?;
             let ([dst, src], [axes]) =
                 operands_with_optional(&instruction, &["dst", "src"], &["axes"])?;
-            match axes {
-                None | Some(Operand::None) => {}
-                Some(Operand::Ints(axes)) if axes[..] == [1, 0] => {}
-                Some(axes) => return Err(StatementError::UnsupportedTransposeAxes(axes.clone())),
-            }
             let [dst, data] = [scope.tile(dst, "dst")?, scope.region(src, "src")?];
-            let [partitions, free] = data.matrix()?;
-            dst.matrix()?;
-            result_shape(&dst, Shape(vec![free, partitions]))?;
+            let [partitions, free] = match axes {
+                None | Some(Operand::None) => data.ends()?,
+                Some(Operand::Ints(axes)) if axes[..] == [1, 0] => data.matrix()?,
+                Some(axes) => return Err(StatementError::UnsupportedTransposeAxes(axes.clone())),
+            };
+            if dst.ends()? != [free, partitions] {
+                let (tensor, shape) = dst.described();
+                let mut expected = data.kept.0.clone();
+                expected.reverse();
+                return Err(StatementError::ResultShape {
+                    tensor,
+                    shape,
+                    expected: Shape(expected),
+                });
+            }
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
                 data: data.region,
@@ -861,6 +869,21 @@ impl RegionOperand<'_> {
     fn matrix(&self) -> Result<[u64; 2], StatementError> {
         match self.kept.0[..] {
             [rows, columns] => Ok([rows, columns]),
+            _ => Err(StatementError::NotAMatrix {
+                tensor: self.name.clone(),
+                shape: self.kept.clone(),
+            }),
+        }
+    }
+
+    /// Its first and last extents, every dimension between them of extent 1: the region a
+    /// DMA transpose with the docs' default axes (`(1, 0)`, `(2, 1, 0)`, `(3, 1, 2, 0)`)
+    /// swaps the ends of.
+    fn ends(&self) -> Result<[u64; 2], StatementError> {
+        match self.kept.0[..] {
+            [first, ref middle @ .., last] if middle.iter().all(|&extent| extent == 1) => {
+                Ok([first, last])
+            }
             _ => Err(StatementError::NotAMatrix {
                 tensor: self.name.clone(),
                 shape: self.kept.clone(),

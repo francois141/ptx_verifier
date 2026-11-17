@@ -1,15 +1,17 @@
-kernel kernel(a, b, out, sums, a_t)
+kernel kernel(a, b, out, sums, a_t, a_t3)
   a: hbm[2, 4]
   b: hbm[2, 4]
   out: hbm[2, 4]
   sums: hbm[2, 1]
   a_t: hbm[4, 2]
+  a_t3: hbm[4, 1, 2]
   x: sbuf[2, 4]
   y: sbuf[2, 4]
   s: sbuf[2, 4]
   r: sbuf[2, 1]
   c: sbuf[2, 4]
   t: sbuf[4, 2]
+  t3: sbuf[4, 1, 2]
   x = dma(a)
   y = dma(b)
   s, r = subtract(y, multiply(x, 2)) reduce add
@@ -18,3 +20,5 @@ kernel kernel(a, b, out, sums, a_t)
   sums = dma(r)
   t = dma_transpose(a)
   a_t = dma(t)
+  t3 = dma_transpose(a.ap([[4, 2], [1, 1], [1, 4]], offset=0))
+  a_t3 = dma(t3)
