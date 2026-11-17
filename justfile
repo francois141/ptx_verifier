@@ -164,7 +164,8 @@ piecewise *args:
 # ===== Trainium ===============================================================
 
 # Release, since attention v2 against its spec takes a minute in debug; VOLTA_BLESS=1 rewrites the snapshots.
-# Check the Trainium kernels' .ast, .ir and .out snapshots, expected rejections and spec equivalence
+# Check the Trainium kernels' .ast, .ir and .out snapshots, expected rejections and spec equivalence,
+# and nkilib's bugs and their fixes (external/trainium/nkilib)
 trainium: python-env
     cargo test -q -p volta_pipeline --test trainium_tests -- accepted_tests:: rejected_tests::
-    cargo test -q --release -p volta_pipeline --test trainium_tests -- equivalence_tests::
+    cargo test -q --release -p volta_pipeline --test trainium_tests -- equivalence_tests:: nkilib_tests::
