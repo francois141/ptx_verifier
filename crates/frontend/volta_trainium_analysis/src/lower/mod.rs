@@ -138,7 +138,7 @@ fn lower_instruction(
             let (instruction, descriptors) = without_dge_mode(instruction)?;
             let [dst, src] = operands(&instruction, &["dst", "src"])?;
             let [dst, src] = [scope.region(dst, "dst")?, scope.region(src, "src")?];
-            same_shape(&dst, &src)?;
+            same_elements(&dst, &src)?;
             Ok(LoweredInstr::Mov {
                 dst: dst.region,
                 src: src.region,
@@ -889,6 +889,18 @@ fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), Stateme
         left.described(),
         right.described(),
     ]))
+}
+
+/// Check that a DMA's regions have one shape once extent-1 dimensions are dropped too: a
+/// DMA moves elements in row-major order, which those dimensions do not change.
+fn same_elements(left: &RegionOperand, right: &RegionOperand) -> Result<(), StatementError> {
+    let squeezed = |shape: &Shape| -> Vec<u64> {
+        shape.0.iter().copied().filter(|&extent| extent != 1).collect()
+    };
+    if squeezed(&left.kept) == squeezed(&right.kept) {
+        return Ok(());
+    }
+    same_shape(left, right)
 }
 
 /// Check that `dst` names a region of the shape `expected` of the instruction's result.

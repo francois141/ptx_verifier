@@ -6,7 +6,8 @@ kernel kernel(a_t, b, out)
   y: sbuf[4, 3]
   acc: psum[2, 3]
   z: sbuf[2, 3]
-  x = dma[dge_mode=hwdge](a_t)
+  x[0:4, 0] = dma[dge_mode=hwdge](a_t.ap([[2, 4], [1, 1]], offset=0))  # in for#0[0]
+  x[0:4, 1] = dma[dge_mode=hwdge](a_t.ap([[2, 4], [1, 1]], offset=1))  # in for#0[1]
   y = dma[dge_mode=hwdge](b)
   acc = matmul(x, y)
   z = mov(acc)
