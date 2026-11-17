@@ -1,4 +1,4 @@
-kernel kernel(a_t: [4, 2], b: [4, 3])
+kernel kernel(a_t: [4, 2], b: [4, 3], again: [2, 3])
   out: shared_hbm[3, 2] of float32
   x: sbuf[4, 2] of float32 at (0, 0)
   y: sbuf[4, 3] of float32 at (0, 32)
@@ -7,6 +7,8 @@ kernel kernel(a_t: [4, 2], b: [4, 3])
   result: sbuf[3, 2] of float32 at (0, 128)
   acc: psum[2, 3] of float32 at (0, 0)
   staged: psum[3, 2] of float32 at (0, 0)
+  redone: psum[2, 3] of float32 at (0, 0)
+  redone_out: sbuf[2, 3] of float32 at (0, 160)
   dma_copy(dst=x, src=a_t)
   dma_copy(dst=y, src=b)
   nc_matmul(accumulate=False, dst=acc, moving=y[0:2, :], stationary=x[0:2, :])  # in for#0[0] > for#1[0]
@@ -18,4 +20,7 @@ kernel kernel(a_t: [4, 2], b: [4, 3])
   tensor_copy(dst=staged, src=product_t)
   tensor_copy(dst=result, engine=nki.isa.scalar_engine, src=staged)
   dma_copy(dst=out, src=result)
+  nc_matmul(dst=redone, moving=y, stationary=x)
+  tensor_copy(dst=redone_out, src=redone)
+  dma_copy(dst=again, src=redone_out)
   return out

@@ -1,6 +1,7 @@
-kernel kernel(a_t, b) -> out
+kernel kernel(a_t, b, again) -> out
   a_t: hbm[4, 2]
   b: hbm[4, 3]
+  again: hbm[2, 3]
   out: hbm[3, 2]
   x: sbuf[4, 2] at (0, 0), 4 bytes each
   y: sbuf[4, 3] at (0, 32), 4 bytes each
@@ -9,6 +10,8 @@ kernel kernel(a_t, b) -> out
   result: sbuf[3, 2] at (0, 128), 4 bytes each
   acc: psum[2, 3] at (0, 0), 4 bytes each
   staged: psum[3, 2] at (0, 0), 4 bytes each
+  redone: psum[2, 3] at (0, 0), 4 bytes each
+  redone_out: sbuf[2, 3] at (0, 160), 4 bytes each
   x = dma(a_t)
   y = dma(b)
   acc = matmul(x[0:2, 0:2], y[0:2, 0:3], accumulate=False)  # in for#0[0] > for#1[0]
@@ -20,3 +23,6 @@ kernel kernel(a_t, b) -> out
   staged = mov(product_t)
   result = mov(staged)
   out = dma(result)
+  redone = matmul(x, y)
+  redone_out = mov(redone)
+  again = dma(redone_out)

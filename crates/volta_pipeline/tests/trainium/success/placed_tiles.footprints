@@ -9,3 +9,6 @@
 8: read product_t[p0:96..104, p1:96..104, p2:96..104]; write staged[p0:0..8, p1:0..8, p2:0..8]
 9: read staged[p0:0..8, p1:0..8, p2:0..8]; write result[p0:128..136, p1:128..136, p2:128..136]
 10: read result[p0:128..136, p1:128..136, p2:128..136]; write out[0..6]
+11: read x[p0:0..8, p1:0..8, p2:0..8, p3:0..8]; read y[p0:32..44, p1:32..44, p2:32..44, p3:32..44]; accumulate(matmul) redone[p0:0..12, p1:0..12]
+12: read redone[p0:0..12, p1:0..12]; write redone_out[p0:160..172, p1:160..172]
+13: read redone_out[p0:160..172, p1:160..172]; write again[0..6]

@@ -4,8 +4,10 @@ import nki.isa as nisa
 
 
 @nki.jit
-def kernel(a_t, b):
-    """out = (a_t.T @ b).T, every tile placed by `address=` as attn_fwd_v10 places its own."""
+def kernel(a_t, b, again):
+    """out = (a_t.T @ b).T, every tile placed by `address=` as attn_fwd_v10 places its own;
+    again = a_t.T @ b, by a default-accumulate matmul into PSUM over `staged`'s dead bytes,
+    which its first write overwrites."""
     contraction, rows = a_t.shape
     columns = b.shape[1]
     chunk = contraction // 2
@@ -19,6 +21,8 @@ def kernel(a_t, b):
     # `staged` takes `acc`'s PSUM bytes once `acc` is read for the last time.
     acc = nl.ndarray((rows, columns), dtype=nl.float32, buffer=nl.psum, address=(0, 0))
     staged = nl.ndarray((columns, rows), dtype=nl.float32, buffer=nl.psum, address=(0, 0))
+    redone = nl.ndarray((rows, columns), dtype=nl.float32, buffer=nl.psum, address=(0, 0))
+    redone_out = nl.ndarray((rows, columns), dtype=nl.float32, buffer=nl.sbuf, address=(0, 160))
 
     nisa.dma_copy(dst=x, src=a_t)
     nisa.dma_copy(dst=y, src=b)
@@ -32,4 +36,7 @@ def kernel(a_t, b):
     nisa.tensor_copy(dst=staged, src=product_t)
     nisa.tensor_copy(dst=result, src=staged, engine=nisa.scalar_engine)
     nisa.dma_copy(dst=out, src=result)
+    nisa.nc_matmul(dst=redone, stationary=x, moving=y)
+    nisa.tensor_copy(dst=redone_out, src=redone)
+    nisa.dma_copy(dst=again, src=redone_out)
     return out

@@ -591,7 +591,7 @@ be a concrete integer below `data`'s free size (`EvalError::IndirectOffset`).
 
 `nc_matmul`'s `accumulate=` is `ir::Accumulation`: `False` overwrites `dst`, `True` adds
 to it (an unwritten element is undefined), and `None`, the default,
-overwrites an element's first write and adds to later ones.
+overwrites an element's first write through its own tile and adds to later ones.
 
 `nl.ndarray(..., address=(partition, offset))` places an on-chip tile (`ast::Address`,
 `Tensor::address`): its partitions from `partition`, its free elements row-major from byte
@@ -877,8 +877,9 @@ guarded stages software-pipelined over `range(0, count + 2)` in `nl.no_reorder()
 (`common::trainium::check_call`; a hand-written `.expected`).
 `success/placed_tiles.py` is `matmul.py`'s product transposed with every tile
 placed, a PSUM tile over the dead accumulator, `accumulate=(i != 0)` run twice (so
-`accumulate=False` must overwrite), `engine=` and `dma_transpose` (a hand-written
-`.expected`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
+`accumulate=False` must overwrite), `engine=`, `dma_transpose` and a default-accumulate
+matmul over a dead tile's PSUM bytes, which it overwrites (a hand-written
+`.expected`; it races under `PlacedTiles::ByTensor`); `placement_errors.py`'s kernels must fail: `ClobberedRead` at the one
 column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM copied out,
 `MixedAllocation`, and a tile past the end of PSUM.
 `success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),

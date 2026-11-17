@@ -15,7 +15,7 @@ use crate::ir::{
 
 use super::EvalError;
 use super::alias;
-use super::tensor::{Clobber, TensorState};
+use super::tensor::TensorState;
 
 /// Run `kernel` and return, in parameter order, each argument it wrote, then the tensor it
 /// returns, each with its written elements by offset. An unwritten argument element holds
@@ -135,7 +135,7 @@ impl<'a> Interpreter<'a> {
                             self.tensors[other].write(aliased, value);
                         } else {
                             let through = tile.name.clone();
-                            self.tensors[other].clobber(aliased, Clobber { instr, through });
+                            self.tensors[other].clobber(aliased, instr, through);
                         }
                     }
                 }
