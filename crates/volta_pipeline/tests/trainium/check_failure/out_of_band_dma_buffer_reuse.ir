@@ -1,0 +1,8 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[2, 4]
+  x: sbuf[1, 4]
+  x = dma[dge_mode=none](a[0:1, 0:4])
+  out[0:1, 0:4] = dma[dge_mode=none](x)
+  x = dma[dge_mode=none](a[1:2, 0:4])
+  out[1:2, 0:4] = dma[dge_mode=none](x)

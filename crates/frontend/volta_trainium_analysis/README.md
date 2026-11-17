@@ -122,7 +122,7 @@ them) is kept as `ir::Descriptors` (`.ir` renders `dma[dge_mode=none]`), which o
 graph's `OutOfBandDmas` reads; any other mode is `StatementError::UnsupportedDgeMode`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
-`nl.square`, `nl.rsqrt`, `nl.exp`); a new member means a variant in the enum's
+`nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity); a new member means a variant in the enum's
 `ALL` array, not a case in lowering. Binary ops take their operands in NKI's
 order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
 operand`, so `nl.subtract` is `data - operand`.
@@ -545,8 +545,10 @@ partial sum racing the other iteration's matmul (R8) under every policy.
 `scan` (below) overwrites its `nl.zeros` tile `scale` with a DMA before any read: two
 writes with no read between them, race free only once write after write is ordered.
 `out_of_band_dma_reload` loads a row into a tile with a `dge_mode.none` DMA and copies it
-out with two more, the pattern of vllm-neuron's `_permute_one_token_nki`: race free only
-under `OutOfBandDmas::Ordered`.
+out with two more, the pattern of vllm-neuron's `_permute_one_token_nki`, and
+`out_of_band_dma_buffer_reuse` reuses one tile per row, the next row's out-of-band load
+overwriting the tile the previous row's out-of-band store reads, the pattern of nkilib's
+`_rmsnorm_tkg_dloc`: both race free only under `OutOfBandDmas::Ordered`.
 `no_reorder_back_to_back_dmas` and `no_reorder_affine` put R0 and R1 inside a
 `no_reorder` block, race free once blocks run in program order; `no_reorder_boundary`
 rewrites inside a block a tile written before it, a race unless write after write is

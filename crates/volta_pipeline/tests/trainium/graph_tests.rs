@@ -90,11 +90,26 @@ fn check_race_under(policy: OrderingPolicy, name: &str, rows: u64) -> (EventGrap
     check_under(policy, &format!("check_failure/{name}"), &shapes)
 }
 
-// Test that a DMA with out-of-band descriptors (dge_mode.none) loading a tile races the
-// out-of-band DMAs copying it out, as AWS's gpsimd_topk audit found such DMAs unordered,
-// unless the policy orders them (recording NkiOutOfBandDmasOrdered).
+// Test that DMAs with out-of-band descriptors (dge_mode.none) race each other through a tile,
+// as AWS's gpsimd_topk audit found such DMAs unordered, unless the policy orders them
+// (recording NkiOutOfBandDmasOrdered): a load racing the copies out of its tile, and a store
+// racing the next load into the tile it reads.
 #[test]
 fn nki_out_of_band_dmas_race_unless_the_policy_orders_them() {
+    let reuse: [(&str, &[u64]); 2] = [("a", &[2, 4]), ("out", &[2, 4])];
+    let name = "check_failure/out_of_band_dma_buffer_reuse";
+    let (graph, report) = check_under(OrderingPolicy::BASELINE, name, &reuse);
+    assert_eq!(
+        conflicts(&graph, &report),
+        BTreeSet::from([
+            (0, 1, WriteRead),
+            (0, 2, WriteWrite),
+            (0, 3, WriteRead),
+            (1, 2, ReadWrite),
+            (2, 3, WriteRead),
+        ])
+    );
+
     let shapes: [(&str, &[u64]); 2] = [("a", &[1, 4]), ("out", &[2, 4])];
     let name = "check_failure/out_of_band_dma_reload";
     let (graph, report) = check_under(OrderingPolicy::BASELINE, name, &shapes);
@@ -692,6 +707,10 @@ fn probes() -> Vec<Probe> {
     probes.push(probe_fixture(
         "check_failure/out_of_band_dma_reload",
         &KernelCall::new(&[("a", &[1, 4]), ("out", &[2, 4])]),
+    ));
+    probes.push(probe_fixture(
+        "check_failure/out_of_band_dma_buffer_reuse",
+        &KernelCall::new(&[("a", &[2, 4]), ("out", &[2, 4])]),
     ));
     probes.push(probe_fixture(
         "success/affine_vector_sum",
