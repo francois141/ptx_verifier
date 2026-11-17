@@ -199,6 +199,8 @@ integer below `data`'s free size (`EvalError::IndirectOffset`), so the index's v
 come from the call (`KernelCall::contents`, below); a symbolic one is that error too. A
 scatter, `dst=t.indirect(...)`, is rejected.
 
+`nc_matmul`'s moving operand and result may have several free dimensions, flattened
+row-major (conv3d's 3-D access patterns); its stationary operand is a matrix.
 `nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
 `False` overwrites `dst`, `True` adds to it (an unwritten element is undefined, so
 an output it reaches is an `UninitializedRead`), and `None`, the
@@ -677,7 +679,8 @@ matmul with `tile_position`/`tile_size`.
 out only its written ones, the rest from a zeroed tile (a hand-checked `.expected`).
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
-through a tile view with an offset (a hand-written `.expected`);
+through a tile view with an offset, and computes `t[:, 0, :].T @ t` by a matmul whose
+moving operand and result keep two free dimensions, flattened (a hand-written `.expected`);
 `pattern_errors.py`'s kernels must fail to lower: a tile view whose first step is not
 the free size, one leaving its partition, one past its tensor's end, and a
 `tensor_reduce` over a leading axis.

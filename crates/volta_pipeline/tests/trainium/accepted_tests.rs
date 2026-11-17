@@ -386,7 +386,11 @@ fn the_placed_tiles_kernel_parses_lowers_and_runs_as_expected() {
 
 #[test]
 fn the_access_patterns_kernel_parses_lowers_and_runs_as_expected() {
-    common::trainium::check("success/access_patterns", "kernel", &[("a", &[2, 6])]);
+    common::trainium::check(
+        "success/access_patterns",
+        "kernel",
+        &[("a", &[2, 6]), ("prod", &[2, 3, 2])],
+    );
 }
 
 // Its `scale` memset, overwritten unread, races under the baseline; it runs in program order.
