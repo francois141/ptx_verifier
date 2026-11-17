@@ -707,7 +707,9 @@ attribute reads the object's own, else the class's, else a bound `Value::Method`
 tile declaration named after the target (PSUM for `matmul` and `transpose`) and
 the one `nki.isa` instruction it lowers to; `load`/`store` require HBM
 (`Declared::place`). `True`/`False` are `Value::Bool`. `nl.zeros` is an on-chip tile
-(`buffer` defaulting to `nl.sbuf`) plus a `memset` to zero. `nl.broadcast_to(x, shape)`
+(`buffer` defaulting to `nl.sbuf`) plus a `memset` to zero, and
+`nl.shared_identity_matrix(n, dtype)` an `n` x `n` SBUF tile (where nkilib uses it) plus an
+`identity` (`LoweredInstr::Identity`; the tracer also takes its `dst=` form). `nl.broadcast_to(x, shape)`
 (numpy's rule, partitions included) is a `tensor_copy` into a new SBUF tile from an
 `ast::Operand::Broadcast`, which lowering reads through a pattern stepping 0 along each
 repeated dimension (`StatementError::BroadcastShape` otherwise). A region's `.shape`
@@ -891,7 +893,8 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
 `success/dma_modes.py` covers `hwdge` DMAs, `engine.sync` and a placed `nc_matmul`.
 `success/refilled_gap.py` evicts a PSUM tile whose columns are not all written; no output
-reaches the unwritten ones.
+reaches the unwritten ones. `success/identity_transpose.py` transposes by a matmul against
+`nl.shared_identity_matrix`.
 `success/access_patterns.py` reads a strided HBM view, sums a 3-D tile over
 `axis=(2,)`, copies out through a tile view with an offset and multiplies by a matmul
 whose moving operand and result have two free dimensions (a hand-written `.expected`); `pattern_errors.py`'s kernels must fail to lower, one per

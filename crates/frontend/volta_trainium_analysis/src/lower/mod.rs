@@ -179,6 +179,14 @@ fn lower_instruction(
             })
         }
 
+        "shared_identity_matrix" => {
+            let [dst] = operands(instruction, &["dst"])?;
+            let dst = scope.tile(dst, "dst")?;
+            let [rows, _] = dst.matrix()?;
+            result_shape(&dst, Shape(vec![rows, rows]))?;
+            Ok(LoweredInstr::Identity { dst: dst.region })
+        }
+
         // =====================================================================
         // Elementwise
         // =====================================================================

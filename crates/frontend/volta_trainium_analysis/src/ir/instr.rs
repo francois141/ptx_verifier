@@ -26,6 +26,8 @@ pub enum LoweredInstr {
     },
     /// Every element of `dst` set to `value`.
     Memset { dst: TensorRegion, value: Scalar },
+    /// `dst`, a square tile region, set to the identity matrix (`nl.shared_identity_matrix`).
+    Identity { dst: TensorRegion },
     /// Tensor indirection: `dst[p, i] = data[p, index[i % 16, i // 16]]` for each of
     /// `dst`'s `count` columns, `index` holding free-dimension offsets of `data`, as the
     /// NKI docs state it, and the same offset from the rows of `p`'s 16-partition group.
@@ -149,6 +151,7 @@ impl LoweredInstr {
                 ..
             } => "tensor_copy",
             LoweredInstr::Memset { .. } => "memset",
+            LoweredInstr::Identity { .. } => "shared_identity_matrix",
             LoweredInstr::Gather { .. } => "tensor_copy (indirect)",
             LoweredInstr::Arith { .. } => "tensor_tensor",
             LoweredInstr::Activation { .. } => "activation",

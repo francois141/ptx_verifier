@@ -134,6 +134,16 @@ fn the_dma_modes_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// A transpose by a matmul against the identity `nl.shared_identity_matrix` writes.
+#[test]
+fn the_identity_transpose_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/identity_transpose",
+        "kernel",
+        &[("a", &[2, 3]), ("out", &[3, 2])],
+    );
+}
+
 // A tile evicted whole, gap included, then the gap refilled: the unwritten elements read
 // `Undefined`, which no output reaches.
 #[test]

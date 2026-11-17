@@ -140,6 +140,7 @@ impl fmt::Display for LoweredKernel {
                 LoweredInstr::Memset { dst, value } => {
                     write!(f, "  {} = memset({value})", region(dst))?
                 }
+                LoweredInstr::Identity { dst } => write!(f, "  {} = identity", region(dst))?,
                 LoweredInstr::Reduce {
                     op,
                     dst,
