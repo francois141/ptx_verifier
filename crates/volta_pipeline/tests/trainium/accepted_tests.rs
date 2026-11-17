@@ -2,9 +2,12 @@
 //! symbolic outputs for one call's parameter shapes, compared with `<name>.ast`, `<name>.ir`
 //! and `<name>.out` beside `trainium/success/<name>.py`.
 
+use std::fmt::Write;
+
 use crate::common;
 
 use volta_trainium_analysis::frontend::parse::KernelCall;
+use volta_trainium_analysis::{EvalError, evaluate, evaluate_sharing_aliases};
 
 #[test]
 fn the_add_kernel_parses_lowers_and_runs_as_expected() {
@@ -92,15 +95,32 @@ fn the_norm_ops_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
-// Two tiles placed over the same bytes with the same element size: a read through one sees a
-// write through the other.
+// Two tiles placed over the same bytes with the same element size: by default a read through
+// one of what the other wrote is a ClobberedRead, the overlap reported; sharing aliases, it
+// sees the value written, as the hardware's memory does.
 #[test]
-fn the_aliased_tiles_kernel_parses_lowers_and_runs_as_expected() {
-    common::trainium::check(
+fn the_aliased_tiles_kernel_is_rejected_unless_aliases_are_shared() {
+    let (_, lowered) = common::trainium::check_lowering(
         "success/aliased_tiles",
         "kernel",
+        &[],
         &[("a", &[2, 4]), ("out", &[2, 4])],
     );
+    assert!(matches!(
+        evaluate(&lowered),
+        Err(EvalError::ClobberedRead { .. })
+    ));
+    let outputs = evaluate_sharing_aliases(&lowered).unwrap();
+    let mut rendered = String::new();
+    for (array, elements) in &outputs.outputs {
+        for &(index, value) in elements {
+            let expr = outputs.arena.display_expr(value);
+            writeln!(rendered, "{array}[{index}] = {expr}").unwrap();
+        }
+    }
+    let path = common::trainium::fixtures().join("success/aliased_tiles.expected");
+    let expected = std::fs::read_to_string(path).unwrap();
+    assert_eq!(rendered, expected);
 }
 
 // The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their

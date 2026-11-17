@@ -9,7 +9,7 @@ mod tensor;
 
 pub use error::EvalError;
 pub use footprint::{Access, Location, Mode, PARTITION_STRIDE, Reducer, footprints};
-pub use interp::evaluate;
+pub use interp::{evaluate, evaluate_sharing_aliases};
 pub use record::{
     Execution, NoReorder, OrderingPolicy, OutOfBandDmas, PlacedTiles, Reductions, WriteAfterWrite,
     record_graph,
