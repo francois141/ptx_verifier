@@ -19,7 +19,28 @@ use super::tensor::{Clobber, TensorState};
 /// returns, each with its written elements by offset. An unwritten argument element holds
 /// its input symbol.
 pub fn evaluate(kernel: &LoweredKernel) -> Result<FullOutputs, EvalError> {
-    let mut interp = Interpreter::new(kernel);
+    run(kernel, AliasReads::Reject)
+}
+
+/// `evaluate`, but a read through a placed tile of bytes another tile wrote, element for
+/// element, sees that value, as the shared memory does: a kernel whose allocator overlaps
+/// two live tiles runs to the outputs the hardware would give, for a spec to refute.
+pub fn evaluate_sharing_aliases(kernel: &LoweredKernel) -> Result<FullOutputs, EvalError> {
+    run(kernel, AliasReads::Shared)
+}
+
+/// What a read through a placed tile sees of bytes a write through another tile covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AliasReads {
+    /// Nothing: the read is `EvalError::ClobberedRead`, so a kernel is checked only on
+    /// values its own tiles wrote, and every overlap of live tiles is reported.
+    Reject,
+    /// The value written, where an element covers exactly the bytes written.
+    Shared,
+}
+
+fn run(kernel: &LoweredKernel, alias_reads: AliasReads) -> Result<FullOutputs, EvalError> {
+    let mut interp = Interpreter::new(kernel, alias_reads);
     for (instr, instruction) in kernel.instructions.iter() {
         interp.step(instr, instruction)?;
     }
@@ -37,10 +58,11 @@ struct Interpreter<'a> {
     tensors: IdVec<TensorId, TensorState<'a>>,
     /// Each tensor's aliases: the tiles `address=` places over its bytes.
     aliases: IdVec<TensorId, Vec<TensorId>>,
+    alias_reads: AliasReads,
 }
 
 impl<'a> Interpreter<'a> {
-    fn new(kernel: &'a LoweredKernel) -> Self {
+    fn new(kernel: &'a LoweredKernel, alias_reads: AliasReads) -> Self {
         let mut arena = ExprArena::new();
         let tensors = kernel
             .tensors
@@ -51,6 +73,7 @@ impl<'a> Interpreter<'a> {
             arena,
             tensors: IdVec::from_vec(tensors),
             aliases: alias::aliases(&kernel.tensors),
+            alias_reads,
         }
     }
 
@@ -66,11 +89,11 @@ impl<'a> Interpreter<'a> {
                 for &other in &self.aliases[tensor] {
                     let other_tile = self.tensors[other].tensor();
                     for aliased in alias::overlapping(other_tile, partition, &bytes) {
-                        // An element over exactly these bytes now holds the value written,
-                        // as the hardware's memory does; one over part of them is garbage.
+                        // Sharing aliases, an element over exactly these bytes now holds the
+                        // value written, as the hardware's memory does; otherwise it is clobbered.
                         let exact = alias::element_bytes(other_tile, &aliased)
                             == Some((partition, bytes.clone()));
-                        if exact {
+                        if exact && self.alias_reads == AliasReads::Shared {
                             self.tensors[other].write(aliased, value);
                         } else {
                             let through = tile.name.clone();

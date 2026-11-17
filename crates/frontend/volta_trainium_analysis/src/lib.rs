@@ -9,8 +9,8 @@ mod lower;
 
 pub use eval::{
     Access, EvalError, Execution, Location, Mode, NoReorder, OrderingPolicy, OutOfBandDmas,
-    PARTITION_STRIDE, PlacedTiles, Reducer, Reductions, WriteAfterWrite, evaluate, footprints,
-    record_graph,
+    PARTITION_STRIDE, PlacedTiles, Reducer, Reductions, WriteAfterWrite, evaluate,
+    evaluate_sharing_aliases, footprints, record_graph,
 };
 pub use ir::{
     ActivationFunc, ArithOp, Descriptors, Index, Initial, InstrId, LoopId, LoopIteration, LoopKind,
