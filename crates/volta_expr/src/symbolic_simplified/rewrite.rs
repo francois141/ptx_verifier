@@ -7,6 +7,7 @@ mod elu;
 pub mod gelu;
 mod hardtanh;
 mod patterns;
+mod softshrink;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -48,6 +49,9 @@ fn replacement(arena: &mut Cow<'_, ExprArena>, id: ExprId) -> Option<ExprId> {
         return Some(arena.to_mut().gelu(x));
     }
     if let Some(found) = hardtanh::hardtanh(arena, id) {
+        return Some(found.build(arena.to_mut()));
+    }
+    if let Some(found) = softshrink::softshrink(arena, id) {
         return Some(found.build(arena.to_mut()));
     }
     if let Some(found) = elu::elu(arena, id) {

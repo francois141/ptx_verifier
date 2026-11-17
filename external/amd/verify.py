@@ -223,6 +223,12 @@ CASES = (
         AMD_ROOT,
     ),
     Case(
+        "piecewise_activations/softshrink",
+        "piecewise_activations/softshrink",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
         "piecewise_activations/elu",
         "piecewise_activations/elu",
         Solve("ACCEPT"),

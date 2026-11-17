@@ -19,6 +19,7 @@ values.
 | `hardswish` | `hardswish` | `Hardswish` | `hardtanh.rs` | ACCEPT |
 | `hardswish_fast` | `hardswish_fast` | `Hardswish`, `-ffast-math` (native `v_max`, `v_min`) | none | ACCEPT |
 | `hardswish_nans` | `hardswish_nans` | `Hardswish`, `-funsafe-math-optimizations` | `hardtanh.rs` | ACCEPT |
+| `softshrink` | `softshrink` | `Softshrink` (0.5) | `softshrink.rs` | ACCEPT |
 | `elu` | `elu` | `ELU` (alpha 1) | `elu.rs` | ACCEPT |
 | `celu` | `celu` | `CELU` (alpha 2), as `elu(x, alpha, 1, 1 / alpha)` | `elu.rs` | ACCEPT |
 | `selu` | `selu` | `SELU`, as `elu(x, alpha, scale, 1)` | `elu.rs` | ACCEPT |

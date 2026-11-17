@@ -187,6 +187,21 @@ impl<'a> Matcher<'a> {
         (self.same(split.below, split.x) && above == split.threshold).then_some((split.x, above))
     }
 
+    /// `k` of `x + k`: `x` itself, or an `add` or `sub` of `x` and a constant.
+    pub(super) fn offset(self, id: ExprId, x: ExprId) -> Option<Rational> {
+        if self.same(id, x) {
+            return Some(Rational::new());
+        }
+
+        match *self.node(id) {
+            ExprNode::Add(a, b) => {
+                either(a, b, |y, k| self.constant(k).filter(|_| self.same(y, x)))
+            }
+            ExprNode::Sub(y, k) if self.same(y, x) => Some(-self.constant(k)?),
+            _ => None,
+        }
+    }
+
     pub(super) fn is<T>(self, id: ExprId, value: T) -> bool
     where
         Rational: From<T>,
