@@ -111,6 +111,10 @@ pub enum StatementError {
         keyword: &'static str,
     },
 
+    /// An `nc_stream_shuffle` mask that is not 32 source partitions or 255s, or regions
+    /// beyond one 32-partition quadrant.
+    ShuffleMask(Operand),
+
     /// An operand that must be `True` or `False`.
     NotABool {
         keyword: &'static str,
@@ -249,6 +253,11 @@ impl fmt::Display for StatementError {
             ),
             Self::NotATensor { keyword } => write!(f, "operand `{keyword}` must be a tensor"),
             Self::NotAScalar { keyword } => write!(f, "operand `{keyword}` must be a number"),
+            Self::ShuffleMask(mask) => write!(
+                f,
+                "`nc_stream_shuffle` takes 32 source partitions or 255s within one 32-partition \
+                 quadrant, not {mask:?}"
+            ),
             Self::NotABool { keyword } => {
                 write!(f, "operand `{keyword}` must be `True` or `False`")
             }

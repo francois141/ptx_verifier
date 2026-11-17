@@ -688,6 +688,12 @@ matmul with `tile_position`/`tile_size`, its first operand loaded a column at a 
 dimensions are dropped, as its elements move in row-major order (nkilib's depthwise_conv1d).
 `success/refilled_gap.py` evicts a PSUM tile whose last columns no matmul wrote and copies
 out only its written ones, the rest from a zeroed tile (a hand-checked `.expected`).
+`nisa.nc_stream_shuffle(src, dst, shuffle_mask)` is `LoweredInstr::Shuffle`: within one
+32-partition quadrant, `dst` partition `p` takes `src` partition `shuffle_mask[p]`, and a 255
+leaves it unwritten; its footprint is both whole regions, which can only add conflicts. The
+parser evaluates Python's list and tuple `+` and `*` (nkilib's `[0] * 32` masks) and passes
+a list operand as integers. `success/stream_shuffle.py` broadcasts a row by an all-zero mask
+and permutes rows with 255s (a hand-checked `.expected`).
 `success/identity_transpose.py` transposes a 2 x 3 tile by the Tensor Engine's transpose
 mode, a matmul with `is_transpose=True` against `nl.shared_identity_matrix(2)` (a hand-checked
 `.expected`); `execution_error/transpose_errors.py`'s kernel must fail, its moving operand

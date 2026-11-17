@@ -895,6 +895,10 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
 `success/dma_modes.py` covers `hwdge` DMAs, `engine.sync`, a placed `nc_matmul` and DMAs
 between a `[4, 1]` view and an indexed `[4]` column.
+`success/stream_shuffle.py` covers `nc_stream_shuffle` (`LoweredInstr::Shuffle`, `dst`
+partition `p` from `src` partition `shuffle_mask[p]` within a 32-partition quadrant, 255
+leaving it unwritten; footprints are whole regions) by a broadcast and a permutation; the
+parser evaluates list and tuple `+` and `*` and passes a list operand as integers.
 `success/refilled_gap.py` evicts a PSUM tile whose columns are not all written; no output
 reaches the unwritten ones. `success/identity_transpose.py` transposes by `nc_matmul`'s
 transpose mode (`is_transpose=True`, `ir::MatmulPass`, its moving operand checked to be the

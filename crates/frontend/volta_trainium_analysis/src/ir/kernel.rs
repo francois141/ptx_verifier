@@ -271,6 +271,19 @@ impl fmt::Display for LoweredKernel {
                         region(moving)
                     )?
                 }
+                LoweredInstr::Shuffle { dst, src, mask } => {
+                    let mask: Vec<String> = mask
+                        .iter()
+                        .map(|entry| entry.map_or("_".to_string(), |from| from.to_string()))
+                        .collect();
+                    write!(
+                        f,
+                        "  {} = shuffle({}, [{}])",
+                        region(dst),
+                        region(src),
+                        mask.join(", ")
+                    )?
+                }
                 LoweredInstr::Transpose { dst, data, mover } => {
                     let op = match mover {
                         Mover::Dma(Descriptors::CompilerChosen) => "dma_transpose",

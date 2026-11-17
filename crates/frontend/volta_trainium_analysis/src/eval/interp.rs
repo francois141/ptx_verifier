@@ -383,6 +383,14 @@ impl<'a> Interpreter<'a> {
                     writes.push(Write::at(dst, [f, p], value));
                 }
             }
+            LoweredInstr::Shuffle { dst, src, mask } => {
+                for [p, f] in elements(dst) {
+                    if let Some(from) = mask[p as usize] {
+                        let value = self.read(instr, src, [from, f])?;
+                        writes.push(Write::at(dst, [p, f], value));
+                    }
+                }
+            }
         }
         Ok(writes)
     }

@@ -568,6 +568,45 @@ fn lower_instruction(
             })
         }
 
+        "nc_stream_shuffle" => {
+            let [dst, src, mask] = operands(instruction, &["dst", "src", "shuffle_mask"])?;
+            let [dst, src] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
+            let [[partitions, free], [sources, source_free]] = [dst.flattened()?, src.flattened()?];
+            if free != source_free {
+                return Err(StatementError::ShapeMismatch([
+                    dst.described(),
+                    src.described(),
+                ]));
+            }
+            let Operand::Ints(mask) = mask else {
+                return Err(StatementError::ShuffleMask(mask.clone()));
+            };
+            const QUADRANT: u64 = 32;
+            const UNWRITTEN: u64 = 255;
+            let entries: Option<Vec<Option<u64>>> = mask
+                .iter()
+                .map(|&entry| match entry {
+                    UNWRITTEN => Some(None),
+                    entry if entry < sources => Some(Some(entry)),
+                    _ => None,
+                })
+                .collect();
+            match entries {
+                Some(entries)
+                    if mask.len() as u64 == QUADRANT
+                        && partitions <= QUADRANT
+                        && sources <= QUADRANT =>
+                {
+                    Ok(LoweredInstr::Shuffle {
+                        dst: dst.region,
+                        src: src.region,
+                        mask: entries,
+                    })
+                }
+                _ => Err(StatementError::ShuffleMask(Operand::Ints(mask.clone()))),
+            }
+        }
+
         // A transpose the DMA engines perform, from a region in any memory into a tile: a 2-D
         // one (`axes=(1, 0)`), or with the default axes one swapping the ends of a region
         // whose other dimensions have extent 1.
@@ -895,7 +934,12 @@ fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), Stateme
 /// DMA moves elements in row-major order, which those dimensions do not change.
 fn same_elements(left: &RegionOperand, right: &RegionOperand) -> Result<(), StatementError> {
     let squeezed = |shape: &Shape| -> Vec<u64> {
-        shape.0.iter().copied().filter(|&extent| extent != 1).collect()
+        shape
+            .0
+            .iter()
+            .copied()
+            .filter(|&extent| extent != 1)
+            .collect()
     };
     if squeezed(&left.kept) == squeezed(&right.kept) {
         return Ok(());
