@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use id_collections::IdVec;
 use volta_expr::FullOutputs;
-use volta_expr::symbolic_full::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
@@ -645,7 +645,7 @@ impl<'a> Interpreter<'a> {
                 let a = registers.read_modified_src(&mut self.arena, lane, *src0)?;
                 let b = registers.read_modified_src(&mut self.arena, lane, *src1)?;
                 let c = registers.read_modified_src(&mut self.arena, lane, *src2)?;
-                let result = self.arena.fma(a, b, c);
+                let result = self.arena.fma(Type::Float(Width(32)), a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::CvtPkF8F32 {
@@ -669,7 +669,7 @@ impl<'a> Interpreter<'a> {
                 let a = registers.read_f32_src0(&mut self.arena, lane, *src0)?;
                 let b = registers.read_f32(&mut self.arena, lane, *src1)?;
                 let c = registers.read_f32(&mut self.arena, lane, *dst)?;
-                let result = self.arena.fma(a, b, c);
+                let result = self.arena.fma(Type::Float(Width(32)), a, b, c);
                 registers.write_vgpr(lane, *dst, result)
             }
             LoweredInstr::PackedF32 { dst, op } => {

@@ -14,7 +14,9 @@ the constant-folded form the backends decide.
 ## Full expressions (`symbolic_full/`)
 
 `symbolic_full::ExprArena` has the simplified arena's constructors and node
-kinds, plus `Exp2` and `Log2`, but each constructor pushes its node as given.
+kinds, plus the operations kernels name that the simplified form spells out (`Exp2`,
+`Log2`, `Fma`, `Rcp`, `Tanh`, `Rsqrt`, `Sigmoid`, `Copysign`, `Median3`), and each
+constructor pushes its node as given.
 An operation also records its *value* (`value`, `value_node`): the constant,
 operand or input element lowering replaces it with, else the node itself.
 `value.rs` computes it by lowering the operation in a scratch arena, each
@@ -23,6 +25,10 @@ always agrees with the lowering. Execution decides on values (`as_i64`,
 `as_bool`, `is_undefined`, ...): addresses, branches and modelled cases see
 the constants they computed, while the outputs keep every operation.
 
+Every operation carries the `Type` its frontend's instruction states (`ty`):
+`Float(w)`, `Int(signedness, w)`, `Bits(w)`, `Pred`, or `Real` for a spec's or an
+NKI kernel's values, which have no machine width.
+
 ## Lowering (`lower.rs`)
 
 `lower(&FullOutputs) -> SymbolicOutputs` (also `FullOutputs::lower`) rebuilds
@@ -30,13 +36,19 @@ the nodes an output reaches, children first, with the simplified
 constructors. A node with a value takes its value's lowering, so no fold runs
 twice. The full forms the simplified language lacks are written out there: `fma` as
 `a * b + c`, `rcp` as `1 / a`, `exp2`/`log2` through `exp`/`log` (folding a float32
-`log2(e)` factor into the exact `exp` it approximates). Each input array keeps one string.
+`log2(e)` factor into the exact `exp` it approximates), `tanh` as
+`(e^{2a} - 1) / (e^{2a} + 1)` so the decision procedure reasons about it, `rsqrt` as
+`1 / sqrt(a)`, `sigmoid` as `1 / (1 + e^-a)`, `copysign` as a select on the sign, and
+the median of three as `max(min(a, b), min(max(a, b), c))`. A float-typed `x ^ sign` or
+`x & !sign` (the mask touching only the sign bit of the type's width) lowers to `-x` or
+`|x|`; the same masks on integers or untyped bits stay bitwise. Each input array keeps one string.
 Each language defines its own atoms (`Real`, `SymbolId`, `NanError`) in its
 `node.rs`: lowering converts a full constant to a simplified one and gives each
 machine symbol a fresh simplified one. `volta_pipeline` lowers every analysis's and spec's outputs before the
 equivalence branch; the event graph's stored values stay in the full arena.
 `tests/lower_tests.rs` checks that an operation stays as built while its value
-and its lowering follow the simplified folds.
+and its lowering follow the simplified folds, and that float sign masks lower to `-x`
+and `|x|` while untyped bits stay bitwise.
 
 ## Simplified expressions (`symbolic_simplified/`)
 

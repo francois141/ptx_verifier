@@ -110,16 +110,26 @@ from a process-global counter).
 
 Every producer (the PTX, AMD and NKI interpreters, `volta_spec::unfold`) builds
 `symbolic_full`: its own `ExprArena`/`ExprId`/`ExprNode` (the simplified node
-kinds plus `Exp2`/`Log2`), whose constructors fold nothing, and returns a
-`FullOutputs`; the event graph stores full `ExprId`s. Each operation records
+kinds plus the operations kernels name that the simplified form spells out: `Exp2`,
+`Log2`, `Fma`, `Rcp`, `Tanh`, `Rsqrt`, `Sigmoid`, `Copysign`, `Median3`), whose
+constructors fold nothing, and returns a
+`FullOutputs`; the event graph stores full `ExprId`s. Every operation carries its
+`Type` (`ty`): `Float(w)`, `Int(signedness, w)`, `Bits(w)`, `Pred`, or `Real` for
+specs and NKI, which have no widths; PTX gives its instruction's type (`expr_type`),
+AMD its opcode's, and a symbolic AMD word, being an f32, gets `Float(32)` for its
+sign-bit `and`/`xor`. Lowering turns `x ^ sign` and `x & !sign` of a float type into
+`-x` and `|x|` (PTX's FP8 `xor 0x80` too), and keeps any other mask, or untyped bits,
+bitwise. Each operation records
 its value (`value`/`value_node`): the constant, operand or input element
 lowering replaces it with, computed by lowering it over placeholders in a
 scratch arena, so it always agrees with `lower`. The interpreters decide on
 values (`as_i64`, `as_bool`, `is_undefined`, `value_node` where they inspect a
 kind). `lower(&FullOutputs) -> SymbolicOutputs` (`FullOutputs::lower`) rebuilds
 the reachable nodes with the simplified constructors, reusing each value, and
-writes the full forms simplified lacks (`lower_fma`, `lower_rcp`, and `lower_exp2`/
-`lower_log2` with their float32 `log2(e)` factoring);
+writes the full forms simplified lacks (`lower_fma`, `lower_rcp`, `lower_exp2`/
+`lower_log2` with their float32 `log2(e)` factoring, `lower_tanh` through `exp`,
+`lower_sigmoid`, `lower_copysign` as a select, `lower_median3` as min/max, `Rsqrt` as
+`1 / sqrt`);
 `volta_pipeline`, `volta_cli` and `volta_py` lower outputs before the
 equivalence branch, and every `.out` snapshot renders the lowered form.
 Each form's `node.rs` defines its own `Real`, `SymbolId` and `NanError` (the full

@@ -1,24 +1,25 @@
 //! Each operation's value, computed as it is built by lowering it over placeholders.
 
-use super::node::{ExprArena, ExprId, ExprNode};
+use super::node::{ExprArena, ExprId, ExprNode, Type};
 use crate::lower::{lower_operation, raise_real};
 use crate::symbolic_simplified as simplified;
 
 impl ExprArena {
-    /// Push `node` and record its value.
-    pub(super) fn operation(&mut self, node: ExprNode) -> ExprId {
-        let value = self.evaluate(&node);
-        self.push(node, value)
+    /// Push the operation `node` of type `ty` and record its value.
+    pub(super) fn operation(&mut self, ty: Type, node: ExprNode) -> ExprId {
+        let value = self.evaluate(ty, &node);
+        self.push_operation(node, ty, value)
     }
 
     /// What lowering makes of `node` when that is a constant, an operand or an input element.
     /// Each operand stands in as its constant value, or else as an opaque symbol: lowering's
     /// folds yield those three from no other property of their operands.
-    fn evaluate(&mut self, node: &ExprNode) -> Option<ExprId> {
+    fn evaluate(&mut self, ty: Type, node: &ExprNode) -> Option<ExprId> {
         let Self {
             nodes,
             strings,
             values,
+            types: _,
             lowered_reals,
             scratch,
         } = self;
@@ -56,7 +57,7 @@ impl ExprArena {
                 .map(|&(_, placeholder)| placeholder)
                 .expect("every child has a placeholder")
         };
-        let result = lower_operation(scratch, node, placeholder_of, strings)?;
+        let result = lower_operation(scratch, node, ty, placeholder_of, strings)?;
 
         if let Some(&(operand, _)) = placeholders.iter().find(|&&(_, p)| p == result) {
             return Some(operand);
@@ -66,7 +67,7 @@ impl ExprArena {
             simplified::ExprNode::RealConst(v) => {
                 let lowered = v.clone();
                 let real = ExprNode::RealConst(raise_real(&lowered));
-                return Some(self.push_lowered(real, None, Some(lowered)));
+                return Some(self.push_constant(real, Some(lowered)));
             }
             simplified::ExprNode::BoolConst(v) => ExprNode::BoolConst(*v),
             simplified::ExprNode::InputElement { index, .. } => {

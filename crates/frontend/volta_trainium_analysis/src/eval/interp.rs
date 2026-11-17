@@ -4,7 +4,7 @@
 
 use id_collections::IdVec;
 use volta_expr::FullOutputs;
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, Type};
 
 use crate::ir::{
     Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, Order,
@@ -165,7 +165,7 @@ impl<'a> Interpreter<'a> {
                     }
                     let mut reduced = self.fold(*op, values);
                     if *sign == Sign::Negated {
-                        reduced = self.arena.neg(reduced);
+                        reduced = self.arena.neg(Type::Real, reduced);
                     }
                     writes.push(Write::at(dst, [partition, result], reduced));
                 }
@@ -293,33 +293,24 @@ impl<'a> Interpreter<'a> {
 
     fn activation(&mut self, func: ActivationFunc, x: ExprId) -> ExprId {
         match func {
-            ActivationFunc::Sigmoid => {
-                let one = self.arena.real(Real::one());
-                let negated = self.arena.neg(x);
-                let exp = self.arena.exp(negated);
-                let denominator = self.arena.add(one, exp);
-                self.arena.rcp(denominator)
-            }
+            ActivationFunc::Sigmoid => self.arena.sigmoid(Type::Real, x),
             ActivationFunc::Relu => {
                 let zero = self.arena.int(0);
-                self.arena.max(x, zero)
+                self.arena.max(Type::Real, x, zero)
             }
-            ActivationFunc::Square => self.arena.mul(x, x),
-            ActivationFunc::Rsqrt => {
-                let root = self.arena.sqrt(x);
-                self.arena.rcp(root)
-            }
-            ActivationFunc::Exp => self.arena.exp(x),
-            ActivationFunc::Reciprocal => self.arena.rcp(x),
+            ActivationFunc::Square => self.arena.mul(Type::Real, x, x),
+            ActivationFunc::Rsqrt => self.arena.rsqrt(Type::Real, x),
+            ActivationFunc::Exp => self.arena.exp(Type::Real, x),
+            ActivationFunc::Reciprocal => self.arena.rcp(Type::Real, x),
         }
     }
 
     fn arith(&mut self, op: ArithOp, a: ExprId, b: ExprId) -> ExprId {
         match op {
-            ArithOp::Add => self.arena.add(a, b),
-            ArithOp::Subtract => self.arena.sub(a, b),
-            ArithOp::Multiply => self.arena.mul(a, b),
-            ArithOp::Maximum => self.arena.max(a, b),
+            ArithOp::Add => self.arena.add(Type::Real, a, b),
+            ArithOp::Subtract => self.arena.sub(Type::Real, a, b),
+            ArithOp::Multiply => self.arena.mul(Type::Real, a, b),
+            ArithOp::Maximum => self.arena.max(Type::Real, a, b),
         }
     }
 
@@ -404,8 +395,8 @@ impl<'a> Interpreter<'a> {
                 for k in 0..contraction {
                     let a = self.read(instr, stationary, [k, row])?;
                     let b = self.read(instr, moving, [k, column])?;
-                    let product = self.arena.mul(a, b);
-                    sum = self.arena.add(sum, product);
+                    let product = self.arena.mul(Type::Real, a, b);
+                    sum = self.arena.add(Type::Real, sum, product);
                 }
                 writes.push(Write::at(dst, [row, column], sum));
             }

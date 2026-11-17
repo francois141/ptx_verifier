@@ -4,7 +4,7 @@
 use std::num::NonZeroI64;
 
 use volta_common::float_bits::{F8Format, decode_e4m3_byte, decode_e5m2_byte};
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, RealRepr};
+use volta_expr::symbolic_full::{self, ExprArena, ExprId, ExprNode, Real, RealRepr, Type, Width};
 
 use crate::ir::{
     BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, F64Op, F64Src, LaneMask, ModifiedSrc,
@@ -12,6 +12,12 @@ use crate::ir::{
 };
 
 use super::EvalError;
+
+const F32: Type = Type::Float(Width(32));
+const F64: Type = Type::Float(Width(64));
+const B32: Type = Type::Bits(Width(32));
+const B64: Type = Type::Bits(Width(64));
+const U32: Type = Type::Int(symbolic_full::Signedness::Unsigned, Width(32));
 use super::wave::{WaveRegisters, apply_modifiers, concrete_word};
 
 enum OperandType {
@@ -87,28 +93,28 @@ pub(super) fn evaluate_bin_op(
         concrete_words(arena, lane, [a, b])?;
     }
     Ok(match op {
-        BinOp::And32 => arena.bit_and(a, b),
-        BinOp::Or32 => arena.bit_or(a, b),
-        BinOp::Xor32 => arena.bit_xor(a, b),
+        BinOp::And32 => arena.bit_and(B32, a, b),
+        BinOp::Or32 => arena.bit_or(B32, a, b),
+        BinOp::Xor32 => arena.bit_xor(B32, a, b),
         BinOp::LShlRev32 => shl32(arena, b, a),
         BinOp::LShrRev32 => lshr32(arena, b, a),
         BinOp::AddU32 => {
-            let sum = arena.add(a, b);
+            let sum = arena.add(U32, a, b);
             low_word(arena, sum)
         }
         BinOp::SubU32 => {
-            let difference = arena.sub(a, b);
+            let difference = arena.sub(U32, a, b);
             low_word(arena, difference)
         }
         BinOp::SubRevU32 => {
-            let difference = arena.sub(b, a);
+            let difference = arena.sub(U32, b, a);
             low_word(arena, difference)
         }
         BinOp::AShrRevI32 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
             ((b as i32) >> (a & 31)) as u32
         })?,
         BinOp::Xnor32 => {
-            let xor = arena.bit_xor(a, b);
+            let xor = arena.bit_xor(B32, a, b);
             not32(arena, xor)
         }
         BinOp::MinI32 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
@@ -117,8 +123,8 @@ pub(super) fn evaluate_bin_op(
         BinOp::MaxI32 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
             (a as i32).max(b as i32) as u32
         })?,
-        BinOp::MinU32 => arena.min(a, b),
-        BinOp::MaxU32 => arena.max(a, b),
+        BinOp::MinU32 => arena.min(U32, a, b),
+        BinOp::MaxU32 => arena.max(U32, a, b),
         BinOp::MulU32U24 => {
             fold_concrete_words(arena, lane, [a, b], |[a, b]| mul_u24(a, b) as u32)?
         }
@@ -131,12 +137,12 @@ pub(super) fn evaluate_bin_op(
         BinOp::MulHiI32I24 => {
             fold_concrete_words(arena, lane, [a, b], |[a, b]| (mul_i24(a, b) >> 32) as u32)?
         }
-        BinOp::AddF32 => arena.add(a, b),
-        BinOp::SubF32 => arena.sub(a, b),
-        BinOp::SubRevF32 => arena.sub(b, a),
-        BinOp::MulF32 => arena.mul(a, b),
-        BinOp::MinF32 => arena.min(a, b),
-        BinOp::MaxF32 => arena.max(a, b),
+        BinOp::AddF32 => arena.add(F32, a, b),
+        BinOp::SubF32 => arena.sub(F32, a, b),
+        BinOp::SubRevF32 => arena.sub(F32, b, a),
+        BinOp::MulF32 => arena.mul(F32, a, b),
+        BinOp::MinF32 => arena.min(F32, a, b),
+        BinOp::MaxF32 => arena.max(F32, a, b),
     })
 }
 
@@ -154,18 +160,18 @@ pub(super) fn evaluate_packed_f32(
             PackedF32Op::Add([src0, src1]) => {
                 let a = read(src0)?;
                 let b = read(src1)?;
-                Ok(arena.add(a, b))
+                Ok(arena.add(F32, a, b))
             }
             PackedF32Op::Mul([src0, src1]) => {
                 let a = read(src0)?;
                 let b = read(src1)?;
-                Ok(arena.mul(a, b))
+                Ok(arena.mul(F32, a, b))
             }
             PackedF32Op::Fma([src0, src1, src2]) => {
                 let a = read(src0)?;
                 let b = read(src1)?;
                 let c = read(src2)?;
-                Ok(arena.fma(a, b, c))
+                Ok(arena.fma(F32, a, b, c))
             }
         }
     };
@@ -183,36 +189,35 @@ pub(super) fn evaluate_f64_op(
     Ok(match op {
         F64Op::Add([a, b]) => {
             let (a, b) = (read(a)?, read(b)?);
-            arena.add(a, b)
+            arena.add(F64, a, b)
         }
         F64Op::Mul([a, b]) => {
             let (a, b) = (read(a)?, read(b)?);
-            arena.mul(a, b)
+            arena.mul(F64, a, b)
         }
         F64Op::Min([a, b]) => {
             let (a, b) = (read(a)?, read(b)?);
-            arena.min(a, b)
+            arena.min(F64, a, b)
         }
         F64Op::Max([a, b]) => {
             let (a, b) = (read(a)?, read(b)?);
-            arena.max(a, b)
+            arena.max(F64, a, b)
         }
         F64Op::Fma([a, b, c]) => {
             let (a, b, c) = (read(a)?, read(b)?, read(c)?);
-            arena.fma(a, b, c)
+            arena.fma(F64, a, b, c)
         }
         F64Op::Rcp([a]) => {
             let a = read(a)?;
-            arena.rcp(a)
+            arena.rcp(F64, a)
         }
         F64Op::Sqrt([a]) => {
             let a = read(a)?;
-            arena.sqrt(a)
+            arena.sqrt(F64, a)
         }
         F64Op::Rsq([a]) => {
             let a = read(a)?;
-            let root = arena.sqrt(a);
-            arena.rcp(root)
+            arena.rsqrt(F64, a)
         }
     })
 }
@@ -232,7 +237,7 @@ pub(super) fn evaluate_cvt_to_f64(
     let integer = match op {
         CvtToF64Op::F32 => {
             let value = registers.read_f32_src0(arena, lane, src.src)?;
-            return Ok(apply_modifiers(arena, value, src.abs, src.neg));
+            return Ok(apply_modifiers(arena, F32, value, src.abs, src.neg));
         }
         CvtToF64Op::I32 => i64::from(concrete(arena)? as i32),
         CvtToF64Op::U32 => i64::from(concrete(arena)?),
@@ -276,12 +281,12 @@ pub(super) fn evaluate_cmp_f64(
     let a = registers.read_modified_f64(arena, lane, src0)?;
     let b = registers.read_modified_f64(arena, lane, src1)?;
     Ok(match op {
-        CmpPredicate::Lt => arena.lt(a, b),
-        CmpPredicate::Eq => arena.eq(a, b),
-        CmpPredicate::Le => arena.le(a, b),
-        CmpPredicate::Gt => arena.gt(a, b),
-        CmpPredicate::Ne => arena.ne(a, b),
-        CmpPredicate::Ge => arena.ge(a, b),
+        CmpPredicate::Lt => arena.lt(F64, a, b),
+        CmpPredicate::Eq => arena.eq(F64, a, b),
+        CmpPredicate::Le => arena.le(F64, a, b),
+        CmpPredicate::Gt => arena.gt(F64, a, b),
+        CmpPredicate::Ne => arena.ne(F64, a, b),
+        CmpPredicate::Ge => arena.ge(F64, a, b),
     })
 }
 
@@ -305,7 +310,7 @@ pub(super) fn evaluate_cndmask(
         (None, Some(_)) => (a, registers.read_f32(arena, lane, src1)?),
         _ => (a, b),
     };
-    Ok(arena.select(condition, b, a))
+    Ok(arena.select(B32, condition, b, a))
 }
 
 /// `mask ? src1 : src0` in `lane`, each source mixed with the other as `evaluate_cndmask` does.
@@ -322,7 +327,7 @@ pub(super) fn evaluate_cndmask_e64(
     if src0.is_modified() || src1.is_modified() {
         let a = registers.read_modified_src(arena, lane, src0)?;
         let b = registers.read_modified_src(arena, lane, src1)?;
-        return Ok(arena.select(condition, b, a));
+        return Ok(arena.select(B32, condition, b, a));
     }
     let a = registers.read_src(arena, lane, src0.src)?;
     let b = registers.read_src(arena, lane, src1.src)?;
@@ -336,7 +341,7 @@ pub(super) fn evaluate_cndmask_e64(
         (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1.src)?),
         _ => (a, b),
     };
-    Ok(arena.select(condition, b, a))
+    Ok(arena.select(B32, condition, b, a))
 }
 
 /// `condition ? b : a` for two concrete words: the word when both agree, else the chosen word
@@ -356,7 +361,7 @@ fn select_words(
         return Ok(Some(a));
     }
     match arena.as_bool(condition) {
-        Some(_) => Ok(Some(arena.select(condition, b, a))),
+        Some(_) => Ok(Some(arena.select(B32, condition, b, a))),
         None => Err(EvalError::AmbiguousSelect { lane }),
     }
 }
@@ -378,9 +383,10 @@ pub(super) fn evaluate_ternary_op(
     if matches!(ternary_operand_type(op), OperandType::Word) {
         concrete_words(arena, lane, [a, b, c])?;
     }
+    let min_max = if op.is_f32() { F32 } else { U32 };
     Ok(match op {
         TernaryOp::AddLShl32 => {
-            let sum = arena.add(a, b);
+            let sum = arena.add(U32, a, b);
             let sum = low_word(arena, sum);
             shl32(arena, sum, c)
         }
@@ -388,42 +394,42 @@ pub(super) fn evaluate_ternary_op(
             let shifted = lshr32(arena, a, b);
             let width = low_five_bits(arena, c);
             let one = arena.int(1);
-            let bit = arena.shl(one, width);
-            let mask = arena.sub(bit, one);
-            arena.bit_and(shifted, mask)
+            let bit = arena.shl(B32, one, width);
+            let mask = arena.sub(U32, bit, one);
+            arena.bit_and(B32, shifted, mask)
         }
         TernaryOp::LShlOr32 => {
             let shifted = shl32(arena, a, b);
-            arena.bit_or(shifted, c)
+            arena.bit_or(B32, shifted, c)
         }
         TernaryOp::Or3_32 => {
-            let ab = arena.bit_or(a, b);
-            arena.bit_or(ab, c)
+            let ab = arena.bit_or(B32, a, b);
+            arena.bit_or(B32, ab, c)
         }
         TernaryOp::LShlAdd32 => {
             let shifted = shl32(arena, a, b);
-            let sum = arena.add(shifted, c);
+            let sum = arena.add(U32, shifted, c);
             low_word(arena, sum)
         }
         TernaryOp::Add3_32 => {
-            let ab = arena.add(a, b);
-            let sum = arena.add(ab, c);
+            let ab = arena.add(U32, a, b);
+            let sum = arena.add(U32, ab, c);
             low_word(arena, sum)
         }
         TernaryOp::AndOr32 => {
-            let masked = arena.bit_and(a, b);
-            arena.bit_or(masked, c)
+            let masked = arena.bit_and(B32, a, b);
+            arena.bit_or(B32, masked, c)
         }
         TernaryOp::Xad32 => {
-            let xor = arena.bit_xor(a, b);
-            let sum = arena.add(xor, c);
+            let xor = arena.bit_xor(B32, a, b);
+            let sum = arena.add(U32, xor, c);
             low_word(arena, sum)
         }
         TernaryOp::Bfi32 => {
-            let inserted = arena.bit_and(a, b);
+            let inserted = arena.bit_and(B32, a, b);
             let not_a = not32(arena, a);
-            let kept = arena.bit_and(not_a, c);
-            arena.bit_or(inserted, kept)
+            let kept = arena.bit_and(B32, not_a, c);
+            arena.bit_or(B32, inserted, kept)
         }
         TernaryOp::BfeI32 => {
             fold_concrete_words(arena, lane, [a, b, c], |[a, b, c]| bfe_i32(a, b, c))?
@@ -434,9 +440,9 @@ pub(super) fn evaluate_ternary_op(
         }
         TernaryOp::AlignByte32 => {
             let three = arena.int(3);
-            let bytes = arena.bit_and(c, three);
+            let bytes = arena.bit_and(B32, c, three);
             let eight = arena.int(8);
-            let amount = arena.mul(bytes, eight);
+            let amount = arena.mul(U32, bytes, eight);
             align(arena, a, b, amount)
         }
         TernaryOp::MadU32U24 => fold_concrete_words(arena, lane, [a, b, c], |[a, b, c]| {
@@ -456,23 +462,18 @@ pub(super) fn evaluate_ternary_op(
             a.min(b).max(a.max(b).min(c)) as u32
         })?,
         TernaryOp::Min3U32 | TernaryOp::Min3F32 => {
-            let ab = arena.min(a, b);
-            arena.min(ab, c)
+            let ab = arena.min(min_max, a, b);
+            arena.min(min_max, ab, c)
         }
         TernaryOp::Max3U32 | TernaryOp::Max3F32 => {
-            let ab = arena.max(a, b);
-            arena.max(ab, c)
+            let ab = arena.max(min_max, a, b);
+            arena.max(min_max, ab, c)
         }
-        TernaryOp::Med3U32 | TernaryOp::Med3F32 => {
-            let low = arena.min(a, b);
-            let high = arena.max(a, b);
-            let capped = arena.min(high, c);
-            arena.max(low, capped)
-        }
+        TernaryOp::Med3U32 | TernaryOp::Med3F32 => arena.median3(min_max, a, b, c),
         TernaryOp::SadU32 => {
-            let difference = arena.sub(a, b);
-            let distance = arena.abs(difference);
-            let sum = arena.add(distance, c);
+            let difference = arena.sub(U32, a, b);
+            let distance = arena.abs(U32, difference);
+            let sum = arena.add(U32, distance, c);
             low_word(arena, sum)
         }
         TernaryOp::BitOp3(table) => {
@@ -518,8 +519,8 @@ fn bitop3(table: u8, a: u32, b: u32, c: u32) -> u32 {
         .fold(0, |result, bit| result | 1 << bit)
 }
 
-/// `x & 0x7fffffff` clears a float's sign bit and `x ^ 0x80000000` flips it, so for a
-/// symbolic f32 `x`, whose other bits are unknown, they are `|x|` and `-x` exactly.
+/// `x & 0x7fffffff` clears a float's sign bit and `x ^ 0x80000000` flips it: a symbolic `x`
+/// is an f32, so the operation is typed f32 and lowering makes it `|x|` or `-x` exactly.
 fn sign_bit_op(arena: &mut ExprArena, op: BinOp, a: ExprId, b: ExprId) -> Option<ExprId> {
     let (mask, value) = match (concrete_word(arena, a), concrete_word(arena, b)) {
         (Some(mask), None) => (mask, b),
@@ -530,8 +531,14 @@ fn sign_bit_op(arena: &mut ExprArena, op: BinOp, a: ExprId, b: ExprId) -> Option
         return None;
     }
     match (op, mask) {
-        (BinOp::And32, 0x7fff_ffff) => Some(arena.abs(value)),
-        (BinOp::Xor32, 0x8000_0000) => Some(arena.neg(value)),
+        (BinOp::And32, 0x7fff_ffff) => {
+            let mask = arena.int(0x7fff_ffff);
+            Some(arena.bit_and(F32, value, mask))
+        }
+        (BinOp::Xor32, 0x8000_0000) => {
+            let mask = arena.int(0x8000_0000);
+            Some(arena.bit_xor(F32, value, mask))
+        }
         _ => None,
     }
 }
@@ -585,17 +592,17 @@ fn bfe_i32(value: u32, offset: u32, width: u32) -> u32 {
 /// The low word of the 64-bit `high:low` shifted right by `amount`, which is below 32.
 fn align(arena: &mut ExprArena, high: ExprId, low: ExprId, amount: ExprId) -> ExprId {
     let thirty_two = arena.int(32);
-    let upper = arena.shl(high, thirty_two);
-    let joined = arena.bit_or(upper, low);
-    let shifted = arena.lshr(joined, amount);
+    let upper = arena.shl(B64, high, thirty_two);
+    let joined = arena.bit_or(B64, upper, low);
+    let shifted = arena.lshr(B64, joined, amount);
     let mask = arena.int(i64::from(u32::MAX));
-    arena.bit_and(shifted, mask)
+    arena.bit_and(B64, shifted, mask)
 }
 
 /// The word's 32 bits inverted.
 fn not32(arena: &mut ExprArena, value: ExprId) -> ExprId {
     let mask = arena.int(i64::from(u32::MAX));
-    arena.bit_xor(value, mask)
+    arena.bit_xor(B32, value, mask)
 }
 
 /// `op src` in `lane`, the source read as `op`'s operand type, an f32 one after its input
@@ -651,16 +658,13 @@ pub(super) fn evaluate_unary_op(
             let truncated = truncate_to_u32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
             arena.int(i64::from(truncated))
         }
-        UnaryOp::RcpIflagF32 | UnaryOp::RcpF32 => arena.rcp(a),
-        UnaryOp::Exp2F32 => arena.exp2(a),
-        UnaryOp::Log2F32 => arena.log2(a),
-        UnaryOp::SqrtF32 => arena.sqrt(a),
-        UnaryOp::RsqF32 => {
-            let root = arena.sqrt(a);
-            arena.rcp(root)
-        }
-        UnaryOp::RndneF32 => arena.round_even(a),
-        UnaryOp::TruncF32 => arena.trunc(a),
+        UnaryOp::RcpIflagF32 | UnaryOp::RcpF32 => arena.rcp(F32, a),
+        UnaryOp::Exp2F32 => arena.exp2(F32, a),
+        UnaryOp::Log2F32 => arena.log2(F32, a),
+        UnaryOp::SqrtF32 => arena.sqrt(F32, a),
+        UnaryOp::RsqF32 => arena.rsqrt(F32, a),
+        UnaryOp::RndneF32 => arena.round_even(F32, a),
+        UnaryOp::TruncF32 => arena.trunc(F32, a),
     })
 }
 
@@ -678,7 +682,7 @@ pub(super) fn evaluate_ldexp_f32(
     // Every power of two in f64's range is exact; beyond it an f32 result is 0 or infinite.
     let power = Real::from_f64(2f64.powi(exponent)).expect("a power of two is not a NaN");
     let scale = arena.real(power);
-    Ok(arena.mul(value, scale))
+    Ok(arena.mul(F32, value, scale))
 }
 
 /// `v_cvt_pk_{fp8,bf8}_f32` in `lane`: `dst`'s word with `half` replaced by the sources'
@@ -881,12 +885,12 @@ fn compare(
         CmpOp::GtU32 => arena.bool_val(unsigned(arena)?.is_gt()),
         CmpOp::NeU32 => arena.bool_val(unsigned(arena)?.is_ne()),
         CmpOp::GeU32 => arena.bool_val(unsigned(arena)?.is_ge()),
-        CmpOp::LtF32 => arena.lt(a, b),
-        CmpOp::LeF32 => arena.le(a, b),
-        CmpOp::GtF32 => arena.gt(a, b),
-        CmpOp::GeF32 => arena.ge(a, b),
-        CmpOp::EqF32 => arena.eq(a, b),
-        CmpOp::LgF32 => arena.ne(a, b),
+        CmpOp::LtF32 => arena.lt(F32, a, b),
+        CmpOp::LeF32 => arena.le(F32, a, b),
+        CmpOp::GtF32 => arena.gt(F32, a, b),
+        CmpOp::GeF32 => arena.ge(F32, a, b),
+        CmpOp::EqF32 => arena.eq(F32, a, b),
+        CmpOp::LgF32 => arena.ne(F32, a, b),
     })
 }
 
@@ -933,25 +937,25 @@ fn truncate_to_i32(arena: &ExprArena, value: ExprId) -> Option<i32> {
 /// The low 32 bits of a concrete integer result.
 fn low_word(arena: &mut ExprArena, value: ExprId) -> ExprId {
     let mask = arena.int(i64::from(u32::MAX));
-    arena.bit_and(value, mask)
+    arena.bit_and(B32, value, mask)
 }
 
 /// `count & 31`: AMD uses only the low five bits of a shift count, so 34 becomes 2 and 32
 /// becomes 0.
 fn low_five_bits(arena: &mut ExprArena, count: ExprId) -> ExprId {
     let mask = arena.int(31);
-    arena.bit_and(count, mask)
+    arena.bit_and(B32, count, mask)
 }
 
 /// `value << (shift & 31)`, keeping the low 32 bits.
 fn shl32(arena: &mut ExprArena, value: ExprId, shift: ExprId) -> ExprId {
     let amount = low_five_bits(arena, shift);
-    let shifted = arena.shl(value, amount);
+    let shifted = arena.shl(B32, value, amount);
     low_word(arena, shifted)
 }
 
 /// The logical `value >> (shift & 31)`.
 fn lshr32(arena: &mut ExprArena, value: ExprId, shift: ExprId) -> ExprId {
     let amount = low_five_bits(arena, shift);
-    arena.lshr(value, amount)
+    arena.lshr(B32, value, amount)
 }

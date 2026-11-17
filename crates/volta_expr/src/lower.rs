@@ -34,7 +34,8 @@ pub fn lower(outputs: &FullOutputs) -> SymbolicOutputs {
             Some(atom) => atom,
             None => {
                 let child = |c: full::ExprId| lowered[c].expect("children precede their parents");
-                lower_operation(&mut target, node, child, &source.strings)
+                let ty = source.ty(id).expect("an operation has a type");
+                lower_operation(&mut target, node, ty, child, &source.strings)
                     .expect("a node is an atom or an operation")
             }
         };
@@ -159,6 +160,7 @@ pub(crate) fn raise_real(real: &simplified::Real) -> full::Real {
 pub(crate) fn lower_operation(
     target: &mut simplified::ExprArena,
     node: &full::ExprNode,
+    ty: full::Type,
     child: impl Fn(full::ExprId) -> simplified::ExprId,
     strings: &IdVec<full::StringId, String>,
 ) -> Option<simplified::ExprId> {
@@ -187,15 +189,35 @@ pub(crate) fn lower_operation(
         Rcp(a) => lower_rcp(target, child(a)),
         Erf(a) => target.erf(child(a)),
         Gelu(a) => target.gelu(child(a)),
+        Tanh(a) => lower_tanh(target, child(a)),
+        Rsqrt(a) => {
+            let root = target.sqrt(child(a));
+            lower_rcp(target, root)
+        }
+        Sigmoid(a) => lower_sigmoid(target, child(a)),
+        Median3(a, b, c) => lower_median3(target, child(a), child(b), child(c)),
+        Copysign(magnitude, sign) => lower_copysign(target, child(magnitude), child(sign)),
         Max(a, b) => target.max(child(a), child(b)),
         Min(a, b) => target.min(child(a), child(b)),
         Abs(a) => target.abs(child(a)),
         Sign(a) => target.sign(child(a)),
         RoundEven(a) => target.round_even(child(a)),
         Trunc(a) => target.trunc(child(a)),
-        BitAnd(a, b) => target.bit_and(child(a), child(b)),
+        BitAnd(a, b) => {
+            let (a, b) = (child(a), child(b));
+            match float_under_mask(target, ty, a, b, SignMask::Clear) {
+                Some(x) => target.abs(x),
+                None => target.bit_and(a, b),
+            }
+        }
         BitOr(a, b) => target.bit_or(child(a), child(b)),
-        BitXor(a, b) => target.bit_xor(child(a), child(b)),
+        BitXor(a, b) => {
+            let (a, b) = (child(a), child(b));
+            match float_under_mask(target, ty, a, b, SignMask::Flip) {
+                Some(x) => target.neg(x),
+                None => target.bit_xor(a, b),
+            }
+        }
         BitNot(a) => target.bit_not(child(a)),
         Shl(a, b) => target.shl(child(a), child(b)),
         Shr(a, b) => target.shr(child(a), child(b)),
@@ -231,6 +253,53 @@ fn lower_fma(
 ) -> simplified::ExprId {
     let product = target.mul(a, b);
     target.add(product, c)
+}
+
+/// `tanh(a)` as `(e^{2a} - 1) / (e^{2a} + 1)`, which the decision procedure reasons about
+/// where it would see an opaque `tanh` atom.
+fn lower_tanh(target: &mut simplified::ExprArena, a: simplified::ExprId) -> simplified::ExprId {
+    let two = target.int(2);
+    let one = target.int(1);
+    let two_a = target.mul(a, two);
+    let e2a = target.exp(two_a);
+    let numerator = target.sub(e2a, one);
+    let denominator = target.add(e2a, one);
+    target.div(numerator, denominator)
+}
+
+/// `sigmoid(a)` as `1 / (1 + e^-a)`.
+fn lower_sigmoid(target: &mut simplified::ExprArena, a: simplified::ExprId) -> simplified::ExprId {
+    let one = target.real(simplified::Real::one());
+    let negated = target.neg(a);
+    let exp = target.exp(negated);
+    let denominator = target.add(one, exp);
+    lower_rcp(target, denominator)
+}
+
+/// The median of three as `max(min(a, b), min(max(a, b), c))`.
+fn lower_median3(
+    target: &mut simplified::ExprArena,
+    a: simplified::ExprId,
+    b: simplified::ExprId,
+    c: simplified::ExprId,
+) -> simplified::ExprId {
+    let low = target.min(a, b);
+    let high = target.max(a, b);
+    let capped = target.min(high, c);
+    target.max(low, capped)
+}
+
+/// `copysign(magnitude, sign)` as `sign >= 0 ? |magnitude| : -|magnitude|`.
+fn lower_copysign(
+    target: &mut simplified::ExprArena,
+    magnitude: simplified::ExprId,
+    sign: simplified::ExprId,
+) -> simplified::ExprId {
+    let zero = target.real(simplified::Real::zero());
+    let non_negative = target.ge(sign, zero);
+    let absolute = target.abs(magnitude);
+    let negated = target.neg(absolute);
+    target.select(non_negative, absolute, negated)
 }
 
 /// `2^a` over the reals: `exp(a * ln 2)`, or `exp(v)` for the compilers' `exp(v)` idiom
@@ -294,4 +363,65 @@ fn factor_log2e(
         }
         _ => None,
     }
+}
+
+/// The two masks that touch only a float's sign bit: `x ^ sign` flips it (`-x`) and
+/// `x & !sign` clears it (`|x|`).
+#[derive(Clone, Copy)]
+enum SignMask {
+    Flip,
+    Clear,
+}
+
+impl SignMask {
+    /// The mask for a float of `bits` bits: its sign bit alone, or every bit but it.
+    fn word(self, bits: u16) -> u64 {
+        let sign = 1u64 << (bits - 1);
+        match self {
+            SignMask::Flip => sign,
+            SignMask::Clear => sign - 1,
+        }
+    }
+}
+
+/// The `x` of `x ^ sign` or `x & !sign` when `ty` is a float type and the other operand is
+/// that mask for its width.
+fn float_under_mask(
+    target: &simplified::ExprArena,
+    ty: full::Type,
+    a: simplified::ExprId,
+    b: simplified::ExprId,
+    mask: SignMask,
+) -> Option<simplified::ExprId> {
+    let full::Type::Float(full::Width(bits @ 1..=64)) = ty else {
+        return None;
+    };
+    let is_mask = |id| low_bits(target, id, bits) == Some(mask.word(bits));
+
+    if is_mask(b) && is_float_value(target, a) {
+        Some(a)
+    } else if is_mask(a) && is_float_value(target, b) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+/// The low `bits` bits of `id` when it is an integer constant.
+fn low_bits(target: &simplified::ExprArena, id: simplified::ExprId, bits: u16) -> Option<u64> {
+    let simplified::ExprNode::IntConst(c) = *target.node(id) else {
+        return None;
+    };
+    Some(c as u64 & (u64::MAX >> (64 - bits)))
+}
+
+/// Whether `id` can be a float's value: not a concrete word, whose bits are not a real's, nor
+/// a predicate or an undefined value.
+fn is_float_value(target: &simplified::ExprArena, id: simplified::ExprId) -> bool {
+    !matches!(
+        target.node(id),
+        simplified::ExprNode::IntConst(_)
+            | simplified::ExprNode::BoolConst(_)
+            | simplified::ExprNode::Undefined
+    )
 }

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use volta_expr::FullOutputs;
-use volta_expr::symbolic_full::{ExprArena, ExprId, NanError, StringId};
+use volta_expr::symbolic_full::{ExprArena, ExprId, NanError, StringId, Type};
 
 /// A row-major shape flattening a multi-dimensional index into the flat element index of
 /// `InputElement` and `FullOutputs::outputs` - the convention a kernel's own address
@@ -625,7 +625,7 @@ fn eval_reduce(
             for i in range {
                 inner.insert(var.to_string(), i);
                 let term = eval(body, env, &inner, arena, array_ids, memo)?;
-                acc = arena.add(acc, term);
+                acc = arena.add(Type::Real, acc, term);
             }
             acc
         }
@@ -636,7 +636,7 @@ fn eval_reduce(
             for i in range {
                 inner.insert(var.to_string(), i);
                 let term = eval(body, env, &inner, arena, array_ids, memo)?;
-                acc = arena.max(acc, term);
+                acc = arena.max(Type::Real, acc, term);
             }
             acc
         }
@@ -685,70 +685,70 @@ fn eval(
                 eval(a, env, bindings, arena, array_ids, memo)?,
                 eval(b, env, bindings, arena, array_ids, memo)?,
             );
-            Ok(arena.add(a, b))
+            Ok(arena.add(Type::Real, a, b))
         }
         SpecExpr::Sub(a, b) => {
             let (a, b) = (
                 eval(a, env, bindings, arena, array_ids, memo)?,
                 eval(b, env, bindings, arena, array_ids, memo)?,
             );
-            Ok(arena.sub(a, b))
+            Ok(arena.sub(Type::Real, a, b))
         }
         SpecExpr::Mul(a, b) => {
             let (a, b) = (
                 eval(a, env, bindings, arena, array_ids, memo)?,
                 eval(b, env, bindings, arena, array_ids, memo)?,
             );
-            Ok(arena.mul(a, b))
+            Ok(arena.mul(Type::Real, a, b))
         }
         SpecExpr::Div(a, b) => {
             let (a, b) = (
                 eval(a, env, bindings, arena, array_ids, memo)?,
                 eval(b, env, bindings, arena, array_ids, memo)?,
             );
-            Ok(arena.div(a, b))
+            Ok(arena.div(Type::Real, a, b))
         }
         SpecExpr::Neg(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.neg(a))
+            Ok(arena.neg(Type::Real, a))
         }
         SpecExpr::Min(a, b) => {
             let (a, b) = (
                 eval(a, env, bindings, arena, array_ids, memo)?,
                 eval(b, env, bindings, arena, array_ids, memo)?,
             );
-            Ok(arena.min(a, b))
+            Ok(arena.min(Type::Real, a, b))
         }
         SpecExpr::Max(a, b) => {
             let (a, b) = (
                 eval(a, env, bindings, arena, array_ids, memo)?,
                 eval(b, env, bindings, arena, array_ids, memo)?,
             );
-            Ok(arena.max(a, b))
+            Ok(arena.max(Type::Real, a, b))
         }
         SpecExpr::Exp(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.exp(a))
+            Ok(arena.exp(Type::Real, a))
         }
         SpecExpr::Log(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.log(a))
+            Ok(arena.log(Type::Real, a))
         }
         SpecExpr::Sqrt(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.sqrt(a))
+            Ok(arena.sqrt(Type::Real, a))
         }
         SpecExpr::Abs(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.abs(a))
+            Ok(arena.abs(Type::Real, a))
         }
         SpecExpr::Sign(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.sign(a))
+            Ok(arena.sign(Type::Real, a))
         }
         SpecExpr::Erf(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
-            Ok(arena.erf(a))
+            Ok(arena.erf(Type::Real, a))
         }
         SpecExpr::Reduce {
             op,

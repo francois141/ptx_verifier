@@ -131,6 +131,28 @@ impl fmt::Display for Real {
     }
 }
 
+/// A width in bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Width(pub u16);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Signedness {
+    Signed,
+    Unsigned,
+}
+
+/// The machine type an operation computes in, as its frontend's instruction states it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Type {
+    /// A real with no machine width: a spec's value, or an NKI element (dtypes are not modelled).
+    Real,
+    Float(Width),
+    Int(Signedness, Width),
+    /// Untyped bits, as PTX's `.b32` or AMD's `_b32` operations read them.
+    Bits(Width),
+    Pred,
+}
+
 /// A handle to a node of a full [`ExprArena`].
 #[id_type(serde = true)]
 pub struct ExprId(pub u32);
@@ -175,9 +197,16 @@ pub enum ExprNode {
     Erf(ExprId),
     /// PyTorch's tanh approximation of GELU.
     Gelu(ExprId),
+    Tanh(ExprId),
+    /// `1 / sqrt(a)`.
+    Rsqrt(ExprId),
+    /// `1 / (1 + e^-a)`.
+    Sigmoid(ExprId),
 
     Max(ExprId, ExprId),
     Min(ExprId, ExprId),
+    /// The median of three values.
+    Median3(ExprId, ExprId, ExprId),
     Abs(ExprId),
     Sign(ExprId),
     RoundEven(ExprId),
@@ -203,6 +232,8 @@ pub enum ExprNode {
     Not(ExprId),
 
     Select(ExprId, ExprId, ExprId),
+    /// The magnitude of the first operand with the sign of the second.
+    Copysign(ExprId, ExprId),
     ToFloat(ExprId),
     Fma(ExprId, ExprId, ExprId),
     /// `array[index]` of a launch-config input array.
@@ -237,6 +268,9 @@ impl ExprNode {
             | Rcp(a)
             | Erf(a)
             | Gelu(a)
+            | Tanh(a)
+            | Rsqrt(a)
+            | Sigmoid(a)
             | Abs(a)
             | Sign(a)
             | RoundEven(a)
@@ -266,12 +300,13 @@ impl ExprNode {
             | Gt(a, b)
             | Ge(a, b)
             | And(a, b)
-            | Or(a, b) => {
+            | Or(a, b)
+            | Copysign(a, b) => {
                 f(*a);
                 f(*b);
             }
 
-            Select(a, b, c) | Fma(a, b, c) => {
+            Select(a, b, c) | Fma(a, b, c) | Median3(a, b, c) => {
                 f(*a);
                 f(*b);
                 f(*c);
@@ -304,6 +339,8 @@ impl ExprNode {
 pub struct ExprArena {
     pub(super) nodes: IdVec<ExprId, ExprNode>,
     pub(crate) strings: IdVec<StringId, String>,
+    /// Each operation's type; `None` for an atom.
+    pub(super) types: IdVec<ExprId, Option<Type>>,
     /// Each node's value, the node itself unless lowering replaces it.
     pub(super) values: IdVec<ExprId, ExprId>,
     /// Each real constant's simplified counterpart, converted once for every evaluation and
@@ -318,32 +355,44 @@ impl ExprArena {
         Self {
             nodes: IdVec::new(),
             strings: IdVec::new(),
+            types: IdVec::new(),
             values: IdVec::new(),
             lowered_reals: IdVec::new(),
             scratch: symbolic_simplified::ExprArena::new(),
         }
     }
 
-    /// Push `node` with value `value`, or itself.
-    pub(super) fn push(&mut self, node: ExprNode, value: Option<ExprId>) -> ExprId {
-        let lowered_real = match &node {
-            ExprNode::RealConst(real) => Some(lower_real(real)),
-            _ => None,
-        };
-        self.push_lowered(node, value, lowered_real)
-    }
-
-    /// Push `node`, whose simplified counterpart as a real constant is `lowered_real`.
-    pub(super) fn push_lowered(
+    /// Push the operation `node` of type `ty`, with value `value`, or itself.
+    pub(super) fn push_operation(
         &mut self,
         node: ExprNode,
+        ty: Type,
+        value: Option<ExprId>,
+    ) -> ExprId {
+        self.push(node, Some(ty), value, None)
+    }
+
+    /// Push the constant `node`, whose simplified counterpart is `lowered_real`.
+    pub(super) fn push_constant(
+        &mut self,
+        node: ExprNode,
+        lowered_real: Option<symbolic_simplified::Real>,
+    ) -> ExprId {
+        self.push(node, None, None, lowered_real)
+    }
+
+    fn push(
+        &mut self,
+        node: ExprNode,
+        ty: Option<Type>,
         value: Option<ExprId>,
         lowered_real: Option<symbolic_simplified::Real>,
     ) -> ExprId {
         let id = self.nodes.push(node);
+        let type_slot = self.types.push(ty);
         let value_slot = self.values.push(value.unwrap_or(id));
         let real_slot = self.lowered_reals.push(lowered_real);
-        debug_assert!(value_slot == id && real_slot == id);
+        debug_assert!(type_slot == id && value_slot == id && real_slot == id);
         id
     }
 
@@ -353,7 +402,16 @@ impl ExprArena {
     }
 
     pub(super) fn atom(&mut self, node: ExprNode) -> ExprId {
-        self.push(node, None)
+        let lowered_real = match &node {
+            ExprNode::RealConst(real) => Some(lower_real(real)),
+            _ => None,
+        };
+        self.push(node, None, None, lowered_real)
+    }
+
+    /// The type of the operation `id`; `None` for an atom.
+    pub fn ty(&self, id: ExprId) -> Option<Type> {
+        self.types[id]
     }
 
     /// The node exactly as built.
@@ -481,6 +539,7 @@ impl Clone for ExprArena {
         Self {
             nodes: self.nodes.clone(),
             strings: self.strings.clone(),
+            types: self.types.clone(),
             values: self.values.clone(),
             lowered_reals: self.lowered_reals.clone(),
             scratch: symbolic_simplified::ExprArena::new(),

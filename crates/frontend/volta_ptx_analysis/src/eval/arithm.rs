@@ -13,7 +13,7 @@ use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
 use volta_common::logging::warn;
-use volta_expr::symbolic_full::{ExprId, Real};
+use volta_expr::symbolic_full::{ExprId, Real, Signedness, Type, Width};
 
 /// Which 16-bit half of a `.b32` funnel-shift operand to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,29 +70,29 @@ impl<'p> Interpreter<'p> {
         }
 
         Ok(match op {
-            BinOp::Add => self.arena.add(a, b),
-            BinOp::Sub => self.arena.sub(a, b),
-            BinOp::Mul => self.arena.mul(a, b),
-            BinOp::Div => self.arena.div(a, b),
-            BinOp::Rem => self.arena.rem(a, b),
-            BinOp::And => self.arena.bit_and(a, b),
-            BinOp::Or => self.arena.bit_or(a, b),
+            BinOp::Add => self.arena.add(expr_type(ty), a, b),
+            BinOp::Sub => self.arena.sub(expr_type(ty), a, b),
+            BinOp::Mul => self.arena.mul(expr_type(ty), a, b),
+            BinOp::Div => self.arena.div(expr_type(ty), a, b),
+            BinOp::Rem => self.arena.rem(expr_type(ty), a, b),
+            BinOp::And => self.arena.bit_and(expr_type(ty), a, b),
+            BinOp::Or => self.arena.bit_or(expr_type(ty), a, b),
             BinOp::Xor => self.eval_xor(ty, a, b),
-            BinOp::Shl => self.arena.shl(a, b),
+            BinOp::Shl => self.arena.shl(expr_type(ty), a, b),
             BinOp::Shr => {
                 if ty.is_signed_int() {
-                    self.arena.shr(a, b)
+                    self.arena.shr(expr_type(ty), a, b)
                 } else {
-                    self.arena.lshr(a, b)
+                    self.arena.lshr(expr_type(ty), a, b)
                 }
             }
-            BinOp::Min => self.arena.min(a, b),
-            BinOp::Max => self.arena.max(a, b),
+            BinOp::Min => self.arena.min(expr_type(ty), a, b),
+            BinOp::Max => self.arena.max(expr_type(ty), a, b),
         })
     }
 
-    /// A symbolic `xor`, always an opaque `bit_xor`: a sign-bit flip negates floats but not
-    /// integers, and untyped `.b*` data can't tell them apart, so it warns to use `neg` instead.
+    /// A symbolic `xor` in the instruction's type. Lowering negates a float's sign-bit flip,
+    /// but `.b*` data is untyped bits, so that flip stays bitwise and warns to use `neg`.
     fn eval_xor(&mut self, ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
         let sign_bit: Option<i64> = match ty.bits() {
             16 => Some(0x8000),
@@ -112,7 +112,7 @@ impl<'p> Interpreter<'p> {
                 ty.bits()
             );
         }
-        self.arena.bit_xor(a, b)
+        self.arena.bit_xor(expr_type(ty), a, b)
     }
 
     /// `lop3.b32` over operands not all concrete (`symbolic` positions; `words`
@@ -139,7 +139,9 @@ impl<'p> Interpreter<'p> {
         let selected = match self.arena.as_int_const(difference) {
             Some(0) => return low,
             Some(ALL_ONES) => sources[position],
-            _ => self.arena.bit_and(sources[position], difference),
+            _ => self
+                .arena
+                .bit_and(Type::Bits(Width(32)), sources[position], difference),
         };
         self.b32_xor(low, selected)
     }
@@ -268,10 +270,10 @@ impl<'p> Interpreter<'p> {
             return Ok(self.arena.bool_val(r));
         }
         Ok(match op {
-            BinOp::And => self.arena.and(a, b),
-            BinOp::Or => self.arena.or(a, b),
+            BinOp::And => self.arena.and(Type::Pred, a, b),
+            BinOp::Or => self.arena.or(Type::Pred, a, b),
             // Boolean xor is inequality.
-            BinOp::Xor => self.arena.ne(a, b),
+            BinOp::Xor => self.arena.ne(Type::Pred, a, b),
             _ => {
                 return Err(EvalError::Unsupported {
                     pc,
@@ -299,11 +301,11 @@ impl<'p> Interpreter<'p> {
             // Wrap the result back to `ty`: `neg.s32`/`abs.s32` of i32::MIN
             // is i32::MIN.
             UnaryOp::Neg => {
-                let r = self.arena.neg(a);
+                let r = self.arena.neg(expr_type(ty), a);
                 self.canon_operand(pc, ty, r)?
             }
             UnaryOp::Abs => {
-                let r = self.arena.abs(a);
+                let r = self.arena.abs(expr_type(ty), a);
                 self.canon_operand(pc, ty, r)?
             }
             UnaryOp::Not => {
@@ -311,7 +313,7 @@ impl<'p> Interpreter<'p> {
                     if let Some(c) = self.arena.as_bool(a) {
                         self.arena.bool_val(!c)
                     } else {
-                        self.arena.not(a)
+                        self.arena.not(expr_type(ty), a)
                     }
                 } else {
                     // Bitwise not; folds when concrete (via canonical i64).
@@ -320,35 +322,21 @@ impl<'p> Interpreter<'p> {
                         let r = canon_int(!c, bits, ty.is_signed_int());
                         self.arena.int(r)
                     } else {
-                        self.arena.bit_not(a)
+                        self.arena.bit_not(expr_type(ty), a)
                     }
                 }
             }
-            UnaryOp::Rcp => self.arena.rcp(a),
-            UnaryOp::Sqrt => self.arena.sqrt(a),
-            UnaryOp::Rsqrt => {
-                let s = self.arena.sqrt(a);
-                self.arena.rcp(s)
-            }
-            UnaryOp::Exp => self.arena.exp(a),
+            UnaryOp::Rcp => self.arena.rcp(expr_type(ty), a),
+            UnaryOp::Sqrt => self.arena.sqrt(expr_type(ty), a),
+            UnaryOp::Rsqrt => self.arena.rsqrt(expr_type(ty), a),
+            UnaryOp::Exp => self.arena.exp(expr_type(ty), a),
             // 2^x = e^(x*ln2) keeps this in the exp fragment.
-            UnaryOp::Ex2 => self.arena.exp2(a),
-            // tanh(x) = (e^2x - 1) / (e^2x + 1), so this too stays in the
-            // interpreted exp fragment rather than becoming an opaque atom
-            // (same approach as `Ex2` above).
-            UnaryOp::Tanh => {
-                let two = self.arena.int(2);
-                let one = self.arena.int(1);
-                let two_x = self.arena.mul(a, two);
-                let e2x = self.arena.exp(two_x);
-                let num = self.arena.sub(e2x, one);
-                let den = self.arena.add(e2x, one);
-                self.arena.div(num, den)
-            }
+            UnaryOp::Ex2 => self.arena.exp2(expr_type(ty), a),
+            UnaryOp::Tanh => self.arena.tanh(expr_type(ty), a),
             // PTX has no natural log: `lg2.approx` is how one is spelled,
             // so it is read as an exact log(a) / ln2 rather than an opaque
             // atom - the mirror of `Ex2` above.
-            UnaryOp::Lg2 => self.arena.log2(a),
+            UnaryOp::Lg2 => self.arena.log2(expr_type(ty), a),
         })
     }
 
@@ -541,7 +529,7 @@ impl<'p> Interpreter<'p> {
     pub(in crate::eval) fn mul_wide(&mut self, src_ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
         let a = self.canon_int_operand(src_ty, a);
         let b = self.canon_int_operand(src_ty, b);
-        self.arena.mul(a, b)
+        self.arena.mul(wide_type(src_ty), a, b)
     }
 
     /// High half of the widening product (nvcc's divide-by-constant idiom).
@@ -551,11 +539,11 @@ impl<'p> Interpreter<'p> {
         let a = self.canon_int_operand(ty, a);
         let b = self.canon_int_operand(ty, b);
         let bits = self.arena.int(ty.bits().min(64) as i64);
-        let product = self.arena.mul(a, b);
+        let product = self.arena.mul(wide_type(ty), a, b);
         if ty.is_signed_int() {
-            self.arena.shr(product, bits)
+            self.arena.shr(wide_type(ty), product, bits)
         } else {
-            self.arena.lshr(product, bits)
+            self.arena.lshr(wide_type(ty), product, bits)
         }
     }
 
@@ -630,12 +618,12 @@ impl<'p> Interpreter<'p> {
         let a = self.canon_operand(pc, ty, a)?;
         let b = self.canon_operand(pc, ty, b)?;
         Ok(match cmp {
-            CmpOp::Eq | CmpOp::Equ => self.arena.eq(a, b),
-            CmpOp::Ne | CmpOp::Neu => self.arena.ne(a, b),
-            CmpOp::Lt | CmpOp::Lo | CmpOp::Ltu => self.arena.lt(a, b),
-            CmpOp::Le | CmpOp::Ls | CmpOp::Leu => self.arena.le(a, b),
-            CmpOp::Gt | CmpOp::Hi | CmpOp::Gtu => self.arena.gt(a, b),
-            CmpOp::Ge | CmpOp::Hs | CmpOp::Geu => self.arena.ge(a, b),
+            CmpOp::Eq | CmpOp::Equ => self.arena.eq(expr_type(ty), a, b),
+            CmpOp::Ne | CmpOp::Neu => self.arena.ne(expr_type(ty), a, b),
+            CmpOp::Lt | CmpOp::Lo | CmpOp::Ltu => self.arena.lt(expr_type(ty), a, b),
+            CmpOp::Le | CmpOp::Ls | CmpOp::Leu => self.arena.le(expr_type(ty), a, b),
+            CmpOp::Gt | CmpOp::Hi | CmpOp::Gtu => self.arena.gt(expr_type(ty), a, b),
+            CmpOp::Ge | CmpOp::Hs | CmpOp::Geu => self.arena.ge(expr_type(ty), a, b),
             CmpOp::Num => self.arena.bool_val(true),
             CmpOp::Nan => self.arena.bool_val(false),
         })
@@ -668,18 +656,23 @@ impl<'p> Interpreter<'p> {
 
     /// Apply a float clamp, exact over the reals: `.relu` is `max(r, 0)`, `.sat`
     /// is `min(max(r, 0), 1)` (the spec's NaN flushing is out of model).
-    pub(in crate::eval) fn apply_clamp(&mut self, clamp: Option<Clamp>, r: ExprId) -> ExprId {
+    pub(in crate::eval) fn apply_clamp(
+        &mut self,
+        clamp: Option<Clamp>,
+        ty: ScalarType,
+        r: ExprId,
+    ) -> ExprId {
         match clamp {
             None => r,
             Some(Clamp::Relu) => {
                 let zero = self.arena.real(Real::zero());
-                self.arena.max(r, zero)
+                self.arena.max(expr_type(ty), r, zero)
             }
             Some(Clamp::Sat) => {
                 let zero = self.arena.real(Real::zero());
                 let one = self.arena.real(Real::one());
-                let low_clamped = self.arena.max(r, zero);
-                self.arena.min(low_clamped, one)
+                let low_clamped = self.arena.max(expr_type(ty), r, zero);
+                self.arena.min(expr_type(ty), low_clamped, one)
             }
         }
     }
@@ -708,7 +701,7 @@ impl<'p> Interpreter<'p> {
         // pass through (data, not addresses, in a structured-CTA).
         let a = self.canon_int_operand(src_ty, a);
         if dst_ty.is_float() {
-            return Ok(self.arena.to_float(a));
+            return Ok(self.arena.to_float(expr_type(dst_ty), a));
         }
         // ... then the result is renormalized at the destination width.
         if let Some(c) = self.arena.as_int_const(a) {
@@ -1006,7 +999,10 @@ impl<'p> Interpreter<'p> {
             })? as u32;
         let apply = |this: &mut Self, lane: ExprId, byte_mask: u32| match byte_mask {
             0 => Ok(lane),
-            0x80 => Ok(this.arena.neg(lane)),
+            0x80 => {
+                let sign = this.arena.int(0x80);
+                Ok(this.arena.bit_xor(Type::Float(Width(8)), lane, sign))
+            }
             _ => Err(EvalError::Unsupported {
                 pc,
                 what: format!(
@@ -1097,4 +1093,31 @@ fn canon_int(v: i64, bits: u32, signed: bool) -> i64 {
     } else {
         masked as i64
     }
+}
+
+/// The expression type of a PTX value of type `ty`; a packed type's is its element's.
+pub(in crate::eval) fn expr_type(ty: ScalarType) -> Type {
+    use ScalarType::*;
+    let width = Width(ty.bits() as u16);
+    match ty {
+        S8 | S16 | S32 | S64 => Type::Int(Signedness::Signed, width),
+        U8 | U16 | U32 | U64 => Type::Int(Signedness::Unsigned, width),
+        S16x2 => Type::Int(Signedness::Signed, Width(16)),
+        U16x2 => Type::Int(Signedness::Unsigned, Width(16)),
+        F16 | Bf16 | F32 | F64 | Tf32 | E4m3 | E5m2 => Type::Float(width),
+        F16x2 | Bf16x2 | E4m3x2 => Type::Float(Width(ty.bits() as u16 / 2)),
+        F32x2 => Type::Float(Width(32)),
+        B8 | B16 | B32 | B64 | B128 | B1024 => Type::Bits(width),
+        Pred => Type::Pred,
+    }
+}
+
+/// The type of a widening product of operands of type `ty`: twice its width, its signedness.
+pub(in crate::eval) fn wide_type(ty: ScalarType) -> Type {
+    let signedness = if ty.is_signed_int() {
+        Signedness::Signed
+    } else {
+        Signedness::Unsigned
+    };
+    Type::Int(signedness, Width(2 * ty.bits().min(64) as u16))
 }

@@ -60,6 +60,7 @@ impl Copier<'_> {
     /// Rebuild a node in `target` from its copied children.
     fn node(&mut self, id: ExprId) -> ExprId {
         let source = self.source;
+        let ty = || source.ty(id).expect("an operation has a type");
         match source.node(id).clone() {
             ExprNode::IntConst(value) => self.target.int(value),
             ExprNode::RealConst(value) => self.target.real(value),
@@ -73,165 +74,186 @@ impl Copier<'_> {
             }
             ExprNode::Add(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.add(a, b)
+                self.target.add(ty(), a, b)
             }
             ExprNode::Sub(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.sub(a, b)
+                self.target.sub(ty(), a, b)
             }
             ExprNode::Mul(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.mul(a, b)
+                self.target.mul(ty(), a, b)
             }
             ExprNode::Div(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.div(a, b)
+                self.target.div(ty(), a, b)
             }
             ExprNode::Rem(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.rem(a, b)
+                self.target.rem(ty(), a, b)
             }
             ExprNode::Neg(a) => {
                 let a = self.expr(a);
-                self.target.neg(a)
+                self.target.neg(ty(), a)
             }
             ExprNode::Exp(a) => {
                 let a = self.expr(a);
-                self.target.exp(a)
+                self.target.exp(ty(), a)
             }
             ExprNode::Exp2(a) => {
                 let a = self.expr(a);
-                self.target.exp2(a)
+                self.target.exp2(ty(), a)
             }
             ExprNode::Log(a) => {
                 let a = self.expr(a);
-                self.target.log(a)
+                self.target.log(ty(), a)
             }
             ExprNode::Log2(a) => {
                 let a = self.expr(a);
-                self.target.log2(a)
+                self.target.log2(ty(), a)
             }
             ExprNode::Sqrt(a) => {
                 let a = self.expr(a);
-                self.target.sqrt(a)
+                self.target.sqrt(ty(), a)
             }
             ExprNode::Rcp(a) => {
                 let a = self.expr(a);
-                self.target.rcp(a)
+                self.target.rcp(ty(), a)
             }
             ExprNode::Max(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.max(a, b)
+                self.target.max(ty(), a, b)
             }
             ExprNode::Min(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.min(a, b)
+                self.target.min(ty(), a, b)
             }
             ExprNode::Abs(a) => {
                 let a = self.expr(a);
-                self.target.abs(a)
+                self.target.abs(ty(), a)
             }
             ExprNode::Sign(a) => {
                 let a = self.expr(a);
-                self.target.sign(a)
+                self.target.sign(ty(), a)
             }
             ExprNode::Erf(a) => {
                 let a = self.expr(a);
-                self.target.erf(a)
+                self.target.erf(ty(), a)
             }
             ExprNode::RoundEven(a) => {
                 let a = self.expr(a);
-                self.target.round_even(a)
+                self.target.round_even(ty(), a)
             }
             ExprNode::Trunc(a) => {
                 let a = self.expr(a);
-                self.target.trunc(a)
+                self.target.trunc(ty(), a)
             }
             ExprNode::BitAnd(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.bit_and(a, b)
+                self.target.bit_and(ty(), a, b)
             }
             ExprNode::BitOr(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.bit_or(a, b)
+                self.target.bit_or(ty(), a, b)
             }
             ExprNode::BitXor(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.bit_xor(a, b)
+                self.target.bit_xor(ty(), a, b)
             }
             ExprNode::BitNot(a) => {
                 let a = self.expr(a);
-                self.target.bit_not(a)
+                self.target.bit_not(ty(), a)
             }
             ExprNode::Shl(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.shl(a, b)
+                self.target.shl(ty(), a, b)
             }
             ExprNode::Shr(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.shr(a, b)
+                self.target.shr(ty(), a, b)
             }
             ExprNode::LShr(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.lshr(a, b)
+                self.target.lshr(ty(), a, b)
             }
             ExprNode::Eq(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.eq(a, b)
+                self.target.eq(ty(), a, b)
             }
             ExprNode::Ne(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.ne(a, b)
+                self.target.ne(ty(), a, b)
             }
             ExprNode::Lt(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.lt(a, b)
+                self.target.lt(ty(), a, b)
             }
             ExprNode::Le(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.le(a, b)
+                self.target.le(ty(), a, b)
             }
             ExprNode::Gt(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.gt(a, b)
+                self.target.gt(ty(), a, b)
             }
             ExprNode::Ge(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.ge(a, b)
+                self.target.ge(ty(), a, b)
             }
             ExprNode::And(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.and(a, b)
+                self.target.and(ty(), a, b)
             }
             ExprNode::Or(a, b) => {
                 let (a, b) = self.pair(a, b);
-                self.target.or(a, b)
+                self.target.or(ty(), a, b)
             }
             ExprNode::Not(a) => {
                 let a = self.expr(a);
-                self.target.not(a)
+                self.target.not(ty(), a)
             }
             ExprNode::Select(condition, then_value, else_value) => {
                 let condition = self.expr(condition);
                 let (then_value, else_value) = self.pair(then_value, else_value);
-                self.target.select(condition, then_value, else_value)
+                self.target.select(ty(), condition, then_value, else_value)
             }
             ExprNode::ToFloat(a) => {
                 let a = self.expr(a);
-                self.target.to_float(a)
+                self.target.to_float(ty(), a)
             }
             ExprNode::Fma(a, b, c) => {
                 let (a, b) = self.pair(a, b);
                 let c = self.expr(c);
-                self.target.fma(a, b, c)
+                self.target.fma(ty(), a, b, c)
+            }
+            ExprNode::Tanh(a) => {
+                let a = self.expr(a);
+                self.target.tanh(ty(), a)
+            }
+            ExprNode::Rsqrt(a) => {
+                let a = self.expr(a);
+                self.target.rsqrt(ty(), a)
+            }
+            ExprNode::Sigmoid(a) => {
+                let a = self.expr(a);
+                self.target.sigmoid(ty(), a)
+            }
+            ExprNode::Median3(a, b, c) => {
+                let (a, b) = self.pair(a, b);
+                let c = self.expr(c);
+                self.target.median3(ty(), a, b, c)
+            }
+            ExprNode::Copysign(magnitude, sign) => {
+                let (magnitude, sign) = self.pair(magnitude, sign);
+                self.target.copysign(ty(), magnitude, sign)
             }
             ExprNode::Gelu(x) => {
                 let x = self.expr(x);
-                self.target.gelu(x)
+                self.target.gelu(ty(), x)
             }
             ExprNode::SymbolicRead { array, index } => {
                 let index = self.expr(index);
-                self.target.symbolic_read(source.string(array), index)
+                self.target.symbolic_read(ty(), source.string(array), index)
             }
             ExprNode::Discarded => self.target.discarded(),
             ExprNode::Undefined => self.target.undefined(),

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use id_collections::id_type;
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Type, Width};
 use volta_graph::AsyncOpId;
 
 use crate::ir::{
@@ -888,7 +888,13 @@ impl WaveRegisters {
         src: ModifiedSrc,
     ) -> Result<ExprId, EvalError> {
         let value = self.read_f32_src(arena, lane, src.src)?;
-        Ok(apply_modifiers(arena, value, src.abs, src.neg))
+        Ok(apply_modifiers(
+            arena,
+            Type::Float(Width(32)),
+            value,
+            src.abs,
+            src.neg,
+        ))
     }
 
     /// `lane`'s value of an f64 source. A VGPR pair holds one f64 value or two concrete words
@@ -933,7 +939,13 @@ impl WaveRegisters {
         src: ModifiedSrc<F64Src>,
     ) -> Result<ExprId, EvalError> {
         let value = self.read_f64_src(arena, lane, src.src)?;
-        Ok(apply_modifiers(arena, value, src.abs, src.neg))
+        Ok(apply_modifiers(
+            arena,
+            Type::Float(Width(64)),
+            value,
+            src.abs,
+            src.neg,
+        ))
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
@@ -1194,15 +1206,16 @@ pub(super) fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
     }
 }
 
-/// A float `value` after its input modifiers: the absolute value, then the negation.
+/// A float `value` of type `ty` after its input modifiers: the absolute value, then the negation.
 pub(super) fn apply_modifiers(
     arena: &mut ExprArena,
+    ty: Type,
     value: ExprId,
     abs: bool,
     neg: bool,
 ) -> ExprId {
-    let value = if abs { arena.abs(value) } else { value };
-    if neg { arena.neg(value) } else { value }
+    let value = if abs { arena.abs(ty, value) } else { value };
+    if neg { arena.neg(ty, value) } else { value }
 }
 
 /// The f32 that `bits` encode, as an exact real; `None` for a NaN.

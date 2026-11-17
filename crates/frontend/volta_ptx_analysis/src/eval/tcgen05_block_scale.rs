@@ -8,7 +8,7 @@ use crate::eval::interp::Interpreter;
 use crate::eval::tcgen05_mma::{InstructionDescriptor, KSelect, ReservedIdescBit, bits};
 use crate::eval::value::Value;
 use crate::ir::{InstrId, Operand};
-use volta_expr::symbolic_full::ExprId;
+use volta_expr::symbolic_full::{ExprId, Signedness, Type, Width};
 use volta_graph::{AccessMode, AsyncOpId, OperandRole};
 
 /// Where `scale_A`'s factors sit in Tensor Memory (`idesc` bit 26).
@@ -215,8 +215,10 @@ impl<'p> Interpreter<'p> {
         let unsupported = |what: String| EvalError::Unsupported { pc, what };
         let Some(bits) = self.arena.as_int_const(e) else {
             let bias = self.arena.int(127);
-            let exponent = self.arena.sub(e, bias);
-            return Ok(self.arena.exp2(exponent));
+            let exponent = self
+                .arena
+                .sub(Type::Int(Signedness::Signed, Width(32)), e, bias);
+            return Ok(self.arena.exp2(Type::Float(Width(32)), exponent));
         };
         if bits == 0xFF {
             return Err(unsupported(
@@ -239,7 +241,7 @@ impl<'p> Interpreter<'p> {
     ) {
         for (row, &scale) in elems.chunks_mut(k_dim).zip(scales) {
             for e in row {
-                *e = self.arena.mul(*e, scale);
+                *e = self.arena.mul(Type::Float(Width(32)), *e, scale);
             }
         }
     }

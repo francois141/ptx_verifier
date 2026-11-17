@@ -17,7 +17,7 @@ use crate::ir::tcgen05::{
     Tcgen05Collector, Tcgen05CollectorOp, Tcgen05MmaA, Tcgen05MmaKind, Tcgen05MmaScales,
 };
 use crate::ir::{InstrId, MemSpace, Operand};
-use volta_expr::symbolic_full::{ExprId, Real};
+use volta_expr::symbolic_full::{ExprId, Real, Type, Width};
 use volta_graph::{AccessMode, AsyncOpId, AsyncOpKind, OperandRole, Proxy};
 
 impl<'p> Interpreter<'p> {
@@ -323,7 +323,7 @@ impl<'p> Interpreter<'p> {
                 let a_row = &a[m as usize * k_dim..][..k_dim];
                 let b_row = &b[n as usize * k_dim..][..k_dim];
                 for (&a_e, &b_e) in a_row.iter().zip(b_row) {
-                    acc = self.arena.fma(a_e, b_e, acc);
+                    acc = self.arena.fma(Type::Float(Width(32)), a_e, b_e, acc);
                 }
                 self.tensor
                     .write(lane, col, Value::Scalar(acc))

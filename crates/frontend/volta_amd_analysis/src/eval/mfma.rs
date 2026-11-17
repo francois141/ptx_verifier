@@ -1,7 +1,7 @@
 //! Matrix core instructions, which read their operands from every lane of a wave and write
 //! their result to every lane.
 
-use volta_expr::symbolic_full::{ExprArena, ExprId};
+use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 
 use crate::ir::{LaneReg, LaneRegs, MfmaSrcC};
 
@@ -61,7 +61,12 @@ pub(super) fn execute_mfma_16x16x4_f32(
             let mut sum = c[reg][lane];
 
             for k in 0..K {
-                sum = arena.fma(a[operand_lane(i, k)], b[operand_lane(j, k)], sum);
+                sum = arena.fma(
+                    Type::Float(Width(32)),
+                    a[operand_lane(i, k)],
+                    b[operand_lane(j, k)],
+                    sum,
+                );
             }
 
             d[i][j] = sum;

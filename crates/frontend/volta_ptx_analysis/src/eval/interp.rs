@@ -10,6 +10,7 @@ use id_collections::IdVec;
 use crate::frontend::ast::ScalarType;
 
 use crate::config::{AnalysisConfig, ParamValue};
+use crate::eval::arithm::{expr_type, wide_type};
 use crate::eval::async_bulk::{BulkStore, complete_bulk_groups};
 use crate::eval::cluster_launch_control::ObservedDecline;
 use crate::eval::cp_async::PendingCopy;
@@ -31,7 +32,7 @@ use crate::ir::{
     MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, TensormapFence,
 };
 use volta_common::logging::{info, warn};
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, StringId};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, StringId, Type, Width};
 use volta_graph::{
     AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierWait, EventGraph, FenceKind,
     GraphBuilder, GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
@@ -935,14 +936,14 @@ impl<'p> Interpreter<'p> {
                         else {
                             return value;
                         };
-                        let magnitude = if this.arena.as_int_const(left) == Some(128) {
-                            Some(right)
+                        let (magnitude, sign) = if this.arena.as_int_const(left) == Some(128) {
+                            (right, left)
                         } else if this.arena.as_int_const(right) == Some(128) {
-                            Some(left)
+                            (left, right)
                         } else {
-                            None
+                            return value;
                         };
-                        magnitude.map_or(value, |value| this.arena.neg(value))
+                        this.arena.bit_xor(Type::Float(Width(8)), magnitude, sign)
                     };
                     // An FP8 scalar byte already denotes its real value, and a
                     // vector-loaded word is a Quad of such values; keep the lanes
@@ -978,7 +979,7 @@ impl<'p> Interpreter<'p> {
                         Ok(if nibble & 8 == 0 {
                             byte
                         } else {
-                            this.arena.neg(byte)
+                            this.arena.neg(Type::Float(Width(8)), byte)
                         })
                     };
                     let b0 = select_byte(self, selector & 0xf)?;
@@ -1031,8 +1032,8 @@ impl<'p> Interpreter<'p> {
                     let (b_lo, b_hi) = self.pair_operand(t, pc, src_b, lane_ty)?;
                     let lo = self.eval_binop(t, pc, *op, lane_ty, a_lo, b_lo)?;
                     let hi = self.eval_binop(t, pc, *op, lane_ty, a_hi, b_hi)?;
-                    let lo = self.apply_clamp(*clamp, lo);
-                    let hi = self.apply_clamp(*clamp, hi);
+                    let lo = self.apply_clamp(*clamp, lane_ty, lo);
+                    let hi = self.apply_clamp(*clamp, lane_ty, hi);
                     self.write_reg(t, *dst, Value::Pair(lo, hi));
                 } else if let Some(v) = self.pair_bitwise_binop(t, pc, *op, *ty, src_a, src_b)? {
                     self.write_reg(t, *dst, v);
@@ -1044,7 +1045,7 @@ impl<'p> Interpreter<'p> {
                     let a = self.scalar_operand(t, pc, src_a)?;
                     let b = self.scalar_operand(t, pc, src_b)?;
                     let r = self.eval_binop(t, pc, *op, *ty, a, b)?;
-                    let r = self.apply_clamp(*clamp, r);
+                    let r = self.apply_clamp(*clamp, *ty, r);
                     self.write_reg(t, *dst, Value::Scalar(r));
                 }
             }
@@ -1070,13 +1071,7 @@ impl<'p> Interpreter<'p> {
             } => {
                 let sign = self.float_operand(t, pc, sign_src, *ty)?;
                 let magnitude = self.float_operand(t, pc, magnitude_src, *ty)?;
-                let zero = self.arena.real(Real::zero());
-                let non_negative = self.arena.ge(sign, zero);
-                let abs_magnitude = self.arena.abs(magnitude);
-                let neg_abs_magnitude = self.arena.neg(abs_magnitude);
-                let r = self
-                    .arena
-                    .select(non_negative, abs_magnitude, neg_abs_magnitude);
+                let r = self.arena.copysign(expr_type(*ty), magnitude, sign);
                 self.write_reg(t, *dst, Value::Scalar(r));
             }
 
@@ -1093,17 +1088,18 @@ impl<'p> Interpreter<'p> {
                     let (a_lo, a_hi) = self.pair_operand(t, pc, src_a, lane_ty)?;
                     let (b_lo, b_hi) = self.pair_operand(t, pc, src_b, lane_ty)?;
                     let (c_lo, c_hi) = self.pair_operand(t, pc, src_c, lane_ty)?;
-                    let lo = self.arena.fma(a_lo, b_lo, c_lo);
-                    let hi = self.arena.fma(a_hi, b_hi, c_hi);
-                    let lo = self.apply_clamp(*clamp, lo);
-                    let hi = self.apply_clamp(*clamp, hi);
+                    let float = expr_type(lane_ty);
+                    let lo = self.arena.fma(float, a_lo, b_lo, c_lo);
+                    let hi = self.arena.fma(float, a_hi, b_hi, c_hi);
+                    let lo = self.apply_clamp(*clamp, lane_ty, lo);
+                    let hi = self.apply_clamp(*clamp, lane_ty, hi);
                     self.write_reg(t, *dst, Value::Pair(lo, hi));
                 } else {
                     let a = self.float_operand(t, pc, src_a, *mul_ty)?;
                     let b = self.float_operand(t, pc, src_b, *mul_ty)?;
                     let c = self.float_operand(t, pc, src_c, *ty)?;
-                    let r = self.arena.fma(a, b, c);
-                    let r = self.apply_clamp(*clamp, r);
+                    let r = self.arena.fma(expr_type(*ty), a, b, c);
+                    let r = self.apply_clamp(*clamp, *ty, r);
                     self.write_reg(t, *dst, Value::Scalar(r));
                 }
             }
@@ -1136,7 +1132,8 @@ impl<'p> Interpreter<'p> {
                     crate::ir::MulMode::Lo => {
                         self.eval_binop(t, pc, BinOp::Add, *ty, product, c)?
                     }
-                    _ => self.arena.add(product, c),
+                    crate::ir::MulMode::Wide => self.arena.add(wide_type(*ty), product, c),
+                    crate::ir::MulMode::Hi => self.arena.add(expr_type(*ty), product, c),
                 };
                 self.write_reg(t, *dst, Value::Scalar(r));
             }
@@ -1276,7 +1273,7 @@ impl<'p> Interpreter<'p> {
                 let a = self.canon_operand(pc, *ty, a)?;
                 let b = self.canon_operand(pc, *ty, b)?;
                 let cond = self.scalar_operand(t, pc, pred)?;
-                let r = self.arena.select(cond, a, b);
+                let r = self.arena.select(expr_type(*ty), cond, a, b);
                 self.write_reg(t, *dst, Value::Scalar(r));
             }
 
@@ -1342,7 +1339,7 @@ impl<'p> Interpreter<'p> {
                             pair
                         } else {
                             let r = self.eval_cvt(pc, *dst_ty, *src_ty, a)?;
-                            Value::Scalar(self.apply_clamp(*clamp, r))
+                            Value::Scalar(self.apply_clamp(*clamp, *dst_ty, r))
                         }
                     }
                 };
@@ -1355,9 +1352,10 @@ impl<'p> Interpreter<'p> {
                     // The common case: a symbolic (or already-split) fp8
                     // element is already its real value (identity over reals,
                     // like every float<->float `cvt`); no bit decode needed.
-                    Value::Pair(b0, b1) => {
-                        Value::Pair(self.apply_clamp(clamp, b0), self.apply_clamp(clamp, b1))
-                    }
+                    Value::Pair(b0, b1) => Value::Pair(
+                        self.apply_clamp(clamp, ScalarType::F16, b0),
+                        self.apply_clamp(clamp, ScalarType::F16, b1),
+                    ),
                     // A genuine concrete 16-bit pattern that never went through
                     // array materialization (`cp.async` zero-fill, `mov.b16`
                     // literal): decode each byte's `.e4m3` encoding.
@@ -1377,14 +1375,17 @@ impl<'p> Interpreter<'p> {
                             hi_byte,
                             float_bits::decode_e4m3_byte,
                         )?;
-                        Value::Pair(self.apply_clamp(clamp, lo), self.apply_clamp(clamp, hi))
+                        Value::Pair(
+                            self.apply_clamp(clamp, ScalarType::F16, lo),
+                            self.apply_clamp(clamp, ScalarType::F16, hi),
+                        )
                     }
                     // One fp8 element loaded at 16-bit register width
                     // (`ld.global.b8 {%rs}`): `e` is its real value; the upper
                     // byte is untracked, hence `Undefined`.
                     Value::Scalar(e) => {
                         let undef = self.arena.undefined();
-                        Value::Pair(self.apply_clamp(clamp, e), undef)
+                        Value::Pair(self.apply_clamp(clamp, ScalarType::F16, e), undef)
                     }
                     Value::Quad(..) => {
                         return Err(EvalError::ValueKindMismatch {

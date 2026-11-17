@@ -7,6 +7,7 @@ use crate::frontend::ast::ScalarType;
 
 use volta_graph::{AccessMode, AsyncOpKind, FenceKind, OperandRole};
 
+use crate::eval::arithm::expr_type;
 use crate::eval::error::{EvalError, EvalResult};
 use crate::eval::float_bits;
 use crate::eval::fragments::{
@@ -22,7 +23,7 @@ use crate::ir::symbols::{RegId, shared_operand_addr};
 use crate::ir::tcgen05::Tcgen05LdStShape;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
-use volta_expr::symbolic_full::ExprId;
+use volta_expr::symbolic_full::{ExprId, Type, Width};
 
 /// A dense matrix of expressions being assembled from lane fragments.
 struct Grid {
@@ -731,7 +732,7 @@ impl Interpreter<'_> {
             }
         }
 
-        let d = self.matmul_acc(pc, &a, &b, &c, m_dim, n_dim, k_dim)?;
+        let d = self.matmul_acc(pc, expr_type(*d_type), &a, &b, &c, m_dim, n_dim, k_dim)?;
 
         for &m in members {
             let lane = m.0 % WARP_SIZE;
@@ -938,7 +939,7 @@ impl Interpreter<'_> {
             )?;
         }
 
-        let d = self.matmul_acc(pc, &a, &b, &c, 16, 16, 16)?;
+        let d = self.matmul_acc(pc, Type::Float(Width(32)), &a, &b, &c, 16, 16, 16)?;
 
         for &m in members {
             let lane = m.0 % WARP_SIZE;
@@ -1383,11 +1384,12 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// `D = A * B + C` over the arena, as an fma chain per element.
+    /// `D = A * B + C` over the arena in the accumulator type `ty`, an fma chain per element.
     #[allow(clippy::too_many_arguments)] // internal helper; the args are the mma shape
     fn matmul_acc(
         &mut self,
         pc: InstrId,
+        ty: Type,
         a: &Grid,
         b: &Grid,
         c: &Grid,
@@ -1402,7 +1404,7 @@ impl Interpreter<'_> {
                 for kk in 0..k {
                     let av = a.get(i, kk, pc)?;
                     let bv = b.get(kk, j, pc)?;
-                    acc = self.arena.fma(av, bv, acc);
+                    acc = self.arena.fma(ty, av, bv, acc);
                 }
                 d.set(i, j, acc);
             }
