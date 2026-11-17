@@ -6,19 +6,62 @@ so no environment variable or user site directory changes what it imports."""
 
 import contextlib
 import importlib
+import importlib.abc
 import importlib.util
 import inspect
 import json
 import sys
 import traceback
+import types
 from pathlib import Path
 
 TRACER = Path(__file__).resolve().parent
 
 
+class HostStub(types.ModuleType):
+    """A host-only module the kernel's module imports but no traced code may use: every
+    attribute, call and subclass of it is another stub, and none is a valid operand."""
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return HostStub(f"{self.__name__}.{name}")
+
+    def __call__(self, *args, **kwargs):
+        return HostStub(f"{self.__name__}()")
+
+    def __mro_entries__(self, bases):
+        return (object,)
+
+    def __contains__(self, item):
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+
+class HostStubs(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def __init__(self, roots):
+        self.roots = set(roots)
+
+    def find_spec(self, name, path, target=None):
+        if name.split(".")[0] in self.roots:
+            return importlib.util.spec_from_loader(name, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        module = HostStub(spec.name)
+        module.__path__ = []
+        return module
+
+    def exec_module(self, module):
+        pass
+
+
 def main():
     request = json.load(sys.stdin)
     sys.path[:0] = [str(TRACER), *request["search_path"]]
+    sys.meta_path.insert(0, HostStubs(request["host_stubs"]))
     from nki import _trace
 
     try:
@@ -31,7 +74,9 @@ def main():
 
 
 def trace(request, _trace):
-    trace = _trace.reset(_trace.TileSizes(**request["tile_sizes"]))
+    trace = _trace.reset(
+        _trace.TileSizes(**request["tile_sizes"]), request["nc_version"]
+    )
     module = load_module(Path(request["file"]).resolve(), request["search_path"])
     function = getattr(module, request["kernel"], None)
     if not callable(function):

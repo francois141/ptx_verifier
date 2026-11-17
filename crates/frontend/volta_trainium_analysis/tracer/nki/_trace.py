@@ -37,6 +37,7 @@ class TileSizes:
 @dataclass
 class Trace:
     tile_sizes: TileSizes = field(default_factory=TileSizes)
+    nc_version: int = 3
     names: set = field(default_factory=set)
     body: list = field(default_factory=list)
     loops: list = field(default_factory=list)
@@ -76,9 +77,9 @@ class Trace:
 TRACE = Trace()
 
 
-def reset(tile_sizes):
+def reset(tile_sizes, nc_version):
     global TRACE
-    TRACE = Trace(tile_sizes=tile_sizes)
+    TRACE = Trace(tile_sizes=tile_sizes, nc_version=nc_version)
     return TRACE
 
 
@@ -113,6 +114,11 @@ class Member:
     def __repr__(self):
         return self._path
 
+    def __str__(self):
+        """A `nki.language` member's bare name, as kernels compare dtypes by `str`."""
+        name = self.member_of(NKI_LANGUAGE)
+        return self._path if name is None else name
+
     def member_of(self, module):
         prefix = module + "."
         return self._path[len(prefix) :] if self._path.startswith(prefix) else None
@@ -144,6 +150,11 @@ class DtypeOf:
     def __repr__(self):
         return f"{self.tensor.name}.dtype"
 
+    def __str__(self):
+        if self.name() is None:
+            raise Unsupported(f"`str({self!r})` needs the call to give its dtype")
+        return self.name()
+
 
 def dtype_name(value):
     if isinstance(value, DtypeOf):
@@ -163,7 +174,244 @@ def wire_dtype(value):
     )
 
 
-class Tensor:
+def _strides(shape):
+    strides, step = [], 1
+    for extent in reversed(shape):
+        strides.append(step)
+        step *= extent
+    return list(reversed(strides))
+
+
+class Views:
+    """NKI's view methods (`nki.language.NkiTensor`): each returns a `Pattern` sharing the
+    tensor's storage, an element offset and `[step, count]` pairs over its row-major
+    layout, as the docs define them. On-chip, dimension 0 is the partitions and stays put."""
+
+    def pattern_view(self):
+        raise NotImplementedError
+
+    def _on_chip(self):
+        return self.pattern_view().tensor.place != "hbm"
+
+    def _with(self, pairs, offset):
+        view = self.pattern_view()
+        return Pattern(view.tensor, [list(pair) for pair in pairs], offset)
+
+    def _dim(self, dim, what):
+        rank = len(self.pattern_view().pattern)
+        dim = non_negative(dim, f"{what}'s dimension")
+        if dim >= rank:
+            raise KernelError(f"{what}'s dimension {dim} is outside a view of {rank}")
+        if dim == 0 and self._on_chip():
+            raise KernelError(
+                f"{what} may not change an on-chip tile's partition dimension"
+            )
+        return dim
+
+    def get_pattern(self):
+        return [list(pair) for pair in self.pattern_view().pattern]
+
+    @property
+    def strides(self):
+        return tuple(step for step, _ in self.pattern_view().pattern)
+
+    @property
+    def offset(self):
+        return self.pattern_view().offset
+
+    @property
+    def size(self):
+        return math.prod(count for _, count in self.pattern_view().pattern)
+
+    @property
+    def ndim(self):
+        return len(self.pattern_view().pattern)
+
+    @property
+    def buffer(self):
+        return Member(f"{NKI_LANGUAGE}.{self.pattern_view().tensor.place}")
+
+    def is_contiguous(self):
+        pairs = self.pattern_view().pattern
+        free = pairs[1:] if self._on_chip() else pairs
+        expected = 1
+        for step, count in reversed(free):
+            if count != 1 and step != expected:
+                return False
+            expected *= count
+        return True
+
+    def slice(self, dim, start, end, step=1):
+        view = self.pattern_view()
+        rank = len(view.pattern)
+        dim = non_negative(dim, "`slice`'s dimension")
+        if dim >= rank:
+            raise KernelError(f"`slice`'s dimension {dim} is outside a view of {rank}")
+        stride, count = view.pattern[dim]
+        start, end = (
+            non_negative(start, "`slice`'s start"),
+            non_negative(end, "`slice`'s end"),
+        )
+        step = non_negative(step, "`slice`'s step")
+        if not (start < end <= count and step >= 1):
+            raise KernelError(
+                f"`slice({dim}, {start}, {end}, {step})` of extent {count}"
+            )
+        pairs = view.pattern[:]
+        pairs[dim] = [stride * step, -(-(end - start) // step)]
+        return self._with(pairs, view.offset + start * stride)
+
+    def select(self, dim, index):
+        view = self.pattern_view()
+        if not is_int(index):
+            raise Unsupported("`select` of a runtime index is not supported")
+        dim = self._dim(dim, "`select`")
+        stride, count = view.pattern[dim]
+        index = non_negative(index, "`select`'s index")
+        if index >= count:
+            raise KernelError(f"`select({dim}, {index})` of extent {count}")
+        pairs = view.pattern[:dim] + view.pattern[dim + 1 :]
+        return self._with(pairs, view.offset + index * stride)
+
+    def reshape_dim(self, dim, shape):
+        view = self.pattern_view()
+        dim = non_negative(dim, "`reshape_dim`'s dimension")
+        stride, count = view.pattern[dim]
+        shape = _infer(list(shape), count, "`reshape_dim`")
+        if dim == 0 and self._on_chip() and len(shape) != 1:
+            raise KernelError(
+                "`reshape_dim` may not split an on-chip tile's partitions"
+            )
+        inner = _strides(shape)
+        split = [[stride * step, extent] for step, extent in zip(inner, shape)]
+        return self._with(
+            view.pattern[:dim] + split + view.pattern[dim + 1 :], view.offset
+        )
+
+    def reshape(self, *shape, **keyword):
+        view = self.pattern_view()
+        if "shape" in keyword:
+            shape = (keyword.pop("shape"),)
+        if keyword:
+            raise KernelError(f"`reshape` takes no {', '.join(keyword)}")
+        shape = (
+            list(shape[0])
+            if len(shape) == 1 and isinstance(shape[0], (tuple, list))
+            else list(shape)
+        )
+        shape = _infer(shape, self.size, "`reshape`")
+        if not self.is_contiguous():
+            raise Unsupported("`reshape` of a non-contiguous view is not supported")
+        if self._on_chip():
+            partition_step, partitions = view.pattern[0]
+            if shape[0] != partitions:
+                raise KernelError(
+                    "`reshape` of an on-chip tile must keep its partitions"
+                )
+            pairs = [[partition_step, partitions]]
+            pairs += [
+                [step, extent] for step, extent in zip(_strides(shape[1:]), shape[1:])
+            ]
+        else:
+            pairs = [[step, extent] for step, extent in zip(_strides(shape), shape)]
+        return self._with(pairs, view.offset)
+
+    def permute(self, *dims, **keyword):
+        view = self.pattern_view()
+        if "dims" in keyword:
+            dims = (keyword.pop("dims"),)
+        if keyword:
+            raise KernelError(f"`permute` takes no {', '.join(keyword)}")
+        dims = (
+            list(dims[0])
+            if len(dims) == 1 and isinstance(dims[0], (tuple, list))
+            else list(dims)
+        )
+        if sorted(dims) != list(range(len(view.pattern))):
+            raise KernelError(
+                f"`permute({dims})` is not a permutation of a view of {len(view.pattern)}"
+            )
+        if self._on_chip() and dims[0] != 0:
+            raise KernelError("`permute` must keep an on-chip tile's partitions first")
+        return self._with([view.pattern[d] for d in dims], view.offset)
+
+    def flatten_dims(self, start_dim, end_dim):
+        view = self.pattern_view()
+        if start_dim == 0 and self._on_chip():
+            raise KernelError(
+                "`flatten_dims` may not merge an on-chip tile's partitions"
+            )
+        merged = view.pattern[start_dim : end_dim + 1]
+        for (step, _), (inner_step, inner_count) in zip(merged, merged[1:]):
+            if step != inner_step * inner_count:
+                raise KernelError(
+                    "`flatten_dims` merges only dimensions contiguous in memory"
+                )
+        pair = [merged[-1][0], math.prod(count for _, count in merged)]
+        return self._with(
+            view.pattern[:start_dim] + [pair] + view.pattern[end_dim + 1 :], view.offset
+        )
+
+    def squeeze_dim(self, dim):
+        view = self.pattern_view()
+        dim = self._dim(dim, "`squeeze_dim`")
+        if view.pattern[dim][1] != 1:
+            raise KernelError(f"`squeeze_dim({dim})` of extent {view.pattern[dim][1]}")
+        return self._with(view.pattern[:dim] + view.pattern[dim + 1 :], view.offset)
+
+    def expand_dim(self, dim):
+        view = self.pattern_view()
+        dim = non_negative(dim, "`expand_dim`'s dimension")
+        if dim == 0 and self._on_chip():
+            raise KernelError(
+                "`expand_dim` may not insert before an on-chip tile's partitions"
+            )
+        return self._with(
+            view.pattern[:dim] + [[1, 1]] + view.pattern[dim:], view.offset
+        )
+
+    def broadcast(self, dim, size):
+        view = self.pattern_view()
+        dim = self._dim(dim, "`broadcast`")
+        if view.pattern[dim][1] != 1:
+            raise KernelError(
+                f"`broadcast({dim}, {size})` of extent {view.pattern[dim][1]}"
+            )
+        pairs = view.pattern[:]
+        pairs[dim] = [0, non_negative(size, "`broadcast`'s size")]
+        return self._with(pairs, view.offset)
+
+    def view(self, dtype):
+        raise Unsupported(
+            "reinterpreting a tensor's bits as another dtype is not modelled"
+        )
+
+    reinterpret_cast = view
+
+    def rearrange(self, *args, **kwargs):
+        raise Unsupported("`rearrange` is not supported")
+
+    def vector_select(self, *args, **kwargs):
+        raise Unsupported(
+            "`vector_select` (runtime per-partition offsets) is not supported"
+        )
+
+
+def _infer(shape, total, what):
+    if shape.count(-1) > 1:
+        raise KernelError(f"{what} infers at most one extent")
+    known = math.prod(extent for extent in shape if extent != -1)
+    if -1 in shape:
+        if known == 0 or total % known:
+            raise KernelError(f"{what} cannot infer an extent of {shape} from {total}")
+        shape[shape.index(-1)] = total // known
+    shape = [non_negative(extent, f"an extent of {what}") for extent in shape]
+    if math.prod(shape) != total:
+        raise KernelError(f"{what} to {shape} changes the element count {total}")
+    return shape
+
+
+class Tensor(Views):
     """A tensor: a kernel argument or an HBM tensor (`place` "hbm"), or an on-chip tile
     ("sbuf", "psum"). Its shape is concrete, as `@nki.jit` specializes it per call."""
 
@@ -177,12 +425,15 @@ class Tensor:
     def dtype(self):
         return DtypeOf(self)
 
-    @property
-    def ndim(self):
-        return len(self.shape)
+    def pattern_view(self):
+        return Pattern(
+            self,
+            [[step, extent] for step, extent in zip(_strides(self.shape), self.shape)],
+            0,
+        )
 
     def __getitem__(self, key):
-        return Region(self, subscript(key)).checked()
+        return Region(self, subscript(expand(key, len(self.shape)))).checked()
 
     def ap(self, pattern, offset=0, **unsupported):
         if unsupported:
@@ -212,6 +463,18 @@ class Tensor:
 
     def wire(self):
         return {"tensor": self.name}
+
+
+def expand(key, rank):
+    """`key` as a tuple with its one `...` replaced by whole slices of the dimensions it spans."""
+    keys = key if isinstance(key, tuple) else (key,)
+    if keys.count(Ellipsis) > 1:
+        raise KernelError("a subscript may hold at most one `...`")
+    if Ellipsis in keys:
+        at = keys.index(Ellipsis)
+        whole = (slice(None),) * (rank - len(keys) + 1)
+        keys = keys[:at] + whole + keys[at + 1 :]
+    return keys
 
 
 def subscript(key):
@@ -262,7 +525,7 @@ def resolve(dims, extents):
     return selected
 
 
-class Region:
+class Region(Views):
     """A rectangular region of a tensor, its subscript as written."""
 
     def __init__(self, tensor, dims):
@@ -284,7 +547,9 @@ class Region:
     def __getitem__(self, key):
         """A region of this region: the two compose to one rectangle of the tensor."""
         kept = [i for i, sel in enumerate(self.selected) if sel[0] == "slice"]
-        inner = resolve(subscript(key), [self.selected[i][2] for i in kept])
+        inner = resolve(
+            subscript(expand(key, len(kept))), [self.selected[i][2] for i in kept]
+        )
         dims = []
         for sel in self.selected:
             dims.append({"index": sel[1]} if sel[0] == "index" else None)
@@ -296,6 +561,19 @@ class Region:
                 dims[position] = {"slice": [start + sel[1], start + sel[1] + sel[2]]}
         return Region(self.tensor, dims).checked()
 
+    def pattern_view(self):
+        steps = _strides(self.tensor.shape)
+        offset = sum(step * sel[1] for step, sel in zip(steps, self.selected))
+        pairs = [
+            [step, sel[2]]
+            for step, sel in zip(steps, self.selected)
+            if sel[0] == "slice"
+        ]
+        return Pattern(self.tensor, pairs, offset)
+
+    def ap(self, pattern, offset=None, **unsupported):
+        return self.pattern_view().ap(pattern, offset, **unsupported)
+
     def __bool__(self):
         raise Unsupported(
             f"the truth of a region of `{self.tensor.name}` is not defined"
@@ -305,11 +583,64 @@ class Region:
         return {"region": {"tensor": self.tensor.name, "dims": self.dims}}
 
 
-class Pattern:
+class Pattern(Views):
+    """A view of `tensor`: element `local` at `offset + sum(step * local)` of its row-major
+    layout, one `[step, count]` pair per dimension."""
+
     def __init__(self, tensor, pattern, offset):
         self.tensor = tensor
         self.pattern = pattern
-        self.offset = offset
+        self._offset = offset
+
+    def pattern_view(self):
+        return self
+
+    @property
+    def offset(self):
+        return self._offset
+
+    def ap(self, pattern, offset=None, **unsupported):
+        if offset is not None and self._offset != 0:
+            raise Unsupported(
+                "`.ap` with an offset of a view that has one is ambiguous in the docs"
+            )
+        base = self._offset if offset is None else offset
+        return self.tensor.ap(pattern, base, **unsupported)
+
+    def __getitem__(self, key):
+        view = self
+        dim = 0
+        for item in expand(key, len(self.pattern)):
+            if isinstance(item, slice):
+                count = view.pattern[dim][1]
+                start, stop, step = item.indices(count)
+                if (
+                    item.start is not None
+                    and item.start < 0
+                    or item.stop is not None
+                    and item.stop < 0
+                ):
+                    raise Unsupported("a negative slice bound is not supported")
+                view = view.slice(dim, start, stop, step)
+                dim += 1
+            elif is_int(item):
+                view = view._select_any(dim, item)
+            else:
+                raise Unsupported(
+                    f"a view index must be an integer or a slice, not `{item!r}`"
+                )
+        return view
+
+    def _select_any(self, dim, index):
+        stride, count = self.pattern[dim]
+        index = non_negative(index, "an index")
+        if index >= count:
+            raise KernelError(f"index {index} of dimension {dim} is outside {count}")
+        return Pattern(
+            self.tensor,
+            self.pattern[:dim] + self.pattern[dim + 1 :],
+            self._offset + index * stride,
+        )
 
     @property
     def shape(self):
@@ -324,7 +655,7 @@ class Pattern:
             "pattern": {
                 "tensor": self.tensor.name,
                 "pattern": self.pattern,
-                "offset": self.offset,
+                "offset": self._offset,
             }
         }
 

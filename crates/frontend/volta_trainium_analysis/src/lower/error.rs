@@ -95,6 +95,10 @@ pub enum StatementError {
     /// A `dma_transpose` `axes` other than `(1, 0)`, a 2-D transpose.
     UnsupportedTransposeAxes(Operand),
 
+    /// A DMA's `dge_mode` other than `nisa.dge_mode.unknown` or `none` (or their values,
+    /// 0 and 3, as nkilib writes them).
+    UnsupportedDgeMode(Operand),
+
     // =========================================================================
     // Operand Errors
     // =========================================================================
@@ -265,6 +269,10 @@ impl fmt::Display for StatementError {
             Self::UnsupportedTransposeAxes(axes) => write!(
                 f,
                 "unsupported `axes` `{axes}`: only `(1, 0)`, a 2-D transpose"
+            ),
+            Self::UnsupportedDgeMode(mode) => write!(
+                f,
+                "unsupported `dge_mode` `{mode}`: only `nisa.dge_mode.unknown` or `none`"
             ),
             Self::OffChip(tensor) => {
                 write!(f, "`{tensor}` is in HBM, not an SBUF or PSUM tile")

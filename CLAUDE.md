@@ -283,8 +283,8 @@ crate-level docs in `lib.rs` are the contract.
   by its `Dependency` object's one generation (`GraphBuilder::signal`, an `Arrival`
   release completing it at once; each later instruction `resume`s from it), under the
   ordering policy's `Assumption`s (`NkiReadAfterWriteOrder` and `NkiWriteAfterReadOrder`
-  always; `NkiWriteAfterWriteOrder`, `NkiHazardsByPlacedAddress` and
-  `NkiNoReorderInProgramOrder` as the policy adds them) and four that bound what the check
+  always; `NkiWriteAfterWriteOrder`, `NkiHazardsByPlacedAddress`,
+  `NkiNoReorderInProgramOrder` and `NkiOutOfBandDmasOrdered` as the policy adds them) and four that bound what the check
   covers, recorded under every policy (`SingleNkiInstance`, `NkiArgumentsDistinct`,
   `NkiInstructionReadsBeforeWrites`, `NkiCompilerAllocation`).
 - `EventGraph::validate` checks the representation invariants (every typed
@@ -631,7 +631,14 @@ targets, NKI loops and `no_reorder` blocks are recorded in each `Origin` (plain 
 are not, which `in_different_affine_iterations` does not need), and a failure is a
 `KernelFailure` (`Unsupported`, `Kernel`, `Assertion`, `Python`) at its kernel line. Its
 interpreter is `$VOLTA_PYTHON` (else `python3`), which needs numpy (`just python-env`,
-`target/volta-python`). `volta_pipeline`'s `common::trainium` `parse_kernel*` wrappers
+`target/volta-python`). The stand-in gives tensors NKI's view methods (`slice`, `select`,
+`reshape`, `reshape_dim`, `permute`, ...: offset and `[step, count]` pairs over the base's
+row-major layout, emitted as `ast::Operand::Pattern`), instructions their documented
+positional order, `nisa.get_nc_version()` the call's `KernelCall::nc_version` (`NcVersion`,
+`Gen3` by default), a gridless launch (`program_ndim()` 0), `nl.tile_size.psum_fmax` (512)
+and `total_available_sbuf_size`, and `nki.isa.constants`/`nki.language.opcode`/`nki.dtype`/
+`nki.collectives`; `Tracer::stubbing` replaces uninstalled host-only modules (torch, vllm)
+with inert stubs. `volta_pipeline`'s `common::trainium` `parse_kernel*` wrappers
 trace every kernel the accepted, graph and equivalence suites parse and require it to
 match the parsed kernel up to declared tensors' names and Python loops.
 
@@ -734,7 +741,7 @@ thread per instruction, its `footprints` as accesses (an accumulation the policy
 `Global`, SBUF and PSUM in `Shared`), and
 a `Dependency` edge wherever the `OrderingPolicy` says the Neuron compiler orders two
 instructions. The docs say only that it synchronizes "based on data dependencies", so a
-policy is four choices, each recorded as an `Assumption`. Every policy orders read after
+policy is five choices, each recorded as an `Assumption`. Every policy orders read after
 write (`NkiReadAfterWriteOrder`: after the latest earlier writer of what it reads) and write
 after read (`NkiWriteAfterReadOrder`: after the readers of what it writes since its latest
 write), unless
@@ -755,14 +762,19 @@ recording no placement assumption; `NoReorder::ProgramOrder`
 (`NkiNoReorderInProgramOrder`) orders each `no_reorder` block's instructions in program
 order, as the API page says it does, though the scheduling guide leaves open whether its
 edges are semaphores or scheduling hints; a block orders nothing against code outside it.
-`OrderingPolicy::ALL` is the sixteen combinations.
+`OutOfBandDmas::Unordered`, the baseline's, drops every dependency between two DMAs at least
+one of which has `dge_mode.none` (`ir::Descriptors::OutOfBand`), as nkilib's `gpsimd_topk`
+audit found the compiler leaves them unordered; `Ordered` records `NkiOutOfBandDmasOrdered`.
+`OrderingPolicy::ALL` is the thirty-two combinations.
 `check_failure/` holds kernels that race under `BASELINE` (R0 `back_to_back_dmas` and its
 `sequential_overwrite` twin, ordered by write after write; R1 `affine_overwrite` and
 `affine_carried`, racing under every policy; R8 `affine_matmul_partial_read`, reading a PSUM
 accumulator inside the loop, racing under every policy; R0 and R1 inside a `no_reorder`
 block, race free once blocks run in program order, and a rewrite across a block's
 boundary, ordered by write after write; `scan`, whose `nl.zeros` tile a DMA overwrites unread,
-ordered by write after write), each naming what would make it race free;
+ordered by write after write; `out_of_band_dma_reload`, `dge_mode.none` DMAs loading a tile
+and copying it out as vllm-neuron's `_permute_one_token_nki` does, ordered only under
+`OutOfBandDmas::Ordered`), each naming what would make it race free;
 `success/sequential_carried`, `affine_carried`'s twin in a `sequential_range`,
 `success/affine_matmul_accumulate`, the docs' matmul reduction, and
 `success/affine_vector_sum`, mamba's add accumulation, are race free; `trainium/accepted_tests.rs` runs them in program order, requiring a `success/`
@@ -1086,7 +1098,7 @@ iterations (the tiled matmul tutorials) verify under every policy, `tensor_tenso
 (mamba) unless the policy is `Reductions::Matmul`, while a read of a partial sum and the other
 `affine_range` fixtures race under every policy. A run that aborts
 gives a graph ending `Aborted` at the failing instruction, so its checks are inconclusive. A table test checks every NKI fixture and
-sample under all sixteen policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
+sample under all thirty-two policies against `trainium/ordering_policies.txt` (`VOLTA_BLESS=1`
 rewrites it). `just trainium` runs its accepted, rejected and
 equivalence suites.
 

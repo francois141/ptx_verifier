@@ -13,7 +13,8 @@ use volta_graph::{
 };
 
 use crate::ir::{
-    ArithOp, InstrId, LoopKind, LoweredKernel, Memory, NoReorderId, Origin, Reordering, TensorId,
+    ArithOp, Descriptors, InstrId, LoopKind, LoweredKernel, Memory, NoReorderId, Origin,
+    Reordering, TensorId,
 };
 
 use super::EvalError;
@@ -30,6 +31,18 @@ pub struct OrderingPolicy {
     pub placed_tiles: PlacedTiles,
     pub no_reorder: NoReorder,
     pub reductions: Reductions,
+    pub out_of_band_dmas: OutOfBandDmas,
+}
+
+/// Whether the compiler orders a DMA whose descriptors are generated out of band
+/// (`dge_mode.none`) against another DMA it conflicts with. AWS's `gpsimd_topk` audit: such
+/// a store is taken "off the GpSIMD engine, which is exactly why nothing then orders that
+/// store against the phase-2 reload of the SAME private_hbm region".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutOfBandDmas {
+    /// Neither orders the other: what the audit found.
+    Unordered,
+    Ordered,
 }
 
 /// Whether a write follows the latest earlier writer of what it writes.
@@ -77,13 +90,14 @@ impl OrderingPolicy {
         placed_tiles: PlacedTiles::ByAddress,
         no_reorder: NoReorder::Unordered,
         reductions: Reductions::MatmulAndAdd,
+        out_of_band_dmas: OutOfBandDmas::Unordered,
     };
 
-    /// Every combination of the four choices, `BASELINE` first.
-    pub const ALL: [OrderingPolicy; 16] = {
-        let mut all = [OrderingPolicy::BASELINE; 16];
+    /// Every combination of the five choices, `BASELINE` first.
+    pub const ALL: [OrderingPolicy; 32] = {
+        let mut all = [OrderingPolicy::BASELINE; 32];
         let mut i = 0;
-        while i < 16 {
+        while i < 32 {
             all[i] = OrderingPolicy {
                 write_after_write: if i & 1 == 0 {
                     WriteAfterWrite::Unordered
@@ -104,6 +118,11 @@ impl OrderingPolicy {
                     Reductions::MatmulAndAdd
                 } else {
                     Reductions::Matmul
+                },
+                out_of_band_dmas: if i & 16 == 0 {
+                    OutOfBandDmas::Unordered
+                } else {
+                    OutOfBandDmas::Ordered
                 },
             };
             i += 1;
@@ -128,6 +147,9 @@ impl OrderingPolicy {
         }
         if self.no_reorder == NoReorder::ProgramOrder {
             assumptions.push(Assumption::NkiNoReorderInProgramOrder);
+        }
+        if self.out_of_band_dmas == OutOfBandDmas::Ordered {
+            assumptions.push(Assumption::NkiOutOfBandDmasOrdered);
         }
         assumptions
     }
@@ -236,6 +258,10 @@ pub fn record_graph(
         let origin = &kernel.origins[instr];
         producers
             .retain(|&producer| !in_different_affine_iterations(&kernel.origins[producer], origin));
+        if policy.out_of_band_dmas == OutOfBandDmas::Unordered {
+            let dma = |id: InstrId| kernel.instructions[id].dma();
+            producers.retain(|&producer| !out_of_band_pair(dma(producer), dma(instr)));
+        }
         if let Some(block) = policy.ordering_block(origin) {
             producers.extend(block_tails.insert(block, instr));
         }
@@ -347,6 +373,11 @@ impl Touch {
             Touch::Reduce(ReductionOp::Maximum) => &[Effect::Reduce(ReductionOp::Maximum)],
         }
     }
+}
+
+/// Whether two instructions are DMAs, at least one with out-of-band descriptors.
+fn out_of_band_pair(a: Option<Descriptors>, b: Option<Descriptors>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if a == Descriptors::OutOfBand || b == Descriptors::OutOfBand)
 }
 
 /// Whether the outermost loop iteration the two origins differ in is an `affine_range`'s.
