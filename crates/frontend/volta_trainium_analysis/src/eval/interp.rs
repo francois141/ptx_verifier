@@ -301,6 +301,7 @@ impl<'a> Interpreter<'a> {
             ActivationFunc::Square => self.arena.mul(Type::Real, x, x),
             ActivationFunc::Rsqrt => self.arena.rsqrt(Type::Real, x),
             ActivationFunc::Exp => self.arena.exp(Type::Real, x),
+            ActivationFunc::Copy => x,
             ActivationFunc::Reciprocal => self.arena.rcp(Type::Real, x),
         }
     }

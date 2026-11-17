@@ -558,7 +558,7 @@ an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd` or `unknown` (or th
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
-(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`) for a variant whose
+(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`) for a variant whose
 `name()` matches, so a new function reaches lowering by joining that array and
 needs no arm of its own; any other member is a lowering error. Binary ops take
 NKI's operand order (`data1 op data2`, `data op operand`). `tensor_reduce` is
@@ -773,8 +773,9 @@ accumulator inside the loop, racing under every policy; R0 and R1 inside a `no_r
 block, race free once blocks run in program order, and a rewrite across a block's
 boundary, ordered by write after write; `scan`, whose `nl.zeros` tile a DMA overwrites unread,
 ordered by write after write; `out_of_band_dma_reload`, `dge_mode.none` DMAs loading a tile
-and copying it out as vllm-neuron's `_permute_one_token_nki` does, ordered only under
-`OutOfBandDmas::Ordered`), each naming what would make it race free;
+and copying it out as vllm-neuron's `_permute_one_token_nki` does, and
+`out_of_band_dma_buffer_reuse`, a store and the next load into one tile as nkilib's
+`_rmsnorm_tkg_dloc` does, ordered only under `OutOfBandDmas::Ordered`), each naming what would make it race free;
 `success/sequential_carried`, `affine_carried`'s twin in a `sequential_range`,
 `success/affine_matmul_accumulate`, the docs' matmul reduction, and
 `success/affine_vector_sum`, mamba's add accumulation, are race free; `trainium/accepted_tests.rs` runs them in program order, requiring a `success/`
