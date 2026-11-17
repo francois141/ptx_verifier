@@ -36,7 +36,7 @@ pub enum EquivalenceVerdict {
 
 /// Compare `reference` and `optimized` on `arrays` with the decision procedure, then confirm
 /// each claimed difference with the numeric oracle before it counts as a refutation. Both
-/// sides are first rewritten by [`rewrite::rewrite_gelus`].
+/// sides are first rewritten by [`rewrite::rewrite_activations`].
 pub fn check_equivalence(
     reference: &SymbolicOutputs,
     optimized: &SymbolicOutputs,
@@ -46,8 +46,8 @@ pub fn check_equivalence(
     info!("[equivalence] checking arrays {}", arrays.join(", "));
     let start = Instant::now();
     let (reference_rewritten, optimized_rewritten) = (
-        rewrite::rewrite_gelus(reference),
-        rewrite::rewrite_gelus(optimized),
+        rewrite::rewrite_activations(reference),
+        rewrite::rewrite_activations(optimized),
     );
     let reference = reference_rewritten.as_ref().unwrap_or(reference);
     let optimized = optimized_rewritten.as_ref().unwrap_or(optimized);

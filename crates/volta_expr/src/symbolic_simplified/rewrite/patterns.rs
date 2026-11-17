@@ -1,6 +1,6 @@
 //! Matchers of general expression shapes a rewrite recognizes: constants, structural
-//! equality, halving and constant scaling, monomials and cubics, and the `tanh` form the
-//! analyses build.
+//! equality, halving and constant scaling, monomials and cubics, the `tanh` form the analyses
+//! build, and the selects piecewise activations compile to.
 
 use std::collections::HashSet;
 
@@ -8,7 +8,17 @@ use rug::Rational;
 use volta_common::commutative::either;
 use volta_common::monomial::Monomial;
 
-use crate::{ExprArena, ExprId, ExprNode, RealRepr};
+use crate::{ExprArena, ExprId, ExprNode, Real, RealRepr};
+
+/// A select on `x` against a constant `threshold`: `above` where `x` is above it, `below` where
+/// it is below. The comparison's strictness is dropped, so a rewrite of one must check that its
+/// two pieces agree at `threshold`.
+pub(super) struct Split {
+    pub(super) x: ExprId,
+    pub(super) threshold: Rational,
+    pub(super) above: ExprId,
+    pub(super) below: ExprId,
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Matcher<'a> {
@@ -123,6 +133,38 @@ impl<'a> Matcher<'a> {
         true
     }
 
+    /// `id` as a select on one expression against a constant.
+    pub(super) fn split(self, id: ExprId) -> Option<Split> {
+        let ExprNode::Select(condition, then, otherwise) = *self.node(id) else {
+            return None;
+        };
+
+        let (less, a, b) = match *self.node(condition) {
+            ExprNode::Lt(a, b) | ExprNode::Le(a, b) => (true, a, b),
+            ExprNode::Gt(a, b) | ExprNode::Ge(a, b) => (false, a, b),
+            _ => return None,
+        };
+
+        let (x, threshold, holds_above) = match (self.constant(a), self.constant(b)) {
+            (None, Some(c)) => (a, c, !less),
+            (Some(c), None) => (b, c, less),
+            _ => return None,
+        };
+
+        let (above, below) = if holds_above {
+            (then, otherwise)
+        } else {
+            (otherwise, then)
+        };
+
+        Some(Split {
+            x,
+            threshold,
+            above,
+            below,
+        })
+    }
+
     pub(super) fn is<T>(self, id: ExprId, value: T) -> bool
     where
         Rational: From<T>,
@@ -147,4 +189,21 @@ fn children(node: &ExprNode) -> Vec<ExprId> {
     let mut children = Vec::new();
     node.for_each_child(|c| children.push(c));
     children
+}
+
+/// `q` as a node: an integer constant when it is one, else a real.
+pub(super) fn constant_node(arena: &mut ExprArena, q: &Rational) -> ExprId {
+    match q.is_integer().then(|| q.numer().to_i64()).flatten() {
+        Some(i) => arena.int(i),
+        None => arena.real(Real::from_rational(q.clone())),
+    }
+}
+
+/// `c * e`, or `e` itself when `c` is 1.
+pub(super) fn scaled_node(arena: &mut ExprArena, c: &Rational, e: ExprId) -> ExprId {
+    if *c == 1 {
+        return e;
+    }
+    let c = constant_node(arena, c);
+    arena.mul(c, e)
 }

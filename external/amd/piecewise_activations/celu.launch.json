@@ -1,0 +1,18 @@
+{
+  "description": "PyTorch's CELU over 64 f32 elements on one AMD wave, alpha = 2",
+  "kernel": "celu",
+  "block": 64,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"name": "n", "int": 64},
+    {"ptr": "x"},
+    {"ptr": "y"},
+    {"name": "alpha", "float": 2.0},
+    {"name": "inv_alpha", "float": 0.5}
+  ],
+  "spec": "celu.spec",
+  "dims": {"N": 64}
+}

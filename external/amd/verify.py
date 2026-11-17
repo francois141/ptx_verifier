@@ -1,4 +1,4 @@
-"""Check the Composable Kernel examples against their specs, one after the other.
+"""Check the Composable Kernel examples, and PyTorch's piecewise activations, against their specs.
 
     uv run --reinstall-package volta --package volta python external/amd/verify.py \
         [--verbose] [PREFIX]
@@ -7,7 +7,8 @@ A PREFIX runs only the cases whose launch file starts with it (`activations`), a
 only those the canonical solver (`solver`) or Lean (`lean`) decides. Each case is a
 kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a launch file
 `composable_kernel/<case>.launch.json` naming its spec, CK's activations under
-`composable_kernel/activations*/`. Each case prints one line when it finishes: PASS if its
+`composable_kernel/activations*/`; PyTorch's continuous piecewise activations are likewise under
+`piecewise_activations/`, which the cases name from this directory. Each case prints one line when it finishes: PASS if its
 kernel verified (ACCEPT, or every output proved in Lean), else FAIL, noting when a verdict
 other than ACCEPT is the case's expected one, such as a known bug's REJECT. `--verbose` also
 prints Volta's log of each case as it runs, then a summary.
@@ -35,8 +36,9 @@ from pathlib import Path
 
 import volta
 
-CK_ROOT = Path(__file__).resolve().parent / "composable_kernel"
-REPO_ROOT = CK_ROOT.parents[2]
+AMD_ROOT = Path(__file__).resolve().parent
+CK_ROOT = AMD_ROOT / "composable_kernel"
+REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
 
@@ -67,9 +69,12 @@ class Prove:
 
 @dataclass(frozen=True)
 class Case:
+    """`launch` and `kernel` are paths without extension, from `root`."""
+
     launch: str
     kernel: str
     check: Solve | Prove
+    root: Path = CK_ROOT
 
     def checker(self) -> str:
         return "solver" if isinstance(self.check, Solve) else "lean"
@@ -183,6 +188,26 @@ CASES = (
         "math_double/ck_tile_exp_double",
         "math_double/ck_tile_math_double",
         Solve("REJECT"),
+    ),
+    # PyTorch's continuous piecewise activations: CELU and SELU are ELU's kernel with their own
+    # alpha, scale and input_scale.
+    Case(
+        "piecewise_activations/elu",
+        "piecewise_activations/elu",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
+        "piecewise_activations/celu",
+        "piecewise_activations/celu",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
+        "piecewise_activations/selu",
+        "piecewise_activations/selu",
+        Solve("ACCEPT"),
+        AMD_ROOT,
     ),
 )
 
@@ -329,8 +354,8 @@ def main() -> int:
             continue
         if args.verbose:
             print(f"\n== {case.launch}: {case.describe()}", flush=True)
-        kernel = CK_ROOT / f"{case.kernel}.s"
-        launch = load_launch(CK_ROOT / f"{case.launch}.launch.json")
+        kernel = case.root / f"{case.kernel}.s"
+        launch = load_launch(case.root / f"{case.launch}.launch.json")
         start = time.monotonic()
         try:
             if isinstance(case.check, Solve):

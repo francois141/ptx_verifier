@@ -1,0 +1,37 @@
+# PyTorch's piecewise activations
+
+PyTorch's continuous piecewise activations (`torch.nn`), each applied to 64 fp32 elements, one
+per work-item of one 64-work-item workgroup. Every kernel is written as PyTorch's CUDA functor
+writes it, in a header-free `<kernel>.hip` compiled to `<kernel>.s`; every case is a launch file
+`<case>.launch.json` and a spec. `just piecewise` runs them through `../verify.py`.
+
+A kernel compiles these activations to selects, which the canonical solver cannot match with a
+spec's `max` and `min`. One rewrite per activation in
+`crates/volta_expr/src/symbolic_simplified/rewrite/` turns the kernel's selects into its spec's
+form first. Constants that are not exact in float32 (SELU's `scale` and PyTorch's f32 product
+`alpha * scale`) appear in the launch files and specs as their exact f32 values.
+
+| Case | Kernel | PyTorch op | Rewrite | Verdict |
+|------|--------|------------|---------|---------|
+| `elu` | `elu` | `ELU` (alpha 1) | `elu.rs` | ACCEPT |
+| `celu` | `celu` | `CELU` (alpha 2), as `elu(x, alpha, 1, 1 / alpha)` | `elu.rs` | ACCEPT |
+| `selu` | `selu` | `SELU`, as `elu(x, alpha, scale, 1)` | `elu.rs` | ACCEPT |
+
+The spec language has no conditional, so ELU, CELU and SELU are stated as
+`max(x, 0) + alpha * (exp(min(x, 0)) - 1)` forms, the same functions. Hardshrink and Threshold
+are discontinuous, which `max` and `min` cannot state, so they have no case.
+
+## Compiling
+
+`elu.hip`, `celu.hip` and `selu.hip` compute both pieces before their select, so clang emits a
+`v_cndmask` rather than a branch on `x`, and take `expm1` as the hardware `exp2` of
+`x * log2(e)`, minus 1. `celu.hip` takes `n` first so its arguments end on a 16-byte boundary:
+clang reads its trailing arguments with one 16-byte load, which would run past a 28-byte
+argument segment. With LLVM's clang, from this directory:
+
+```sh
+for hip in *.hip; do
+  clang -x hip -std=c++17 --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
+    -nogpuinc -O2 -g0 -fno-verbose-asm -S "$hip" -o "${hip%.hip}.s"
+done
+```

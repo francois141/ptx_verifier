@@ -1,7 +1,9 @@
-//! A local rewrite of an expression graph into equal, more structured nodes: PyTorch's tanh
-//! GELU into one [`crate::ExprNode::Gelu`]. `volta_pipeline` applies it to both sides of an
-//! equivalence check.
+//! Local rewrites of an expression graph into equal nodes both sides of an equivalence check
+//! reach: PyTorch's tanh GELU into one [`crate::ExprNode::Gelu`], and the select of PyTorch's
+//! ELU family into the `max` and `min` form its specs state, one module per activation.
+//! `volta_pipeline` applies them to both sides of an equivalence check.
 
+mod elu;
 pub mod gelu;
 mod patterns;
 
@@ -12,9 +14,9 @@ use id_collections::{Count, IdVec};
 
 use crate::{ExprArena, ExprId, SymbolicOutputs};
 
-/// `outputs` with [`gelu::torch_gelu`] applied to each node reachable from an output,
-/// children first; `None` when it applies nowhere, so the arena is copied only for a match.
-pub fn rewrite_gelus(outputs: &SymbolicOutputs) -> Option<SymbolicOutputs> {
+/// `outputs` with the first applicable rewrite applied to each node reachable from an output,
+/// children first; `None` when none applies, so the arena is copied only for a match.
+pub fn rewrite_activations(outputs: &SymbolicOutputs) -> Option<SymbolicOutputs> {
     let mut nodes = Nodes::mark_reachable(outputs);
     let mut arena = Cow::Borrowed(&outputs.arena);
 
@@ -24,10 +26,7 @@ pub fn rewrite_gelus(outputs: &SymbolicOutputs) -> Option<SymbolicOutputs> {
         }
 
         let updated = with_latest_children(&mut arena, id, |c| nodes.latest(c));
-        let target = match gelu::torch_gelu(&arena, updated) {
-            Some(x) => arena.to_mut().gelu(x),
-            None => updated,
-        };
+        let target = replacement(&mut arena, updated).unwrap_or(updated);
 
         if target != id {
             nodes.record_replacement(id, target);
@@ -40,6 +39,17 @@ pub fn rewrite_gelus(outputs: &SymbolicOutputs) -> Option<SymbolicOutputs> {
 
     let outputs = nodes.redirect_outputs(outputs);
     Some(SymbolicOutputs { arena, outputs })
+}
+
+/// The node an activation rewrite builds in place of `id`, when one applies to it.
+fn replacement(arena: &mut Cow<'_, ExprArena>, id: ExprId) -> Option<ExprId> {
+    if let Some(x) = gelu::torch_gelu(arena, id) {
+        return Some(arena.to_mut().gelu(x));
+    }
+    if let Some(found) = elu::elu(arena, id) {
+        return Some(found.build(arena.to_mut()));
+    }
+    None
 }
 
 /// `id` with each child `c` replaced by `latest(c)`, rebuilt only when one of them changed.
@@ -58,7 +68,7 @@ fn with_latest_children(
     }
 }
 
-/// What [`rewrite_gelus`] knows of an original node: one byte each, so a pass over a
+/// What [`rewrite_activations`] knows of an original node: one byte each, so a pass over a
 /// many-million-node arena hashes only the nodes it replaces.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mark {
