@@ -61,8 +61,16 @@ class _TileSize:
 
     # A PSUM bank's free size in fp32 elements: one of Volta's eight 2 KiB banks.
     psum_fmax = 2048 // 4
+    psum_bank_fmax = 2048 // 4
+
+    def __init__(self):
+        # Constants the docs name without a value (`sbuf_min_align`, ...): a wrapper that
+        # needs one sets it here, stating its assumption in the open.
+        self.__dict__["assumed"] = {}
 
     def __getattr__(self, name):
+        if name in self.assumed:
+            return self.assumed[name]
         name = self.ALIASES.get(name, name)
         if name.startswith("__") or not hasattr(_trace.TRACE.tile_sizes, name):
             raise Unsupported(f"`nl.tile_size.{name}` is not supported")

@@ -66,6 +66,10 @@ the call shapes, and prints the trace as JSON, which `frontend::trace` validates
   (`str(nl.float32)` is `float32`), as nkilib's allocator compares them.
 - `nl.private_hbm` tensors are HBM tensors like `nl.shared_hbm` ones: one traced program
   is alone on its core (`SingleNkiInstance`).
+- Subscripts take steps (`t[a:b:2]`, through a view); a step of 1 is none.
+- `nl.tile_size` constants the docs name without a value (`sbuf_min_align`, ...) are
+  unsupported unless a wrapper states one: `nl.tile_size.assumed["sbuf_min_align"] = 32`.
+  `psum_bank_fmax` is `psum_fmax`'s 512.
 - `nki.isa.constants`, `nki.language.opcode`, `nki.dtype` and `nki.collectives` re-export the
   members of `nki.isa` and `nki.language` (collectives are unsupported when used).
 - `Tracer::stubbing(&["torch", ...])` replaces host-only modules a kernel's module imports
@@ -138,9 +142,12 @@ the compiler's choice, or the older `nisa.vector_engine`, `scalar_engine`, `gpsi
 and `tensor_engine`) is accepted and dropped,
 since the engine does not change the result; only tensor indirection, which the docs
 run on the vector or scalar engine, rejects `gpsimd`. A DMA's `dge_mode=`
-(`nisa.dge_mode.unknown`, the default, or `none`, or their values 0 and 3 as nkilib writes
-them) is kept as `ir::Descriptors` (`.ir` renders `dma[dge_mode=none]`), which only the
-graph's `OutOfBandDmas` reads; any other mode is `StatementError::UnsupportedDgeMode`. Their
+(`nisa.dge_mode.unknown`, the default, `none` or `hwdge`, the first two also as their values
+0 and 3 as nkilib writes them) is kept as `ir::Descriptors` (`.ir` renders
+`dma[dge_mode=none]`), which only the graph's `OutOfBandDmas` reads; `hwdge` is ordered like
+the default, there being no evidence either way. `engine=nisa.engine.sync`, a DMA queue, is
+dropped, as are `nc_matmul`'s `tile_position` and `tile_size`, a placement on the Tensor
+engine's array; any other mode is `StatementError::UnsupportedDgeMode`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
 `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity, `nl.sqrt`, `nl.abs`); a new member
@@ -656,6 +663,8 @@ transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a gen
 `success/aliased_tiles.py` writes through one placed `float32` tile and reads the same bytes
 through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.
+`success/dma_modes.py` is `matmul.py`'s product through `hwdge` DMAs on the sync engine and a
+matmul with `tile_position`/`tile_size`.
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);

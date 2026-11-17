@@ -31,12 +31,14 @@ const LOAD_REDUCE: &str = "nki.isa.reduce_cmd.load_reduce";
 /// The compute engines an instruction's `engine=` may pick, by `nki.isa` member;
 /// `engine.unknown` lets the compiler choose. Which engine runs an instruction does not
 /// change its result, but tensor indirection runs on the vector or scalar engine only.
-const ENGINES: [(&str, Option<Engine>); 9] = [
+const ENGINES: [(&str, Option<Engine>); 10] = [
     ("nki.isa.engine.vector", Some(Engine::Vector)),
     ("nki.isa.engine.scalar", Some(Engine::Scalar)),
     ("nki.isa.engine.gpsimd", Some(Engine::Gpsimd)),
     ("nki.isa.engine.tensor", Some(Engine::Tensor)),
     ("nki.isa.engine.unknown", None),
+    // The DMA queue a `dma_copy` issues on; it does not change the copy.
+    ("nki.isa.engine.sync", None),
     ("nki.isa.vector_engine", Some(Engine::Vector)),
     ("nki.isa.scalar_engine", Some(Engine::Scalar)),
     ("nki.isa.gpsimd_engine", Some(Engine::Gpsimd)),
@@ -485,10 +487,12 @@ fn lower_instruction(
         // Tensor Engine
         // =====================================================================
         "nc_matmul" => {
-            let ([dst, stationary, moving], [accumulate]) = operands_with_optional(
+            // `tile_position` and `tile_size` place the matmul on part of the Tensor engine's
+            // array, which does not change its product.
+            let ([dst, stationary, moving], [accumulate, _, _]) = operands_with_optional(
                 instruction,
                 &["dst", "stationary", "moving"],
-                &["accumulate"],
+                &["accumulate", "tile_position", "tile_size"],
             )?;
             let accumulation = match accumulate {
                 None | Some(Operand::None) => Accumulation::FirstOverwrites,
@@ -578,8 +582,8 @@ fn lower_instruction(
 // =============================================================================
 
 /// A DMA `instruction` without its `dge_mode=`, and how that mode generates its
-/// descriptors: `nisa.dge_mode.unknown` (the default) or `none`, also written as their
-/// values 0 and 3.
+/// descriptors: `nisa.dge_mode.unknown` (the default), `none` or `hwdge`, the first two also
+/// written as their values 0 and 3.
 fn without_dge_mode(
     instruction: &Instruction,
 ) -> Result<(Instruction, Descriptors), StatementError> {
@@ -592,6 +596,9 @@ fn without_dge_mode(
         }
         Some(Operand::Member(member)) if member == "nki.isa.dge_mode.none" => {
             Descriptors::OutOfBand
+        }
+        Some(Operand::Member(member)) if member == "nki.isa.dge_mode.hwdge" => {
+            Descriptors::Hardware
         }
         Some(other) => return Err(StatementError::UnsupportedDgeMode(other)),
     };
