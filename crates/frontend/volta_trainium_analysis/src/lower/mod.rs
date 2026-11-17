@@ -26,6 +26,7 @@ const NKI_LANGUAGE: &str = "nki.language";
 /// The one `reduce_cmd` lowered: reset the accumulator, then reduce this instruction's
 /// result. The others carry an accumulator across instructions, which is not modelled.
 const RESET_REDUCE: &str = "nki.isa.reduce_cmd.reset_reduce";
+const LOAD_REDUCE: &str = "nki.isa.reduce_cmd.load_reduce";
 
 /// The compute engines an instruction's `engine=` may pick, by `nki.isa` member;
 /// `engine.unknown` lets the compiler choose. Which engine runs an instruction does not
@@ -390,14 +391,21 @@ fn lower_instruction(
                 &["dst", "src", "op0", "op1", "imm0"],
                 &["imm1", "reduce_cmd"],
             )?;
-            if let Some(cmd) = reduce_cmd {
-                reset_reduce(cmd)?;
-            }
-            if let Some(imm1) = imm1.filter(|imm1| **imm1 != Operand::None) {
-                return Err(StatementError::UnsupportedReduceCmd(imm1.clone()));
-            }
             let [dst, src] = [scope.tile(dst, "dst")?, scope.tile(src, "src")?];
             same_shape(&dst, &src)?;
+            let imm1 = imm1.filter(|imm1| **imm1 != Operand::None);
+            let initial = match (reduce_cmd, imm1) {
+                (None, None) => None,
+                (Some(cmd), None) if is_member(cmd, RESET_REDUCE) => None,
+                (Some(cmd), Some(imm1)) if is_member(cmd, LOAD_REDUCE) => {
+                    let [partitions, _] = dst.region.tile_extents();
+                    Some(scalar_operand(imm1, "imm1", partitions, scope)?)
+                }
+                (Some(cmd), _) => return Err(StatementError::UnsupportedReduceCmd(cmd.clone())),
+                (None, Some(imm1)) => {
+                    return Err(StatementError::UnsupportedReduceCmd(imm1.clone()));
+                }
+            };
             let imm0 = match imm0 {
                 Operand::Scalar(value) => *value,
                 Operand::Int(value) => Scalar::new(*value as f64).expect("an integer is finite"),
@@ -407,6 +415,7 @@ fn lower_instruction(
                 op0: arith_op(op0)?,
                 imm0,
                 op1: arith_op(op1)?,
+                initial,
                 dst: dst.region,
                 src: src.region,
             })
@@ -780,6 +789,11 @@ fn reduction(
         op,
         res: res.region,
     })
+}
+
+/// Whether `operand` is the `nki` member `member`.
+fn is_member(operand: &Operand, member: &str) -> bool {
+    matches!(operand, Operand::Member(given) if given == member)
 }
 
 /// Check that a `reduce_cmd` is `nisa.reduce_cmd.reset_reduce`.

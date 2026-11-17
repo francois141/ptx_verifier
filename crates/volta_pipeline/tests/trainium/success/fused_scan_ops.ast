@@ -1,4 +1,4 @@
-kernel kernel(a: [2, 4], b: [2, 4], out: [2, 4], sums: [2, 1], a_t: [4, 2], a_t3: [4, 1, 2])
+kernel kernel(a: [2, 4], b: [2, 4], out: [2, 4], sums: [2, 1], a_t: [4, 2], a_t3: [4, 1, 2], carried: [2, 4])
   x: sbuf[2, 4] of a.dtype
   dma_copy(dst=x, src=a)
   y: sbuf[2, 4] of b.dtype
@@ -10,6 +10,9 @@ kernel kernel(a: [2, 4], b: [2, 4], out: [2, 4], sums: [2, 1], a_t: [4, 2], a_t3
   tensor_scalar_cumulative(dst=c, imm0=1, op0=nki.language.multiply, op1=nki.language.add, src=s)
   dma_copy(dst=out, src=c)
   dma_copy(dst=sums, src=r)
+  d: sbuf[2, 4] of float32
+  tensor_scalar_cumulative(dst=d, imm0=0, imm1=r, op0=nki.language.add, op1=nki.language.add, reduce_cmd=nki.isa.reduce_cmd.load_reduce, src=s)
+  dma_copy(dst=carried, src=d)
   t: sbuf[4, 2] of a.dtype
   dma_transpose(dst=t, src=a)
   dma_copy(dst=a_t, src=t)

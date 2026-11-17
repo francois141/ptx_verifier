@@ -76,6 +76,7 @@ fn the_fused_scan_ops_kernel_parses_lowers_and_runs_as_expected() {
             ("sums", &[2, 1]),
             ("a_t", &[4, 2]),
             ("a_t3", &[4, 1, 2]),
+            ("carried", &[2, 4]),
         ],
     );
 }

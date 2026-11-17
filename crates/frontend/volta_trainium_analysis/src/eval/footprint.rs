@@ -161,9 +161,14 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             reduced(reduce),
         ]
         .concat(),
-        LoweredInstr::Cumulative { dst, src, .. } => {
-            vec![access(Mode::Read, src), access(Mode::Write, dst)]
-        }
+        LoweredInstr::Cumulative {
+            dst, src, initial, ..
+        } => [
+            vec![access(Mode::Read, src)],
+            scalars(&[initial.as_ref()]),
+            vec![access(Mode::Write, dst)],
+        ]
+        .concat(),
         LoweredInstr::Scan {
             dst,
             data0,
