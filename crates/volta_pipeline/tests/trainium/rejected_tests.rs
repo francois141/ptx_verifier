@@ -1,5 +1,5 @@
-//! NKI kernels the analysis must reject: tile placements, access patterns, broadcasts and
-//! gathers it does not define, each with its expected lowering or execution error.
+//! NKI kernels the analysis must reject: tile placements, access patterns, broadcasts,
+//! gathers and transposes it does not define, each with its expected lowering or execution error.
 
 use crate::common;
 
@@ -257,6 +257,24 @@ fn gathers_the_docs_do_not_define_are_errors() {
             tensor: TensorName("offsets".into()),
             shape: volta_trainium_analysis::Shape(vec![32, 1]),
             partitions: 16,
+        }
+    );
+}
+
+#[test]
+fn a_transpose_whose_moving_operand_is_not_the_identity_is_an_error() {
+    let parsed = parse_kernel(
+        &common::trainium::source("execution_error/transpose_errors"),
+        "moving_not_identity",
+        &[("a", &[2, 3]), ("out", &[3, 2])],
+    )
+    .unwrap();
+    assert_eq!(
+        evaluate(&lower_kernel(&parsed).unwrap()).unwrap_err(),
+        EvalError::NotIdentity {
+            instr: InstrId(2),
+            tensor: "ones".into(),
+            index: Index(vec![0, 1]),
         }
     );
 }

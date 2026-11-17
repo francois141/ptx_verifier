@@ -203,6 +203,9 @@ integer below `data`'s free size (`EvalError::IndirectOffset`), so the index's v
 come from the call (`KernelCall::contents`, below); a symbolic one is that error too. A
 scatter, `dst=t.indirect(...)`, is rejected.
 
+`nc_matmul(is_transpose=True)` is the Tensor Engine's transpose mode (`ir::MatmulPass`),
+defined only when `moving` is the identity: the run checks that it holds the concrete
+identity (else `EvalError::NotIdentity`), where the product is the transpose.
 `nc_matmul`'s moving operand and result may have several free dimensions, flattened
 row-major (conv3d's 3-D access patterns); its stationary operand is a matrix.
 `nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
@@ -681,8 +684,10 @@ through another: a `ClobberedRead` under `evaluate`, the value written under
 matmul with `tile_position`/`tile_size`.
 `success/refilled_gap.py` evicts a PSUM tile whose last columns no matmul wrote and copies
 out only its written ones, the rest from a zeroed tile (a hand-checked `.expected`).
-`success/identity_transpose.py` transposes a 2 x 3 tile by a matmul against
-`nl.shared_identity_matrix(2)` (a hand-checked `.expected`).
+`success/identity_transpose.py` transposes a 2 x 3 tile by the Tensor Engine's transpose
+mode, a matmul with `is_transpose=True` against `nl.shared_identity_matrix(2)` (a hand-checked
+`.expected`); `execution_error/transpose_errors.py`'s kernel must fail, its moving operand
+not the identity.
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset, and computes `t[:, 0, :].T @ t` by a matmul whose

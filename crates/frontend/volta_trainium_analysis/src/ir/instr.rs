@@ -129,6 +129,7 @@ pub enum LoweredInstr {
         stationary: TensorRegion,
         moving: TensorRegion,
         accumulation: Accumulation,
+        pass: MatmulPass,
     },
     /// `dst[f, p] = data[p, f]` over on-chip regions.
     Transpose {
@@ -218,6 +219,15 @@ pub enum Descriptors {
 pub struct Reduction {
     pub op: ArithOp,
     pub res: TensorRegion,
+}
+
+/// How `nc_matmul` runs, from `is_transpose=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatmulPass {
+    Multiply,
+    /// The Tensor Engine's transpose mode: `dst = stationary.T`, defined only when `moving`
+    /// is the identity, where it is also the product.
+    Transpose,
 }
 
 /// Whether `nc_matmul` adds its product to `dst` or overwrites it, from `accumulate=`.

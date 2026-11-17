@@ -46,6 +46,14 @@ pub enum EvalError {
         offsets: [u64; 2],
     },
 
+    /// A Tensor Engine transpose (`is_transpose=True`) whose moving operand is not the
+    /// identity, which the mode requires.
+    NotIdentity {
+        instr: InstrId,
+        tensor: String,
+        index: Index,
+    },
+
     // =========================================================================
     // Shape Errors
     // =========================================================================
@@ -61,6 +69,7 @@ impl EvalError {
             | Self::ClobberedRead { instr, .. }
             | Self::IndirectOffset { instr, .. }
             | Self::IndirectReadings { instr, .. }
+            | Self::NotIdentity { instr, .. }
             | Self::ElementCountOverflow { instr, .. } => *instr,
         }
     }
@@ -109,6 +118,16 @@ impl fmt::Display for EvalError {
                 f,
                 "instruction {}: column {column} of partition {partition} gathers offset {docs} \
                  from the index's first rows but {group} from its partition group's",
+                instr.0
+            ),
+            Self::NotIdentity {
+                instr,
+                tensor,
+                index,
+            } => write!(
+                f,
+                "instruction {}: a transpose's moving operand `{tensor}` is not the identity at \
+                 {index}",
                 instr.0
             ),
             Self::ElementCountOverflow { instr, tensor } => write!(

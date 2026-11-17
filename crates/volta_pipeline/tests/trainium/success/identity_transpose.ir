@@ -7,6 +7,6 @@ kernel kernel(a, out)
   t: sbuf[3, 2]
   x = dma(a)
   ident = identity
-  acc = matmul(x, ident)
+  acc = matmul(x, ident, is_transpose=True)
   t = mov(acc)
   out = dma(t)
