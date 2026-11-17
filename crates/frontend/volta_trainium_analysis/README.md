@@ -395,11 +395,13 @@ places all its on-chip tiles or none (`LowerError::MixedAllocation`), since the
 compiler could place an unplaced tile anywhere.
 
 Two placed tiles may overlap, as v10's `v_psum_t` and `qk_psum` share PSUM bank 0.
-The interpreter finds each pair of tiles whose bytes overlap (`eval/alias.rs`), and a
-write through one clobbers every element of the other that covers any of its bytes:
-reading a clobbered element before writing it again is an
-`EvalError::ClobberedRead`, which names the write, so a kernel is checked only on
-values its own tile wrote. This holds in program order. Whether the compiler orders
+The interpreter finds each pair of tiles whose bytes overlap (`eval/alias.rs`). A write
+through one sets the other's element covering exactly the same bytes (the same element
+size, aligned) to the value written, as the shared memory does; it clobbers every other
+element of the other that covers any of its bytes, and reading a clobbered element before
+writing it again is an `EvalError::ClobberedRead`, which names the write. So a kernel
+reading another tile's bytes through its own gets the value the hardware would, and one
+reading part of an element is rejected. This holds in program order. Whether the compiler orders
 accesses through two tiles placed over each other the docs do not say; the event graph's
 baseline policy assumes it does, by address (see Event graph).
 
@@ -649,6 +651,8 @@ transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a gen
 `.expected`).
 `success/norm_ops.py` covers `nl.abs` and `nl.sqrt`, a `keepdims` `tensor_reduce` under
 `nl.max` and `tensor_partition_reduce`, as nkilib's foreach norms use them.
+`success/aliased_tiles.py` writes through one placed `float32` tile and reads the same bytes
+through another.
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset (a hand-written `.expected`);
