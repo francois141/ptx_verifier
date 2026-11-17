@@ -21,8 +21,11 @@ The frontend is public; the other stages are private.
 under real Python and returns the same `ast::Kernel` that `parse_kernel_for_call` does,
 so lowering, execution and the graph are unchanged. The Rust parser reads a subset of
 Python; production libraries such as AWS's nki-library use far more (dataclasses, enums,
-conditional expressions, f-strings, relative imports), which the tracer gets for free,
-as NKI's own tracer does.
+conditional expressions, f-strings, relative imports), which the tracer gets for free.
+NKI itself has two frontends, one parsing the kernel's source and one tracing it, and
+nkilib's comments show both accept only a subset of Python (no `set`, `sorted` or
+`getattr`, for one), so kernels written for NKI stay in Python whose meaning CPython
+gives exactly; the tracer accepts more than NKI does, never less.
 
 `tracer/trace.py` (run as `python -I`, reading a JSON request on stdin) puts the stand-in
 `nki` package first on `sys.path`, imports the kernel's module (by its dotted name under
