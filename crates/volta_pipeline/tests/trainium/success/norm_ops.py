@@ -5,9 +5,9 @@ import nki.isa as nisa
 
 # The operations nkilib's foreach norms use: activations abs and sqrt, a tensor_reduce
 # with keepdims=True under nl.max (an alias of nl.maximum), and a tensor_partition_reduce
-# folding a [P, 1] column into one element.
+# folding a [P, 1] column into one element; `inv` is the root's reciprocal by activation.
 @nki.jit
-def kernel(a, out):
+def kernel(a, out, inv):
     assert a.shape == (2, 4)
     x = nl.ndarray((2, 4), dtype=a.dtype, buffer=nl.sbuf)
     nisa.dma_copy(dst=x, src=a)
@@ -19,3 +19,6 @@ def kernel(a, out):
     root = nl.ndarray((1, 1), dtype=nl.float32, buffer=nl.sbuf)
     nisa.activation(dst=root, op=nl.sqrt, data=total)
     nisa.dma_copy(dst=out, src=root)
+    inverse = nl.ndarray((1, 1), dtype=nl.float32, buffer=nl.sbuf)
+    nisa.activation(dst=inverse, op=nl.reciprocal, data=root)
+    nisa.dma_copy(dst=inv, src=inverse)

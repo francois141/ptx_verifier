@@ -563,7 +563,8 @@ an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor`, `sync` (
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
-(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, `nl.sqrt`, `nl.abs`;
+(`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, `nl.sqrt`, `nl.abs`,
+`nl.reciprocal`;
 `nl.max` is taken as `nl.maximum`) for a variant whose
 `name()` matches, so a new function reaches lowering by joining that array and
 needs no arm of its own; any other member is a lowering error. Binary ops take
@@ -574,8 +575,8 @@ other dimensions, folds one run of consecutive elements of each partition's free
 view, seeded with its first (shared with `ir::Reduction` as `Interpreter::fold`);
 reducing every free axis leaves `dst[p, 0]`. `negate=True` (an `ast::Operand::Bool`)
 negates the result (`ir::Sign`).
-`reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which
-is outside `ALL` so `activation(op=nl.reciprocal)` stays an error.
+`reciprocal` lowers to an `Activation` of `ActivationFunc::Reciprocal`, which is in
+`ALL` too: `activation(op=nl.reciprocal)`, undocumented, is what nkilib's `ssd` passes.
 `tensor_tensor_scan` is `LoweredInstr::Scan`, the docs' recurrence along each partition
 of matrix regions, `dst[p, i] = op1(op0(data0[p, i], dst[p, i - 1]), data1[p, i])` from
 `initial` (a literal or a `[partitions, 1]` tile), `reverse0`/`reverse1` swapping an op's
@@ -888,8 +889,8 @@ column a `bfloat16` tile overwrote, `accumulate=True` into unwritten PSUM copied
 `success/fused_scan_ops.py` covers `scalar_tensor_tensor` (`reverse1`, a reduction),
 `tensor_scalar_cumulative` (with `load_reduce`), a `tensor_scalar` with `reverse1` and
 HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
-`success/norm_ops.py` covers `nl.abs`, `nl.sqrt`, `keepdims` under `nl.max` and
-`tensor_partition_reduce`.
+`success/norm_ops.py` covers `nl.abs`, `nl.sqrt`, `keepdims` under `nl.max`,
+`tensor_partition_reduce` and `activation(op=nl.reciprocal)`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
 `success/dma_modes.py` covers `hwdge` DMAs, `engine.sync`, a placed `nc_matmul` and DMAs
