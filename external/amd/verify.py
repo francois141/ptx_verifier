@@ -189,8 +189,39 @@ CASES = (
         "math_double/ck_tile_math_double",
         Solve("REJECT"),
     ),
-    # PyTorch's continuous piecewise activations: CELU and SELU are ELU's kernel with their own
-    # alpha, scale and input_scale.
+    # PyTorch's continuous piecewise activations.
+    Case(
+        "piecewise_activations/hardtanh",
+        "piecewise_activations/hardtanh",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
+        "piecewise_activations/hardsigmoid",
+        "piecewise_activations/hardsigmoid",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    # Hardswish compiled three ways: plain and -funsafe-math-optimizations keep the selects,
+    # -ffast-math gives native v_max and v_min.
+    Case(
+        "piecewise_activations/hardswish",
+        "piecewise_activations/hardswish",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
+        "piecewise_activations/hardswish_fast",
+        "piecewise_activations/hardswish_fast",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
+    Case(
+        "piecewise_activations/hardswish_nans",
+        "piecewise_activations/hardswish_nans",
+        Solve("ACCEPT"),
+        AMD_ROOT,
+    ),
     Case(
         "piecewise_activations/elu",
         "piecewise_activations/elu",

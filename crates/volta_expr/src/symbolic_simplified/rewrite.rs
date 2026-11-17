@@ -1,10 +1,11 @@
 //! Local rewrites of an expression graph into equal nodes both sides of an equivalence check
-//! reach: PyTorch's tanh GELU into one [`crate::ExprNode::Gelu`], and the select of PyTorch's
-//! ELU family into the `max` and `min` form its specs state, one module per activation.
-//! `volta_pipeline` applies them to both sides of an equivalence check.
+//! reach: PyTorch's tanh GELU into one [`crate::ExprNode::Gelu`], and the selects of PyTorch's
+//! piecewise activations into the `max` and `min` forms their specs state, one module per
+//! activation. `volta_pipeline` applies them to both sides of an equivalence check.
 
 mod elu;
 pub mod gelu;
+mod hardtanh;
 mod patterns;
 
 use std::borrow::Cow;
@@ -45,6 +46,9 @@ pub fn rewrite_activations(outputs: &SymbolicOutputs) -> Option<SymbolicOutputs>
 fn replacement(arena: &mut Cow<'_, ExprArena>, id: ExprId) -> Option<ExprId> {
     if let Some(x) = gelu::torch_gelu(arena, id) {
         return Some(arena.to_mut().gelu(x));
+    }
+    if let Some(found) = hardtanh::hardtanh(arena, id) {
+        return Some(found.build(arena.to_mut()));
     }
     if let Some(found) = elu::elu(arena, id) {
         return Some(found.build(arena.to_mut()));

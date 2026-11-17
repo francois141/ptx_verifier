@@ -1,0 +1,16 @@
+{
+  "description": "PyTorch's Hardswish compiled with -funsafe-math-optimizations, over 64 f32 elements on one AMD wave",
+  "kernel": "hardswish_nans",
+  "block": 64,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "y"},
+    {"name": "n", "int": 64}
+  ],
+  "spec": "hardswish.spec",
+  "dims": {"N": 64}
+}

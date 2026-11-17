@@ -165,6 +165,28 @@ impl<'a> Matcher<'a> {
         })
     }
 
+    /// `(x, c)` of `max(x, c)`, a `max` node or the select `x > c ? x : c`.
+    pub(super) fn lower_bound(self, id: ExprId) -> Option<(ExprId, Rational)> {
+        if let ExprNode::Max(a, b) = *self.node(id) {
+            return either(a, b, |x, c| Some((x, self.constant(c)?)));
+        }
+
+        let split = self.split(id)?;
+        let below = self.constant(split.below)?;
+        (self.same(split.above, split.x) && below == split.threshold).then_some((split.x, below))
+    }
+
+    /// `(x, c)` of `min(x, c)`, a `min` node or the select `x < c ? x : c`.
+    pub(super) fn upper_bound(self, id: ExprId) -> Option<(ExprId, Rational)> {
+        if let ExprNode::Min(a, b) = *self.node(id) {
+            return either(a, b, |x, c| Some((x, self.constant(c)?)));
+        }
+
+        let split = self.split(id)?;
+        let above = self.constant(split.above)?;
+        (self.same(split.below, split.x) && above == split.threshold).then_some((split.x, above))
+    }
+
     pub(super) fn is<T>(self, id: ExprId, value: T) -> bool
     where
         Rational: From<T>,
