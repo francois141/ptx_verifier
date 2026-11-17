@@ -193,6 +193,56 @@ impl<'a> Interpreter<'a> {
                     writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
                 }
             }
+            LoweredInstr::ScalarTensorTensor {
+                dst,
+                data,
+                op0,
+                operand0,
+                op1,
+                operand1,
+                reduce,
+            } => {
+                let [partitions, free] = dst.tile_extents();
+                for partition in 0..partitions {
+                    let mut row = Vec::new();
+                    for element in 0..free {
+                        let at = [partition, element];
+                        let x = self.read(instr, data, at)?;
+                        let scalar = self.scalar(instr, operand0, at)?;
+                        let step = self.ordered(*op0, x, scalar);
+                        let other = self.read(instr, operand1, at)?;
+                        let value = self.ordered(*op1, step, other);
+                        writes.push(Write::at(dst, at, value));
+                        row.push(value);
+                    }
+                    writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
+                }
+            }
+            LoweredInstr::Cumulative {
+                dst,
+                src,
+                op0,
+                imm0,
+                op1,
+            } => {
+                let [partitions, free] = dst.tile_extents();
+                for partition in 0..partitions {
+                    let mut acc = None;
+                    for element in 0..free {
+                        let at = [partition, element];
+                        let x = self.read(instr, src, at)?;
+                        let imm = self.scalar(instr, &ScalarOperand::Constant(*imm0), at)?;
+                        let step = self.arith(*op0, x, imm);
+                        // `op1(step, identity)` is `step` for every op the docs allow.
+                        let value = match acc {
+                            None => step,
+                            Some(acc) => self.arith(*op1, step, acc),
+                        };
+                        acc = Some(value);
+                        writes.push(Write::at(dst, at, value));
+                    }
+                }
+            }
             LoweredInstr::Scan {
                 dst,
                 data0,

@@ -62,6 +62,23 @@ fn the_loop_origins_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// scalar_tensor_tensor with a reduction and a reversed op, tensor_scalar_cumulative, and a
+// dma_transpose from HBM with default axes.
+#[test]
+fn the_fused_scan_ops_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/fused_scan_ops",
+        "kernel",
+        &[
+            ("a", &[2, 4]),
+            ("b", &[2, 4]),
+            ("out", &[2, 4]),
+            ("sums", &[2, 1]),
+            ("a_t", &[4, 2]),
+        ],
+    );
+}
+
 // The race fixtures in `check_failure/` run in program order; `graph_tests.rs` checks their
 // event graphs' races.
 #[test]

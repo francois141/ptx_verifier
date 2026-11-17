@@ -1,0 +1,20 @@
+kernel kernel(a, b, out, sums, a_t)
+  a: hbm[2, 4]
+  b: hbm[2, 4]
+  out: hbm[2, 4]
+  sums: hbm[2, 1]
+  a_t: hbm[4, 2]
+  x: sbuf[2, 4]
+  y: sbuf[2, 4]
+  s: sbuf[2, 4]
+  r: sbuf[2, 1]
+  c: sbuf[2, 4]
+  t: sbuf[4, 2]
+  x = dma(a)
+  y = dma(b)
+  s, r = subtract(y, multiply(x, 2)) reduce add
+  c = cumulative(acc = multiply(s, 1); acc = add(that, acc))
+  out = dma(c)
+  sums = dma(r)
+  t = dma_transpose(a)
+  a_t = dma(t)

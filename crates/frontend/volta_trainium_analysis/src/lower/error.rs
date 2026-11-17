@@ -259,8 +259,8 @@ impl fmt::Display for StatementError {
             Self::UnsupportedEngine(engine) => write!(
                 f,
                 "unsupported `engine` `{engine}`: only `nisa.engine.vector`, `scalar`, \
-                 `gpsimd` or `unknown`, or `nisa.vector_engine`, `scalar_engine` or \
-                 `gpsimd_engine`"
+                 `gpsimd`, `tensor` or `unknown`, or `nisa.vector_engine`, `scalar_engine`, \
+                 `gpsimd_engine` or `tensor_engine`"
             ),
             Self::IndirectEngine(engine) => write!(
                 f,
