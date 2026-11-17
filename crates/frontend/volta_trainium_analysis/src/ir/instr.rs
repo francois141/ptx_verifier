@@ -137,6 +137,14 @@ pub enum LoweredInstr {
         data: TensorRegion,
         mover: Mover,
     },
+    /// `nc_stream_shuffle`, within one 32-partition quadrant: `dst[p, f] = src[mask[p], f]`
+    /// for each of `dst`'s partitions whose `mask` entry is `Some`; a `None` (the docs' 255)
+    /// leaves that partition unwritten.
+    Shuffle {
+        dst: TensorRegion,
+        src: TensorRegion,
+        mask: Vec<Option<u64>>,
+    },
 }
 
 impl LoweredInstr {
@@ -171,6 +179,7 @@ impl LoweredInstr {
                 mover: Mover::Engine,
                 ..
             } => "nc_transpose",
+            LoweredInstr::Shuffle { .. } => "nc_stream_shuffle",
         }
     }
 }

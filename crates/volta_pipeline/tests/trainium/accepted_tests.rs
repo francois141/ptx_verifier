@@ -134,6 +134,16 @@ fn the_dma_modes_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// nc_stream_shuffle broadcasting a row, then permuting rows with skipped partitions.
+#[test]
+fn the_stream_shuffle_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/stream_shuffle",
+        "kernel",
+        &[("a", &[3, 2]), ("out", &[4, 2])],
+    );
+}
+
 // A transpose by a matmul against the identity `nl.shared_identity_matrix` writes.
 #[test]
 fn the_identity_transpose_kernel_parses_lowers_and_runs_as_expected() {

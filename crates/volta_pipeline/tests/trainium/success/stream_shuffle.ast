@@ -1,0 +1,11 @@
+kernel kernel(a: [3, 2], out: [4, 2])
+  x: sbuf[3, 2] of float32
+  dma_copy(dst=x, src=a)
+  y: sbuf[4, 2] of float32
+  nc_stream_shuffle(dst=y, shuffle_mask=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), src=x[0:1, :])
+  z: sbuf[4, 2] of float32
+  nc_stream_shuffle(dst=z, shuffle_mask=(2, 255, 1, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255), src=x)
+  dma_copy(dst=out[0:1, :], src=z[0:1, :])  # in for#0[0]
+  dma_copy(dst=out[2:3, :], src=z[2:3, :])  # in for#0[1]
+  dma_copy(dst=out[1:2, :], src=y[1:2, :])  # in for#1[0]
+  dma_copy(dst=out[3:4, :], src=y[3:4, :])  # in for#1[1]

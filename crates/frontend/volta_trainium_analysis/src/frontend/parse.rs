@@ -1141,6 +1141,9 @@ impl Trace<'_> {
                 if op == BinOp::Div {
                     return true_division(&lhs, &rhs, line);
                 }
+                if let Some(value) = self.sequence_op(op, &lhs, &rhs) {
+                    return Ok(value);
+                }
                 let (Value::Int(lhs), Value::Int(rhs)) = (lhs, rhs) else {
                     bail!(line, "`{}` needs integer operands", op.text());
                 };
@@ -1466,6 +1469,36 @@ impl Trace<'_> {
             .into_iter()
             .map(|expr| self.evaluate(frame, expr, line))
             .collect()
+    }
+
+    /// Python's sequence `+` (two lists or two tuples, concatenated into a new one) and
+    /// `*` (a list or tuple repeated an integer number of times, none if it is negative).
+    fn sequence_op(&mut self, op: BinOp, lhs: &Value, rhs: &Value) -> Option<Value> {
+        let items = |value: &Value| match value {
+            Value::List(list) => Some(self.lists[*list].clone()),
+            Value::Tuple(items) => Some(items.clone()),
+            _ => None,
+        };
+        let joined = match (op, lhs, rhs) {
+            (BinOp::Add, Value::List(_), Value::List(_))
+            | (BinOp::Add, Value::Tuple(_), Value::Tuple(_)) => [items(lhs)?, items(rhs)?].concat(),
+            (BinOp::Mul, sequence, Value::Int(count))
+            | (BinOp::Mul, Value::Int(count), sequence) => {
+                let repeated = items(sequence)?;
+                let count = usize::try_from(*count).unwrap_or(0);
+                repeated
+                    .iter()
+                    .cloned()
+                    .cycle()
+                    .take(repeated.len() * count)
+                    .collect()
+            }
+            _ => return None,
+        };
+        Some(match (lhs, rhs) {
+            (Value::List(_), _) | (_, Value::List(_)) => self.new_list(joined),
+            _ => Value::Tuple(joined),
+        })
     }
 
     fn new_list(&mut self, items: Vec<Value>) -> Value {
@@ -2782,7 +2815,10 @@ fn instruction(
         if operands.contains_key(&keyword) {
             bail!(line, "operand `{keyword}` of `{callee}` is given twice");
         }
-        let value = trace.evaluate(frame, expr, line)?;
+        let value = match trace.evaluate(frame, expr, line)? {
+            Value::List(list) => Value::Tuple(trace.lists[list].clone()),
+            value => value,
+        };
         let operand = read_operand(&keyword, value, line)?;
         operands.insert(keyword, operand);
     }
@@ -2894,7 +2930,8 @@ fn read_buffer(value: Value, line: usize) -> Result<Buffer, ParseError> {
 }
 
 /// A tensor, a region of one, a scalar, a module member, an integer or a tuple of
-/// them, a bool or `None`, e.g. `x`, `x[0:4, :]`, `0.125`, `nl.add`, `1`, `(1,)` or `True`.
+/// them (an instruction's list operand arrives as a tuple), a bool or `None`, e.g. `x`,
+/// `x[0:4, :]`, `0.125`, `nl.add`, `1`, `(1,)` or `True`.
 fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, ParseError> {
     match value {
         Value::Tensor(tensor) => Ok(Operand::Tensor(tensor)),

@@ -208,6 +208,10 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
         LoweredInstr::Transpose { dst, data, .. } => {
             vec![access(Mode::Read, data), access(Mode::Write, dst)]
         }
+        // Whole regions, though a mask may skip partitions: more conflicts, never fewer.
+        LoweredInstr::Shuffle { dst, src, .. } => {
+            vec![access(Mode::Read, src), access(Mode::Write, dst)]
+        }
     }
 }
 
