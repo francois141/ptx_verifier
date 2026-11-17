@@ -518,15 +518,16 @@ fn lower_instruction(
             moving.in_memory(Memory::Sbuf)?;
             dst.in_memory(Memory::Psum)?;
             let [[contraction, rows], [moving_contraction, columns]] =
-                [stationary.matrix()?, moving.matrix()?];
+                [stationary.matrix()?, moving.flattened()?];
             if contraction != moving_contraction {
                 return Err(StatementError::ContractionMismatch([
                     stationary.described(),
                     moving.described(),
                 ]));
             }
-            dst.matrix()?;
-            result_shape(&dst, Shape(vec![rows, columns]))?;
+            if dst.flattened()? != [rows, columns] {
+                result_shape(&dst, Shape(vec![rows, columns]))?;
+            }
             Ok(LoweredInstr::Matmul {
                 dst: dst.region,
                 stationary: stationary.region,
@@ -935,6 +936,20 @@ impl RegionOperand<'_> {
     fn matrix(&self) -> Result<[u64; 2], StatementError> {
         match self.kept.0[..] {
             [rows, columns] => Ok([rows, columns]),
+            _ => Err(StatementError::NotAMatrix {
+                tensor: self.name.clone(),
+                shape: self.kept.clone(),
+            }),
+        }
+    }
+
+    /// Its partitions and its free dimensions flattened row-major, as a matmul reads its
+    /// moving operand and writes its result.
+    fn flattened(&self) -> Result<[u64; 2], StatementError> {
+        match self.kept.0[..] {
+            [partitions, ref free @ ..] if !free.is_empty() => {
+                Ok([partitions, free.iter().product()])
+            }
             _ => Err(StatementError::NotAMatrix {
                 tensor: self.name.clone(),
                 shape: self.kept.clone(),

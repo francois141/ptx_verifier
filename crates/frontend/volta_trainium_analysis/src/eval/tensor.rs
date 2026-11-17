@@ -24,6 +24,8 @@ pub(super) struct TensorState<'a> {
 pub(super) struct Clobber {
     pub(super) instr: InstrId,
     pub(super) through: String,
+    /// Whether the element held a value of its own tensor's writes before.
+    lost_write: bool,
 }
 
 impl<'a> TensorState<'a> {
@@ -74,13 +76,21 @@ impl<'a> TensorState<'a> {
         }
     }
 
-    /// The value last written at `index`, if any; a clobbered element is an error.
+    /// The value this tensor last wrote at `index`, if any, as a matmul's `accumulate=None`
+    /// asks: an element clobbered before any write of its own is unwritten, one clobbered
+    /// after is an error.
     pub(super) fn written(
         &self,
         instr: InstrId,
         index: &Index,
     ) -> Result<Option<ExprId>, EvalError> {
-        self.unclobbered(instr, index)?;
+        if self
+            .clobbered
+            .get(index)
+            .is_some_and(|clobber| clobber.lost_write)
+        {
+            self.unclobbered(instr, index)?;
+        }
         Ok(self.written.get(index).copied())
     }
 
@@ -89,14 +99,25 @@ impl<'a> TensorState<'a> {
         self.written.insert(index, value);
     }
 
-    pub(super) fn clobber(&mut self, index: Index, clobber: Clobber) {
-        self.written.remove(&index);
+    pub(super) fn clobber(&mut self, index: Index, instr: InstrId, through: String) {
+        let lost_write = self.written.remove(&index).is_some()
+            || self
+                .clobbered
+                .get(&index)
+                .is_some_and(|clobber| clobber.lost_write);
+        let clobber = Clobber {
+            instr,
+            through,
+            lost_write,
+        };
         self.clobbered.insert(index, clobber);
     }
 
     fn unclobbered(&self, instr: InstrId, index: &Index) -> Result<(), EvalError> {
         match self.clobbered.get(index) {
-            Some(Clobber { instr: by, through }) => Err(EvalError::ClobberedRead {
+            Some(Clobber {
+                instr: by, through, ..
+            }) => Err(EvalError::ClobberedRead {
                 instr,
                 tensor: self.tensor.name.clone(),
                 index: index.clone(),

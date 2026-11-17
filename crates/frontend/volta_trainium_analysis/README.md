@@ -202,7 +202,9 @@ scatter, `dst=t.indirect(...)`, is rejected.
 `nc_matmul` takes `accumulate=` as the NKI docs define it (`ir::Accumulation`):
 `False` overwrites `dst`, `True` adds to it (an unwritten element is undefined, so
 an output it reaches is an `UninitializedRead`), and `None`, the
-default, overwrites an element's first write and adds to later ones.
+default, overwrites an element's first write and adds to later ones: first through
+`dst`'s own tile, so bytes another placed tile wrote before it are overwritten, while its
+own sum clobbered since is a `ClobberedRead`.
 `dma_transpose` with `axes=(1, 0)` is a 2-D transpose of one tile region into
 another, the same `Transpose` as `nc_transpose`; other `axes` are errors.
 
@@ -651,7 +653,10 @@ in a software-pipelined `range(0, count + 2)` inside `with nl.no_reorder()` (its
 tile placed by `address=`, including a PSUM tile placed over the accumulator once it
 is dead: `accumulate=(i != 0)` over two contraction chunks, twice, so the second
 pass's `accumulate=False` must overwrite the first's sum, then `engine=` copies and a
-`dma_transpose` (a hand-written `.expected`, `matmul.expected` transposed).
+`dma_transpose` (a hand-written `.expected`, `matmul.expected` transposed); `again`
+recomputes the product with a default-accumulate matmul into PSUM over the dead
+`staged` tile's bytes, which it must overwrite (as nkilib's conv3d reuses its PSUM banks).
+Nothing orders that reuse but placement, so the fixture races under `PlacedTiles::ByTensor`.
 `execution_error/placement_errors.py` holds kernels `trainium/rejected_tests.rs` expects to fail:
 a read of the bytes a `bfloat16` tile overwrote in one column of a `float32` one
 (`ClobberedRead`, at exactly that column), `accumulate=True` into unwritten PSUM copied out, a

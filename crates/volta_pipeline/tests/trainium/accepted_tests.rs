@@ -380,7 +380,7 @@ fn the_placed_tiles_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
         "success/placed_tiles",
         "kernel",
-        &[("a_t", &[4, 2]), ("b", &[4, 3])],
+        &[("a_t", &[4, 2]), ("b", &[4, 3]), ("again", &[2, 3])],
     );
 }
 
