@@ -100,6 +100,10 @@ and execution see only `nki.isa`:
 | `t = nl.transpose(x)` | PSUM `[F, P]` | `nc_transpose` |
 | `b = nl.broadcast_to(x, shape)` | SBUF `shape` | `tensor_copy(src=nl.broadcast_to(x, shape))` |
 
+`t = nl.shared_identity_matrix(n, dtype=...)` declares an `n` x `n` SBUF tile and sets it to
+the identity (`LoweredInstr::Identity`, `.ir`'s `identity`); the docs place the constant in
+shared HBM, but every nkilib caller uses it as an on-chip matmul or transpose operand. The
+tracer also takes `dst=`, writing an existing tile.
 `t = nl.zeros(shape, dtype, buffer=nl.sbuf)` declares an on-chip tile and a `memset` of it
 to zero, so a later `nc_matmul` into it accumulates onto zeros: the accumulator
 v3 and v4 contract into over a loop. `nl.load` reads and `nl.store` writes device
@@ -677,6 +681,8 @@ through another: a `ClobberedRead` under `evaluate`, the value written under
 matmul with `tile_position`/`tile_size`.
 `success/refilled_gap.py` evicts a PSUM tile whose last columns no matmul wrote and copies
 out only its written ones, the rest from a zeroed tile (a hand-checked `.expected`).
+`success/identity_transpose.py` transposes a 2 x 3 tile by a matmul against
+`nl.shared_identity_matrix(2)` (a hand-checked `.expected`).
 `success/access_patterns.py` transposes each row's 2 x 3 matrix into a 3-D
 tile through a strided HBM view, sums it over `axis=(2,)` and copies a column out
 through a tile view with an offset, and computes `t[:, 0, :].T @ t` by a matmul whose

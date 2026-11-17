@@ -86,7 +86,9 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
         LoweredInstr::Mov { dst, src, .. } => {
             vec![access(Mode::Read, src), access(Mode::Write, dst)]
         }
-        LoweredInstr::Memset { dst, .. } => vec![access(Mode::Write, dst)],
+        LoweredInstr::Memset { dst, .. } | LoweredInstr::Identity { dst } => {
+            vec![access(Mode::Write, dst)]
+        }
         LoweredInstr::Gather { dst, data, index } => vec![
             access(Mode::Read, data),
             access(Mode::Read, index),

@@ -176,6 +176,12 @@ impl<'a> Interpreter<'a> {
                     writes.push(Write::at(dst, [p, f], value));
                 }
             }
+            LoweredInstr::Identity { dst } => {
+                for [p, f] in elements(dst) {
+                    let value = self.arena.int(i64::from(p == f));
+                    writes.push(Write::at(dst, [p, f], value));
+                }
+            }
             LoweredInstr::Arith { op, dst, lhs, rhs } => {
                 for at in elements(dst) {
                     let a = self.read(instr, lhs, at)?;

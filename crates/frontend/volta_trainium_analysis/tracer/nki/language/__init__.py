@@ -103,6 +103,19 @@ def zeros(shape, dtype, buffer=sbuf, name=None):
     return tile
 
 
+def shared_identity_matrix(n, dtype=None, dst=None, **kwargs):
+    """The `n` x `n` identity: written into `dst`, else into a new SBUF tile, where every
+    kernel calling it without `dst` uses it (as a matmul or transpose operand)."""
+    if kwargs:
+        raise Unsupported(
+            f"`nl.shared_identity_matrix`'s `{next(iter(kwargs))}` is not supported"
+        )
+    n = non_negative(n, "`nl.shared_identity_matrix`'s size")
+    tile = declare_tile((n, n), dtype, "sbuf") if dst is None else dst
+    _trace.TRACE.instruction("shared_identity_matrix", {"dst": operand("dst", tile)})
+    return tile
+
+
 def _buffer(buffer):
     if buffer not in ON_CHIP:
         raise Unsupported(

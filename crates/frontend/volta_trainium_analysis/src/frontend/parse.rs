@@ -2104,7 +2104,8 @@ fn assertion(test: Expr, trace: &mut Trace, frame: &Frame, line: usize) -> Resul
     Ok(())
 }
 
-/// The calls that declare a new tensor: `nl.ndarray`, `nl.zeros` and the
+/// The calls that declare a new tensor: `nl.ndarray`, `nl.zeros`,
+/// `nl.shared_identity_matrix` and the
 /// `nki.language` functions returning a tile. `target`, qualified in its frame, names the
 /// tensor; the caller binds it. `None` if `callee` is none of them.
 fn tensor_call(
@@ -2118,6 +2119,7 @@ fn tensor_call(
     let tensor = match callee.member_of(NKI_LANGUAGE) {
         Some("ndarray") => declaration(target, &call, trace, frame, line)?,
         Some("zeros") => zeros(target, &call, trace, frame, line)?,
+        Some("shared_identity_matrix") => identity(target, &call, trace, frame, line)?,
         _ => match TileFunction::of(callee) {
             Some(function) => tile_call(target, function, call, trace, frame, line)?,
             None => return Ok(None),
@@ -2127,8 +2129,10 @@ fn tensor_call(
 }
 
 fn is_tensor_call(callee: &Value) -> bool {
-    matches!(callee.member_of(NKI_LANGUAGE), Some("ndarray" | "zeros"))
-        || TileFunction::of(callee).is_some()
+    matches!(
+        callee.member_of(NKI_LANGUAGE),
+        Some("ndarray" | "zeros" | "shared_identity_matrix")
+    ) || TileFunction::of(callee).is_some()
 }
 
 /// `target = nl.ndarray(shape, dtype, buffer=...)`: an HBM tensor of any rank in
@@ -2220,6 +2224,39 @@ fn zeros(
         operands: operands
             .map(|(keyword, operand)| (keyword.to_string(), operand))
             .into(),
+        origin: trace.origin.clone(),
+    }));
+    Ok(tile)
+}
+
+/// `target = nl.shared_identity_matrix(n, dtype=...)`: an `n` x `n` SBUF tile set to the
+/// identity, as the tracer declares it.
+fn identity(
+    target: String,
+    call: &Call,
+    trace: &mut Trace,
+    frame: &Frame,
+    line: usize,
+) -> Result<TensorName, ParseError> {
+    let [size, dtype] = arguments(call, ["n", "dtype"], 2, trace, frame, line)?;
+    let [size, dtype] = [size, dtype].map(|value| value.expect("required"));
+    let Value::Int(size) = size else {
+        bail!(line, "`{}`'s size must be an integer", call.callee);
+    };
+    let Ok(size) = u64::try_from(size) else {
+        bail!(line, "`{}`'s size must be positive", call.callee);
+    };
+    let tile = declare_tile(
+        target,
+        tile_shape(&[size, size], line)?,
+        read_dtype(dtype, line)?,
+        Buffer::Sbuf,
+        None,
+        trace,
+    );
+    trace.body.push(Statement::Instruction(Instruction {
+        opcode: "shared_identity_matrix".into(),
+        operands: [("dst".to_string(), Operand::Tensor(tile.clone()))].into(),
         origin: trace.origin.clone(),
     }));
     Ok(tile)

@@ -1,0 +1,12 @@
+kernel kernel(a, out)
+  a: hbm[2, 3]
+  out: hbm[3, 2]
+  x: sbuf[2, 3]
+  ident: sbuf[2, 2]
+  acc: psum[3, 2]
+  t: sbuf[3, 2]
+  x = dma(a)
+  ident = identity
+  acc = matmul(x, ident)
+  t = mov(acc)
+  out = dma(t)
