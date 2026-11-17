@@ -155,7 +155,8 @@ dropped, as are `nc_matmul`'s `tile_position` and `tile_size`, a placement on th
 engine's array; any other mode is `StatementError::UnsupportedDgeMode`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
-`nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity, `nl.sqrt`, `nl.abs`); a new member
+`nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity, `nl.sqrt`, `nl.abs`,
+`nl.reciprocal`); a new member
 means a variant in the enum's
 `ALL` array, not a case in lowering. Binary ops take their operands in NKI's
 order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
@@ -168,8 +169,8 @@ consecutive elements of its `[partitions, free]` view, seeded with the run's fir
 element, so `nl.maximum` needs no `-inf`. Reducing every free axis leaves one element
 per partition, `t[:, 0:1]` or `t[:, 0]`; `negate=True` negates the result
 (`ir::Sign`). `reciprocal` is elementwise `1 / x`: it lowers to an `Activation` of
-`ActivationFunc::Reciprocal`, which is outside `ALL`, so `activation`'s `op` cannot
-name it.
+`ActivationFunc::Reciprocal`, which `activation`'s `op` may also name: its docs do not
+list it, but nkilib's kernels (`ssd`, the norms) pass it.
 
 `activation` computes `op(data * scale + bias)`, as its docs' pseudo-code does, `scale`
 and `bias` optional operands broadcast like a `tensor_scalar` one (a literal or a
@@ -676,7 +677,8 @@ row-sum reduction), its running row sums with `tensor_scalar_cumulative` (from z
 transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a generated
 `.expected`).
 `success/norm_ops.py` covers `nl.abs` and `nl.sqrt`, a `keepdims` `tensor_reduce` under
-`nl.max` and `tensor_partition_reduce`, as nkilib's foreach norms use them.
+`nl.max` and `tensor_partition_reduce`, as nkilib's foreach norms use them, and an
+`activation` with `op=nl.reciprocal`.
 `success/aliased_tiles.py` writes through one placed `float32` tile and reads the same bytes
 through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.

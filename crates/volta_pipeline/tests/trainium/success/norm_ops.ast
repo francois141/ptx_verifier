@@ -1,4 +1,4 @@
-kernel kernel(a: [2, 4], out: [1, 1])
+kernel kernel(a: [2, 4], out: [1, 1], inv: [1, 1])
   x: sbuf[2, 4] of a.dtype
   dma_copy(dst=x, src=a)
   activation(data=x, dst=x, op=nki.language.abs)
@@ -9,3 +9,6 @@ kernel kernel(a: [2, 4], out: [1, 1])
   root: sbuf[1, 1] of float32
   activation(data=total, dst=root, op=nki.language.sqrt)
   dma_copy(dst=out, src=root)
+  inverse: sbuf[1, 1] of float32
+  activation(data=root, dst=inverse, op=nki.language.reciprocal)
+  dma_copy(dst=inv, src=inverse)

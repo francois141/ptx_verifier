@@ -92,7 +92,7 @@ fn the_norm_ops_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(
         "success/norm_ops",
         "kernel",
-        &[("a", &[2, 4]), ("out", &[1, 1])],
+        &[("a", &[2, 4]), ("out", &[1, 1]), ("inv", &[1, 1])],
     );
 }
 
