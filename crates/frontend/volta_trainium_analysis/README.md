@@ -38,7 +38,10 @@ the call shapes, and prints the trace as JSON, which `frontend::trace` validates
   instructions exactly as the parser's rewrites do (the table above). A tensor is named
   after its assignment target, read from the calling frame's position in its source
   (`name=` overrides it), prefixed `function[call].` for each helper call it is declared
-  in and suffixed by each enclosing NKI loop's index, then `~n` if taken.
+  in and suffixed by each enclosing NKI loop's index, then `~n` if taken. The tensor the
+  kernel returns takes the name of the kernel's one variable bound to it (read from its
+  frame on return), so an output a helper declared is named as the parser names a tensor
+  a helper returns.
 - Calling any `nisa.<opcode>` records that instruction, its operands by keyword
   (positionally only where the parser's `POSITIONAL` allows), for lowering to accept or
   reject; any other `nl`/`nisa` member (`nl.add`, `nisa.engine.vector`) is a `Member`

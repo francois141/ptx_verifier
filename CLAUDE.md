@@ -633,7 +633,7 @@ rational, since only f64-round-tripping reals print as decimals.
 `frontend::trace::Tracer` runs a kernel call under CPython instead (`tracer/trace.py`
 with a stand-in `nki` package, `python -I`), giving the same `ast::Kernel` from a JSON
 trace: every `nisa.<opcode>` call is recorded, tensors are named after their assignment
-targets, NKI loops and `no_reorder` blocks are recorded in each `Origin` (plain Python loops
+targets (the returned one after the kernel's variable holding it), NKI loops and `no_reorder` blocks are recorded in each `Origin` (plain Python loops
 are not, which `in_different_affine_iterations` does not need), and a failure is a
 `KernelFailure` (`Unsupported`, `Kernel`, `Assertion`, `Python`) at its kernel line. Its
 interpreter is `$VOLTA_PYTHON` (else `python3`), which needs numpy (`just python-env`,

@@ -87,17 +87,54 @@ def trace(request, _trace):
 
     params, arguments = bind(function, request, _trace)
     trace.kernel_code = function.__code__
-    returned = function(**arguments)
+    returned, binding = call_kernel(function, arguments)
     if returned is not None and not isinstance(returned, _trace.Tensor):
         raise _trace.Unsupported(
             f"a kernel returning `{type(returned).__name__}` is not supported"
         )
+    body = trace.body
+    if returned is not None and binding is not None and binding not in trace.names:
+        body = renamed(body, returned.name, binding)
+        returned.name = binding
     return {
         "name": request["kernel"],
         "params": params,
-        "body": trace.body,
+        "body": body,
         "returned": None if returned is None else returned.name,
     }
+
+
+def call_kernel(function, arguments):
+    """The kernel's return value, and the name of the kernel's own variable bound to it when
+    it returns: the output array's name when a helper declared the tensor, as the parser
+    names a tensor a helper returns after its caller's binding."""
+    seen = {}
+
+    def profile(frame, event, arg):
+        if event == "return" and frame.f_code is function.__code__:
+            seen["locals"] = dict(frame.f_locals)
+
+    previous = sys.getprofile()
+    sys.setprofile(profile)
+    try:
+        returned = function(**arguments)
+    finally:
+        sys.setprofile(previous)
+    names = [
+        name for name, value in seen.get("locals", {}).items() if value is returned
+    ]
+    return returned, (names[0] if len(names) == 1 else None)
+
+
+def renamed(value, old, new):
+    """`value`, a trace's JSON, with every string equal to tensor name `old` replaced by `new`."""
+    if isinstance(value, str):
+        return new if value == old else value
+    if isinstance(value, list):
+        return [renamed(item, old, new) for item in value]
+    if isinstance(value, dict):
+        return {key: renamed(item, old, new) for key, item in value.items()}
+    return value
 
 
 def load_module(file, search_path):
