@@ -1,0 +1,18 @@
+{
+  "description": "PyTorch's Softshrink over 64 f32 elements in one CUDA block, lambd = 0.5",
+  "kernel": "softshrink",
+  "block": 64,
+  "grid": 1,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "y"},
+    {"name": "lambd", "float": 0.5},
+    {"name": "n", "int": 64}
+  ],
+  "spec": "softshrink.spec",
+  "dims": {"N": 64}
+}

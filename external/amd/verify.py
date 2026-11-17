@@ -7,8 +7,9 @@ A PREFIX runs only the cases whose launch file starts with it (`activations`), a
 only those the canonical solver (`solver`) or Lean (`lean`) decides. Each case is a
 kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a launch file
 `composable_kernel/<case>.launch.json` naming its spec, CK's activations under
-`composable_kernel/activations*/`; PyTorch's continuous piecewise activations are likewise under
-`piecewise_activations/`, which the cases name from this directory. Each case prints one line when it finishes: PASS if its
+`composable_kernel/activations*/`; PyTorch's continuous piecewise activations are likewise in
+`external/activation/`, the cases named `activation/<case>`, compiled for AMD and, as
+`activation/<case>_ptx`, from CUDA to PTX. Each case prints one line when it finishes: PASS if its
 kernel verified (ACCEPT, or every output proved in Lean), else FAIL, noting when a verdict
 other than ACCEPT is the case's expected one, such as a known bug's REJECT. `--verbose` also
 prints Volta's log of each case as it runs, then a summary.
@@ -38,6 +39,7 @@ import volta
 
 AMD_ROOT = Path(__file__).resolve().parent
 CK_ROOT = AMD_ROOT / "composable_kernel"
+ACTIVATION_ROOT = AMD_ROOT.parent / "activation"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
@@ -69,12 +71,17 @@ class Prove:
 
 @dataclass(frozen=True)
 class Case:
-    """`launch` and `kernel` are paths without extension, from `root`."""
+    """`launch` and `kernel` are paths without extension, from `root`; `extension` is the
+    kernel's, which chooses its ISA."""
 
     launch: str
     kernel: str
     check: Solve | Prove
     root: Path = CK_ROOT
+    extension: str = ".s"
+
+    def name(self) -> str:
+        return self.launch if self.root == CK_ROOT else f"{self.root.name}/{self.launch}"
 
     def checker(self) -> str:
         return "solver" if isinstance(self.check, Solve) else "lean"
@@ -93,6 +100,21 @@ class Outcome:
     expected: bool
     detail: str
 
+
+# Hardswish is compiled three ways: plain and -funsafe-math-optimizations keep the selects,
+# -ffast-math gives native max and min instructions.
+PIECEWISE = (
+    "hardtanh",
+    "leaky_relu",
+    "hardsigmoid",
+    "hardswish",
+    "hardswish_fast",
+    "hardswish_nans",
+    "softshrink",
+    "elu",
+    "celu",
+    "selu",
+)
 
 CASES = (
     Case("ck_gemm", "ck_gemm", Solve("ACCEPT")),
@@ -189,69 +211,10 @@ CASES = (
         "math_double/ck_tile_math_double",
         Solve("REJECT"),
     ),
-    # PyTorch's continuous piecewise activations.
-    Case(
-        "piecewise_activations/hardtanh",
-        "piecewise_activations/hardtanh",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/leaky_relu",
-        "piecewise_activations/leaky_relu",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/hardsigmoid",
-        "piecewise_activations/hardsigmoid",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    # Hardswish compiled three ways: plain and -funsafe-math-optimizations keep the selects,
-    # -ffast-math gives native v_max and v_min.
-    Case(
-        "piecewise_activations/hardswish",
-        "piecewise_activations/hardswish",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/hardswish_fast",
-        "piecewise_activations/hardswish_fast",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/hardswish_nans",
-        "piecewise_activations/hardswish_nans",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/softshrink",
-        "piecewise_activations/softshrink",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/elu",
-        "piecewise_activations/elu",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/celu",
-        "piecewise_activations/celu",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
-    Case(
-        "piecewise_activations/selu",
-        "piecewise_activations/selu",
-        Solve("ACCEPT"),
-        AMD_ROOT,
-    ),
+    # PyTorch's continuous piecewise activations, each compiled for AMD and, as `<op>_ptx`, to
+    # PTX.
+    *(Case(op, op, Solve("ACCEPT"), ACTIVATION_ROOT) for op in PIECEWISE),
+    *(Case(f"{op}_ptx", op, Solve("ACCEPT"), ACTIVATION_ROOT, ".ptx") for op in PIECEWISE),
 )
 
 
@@ -314,7 +277,7 @@ def solve(kernel: Path, launch: Launch, check: Solve) -> Outcome:
 
 
 def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> Outcome:
-    directory = LEAN_DIR / case.launch
+    directory = LEAN_DIR / case.name()
     arguments = {
         "kernel": launch.kernel,
         "spec": launch.spec,
@@ -391,13 +354,13 @@ def main() -> int:
 
     results = []
     for case in CASES:
-        if not case.launch.startswith(prefix):
+        if not case.name().startswith(prefix):
             continue
         if args.checker and case.checker() != args.checker:
             continue
         if args.verbose:
-            print(f"\n== {case.launch}: {case.describe()}", flush=True)
-        kernel = case.root / f"{case.kernel}.s"
+            print(f"\n== {case.name()}: {case.describe()}", flush=True)
+        kernel = case.root / f"{case.kernel}{case.extension}"
         launch = load_launch(case.root / f"{case.launch}.launch.json")
         start = time.monotonic()
         try:
@@ -409,7 +372,7 @@ def main() -> int:
             outcome = Outcome(False, False, f"{type(error).__name__}: {error}")
 
         seconds = time.monotonic() - start
-        line = f"{status(outcome.verified)} {case.launch}: {outcome.detail} ({seconds:.1f}s)"
+        line = f"{status(outcome.verified)} {case.name()}: {outcome.detail} ({seconds:.1f}s)"
         print(line, flush=True)
         results.append((outcome.expected, line))
 

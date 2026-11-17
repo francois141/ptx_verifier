@@ -1,0 +1,19 @@
+{
+  "description": "PyTorch's CELU over 64 f32 elements in one CUDA block, alpha = 2",
+  "kernel": "celu",
+  "block": 64,
+  "grid": 1,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "y"},
+    {"name": "alpha", "float": 2.0},
+    {"name": "inv_alpha", "float": 0.5},
+    {"name": "n", "int": 64}
+  ],
+  "spec": "celu.spec",
+  "dims": {"N": 64}
+}

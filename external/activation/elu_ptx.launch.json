@@ -1,0 +1,18 @@
+{
+  "description": "PyTorch's ELU over 64 f32 elements in one CUDA block, alpha = 1",
+  "kernel": "elu",
+  "block": 64,
+  "grid": 1,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "y"},
+    {"name": "alpha", "float": 1.0},
+    {"name": "n", "int": 64}
+  ],
+  "spec": "elu.spec",
+  "dims": {"N": 64}
+}

@@ -1,0 +1,18 @@
+{
+  "description": "PyTorch's LeakyReLU over 64 f32 elements in one CUDA block, negative_slope = f32(0.01)",
+  "kernel": "leaky_relu",
+  "block": 64,
+  "grid": 1,
+  "arrays": [
+    {"name": "x", "kind": "in", "dtype": "f32", "shape": [64]},
+    {"name": "y", "kind": "out", "dtype": "f32", "shape": [64]}
+  ],
+  "params": [
+    {"ptr": "x"},
+    {"ptr": "y"},
+    {"name": "negval", "float": 0.009999999776482582},
+    {"name": "n", "int": 64}
+  ],
+  "spec": "leaky_relu.spec",
+  "dims": {"N": 64}
+}

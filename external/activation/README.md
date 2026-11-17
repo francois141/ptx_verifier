@@ -1,9 +1,11 @@
 # PyTorch's piecewise activations
 
 PyTorch's continuous piecewise activations (`torch.nn`), each applied to 64 fp32 elements, one
-per work-item of one 64-work-item workgroup. Every kernel is written as PyTorch's CUDA functor
-writes it, in a header-free `<kernel>.hip` compiled to `<kernel>.s`; every case is a launch file
-`<case>.launch.json` and a spec. `just piecewise` runs them through `../verify.py`.
+per work-item of one 64-work-item workgroup or CUDA block. Every kernel is written as PyTorch's
+CUDA functor writes it, twice: a header-free `<kernel>.hip` compiled to `<kernel>.s` for AMD, and
+a header-free `<kernel>.cu` compiled to `<kernel>.ptx`. Every case is a launch file
+`<case>.launch.json` (AMD) or `<case>_ptx.launch.json` (PTX) and the spec they share.
+`just piecewise` runs both through `../amd/verify.py`.
 
 A kernel compiles these activations to selects, which the canonical solver cannot match with a
 spec's `max` and `min`. One rewrite per activation in
@@ -48,5 +50,20 @@ for hip in *.hip; do
   esac
   clang -x hip -std=c++17 --offload-arch=gfx950:xnack- --offload-device-only -nogpulib \
     -nogpuinc -O2 -g0 -fno-verbose-asm $flags -S "$hip" -o "${hip%.hip}.s"
+done
+```
+
+The `.cu` files compile to PTX with the same clang (21.1.8), `hardswish_fast.cu` and
+`hardswish_nans.cu` with the same flags:
+
+```sh
+for cu in *.cu; do
+  case "$cu" in
+    hardswish_fast.cu) flags=-ffast-math ;;
+    hardswish_nans.cu) flags=-funsafe-math-optimizations ;;
+    *) flags= ;;
+  esac
+  clang -x cuda --cuda-device-only --cuda-gpu-arch=sm_80 -nocudainc -nocudalib -O2 $flags \
+    -S "$cu" -o "${cu%.cu}.ptx"
 done
 ```

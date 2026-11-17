@@ -134,9 +134,9 @@ activation_lean *args:
     uv run --reinstall-package volta --package volta python external/amd/verify.py --checker lean {{args}} activations
 
 # `--verbose` prints each case's log.
-# Check PyTorch's piecewise activations in external/amd/piecewise_activations against their specs
+# Check PyTorch's piecewise activations in external/activation against their specs
 piecewise *args:
-    uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} piecewise_activations
+    uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} activation/
 
 # ===== Trainium ===============================================================
 
