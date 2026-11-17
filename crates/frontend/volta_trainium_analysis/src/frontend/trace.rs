@@ -1,7 +1,7 @@
 //! Kernels traced under CPython: `tracer/trace.py` runs a kernel call with a stand-in
 //! `nki` package that records each declaration and `nki.isa` call, and prints the
-//! kernel in the JSON wire form this module reads into an `ast::Kernel`. All of Python
-//! is then available to kernel code, as it is to NKI's own tracer.
+//! kernel in the JSON wire form this module reads into an `ast::Kernel`. Kernel code may
+//! use all of Python, more than NKI's own frontends accept.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
