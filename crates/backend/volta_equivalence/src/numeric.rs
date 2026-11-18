@@ -130,6 +130,7 @@ fn eval_inner(
         ExprNode::BitOr(a, b) => ((ev(*a, memo)? as i64) | (ev(*b, memo)? as i64)) as f64,
         ExprNode::BitXor(a, b) => ((ev(*a, memo)? as i64) ^ (ev(*b, memo)? as i64)) as f64,
         ExprNode::BitNot(a) => !(ev(*a, memo)? as i64) as f64,
+        ExprNode::Popc(a) => (ev(*a, memo)? as i64).count_ones() as f64,
         ExprNode::Shl(a, b) => ((ev(*a, memo)? as i64).wrapping_shl(ev(*b, memo)? as u32)) as f64,
         ExprNode::Shr(a, b) => ((ev(*a, memo)? as i64).wrapping_shr(ev(*b, memo)? as u32)) as f64,
         ExprNode::LShr(a, b) => ((ev(*a, memo)? as u64).wrapping_shr(ev(*b, memo)? as u32)) as f64,

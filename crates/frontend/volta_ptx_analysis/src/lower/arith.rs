@@ -5,9 +5,9 @@
 use crate::frontend::ast::{
     self, AbsInstr, AddInstr, BfeInstr, BfiInstr, CopysignInstr, CvtInstr, CvtRounding, DivInstr,
     Ex2Instr, FmaInstr, FpRound, Lg2Instr, LogicInstr, Lop3Instr, MadInstr, MaxInstr, MinInstr,
-    MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PrmtInstr, RcpInstr, RemInstr,
-    RsqrtInstr, ScalarType, SelpInstr, SetpInstr, ShfInstr, ShiftInstr, SqrtInstr, SubInstr,
-    TanhInstr,
+    MulInstr, MulMode, NegInstr, NotInstr, Operand as AstOperand, PopcInstr, PrmtInstr, RcpInstr,
+    RemInstr, RsqrtInstr, ScalarType, SelpInstr, SetpInstr, ShfInstr, ShiftInstr, SqrtInstr,
+    SubInstr, TanhInstr,
 };
 
 use crate::ir::types::ScalarTypeExt;
@@ -1565,6 +1565,28 @@ pub(super) fn lower_not(
             dst: dst_typed.reg,
             src: src_typed.operand,
             ty: not.ty,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// `popc.{b32,b64} d, a`: `d` is a 32-bit count whatever `a`'s width.
+pub(super) fn lower_popc(
+    ctx: &mut LoweringContext,
+    popc: &PopcInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let dst_typed = ctx.resolve_dst_typed(&popc.dst)?;
+    let src_typed = ctx.resolve_operand_typed(&popc.src)?;
+    ctx.check_dst_type(&dst_typed, ScalarType::U32, "popc")?;
+    ctx.check_operand_type(&src_typed, popc.ty, "popc")?;
+    ctx.emit(
+        LoweredInstr::UnaryOp {
+            op: UnaryOp::Popc,
+            dst: dst_typed.reg,
+            src: src_typed.operand,
+            ty: popc.ty,
         },
         predicate,
     )?;

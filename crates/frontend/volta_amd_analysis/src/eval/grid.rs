@@ -160,6 +160,10 @@ impl Copier<'_> {
                 let (a, b) = self.pair(a, b);
                 self.target.bit_xor(ty(), a, b)
             }
+            ExprNode::Popc(a) => {
+                let a = self.expr(a);
+                self.target.popc(ty(), a)
+            }
             ExprNode::BitNot(a) => {
                 let a = self.expr(a);
                 self.target.bit_not(ty(), a)

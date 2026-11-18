@@ -178,6 +178,7 @@ impl Session {
             ExprNode::BitOr(a, b) => self.uninterp2(side, arena, UninterpOp::BitOr, *a, *b),
             ExprNode::BitXor(a, b) => self.uninterp2(side, arena, UninterpOp::BitXor, *a, *b),
             ExprNode::BitNot(a) => self.uninterp1(side, arena, UninterpOp::BitNot, *a),
+            ExprNode::Popc(a) => self.uninterp1(side, arena, UninterpOp::Popc, *a),
             ExprNode::Shl(a, b) => self.uninterp2(side, arena, UninterpOp::Shl, *a, *b),
             ExprNode::Shr(a, b) => self.uninterp2(side, arena, UninterpOp::Shr, *a, *b),
             ExprNode::LShr(a, b) => self.uninterp2(side, arena, UninterpOp::LShr, *a, *b),

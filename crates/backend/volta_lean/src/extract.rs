@@ -506,6 +506,7 @@ fn render_node(
         | Undefined
         | Rem(..)
         | BitNot(_)
+        | Popc(_)
         | BitAnd(..)
         | BitOr(..)
         | BitXor(..)

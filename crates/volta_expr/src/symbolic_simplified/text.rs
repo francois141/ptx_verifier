@@ -44,6 +44,7 @@ const UNARY: &[(&str, Unary)] = &[
     ("rint", ExprNode::RoundEven),
     ("trunc", ExprNode::Trunc),
     ("bitnot", ExprNode::BitNot),
+    ("popc", ExprNode::Popc),
     ("not", ExprNode::Not),
     ("tofloat", ExprNode::ToFloat),
 ];
@@ -100,6 +101,7 @@ fn spell(node: &ExprNode) -> (&'static str, Vec<Operand>) {
         RoundEven(a) => ("rint", vec![Child(*a)]),
         Trunc(a) => ("trunc", vec![Child(*a)]),
         BitNot(a) => ("bitnot", vec![Child(*a)]),
+        Popc(a) => ("popc", vec![Child(*a)]),
         Not(a) => ("not", vec![Child(*a)]),
         ToFloat(a) => ("tofloat", vec![Child(*a)]),
         Add(a, b) => ("add", vec![Child(*a), Child(*b)]),

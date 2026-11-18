@@ -219,6 +219,7 @@ pub(crate) fn lower_operation(
             }
         }
         BitNot(a) => target.bit_not(child(a)),
+        Popc(a) => target.popc(child(a)),
         Shl(a, b) => target.shl(child(a), child(b)),
         Shr(a, b) => target.shr(child(a), child(b)),
         LShr(a, b) => target.lshr(child(a), child(b)),

@@ -162,6 +162,8 @@ pub enum UnaryOp {
     Abs,
     // Bitwise
     Not,
+    /// Population count: the number of set bits.
+    Popc,
     // Floating-point
     Rcp,
     Sqrt,

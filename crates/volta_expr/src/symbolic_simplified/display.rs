@@ -141,6 +141,11 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
+            ExprNode::Popc(a) => {
+                write!(f, "popc(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ")")
+            }
             ExprNode::Shl(a, b) => {
                 write!(f, "(")?;
                 self.fmt_expr(*a, f)?;

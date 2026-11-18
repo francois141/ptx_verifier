@@ -426,6 +426,14 @@ impl ExprArena {
         self.push(ExprNode::BitNot(a))
     }
 
+    /// Population count, folding a non-negative constant, whose set bits no width changes.
+    pub fn popc(&mut self, a: ExprId) -> ExprId {
+        if let ExprNode::IntConst(x @ 0..) = *self.node(a) {
+            return self.int(i64::from(x.count_ones()));
+        }
+        self.push(ExprNode::Popc(a))
+    }
+
     /// Left shift with constant folding.
     pub fn shl(&mut self, a: ExprId, b: ExprId) -> ExprId {
         match (self.node(a), self.node(b)) {

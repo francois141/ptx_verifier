@@ -216,6 +216,8 @@ pub enum ExprNode {
     BitOr(ExprId, ExprId),
     BitXor(ExprId, ExprId),
     BitNot(ExprId),
+    /// Population count of an integer word: the number of its set bits.
+    Popc(ExprId),
     Shl(ExprId, ExprId),
     Shr(ExprId, ExprId),
     LShr(ExprId, ExprId),
@@ -276,6 +278,7 @@ impl ExprNode {
             | RoundEven(a)
             | Trunc(a)
             | BitNot(a)
+            | Popc(a)
             | Not(a)
             | ToFloat(a)
             | SymbolicRead { index: a, .. } => f(*a),

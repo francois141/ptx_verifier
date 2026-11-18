@@ -36,6 +36,7 @@ fn notation(node: &ExprNode) -> Option<Notation> {
         Or(..) => Infix("||"),
         Neg(_) => Prefix("-"),
         BitNot(_) => Prefix("~"),
+        Popc(_) => Call("popc"),
         Not(_) => Prefix("!"),
         Exp(_) => Call("exp"),
         Exp2(_) => Call("exp2"),

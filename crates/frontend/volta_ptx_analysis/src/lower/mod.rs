@@ -31,8 +31,8 @@ use crate::ir::{BarrierAlignment, BinOp, InstrId, LoweredInstr, LoweredProgram, 
 use arith::{
     lower_abs, lower_add, lower_bfe, lower_bfi, lower_copysign, lower_cvt, lower_div, lower_ex2,
     lower_fma, lower_lg2, lower_logic, lower_lop3, lower_mad, lower_max, lower_min, lower_mul,
-    lower_neg, lower_not, lower_prmt, lower_rcp, lower_rem, lower_rsqrt, lower_selp, lower_setp,
-    lower_shf, lower_shift, lower_sqrt, lower_sub, lower_tanh,
+    lower_neg, lower_not, lower_popc, lower_prmt, lower_rcp, lower_rem, lower_rsqrt, lower_selp,
+    lower_setp, lower_shf, lower_shift, lower_sqrt, lower_sub, lower_tanh,
 };
 use clc::{lower_clc_query_cancel, lower_clc_try_cancel};
 use context::{LocalParamSlot, LoweringContext, unsupported};
@@ -334,6 +334,7 @@ fn lower_parsed_instruction(
         ParsedInstruction::Or(logic) => lower_logic(ctx, BinOp::Or, "or", logic, predicate),
         ParsedInstruction::Xor(logic) => lower_logic(ctx, BinOp::Xor, "xor", logic, predicate),
         ParsedInstruction::Not(not) => lower_not(ctx, not, predicate),
+        ParsedInstruction::Popc(popc) => lower_popc(ctx, popc, predicate),
         ParsedInstruction::Shl(shift) => lower_shift(ctx, BinOp::Shl, "shl", shift, predicate),
         ParsedInstruction::Shr(shift) => lower_shift(ctx, BinOp::Shr, "shr", shift, predicate),
         ParsedInstruction::Shf(shf) => lower_shf(ctx, shf, predicate),

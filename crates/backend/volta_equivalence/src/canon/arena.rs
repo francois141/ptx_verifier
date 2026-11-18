@@ -83,6 +83,7 @@ pub enum UninterpOp {
     BitOr,
     BitXor,
     BitNot,
+    Popc,
     Shl,
     Shr,
     LShr,

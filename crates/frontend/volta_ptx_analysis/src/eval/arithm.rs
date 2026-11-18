@@ -292,7 +292,7 @@ impl<'p> Interpreter<'p> {
     ) -> EvalResult<ExprId> {
         // Re-read the operand as `ty` (signed width, float bits decoded) -
         // except for `not`, a pure bit operation.
-        let a = if matches!(op, UnaryOp::Not) {
+        let a = if matches!(op, UnaryOp::Not | UnaryOp::Popc) {
             a
         } else {
             self.canon_operand(pc, ty, a)?
@@ -326,6 +326,7 @@ impl<'p> Interpreter<'p> {
                     }
                 }
             }
+            UnaryOp::Popc => self.arena.popc(expr_type(ty), a),
             UnaryOp::Rcp => self.arena.rcp(expr_type(ty), a),
             UnaryOp::Sqrt => self.arena.sqrt(expr_type(ty), a),
             UnaryOp::Rsqrt => self.arena.rsqrt(expr_type(ty), a),

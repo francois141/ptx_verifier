@@ -179,6 +179,10 @@ impl ExprArena {
         self.operation(ty, ExprNode::BitNot(a))
     }
 
+    pub fn popc(&mut self, ty: Type, a: ExprId) -> ExprId {
+        self.operation(ty, ExprNode::Popc(a))
+    }
+
     pub fn shl(&mut self, ty: Type, a: ExprId, b: ExprId) -> ExprId {
         self.operation(ty, ExprNode::Shl(a, b))
     }

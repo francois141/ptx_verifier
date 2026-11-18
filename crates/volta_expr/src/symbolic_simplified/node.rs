@@ -416,6 +416,8 @@ pub enum ExprNode {
     BitXor(ExprId, ExprId),
     /// Bitwise NOT: ~a
     BitNot(ExprId),
+    /// Population count of an integer word: the number of its set bits.
+    Popc(ExprId),
     /// Left shift: a << b
     Shl(ExprId, ExprId),
     /// Arithmetic right shift: a >> b (sign-extending)
@@ -508,6 +510,7 @@ impl ExprNode {
             | ExprNode::RoundEven(a)
             | ExprNode::Trunc(a)
             | ExprNode::BitNot(a)
+            | ExprNode::Popc(a)
             | ExprNode::Not(a)
             | ExprNode::ToFloat(a)
             | ExprNode::SymbolicRead { index: a, .. } => f(*a),
@@ -568,6 +571,7 @@ impl ExprNode {
             RoundEven(a) => RoundEven(f(a)),
             Trunc(a) => Trunc(f(a)),
             BitNot(a) => BitNot(f(a)),
+            Popc(a) => Popc(f(a)),
             Not(a) => Not(f(a)),
             ToFloat(a) => ToFloat(f(a)),
             SymbolicRead { array, index } => SymbolicRead {
@@ -891,6 +895,7 @@ fn structurally_equal_inner(
         | (RoundEven(a1), RoundEven(b1))
         | (Trunc(a1), Trunc(b1))
         | (BitNot(a1), BitNot(b1))
+        | (Popc(a1), Popc(b1))
         | (Not(a1), Not(b1))
         | (ToFloat(a1), ToFloat(b1)) => structurally_equal(a_arena, *a1, b_arena, *b1),
 
