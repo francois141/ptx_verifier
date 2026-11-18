@@ -33,7 +33,10 @@ fn parsed_matmul_spec_matches_a_hand_built_reference() {
     let parsed = volta_spec::parse_spec(MATMUL_SPEC).expect("spec should parse");
     let (env, specs) =
         volta_spec::instantiate(&parsed, &dims(2, 2, 3)).expect("should instantiate");
-    let spec_output = unfold(&specs, &env, 0).expect("should unfold").lower();
+    let spec_output = unfold(&specs, &env, 0)
+        .expect("should unfold")
+        .lower()
+        .unwrap();
 
     let mut arena = ExprArena::new();
     let a = arena.intern_string("A");

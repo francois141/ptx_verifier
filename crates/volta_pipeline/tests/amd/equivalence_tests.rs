@@ -43,7 +43,8 @@ fn check_gemm(
     let dims = HashMap::from([("M".into(), m), ("N".into(), n), ("K".into(), k)]);
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
 
     check_equivalence(
         &reference,
@@ -260,7 +261,8 @@ fn check_ck_fmha(
         include_str!("../../../backend/volta_equivalence/tests/specs/attention_batch_head.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     check_equivalence(
         &reference,
         &actual,
@@ -364,7 +366,8 @@ fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
     let spec = include_str!("../../../backend/volta_equivalence/tests/specs/row_softmax.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     check_equivalence(
         &reference,
         &actual,
@@ -446,7 +449,8 @@ fn check_ck_rmsnorm(rows: u32, row: u32, columns: u32, epsilon: f32) -> Equivale
     let spec = include_str!("../../../backend/volta_equivalence/tests/specs/row_rms_norm.spec");
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     check_equivalence(
         &reference,
         &actual,
@@ -526,7 +530,8 @@ fn check_ck_avgpool2d(
     let dims = avgpool2d_dims(specified);
     let mut reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
 
     // Work-item i of a workgroup owns output 256 * workgroup + i: keep those of the reference.
     let first = 256 * u64::from(workgroup);

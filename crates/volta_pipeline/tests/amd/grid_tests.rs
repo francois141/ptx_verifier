@@ -78,7 +78,7 @@ fn ck_gemm_grid_run_matches_each_tile_run() {
         .verified_outputs();
         let verdict = check_equivalence(
             &expected,
-            &outputs.lower(),
+            &outputs.lower().unwrap(),
             &["C".into()],
             &EquivCheckOptions::default(),
         )
@@ -144,7 +144,13 @@ fn ck_fmha_grid_run_matches_each_head_run() {
             sample: 64,
             ..EquivCheckOptions::default()
         };
-        let verdict = check_equivalence(&expected, &outputs.lower(), &["O".into()], &options).0;
+        let verdict = check_equivalence(
+            &expected,
+            &outputs.lower().unwrap(),
+            &["O".into()],
+            &options,
+        )
+        .0;
         assert!(
             matches!(verdict, EquivalenceVerdict::Equivalent { .. }),
             "head {id:?}: {verdict:?}"

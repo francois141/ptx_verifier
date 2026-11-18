@@ -456,10 +456,14 @@ impl Session {
         let ra = self.ratv_intern(ra);
         let rb = self.canon_value(side, arena, b)?;
         let rb = self.ratv_intern(rb);
-        let p = self.arena.atom_poly(Atom::Uninterp {
+        let mut args = vec![ra, rb];
+        if matches!(
             op,
-            args: vec![ra, rb],
-        });
+            UninterpOp::BitAnd | UninterpOp::BitOr | UninterpOp::BitXor
+        ) {
+            args.sort_by_key(|r| (r.numer.0, r.denom.0));
+        }
+        let p = self.arena.atom_poly(Atom::Uninterp { op, args });
         Ok(RatV::from_rat(self.arena.rat_poly(p)))
     }
 }

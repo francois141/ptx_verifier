@@ -80,8 +80,8 @@ fn symbolic_outputs_are_consumed_without_graph_verification() {
     let a = run(&module, in_out_config(2, 2));
     let b = run(&module, in_out_config(2, 2));
     let outcome = check_output_equivalence(
-        &a.symbolic_outputs().unwrap().lower(),
-        &b.symbolic_outputs().unwrap().lower(),
+        &a.symbolic_outputs().unwrap().lower().unwrap(),
+        &b.symbolic_outputs().unwrap().lower().unwrap(),
         &["out".to_string()],
     )
     .unwrap();

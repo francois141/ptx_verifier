@@ -13,7 +13,7 @@ use volta_pipeline::{GraphBranch, KernelEvidence, verify_kernel};
 use volta_ptx_analysis::frontend::ascii::{AsAscii, AsciiChar};
 use volta_ptx_analysis::frontend::ast::Module;
 use volta_ptx_analysis::frontend::parse;
-use volta_ptx_analysis::{AnalysisConfig, AnalysisParts, OutputsUnavailable, Stats};
+use volta_ptx_analysis::{AnalysisConfig, AnalysisParts, Stats};
 
 /// One kernel after the analysis stage and the graph branch.
 pub(crate) struct KernelSide {
@@ -34,7 +34,8 @@ impl KernelSide {
 
 /// One kernel's analysis artifacts other than its graph.
 pub(crate) struct KernelRun {
-    pub(crate) outputs: Result<SymbolicOutputs, OutputsUnavailable>,
+    /// Why the run has no outputs, when it has none.
+    pub(crate) outputs: Result<SymbolicOutputs, String>,
     pub(crate) stats: Stats,
     pub(crate) op_counts: BTreeMap<&'static str, u64>,
 }
@@ -56,7 +57,9 @@ pub(crate) fn run_kernel(
     } = verified.analysis.into_parts();
     Ok((
         KernelRun {
-            outputs: outputs.map(|outputs| outputs.lower()),
+            outputs: outputs
+                .map_err(|why| why.to_string())
+                .and_then(|outputs| outputs.lower().map_err(|why| why.to_string())),
             stats,
             op_counts,
         },

@@ -42,8 +42,8 @@ impl Frontend for PtxFrontend {
         Ok(KernelRun {
             outputs: parts
                 .outputs
-                .map(|outputs| outputs.lower())
-                .map_err(|why| why.to_string()),
+                .map_err(|why| why.to_string())
+                .and_then(|outputs| outputs.lower().map_err(|why| why.to_string())),
             graph: GraphEvidence::Checked {
                 graph: Box::new(parts.graph),
                 report: Box::new(verified.graph),

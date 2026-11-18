@@ -41,7 +41,8 @@ fn write_challenge(name: &str, arrays: &[ArrayDef], claim: &Claim) -> Result<Str
     let dims = HashMap::from([("N".to_string(), u64::from(common::amd::WORKITEMS))]);
     let baseline = extract_expressions_from_spec(&source, &dims)
         .map_err(|e| e.to_string())?
-        .lower();
+        .lower()
+        .unwrap();
 
     let checked: Vec<String> = baseline.outputs.iter().map(|(a, _)| a.clone()).collect();
 

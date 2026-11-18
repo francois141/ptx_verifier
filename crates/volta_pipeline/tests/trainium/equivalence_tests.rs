@@ -74,7 +74,7 @@ fn against_spec(
     options: &EquivCheckOptions,
 ) -> EquivalenceVerdict {
     let lowered = lower_kernel(parsed).unwrap();
-    let actual = evaluate(&lowered).unwrap().lower();
+    let actual = evaluate(&lowered).unwrap().lower().unwrap();
 
     let dims = dims
         .iter()
@@ -82,7 +82,8 @@ fn against_spec(
         .collect::<HashMap<_, _>>();
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
 
     check_equivalence(&reference, &actual, &[array.into()], options).0
 }
@@ -290,7 +291,7 @@ fn check_attention(kernel: &str, spec: &str, sample: u64) -> EquivalenceVerdict 
 fn check_attention_pair(reference: &str, other: &str, sample: u64) -> EquivalenceVerdict {
     let [reference, other] = [reference, other].map(|kernel| {
         let lowered = lower_kernel(&attention_kernel(kernel)).unwrap();
-        evaluate(&lowered).unwrap().lower()
+        evaluate(&lowered).unwrap().lower().unwrap()
     });
     check_equivalence(&reference, &other, &["kernel_out".into()], &sampled(sample)).0
 }
@@ -431,7 +432,7 @@ fn check_tiled_attention_pair(
 ) -> EquivalenceVerdict {
     let [reference, other] = [reference, other].map(|kernel| {
         let lowered = lower_kernel(&tiled_attention_kernel(kernel, tile_sizes, shape)).unwrap();
-        evaluate(&lowered).unwrap().lower()
+        evaluate(&lowered).unwrap().lower().unwrap()
     });
     check_equivalence(&reference, &other, &["kernel_out".into()], &sampled(sample)).0
 }
@@ -587,7 +588,8 @@ fn nki_attention_tiled_versions_match_attention_and_each_other_on_a_row_of_each_
     let reference = only_rows(
         volta_spec::extract_expressions_from_spec(ATTENTION_SPEC, &dims)
             .unwrap()
-            .lower(),
+            .lower()
+            .unwrap(),
         &QUERY_TILE_ROWS,
     );
     let every_tile = EquivalenceVerdict::Equivalent {
@@ -600,7 +602,10 @@ fn nki_attention_tiled_versions_match_attention_and_each_other_on_a_row_of_each_
     for kernel in TILED {
         let parsed = parse_tiled(ATTENTION_KERNELS, kernel, TileSizes::HARDWARE, shape);
         let actual = only_rows(
-            evaluate(&lower_kernel(&parsed).unwrap()).unwrap().lower(),
+            evaluate(&lower_kernel(&parsed).unwrap())
+                .unwrap()
+                .lower()
+                .unwrap(),
             &QUERY_TILE_ROWS,
         );
         assert_eq!(
@@ -689,7 +694,10 @@ fn matrix_multiplication_with(
     };
     let parsed = parse_kernel_for_call(MATRIX_MULTIPLICATION, &[], kernel, &call)
         .unwrap_or_else(|e| panic!("{kernel}: {e}"));
-    evaluate(&lower_kernel(&parsed).unwrap()).unwrap().lower()
+    evaluate(&lower_kernel(&parsed).unwrap())
+        .unwrap()
+        .lower()
+        .unwrap()
 }
 
 /// `outputs`' `result` against `spec` at `[m, n, k]`.
@@ -704,7 +712,8 @@ fn matrix_multiplication_against(
         .into();
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     check_equivalence(&reference, outputs, &["result".into()], &sampled(sample)).0
 }
 
@@ -964,6 +973,7 @@ fn mamba(
     )
     .unwrap()
     .lower()
+    .unwrap()
 }
 
 fn parse_mamba(
@@ -1009,7 +1019,8 @@ fn mamba_against(
     .into();
     let reference = volta_spec::extract_expressions_from_spec(spec, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     check_equivalence(
         &reference,
         outputs,
@@ -1120,7 +1131,10 @@ fn tensor_indirection(data: [u64; 2], offsets: &[u64]) -> SymbolicOutputs {
     };
     let parsed =
         parse_kernel_for_call(TENSOR_INDIRECTION, &[], "tensor_indirection_kernel", &call).unwrap();
-    evaluate(&lower_kernel(&parsed).unwrap()).unwrap().lower()
+    evaluate(&lower_kernel(&parsed).unwrap())
+        .unwrap()
+        .lower()
+        .unwrap()
 }
 
 /// `outputs`' `out_tensor` against `spec` at `[data_p, data_f]`, its index array holding
@@ -1143,7 +1157,8 @@ fn tensor_indirection_against(
     let indices = [("index_tensor".to_string(), offsets)].into();
     let reference = volta_spec::extract_expressions_from_spec_with_indices(spec, &dims, &indices)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     check_equivalence(
         &reference,
         outputs,
@@ -1254,7 +1269,8 @@ fn nki_tensor_indirection_against_another_offset_or_no_gather_is_refuted() {
     .into();
     let reference = volta_spec::extract_expressions_from_spec(&ungathered, &dims)
         .unwrap()
-        .lower();
+        .lower()
+        .unwrap();
     refuted(
         check_equivalence(
             &reference,

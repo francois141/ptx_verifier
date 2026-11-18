@@ -6,7 +6,11 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use volta_expr::FullOutputs;
-use volta_expr::symbolic_full::{ExprArena, ExprId, NanError, StringId, Type};
+use volta_expr::lower::LowerError;
+use volta_expr::symbolic_full::{ExprArena, ExprId, NanError, StringId, Type, Width};
+
+/// The type of a spec's bitwise operations: every opaque word operation is on 32-bit words.
+const WORD: Type = Type::Bits(Width(32));
 
 /// A row-major shape flattening a multi-dimensional index into the flat element index of
 /// `InputElement` and `FullOutputs::outputs` - the convention a kernel's own address
@@ -143,6 +147,14 @@ pub enum SpecExpr {
     Abs(Box<SpecExpr>),
     Sign(Box<SpecExpr>),
     Erf(Box<SpecExpr>),
+    /// The opaque bitwise operations on 32-bit words, as a kernel's `.b32` instructions compute
+    /// them: `and`, `xor`, `shl` and `shr` (logical) of a word and a word or shift amount.
+    BitAnd(Box<SpecExpr>, Box<SpecExpr>),
+    BitXor(Box<SpecExpr>, Box<SpecExpr>),
+    Shl(Box<SpecExpr>, Box<SpecExpr>),
+    Shr(Box<SpecExpr>, Box<SpecExpr>),
+    /// The number of set bits of a 32-bit word, opaque.
+    Popc(Box<SpecExpr>),
     /// `op_{var=start}^{end-1} body`, unrolled into `end - start` terms combined by `op`
     /// (empty-range identity: `0` for `Sum`, `-infinity` for `Max`, as in `ExprArena::max`
     /// chains). The ends are index expressions over dims and enclosing variables.
@@ -205,6 +217,10 @@ impl SpecExpr {
 
     pub fn erf(self) -> Self {
         SpecExpr::Erf(Box::new(self))
+    }
+
+    pub fn popc(self) -> Self {
+        SpecExpr::Popc(Box::new(self))
     }
 
     pub fn reduce(
@@ -325,6 +341,8 @@ pub enum SpecError {
     /// An index array read as a value rather than inside a subscript.
     IndexArrayAsValue(String),
     Nan(NanError),
+    /// The unfolded spec does not lower to the simplified language.
+    Lower(LowerError),
 }
 
 impl fmt::Display for SpecError {
@@ -370,11 +388,18 @@ impl fmt::Display for SpecError {
                 array, index, shape
             ),
             Self::Nan(_) => write!(f, "spec contains a NaN float literal"),
+            Self::Lower(e) => write!(f, "{e}"),
         }
     }
 }
 
 impl std::error::Error for SpecError {}
+
+impl From<LowerError> for SpecError {
+    fn from(e: LowerError) -> Self {
+        Self::Lower(e)
+    }
+}
 
 impl From<NanError> for SpecError {
     fn from(e: NanError) -> Self {
@@ -534,7 +559,11 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
         | SpecExpr::Mul(a, b)
         | SpecExpr::Div(a, b)
         | SpecExpr::Min(a, b)
-        | SpecExpr::Max(a, b) => {
+        | SpecExpr::Max(a, b)
+        | SpecExpr::BitAnd(a, b)
+        | SpecExpr::BitXor(a, b)
+        | SpecExpr::Shl(a, b)
+        | SpecExpr::Shr(a, b) => {
             free_vars(a, out);
             free_vars(b, out);
         }
@@ -544,7 +573,8 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
         | SpecExpr::Sqrt(a)
         | SpecExpr::Abs(a)
         | SpecExpr::Sign(a)
-        | SpecExpr::Erf(a) => {
+        | SpecExpr::Erf(a)
+        | SpecExpr::Popc(a) => {
             free_vars(a, out);
         }
         SpecExpr::Reduce {
@@ -749,6 +779,25 @@ fn eval(
         SpecExpr::Erf(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;
             Ok(arena.erf(Type::Real, a))
+        }
+        SpecExpr::BitAnd(a, b)
+        | SpecExpr::BitXor(a, b)
+        | SpecExpr::Shl(a, b)
+        | SpecExpr::Shr(a, b) => {
+            let (x, y) = (
+                eval(a, env, bindings, arena, array_ids, memo)?,
+                eval(b, env, bindings, arena, array_ids, memo)?,
+            );
+            Ok(match expr {
+                SpecExpr::BitAnd(..) => arena.bit_and(WORD, x, y),
+                SpecExpr::BitXor(..) => arena.bit_xor(WORD, x, y),
+                SpecExpr::Shl(..) => arena.shl(WORD, x, y),
+                _ => arena.lshr(WORD, x, y),
+            })
+        }
+        SpecExpr::Popc(a) => {
+            let a = eval(a, env, bindings, arena, array_ids, memo)?;
+            Ok(arena.popc(WORD, a))
         }
         SpecExpr::Reduce {
             op,

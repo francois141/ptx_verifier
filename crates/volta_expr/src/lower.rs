@@ -2,6 +2,7 @@
 //! simplified constructors, which fold constants exactly and apply their simplifications.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use id_collections::{Count, IdVec};
 
@@ -9,10 +10,35 @@ use crate::outputs::{FullOutputs, SymbolicOutputs};
 use crate::symbolic_full as full;
 use crate::symbolic_simplified as simplified;
 
+/// Why outputs cannot be lowered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LowerError {
+    /// A bitwise operation that stays bitwise, and so opaque to the decision procedure, of a
+    /// type other than a 32-bit word: one opaque atom denotes one function only at one width.
+    BitwiseWidth {
+        operation: &'static str,
+        ty: full::Type,
+    },
+}
+
+impl fmt::Display for LowerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LowerError::BitwiseWidth { operation, ty } => write!(
+                f,
+                "the bitwise operation {operation} has type {ty:?}, but only 32-bit words are \
+                 supported"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LowerError {}
+
 /// `outputs` in the simplified language: the nodes reachable from an output, lowered
 /// children first, each node the full arena already evaluated taking its value's lowering.
 /// Each machine symbol becomes a fresh simplified one and each input array keeps one string.
-pub fn lower(outputs: &FullOutputs) -> SymbolicOutputs {
+pub fn lower(outputs: &FullOutputs) -> Result<SymbolicOutputs, LowerError> {
     let source = &outputs.arena;
     let reachable = reachable(outputs);
     let mut target = simplified::ExprArena::new();
@@ -35,8 +61,14 @@ pub fn lower(outputs: &FullOutputs) -> SymbolicOutputs {
             None => {
                 let child = |c: full::ExprId| lowered[c].expect("children precede their parents");
                 let ty = source.ty(id).expect("an operation has a type");
-                lower_operation(&mut target, node, ty, child, &source.strings)
-                    .expect("a node is an atom or an operation")
+                let lowered = lower_operation(&mut target, node, ty, child, &source.strings)
+                    .expect("a node is an atom or an operation");
+                if let Some(operation) = bitwise_operation(target.node(lowered))
+                    && !is_word32(ty)
+                {
+                    return Err(LowerError::BitwiseWidth { operation, ty });
+                }
+                lowered
             }
         };
         lowered[id] = Some(lowered_id);
@@ -52,10 +84,35 @@ pub fn lower(outputs: &FullOutputs) -> SymbolicOutputs {
         lowered_outputs.push((array.clone(), roots));
     }
 
-    SymbolicOutputs {
+    Ok(SymbolicOutputs {
         arena: target,
         outputs: lowered_outputs,
-    }
+    })
+}
+
+/// The name of `node`'s operation when the decision procedure keeps it opaque as a word
+/// operation.
+fn bitwise_operation(node: &simplified::ExprNode) -> Option<&'static str> {
+    use simplified::ExprNode::*;
+    Some(match node {
+        BitAnd(..) => "and",
+        BitOr(..) => "or",
+        BitXor(..) => "xor",
+        BitNot(_) => "not",
+        Shl(..) => "shl",
+        Shr(..) => "shr",
+        LShr(..) => "lshr",
+        Popc(_) => "popc",
+        _ => return None,
+    })
+}
+
+/// Whether `ty` is a 32-bit word: `.b32`, or a 32-bit integer (`shr.u32`, `shr.s32`).
+fn is_word32(ty: full::Type) -> bool {
+    matches!(
+        ty,
+        full::Type::Bits(full::Width(32)) | full::Type::Int(_, full::Width(32))
+    )
 }
 
 /// Which nodes an output reaches through values, in one descending sweep: a node's children

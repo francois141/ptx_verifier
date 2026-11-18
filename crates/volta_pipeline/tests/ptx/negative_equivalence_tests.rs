@@ -106,7 +106,8 @@ fn run(name: &str, kernel: &Kernel) -> SymbolicOutputs {
         .into_parts()
         .outputs
         .unwrap_or_else(|why| panic!("{}: no outputs: {}", name, why))
-        .lower();
+        .lower()
+        .unwrap();
     let conclusion = verified.graph.conclusion();
     assert_eq!(
         conclusion,

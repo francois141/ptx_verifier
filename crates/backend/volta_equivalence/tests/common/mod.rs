@@ -40,6 +40,7 @@ pub fn unfold_spec(name: &str, src: &str, dims: &[(&str, u64)]) -> SymbolicOutpu
     unfold(&specs, &env, 0)
         .unwrap_or_else(|e| panic!("{name}: unfold: {e}"))
         .lower()
+        .unwrap()
 }
 
 /// The verdict along the reference's output arrays, after asserting that a

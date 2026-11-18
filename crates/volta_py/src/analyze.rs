@@ -104,7 +104,8 @@ pub(crate) fn check_kernel(
     let parts = verified.analysis.into_parts();
     let exprs = parts
         .outputs
-        .map(|outputs| outputs.lower())
+        .map_err(|why| VoltaError::new_err(why.to_string()))?
+        .lower()
         .map_err(|why| VoltaError::new_err(why.to_string()))?;
     Ok(CheckedKernel {
         exprs,

@@ -337,6 +337,17 @@ impl Parser {
             "sign" => Ok(self.parse_unary_call()?.sign()),
             "erf" => Ok(self.parse_unary_call()?.erf()),
             "tanh" => Ok(desugar_tanh(self.parse_unary_call()?)),
+            "and" | "xor" | "shl" | "shr" => {
+                let (a, b) = self.parse_binary_call()?;
+                let (a, b) = (Box::new(a), Box::new(b));
+                Ok(match name {
+                    "and" => SpecExpr::BitAnd(a, b),
+                    "xor" => SpecExpr::BitXor(a, b),
+                    "shl" => SpecExpr::Shl(a, b),
+                    _ => SpecExpr::Shr(a, b),
+                })
+            }
+            "popc" => Ok(self.parse_unary_call()?.popc()),
             "min" => {
                 let (a, b) = self.parse_binary_call()?;
                 Ok(a.min(b))

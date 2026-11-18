@@ -120,7 +120,7 @@ fn a_grid_run_gives_each_workgroup_its_own_outputs() {
         );
         let expected = alone.verified_outputs();
         assert_eq!(
-            output_words(&outputs.lower()),
+            output_words(&outputs.lower().unwrap()),
             output_words(&expected),
             "{id:?}"
         );
@@ -230,7 +230,7 @@ fn grid_branches_compare_taken_paths_not_individual_vcc_bits() {
                 )
             })
             .collect();
-        assert_eq!(output_words(&outputs.lower()), expected, "{id:?}");
+        assert_eq!(output_words(&outputs.lower().unwrap()), expected, "{id:?}");
     }
 }
 

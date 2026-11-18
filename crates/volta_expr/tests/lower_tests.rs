@@ -25,7 +25,8 @@ fn full_operations_stay_as_built_and_lower_to_their_folds() {
         arena,
         outputs: vec![("o".to_string(), vec![(0, chosen)])],
     }
-    .lower();
+    .lower()
+    .unwrap();
     let root = lowered.element("o", 0).unwrap();
     assert_eq!(lowered.arena.display_expr(root), "a[0]");
     assert_eq!(lowered.arena.node_count(), 1);
@@ -52,7 +53,8 @@ fn sign_masks_of_floats_lower_to_negation_and_absolute_value() {
         arena,
         outputs: vec![("o".to_string(), (0..).zip(roots).collect())],
     }
-    .lower();
+    .lower()
+    .unwrap();
     let text = |index| {
         lowered
             .arena

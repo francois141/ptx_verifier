@@ -53,8 +53,8 @@ impl Frontend for NkiFrontend {
         let report = check_graph(&graph);
         Ok(KernelRun {
             outputs: outputs
-                .map(|outputs| outputs.lower())
-                .map_err(|e| e.to_string()),
+                .map_err(|e| e.to_string())
+                .and_then(|outputs| outputs.lower().map_err(|e| e.to_string())),
             graph: GraphEvidence::Checked {
                 graph: Box::new(graph),
                 report: Box::new(report),

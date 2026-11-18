@@ -17,7 +17,7 @@ pub struct FullOutputs {
 
 impl FullOutputs {
     /// These outputs in the simplified language (see [`lower::lower`]).
-    pub fn lower(&self) -> SymbolicOutputs {
+    pub fn lower(&self) -> Result<SymbolicOutputs, lower::LowerError> {
         lower::lower(self)
     }
 }

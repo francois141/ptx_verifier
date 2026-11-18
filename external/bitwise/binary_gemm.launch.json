@@ -1,0 +1,21 @@
+{
+  "description": "XNOR-popcount binary GEMM: c[r, n] = K - 2 * popc(a[r, :] ^ b[n, :]), the +-1 dot product of a's row r and b's row n, each K = 128 sign bits packed in 4 i32 words",
+  "kernel": "binary_gemm",
+  "block": [8, 8, 1],
+  "grid": [1, 1, 1],
+  "arrays": [
+    {"name": "a", "kind": "in", "dtype": "i32", "shape": [8, 4]},
+    {"name": "b", "kind": "in", "dtype": "i32", "shape": [8, 4]},
+    {"name": "c", "kind": "out", "dtype": "i32", "shape": [8, 8]}
+  ],
+  "params": [
+    {"name": "a", "ptr": "a"},
+    {"name": "b", "ptr": "b"},
+    {"name": "c", "ptr": "c"},
+    {"name": "M", "int": 8},
+    {"name": "N", "int": 8},
+    {"name": "K", "int": 128}
+  ],
+  "spec": "binary_gemm.spec",
+  "dims": {"M": 8, "N": 8, "KW": 4}
+}

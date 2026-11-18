@@ -62,13 +62,13 @@ impl Frontend for AmdFrontend {
         );
         let outputs = result
             .symbolic_outputs
-            .map(|outputs| outputs.lower())
             .ok_or_else(|| match &result.terminal {
                 Terminal::Aborted { wave, pc, error } => {
                     format!("wave {} aborted at instruction {}: {error}", wave.0, pc.0)
                 }
                 Terminal::Completed => "the run completed without outputs".into(),
-            });
+            })
+            .and_then(|outputs| outputs.lower().map_err(|why| why.to_string()));
 
         Ok(KernelRun {
             outputs,

@@ -71,6 +71,7 @@ impl AmdChecked {
             .symbolic_outputs
             .expect("a verified run completed, so its outputs read back")
             .lower()
+            .unwrap()
     }
 }
 
@@ -278,7 +279,7 @@ fn run_outputs(
     }
     result
         .symbolic_outputs
-        .map(|outputs| outputs.lower())
+        .map(|outputs| outputs.lower().unwrap())
         .ok_or("no symbolic outputs".into())
 }
 

@@ -66,7 +66,10 @@ pub fn check_call(name: &str, kernel: &str, modules: &[&str], call: &KernelCall)
         (folder, conclusion) => panic!("{name}: a {folder:?} fixture concluded {conclusion:?}"),
     }
 
-    let outputs = run.unwrap_or_else(|e| panic!("{name}: {e}")).lower();
+    let outputs = run
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+        .lower()
+        .unwrap();
     let mut rendered = String::new();
     for (array, elements) in &outputs.outputs {
         for &(index, value) in elements {
