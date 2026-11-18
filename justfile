@@ -101,6 +101,15 @@ tilelang *args:
 ai_compiler *args:
     python3 external/ptx/races.py --framework ai_compiler {{args}}
 
+# Check the bitwise kernels in external/bitwise against their specs, BitDelta on 32 of its 8192 outputs
+bitwise:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    cargo build --release -q -p volta_cli
+    solve() { printf '%s: ' "$1"; ./target/release/volta --no-log-file solve "${@:2}" | sed -n 's/^VERDICT: //p'; }
+    solve binary_gemm external/bitwise/binary_gemm.ptx --config external/bitwise/binary_gemm.launch.json
+    solve bitdelta external/bitwise/bitdelta/kernel_tile.ptx --config external/bitwise/bitdelta/kernel_tile.launch.json --recycle-terms 1000000 --sample 32
+
 # Analyze TileLang's warp-specialized copy-GEMM kernel, printing volta's full report
 tilelang-ws-gemm *args:
     cargo run --release -q -p volta_cli -- analyze external/ptx/tilelang/warp_specialize/matmul_warp_specialize_copy_gemm_0_1_kernel.ptx --config external/ptx/tilelang/warp_specialize/matmul_warp_specialize_copy_gemm_0_1_kernel.m128n128k64.launch.json --no-profile {{args}}

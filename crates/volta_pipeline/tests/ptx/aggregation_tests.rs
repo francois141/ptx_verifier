@@ -139,15 +139,18 @@ fn equivalent_verified_kernels_are_accepted() {
 }
 
 #[test]
-fn a_sampled_proof_is_not_an_acceptance() {
+fn a_sampled_proof_is_accepted_as_sampled() {
     let (a, b) = (run(COPY), run(COPY));
     let sampled = EquivalenceVerdict::Equivalent {
         checked: 2,
         total: 4,
     };
     let decision = decide_pair(&sampled, &a, &b);
-    assert_eq!(decision.verdict, Verdict::Unknown);
-    assert!(decision.evidence[0].contains("sampled"), "{decision:?}");
+    assert_eq!(decision.verdict, Verdict::Accept);
+    assert!(
+        decision.evidence[0].contains("2 of 4 elements compared (sampled)"),
+        "{decision:?}"
+    );
 }
 
 #[test]

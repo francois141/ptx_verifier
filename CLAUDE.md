@@ -997,8 +997,9 @@ The integration point: `verify_kernel(module, kernel, config)` (analysis stage
 `check_equivalence` (the equivalence branch over symbolic outputs only; a
 claimed difference is a refutation only once the numeric oracle separates it,
 else `Unproven`), and `decide(equivalence, kernels) -> Decision { verdict,
-evidence, assumptions }`: ACCEPT needs a complete (unsampled) equivalence proof
-and every kernel `Verified` (a kernel whose interpreter records no graph,
+evidence, assumptions }`: ACCEPT needs every compared element proved equivalent
+(a sampled check compares a prefix of each array, and its evidence says how many
+elements) and every kernel `Verified` (a kernel whose interpreter records no graph,
 `GraphBranch::NotRecorded`, is at best UNKNOWN); any refutation, failed check or
 deadlock is REJECT; anything else is UNKNOWN. Tests:
 `ptx/aggregation_tests.rs` (real kernels through both branches),
@@ -1294,7 +1295,8 @@ Commands:
   FILE2 as `.vexpr` files instead (e.g. from `analyze --emit-exprs`): no PTX,
   no symbolic execution. With kernel inputs both branches run and `decide`
   prints `VERDICT: ACCEPT|REJECT|UNKNOWN` with its evidence and assumptions
-  (exit 0/1/2; a sampled check is never ACCEPT); expression inputs
+  (exit 0/1/2; a sampled check's ACCEPT covers only the elements it compared,
+  as its evidence states); expression inputs
   (`--exprs`, `--from-dump`) run the equivalence branch only and exit 0 only
   when every checked element is proved equivalent.
 - `volta verify <file> <spec>` - one kernel against a spec, through both

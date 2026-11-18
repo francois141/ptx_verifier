@@ -23,10 +23,11 @@ artifacts and never call each other or the stage.
   difference counts as a refutation only once the numeric oracle separates it
   (`confirm_differences`); otherwise it is `Unproven`.
 - **`decide(&equivalence, &[KernelEvidence]) -> Decision`** (`aggregate.rs`):
-  - **ACCEPT** requires a complete (unsampled) equivalence proof and every
-    kernel's graph conclusion `Verified`;
+  - **ACCEPT** requires every compared element proved equivalent and every
+    kernel's graph conclusion `Verified`; a sampled check compares a prefix of
+    each array only, and its evidence says how many elements that is;
   - **REJECT** on any refutation, failed graph check, or deadlock;
-  - **UNKNOWN** otherwise (sampled check, unresolved obligations, aborted run,
+  - **UNKNOWN** otherwise (unresolved obligations, aborted run,
     unproven difference, or a kernel whose interpreter records no graph:
     `GraphBranch::NotRecorded`).
 

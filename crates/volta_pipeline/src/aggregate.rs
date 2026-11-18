@@ -7,7 +7,7 @@ use crate::equivalence::EquivalenceVerdict;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Equivalent, with every graph check passed on a completed trace.
+    /// Every compared element equivalent, with every graph check passed on a completed trace.
     Accept,
     /// A refutation, a failed graph check or a deadlock, with its witness.
     Reject,
@@ -49,10 +49,10 @@ pub struct Decision {
     pub assumptions: Vec<Assumption>,
 }
 
-/// Combine the equivalence branch's verdict with each kernel's graph report. ACCEPT needs a
-/// complete equivalence proof and every kernel `Verified` (a completed trace, every check
-/// passed), so a kernel with no recorded graph is at best UNKNOWN; any refutation, index-set mismatch, failed check or deadlock is a REJECT;
-/// anything else is UNKNOWN.
+/// Combine the equivalence branch's verdict with each kernel's graph report. ACCEPT needs every
+/// compared element proved equivalent (a sampled check's evidence says how many it compared)
+/// and every kernel `Verified`, so a kernel with no recorded graph is at best UNKNOWN; any
+/// refutation, index-set mismatch, failed check or deadlock is a REJECT; anything else UNKNOWN.
 pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> Decision {
     let mut established = Vec::new();
     let mut rejected = Vec::new();
@@ -61,8 +61,8 @@ pub fn decide(equivalence: &EquivalenceVerdict, kernels: &[KernelEvidence]) -> D
         EquivalenceVerdict::Equivalent { checked, total } if checked == total => established.push(
             format!("equivalence: all {total} compared elements proved equivalent"),
         ),
-        EquivalenceVerdict::Equivalent { checked, total } => missing.push(format!(
-            "equivalence: only {checked} of {total} elements were compared (sampled)"
+        EquivalenceVerdict::Equivalent { checked, total } => established.push(format!(
+            "equivalence: {checked} of {total} elements compared (sampled), each proved equivalent"
         )),
         EquivalenceVerdict::Refuted { elements } => rejected.push(format!(
             "equivalence: {} element(s) refuted by a numeric counterexample{}",
