@@ -23,8 +23,11 @@
 //!   performs a wave's DS instructions in issue order, an order the graph does not record.
 //! * The pairs are enumerated per byte without visiting every ordered one: each location keeps
 //!   its effects as a forest in which an effect's children were ordered before it when it
-//!   arrived, so an earlier effect reaching the new one vouches for its whole subtree. `B` is
-//!   still exact: every unordered pair is found, each once, at its lowest shared byte.
+//!   arrived. Its subtree reached its anchor: the effect itself on a thread, else its async
+//!   op's issue, which `G_HB` does not order before what the effect reaches (an async
+//!   completion carries only its op's effects). So an earlier effect vouches for its subtree
+//!   only when its anchor reaches the new effect too. `B` is still exact: every unordered pair
+//!   is found, each once, at its lowest shared byte.
 //! * `Pass`: `B = {}`; only then is [`MemoryConflictFree`] issued (Algorithm 4's
 //!   prerequisite). `Fail`: `B`, ordered by the later effect (at most [`CONFLICT_CAP`]
 //!   pairs are listed). `Unknown`: an atomic effect, outside the initial contract (§2).
@@ -97,11 +100,12 @@ impl Actor {
     }
 }
 
-/// One effect at one byte; its children reached it when it arrived.
+/// One effect at one byte; its children, and so its subtree, reached `anchor` when it arrived.
 #[derive(Debug)]
 struct Node {
     event: EventId,
     actor: Actor,
+    anchor: ThreadPoint,
     mode: AccessMode,
     ordering: OrderingKind,
     children: Vec<usize>,
@@ -141,9 +145,10 @@ pub fn check_memory_conflicts<'g>(
         if !in_m(access) || found.len() >= CONFLICT_CAP {
             return;
         }
-        let actor = match graph.event(e).ctx {
-            ExecContext::Thread(_) => Actor::Thread(points[e.0 as usize].expect("a thread event")),
-            ExecContext::Async(op) => Actor::Effect(op),
+        let point = |event: EventId| points[event.0 as usize].expect("a thread event");
+        let (actor, anchor) = match graph.event(e).ctx {
+            ExecContext::Thread(_) => (Actor::Thread(point(e)), point(e)),
+            ExecContext::Async(op) => (Actor::Effect(op), point(graph.async_op(op).issue)),
             ExecContext::Generation(_) => unreachable!("effects live in threads or async ops"),
         };
         for location in bytes(access) {
@@ -154,18 +159,20 @@ pub fn check_memory_conflicts<'g>(
             let node = nodes.len();
             let mut children = Vec::new();
             let mut kept = Vec::new();
-            let mut unordered = Vec::new();
+            let mut examined = Vec::new();
             for root in roots {
-                if nodes[root].actor.reaches(view) {
+                let r = &nodes[root];
+                if r.actor.reaches(view) && view.thread_hb(r.anchor) {
                     children.push(root);
                 } else {
                     kept.push(root);
-                    unordered.push(root);
+                    examined.push(root);
                 }
             }
-            while let Some(n) = unordered.pop() {
+            while let Some(n) = examined.pop() {
                 let earlier = &nodes[n];
-                if let Some(kind) = ConflictKind::of(earlier.mode, access.mode)
+                if !earlier.actor.reaches(view)
+                    && let Some(kind) = ConflictKind::of(earlier.mode, access.mode)
                     && !commute(earlier.ordering, access.ordering)
                     && !same_wave_ds(graph, earlier.event, e)
                     && reported.insert((earlier.event, e))
@@ -177,15 +184,14 @@ pub fn check_memory_conflicts<'g>(
                         later: e,
                     });
                 }
-                for &c in &earlier.children {
-                    if !nodes[c].actor.reaches(view) {
-                        unordered.push(c);
-                    }
+                if !view.thread_hb(earlier.anchor) {
+                    examined.extend(&earlier.children);
                 }
             }
             nodes.push(Node {
                 event: e,
                 actor,
+                anchor,
                 mode: access.mode,
                 ordering: access.ordering,
                 children,

@@ -183,6 +183,23 @@ fn the_issuer_is_not_ordered_after_its_own_async_write() {
     assert!(matches!(g.event(c.earlier).ctx, ExecContext::Async(_)));
 }
 
+/// The copy's completion orders its own write before the waiter, not its issuer's earlier
+/// store to the same byte, though that store reaches the copy (issue 22).
+#[test]
+fn an_async_write_does_not_order_its_issuers_earlier_store() {
+    let mut s = Scenario::new(2);
+    let m = s.mbarrier(0, 1);
+    let p0 = s.phase(m, 0);
+    s.arrive_expect_tx(0, p0, 4);
+    let store = s.write(0, 0x10, 1);
+    s.bulk_copy(0, 0x10, p0, 4);
+    s.complete(p0);
+    s.wait(1, m, Parity::Even, p0);
+    let after = s.read(1, 0x10);
+    let (g, _) = s.completed(2);
+    assert!(pairs(&check(&g)).contains(&(store, after)));
+}
+
 #[test]
 fn an_in_flight_async_read_is_overwritten_by_a_reuse() {
     let mut s = Scenario::new(2);
