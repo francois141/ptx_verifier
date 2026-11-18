@@ -1,0 +1,21 @@
+{
+  "description": "simdjson's structural starts: 4 rows of 4 32-character blocks, one thread per block; start marks where each structural character, string and scalar begins",
+  "kernel": "structural_start",
+  "block": [4, 4, 1],
+  "grid": [1, 1, 1],
+  "arrays": [
+    {"name": "quote", "kind": "in", "dtype": "i32", "shape": [4, 4]},
+    {"name": "op", "kind": "in", "dtype": "i32", "shape": [4, 4]},
+    {"name": "ws", "kind": "in", "dtype": "i32", "shape": [4, 4]},
+    {"name": "start", "kind": "out", "dtype": "i32", "shape": [4, 4]}
+  ],
+  "params": [
+    {"name": "quote", "ptr": "quote"},
+    {"name": "op", "ptr": "op"},
+    {"name": "ws", "ptr": "ws"},
+    {"name": "start", "ptr": "start"},
+    {"name": "words", "int": 4}
+  ],
+  "spec": "structural_start.spec",
+  "dims": {"R": 4, "W": 4}
+}

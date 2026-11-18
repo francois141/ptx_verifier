@@ -1,0 +1,21 @@
+{
+  "description": "simdjson stage 1: 4 rows of 4 32-character blocks, one thread per block; in_string and structural are each block's string-region and outside-string structural masks",
+  "kernel": "stage1",
+  "block": [4, 4, 1],
+  "grid": [1, 1, 1],
+  "arrays": [
+    {"name": "quote", "kind": "in", "dtype": "i32", "shape": [4, 4]},
+    {"name": "op", "kind": "in", "dtype": "i32", "shape": [4, 4]},
+    {"name": "in_string", "kind": "out", "dtype": "i32", "shape": [4, 4]},
+    {"name": "structural", "kind": "out", "dtype": "i32", "shape": [4, 4]}
+  ],
+  "params": [
+    {"name": "quote", "ptr": "quote"},
+    {"name": "op", "ptr": "op"},
+    {"name": "in_string", "ptr": "in_string"},
+    {"name": "structural", "ptr": "structural"},
+    {"name": "words", "int": 4}
+  ],
+  "spec": "stage1.spec",
+  "dims": {"R": 4, "W": 4}
+}

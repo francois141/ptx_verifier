@@ -109,6 +109,11 @@ bitwise:
     solve() { printf '%s: ' "$1"; ./target/release/volta --no-log-file solve "${@:2}" | sed -n 's/^VERDICT: //p'; }
     solve binary_gemm external/bitwise/binary_gemm.ptx --config external/bitwise/binary_gemm.launch.json
     solve bitdelta external/bitwise/bitdelta/kernel_tile.ptx --config external/bitwise/bitdelta/kernel_tile.launch.json --recycle-terms 1000000 --sample 32
+    solve simdjson_strings external/bitwise/simdjson/stage1.ptx --config external/bitwise/simdjson/stage1.launch.json
+    solve simdjson_escape external/bitwise/simdjson/escape.ptx --config external/bitwise/simdjson/escape.launch.json
+    solve simdjson_structural external/bitwise/simdjson/structural_start.ptx --config external/bitwise/simdjson/structural_start.launch.json
+    solve simdjson_indexer external/bitwise/simdjson/indexer.ptx --config external/bitwise/simdjson/indexer.launch.json
+    solve simdjson_digits external/bitwise/simdjson/digits.ptx --config external/bitwise/simdjson/digits.launch.json
 
 # Analyze TileLang's warp-specialized copy-GEMM kernel, printing volta's full report
 tilelang-ws-gemm *args:

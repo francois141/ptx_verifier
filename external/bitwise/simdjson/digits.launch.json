@@ -1,0 +1,16 @@
+{
+  "description": "simdjson's eight-digit number parsing: 8 fields of two 32-bit words of four ASCII digits; value is each field's eight-digit number",
+  "kernel": "digits",
+  "block": [8, 1, 1],
+  "grid": [1, 1, 1],
+  "arrays": [
+    {"name": "chars", "kind": "in", "dtype": "i32", "shape": [8, 2]},
+    {"name": "value", "kind": "out", "dtype": "i32", "shape": [8]}
+  ],
+  "params": [
+    {"name": "chars", "ptr": "chars"},
+    {"name": "value", "ptr": "value"}
+  ],
+  "spec": "digits.spec",
+  "dims": {"F": 8, "H": 2}
+}
