@@ -1,6 +1,10 @@
 //! Lowering from the full language to `symbolic_simplified`: every node rebuilt with the
 //! simplified constructors, which fold constants exactly and apply their simplifications.
 
+mod bit_delta_pattern;
+mod bitfield_pattern;
+mod word_bits;
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -61,8 +65,11 @@ pub fn lower(outputs: &FullOutputs) -> Result<SymbolicOutputs, LowerError> {
             None => {
                 let child = |c: full::ExprId| lowered[c].expect("children precede their parents");
                 let ty = source.ty(id).expect("an operation has a type");
-                let lowered = lower_operation(&mut target, node, ty, child, &source.strings)
-                    .expect("a node is an atom or an operation");
+                let lowered = bitfield_pattern::standard_form(source, id, &mut target, child)
+                    .unwrap_or_else(|| {
+                        lower_operation(&mut target, node, ty, child, &source.strings)
+                            .expect("a node is an atom or an operation")
+                    });
                 if let Some(operation) = bitwise_operation(target.node(lowered))
                     && !is_word32(ty)
                 {
@@ -297,16 +304,16 @@ pub(crate) fn lower_operation(
     })
 }
 
-/// `(word >> shift) & mask`.
-fn extract(
+/// The `width` bits of `word` from bit `offset` up, `(word >> offset) & (2^width - 1)`.
+fn extract_bitfield(
     target: &mut simplified::ExprArena,
     word: simplified::ExprId,
-    shift: u32,
-    mask: i64,
+    offset: u32,
+    width: u32,
 ) -> simplified::ExprId {
-    let shift = target.int(i64::from(shift));
-    let shifted = target.lshr(word, shift);
-    let mask = target.int(mask);
+    let offset = target.int(i64::from(offset));
+    let shifted = target.lshr(word, offset);
+    let mask = target.int((1 << width) - 1);
     target.bit_and(shifted, mask)
 }
 
@@ -322,9 +329,9 @@ fn lower_prmt(
     for (result_byte, from) in (0..).zip(selector.bytes()) {
         let operand = from.operand.of(a, b);
         let byte = match from.take {
-            full::ByteTake::Value => extract(target, operand, 8 * from.byte, 0xff),
+            full::ByteTake::Value => extract_bitfield(target, operand, 8 * from.byte, 8),
             full::ByteTake::Sign => {
-                let sign = extract(target, operand, 8 * from.byte + 7, 1);
+                let sign = extract_bitfield(target, operand, 8 * from.byte + 7, 1);
                 let ones = target.int(0xff);
                 target.mul(sign, ones)
             }

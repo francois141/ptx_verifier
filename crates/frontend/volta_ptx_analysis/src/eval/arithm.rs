@@ -15,6 +15,14 @@ use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
 use volta_common::logging::warn;
 use volta_expr::symbolic_full::{ExprId, Real, Signedness, Type, Width};
 
+/// The `lop3` truth table of `(a & b) ^ c`.
+const LOP3_AND_XOR: u32 = 0x6a;
+/// The sign bits of the two f16 halves of a 32-bit word: their mask, and each one's position.
+const F16X2_SIGNS: u32 = 0x8000_8000;
+const F16X2_SIGN_BITS: [u32; 2] = [15, 31];
+/// The packed f16 pair `(-1.0, -1.0)`.
+const F16X2_MINUS_ONES: u32 = 0xbc00_bc00;
+
 /// Which 16-bit half of a `.b32` funnel-shift operand to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaneHalf {
@@ -113,6 +121,36 @@ impl<'p> Interpreter<'p> {
             );
         }
         self.arena.bit_xor(expr_type(ty), a, b)
+    }
+
+    /// `lop3.b32 d, q, 0x80008000, 0xbc00bc00, 0x6a`, that is `(q & signs) ^ (-1.0, -1.0)`: the
+    /// packed f16 pair of -1.0s whose signs the sign bits of `q` flip, so each half is +1 where
+    /// its bit of `q` is set and -1 where it is clear, `2 * bit - 1`. `None` for another `lop3`.
+    pub(in crate::eval) fn lop3_signed_ones(
+        &mut self,
+        lut: u32,
+        sources: [ExprId; 3],
+        words: [u32; 3],
+        symbolic: &[usize],
+    ) -> Option<Value> {
+        let [q, _, _] = sources;
+        let is_sign_injection =
+            lut == LOP3_AND_XOR && symbolic == [0] && words[1..] == [F16X2_SIGNS, F16X2_MINUS_ONES];
+        if !is_sign_injection {
+            return None;
+        }
+        let (word, half) = (Type::Bits(Width(32)), Type::Float(Width(16)));
+        let [lo, hi] = F16X2_SIGN_BITS.map(|sign| {
+            let sign = self.arena.int(i64::from(sign));
+            let shifted = self.arena.lshr(word, q, sign);
+            let one = self.arena.int(1);
+            let bit = self.arena.bit_and(word, shifted, one);
+            let two = self.arena.int(2);
+            let doubled = self.arena.mul(half, two, bit);
+            let one = self.arena.int(1);
+            self.arena.sub(half, doubled, one)
+        });
+        Some(Value::Pair(lo, hi))
     }
 
     /// `lop3.b32` over operands not all concrete (`symbolic` positions; `words`

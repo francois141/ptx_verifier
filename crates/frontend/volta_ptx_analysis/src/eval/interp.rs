@@ -32,7 +32,7 @@ use crate::ir::{
     MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand, TensormapFence,
 };
 use volta_common::logging::{info, warn};
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, StringId, Type, Width};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, PrmtSelector, StringId, Type, Width};
 use volta_graph::{
     AbortCause, ArrivalOrdering, AsyncOpId, AsyncOpKind, BarrierWait, EventGraph, FenceKind,
     GraphBuilder, GroupFamily, OperandRole, Provenance, Proxy, Space, Terminal,
@@ -912,6 +912,8 @@ impl<'p> Interpreter<'p> {
                 let selector = self.concrete_operand(t, pc, selector, "prmt selector")? as u16;
                 let src_a = self.operand_value(t, pc, src_a)?;
                 let src_b = self.operand_value(t, pc, src_b)?;
+                let source_bytes = PrmtSelector(selector).bytes();
+                let reads_past_byte_0 = source_bytes.iter().any(|from| from.byte != 0);
 
                 if let (Value::Pair(a_lo, a_hi), Value::Pair(b_lo, b_hi)) = (src_a, src_b) {
                     // Exact only when each result half takes one source half whole
@@ -930,6 +932,13 @@ impl<'p> Interpreter<'p> {
                     };
                     let pair = Value::Pair(select(selector & 0xff)?, select(selector >> 8)?);
                     self.write_reg(t, *dst, pair);
+                } else if let (Value::Scalar(a), Value::Scalar(b)) = (src_a, src_b)
+                    && reads_past_byte_0
+                {
+                    // A scalar FP8 value fills byte 0 only, so reading another byte makes both
+                    // sources 32-bit integer words.
+                    let word = self.arena.prmt(a, b, PrmtSelector(selector));
+                    self.write_reg(t, *dst, Value::Scalar(word));
                 } else {
                     let fp8_sign_xor = |this: &mut Self, value: ExprId| {
                         let ExprNode::BitXor(left, right) = this.arena.value_node(value).clone()
@@ -1015,8 +1024,12 @@ impl<'p> Interpreter<'p> {
                         }
                     }
                 }
-                let result = self.lop3_expand(lut, sources, words, &symbolic[..symbolic_len]);
-                self.write_reg(t, *dst, Value::Scalar(result));
+                let symbolic = &symbolic[..symbolic_len];
+                let value = match self.lop3_signed_ones(lut, sources, words, symbolic) {
+                    Some(pair) => pair,
+                    None => Value::Scalar(self.lop3_expand(lut, sources, words, symbolic)),
+                };
+                self.write_reg(t, *dst, value);
             }
 
             LoweredInstr::BinOp {
