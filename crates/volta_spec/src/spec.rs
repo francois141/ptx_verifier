@@ -148,11 +148,14 @@ pub enum SpecExpr {
     Sign(Box<SpecExpr>),
     Erf(Box<SpecExpr>),
     /// The opaque bitwise operations on 32-bit words, as a kernel's `.b32` instructions compute
-    /// them: `and`, `xor`, `shl` and `shr` (logical) of a word and a word or shift amount.
+    /// them: `and`, `or`, `xor`, `shl` and `shr` (logical) of a word and a word or shift amount.
     BitAnd(Box<SpecExpr>, Box<SpecExpr>),
+    BitOr(Box<SpecExpr>, Box<SpecExpr>),
     BitXor(Box<SpecExpr>, Box<SpecExpr>),
     Shl(Box<SpecExpr>, Box<SpecExpr>),
     Shr(Box<SpecExpr>, Box<SpecExpr>),
+    /// The complement of a 32-bit word, as `not.b32` computes it, opaque.
+    BitNot(Box<SpecExpr>),
     /// The number of set bits of a 32-bit word, opaque.
     Popc(Box<SpecExpr>),
     /// `op_{var=start}^{end-1} body`, unrolled into `end - start` terms combined by `op`
@@ -163,6 +166,13 @@ pub enum SpecExpr {
         var: String,
         start: IndexExpr,
         end: IndexExpr,
+        body: Box<SpecExpr>,
+    },
+    /// `body` with `name` standing for `value`, which is built once however often `body`
+    /// reads it. A let-bound name is a value, never a subscript.
+    Let {
+        name: String,
+        value: Box<SpecExpr>,
         body: Box<SpecExpr>,
     },
 }
@@ -217,6 +227,10 @@ impl SpecExpr {
 
     pub fn erf(self) -> Self {
         SpecExpr::Erf(Box::new(self))
+    }
+
+    pub fn bit_not(self) -> Self {
+        SpecExpr::BitNot(Box::new(self))
     }
 
     pub fn popc(self) -> Self {
@@ -340,6 +354,8 @@ pub enum SpecError {
     NotAnIndexArray(String),
     /// An index array read as a value rather than inside a subscript.
     IndexArrayAsValue(String),
+    /// A let-bound name read inside a subscript.
+    LetInSubscript(String),
     Nan(NanError),
     /// The unfolded spec does not lower to the simplified language.
     Lower(LowerError),
@@ -359,6 +375,9 @@ impl fmt::Display for SpecError {
             ),
             Self::IndexArrayAsValue(name) => {
                 write!(f, "index array '{name}' is read outside a subscript")
+            }
+            Self::LetInSubscript(name) => {
+                write!(f, "let-bound '{name}' is a value, but it is read in a subscript")
             }
             Self::ShapeVarMismatch {
                 array,
@@ -429,8 +448,12 @@ pub fn unfold(specs: &[OutputSpec], env: &SpecEnv, sample: u64) -> Result<FullOu
         } as usize;
         let mut elems = Vec::with_capacity(limit);
         for idx in spec.shape.indices().take(limit) {
-            let bindings: HashMap<String, u64> =
-                spec.vars.iter().cloned().zip(idx.iter().copied()).collect();
+            let bindings: Bindings = spec
+                .vars
+                .iter()
+                .cloned()
+                .zip(idx.iter().map(|&i| Bound::Index(i)))
+                .collect();
             let flat = spec.shape.flatten(&idx);
             let value = eval(
                 &spec.body,
@@ -450,16 +473,16 @@ pub fn unfold(specs: &[OutputSpec], env: &SpecEnv, sample: u64) -> Result<FullOu
 /// Resolve a bare name in expression/index position: a bound variable (output index or
 /// loop variable) takes precedence, falling back to a `dim`'s concrete value so e.g.
 /// `sum(...) / N` can reference a declared `dim` directly.
-fn resolve_var(
-    name: &str,
-    env: &SpecEnv,
-    bindings: &HashMap<String, u64>,
-) -> Result<u64, SpecError> {
-    bindings
-        .get(name)
-        .copied()
-        .or_else(|| env.dims.get(name).copied())
-        .ok_or_else(|| SpecError::UnboundVar(name.to_string()))
+fn resolve_var(name: &str, env: &SpecEnv, bindings: &Bindings) -> Result<u64, SpecError> {
+    match bindings.get(name) {
+        Some(Bound::Index(v)) => Ok(*v),
+        Some(Bound::Value(_)) => Err(SpecError::LetInSubscript(name.to_string())),
+        None => env
+            .dims
+            .get(name)
+            .copied()
+            .ok_or_else(|| SpecError::UnboundVar(name.to_string())),
+    }
 }
 
 /// Signed, so a zero-padded array's out-of-shape taps (e.g. `4 * h + kh - 2` near the
@@ -467,7 +490,7 @@ fn resolve_var(
 fn eval_index(
     expr: &IndexExpr,
     env: &SpecEnv,
-    bindings: &HashMap<String, u64>,
+    bindings: &Bindings,
 ) -> Result<i64, SpecError> {
     match expr {
         IndexExpr::Int(v) => Ok(*v as i64),
@@ -493,7 +516,7 @@ fn in_bounds(
     array: &str,
     indices: &[IndexExpr],
     env: &SpecEnv,
-    bindings: &HashMap<String, u64>,
+    bindings: &Bindings,
 ) -> Result<u64, SpecError> {
     let shape = env
         .arrays
@@ -538,7 +561,16 @@ fn array_string_id(
 /// `Reduce` cache keyed on the site (`SpecExpr` address, stable while `specs` is borrowed)
 /// plus the bindings of the body's free variables other than its loop variable, so e.g. a
 /// softmax row's max is built once per row, not once per element.
-type ReduceMemo = HashMap<(usize, Vec<(String, u64)>), ExprId>;
+type ReduceMemo = HashMap<(usize, Vec<(String, Bound)>), ExprId>;
+
+/// What a name in scope stands for: an output index or loop variable, or a `let`'s value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Bound {
+    Index(u64),
+    Value(ExprId),
+}
+
+type Bindings = HashMap<String, Bound>;
 
 /// The variable names `expr` reads (for `Reduce`'s memo key): a nested
 /// `Reduce`'s own loop variable is excluded from its body's contribution
@@ -561,6 +593,7 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
         | SpecExpr::Min(a, b)
         | SpecExpr::Max(a, b)
         | SpecExpr::BitAnd(a, b)
+        | SpecExpr::BitOr(a, b)
         | SpecExpr::BitXor(a, b)
         | SpecExpr::Shl(a, b)
         | SpecExpr::Shr(a, b) => {
@@ -574,6 +607,7 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
         | SpecExpr::Abs(a)
         | SpecExpr::Sign(a)
         | SpecExpr::Erf(a)
+        | SpecExpr::BitNot(a)
         | SpecExpr::Popc(a) => {
             free_vars(a, out);
         }
@@ -590,6 +624,13 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
             out.extend(inner);
             index_free_vars(start, out);
             index_free_vars(end, out);
+        }
+        SpecExpr::Let { name, value, body } => {
+            free_vars(value, out);
+            let mut inner = std::collections::HashSet::new();
+            free_vars(body, &mut inner);
+            inner.remove(name);
+            out.extend(inner);
         }
     }
 }
@@ -620,14 +661,14 @@ fn eval_reduce(
     [start, end]: [&IndexExpr; 2],
     body: &SpecExpr,
     env: &SpecEnv,
-    bindings: &HashMap<String, u64>,
+    bindings: &Bindings,
     arena: &mut ExprArena,
     array_ids: &mut HashMap<String, StringId>,
     memo: &mut ReduceMemo,
 ) -> Result<ExprId, SpecError> {
     let mut relevant = std::collections::HashSet::new();
     free_vars(site, &mut relevant);
-    let mut key_vars: Vec<(String, u64)> = relevant
+    let mut key_vars: Vec<(String, Bound)> = relevant
         .into_iter()
         .filter_map(|name| bindings.get(&name).map(|&v| (name, v)))
         .collect();
@@ -653,7 +694,7 @@ fn eval_reduce(
         ReduceOp::Sum => {
             let mut acc = arena.int(0);
             for i in range {
-                inner.insert(var.to_string(), i);
+                inner.insert(var.to_string(), Bound::Index(i));
                 let term = eval(body, env, &inner, arena, array_ids, memo)?;
                 acc = arena.add(Type::Real, acc, term);
             }
@@ -664,7 +705,7 @@ fn eval_reduce(
             // `ExprArena::max` already uses for its chains.
             let mut acc = arena.float_from_f64(f64::NEG_INFINITY)?;
             for i in range {
-                inner.insert(var.to_string(), i);
+                inner.insert(var.to_string(), Bound::Index(i));
                 let term = eval(body, env, &inner, arena, array_ids, memo)?;
                 acc = arena.max(Type::Real, acc, term);
             }
@@ -678,7 +719,7 @@ fn eval_reduce(
 fn eval(
     expr: &SpecExpr,
     env: &SpecEnv,
-    bindings: &HashMap<String, u64>,
+    bindings: &Bindings,
     arena: &mut ExprArena,
     array_ids: &mut HashMap<String, StringId>,
     memo: &mut ReduceMemo,
@@ -686,6 +727,7 @@ fn eval(
     match expr {
         SpecExpr::Int(v) => Ok(arena.int(*v)),
         SpecExpr::Real(v) => Ok(arena.float_from_f64(*v)?),
+        SpecExpr::Var(name) if let Some(&Bound::Value(value)) = bindings.get(name) => Ok(value),
         SpecExpr::Var(name) if env.params.contains(name) && !bindings.contains_key(name) => {
             Ok(arena.param_symbol(name))
         }
@@ -781,6 +823,7 @@ fn eval(
             Ok(arena.erf(Type::Real, a))
         }
         SpecExpr::BitAnd(a, b)
+        | SpecExpr::BitOr(a, b)
         | SpecExpr::BitXor(a, b)
         | SpecExpr::Shl(a, b)
         | SpecExpr::Shr(a, b) => {
@@ -790,10 +833,21 @@ fn eval(
             );
             Ok(match expr {
                 SpecExpr::BitAnd(..) => arena.bit_and(WORD, x, y),
+                SpecExpr::BitOr(..) => arena.bit_or(WORD, x, y),
                 SpecExpr::BitXor(..) => arena.bit_xor(WORD, x, y),
                 SpecExpr::Shl(..) => arena.shl(WORD, x, y),
                 _ => arena.lshr(WORD, x, y),
             })
+        }
+        SpecExpr::Let { name, value, body } => {
+            let value = eval(value, env, bindings, arena, array_ids, memo)?;
+            let mut inner = bindings.clone();
+            inner.insert(name.clone(), Bound::Value(value));
+            eval(body, env, &inner, arena, array_ids, memo)
+        }
+        SpecExpr::BitNot(a) => {
+            let a = eval(a, env, bindings, arena, array_ids, memo)?;
+            Ok(arena.bit_not(WORD, a))
         }
         SpecExpr::Popc(a) => {
             let a = eval(a, env, bindings, arena, array_ids, memo)?;

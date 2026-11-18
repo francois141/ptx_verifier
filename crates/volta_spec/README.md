@@ -39,8 +39,10 @@ C[i, j] = alpha * sum(k in 0..K, A[i, k] * B[k, j]);
     a value, a subscript reading another array, or an equation defining one is an
     error);
   - `NAME[i, j, ...] = expr;`: an output equation. Bodies use `+ - * /`,
-    unary `-`, builtins (`exp`, `log`, `sqrt`, `abs`, `sign`, `min`, `max`)
-    and reductions `sum(k in 0..K, e)` / `max(k in 0..K, e)`. A range's ends
+    unary `-`, builtins (`exp`, `log`, `sqrt`, `abs`, `sign`, `min`, `max`),
+    opaque 32-bit word operations (`and`, `or`, `xor`, `not`, `shl`, `shr`, `popc`),
+    `let(name, value, body)` (`value` built once, read as `name` in `body`, never in a
+    subscript) and reductions `sum(k in 0..K, e)` / `max(k in 0..K, e)`. A range's ends
     are index expressions over dims and enclosing variables, so a scan's causal
     sums read `sum(s in 0..t + 1, ...)` and `sum(r in s + 1..t + 1, ...)`; an
     empty range is the identity (0, or -infinity for `max`), and a non-empty
