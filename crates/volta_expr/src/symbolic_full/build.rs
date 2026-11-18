@@ -1,6 +1,7 @@
 //! `ExprArena`'s constructors: each pushes its node as given, folding nothing.
 
-use super::node::{ExprArena, ExprId, ExprNode, NanError, Real, StringId, SymbolId, Type};
+use super::node::{ExprArena, ExprId, ExprNode, NanError, Real, StringId, SymbolId, Type, Width};
+use super::prmt::PrmtSelector;
 
 impl ExprArena {
     pub fn int(&mut self, v: i64) -> ExprId {
@@ -181,6 +182,11 @@ impl ExprArena {
 
     pub fn popc(&mut self, ty: Type, a: ExprId) -> ExprId {
         self.operation(ty, ExprNode::Popc(a))
+    }
+
+    /// `prmt` of the words `a` and `b`: a 32-bit operation, as the instruction is.
+    pub fn prmt(&mut self, a: ExprId, b: ExprId, selector: PrmtSelector) -> ExprId {
+        self.operation(Type::Bits(Width(32)), ExprNode::Prmt { a, b, selector })
     }
 
     pub fn shl(&mut self, ty: Type, a: ExprId, b: ExprId) -> ExprId {

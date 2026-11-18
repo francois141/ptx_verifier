@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use id_collections::{IdVec, id_type};
 
+use super::prmt::PrmtSelector;
 use crate::lower::lower_real;
 use crate::symbolic_simplified;
 
@@ -221,6 +222,13 @@ pub enum ExprNode {
     Shl(ExprId, ExprId),
     Shr(ExprId, ExprId),
     LShr(ExprId, ExprId),
+    /// PTX's `prmt` of the 32-bit words `a` and `b`: each result byte is the byte of `a` or `b`
+    /// that `selector` names. Lowered to the shifts and masks that move each byte.
+    Prmt {
+        a: ExprId,
+        b: ExprId,
+        selector: PrmtSelector,
+    },
 
     Eq(ExprId, ExprId),
     Ne(ExprId, ExprId),
@@ -304,7 +312,8 @@ impl ExprNode {
             | Ge(a, b)
             | And(a, b)
             | Or(a, b)
-            | Copysign(a, b) => {
+            | Copysign(a, b)
+            | Prmt { a, b, .. } => {
                 f(*a);
                 f(*b);
             }

@@ -6,6 +6,8 @@
 mod build;
 mod display;
 mod node;
+mod prmt;
 mod value;
 
 pub use node::*;
+pub use prmt::{ByteTake, PrmtOperand, PrmtSelector, SourceByte};

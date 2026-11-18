@@ -180,6 +180,10 @@ impl Copier<'_> {
                 let (a, b) = self.pair(a, b);
                 self.target.lshr(ty(), a, b)
             }
+            ExprNode::Prmt { a, b, selector } => {
+                let (a, b) = self.pair(a, b);
+                self.target.prmt(a, b, selector)
+            }
             ExprNode::Eq(a, b) => {
                 let (a, b) = self.pair(a, b);
                 self.target.eq(ty(), a, b)

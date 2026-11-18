@@ -280,6 +280,7 @@ pub(crate) fn lower_operation(
         Shl(a, b) => target.shl(child(a), child(b)),
         Shr(a, b) => target.shr(child(a), child(b)),
         LShr(a, b) => target.lshr(child(a), child(b)),
+        Prmt { a, b, selector } => lower_prmt(target, child(a), child(b), selector),
         Eq(a, b) => target.eq(child(a), child(b)),
         Ne(a, b) => target.ne(child(a), child(b)),
         Lt(a, b) => target.lt(child(a), child(b)),
@@ -294,6 +295,45 @@ pub(crate) fn lower_operation(
         Fma(a, b, c) => lower_fma(target, child(a), child(b), child(c)),
         SymbolicRead { array, index } => target.symbolic_read(&strings[array], child(index)),
     })
+}
+
+/// `(word >> shift) & mask`.
+fn extract(
+    target: &mut simplified::ExprArena,
+    word: simplified::ExprId,
+    shift: u32,
+    mask: i64,
+) -> simplified::ExprId {
+    let shift = target.int(i64::from(shift));
+    let shifted = target.lshr(word, shift);
+    let mask = target.int(mask);
+    target.bit_and(shifted, mask)
+}
+
+/// `prmt` as the or of its four result bytes, each moved into place. A sign-filled byte is
+/// its source byte's top bit times `0xff`.
+fn lower_prmt(
+    target: &mut simplified::ExprArena,
+    a: simplified::ExprId,
+    b: simplified::ExprId,
+    selector: full::PrmtSelector,
+) -> simplified::ExprId {
+    let mut word = target.int(0);
+    for (result_byte, from) in (0..).zip(selector.bytes()) {
+        let operand = from.operand.of(a, b);
+        let byte = match from.take {
+            full::ByteTake::Value => extract(target, operand, 8 * from.byte, 0xff),
+            full::ByteTake::Sign => {
+                let sign = extract(target, operand, 8 * from.byte + 7, 1);
+                let ones = target.int(0xff);
+                target.mul(sign, ones)
+            }
+        };
+        let place = target.int(8 * result_byte);
+        let placed = target.shl(byte, place);
+        word = target.bit_or(word, placed);
+    }
+    word
 }
 
 /// `1 / a`, folding exactly as `div` does.

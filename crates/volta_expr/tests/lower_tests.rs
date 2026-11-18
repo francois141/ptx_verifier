@@ -1,5 +1,5 @@
 use volta_expr::FullOutputs;
-use volta_expr::symbolic_full::{ExprArena, ExprNode, Type, Width};
+use volta_expr::symbolic_full::{ExprArena, ExprNode, PrmtSelector, Type, Width};
 
 /// A full arena keeps `(1 < 2) ? a[0] * 1.0 : a[1]` as built while its values follow the
 /// simplified folds (the condition is `true`, the select is `a[0]`), and lowering applies them.
@@ -63,4 +63,28 @@ fn sign_masks_of_floats_lower_to_negation_and_absolute_value() {
     assert_eq!(text(0), "(-a[0])");
     assert_eq!(text(1), "abs(a[0])");
     assert_eq!(text(2), "(a[0] ^ 2147483648)");
+}
+
+/// A byte permute lowers to its four result bytes, each taken out of its source word and moved
+/// into place: `0x3120` swaps bytes 1 and 2.
+#[test]
+fn a_prmt_lowers_to_its_bytes_moved_into_place() {
+    let mut arena = ExprArena::new();
+    let a = arena.intern_string("a");
+    let word = arena.input_element(a, 0);
+    let zero = arena.int(0);
+    let permuted = arena.prmt(word, zero, PrmtSelector(0x3120));
+
+    let lowered = FullOutputs {
+        arena,
+        outputs: vec![("o".to_string(), vec![(0, permuted)])],
+    }
+    .lower()
+    .unwrap();
+    let root = lowered.element("o", 0).unwrap();
+    assert_eq!(
+        lowered.arena.display_expr(root),
+        "((((0 | (a[0] & 255)) | (((a[0] >>> 16) & 255) << 8)) | (((a[0] >>> 8) & 255) << 16)) \
+         | (((a[0] >>> 24) & 255) << 24))"
+    );
 }

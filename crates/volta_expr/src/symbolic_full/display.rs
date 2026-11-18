@@ -67,6 +67,7 @@ fn notation(node: &ExprNode) -> Option<Notation> {
         | InputElement { .. }
         | Select(..)
         | SymbolicRead { .. }
+        | Prmt { .. }
         | Discarded
         | Undefined => {
             return None;
@@ -97,6 +98,13 @@ impl ExprArena {
                 write!(f, "{}[", self.string(*array))?;
                 self.fmt_expr(*index, f)?;
                 return write!(f, "]");
+            }
+            ExprNode::Prmt { a, b, selector } => {
+                write!(f, "prmt(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ", ")?;
+                self.fmt_expr(*b, f)?;
+                return write!(f, ", {:#06x})", selector.0);
             }
             ExprNode::Select(c, t, e) => {
                 write!(f, "(")?;
