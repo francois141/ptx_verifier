@@ -9,7 +9,8 @@ use crate::frontend::ast::{
 use crate::frontend::lex::DottedIdent;
 
 use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
-use crate::ir::{LoweredInstr, MemSpace, Predicate};
+use crate::ir::types::RegClass;
+use crate::ir::{LoweredInstr, MemSpace, Operand, Predicate};
 
 use super::context::{LoweringContext, parse_scalar_type_modifier, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -247,6 +248,9 @@ pub(super) fn lower_mma(
     operands: &[AstOperand],
     predicate: Option<Predicate>,
 ) -> LowerResult<()> {
+    if modifiers.iter().any(|m| m.to_string() == "b1") {
+        return lower_mma_xor_popc(ctx, modifiers, operands, predicate);
+    }
     let mut shape: Option<MmaShape> = None;
     let mut layouts: Vec<MmaLayout> = Vec::new();
     let mut types: Vec<ScalarType> = Vec::new();
@@ -399,6 +403,79 @@ pub(super) fn lower_mma(
             a_type,
             b_type,
             d_type,
+        },
+        predicate,
+    )?;
+    Ok(())
+}
+
+/// The one binary tensor-core form used by CUTLASS's SM80 XOR-popcount GEMM.
+fn lower_mma_xor_popc(
+    ctx: &mut LoweringContext,
+    modifiers: &[DottedIdent],
+    operands: &[AstOperand],
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    let given: Vec<_> = modifiers.iter().map(ToString::to_string).collect();
+    if given
+        != [
+            "sync",
+            "aligned",
+            "m16n8k256",
+            "row",
+            "col",
+            "s32",
+            "b1",
+            "b1",
+            "s32",
+            "xor",
+            "popc",
+        ]
+    {
+        return Err(unsupported(
+            "mma",
+            "only .sync.aligned.m16n8k256.row.col.s32.b1.b1.s32.xor.popc is modeled for binary MMA",
+        ));
+    }
+    if operands.len() != 4 {
+        return Err(unsupported(
+            "mma",
+            "binary MMA requires four vector operands",
+        ));
+    }
+    let dst = ctx.resolve_dst_vector(&operands[0])?;
+    let src_a = ctx.resolve_dst_vector(&operands[1])?;
+    let src_b = ctx.resolve_dst_vector(&operands[2])?;
+    let src_c = ctx.resolve_operand_vector(&operands[3])?;
+    if (dst.len(), src_a.len(), src_b.len(), src_c.len()) != (4, 4, 2, 4) {
+        return Err(unsupported(
+            "mma",
+            "binary m16n8k256 requires 4 D, 4 A, 2 B, and 4 C registers",
+        ));
+    }
+    if dst
+        .iter()
+        .chain(&src_a)
+        .chain(&src_b)
+        .any(|r| r.class != RegClass::Bits32)
+        || src_c.iter().any(|op| match op {
+            Operand::Reg(r) => r.class != RegClass::Bits32,
+            Operand::ImmI64(v) => !(-(1i64 << 31)..(1i64 << 32)).contains(v),
+            Operand::ImmU64(v) => *v > u32::MAX as u64,
+            _ => true,
+        })
+    {
+        return Err(unsupported(
+            "mma",
+            "binary MMA requires 32-bit integer/bit registers and s32 accumulator values",
+        ));
+    }
+    ctx.emit(
+        LoweredInstr::MmaXorPopc {
+            dst,
+            src_a,
+            src_b,
+            src_c,
         },
         predicate,
     )?;

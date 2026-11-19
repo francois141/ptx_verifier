@@ -1,0 +1,42 @@
+.version 8.0
+.target sm_80
+.address_size 64
+.visible .entry binary_mma(.param .u64 a, .param .u64 b, .param .u64 seed, .param .u64 out) {
+    .reg .b32 %lane, %group, %thread, %idx, %off;
+    .reg .b32 %a<4>, %b<2>, %c<4>;
+    .reg .b64 %pa, %pb, %ps, %po, %bytes, %addr;
+    ld.param.u64 %pa, [a];
+    ld.param.u64 %pb, [b];
+    ld.param.u64 %ps, [seed];
+    ld.param.u64 %po, [out];
+    mov.u32 %lane, %laneid;
+    shr.u32 %group, %lane, 2;
+    and.b32 %thread, %lane, 3;
+    mad.lo.u32 %idx, %group, 8, %thread;
+    mul.wide.u32 %bytes, %idx, 4;
+    add.u64 %addr, %pa, %bytes;
+    ld.global.u32 %a0, [%addr];
+    ld.global.u32 %a1, [%addr+256];
+    ld.global.u32 %a2, [%addr+16];
+    ld.global.u32 %a3, [%addr+272];
+    add.u64 %addr, %pb, %bytes;
+    ld.global.u32 %b0, [%addr];
+    ld.global.u32 %b1, [%addr+16];
+    shl.b32 %off, %thread, 1;
+    mad.lo.u32 %idx, %group, 8, %off;
+    mul.wide.u32 %bytes, %idx, 4;
+    add.u64 %addr, %ps, %bytes;
+    ld.global.u32 %c0, [%addr];
+    ld.global.u32 %c1, [%addr+4];
+    ld.global.u32 %c2, [%addr+256];
+    ld.global.u32 %c3, [%addr+260];
+    // D aliases A: every lane must read the original A before any lane writes D.
+    mma.sync.aligned.m16n8k256.row.col.s32.b1.b1.s32.xor.popc
+        {%a0,%a1,%a2,%a3}, {%a0,%a1,%a2,%a3}, {%b0,%b1}, {%c0,%c1,%c2,%c3};
+    add.u64 %addr, %po, %bytes;
+    st.global.u32 [%addr], %a0;
+    st.global.u32 [%addr+4], %a1;
+    st.global.u32 [%addr+256], %a2;
+    st.global.u32 [%addr+260], %a3;
+    ret;
+}

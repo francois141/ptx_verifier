@@ -2245,3 +2245,20 @@ fn test_tcgen05_mma_kind_mxf8f6f4_symbolic_scales() {
         .to_vec();
     analyze!("success/tcgen05_mma_kind_mxf8f6f4_symbolic_scales", config);
 }
+
+/// One warp's `mma.sync.m16n8k256.b1.xor.popc` over a 16x8-word A, an 8x8-word B (one row
+/// per output column) and seed C: out[m, n] = seed[m, n] + sum_w popc(a[m, w] ^ b[n, w]).
+#[test]
+fn test_mma_xor_popc() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![
+        array("a", 0x10000, 4, 128, ArrayKind::Input),
+        array("b", 0x20000, 4, 64, ArrayKind::Input),
+        array("seed", 0x30000, 4, 128, ArrayKind::Input),
+        array("out", 0x40000, 4, 128, ArrayKind::Output),
+    ];
+    config.params = ["a", "b", "seed", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/mma_xor_popc", config);
+}

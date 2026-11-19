@@ -24,6 +24,25 @@ fn test_lowering_context_creation() {
 }
 
 #[test]
+fn binary_mma_rejects_wrong_shapes_operations_and_fragments() {
+    let instruction = "mma.sync.aligned.m16n8k256.row.col.s32.b1.b1.s32.xor.popc \
+        {%r0,%r1,%r2,%r3}, {%r0,%r1,%r2,%r3}, {%r4,%r5}, {0,0,0,0};";
+    assert!(lower_body(instruction).is_ok());
+    for invalid in [
+        instruction.replace("m16n8k256", "m16n8k128"),
+        instruction.replace(".xor.popc", ".and.popc"),
+        instruction.replace(".row.col", ".col.row"),
+        instruction.replace(".aligned", ""),
+        instruction.replace("{%r4,%r5}", "{%r4}"),
+        instruction.replace("{%r4,%r5}", "{%rd4,%rd5}"),
+        instruction.replace("{0,0,0,0}", "{0f3f800000,0,0,0}"),
+        instruction.replace("{0,0,0,0}", "{4294967296,0,0,0}"),
+    ] {
+        assert!(lower_body(&invalid).is_err(), "accepted {invalid}");
+    }
+}
+
+#[test]
 fn test_label_recording() {
     let mut ctx = LoweringContext::new();
     ctx.record_label("LOOP");

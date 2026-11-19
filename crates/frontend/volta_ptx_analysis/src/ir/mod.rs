@@ -677,6 +677,15 @@ pub enum LoweredInstr {
         d_type: ScalarType,
     },
 
+    /// `mma.sync.aligned.m16n8k256.row.col.s32.b1.b1.s32.xor.popc`.
+    /// A/B fragments contain four/two packed 32-bit words; C/D four s32 values.
+    MmaXorPopc {
+        dst: Vec<RegId>,
+        src_a: Vec<RegId>,
+        src_b: Vec<RegId>,
+        src_c: Vec<Operand>,
+    },
+
     /// WMMA cooperative matrix load (wmma.load.{a,b,c}.sync)
     WmmaLoad {
         operand: crate::ir::mma::MmaOperand,
@@ -1044,6 +1053,7 @@ define_instr_kinds!(
     Ldmatrix,
     Movmatrix,
     Mma,
+    MmaXorPopc,
     WmmaLoad,
     WmmaStore,
     WmmaMma,

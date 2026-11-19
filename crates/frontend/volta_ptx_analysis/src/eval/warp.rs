@@ -22,7 +22,7 @@ use crate::ir::mma::{MmaLayout, MmaOperand, MmaShape};
 use crate::ir::symbols::{RegId, shared_operand_addr};
 use crate::ir::tcgen05::Tcgen05LdStShape;
 use crate::ir::types::ScalarTypeExt;
-use crate::ir::{InstrId, LoweredInstr, MemSpace, Operand, ShflMode};
+use crate::ir::{BinOp, InstrId, LoweredInstr, MemSpace, Operand, ShflMode, UnaryOp};
 use volta_expr::symbolic_full::{ExprId, Type, Width};
 
 /// A dense matrix of expressions being assembled from lane fragments.
@@ -50,6 +50,9 @@ impl Grid {
         })
     }
 }
+
+/// The 32-bit words of K in a binary `m16n8k256` MMA.
+const BINARY_MMA_WORDS: u32 = 256 / 32;
 
 /// Element offset (in elements) within a matrix laid out in memory.
 fn elem_offset(layout: MmaLayout, row: u32, col: u32, stride: u64) -> u64 {
@@ -154,6 +157,7 @@ impl Interpreter<'_> {
             }
             LoweredInstr::Movmatrix { dst, src } => self.exec_movmatrix(pc, members, *dst, src)?,
             LoweredInstr::Mma { .. } => self.exec_mma(pc, members, &instr)?,
+            LoweredInstr::MmaXorPopc { .. } => self.exec_mma_xor_popc(pc, members, &instr)?,
             LoweredInstr::WmmaLoad { .. } => self.exec_wmma_load(pc, members, &instr)?,
             LoweredInstr::WmmaStore { .. } => self.exec_wmma_store(pc, members, &instr)?,
             LoweredInstr::WmmaMma { .. } => self.exec_wmma_mma(pc, members, &instr)?,
@@ -289,6 +293,7 @@ impl Interpreter<'_> {
                 // Every lane owns a/b/c fragment elements the product needs.
                 self.require_live_warp(pc, members, "mma.sync")
             }
+            LoweredInstr::MmaXorPopc { .. } => self.require_live_warp(pc, members, "mma.sync"),
             LoweredInstr::WmmaLoad { shape, .. }
             | LoweredInstr::WmmaStore { shape, .. }
             | LoweredInstr::WmmaMma { shape, .. } => self.check_wmma_shape(pc, members, *shape),
@@ -754,6 +759,89 @@ impl Interpreter<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `D = C + popc(A xor B)`. Each A/B register packs 32 K bits at the m16n8k8 tf32
+    /// register positions (PTX ISA m16n8k256 fragments). The words stay packed, so
+    /// each output is C plus eight `popc(xor)` terms.
+    fn exec_mma_xor_popc(
+        &mut self,
+        pc: InstrId,
+        members: &[ThreadId],
+        instr: &LoweredInstr,
+    ) -> EvalResult<()> {
+        let LoweredInstr::MmaXorPopc {
+            dst,
+            src_a,
+            src_b,
+            src_c,
+        } = instr
+        else {
+            unreachable!()
+        };
+        let mut a = Grid::new(16, BINARY_MMA_WORDS as usize);
+        let mut b = Grid::new(BINARY_MMA_WORDS as usize, 8);
+        let mut c = Grid::new(16, 8);
+        // Read every lane's sources before writing any D: D may alias A, B or C.
+        for &thread in members {
+            let lane = thread.0 % WARP_SIZE;
+            let a_elems = m16n8k8_tf32::matrix_a(lane);
+            let b_elems = m16n8k8_tf32::matrix_b(lane);
+            let c_elems = m16n8k16_f16::matrix_cd(lane);
+            self.read_fragment(pc, thread, &a_elems, |i| Operand::Reg(src_a[i]), &mut a)?;
+            self.read_fragment(pc, thread, &b_elems, |i| Operand::Reg(src_b[i]), &mut b)?;
+            self.read_fragment(pc, thread, &c_elems, |i| src_c[i], &mut c)?;
+        }
+        for &thread in members {
+            for elem in m16n8k16_f16::matrix_cd(thread.0 % WARP_SIZE) {
+                let accumulator = c.get(elem.row, elem.col, pc)?;
+                let accumulator = self.canon_operand(pc, ScalarType::S32, accumulator)?;
+                let sum = self.xor_popc_dot(pc, thread, &a, &b, elem.row, elem.col, accumulator)?;
+                self.threads[thread]
+                    .regs
+                    .write(dst[elem.reg_idx], Value::Scalar(sum));
+            }
+        }
+        Ok(())
+    }
+
+    /// Place one lane's fragment of raw words into a grid; `operand(i)` is register `i`.
+    fn read_fragment(
+        &mut self,
+        pc: InstrId,
+        thread: ThreadId,
+        elems: &[FragmentElement],
+        operand: impl Fn(usize) -> Operand,
+        grid: &mut Grid,
+    ) -> EvalResult<()> {
+        for elem in elems {
+            let value = self.scalar_operand(thread, pc, &operand(elem.reg_idx))?;
+            grid.set(elem.row, elem.col, value);
+        }
+        Ok(())
+    }
+
+    /// `accumulator + sum_w popc(a[row, w] xor b[w, col])`, in s32.
+    #[allow(clippy::too_many_arguments)]
+    fn xor_popc_dot(
+        &mut self,
+        pc: InstrId,
+        thread: ThreadId,
+        a: &Grid,
+        b: &Grid,
+        row: u32,
+        col: u32,
+        accumulator: ExprId,
+    ) -> EvalResult<ExprId> {
+        let mut sum = accumulator;
+        for word in 0..BINARY_MMA_WORDS {
+            let (a_word, b_word) = (a.get(row, word, pc)?, b.get(word, col, pc)?);
+            let differing =
+                self.eval_binop(thread, pc, BinOp::Xor, ScalarType::B32, a_word, b_word)?;
+            let count = self.eval_unop(pc, UnaryOp::Popc, ScalarType::B32, differing)?;
+            sum = self.eval_binop(thread, pc, BinOp::Add, ScalarType::S32, sum, count)?;
+        }
+        Ok(sum)
     }
 
     /// `wmma.load.{a,b,c}.sync.aligned.{row,col}.m16n16k16{.shared}.{f16,f32}`;

@@ -1645,6 +1645,7 @@ impl<'p> Interpreter<'p> {
             LoweredInstr::Ldmatrix { .. }
             | LoweredInstr::Movmatrix { .. }
             | LoweredInstr::Mma { .. }
+            | LoweredInstr::MmaXorPopc { .. }
             | LoweredInstr::WmmaLoad { .. }
             | LoweredInstr::WmmaStore { .. }
             | LoweredInstr::WmmaMma { .. }
