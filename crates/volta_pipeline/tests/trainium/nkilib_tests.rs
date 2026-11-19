@@ -7,6 +7,7 @@
 mod bugs;
 mod conv;
 mod elementwise;
+mod norms;
 mod pooling;
 
 use std::collections::HashMap;
