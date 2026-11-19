@@ -9,6 +9,7 @@ and `popc(a)`.
 |---|---|---|---|
 | `binary_gemm.ptx` | `binary_gemm.launch.json` (8 x 8 outputs, K = 128) | `binary_gemm.spec` | ACCEPT |
 | `cutlass_binary_gemm/kernel.ptx` | `cutlass_binary_gemm/kernel.launch.json` (M=N=K=256, CTA 0) | `cutlass_binary_gemm/binary_gemm.spec` | ACCEPT, all 16,384 tile outputs |
+| `triton_binary_gemm/kernel.ptx` | `triton_binary_gemm/kernel.launch.json` (M=N=K=256, CTA 0) | `triton_binary_gemm/binary_gemm.spec` | ACCEPT, all 4,096 tile outputs |
 | `bitdelta/kernel_tile.ptx` | `bitdelta/kernel_tile.launch.json` | `bitdelta/bitdelta.spec` | ACCEPT (see `bitdelta/README.md`) |
 | `simdjson/stage1.ptx` | `simdjson/stage1.launch.json` (4 rows of 4 blocks) | `simdjson/stage1.spec` | ACCEPT |
 | `simdjson/escape.ptx` | `simdjson/escape.launch.json` (8 blocks) | `simdjson/escape.spec` | ACCEPT |
@@ -25,6 +26,8 @@ order.
 SM80 binary tensor-core GEMM at M=N=K=256. Its native `OpXorPopc` returns the
 Hamming distance, `sum_w popc(a[m,w] ^ b[n,w])`; the older signed `binary_gemm.ptx`
 above returns `K - 2 * distance`. `just bitwise` checks CTA 0's tile.
+[`triton_binary_gemm/`](triton_binary_gemm/README.md) computes the same Hamming
+distance in Triton with CUDA-core `xor` and `popc`, compiled for Blackwell (`sm_100a`).
 
 ```sh
 cargo run --release -q -p volta_cli -- solve external/bitwise/binary_gemm.ptx \
