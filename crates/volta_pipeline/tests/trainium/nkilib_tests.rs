@@ -5,6 +5,7 @@
 //! bugs Volta found and their fixes; the other modules, kernels found correct.
 
 mod bugs;
+mod pooling;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
