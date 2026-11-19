@@ -12,7 +12,6 @@ use volta_expr::{FullOutputs, SymbolicOutputs};
 use volta_graph_check::{GraphConclusion, check_graph};
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
 use volta_trainium_analysis::frontend::parse::{Constant, KernelCall};
-use volta_trainium_analysis::frontend::trace::Tracer;
 use volta_trainium_analysis::{
     EvalError, Execution, LoweredKernel, OrderingPolicy, WriteAfterWrite, evaluate,
     evaluate_sharing_aliases, lower_kernel, record_graph,
@@ -61,7 +60,7 @@ fn lowered(wrapper: &str, args: &[Arg]) -> LoweredKernel {
         ..KernelCall::new(&shapes)
     };
     let file = PathBuf::from(NKILIB).join(wrapper);
-    let kernel = Tracer::from_env()
+    let kernel = crate::common::trainium::tracer()
         .trace(&file, &[PathBuf::from(NKILIB).join("src")], "kernel", &call)
         .unwrap_or_else(|e| panic!("{wrapper}: {e}"));
     lower_kernel(&kernel).unwrap_or_else(|e| panic!("{wrapper}: {e}"))
