@@ -1,0 +1,41 @@
+{
+  "repository": "https://github.com/FasterDecoding/BitDelta",
+  "commit": "ecbee1e28f6b02444d535e0a165b48cba3fe217a",
+  "upstream_sha256": "3ad7d5d8cb1d8b4407efba5bdac7cf6bd196f0e1a88ab01b07be812bd8302def",
+  "ptx_sha256": "6e132dffd26ec5eb1af5908d92a4c5371a6fd09d5e53bf4fb93032b86d98d6c6",
+  "triton": "3.5.1",
+  "target": "sm_90a",
+  "constants": {
+    "M": 256,
+    "N": 256,
+    "K": 256,
+    "n_bits": 32,
+    "stride_am": 256,
+    "stride_ak": 1,
+    "stride_bk": 256,
+    "stride_bn": 1,
+    "stride_cm": 256,
+    "stride_cn": 1,
+    "BLOCK_SIZE_M": 16,
+    "BLOCK_SIZE_N": 256,
+    "BLOCK_SIZE_K": 64,
+    "GROUP_SIZE_M": 8,
+    "ACTIVATION": ""
+  },
+  "options": {
+    "num_warps": 8,
+    "num_stages": 3
+  },
+  "shared": 165888,
+  "kernel": "binary_matmul_kernel",
+  "grid": [
+    16,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ]
+}

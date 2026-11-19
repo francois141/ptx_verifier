@@ -88,3 +88,81 @@ fn a_prmt_lowers_to_its_bytes_moved_into_place() {
          | (((a[0] >>> 24) & 255) << 24))"
     );
 }
+
+/// Triton fuses the factor two into the mask. Include bit zero (a left shift),
+/// bit 31 (a logical right shift), both mask orders, and complemented signs.
+#[test]
+fn triton_scaled_sign_bits_lower_to_the_original_bit() {
+    for index in 0..32 {
+        for complemented in [false, true] {
+            for swapped in [false, true] {
+                let mut arena = ExprArena::new();
+                let bits = Type::Bits(Width(32));
+                let a = arena.intern_string("a");
+                let word = arena.input_element(a, 0);
+                let one = arena.int(1);
+                let two = arena.int(2);
+                let moved = if index == 0 {
+                    arena.shl(bits, word, one)
+                } else {
+                    let shift = arena.int(index - 1);
+                    arena.lshr(bits, word, shift)
+                };
+                let moved = if complemented {
+                    arena.bit_xor(bits, moved, two)
+                } else {
+                    moved
+                };
+                let masked = if swapped {
+                    arena.bit_and(bits, two, moved)
+                } else {
+                    arena.bit_and(bits, moved, two)
+                };
+                let lowered = FullOutputs {
+                    arena,
+                    outputs: vec![("o".into(), vec![(0, masked)])],
+                }
+                .lower()
+                .unwrap();
+                let actual = lowered.arena.display_expr(lowered.element("o", 0).unwrap());
+                let mut expected = volta_expr::symbolic_simplified::ExprArena::new();
+                let a = expected.intern_string("a");
+                let word = expected.input_element(a, 0);
+                let shift = expected.int(index);
+                let moved = expected.lshr(word, shift);
+                let one = expected.int(1);
+                let bit = expected.bit_and(moved, one);
+                let bit = if complemented {
+                    expected.sub(one, bit)
+                } else {
+                    bit
+                };
+                let two = expected.int(2);
+                let result = expected.mul(two, bit);
+                assert_eq!(actual, expected.display_expr(result), "bit {index}");
+            }
+        }
+    }
+}
+
+#[test]
+fn sign_bit_and_multibit_masks_stay_opaque() {
+    for mask in [3, 6, 0x8000_0000] {
+        let mut arena = ExprArena::new();
+        let bits = Type::Bits(Width(32));
+        let a = arena.intern_string("a");
+        let word = arena.input_element(a, 0);
+        let mask_id = arena.int(mask);
+        let masked = arena.bit_and(bits, word, mask_id);
+        let lowered = FullOutputs {
+            arena,
+            outputs: vec![("o".into(), vec![(0, masked)])],
+        }
+        .lower()
+        .unwrap();
+        assert_eq!(
+            lowered.arena.display_expr(lowered.element("o", 0).unwrap()),
+            format!("(a[0] & {mask})")
+        );
+    }
+}

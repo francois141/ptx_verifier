@@ -110,7 +110,7 @@ tilelang *args:
 ai_compiler *args:
     python3 external/ptx/races.py --framework ai_compiler {{args}}
 
-# Check the bitwise kernels in external/bitwise against their specs, BitDelta on 32 of its 8192 outputs
+# Check bitwise kernels; sample 32 outputs of the large LLM BitDelta and check full Triton tiles
 bitwise:
     #!/usr/bin/env bash
     set -eo pipefail
@@ -119,7 +119,9 @@ bitwise:
     solve binary_gemm external/bitwise/binary_gemm.ptx --config external/bitwise/binary_gemm.launch.json
     solve cutlass_binary_gemm external/bitwise/cutlass_binary_gemm/kernel.ptx --config external/bitwise/cutlass_binary_gemm/kernel.launch.json --print-outputs 0
     solve triton_binary_gemm external/bitwise/triton_binary_gemm/kernel.ptx --config external/bitwise/triton_binary_gemm/kernel.launch.json --print-outputs 0
-    solve bitdelta external/bitwise/bitdelta/kernel_tile.ptx --config external/bitwise/bitdelta/kernel_tile.launch.json --recycle-terms 1000000 --sample 32
+    solve bitdelta_llm external/bitwise/bitdelta_llm/kernel_tile.ptx --config external/bitwise/bitdelta_llm/kernel_tile.launch.json --recycle-terms 1000000 --sample 32
+    solve bitdelta_triton_matmul external/bitwise/bitdelta_triton/binary_matmul_kernel.ptx --config external/bitwise/bitdelta_triton/binary_matmul_kernel.launch.json --recycle-terms 1000000 --print-outputs 0
+    solve bitdelta_triton_bmm external/bitwise/bitdelta_triton/binary_bmm_kernel.ptx --config external/bitwise/bitdelta_triton/binary_bmm_kernel.launch.json --recycle-terms 1000000 --print-outputs 0
     solve simdjson_strings external/bitwise/simdjson/stage1.ptx --config external/bitwise/simdjson/stage1.launch.json
     solve simdjson_escape external/bitwise/simdjson/escape.ptx --config external/bitwise/simdjson/escape.launch.json
     solve simdjson_structural external/bitwise/simdjson/structural_start.ptx --config external/bitwise/simdjson/structural_start.launch.json

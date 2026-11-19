@@ -15,25 +15,28 @@ enum Polarity {
     Complemented,
 }
 
-/// A node `x & 1` whose result is the bit at `offset` of the input element `word`, in
-/// `polarity`.
+/// A single-bit mask whose result is `scale` times the bit at `offset` of the input
+/// element `word`, in `polarity`.
 pub(super) struct BitDeltaPattern {
     word: full::ExprId,
     offset: u32,
     polarity: Polarity,
+    scale: i64,
 }
 
 impl BitfieldPattern for BitDeltaPattern {
-    /// A node `x & 1` whose bit 0 is exactly one input bit, or that bit's complement.
+    /// A node `x & 2^s` whose bit s is exactly one input bit, or its complement.
+    /// Exclude the sign bit: its numeric value depends on signed interpretation.
     fn detect(arena: &full::ExprArena, id: full::ExprId) -> Option<Self> {
         let full::ExprNode::BitAnd(a, b) = *arena.node(id) else {
             return None;
         };
-        let is_one = |operand| arena.as_int_const(operand) == Some(1);
-        if !is_one(a) && !is_one(b) {
-            return None;
-        }
-        let Bit { constant, inputs } = BitReader::new(arena).bit(id, 0)?;
+        let mask = |operand| {
+            let value = u32::try_from(arena.as_int_const(operand)?).ok()?;
+            (value.is_power_of_two() && value < (1 << 31)).then_some(value)
+        };
+        let scale = mask(a).or_else(|| mask(b))?;
+        let Bit { constant, inputs } = BitReader::new(arena).bit(id, scale.trailing_zeros())?;
         let mut inputs = inputs.into_iter();
         let (Some(InputBit { word, index }), None) = (inputs.next(), inputs.next()) else {
             return None;
@@ -47,22 +50,25 @@ impl BitfieldPattern for BitDeltaPattern {
             word,
             offset: index,
             polarity,
+            scale: i64::from(scale),
         })
     }
 
-    /// `(word >> offset) & 1`; a complemented bit, being 0 or 1, is 1 minus it.
+    /// `scale * ((word >> offset) & 1)`; a complemented bit is 1 minus the bit.
     fn lower(
         self,
         target: &mut simplified::ExprArena,
         child: impl Fn(full::ExprId) -> simplified::ExprId,
     ) -> simplified::ExprId {
         let bit = extract_bitfield(target, child(self.word), self.offset, 1);
-        match self.polarity {
+        let bit = match self.polarity {
             Polarity::Direct => bit,
             Polarity::Complemented => {
                 let one = target.int(1);
                 target.sub(one, bit)
             }
-        }
+        };
+        let scale = target.int(self.scale);
+        target.mul(scale, bit)
     }
 }

@@ -10,7 +10,9 @@ and `popc(a)`.
 | `binary_gemm.ptx` | `binary_gemm.launch.json` (8 x 8 outputs, K = 128) | `binary_gemm.spec` | ACCEPT |
 | `cutlass_binary_gemm/kernel.ptx` | `cutlass_binary_gemm/kernel.launch.json` (M=N=K=256, CTA 0) | `cutlass_binary_gemm/binary_gemm.spec` | ACCEPT, all 16,384 tile outputs |
 | `triton_binary_gemm/kernel.ptx` | `triton_binary_gemm/kernel.launch.json` (M=N=K=256, CTA 0) | `triton_binary_gemm/binary_gemm.spec` | ACCEPT, all 4,096 tile outputs |
-| `bitdelta/kernel_tile.ptx` | `bitdelta/kernel_tile.launch.json` | `bitdelta/bitdelta.spec` | ACCEPT (see `bitdelta/README.md`) |
+| `bitdelta_llm/kernel_tile.ptx` | `bitdelta_llm/kernel_tile.launch.json` | `bitdelta_llm/bitdelta.spec` | ACCEPT (see `bitdelta_llm/README.md`) |
+| `bitdelta_triton/binary_matmul_kernel.ptx` | `bitdelta_triton/binary_matmul_kernel.launch.json` (M=N=K=256, CTA 0) | `bitdelta_triton/bitdelta.spec` | ACCEPT, all 4096 tile outputs |
+| `bitdelta_triton/binary_bmm_kernel.ptx` | `bitdelta_triton/binary_bmm_kernel.launch.json` (M=N=K=256, batch 0, CTA 0) | `bitdelta_triton/bitdelta.spec` | ACCEPT, all 4096 tile outputs |
 | `simdjson/stage1.ptx` | `simdjson/stage1.launch.json` (4 rows of 4 blocks) | `simdjson/stage1.spec` | ACCEPT |
 | `simdjson/escape.ptx` | `simdjson/escape.launch.json` (8 blocks) | `simdjson/escape.spec` | ACCEPT |
 | `simdjson/structural_start.ptx` | `simdjson/structural_start.launch.json` (4 rows of 4 blocks) | `simdjson/structural_start.spec` | ACCEPT |
@@ -21,6 +23,11 @@ and `popc(a)`.
 the dot product of two rows of `±1` signs. The spec states those same operations; the solver
 compares the opaque `popc`s inside the opaque `shl` as polynomials, and `xor`'s operands in either
 order.
+
+`bitdelta_llm/` is the previous `bitdelta/` AI-compiler example. `bitdelta_triton/`
+contains the two original FasterDecoding/BitDelta Triton kernels compiled for
+256×256 matrices; `just bitwise` checks CTA (0,0,0)'s 4,096 outputs of each. See
+[the extraction and verification instructions](bitdelta_triton/README.md).
 
 [`cutlass_binary_gemm/`](cutlass_binary_gemm/README.md) instantiates CUTLASS's
 SM80 binary tensor-core GEMM at M=N=K=256. Its native `OpXorPopc` returns the

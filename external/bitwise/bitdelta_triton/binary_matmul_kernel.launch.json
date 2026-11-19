@@ -1,0 +1,75 @@
+{
+  "description": "binary_matmul_kernel: original 256x256x256 PTX, CTA (0,0,0), all 4096 tile outputs",
+  "kernel": "binary_matmul_kernel",
+  "grid": [
+    16,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 165888,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "f16",
+      "shape": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "i32",
+      "shape": [
+        8,
+        256
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "f16",
+      "shape": [
+        16,
+        256
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "a_ptr",
+      "ptr": "a"
+    },
+    {
+      "name": "b_ptr",
+      "ptr": "b"
+    },
+    {
+      "name": "c_ptr",
+      "ptr": "c"
+    },
+    {
+      "name": "global_scratch",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch",
+      "int": 0
+    }
+  ],
+  "spec": "bitdelta.spec",
+  "dims": {
+    "M": 16,
+    "N": 256,
+    "K": 256,
+    "KW": 8,
+    "NB": 256,
+    "MA": 256
+  }
+}

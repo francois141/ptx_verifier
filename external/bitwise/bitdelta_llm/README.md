@@ -24,8 +24,8 @@ so that CTA 0's 64 x 128 tile of `c` is a dense array: a spec's output must cove
 elements a kernel writes. The math path is unchanged.
 
 ```sh
-cargo run --release -q -p volta_cli -- solve external/bitwise/bitdelta/kernel_tile.ptx \
-  --config external/bitwise/bitdelta/kernel_tile.launch.json --recycle-terms 1000000
+cargo run --release -q -p volta_cli -- solve external/bitwise/bitdelta_llm/kernel_tile.ptx \
+  --config external/bitwise/bitdelta_llm/kernel_tile.launch.json --recycle-terms 1000000
 ```
 
 The output has 8192 elements, each a 4096-term sum. With the default recycle bound, a session
