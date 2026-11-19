@@ -1,11 +1,13 @@
-//! Bugs Volta found in nkilib's experimental kernels, vendored unmodified at nki-library
-//! `ad2f1b9` in `external/trainium/nkilib/src/`, and their proposed fixes. Each buggy kernel
+//! Bugs Volta found in nkilib's experimental kernels, traced from nki-library at the commit
+//! `external/trainium/nkilib/nki-library.commit` names (`just nkilib` fetches it into
+//! `target/nkilib`), and their proposed fixes. Each buggy kernel
 //! fails at the call that shows its bug (an execution error, or a refutation against its spec
 //! in `external/trainium/nkilib/`, the operation of nkilib's own `*_torch.py` reference); the
 //! same call with the fix `fixes.py` applies is proved equal to the spec and race free.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use volta_equivalence::check::EquivCheckOptions;
 use volta_expr::{FullOutputs, SymbolicOutputs};
@@ -21,6 +23,27 @@ const NKILIB: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../external/trainium/nkilib"
 );
+
+/// The root nki-library's `nkilib` package is imported from: `target/nkilib`'s
+/// `src/nkilib_src`, checked once to be at the pinned commit.
+fn nkilib_source() -> PathBuf {
+    static SOURCE: OnceLock<PathBuf> = OnceLock::new();
+    SOURCE
+        .get_or_init(|| {
+            let clone = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/nkilib");
+            let pinned = std::fs::read_to_string(Path::new(NKILIB).join("nki-library.commit"))
+                .expect("external/trainium/nkilib/nki-library.commit is readable");
+            let head = std::fs::read_to_string(clone.join(".git/HEAD")).unwrap_or_default();
+            assert!(
+                head.trim() == pinned.trim(),
+                "the nkilib suite traces nki-library at {}, which `target/nkilib` does not hold. \
+                 Run `just nkilib` (or `just trainium`) to fetch it.",
+                pinned.trim()
+            );
+            clone.join("src/nkilib_src")
+        })
+        .clone()
+}
 
 /// The fixed kernels write a tile and overwrite it unread (a `memset` before a copy), which
 /// races unless the compiler orders write after write.
@@ -61,7 +84,7 @@ fn lowered(wrapper: &str, args: &[Arg]) -> LoweredKernel {
     };
     let file = PathBuf::from(NKILIB).join(wrapper);
     let kernel = crate::common::trainium::tracer()
-        .trace(&file, &[PathBuf::from(NKILIB).join("src")], "kernel", &call)
+        .trace(&file, &[nkilib_source()], "kernel", &call)
         .unwrap_or_else(|e| panic!("{wrapper}: {e}"));
     lower_kernel(&kernel).unwrap_or_else(|e| panic!("{wrapper}: {e}"))
 }

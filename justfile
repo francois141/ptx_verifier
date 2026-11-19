@@ -12,11 +12,11 @@ help:
 # ===== Tests ==================================================================
 
 # Run every Rust unit and integration test of the workspace
-test: python-env
+test: python-env nkilib
     cargo test --release --workspace --no-fail-fast -- --test-threads 16 --color always
 
 # Run volta_pipeline's end-to-end tests of every ISA (PTX, AMD and Trainium kernels)
-all: python-env
+all: python-env nkilib
     cargo test --release -p volta_pipeline -- --test-threads 16 --color always
 
 # Kernel modules import numpy, so tracing one needs a Python that has it.
@@ -24,6 +24,19 @@ all: python-env
 python-env:
     uv venv -q --allow-existing --python ">=3.11" target/volta-python
     uv pip install -q --python target/volta-python/bin/python "numpy>=2"
+
+# The nkilib suite traces nki-library's kernels at the commit external/trainium/nkilib/nki-library.commit names.
+# Fetch that commit of nki-library into target/nkilib, unless it is already there
+nkilib:
+    #!/usr/bin/env sh
+    set -eu
+    commit=$(cat external/trainium/nkilib/nki-library.commit)
+    if [ "$(git -C target/nkilib rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
+        rm -rf target/nkilib
+        git init -q target/nkilib
+        git -C target/nkilib fetch -q --depth 1 https://github.com/aws-neuron/nki-library.git "$commit"
+        git -C target/nkilib -c advice.detachedHead=false checkout -q FETCH_HEAD
+    fi
 
 # ===== Static checks and formatting ===========================================
 
@@ -181,6 +194,6 @@ piecewise *args:
 # Release, since attention v2 against its spec takes a minute in debug; VOLTA_BLESS=1 rewrites the snapshots.
 # Check the Trainium kernels' .ast, .ir and .out snapshots, expected rejections and spec equivalence,
 # and nkilib's bugs and their fixes (external/trainium/nkilib)
-trainium: python-env
+trainium: python-env nkilib
     cargo test -q -p volta_pipeline --test trainium_tests -- accepted_tests:: rejected_tests::
     cargo test -q --release -p volta_pipeline --test trainium_tests -- equivalence_tests:: nkilib_tests::

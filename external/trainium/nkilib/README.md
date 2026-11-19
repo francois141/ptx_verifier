@@ -21,13 +21,14 @@ Volta also proved other nkilib kernels correct; they are listed in
 
 ## Layout
 
-- **`src/`**: the nkilib modules these four kernels import, vendored unmodified at `ad2f1b9`
-  under nkilib's Apache-2.0 license (`src/LICENSE`, `src/NOTICE`).
+- **`nki-library.commit`**: the nki-library commit the kernels are traced from (`ad2f1b9`).
+  `just nkilib` fetches it into `target/nkilib`, and `just trainium` runs that first. No
+  nkilib source is kept in this repository.
 - **`<kernel>.py`**: the wrapper Volta traces. It calls the kernel as released and fixes its
   outputs' names.
 - **`<kernel>_fixed.py`**: the same wrapper, but it first imports the kernel's module through
-  `fixes.apply`. That applies `fixes.py`'s text edits to the vendored source as the module is
-  imported, so `src/` stays exactly as released.
+  `fixes.apply`. That applies `fixes.py`'s text edits to the fetched source as the module is
+  imported, so `target/nkilib` stays exactly as released.
 - **`*.spec`**: each operation as nkilib's own PyTorch reference (`*_torch.py`) defines it.
   - `max_pooling_3d.spec` follows `F.max_pool3d`.
   - `conv3d.spec` follows `nn.Conv3d` after `F.pad`. It gives both `conv_out` (`conv3d`) and
@@ -130,7 +131,7 @@ Volta also proved these kernels equal to a spec written from nkilib's own PyTorc
 (`*_torch.py`) at every call below, and race free under `OrderingPolicy::BASELINE` unless the
 row says otherwise. These results say where not to look. They were checked with standalone
 probes, outside this repository; turning them into cases of `nkilib_tests.rs` is left to a
-later change, since it needs about 15k more lines of nkilib's source.
+later change.
 
 | Kernel (nkilib, `ad2f1b9`) | Calls | Result |
 |---|---|---|
