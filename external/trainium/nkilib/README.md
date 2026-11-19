@@ -9,12 +9,15 @@ Each buggy call must fail, either with an execution error or with a refutation a
 kernel's spec. The same call with the fix applied must be proved equal to the spec and race
 free.
 
-| ID | Kernel | Call | What Volta reports | Proposed fix |
-|---|---|---|---|---|
-| F7 | `max_pooling_3d` | `[1, 2, 5, 6, 7]`, kernel 2, stride 1, padding 1 | a tile is read after another tile overwrote its bytes (`ClobberedRead`); reading the shared bytes, 40 of 672 outputs are refuted | one reduce section per axis |
-| F9 | `conv3d` (fallback path, `C_in > 64`) | `[1, 130, 1, 3, 4]`, 1 x 1 x 1 filter, W padding `(0, 2)`, and with D and H padding | unwritten PSUM reaches `conv_out` (`UninitializedRead`) | mark each tap's written rectangle, not the flattened span |
-| F11 | `conv3d_bwd` `dx` (col2im path, `C_out > 64`) | `[1, 2, 1, 4, 4]`, 3 x 3 x 3 filter, padding 1; `[1, 2, 2, 4, 4]`, 2 x 2 x 2 filter | all 32 elements refuted; with two frames, `dx`'s plane 1 is never written | take the 3-D branch whenever depth matters |
-| F12 | `conv3d_temporal_unroll` | `[1, 65, 6, 1, 513]`, 2 x 1 x 1 filter, depth dilation 2 | all 2,052 outputs refuted | stop multiplying `d_in` by the dilation |
+| ID | Kernel | Call | What Volta reports | Proposed fix | Upstream |
+|---|---|---|---|---|---|
+| F7 | `max_pooling_3d` | `[1, 2, 5, 6, 7]`, kernel 2, stride 1, padding 1 | a tile is read after another tile overwrote its bytes (`ClobberedRead`); reading the shared bytes, 40 of 672 outputs are refuted | one reduce section per axis | not yet filed |
+| F9 | `conv3d` (fallback path, `C_in > 64`) | `[1, 130, 1, 3, 4]`, 1 x 1 x 1 filter, W padding `(0, 2)`, and with D and H padding | unwritten PSUM reaches `conv_out` (`UninitializedRead`) | mark each tap's written rectangle, not the flattened span | not yet filed |
+| F11 | `conv3d_bwd` `dx` (col2im path, `C_out > 64`) | `[1, 2, 1, 4, 4]`, 3 x 3 x 3 filter, padding 1; `[1, 2, 2, 4, 4]`, 2 x 2 x 2 filter | all 32 elements refuted; with two frames, `dx`'s plane 1 is never written | take the 3-D branch whenever depth matters | [aws-neuron/nki-library#28](https://github.com/aws-neuron/nki-library/issues/28), fix in [#29](https://github.com/aws-neuron/nki-library/pull/29) |
+| F12 | `conv3d_temporal_unroll` | `[1, 65, 6, 1, 513]`, 2 x 1 x 1 filter, depth dilation 2 | all 2,052 outputs refuted | stop multiplying `d_in` by the dilation | [aws-neuron/nki-library#26](https://github.com/aws-neuron/nki-library/issues/26), fix in [#27](https://github.com/aws-neuron/nki-library/pull/27) |
+
+Volta also proved other nkilib kernels correct; they are listed in
+[Checked and found correct](#checked-and-found-correct) below.
 
 ## Layout
 
@@ -120,3 +123,34 @@ found by reading the code at the instructions Volta named.
 
 None of these verdicts depends on how the compiler orders instructions: the kernels are wrong
 in program order. They have not yet been reproduced on Trainium hardware or NKI's simulator.
+
+## Checked and found correct
+
+Volta also proved these kernels equal to a spec written from nkilib's own PyTorch reference
+(`*_torch.py`) at every call below, and race free under `OrderingPolicy::BASELINE` unless the
+row says otherwise. These results say where not to look. They were checked with standalone
+probes, outside this repository; turning them into cases of `nkilib_tests.rs` is left to a
+later change, since it needs about 15k more lines of nkilib's source.
+
+| Kernel (nkilib, `ad2f1b9`) | Calls | Result |
+|---|---|---|
+| `core/subkernels/rmsnorm_tkg` (one core) | `[1, 4, 256]`, `[1, 1, 128]`, `[3, 5, 384]`, `[2, 80, 256]`, `[1, 3, 256]`; default layout, `hidden_dim_tp=True`, `hidden_actual=200` | equal; race free |
+| `core/subkernels/layernorm_tkg` (one core, with `beta`) | `[1, 4, 256]`, `[3, 5, 256]` | equal; race free |
+| `core/cumsum/cumsum` | float and int32 paths; `[10, 21]`, `[3, 2, 17]`, `[8, 16]`, `[1, 1]` at small tile sizes, `[4, 8]` and `[2, 3, 600]` at hardware ones | equal; race free |
+| `experimental/foreach/foreach_elementwise`: `add_scalar`, `add_tensor`, `sub_tensor`, `mul_tensor`, `div_tensor`, `addcdiv`, `addcmul`, `lerp` | `numel` 43, 16, 4 and 3, with 16-element tiles | equal |
+| `experimental/foreach/foreach_norm`: `l2_norm`, `l1_norm`, `linf_norm` | `numel` 43, 16 and 3, with 16-element tiles | equal; race free, except `linf_norm`'s maximum accumulated across `affine_range` iterations, which commutes in practice |
+| `experimental/pooling/avg_pooling_3d` | kernel/stride/padding 2/2/0, 2/1/1, 3/2/1; NCDHW and NDHWC; `[1, 2, 5, 6, 7]`, `[2, 130, 5, 6, 7]`; 60 fuzzed calls | equal; race free once write after write is ordered (a `memset` then a DMA into padded tiles) |
+| `experimental/pooling/avg_pooling_3d_backward` | seven kernel/stride/padding settings on `[1, 2, 5, 6, 7]` and `[1, 2, 4, 6, 6]`; 50 fuzzed calls | equal; race free |
+| `experimental/pooling/max_pooling_3d` | 2/2/0, 3/2/1, 3/1/1 on `[1, 2, 5, 6, 7]`; 52 of 60 fuzzed calls | equal; race free. The other 8 are F7 |
+| `experimental/conv/conv1d` (no activation) | strides, dilation, asymmetric padding, with and without bias, over 128 channels, two length tiles; 50 fuzzed calls | equal; race free once write after write is ordered |
+| `experimental/conv/depthwise_conv1d` (`depthwise_conv1d_implicit_gemm`) | 36 calls: 1 to 200 taps, strides 1 to 4, asymmetric padding, 2 to 258 channels | equal; race free |
+| `experimental/conv/conv3d` (no batch norm, no activation) | strides 1 and 2, dilation 2, symmetric and asymmetric padding, two batches; 110 fuzzed calls | equal; race free once write after write is ordered, except F9 and F10 (a division by zero when every tap is in the padding) |
+| `experimental/conv/conv3d_bwd` (`dx`, `dw`, `db`) | 60 fuzzed calls: strides 1 and 2, dilations 1 and 2, asymmetric padding, 1 to 130 channels, two batches | equal; race free, except F11 in `dx` |
+| `experimental/conv/conv3d_temporal_unroll` | `[2, 1, 520]` and `[3, 1, 522]` outputs, 1 x 1 x 1 and 3 x 3 x 3 filters, strides 1 and 2, padding | equal; race free without depth dilation, F12 with it |
+| `experimental/conv/conv3d_transpose` | 39 fuzzed calls: up to 130 channels, filters 1 to 3, strides 1 to 3, dilations 1 and 2, padding 0 to 2 | 37 equal (equivalence only); one too large for the checker; one crash (F10) |
+| `experimental/pad/pad` (constant 0, replicate, reflect, circular) | 150 fuzzed calls, up to 130 channels, 1 to 3 padded dimensions | 143 equal and race free; 7 rejected by an over-strict `reflect requires size >= 2` (line 80), not wrong outputs |
+| `experimental/scan/linear_scan` | `[2, 10]`, `[130, 7]`, `[3, 2, 8]` with `initial` | equal to itself untiled with a 3-element tile, so carries cross tiles; race free |
+| `experimental/scan/selective_scan` (no `D` skip) | `[1, 2, 7]` and `[2, 130, 5]`, states 3 and 2, with `initial_state` | equal, also with a 3-element tile; race free |
+| `experimental/scan/ssd` (Mamba-2, no `D` skip) | head-outer and chunk-outer, 1 and 2 batches, 2 and 3 chunks, `headdim` up to 515 | equal; race free |
+| `experimental/optimizer/fused_adam` (`adam_kernel`, `adamw_kernel`, no AMSGrad) | 1 to 1,000 elements, also with a 3-element tile | equal; race free |
+| `experimental/batch_norm/batch_norm_bwd` (no ReLU, no residual, one batch) | `[1, 4, 2, 8, 8]`, `[1, 130, 1, 4, 4]`, `[1, 2, 3, 5, 7]` | equal; race free |
