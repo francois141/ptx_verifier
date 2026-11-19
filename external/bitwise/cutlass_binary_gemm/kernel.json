@@ -1,0 +1,50 @@
+{
+  "repository": "https://github.com/NVIDIA/cutlass",
+  "tag": "v3.9.2",
+  "commit": "ad7b2f5e84fcfa124cb02b91d5bd26d238c0459e",
+  "cuda": "release 12.9, V12.9.86",
+  "target": "sm_80",
+  "backend": "docker",
+  "docker_image": "nvidia/cuda:12.9.1-devel-ubuntu24.04",
+  "flags": [
+    "-std=c++17",
+    "-O3",
+    "-arch=sm_80",
+    "-ptx",
+    "kernel.cu",
+    "-o",
+    "kernel.ptx"
+  ],
+  "M": 256,
+  "N": 256,
+  "K": 256,
+  "threadblock_shape": [
+    64,
+    256,
+    512
+  ],
+  "warp_shape": [
+    64,
+    64,
+    512
+  ],
+  "instruction_shape": [
+    16,
+    8,
+    256
+  ],
+  "stages": 3,
+  "grid": [
+    4,
+    1,
+    1
+  ],
+  "block": [
+    128,
+    1,
+    1
+  ],
+  "shared_bytes": 61440,
+  "source_sha256": "a702110ba2614fab65ceaa52c9edf390a3acd6e28d2e2ca608f32eaa60d6dcd5",
+  "ptx_sha256": "17599e3a0732686652004505c56e74205ab08db5ab7fe3486c5b5a586c6e9a7b"
+}

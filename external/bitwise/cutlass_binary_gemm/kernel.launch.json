@@ -1,0 +1,15 @@
+{
+  "description": "CUTLASS v3.9.2 XOR-popcount GEMM, M=N=K=256, CTA 0's full 64x256 output tile",
+  "kernel": "cutlass_binary_gemm",
+  "block": [128, 1, 1],
+  "grid": [4, 1, 1],
+  "dynamic_shared_bytes": 61440,
+  "arrays": [
+    {"name": "a", "kind": "in", "dtype": "u32", "shape": [256, 8], "base": "0x100000"},
+    {"name": "b", "kind": "in", "dtype": "u32", "shape": [256, 8], "base": "0x200000"},
+    {"name": "c", "kind": "out", "dtype": "i32", "shape": [64, 256], "base": "0x300000"}
+  ],
+  "params": [{"ptr": "a"}, {"ptr": "b"}, {"int": 3145728}],
+  "spec": "binary_gemm.spec",
+  "dims": {"M": 256, "N": 256, "KW": 8, "TM": 64, "ROW": 0}
+}

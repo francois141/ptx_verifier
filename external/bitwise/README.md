@@ -8,6 +8,7 @@ and `popc(a)`.
 | Kernel | Launch | Spec | Verdict |
 |---|---|---|---|
 | `binary_gemm.ptx` | `binary_gemm.launch.json` (8 x 8 outputs, K = 128) | `binary_gemm.spec` | ACCEPT |
+| `cutlass_binary_gemm/kernel.ptx` | `cutlass_binary_gemm/kernel.launch.json` (M=N=K=256, CTA 0) | `cutlass_binary_gemm/binary_gemm.spec` | ACCEPT, all 16,384 tile outputs |
 | `bitdelta/kernel_tile.ptx` | `bitdelta/kernel_tile.launch.json` | `bitdelta/bitdelta.spec` | ACCEPT (see `bitdelta/README.md`) |
 | `simdjson/stage1.ptx` | `simdjson/stage1.launch.json` (4 rows of 4 blocks) | `simdjson/stage1.spec` | ACCEPT |
 | `simdjson/escape.ptx` | `simdjson/escape.launch.json` (8 blocks) | `simdjson/escape.spec` | ACCEPT |
@@ -19,6 +20,11 @@ and `popc(a)`.
 the dot product of two rows of `±1` signs. The spec states those same operations; the solver
 compares the opaque `popc`s inside the opaque `shl` as polynomials, and `xor`'s operands in either
 order.
+
+[`cutlass_binary_gemm/`](cutlass_binary_gemm/README.md) instantiates CUTLASS's
+SM80 binary tensor-core GEMM at M=N=K=256. Its native `OpXorPopc` returns the
+Hamming distance, `sum_w popc(a[m,w] ^ b[n,w])`; the older signed `binary_gemm.ptx`
+above returns `K - 2 * distance`. `just bitwise` checks CTA 0's tile.
 
 ```sh
 cargo run --release -q -p volta_cli -- solve external/bitwise/binary_gemm.ptx \
