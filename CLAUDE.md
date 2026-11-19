@@ -1123,7 +1123,8 @@ against one moved offset and the ungathered `data[:, i]`.
 `ClobberedRead`, `conv3d` (F9) `UninitializedRead`, `conv3d_bwd` `dx` (F11) and
 `conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
 `fixes.py`'s fix at import, and the fixed call is proved equal and race free under
-`WriteAfterWrite::Ordered`. `external/trainium/nkilib/README.md` explains each bug.
+`WriteAfterWrite::Ordered`. `external/trainium/nkilib/README.md` explains each bug, links
+its upstream issue, and lists the nkilib kernels Volta checked and found correct outside this suite.
 AMD output checks require the same run's graph to conclude `Verified`: snapshots,
 equivalence comparisons, the Lean challenge, and the grid tests' individual workgroup runs.
 `amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
