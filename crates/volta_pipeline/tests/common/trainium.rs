@@ -9,6 +9,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use volta_graph_check::{GraphConclusion, check_graph};
@@ -198,11 +200,37 @@ pub fn parse_kernel_for_call(
     Ok(parsed)
 }
 
+/// The tracer of every suite: `$VOLTA_PYTHON`, else `just python-env`'s
+/// `target/volta-python` when it exists (so plain `cargo test` finds it), else `python3`.
+/// Panics, saying how to fix it, if that interpreter cannot import numpy.
+pub fn tracer() -> Tracer {
+    static PYTHON: OnceLock<PathBuf> = OnceLock::new();
+    Tracer::new(PYTHON.get_or_init(|| {
+        let venv =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/volta-python/bin/python");
+        let python = std::env::var_os("VOLTA_PYTHON")
+            .map(PathBuf::from)
+            .or_else(|| venv.exists().then_some(venv))
+            .unwrap_or_else(|| PathBuf::from("python3"));
+        let numpy = Command::new(&python)
+            .args(["-I", "-c", "import numpy"])
+            .output();
+        assert!(
+            numpy.is_ok_and(|output| output.status.success()),
+            "NKI kernels are traced under CPython with numpy, but `{}` cannot import numpy. \
+             Run `just python-env` once (or any `just` test recipe), or set VOLTA_PYTHON to \
+             a Python that has numpy.",
+            python.display()
+        );
+        python
+    }))
+}
+
 /// Kernel `kernel` of `file` traced under CPython for `call` must be `parsed`, up to the
 /// names of the tensors it declares (all but the one it returns) and its plain Python
 /// loops, which the tracer cannot see and which order nothing (`LoopKind::Python`).
 pub fn assert_traced_matches(file: &Path, kernel: &str, call: &KernelCall, parsed: &Kernel) {
-    let traced = Tracer::from_env()
+    let traced = tracer()
         .trace(file, &[], kernel, call)
         .unwrap_or_else(|e| panic!("{}: tracing `{kernel}`: {e}", file.display()));
     let [parsed, traced] = [parsed, &traced].map(|kernel| canonical(kernel).to_string());

@@ -82,8 +82,10 @@ only inline unit tests of their internals.
   Every NKI kernel the accepted, graph and equivalence suites parse is also traced under
   CPython (`common::trainium::assert_traced_matches`, through the `parse_kernel*`
   wrappers in `common::trainium`), and the two kernels must agree up to declared
-  tensors' names and plain Python loops; so these suites need `$VOLTA_PYTHON` (a Python
-  with numpy, `just python-env`).
+  tensors' names and plain Python loops; so these suites need a Python with numpy:
+  `common::trainium::tracer` takes `$VOLTA_PYTHON`, else `target/volta-python` (`just
+  python-env`) when it exists, so plain `cargo test` works once it is made, else `python3`,
+  and fails at once, naming `just python-env`, if that one cannot import numpy.
 - `trainium/graph_tests.rs`: NKI kernels' event graphs, one graph thread per
   instruction, under `OrderingPolicy::BASELINE` (the frontend's) unless a test names
   another: read after write and write after read are ordered, by address through the bytes

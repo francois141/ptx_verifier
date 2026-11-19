@@ -650,7 +650,10 @@ and `total_available_sbuf_size`, and `nki.isa.constants`/`nki.language.opcode`/`
 `nki.collectives`; `Tracer::stubbing` replaces uninstalled host-only modules (torch, vllm)
 with inert stubs. `volta_pipeline`'s `common::trainium` `parse_kernel*` wrappers
 trace every kernel the accepted, graph and equivalence suites parse and require it to
-match the parsed kernel up to declared tensors' names and Python loops.
+match the parsed kernel up to declared tensors' names and Python loops. They trace with
+`common::trainium::tracer`: `$VOLTA_PYTHON`, else `target/volta-python` when it exists (so
+plain `cargo test` works after `just python-env`), else `python3`, failing at once, naming
+`just python-env`, if it cannot import numpy.
 
 A kernel is parsed for one call: `parse_kernel(source, name, shapes)` takes each
 parameter's shape, as `@nki.jit` specializes a kernel per call (a missing,
