@@ -1,4 +1,4 @@
-"""Proposed fixes of the nkilib bugs, applied to the vendored, unmodified source as it is
+"""Proposed fixes of the nkilib bugs, applied to nki-library's unmodified source as it is
 imported: `apply(module)` replaces each fix's `old` text (which must occur exactly once) with
 its `new` text, keeping the file's name and line count so traced lines still point at it.
 A fixed wrapper applies its fixes before importing the kernel, so every importer sees them."""
