@@ -181,17 +181,20 @@ only inline unit tests of their internals.
   columns); it is refuted against the spec given one other offset and against the
   ungathered `data[:, i]`.
   Functional equivalence only; `just trainium` runs them in release.
-- `trainium/nkilib_tests.rs`: bugs Volta found in nkilib's experimental kernels, traced under
-  CPython through the wrappers in `external/trainium/nkilib/` from nki-library at the commit
-  its `nki-library.commit` names. `just nkilib` fetches that commit into `target/nkilib`;
-  without it, every test of the suite fails with a message naming `just nkilib`. Each buggy call fails: `max_pooling_3d` (F7) with a
+- `trainium/nkilib_tests.rs` and its modules in `trainium/nkilib_tests/`: nkilib's kernels,
+  traced under CPython through the wrappers in `external/trainium/nkilib/` from nki-library
+  at the commit its `nki-library.commit` names. `just nkilib` fetches that commit into
+  `target/nkilib`; without it, every test of the suite fails with a message naming `just
+  nkilib`. In `bugs`, each buggy call fails: `max_pooling_3d` (F7) with a
   `ClobberedRead`, refuted on 40 outputs when the shared bytes are read; `conv3d`'s fallback
   path (F9) with an `UninitializedRead`; `conv3d_bwd`'s `dx` (F11) refuted on every element,
   or leaving a depth plane unwritten; and `conv3d_temporal_unroll` (F12) refuted on every
   output. Each `*_fixed.py` wrapper applies `fixes.py`'s proposed fix as the module is
   imported, and the same call must be proved equal to its spec and race free with write
-  after write ordered. `external/trainium/nkilib/README.md` describes each bug. Release,
-  through `just trainium`, which fetches nki-library first.
+  after write ordered. `norms`, `elementwise`, `pooling` and `conv` hold the twenty kernels
+  found correct: each call is proved equal to its spec on every element and race free.
+  `external/trainium/nkilib/README.md` describes each bug and lists each correct kernel's
+  calls. About 30 s in release, through `just trainium`, which fetches nki-library first.
 - the PTX suites below, over `tests/common/`.
 
 ### How a test runs

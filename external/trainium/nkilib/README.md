@@ -1,13 +1,18 @@
-# Bugs in nkilib's experimental kernels
+# nkilib's kernels
 
-Volta found four bugs in AWS's [nki-library](https://github.com/aws-neuron/nki-library)
-(commit `ad2f1b9`). Each one silently gives wrong outputs, with no error. This folder holds
-each bug's kernel at the call that shows it, together with a proposed fix.
+Volta checks kernels of AWS's [nki-library](https://github.com/aws-neuron/nki-library)
+(commit `ad2f1b9`) against specs written from nkilib's own PyTorch references:
+- **[the bugs](#the-bugs) it found**, four of which silently give wrong outputs, with no
+  error. Each is kept at the call that shows it, together with a proposed fix;
+- **[the kernels it found correct](#checked-and-found-correct)**, each at the calls it was
+  proved on.
 
-`crates/volta_pipeline/tests/trainium/nkilib_tests.rs` runs them all through `just trainium`.
-Each buggy call must fail, either with an execution error or with a refutation against the
-kernel's spec. The same call with the fix applied must be proved equal to the spec and race
-free.
+`crates/volta_pipeline/tests/trainium/nkilib_tests/` runs them all through `just trainium`:
+- **`bugs.rs`:** each buggy call must fail, either with an execution error or with a
+  refutation against the kernel's spec. The same call with the fix applied must be proved
+  equal to the spec and race free.
+- **`norms.rs`, `elementwise.rs`, `pooling.rs`, `conv.rs`:** each call of a correct kernel
+  must be proved equal to its spec on every element and race free.
 
 | ID | Kernel | Call | What Volta reports | Proposed fix | Upstream |
 |---|---|---|---|---|---|
@@ -16,26 +21,25 @@ free.
 | F11 | `conv3d_bwd` `dx` (col2im path, `C_out > 64`) | `[1, 2, 1, 4, 4]`, 3 x 3 x 3 filter, padding 1; `[1, 2, 2, 4, 4]`, 2 x 2 x 2 filter | all 32 elements refuted; with two frames, `dx`'s plane 1 is never written | take the 3-D branch whenever depth matters | [aws-neuron/nki-library#28](https://github.com/aws-neuron/nki-library/issues/28), fix in [#29](https://github.com/aws-neuron/nki-library/pull/29) |
 | F12 | `conv3d_temporal_unroll` | `[1, 65, 6, 1, 513]`, 2 x 1 x 1 filter, depth dilation 2 | all 2,052 outputs refuted | stop multiplying `d_in` by the dilation | [aws-neuron/nki-library#26](https://github.com/aws-neuron/nki-library/issues/26), fix in [#27](https://github.com/aws-neuron/nki-library/pull/27) |
 
-Volta also proved other nkilib kernels correct; they are listed in
-[Checked and found correct](#checked-and-found-correct) below.
-
 ## Layout
 
 - **`nki-library.commit`**: the nki-library commit the kernels are traced from (`ad2f1b9`).
   `just nkilib` fetches it into `target/nkilib`, and `just trainium` runs that first. No
   nkilib source is kept in this repository.
 - **`<kernel>.py`**: the wrapper Volta traces. It calls the kernel as released and fixes its
-  outputs' names.
+  outputs' names. Where one wrapper covers several variants (an op, a layout, which output
+  to return, a smaller tile size), a constant of the call picks it.
 - **`<kernel>_fixed.py`**: the same wrapper, but it first imports the kernel's module through
   `fixes.apply`. That applies `fixes.py`'s text edits to the fetched source as the module is
   imported, so `target/nkilib` stays exactly as released.
 - **`*.spec`**: each operation as nkilib's own PyTorch reference (`*_torch.py`) defines it.
+  Where the kernel multiplies by a rounded constant (`1/384`, `1/27`), so does the spec.
   - `max_pooling_3d.spec` follows `F.max_pool3d`.
   - `conv3d.spec` follows `nn.Conv3d` after `F.pad`. It gives both `conv_out` (`conv3d`) and
     `y_out` (`conv3d_temporal_unroll`).
   - `conv3d_bwd.spec` gives that convolution's gradients.
-  - Evaluated in float64, each spec agrees with the torch reference at the calls above
-    (largest relative error 4e-14).
+  - Evaluated in float64, each bug's spec agrees with the torch reference at its failing
+    call (largest relative error 4e-14).
 
 ## The bugs
 
@@ -127,31 +131,34 @@ in program order. They have not yet been reproduced on Trainium hardware or NKI'
 
 ## Checked and found correct
 
-Volta also proved these kernels equal to a spec written from nkilib's own PyTorch reference
-(`*_torch.py`) at every call below, and race free under `OrderingPolicy::BASELINE` unless the
-row says otherwise. These results say where not to look. They were checked with standalone
-probes, outside this repository; turning them into cases of `nkilib_tests.rs` is left to a
-later change.
+Volta proved each kernel below equal to its spec on every element at every call listed, and
+race free under `OrderingPolicy::BASELINE`, or under `WAW` (`BASELINE` with write after write
+ordered) where the row says so. These results say where not to look. A `WAW` kernel writes a
+tile and overwrites it with no read in between, typically a `memset` followed by a DMA; that
+is a race only if the compiler does not order two writes to the same bytes.
 
-| Kernel (nkilib, `ad2f1b9`) | Calls | Result |
-|---|---|---|
-| `core/subkernels/rmsnorm_tkg` (one core) | `[1, 4, 256]`, `[1, 1, 128]`, `[3, 5, 384]`, `[2, 80, 256]`, `[1, 3, 256]`; default layout, `hidden_dim_tp=True`, `hidden_actual=200` | equal; race free |
-| `core/subkernels/layernorm_tkg` (one core, with `beta`) | `[1, 4, 256]`, `[3, 5, 256]` | equal; race free |
-| `core/cumsum/cumsum` | float and int32 paths; `[10, 21]`, `[3, 2, 17]`, `[8, 16]`, `[1, 1]` at small tile sizes, `[4, 8]` and `[2, 3, 600]` at hardware ones | equal; race free |
-| `experimental/foreach/foreach_elementwise`: `add_scalar`, `add_tensor`, `sub_tensor`, `mul_tensor`, `div_tensor`, `addcdiv`, `addcmul`, `lerp` | `numel` 43, 16, 4 and 3, with 16-element tiles | equal |
-| `experimental/foreach/foreach_norm`: `l2_norm`, `l1_norm`, `linf_norm` | `numel` 43, 16 and 3, with 16-element tiles | equal; race free, except `linf_norm`'s maximum accumulated across `affine_range` iterations, which commutes in practice |
-| `experimental/pooling/avg_pooling_3d` | kernel/stride/padding 2/2/0, 2/1/1, 3/2/1; NCDHW and NDHWC; `[1, 2, 5, 6, 7]`, `[2, 130, 5, 6, 7]`; 60 fuzzed calls | equal; race free once write after write is ordered (a `memset` then a DMA into padded tiles) |
-| `experimental/pooling/avg_pooling_3d_backward` | seven kernel/stride/padding settings on `[1, 2, 5, 6, 7]` and `[1, 2, 4, 6, 6]`; 50 fuzzed calls | equal; race free |
-| `experimental/pooling/max_pooling_3d` | 2/2/0, 3/2/1, 3/1/1 on `[1, 2, 5, 6, 7]`; 52 of 60 fuzzed calls | equal; race free. The other 8 are F7 |
-| `experimental/conv/conv1d` (no activation) | strides, dilation, asymmetric padding, with and without bias, over 128 channels, two length tiles; 50 fuzzed calls | equal; race free once write after write is ordered |
-| `experimental/conv/depthwise_conv1d` (`depthwise_conv1d_implicit_gemm`) | 36 calls: 1 to 200 taps, strides 1 to 4, asymmetric padding, 2 to 258 channels | equal; race free |
-| `experimental/conv/conv3d` (no batch norm, no activation) | strides 1 and 2, dilation 2, symmetric and asymmetric padding, two batches; 110 fuzzed calls | equal; race free once write after write is ordered, except F9 and F10 (a division by zero when every tap is in the padding) |
-| `experimental/conv/conv3d_bwd` (`dx`, `dw`, `db`) | 60 fuzzed calls: strides 1 and 2, dilations 1 and 2, asymmetric padding, 1 to 130 channels, two batches | equal; race free, except F11 in `dx` |
-| `experimental/conv/conv3d_temporal_unroll` | `[2, 1, 520]` and `[3, 1, 522]` outputs, 1 x 1 x 1 and 3 x 3 x 3 filters, strides 1 and 2, padding | equal; race free without depth dilation, F12 with it |
-| `experimental/conv/conv3d_transpose` | 39 fuzzed calls: up to 130 channels, filters 1 to 3, strides 1 to 3, dilations 1 and 2, padding 0 to 2 | 37 equal (equivalence only); one too large for the checker; one crash (F10) |
-| `experimental/pad/pad` (constant 0, replicate, reflect, circular) | 150 fuzzed calls, up to 130 channels, 1 to 3 padded dimensions | 143 equal and race free; 7 rejected by an over-strict `reflect requires size >= 2` (line 80), not wrong outputs |
-| `experimental/scan/linear_scan` | `[2, 10]`, `[130, 7]`, `[3, 2, 8]` with `initial` | equal to itself untiled with a 3-element tile, so carries cross tiles; race free |
-| `experimental/scan/selective_scan` (no `D` skip) | `[1, 2, 7]` and `[2, 130, 5]`, states 3 and 2, with `initial_state` | equal, also with a 3-element tile; race free |
-| `experimental/scan/ssd` (Mamba-2, no `D` skip) | head-outer and chunk-outer, 1 and 2 batches, 2 and 3 chunks, `headdim` up to 515 | equal; race free |
-| `experimental/optimizer/fused_adam` (`adam_kernel`, `adamw_kernel`, no AMSGrad) | 1 to 1,000 elements, also with a 3-element tile | equal; race free |
-| `experimental/batch_norm/batch_norm_bwd` (no ReLU, no residual, one batch) | `[1, 4, 2, 8, 8]`, `[1, 130, 1, 4, 4]`, `[1, 2, 3, 5, 7]` | equal; race free |
+The calls are the representative ones of the original checks, not their fuzzing campaigns
+(e.g. `conv3d`'s 110 random calls). All of them run in about 30 s in release.
+
+| Kernel (nkilib `ad2f1b9`) | Test module | Calls | Result |
+|---|---|---|---|
+| `core/subkernels/rmsnorm_tkg` (one core) | `norms` | default layout at `[1, 4, 256]`, `[1, 1, 128]`, `[2, 80, 256]`, `[3, 5, 384]`; `hidden_dim_tp=True` at `[1, 4, 256]`, `[3, 5, 384]`; `hidden_actual=200` at `[1, 3, 256]` | equal; race free. The other layout's spec is refuted (1,016 of 1,024) |
+| `core/subkernels/layernorm_tkg` (one core, with `beta`) | `norms` | `[1, 4, 256]`, `[3, 2, 128]` | equal; race free |
+| `core/cumsum/cumsum` | `norms` | float32 and int32 at `[10, 21]` with 4 x 8 tiles; `[3, 2, 17]`, `[8, 16]`, `[1, 1]`; `[4, 8]` and `[2, 3, 600]` at hardware tiles | equal; race free. An exclusive scan is refuted |
+| `experimental/scan/linear_scan` | `norms` | `[2, 10]`, `[130, 7]`, `[3, 2, 8]` with `initial`; `result` and `final_state` | equal to itself untiled with a 3-element tile, so carries cross tiles; race free |
+| `experimental/scan/selective_scan` (no `D` skip) | `norms` | `[1, 2, 7]` with 3 states, `[2, 130, 5]` with 2, `initial_state`, 3-element tiles; `y` and `final_state` | equal; race free under `WAW` |
+| `experimental/scan/ssd` (Mamba-2, no `D` skip) | `norms` | head-outer and chunk-outer, 1 and 2 batches, 2 and 3 chunks, `headdim` 515 (past 512); `y` and `final_state` | equal; race free |
+| `experimental/foreach/foreach_elementwise`: `add_scalar`, `add_tensor`, `sub_tensor`, `mul_tensor`, `div_tensor`, `addcdiv`, `addcmul`, `lerp` | `elementwise` | `numel` 43, 16, 4 and 3, with 16-element tiles (full tiles, a partial tile and a tail) | equal; race free |
+| `experimental/foreach/foreach_norm`: `l2_norm`, `l1_norm`, `linf_norm` | `elementwise` | `numel` 43, 16 and 3, with 16-element tiles | equal; race free, except `linf_norm` across tiles: its maximum accumulated across `affine_range` iterations is a `MemoryConflict`, since only additions commute there; likely benign |
+| `experimental/optimizer/fused_adam` (`adam_kernel`, `adamw_kernel`, no AMSGrad) | `elementwise` | all three outputs at 1 and 300 elements, and at 1,000 with a 3-element tile | equal; race free |
+| `experimental/batch_norm/batch_norm_bwd` (no ReLU, no residual, one batch) | `elementwise` | `dx`, `dgamma`, `dbeta` at `[1, 4, 2, 8, 8]`, `[1, 130, 1, 4, 4]`, `[1, 2, 3, 5, 7]` | equal; race free, under `WAW` at `[1, 130, 1, 4, 4]`, whose two channel tiles both write the unread `dbeta_discard_tile` |
+| `experimental/pooling/avg_pooling_3d` | `pooling` | kernel/stride/padding 2/2/0, 2/1/1, 3/2/1 in NCDHW on `[1, 2, 5, 6, 7]`; 2/2/0 and 2/1/1 in NDHWC and NCDHW to NDHWC; 2/2/0 and 3/2/1 on `[2, 130, 5, 6, 7]` | equal; race free under `WAW` (a `memset`, then a DMA into padded tiles) |
+| `experimental/pooling/avg_pooling_3d_backward` | `pooling` | seven kernel/stride/padding settings on `[1, 2, 5, 6, 7]`, 3/2/1 on `[1, 2, 4, 6, 6]` | equal; race free |
+| `experimental/pooling/max_pooling_3d` | `pooling` | 2/2/0, 3/2/1, 3/1/1 on `[1, 2, 5, 6, 7]`, where no axis grows | equal; race free. Growing axes are F7 |
+| `experimental/pad/pad` (constant 0, replicate, reflect, circular) | `pooling` | two calls per mode, 1 to 3 padded dimensions, one with 130 channels | equal; race free. Its `reflect requires size >= 2` (line 80) also rejects zero padding on a size-1 axis, which PyTorch accepts: over-strict, not wrong |
+| `experimental/conv/conv1d` (no activation) | `conv` | `[2, 64, 40]` to 128 channels with stride 2, dilation 2, padding `(2, 1)` and bias; `[1, 130, 21]` to 130, dilation 3, no bias; `[1, 2, 515]` (two length tiles) | equal; race free under `WAW` |
+| `experimental/conv/depthwise_conv1d` (`depthwise_conv1d_implicit_gemm`) | `conv` | 130 channels (two tiles) with stride 2; 200 taps (two tap tiles) with padding `(2, 5)`; stride 4 | equal; race free under `WAW` |
+| `experimental/conv/conv3d` (no batch norm, no activation; `C_in` at most 64) | `conv` | two batches; stride 2 with padding 1; dilation 2 with asymmetric padding; a 2 x 3 x 2 filter with mixed strides | equal; race free under `WAW`. `C_in > 64` with wide W padding is F9 |
+| `experimental/conv/conv3d_bwd` (`dx`, `dw`, `db`) | `conv` | each gradient on two batches with asymmetric padding; stride 2 with dilation `(1, 2, 1)`; `C_out` 65 (col2im) with three output depth planes | equal; race free under `WAW`. One output depth plane on col2im is F11 |
+| `experimental/conv/conv3d_temporal_unroll` (`C_in` 65) | `conv` | `[2, 1, 520]` outputs with a 1 x 1 x 1 filter; `[3, 1, 522]` with 3 x 3 x 3, stride `(2, 1, 1)`, padding | equal; race free under `WAW`. Depth dilation is F12 |
+| `experimental/conv/conv3d_transpose` | `conv` | 2 to 65 input channels, filters 2 and 3, strides 1 to 3, dilation 2, padding 0 and 1 | equal; race free under `WAW` |
