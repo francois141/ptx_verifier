@@ -1118,14 +1118,20 @@ its scan restarted each tile; the tensor_indirection tutorial's kernel, its offs
 call's `contents`, against `tensor_indirection.spec` (an index array) at its driver's
 128 x 64 x 32 for four offset vectors and at 16 x 8 x 16 and 48 x 20 x 48, refuted
 against one moved offset and the ungathered `data[:, i]`.
-`trainium/nkilib_tests.rs` runs the bugs Volta found in nkilib (nki-library at the commit
-`external/trainium/nkilib/nki-library.commit` names, which `just nkilib` fetches into
-`target/nkilib`; the suite fails at once, naming `just nkilib`, without it) at their calls: `max_pooling_3d` (F7)
+`trainium/nkilib_tests.rs` (helpers) and its modules in `trainium/nkilib_tests/` trace nkilib's
+kernels (nki-library at the commit `external/trainium/nkilib/nki-library.commit` names, which
+`just nkilib` fetches into `target/nkilib`; the suite fails at once, naming `just nkilib`,
+without it) through the wrappers in `external/trainium/nkilib/`. `bugs` runs the bugs Volta
+found at their calls: `max_pooling_3d` (F7)
 `ClobberedRead`, `conv3d` (F9) `UninitializedRead`, `conv3d_bwd` `dx` (F11) and
 `conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
 `fixes.py`'s fix at import, and the fixed call is proved equal and race free under
-`WriteAfterWrite::Ordered`. `external/trainium/nkilib/README.md` explains each bug, links
-its upstream issue, and lists the nkilib kernels Volta checked and found correct outside this suite.
+`WriteAfterWrite::Ordered`. `norms`, `elementwise`, `pooling` and `conv` prove twenty kernels
+found correct equal to their specs on every element and race free, under `BASELINE` or, where
+a tile is overwritten unread, write after write ordered: rmsnorm_tkg, layernorm_tkg, cumsum
+and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
+convolutions. `external/trainium/nkilib/README.md` explains each bug, links its upstream
+issue, and lists each correct kernel's calls and verdict.
 AMD output checks require the same run's graph to conclude `Verified`: snapshots,
 equivalence comparisons, the Lean challenge, and the grid tests' individual workgroup runs.
 `amd/graph_tests.rs` checks LDS reuse and pending-read races, and requires the snapshot helper
