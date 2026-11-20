@@ -8,4 +8,5 @@ output_projection_tkg = importlib.import_module(
 
 
 def kernel(attention, weight):
-    return output_projection_tkg(attention, weight)
+    out = output_projection_tkg(attention, weight)
+    return out

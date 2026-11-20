@@ -15,4 +15,5 @@ def kernel(input, fused_qkv_weights, d_head=128, num_q_heads=2, num_kv_heads=1):
         num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
     )
-    return getattr(output, "tensor", output)
+    out = getattr(output, "tensor", output)
+    return out

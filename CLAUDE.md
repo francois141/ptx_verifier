@@ -1126,9 +1126,10 @@ found at their calls: `max_pooling_3d` (F7)
 `ClobberedRead`, `conv3d` (F9) `UninitializedRead`, `conv3d_bwd` `dx` (F11) and
 `conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
 `fixes.py`'s fix at import, and the fixed call is proved equal and race free under
-`WriteAfterWrite::Ordered`. `norms`, `elementwise`, `pooling` and `conv` prove twenty kernels
-found correct equal to their specs on every element and race free, under `BASELINE` or, where
-a tile is overwritten unread, write after write ordered: rmsnorm_tkg, layernorm_tkg, cumsum
+`WriteAfterWrite::Ordered`. `layers`, `norms`, `elementwise`, `pooling` and `conv` prove
+twenty-four kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
+a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection_cte
+and qkv's token generation path; rmsnorm_tkg, layernorm_tkg, cumsum
 and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
 convolutions. `triage` records how far one call of each core kernel not yet checked gets
 (traced, lowered, run, graph verdict), or its first blocker, against

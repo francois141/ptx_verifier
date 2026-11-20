@@ -11,7 +11,7 @@ Volta checks kernels of AWS's [nki-library](https://github.com/aws-neuron/nki-li
 - **`bugs.rs`:** each buggy call must fail, either with an execution error or with a
   refutation against the kernel's spec. The same call with the fix applied must be proved
   equal to the spec and race free.
-- **`norms.rs`, `elementwise.rs`, `pooling.rs`, `conv.rs`:** each call of a correct kernel
+- **`layers.rs`, `norms.rs`, `elementwise.rs`, `pooling.rs`, `conv.rs`:** each call of a correct kernel
   must be proved equal to its spec on every element and race free.
 
 | ID | Kernel | Call | What Volta reports | Proposed fix | Upstream |
@@ -142,6 +142,10 @@ The calls are the representative ones of the original checks, not their fuzzing 
 
 | Kernel (nkilib `ad2f1b9`) | Test module | Calls | Result |
 |---|---|---|---|
+| `core/embeddings/rope` (`RoPE`, contiguous layout, one core) | `layers` | `d_head` 128 with 2 heads and 4 tokens; `d_head` 64 with 2 batches and 3 tokens | equal; race free. The interleaved layout's spec is refuted (128 of 128) |
+| `core/embeddings/rope_hf` (from `cos` and `sin`) | `layers` | 2 query heads and 1 key head, 128 tokens, `head_dim` 64; `q_out` and `k_out` | equal; race free |
+| `core/output_projection` cte (one core, unquantized) | `layers` | 2 heads of 128, 128 tokens, hidden 128 | equal; race free |
+| `core/qkv` tkg (one core, unfused, unquantized, BSD) | `layers` | 4 tokens, hidden 512, 2 query, 1 key and 1 value heads of 128 | equal; race free |
 | `core/subkernels/rmsnorm_tkg` (one core) | `norms` | default layout at `[1, 4, 256]`, `[1, 1, 128]`, `[2, 80, 256]`, `[3, 5, 384]`; `hidden_dim_tp=True` at `[1, 4, 256]`, `[3, 5, 384]`; `hidden_actual=200` at `[1, 3, 256]` | equal; race free. The other layout's spec is refuted (1,016 of 1,024) |
 | `core/subkernels/layernorm_tkg` (one core, with `beta`) | `norms` | `[1, 4, 256]`, `[3, 2, 128]` | equal; race free |
 | `core/cumsum/cumsum` | `norms` | float32 and int32 at `[10, 21]` with 4 x 8 tiles; `[3, 2, 17]`, `[8, 16]`, `[1, 1]`; `[4, 8]` and `[2, 3, 600]` at hardware tiles | equal; race free. An exclusive scan is refuted |
@@ -165,7 +169,7 @@ The calls are the representative ones of the original checks, not their fuzzing 
 
 ## Core kernels in progress
 
-`triage.txt` records how far each core kernel not yet checked gets through Volta at one
+`triage.txt` records how far each core kernel call not yet checked gets through Volta at one
 small call: traced, lowered and run, then its graph's verdict under `BASELINE` and `WAW`. A
 stage that fails names the kernel's first blocker. `nkilib_tests/triage.rs` regenerates the
 table and fails when it changes (`VOLTA_BLESS=1` rewrites it), so a change that unblocks a
@@ -173,9 +177,6 @@ kernel shows up there.
 
 | Kernel (nkilib `core/`) | Reaches | First blocker |
 |---|---|---|
-| `embeddings/rope`, `rope_hf` | race free under `BASELINE` | none; needs a spec |
-| `output_projection` cte | race free under `BASELINE` | none; needs a spec |
-| `qkv` tkg | race free under `BASELINE` | none; needs a spec |
 | `rmsnorm/rmsnorm_quant` static | lowering | `nl.minimum`. Row quantization stores fp32 scales as fp8 bytes, which is out of model |
 | `output_projection` tkg | lowering | an operand of shape `[128, 1, 4]` against one of `[128, 4]` |
 | `qkv` cte | lowering | `dge_mode.swdge` DMAs |
