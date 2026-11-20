@@ -162,3 +162,29 @@ The calls are the representative ones of the original checks, not their fuzzing 
 | `experimental/conv/conv3d_bwd` (`dx`, `dw`, `db`) | `conv` | each gradient on two batches with asymmetric padding; stride 2 with dilation `(1, 2, 1)`; `C_out` 65 (col2im) with three output depth planes | equal; race free under `WAW`. One output depth plane on col2im is F11 |
 | `experimental/conv/conv3d_temporal_unroll` (`C_in` 65) | `conv` | `[2, 1, 520]` outputs with a 1 x 1 x 1 filter; `[3, 1, 522]` with 3 x 3 x 3, stride `(2, 1, 1)`, padding | equal; race free under `WAW`. Depth dilation is F12 |
 | `experimental/conv/conv3d_transpose` | `conv` | 2 to 65 input channels, filters 2 and 3, strides 1 to 3, dilation 2, padding 0 and 1 | equal; race free under `WAW` |
+
+## Core kernels in progress
+
+`triage.txt` records how far each core kernel not yet checked gets through Volta at one
+small call: traced, lowered and run, then its graph's verdict under `BASELINE` and `WAW`. A
+stage that fails names the kernel's first blocker. `nkilib_tests/triage.rs` regenerates the
+table and fails when it changes (`VOLTA_BLESS=1` rewrites it), so a change that unblocks a
+kernel shows up there.
+
+| Kernel (nkilib `core/`) | Reaches | First blocker |
+|---|---|---|
+| `embeddings/rope`, `rope_hf` | race free under `BASELINE` | none; needs a spec |
+| `output_projection` cte | race free under `BASELINE` | none; needs a spec |
+| `qkv` tkg | race free under `BASELINE` | none; needs a spec |
+| `rmsnorm/rmsnorm_quant` static | lowering | `nl.minimum`. Row quantization stores fp32 scales as fp8 bytes, which is out of model |
+| `output_projection` tkg | lowering | an operand of shape `[128, 1, 4]` against one of `[128, 4]` |
+| `qkv` cte | lowering | `dge_mode.swdge` DMAs |
+| `mlp` cte | lowering | a tile with two free dimensions as an operand |
+| `mlp` tkg | tracing | `flatten_dims` of a view whose dimensions are not contiguous |
+| `attention/attention_cte` | tracing | `nisa.iota` with a nested `pattern` |
+| `attention/attention_tkg` | tracing | a `memset` to `-inf` |
+
+`mlp` sizes its own SBUF heap at 200 KiB a partition, past the 192 KiB Volta assumes for
+Trn2, so its calls run with a 224 KiB partition, the bound its context encoding path uses.
+`attention_tkg` without fused RoPE needs `q` and `k` in SBUF, so its wrapper copies them
+there.

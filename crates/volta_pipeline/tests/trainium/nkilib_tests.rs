@@ -9,6 +9,7 @@ mod conv;
 mod elementwise;
 mod norms;
 mod pooling;
+mod triage;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,9 @@ use volta_equivalence::check::EquivCheckOptions;
 use volta_expr::{FullOutputs, SymbolicOutputs};
 use volta_graph_check::{GraphConclusion, check_graph};
 use volta_pipeline::{EquivalenceVerdict, check_equivalence};
+use volta_trainium_analysis::frontend::ast::Kernel;
 use volta_trainium_analysis::frontend::parse::{Constant, KernelCall, TileSizes};
+use volta_trainium_analysis::frontend::trace::TraceError;
 use volta_trainium_analysis::{
     Execution, LoweredKernel, OrderingPolicy, WriteAfterWrite, evaluate, lower_kernel, record_graph,
 };
@@ -74,6 +77,12 @@ fn lowered(wrapper: &str, args: &[Arg]) -> LoweredKernel {
 
 /// Wrapper `wrapper`'s `kernel` traced for `args` at `tile_sizes` and lowered.
 fn lowered_at(wrapper: &str, args: &[Arg], tile_sizes: TileSizes) -> LoweredKernel {
+    let kernel = traced(wrapper, args, tile_sizes).unwrap_or_else(|e| panic!("{wrapper}: {e}"));
+    lower_kernel(&kernel).unwrap_or_else(|e| panic!("{wrapper}: {e}"))
+}
+
+/// Wrapper `wrapper`'s `kernel` traced for `args` at `tile_sizes`.
+fn traced(wrapper: &str, args: &[Arg], tile_sizes: TileSizes) -> Result<Kernel, TraceError> {
     let mut shapes: Vec<(&str, &[u64])> = vec![];
     let mut dtypes: Vec<(&str, &str)> = vec![];
     let mut contents: Vec<(&str, &[u64])> = vec![];
@@ -106,10 +115,7 @@ fn lowered_at(wrapper: &str, args: &[Arg], tile_sizes: TileSizes) -> LoweredKern
         ..KernelCall::new(&shapes)
     };
     let file = PathBuf::from(NKILIB).join(wrapper);
-    let kernel = crate::common::trainium::tracer()
-        .trace(&file, &[nkilib_source()], "kernel", &call)
-        .unwrap_or_else(|e| panic!("{wrapper}: {e}"));
-    lower_kernel(&kernel).unwrap_or_else(|e| panic!("{wrapper}: {e}"))
+    crate::common::trainium::tracer().trace(&file, &[nkilib_source()], "kernel", &call)
 }
 
 /// The outputs of spec file `spec` at `dims`, with the index arrays `indices`.

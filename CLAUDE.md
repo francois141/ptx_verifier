@@ -1130,7 +1130,10 @@ found at their calls: `max_pooling_3d` (F7)
 found correct equal to their specs on every element and race free, under `BASELINE` or, where
 a tile is overwritten unread, write after write ordered: rmsnorm_tkg, layernorm_tkg, cumsum
 and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
-convolutions. `external/trainium/nkilib/README.md` explains each bug, links its upstream
+convolutions. `triage` records how far one call of each core kernel not yet checked gets
+(traced, lowered, run, graph verdict), or its first blocker, against
+`external/trainium/nkilib/triage.txt` (`VOLTA_BLESS=1` rewrites it).
+`external/trainium/nkilib/README.md` explains each bug, links its upstream
 issue, and lists each correct kernel's calls and verdict.
 AMD output checks require the same run's graph to conclude `Verified`: snapshots,
 equivalence comparisons, the Lean challenge, and the grid tests' individual workgroup runs.
