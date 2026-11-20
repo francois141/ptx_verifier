@@ -3,6 +3,7 @@
 
 mod activation;
 mod arith;
+mod compare;
 mod instr;
 mod kernel;
 mod scalar;
@@ -11,6 +12,7 @@ mod tensor;
 pub use crate::frontend::ast::{LoopId, LoopIteration, LoopKind, NoReorderId, Origin, Reordering};
 pub use activation::ActivationFunc;
 pub use arith::ArithOp;
+pub use compare::Comparison;
 pub use instr::{
     Accumulation, Copied, Descriptors, InstrId, LoweredInstr, MatmulPass, Mover, Order, Reduction,
     Sign,

@@ -1,0 +1,26 @@
+kernel kernel(a, bound, out, row_max, idx, banded)
+  a: hbm[4, 4]
+  bound: hbm[4, 1]
+  out: hbm[4, 4]
+  row_max: hbm[4, 1]
+  idx: hbm[4, 6]
+  banded: hbm[4, 4]
+  x: sbuf[4, 4]
+  zero: sbuf[4, 1]
+  upper: sbuf[4, 1]
+  y: sbuf[4, 4]
+  r: sbuf[4, 1]
+  i: sbuf[4, 6]
+  b: sbuf[4, 1]
+  w: sbuf[4, 4]
+  x = dma(a)
+  zero = memset(0)
+  upper = iota([[1, 1]], offset=0, channel_multiplier=1)
+  y, r = range_select(x, greater_equal(zero), less_equal(upper), start=0, else=-3) reduce maximum
+  out = dma(y)
+  row_max = dma(r)
+  i = iota([[3, 2], [1, 3]], offset=1, channel_multiplier=10)
+  idx = dma(i)
+  b = dma(bound)
+  w = range_select(x, greater(zero), less(b), start=1, else=0)
+  banded = dma(w)

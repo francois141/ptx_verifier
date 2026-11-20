@@ -86,7 +86,25 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
         LoweredInstr::Mov { dst, src, .. } => {
             vec![access(Mode::Read, src), access(Mode::Write, dst)]
         }
-        LoweredInstr::Memset { dst, .. } | LoweredInstr::Identity { dst } => {
+        LoweredInstr::RangeSelect {
+            dst,
+            on_true,
+            bounds,
+            reduce,
+            ..
+        } => [
+            vec![
+                access(Mode::Read, on_true),
+                access(Mode::Read, &bounds[0]),
+                access(Mode::Read, &bounds[1]),
+                access(Mode::Write, dst),
+            ],
+            reduced(reduce),
+        ]
+        .concat(),
+        LoweredInstr::Memset { dst, .. }
+        | LoweredInstr::Identity { dst }
+        | LoweredInstr::Iota { dst, .. } => {
             vec![access(Mode::Write, dst)]
         }
         LoweredInstr::Gather { dst, data, index } => vec![

@@ -9,8 +9,8 @@ use volta_expr::FullOutputs;
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, Type};
 
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Copied, Index, InstrId, LoweredInstr, LoweredKernel,
-    MatmulPass, Order, Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Comparison, Copied, Index, InstrId, LoweredInstr,
+    LoweredKernel, MatmulPass, Order, Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
 };
 
 use super::EvalError;
@@ -388,6 +388,58 @@ impl<'a> Interpreter<'a> {
                     writes.push(Write::at(dst, [c, m * first + a], value));
                 }
             }
+            LoweredInstr::Iota {
+                dst,
+                pattern,
+                offset,
+                channel_multiplier,
+            } => {
+                for [partition, free] in elements(dst) {
+                    let mut value = offset + partition as i64 * channel_multiplier;
+                    let mut rest = free;
+                    for &(step, count) in pattern.iter().rev() {
+                        value += step * (rest % count) as i64;
+                        rest /= count;
+                    }
+                    let value = self
+                        .arena
+                        .float_from_f64(value as f64)
+                        .expect("an integer is a number");
+                    writes.push(Write::at(dst, [partition, free], value));
+                }
+            }
+            LoweredInstr::RangeSelect {
+                dst,
+                on_true,
+                bounds,
+                comparisons,
+                range_start,
+                on_false,
+                reduce,
+            } => {
+                let [partitions, free] = dst.tile_extents();
+                for partition in 0..partitions {
+                    let mut row = Vec::new();
+                    for element in 0..free {
+                        let at = [partition, element];
+                        let kept = self.read(instr, on_true, at)?;
+                        let rejected = self
+                            .arena
+                            .float_from_f64(on_false.get())
+                            .expect("a scalar is a number");
+                        let position = (range_start + element) as f64;
+                        let mut tests = Vec::new();
+                        for (bound, comparison) in bounds.iter().zip(comparisons) {
+                            let bound = self.read(instr, bound, [partition, 0])?;
+                            tests.push((bound, *comparison));
+                        }
+                        let value = self.selected(position, &tests, kept, rejected);
+                        writes.push(Write::at(dst, at, value));
+                        row.push(value);
+                    }
+                    writes.extend(self.reduce_row(reduce.as_ref(), partition, row));
+                }
+            }
             LoweredInstr::CopyPredicated {
                 dst,
                 src,
@@ -538,6 +590,49 @@ impl<'a> Interpreter<'a> {
         values.fold(first, |accumulated, value| {
             self.arith(op, accumulated, value)
         })
+    }
+
+    /// `kept` where `position` passes every `(bound, comparison)` test, else `rejected`:
+    /// decided at once for concrete bounds, else a select over the comparisons.
+    fn selected(
+        &mut self,
+        position: f64,
+        tests: &[(ExprId, Comparison)],
+        kept: ExprId,
+        rejected: ExprId,
+    ) -> ExprId {
+        let concrete: Option<Vec<f64>> = tests
+            .iter()
+            .map(|&(bound, _)| self.arena.as_f64(bound))
+            .collect();
+        if let Some(bounds) = concrete {
+            let passes = bounds
+                .iter()
+                .zip(tests)
+                .all(|(&bound, &(_, comparison))| comparison.holds(position, bound));
+            return if passes { kept } else { rejected };
+        }
+        let position = self
+            .arena
+            .float_from_f64(position)
+            .expect("a position is a number");
+        let mut condition = None;
+        for &(bound, comparison) in tests {
+            let test = match comparison {
+                Comparison::Equal => self.arena.eq(Type::Real, position, bound),
+                Comparison::NotEqual => self.arena.ne(Type::Real, position, bound),
+                Comparison::Less => self.arena.lt(Type::Real, position, bound),
+                Comparison::LessEqual => self.arena.le(Type::Real, position, bound),
+                Comparison::Greater => self.arena.gt(Type::Real, position, bound),
+                Comparison::GreaterEqual => self.arena.ge(Type::Real, position, bound),
+            };
+            condition = Some(match condition {
+                None => test,
+                Some(both) => self.arena.and(Type::Pred, both, test),
+            });
+        }
+        let condition = condition.expect("range_select tests two bounds");
+        self.arena.select(Type::Real, condition, kept, rejected)
     }
 
     /// The write of `reduction`'s result for one partition's `row` of an instruction's

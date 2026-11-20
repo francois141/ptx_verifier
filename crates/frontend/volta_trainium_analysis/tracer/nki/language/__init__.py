@@ -2,6 +2,8 @@
 the tile-returning functions, each rewritten into a declaration and the one `nki.isa`
 instruction it lowers to. Any other member is a `Member` passed by its dotted path."""
 
+import inspect
+
 from .. import _trace
 from .._trace import (
     NKI_LANGUAGE,
@@ -37,6 +39,22 @@ def __getattr__(name):
 
 class NKIObject:
     """The base of a kernel's own classes; a plain Python object when traced."""
+
+    def __init_subclass__(cls, **kwargs):
+        # NKI takes a `@dataclass` subclass's unannotated attributes as fields too, as
+        # nkilib's `SectionParams(section_idx=...)` relies on; CPython's dataclass would not.
+        super().__init_subclass__(**kwargs)
+        annotations = dict(inspect.get_annotations(cls))
+        unannotated = [
+            name
+            for name, value in cls.__dict__.items()
+            if not name.startswith("_")
+            and name not in annotations
+            and not callable(value)
+            and not isinstance(value, (staticmethod, classmethod, property))
+        ]
+        if unannotated:
+            cls.__annotations__ = {**annotations, **dict.fromkeys(unannotated, object)}
 
 
 class _Function(Member):

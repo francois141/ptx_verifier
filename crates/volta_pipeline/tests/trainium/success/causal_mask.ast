@@ -1,0 +1,20 @@
+kernel kernel(a: [4, 4], bound: [4, 1], out: [4, 4], row_max: [4, 1], idx: [4, 6], banded: [4, 4])
+  x: sbuf[4, 4] of a.dtype
+  dma_copy(dst=x, src=a)
+  zero: sbuf[4, 1] of float32
+  memset(dst=zero, value=0)
+  upper: sbuf[4, 1] of float32
+  iota(channel_multiplier=1, dst=upper, pattern=[[1, 1]])
+  y: sbuf[4, 4] of a.dtype
+  r: sbuf[4, 1] of a.dtype
+  range_select(bound0=zero, bound1=upper, comp_op0=nki.language.greater_equal, comp_op1=nki.language.less_equal, dst=y, on_false_value=-3, on_true_tile=x, range_start=0, reduce_cmd=nki.isa.reduce_cmd.reset_reduce, reduce_op=nki.language.maximum, reduce_res=r)
+  dma_copy(dst=out, src=y)
+  dma_copy(dst=row_max, src=r)
+  i: sbuf[4, 6] of float32
+  iota(channel_multiplier=10, dst=i, offset=1, pattern=[[3, 2], [1, 3]])
+  dma_copy(dst=idx, src=i)
+  b: sbuf[4, 1] of bound.dtype
+  dma_copy(dst=b, src=bound)
+  w: sbuf[4, 4] of a.dtype
+  range_select(bound0=zero, bound1=b, comp_op0=nki.language.greater, comp_op1=nki.language.less, dst=w, on_false_value=0, on_true_tile=x, range_start=1)
+  dma_copy(dst=banded, src=w)

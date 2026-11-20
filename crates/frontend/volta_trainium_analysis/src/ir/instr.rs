@@ -4,7 +4,7 @@ use id_collections::id_type;
 
 use crate::frontend::ast::Scalar;
 
-use super::{ActivationFunc, ArithOp, ScalarOperand, ScalarStep, TensorRegion};
+use super::{ActivationFunc, ArithOp, Comparison, ScalarOperand, ScalarStep, TensorRegion};
 
 /// An instruction's position in its kernel body.
 #[id_type]
@@ -34,6 +34,26 @@ pub enum LoweredInstr {
     },
     /// Every element of `dst` set to `value`.
     Memset { dst: TensorRegion, value: Scalar },
+    /// `iota`: `dst[p, f] = offset + p * channel_multiplier + sum(step * i)`, the `i` the
+    /// free index `f` taken row-major over `pattern`'s `(step, count)` pairs.
+    Iota {
+        dst: TensorRegion,
+        pattern: Vec<(i64, u64)>,
+        offset: i64,
+        channel_multiplier: i64,
+    },
+    /// `range_select`: `dst[p, f]` is `on_true[p, f]` where `range_start + f` satisfies
+    /// both `comparisons` against `bounds[0][p]` and `bounds[1][p]`, else `on_false`, with
+    /// an optional reduction of each partition's result.
+    RangeSelect {
+        dst: TensorRegion,
+        on_true: TensorRegion,
+        bounds: [TensorRegion; 2],
+        comparisons: [Comparison; 2],
+        range_start: u64,
+        on_false: Scalar,
+        reduce: Option<Reduction>,
+    },
     /// `dst`, a square tile region, set to the identity matrix (`nl.shared_identity_matrix`).
     Identity { dst: TensorRegion },
     /// Tensor indirection: `dst[p, i] = data[p, index[i % 16, i // 16]]` for each of
@@ -192,6 +212,8 @@ impl LoweredInstr {
             } => "nc_transpose",
             LoweredInstr::Shuffle { .. } => "nc_stream_shuffle",
             LoweredInstr::CopyPredicated { .. } => "tensor_copy_predicated",
+            LoweredInstr::Iota { .. } => "iota",
+            LoweredInstr::RangeSelect { .. } => "range_select",
         }
     }
 }

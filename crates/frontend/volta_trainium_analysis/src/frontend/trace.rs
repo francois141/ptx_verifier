@@ -379,6 +379,7 @@ enum WireOperand {
     Infinity(WireSign),
     Int(u64),
     Ints(Vec<u64>),
+    Pairs(Vec<(i64, u64)>),
     Bool(bool),
     None(()),
     Region {
@@ -566,6 +567,7 @@ impl WireOperand {
             ),
             Self::Int(value) => Operand::Int(value),
             Self::Ints(values) => Operand::Ints(values),
+            Self::Pairs(pairs) => Operand::Pairs(pairs),
             Self::Bool(value) => Operand::Bool(value),
             Self::None(()) => Operand::None,
             Self::Region { tensor, dims } => Operand::Region {
