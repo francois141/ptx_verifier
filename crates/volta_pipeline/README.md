@@ -191,8 +191,8 @@ only inline unit tests of their internals.
   or leaving a depth plane unwritten; and `conv3d_temporal_unroll` (F12) refuted on every
   output. Each `*_fixed.py` wrapper applies `fixes.py`'s proposed fix as the module is
   imported, and the same call must be proved equal to its spec and race free with write
-  after write ordered. `norms`, `elementwise`, `pooling` and `conv` hold the twenty kernels
-  found correct: each call is proved equal to its spec on every element and race free.
+  after write ordered. `layers`, `norms`, `elementwise`, `pooling` and `conv` hold the
+  twenty-four kernels found correct: each call is proved equal to its spec on every element and race free.
   `triage` runs one call of each core kernel not yet checked as far as it gets (traced,
   lowered, run, its graph's verdict) and compares the table with
   `external/trainium/nkilib/triage.txt` (`VOLTA_BLESS=1` rewrites it).

@@ -8,4 +8,5 @@ output_projection_cte = importlib.import_module(
 
 
 def kernel(attention, weight):
-    return output_projection_cte(attention, weight)
+    out = output_projection_cte(attention, weight)
+    return out

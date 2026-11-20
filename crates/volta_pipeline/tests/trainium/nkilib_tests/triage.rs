@@ -61,40 +61,11 @@ fn calls() -> Vec<Call> {
             ],
         ),
         call(
-            "rope d 128, 2 heads, s 4",
-            "rope.py",
-            vec![
-                T("x_in", vec![128, 1, 2, 4]),
-                T("cos", vec![64, 1, 4]),
-                T("sin", vec![64, 1, 4]),
-            ],
-        ),
-        call(
-            "rope_hf 2 q heads, 1 k head, s 128, d 64",
-            "rope_hf.py",
-            vec![
-                T("q", vec![1, 2, 128, 64]),
-                T("k", vec![1, 1, 128, 64]),
-                T("q_out", vec![1, 2, 128, 64]),
-                T("k_out", vec![1, 1, 128, 64]),
-                T("cos", vec![1, 128, 64]),
-                T("sin", vec![1, 128, 64]),
-            ],
-        ),
-        call(
             "output_projection_tkg d 128, 2 heads, s 4, h 512",
             "output_projection_tkg.py",
             vec![
                 T("attention", vec![128, 1, 2, 4]),
                 T("weight", vec![256, 512]),
-            ],
-        ),
-        call(
-            "output_projection_cte 2 heads, d 128, s 128, h 128",
-            "output_projection_cte.py",
-            vec![
-                T("attention", vec![1, 2, 128, 128]),
-                T("weight", vec![256, 128]),
             ],
         ),
         Call {
@@ -105,14 +76,6 @@ fn calls() -> Vec<Call> {
             tile_sizes: MLP_SBUF,
             ..call("mlp cte s 512, h 512, i 256", "mlp.py", mlp(512))
         },
-        call(
-            "qkv tkg s 4, h 512, d 128, 2 + 1 + 1 heads",
-            "qkv.py",
-            vec![
-                T("input", vec![1, 4, 512]),
-                T("fused_qkv_weights", vec![512, 512]),
-            ],
-        ),
         call(
             "qkv cte s 512, h 512, d 128, 2 + 1 + 1 heads",
             "qkv.py",

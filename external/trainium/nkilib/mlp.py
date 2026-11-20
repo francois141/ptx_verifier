@@ -7,4 +7,5 @@ mlp = importlib.import_module("nkilib.core.mlp.mlp").mlp
 
 
 def kernel(hidden, gate_w, up_w, down_w):
-    return mlp(hidden, gate_w, up_w, down_w)[0]
+    out = mlp(hidden, gate_w, up_w, down_w)[0]
+    return out

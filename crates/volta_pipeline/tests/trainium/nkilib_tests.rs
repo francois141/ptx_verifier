@@ -7,6 +7,7 @@
 mod bugs;
 mod conv;
 mod elementwise;
+mod layers;
 mod norms;
 mod pooling;
 mod triage;
