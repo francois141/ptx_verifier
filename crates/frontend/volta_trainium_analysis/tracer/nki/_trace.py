@@ -136,6 +136,8 @@ class DtypeOf:
     def __eq__(self, other):
         if isinstance(other, DtypeOf) and other.tensor is self.tensor:
             return True
+        if other is None:
+            return False
         mine = self.name()
         theirs = dtype_name(other)
         if mine is None or theirs is None:
