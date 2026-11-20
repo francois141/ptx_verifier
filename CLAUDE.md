@@ -1147,7 +1147,10 @@ thirty kernels found correct equal to their specs on every element and race free
 a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection,
 qkv and mlp (both paths), attention_tkg (decode, masked or not), attention_cte (causal), rmsnorm_quant with static quantization; rmsnorm_tkg, layernorm_tkg, cumsum
 and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
-convolutions. `triage` records how far one call of each core kernel not yet checked gets
+convolutions. `elementwise` also pins F14 (suspected): under `PlacedTiles::ByTensor`,
+`batch_norm_bwd`'s dx phase races phase 1 through the released tiles it reuses (nine
+conflicts at `[1, 130, 1, 4, 4]`); `batch_norm_bwd_fixed.py`, keeping phase 1's scope open,
+is equal and race free. `triage` records how far one call of each core kernel not yet checked gets
 (traced, lowered, run, graph verdict), or its first blocker, against
 `external/trainium/nkilib/triage.txt` (`VOLTA_BLESS=1` rewrites it).
 `external/trainium/nkilib/README.md` explains each bug, links its upstream
