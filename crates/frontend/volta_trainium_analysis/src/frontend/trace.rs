@@ -363,11 +363,20 @@ enum WireLoopKind {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireSign {
+    Negative,
+    Positive,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum WireOperand {
     Tensor(String),
     Member(String),
     Scalar(f64),
+    /// An infinite float, which JSON cannot write: `-inf` or `inf`.
+    Infinity(WireSign),
     Int(u64),
     Ints(Vec<u64>),
     Bool(bool),
@@ -546,7 +555,14 @@ impl WireOperand {
             Self::Tensor(tensor) => Operand::Tensor(names.get(tensor)?),
             Self::Member(member) => Operand::Member(member),
             Self::Scalar(value) => Operand::Scalar(
-                Scalar::new(value).ok_or_else(|| format!("scalar {value} is not finite"))?,
+                Scalar::new(value).ok_or_else(|| format!("scalar {value} is not a number"))?,
+            ),
+            Self::Infinity(sign) => Operand::Scalar(
+                Scalar::new(match sign {
+                    WireSign::Negative => f64::NEG_INFINITY,
+                    WireSign::Positive => f64::INFINITY,
+                })
+                .expect("an infinity is a number"),
             ),
             Self::Int(value) => Operand::Int(value),
             Self::Ints(values) => Operand::Ints(values),

@@ -1,0 +1,21 @@
+kernel kernel(a, mask, out, row_max, kept)
+  a: hbm[2, 4]
+  mask: hbm[2, 4]
+  out: hbm[2, 4]
+  row_max: hbm[2, 1]
+  kept: hbm[2, 4]
+  x: sbuf[2, 4]
+  m: sbuf[2, 4]
+  scores: sbuf[2, 4]
+  r: sbuf[2, 1]
+  z: sbuf[2, 4]
+  x = dma(a)
+  m = dma(mask)
+  scores = memset(-inf)
+  scores = copy_predicated(x, m)
+  out = dma(scores)
+  r = reduce maximum(scores)
+  row_max = dma(r)
+  z = memset(0)
+  z = copy_predicated(x, m, reverse_pred)
+  kept = dma(z)

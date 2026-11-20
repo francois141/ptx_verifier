@@ -1,0 +1,16 @@
+kernel kernel(a: [2, 4], mask: [2, 4], out: [2, 4], row_max: [2, 1], kept: [2, 4])
+  x: sbuf[2, 4] of a.dtype
+  dma_copy(dst=x, src=a)
+  m: sbuf[2, 4] of mask.dtype
+  dma_copy(dst=m, src=mask)
+  scores: sbuf[2, 4] of a.dtype
+  memset(dst=scores, value=-inf)
+  tensor_copy_predicated(dst=scores, predicate=m, src=x)
+  dma_copy(dst=out, src=scores)
+  r: sbuf[2, 1] of a.dtype
+  tensor_reduce(axis=1, data=scores, dst=r, op=nki.language.maximum)
+  dma_copy(dst=row_max, src=r)
+  z: sbuf[2, 4] of a.dtype
+  memset(dst=z, value=0)
+  tensor_copy_predicated(dst=z, predicate=m, reverse_pred=True, src=x)
+  dma_copy(dst=kept, src=z)

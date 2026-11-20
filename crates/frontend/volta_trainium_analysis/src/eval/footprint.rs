@@ -209,6 +209,18 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
             vec![access(Mode::Read, data), access(Mode::Write, dst)]
         }
         // Whole regions, though a mask may skip partitions: more conflicts, never fewer.
+        // `dst` is read too: where the predicate does not copy, its element stays.
+        LoweredInstr::CopyPredicated {
+            dst,
+            src,
+            predicate,
+            ..
+        } => vec![
+            access(Mode::Read, src),
+            access(Mode::Read, predicate),
+            access(Mode::Read, dst),
+            access(Mode::Write, dst),
+        ],
         LoweredInstr::Shuffle { dst, src, .. } => {
             vec![access(Mode::Read, src), access(Mode::Write, dst)]
         }

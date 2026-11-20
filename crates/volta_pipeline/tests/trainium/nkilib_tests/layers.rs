@@ -9,7 +9,7 @@ use volta_trainium_analysis::{OrderingPolicy, evaluate};
 
 use super::Arg;
 use super::Arg::Tensor as T;
-use super::{assert_proved, lowered, lowered_at, spec, verdict};
+use super::{WAW, assert_proved, lowered, lowered_at, spec, verdict};
 
 const BASELINE: OrderingPolicy = OrderingPolicy::BASELINE;
 
@@ -187,4 +187,64 @@ fn nkilib_mlp_cte_matches_the_gated_projection() {
 #[ignore]
 fn nkilib_mlp_cte_on_97_tokens_matches_the_gated_projection() {
     assert_mlp_proved([1, 97, 128, 1], false);
+}
+
+/// Decode at one batch and head, every cache slot valid: the mask is given, all ones.
+#[test]
+fn nkilib_attention_tkg_matches_attention_over_the_cache() {
+    let [d, sp, sa] = [64, 128, 1];
+    let kernel = lowered(
+        "attention_tkg.py",
+        &[
+            T("q", vec![d, sa]),
+            T("k_active", vec![d, sa]),
+            T("v_active", vec![1, 1, sa, d]),
+            T("k_prior", vec![1, 1, d, sp]),
+            T("v_prior", vec![1, 1, sp, d]),
+            Arg::Filled("mask", vec![sp, 1, 1, sa], vec![1; (sp * sa) as usize]),
+            T("out", vec![1, 1, d, sa]),
+        ],
+    );
+    let dims = [
+        ("D", d),
+        ("SP", sp),
+        ("SA", sa),
+        ("KP", sp - sa),
+        ("ONE", 1),
+    ];
+    assert_proved(WAW, &kernel, &spec("attention_tkg.spec", &dims, &[]), "out");
+}
+
+/// The same call with every third prior slot masked out, the active slot kept.
+#[test]
+fn nkilib_attention_tkg_matches_masked_attention() {
+    let [d, sp, sa] = [64, 128, 1];
+    let mask: Vec<u64> = (0..sp)
+        .map(|j| u64::from(j % 3 != 0 || j >= sp - sa))
+        .collect();
+    let valid: Vec<i64> = (0..sp - sa)
+        .filter(|&j| mask[j as usize] == 1)
+        .map(|j| j as i64)
+        .collect();
+    let kernel = lowered(
+        "attention_tkg.py",
+        &[
+            T("q", vec![d, sa]),
+            T("k_active", vec![d, sa]),
+            T("v_active", vec![1, 1, sa, d]),
+            T("k_prior", vec![1, 1, d, sp]),
+            T("v_prior", vec![1, 1, sp, d]),
+            Arg::Filled("mask", vec![sp, 1, 1, sa], mask),
+            T("out", vec![1, 1, d, sa]),
+        ],
+    );
+    let dims = [
+        ("D", d),
+        ("SP", sp),
+        ("SA", sa),
+        ("NV", valid.len() as u64),
+        ("ONE", 1),
+    ];
+    let spec = spec("attention_tkg_masked.spec", &dims, &[("VALID", valid)]);
+    assert_proved(WAW, &kernel, &spec, "out");
 }

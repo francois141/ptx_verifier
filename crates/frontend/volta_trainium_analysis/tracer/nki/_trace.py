@@ -741,8 +741,10 @@ def operand(keyword, value):
         type(value).__module__ == "numpy" and hasattr(value, "dtype")
     ):
         value = float(value)
-        if not math.isfinite(value):
-            raise Unsupported(f"operand `{keyword}` is not finite: {value}")
+        if math.isnan(value):
+            raise Unsupported(f"operand `{keyword}` is NaN")
+        if math.isinf(value):
+            return {"infinity": "negative" if value < 0 else "positive"}
         return {"scalar": value}
     if isinstance(value, (tuple, list)):
         return {

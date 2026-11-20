@@ -1158,7 +1158,7 @@ impl Trace<'_> {
                         None => bail!(line, "integer arithmetic overflows"),
                     },
                     (UnaryOp::Neg, Value::Float(value)) => Ok(Value::Float(
-                        Scalar::new(-value.get()).expect("a negated finite float is finite"),
+                        Scalar::new(-value.get()).expect("a negated number is a number"),
                     )),
                     (UnaryOp::Invert, Value::Int(value)) => Ok(Value::Int(!value)),
                     (_, operand) => bail!(line, "unsupported operand `{operand}`"),
@@ -1676,7 +1676,7 @@ fn true_division(lhs: &Value, rhs: &Value, line: usize) -> Result<Value, ParseEr
     if rhs == 0.0 {
         bail!(line, "division by zero");
     }
-    match Scalar::new(lhs / rhs) {
+    match Scalar::new(lhs / rhs).filter(|quotient| quotient.get().is_finite()) {
         Some(quotient) => Ok(Value::Float(quotient)),
         None => bail!(line, "`/` overflows a float"),
     }
@@ -1721,8 +1721,14 @@ fn non_negative(value: i64, what: &str, line: usize) -> Result<u64, ParseError> 
     }
 }
 
-/// An `nl.tile_size` limit as its integer; any other member as itself.
+/// An `nl.tile_size` limit as its integer, `numpy.inf` or `math.inf` as the float (nkilib's
+/// `memset(..., value=-np.inf)`); any other member as itself.
 fn tile_size(tile_sizes: TileSizes, member: String, line: usize) -> Result<Value, ParseError> {
+    if matches!(member.as_str(), "numpy.inf" | "math.inf") {
+        return Ok(Value::Float(
+            Scalar::new(f64::INFINITY).expect("an infinity is a number"),
+        ));
+    }
     let Some(limit) = member
         .strip_prefix(NKI_LANGUAGE)
         .and_then(|rest| rest.strip_prefix(".tile_size."))

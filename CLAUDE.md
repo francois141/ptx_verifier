@@ -550,7 +550,9 @@ function over `nki.language`/`nki.isa`); the stages mirror the other analyses:
 parsing (`frontend`, public), lowering (`lower`, `ir`) and symbolic execution
 (`eval`).
 
-Lowering accepts seventeen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+Lowering accepts eighteen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
+`tensor_copy_predicated` (`LoweredInstr::CopyPredicated`, `src` where `predicate` is nonzero,
+else `dst` kept; a symbolic predicate a `select`),
 `memset` (`LoweredInstr::Memset`), `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`,
 `activation`, `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`
 (`LoweredInstr::ScalarTensorTensor`), `tensor_scalar_cumulative` (`LoweredInstr::Cumulative`,
@@ -630,8 +632,9 @@ errors); `activation_reduce` is that instruction, as the NKI docs
 define it, and `tensor_scalar_reduce` is a one-step `TensorScalar` with a
 `Reduction`. A tile's `dtype` is not modelled: values are reals, so v7 to v8a's
 `nl.bfloat16` scores are checked without their rounding. A float literal
-is an `ast::Scalar`, a newtype whose constructor rejects non-finite values, so
-it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
+is an `ast::Scalar`, a newtype whose constructor rejects NaN (infinities pass, as nkilib's
+`memset(..., value=-np.inf)`; the parser reads `numpy.inf`/`math.inf`, the tracer sends
+`{"infinity": ...}`), so it is `Eq` and converts infallibly - through `Real::from_f64` and not an exact
 rational, since only f64-round-tripping reals print as decimals.
 
 `frontend::trace::Tracer` runs a kernel call under CPython instead (`tracer/trace.py`
@@ -897,6 +900,8 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `tensor_partition_reduce` and `activation(op=nl.reciprocal)`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
+`success/predicated_copy.py` covers `tensor_copy_predicated` under a symbolic mask over a
+`-inf` tile, its row maxima, and `reverse_pred`.
 `success/mlp_ops.py` covers a 3-D `dma_transpose` around a middle dimension, `nl.silu` and an
 `nc_transpose` into a `[4, 1, 3]` tile.
 `success/clip_ops.py` covers `nl.minimum` (a `tensor_scalar` clip) and a `tensor_tensor` over
@@ -1132,9 +1137,9 @@ found at their calls: `max_pooling_3d` (F7)
 `conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
 `fixes.py`'s fix at import, and the fixed call is proved equal and race free under
 `WriteAfterWrite::Ordered`. `layers`, `norms`, `elementwise`, `pooling` and `conv` prove
-twenty-eight kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
+twenty-nine kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
 a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection,
-qkv and mlp (both paths), rmsnorm_quant with static quantization; rmsnorm_tkg, layernorm_tkg, cumsum
+qkv and mlp (both paths), attention_tkg (decode, masked or not), rmsnorm_quant with static quantization; rmsnorm_tkg, layernorm_tkg, cumsum
 and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
 convolutions. `triage` records how far one call of each core kernel not yet checked gets
 (traced, lowered, run, graph verdict), or its first blocker, against
