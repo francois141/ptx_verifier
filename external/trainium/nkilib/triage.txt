@@ -1,0 +1,27 @@
+# Each core nkilib kernel not yet checked, at one call: the first stage that stops it
+# (trace, lower, run) and why, or its graph's verdict under BASELINE and with write
+# after write ordered (WAW).
+rmsnorm_quant row [1, 4, 256]
+    trace: nkilib/core/rmsnorm/rmsnorm_quant.py:506: unsupported: reinterpreting a tensor's bits as another dtype is not modelled
+rmsnorm_quant static [1, 4, 256]
+    lower: statement 23: unsupported arithmetic op `nki.language.minimum`
+rope d 128, 2 heads, s 4
+    ran 21 statements; BASELINE race free, WAW race free
+rope_hf 2 q heads, 1 k head, s 128, d 64
+    ran 37 statements; BASELINE race free, WAW race free
+output_projection_tkg d 128, 2 heads, s 4, h 512
+    lower: statement 3: the `output_projection_tkg[0].BufferManager.alloc_stack[0].mloc` operand has shape [128, 4] but the `output_projection_tkg[0]._load_attn_to_sbuf[0]...
+output_projection_cte 2 heads, d 128, s 128, h 128
+    ran 18 statements; BASELINE race free, WAW race free
+mlp tkg s 4, h 512, i 256
+    trace: nkilib/core/mlp/mlp_tkg/mlp_tkg_utils.py:465: invalid kernel: `flatten_dims` merges only dimensions contiguous in memory
+mlp cte s 512, h 512, i 256
+    lower: statement 13: the `hidden` operand has shape [128, 4, 128], but the instruction takes tiles of one free dimension
+qkv tkg s 4, h 512, d 128, 2 + 1 + 1 heads
+    ran 17 statements; BASELINE race free, WAW race free
+qkv cte s 512, h 512, d 128, 2 + 1 + 1 heads
+    lower: statement 17: unsupported `dge_mode` `nki.isa.dge_mode.swdge`: only `nisa.dge_mode.unknown`, `none` or `hwdge`
+attention_cte causal s 128, d 64
+    trace: nkilib/core/attention/attention_cte.py:1872: invalid kernel: an item of operand `pattern` must be an integer, not `[128, 1]`
+attention_tkg s_active 1, s_prior 128, d 64
+    trace: nkilib/core/attention/attention_tkg.py:2832: unsupported: operand `value` is not finite: -inf
