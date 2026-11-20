@@ -562,7 +562,7 @@ swap the ends of a region whose middle extents are 1, its source in any memory, 
 an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor`, `sync` (a DMA queue) or `unknown` (or the older
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
-`nl.subtract`, `nl.multiply`, `nl.maximum`) and `ActivationFunc::ALL`
+`nl.subtract`, `nl.multiply`, `nl.maximum`, `nl.minimum`) and `ActivationFunc::ALL`
 (`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, `nl.sqrt`, `nl.abs`,
 `nl.reciprocal`;
 `nl.max` is taken as `nl.maximum`) for a variant whose
@@ -806,7 +806,8 @@ tile's shape is the region's kept extents) and for `lower/` (`Scope::region`,
 `Scope::tile` for an on-chip one, which must slice its partition dimension). Every
 instruction operand is an `ir::TensorRegion` - full-rank `start` and `shape`, an
 indexed dimension of extent 1, and each dimension's `Selection` for `.ir` - and
-every shape rule compares kept shapes (indexed dimensions dropped); a broadcast
+every shape rule compares kept shapes (indexed dimensions dropped; operands that must agree
+may also differ by free dimensions of extent 1, `same_shape`); a broadcast
 operand or reduction result needs one element per partition (`t[:, 0:1]` or
 `t[:, 0]`), and matmul, transpose and an instruction's reduction a kept shape of
 exactly two dimensions. An operand may instead be `t.ap(pattern, offset=0)`
@@ -896,7 +897,9 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `tensor_partition_reduce` and `activation(op=nl.reciprocal)`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
-`success/dma_modes.py` covers `hwdge` DMAs, `engine.sync`, a placed `nc_matmul` and DMAs
+`success/clip_ops.py` covers `nl.minimum` (a `tensor_scalar` clip) and a `tensor_tensor` over
+`[2, 1, 4]` and `[2, 4]` tiles.
+`success/dma_modes.py` covers `hwdge` and `swdge` DMAs (`swdge` ordered like `hwdge`), `engine.sync`, a placed `nc_matmul` and DMAs
 between a `[4, 1]` view and an indexed `[4]` column.
 `success/stream_shuffle.py` covers `nc_stream_shuffle` (`LoweredInstr::Shuffle`, `dst`
 partition `p` from `src` partition `shuffle_mask[p]` within a 32-partition quadrant, 255
@@ -1127,9 +1130,9 @@ found at their calls: `max_pooling_3d` (F7)
 `conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
 `fixes.py`'s fix at import, and the fixed call is proved equal and race free under
 `WriteAfterWrite::Ordered`. `layers`, `norms`, `elementwise`, `pooling` and `conv` prove
-twenty-four kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
-a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection_cte
-and qkv's token generation path; rmsnorm_tkg, layernorm_tkg, cumsum
+twenty-seven kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
+a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection
+and qkv (both paths), rmsnorm_quant with static quantization; rmsnorm_tkg, layernorm_tkg, cumsum
 and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
 convolutions. `triage` records how far one call of each core kernel not yet checked gets
 (traced, lowered, run, graph verdict), or its first blocker, against

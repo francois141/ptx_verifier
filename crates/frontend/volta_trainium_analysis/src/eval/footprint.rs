@@ -219,7 +219,7 @@ fn accesses(kernel: &LoweredKernel, instruction: &LoweredInstr) -> Vec<Access> {
 /// op, so a new `ArithOp` cannot become an accumulation without a decision.
 fn accumulates(op: ArithOp) -> bool {
     match op {
-        ArithOp::Add | ArithOp::Multiply | ArithOp::Maximum => true,
+        ArithOp::Add | ArithOp::Multiply | ArithOp::Maximum | ArithOp::Minimum => true,
         ArithOp::Subtract => false,
     }
 }

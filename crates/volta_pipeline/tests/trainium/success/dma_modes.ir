@@ -8,7 +8,7 @@ kernel kernel(a_t, b, out)
   z: sbuf[2, 3]
   x[0:4, 0] = dma[dge_mode=hwdge](a_t.ap([[2, 4], [1, 1]], offset=0))  # in for#0[0]
   x[0:4, 1] = dma[dge_mode=hwdge](a_t.ap([[2, 4], [1, 1]], offset=1))  # in for#0[1]
-  y = dma[dge_mode=hwdge](b)
+  y = dma[dge_mode=swdge](b)
   acc = matmul(x, y)
   z = mov(acc)
   out = dma(z)

@@ -1,0 +1,12 @@
+kernel kernel(a, out)
+  a: hbm[2, 4]
+  out: hbm[2, 4]
+  x: sbuf[2, 4]
+  clipped: sbuf[2, 4]
+  column: sbuf[2, 1, 4]
+  y: sbuf[2, 4]
+  x = dma(a)
+  clipped = maximum(minimum(x, 1), -1)
+  column = mov(clipped)
+  y = minimum(column, x)
+  out = dma(y)

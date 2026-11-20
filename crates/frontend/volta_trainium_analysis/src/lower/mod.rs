@@ -646,7 +646,7 @@ fn lower_instruction(
 // =============================================================================
 
 /// A DMA `instruction` without its `dge_mode=`, and how that mode generates its
-/// descriptors: `nisa.dge_mode.unknown` (the default), `none` or `hwdge`, the first two also
+/// descriptors: `nisa.dge_mode.unknown` (the default), `none`, `hwdge` or `swdge`, the first two also
 /// written as their values 0 and 3.
 fn without_dge_mode(
     instruction: &Instruction,
@@ -663,6 +663,9 @@ fn without_dge_mode(
         }
         Some(Operand::Member(member)) if member == "nki.isa.dge_mode.hwdge" => {
             Descriptors::Hardware
+        }
+        Some(Operand::Member(member)) if member == "nki.isa.dge_mode.swdge" => {
+            Descriptors::Software
         }
         Some(other) => return Err(StatementError::UnsupportedDgeMode(other)),
     };
@@ -919,9 +922,18 @@ fn reset_reduce(cmd: &Operand) -> Result<(), StatementError> {
 // Operand Checks
 // =============================================================================
 
-/// Two operands that must name regions of one shape, their indexed dimensions dropped.
+/// Two operands that must name regions of one shape, their indexed dimensions and free
+/// dimensions of extent 1 dropped: an engine pairs free elements in row-major order, which
+/// those dimensions do not change (nkilib's `[[8, 128], [8, 1], [1, 4]]` view of a tile).
 fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), StatementError> {
-    if left.kept == right.kept {
+    let squeezed = |shape: &Shape| -> Option<(u64, Vec<u64>)> {
+        let (&partitions, free) = shape.0.split_first()?;
+        Some((
+            partitions,
+            free.iter().copied().filter(|&e| e != 1).collect(),
+        ))
+    };
+    if left.kept == right.kept || squeezed(&left.kept) == squeezed(&right.kept) {
         return Ok(());
     }
     Err(StatementError::ShapeMismatch([

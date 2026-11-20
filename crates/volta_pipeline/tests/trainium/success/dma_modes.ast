@@ -5,7 +5,7 @@ kernel kernel(a_t: [4, 2], b: [4, 3], out: [2, 3])
   z: sbuf[2, 3] of float32
   dma_copy(dge_mode=nki.isa.dge_mode.hwdge, dst=x[:, 0], engine=nki.isa.engine.sync, src=a_t.ap([[2, 4], [1, 1]], offset=0))  # in for#0[0]
   dma_copy(dge_mode=nki.isa.dge_mode.hwdge, dst=x[:, 1], engine=nki.isa.engine.sync, src=a_t.ap([[2, 4], [1, 1]], offset=1))  # in for#0[1]
-  dma_copy(dge_mode=nki.isa.dge_mode.hwdge, dst=y, src=b)
+  dma_copy(dge_mode=nki.isa.dge_mode.swdge, dst=y, src=b)
   nc_matmul(dst=acc, moving=y, stationary=x, tile_position=(0, 0), tile_size=(4, 2))
   tensor_copy(dst=z, src=acc)
   dma_copy(dst=out, engine=nki.isa.engine.sync, src=z)

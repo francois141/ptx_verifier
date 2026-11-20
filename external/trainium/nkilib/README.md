@@ -145,7 +145,10 @@ The calls are the representative ones of the original checks, not their fuzzing 
 | `core/embeddings/rope` (`RoPE`, contiguous layout, one core) | `layers` | `d_head` 128 with 2 heads and 4 tokens; `d_head` 64 with 2 batches and 3 tokens | equal; race free. The interleaved layout's spec is refuted (128 of 128) |
 | `core/embeddings/rope_hf` (from `cos` and `sin`) | `layers` | 2 query heads and 1 key head, 128 tokens, `head_dim` 64; `q_out` and `k_out` | equal; race free |
 | `core/output_projection` cte (one core, unquantized) | `layers` | 2 heads of 128, 128 tokens, hidden 128 | equal; race free |
+| `core/output_projection` tkg (one core, unquantized) | `layers` | 2 heads of 128, 4 tokens, hidden 512 | equal; race free |
 | `core/qkv` tkg (one core, unfused, unquantized, BSD) | `layers` | 4 tokens, hidden 512, 2 query, 1 key and 1 value heads of 128 | equal; race free |
+| `core/qkv` cte (one core, unfused, unquantized, BSD) | `layers` | 128 tokens, hidden 128, 2 query, 1 key and 1 value heads of 128 | equal; race free |
+| `core/rmsnorm/rmsnorm_quant` (static quantization) | `norms` | `[1, 4, 256]`, `[2, 3, 128]` | equal, over the reals (the fp8 cast is not modelled); race free. Token `t` is divided by row `t` of the `[128, 1]` scale, which the reference takes to be one value broadcast |
 | `core/subkernels/rmsnorm_tkg` (one core) | `norms` | default layout at `[1, 4, 256]`, `[1, 1, 128]`, `[2, 80, 256]`, `[3, 5, 384]`; `hidden_dim_tp=True` at `[1, 4, 256]`, `[3, 5, 384]`; `hidden_actual=200` at `[1, 3, 256]` | equal; race free. The other layout's spec is refuted (1,016 of 1,024) |
 | `core/subkernels/layernorm_tkg` (one core, with `beta`) | `norms` | `[1, 4, 256]`, `[3, 2, 128]` | equal; race free |
 | `core/cumsum/cumsum` | `norms` | float32 and int32 at `[10, 21]` with 4 x 8 tiles; `[3, 2, 17]`, `[8, 16]`, `[1, 1]`; `[4, 8]` and `[2, 3, 600]` at hardware tiles | equal; race free. An exclusive scan is refuted |
@@ -177,9 +180,7 @@ kernel shows up there.
 
 | Kernel (nkilib `core/`) | Reaches | First blocker |
 |---|---|---|
-| `rmsnorm/rmsnorm_quant` static | lowering | `nl.minimum`. Row quantization stores fp32 scales as fp8 bytes, which is out of model |
-| `output_projection` tkg | lowering | an operand of shape `[128, 1, 4]` against one of `[128, 4]` |
-| `qkv` cte | lowering | `dge_mode.swdge` DMAs |
+| `rmsnorm/rmsnorm_quant` row | tracing | it stores fp32 scales as fp8 bytes, which is out of model |
 | `mlp` cte | lowering | a tile with two free dimensions as an operand |
 | `mlp` tkg | tracing | `flatten_dims` of a view whose dimensions are not contiguous |
 | `attention/attention_cte` | tracing | `nisa.iota` with a nested `pattern` |

@@ -480,6 +480,7 @@ impl<'a> Interpreter<'a> {
             ArithOp::Subtract => self.arena.sub(Type::Real, a, b),
             ArithOp::Multiply => self.arena.mul(Type::Real, a, b),
             ArithOp::Maximum => self.arena.max(Type::Real, a, b),
+            ArithOp::Minimum => self.arena.min(Type::Real, a, b),
         }
     }
 
