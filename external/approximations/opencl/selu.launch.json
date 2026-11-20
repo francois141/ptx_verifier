@@ -1,0 +1,68 @@
+{
+  "description": "activations.cl's selu after a 128x128x128 GEMM, one workgroup",
+  "kernel": "selu",
+  "block": 64,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        128,
+        128
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        128,
+        128
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        128,
+        128
+      ]
+    }
+  ],
+  "params": [
+    {
+      "ptr": "a"
+    },
+    {
+      "ptr": "b"
+    },
+    {
+      "ptr": "c"
+    },
+    {
+      "name": "M",
+      "int": 128
+    },
+    {
+      "name": "N",
+      "int": 128
+    },
+    {
+      "name": "K",
+      "int": 128
+    },
+    {
+      "name": "padding",
+      "int": 0
+    }
+  ],
+  "spec": "../specs/selu.spec",
+  "dims": {
+    "M": 128,
+    "N": 128,
+    "K": 128,
+    "TM": 128
+  }
+}

@@ -160,6 +160,11 @@ amd_activations *args:
 activation_lean *args:
     uv run --reinstall-package volta --package volta python external/amd/verify.py --checker lean {{args}} activations
 
+# `--extract-only` writes the Lean challenges without proving them; CASE... narrows the run.
+# Check the OpenCL activations in external/approximations/opencl: the canonical solver, else a Lean proof
+opencl_lean *args:
+    uv run --reinstall-package volta --package volta python external/approximations/opencl/prove.py {{args}}
+
 # `--verbose` prints each case's log.
 # Check PyTorch's piecewise activations in external/activation against their specs
 piecewise *args:
