@@ -109,8 +109,9 @@ impl Partitions {
     }
 }
 
-/// A finite decimal literal, e.g. `tensor_scalar`'s `operand0=0.125`. `new`
-/// rejects non-finite values, so equality is reflexive and `Eq` holds.
+/// A float literal, e.g. `tensor_scalar`'s `operand0=0.125`, or an infinity (nkilib's
+/// `memset` of `-inf` before a running maximum). `new` rejects NaN, so equality is
+/// reflexive and `Eq` holds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scalar(f64);
 
@@ -118,7 +119,7 @@ impl Eq for Scalar {}
 
 impl Scalar {
     pub fn new(value: f64) -> Option<Self> {
-        value.is_finite().then_some(Self(value))
+        (!value.is_nan()).then_some(Self(value))
     }
 
     pub fn get(self) -> f64 {

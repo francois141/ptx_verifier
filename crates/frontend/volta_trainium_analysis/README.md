@@ -122,11 +122,19 @@ takes (see below); the docs' further `*index` tiles are unsupported.
 
 ## Instructions
 
-Lowering accepts seventeen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+Lowering accepts eighteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+`tensor_copy_predicated`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
 `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`,
 `tensor_scalar_cumulative`, `tensor_partition_reduce`, `reciprocal`, `nc_matmul`,
-`nc_transpose` and `dma_transpose`. `tensor_partition_reduce` is
+`nc_transpose` and `dma_transpose`. `tensor_copy_predicated` is
+`LoweredInstr::CopyPredicated`: each `dst` element becomes `src`'s where `predicate`'s is
+nonzero (`Copied::Nonzero`; zero under `reverse_pred=True`), else keeps its value, so it reads
+`dst` too. A concrete predicate picks its side at once; a symbolic one is a `select`. A float
+literal may be infinite (`ast::Scalar` rejects only NaN), as nkilib's `memset(...,
+value=-np.inf)` before a predicated copy; the parser reads `numpy.inf` and `math.inf`, and
+the tracer sends an infinity as `{"infinity": "negative"}`, JSON having none.
+`tensor_partition_reduce` is
 `LoweredInstr::PartitionReduce`: each `dst[0, f]` folds `add` or `maximum` over `data`'s
 partitions at `f` (the docs give no output shape; nkilib reduces `[P, 1]` into `[1, 1]`).
 `tensor_reduce` takes `keepdims`; `nl.max` is `nl.maximum`, as nkilib passes it.
@@ -686,6 +694,8 @@ transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a gen
 `success/aliased_tiles.py` writes through one placed `float32` tile and reads the same bytes
 through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.
+`success/predicated_copy.py` copies under a symbolic mask into a tile set to `-inf`, takes
+its row maxima, and copies with `reverse_pred` into a zeroed tile.
 `success/mlp_ops.py` transposes a `[3, 2, 4]` view by `dma_transpose` around its middle
 dimension, applies `nl.silu`, and `nc_transpose`s into a `[4, 1, 3]` tile.
 `success/clip_ops.py` clips by `nl.minimum` and `nl.maximum` in a `tensor_scalar`, then takes a

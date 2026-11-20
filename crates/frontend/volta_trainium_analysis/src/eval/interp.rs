@@ -9,8 +9,8 @@ use volta_expr::FullOutputs;
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, Type};
 
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Index, InstrId, LoweredInstr, LoweredKernel, MatmulPass,
-    Order, Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Copied, Index, InstrId, LoweredInstr, LoweredKernel,
+    MatmulPass, Order, Reduction, ScalarOperand, Sign, TensorId, TensorRegion,
 };
 
 use super::EvalError;
@@ -386,6 +386,34 @@ impl<'a> Interpreter<'a> {
                     let (m, c) = (f / last, f % last);
                     let value = self.read(instr, data, [a, f])?;
                     writes.push(Write::at(dst, [c, m * first + a], value));
+                }
+            }
+            LoweredInstr::CopyPredicated {
+                dst,
+                src,
+                predicate,
+                copied_where,
+            } => {
+                for at in elements(dst) {
+                    let value = self.read(instr, src, at)?;
+                    let old = self.read(instr, dst, at)?;
+                    let flag = self.read(instr, predicate, at)?;
+                    let [then, otherwise] = match copied_where {
+                        Copied::Nonzero => [value, old],
+                        Copied::Zero => [old, value],
+                    };
+                    // A concrete flag picks its side here: a select over an integer flag and a
+                    // real zero would not fold, and the side not taken may be infinite.
+                    let chosen = match self.arena.as_f64(flag) {
+                        Some(flag) if flag != 0.0 => then,
+                        Some(_) => otherwise,
+                        None => {
+                            let zero = self.arena.float_from_f64(0.0).expect("zero is a number");
+                            let nonzero = self.arena.ne(Type::Real, flag, zero);
+                            self.arena.select(Type::Real, nonzero, then, otherwise)
+                        }
+                    };
+                    writes.push(Write::at(dst, at, chosen));
                 }
             }
             LoweredInstr::Shuffle { dst, src, mask } => {

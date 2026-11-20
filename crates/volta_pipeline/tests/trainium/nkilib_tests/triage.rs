@@ -45,19 +45,6 @@ fn calls() -> Vec<Call> {
                 T("v", vec![1, 128, 64]),
             ],
         ),
-        call(
-            "attention_tkg s_active 1, s_prior 128, d 64",
-            "attention_tkg.py",
-            vec![
-                T("q", vec![64, 1]),
-                T("k_active", vec![64, 1]),
-                T("v_active", vec![1, 1, 1, 64]),
-                T("k_prior", vec![1, 1, 64, 128]),
-                T("v_prior", vec![1, 1, 128, 64]),
-                T("mask", vec![128, 1, 1, 1]),
-                T("out", vec![1, 1, 64, 1]),
-            ],
-        ),
     ]
 }
 

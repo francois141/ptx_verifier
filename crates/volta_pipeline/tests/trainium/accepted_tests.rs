@@ -118,6 +118,23 @@ fn the_mlp_ops_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// tensor_copy_predicated under a symbolic mask over a tile set to -inf, its row maxima, and
+// a reverse_pred copy.
+#[test]
+fn the_predicated_copy_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/predicated_copy",
+        "kernel",
+        &[
+            ("a", &[2, 4]),
+            ("mask", &[2, 4]),
+            ("out", &[2, 4]),
+            ("row_max", &[2, 1]),
+            ("kept", &[2, 4]),
+        ],
+    );
+}
+
 // Two tiles placed over the same bytes with the same element size: by default a read through
 // one of what the other wrote is a ClobberedRead, the overlap reported; sharing aliases, it
 // sees the value written, as the hardware's memory does.

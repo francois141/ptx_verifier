@@ -14,9 +14,9 @@ use crate::frontend::ast::{
     TensorName, resolve_region,
 };
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Descriptors, Index, Initial, Layout, LoweredInstr,
-    LoweredKernel, MatmulPass, Memory, Mover, Order, Reduction, ScalarOperand, ScalarStep,
-    Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
+    Accumulation, ActivationFunc, ArithOp, Copied, Descriptors, Index, Initial, Layout,
+    LoweredInstr, LoweredKernel, MatmulPass, Memory, Mover, Order, Reduction, ScalarOperand,
+    ScalarStep, Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
 };
 
 pub use error::{LowerError, PatternProblem, StatementError};
@@ -162,6 +162,36 @@ fn lower_instruction(
                 dst: dst.region,
                 src: src.region,
                 mover: Mover::Engine,
+            })
+        }
+
+        "tensor_copy_predicated" => {
+            let ([dst, src, predicate], [reverse]) = operands_with_optional(
+                instruction,
+                &["dst", "src", "predicate"],
+                &["reverse_pred"],
+            )?;
+            let [dst, src, predicate] = [
+                scope.tile(dst, "dst")?,
+                scope.tile(src, "src")?,
+                scope.tile(predicate, "predicate")?,
+            ];
+            same_shape(&dst, &src)?;
+            same_shape(&dst, &predicate)?;
+            let copied_where = match reverse {
+                None | Some(Operand::None) | Some(Operand::Bool(false)) => Copied::Nonzero,
+                Some(Operand::Bool(true)) => Copied::Zero,
+                Some(_) => {
+                    return Err(StatementError::NotABool {
+                        keyword: "reverse_pred",
+                    });
+                }
+            };
+            Ok(LoweredInstr::CopyPredicated {
+                dst: dst.region,
+                src: src.region,
+                predicate: predicate.region,
+                copied_where,
             })
         }
 

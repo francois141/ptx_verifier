@@ -5,5 +5,3 @@ rmsnorm_quant row [1, 4, 256]
     trace: nkilib/core/rmsnorm/rmsnorm_quant.py:506: unsupported: reinterpreting a tensor's bits as another dtype is not modelled
 attention_cte causal s 128, d 64
     trace: nkilib/core/attention/attention_cte.py:1872: invalid kernel: an item of operand `pattern` must be an integer, not `[128, 1]`
-attention_tkg s_active 1, s_prior 128, d 64
-    trace: nkilib/core/attention/attention_tkg.py:2832: unsupported: operand `value` is not finite: -inf

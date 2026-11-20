@@ -24,6 +24,14 @@ pub enum LoweredInstr {
         src: TensorRegion,
         mover: Mover,
     },
+    /// `tensor_copy_predicated`: each element of `dst` set to `src`'s where `predicate`'s is
+    /// `copied_where` (nonzero, or zero under `reverse_pred=True`), else left as it was.
+    CopyPredicated {
+        dst: TensorRegion,
+        src: TensorRegion,
+        predicate: TensorRegion,
+        copied_where: Copied,
+    },
     /// Every element of `dst` set to `value`.
     Memset { dst: TensorRegion, value: Scalar },
     /// `dst`, a square tile region, set to the identity matrix (`nl.shared_identity_matrix`).
@@ -183,6 +191,7 @@ impl LoweredInstr {
                 ..
             } => "nc_transpose",
             LoweredInstr::Shuffle { .. } => "nc_stream_shuffle",
+            LoweredInstr::CopyPredicated { .. } => "tensor_copy_predicated",
         }
     }
 }
@@ -210,6 +219,15 @@ impl LoweredInstr {
             _ => None,
         }
     }
+}
+
+/// Where `tensor_copy_predicated` copies, from its `reverse_pred=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Copied {
+    /// Where the predicate is nonzero, the default.
+    Nonzero,
+    /// Where it is zero (`reverse_pred=True`).
+    Zero,
 }
 
 /// How a DMA's descriptors are generated, from its `dge_mode=`.

@@ -6,8 +6,8 @@ use std::fmt;
 use id_collections::IdVec;
 
 use super::{
-    Accumulation, ArithOp, Descriptors, Initial, InstrId, Layout, LoweredInstr, MatmulPass, Mover,
-    Order, Origin, Reduction, ScalarOperand, ScalarStep, Selection, Sign, Tensor, TensorId,
+    Accumulation, ArithOp, Copied, Descriptors, Initial, InstrId, Layout, LoweredInstr, MatmulPass,
+    Mover, Order, Origin, Reduction, ScalarOperand, ScalarStep, Selection, Sign, Tensor, TensorId,
     TensorRegion,
 };
 
@@ -270,6 +270,24 @@ impl fmt::Display for LoweredKernel {
                         region(dst),
                         region(stationary),
                         region(moving)
+                    )?
+                }
+                LoweredInstr::CopyPredicated {
+                    dst,
+                    src,
+                    predicate,
+                    copied_where,
+                } => {
+                    let reverse = match copied_where {
+                        Copied::Nonzero => "",
+                        Copied::Zero => ", reverse_pred",
+                    };
+                    write!(
+                        f,
+                        "  {} = copy_predicated({}, {}{reverse})",
+                        region(dst),
+                        region(src),
+                        region(predicate)
                     )?
                 }
                 LoweredInstr::Shuffle { dst, src, mask } => {

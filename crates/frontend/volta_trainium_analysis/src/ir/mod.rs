@@ -12,7 +12,8 @@ pub use crate::frontend::ast::{LoopId, LoopIteration, LoopKind, NoReorderId, Ori
 pub use activation::ActivationFunc;
 pub use arith::ArithOp;
 pub use instr::{
-    Accumulation, Descriptors, InstrId, LoweredInstr, MatmulPass, Mover, Order, Reduction, Sign,
+    Accumulation, Copied, Descriptors, InstrId, LoweredInstr, MatmulPass, Mover, Order, Reduction,
+    Sign,
 };
 pub use kernel::LoweredKernel;
 pub use scalar::{ScalarOperand, ScalarStep};
