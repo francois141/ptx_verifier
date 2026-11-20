@@ -58,6 +58,22 @@ FIXES = {
             "k_d_num = d_in + pad_d_left - d_out * stride_d",
         ),
     ],
+    # F14: the dx phase allocates over phase 1's bytes once phase 1's scope closes, and its
+    # x_in loads can land while phase 1 still reads them; keep phase 1's tiles live through it.
+    "nkilib.experimental.batch_norm.batch_norm_bwd": [
+        (
+            "                n_prgs=n_prgs,\n            )\n\n    sbm.close_scope()\n",
+            "                n_prgs=n_prgs,\n            )\n\n    pass\n",
+        ),
+        (
+            '_assert_sbuf_budget(sbm, mem_cfg.phase2_total_bytes, "phase 2")',
+            '_assert_sbuf_budget(sbm, mem_cfg.phase1_total_bytes + mem_cfg.phase2_total_bytes, "phase 2")',
+        ),
+        (
+            "engine=nki.isa.engine.sync)\n\n    sbm.close_scope()\n",
+            "engine=nki.isa.engine.sync)\n\n    sbm.close_scope(); sbm.close_scope()\n",
+        ),
+    ],
 }
 
 

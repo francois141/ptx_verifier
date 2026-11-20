@@ -193,6 +193,9 @@ only inline unit tests of their internals.
   imported, and the same call must be proved equal to its spec and race free with write
   after write ordered. `layers`, `norms`, `elementwise`, `pooling` and `conv` hold the
   thirty kernels found correct: each call is proved equal to its spec on every element and race free.
+  `elementwise` also pins F14, suspected: with hazards tracked per tensor only, `batch_norm_bwd`'s
+  dx phase races phase 1 through the tiles it reuses (nine conflicts), and `batch_norm_bwd_fixed.py`,
+  keeping phase 1's tiles live, is equal and race free.
   `triage` runs one call of each core kernel not yet checked as far as it gets (traced,
   lowered, run, its graph's verdict) and compares the table with
   `external/trainium/nkilib/triage.txt` (`VOLTA_BLESS=1` rewrites it).

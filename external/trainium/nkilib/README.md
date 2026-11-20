@@ -116,6 +116,40 @@ above 1.
 
 **The fix:** drop the multiplication.
 
+## Suspected: F14, `batch_norm_bwd` reuses phase 1's tiles while phase 1 still reads them
+
+Unlike the bugs above, F14 turns on one assumption: that the compiler orders accesses to
+`address=` tiles only within one tensor (`PlacedTiles::ByTensor`). nkilib's own
+`experimental/mla/glm/glm_indexer_topk.py` (line 200) says it does: "`close_scope` releases
+addresses but the compiler cannot see that the next scope's tensor aliases the previous one",
+seen on hardware as 7939 of 8256 wrong cells. Under the baseline (`ByAddress`) it verifies.
+
+**Where:** `experimental/batch_norm/batch_norm_bwd.py`. `_batch_norm_bwd_dx_phase` (line
+1424) "Reuses phase 1's SBUF (its scope was closed)" for its `x_in`, `dx` and `var_x` tiles,
+and multibuffers them "so a tile's load ... overlap[s] the previous tile's compute".
+
+**What Volta reports**, at `[1, 130, 1, 4, 4]` (two channel tiles), under `WAW` with
+`ByTensor`: nine conflicts, all through released bytes. Two of them can change values:
+- The dx phase's DMA load of `x_in` into `dx_x_in_tile_1` (instruction 46) lands on
+  phase 1's `dy_times_x_tile`. Channel tile 1's `yx_partials` reduction (25) and channel tile
+  0's reduction (9) still read that tile, so `dgamma` and `dx` could sum `x` instead of
+  `dy * x`.
+- Phase 1's load of channel tile 1's `x_in` (22) lands on `dx_tile_0`. Instruction 44 writes
+  that tile and 45 stores it to `dx`.
+  Nothing but the address orders these pairs. With one channel tile the only flags are
+  between two loads of the same data, which cannot change a value.
+
+**The fix tried here:** `fixes.py` keeps phase 1's scope open until the dx phase ends, so
+no tile is reused. The fixed call is equal to the spec on all three outputs and race free
+under `ByTensor`. It costs SBUF, and the kernel's tiling budgets each phase separately. The
+fix `glm_indexer_topk` uses instead reuses one tensor per role, which is free; upstream
+would likely prefer it.
+
+**To settle it:** ask AWS whether hazards between `address=` tiles of different scopes are
+tracked, citing `glm_indexer_topk`. Core `mlp_cte` places its gate and up PSUM tiles on the
+same banks and relies on compute-to-compute hazards being tracked; F14 involves a DMA, which
+is what `glm_indexer_topk` describes.
+
 ## How they were found
 
 Volta's own checks reported each bug before anyone read the code:
@@ -161,7 +195,7 @@ The calls are the representative ones of the original checks, not their fuzzing 
 | `experimental/foreach/foreach_elementwise`: `add_scalar`, `add_tensor`, `sub_tensor`, `mul_tensor`, `div_tensor`, `addcdiv`, `addcmul`, `lerp` | `elementwise` | `numel` 43, 16, 4 and 3, with 16-element tiles (full tiles, a partial tile and a tail) | equal; race free |
 | `experimental/foreach/foreach_norm`: `l2_norm`, `l1_norm`, `linf_norm` | `elementwise` | `numel` 43, 16 and 3, with 16-element tiles | equal; race free, except `linf_norm` across tiles: its maximum accumulated across `affine_range` iterations is a `MemoryConflict`, since only additions commute there; likely benign |
 | `experimental/optimizer/fused_adam` (`adam_kernel`, `adamw_kernel`, no AMSGrad) | `elementwise` | all three outputs at 1 and 300 elements, and at 1,000 with a 3-element tile | equal; race free |
-| `experimental/batch_norm/batch_norm_bwd` (no ReLU, no residual, one batch) | `elementwise` | `dx`, `dgamma`, `dbeta` at `[1, 4, 2, 8, 8]`, `[1, 130, 1, 4, 4]`, `[1, 2, 3, 5, 7]` | equal; race free, under `WAW` at `[1, 130, 1, 4, 4]`, whose two channel tiles both write the unread `dbeta_discard_tile` |
+| `experimental/batch_norm/batch_norm_bwd` (no ReLU, no residual, one batch) | `elementwise` | `dx`, `dgamma`, `dbeta` at `[1, 4, 2, 8, 8]`, `[1, 130, 1, 4, 4]`, `[1, 2, 3, 5, 7]` | equal; race free, under `WAW` at `[1, 130, 1, 4, 4]`, whose two channel tiles both write the unread `dbeta_discard_tile`. Per tensor, F14 |
 | `experimental/pooling/avg_pooling_3d` | `pooling` | kernel/stride/padding 2/2/0, 2/1/1, 3/2/1 in NCDHW on `[1, 2, 5, 6, 7]`; 2/2/0 and 2/1/1 in NDHWC and NCDHW to NDHWC; 2/2/0 and 3/2/1 on `[2, 130, 5, 6, 7]` | equal; race free under `WAW` (a `memset`, then a DMA into padded tiles) |
 | `experimental/pooling/avg_pooling_3d_backward` | `pooling` | seven kernel/stride/padding settings on `[1, 2, 5, 6, 7]`, 3/2/1 on `[1, 2, 4, 6, 6]` | equal; race free |
 | `experimental/pooling/max_pooling_3d` | `pooling` | 2/2/0, 3/2/1, 3/1/1 on `[1, 2, 5, 6, 7]`, where no axis grows | equal; race free. Growing axes are F7 |

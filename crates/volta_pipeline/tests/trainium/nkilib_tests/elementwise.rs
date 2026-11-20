@@ -1,12 +1,19 @@
 //! nkilib kernels found correct whose outputs are elementwise in their inputs or reduce them
 //! per channel: the foreach ops and norms, fused Adam and AdamW, and batch norm's backward.
 //! Each is proved equal to its spec on every element and race free under the baseline, but for
-//! F6 and a scratch tile `batch_norm_bwd` rewrites unread.
+//! F6 and a scratch tile `batch_norm_bwd` rewrites unread. F14: `batch_norm_bwd` races once
+//! hazards are tracked per tensor only.
+
+use std::collections::BTreeSet;
 
 use volta_expr::SymbolicOutputs;
+use volta_graph::ExecContext;
+use volta_graph_check::domain::ConflictKind::{self, ReadWrite, WriteRead, WriteWrite};
 use volta_graph_check::{GraphConclusion, Property, check_graph};
 use volta_trainium_analysis::frontend::parse::TileSizes;
-use volta_trainium_analysis::{Execution, LoweredKernel, OrderingPolicy, evaluate, record_graph};
+use volta_trainium_analysis::{
+    Execution, LoweredKernel, OrderingPolicy, PlacedTiles, evaluate, record_graph,
+};
 
 use super::{Arg, WAW, assert_equal, assert_proved, lowered, lowered_at, spec};
 
@@ -233,5 +240,81 @@ fn nkilib_batch_norm_bwd_matches_the_gradients_in_the_saved_statistics() {
             let kernel = lowered("batch_norm_bwd.py", &args);
             assert_proved(policy, &kernel, &spec, array);
         }
+    }
+}
+
+/// `batch_norm_bwd`'s call with two channel tiles, `[1, 130, 1, 4, 4]`, returning `output`.
+fn batch_norm_two_channel_tiles(output: i64) -> [Arg; 7] {
+    let shape = vec![1, 130, 1, 4, 4];
+    [
+        Arg::Tensor("dy", shape.clone()),
+        Arg::Tensor("x_in", shape),
+        Arg::Tensor("means", vec![130]),
+        Arg::Tensor("variances", vec![130]),
+        Arg::Tensor("gamma", vec![130, 1]),
+        Arg::Tensor("beta", vec![130, 1]),
+        Arg::Int("output", output),
+    ]
+}
+
+/// Write after write ordered, with hazards through placed tiles tracked per tensor only.
+const WAW_BY_TENSOR: OrderingPolicy = OrderingPolicy {
+    placed_tiles: PlacedTiles::ByTensor,
+    ..WAW
+};
+
+/// F14 (suspected): `batch_norm_bwd`'s dx phase closes phase 1's scope and allocates its
+/// `x_in` and `dx` tiles over phase 1's bytes. With two channel tiles, its loads of `x_in`
+/// (42, 46) overwrite tiles phase 1 still reads (`x_in_tile_0` at 8, `dy_times_x_tile` at 9
+/// and 25), and channel tile 1's phase 1 load (22) lands on `dx_tile_0`, which 44 writes and
+/// 45 stores. Only the bytes order them, which nkilib's `glm_indexer_topk` says the compiler
+/// does not see across scopes.
+#[test]
+fn nkilib_batch_norm_bwd_dx_phase_races_phase_1_through_released_tiles_per_tensor() {
+    let kernel = lowered("batch_norm_bwd.py", &batch_norm_two_channel_tiles(0));
+    let graph = record_graph(&kernel, WAW_BY_TENSOR, &Execution::of(&evaluate(&kernel)));
+    let report = check_graph(&graph);
+    let instruction = |event| match graph.event(event).ctx {
+        ExecContext::Thread(thread) => thread.0,
+        ctx => panic!("an NKI access is its instruction's: {ctx:?}"),
+    };
+    let conflicts: BTreeSet<(u32, u32, ConflictKind)> = report
+        .memory_conflict
+        .violations()
+        .iter()
+        .map(|c| (instruction(c.earlier), instruction(c.later), c.kind))
+        .collect();
+    let expected = BTreeSet::from([
+        (6, 42, WriteWrite),
+        (8, 42, ReadWrite),
+        (8, 46, WriteWrite),
+        (9, 46, ReadWrite),
+        (22, 44, WriteWrite),
+        (22, 45, WriteRead),
+        (24, 44, ReadWrite),
+        (24, 46, WriteWrite),
+        (25, 46, ReadWrite),
+    ]);
+    assert_eq!(conflicts, expected);
+}
+
+/// F14's fix keeps phase 1's scope open through the dx phase, so no tile is reused: every
+/// output is equal and race free even with hazards tracked per tensor.
+#[test]
+fn nkilib_batch_norm_bwd_keeping_phase_1_live_matches_the_gradients_per_tensor() {
+    let dims = [
+        ("B", 1),
+        ("C", 130),
+        ("D", 1),
+        ("H", 4),
+        ("W", 4),
+        ("M", 16),
+        ("ONE", 1),
+    ];
+    let spec = spec("batch_norm_bwd.spec", &dims, &[]);
+    for (output, array) in BATCH_NORM_OUTPUTS.iter().enumerate() {
+        let args = batch_norm_two_channel_tiles(output as i64);
+        let kernel = lowered("batch_norm_bwd_fixed.py", &args);
+        assert_proved(WAW_BY_TENSOR, &kernel, &spec, array);
     }
 }
