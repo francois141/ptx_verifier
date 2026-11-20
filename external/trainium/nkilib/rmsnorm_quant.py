@@ -15,6 +15,7 @@ def kernel(hidden, ln_w, input_dequant_scale=None):
         else QuantizationType.STATIC
     )
     args = module.RmsNormQuantKernelArgs(quantization_type=quantization)
-    return module.rmsnorm_quant_kernel(
+    out = module.rmsnorm_quant_kernel(
         hidden, ln_w, args, input_dequant_scale=input_dequant_scale
     )
+    return out

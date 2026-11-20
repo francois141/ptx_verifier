@@ -1,5 +1,6 @@
 //! Normalizations and scans found correct: `rmsnorm_tkg` and `layernorm_tkg` (one core),
-//! `cumsum`, and the experimental `linear_scan`, `selective_scan` and `ssd`.
+//! `rmsnorm_quant` with static quantization, `cumsum`, and the experimental `linear_scan`,
+//! `selective_scan` and `ssd`.
 
 use volta_pipeline::EquivalenceVerdict;
 use volta_trainium_analysis::{OrderingPolicy, evaluate};
@@ -229,5 +230,23 @@ fn nkilib_ssd_matches_mamba2s_recurrence() {
             ];
             assert_proved(BASELINE, &lowered("ssd.py", &args), &spec, output);
         }
+    }
+}
+
+/// Static quantization: RMSNorm, then the clip to float8_e4m3's range, over reals.
+#[test]
+fn nkilib_rmsnorm_quant_static_matches_clipped_rms_norm() {
+    for [b, s, h] in [[1, 4, 256], [2, 3, 128]] {
+        let kernel = lowered(
+            "rmsnorm_quant.py",
+            &[
+                Arg::Tensor("hidden", vec![b, s, h]),
+                Arg::Tensor("ln_w", vec![1, h]),
+                Arg::Tensor("input_dequant_scale", vec![128, 1]),
+            ],
+        );
+        let dims = [("T", b * s), ("H", h), ("ONE", 1), ("P", 128)];
+        let spec = spec("rmsnorm_quant_static.spec", &dims, &[]);
+        assert_proved(BASELINE, &kernel, &spec, "out");
     }
 }

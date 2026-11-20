@@ -1,0 +1,10 @@
+kernel kernel(a: [2, 4], out: [2, 4])
+  x: sbuf[2, 4] of a.dtype
+  dma_copy(dst=x, src=a)
+  clipped: sbuf[2, 4] of a.dtype
+  tensor_scalar(data=x, dst=clipped, op0=nki.language.minimum, op1=nki.language.maximum, operand0=1, operand1=-1)
+  column: sbuf[2, 1, 4] of a.dtype
+  tensor_copy(dst=column, src=clipped)
+  y: sbuf[2, 4] of a.dtype
+  tensor_tensor(data1=column, data2=x, dst=y, op=nki.language.minimum)
+  dma_copy(dst=out, src=y)

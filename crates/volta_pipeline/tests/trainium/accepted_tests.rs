@@ -96,6 +96,17 @@ fn the_norm_ops_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// nl.minimum in a tensor_scalar clip and a tensor_tensor whose operands differ by an extent-1
+// free dimension.
+#[test]
+fn the_clip_ops_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/clip_ops",
+        "kernel",
+        &[("a", &[2, 4]), ("out", &[2, 4])],
+    );
+}
+
 // Two tiles placed over the same bytes with the same element size: by default a read through
 // one of what the other wrote is a ClobberedRead, the overlap reported; sharing aliases, it
 // sees the value written, as the hardware's memory does.
@@ -124,7 +135,7 @@ fn the_aliased_tiles_kernel_is_rejected_unless_aliases_are_shared() {
     assert_eq!(rendered, expected);
 }
 
-// matmul.py's product through hwdge DMAs on the sync engine and a placed matmul.
+// matmul.py's product through hwdge and swdge DMAs on the sync engine and a placed matmul.
 #[test]
 fn the_dma_modes_kernel_parses_lowers_and_runs_as_expected() {
     common::trainium::check(

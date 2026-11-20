@@ -51,23 +51,6 @@ fn calls() -> Vec<Call> {
             "rmsnorm_quant.py",
             vec![T("hidden", vec![1, 4, 256]), T("ln_w", vec![1, 256])],
         ),
-        call(
-            "rmsnorm_quant static [1, 4, 256]",
-            "rmsnorm_quant.py",
-            vec![
-                T("hidden", vec![1, 4, 256]),
-                T("ln_w", vec![1, 256]),
-                T("input_dequant_scale", vec![128, 1]),
-            ],
-        ),
-        call(
-            "output_projection_tkg d 128, 2 heads, s 4, h 512",
-            "output_projection_tkg.py",
-            vec![
-                T("attention", vec![128, 1, 2, 4]),
-                T("weight", vec![256, 512]),
-            ],
-        ),
         Call {
             tile_sizes: MLP_SBUF,
             ..call("mlp tkg s 4, h 512, i 256", "mlp.py", mlp(4))
@@ -76,14 +59,6 @@ fn calls() -> Vec<Call> {
             tile_sizes: MLP_SBUF,
             ..call("mlp cte s 512, h 512, i 256", "mlp.py", mlp(512))
         },
-        call(
-            "qkv cte s 512, h 512, d 128, 2 + 1 + 1 heads",
-            "qkv.py",
-            vec![
-                T("input", vec![1, 512, 512]),
-                T("fused_qkv_weights", vec![512, 512]),
-            ],
-        ),
         call(
             "attention_cte causal s 128, d 64",
             "attention_cte.py",

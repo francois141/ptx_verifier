@@ -7,10 +7,17 @@ pub enum ArithOp {
     Subtract,
     Multiply,
     Maximum,
+    Minimum,
 }
 
 impl ArithOp {
-    pub const ALL: [Self; 4] = [Self::Add, Self::Subtract, Self::Multiply, Self::Maximum];
+    pub const ALL: [Self; 5] = [
+        Self::Add,
+        Self::Subtract,
+        Self::Multiply,
+        Self::Maximum,
+        Self::Minimum,
+    ];
 
     /// Its `nki.language` member: `nl.add` is `add`.
     pub fn name(self) -> &'static str {
@@ -19,6 +26,7 @@ impl ArithOp {
             Self::Subtract => "subtract",
             Self::Multiply => "multiply",
             Self::Maximum => "maximum",
+            Self::Minimum => "minimum",
         }
     }
 }
