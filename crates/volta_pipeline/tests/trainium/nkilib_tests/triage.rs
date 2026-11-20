@@ -29,36 +29,13 @@ fn call(label: &'static str, wrapper: &'static str, args: Vec<Arg>) -> Call {
     }
 }
 
-/// mlp sizes its own SBUF heap at 200 KiB a partition (its context encoding path at
-/// `MAX_AVAILABLE_SBUF_SIZE`, about 208 KiB), past `HARDWARE`'s 192 KiB.
-const MLP_SBUF: TileSizes = TileSizes {
-    sbuf_fmax_bytes: 224 * 1024,
-    ..TileSizes::HARDWARE
-};
-
 fn calls() -> Vec<Call> {
-    let mlp = |s: u64| {
-        vec![
-            T("hidden", vec![1, s, 512]),
-            T("gate_w", vec![512, 256]),
-            T("up_w", vec![512, 256]),
-            T("down_w", vec![256, 512]),
-        ]
-    };
     vec![
         call(
             "rmsnorm_quant row [1, 4, 256]",
             "rmsnorm_quant.py",
             vec![T("hidden", vec![1, 4, 256]), T("ln_w", vec![1, 256])],
         ),
-        Call {
-            tile_sizes: MLP_SBUF,
-            ..call("mlp tkg s 4, h 512, i 256", "mlp.py", mlp(4))
-        },
-        Call {
-            tile_sizes: MLP_SBUF,
-            ..call("mlp cte s 512, h 512, i 256", "mlp.py", mlp(512))
-        },
         call(
             "attention_cte causal s 128, d 64",
             "attention_cte.py",

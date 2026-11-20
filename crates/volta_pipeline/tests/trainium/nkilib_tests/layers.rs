@@ -1,13 +1,15 @@
 //! Core nkilib kernels of a transformer layer found correct, on one core and unquantized:
-//! `RoPE` and `rope_hf`, and `output_projection` and `qkv` on both their token generation and
-//! context encoding paths. Each is proved equal to its spec on every element and race free
+//! `RoPE` and `rope_hf`, and `output_projection`, `qkv` and `mlp` on both their token
+//! generation and context encoding paths. Each is proved equal to its spec on every element and race free
 //! under the baseline.
 
 use volta_pipeline::EquivalenceVerdict;
+use volta_trainium_analysis::frontend::parse::TileSizes;
 use volta_trainium_analysis::{OrderingPolicy, evaluate};
 
+use super::Arg;
 use super::Arg::Tensor as T;
-use super::{assert_proved, lowered, spec, verdict};
+use super::{assert_proved, lowered, lowered_at, spec, verdict};
 
 const BASELINE: OrderingPolicy = OrderingPolicy::BASELINE;
 
@@ -141,4 +143,48 @@ fn nkilib_qkv_cte_matches_the_product() {
     );
     let dims = [("B", b), ("S", s), ("H", h), ("I", i)];
     assert_proved(BASELINE, &kernel, &spec("qkv.spec", &dims, &[]), "out");
+}
+
+/// `mlp` at a 224 KiB SBUF partition: it sizes its own heap past `HARDWARE`'s 192 KiB.
+const MLP_SBUF: TileSizes = TileSizes {
+    sbuf_fmax_bytes: 224 * 1024,
+    ..TileSizes::HARDWARE
+};
+
+/// `mlp`'s call at `[b, s, h]` with an intermediate of `i`, proved equal to `mlp.spec`. Each
+/// output sums `i` SiLU fractions over different denominators, which the decision procedure
+/// puts over one: past a few, the VC outgrows its budget, so `i` stays small.
+fn assert_mlp_proved([b, s, h, i]: [u64; 4], force_cte_mode: bool) {
+    let kernel = lowered_at(
+        "mlp.py",
+        &[
+            T("hidden", vec![b, s, h]),
+            T("gate_w", vec![h, i]),
+            T("up_w", vec![h, i]),
+            T("down_w", vec![i, h]),
+            Arg::Bool("force_cte_mode", force_cte_mode),
+        ],
+        MLP_SBUF,
+    );
+    let dims = [("T", b * s), ("H", h), ("I", i)];
+    assert_proved(BASELINE, &kernel, &spec("mlp.spec", &dims, &[]), "out");
+}
+
+/// Token generation, up to 96 tokens; `H` must be a multiple of 128.
+#[test]
+fn nkilib_mlp_tkg_matches_the_gated_projection() {
+    assert_mlp_proved([1, 1, 128, 2], false);
+}
+
+/// Context encoding, forced at 4 tokens.
+#[test]
+fn nkilib_mlp_cte_matches_the_gated_projection() {
+    assert_mlp_proved([1, 4, 128, 2], true);
+}
+
+/// Context encoding as `mlp` picks it, past 96 tokens: about 2.5 minutes.
+#[test]
+#[ignore]
+fn nkilib_mlp_cte_on_97_tokens_matches_the_gated_projection() {
+    assert_mlp_proved([1, 97, 128, 1], false);
 }

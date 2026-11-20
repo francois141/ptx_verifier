@@ -564,6 +564,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
                 data: data.region,
+                middle: 1,
                 mover: Mover::Engine,
             })
         }
@@ -615,12 +616,16 @@ fn lower_instruction(
             let ([dst, src], [axes]) =
                 operands_with_optional(&instruction, &["dst", "src"], &["axes"])?;
             let [dst, data] = [scope.tile(dst, "dst")?, scope.region(src, "src")?];
-            let [partitions, free] = match axes {
+            let (first, middle, last) = match axes {
                 None | Some(Operand::None) => data.ends()?,
-                Some(Operand::Ints(axes)) if axes[..] == [1, 0] => data.matrix()?,
+                Some(Operand::Ints(axes)) if axes[..] == [1, 0] => {
+                    let [rows, columns] = data.matrix()?;
+                    (rows, Vec::new(), columns)
+                }
                 Some(axes) => return Err(StatementError::UnsupportedTransposeAxes(axes.clone())),
             };
-            if dst.ends()? != [free, partitions] {
+            let size = middle.iter().product();
+            if dst.ends()? != (last, middle, first) {
                 let (tensor, shape) = dst.described();
                 let mut expected = data.kept.0.clone();
                 expected.reverse();
@@ -633,6 +638,7 @@ fn lower_instruction(
             Ok(LoweredInstr::Transpose {
                 dst: dst.region,
                 data: data.region,
+                middle: size,
                 mover: Mover::Dma(descriptors),
             })
         }
@@ -926,13 +932,6 @@ fn reset_reduce(cmd: &Operand) -> Result<(), StatementError> {
 /// dimensions of extent 1 dropped: an engine pairs free elements in row-major order, which
 /// those dimensions do not change (nkilib's `[[8, 128], [8, 1], [1, 4]]` view of a tile).
 fn same_shape(left: &RegionOperand, right: &RegionOperand) -> Result<(), StatementError> {
-    let squeezed = |shape: &Shape| -> Option<(u64, Vec<u64>)> {
-        let (&partitions, free) = shape.0.split_first()?;
-        Some((
-            partitions,
-            free.iter().copied().filter(|&e| e != 1).collect(),
-        ))
-    };
     if left.kept == right.kept || squeezed(&left.kept) == squeezed(&right.kept) {
         return Ok(());
     }
@@ -959,9 +958,20 @@ fn same_elements(left: &RegionOperand, right: &RegionOperand) -> Result<(), Stat
     same_shape(left, right)
 }
 
-/// Check that `dst` names a region of the shape `expected` of the instruction's result.
+/// A shape's partitions and its free extents other than 1, which `same_shape` and
+/// `result_shape` compare.
+fn squeezed(shape: &Shape) -> Option<(u64, Vec<u64>)> {
+    let (&partitions, free) = shape.0.split_first()?;
+    Some((
+        partitions,
+        free.iter().copied().filter(|&e| e != 1).collect(),
+    ))
+}
+
+/// Check that `dst` names a region of the shape `expected` of the instruction's result, up to
+/// free dimensions of extent 1, as `same_shape`.
 fn result_shape(dst: &RegionOperand, expected: Shape) -> Result<(), StatementError> {
-    if dst.kept == expected {
+    if dst.kept == expected || squeezed(&dst.kept) == squeezed(&expected) {
         return Ok(());
     }
     let (tensor, shape) = dst.described();
@@ -1019,10 +1029,19 @@ struct RegionOperand<'a> {
 }
 
 impl RegionOperand<'_> {
-    /// Its `[rows, columns]` shape, for an instruction over tiles of one free dimension.
+    /// Its `[rows, columns]` shape, for an instruction over tiles of one free dimension, other
+    /// free dimensions of extent 1 allowed (nkilib's `[[8, 128], [4, 1], [1, 4]]` views).
     fn matrix(&self) -> Result<[u64; 2], StatementError> {
-        match self.kept.0[..] {
-            [rows, columns] => Ok([rows, columns]),
+        let [rows, ref free @ ..] = self.kept.0[..] else {
+            return Err(StatementError::NotAMatrix {
+                tensor: self.name.clone(),
+                shape: self.kept.clone(),
+            });
+        };
+        let wide: Vec<u64> = free.iter().copied().filter(|&extent| extent != 1).collect();
+        match (free.len(), &wide[..]) {
+            (1.., [columns]) => Ok([rows, *columns]),
+            (1.., []) => Ok([rows, 1]),
             _ => Err(StatementError::NotAMatrix {
                 tensor: self.name.clone(),
                 shape: self.kept.clone(),
@@ -1044,13 +1063,18 @@ impl RegionOperand<'_> {
         }
     }
 
-    /// Its first and last extents, every dimension between them of extent 1: the region a
+    /// Its first extent, the extents between, those of 1 dropped, and its last: the region a
     /// DMA transpose with the docs' default axes (`(1, 0)`, `(2, 1, 0)`, `(3, 1, 2, 0)`)
-    /// swaps the ends of.
-    fn ends(&self) -> Result<[u64; 2], StatementError> {
+    /// swaps the ends of, keeping the middle in place.
+    fn ends(&self) -> Result<(u64, Vec<u64>, u64), StatementError> {
         match self.kept.0[..] {
-            [first, ref middle @ .., last] if middle.iter().all(|&extent| extent == 1) => {
-                Ok([first, last])
+            [first, ref middle @ .., last] => {
+                let middle = middle
+                    .iter()
+                    .copied()
+                    .filter(|&extent| extent != 1)
+                    .collect();
+                Ok((first, middle, last))
             }
             _ => Err(StatementError::NotAMatrix {
                 tensor: self.name.clone(),

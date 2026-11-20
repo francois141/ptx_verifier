@@ -1,0 +1,16 @@
+kernel kernel(a, out, a_t)
+  a: hbm[3, 8]
+  out: hbm[4, 2, 3]
+  a_t: hbm[4, 1, 3]
+  t: sbuf[4, 2, 3]
+  s: sbuf[4, 2, 3]
+  x: sbuf[3, 4]
+  p: psum[4, 1, 3]
+  y: sbuf[4, 1, 3]
+  t = dma_transpose(a.ap([[8, 3], [4, 2], [1, 4]], offset=0))
+  s = silu(t)
+  out = dma(s)
+  x = dma(a[0:3, 0:4])
+  p = transpose(x)
+  y = mov(p)
+  a_t = dma(y)

@@ -21,11 +21,13 @@ pub enum ActivationFunc {
     /// `rcp(x)`: `nisa.reciprocal`'s, and `activation`'s though its docs do not list it, as
     /// nkilib's kernels pass it.
     Reciprocal,
+    /// `x * sigmoid(x)`: SiLU, nkilib's mlp gate.
+    Silu,
 }
 
 impl ActivationFunc {
     /// The functions `activation`'s `op` can name.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Sigmoid,
         Self::Relu,
         Self::Square,
@@ -35,6 +37,7 @@ impl ActivationFunc {
         Self::Sqrt,
         Self::Abs,
         Self::Reciprocal,
+        Self::Silu,
     ];
 
     /// Its `nki.language` member: `nl.sigmoid` is `sigmoid`.
@@ -49,6 +52,7 @@ impl ActivationFunc {
             Self::Sqrt => "sqrt",
             Self::Abs => "abs",
             Self::Reciprocal => "reciprocal",
+            Self::Silu => "silu",
         }
     }
 }

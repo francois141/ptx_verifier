@@ -107,6 +107,17 @@ fn the_clip_ops_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// A 3-D dma_transpose around a middle dimension, nl.silu, and an nc_transpose into a tile
+// with an extent-1 free dimension, as nkilib's mlp issues them.
+#[test]
+fn the_mlp_ops_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/mlp_ops",
+        "kernel",
+        &[("a", &[3, 8]), ("out", &[4, 2, 3]), ("a_t", &[4, 1, 3])],
+    );
+}
+
 // Two tiles placed over the same bytes with the same element size: by default a read through
 // one of what the other wrote is a ClobberedRead, the overlap reported; sharing aliases, it
 // sees the value written, as the hardware's memory does.

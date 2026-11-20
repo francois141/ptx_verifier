@@ -131,10 +131,13 @@ pub enum LoweredInstr {
         accumulation: Accumulation,
         pass: MatmulPass,
     },
-    /// `dst[f, p] = data[p, f]` over on-chip regions.
+    /// `dst[c, m, a] = data[a, m, c]`: the ends of a `[A, M, C]` region swapped, its middle
+    /// dimensions (`middle` elements, flattened row-major) kept in place; a matrix's `middle`
+    /// is 1, `dst[f, p] = data[p, f]`.
     Transpose {
         dst: TensorRegion,
         data: TensorRegion,
+        middle: u64,
         mover: Mover,
     },
     /// `nc_stream_shuffle`, within one 32-partition quadrant: `dst[p, f] = src[mask[p], f]`

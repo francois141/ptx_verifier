@@ -1,0 +1,13 @@
+kernel kernel(a: [3, 8], out: [4, 2, 3], a_t: [4, 1, 3])
+  t: sbuf[4, 2, 3] of a.dtype
+  dma_transpose(dst=t, src=a.ap([[8, 3], [4, 2], [1, 4]], offset=0))
+  s: sbuf[4, 2, 3] of a.dtype
+  activation(data=t, dst=s, op=nki.language.silu)
+  dma_copy(dst=out, src=s)
+  x: sbuf[3, 4] of a.dtype
+  dma_copy(dst=x, src=a[:, 0:4])
+  p: psum[4, 1, 3] of float32
+  nc_transpose(data=x, dst=p)
+  y: sbuf[4, 1, 3] of a.dtype
+  tensor_copy(dst=y, src=p)
+  dma_copy(dst=a_t, src=y)

@@ -140,8 +140,8 @@ across column tiles.
 `tensor_scalar` takes `reverse0`/`reverse1`, swapping a step's operands (`ScalarStep::order`).
 `dma_transpose` reads a region in any memory, HBM included, its `axes` `(1, 0)` or omitted;
 with the docs' default axes (`(1, 0)`, `(2, 1, 0)`, `(3, 1, 2, 0)`) it swaps the first and
-last dimensions of a region whose others all have extent 1, as nkilib's `rmsnorm_tkg`
-loads with.
+last dimensions of a region and keeps the others in place (`Transpose::middle`, their
+element count): `dst[c, m, a] = src[a, m, c]`, as nkilib's `rmsnorm_tkg` and `mlp` load with.
 An instruction's `engine=` (`nisa.engine.vector`, `scalar`, `gpsimd`, `tensor` or `unknown`,
 the compiler's choice, or the older `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`
 and `tensor_engine`) is accepted and dropped,
@@ -157,7 +157,7 @@ engine's array; any other mode is `StatementError::UnsupportedDgeMode`. Their
 `nki.language` operands come from `ArithOp` (`nl.add`, `nl.subtract`,
 `nl.multiply`, `nl.maximum`, `nl.minimum`) and `ActivationFunc` (`nl.sigmoid`, `nl.relu`,
 `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, the identity, `nl.sqrt`, `nl.abs`,
-`nl.reciprocal`); a new member
+`nl.reciprocal`, `nl.silu` as `x * sigmoid(x)`); a new member
 means a variant in the enum's
 `ALL` array, not a case in lowering. Binary ops take their operands in NKI's
 order: `tensor_tensor` computes `data1 op data2` and `tensor_scalar` `data op
@@ -384,7 +384,8 @@ slice its partition dimension. Instructions see each tile region as `[partitions
 free]`, its other dimensions flattened row-major into one free axis, so an
 elementwise instruction pairs `v_sbuf_t[:, i, :]` with a `[PMAX, d_head]` tile;
 `nc_matmul`, `nc_transpose` and an instruction's reduction take regions of exactly
-one free dimension once indexed ones are dropped. Copies pair their regions' elements in row-major order.
+one free dimension once indexed ones and free ones of extent 1 are dropped, and a result's
+shape may differ from the one expected by free dimensions of extent 1. Copies pair their regions' elements in row-major order.
 
 v3 to v8a and v10 parse, lower and run unmodified at the size they assert (`q`, `k`
 and `v` of `[128, 512]`; v10's in `bfloat16`), each in about ten seconds in release;
@@ -685,6 +686,8 @@ transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a gen
 `success/aliased_tiles.py` writes through one placed `float32` tile and reads the same bytes
 through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.
+`success/mlp_ops.py` transposes a `[3, 2, 4]` view by `dma_transpose` around its middle
+dimension, applies `nl.silu`, and `nc_transpose`s into a `[4, 1, 3]` tile.
 `success/clip_ops.py` clips by `nl.minimum` and `nl.maximum` in a `tensor_scalar`, then takes a
 `tensor_tensor` minimum of a `[2, 1, 4]` tile and a `[2, 4]` one.
 `success/dma_modes.py` is `matmul.py`'s product through `hwdge` and `swdge` DMAs on the sync engine and a
