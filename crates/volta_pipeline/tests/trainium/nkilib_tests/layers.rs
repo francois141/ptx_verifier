@@ -248,3 +248,19 @@ fn nkilib_attention_tkg_matches_masked_attention() {
     let spec = spec("attention_tkg_masked.spec", &dims, &[("VALID", valid)]);
     assert_proved(WAW, &kernel, &spec, "out");
 }
+
+/// Causal context encoding over one 128-token tile, its masked scores float32's lowest.
+#[test]
+fn nkilib_attention_cte_matches_causal_attention() {
+    let [b, s, d] = [1, 128, 64];
+    let kernel = lowered(
+        "attention_cte.py",
+        &[
+            T("q", vec![b, s, d]),
+            T("k", vec![b, d, s]),
+            T("v", vec![b, s, d]),
+        ],
+    );
+    let dims = [("B", b), ("S", s), ("D", d)];
+    assert_proved(WAW, &kernel, &spec("attention_cte.spec", &dims, &[]), "out");
+}

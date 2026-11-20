@@ -30,22 +30,11 @@ fn call(label: &'static str, wrapper: &'static str, args: Vec<Arg>) -> Call {
 }
 
 fn calls() -> Vec<Call> {
-    vec![
-        call(
-            "rmsnorm_quant row [1, 4, 256]",
-            "rmsnorm_quant.py",
-            vec![T("hidden", vec![1, 4, 256]), T("ln_w", vec![1, 256])],
-        ),
-        call(
-            "attention_cte causal s 128, d 64",
-            "attention_cte.py",
-            vec![
-                T("q", vec![1, 128, 64]),
-                T("k", vec![1, 64, 128]),
-                T("v", vec![1, 128, 64]),
-            ],
-        ),
-    ]
+    vec![call(
+        "rmsnorm_quant row [1, 4, 256]",
+        "rmsnorm_quant.py",
+        vec![T("hidden", vec![1, 4, 256]), T("ln_w", vec![1, 256])],
+    )]
 }
 
 /// The furthest stage `call` reaches, or the first line of the error that stopped it, its

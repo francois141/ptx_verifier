@@ -122,8 +122,8 @@ takes (see below); the docs' further `*index` tiles are unsupported.
 
 ## Instructions
 
-Lowering accepts eighteen `nki.isa` instructions: `dma_copy`, `tensor_copy`,
-`tensor_copy_predicated`,
+Lowering accepts twenty `nki.isa` instructions: `dma_copy`, `tensor_copy`,
+`tensor_copy_predicated`, `iota`, `range_select`,
 `memset`, `tensor_tensor`, `tensor_scalar`, `tensor_scalar_reduce`, `activation`,
 `activation_reduce`, `tensor_reduce`, `tensor_tensor_scan`, `scalar_tensor_tensor`,
 `tensor_scalar_cumulative`, `tensor_partition_reduce`, `reciprocal`, `nc_matmul`,
@@ -134,6 +134,16 @@ nonzero (`Copied::Nonzero`; zero under `reverse_pred=True`), else keeps its valu
 literal may be infinite (`ast::Scalar` rejects only NaN), as nkilib's `memset(...,
 value=-np.inf)` before a predicated copy; the parser reads `numpy.inf` and `math.inf`, and
 the tracer sends an infinity as `{"infinity": "negative"}`, JSON having none.
+`iota` is `LoweredInstr::Iota`: `dst[p, f] = offset + p * channel_multiplier + sum(step *
+i)`, `f` taken row-major over its `pattern`'s `[step, count]` pairs (`ast::Operand::Pairs`,
+steps possibly negative). `range_select` is `LoweredInstr::RangeSelect`: `dst[p, f]` is
+`on_true_tile[p, f]` where `range_start + f` passes `comp_op0` against `bound0[p]` and
+`comp_op1` against `bound1[p]` (`ir::Comparison`, `nl.equal` to `nl.greater_equal`), else
+`on_false_value` (float32's lowest by default), with an optional `reset_reduce` reduction;
+concrete bounds decide at once, symbolic ones give a `select`. These build nkilib
+`attention_cte`'s causal mask. The tracer's stand-in `nl.NKIObject` takes a `@dataclass`
+subclass's unannotated class attributes as fields too, as NKI does and nkilib's
+`SectionParams(section_idx=...)` needs.
 `tensor_partition_reduce` is
 `LoweredInstr::PartitionReduce`: each `dst[0, f]` folds `add` or `maximum` over `data`'s
 partitions at `f` (the docs give no output shape; nkilib reduces `[P, 1]` into `[1, 1]`).
@@ -694,6 +704,8 @@ transpose with `dma_transpose`s from HBM with default `axes`, 2-D and 3-D (a gen
 `success/aliased_tiles.py` writes through one placed `float32` tile and reads the same bytes
 through another: a `ClobberedRead` under `evaluate`, the value written under
 `evaluate_sharing_aliases`.
+`success/causal_mask.py` builds a causal mask by `iota` and `range_select` with row maxima,
+an `iota` over two free dimensions, and a `range_select` against a symbolic bound.
 `success/predicated_copy.py` copies under a symbolic mask into a tile set to `-inf`, takes
 its row maxima, and copies with `reverse_pred` into a zeroed tile.
 `success/mlp_ops.py` transposes a `[3, 2, 4]` view by `dma_transpose` around its middle

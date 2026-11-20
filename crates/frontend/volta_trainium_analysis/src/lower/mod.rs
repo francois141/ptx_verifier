@@ -14,7 +14,7 @@ use crate::frontend::ast::{
     TensorName, resolve_region,
 };
 use crate::ir::{
-    Accumulation, ActivationFunc, ArithOp, Copied, Descriptors, Index, Initial, Layout,
+    Accumulation, ActivationFunc, ArithOp, Comparison, Copied, Descriptors, Index, Initial, Layout,
     LoweredInstr, LoweredKernel, MatmulPass, Memory, Mover, Order, Reduction, ScalarOperand,
     ScalarStep, Selection, Shape, Sign, Tensor, TensorId, TensorRegion,
 };
@@ -162,6 +162,115 @@ fn lower_instruction(
                 dst: dst.region,
                 src: src.region,
                 mover: Mover::Engine,
+            })
+        }
+
+        "iota" => {
+            let ([dst, pattern], [offset, channel_multiplier]) = operands_with_optional(
+                instruction,
+                &["dst", "pattern"],
+                &["offset", "channel_multiplier"],
+            )?;
+            let dst = scope.tile(dst, "dst")?;
+            let Operand::Pairs(pattern) = pattern else {
+                return Err(StatementError::NotAPattern { keyword: "pattern" });
+            };
+            let [_, free] = dst.region.tile_extents();
+            if pattern.iter().map(|&(_, count)| count).product::<u64>() != free {
+                let (tensor, shape) = dst.described();
+                return Err(StatementError::ResultShape {
+                    tensor,
+                    shape,
+                    expected: Shape(vec![dst.region.tile_extents()[0], free]),
+                });
+            }
+            Ok(LoweredInstr::Iota {
+                dst: dst.region,
+                pattern: pattern.clone(),
+                offset: integer(offset, "offset")?,
+                channel_multiplier: integer(channel_multiplier, "channel_multiplier")?,
+            })
+        }
+
+        "range_select" => {
+            let (
+                [dst, on_true, comp_op0, comp_op1, bound0, bound1],
+                [
+                    reduce_cmd,
+                    reduce_res,
+                    reduce_op,
+                    range_start,
+                    on_false_value,
+                ],
+            ) = operands_with_optional(
+                instruction,
+                &[
+                    "dst",
+                    "on_true_tile",
+                    "comp_op0",
+                    "comp_op1",
+                    "bound0",
+                    "bound1",
+                ],
+                &[
+                    "reduce_cmd",
+                    "reduce_res",
+                    "reduce_op",
+                    "range_start",
+                    "on_false_value",
+                ],
+            )?;
+            let [dst, on_true] = [
+                scope.tile(dst, "dst")?,
+                scope.tile(on_true, "on_true_tile")?,
+            ];
+            same_shape(&dst, &on_true)?;
+            let [partitions, _] = dst.region.tile_extents();
+            let mut bounds = Vec::new();
+            for (bound, keyword) in [(bound0, "bound0"), (bound1, "bound1")] {
+                let bound = scope.tile(bound, keyword)?;
+                per_partition(&bound, partitions)?;
+                bounds.push(bound.region);
+            }
+            let reduce = match (reduce_op, reduce_res, reduce_cmd) {
+                (Some(op), Some(res), Some(cmd)) => {
+                    reset_reduce(cmd)?;
+                    Some(reduction(op, res, &dst, scope)?)
+                }
+                (None, None, _) => None,
+                _ => {
+                    return Err(StatementError::UnpairedOperands {
+                        opcode: instruction.opcode.clone(),
+                        keywords: &["reduce_op", "reduce_res", "reduce_cmd"],
+                    });
+                }
+            };
+            let on_false = match on_false_value {
+                None | Some(Operand::None) => Scalar::new(f32::MIN as f64).expect("a number"),
+                Some(Operand::Scalar(value)) => *value,
+                Some(_) => {
+                    return Err(StatementError::NotAScalar {
+                        keyword: "on_false_value",
+                    });
+                }
+            };
+            let range_start = match range_start {
+                None | Some(Operand::None) => 0,
+                Some(Operand::Int(start)) => *start,
+                Some(_) => {
+                    return Err(StatementError::NotAnInteger {
+                        keyword: "range_start",
+                    });
+                }
+            };
+            Ok(LoweredInstr::RangeSelect {
+                dst: dst.region,
+                on_true: on_true.region,
+                bounds: bounds.try_into().expect("two bounds"),
+                comparisons: [comparison(comp_op0)?, comparison(comp_op1)?],
+                range_start,
+                on_false,
+                reduce,
             })
         }
 
@@ -832,6 +941,26 @@ fn arith_op(operand: &Operand) -> Result<ArithOp, StatementError> {
         .into_iter()
         .find(|op| Some(op.name()) == name)
         .ok_or_else(|| StatementError::UnsupportedArithOp(operand.clone()))
+}
+
+/// A `nki.language` comparison, e.g. `nl.greater_equal`.
+fn comparison(operand: &Operand) -> Result<Comparison, StatementError> {
+    let name = language_member(operand);
+    Comparison::ALL
+        .into_iter()
+        .find(|comparison| Some(comparison.name()) == name)
+        .ok_or_else(|| StatementError::UnsupportedComparison(operand.clone()))
+}
+
+/// An optional integer operand, 0 if absent: `iota`'s `offset` and `channel_multiplier`.
+fn integer(operand: Option<&Operand>, keyword: &'static str) -> Result<i64, StatementError> {
+    match operand {
+        None | Some(Operand::None) => Ok(0),
+        Some(Operand::Int(value)) => {
+            i64::try_from(*value).map_err(|_| StatementError::NotAnInteger { keyword })
+        }
+        Some(_) => Err(StatementError::NotAnInteger { keyword }),
+    }
 }
 
 /// A `nki.language` activation function, e.g. `nl.sigmoid`.

@@ -2821,8 +2821,13 @@ fn instruction(
         if operands.contains_key(&keyword) {
             bail!(line, "operand `{keyword}` of `{callee}` is given twice");
         }
-        let value = match trace.evaluate(frame, expr, line)? {
+        let value = trace.evaluate(frame, expr, line)?;
+        let tupled = |value: Value| match value {
             Value::List(list) => Value::Tuple(trace.lists[list].clone()),
+            value => value,
+        };
+        let value = match tupled(value) {
+            Value::Tuple(items) => Value::Tuple(items.into_iter().map(tupled).collect()),
             value => value,
         };
         let operand = read_operand(&keyword, value, line)?;
@@ -2969,6 +2974,24 @@ fn read_operand(keyword: &str, value: Value, line: usize) -> Result<Operand, Par
             index,
             count,
         }),
+        Value::Tuple(items)
+            if !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| matches!(item, Value::Tuple(pair) if pair.len() == 2)) =>
+        {
+            let mut pairs = Vec::new();
+            for item in items {
+                let Value::Tuple(pair) = item else {
+                    unreachable!("every item is a pair")
+                };
+                let [Value::Int(step), Value::Int(count)] = pair[..] else {
+                    bail!(line, "operand `{keyword}`'s pairs must hold integers only");
+                };
+                pairs.push((step, non_negative(count, "a pair's count", line)?));
+            }
+            Ok(Operand::Pairs(pairs))
+        }
         Value::Tuple(items) => {
             let mut values = Vec::new();
             for item in items {

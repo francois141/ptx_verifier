@@ -78,6 +78,20 @@ pub enum StatementError {
 
     UnsupportedActivation(Operand),
 
+    /// A comparison other than `nl.equal`, `not_equal`, `less`, `less_equal`, `greater` or
+    /// `greater_equal`.
+    UnsupportedComparison(Operand),
+
+    /// An operand that must be a list of `[step, count]` pairs.
+    NotAPattern {
+        keyword: &'static str,
+    },
+
+    /// An operand that must be an integer.
+    NotAnInteger {
+        keyword: &'static str,
+    },
+
     /// A reduction `axis` other than a tile's free axis.
     UnsupportedAxis(Operand),
 
@@ -245,6 +259,16 @@ impl fmt::Display for StatementError {
             Self::UnsupportedArithOp(op) => write!(f, "unsupported arithmetic op `{op}`"),
             Self::UnsupportedActivation(op) => {
                 write!(f, "unsupported activation function `{op}`")
+            }
+            Self::UnsupportedComparison(op) => write!(f, "unsupported comparison `{op}`"),
+            Self::NotAPattern { keyword } => {
+                write!(
+                    f,
+                    "operand `{keyword}` must be a list of `[step, count]` pairs"
+                )
+            }
+            Self::NotAnInteger { keyword } => {
+                write!(f, "operand `{keyword}` must be a non-negative integer")
             }
             Self::UnsupportedAxis(axis) => write!(
                 f,

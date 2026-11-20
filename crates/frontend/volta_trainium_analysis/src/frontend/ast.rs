@@ -325,6 +325,8 @@ pub enum Operand {
     Int(u64),
     /// A tuple of integers, e.g. `axis=(1,)`.
     Ints(Vec<u64>),
+    /// A list of `[step, count]` pairs, steps possibly negative: `iota`'s `pattern`.
+    Pairs(Vec<(i64, u64)>),
     /// `True` or `False`, e.g. `negate=True`.
     Bool(bool),
     /// `None`, e.g. `accumulate=None`.
@@ -455,6 +457,13 @@ impl fmt::Display for Operand {
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
             Self::None => f.write_str("None"),
+            Self::Pairs(pairs) => {
+                let pairs: Vec<String> = pairs
+                    .iter()
+                    .map(|(step, count)| format!("[{step}, {count}]"))
+                    .collect();
+                write!(f, "[{}]", pairs.join(", "))
+            }
             Self::Ints(values) => match &values[..] {
                 [value] => write!(f, "({value},)"),
                 _ => {

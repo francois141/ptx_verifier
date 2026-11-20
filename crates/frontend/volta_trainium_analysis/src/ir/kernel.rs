@@ -132,6 +132,42 @@ impl fmt::Display for LoweredKernel {
                     let expr = format!("{}({data})", func.name());
                     write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
                 }
+                LoweredInstr::Iota {
+                    dst,
+                    pattern,
+                    offset,
+                    channel_multiplier,
+                } => {
+                    let pattern: Vec<String> = pattern
+                        .iter()
+                        .map(|(step, count)| format!("[{step}, {count}]"))
+                        .collect();
+                    write!(
+                        f,
+                        "  {} = iota([{}], offset={offset}, channel_multiplier={channel_multiplier})",
+                        region(dst),
+                        pattern.join(", ")
+                    )?
+                }
+                LoweredInstr::RangeSelect {
+                    dst,
+                    on_true,
+                    bounds,
+                    comparisons,
+                    range_start,
+                    on_false,
+                    reduce,
+                } => {
+                    let expr = format!(
+                        "range_select({}, {}({}), {}({}), start={range_start}, else={on_false})",
+                        region(on_true),
+                        comparisons[0].name(),
+                        region(&bounds[0]),
+                        comparisons[1].name(),
+                        region(&bounds[1]),
+                    );
+                    write!(f, "  {}", reduced(region(dst), expr, reduce.as_ref()))?
+                }
                 LoweredInstr::Gather { dst, data, index } => write!(
                     f,
                     "  {} = gather({}, {})",

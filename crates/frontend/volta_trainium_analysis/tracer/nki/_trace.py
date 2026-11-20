@@ -746,6 +746,18 @@ def operand(keyword, value):
         if math.isinf(value):
             return {"infinity": "negative" if value < 0 else "positive"}
         return {"scalar": value}
+    if (
+        isinstance(value, (tuple, list))
+        and value
+        and all(isinstance(item, (tuple, list)) and len(item) == 2 for item in value)
+    ):
+        what = f"a pair of operand `{keyword}`"
+        for step, count in value:
+            if not is_int(step):
+                raise KernelError(f"{what} must hold integers, not `{step!r}`")
+        return {
+            "pairs": [[int(step), non_negative(count, what)] for step, count in value]
+        }
     if isinstance(value, (tuple, list)):
         return {
             "ints": [

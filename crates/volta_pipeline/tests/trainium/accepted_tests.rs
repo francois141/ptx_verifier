@@ -135,6 +135,24 @@ fn the_predicated_copy_kernel_parses_lowers_and_runs_as_expected() {
     );
 }
 
+// iota over one and two free dimensions, and range_select under concrete bounds with its row
+// maxima and under a symbolic bound.
+#[test]
+fn the_causal_mask_kernel_parses_lowers_and_runs_as_expected() {
+    common::trainium::check(
+        "success/causal_mask",
+        "kernel",
+        &[
+            ("a", &[4, 4]),
+            ("bound", &[4, 1]),
+            ("out", &[4, 4]),
+            ("row_max", &[4, 1]),
+            ("idx", &[4, 6]),
+            ("banded", &[4, 4]),
+        ],
+    );
+}
+
 // Two tiles placed over the same bytes with the same element size: by default a read through
 // one of what the other wrote is a ClobberedRead, the overlap reported; sharing aliases, it
 // sees the value written, as the hardware's memory does.
