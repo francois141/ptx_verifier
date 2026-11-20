@@ -132,6 +132,12 @@ bitwise:
 tilelang-ws-gemm *args:
     cargo run --release -q -p volta_cli -- analyze external/ptx/tilelang/warp_specialize/matmul_warp_specialize_copy_gemm_0_1_kernel.ptx --config external/ptx/tilelang/warp_specialize/matmul_warp_specialize_copy_gemm_0_1_kernel.m128n128k64.launch.json --no-profile {{args}}
 
+# `--sample N` checks N outputs per kernel, `--filter TEXT` the cases naming it, `--markdown` prints the README's table.
+# Check the fused GEMM + activation kernels of CUTLASS, Triton, Composable Kernel and OpenCL in external/approximations
+approximations *args:
+    cargo build --release -q -p volta_cli
+    python3 external/approximations/verify.py --report external/approximations/REPORT.md {{args}}
+
 # ===== AMD ====================================================================
 
 # Check the AMD kernels' outputs, expected rejections and functional equivalence

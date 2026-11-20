@@ -15,10 +15,14 @@
 /external/**/*.ptx
 # PyTorch's activations are compiled by hand, so their PTX is tracked like their AMD assembly
 !/external/activation/*.ptx
+# The fused GEMM + activation kernels are compiled by their extract.py scripts; their PTX is tracked too
+!/external/approximations/**/*.ptx
 /external/**/*.json
 !/external/**/*.launch.json
 /external/ptx/output/
 # `just benchmark`'s report
 /external/benchmark/report.md
+# `just approximations`'s report
+/external/approximations/REPORT.md
 # The Gluon tutorials, downloaded by `external/ptx/extraction/gluon.py`
 /external/ptx/sources/gluon/

@@ -241,7 +241,7 @@ pub(crate) fn lower_operation(
 
         Add(a, b) => target.add(child(a), child(b)),
         Sub(a, b) => target.sub(child(a), child(b)),
-        Mul(a, b) => target.mul(child(a), child(b)),
+        Mul(a, b) => lower_mul(target, child(a), child(b)),
         Div(a, b) => target.div(child(a), child(b)),
         Rem(a, b) => target.rem(child(a), child(b)),
         Neg(a) => target.neg(child(a)),
@@ -381,13 +381,29 @@ fn lower_sigmoid(target: &mut simplified::ExprArena, a: simplified::ExprId) -> s
     lower_rcp(target, denominator)
 }
 
-/// The median of three as `max(min(a, b), min(max(a, b), c))`.
+/// The median of three as `max(min(a, b), min(max(a, b), c))`, or, between two constants, the
+/// clamp `min(max(x, low), high)` a spec states (the `v_med3_f32` a clamp compiles to).
 fn lower_median3(
     target: &mut simplified::ExprArena,
     a: simplified::ExprId,
     b: simplified::ExprId,
     c: simplified::ExprId,
 ) -> simplified::ExprId {
+    let is_constant = |target: &simplified::ExprArena, id| {
+        matches!(
+            target.node(id),
+            simplified::ExprNode::RealConst(_) | simplified::ExprNode::IntConst(_)
+        )
+    };
+    let operands = [a, b, c];
+    let constants: Vec<usize> = (0..3).filter(|&i| is_constant(target, operands[i])).collect();
+    if let [p, q] = constants[..] {
+        let x = operands[3 - p - q];
+        let low = target.min(operands[p], operands[q]);
+        let high = target.max(operands[p], operands[q]);
+        let floored = target.max(x, low);
+        return target.min(floored, high);
+    }
     let low = target.min(a, b);
     let high = target.max(a, b);
     let capped = target.min(high, c);
@@ -417,6 +433,32 @@ fn lower_exp2(target: &mut simplified::ExprArena, a: simplified::ExprId) -> simp
     let ln2 = ln2_f32(target);
     let scaled = target.mul(a, ln2);
     target.exp(scaled)
+}
+
+/// `a * b`, or `log(v)` for the compilers' `log(v)` idiom `log2(v) * ln 2`, which kernels spell
+/// with a float32 `ln 2` (a `log(v) * 0.99999...` over the reals) and is folded to the exact
+/// `log(v)` it approximates: the mirror of [`lower_exp2`]'s fold over [`lower_log2`]'s quotient.
+fn lower_mul(
+    target: &mut simplified::ExprArena,
+    a: simplified::ExprId,
+    b: simplified::ExprId,
+) -> simplified::ExprId {
+    for (log2, constant) in [(a, b), (b, a)] {
+        if is_near(target, constant, std::f64::consts::LN_2)
+            && let simplified::ExprNode::Div(log, ln2) = *target.node(log2)
+            && is_near(target, ln2, std::f64::consts::LN_2)
+            && matches!(target.node(log), simplified::ExprNode::Log(_))
+        {
+            return log;
+        }
+    }
+    target.mul(a, b)
+}
+
+/// Whether `id` is a real constant within float32 rounding (1e-6, relative) of `value`.
+fn is_near(target: &simplified::ExprArena, id: simplified::ExprId, value: f64) -> bool {
+    matches!(target.node(id), simplified::ExprNode::RealConst(real)
+        if (real.to_f64() - value).abs() <= value * 1e-6)
 }
 
 /// `log2(a)` over the reals, as `log(a) / ln 2`, the mirror of [`lower_exp2`].

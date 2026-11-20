@@ -5,6 +5,7 @@
 //! (`input_scale = 1 / alpha`) and SELU (its `alpha` and `scale`) each compile to this select.
 
 use rug::Rational;
+use volta_common::commutative::either;
 
 use super::node::{constant_node, scaled_node};
 use super::patterns::Matcher;
@@ -27,8 +28,7 @@ pub(super) fn elu(arena: &ExprArena, id: ExprId) -> Option<Elu> {
     }
 
     let above = m.monomial(split.above, split.x)?;
-    let (coefficient, expm1) = m.scaled(split.below);
-    let argument = exp_minus_one(m, expm1)?;
+    let (coefficient, argument) = scaled_expm1(m, split.below)?;
     let input = m.monomial(argument, split.x)?;
 
     (above.degree == 1 && input.degree == 1).then_some(Elu {
@@ -37,6 +37,33 @@ pub(super) fn elu(arena: &ExprArena, id: ExprId) -> Option<Elu> {
         coefficient,
         input_scale: input.coefficient,
     })
+}
+
+/// The coefficient `c` and argument `a` of `c * (exp(a) - 1)`, also in the distributed form
+/// `c * exp(a) - c` compilers fold into one fma.
+fn scaled_expm1(m: Matcher, id: ExprId) -> Option<(Rational, ExprId)> {
+    let (coefficient, expm1) = m.scaled(id);
+    if let Some(argument) = exp_minus_one(m, expm1) {
+        return Some((coefficient, argument));
+    }
+    let scaled_exp = |term| {
+        let (c, e) = m.scaled(term);
+        match *m.node(e) {
+            ExprNode::Exp(argument) => Some((c, argument)),
+            _ => None,
+        }
+    };
+    match *m.node(id) {
+        ExprNode::Add(a, b) => either(a, b, |term, offset| {
+            let (c, argument) = scaled_exp(term)?;
+            m.is(offset, -c.clone()).then_some((c, argument))
+        }),
+        ExprNode::Sub(term, offset) => {
+            let (c, argument) = scaled_exp(term)?;
+            m.is(offset, c.clone()).then_some((c, argument))
+        }
+        _ => None,
+    }
 }
 
 /// The argument `a` of `exp(a) - 1`, an `add` of `-1` or a `sub` of 1.

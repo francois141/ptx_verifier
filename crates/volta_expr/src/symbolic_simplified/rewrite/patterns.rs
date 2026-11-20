@@ -62,30 +62,54 @@ impl<'a> Matcher<'a> {
         either(a, b, |x, half| self.is(half, (1, 2)).then_some(x))
     }
 
-    /// `id` as `s * rest`, `s` the product of the constant factors atop its `mul` chain.
+    /// `id` as `s * rest`, `s` the product of the constant factors atop its `mul` chain, a
+    /// doubling `y + y` (how LLVM writes `2 * y`) counting 2.
     pub(super) fn scaled(self, mut id: ExprId) -> (Rational, ExprId) {
         let mut scale = Rational::from(1);
 
-        while let ExprNode::Mul(a, b) = *self.node(id)
-            && let Some((c, rest)) = either(a, b, |c, rest| Some((self.constant(c)?, rest)))
-        {
-            scale *= c;
-            id = rest;
+        loop {
+            match *self.node(id) {
+                ExprNode::Mul(a, b) => {
+                    let Some((c, rest)) = either(a, b, |c, rest| Some((self.constant(c)?, rest)))
+                    else {
+                        break;
+                    };
+                    scale *= c;
+                    id = rest;
+                }
+                ExprNode::Add(a, b) if a == b => {
+                    scale *= 2;
+                    id = a;
+                }
+                _ => break,
+            }
         }
 
         (scale, id)
     }
 
-    /// `k` of `x + k*x^3`, an `add` of the two terms.
-    pub(super) fn cubic(self, id: ExprId, x: ExprId) -> Option<Rational> {
-        let ExprNode::Add(a, b) = *self.node(id) else {
-            return None;
-        };
-        let cube = either(a, b, |linear, cube| {
-            self.monomial(cube, x).filter(|_| self.same(linear, x))
-        })?;
-
-        (cube.degree == 3).then_some(cube.coefficient)
+    /// `(c, k)` of `c * (x + k*x^3)`: an `add` of `x` and `k*x^3` (`c` is 1), or the product
+    /// `x * (c + c*k*x^2)` CUTLASS and CK write.
+    pub(super) fn cubic(self, id: ExprId, x: ExprId) -> Option<(Rational, Rational)> {
+        match *self.node(id) {
+            ExprNode::Add(a, b) => {
+                let cube = either(a, b, |linear, cube| {
+                    self.monomial(cube, x).filter(|_| self.same(linear, x))
+                })?;
+                (cube.degree == 3).then(|| (Rational::from(1), cube.coefficient))
+            }
+            ExprNode::Mul(a, b) => {
+                let quadratic = either(a, b, |same_x, poly| self.same(same_x, x).then_some(poly))?;
+                let ExprNode::Add(p, q) = *self.node(quadratic) else {
+                    return None;
+                };
+                let (c, square) = either(p, q, |c, square| {
+                    Some((self.constant(c)?, self.monomial(square, x)?))
+                })?;
+                (square.degree == 2 && c != 0).then(|| (c.clone(), square.coefficient / c))
+            }
+            _ => None,
+        }
     }
 
     /// `id` as a product of constants and copies of `x`, in any association.

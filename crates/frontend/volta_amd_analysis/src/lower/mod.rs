@@ -239,6 +239,19 @@ fn lower_as_written(
         ("s_cmp_gt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtU32, operands),
         ("s_cmp_lg_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LgU32, operands),
         ("s_cmp_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
+        // SOPK compares: the same comparisons with a 16-bit immediate second source.
+        ("s_cmpk_lt_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtI32, operands),
+        ("s_cmpk_eq_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::EqI32, operands),
+        ("s_cmpk_le_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LeI32, operands),
+        ("s_cmpk_gt_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtI32, operands),
+        ("s_cmpk_lg_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LgI32, operands),
+        ("s_cmpk_ge_i32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeI32, operands),
+        ("s_cmpk_lt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LtU32, operands),
+        ("s_cmpk_eq_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::EqU32, operands),
+        ("s_cmpk_le_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LeU32, operands),
+        ("s_cmpk_gt_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GtU32, operands),
+        ("s_cmpk_lg_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::LgU32, operands),
+        ("s_cmpk_ge_u32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::GeU32, operands),
         ("s_cmp_eq_u64", operands) => lower_scalar_cmp64(ir::ScalarCmp64Op::EqU64, operands),
         ("s_cmp_lg_u64", operands) => lower_scalar_cmp64(ir::ScalarCmp64Op::LgU64, operands),
         ("s_bitcmp0_b32", operands) => lower_scalar_cmp(ir::ScalarCmpOp::BitCmp0B32, operands),
@@ -1732,20 +1745,17 @@ fn vector_tuple<const N: usize>(operand: &Operand, file: RegFile) -> Option<[u8;
     Some(std::array::from_fn(|i| first + i as u8))
 }
 
-/// A partial overlap with `dst` is rejected, as the result of reading it is not established.
+/// The accumulator may overlap `dst` in part: a four-register MFMA reads all of it before writing
+/// (LLVM's `VOPProfileMAI` early-clobbers only results wider than 128 bits), as the evaluator does.
 fn mfma_src_c(dst: LaneRegs<4>, operand: &Operand) -> Result<MfmaSrcC, &'static str> {
     if let Some(Vop3Src::Inline(bits)) = vop3_src(operand) {
         return Ok(MfmaSrcC::Inline(bits));
     }
     let src = lane_regs::<4>(operand)
         .ok_or("expected an inline constant or an aligned four-register accumulator")?;
-    let (dst_first, src_first) = match (dst, src) {
-        (LaneRegs::Vgprs(dst), LaneRegs::Vgprs(src)) => (dst[0].0, src[0].0),
-        (LaneRegs::Agprs(dst), LaneRegs::Agprs(src)) => (dst[0].0, src[0].0),
+    match (dst, src) {
+        (LaneRegs::Vgprs(_), LaneRegs::Vgprs(_)) | (LaneRegs::Agprs(_), LaneRegs::Agprs(_)) => {}
         _ => return Err("expected the accumulator in the destination's register file"),
-    };
-    if dst_first != src_first && dst_first.abs_diff(src_first) < 4 {
-        return Err("expected the accumulator to coincide with the destination or not overlap it");
     }
     Ok(MfmaSrcC::Regs(src))
 }
