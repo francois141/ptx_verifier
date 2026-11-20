@@ -1,0 +1,65 @@
+{
+  "description": "CUTLASS v3.9.2 TF32 GEMM with CUTLASS's SiLu fused, M=N=K=256, CTA 0's 128x256 tile",
+  "kernel": "cutlass_gemm",
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "grid": [
+    2,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 147456,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        128,
+        256
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "a",
+      "ptr": "a"
+    },
+    {
+      "name": "b",
+      "ptr": "b"
+    },
+    {
+      "name": "c",
+      "ptr": "c"
+    }
+  ],
+  "spec": "../specs/silu.spec",
+  "dims": {
+    "M": 256,
+    "N": 256,
+    "K": 256,
+    "TM": 128
+  }
+}
