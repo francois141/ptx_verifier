@@ -344,6 +344,8 @@ class Views:
                 "`flatten_dims` may not merge an on-chip tile's partitions"
             )
         merged = view.pattern[start_dim : end_dim + 1]
+        # A dimension of count 1 is contiguous with any other, whatever its step.
+        merged = [pair for pair in merged if pair[1] != 1] or merged[-1:]
         for (step, _), (inner_step, inner_count) in zip(merged, merged[1:]):
             if step != inner_step * inner_count:
                 raise KernelError(

@@ -285,7 +285,9 @@ impl fmt::Display for LoweredKernel {
                         mask.join(", ")
                     )?
                 }
-                LoweredInstr::Transpose { dst, data, mover } => {
+                LoweredInstr::Transpose {
+                    dst, data, mover, ..
+                } => {
                     let op = match mover {
                         Mover::Dma(Descriptors::CompilerChosen) => "dma_transpose",
                         Mover::Dma(Descriptors::OutOfBand) => "dma_transpose[dge_mode=none]",

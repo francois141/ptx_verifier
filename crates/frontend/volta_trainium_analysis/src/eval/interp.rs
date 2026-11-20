@@ -377,10 +377,15 @@ impl<'a> Interpreter<'a> {
                     writes.push(Write::at(dst, [partition, column], value));
                 }
             }
-            LoweredInstr::Transpose { dst, data, .. } => {
-                for [p, f] in elements(data) {
-                    let value = self.read(instr, data, [p, f])?;
-                    writes.push(Write::at(dst, [f, p], value));
+            LoweredInstr::Transpose {
+                dst, data, middle, ..
+            } => {
+                let [first, free] = data.tile_extents();
+                let last = free / middle;
+                for [a, f] in elements(data) {
+                    let (m, c) = (f / last, f % last);
+                    let value = self.read(instr, data, [a, f])?;
+                    writes.push(Write::at(dst, [c, m * first + a], value));
                 }
             }
             LoweredInstr::Shuffle { dst, src, mask } => {
@@ -460,6 +465,10 @@ impl<'a> Interpreter<'a> {
     fn activation(&mut self, func: ActivationFunc, x: ExprId) -> ExprId {
         match func {
             ActivationFunc::Sigmoid => self.arena.sigmoid(Type::Real, x),
+            ActivationFunc::Silu => {
+                let sigmoid = self.arena.sigmoid(Type::Real, x);
+                self.arena.mul(Type::Real, x, sigmoid)
+            }
             ActivationFunc::Relu => {
                 let zero = self.arena.int(0);
                 self.arena.max(Type::Real, x, zero)

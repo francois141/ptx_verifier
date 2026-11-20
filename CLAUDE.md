@@ -557,14 +557,14 @@ Lowering accepts seventeen `nki.isa` instructions - `dma_copy`, `tensor_copy`,
 `reset_reduce` or `load_reduce` from `imm1`), `tensor_partition_reduce`
 (`LoweredInstr::PartitionReduce`, `add` or `maximum` across partitions into `[1, F]`),
 `reciprocal`, `nc_matmul`, `nc_transpose` and `dma_transpose` (`axes=(1, 0)`, or omitted to
-swap the ends of a region whose middle extents are 1, its source in any memory, the same
-`Transpose`) - drops
+swap the ends of a region, its middle dimensions kept in place (`Transpose::middle`), its
+source in any memory, the same `Transpose`) - drops
 an `engine=` naming `nisa.engine.vector`, `scalar`, `gpsimd`, `tensor`, `sync` (a DMA queue) or `unknown` (or the older
 `nisa.vector_engine`, `scalar_engine`, `gpsimd_engine`, `tensor_engine`), and resolves
 their `nki.language` operands by searching `ArithOp::ALL` (`nl.add`,
 `nl.subtract`, `nl.multiply`, `nl.maximum`, `nl.minimum`) and `ActivationFunc::ALL`
 (`nl.sigmoid`, `nl.relu`, `nl.square`, `nl.rsqrt`, `nl.exp`, `nl.copy`, `nl.sqrt`, `nl.abs`,
-`nl.reciprocal`;
+`nl.reciprocal`, `nl.silu`;
 `nl.max` is taken as `nl.maximum`) for a variant whose
 `name()` matches, so a new function reaches lowering by joining that array and
 needs no arm of its own; any other member is a lowering error. Binary ops take
@@ -810,7 +810,7 @@ every shape rule compares kept shapes (indexed dimensions dropped; operands that
 may also differ by free dimensions of extent 1, `same_shape`); a broadcast
 operand or reduction result needs one element per partition (`t[:, 0:1]` or
 `t[:, 0]`), and matmul, transpose and an instruction's reduction a kept shape of
-exactly two dimensions. An operand may instead be `t.ap(pattern, offset=0)`
+exactly two dimensions, free dimensions of extent 1 aside (a result's shape likewise). An operand may instead be `t.ap(pattern, offset=0)`
 (`ast::Operand::Pattern`), as `torch.as_strided`: its `[step, count]` pairs are the
 view's dimensions, element `local` at position `offset + sum(step * local)` of `t`'s
 row-major layout. A `TensorRegion`'s `ir::Layout` is a `Rectangle` (`start`,
@@ -897,6 +897,8 @@ HBM-sourced `dma_transpose`s with default `axes`, 2-D and 3-D.
 `tensor_partition_reduce` and `activation(op=nl.reciprocal)`.
 `success/aliased_tiles.py` reads through one placed tile what another wrote over its bytes:
 `ClobberedRead` under `evaluate`, the value under `evaluate_sharing_aliases`.
+`success/mlp_ops.py` covers a 3-D `dma_transpose` around a middle dimension, `nl.silu` and an
+`nc_transpose` into a `[4, 1, 3]` tile.
 `success/clip_ops.py` covers `nl.minimum` (a `tensor_scalar` clip) and a `tensor_tensor` over
 `[2, 1, 4]` and `[2, 4]` tiles.
 `success/dma_modes.py` covers `hwdge` and `swdge` DMAs (`swdge` ordered like `hwdge`), `engine.sync`, a placed `nc_matmul` and DMAs
@@ -1130,9 +1132,9 @@ found at their calls: `max_pooling_3d` (F7)
 `conv3d_temporal_unroll` (F12) refuted against their specs; each `*_fixed.py` wrapper applies
 `fixes.py`'s fix at import, and the fixed call is proved equal and race free under
 `WriteAfterWrite::Ordered`. `layers`, `norms`, `elementwise`, `pooling` and `conv` prove
-twenty-seven kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
-a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection
-and qkv (both paths), rmsnorm_quant with static quantization; rmsnorm_tkg, layernorm_tkg, cumsum
+twenty-eight kernels found correct equal to their specs on every element and race free, under `BASELINE` or, where
+a tile is overwritten unread, write after write ordered: RoPE, rope_hf, output_projection,
+qkv and mlp (both paths), rmsnorm_quant with static quantization; rmsnorm_tkg, layernorm_tkg, cumsum
 and the scans; foreach, fused Adam and batch norm backward; pooling and pad; the
 convolutions. `triage` records how far one call of each core kernel not yet checked gets
 (traced, lowered, run, graph verdict), or its first blocker, against

@@ -7,13 +7,18 @@ import importlib
 qkv = importlib.import_module("nkilib.core.qkv.qkv").qkv
 
 
+def viewed(output):
+    return getattr(output, "tensor", output)
+
+
 def kernel(input, fused_qkv_weights, d_head=128, num_q_heads=2, num_kv_heads=1):
-    output = qkv(
-        input,
-        fused_qkv_weights,
-        d_head=d_head,
-        num_q_heads=num_q_heads,
-        num_kv_heads=num_kv_heads,
+    out = viewed(
+        qkv(
+            input,
+            fused_qkv_weights,
+            d_head=d_head,
+            num_q_heads=num_q_heads,
+            num_kv_heads=num_kv_heads,
+        )
     )
-    out = getattr(output, "tensor", output)
     return out

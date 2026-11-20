@@ -148,6 +148,7 @@ The calls are the representative ones of the original checks, not their fuzzing 
 | `core/output_projection` tkg (one core, unquantized) | `layers` | 2 heads of 128, 4 tokens, hidden 512 | equal; race free |
 | `core/qkv` tkg (one core, unfused, unquantized, BSD) | `layers` | 4 tokens, hidden 512, 2 query, 1 key and 1 value heads of 128 | equal; race free |
 | `core/qkv` cte (one core, unfused, unquantized, BSD) | `layers` | 128 tokens, hidden 128, 2 query, 1 key and 1 value heads of 128 | equal; race free |
+| `core/mlp` (one core, unquantized, unnormalized, SiLU) | `layers` | token generation at 1 token, intermediate 2; context encoding forced at 4 tokens, intermediate 2; and, ignored by default (2.5 minutes), at 97 tokens as `mlp` picks it, intermediate 1; hidden 128 | equal; race free. Run with a 224 KiB SBUF partition (below). A wider intermediate puts each output's SiLU fractions over one denominator past the decision procedure's budget |
 | `core/rmsnorm/rmsnorm_quant` (static quantization) | `norms` | `[1, 4, 256]`, `[2, 3, 128]` | equal, over the reals (the fp8 cast is not modelled); race free. Token `t` is divided by row `t` of the `[128, 1]` scale, which the reference takes to be one value broadcast |
 | `core/subkernels/rmsnorm_tkg` (one core) | `norms` | default layout at `[1, 4, 256]`, `[1, 1, 128]`, `[2, 80, 256]`, `[3, 5, 384]`; `hidden_dim_tp=True` at `[1, 4, 256]`, `[3, 5, 384]`; `hidden_actual=200` at `[1, 3, 256]` | equal; race free. The other layout's spec is refuted (1,016 of 1,024) |
 | `core/subkernels/layernorm_tkg` (one core, with `beta`) | `norms` | `[1, 4, 256]`, `[3, 2, 128]` | equal; race free |
@@ -181,12 +182,11 @@ kernel shows up there.
 | Kernel (nkilib `core/`) | Reaches | First blocker |
 |---|---|---|
 | `rmsnorm/rmsnorm_quant` row | tracing | it stores fp32 scales as fp8 bytes, which is out of model |
-| `mlp` cte | lowering | a tile with two free dimensions as an operand |
-| `mlp` tkg | tracing | `flatten_dims` of a view whose dimensions are not contiguous |
 | `attention/attention_cte` | tracing | `nisa.iota` with a nested `pattern` |
 | `attention/attention_tkg` | tracing | a `memset` to `-inf` |
 
 `mlp` sizes its own SBUF heap at 200 KiB a partition, past the 192 KiB Volta assumes for
-Trn2, so its calls run with a 224 KiB partition, the bound its context encoding path uses.
+Trn2, so its calls run with a 224 KiB partition, the bound its context encoding path uses
+(`MAX_AVAILABLE_SBUF_SIZE`). Which of the two sizes is right is open.
 `attention_tkg` without fused RoPE needs `q` and `k` in SBUF, so its wrapper copies them
 there.
