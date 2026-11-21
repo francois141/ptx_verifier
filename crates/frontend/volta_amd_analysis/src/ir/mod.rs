@@ -195,6 +195,8 @@ pub enum LaneMask {
 pub enum ScalarOp32 {
     /// SCC is the carry out.
     AddU32,
+    /// `(src0 << n) + src1` for `n` in 1..=4; SCC is the carry out of the 64-bit sum.
+    LShlAddU32(u8),
     /// `src0 + src1 + SCC`; SCC is the carry out.
     AddcU32,
     /// SCC is the signed overflow.

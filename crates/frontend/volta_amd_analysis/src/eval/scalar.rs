@@ -378,6 +378,10 @@ fn scalar_op32(
             let (sum, carry) = a.overflowing_add(b);
             (sum, Some(carry))
         }
+        ScalarOp32::LShlAddU32(shift) => {
+            let sum = (u64::from(a) << shift) + u64::from(b);
+            (sum as u32, Some(sum >> 32 != 0))
+        }
         ScalarOp32::AddcU32 => {
             let sum = u64::from(a) + u64::from(b) + u64::from(registers.read_scc()?);
             (sum as u32, Some(sum >> 32 != 0))

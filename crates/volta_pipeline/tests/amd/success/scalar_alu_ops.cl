@@ -166,4 +166,9 @@ __kernel void scalar_alu_ops(__global unsigned *out, unsigned a, unsigned b, uns
     row[113] = (unsigned)zero64;
     row[114] = (unsigned)(zero64 >> 32);
     row[115] = zero_scc;
+
+    OP32("", s_lshl1_add_u32, 116);
+    OP32("", s_lshl2_add_u32, 118);
+    OP32("", s_lshl3_add_u32, 120);
+    OP32("", s_lshl4_add_u32, 122);
 }
