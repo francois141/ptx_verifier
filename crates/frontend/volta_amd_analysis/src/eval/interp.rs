@@ -9,8 +9,8 @@ use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
-    BinOp, BranchCondition, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr,
-    LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr, Vop3Src,
+    BinOp, BranchCondition, CarryOp, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses,
+    LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -214,6 +214,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::CmpE64 { .. }
             | LoweredInstr::Cmp64 { .. }
             | LoweredInstr::CmpF64 { .. }
+            | LoweredInstr::CarryOp32 { .. }
             | LoweredInstr::MadU64U32 { .. }
             | LoweredInstr::Mfma16x16x4F32 { .. }
             | LoweredInstr::Mfma32x32x16Bf16 { .. }
@@ -401,6 +402,14 @@ impl<'a> Interpreter<'a> {
                 *src_c,
             ),
             LoweredInstr::Permlane32Swap { dst, src } => self.permlane32_swap(wave, *dst, *src),
+            LoweredInstr::CarryOp32 {
+                op,
+                dst,
+                carry_out,
+                src0,
+                src1,
+                carry_in,
+            } => self.execute_carry_op(wave, *op, *dst, *carry_out, *src0, *src1, *carry_in),
             LoweredInstr::DsReadTrB16 { dst, addr, offset } => {
                 self.ds_read_tr_b16(wave, *dst, *addr, *offset)
             }
@@ -895,6 +904,48 @@ impl<'a> Interpreter<'a> {
             registers.start_vector_load(lane, &dst, &words, LoadCounter::Lgkm)?;
         }
         Ok(())
+    }
+
+    /// Every lane's sources and carry in are read before `dst` or `carry_out` is written, since
+    /// either may overlap a source.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_carry_op(
+        &mut self,
+        wave: WaveId,
+        op: CarryOp,
+        dst: Vgpr,
+        carry_out: LaneMask,
+        src0: Vop3Src,
+        src1: Vop3Src,
+        carry_in: Option<LaneMask>,
+    ) -> Result<(), EvalError> {
+        let exec = self.waves[wave].exec;
+        let registers = &mut self.waves[wave].registers;
+        let mut results = Vec::with_capacity(64);
+        for lane in active_lanes(exec) {
+            let a = registers.read_src(&mut self.arena, lane, src0)?;
+            let b = registers.read_src(&mut self.arena, lane, src1)?;
+            let word =
+                |value| concrete_word(&self.arena, value).ok_or(EvalError::SymbolicWord { lane });
+            let (a, b) = (word(a)?, word(b)?);
+            let carry = match carry_in {
+                Some(mask) => {
+                    let condition = registers.read_lane_condition(&mut self.arena, lane, mask)?;
+                    self.arena
+                        .as_bool(condition)
+                        .ok_or(EvalError::SymbolicWord { lane })?
+                }
+                None => false,
+            };
+            results.push((lane, op.apply(a, b, carry)));
+        }
+        let mut carries = vec![self.arena.bool_val(false); 64];
+        for &(lane, (value, carry)) in &results {
+            let value = self.arena.int(i64::from(value));
+            registers.write_vgpr(lane, dst, value)?;
+            carries[lane] = self.arena.bool_val(carry);
+        }
+        registers.write_lane_mask(&mut self.arena, carry_out, &carries)
     }
 
     /// Swap lanes 32 to 63 of `dst` with lanes 0 to 31 of `src`, reading every word first.

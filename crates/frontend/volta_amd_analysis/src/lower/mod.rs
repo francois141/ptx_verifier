@@ -567,6 +567,21 @@ fn lower_as_written(
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             mask: lane_mask(mask).ok_or("expected vcc or an aligned SGPR pair as the mask")?,
         }),
+        (
+            "v_add_co_u32_e32"
+            | "v_add_co_u32_e64"
+            | "v_sub_co_u32_e32"
+            | "v_sub_co_u32_e64"
+            | "v_subrev_co_u32_e32"
+            | "v_subrev_co_u32_e64"
+            | "v_addc_co_u32_e32"
+            | "v_addc_co_u32_e64"
+            | "v_subb_co_u32_e32"
+            | "v_subb_co_u32_e64"
+            | "v_subbrev_co_u32_e32"
+            | "v_subbrev_co_u32_e64",
+            operands,
+        ) => lower_carry_op(opcode, operands),
         ("v_mad_u64_u32", [dst, carry, src0, src1, src2]) => Ok(MadU64U32 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
             carry: sgprs(carry).ok_or("expected an aligned SGPR carry pair")?,
@@ -944,6 +959,48 @@ fn lower_scalar_load(
         dst,
         base: sgprs(base).ok_or("expected an aligned SGPR base pair")?,
         offset: immediate(offset, 0xfffff).ok_or("expected a nonnegative 20-bit byte offset")?,
+    })
+}
+
+/// `dst, carry_out, src0, src1[, carry_in]`; the e32 encoding's carries are VCC.
+fn lower_carry_op(opcode: &str, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
+    let name = opcode.trim_end_matches("_e32").trim_end_matches("_e64");
+    let op = match name {
+        "v_add_co_u32" => ir::CarryOp::Add,
+        "v_addc_co_u32" => ir::CarryOp::Addc,
+        "v_sub_co_u32" => ir::CarryOp::Sub,
+        "v_subb_co_u32" => ir::CarryOp::Subb,
+        "v_subrev_co_u32" => ir::CarryOp::SubRev,
+        "v_subbrev_co_u32" => ir::CarryOp::SubbRev,
+        _ => return Err(UNKNOWN_OPCODE),
+    };
+    let takes_carry = matches!(
+        op,
+        ir::CarryOp::Addc | ir::CarryOp::Subb | ir::CarryOp::SubbRev
+    );
+    let (dst, carry_out, src0, src1, carry_in) = match (operands, takes_carry) {
+        ([dst, carry_out, src0, src1], false) => (dst, carry_out, src0, src1, None),
+        ([dst, carry_out, src0, src1, carry_in], true) => {
+            (dst, carry_out, src0, src1, Some(carry_in))
+        }
+        _ => return Err("unsupported operand count"),
+    };
+    let e32 = opcode.ends_with("_e32");
+    let mask = |operand: &Operand| match (e32, operand) {
+        (true, Operand::Vcc) => Ok(LaneMask::Vcc),
+        (true, _) => Err("expected vcc as an e32 carry"),
+        (false, _) => lane_mask(operand).ok_or("expected vcc or an aligned SGPR pair as a carry"),
+    };
+    Ok(LoweredInstr::CarryOp32 {
+        op,
+        dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+        carry_out: mask(carry_out)?,
+        src0: vop3_src(src0)
+            .or_else(|| constant(src0).map(Vop3Src::Inline))
+            .ok_or("expected a VGPR, an SGPR or a constant first source")?,
+        src1: vop3_src(src1)
+            .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+        carry_in: carry_in.map(mask).transpose()?,
     })
 }
 

@@ -133,4 +133,35 @@ __kernel void vector_int_ops(__global unsigned *out, unsigned factor, unsigned m
     row[48] = (unsigned)(shifted >> 32);
     row[49] = (unsigned)scaled;
     row[50] = (unsigned)(scaled >> 32);
+
+    // A 64-bit add carrying through VCC, `y - x` borrowing through an SGPR pair, and `y - x`
+    // again from the reversed forms, which subtract their first source from their second.
+    unsigned x_low = 0xfffffff0u + i, y_low = 0x20, x_high = 0xfffffff4u + i, y_high = 0xfffffff8u;
+    unsigned sum_low, sum_high, sum_carry, difference_low, difference_high, difference_borrow;
+    unsigned reversed_low, reversed_high, reversed_borrow;
+    ulong borrow;
+    __asm__ volatile(
+        "v_add_co_u32_e32 %0, vcc, %10, %11\n\t"
+        "v_addc_co_u32_e32 %1, vcc, %12, %13, vcc\n\t"
+        "v_cndmask_b32_e64 %2, 0, 1, vcc\n\t"
+        "v_sub_co_u32_e64 %3, %9, %11, %10\n\t"
+        "v_subb_co_u32_e64 %4, %9, %13, %12, %9\n\t"
+        "v_cndmask_b32_e64 %5, 0, 1, %9\n\t"
+        "v_subrev_co_u32_e32 %6, vcc, %10, %11\n\t"
+        "v_subbrev_co_u32_e32 %7, vcc, %12, %13, vcc\n\t"
+        "v_cndmask_b32_e64 %8, 0, 1, vcc"
+        : "=&v"(sum_low), "=&v"(sum_high), "=&v"(sum_carry), "=&v"(difference_low),
+          "=&v"(difference_high), "=&v"(difference_borrow), "=&v"(reversed_low),
+          "=&v"(reversed_high), "=&v"(reversed_borrow), "=&s"(borrow)
+        : "v"(x_low), "v"(y_low), "v"(x_high), "v"(y_high)
+        : "vcc");
+    row[51] = sum_low;
+    row[52] = sum_high;
+    row[53] = sum_carry;
+    row[54] = difference_low;
+    row[55] = difference_high;
+    row[56] = difference_borrow;
+    row[57] = reversed_low;
+    row[58] = reversed_high;
+    row[59] = reversed_borrow;
 }

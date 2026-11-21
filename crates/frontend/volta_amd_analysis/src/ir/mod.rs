@@ -739,6 +739,33 @@ impl WordByte {
     }
 }
 
+/// A 32-bit vector add or subtract with a carry (or borrow) out, and for `Addc`, `Subb` and
+/// `SubbRev` a carry in; `Rev` operations subtract `src0` from `src1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarryOp {
+    Add,
+    Addc,
+    Sub,
+    Subb,
+    SubRev,
+    SubbRev,
+}
+
+impl CarryOp {
+    /// The result word and the carry out, over concrete words.
+    pub fn apply(self, a: u32, b: u32, carry_in: bool) -> (u32, bool) {
+        let (a, b, c) = (u64::from(a), u64::from(b), u64::from(carry_in));
+        match self {
+            Self::Add | Self::Addc => {
+                let sum = a + b + c;
+                (sum as u32, sum >> 32 != 0)
+            }
+            Self::Sub | Self::Subb => (a.wrapping_sub(b + c) as u32, b + c > a),
+            Self::SubRev | Self::SubbRev => (b.wrapping_sub(a + c) as u32, a + c > b),
+        }
+    }
+}
+
 /// A 16-bit half of a 32-bit word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WordHalf {
@@ -994,6 +1021,16 @@ pub enum LoweredInstr {
         src1: ModifiedSrc,
         mask: LaneMask,
     },
+    /// `dst = op(src0, src1, carry_in)` over concrete words in each active lane, its carry
+    /// out in `carry_out`, whose inactive lanes' bits are cleared.
+    CarryOp32 {
+        op: CarryOp,
+        dst: Vgpr,
+        carry_out: LaneMask,
+        src0: Vop3Src,
+        src1: Vop3Src,
+        carry_in: Option<LaneMask>,
+    },
     /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
     /// carry out of 64 bits in each lane's bit of `carry`.
     MadU64U32 {
@@ -1176,6 +1213,7 @@ impl LoweredInstr {
             Self::CmpE64 { .. } => "v_cmp (e64)",
             Self::CndMask32 { .. } => "v_cndmask_b32",
             Self::CndMask32E64 { .. } => "v_cndmask_b32 (e64)",
+            Self::CarryOp32 { .. } => "vector add/sub with carry",
             Self::MadU64U32 { .. } => "v_mad_u64_u32",
             Self::ShiftAdd64 { .. } => "64-bit vector shift",
             Self::AccvgprWrite32 { .. } => "v_accvgpr_write_b32",
