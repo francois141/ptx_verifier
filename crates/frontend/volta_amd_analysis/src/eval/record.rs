@@ -101,6 +101,17 @@ impl Interpreter<'_> {
                     }
                 }
             }
+            LoweredInstr::DsReadTrB16 { addr, offset, .. } => {
+                for lane in active_lanes(exec) {
+                    let start = self.lds_address(wave, lane, addr, u32::from(offset))?;
+                    for address in self.lds.word_addresses(start, 2)? {
+                        words.push(LdsWord {
+                            address,
+                            source: None,
+                        });
+                    }
+                }
+            }
             LoweredInstr::DsBPermute { .. } => {}
             _ => unreachable!("only DS instructions are issued to the LDS"),
         }

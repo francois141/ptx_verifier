@@ -27,6 +27,7 @@ impl Interpreter<'_> {
                 .into_iter()
                 .flat_map(|(_, destination)| destination.regs().to_vec())
                 .collect(),
+            LoweredInstr::DsReadTrB16 { dst, .. } => dst.to_vec(),
             LoweredInstr::DsWrite { .. } => Vec::new(),
             _ => unreachable!("only DS instructions are issued to the LDS"),
         };

@@ -189,6 +189,7 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::DsWrite { .. }
             | LoweredInstr::DsRead { .. }
+            | LoweredInstr::DsReadTrB16 { .. }
             | LoweredInstr::DsBPermute { .. } => {
                 self.execute_ds(wave, pc, instruction)?;
             }
@@ -394,6 +395,9 @@ impl<'a> Interpreter<'a> {
                 *src_c,
             ),
             LoweredInstr::Permlane32Swap { dst, src } => self.permlane32_swap(wave, *dst, *src),
+            LoweredInstr::DsReadTrB16 { dst, addr, offset } => {
+                self.ds_read_tr_b16(wave, *dst, *addr, *offset)
+            }
             LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses),
             LoweredInstr::DsBPermute {
                 dst,
@@ -809,6 +813,49 @@ impl<'a> Interpreter<'a> {
         )
     }
 
+    /// `ds_read_b64_tr_b16`: each lane receives four bf16 elements, transposed within its group
+    /// of 16 lanes, as two pairs in `dst`. The lane mapping is that of Triton's and FlyDSL's CDNA4
+    /// backends; the ISA requires every lane active.
+    fn ds_read_tr_b16(
+        &mut self,
+        wave: WaveId,
+        dst: [Vgpr; 2],
+        addr: Vgpr,
+        offset: u16,
+    ) -> Result<(), EvalError> {
+        if self.waves[wave].exec != u64::MAX {
+            return Err(EvalError::InactiveLanes);
+        }
+        let addresses = (0..64)
+            .map(|lane| self.lds_address(wave, lane, addr, u32::from(offset)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut loaded = Vec::with_capacity(64);
+        for lane in 0..64 {
+            // Element `e` is the `lane % 4`th 16-bit element at its source lane's address.
+            let mut read_element = |e: usize| {
+                let source = transpose_source_lane(lane, e);
+                let address = addresses[source] + 2 * (lane % 4) as u64;
+                self.lds.read_bf16(&mut self.arena, address, lane)
+            };
+            let first = Word::Bf16 {
+                low: read_element(0)?,
+                high: read_element(1)?,
+            };
+            let second = Word::Bf16 {
+                low: read_element(2)?,
+                high: read_element(3)?,
+            };
+            loaded.push([first, second]);
+        }
+
+        let registers = &mut self.waves[wave].registers;
+        for (lane, words) in loaded.into_iter().enumerate() {
+            registers.start_vector_load(lane, &dst, &words, LoadCounter::Lgkm)?;
+        }
+        Ok(())
+    }
+
     /// Swap lanes 32 to 63 of `dst` with lanes 0 to 31 of `src`, reading every word first.
     fn permlane32_swap(&mut self, wave: WaveId, dst: Vgpr, src: Vgpr) -> Result<(), EvalError> {
         if self.waves[wave].exec != u64::MAX {
@@ -845,6 +892,12 @@ impl<'a> Interpreter<'a> {
             self.global.into_outputs(self.arena),
         )
     }
+}
+
+/// The lane whose address supplies element `e` of `lane` in `ds_read_b64_tr_b16`: lane
+/// `4 * e + (lane % 16) / 4` of `lane`'s group of 16.
+fn transpose_source_lane(lane: usize, e: usize) -> usize {
+    16 * (lane / 16) + 4 * e + (lane % 16) / 4
 }
 
 /// One lane of an instruction that moves or selects a word holding two bf16 halves, or takes one

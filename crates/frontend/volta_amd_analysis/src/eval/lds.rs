@@ -4,6 +4,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use volta_expr::symbolic_full::{ExprArena, ExprId};
+
 use crate::ir::InstrId;
 
 use super::EvalError;
@@ -112,5 +114,25 @@ impl Lds {
             self.words[self.selected].insert(word_address, value);
         }
         Ok(())
+    }
+
+    /// The bf16 half at the 2-byte aligned `address`: the low half of its word when `address` is
+    /// the word's own, else the high half. `lane` names the reader for an error.
+    pub(super) fn read_bf16(
+        &self,
+        arena: &mut ExprArena,
+        address: u64,
+        lane: usize,
+    ) -> Result<ExprId, EvalError> {
+        if !address.is_multiple_of(2) {
+            return Err(EvalError::LdsAccess {
+                address,
+                size: self.size,
+            });
+        }
+        let word_address = address - address % 4;
+        let word = self.read(word_address, 1)?[0];
+        let [low, high] = word.bf16_halves(arena).ok_or(EvalError::NotBf16 { lane })?;
+        Ok(if address == word_address { low } else { high })
     }
 }

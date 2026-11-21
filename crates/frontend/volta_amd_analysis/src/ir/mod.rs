@@ -1068,6 +1068,13 @@ pub enum LoweredInstr {
         addr: Vgpr,
         accesses: LdsAccesses<DsReadDst>,
     },
+    /// A transposing read of 16-bit elements: each lane addresses 8 bytes at its address VGPR
+    /// plus `offset`, and receives four elements gathered across its group of lanes.
+    DsReadTrB16 {
+        dst: [Vgpr; 2],
+        addr: Vgpr,
+        offset: u16,
+    },
     /// Each lane reads `src` from the lane selected by its byte address plus `offset`.
     DsBPermute {
         dst: Vgpr,
@@ -1134,6 +1141,7 @@ impl LoweredInstr {
             Self::Mfma32x32x16Bf16 { .. } => "v_mfma_f32_32x32x16_bf16",
             Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
             Self::Permlane32Swap { .. } => "v_permlane32_swap_b32",
+            Self::DsReadTrB16 { .. } => "ds_read_b64_tr_b16",
             Self::GlobalLoad { .. } => "global_load",
             Self::GlobalStore { .. } => "global_store",
             Self::BufferLoad { .. } => "buffer_load",

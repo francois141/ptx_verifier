@@ -692,6 +692,11 @@ fn lower_as_written(
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
         }),
+        ("ds_read_b64_tr_b16", [dst, addr, modifiers @ ..]) => Ok(DsReadTrB16 {
+            dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            addr: vgpr(addr).ok_or("expected one address VGPR")?,
+            offset: lds_offset(modifiers)?,
+        }),
         ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
             dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
