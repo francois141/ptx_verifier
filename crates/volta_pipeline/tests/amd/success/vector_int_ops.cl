@@ -121,4 +121,16 @@ __kernel void vector_int_ops(__global unsigned *out, unsigned factor, unsigned m
     __asm__ volatile("v_pk_mov_b32 %0, -2, 64" : "=v"(pair));
     row[45] = pair.s0;
     row[46] = pair.s1;
+
+    // v_lshlrev_b64 takes its shift modulo 64, which wraps from lane 34 on; v_lshl_add_u64
+    // shifts by 0 to 4, and its addend carries out of the low word.
+    ulong wide = 0x180000003ul + i, addend = 0xffffffffu - i, shifted, scaled;
+    unsigned shift = (i & 3) + (i >> 5);
+    __asm__ volatile("v_lshlrev_b64 %0, %1, %2" : "=v"(shifted) : "v"(i + 30), "v"(wide));
+    __asm__ volatile("v_lshl_add_u64 %0, %1, %2, %3"
+                     : "=v"(scaled) : "v"(wide), "v"(shift), "v"(addend));
+    row[47] = (unsigned)shifted;
+    row[48] = (unsigned)(shifted >> 32);
+    row[49] = (unsigned)scaled;
+    row[50] = (unsigned)(scaled >> 32);
 }

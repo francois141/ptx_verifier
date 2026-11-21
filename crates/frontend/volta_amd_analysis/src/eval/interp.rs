@@ -225,6 +225,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::LdexpF32 { .. }
             | LoweredInstr::Mov64 { .. }
+            | LoweredInstr::ShiftAdd64 { .. }
             | LoweredInstr::Cmp { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
@@ -418,6 +419,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::UnaryOp { .. }
             | LoweredInstr::LdexpF32 { .. }
             | LoweredInstr::Mov64 { .. }
+            | LoweredInstr::ShiftAdd64 { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
@@ -642,6 +644,36 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::Mov64 { dst, src } => {
                 registers.move_words(&mut self.arena, lane, *dst, *src)
+            }
+            LoweredInstr::ShiftAdd64 {
+                dst,
+                src,
+                shift,
+                addend,
+            } => {
+                let word = |arena: &mut ExprArena, src: Src0| {
+                    let value = registers.read_src0(arena, lane, src)?;
+                    concrete_word(arena, value).ok_or(EvalError::SymbolicWord { lane })
+                };
+                let pair = |arena: &mut ExprArena, [low, high]: [Src0; 2]| {
+                    Ok::<_, EvalError>(
+                        u64::from(word(arena, low)?) | u64::from(word(arena, high)?) << 32,
+                    )
+                };
+                let value = pair(&mut self.arena, *src)?;
+                let shift = registers.read_src(&mut self.arena, lane, *shift)?;
+                let shift =
+                    concrete_word(&self.arena, shift).ok_or(EvalError::SymbolicWord { lane })?;
+                let (shift, addend) = match addend {
+                    Some(_) if shift > 4 => return Err(EvalError::UnsupportedInstruction),
+                    Some(addend) => (shift, pair(&mut self.arena, *addend)?),
+                    None => (shift % 64, 0),
+                };
+                let result = (value << shift).wrapping_add(addend);
+                let low = self.arena.int(i64::from(result as u32));
+                let high = self.arena.int(i64::from((result >> 32) as u32));
+                registers.write_vgpr(lane, dst[0], low)?;
+                registers.write_vgpr(lane, dst[1], high)
             }
             LoweredInstr::F64 { dst, op } => {
                 let result = evaluate_f64_op(&mut self.arena, registers, lane, *op)?;

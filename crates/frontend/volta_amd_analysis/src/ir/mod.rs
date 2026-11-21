@@ -934,6 +934,14 @@ pub enum LoweredInstr {
         dst: [Vgpr; 2],
         src: [Src0; 2],
     },
+    /// `dst = (src << shift) + addend` over concrete unsigned 64-bit words, the shift taken
+    /// modulo 64 (`v_lshlrev_b64` has no addend, `v_lshl_add_u64` a shift of at most 4).
+    ShiftAdd64 {
+        dst: [Vgpr; 2],
+        src: [Src0; 2],
+        shift: Vop3Src,
+        addend: Option<[Src0; 2]>,
+    },
     /// Sets each lane's VCC bit to `src0 op src1`.
     Cmp {
         op: CmpOp,
@@ -1161,6 +1169,7 @@ impl LoweredInstr {
             Self::CndMask32 { .. } => "v_cndmask_b32",
             Self::CndMask32E64 { .. } => "v_cndmask_b32 (e64)",
             Self::MadU64U32 { .. } => "v_mad_u64_u32",
+            Self::ShiftAdd64 { .. } => "64-bit vector shift",
             Self::AccvgprWrite32 { .. } => "v_accvgpr_write_b32",
             Self::AccvgprRead32 { .. } => "v_accvgpr_read_b32",
             Self::FmaF32 { .. } => "v_fma_f32",

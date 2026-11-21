@@ -438,6 +438,18 @@ fn lower_as_written(
         ("v_mbcnt_lo_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MbcntLoU32, operands),
         ("v_mbcnt_hi_u32_b32", operands) => lower_vop3_bin_op(ir::Vop3BinOp::MbcntHiU32, operands),
         ("v_mov_b32_e32", operands) => lower_unary_op(ir::UnaryOp::Mov32, operands),
+        ("v_lshl_add_u64", [dst, src, shift, addend]) => Ok(ShiftAdd64 {
+            dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            src: vop3_words(src)?,
+            shift: vop3_src(shift).ok_or("expected a VGPR, an SGPR or an inline shift")?,
+            addend: Some(vop3_words(addend)?),
+        }),
+        ("v_lshlrev_b64", [dst, shift, src]) => Ok(ShiftAdd64 {
+            dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            src: vop3_words(src)?,
+            shift: vop3_src(shift).ok_or("expected a VGPR, an SGPR or an inline shift")?,
+            addend: None,
+        }),
         ("v_mov_b64_e32", [dst, src]) => Ok(Mov64 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
             src: src0_words(src)?,
@@ -853,6 +865,8 @@ fn lower_as_written(
             | "v_not_b32_e64"
             | "v_cndmask_b32_e64"
             | "v_mad_u64_u32"
+            | "v_lshl_add_u64"
+            | "v_lshlrev_b64"
             | "s_bfe_i64"
             | "buffer_load_dword"
             | "buffer_load_dwordx2"
