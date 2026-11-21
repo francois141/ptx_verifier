@@ -211,6 +211,12 @@ impl Interpreter<'_> {
                 let value = registers.read_vgpr(lane, *src)?;
                 registers.write_sgpr(*dst, value)
             }
+            LoweredInstr::ReadLane { dst, src, lane } => {
+                let lane = self.read_scalar_word(wave, *lane)? as usize % 64;
+                let registers = &mut self.waves[wave].registers;
+                let value = registers.read_vgpr(lane, *src)?;
+                registers.write_sgpr(*dst, value)
+            }
             LoweredInstr::Nop => Ok(()),
             LoweredInstr::WaitCnt { vmcnt, lgkmcnt } => {
                 let scalar_load_in_flight = self.waves[wave]

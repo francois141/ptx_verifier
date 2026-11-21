@@ -890,6 +890,12 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: Vgpr,
     },
+    /// `dst = src` of lane `lane % 64`, whether or not that lane is active.
+    ReadLane {
+        dst: Sgpr,
+        src: Vgpr,
+        lane: ScalarSrc,
+    },
     /// `dst = src0 op src1` in each lane, in either encoding. Only f32 operations take input
     /// modifiers.
     BinOp {
@@ -1141,6 +1147,7 @@ impl LoweredInstr {
             Self::CondBranch { .. } => "s_cbranch",
             Self::Barrier => "s_barrier",
             Self::ReadFirstLane { .. } => "v_readfirstlane_b32",
+            Self::ReadLane { .. } => "v_readlane_b32",
             Self::BinOp { .. } => "vector op",
             Self::TernaryOp { .. } => "vector op (3 sources)",
             Self::Vop3BinOp { .. } => "vector op (e64)",

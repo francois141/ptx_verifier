@@ -197,6 +197,20 @@ __kernel void exec_ops(__global const float *input, __global unsigned *out,
     row[21] = (unsigned)(sum >> 32);
     row[22] = (unsigned)carries;
     row[23] = (unsigned)(carries >> 32);
+
+    // A lane read ignores EXEC: it reads the inactive lane 4, and its SGPR lane index 70 is
+    // taken modulo 64, reading lane 6.
+    unsigned inactive_lane, wrapped_lane;
+    __asm__ volatile(
+        "s_mov_b64 %2, exec\n\t"
+        "s_mov_b64 exec, %3\n\t"
+        "v_readlane_b32 %0, %4, 4\n\t"
+        "v_readlane_b32 %1, %4, %5\n\t"
+        "s_mov_b64 exec, %2"
+        : "=&s"(inactive_lane), "=&s"(wrapped_lane), "=&s"(saved)
+        : "s"(odd), "v"(i + 600), "s"(70u));
+    row[24] = inactive_lane;
+    row[25] = wrapped_lane;
 }
 
 // The odd lanes' global load is still in flight when the wait completes the even lanes' LDS

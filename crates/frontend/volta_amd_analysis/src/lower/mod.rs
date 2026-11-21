@@ -308,6 +308,11 @@ fn lower_as_written(
             target: branch_target(target, labels)?,
         }),
         ("s_barrier", []) => Ok(Barrier),
+        ("v_readlane_b32", [dst, src, lane]) => Ok(ReadLane {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+            lane: scalar_source(lane).ok_or("expected an SGPR or constant lane")?,
+        }),
         ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -842,6 +847,7 @@ fn lower_as_written(
             | "s_cbranch_execnz"
             | "s_barrier"
             | "v_readfirstlane_b32"
+            | "v_readlane_b32"
             | "v_bitop3_b32"
             | "v_mov_b64_e32"
             | "v_not_b32_e64"

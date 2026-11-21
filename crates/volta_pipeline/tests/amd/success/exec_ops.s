@@ -180,10 +180,22 @@ exec_ops:
 	v_mad_u64_u32 v[2:3], s[0:1], v7, v7, v[4:5]
 	s_mov_b64 exec, s[4:5]
 	;;#ASMEND
-	s_nop 0
+	v_add_u32_e32 v0, 0x258, v0
 	v_mov_b32_e32 v4, s0
 	v_mov_b32_e32 v5, s1
 	global_store_dwordx4 v6, v[2:5], s[6:7] offset:80
+	s_movk_i32 s4, 0x46
+	;;#ASMSTART
+	s_mov_b64 s[0:1], exec
+	s_mov_b64 exec, s[2:3]
+	v_readlane_b32 s5, v0, 4
+	v_readlane_b32 s8, v0, s4
+	s_mov_b64 exec, s[0:1]
+	;;#ASMEND
+	s_nop 0
+	v_mov_b32_e32 v0, s5
+	v_mov_b32_e32 v1, s8
+	global_store_dwordx2 v6, v[0:1], s[6:7] offset:96
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -426,10 +438,23 @@ __clang_ocl_kern_imp_exec_ops:
 	v_mad_u64_u32 v[0:1], s[0:1], v4, v4, v[2:3]
 	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
-	s_nop 0
+	s_movk_i32 s2, 0x46
 	v_mov_b32_e32 v2, s0
 	v_mov_b32_e32 v3, s1
 	global_store_dwordx4 v[10:11], v[0:3], off offset:80
+	s_nop 1
+	v_add_u32_e32 v0, 0x258, v6
+	;;#ASMSTART
+	s_mov_b64 s[0:1], exec
+	s_mov_b64 exec, s[4:5]
+	v_readlane_b32 s3, v0, 4
+	v_readlane_b32 s6, v0, s2
+	s_mov_b64 exec, s[0:1]
+	;;#ASMEND
+	s_nop 0
+	v_mov_b32_e32 v0, s3
+	v_mov_b32_e32 v1, s6
+	global_store_dwordx2 v[10:11], v[0:1], off offset:96
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:
