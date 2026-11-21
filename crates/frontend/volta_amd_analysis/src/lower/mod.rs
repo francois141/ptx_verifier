@@ -313,6 +313,36 @@ fn lower_as_written(
             src: vgpr(src).ok_or("expected one source VGPR")?,
             lane: scalar_source(lane).ok_or("expected an SGPR or constant lane")?,
         }),
+        ("v_div_scale_f32", [dst, scaled, src, denominator, numerator]) => {
+            // Over the reals only the first source matters; the others must still be sources.
+            for operand in [denominator, numerator] {
+                modified_src(operand).ok_or("expected a VGPR, an SGPR or an inline constant")?;
+            }
+            Ok(DivScaleF32 {
+                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+                scaled: lane_mask(scaled).ok_or("expected vcc or an aligned SGPR pair")?,
+                src: modified_src(src).ok_or("expected a VGPR, an SGPR or an inline constant")?,
+            })
+        }
+        ("v_div_fmas_f32", [dst, src0, src1, src2]) => {
+            let source = |operand| {
+                modified_src(operand).ok_or("expected a VGPR, an SGPR or an inline constant")
+            };
+            Ok(DivFmasF32 {
+                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+                srcs: [source(src0)?, source(src1)?, source(src2)?],
+            })
+        }
+        ("v_div_fixup_f32", [dst, quotient, denominator, numerator]) => {
+            for operand in [denominator, numerator] {
+                modified_src(operand).ok_or("expected a VGPR, an SGPR or an inline constant")?;
+            }
+            Ok(DivFixupF32 {
+                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+                quotient: modified_src(quotient)
+                    .ok_or("expected a VGPR, an SGPR or an inline constant")?,
+            })
+        }
         ("v_readfirstlane_b32", [dst, src]) => Ok(ReadFirstLane {
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: vgpr(src).ok_or("expected one source VGPR")?,
@@ -881,6 +911,9 @@ fn lower_as_written(
             | "s_barrier"
             | "v_readfirstlane_b32"
             | "v_readlane_b32"
+            | "v_div_scale_f32"
+            | "v_div_fmas_f32"
+            | "v_div_fixup_f32"
             | "v_bitop3_b32"
             | "v_mov_b64_e32"
             | "v_not_b32_e64"

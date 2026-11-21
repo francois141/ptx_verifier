@@ -101,6 +101,20 @@ float_ops:
 	v_max3_f32 v0, -v18, |v19|, v18
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1] offset:112
+	;;#ASMSTART
+	v_div_scale_f32 v1, s[2:3], v19, v19, v18
+	v_div_scale_f32 v2, vcc, v18, v19, v18
+	v_rcp_f32_e32 v3, v1
+	v_fma_f32 v5, -v1, v3, 1.0
+	v_fma_f32 v3, v5, v3, v3
+	v_mul_f32_e32 v4, v2, v3
+	v_fma_f32 v5, -v1, v4, v2
+	v_fma_f32 v4, v5, v3, v4
+	v_fma_f32 v5, -v1, v4, v2
+	v_div_fmas_f32 v4, v5, v3, v4
+	v_div_fixup_f32 v0, v4, v19, v18
+	;;#ASMEND
+	global_store_dword v20, v0, s[0:1] offset:116
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -259,6 +273,20 @@ __clang_ocl_kern_imp_float_ops:
 	v_max3_f32 v0, -v20, |v21|, v20
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off offset:112
+	;;#ASMSTART
+	v_div_scale_f32 v1, s[0:1], v21, v21, v20
+	v_div_scale_f32 v2, vcc, v20, v21, v20
+	v_rcp_f32_e32 v3, v1
+	v_fma_f32 v5, -v1, v3, 1.0
+	v_fma_f32 v3, v5, v3, v3
+	v_mul_f32_e32 v4, v2, v3
+	v_fma_f32 v5, -v1, v4, v2
+	v_fma_f32 v4, v5, v3, v4
+	v_fma_f32 v5, -v1, v4, v2
+	v_div_fmas_f32 v4, v5, v3, v4
+	v_div_fixup_f32 v0, v4, v21, v20
+	;;#ASMEND
+	global_store_dword v[16:17], v0, off offset:116
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:

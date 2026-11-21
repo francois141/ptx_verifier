@@ -393,6 +393,31 @@ fn the_float_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that the IEEE division sequence of float_ops' column 29 is x / y over the reals: the
+// decision procedure proves it equal to column 10, Clang's fast-math quotient, in every lane.
+#[test]
+fn the_ieee_division_sequence_is_the_quotient() {
+    let outputs = common::amd::outputs(
+        "success/float_ops",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array_of("out", 0x30000, 64 * FLOAT_OPS_ROW, ArrayKind::Output(F32)),
+        ],
+    )
+    .unwrap();
+    let mut session = volta_equivalence::EquivSession::new(&outputs.arena, &outputs.arena);
+    for lane in 0..64 {
+        let element = |column| {
+            outputs
+                .element("out", lane * FLOAT_OPS_ROW + column)
+                .unwrap()
+        };
+        let equal = session.check(element(29), element(10));
+        assert!(matches!(equal, Ok(true)), "lane {lane}: {equal:?}");
+    }
+}
+
 // Test that each f32 comparison keeps its symbolic predicate per lane in an SGPR mask,
 // so a select on that mask reads as `(a op b) ? b : a`.
 #[test]

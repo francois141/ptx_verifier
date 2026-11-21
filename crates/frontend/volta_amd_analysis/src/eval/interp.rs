@@ -212,6 +212,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::BitCmpScalar64 { .. }
             | LoweredInstr::ReadFirstLane { .. }
             | LoweredInstr::ReadLane { .. }
+            | LoweredInstr::DivScaleF32 { .. }
             | LoweredInstr::CmpE64 { .. }
             | LoweredInstr::Cmp64 { .. }
             | LoweredInstr::CmpF64 { .. }
@@ -235,6 +236,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
+            | LoweredInstr::DivFmasF32 { .. }
+            | LoweredInstr::DivFixupF32 { .. }
             | LoweredInstr::CvtPkF8F32 { .. }
             | LoweredInstr::F64 { .. }
             | LoweredInstr::CvtToF64 { .. }
@@ -403,6 +406,22 @@ impl<'a> Interpreter<'a> {
                 *src_c,
             ),
             LoweredInstr::Permlane32Swap { dst, src } => self.permlane32_swap(wave, *dst, *src),
+            LoweredInstr::DivScaleF32 { dst, scaled, src } => {
+                let exec = self.waves[wave].exec;
+                let registers = &mut self.waves[wave].registers;
+                let mut values = Vec::new();
+                for lane in active_lanes(exec) {
+                    values.push((
+                        lane,
+                        registers.read_modified_src(&mut self.arena, lane, *src)?,
+                    ));
+                }
+                for (lane, value) in values {
+                    registers.write_vgpr(lane, *dst, value)?;
+                }
+                let clear = vec![self.arena.bool_val(false); 64];
+                registers.write_lane_mask(&mut self.arena, *scaled, &clear)
+            }
             LoweredInstr::CarryOp32 {
                 op,
                 dst,
@@ -439,6 +458,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
             | LoweredInstr::FmacF32 { .. }
+            | LoweredInstr::DivFmasF32 { .. }
+            | LoweredInstr::DivFixupF32 { .. }
             | LoweredInstr::CvtPkF8F32 { .. }
             | LoweredInstr::F64 { .. }
             | LoweredInstr::CvtToF64 { .. }
@@ -720,6 +741,22 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::AccvgprRead32 { dst, src } => {
                 let value = registers.read_agpr(lane, *src)?;
+                registers.write_vgpr(lane, *dst, value)
+            }
+            LoweredInstr::DivFmasF32 { dst, srcs } => {
+                let vcc = registers.read_vcc(lane)?;
+                if self.arena.as_bool(vcc) != Some(false) {
+                    return Err(EvalError::UnsupportedInstruction);
+                }
+                let [a, b, c] = srcs;
+                let a = registers.read_modified_src(&mut self.arena, lane, *a)?;
+                let b = registers.read_modified_src(&mut self.arena, lane, *b)?;
+                let c = registers.read_modified_src(&mut self.arena, lane, *c)?;
+                let result = self.arena.fma(Type::Float(Width(32)), a, b, c);
+                registers.write_vgpr(lane, *dst, result)
+            }
+            LoweredInstr::DivFixupF32 { dst, quotient } => {
+                let value = registers.read_modified_src(&mut self.arena, lane, *quotient)?;
                 registers.write_vgpr(lane, *dst, value)
             }
             LoweredInstr::FmaF32 {

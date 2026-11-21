@@ -86,4 +86,25 @@ __kernel void float_ops(__global const float *a, __global const float *b, __glob
     __asm__ volatile("v_max3_f32 %0, -%1, |%2|, %1"
                      : "=v"(result) : "v"(x), "v"(y));
     row[28] = result;
+
+    // LLVM's IEEE division sequence for x / y, which over the reals scales nothing: the
+    // scales are their first source and clear VCC, so its corrections cancel to x / y.
+    float scaled_y, scaled_x, reciprocal, quotient, error;
+    ulong scaled;
+    __asm__ volatile(
+        "v_div_scale_f32 %1, %6, %8, %8, %7\n\t"
+        "v_div_scale_f32 %2, vcc, %7, %8, %7\n\t"
+        "v_rcp_f32_e32 %3, %1\n\t"
+        "v_fma_f32 %5, -%1, %3, 1.0\n\t"
+        "v_fma_f32 %3, %5, %3, %3\n\t"
+        "v_mul_f32_e32 %4, %2, %3\n\t"
+        "v_fma_f32 %5, -%1, %4, %2\n\t"
+        "v_fma_f32 %4, %5, %3, %4\n\t"
+        "v_fma_f32 %5, -%1, %4, %2\n\t"
+        "v_div_fmas_f32 %4, %5, %3, %4\n\t"
+        "v_div_fixup_f32 %0, %4, %8, %7"
+        : "=&v"(result), "=&v"(scaled_y), "=&v"(scaled_x), "=&v"(reciprocal),
+          "=&v"(quotient), "=&v"(error), "=&s"(scaled)
+        : "v"(x), "v"(y) : "vcc");
+    row[29] = result;
 }

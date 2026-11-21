@@ -931,6 +931,22 @@ pub enum LoweredInstr {
         src: Vgpr,
         lane: ScalarSrc,
     },
+    /// The IEEE f32 division sequence over the reals, where no operand needs rescaling:
+    /// `v_div_scale_f32` is its first source and clears its lane's bit of `scaled`,
+    /// `v_div_fmas_f32` is an fma that requires VCC clear, `v_div_fixup_f32` its quotient.
+    DivScaleF32 {
+        dst: Vgpr,
+        scaled: LaneMask,
+        src: ModifiedSrc,
+    },
+    DivFmasF32 {
+        dst: Vgpr,
+        srcs: [ModifiedSrc; 3],
+    },
+    DivFixupF32 {
+        dst: Vgpr,
+        quotient: ModifiedSrc,
+    },
     /// `dst = src0 op src1` in each lane, in either encoding. Only f32 operations take input
     /// modifiers.
     BinOp {
@@ -1208,6 +1224,9 @@ impl LoweredInstr {
             Self::Barrier => "s_barrier",
             Self::ReadFirstLane { .. } => "v_readfirstlane_b32",
             Self::ReadLane { .. } => "v_readlane_b32",
+            Self::DivScaleF32 { .. } => "v_div_scale_f32",
+            Self::DivFmasF32 { .. } => "v_div_fmas_f32",
+            Self::DivFixupF32 { .. } => "v_div_fixup_f32",
             Self::BinOp { .. } => "vector op",
             Self::TernaryOp { .. } => "vector op (3 sources)",
             Self::Vop3BinOp { .. } => "vector op (e64)",
