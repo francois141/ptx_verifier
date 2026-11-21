@@ -373,6 +373,111 @@ __clang_ocl_kern_imp_workgroup_xyz:
 	.set __clang_ocl_kern_imp_workgroup_xyz.has_dyn_sized_stack, 0
 	.set __clang_ocl_kern_imp_workgroup_xyz.has_recursion, 0
 	.set __clang_ocl_kern_imp_workgroup_xyz.has_indirect_call, 0
+	.protected	workgroup_xyz_user_sgprs
+	.globl	workgroup_xyz_user_sgprs
+	.p2align	8
+	.type	workgroup_xyz_user_sgprs,@function
+workgroup_xyz_user_sgprs:
+	s_load_dwordx2 s[4:5], s[4:5], 0x0
+	v_lshlrev_b32_e32 v0, 2, v0
+	v_mov_b32_e32 v1, s6
+	;;#ASMSTART
+	; s[0:1] s[2:3]
+	;;#ASMEND
+	s_waitcnt lgkmcnt(0)
+	global_store_dword v0, v1, s[4:5]
+	v_mov_b32_e32 v1, s7
+	global_store_dword v0, v1, s[4:5] offset:256
+	v_mov_b32_e32 v1, s8
+	global_store_dword v0, v1, s[4:5] offset:512
+	s_endpgm
+	.section	.rodata,"a",@progbits
+	.p2align	6, 0x0
+	.amdhsa_kernel workgroup_xyz_user_sgprs
+		.amdhsa_group_segment_fixed_size 0
+		.amdhsa_private_segment_fixed_size 0
+		.amdhsa_kernarg_size 264
+		.amdhsa_user_sgpr_count 6
+		.amdhsa_user_sgpr_dispatch_ptr 1
+		.amdhsa_user_sgpr_queue_ptr 1
+		.amdhsa_user_sgpr_kernarg_segment_ptr 1
+		.amdhsa_user_sgpr_dispatch_id 0
+		.amdhsa_user_sgpr_kernarg_preload_length 0
+		.amdhsa_user_sgpr_kernarg_preload_offset 0
+		.amdhsa_user_sgpr_private_segment_size 0
+		.amdhsa_uses_dynamic_stack 0
+		.amdhsa_enable_private_segment 0
+		.amdhsa_system_sgpr_workgroup_id_x 1
+		.amdhsa_system_sgpr_workgroup_id_y 1
+		.amdhsa_system_sgpr_workgroup_id_z 1
+		.amdhsa_system_sgpr_workgroup_info 0
+		.amdhsa_system_vgpr_workitem_id 0
+		.amdhsa_next_free_vgpr 2
+		.amdhsa_next_free_sgpr 9
+		.amdhsa_accum_offset 4
+		.amdhsa_reserve_vcc 0
+		.amdhsa_float_round_mode_32 0
+		.amdhsa_float_round_mode_16_64 0
+		.amdhsa_float_denorm_mode_32 3
+		.amdhsa_float_denorm_mode_16_64 3
+		.amdhsa_dx10_clamp 1
+		.amdhsa_ieee_mode 1
+		.amdhsa_fp16_overflow 0
+		.amdhsa_tg_split 0
+		.amdhsa_exception_fp_ieee_invalid_op 0
+		.amdhsa_exception_fp_denorm_src 0
+		.amdhsa_exception_fp_ieee_div_zero 0
+		.amdhsa_exception_fp_ieee_overflow 0
+		.amdhsa_exception_fp_ieee_underflow 0
+		.amdhsa_exception_fp_ieee_inexact 0
+		.amdhsa_exception_int_div_zero 0
+	.end_amdhsa_kernel
+	.text
+.Lfunc_end8:
+	.size	workgroup_xyz_user_sgprs, .Lfunc_end8-workgroup_xyz_user_sgprs
+
+	.set workgroup_xyz_user_sgprs.num_vgpr, 2
+	.set workgroup_xyz_user_sgprs.num_agpr, 0
+	.set workgroup_xyz_user_sgprs.numbered_sgpr, 9
+	.set workgroup_xyz_user_sgprs.private_seg_size, 0
+	.set workgroup_xyz_user_sgprs.uses_vcc, 0
+	.set workgroup_xyz_user_sgprs.uses_flat_scratch, 0
+	.set workgroup_xyz_user_sgprs.has_dyn_sized_stack, 0
+	.set workgroup_xyz_user_sgprs.has_recursion, 0
+	.set workgroup_xyz_user_sgprs.has_indirect_call, 0
+	.protected	__clang_ocl_kern_imp_workgroup_xyz_user_sgprs
+	.globl	__clang_ocl_kern_imp_workgroup_xyz_user_sgprs
+	.p2align	2
+	.type	__clang_ocl_kern_imp_workgroup_xyz_user_sgprs,@function
+__clang_ocl_kern_imp_workgroup_xyz_user_sgprs:
+	s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)
+	v_and_b32_e32 v2, 0x3ff, v31
+	v_lshlrev_b32_e32 v2, 2, v2
+	v_mov_b32_e32 v3, 0
+	v_lshl_add_u64 v[0:1], v[0:1], 0, v[2:3]
+	v_mov_b32_e32 v2, s12
+	;;#ASMSTART
+	; s[4:5] s[6:7]
+	;;#ASMEND
+	global_store_dword v[0:1], v2, off
+	v_mov_b32_e32 v2, s13
+	global_store_dword v[0:1], v2, off offset:256
+	v_mov_b32_e32 v2, s14
+	global_store_dword v[0:1], v2, off offset:512
+	s_waitcnt vmcnt(0)
+	s_setpc_b64 s[30:31]
+.Lfunc_end9:
+	.size	__clang_ocl_kern_imp_workgroup_xyz_user_sgprs, .Lfunc_end9-__clang_ocl_kern_imp_workgroup_xyz_user_sgprs
+
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.num_vgpr, 32
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.num_agpr, 0
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.numbered_sgpr, 32
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.private_seg_size, 0
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.uses_vcc, 0
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.uses_flat_scratch, 0
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.has_dyn_sized_stack, 0
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.has_recursion, 0
+	.set __clang_ocl_kern_imp_workgroup_xyz_user_sgprs.has_indirect_call, 0
 	.protected	grid_lds_words
 	.globl	grid_lds_words
 	.p2align	8
@@ -460,8 +565,8 @@ grid_lds_words:
 		.amdhsa_exception_int_div_zero 0
 	.end_amdhsa_kernel
 	.text
-.Lfunc_end8:
-	.size	grid_lds_words, .Lfunc_end8-grid_lds_words
+.Lfunc_end10:
+	.size	grid_lds_words, .Lfunc_end10-grid_lds_words
 
 	.set grid_lds_words.num_vgpr, 7
 	.set grid_lds_words.num_agpr, 0
@@ -520,8 +625,8 @@ __clang_ocl_kern_imp_grid_lds_words:
 	global_store_dword v0, v9, s[0:1]
 	;;#ASMEND
 	s_setpc_b64 s[30:31]
-.Lfunc_end9:
-	.size	__clang_ocl_kern_imp_grid_lds_words, .Lfunc_end9-__clang_ocl_kern_imp_grid_lds_words
+.Lfunc_end11:
+	.size	__clang_ocl_kern_imp_grid_lds_words, .Lfunc_end11-__clang_ocl_kern_imp_grid_lds_words
 
 	.set __clang_ocl_kern_imp_grid_lds_words.num_vgpr, 32
 	.set __clang_ocl_kern_imp_grid_lds_words.num_agpr, 0
@@ -595,8 +700,8 @@ grid_vcc_branch:
 		.amdhsa_exception_int_div_zero 0
 	.end_amdhsa_kernel
 	.text
-.Lfunc_end10:
-	.size	grid_vcc_branch, .Lfunc_end10-grid_vcc_branch
+.Lfunc_end12:
+	.size	grid_vcc_branch, .Lfunc_end12-grid_vcc_branch
 
 	.set grid_vcc_branch.num_vgpr, 3
 	.set grid_vcc_branch.num_agpr, 0
@@ -630,8 +735,8 @@ __clang_ocl_kern_imp_grid_vcc_branch:
 	global_store_dword v0, v4, s[0:1]
 	;;#ASMEND
 	s_setpc_b64 s[30:31]
-.Lfunc_end11:
-	.size	__clang_ocl_kern_imp_grid_vcc_branch, .Lfunc_end11-__clang_ocl_kern_imp_grid_vcc_branch
+.Lfunc_end13:
+	.size	__clang_ocl_kern_imp_grid_vcc_branch, .Lfunc_end13-__clang_ocl_kern_imp_grid_vcc_branch
 
 	.set __clang_ocl_kern_imp_grid_vcc_branch.num_vgpr, 32
 	.set __clang_ocl_kern_imp_grid_vcc_branch.num_agpr, 0
@@ -701,8 +806,8 @@ grid_lds_addresses:
 		.amdhsa_exception_int_div_zero 0
 	.end_amdhsa_kernel
 	.text
-.Lfunc_end12:
-	.size	grid_lds_addresses, .Lfunc_end12-grid_lds_addresses
+.Lfunc_end14:
+	.size	grid_lds_addresses, .Lfunc_end14-grid_lds_addresses
 
 	.set grid_lds_addresses.num_vgpr, 2
 	.set grid_lds_addresses.num_agpr, 0
@@ -733,8 +838,8 @@ __clang_ocl_kern_imp_grid_lds_addresses:
 	global_store_dword v3, v2, s[0:1]
 	;;#ASMEND
 	s_setpc_b64 s[30:31]
-.Lfunc_end13:
-	.size	__clang_ocl_kern_imp_grid_lds_addresses, .Lfunc_end13-__clang_ocl_kern_imp_grid_lds_addresses
+.Lfunc_end15:
+	.size	__clang_ocl_kern_imp_grid_lds_addresses, .Lfunc_end15-__clang_ocl_kern_imp_grid_lds_addresses
 
 	.set __clang_ocl_kern_imp_grid_lds_addresses.num_vgpr, 32
 	.set __clang_ocl_kern_imp_grid_lds_addresses.num_agpr, 0
@@ -811,8 +916,8 @@ grid_lds_nan:
 		.amdhsa_exception_int_div_zero 0
 	.end_amdhsa_kernel
 	.text
-.Lfunc_end14:
-	.size	grid_lds_nan, .Lfunc_end14-grid_lds_nan
+.Lfunc_end16:
+	.size	grid_lds_nan, .Lfunc_end16-grid_lds_nan
 
 	.set grid_lds_nan.num_vgpr, 2
 	.set grid_lds_nan.num_agpr, 0
@@ -850,8 +955,8 @@ __clang_ocl_kern_imp_grid_lds_nan:
 	global_store_dword v0, v3, s[0:1]
 	;;#ASMEND
 	s_setpc_b64 s[30:31]
-.Lfunc_end15:
-	.size	__clang_ocl_kern_imp_grid_lds_nan, .Lfunc_end15-__clang_ocl_kern_imp_grid_lds_nan
+.Lfunc_end17:
+	.size	__clang_ocl_kern_imp_grid_lds_nan, .Lfunc_end17-__clang_ocl_kern_imp_grid_lds_nan
 
 	.set __clang_ocl_kern_imp_grid_lds_nan.num_vgpr, 32
 	.set __clang_ocl_kern_imp_grid_lds_nan.num_agpr, 0
@@ -973,6 +1078,73 @@ amdhsa.kernels:
     .sgpr_count:     11
     .sgpr_spill_count: 0
     .symbol:         workgroup_xyz.kd
+    .uniform_work_group_size: 1
+    .uses_dynamic_stack: false
+    .vgpr_count:     2
+    .vgpr_spill_count: 0
+    .wavefront_size: 64
+  - .agpr_count:     0
+    .args:
+      - .address_space:  global
+        .offset:         0
+        .size:           8
+        .type_name:      'uint*'
+        .value_kind:     global_buffer
+      - .offset:         8
+        .size:           4
+        .value_kind:     hidden_block_count_x
+      - .offset:         12
+        .size:           4
+        .value_kind:     hidden_block_count_y
+      - .offset:         16
+        .size:           4
+        .value_kind:     hidden_block_count_z
+      - .offset:         20
+        .size:           2
+        .value_kind:     hidden_group_size_x
+      - .offset:         22
+        .size:           2
+        .value_kind:     hidden_group_size_y
+      - .offset:         24
+        .size:           2
+        .value_kind:     hidden_group_size_z
+      - .offset:         26
+        .size:           2
+        .value_kind:     hidden_remainder_x
+      - .offset:         28
+        .size:           2
+        .value_kind:     hidden_remainder_y
+      - .offset:         30
+        .size:           2
+        .value_kind:     hidden_remainder_z
+      - .offset:         48
+        .size:           8
+        .value_kind:     hidden_global_offset_x
+      - .offset:         56
+        .size:           8
+        .value_kind:     hidden_global_offset_y
+      - .offset:         64
+        .size:           8
+        .value_kind:     hidden_global_offset_z
+      - .offset:         72
+        .size:           2
+        .value_kind:     hidden_grid_dims
+      - .offset:         208
+        .size:           8
+        .value_kind:     hidden_queue_ptr
+    .group_segment_fixed_size: 0
+    .kernarg_segment_align: 8
+    .kernarg_segment_size: 264
+    .language:       OpenCL C
+    .language_version:
+      - 1
+      - 2
+    .max_flat_workgroup_size: 256
+    .name:           workgroup_xyz_user_sgprs
+    .private_segment_fixed_size: 0
+    .sgpr_count:     15
+    .sgpr_spill_count: 0
+    .symbol:         workgroup_xyz_user_sgprs.kd
     .uniform_work_group_size: 1
     .uses_dynamic_stack: false
     .vgpr_count:     2

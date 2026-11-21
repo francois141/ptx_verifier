@@ -165,15 +165,27 @@ pub(crate) fn initialize_waves(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let user_sgprs = setting("user_sgpr_count", 2)?;
+    let user_sgprs = setting("user_sgpr_count", 16)?;
     let workitem_id_mode = setting("system_vgpr_workitem_id", 2)?;
 
-    // The argument pointer needs two user SGPRs when enabled, otherwise none.
-    if user_sgprs != if kernarg_enabled { 2 } else { 0 } {
+    // The ABI's user SGPRs before the argument pointer, then those after it, two each. The
+    // dispatch and queue pointers and the dispatch ID are left unwritten: reading one fails.
+    let enabled = |name: &str| match kernel.descriptor.get(name).copied() {
+        None | Some(0) => Ok(0),
+        Some(1) => Ok(2),
+        Some(value) => Err(EvalError::Launch {
+            message: format!("unsupported .amdhsa_{name} {value}"),
+        }),
+    };
+    let before_kernarg = enabled("user_sgpr_dispatch_ptr")? + enabled("user_sgpr_queue_ptr")?;
+    let after_kernarg = enabled("user_sgpr_dispatch_id")?;
+    let kernarg_sgprs = if kernarg_enabled { 2 } else { 0 };
+    if user_sgprs != before_kernarg + kernarg_sgprs + after_kernarg {
         return Err(EvalError::Launch {
-            message: ".amdhsa_user_sgpr_count must match the enabled kernarg pointer".into(),
+            message: ".amdhsa_user_sgpr_count must match the enabled user SGPRs".into(),
         });
     }
+    let kernarg_sgpr = before_kernarg as u8;
 
     if kernarg_enabled && !launch.kernarg_address.is_multiple_of(16) {
         return Err(EvalError::Launch {
@@ -186,11 +198,11 @@ pub(crate) fn initialize_waves(
         // Initialize scalar registers with the requested launch inputs.
         let mut registers = WaveRegisters::default();
         if kernarg_enabled {
-            // Split the 64-bit address across s0 (low word) and s1 (high word).
+            // Split the 64-bit address across two SGPRs, the low word first.
             let low = arena.int((launch.kernarg_address & u64::from(u32::MAX)) as i64);
             let high = arena.int((launch.kernarg_address >> 32) as i64);
-            registers.write_sgpr(Sgpr(0), low)?;
-            registers.write_sgpr(Sgpr(1), high)?;
+            registers.write_sgpr(Sgpr(kernarg_sgpr), low)?;
+            registers.write_sgpr(Sgpr(kernarg_sgpr + 1), high)?;
         }
 
         // Each enabled workgroup ID follows the user registers; disabled axes take no register.
@@ -222,6 +234,9 @@ fn reject_unsupported_inputs(descriptor: &BTreeMap<String, u64>) -> Result<(), E
         let unsupported = match setting.as_str() {
             // Read and checked by `initialize_waves`.
             "user_sgpr_count"
+            | "user_sgpr_dispatch_ptr"
+            | "user_sgpr_queue_ptr"
+            | "user_sgpr_dispatch_id"
             | "user_sgpr_kernarg_segment_ptr"
             | "system_sgpr_workgroup_id_x"
             | "system_sgpr_workgroup_id_y"
@@ -229,7 +244,7 @@ fn reject_unsupported_inputs(descriptor: &BTreeMap<String, u64>) -> Result<(), E
             // Loads nothing without a preload length, which the last arm rejects.
             "user_sgpr_kernarg_preload_offset" => false,
             "enable_private_segment" | "wavefront_size32" => true,
-            // Every other SGPR input, such as the dispatch pointer or workgroup info.
+            // Every other SGPR input, such as the private segment buffer or workgroup info.
             other => other.starts_with("user_sgpr_") || other.starts_with("system_sgpr_"),
         };
         if unsupported && value != 0 {

@@ -20,11 +20,12 @@ use volta_graph_check::{GraphConclusion, check_graph};
 // Test nonzero X/Y/Z coordinates in every lane, including descriptors with unused axes.
 #[test]
 fn workgroup_ids_follow_the_kernel_descriptor() {
-    let cases: [(&str, &[u32]); 4] = [
+    let cases: [(&str, &[u32]); 5] = [
         ("workgroup_x", &[2]),
         ("workgroup_y", &[3]),
         ("workgroup_z", &[5]),
         ("workgroup_xyz", &[2, 3, 5]),
+        ("workgroup_xyz_user_sgprs", &[2, 3, 5]),
     ];
     for (name, expected) in cases {
         let actual = run_workgroup_id_kernel(name).verified_outputs();

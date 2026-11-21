@@ -22,6 +22,17 @@ __kernel void workgroup_xyz(__global unsigned *out) {
     out[i + 128] = __builtin_amdgcn_workgroup_id_z();
 }
 
+// The dispatch and queue pointers take the first four user SGPRs, which moves the argument
+// pointer and the workgroup IDs after them.
+__kernel void workgroup_xyz_user_sgprs(__global unsigned *out) {
+    __asm__ volatile("; %0 %1"
+        : : "s"(__builtin_amdgcn_dispatch_ptr()), "s"(__builtin_amdgcn_queue_ptr()));
+    unsigned i = __builtin_amdgcn_workitem_id_x();
+    out[i] = __builtin_amdgcn_workgroup_id_x();
+    out[i + 64] = __builtin_amdgcn_workgroup_id_y();
+    out[i + 128] = __builtin_amdgcn_workgroup_id_z();
+}
+
 // Keep global stores in the supported SGPR-base form. Reading each base word from
 // lane 0 also keeps it scalar in Clang's callable helper; kernel arguments are uniform.
 #define STORE_WORD(base, index, value) do { \
