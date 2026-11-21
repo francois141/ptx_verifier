@@ -387,6 +387,7 @@ fn lower_as_written(
         ("v_bfi_b32", operands) => lower_ternary_op(ir::TernaryOp::Bfi32, operands),
         ("v_bfe_i32", operands) => lower_ternary_op(ir::TernaryOp::BfeI32, operands),
         ("v_alignbit_b32", operands) => lower_ternary_op(ir::TernaryOp::AlignBit32, operands),
+        ("v_perm_b32", operands) => lower_ternary_op(ir::TernaryOp::Perm32, operands),
         ("v_alignbyte_b32", operands) => lower_ternary_op(ir::TernaryOp::AlignByte32, operands),
         ("v_mad_u32_u24", operands) => lower_ternary_op(ir::TernaryOp::MadU32U24, operands),
         ("v_mad_i32_i24", operands) => lower_ternary_op(ir::TernaryOp::MadI32I24, operands),

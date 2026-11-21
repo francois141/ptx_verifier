@@ -602,6 +602,9 @@ pub enum TernaryOp {
     AlignBit32,
     /// The low word of the 64-bit `src0:src1` shifted right by `src2 & 3` bytes.
     AlignByte32,
+    /// Each result byte chosen from the 64-bit `src0:src1` by a byte of `src2`: 0 to 7 name
+    /// its bytes, low first, and 12 a zero byte.
+    Perm32,
     /// The low word of `MulU32U24`'s product plus `src2`.
     MadU32U24,
     /// The low word of `MulI32I24`'s product plus `src2`.

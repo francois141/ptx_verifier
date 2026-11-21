@@ -445,6 +445,9 @@ pub(super) fn evaluate_ternary_op(
             let amount = arena.mul(U32, bytes, eight);
             align(arena, a, b, amount)
         }
+        TernaryOp::Perm32 => {
+            fold_concrete_words(arena, lane, [a, b, c], |[a, b, c]| perm32(a, b, c))?
+        }
         TernaryOp::MadU32U24 => fold_concrete_words(arena, lane, [a, b, c], |[a, b, c]| {
             (mul_u24(a, b) as u32).wrapping_add(c)
         })?,
@@ -891,6 +894,24 @@ fn compare(
         CmpOp::GeF32 => arena.ge(F32, a, b),
         CmpOp::EqF32 => arena.eq(F32, a, b),
         CmpOp::LgF32 => arena.ne(F32, a, b),
+    })
+}
+
+/// `v_perm_b32`: each result byte chosen by a selector byte from the 64-bit `high:low`
+/// (0 to 7), a sign byte of its odd bytes (8 to 11), zero (12) or all ones (13 and above).
+pub(super) fn perm32(high: u32, low: u32, selectors: u32) -> u32 {
+    let bytes = (u64::from(high) << 32) | u64::from(low);
+    (0..4).fold(0, |word, i| {
+        let byte = match (selectors >> (8 * i)) as u8 {
+            sel @ 0..=7 => (bytes >> (8 * sel)) as u8,
+            sel @ 8..=11 => {
+                let sign = bytes >> (16 * u32::from(sel - 8) + 15) & 1;
+                if sign == 1 { 0xff } else { 0 }
+            }
+            12 => 0,
+            _ => 0xff,
+        };
+        word | (u32::from(byte) << (8 * i))
     })
 }
 
