@@ -9,7 +9,9 @@ kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
 `composable_kernel/<case>.launch.json` naming its spec, CK's activations under
 `composable_kernel/activations*/`; PyTorch's continuous piecewise activations are likewise in
 `external/activation/`, the cases named `activation/<case>`, compiled for AMD and, as
-`activation/<case>_ptx`, from CUDA to PTX. Each case prints one line when it finishes: PASS if its
+`activation/<case>_ptx`, from CUDA to PTX. Triton's tutorial kernels, compiled for gfx950, are in
+`triton/`, the cases named `triton/<case>`. Each case prints one line when it finishes: PASS
+if its
 kernel verified (ACCEPT, or every output proved in Lean), else FAIL, noting when a verdict
 other than ACCEPT is the case's expected one, such as a known bug's REJECT. `--verbose` also
 prints Volta's log of each case as it runs, then a summary.
@@ -40,6 +42,7 @@ import volta
 AMD_ROOT = Path(__file__).resolve().parent
 CK_ROOT = AMD_ROOT / "composable_kernel"
 ACTIVATION_ROOT = AMD_ROOT.parent / "activation"
+TRITON_ROOT = AMD_ROOT / "triton"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
@@ -115,6 +118,9 @@ PIECEWISE = (
     "celu",
     "selu",
 )
+
+# Triton's tutorial kernels.
+TRITON = ("vector_add", "softmax", "matmul", "matmul_leaky_relu", "layer_norm")
 
 CASES = (
     Case("ck_gemm", "ck_gemm", Solve("ACCEPT")),
@@ -215,6 +221,7 @@ CASES = (
     # PTX.
     *(Case(op, op, Solve("ACCEPT"), ACTIVATION_ROOT) for op in PIECEWISE),
     *(Case(f"{op}_ptx", op, Solve("ACCEPT"), ACTIVATION_ROOT, ".ptx") for op in PIECEWISE),
+    *(Case(kernel, kernel, Solve("ACCEPT"), TRITON_ROOT) for kernel in TRITON),
 )
 
 
@@ -229,7 +236,9 @@ class Launch:
 def load_launch(path: Path) -> Launch:
     launch = json.loads(path.read_text(encoding="utf-8"))
     config = volta.Config(
-        block=dims3(launch["block"]), grid=dims3(launch.get("grid", 1))
+        block=dims3(launch["block"]),
+        grid=dims3(launch.get("grid", 1)),
+        dynamic_shared_bytes=launch.get("dynamic_shared_bytes", 0),
     )
 
     next_base = ARRAY_ALIGN

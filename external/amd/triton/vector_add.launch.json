@@ -1,0 +1,76 @@
+{
+  "description": "Triton vector addition tutorial, 4096 elements in blocks of 1024, workgroup 0's block",
+  "kernel": "add_kernel",
+  "grid": [
+    4,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {
+      "name": "x",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        4096
+      ]
+    },
+    {
+      "name": "y",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        4096
+      ]
+    },
+    {
+      "name": "output",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        1024
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "x_ptr",
+      "ptr": "x"
+    },
+    {
+      "name": "y_ptr",
+      "ptr": "y"
+    },
+    {
+      "name": "output_ptr",
+      "ptr": "output"
+    },
+    {
+      "name": "global_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (high word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (high word, null)",
+      "int": 0
+    }
+  ],
+  "spec": "vector_add.spec",
+  "dims": {
+    "N": 4096,
+    "B": 1024
+  }
+}

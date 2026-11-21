@@ -1,0 +1,66 @@
+{
+  "description": "Triton fused softmax tutorial, 4 rows of 100 columns in 128-lane blocks, one workgroup looping over every row",
+  "kernel": "softmax_kernel",
+  "grid": [
+    1,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 8,
+  "arrays": [
+    {
+      "name": "x",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        4,
+        100
+      ]
+    },
+    {
+      "name": "output",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        4,
+        100
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "output_ptr",
+      "ptr": "output"
+    },
+    {
+      "name": "input_ptr",
+      "ptr": "x"
+    },
+    {
+      "name": "global_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (high word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (high word, null)",
+      "int": 0
+    }
+  ],
+  "spec": "softmax.spec",
+  "dims": {
+    "R": 4,
+    "C": 100
+  }
+}

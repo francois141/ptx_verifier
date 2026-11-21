@@ -1,0 +1,123 @@
+{
+  "description": "Triton layer normalization tutorial's forward pass, 4 rows of 100 columns in 64-lane blocks, eps f32(1e-5), workgroup 0's row",
+  "kernel": "layer_norm_fwd_kernel",
+  "grid": [
+    4,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {
+      "name": "x",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        4,
+        100
+      ]
+    },
+    {
+      "name": "y",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        1,
+        100
+      ]
+    },
+    {
+      "name": "w",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        100
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        100
+      ]
+    },
+    {
+      "name": "mean",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        1
+      ]
+    },
+    {
+      "name": "rstd",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        1
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "X",
+      "ptr": "x"
+    },
+    {
+      "name": "Y",
+      "ptr": "y"
+    },
+    {
+      "name": "W",
+      "ptr": "w"
+    },
+    {
+      "name": "B",
+      "ptr": "b"
+    },
+    {
+      "name": "Mean",
+      "ptr": "mean"
+    },
+    {
+      "name": "Rstd",
+      "ptr": "rstd"
+    },
+    {
+      "name": "eps (f32 1e-5)",
+      "float": 9.999999747378752e-06
+    },
+    {
+      "name": "padding",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (high word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (high word, null)",
+      "int": 0
+    }
+  ],
+  "spec": "layer_norm.spec",
+  "dims": {
+    "M": 4,
+    "R": 1,
+    "N": 100
+  }
+}

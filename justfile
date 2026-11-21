@@ -189,6 +189,11 @@ opencl_lean *args:
 piecewise *args:
     uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} activation/
 
+# `--verbose` prints each case's log.
+# Check Triton's tutorial kernels in external/amd/triton against their specs
+triton *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} triton/
+
 # ===== Trainium ===============================================================
 
 # Release, since attention v2 against its spec takes a minute in debug; VOLTA_BLESS=1 rewrites the snapshots.

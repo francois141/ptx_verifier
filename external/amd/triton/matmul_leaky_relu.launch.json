@@ -1,0 +1,81 @@
+{
+  "description": "Triton matrix multiplication tutorial, fp32, leaky_relu after the K loop; M=128, N=64, K=64, workgroup 0's 32x64 tile of C",
+  "kernel": "matmul_kernel",
+  "grid": [
+    4,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 6144,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        128,
+        64
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        64,
+        64
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        32,
+        64
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "a_ptr",
+      "ptr": "a"
+    },
+    {
+      "name": "b_ptr",
+      "ptr": "b"
+    },
+    {
+      "name": "c_ptr",
+      "ptr": "c"
+    },
+    {
+      "name": "global_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (high word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (high word, null)",
+      "int": 0
+    }
+  ],
+  "spec": "matmul_leaky_relu.spec",
+  "dims": {
+    "M": 128,
+    "N": 64,
+    "K": 64,
+    "TM": 32
+  }
+}
