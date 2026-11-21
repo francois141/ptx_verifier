@@ -475,6 +475,9 @@ pub enum AsyncOpKind {
     /// LDS performs one wave's DS instructions in issue order: each one's effects follow those
     /// of the wave's earlier ones, and its completion implies theirs.
     Ds,
+    /// An AMD buffer load to LDS: its LDS writes, completed by its wave's `s_waitcnt vmcnt`.
+    /// Unlike DS instructions, nothing orders it with the wave's DS accesses but that wait.
+    LdsLoad,
 }
 
 impl AsyncOpKind {
@@ -491,6 +494,7 @@ impl AsyncOpKind {
             AsyncOpKind::Tcgen05St => "tcgen05.st",
             AsyncOpKind::WgmmaMma { .. } => "wgmma.mma_async",
             AsyncOpKind::Ds => "ds",
+            AsyncOpKind::LdsLoad => "buffer_load (to LDS)",
         }
     }
 }

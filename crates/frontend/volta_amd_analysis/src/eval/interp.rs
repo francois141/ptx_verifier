@@ -193,6 +193,9 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::DsBPermute { .. } => {
                 self.execute_ds(wave, pc, instruction)?;
             }
+            LoweredInstr::BufferLoadLds { width, address } => {
+                self.execute_buffer_load_lds(wave, pc, *width, *address)?;
+            }
             // Every other instruction computes register values or accesses global memory.
             LoweredInstr::ScalarLoad { .. }
             | LoweredInstr::MovScalar32 { .. }
@@ -428,6 +431,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::GlobalStore { .. }
             | LoweredInstr::BufferLoad { .. }
             | LoweredInstr::BufferStore { .. }
+            | LoweredInstr::BufferLoadLds { .. }
             | LoweredInstr::CvtPkBf16F32 { .. }
             | LoweredInstr::DsRead { .. } => {
                 for lane in active_lanes(self.waves[wave].exec) {
@@ -608,6 +612,9 @@ impl<'a> Interpreter<'a> {
                 let low = registers.read_modified_src(&mut self.arena, lane, srcs[0])?;
                 let high = registers.read_modified_src(&mut self.arena, lane, srcs[1])?;
                 registers.write_vgpr_word(lane, *dst, Word::Bf16 { low, high })
+            }
+            LoweredInstr::BufferLoadLds { width, address } => {
+                self.buffer_load_lds(wave, lane, *width, *address)
             }
             LoweredInstr::TernaryOp { op, dst, srcs } => {
                 let result = evaluate_ternary_op(&mut self.arena, registers, lane, *op, *srcs)?;

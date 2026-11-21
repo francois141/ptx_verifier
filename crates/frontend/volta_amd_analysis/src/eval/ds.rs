@@ -2,7 +2,7 @@
 //! `lgkmcnt` queue, which `Interpreter::wait_lgkm` completes. Their data moves at issue; a read's
 //! or lane exchange's destinations stay pending until it completes.
 
-use crate::ir::{InstrId, LoweredInstr, Vgpr};
+use crate::ir::{BufferAddress, BufferLdsWidth, InstrId, LoweredInstr, Vgpr};
 
 use super::wave::{LgkmInFlight, LoadCounter, WaveId, active_lanes, lane_bit};
 use super::word::Word;
@@ -68,6 +68,38 @@ impl Interpreter<'_> {
 
         for (lane, value) in values {
             registers.start_vector_load(lane, &[dst], &[value], LoadCounter::Lgkm)?;
+        }
+        Ok(())
+    }
+
+    /// Issue a buffer load to LDS for the active lanes of `wave`: its LDS words enter the event
+    /// graph, then each workgroup's data lands at issue, and each lane counts it under `vmcnt`.
+    pub(super) fn execute_buffer_load_lds(
+        &mut self,
+        wave: WaveId,
+        pc: InstrId,
+        width: BufferLdsWidth,
+        address: BufferAddress,
+    ) -> Result<(), EvalError> {
+        let instruction = LoweredInstr::BufferLoadLds { width, address };
+        self.execute_each_workgroup(wave, &instruction)?;
+        // The graph records the first workgroup's words, as it does for DS writes.
+        self.lds.select(0);
+        let exec = self.waves[wave].exec;
+        let mut writes = Vec::new();
+        for lane in active_lanes(exec) {
+            let start = self.lds_load_address(wave, lane, width)?;
+            let addresses = self.lds.word_addresses(start, width.words())?;
+            let words = self.lds.read(start, width.words())?;
+            writes.extend(
+                addresses
+                    .into_iter()
+                    .zip(words.into_iter().map(Word::stored)),
+            );
+        }
+        let op = self.record_lds_load_issue(wave, pc, writes);
+        for lane in active_lanes(exec) {
+            self.waves[wave].registers.start_lds_load(lane, op);
         }
         Ok(())
     }

@@ -60,8 +60,10 @@ pub enum Operand {
     Vcc,
     /// The mask of the wave's active lanes.
     Exec,
-    /// The scalar register M0.
+    /// The scalar register M0, which holds an LDS address for loads to LDS.
     M0,
+    /// A buffer load's `lds` flag: the data goes to LDS at M0 rather than to VGPRs.
+    Lds,
     /// A lane-permute's `bound_ctrl:1` flag.
     BoundCtrl,
     /// A branch target.

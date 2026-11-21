@@ -168,14 +168,22 @@ pub(super) enum LoadCounter {
     Lgkm,
 }
 
-/// One lane's vector and accumulation registers, its VCC bit as a boolean expression, and the
-/// destinations of each of its `vmcnt` loads still pending, oldest first; only VGPRs are loaded.
+/// One lane's vector and accumulation registers, its VCC bit as a boolean expression, and each
+/// of its `vmcnt` loads still pending, oldest first.
 #[derive(Debug, Clone)]
 struct LaneRegisters {
     values: [VectorValue; 256],
     accumulators: [Option<ExprId>; 256],
     vcc: Option<ExprId>,
-    pending_loads: VecDeque<Vec<Vgpr>>,
+    pending_loads: VecDeque<VmLoad>,
+}
+
+/// A lane's pending `vmcnt` load: the VGPRs it writes, or the event graph's operation of a load
+/// to LDS, which completes once no lane that issued it has it pending.
+#[derive(Debug, Clone, PartialEq)]
+enum VmLoad {
+    Registers(Vec<Vgpr>),
+    Lds(AsyncOpId),
 }
 
 // Initialize the wave with all registers unwritten.
@@ -1175,14 +1183,24 @@ impl WaveRegisters {
         for (&reg, &value) in dst.iter().zip(values) {
             self.set_vector(lane, reg, VectorValue::Word(RegValue::Pending(value)));
         }
-        // A repeated execution for a later workgroup issues the load the first one counted.
-        if counter == LoadCounter::Vm
-            && !self.repeat
-            && let Some(registers) = self.vector.get_mut(lane)
-        {
-            registers.pending_loads.push_back(dst.to_vec());
+        if counter == LoadCounter::Vm {
+            self.count_vm_load(lane, VmLoad::Registers(dst.to_vec()));
         }
         Ok(())
+    }
+
+    /// Count `lane`'s load to LDS, the event graph's `op`, among its `vmcnt` loads.
+    pub(super) fn start_lds_load(&mut self, lane: usize, op: AsyncOpId) {
+        self.count_vm_load(lane, VmLoad::Lds(op));
+    }
+
+    fn count_vm_load(&mut self, lane: usize, load: VmLoad) {
+        // A repeated execution for a later workgroup issues the load the first one counted.
+        if !self.repeat
+            && let Some(registers) = self.vector.get_mut(lane)
+        {
+            registers.pending_loads.push_back(load);
+        }
     }
 
     /// Store the word of each register of `src` to consecutive addresses.
@@ -1217,22 +1235,43 @@ impl WaveRegisters {
         self.assign(slot, Stored::Vector(value));
     }
 
-    /// Wait until at most `outstanding` `vmcnt` loads are in flight per lane. Loads return in
-    /// issue order, so the most recent stay pending; counting neither stores nor the loads EXEC
-    /// kept from a lane keeps more loads pending than the hardware does.
-    pub(super) fn finish_vm_loads(&mut self, outstanding: usize) {
+    /// Wait until at most `outstanding` `vmcnt` loads are in flight per lane, returning the
+    /// loads to LDS this completed in every lane, in issue order. Loads return in issue order,
+    /// so the most recent stay pending; counting neither stores nor the loads EXEC kept from a
+    /// lane keeps more loads pending than the hardware does.
+    pub(super) fn finish_vm_loads(&mut self, outstanding: usize) -> Vec<AsyncOpId> {
+        let mut lds_loads = Vec::new();
         for lane in 0..self.vector.len() {
-            let completed: Vec<Vec<Vgpr>> = match self.vector.get_mut(lane) {
+            let completed: Vec<VmLoad> = match self.vector.get_mut(lane) {
                 Some(registers) => {
                     let count = registers.pending_loads.len().saturating_sub(outstanding);
                     registers.pending_loads.drain(..count).collect()
                 }
                 None => Vec::new(),
             };
-            for reg in completed.into_iter().flatten() {
-                self.finish_slot(vector_slot(lane, reg));
+            for load in completed {
+                match load {
+                    VmLoad::Registers(dst) => {
+                        for reg in dst {
+                            self.finish_slot(vector_slot(lane, reg));
+                        }
+                    }
+                    VmLoad::Lds(op) => {
+                        if !lds_loads.contains(&op) {
+                            lds_loads.push(op);
+                        }
+                    }
+                }
             }
         }
+        let still_pending = |op: AsyncOpId| {
+            self.vector
+                .iter()
+                .any(|lane| lane.pending_loads.contains(&VmLoad::Lds(op)))
+        };
+        lds_loads.retain(|&op| !still_pending(op));
+        lds_loads.sort();
+        lds_loads
     }
 
     /// A completed DS read or lane exchange makes `dst` readable in `lanes`, the lanes that ran

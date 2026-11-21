@@ -700,6 +700,18 @@ fn lower_as_written(
             addr: vgpr(addr).ok_or("expected one address VGPR")?,
             offset: lds_offset(modifiers)?,
         }),
+        ("buffer_load_dword", [vaddr, rsrc, soffset, modifiers @ .., Operand::Lds]) => {
+            Ok(BufferLoadLds {
+                width: ir::BufferLdsWidth::Dword,
+                address: buffer_lds_address(vaddr, rsrc, soffset, modifiers)?,
+            })
+        }
+        ("buffer_load_dwordx4", [vaddr, rsrc, soffset, modifiers @ .., Operand::Lds]) => {
+            Ok(BufferLoadLds {
+                width: ir::BufferLdsWidth::Dwordx4,
+                address: buffer_lds_address(vaddr, rsrc, soffset, modifiers)?,
+            })
+        }
         ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
             dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
@@ -1581,6 +1593,21 @@ fn buffer_address(
         soffset,
         imm_offset,
     })
+}
+
+/// A load to LDS whose immediate offset is zero: whether the hardware also adds it to the LDS
+/// address is not modeled.
+fn buffer_lds_address(
+    vaddr: &Operand,
+    rsrc: &Operand,
+    soffset: &Operand,
+    modifiers: &[Operand],
+) -> Result<BufferAddress, &'static str> {
+    let address = buffer_address(vaddr, rsrc, soffset, modifiers)?;
+    if address.imm_offset != BufferImmOffset::ZERO {
+        return Err("expected no immediate offset on a load to LDS");
+    }
+    Ok(address)
 }
 
 #[derive(Debug, Clone, Copy)]

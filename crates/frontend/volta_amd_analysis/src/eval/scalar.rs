@@ -224,7 +224,9 @@ impl Interpreter<'_> {
                 }
                 if let Some(outstanding) = vmcnt {
                     let registers = &mut self.waves[wave].registers;
-                    registers.finish_vm_loads(usize::from(*outstanding));
+                    let lds_loads = registers.finish_vm_loads(usize::from(*outstanding));
+                    let pc = self.waves[wave].pc;
+                    self.record_vm_wait(wave, pc, usize::from(*outstanding), &lds_loads);
                 }
                 if let Some(outstanding) = lgkmcnt {
                     let pc = self.waves[wave].pc;

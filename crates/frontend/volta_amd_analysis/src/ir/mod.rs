@@ -349,6 +349,22 @@ pub struct BufferAddress {
     pub imm_offset: BufferImmOffset,
 }
 
+/// The words each lane of a buffer load to LDS moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferLdsWidth {
+    Dword,
+    Dwordx4,
+}
+
+impl BufferLdsWidth {
+    pub fn words(self) -> u32 {
+        match self {
+            Self::Dword => 1,
+            Self::Dwordx4 => 4,
+        }
+    }
+}
+
 /// A MUBUF instruction's unsigned 12-bit immediate byte offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferImmOffset(u16);
@@ -1063,6 +1079,12 @@ pub enum LoweredInstr {
         src: BufferStoreSrc,
         address: BufferAddress,
     },
+    /// Each active lane loads `width` words as `BufferLoad` does and writes them to LDS at
+    /// `M0 + 4 * words * lane` instead of to VGPRs; `vmcnt` counts it.
+    BufferLoadLds {
+        width: BufferLdsWidth,
+        address: BufferAddress,
+    },
     /// The accesses write in order, so the second of two overlapping ones wins.
     DsWrite {
         addr: Vgpr,
@@ -1146,6 +1168,7 @@ impl LoweredInstr {
             Self::Mfma32x32x16Bf16 { .. } => "v_mfma_f32_32x32x16_bf16",
             Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
             Self::Permlane32Swap { .. } => "v_permlane32_swap_b32",
+            Self::BufferLoadLds { .. } => "buffer_load (to LDS)",
             Self::DsReadTrB16 { .. } => "ds_read_b64_tr_b16",
             Self::GlobalLoad { .. } => "global_load",
             Self::GlobalStore { .. } => "global_store",

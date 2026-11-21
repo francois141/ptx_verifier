@@ -1,7 +1,7 @@
 //! Raw buffer loads and stores for a single lane.
 //! A buffer resource defines the base address and bounds of each access to global memory.
 
-use crate::ir::{BufferAddress, LaneReg, ScalarSrc, Sgpr, Vgpr};
+use crate::ir::{BufferAddress, BufferLdsWidth, LaneReg, ScalarSrc, Sgpr, Vgpr};
 
 use super::wave::{LoadCounter, WaveId};
 use super::word::Word;
@@ -126,6 +126,38 @@ impl Interpreter<'_> {
                 .collect(),
             BufferRange::Outside => Ok(vec![Word::Value(self.arena.int(0)); word_count as usize]),
         }
+    }
+
+    /// The LDS byte address of `lane`'s words in a load to LDS: `M0[17:0]` plus the lane's share
+    /// (CDNA4 ISA §9.1.9).
+    pub(super) fn lds_load_address(
+        &self,
+        wave: WaveId,
+        lane: usize,
+        width: BufferLdsWidth,
+    ) -> Result<u64, EvalError> {
+        let m0 = self.waves[wave]
+            .registers
+            .read_sgpr_word(&self.arena, Sgpr::M0)?;
+        let lane_bytes = match width {
+            BufferLdsWidth::Dword => 4,
+            BufferLdsWidth::Dwordx4 => 16,
+        };
+        Ok(u64::from(m0 & 0x3ffff) + lane_bytes * lane as u64)
+    }
+
+    /// Write `lane`'s words of a load to LDS, which lands at issue; the event graph orders its
+    /// readers after the `vmcnt` wait that completes it.
+    pub(super) fn buffer_load_lds(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        width: BufferLdsWidth,
+        address: BufferAddress,
+    ) -> Result<(), EvalError> {
+        let words = self.buffer_words(wave, lane, address, u64::from(width.words()))?;
+        let lds_address = self.lds_load_address(wave, lane, width)?;
+        self.lds.write(lds_address, &words)
     }
 
     /// Store the word of each register of `src`; a store outside the buffer is dropped.

@@ -4,7 +4,7 @@
 
 use volta_graph::{
     AsyncOpId, AsyncOpKind, BarrierArrivals, BarrierWait, Effect, Footprint, GroupWait,
-    OperandRole, OrdinaryAccess, ProgramPoint, Proxy, Space, ThreadIx,
+    OperandRole, OrdinaryAccess, ProgramPoint, Proxy, Space, StoredValue, ThreadIx,
 };
 
 use crate::ir::{InstrId, LaneReg, LoweredInstr};
@@ -141,6 +141,39 @@ impl Interpreter<'_> {
     }
 }
 
+// ===== Record loads to LDS =====
+// Each buffer load to LDS is an async operation over the LDS words its active lanes write.
+
+impl Interpreter<'_> {
+    /// `wave` issues the load to LDS at `pc`: an async operation writing each active lane's
+    /// words, completed by a later `s_waitcnt vmcnt`. Its stored values are the first
+    /// workgroup's, as the event graph's are for DS writes.
+    pub(super) fn record_lds_load_issue(
+        &mut self,
+        wave: WaveId,
+        pc: InstrId,
+        writes: Vec<(u32, StoredValue)>,
+    ) -> AsyncOpId {
+        let op = self
+            .graph
+            .async_issue(thread(wave), point(pc), AsyncOpKind::LdsLoad);
+        for (address, stored) in writes {
+            let access = OrdinaryAccess {
+                space: Space::Shared,
+                footprint: Footprint::Bytes {
+                    addr: u64::from(address),
+                    width: 4,
+                },
+                proxy: Proxy::Generic,
+                role: OperandRole::Plain,
+                effect: Effect::Write(stored),
+            };
+            self.graph.ordinary_async_effect(op, thread(wave), access);
+        }
+        op
+    }
+}
+
 // ===== Record wait =====
 // Each `s_waitcnt lgkmcnt` completes DS instructions in a generation of the wave's wait object.
 
@@ -148,6 +181,22 @@ impl Interpreter<'_> {
     /// `wave`'s `s_waitcnt lgkmcnt(outstanding)` at `pc` completed the DS instructions `ops`: a
     /// generation of the wave's wait object tracks them, then releases the wave.
     pub(super) fn record_lgkm_wait(
+        &mut self,
+        wave: WaveId,
+        pc: InstrId,
+        outstanding: usize,
+        ops: &[AsyncOpId],
+    ) {
+        let wait = GroupWait::Async {
+            keep_pending: outstanding as u32,
+        };
+        self.graph.group_wait(thread(wave), point(pc), wait, ops);
+    }
+}
+
+impl Interpreter<'_> {
+    /// `wave`'s `s_waitcnt vmcnt(outstanding)` at `pc` completed the loads to LDS `ops`.
+    pub(super) fn record_vm_wait(
         &mut self,
         wave: WaveId,
         pc: InstrId,
