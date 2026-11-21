@@ -1020,6 +1020,11 @@ pub enum LoweredInstr {
         src_b: LaneReg,
         src_c: MfmaSrcC,
     },
+    /// The two f32 sources as the bf16 halves of `dst`, `srcs[0]` in the low half.
+    CvtPkBf16F32 {
+        dst: Vgpr,
+        srcs: [ModifiedSrc; 2],
+    },
     GlobalLoad {
         dst: GlobalLoadDst,
         address: GlobalAddress,
@@ -1111,6 +1116,7 @@ impl LoweredInstr {
             Self::CvtFromF64 { .. } => "v_cvt from f64",
             Self::PackedF32 { .. } => "packed f32 op",
             Self::Mfma16x16x4F32 { .. } => "v_mfma_f32_16x16x4_f32",
+            Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
             Self::GlobalLoad { .. } => "global_load",
             Self::GlobalStore { .. } => "global_store",
             Self::BufferLoad { .. } => "buffer_load",

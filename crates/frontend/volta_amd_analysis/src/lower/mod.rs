@@ -665,6 +665,15 @@ fn lower_as_written(
                 src_c: mfma_src_c(dst, src_c)?,
             })
         }
+        ("v_cvt_pk_bf16_f32", [dst, src0, src1]) => Ok(CvtPkBf16F32 {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            srcs: [
+                modified_src(src0)
+                    .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+                modified_src(src1)
+                    .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+            ],
+        }),
         ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
             dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
@@ -800,6 +809,7 @@ fn lower_as_written(
             | "s_mulk_i32"
             | "s_setprio"
             | "v_mfma_f32_16x16x4_f32"
+            | "v_cvt_pk_bf16_f32"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"
             | "v_accvgpr_read_b32"
