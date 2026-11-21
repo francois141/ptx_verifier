@@ -60,6 +60,8 @@ pub enum Operand {
     Vcc,
     /// The mask of the wave's active lanes.
     Exec,
+    /// The scalar register M0.
+    M0,
     /// A lane-permute's `bound_ctrl:1` flag.
     BoundCtrl,
     /// A branch target.

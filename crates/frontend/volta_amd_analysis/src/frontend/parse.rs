@@ -39,6 +39,7 @@ fn operand(text: &str) -> Option<Operand> {
     match text {
         "vcc" => return Some(Operand::Vcc),
         "exec" => return Some(Operand::Exec),
+        "m0" => return Some(Operand::M0),
         "offen" => return Some(Operand::Offen),
         "bound_ctrl:1" => return Some(Operand::BoundCtrl),
         _ => {}

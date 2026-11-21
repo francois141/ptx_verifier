@@ -101,8 +101,9 @@ enum ScalarValue {
 /// Register storage for one CDNA4 wave, apart from EXEC, which `WaveState` holds.
 #[derive(Debug)]
 pub(crate) struct WaveRegisters {
-    scalar: [ScalarValue; 102], // Scalar registers are shared by the wave.
-    scc: Option<bool>,          // The scalar condition code, once an instruction writes it.
+    // Scalar registers are shared by the wave; the last entry is M0 (`Sgpr::M0`).
+    scalar: [ScalarValue; SCALAR_SLOTS],
+    scc: Option<bool>, // The scalar condition code, once an instruction writes it.
     vector: Vec<LaneRegisters>, // Vector registers have a value per lane.
     /// Locations whose state differs between the launch's workgroups, one state per workgroup.
     varying: HashMap<Slot, Box<[Stored]>>,
@@ -115,6 +116,9 @@ pub(crate) struct WaveRegisters {
     /// issues, which every workgroup issues alike, is counted only once.
     repeat: bool,
 }
+
+/// The SGPRs s0 to s101 and, at its encoding, M0; the encodings between are not storage.
+const SCALAR_SLOTS: usize = Sgpr::M0.0 as usize + 1;
 
 /// A register location: a scalar register, SCC, or one lane's VGPR, AGPR or VCC bit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

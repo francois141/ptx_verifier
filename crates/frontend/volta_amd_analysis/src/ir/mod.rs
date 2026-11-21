@@ -21,6 +21,11 @@ pub struct LoweredKernel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sgpr(pub u8);
 
+impl Sgpr {
+    /// M0, at its operand encoding 124, past the general-purpose SGPRs.
+    pub const M0: Sgpr = Sgpr(124);
+}
+
 /// A physical 32-bit vector register, with a separate value in each lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vgpr(pub u8);

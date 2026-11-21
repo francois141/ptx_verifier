@@ -335,7 +335,10 @@ fn lower_as_written(
             offset,
         ),
         ("s_mov_b32", [dst, src]) => Ok(MovScalar32 {
-            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            dst: match dst {
+                Operand::M0 => Sgpr::M0,
+                _ => sgpr(dst).ok_or("expected one destination SGPR or m0")?,
+            },
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
         }),
         ("s_mulk_i32", [dst, src]) => {
