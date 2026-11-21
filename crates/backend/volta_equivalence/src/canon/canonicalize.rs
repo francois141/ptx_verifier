@@ -192,6 +192,14 @@ impl Session {
             ExprNode::Or(a, b) => self.uninterp2(side, arena, UninterpOp::Or, *a, *b),
             ExprNode::Not(a) => self.uninterp1(side, arena, UninterpOp::Not, *a),
             ExprNode::Select(c, t, f) => {
+                if let Some((greater, lesser)) = claimed_order(arena, *c) {
+                    if self.is_always_greater(side, arena, greater, lesser)? {
+                        return self.canon_value(side, arena, *t);
+                    }
+                    if self.is_always_greater(side, arena, lesser, greater)? {
+                        return self.canon_value(side, arena, *f);
+                    }
+                }
                 let rc = self.canon_value(side, arena, *c)?;
                 let rc = self.ratv_intern(rc);
                 let rt = self.canon_value(side, arena, *t)?;
@@ -296,6 +304,24 @@ impl Session {
             },
             _ => None,
         }
+    }
+
+    /// Whether `a > b` for every value of the inputs: [`Self::rat_sign`] proves `a - b`
+    /// positive, as for a softmax denominator, a sum of exponentials, against `0`.
+    fn is_always_greater(
+        &mut self,
+        side: Side,
+        arena: &ExprArena,
+        a: ExprId,
+        b: ExprId,
+    ) -> Result<bool, CanonError> {
+        let a = self.canon_value(side, arena, a)?;
+        let a = self.ratv_intern(a);
+        let b = self.canon_value(side, arena, b)?;
+        let b = self.ratv_intern(b);
+        let difference = self.rat_sub_v(RatV::from_rat(a), RatV::from_rat(b))?;
+        let difference = self.ratv_intern(difference);
+        Ok(self.rat_sign(difference) == Sign::Positive)
     }
 
     /// A conservative sign for a canonical rational: `Positive` only when
@@ -465,5 +491,15 @@ impl Session {
         }
         let p = self.arena.atom_poly(Atom::Uninterp { op, args });
         Ok(RatV::from_rat(self.arena.rat_poly(p)))
+    }
+}
+
+/// The sides of an ordering comparison, the one it claims greater first: a strict order
+/// between them decides `>`/`>=` (and `<`/`<=`) alike. `None` for any other condition.
+fn claimed_order(arena: &ExprArena, condition: ExprId) -> Option<(ExprId, ExprId)> {
+    match *arena.node(condition) {
+        ExprNode::Gt(a, b) | ExprNode::Ge(a, b) => Some((a, b)),
+        ExprNode::Lt(a, b) | ExprNode::Le(a, b) => Some((b, a)),
+        _ => None,
     }
 }
