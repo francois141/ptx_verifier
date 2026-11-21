@@ -124,6 +124,40 @@ fn operand(text: &str) -> Option<Operand> {
     (first <= last).then_some(Operand::Reg { file, first, last })
 }
 
+/// The GNU numeric local labels of inline asm: `N:` may be defined repeatedly, and `Nf` and
+/// `Nb` name the next and the previous definition of `N`. Each definition gets its own name.
+#[derive(Default)]
+struct LocalLabels {
+    defined: BTreeMap<u64, usize>,
+}
+
+impl LocalLabels {
+    fn name(n: u64, occurrence: usize) -> String {
+        format!(".Llocal{n}_{occurrence}")
+    }
+
+    fn define(&mut self, n: u64) -> String {
+        let occurrence = self.defined.entry(n).or_insert(0);
+        *occurrence += 1;
+        Self::name(n, *occurrence - 1)
+    }
+
+    /// `None` when `piece` is not a local label reference.
+    fn reference(&self, piece: &str) -> Option<Result<String, String>> {
+        let (digits, direction) = piece.split_at_checked(piece.len().checked_sub(1)?)?;
+        let n: u64 = digits.parse().ok()?;
+        let defined = self.defined.get(&n).copied().unwrap_or(0);
+        match direction {
+            "f" => Some(Ok(Self::name(n, defined))),
+            "b" => Some(match defined.checked_sub(1) {
+                Some(previous) => Ok(Self::name(n, previous)),
+                None => Err(format!("local label {piece:?} has no earlier definition")),
+            }),
+            _ => None,
+        }
+    }
+}
+
 fn unsupported_operand(piece: &str, line: &str) -> String {
     if piece.contains('.') && piece.parse::<f32>().is_ok() {
         format!(
@@ -165,19 +199,23 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
     let mut instructions = Vec::new();
     let mut spans = Vec::new();
     let mut labels = BTreeMap::new();
+    let mut local_labels = LocalLabels::default();
     for line in &lines[entry + 1..] {
         let (opcode, rest) = word(line);
         if opcode == ".section" || opcode.starts_with(".Lfunc_end") {
             break;
         }
-        if let Some(label) = line
-            .strip_suffix(':')
-            .filter(|label| label.starts_with(".L"))
-        {
-            if labels
-                .insert(label.to_owned(), instructions.len())
-                .is_some()
-            {
+        // Alignment padding is `s_nop`s, which execute nothing.
+        if opcode == ".p2align" {
+            continue;
+        }
+        let label = match line.strip_suffix(':') {
+            Some(label) if label.starts_with(".L") => Some(label.to_owned()),
+            Some(label) => label.parse().ok().map(|n| local_labels.define(n)),
+            None => None,
+        };
+        if let Some(label) = label {
+            if labels.insert(label.clone(), instructions.len()).is_some() {
                 return Err(format!("duplicate label {label:?}"));
             }
             continue;
@@ -201,7 +239,10 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
                 !in_brackets && matches!(ch, ',' | ' ' | '\t')
             })
             .filter(|piece| !piece.is_empty())
-            .map(|piece| operand(piece).ok_or_else(|| unsupported_operand(piece, line)))
+            .map(|piece| match local_labels.reference(piece) {
+                Some(label) => label.map(Operand::Label),
+                None => operand(piece).ok_or_else(|| unsupported_operand(piece, line)),
+            })
             .collect::<Result<_, _>>()?;
         instructions.push(Instruction {
             opcode: opcode.into(),
