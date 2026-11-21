@@ -164,4 +164,16 @@ __kernel void vector_int_ops(__global unsigned *out, unsigned factor, unsigned m
     row[57] = reversed_low;
     row[58] = reversed_high;
     row[59] = reversed_borrow;
+
+    // The swaps exchange each odd group of 16 (or 32) lanes of the first register with the even
+    // group of the second before it; the other groups keep their words.
+    unsigned rows_first = i + 800, rows_second = i + 900;
+    unsigned halves_first = i + 1000, halves_second = i + 1100;
+    __asm__ volatile("v_permlane16_swap_b32_e32 %0, %1" : "+v"(rows_first), "+v"(rows_second));
+    __asm__ volatile("v_permlane32_swap_b32_e32 %0, %1"
+                     : "+v"(halves_first), "+v"(halves_second));
+    row[60] = rows_first;
+    row[61] = rows_second;
+    row[62] = halves_first;
+    row[63] = halves_second;
 }

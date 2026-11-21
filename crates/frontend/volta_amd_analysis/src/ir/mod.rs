@@ -1133,6 +1133,11 @@ pub enum LoweredInstr {
         dst: Vgpr,
         srcs: [ModifiedSrc; 2],
     },
+    /// Swap the odd 16-lane rows of `dst` with the even rows of `src`, writing both registers.
+    Permlane16Swap {
+        dst: Vgpr,
+        src: Vgpr,
+    },
     /// Swap lanes 32 to 63 of `dst` with lanes 0 to 31 of `src`, writing both registers.
     Permlane32Swap {
         dst: Vgpr,
@@ -1258,6 +1263,7 @@ impl LoweredInstr {
             Self::Mfma32x32x16Bf16 { .. } => "v_mfma_f32_32x32x16_bf16",
             Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
             Self::Permlane32Swap { .. } => "v_permlane32_swap_b32",
+            Self::Permlane16Swap { .. } => "v_permlane16_swap_b32",
             Self::BufferLoadLds { .. } => "buffer_load (to LDS)",
             Self::DsReadTrB16 { .. } => "ds_read_b64_tr_b16",
             Self::GlobalLoad { .. } => "global_load",

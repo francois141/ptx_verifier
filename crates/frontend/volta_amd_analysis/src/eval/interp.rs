@@ -222,6 +222,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Mfma32x32x16Bf16 { .. }
             | LoweredInstr::CvtPkBf16F32 { .. }
             | LoweredInstr::Permlane32Swap { .. }
+            | LoweredInstr::Permlane16Swap { .. }
             | LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
             | LoweredInstr::Vop3BinOp { .. }
@@ -405,7 +406,8 @@ impl<'a> Interpreter<'a> {
                 *src_b,
                 *src_c,
             ),
-            LoweredInstr::Permlane32Swap { dst, src } => self.permlane32_swap(wave, *dst, *src),
+            LoweredInstr::Permlane32Swap { dst, src } => self.permlane_swap(wave, *dst, *src, 32),
+            LoweredInstr::Permlane16Swap { dst, src } => self.permlane_swap(wave, *dst, *src, 16),
             LoweredInstr::DivScaleF32 { dst, scaled, src } => {
                 let exec = self.waves[wave].exec;
                 let registers = &mut self.waves[wave].registers;
@@ -989,16 +991,25 @@ impl<'a> Interpreter<'a> {
         registers.write_lane_mask(&mut self.arena, carry_out, &carries)
     }
 
-    /// Swap lanes 32 to 63 of `dst` with lanes 0 to 31 of `src`, reading every word first.
-    fn permlane32_swap(&mut self, wave: WaveId, dst: Vgpr, src: Vgpr) -> Result<(), EvalError> {
+    /// Swap each odd group of `width` lanes of `dst` with the even group of `src` before it.
+    fn permlane_swap(
+        &mut self,
+        wave: WaveId,
+        dst: Vgpr,
+        src: Vgpr,
+        width: usize,
+    ) -> Result<(), EvalError> {
         if self.waves[wave].exec != u64::MAX {
             return Err(EvalError::InactiveLanes);
         }
         let registers = &mut self.waves[wave].registers;
         let mut moves = Vec::with_capacity(64);
-        for lane in 0..32 {
-            moves.push((lane, src, registers.read_vgpr_word(lane + 32, dst)?));
-            moves.push((lane + 32, dst, registers.read_vgpr_word(lane, src)?));
+        for lane in 0..64 {
+            if lane / width % 2 == 0 {
+                moves.push((lane, src, registers.read_vgpr_word(lane + width, dst)?));
+            } else {
+                moves.push((lane, dst, registers.read_vgpr_word(lane - width, src)?));
+            }
         }
         for (lane, reg, word) in moves {
             registers.write_vgpr_word(lane, reg, word)?;
