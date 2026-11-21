@@ -1163,6 +1163,13 @@ pub enum LoweredInstr {
         addr: Vgpr,
         offset: u16,
     },
+    /// `ds_swizzle_b32` in its swap mode: each active lane reads `src` of lane `lane ^ xor`,
+    /// an LDS lane exchange that accesses no LDS memory.
+    DsSwizzle {
+        dst: Vgpr,
+        src: Vgpr,
+        xor: u8,
+    },
     /// Each lane reads `src` from the lane selected by its byte address plus `offset`.
     DsBPermute {
         dst: Vgpr,
@@ -1241,6 +1248,7 @@ impl LoweredInstr {
             Self::DsWrite { .. } => "ds_write",
             Self::DsRead { .. } => "ds_read",
             Self::DsBPermute { .. } => "ds_bpermute_b32",
+            Self::DsSwizzle { .. } => "ds_swizzle_b32",
             Self::WaitCnt { .. } => "s_waitcnt",
             Self::Nop => "s_nop",
             Self::EndPgm => "s_endpgm",

@@ -190,7 +190,8 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::DsWrite { .. }
             | LoweredInstr::DsRead { .. }
             | LoweredInstr::DsReadTrB16 { .. }
-            | LoweredInstr::DsBPermute { .. } => {
+            | LoweredInstr::DsBPermute { .. }
+            | LoweredInstr::DsSwizzle { .. } => {
                 self.execute_ds(wave, pc, instruction)?;
             }
             LoweredInstr::BufferLoadLds { width, address } => {
@@ -414,6 +415,9 @@ impl<'a> Interpreter<'a> {
                 self.ds_read_tr_b16(wave, *dst, *addr, *offset)
             }
             LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses),
+            LoweredInstr::DsSwizzle { dst, src, xor } => {
+                self.execute_ds_swizzle(wave, *dst, *src, *xor)
+            }
             LoweredInstr::DsBPermute {
                 dst,
                 addr,

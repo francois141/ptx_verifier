@@ -839,6 +839,12 @@ fn lower_as_written(
             ),
             address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
         }),
+        ("ds_swizzle_b32", [dst, src, Operand::SwizzleSwap(xor)]) => Ok(DsSwizzle {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+            xor: *xor,
+        }),
+        ("ds_swizzle_b32", _) => Err("expected a swizzle in swap mode, offset:swizzle(SWAP,n)"),
         ("ds_bpermute_b32", [dst, addr, src, modifiers @ ..]) => Ok(DsBPermute {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             addr: vgpr(addr).ok_or("expected one address VGPR")?,

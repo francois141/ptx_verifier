@@ -112,7 +112,7 @@ impl Interpreter<'_> {
                     }
                 }
             }
-            LoweredInstr::DsBPermute { .. } => {}
+            LoweredInstr::DsBPermute { .. } | LoweredInstr::DsSwizzle { .. } => {}
             _ => unreachable!("only DS instructions are issued to the LDS"),
         }
         Ok(words)

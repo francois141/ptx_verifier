@@ -21,7 +21,9 @@ impl Interpreter<'_> {
         let op = self.record_ds_issue(wave, pc, instruction)?;
         self.execute_each_workgroup(wave, instruction)?;
         let dst = match instruction {
-            LoweredInstr::DsBPermute { dst, .. } => vec![*dst],
+            LoweredInstr::DsBPermute { dst, .. } | LoweredInstr::DsSwizzle { dst, .. } => {
+                vec![*dst]
+            }
             LoweredInstr::DsRead { accesses, .. } => accesses
                 .accesses()
                 .into_iter()
@@ -66,6 +68,33 @@ impl Interpreter<'_> {
             values.push((lane, value));
         }
 
+        for (lane, value) in values {
+            registers.start_vector_load(lane, &[dst], &[value], LoadCounter::Lgkm)?;
+        }
+        Ok(())
+    }
+
+    /// `ds_swizzle_b32`'s swap mode, pending as `ds_bpermute_b32` is; an inactive source lane
+    /// delivers 0 there too.
+    pub(super) fn execute_ds_swizzle(
+        &mut self,
+        wave: WaveId,
+        dst: Vgpr,
+        src: Vgpr,
+        xor: u8,
+    ) -> Result<(), EvalError> {
+        let exec = self.waves[wave].exec;
+        let registers = &mut self.waves[wave].registers;
+        let mut values = Vec::with_capacity(64);
+        for lane in active_lanes(exec) {
+            let source_lane = lane ^ usize::from(xor);
+            let value = if lane_bit(exec, source_lane) {
+                registers.read_vgpr_word(source_lane, src)?
+            } else {
+                Word::Value(self.arena.int(0))
+            };
+            values.push((lane, value));
+        }
         for (lane, value) in values {
             registers.start_vector_load(lane, &[dst], &[value], LoadCounter::Lgkm)?;
         }

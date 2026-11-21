@@ -68,6 +68,8 @@ pub enum Operand {
     BoundCtrl,
     /// A branch target.
     Label(String),
+    /// `ds_swizzle_b32`'s `offset:swizzle(SWAP,n)`: each lane reads lane `lane ^ n`.
+    SwizzleSwap(u8),
     /// A buffer instruction's `offen` flag: its address VGPR is a byte offset.
     Offen,
     /// A memory instruction's `off` in place of an address register.

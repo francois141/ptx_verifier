@@ -211,6 +211,26 @@ __kernel void exec_ops(__global const float *input, __global unsigned *out,
         : "s"(odd), "v"(i + 600), "s"(70u));
     row[24] = inactive_lane;
     row[25] = wrapped_lane;
+
+    // A swap-mode swizzle reads lane `i ^ n`, and an inactive source lane gives 0. In the odd
+    // lanes SWAP,1 reads an inactive even lane and SWAP,2 an active odd one, while the even lanes
+    // keep 7; SWAP,16 then runs in every lane.
+    unsigned swap_1, swap_2, swap_16;
+    __asm__ volatile(
+        "v_mov_b32_e32 %0, 7\n\t"
+        "v_mov_b32_e32 %1, 7\n\t"
+        "s_mov_b64 %3, exec\n\t"
+        "s_mov_b64 exec, %4\n\t"
+        "ds_swizzle_b32 %0, %5 offset:swizzle(SWAP,1)\n\t"
+        "ds_swizzle_b32 %1, %5 offset:swizzle(SWAP,2)\n\t"
+        "s_mov_b64 exec, %3\n\t"
+        "ds_swizzle_b32 %2, %5 offset:swizzle(SWAP,16)\n\t"
+        "s_waitcnt lgkmcnt(0)"
+        : "=&v"(swap_1), "=&v"(swap_2), "=&v"(swap_16), "=&s"(saved)
+        : "s"(odd), "v"(i + 700));
+    row[26] = swap_1;
+    row[27] = swap_2;
+    row[28] = swap_16;
 }
 
 // The odd lanes' global load is still in flight when the wait completes the even lanes' LDS

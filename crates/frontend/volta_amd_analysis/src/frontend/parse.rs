@@ -49,6 +49,14 @@ fn operand(text: &str) -> Option<Operand> {
     if text.starts_with(".L") {
         return Some(Operand::Label(text.into()));
     }
+    if let Some(n) = text
+        .strip_prefix("offset:swizzle(SWAP,")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .and_then(|n| n.parse::<u8>().ok())
+        .filter(|n| n.is_power_of_two() && *n <= 16)
+    {
+        return Some(Operand::SwizzleSwap(n));
+    }
     if let Some(offset) = text.strip_prefix("offset0:") {
         return integer(offset).map(Operand::Offset0);
     }
@@ -237,8 +245,8 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         let operands = rest
             .split(|ch: char| {
                 match ch {
-                    '[' => in_brackets = true,
-                    ']' => in_brackets = false,
+                    '[' | '(' => in_brackets = true,
+                    ']' | ')' => in_brackets = false,
                     _ => {}
                 }
                 !in_brackets && matches!(ch, ',' | ' ' | '\t')

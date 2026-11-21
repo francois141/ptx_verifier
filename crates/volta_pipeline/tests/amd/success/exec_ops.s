@@ -180,7 +180,7 @@ exec_ops:
 	v_mad_u64_u32 v[2:3], s[0:1], v7, v7, v[4:5]
 	s_mov_b64 exec, s[4:5]
 	;;#ASMEND
-	v_add_u32_e32 v0, 0x258, v0
+	v_add_u32_e32 v1, 0x258, v0
 	v_mov_b32_e32 v4, s0
 	v_mov_b32_e32 v5, s1
 	global_store_dwordx4 v6, v[2:5], s[6:7] offset:80
@@ -188,14 +188,27 @@ exec_ops:
 	;;#ASMSTART
 	s_mov_b64 s[0:1], exec
 	s_mov_b64 exec, s[2:3]
-	v_readlane_b32 s5, v0, 4
-	v_readlane_b32 s8, v0, s4
+	v_readlane_b32 s5, v1, 4
+	v_readlane_b32 s8, v1, s4
 	s_mov_b64 exec, s[0:1]
 	;;#ASMEND
 	s_nop 0
-	v_mov_b32_e32 v0, s5
-	v_mov_b32_e32 v1, s8
-	global_store_dwordx2 v6, v[0:1], s[6:7] offset:96
+	v_mov_b32_e32 v2, s5
+	v_mov_b32_e32 v3, s8
+	global_store_dwordx2 v6, v[2:3], s[6:7] offset:96
+	v_add_u32_e32 v3, 0x2bc, v0
+	;;#ASMSTART
+	v_mov_b32_e32 v0, 7
+	v_mov_b32_e32 v1, 7
+	s_mov_b64 s[0:1], exec
+	s_mov_b64 exec, s[2:3]
+	ds_swizzle_b32 v0, v3 offset:swizzle(SWAP,1)
+	ds_swizzle_b32 v1, v3 offset:swizzle(SWAP,2)
+	s_mov_b64 exec, s[0:1]
+	ds_swizzle_b32 v2, v3 offset:swizzle(SWAP,16)
+	s_waitcnt lgkmcnt(0)
+	;;#ASMEND
+	global_store_dwordx3 v6, v[0:2], s[6:7] offset:104
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -451,10 +464,22 @@ __clang_ocl_kern_imp_exec_ops:
 	v_readlane_b32 s6, v0, s2
 	s_mov_b64 exec, s[0:1]
 	;;#ASMEND
-	s_nop 0
+	v_add_u32_e32 v3, 0x2bc, v6
 	v_mov_b32_e32 v0, s3
 	v_mov_b32_e32 v1, s6
 	global_store_dwordx2 v[10:11], v[0:1], off offset:96
+	;;#ASMSTART
+	v_mov_b32_e32 v0, 7
+	v_mov_b32_e32 v1, 7
+	s_mov_b64 s[0:1], exec
+	s_mov_b64 exec, s[4:5]
+	ds_swizzle_b32 v0, v3 offset:swizzle(SWAP,1)
+	ds_swizzle_b32 v1, v3 offset:swizzle(SWAP,2)
+	s_mov_b64 exec, s[0:1]
+	ds_swizzle_b32 v2, v3 offset:swizzle(SWAP,16)
+	s_waitcnt lgkmcnt(0)
+	;;#ASMEND
+	global_store_dwordx3 v[10:11], v[0:2], off offset:104
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:
