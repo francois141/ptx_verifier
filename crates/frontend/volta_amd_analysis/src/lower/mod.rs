@@ -684,6 +684,14 @@ fn lower_as_written(
                     .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
             ],
         }),
+        // `bound_ctrl` only affects inactive lanes, and execution requires every lane active.
+        (
+            "v_permlane32_swap_b32_e32" | "v_permlane32_swap_b32_e64",
+            [dst, src] | [dst, src, Operand::BoundCtrl],
+        ) => Ok(Permlane32Swap {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: vgpr(src).ok_or("expected one source VGPR")?,
+        }),
         ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
             dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
@@ -821,6 +829,8 @@ fn lower_as_written(
             | "v_mfma_f32_16x16x4_f32"
             | "v_mfma_f32_32x32x16_bf16"
             | "v_cvt_pk_bf16_f32"
+            | "v_permlane32_swap_b32_e32"
+            | "v_permlane32_swap_b32_e64"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"
             | "v_accvgpr_read_b32"

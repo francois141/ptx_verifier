@@ -1035,6 +1035,11 @@ pub enum LoweredInstr {
         dst: Vgpr,
         srcs: [ModifiedSrc; 2],
     },
+    /// Swap lanes 32 to 63 of `dst` with lanes 0 to 31 of `src`, writing both registers.
+    Permlane32Swap {
+        dst: Vgpr,
+        src: Vgpr,
+    },
     GlobalLoad {
         dst: GlobalLoadDst,
         address: GlobalAddress,
@@ -1128,6 +1133,7 @@ impl LoweredInstr {
             Self::Mfma16x16x4F32 { .. } => "v_mfma_f32_16x16x4_f32",
             Self::Mfma32x32x16Bf16 { .. } => "v_mfma_f32_32x32x16_bf16",
             Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
+            Self::Permlane32Swap { .. } => "v_permlane32_swap_b32",
             Self::GlobalLoad { .. } => "global_load",
             Self::GlobalStore { .. } => "global_store",
             Self::BufferLoad { .. } => "buffer_load",

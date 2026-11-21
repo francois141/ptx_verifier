@@ -88,6 +88,8 @@ pub enum EvalError {
     InvalidBf16Output {
         address: u64,
     },
+    /// A lane exchange that needs every lane active ran with some inactive.
+    InactiveLanes,
     /// A VGPR pair read as an f64 holds neither one f64 value nor two concrete words.
     InvalidF64Vgpr {
         lane: usize,
@@ -251,6 +253,12 @@ impl fmt::Display for EvalError {
                 f,
                 "the word stored to the bf16 output at {address:#x} is not two bf16 values"
             ),
+            Self::InactiveLanes => {
+                write!(
+                    f,
+                    "the lane exchange requires every lane of the wave to be active"
+                )
+            }
             Self::InvalidF64Vgpr { lane, reg } => write!(
                 f,
                 "VGPR pair at v{} in lane {lane} holds neither an f64 value nor two concrete words",

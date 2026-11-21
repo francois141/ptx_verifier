@@ -60,6 +60,8 @@ pub enum Operand {
     Vcc,
     /// The mask of the wave's active lanes.
     Exec,
+    /// A lane-permute's `bound_ctrl:1` flag.
+    BoundCtrl,
     /// A branch target.
     Label(String),
     /// A buffer instruction's `offen` flag: its address VGPR is a byte offset.

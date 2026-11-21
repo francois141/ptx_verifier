@@ -40,6 +40,7 @@ fn operand(text: &str) -> Option<Operand> {
         "vcc" => return Some(Operand::Vcc),
         "exec" => return Some(Operand::Exec),
         "offen" => return Some(Operand::Offen),
+        "bound_ctrl:1" => return Some(Operand::BoundCtrl),
         _ => {}
     }
     if text.starts_with(".L") {

@@ -213,6 +213,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Mfma16x16x4F32 { .. }
             | LoweredInstr::Mfma32x32x16Bf16 { .. }
             | LoweredInstr::CvtPkBf16F32 { .. }
+            | LoweredInstr::Permlane32Swap { .. }
             | LoweredInstr::BinOp { .. }
             | LoweredInstr::TernaryOp { .. }
             | LoweredInstr::Vop3BinOp { .. }
@@ -392,6 +393,7 @@ impl<'a> Interpreter<'a> {
                 *src_b,
                 *src_c,
             ),
+            LoweredInstr::Permlane32Swap { dst, src } => self.permlane32_swap(wave, *dst, *src),
             LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses),
             LoweredInstr::DsBPermute {
                 dst,
@@ -805,6 +807,23 @@ impl<'a> Interpreter<'a> {
             &values,
             LoadCounter::Lgkm,
         )
+    }
+
+    /// Swap lanes 32 to 63 of `dst` with lanes 0 to 31 of `src`, reading every word first.
+    fn permlane32_swap(&mut self, wave: WaveId, dst: Vgpr, src: Vgpr) -> Result<(), EvalError> {
+        if self.waves[wave].exec != u64::MAX {
+            return Err(EvalError::InactiveLanes);
+        }
+        let registers = &mut self.waves[wave].registers;
+        let mut moves = Vec::with_capacity(64);
+        for lane in 0..32 {
+            moves.push((lane, src, registers.read_vgpr_word(lane + 32, dst)?));
+            moves.push((lane + 32, dst, registers.read_vgpr_word(lane, src)?));
+        }
+        for (lane, reg, word) in moves {
+            registers.write_vgpr_word(lane, reg, word)?;
+        }
+        Ok(())
     }
 
     /// End a run over a whole grid, keeping each workgroup's outputs and their conflicts.
