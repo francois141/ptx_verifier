@@ -160,6 +160,15 @@ fn lower_as_written(
         ("s_lshl2_add_u32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlAddU32(2), operands),
         ("s_lshl3_add_u32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlAddU32(3), operands),
         ("s_lshl4_add_u32", operands) => lower_scalar_op32(ir::ScalarOp32::LShlAddU32(4), operands),
+        ("s_addk_i32", [dst, src]) => {
+            let dst = sgpr(dst).ok_or("expected one destination SGPR")?;
+            Ok(ScalarOp32 {
+                op: ir::ScalarOp32::AddI32,
+                dst,
+                src0: ScalarSrc::Sgpr(dst),
+                src1: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
+            })
+        }
         ("s_sub_i32", operands) => lower_scalar_op32(ir::ScalarOp32::SubI32, operands),
         ("s_sub_u32", operands) => lower_scalar_op32(ir::ScalarOp32::SubU32, operands),
         ("s_subb_u32", operands) => lower_scalar_op32(ir::ScalarOp32::SubbU32, operands),
@@ -848,6 +857,7 @@ fn lower_as_written(
             | "buffer_store_dwordx3"
             | "buffer_store_dwordx4"
             | "s_mov_b32"
+            | "s_addk_i32"
             | "s_mulk_i32"
             | "s_setprio"
             | "v_mfma_f32_16x16x4_f32"

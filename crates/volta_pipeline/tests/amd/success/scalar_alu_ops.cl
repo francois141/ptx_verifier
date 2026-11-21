@@ -171,4 +171,20 @@ __kernel void scalar_alu_ops(__global unsigned *out, unsigned a, unsigned b, uns
     OP32("", s_lshl2_add_u32, 118);
     OP32("", s_lshl3_add_u32, 120);
     OP32("", s_lshl4_add_u32, 122);
+
+    // s_addk_i32 sign-extends its immediate (0xffff is -1) and sets SCC on signed overflow.
+    unsigned decremented, overflowed, decrement_scc, overflow_scc;
+    __asm__ volatile(
+        "s_mov_b32 %0, %4\n\t"
+        "s_addk_i32 %0, 0xffff\n\t"
+        "s_cselect_b32 %2, 1, 0\n\t"
+        "s_mov_b32 %1, 0x7fffffff\n\t"
+        "s_addk_i32 %1, 0x1\n\t"
+        "s_cselect_b32 %3, 1, 0"
+        : "=&s"(decremented), "=&s"(overflowed), "=&s"(decrement_scc), "=&s"(overflow_scc)
+        : "s"(scalar_a) : "scc");
+    row[124] = decremented;
+    row[125] = decrement_scc;
+    row[126] = overflowed;
+    row[127] = overflow_scc;
 }

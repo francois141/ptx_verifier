@@ -525,6 +525,20 @@ scalar_alu_ops:
 	v_mov_b32_e32 v0, s2
 	v_mov_b32_e32 v1, s3
 	global_store_dwordx2 v4, v[0:1], s[0:1] offset:488
+	;;#ASMSTART
+	s_mov_b32 s2, s4
+	s_addk_i32 s2, 0xffff
+	s_cselect_b32 s5, 1, 0
+	s_mov_b32 s3, 0x7fffffff
+	s_addk_i32 s3, 0x1
+	s_cselect_b32 s6, 1, 0
+	;;#ASMEND
+	s_nop 0
+	v_mov_b32_e32 v0, s2
+	v_mov_b32_e32 v1, s5
+	v_mov_b32_e32 v2, s3
+	v_mov_b32_e32 v3, s6
+	global_store_dwordx4 v4, v[0:3], s[0:1] offset:496
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -1107,6 +1121,20 @@ __clang_ocl_kern_imp_scalar_alu_ops:
 	v_mov_b32_e32 v2, s0
 	v_mov_b32_e32 v3, s1
 	global_store_dwordx2 v[0:1], v[2:3], off offset:488
+	;;#ASMSTART
+	s_mov_b32 s0, s4
+	s_addk_i32 s0, 0xffff
+	s_cselect_b32 s2, 1, 0
+	s_mov_b32 s1, 0x7fffffff
+	s_addk_i32 s1, 0x1
+	s_cselect_b32 s3, 1, 0
+	;;#ASMEND
+	s_nop 0
+	v_mov_b32_e32 v2, s0
+	v_mov_b32_e32 v3, s2
+	v_mov_b32_e32 v4, s1
+	v_mov_b32_e32 v5, s3
+	global_store_dwordx4 v[0:1], v[2:5], off offset:496
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:
