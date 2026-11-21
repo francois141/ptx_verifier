@@ -75,6 +75,15 @@ pub enum EvalError {
         lane: usize,
         reg: Vgpr,
     },
+    /// An instruction that reads whole words read two bf16 halves.
+    Bf16Halves {
+        lane: usize,
+        reg: Vgpr,
+    },
+    /// A store of a word that is not two bf16 halves to a bf16 output.
+    InvalidBf16Output {
+        address: u64,
+    },
     /// A VGPR pair read as an f64 holds neither one f64 value nor two concrete words.
     InvalidF64Vgpr {
         lane: usize,
@@ -225,6 +234,15 @@ impl fmt::Display for EvalError {
             Self::F64Half { lane, reg } => {
                 write!(f, "v{} in lane {lane} holds one half of an f64", reg.0)
             }
+            Self::Bf16Halves { lane, reg } => write!(
+                f,
+                "v{} in lane {lane} holds two bf16 halves, which this instruction does not read",
+                reg.0
+            ),
+            Self::InvalidBf16Output { address } => write!(
+                f,
+                "the word stored to the bf16 output at {address:#x} is not two bf16 values"
+            ),
             Self::InvalidF64Vgpr { lane, reg } => write!(
                 f,
                 "VGPR pair at v{} in lane {lane} holds neither an f64 value nor two concrete words",

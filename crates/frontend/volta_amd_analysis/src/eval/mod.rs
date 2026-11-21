@@ -12,9 +12,10 @@ mod mfma;
 mod record;
 mod scalar;
 mod wave;
+mod word;
 
 pub use crate::error::EvalError;
-pub use global::{ArrayDef, ArrayKind, OutputType};
+pub use global::{ArrayDef, ArrayKind, Element, OutputType};
 pub(crate) use grid::workgroup_outputs;
 pub(crate) use interp::Interpreter;
 pub use interp::Terminal;

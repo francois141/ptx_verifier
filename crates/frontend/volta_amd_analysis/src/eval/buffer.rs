@@ -4,6 +4,7 @@
 use crate::ir::{BufferAddress, LaneReg, ScalarSrc, Sgpr, Vgpr};
 
 use super::wave::{LoadCounter, WaveId};
+use super::word::Word;
 use super::{EvalError, Interpreter};
 
 /// The fields of a buffer resource that an untyped raw access uses: the 48-bit base address
@@ -102,23 +103,29 @@ impl Interpreter<'_> {
         address: BufferAddress,
         dst: &[Vgpr],
     ) -> Result<(), EvalError> {
-        let word_count = dst.len() as u64;
-        let range = self.buffer_range(wave, lane, address, word_count)?;
-        let values = match range {
-            BufferRange::Inside(start) => {
-                let mut values = Vec::with_capacity(dst.len());
-                for word_index in 0..word_count {
-                    let word_address = start + 4 * word_index;
-                    let value = self.global.load_dword(word_address, &mut self.arena)?;
-                    values.push(value);
-                }
-                values
-            }
-            BufferRange::Outside => vec![self.arena.int(0); dst.len()],
-        };
+        let values = self.buffer_words(wave, lane, address, dst.len() as u64)?;
         self.waves[wave]
             .registers
             .start_vector_load(lane, dst, &values, LoadCounter::Vm)
+    }
+
+    /// `lane`'s `word_count` words of a buffer load, zero outside the buffer.
+    fn buffer_words(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        address: BufferAddress,
+        word_count: u64,
+    ) -> Result<Vec<Word>, EvalError> {
+        match self.buffer_range(wave, lane, address, word_count)? {
+            BufferRange::Inside(start) => (0..word_count)
+                .map(|word_index| {
+                    self.global
+                        .load_dword(start + 4 * word_index, &mut self.arena)
+                })
+                .collect(),
+            BufferRange::Outside => Ok(vec![Word::Value(self.arena.int(0)); word_count as usize]),
+        }
     }
 
     /// Store the word of each register of `src`; a store outside the buffer is dropped.
@@ -138,7 +145,7 @@ impl Interpreter<'_> {
 
         for (word_index, &reg) in src.iter().enumerate() {
             let word_address = start + 4 * word_index as u64;
-            let value = self.waves[wave].registers.read_lane_reg(lane, reg)?;
+            let value = self.waves[wave].registers.read_lane_word(lane, reg)?;
             self.global
                 .store_dword(word_address, value, &mut self.arena)?;
         }

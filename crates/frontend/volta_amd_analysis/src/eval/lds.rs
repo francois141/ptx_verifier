@@ -4,12 +4,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use volta_expr::symbolic_full::ExprId;
-
 use crate::ir::InstrId;
 
 use super::EvalError;
 use super::wave::WaveId;
+use super::word::Word;
 
 /// One lane's access of an LDS word: the wave and lane that issued it, at instruction `pc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +45,7 @@ impl fmt::Display for LdsRace {
 #[derive(Debug)]
 pub(super) struct Lds {
     size: u32,
-    words: Vec<BTreeMap<u32, ExprId>>,
+    words: Vec<BTreeMap<u32, Word>>,
     selected: usize,
 }
 
@@ -91,7 +90,7 @@ impl Lds {
         Ok(addresses)
     }
 
-    pub(super) fn read(&self, address: u64, word_count: u32) -> Result<Vec<ExprId>, EvalError> {
+    pub(super) fn read(&self, address: u64, word_count: u32) -> Result<Vec<Word>, EvalError> {
         let addresses = self.word_addresses(address, word_count)?;
         let mut values = Vec::with_capacity(addresses.len());
 
@@ -107,7 +106,7 @@ impl Lds {
         Ok(values)
     }
 
-    pub(super) fn write(&mut self, address: u64, values: &[ExprId]) -> Result<(), EvalError> {
+    pub(super) fn write(&mut self, address: u64, values: &[Word]) -> Result<(), EvalError> {
         let addresses = self.word_addresses(address, values.len() as u32)?;
         for (word_address, &value) in addresses.into_iter().zip(values) {
             self.words[self.selected].insert(word_address, value);

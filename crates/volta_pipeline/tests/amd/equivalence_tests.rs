@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use volta_amd_analysis::OutputType::F32;
-use volta_amd_analysis::{ArrayDef, ArrayKind, WorkgroupLaunch};
+use volta_amd_analysis::{ArrayDef, ArrayKind, Element, WorkgroupLaunch};
 use volta_equivalence::check::EquivCheckOptions;
 use volta_pipeline::{
     EquivalenceVerdict, GraphBranch, KernelEvidence, Spec, Verdict, check_against_spec,
@@ -348,6 +348,7 @@ fn check_softmax(workitems: u32, dims: [u64; 2]) -> EquivalenceVerdict {
         base,
         len: u64::from(workitems),
         kind,
+        element: Element::Word,
     });
     let kernarg = [A_BASE, B_BASE].map(u64::to_le_bytes).concat();
     let actual = check_amd(

@@ -4,7 +4,7 @@
 
 use volta_graph::{
     AsyncOpId, AsyncOpKind, BarrierArrivals, BarrierWait, Effect, Footprint, GroupWait,
-    OperandRole, OrdinaryAccess, ProgramPoint, Proxy, Space, StoredValue, ThreadIx,
+    OperandRole, OrdinaryAccess, ProgramPoint, Proxy, Space, ThreadIx,
 };
 
 use crate::ir::{InstrId, LaneReg, LoweredInstr};
@@ -111,8 +111,8 @@ impl Interpreter<'_> {
     fn lds_access(&self, wave: WaveId, word: LdsWord) -> Result<OrdinaryAccess, EvalError> {
         let effect = match word.source {
             Some((lane, reg)) => {
-                let stored = self.waves[wave].registers.read_lane_reg(lane, reg)?;
-                Effect::Write(StoredValue::Scalar(stored))
+                let stored = self.waves[wave].registers.read_lane_word(lane, reg)?;
+                Effect::Write(stored.stored())
             }
             None => Effect::Read,
         };

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use volta_amd_analysis::ArrayKind::{Input, Output};
 use volta_amd_analysis::OutputType::{F32, U32};
-use volta_amd_analysis::{ArrayDef, ArrayKind};
+use volta_amd_analysis::{ArrayDef, ArrayKind, Element};
 use volta_graph::AccessMode::{Read, Write};
 use volta_graph::{AsyncOpKind, EventKind, GenerationKind, Space};
 use volta_graph_check::domain::ConflictKind;
@@ -32,6 +32,7 @@ fn run_lds_sync(kernel: &str) -> AmdChecked {
             base,
             len: 128,
             kind,
+            element: Element::Word,
         },
     );
     let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
@@ -297,6 +298,7 @@ fn only_active_lanes_access_lds() {
             base,
             len,
             kind,
+            element: Element::Word,
         },
     );
     let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();

@@ -9,6 +9,7 @@ use volta_expr::symbolic_full::{ExprArena, ExprId, StringId};
 use super::EvalError;
 use super::scalar::KernargBuffer;
 use super::wave::{as_f32, concrete_word};
+use super::word::Word;
 
 /// How each 32-bit output element is interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +24,27 @@ pub enum ArrayKind {
     Output(OutputType),
 }
 
-/// An array of 32-bit words in global memory: element `i` is at `base + 4i`. An input
+/// How an array's bytes hold its elements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Element {
+    /// A 32-bit word per element, read and written whole; an output's `OutputType` says how a
+    /// stored word is interpreted.
+    Word,
+    /// A bf16 real per two bytes, two to a word, the lower address in the low half. Every
+    /// element is a real, so an output's `OutputType` must be `F32`.
+    Bf16,
+}
+
+impl Element {
+    fn bytes(self) -> u64 {
+        match self {
+            Element::Word => 4,
+            Element::Bf16 => 2,
+        }
+    }
+}
+
+/// An array in global memory: element `i` is at `base + i * element bytes`. An input
 /// element's value is the symbol for element `i` of `name`; output elements start
 /// unwritten, and the kernel can store to them but cannot load them.
 #[derive(Debug, Clone)]
@@ -32,6 +53,7 @@ pub struct ArrayDef {
     pub base: u64,
     pub len: u64,
     pub kind: ArrayKind,
+    pub element: Element,
 }
 
 /// An array whose name is interned in the interpreter's arena.
@@ -41,20 +63,27 @@ struct Region {
     base: u64,
     len: u64,
     kind: ArrayKind,
+    element: Element,
 }
 
 impl Region {
-    /// The index of the element whose four bytes start at `address`, if there is one.
+    /// The index of the first element of the word at `address`, if the word lies in the array.
     fn element_at(&self, address: u64) -> Option<u64> {
-        if address < self.base {
-            return None;
-        }
-        let offset = address - self.base;
+        let offset = address.checked_sub(self.base)?;
         if !offset.is_multiple_of(4) {
             return None;
         }
-        let index = offset / 4;
-        if index < self.len { Some(index) } else { None }
+        let index = offset / self.element.bytes();
+        let elements_per_word = 4 / self.element.bytes();
+        (index + elements_per_word <= self.len).then_some(index)
+    }
+
+    /// The index of the element that starts at `address`, if there is one.
+    fn index_of_element(&self, address: u64) -> Option<u64> {
+        let offset = address.checked_sub(self.base)?;
+        let bytes = self.element.bytes();
+        let index = offset / bytes;
+        (offset.is_multiple_of(bytes) && index < self.len).then_some(index)
     }
 }
 
@@ -62,7 +91,7 @@ impl Region {
 #[derive(Debug, Default)]
 pub(super) struct GlobalMemory {
     regions: Vec<Region>,
-    /// Each workgroup's written output words by address; a selected workgroup's run has one.
+    /// Each workgroup's written output elements by address; a selected workgroup's run has one.
     written: Vec<BTreeMap<u64, ExprId>>,
     /// The workgroup a store applies to; `None` applies it to every workgroup.
     selected: Option<usize>,
@@ -90,6 +119,12 @@ impl GlobalMemory {
         check_unique_names(arrays)?;
         let mut ranges = vec![kernarg_range(kernarg)?];
         for array in arrays {
+            if array.element == Element::Bf16 && array.kind == ArrayKind::Output(OutputType::U32) {
+                let label = array_label(array);
+                return Err(launch_error(format!(
+                    "{label} holds bf16 reals, not u32 words"
+                )));
+            }
             ranges.push(array_range(array)?);
         }
         check_disjoint(&ranges)?;
@@ -101,6 +136,7 @@ impl GlobalMemory {
                 base: array.base,
                 len: array.len,
                 kind: array.kind,
+                element: array.element,
             });
         }
         Ok(Self {
@@ -110,55 +146,75 @@ impl GlobalMemory {
         })
     }
 
-    /// The symbol of the input element whose four bytes start at `address`.
-    pub fn load_dword(&self, address: u64, arena: &mut ExprArena) -> Result<ExprId, EvalError> {
+    /// The input word at `address`: its element's symbol, or the two symbols of a bf16 array.
+    pub fn load_dword(&self, address: u64, arena: &mut ExprArena) -> Result<Word, EvalError> {
         for region in &self.regions {
             if region.kind == ArrayKind::Input
                 && let Some(index) = region.element_at(address)
             {
-                return Ok(arena.input_element(region.name, index));
+                return Ok(match region.element {
+                    Element::Word => Word::Value(arena.input_element(region.name, index)),
+                    Element::Bf16 => Word::Bf16 {
+                        low: arena.input_element(region.name, index),
+                        high: arena.input_element(region.name, index + 1),
+                    },
+                });
             }
         }
         Err(EvalError::GlobalRead { address })
     }
 
-    /// Interpret a stored word according to the output type and record its mathematical value.
-    /// Output elements cannot be loaded; a later store replaces the recorded value.
+    /// Interpret a stored word according to the output's elements and record their
+    /// mathematical values. Output elements cannot be loaded; a later store replaces them.
     pub fn store_dword(
         &mut self,
         address: u64,
-        value: ExprId,
+        word: Word,
         arena: &mut ExprArena,
     ) -> Result<(), EvalError> {
-        let output_type = self
+        let (element, output_type) = self
             .regions
             .iter()
             .find_map(|region| match region.kind {
-                ArrayKind::Output(ty) if region.element_at(address).is_some() => Some(ty),
+                ArrayKind::Output(ty) if region.element_at(address).is_some() => {
+                    Some((region.element, ty))
+                }
                 _ => None,
             })
             .ok_or(EvalError::GlobalWrite { address })?;
 
         // Decode float constants without changing real expressions; integer outputs need known bits.
-        let value = match output_type {
-            OutputType::F32 => {
-                as_f32(arena, value).ok_or(EvalError::InvalidFloatOutput { address })?
+        let elements = match (element, word) {
+            (Element::Bf16, word) => {
+                let [low, high] = word
+                    .bf16_halves(arena)
+                    .ok_or(EvalError::InvalidBf16Output { address })?;
+                vec![(address, low), (address + 2, high)]
             }
-            OutputType::U32 => {
-                concrete_word(arena, value).ok_or(EvalError::InvalidIntegerOutput { address })?;
-                value
+            (Element::Word, Word::Bf16 { .. }) => {
+                return Err(EvalError::InvalidFloatOutput { address });
+            }
+            (Element::Word, Word::Value(value)) => {
+                let value = match output_type {
+                    OutputType::F32 => {
+                        as_f32(arena, value).ok_or(EvalError::InvalidFloatOutput { address })?
+                    }
+                    OutputType::U32 => {
+                        concrete_word(arena, value)
+                            .ok_or(EvalError::InvalidIntegerOutput { address })?;
+                        value
+                    }
+                };
+                vec![(address, value)]
             }
         };
-        match self.selected {
-            Some(workgroup) => {
-                if let Some(written) = self.written.get_mut(workgroup) {
-                    written.insert(address, value);
-                }
-            }
-            None => {
-                for written in &mut self.written {
-                    written.insert(address, value);
-                }
+        let workgroups = match self.selected {
+            Some(workgroup) => workgroup..workgroup + 1,
+            None => 0..self.written.len(),
+        };
+        for workgroup in workgroups {
+            if let Some(written) = self.written.get_mut(workgroup) {
+                written.extend(elements.iter().copied());
             }
         }
         Ok(())
@@ -198,7 +254,7 @@ impl GlobalMemory {
                 };
                 // Only output elements are ever written, so each address names one.
                 for region in &self.regions {
-                    if let Some(index) = region.element_at(address) {
+                    if let Some(index) = region.index_of_element(address) {
                         conflicts.push(OutputConflict {
                             array: arena.string(region.name).to_owned(),
                             index,
@@ -220,7 +276,7 @@ impl GlobalMemory {
                 let elements = written
                     .iter()
                     .filter_map(|(&address, &value)| {
-                        region.element_at(address).map(|index| (index, value))
+                        region.index_of_element(address).map(|index| (index, value))
                     })
                     .collect();
                 (arena.string(region.name).to_owned(), elements)
@@ -267,7 +323,7 @@ fn array_range(array: &ArrayDef) -> Result<ByteRange, EvalError> {
     if !array.base.is_multiple_of(4) {
         return Err(launch_error(format!("{label} must start 4-byte aligned")));
     }
-    let end = match array.len.checked_mul(4) {
+    let end = match array.len.checked_mul(array.element.bytes()) {
         Some(size) => array.base.checked_add(size),
         None => None,
     };

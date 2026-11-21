@@ -728,7 +728,7 @@ impl<'a> Interpreter<'a> {
                 let registers = &self.waves[wave].registers;
                 let mut values = Vec::new();
                 for source_reg in data.regs() {
-                    let value = registers.read_lane_reg(lane, source_reg)?;
+                    let value = registers.read_lane_word(lane, source_reg)?;
                     values.push(value);
                 }
                 for address in self

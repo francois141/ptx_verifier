@@ -12,6 +12,7 @@ use crate::ir::{
 
 use super::EvalError;
 use super::global::GlobalMemory;
+use super::word::Word;
 
 /// A wave of the selected workgroup, identified by its index.
 /// Wave `w` holds work-items `64w` to `64w + 63`.
@@ -71,17 +72,17 @@ pub(crate) enum LgkmInFlight {
 /// A register's value; a pending value is a load's result, which the wave may neither read nor
 /// overwrite before a wait completes the load.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum RegValue {
+enum RegValue<T = ExprId> {
     Uninitialized,
-    Ready(ExprId),
-    Pending(ExprId),
+    Ready(T),
+    Pending(T),
 }
 
 /// A vector register holds a word, or one half of an f64 stored as a single real across a pair.
 /// Both halves name the real, so a pair is one f64 only while its halves still match.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum VectorValue {
-    Word(RegValue),
+    Word(RegValue<Word>),
     F64Low(ExprId),
     F64High(ExprId),
 }
@@ -489,13 +490,10 @@ impl WaveRegisters {
 
     /// Make a completed load's destination readable, in every workgroup's state.
     fn finish_slot(&mut self, slot: Slot) {
-        let finish = |state: &mut Stored| {
-            if let Stored::Scalar(ScalarValue::Word(value))
-            | Stored::Vector(VectorValue::Word(value)) = state
-                && let RegValue::Pending(loaded) = *value
-            {
-                *value = RegValue::Ready(loaded);
-            }
+        let finish = |state: &mut Stored| match state {
+            Stored::Scalar(ScalarValue::Word(value)) => value.finish(),
+            Stored::Vector(VectorValue::Word(value)) => value.finish(),
+            _ => {}
         };
         let mut state = self.base_state(slot);
         finish(&mut state);
@@ -504,6 +502,15 @@ impl WaveRegisters {
             for state in states.iter_mut() {
                 finish(state);
             }
+        }
+    }
+}
+
+impl<T: Copy> RegValue<T> {
+    /// A completed load's value becomes readable.
+    fn finish(&mut self) {
+        if let RegValue::Pending(loaded) = *self {
+            *self = RegValue::Ready(loaded);
         }
     }
 }
@@ -527,11 +534,25 @@ fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
     atom && a == b
 }
 
-fn same_reg_value(arena: &ExprArena, a: RegValue, b: RegValue) -> bool {
+fn same_word(arena: &ExprArena, a: Word, b: Word) -> bool {
+    match (a, b) {
+        (Word::Value(a), Word::Value(b)) => same_value(arena, a, b),
+        (
+            Word::Bf16 { low, high },
+            Word::Bf16 {
+                low: other_low,
+                high: other_high,
+            },
+        ) => same_value(arena, low, other_low) && same_value(arena, high, other_high),
+        _ => false,
+    }
+}
+
+fn same_reg_value<T: Copy>(a: RegValue<T>, b: RegValue<T>, same: impl Fn(T, T) -> bool) -> bool {
     match (a, b) {
         (RegValue::Uninitialized, RegValue::Uninitialized) => true,
         (RegValue::Ready(a), RegValue::Ready(b)) | (RegValue::Pending(a), RegValue::Pending(b)) => {
-            same_value(arena, a, b)
+            same(a, b)
         }
         _ => false,
     }
@@ -545,9 +566,11 @@ fn same_state(arena: &ExprArena, a: &Stored, b: &Stored) -> bool {
         _ => false,
     };
     match (a, b) {
-        (Stored::Scalar(ScalarValue::Word(a)), Stored::Scalar(ScalarValue::Word(b)))
-        | (Stored::Vector(VectorValue::Word(a)), Stored::Vector(VectorValue::Word(b))) => {
-            same_reg_value(arena, *a, *b)
+        (Stored::Scalar(ScalarValue::Word(a)), Stored::Scalar(ScalarValue::Word(b))) => {
+            same_reg_value(*a, *b, |a, b| same_value(arena, a, b))
+        }
+        (Stored::Vector(VectorValue::Word(a)), Stored::Vector(VectorValue::Word(b))) => {
+            same_reg_value(*a, *b, |a, b| same_word(arena, a, b))
         }
         (Stored::Scalar(ScalarValue::LaneMask(a)), Stored::Scalar(ScalarValue::LaneMask(b))) => {
             a.len() == b.len()
@@ -782,8 +805,16 @@ impl WaveRegisters {
     /// Read a lane's vector register, rejecting an invalid lane, an unwritten register, or a
     /// pending load's destination.
     pub fn read_vgpr(&self, lane: usize, reg: Vgpr) -> Result<ExprId, EvalError> {
+        match self.read_vgpr_word(lane, reg)? {
+            Word::Value(value) => Ok(value),
+            Word::Bf16 { .. } => Err(EvalError::Bf16Halves { lane, reg }),
+        }
+    }
+
+    /// Read a lane's vector register as a word in either form, as moves and stores do.
+    pub(super) fn read_vgpr_word(&self, lane: usize, reg: Vgpr) -> Result<Word, EvalError> {
         match self.vector_at(lane, reg)? {
-            VectorValue::Word(RegValue::Ready(value)) => Ok(value),
+            VectorValue::Word(RegValue::Ready(word)) => Ok(word),
             VectorValue::Word(RegValue::Pending(_)) => Err(EvalError::PendingVgpr { lane, reg }),
             VectorValue::Word(RegValue::Uninitialized) => {
                 Err(EvalError::UninitializedVgpr { lane, reg })
@@ -791,6 +822,14 @@ impl WaveRegisters {
             VectorValue::F64Low(_) | VectorValue::F64High(_) => {
                 Err(EvalError::F64Half { lane, reg })
             }
+        }
+    }
+
+    /// A lane's VGPR or AGPR as a word in either form; AGPRs hold single values.
+    pub(super) fn read_lane_word(&self, lane: usize, reg: LaneReg) -> Result<Word, EvalError> {
+        match reg {
+            LaneReg::Vgpr(reg) => self.read_vgpr_word(lane, reg),
+            LaneReg::Agpr(reg) => self.read_agpr(lane, reg).map(Word::Value),
         }
     }
 
@@ -809,13 +848,6 @@ impl WaveRegisters {
     pub fn read_agpr(&self, lane: usize, reg: Agpr) -> Result<ExprId, EvalError> {
         self.agpr_at(lane, reg)?
             .ok_or(EvalError::UninitializedAgpr { lane, reg })
-    }
-
-    pub fn read_lane_reg(&self, lane: usize, reg: LaneReg) -> Result<ExprId, EvalError> {
-        match reg {
-            LaneReg::Vgpr(reg) => self.read_vgpr(lane, reg),
-            LaneReg::Agpr(reg) => self.read_agpr(lane, reg),
-        }
     }
 
     /// `lane`'s value of a first source, as its 32 bits.
@@ -993,8 +1025,17 @@ impl WaveRegisters {
     /// Write a vector register in one lane unless the lane is invalid or a load is still writing
     /// to the register.
     pub fn write_vgpr(&mut self, lane: usize, reg: Vgpr, value: ExprId) -> Result<(), EvalError> {
+        self.write_vgpr_word(lane, reg, Word::Value(value))
+    }
+
+    pub(super) fn write_vgpr_word(
+        &mut self,
+        lane: usize,
+        reg: Vgpr,
+        word: Word,
+    ) -> Result<(), EvalError> {
         self.check_vector_destination(lane, reg)?;
-        self.set_vector(lane, reg, VectorValue::Word(RegValue::Ready(value)));
+        self.set_vector(lane, reg, VectorValue::Word(RegValue::Ready(word)));
         Ok(())
     }
 
@@ -1050,9 +1091,11 @@ impl WaveRegisters {
             if matches!(value, VectorValue::F64Low(_) | VectorValue::F64High(_)) {
                 return Ok(value);
             }
+            let word = self.read_vgpr_word(lane, reg)?;
+            return Ok(VectorValue::Word(RegValue::Ready(word)));
         }
         let value = self.read_src0(arena, lane, src)?;
-        Ok(VectorValue::Word(RegValue::Ready(value)))
+        Ok(VectorValue::Word(RegValue::Ready(Word::Value(value))))
     }
 
     pub fn write_lane_reg(
@@ -1106,7 +1149,7 @@ impl WaveRegisters {
         &mut self,
         lane: usize,
         dst: &[Vgpr],
-        values: &[ExprId],
+        values: &[Word],
         counter: LoadCounter,
     ) -> Result<(), EvalError> {
         // Check every destination before changing any register.
@@ -1139,7 +1182,7 @@ impl WaveRegisters {
         let start = self.global_address(arena, lane, address)?;
         for (i, &reg) in (0u64..).zip(src) {
             let word_address = start.checked_add(4 * i).ok_or(EvalError::AddressOverflow)?;
-            global.store_dword(word_address, self.read_lane_reg(lane, reg)?, arena)?;
+            global.store_dword(word_address, self.read_lane_word(lane, reg)?, arena)?;
         }
         Ok(())
     }

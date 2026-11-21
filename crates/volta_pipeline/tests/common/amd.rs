@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    AnalysisError, AnalysisResult, ArrayDef, ArrayKind, OutputType, Terminal, WorkgroupLaunch,
-    analyze,
+    AnalysisError, AnalysisResult, ArrayDef, ArrayKind, Element, OutputType, Terminal,
+    WorkgroupLaunch, analyze,
 };
 use volta_expr::SymbolicOutputs;
 use volta_graph_check::{GraphConclusion, GraphReport, check_graph};
@@ -132,6 +132,7 @@ pub fn array_of(name: &str, base: u64, len: u64, kind: ArrayKind) -> ArrayDef {
         base,
         len,
         kind,
+        element: Element::Word,
     }
 }
 
@@ -321,6 +322,7 @@ pub fn gemm_arrays([m, n, k]: [u64; 3]) -> [ArrayDef; 3] {
         base,
         len,
         kind,
+        element: Element::Word,
     })
 }
 
@@ -633,6 +635,7 @@ pub fn fmha_arrays(len: u64) -> [ArrayDef; 4] {
         base,
         len,
         kind,
+        element: Element::Word,
     })
 }
 
@@ -758,6 +761,7 @@ pub fn rmsnorm_arrays(rows: u64, columns: u64) -> [ArrayDef; 3] {
         base,
         len,
         kind,
+        element: Element::Word,
     })
 }
 
@@ -880,6 +884,7 @@ pub fn avgpool_arrays(pool: &AvgPool2d) -> [ArrayDef; 2] {
         base,
         len: len as u64,
         kind,
+        element: Element::Word,
     })
 }
 

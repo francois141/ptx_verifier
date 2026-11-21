@@ -12,7 +12,7 @@ pub use analysis::{
     AnalysisError, AnalysisResult, GridAnalysis, StoreConflict, analyze, analyze_grid,
 };
 pub use eval::{
-    ArrayDef, ArrayKind, EvalError, LdsLaneAccess, LdsRace, OutputType, Terminal, WaveId,
+    ArrayDef, ArrayKind, Element, EvalError, LdsLaneAccess, LdsRace, OutputType, Terminal, WaveId,
     WorkgroupLaunch,
 };
 pub use ir::{

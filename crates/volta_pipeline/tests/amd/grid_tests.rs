@@ -6,7 +6,7 @@ use crate::common;
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    ArrayDef, ArrayKind, EvalError, OutputType, Terminal, WorkgroupLaunch, analyze_grid,
+    ArrayDef, ArrayKind, Element, EvalError, OutputType, Terminal, WorkgroupLaunch, analyze_grid,
 };
 use volta_equivalence::check::EquivCheckOptions;
 use volta_graph_check::{GraphConclusion, check_graph};
@@ -41,6 +41,7 @@ fn ck_gemm_launch(dims: [i32; 3]) -> (Vec<u8>, [ArrayDef; 3], u32) {
         base,
         len,
         kind,
+        element: Element::Word,
     });
     let tiles = dims.map(|d| (d as u32).div_ceil(64));
     let kernarg = ck_gemm_kernarg(0x10000, 0x50000, 0x90000, dims);

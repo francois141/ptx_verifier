@@ -4,7 +4,9 @@
 use std::time::Instant;
 
 use volta_amd_analysis::frontend::parse::parse_kernel;
-use volta_amd_analysis::{ArrayDef, ArrayKind, OutputType, Terminal, WorkgroupLaunch, analyze};
+use volta_amd_analysis::{
+    ArrayDef, ArrayKind, Element, OutputType, Terminal, WorkgroupLaunch, analyze,
+};
 use volta_common::logging::info;
 use volta_graph_check::check_graph;
 use volta_ptx_analysis::{AnalysisConfig, ParamValue};
@@ -144,18 +146,24 @@ fn word_array(array: &volta_ptx_analysis::ArrayDef) -> Result<ArrayDef, Frontend
         }
     };
 
-    if array.elem_width != 4 {
-        return Err(FrontendError::Launch(format!(
-            "AMD array `{}` has {}-byte elements; AMD arrays hold 32-bit words",
-            array.name, array.elem_width
-        )));
-    }
+    // A launch names no element type: the only 16-bit format the AMD model reads is bf16.
+    let element = match array.elem_width {
+        4 => Element::Word,
+        2 => Element::Bf16,
+        width => {
+            return Err(FrontendError::Launch(format!(
+                "AMD array `{}` has {width}-byte elements; AMD arrays hold 32-bit words or bf16",
+                array.name
+            )));
+        }
+    };
 
     Ok(ArrayDef {
         name: array.name.clone(),
         base: array.base,
         len: array.len,
         kind,
+        element,
     })
 }
 

@@ -7,6 +7,7 @@ use crate::ir::{
 };
 
 use super::wave::{LgkmInFlight, WaveId, WaveRegisters};
+use super::word::Word;
 use super::{EvalError, Interpreter};
 
 /// Read-only kernel argument bytes at a concrete device address.
@@ -260,12 +261,15 @@ impl Interpreter<'_> {
                 .load_dwords::<N>(address)?
                 .map(|word| self.arena.int(i64::from(word)))
         } else {
-            let first = self.global.load_dword(address, &mut self.arena)?;
+            // Scalar registers hold single values, so a bf16 input is not loaded into one.
+            let mut load = |address: u64| match self.global.load_dword(address, &mut self.arena)? {
+                Word::Value(value) => Ok(value),
+                Word::Bf16 { .. } => Err(EvalError::GlobalRead { address }),
+            };
+            let first = load(address)?;
             let mut values = [first; N];
             for (i, value) in values.iter_mut().enumerate().skip(1) {
-                *value = self
-                    .global
-                    .load_dword(address + 4 * i as u64, &mut self.arena)?;
+                *value = load(address + 4 * i as u64)?;
             }
             values
         };

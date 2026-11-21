@@ -5,6 +5,7 @@
 use crate::ir::{InstrId, LoweredInstr, Vgpr};
 
 use super::wave::{LgkmInFlight, LoadCounter, WaveId, active_lanes, lane_bit};
+use super::word::Word;
 use super::{EvalError, Interpreter};
 
 impl Interpreter<'_> {
@@ -57,9 +58,9 @@ impl Interpreter<'_> {
             let source_lane = ((address.wrapping_add(u32::from(offset)) >> 2) & 63) as usize;
             // EXEC applies to the source read as well: an inactive source lane delivers 0.
             let value = if lane_bit(exec, source_lane) {
-                registers.read_vgpr(source_lane, src)?
+                registers.read_vgpr_word(source_lane, src)?
             } else {
-                self.arena.int(0)
+                Word::Value(self.arena.int(0))
             };
             values.push((lane, value));
         }
