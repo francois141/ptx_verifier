@@ -2,6 +2,7 @@
 //! arrays, which vector stores write.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use volta_expr::FullOutputs;
 use volta_expr::symbolic_full::{ExprArena, ExprId, StringId};
@@ -18,9 +19,12 @@ pub enum OutputType {
     U32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayKind {
     Input,
+    /// A read-only input of concrete words, one per `Element::Word` element: integer data
+    /// such as counts and indices, which symbolic elements cannot address or divide.
+    Integers(Arc<[u32]>),
     Output(OutputType),
 }
 
@@ -125,6 +129,14 @@ impl GlobalMemory {
                     "{label} holds bf16 reals, not u32 words"
                 )));
             }
+            if let ArrayKind::Integers(words) = &array.kind
+                && (array.element != Element::Word || words.len() as u64 != array.len)
+            {
+                let label = array_label(array);
+                return Err(launch_error(format!(
+                    "{label} needs exactly one 32-bit word per element"
+                )));
+            }
             ranges.push(array_range(array)?);
         }
         check_disjoint(&ranges)?;
@@ -135,7 +147,7 @@ impl GlobalMemory {
                 name: arena.intern_string(array.name.clone()),
                 base: array.base,
                 len: array.len,
-                kind: array.kind,
+                kind: array.kind.clone(),
                 element: array.element,
             });
         }
@@ -149,9 +161,13 @@ impl GlobalMemory {
     /// The input word at `address`: its element's symbol, or the two symbols of a bf16 array.
     pub fn load_dword(&self, address: u64, arena: &mut ExprArena) -> Result<Word, EvalError> {
         for region in &self.regions {
-            if region.kind == ArrayKind::Input
-                && let Some(index) = region.element_at(address)
-            {
+            let Some(index) = region.element_at(address) else {
+                continue;
+            };
+            if let ArrayKind::Integers(words) = &region.kind {
+                return Ok(Word::Value(arena.int(i64::from(words[index as usize]))));
+            }
+            if region.kind == ArrayKind::Input {
                 return Ok(match region.element {
                     Element::Word => Word::Value(arena.input_element(region.name, index)),
                     Element::Bf16 => Word::Bf16 {

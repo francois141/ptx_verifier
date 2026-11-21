@@ -120,6 +120,23 @@ impl ConfigPy {
         self.0.global_values.push((name, value));
     }
 
+    /// Give an AMD input array concrete 32-bit words (an integer in `[-2^31, 2^32)` each, as a
+    /// launch file's `contents`): counts or indices the kernel computes addresses from.
+    fn set_contents(&mut self, name: String, words: Vec<i64>) -> PyResult<()> {
+        let words = words
+            .into_iter()
+            .map(|value| match value {
+                -0x8000_0000..0 => Ok(value as i32 as u32),
+                0..=0xffff_ffff => Ok(value as u32),
+                _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "array '{name}': {value} is not a 32-bit word"
+                ))),
+            })
+            .collect::<PyResult<_>>()?;
+        self.0.array_contents.push((name, words));
+        Ok(())
+    }
+
     fn __repr__(&self) -> String {
         format!("{:?}", self.0)
     }

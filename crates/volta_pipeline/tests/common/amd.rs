@@ -450,7 +450,7 @@ impl Launch {
         for (position, array) in self.arrays.iter().enumerate() {
             let name = format!(r#""{}","#, array.name);
             let kind = match array.kind {
-                ArrayKind::Input => r#""in","#,
+                ArrayKind::Input | ArrayKind::Integers(_) => r#""in","#,
                 ArrayKind::Output(_) => r#""out","#,
             };
             let shape = &array.shape;

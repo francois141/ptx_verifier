@@ -166,6 +166,8 @@ pub struct AnalysisConfig {
     pub dynamic_shared_bytes: u64,
     /// Abort analysis after this many executed instructions
     pub max_instructions: u64,
+    /// Concrete 32-bit words of input arrays, by name; only the AMD frontend reads them
+    pub array_contents: Vec<(String, Vec<u32>)>,
 }
 
 impl AnalysisConfig {
@@ -178,6 +180,7 @@ impl AnalysisConfig {
             global_values: Vec::new(),
             dynamic_shared_bytes: 0,
             max_instructions: 2_000_000_000,
+            array_contents: Vec::new(),
         }
     }
 

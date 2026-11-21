@@ -103,6 +103,7 @@ impl LaunchFile {
             config.max_instructions = max;
         }
 
+        config.array_contents = array_contents(&raw.arrays)?;
         config.arrays = lay_out_arrays(raw.arrays)?;
 
         for (position, param) in raw.params.into_iter().enumerate() {
@@ -129,6 +130,34 @@ impl LaunchFile {
             config,
         })
     }
+}
+
+/// Each `contents` as 32-bit words, an integer in `[-2^31, 2^32)` giving its two's complement.
+fn array_contents(raw_arrays: &[RawArray]) -> Result<Vec<(String, Vec<u32>)>, String> {
+    raw_arrays
+        .iter()
+        .filter_map(|raw| raw.contents.as_ref().map(|contents| (raw, contents)))
+        .map(|(raw, contents)| {
+            if !matches!(raw.kind, RawKind::In) {
+                return Err(format!(
+                    "array '{}': only an `in` array has `contents`",
+                    raw.name
+                ));
+            }
+            let words = contents
+                .iter()
+                .map(|&value| match value {
+                    -0x8000_0000..0 => Ok(value as i32 as u32),
+                    0..=0xffff_ffff => Ok(value as u32),
+                    _ => Err(format!(
+                        "array '{}': {value} is not a 32-bit word",
+                        raw.name
+                    )),
+                })
+                .collect::<Result<_, _>>()?;
+            Ok((raw.name.clone(), words))
+        })
+        .collect()
 }
 
 /// An array without a `base` starts at the first `ARRAY_ALIGN` boundary past
@@ -215,6 +244,7 @@ struct RawArray {
     shape: Option<Vec<u64>>,
     len: Option<u64>,
     base: Option<RawAddress>,
+    contents: Option<Vec<i64>>,
 }
 
 impl RawArray {

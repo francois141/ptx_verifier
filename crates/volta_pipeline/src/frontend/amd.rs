@@ -114,7 +114,7 @@ fn workgroup_launch(
     let arrays = launch
         .arrays
         .iter()
-        .map(word_array)
+        .map(|array| word_array(array, contents_of(launch, &array.name)))
         .collect::<Result<_, _>>()?;
 
     let mut kernarg = Vec::new();
@@ -133,9 +133,23 @@ fn workgroup_launch(
     Ok((workgroup, kernarg, arrays))
 }
 
-fn word_array(array: &volta_ptx_analysis::ArrayDef) -> Result<ArrayDef, FrontendError> {
+fn contents_of<'a>(launch: &'a AnalysisConfig, name: &str) -> Option<&'a [u32]> {
+    launch
+        .array_contents
+        .iter()
+        .find(|(array, _)| array == name)
+        .map(|(_, words)| words.as_slice())
+}
+
+fn word_array(
+    array: &volta_ptx_analysis::ArrayDef,
+    contents: Option<&[u32]>,
+) -> Result<ArrayDef, FrontendError> {
     let kind = match array.kind {
-        volta_ptx_analysis::ArrayKind::Input => ArrayKind::Input,
+        volta_ptx_analysis::ArrayKind::Input => match contents {
+            Some(words) => ArrayKind::Integers(words.into()),
+            None => ArrayKind::Input,
+        },
         // A launch carries no element type, so every output word is read as an f32.
         volta_ptx_analysis::ArrayKind::Output => ArrayKind::Output(OutputType::F32),
         volta_ptx_analysis::ArrayKind::InputOutput | volta_ptx_analysis::ArrayKind::IndexInput => {

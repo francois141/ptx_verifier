@@ -247,6 +247,8 @@ def load_launch(path: Path) -> Launch:
         length = math.prod(array["shape"])
         kind = ARRAY_KINDS[array["kind"]]
         config.add_array(volta.ArrayDef(array["name"], next_base, width, length, kind))
+        if "contents" in array:
+            config.set_contents(array["name"], array["contents"])
         next_base = -(-(next_base + width * length) // ARRAY_ALIGN) * ARRAY_ALIGN
 
     for param in launch["params"]:
