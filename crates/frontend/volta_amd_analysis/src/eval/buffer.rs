@@ -1,7 +1,7 @@
 //! Raw buffer loads and stores for a single lane.
 //! A buffer resource defines the base address and bounds of each access to global memory.
 
-use crate::ir::{BufferAddress, LaneReg, Sgpr, Vgpr};
+use crate::ir::{BufferAddress, LaneReg, ScalarSrc, Sgpr, Vgpr};
 
 use super::wave::{LoadCounter, WaveId};
 use super::{EvalError, Interpreter};
@@ -71,7 +71,12 @@ impl Interpreter<'_> {
         let registers = &self.waves[wave].registers;
         let vgpr_offset =
             registers.read_concrete_address_vgpr(&self.arena, lane, address.vgpr_offset)?;
-        let buffer_offset = u64::from(vgpr_offset) + address.imm_offset.bytes();
+        let soffset = match address.soffset {
+            ScalarSrc::Sgpr(reg) => registers.read_sgpr_word(&self.arena, reg)?,
+            ScalarSrc::Const(bits) => bits,
+        };
+        let buffer_offset =
+            u64::from(vgpr_offset) + u64::from(soffset) + address.imm_offset.bytes();
         let access_size = 4 * word_count;
         let buffer_end = buffer_offset + access_size;
 

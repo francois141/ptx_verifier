@@ -334,12 +334,13 @@ pub enum BranchCondition {
 }
 
 /// A raw buffer instruction's address in each lane: the byte offset in the lane's VGPR plus
-/// the instruction's immediate byte offset, within the buffer the four-SGPR resource
-/// describes. The SGPR offset is the inline constant 0.
+/// the scalar offset plus the instruction's immediate byte offset, within the buffer the
+/// four-SGPR resource describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferAddress {
     pub vgpr_offset: Vgpr,
     pub rsrc: [Sgpr; 4],
+    pub soffset: ScalarSrc,
     pub imm_offset: BufferImmOffset,
 }
 

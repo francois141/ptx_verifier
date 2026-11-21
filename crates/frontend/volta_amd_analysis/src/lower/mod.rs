@@ -1512,17 +1512,18 @@ fn branch_target(
     ))
 }
 
-/// Only the offset-enabled raw form is supported: `offen`, an SGPR offset of the inline
-/// constant 0, and an optional 12-bit immediate (LLVM 21.1.8's `isLegalMUBUFImmOffset`).
+/// Only the offset-enabled raw form is supported: `offen`, an SGPR or inline-integer scalar
+/// offset, and an optional 12-bit immediate (LLVM 21.1.8's `isLegalMUBUFImmOffset`).
 fn buffer_address(
     vaddr: &Operand,
     rsrc: &Operand,
     soffset: &Operand,
     modifiers: &[Operand],
 ) -> Result<BufferAddress, &'static str> {
-    if *soffset != Operand::Imm(0) {
-        return Err("expected an SGPR offset of 0");
-    }
+    let soffset = match soffset {
+        Operand::Imm(value @ 0..=64) => ScalarSrc::Const(*value as u32),
+        _ => ScalarSrc::Sgpr(sgpr(soffset).ok_or("expected an SGPR or inline scalar offset")?),
+    };
 
     let imm_offset = match modifiers {
         [Operand::Offen] => BufferImmOffset::ZERO,
@@ -1535,6 +1536,7 @@ fn buffer_address(
     Ok(BufferAddress {
         vgpr_offset: vgpr(vaddr).ok_or("expected one offset VGPR")?,
         rsrc: sgprs(rsrc).ok_or("expected an aligned four-SGPR buffer resource")?,
+        soffset,
         imm_offset,
     })
 }
