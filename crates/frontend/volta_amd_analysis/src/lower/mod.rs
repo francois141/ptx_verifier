@@ -1085,7 +1085,9 @@ fn lower_cmp_f64(mnemonic: &str, operands: &[Operand]) -> Result<LoweredInstr, &
             }
             LaneMask::Vcc
         }
-        Encoding::E64 => lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?,
+        Encoding::E64 => {
+            lane_mask(dst).ok_or("expected vcc or an aligned SGPR destination pair")?
+        }
     };
     Ok(LoweredInstr::CmpF64 {
         op,
@@ -1174,7 +1176,8 @@ fn lower_cvt_from_f64(
     Ok(LoweredInstr::CvtFromF64 {
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
-        src: f64_source(src, encoding).ok_or("expected a register pair or a constant f64 source")?,
+        src: f64_source(src, encoding)
+            .ok_or("expected a register pair or a constant f64 source")?,
     })
 }
 

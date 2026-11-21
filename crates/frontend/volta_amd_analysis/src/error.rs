@@ -10,44 +10,99 @@ pub enum EvalError {
     InvalidSgpr(Sgpr),
     InvalidLane(usize),
     UninitializedSgpr(Sgpr),
-    UninitializedVgpr { lane: usize, reg: Vgpr },
-    UninitializedAgpr { lane: usize, reg: Agpr },
-    UninitializedVcc { lane: usize },
+    UninitializedVgpr {
+        lane: usize,
+        reg: Vgpr,
+    },
+    UninitializedAgpr {
+        lane: usize,
+        reg: Agpr,
+    },
+    UninitializedVcc {
+        lane: usize,
+    },
     UninitializedScc,
     SymbolicSgpr(Sgpr),
-    SymbolicVcc { lane: usize },
-    SymbolicWord { lane: usize },
-    AmbiguousSelect { lane: usize },
+    SymbolicVcc {
+        lane: usize,
+    },
+    SymbolicWord {
+        lane: usize,
+    },
+    AmbiguousSelect {
+        lane: usize,
+    },
     /// An fp8 conversion of a symbolic f32, or of one that needs rounding to fp8.
-    UnmodeledFp8 { lane: usize },
-    UnsupportedBufferResource { reason: &'static str },
-    PartialBufferAccess { buffer_offset: u64 },
-    LdsAccess { address: u64, size: u32 },
-    UninitializedLds { address: u32 },
+    UnmodeledFp8 {
+        lane: usize,
+    },
+    UnsupportedBufferResource {
+        reason: &'static str,
+    },
+    PartialBufferAccess {
+        buffer_offset: u64,
+    },
+    LdsAccess {
+        address: u64,
+        size: u32,
+    },
+    UninitializedLds {
+        address: u32,
+    },
     LdsRace(LdsRace),
     PendingSgpr(Sgpr),
-    PendingVgpr { lane: usize, reg: Vgpr },
+    PendingVgpr {
+        lane: usize,
+        reg: Vgpr,
+    },
     InvalidAddressRegister(Sgpr),
-    InvalidAddressVgpr { lane: usize, reg: Vgpr },
-    InvalidFloatVgpr { lane: usize, reg: Vgpr },
-    InvalidFloatAgpr { lane: usize, reg: Agpr },
+    InvalidAddressVgpr {
+        lane: usize,
+        reg: Vgpr,
+    },
+    InvalidFloatVgpr {
+        lane: usize,
+        reg: Vgpr,
+    },
+    InvalidFloatAgpr {
+        lane: usize,
+        reg: Agpr,
+    },
     InvalidFloatSgpr(Sgpr),
     InvalidFloatConstant(u32),
     /// A word instruction read one half of an f64 held across a register pair.
-    F64Half { lane: usize, reg: Vgpr },
+    F64Half {
+        lane: usize,
+        reg: Vgpr,
+    },
     /// A VGPR pair read as an f64 holds neither one f64 value nor two concrete words.
-    InvalidF64Vgpr { lane: usize, reg: Vgpr },
+    InvalidF64Vgpr {
+        lane: usize,
+        reg: Vgpr,
+    },
     /// The bits of an f64 source encode a NaN.
     InvalidF64Bits(u64),
     AddressOverflow,
-    KernargRead { address: u64 },
-    GlobalRead { address: u64 },
-    GlobalWrite { address: u64 },
-    InvalidFloatOutput { address: u64 },
-    InvalidIntegerOutput { address: u64 },
+    KernargRead {
+        address: u64,
+    },
+    GlobalRead {
+        address: u64,
+    },
+    GlobalWrite {
+        address: u64,
+    },
+    InvalidFloatOutput {
+        address: u64,
+    },
+    InvalidIntegerOutput {
+        address: u64,
+    },
     UnsupportedInstruction,
     MissingEndPgm,
-    Launch { message: String },
+    Launch {
+        message: String,
+    },
     /// A value that differs between the launch's workgroups, where one shared value is required:
     /// a branch condition, EXEC, an LDS access, or any read without a selected workgroup.
     DependsOnWorkgroup,

@@ -161,7 +161,10 @@ fn nki_kernels_rewriting_tiles_only_after_reading_them_are_verified() {
         ("subscripts_softmax", &softmax),
         ("fused_softmax", &[("x", &[2, 4])]),
         ("access_patterns", &[("a", &[2, 6]), ("prod", &[2, 3, 2])]),
-        ("placed_tiles", &[("a_t", &[4, 2]), ("b", &[4, 3]), ("again", &[2, 3])]),
+        (
+            "placed_tiles",
+            &[("a_t", &[4, 2]), ("b", &[4, 3]), ("again", &[2, 3])],
+        ),
         ("sequential_carried", &[("a", &[3, 4]), ("out", &[2, 4])]),
     ];
     for (name, shapes) in kernels {
@@ -667,7 +670,10 @@ fn probes() -> Vec<Probe> {
         ("subscripts_softmax", &softmax),
         ("subscripts_matmul", &matmul),
         ("fused_softmax", &[("x", &[2, 4])]),
-        ("placed_tiles", &[("a_t", &[4, 2]), ("b", &[4, 3]), ("again", &[2, 3])]),
+        (
+            "placed_tiles",
+            &[("a_t", &[4, 2]), ("b", &[4, 3]), ("again", &[2, 3])],
+        ),
         ("access_patterns", &[("a", &[2, 6]), ("prod", &[2, 3, 2])]),
         ("sequential_carried", &[("a", &[3, 4]), ("out", &[2, 4])]),
     ];
