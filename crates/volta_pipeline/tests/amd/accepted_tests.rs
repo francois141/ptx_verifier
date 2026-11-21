@@ -245,6 +245,33 @@ fn the_copy_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that a workgroup of 40 work-items runs as one wave whose last 24 lanes start inactive:
+// only the first 40 elements are copied.
+#[test]
+fn a_workgroup_smaller_than_a_wave_runs_only_its_work_items() {
+    let arrays = [
+        array("in", 0x10000, ArrayKind::Input),
+        array("out", 0x20000, ArrayKind::Output(F32)),
+    ];
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    let outputs = check_amd(
+        "success/copy.s",
+        amd_fixture!("success/copy"),
+        "copy",
+        40,
+        &kernarg,
+        &arrays,
+    )
+    .verified_outputs();
+    let copied: Vec<(u64, String)> = outputs.outputs[0]
+        .1
+        .iter()
+        .map(|&(index, value)| (index, outputs.arena.display_expr(value).to_string()))
+        .collect();
+    let expected: Vec<(u64, String)> = (0..40).map(|i| (i, format!("in[{i}]"))).collect();
+    assert_eq!(copied, expected);
+}
+
 #[test]
 fn the_add_kernel_writes_its_expected_outputs() {
     common::amd::check_run(

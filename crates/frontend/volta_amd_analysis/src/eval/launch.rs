@@ -120,11 +120,13 @@ pub(crate) fn initialize_waves(
         .checked_mul(size_y)
         .and_then(|xy| xy.checked_mul(size_z));
 
-    let Some(workitems) =
-        workitems.filter(|count| (64..=1024).contains(count) && count.is_multiple_of(64))
-    else {
+    // A workgroup of fewer than 64 work-items is one wave whose other lanes start inactive.
+    let Some(workitems) = workitems.filter(|count| {
+        (1..64).contains(count) || ((64..=1024).contains(count) && count.is_multiple_of(64))
+    }) else {
         return Err(EvalError::Launch {
-            message: "expected a workgroup totaling 64 to 1024 work-items in full waves".into(),
+            message: "expected a workgroup of 1 to 63 work-items, or of 64 to 1024 in full waves"
+                .into(),
         });
     };
 
@@ -180,7 +182,7 @@ pub(crate) fn initialize_waves(
     }
 
     let mut waves = Vec::new();
-    for wave in (0..workitems / 64).map(WaveId) {
+    for wave in (0..workitems.div_ceil(64)).map(WaveId) {
         // Initialize scalar registers with the requested launch inputs.
         let mut registers = WaveRegisters::default();
         if kernarg_enabled {
@@ -204,7 +206,11 @@ pub(crate) fn initialize_waves(
             registers.write_vgpr(lane, Vgpr(0), id)?;
         }
 
-        waves.push(WaveState::new(registers));
+        let mut state = WaveState::new(registers);
+        if workitems < 64 {
+            state.exec = (1 << workitems) - 1;
+        }
+        waves.push(state);
     }
     Ok(IdVec::from_vec(waves))
 }
