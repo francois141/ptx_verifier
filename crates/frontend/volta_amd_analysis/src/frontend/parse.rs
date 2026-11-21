@@ -98,6 +98,7 @@ fn operand(text: &str) -> Option<Operand> {
     if let Some((name, rest)) = text.split_once('(') {
         let counter = match name {
             "vmcnt" => Counter::Vm,
+            "expcnt" => Counter::Exp,
             "lgkmcnt" => Counter::Lgkm,
             _ => return None,
         };
@@ -412,7 +413,7 @@ mod tests {
             "s[0]",
             "x0",
             "glc",
-            "expcnt(0)",
+            "bound_ctrl:0",
             "vmcnt(x)",
             "--1",
         ] {

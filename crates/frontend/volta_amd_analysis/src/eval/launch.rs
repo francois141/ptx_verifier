@@ -109,7 +109,7 @@ pub(crate) fn initialize_waves(
     launch: &WorkgroupLaunch,
     arena: &mut ExprArena,
 ) -> Result<IdVec<WaveId, WaveState>, EvalError> {
-    if kernel.target.split(':').next() != Some("amdgcn-amd-amdhsa--gfx950") {
+    if !crate::lower::targets_gfx950(&kernel.target) {
         return Err(EvalError::Launch {
             message: format!("unsupported target {:?}", kernel.target),
         });

@@ -36,6 +36,8 @@ pub enum RegFile {
 pub enum Counter {
     Vm,
     Lgkm,
+    /// Export and GDS operations, which no modeled instruction issues.
+    Exp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +75,7 @@ pub enum Operand {
     /// Negate selected sources for the low or high result of a packed instruction.
     NegLo(Vec<bool>),
     NegHi(Vec<bool>),
-    /// `vmcnt(n)` or `lgkmcnt(n)`.
+    /// `vmcnt(n)`, `expcnt(n)` or `lgkmcnt(n)`.
     Wait {
         counter: Counter,
         value: u64,

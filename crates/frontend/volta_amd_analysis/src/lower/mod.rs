@@ -48,7 +48,7 @@ impl std::error::Error for LowerError {}
 /// Lower a parsed kernel into typed instructions, preserving order and launch metadata.
 /// Return `LowerError` for unsupported targets, instructions, or operand forms.
 pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
-    if kernel.target.split(':').next() != Some("amdgcn-amd-amdhsa--gfx950") {
+    if !targets_gfx950(&kernel.target) {
         return Err(LowerError::UnsupportedTarget {
             target: kernel.target.clone(),
         });
@@ -73,6 +73,15 @@ pub fn lower_kernel(kernel: &Kernel) -> Result<LoweredKernel, LowerError> {
         instructions: IdVec::from_vec(instructions),
         descriptor: kernel.descriptor.clone(),
     })
+}
+
+/// Whether an `.amdgcn_target` names gfx950, with any target features. Clang leaves the
+/// triple's environment empty; MLIR-based compilers spell it `unknown`.
+pub(crate) fn targets_gfx950(target: &str) -> bool {
+    matches!(
+        target.split(':').next(),
+        Some("amdgcn-amd-amdhsa--gfx950" | "amdgcn-amd-amdhsa-unknown-gfx950")
+    )
 }
 
 /// What lowering reports for an opcode it does not know.
@@ -329,6 +338,20 @@ fn lower_as_written(
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source(src).ok_or("expected an SGPR or a 32-bit constant source")?,
         }),
+        ("s_mulk_i32", [dst, src]) => {
+            let dst = sgpr(dst).ok_or("expected one destination SGPR")?;
+            Ok(ScalarOp32 {
+                op: ir::ScalarOp32::MulI32,
+                dst,
+                src0: ScalarSrc::Sgpr(dst),
+                src1: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
+            })
+        }
+        // Wave priority changes only the hardware's scheduling, which no result depends on.
+        ("s_setprio", [priority]) => {
+            immediate(priority, 3).ok_or("expected a priority from 0 to 3")?;
+            Ok(Nop)
+        }
         ("v_and_b32_e32", operands) => lower_bin_op(ir::BinOp::And32, operands),
         ("v_or_b32_e32", operands) => lower_bin_op(ir::BinOp::Or32, operands),
         ("v_xor_b32_e32", operands) => lower_bin_op(ir::BinOp::Xor32, operands),
@@ -773,6 +796,8 @@ fn lower_as_written(
             | "buffer_store_dwordx3"
             | "buffer_store_dwordx4"
             | "s_mov_b32"
+            | "s_mulk_i32"
+            | "s_setprio"
             | "v_mfma_f32_16x16x4_f32"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"
@@ -1954,6 +1979,11 @@ fn lower_wait(operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
                 counter: Counter::Lgkm,
                 value,
             } if *value <= 15 => (&mut lgkmcnt, *value),
+            // No modeled instruction issues an export, so the counter is always zero.
+            Operand::Wait {
+                counter: Counter::Exp,
+                value,
+            } if *value <= 7 => continue,
             _ => return Err("unsupported wait counter or value"),
         };
         if slot.replace(value as u8).is_some() {
