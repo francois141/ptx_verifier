@@ -345,7 +345,8 @@ pub enum BranchCondition {
 /// four-SGPR resource describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferAddress {
-    pub vgpr_offset: Vgpr,
+    /// `None` for `off`: the address has no per-lane offset.
+    pub vgpr_offset: Option<Vgpr>,
     pub rsrc: [Sgpr; 4],
     pub soffset: ScalarSrc,
     pub imm_offset: BufferImmOffset,
@@ -528,13 +529,20 @@ impl BufferStoreSrc {
     }
 }
 
-/// A global instruction's address in each lane: the SGPR-pair base, plus the lane's VGPR as a
-/// 32-bit unsigned offset, plus a signed 13-bit immediate byte offset.
+/// A global instruction's address in each lane: its base plus a signed 13-bit immediate byte
+/// offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalAddress {
-    pub vaddr: Vgpr,
-    pub saddr: [Sgpr; 2],
+    pub base: GlobalBase,
     pub offset: i16,
+}
+
+/// A global address before its immediate offset: an SGPR-pair base plus a 32-bit VGPR offset,
+/// or, for `off`, a 64-bit address in a VGPR pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalBase {
+    Scalar { vaddr: Vgpr, saddr: [Sgpr; 2] },
+    Vector([Vgpr; 2]),
 }
 
 /// A VOP2 operation of two sources: the 32-bit ops read their operands as words, the f32 ops

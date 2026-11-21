@@ -41,6 +41,7 @@ fn operand(text: &str) -> Option<Operand> {
         "exec" => return Some(Operand::Exec),
         "m0" => return Some(Operand::M0),
         "offen" => return Some(Operand::Offen),
+        "off" => return Some(Operand::Off),
         "lds" => return Some(Operand::Lds),
         "bound_ctrl:1" => return Some(Operand::BoundCtrl),
         _ => {}

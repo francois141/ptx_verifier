@@ -7,7 +7,8 @@ use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Type, Width};
 use volta_graph::AsyncOpId;
 
 use crate::ir::{
-    Agpr, F64Src, GlobalAddress, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0, Vgpr, Vop3Src,
+    Agpr, F64Src, GlobalAddress, GlobalBase, InstrId, LaneMask, LaneReg, ModifiedSrc, Sgpr, Src0,
+    Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -1004,18 +1005,27 @@ impl WaveRegisters {
     }
 
     /// The address `lane` accesses in a global instruction: an SGPR-pair base plus a 32-bit
-    /// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`, plus
-    /// the instruction's immediate offset.
+    /// VGPR offset (CDNA4 §10.4), zero-extended as in LLVM 21.1.8's `SelectGlobalSAddr`, or for
+    /// `off` the 64-bit address in a VGPR pair, plus the instruction's immediate offset.
     pub fn global_address(
         &self,
         arena: &ExprArena,
         lane: usize,
         address: GlobalAddress,
     ) -> Result<u64, EvalError> {
-        let base = self.read_concrete_address(arena, address.saddr)?;
-        let offset = self.read_concrete_address_vgpr(arena, lane, address.vaddr)?;
-        base.checked_add(u64::from(offset))
-            .and_then(|sum| sum.checked_add_signed(i64::from(address.offset)))
+        let base = match address.base {
+            GlobalBase::Scalar { vaddr, saddr } => {
+                let base = self.read_concrete_address(arena, saddr)?;
+                let offset = self.read_concrete_address_vgpr(arena, lane, vaddr)?;
+                base.checked_add(u64::from(offset))
+            }
+            GlobalBase::Vector([low, high]) => {
+                let low = self.read_concrete_address_vgpr(arena, lane, low)?;
+                let high = self.read_concrete_address_vgpr(arena, lane, high)?;
+                Some(u64::from(low) | u64::from(high) << 32)
+            }
+        };
+        base.and_then(|sum| sum.checked_add_signed(i64::from(address.offset)))
             .ok_or(EvalError::AddressOverflow)
     }
 

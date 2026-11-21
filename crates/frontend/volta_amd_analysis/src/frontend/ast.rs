@@ -70,6 +70,8 @@ pub enum Operand {
     Label(String),
     /// A buffer instruction's `offen` flag: its address VGPR is a byte offset.
     Offen,
+    /// A memory instruction's `off` in place of an address register.
+    Off,
     /// The `offset0:n` and `offset1:n` of a two-address LDS instruction, in units of its size.
     Offset0(u64),
     Offset1(u64),

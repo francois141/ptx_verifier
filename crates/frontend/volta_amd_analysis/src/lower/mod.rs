@@ -1613,16 +1613,20 @@ fn buffer_address(
         _ => ScalarSrc::Sgpr(sgpr(soffset).ok_or("expected an SGPR or inline scalar offset")?),
     };
 
-    let imm_offset = match modifiers {
-        [Operand::Offen] => BufferImmOffset::ZERO,
-        [Operand::Offen, Operand::Offset(offset)] => {
-            BufferImmOffset::new(*offset).ok_or("expected an unsigned 12-bit byte offset")?
-        }
-        _ => return Err("expected offen and an optional byte offset"),
+    let offset = |offset: &i64| {
+        BufferImmOffset::new(*offset).ok_or("expected an unsigned 12-bit byte offset")
+    };
+    let lane_offset = || vgpr(vaddr).map(Some).ok_or("expected one offset VGPR");
+    let (vgpr_offset, imm_offset) = match (vaddr, modifiers) {
+        (Operand::Off, []) => (None, BufferImmOffset::ZERO),
+        (Operand::Off, [Operand::Offset(imm)]) => (None, offset(imm)?),
+        (_, [Operand::Offen]) => (lane_offset()?, BufferImmOffset::ZERO),
+        (_, [Operand::Offen, Operand::Offset(imm)]) => (lane_offset()?, offset(imm)?),
+        _ => return Err("expected `off`, or a VGPR with offen, and an optional byte offset"),
     };
 
     Ok(BufferAddress {
-        vgpr_offset: vgpr(vaddr).ok_or("expected one offset VGPR")?,
+        vgpr_offset,
         rsrc: sgprs(rsrc).ok_or("expected an aligned four-SGPR buffer resource")?,
         soffset,
         imm_offset,
@@ -2052,11 +2056,16 @@ fn global_address(
             .ok_or("expected a signed 13-bit byte offset")?,
         _ => return Err("unsupported operand count"),
     };
-    Ok(GlobalAddress {
-        vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
-        saddr: sgprs(saddr).ok_or("expected an aligned SGPR base pair")?,
-        offset,
-    })
+    let base = match saddr {
+        Operand::Off => ir::GlobalBase::Vector(
+            vgprs(vaddr).ok_or("expected an even-aligned VGPR address pair")?,
+        ),
+        _ => ir::GlobalBase::Scalar {
+            vaddr: vgpr(vaddr).ok_or("expected one address VGPR")?,
+            saddr: sgprs(saddr).ok_or("expected an aligned SGPR base pair")?,
+        },
+    };
+    Ok(GlobalAddress { base, offset })
 }
 
 /// A 32-bit literal or an inline constant, as the 32 bits of the operand.

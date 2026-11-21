@@ -273,6 +273,19 @@ fn a_workgroup_smaller_than_a_wave_runs_only_its_work_items() {
     assert_eq!(copied, expected);
 }
 
+// Test `off` addresses: a global load through a VGPR address pair with a negative offset reads
+// each lane's input element, and a buffer load without a lane offset reads input[3] everywhere.
+#[test]
+fn the_off_addresses_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/off_addresses",
+        &[
+            array("input", 0x10000, ArrayKind::Input),
+            array_of("out", 0x20000, 128, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 #[test]
 fn the_add_kernel_writes_its_expected_outputs() {
     common::amd::check_run(

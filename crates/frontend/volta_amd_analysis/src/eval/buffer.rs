@@ -70,8 +70,10 @@ impl Interpreter<'_> {
     ) -> Result<BufferRange, EvalError> {
         let resource = self.buffer_resource(wave, address.rsrc)?;
         let registers = &self.waves[wave].registers;
-        let vgpr_offset =
-            registers.read_concrete_address_vgpr(&self.arena, lane, address.vgpr_offset)?;
+        let vgpr_offset = match address.vgpr_offset {
+            Some(reg) => registers.read_concrete_address_vgpr(&self.arena, lane, reg)?,
+            None => 0,
+        };
         let soffset = match address.soffset {
             ScalarSrc::Sgpr(reg) => registers.read_sgpr_word(&self.arena, reg)?,
             ScalarSrc::Const(bits) => bits,
