@@ -56,8 +56,8 @@ impl<const N: usize> LaneRegs<N> {
 /// An MFMA's accumulator input: registers of the destination's file that coincide with the
 /// destination or do not overlap it, or an inline constant for every element, as a `Vop3Src`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MfmaSrcC {
-    Regs(LaneRegs<4>),
+pub enum MfmaSrcC<const N: usize = 4> {
+    Regs(LaneRegs<N>),
     Inline(u32),
 }
 
@@ -1020,6 +1020,16 @@ pub enum LoweredInstr {
         src_b: LaneReg,
         src_c: MfmaSrcC,
     },
+    /// The wave's `D = A * B + C` over bf16 `A` and `B` and f32 `C` and `D`, for a 32 x 16 `A`,
+    /// a 16 x 32 `B` and 32 x 32 `C` and `D`: lane `l` holds `A[l % 32][8 * (l / 32) + j]` and
+    /// `B[8 * (l / 32) + j][l % 32]` as the `j`th bf16 of its source registers, low half first,
+    /// and its `r`th accumulator register `C[8 * (r / 4) + 4 * (l / 32) + r % 4][l % 32]`.
+    Mfma32x32x16Bf16 {
+        dst: LaneRegs<16>,
+        src_a: LaneRegs<4>,
+        src_b: LaneRegs<4>,
+        src_c: MfmaSrcC<16>,
+    },
     /// The two f32 sources as the bf16 halves of `dst`, `srcs[0]` in the low half.
     CvtPkBf16F32 {
         dst: Vgpr,
@@ -1116,6 +1126,7 @@ impl LoweredInstr {
             Self::CvtFromF64 { .. } => "v_cvt from f64",
             Self::PackedF32 { .. } => "packed f32 op",
             Self::Mfma16x16x4F32 { .. } => "v_mfma_f32_16x16x4_f32",
+            Self::Mfma32x32x16Bf16 { .. } => "v_mfma_f32_32x32x16_bf16",
             Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
             Self::GlobalLoad { .. } => "global_load",
             Self::GlobalStore { .. } => "global_store",

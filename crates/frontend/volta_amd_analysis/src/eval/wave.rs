@@ -825,6 +825,17 @@ impl WaveRegisters {
         }
     }
 
+    /// A lane's register as two bf16 halves, low first.
+    pub(super) fn read_bf16_halves(
+        &self,
+        arena: &mut ExprArena,
+        lane: usize,
+        reg: LaneReg,
+    ) -> Result<[ExprId; 2], EvalError> {
+        let word = self.read_lane_word(lane, reg)?;
+        word.bf16_halves(arena).ok_or(EvalError::NotBf16 { lane })
+    }
+
     /// A lane's VGPR or AGPR as a word in either form; AGPRs hold single values.
     pub(super) fn read_lane_word(&self, lane: usize, reg: LaneReg) -> Result<Word, EvalError> {
         match reg {

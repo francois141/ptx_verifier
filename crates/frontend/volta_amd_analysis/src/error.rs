@@ -80,6 +80,10 @@ pub enum EvalError {
         lane: usize,
         reg: Vgpr,
     },
+    /// An instruction that reads bf16 halves read a symbolic word, whose bits are unknown.
+    NotBf16 {
+        lane: usize,
+    },
     /// A store of a word that is not two bf16 halves to a bf16 output.
     InvalidBf16Output {
         address: u64,
@@ -238,6 +242,10 @@ impl fmt::Display for EvalError {
                 f,
                 "v{} in lane {lane} holds two bf16 halves, which this instruction does not read",
                 reg.0
+            ),
+            Self::NotBf16 { lane } => write!(
+                f,
+                "lane {lane} reads bf16 halves from a symbolic word, whose bits are unknown"
             ),
             Self::InvalidBf16Output { address } => write!(
                 f,

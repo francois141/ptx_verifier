@@ -665,6 +665,16 @@ fn lower_as_written(
                 src_c: mfma_src_c(dst, src_c)?,
             })
         }
+        ("v_mfma_f32_32x32x16_bf16", [dst, src_a, src_b, src_c]) => {
+            let dst = lane_regs(dst)
+                .ok_or("expected an aligned sixteen-VGPR or sixteen-AGPR destination")?;
+            Ok(Mfma32x32x16Bf16 {
+                dst,
+                src_a: lane_regs(src_a).ok_or("expected an aligned four-register A source")?,
+                src_b: lane_regs(src_b).ok_or("expected an aligned four-register B source")?,
+                src_c: mfma_src_c16(dst, src_c)?,
+            })
+        }
         ("v_cvt_pk_bf16_f32", [dst, src0, src1]) => Ok(CvtPkBf16F32 {
             dst: vgpr(dst).ok_or("expected one destination VGPR")?,
             srcs: [
@@ -809,6 +819,7 @@ fn lower_as_written(
             | "s_mulk_i32"
             | "s_setprio"
             | "v_mfma_f32_16x16x4_f32"
+            | "v_mfma_f32_32x32x16_bf16"
             | "v_cvt_pk_bf16_f32"
             | "v_cndmask_b32_e32"
             | "v_accvgpr_write_b32"
@@ -1797,6 +1808,30 @@ fn mfma_src_c(dst: LaneRegs<4>, operand: &Operand) -> Result<MfmaSrcC, &'static 
     match (dst, src) {
         (LaneRegs::Vgprs(_), LaneRegs::Vgprs(_)) | (LaneRegs::Agprs(_), LaneRegs::Agprs(_)) => {}
         _ => return Err("expected the accumulator in the destination's register file"),
+    }
+    Ok(MfmaSrcC::Regs(src))
+}
+
+/// A sixteen-register result is early-clobbered, so the accumulator must be the destination
+/// itself or not overlap it.
+fn mfma_src_c16(dst: LaneRegs<16>, operand: &Operand) -> Result<MfmaSrcC<16>, &'static str> {
+    if let Some(Vop3Src::Inline(bits)) = vop3_src(operand) {
+        return Ok(MfmaSrcC::Inline(bits));
+    }
+    let src = lane_regs::<16>(operand)
+        .ok_or("expected an inline constant or an aligned sixteen-register accumulator")?;
+    let disjoint = |a: &[u8; 16], b: &[u8; 16]| a[15] < b[0] || b[15] < a[0];
+    let valid = match (dst, src) {
+        (LaneRegs::Vgprs(d), LaneRegs::Vgprs(s)) => {
+            d == s || disjoint(&d.map(|reg| reg.0), &s.map(|reg| reg.0))
+        }
+        (LaneRegs::Agprs(d), LaneRegs::Agprs(s)) => {
+            d == s || disjoint(&d.map(|reg| reg.0), &s.map(|reg| reg.0))
+        }
+        _ => return Err("expected the accumulator in the destination's register file"),
+    };
+    if !valid {
+        return Err("expected the accumulator to be the destination or not overlap it");
     }
     Ok(MfmaSrcC::Regs(src))
 }
