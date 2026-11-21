@@ -302,6 +302,9 @@ pub(super) fn evaluate_cndmask(
     let condition = registers.read_vcc(lane)?;
     let a = registers.read_src0(arena, lane, src0)?;
     let b = registers.read_vgpr(lane, src1)?;
+    if let Some(word) = select_equal(arena, condition, a, b) {
+        return Ok(word);
+    }
     if let Some(word) = select_words(arena, lane, condition, a, b)? {
         return Ok(word);
     }
@@ -331,6 +334,9 @@ pub(super) fn evaluate_cndmask_e64(
     }
     let a = registers.read_src(arena, lane, src0.src)?;
     let b = registers.read_src(arena, lane, src1.src)?;
+    if let Some(word) = select_equal(arena, condition, a, b) {
+        return Ok(word);
+    }
     if let Some(word) = select_words(arena, lane, condition, a, b)? {
         return Ok(word);
     }
@@ -858,6 +864,15 @@ pub(super) fn evaluate_cmp64(
         CmpPredicate::Ne => order.is_ne(),
         CmpPredicate::Ge => order.is_ge(),
     }))
+}
+
+/// `condition ? b : a` when `condition` is `x == y` and the sources are `x` and `y`: whichever
+/// way the condition goes, the result equals `a`.
+fn select_equal(arena: &ExprArena, condition: ExprId, a: ExprId, b: ExprId) -> Option<ExprId> {
+    match *arena.node(condition) {
+        ExprNode::Eq(x, y) if (x, y) == (a, b) || (x, y) == (b, a) => Some(a),
+        _ => None,
+    }
 }
 
 /// An integer comparison needs concrete words, which it reinterprets as `op`'s signedness.
