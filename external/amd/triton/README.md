@@ -1,4 +1,4 @@
-# Triton tutorial kernels on AMD
+# Triton kernels on AMD
 
 Triton's classic tutorial kernels (triton-lang.org, "Getting Started"), in fp32, compiled for AMD
 gfx950 (CDNA4) and checked against a spec each. `kernels.py` holds them with every size a
@@ -25,6 +25,31 @@ tutorials use fp16 operands for the GEMM; here they are fp32, so `tl.dot` is
 `v_mfma_f32_16x16x4_f32` (`matrix_instr_nonkdim=16`). Softmax's 100 columns and layer norm's 100
 leave a partly masked block: softmax loads `-inf` there, which drops out of the max and the sum.
 Layer norm also stores each row's mean and reciprocal standard deviation, which its spec states.
+
+## Binary GEMMs
+
+The two Triton kernels of `external/bitwise/` that compute with packed bits, compiled for gfx950
+at that directory's sizes (M=N=K=256) and checked against its specs. Volta runs workgroup 0, so
+each launch file's output is that workgroup's 16 x 256 tile of C.
+
+| Case | Source | Config | LDS | Spec |
+|---|---|---|---|---|
+| `binary_gemm` | `kernels.py`'s `binary_gemm_kernel`, `bitwise/triton_binary_gemm/kernel.py` with ROCm's `__ockl_popcount_u32` for `libdevice.popc` (absent from Triton's HIP libdevice) | 16 x 256 tile, `num_warps=4`, grid 16 x 1 | none | `bitwise/triton_binary_gemm/binary_gemm.spec` |
+| `bitdelta_matmul` | BitDelta's `binary_matmul_kernel`, compiled from `bitwise/bitdelta_triton/upstream/` | its first autotune config: 16 x 256 x 64, `GROUP_SIZE_M=8`, `num_warps=8`, `num_stages=3` | 72 KiB | `bitwise/bitdelta_triton/bitdelta.spec` |
+| `bitdelta_bmm` | BitDelta's `binary_bmm_kernel`, likewise | the same, `num_warps=4`, grid 16 x 2 (batch 0 checked) | 72 KiB | the same |
+
+The XOR-popcount GEMM is `v_xor_b32` and `v_bcnt_u32_b32` on CUDA-core-style VALU lanes, one per
+output and word. BitDelta's kernels take fp32 activations and output here, where the sm_90a build
+takes f16: the AMD frontend models no f16, and fp32 makes `tl.dot` the f32 MFMA
+(`v_mfma_f32_16x16x4_f32`) the GEMM tutorial already uses. Their `accumulator.to(tl.float16)` stays,
+so the result is rounded to f16 and widened back (`v_cvt_pk_f16_f32`, `v_cvt_f32_f16`) before
+the fp32 store.
+
+None of the three verifies yet. Each stops before running at a Triton feature of the frontend
+(the argument preload of `binary_gemm`, the dynamic LDS of the BitDelta kernels, `src0_sel:BYTE_3`
+of `bitdelta_bmm`), and past those their inputs are symbolic packed words: the AMD frontend
+requires integer and bitwise operations on concrete words, and BitDelta's f16 round trip has no
+model.
 
 ## What the compiled kernels use
 
@@ -58,16 +83,19 @@ volta solve external/amd/triton/softmax.s --config external/amd/triton/softmax.l
 
 ## Building
 
-`extract.py` runs under `triton==3.5.1` on Linux (no GPU) and needs no ROCm installation. On this
-Mac it runs in the `volta-tritonbench:triton-3.5.1` image, from this directory:
+`extract.py` runs under `triton==3.5.1` and `torch` (which BitDelta's file imports) on Linux (no
+GPU) and needs no ROCm installation. It reads BitDelta's kernels from `external/bitwise/`, so the
+container mirrors the repository's layout. On this Mac it runs in the
+`volta-tritonbench:triton-3.5.1-torch-2.9.0` image, from the repository root:
 
 ```sh
-docker create --name volta-triton-amd --workdir /work \
-  volta-tritonbench:triton-3.5.1 python extract.py --out /work/out
-docker cp kernels.py volta-triton-amd:/work/
-docker cp extract.py volta-triton-amd:/work/
+docker create --name volta-triton-amd --workdir /work/external/amd/triton \
+  volta-tritonbench:triton-3.5.1-torch-2.9.0 python extract.py --out out
+COPYFILE_DISABLE=1 tar -c --no-xattrs external/amd/triton/kernels.py \
+  external/amd/triton/extract.py external/bitwise/bitdelta_triton/upstream/binary_gemm_kernel.py \
+  | docker cp - volta-triton-amd:/work/
 docker start --attach volta-triton-amd
-docker cp volta-triton-amd:/work/out/. .
+docker cp volta-triton-amd:/work/external/amd/triton/out/. external/amd/triton/
 docker rm volta-triton-amd
 ```
 

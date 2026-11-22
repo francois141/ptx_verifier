@@ -1,0 +1,83 @@
+{
+  "description": "Triton BitDelta binary_matmul_kernel, fp32 x times signs packed 32 per int32, its fp16 result stored as fp32; M=N=K=256, tile 16x256x64, workgroup 0's 16x256 tile of C",
+  "kernel": "binary_matmul_kernel",
+  "grid": [
+    16,
+    1,
+    1
+  ],
+  "block": [
+    512,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 73728,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "i32",
+      "shape": [
+        8,
+        256
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        16,
+        256
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "a_ptr",
+      "ptr": "a"
+    },
+    {
+      "name": "b_ptr",
+      "ptr": "b"
+    },
+    {
+      "name": "c_ptr",
+      "ptr": "c"
+    },
+    {
+      "name": "global_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (high word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (high word, null)",
+      "int": 0
+    }
+  ],
+  "spec": "../../bitwise/bitdelta_triton/bitdelta.spec",
+  "dims": {
+    "M": 16,
+    "N": 256,
+    "K": 256,
+    "KW": 8,
+    "NB": 256,
+    "MA": 256
+  }
+}

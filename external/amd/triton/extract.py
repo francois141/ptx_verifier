@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Compile kernels.py's tutorial kernels offline for AMD gfx950, one assembly file per case.
+"""Compile kernels.py's tutorial kernels and the binary GEMMs offline for AMD gfx950.
 
-Run with triton==3.5.1 on Linux (the volta-tritonbench:triton-3.5.1 image; no GPU is needed):
+The binary GEMMs are external/bitwise's Triton sources, compiled in place: its XOR-popcount
+GEMM and BitDelta's upstream kernels. Run with triton==3.5.1 and torch (which BitDelta imports)
+on Linux (the volta-tritonbench:triton-3.5.1-torch-2.9.0 image; no GPU is needed):
     python extract.py [--out DIR] [CASE...]
 writes <case>.s (the AMDGCN assembly), <case>.json (compiler, constants, hashes) and
-<case>.launch.json (workgroup 0 of the grid, checked against the <spec>.spec beside it). Triton
+<case>.launch.json (workgroup 0 of the grid, checked against the spec it names). Triton
 allocates LDS dynamically: a launch's dynamic_shared_bytes is metadata.shared.
 """
 import argparse
@@ -24,8 +26,10 @@ EPS = struct.unpack("f", struct.pack("f", 1e-5))[0]
 
 @dataclass
 class Case:
-    """`kernel` names a function of kernels.py; `pointers` its pointer arguments in order, each
-    an array of `arrays`; `scalars` its other runtime arguments, as launch-file parameters."""
+    """`kernel` names a function of `source` (an autotuned one compiles with the config in
+    `constants` and `options`); `pointers` its pointer arguments in order, each an array of
+    `arrays`, typed by `pointer_types` (default fp32); `scalars` its other runtime arguments, as
+    launch-file parameters."""
 
     kernel: str
     description: str
@@ -38,6 +42,8 @@ class Case:
     scalars: list = field(default_factory=list)
     signature: dict = field(default_factory=dict)
     options: dict = field(default_factory=lambda: {"num_warps": 4})
+    source: str = "kernels.py"
+    pointer_types: dict = field(default_factory=dict)
 
 
 def matmul(activation):
@@ -63,6 +69,61 @@ def matmul(activation):
         dims=dict(M=m, N=n, K=k, TM=block_m),
         options={"num_warps": 4, "num_stages": 2, "matrix_instr_nonkdim": 16},
     )
+
+
+BITWISE = "../../bitwise"
+BITDELTA = f"{BITWISE}/bitdelta_triton/upstream/binary_gemm_kernel.py"
+
+
+def bitdelta(kernel, num_warps, grid):
+    """BitDelta's upstream kernel under its first autotune config, as bitwise/bitdelta_triton
+    compiles it for sm_90a, but with fp32 activations and output: the AMD frontend models no
+    f16. Batch 0's arrays only, as there."""
+    batch = dict(stride_batch_a=65536, stride_batch_b=2048, stride_batch_c=65536)
+    return Case(
+        kernel=kernel,
+        description=f"BitDelta {kernel}, fp32 x times signs packed 32 per int32, its fp16 "
+                    f"result stored as fp32; M=N=K=256, tile 16x256x64, workgroup 0's 16x256 "
+                    f"tile of C",
+        constants=dict(
+            M=256, N=256, K=256, n_bits=32, stride_am=256, stride_ak=1, stride_bk=256,
+            stride_bn=1, stride_cm=256, stride_cn=1, BLOCK_SIZE_M=16, BLOCK_SIZE_N=256,
+            BLOCK_SIZE_K=64, GROUP_SIZE_M=8, ACTIVATION="",
+            **(batch if kernel == "binary_bmm_kernel" else {}),
+        ),
+        pointers=["a", "b", "c"],
+        arrays=[
+            dict(name="a", kind="in", dtype="f32", shape=[256, 256]),
+            dict(name="b", kind="in", dtype="i32", shape=[8, 256]),
+            dict(name="c", kind="out", dtype="f32", shape=[16, 256]),
+        ],
+        grid=grid,
+        spec=f"{BITWISE}/bitdelta_triton/bitdelta",
+        dims=dict(M=16, N=256, K=256, KW=8, NB=256, MA=256),
+        options={"num_warps": num_warps, "num_stages": 3, "matrix_instr_nonkdim": 16},
+        source=BITDELTA,
+        pointer_types=dict(b_ptr="*i32"),
+    )
+
+
+BINARY_GEMM = Case(
+    kernel="binary_gemm_kernel",
+    description="XOR-popcount binary GEMM (bitwise/triton_binary_gemm's), c[m, n] = sum_w popc(a[m, w] ^ b[n, w]); "
+                "M=N=K=256 (8 words per row), workgroup 0's 16x256 tile of C",
+    constants=dict(M=256, N=256, KW=8, stride_am=8, stride_bn=8, stride_cm=256,
+                   BLOCK_M=16, BLOCK_N=256),
+    pointers=["a", "b", "c"],
+    arrays=[
+        dict(name="a", kind="in", dtype="i32", shape=[256, 8]),
+        dict(name="b", kind="in", dtype="i32", shape=[256, 8]),
+        dict(name="c", kind="out", dtype="i32", shape=[16, 256]),
+    ],
+    grid=[16, 1],
+    spec=f"{BITWISE}/triton_binary_gemm/binary_gemm",
+    dims=dict(MA=256, N=256, KW=8, TM=16),
+    options={"num_warps": 4, "num_stages": 1},
+    pointer_types=dict(a_ptr="*i32", b_ptr="*i32", c_ptr="*i32"),
+)
 
 
 # Every case is workgroup 0 of its grid; its output arrays are what that workgroup writes.
@@ -100,6 +161,9 @@ CASES = {
     ),
     "matmul": matmul("none"),
     "matmul_leaky_relu": matmul("leaky_relu"),
+    "binary_gemm": BINARY_GEMM,
+    "bitdelta_matmul": bitdelta("binary_matmul_kernel", 8, [16, 1]),
+    "bitdelta_bmm": bitdelta("binary_bmm_kernel", 4, [16, 2]),
     "layer_norm": Case(
         kernel="layer_norm_fwd_kernel",
         description="layer normalization tutorial's forward pass, 4 rows of 100 columns in "
@@ -126,6 +190,9 @@ POINTER_NAMES = {
     "softmax_kernel": ["output_ptr", "input_ptr"],
     "matmul_kernel": ["a_ptr", "b_ptr", "c_ptr"],
     "layer_norm_fwd_kernel": ["X", "Y", "W", "B", "Mean", "Rstd"],
+    "binary_gemm_kernel": ["a_ptr", "b_ptr", "c_ptr"],
+    "binary_matmul_kernel": ["a_ptr", "b_ptr", "c_ptr"],
+    "binary_bmm_kernel": ["a_ptr", "b_ptr", "c_ptr"],
 }
 
 
@@ -161,17 +228,26 @@ def main() -> int:
 
     if triton.__version__ != "3.5.1":
         raise RuntimeError("Reproduction requires triton==3.5.1")
-    spec = importlib.util.spec_from_file_location("tutorials", ROOT / "kernels.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    source_sha256 = hashlib.sha256((ROOT / "kernels.py").read_bytes()).hexdigest()
+    modules = {}
+
+    def load(source):
+        if source not in modules:
+            spec = importlib.util.spec_from_file_location(Path(source).stem, ROOT / source)
+            modules[source] = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(modules[source])
+        return modules[source]
+
     args.out.mkdir(parents=True, exist_ok=True)
 
     for name in args.cases or list(CASES):
         case = CASES[name]
-        fn = getattr(module, case.kernel)
+        fn = getattr(load(case.source), case.kernel)
+        if isinstance(fn, triton.runtime.Autotuner):
+            fn = fn.fn
+        source_sha256 = hashlib.sha256((ROOT / case.source).read_bytes()).hexdigest()
         signature = {arg: "constexpr" for arg in fn.arg_names}
         signature.update({p: "*fp32" for p in POINTER_NAMES[case.kernel]})
+        signature.update(case.pointer_types)
         signature.update(case.signature)
         kernel = triton.compile(
             ASTSource(fn, signature, constexprs=case.constants),
@@ -185,9 +261,11 @@ def main() -> int:
             if line.strip().startswith(".amdhsa_kernarg_size")
         )
         block = [WAVE * case.options["num_warps"], 1, 1]
-        grid = [case.grid, 1, 1]
+        grid = ([case.grid] if isinstance(case.grid, int) else case.grid) + [1, 1]
+        grid = grid[:3]
         metadata = dict(
-            triton=triton.__version__, target=TARGET[1], constants=case.constants,
+            triton=triton.__version__, target=TARGET[1], source=case.source,
+            constants=case.constants,
             options=case.options, shared=kernel.metadata.shared, kernel=kernel.metadata.name,
             grid=grid, block=block, source_sha256=source_sha256,
             asm_sha256=hashlib.sha256(asm.encode()).hexdigest(),

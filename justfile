@@ -123,7 +123,8 @@ tilelang *args:
 ai_compiler *args:
     python3 external/ptx/races.py --framework ai_compiler {{args}}
 
-# Check bitwise kernels; sample 32 outputs of the large LLM BitDelta and check full Triton tiles
+# Check bitwise kernels; sample 32 outputs of the large LLM BitDelta and check full Triton tiles.
+# The AMD builds (external/amd/triton) print their error and do not stop the recipe
 bitwise:
     #!/usr/bin/env bash
     set -eo pipefail
@@ -140,6 +141,10 @@ bitwise:
     solve simdjson_structural external/bitwise/simdjson/structural_start.ptx --config external/bitwise/simdjson/structural_start.launch.json
     solve simdjson_indexer external/bitwise/simdjson/indexer.ptx --config external/bitwise/simdjson/indexer.launch.json
     solve simdjson_digits external/bitwise/simdjson/digits.ptx --config external/bitwise/simdjson/digits.launch.json
+    amd() { printf '%s: ' "$1"; ./target/release/volta --no-log-file solve "external/amd/triton/$2.s" --config "external/amd/triton/$2.launch.json" --print-outputs 0 2>&1 | sed -n 's/^VERDICT: //p; s/^error: /ERROR: /p' || true; }
+    amd amd_triton_binary_gemm binary_gemm
+    amd amd_bitdelta_triton_matmul bitdelta_matmul
+    amd amd_bitdelta_triton_bmm bitdelta_bmm
 
 # Analyze TileLang's warp-specialized copy-GEMM kernel, printing volta's full report
 tilelang-ws-gemm *args:

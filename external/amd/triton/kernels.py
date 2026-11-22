@@ -5,10 +5,12 @@ the compiled kernel needs no runtime shape: 01 vector addition, 02 fused softmax
 the tutorial's tl.num_programs(0), is NUM_PROGRAMS), 03 matrix multiplication (fp32 operands, so
 tl.dot is the f32 MFMA, with the tutorial's optional fused leaky ReLU), and 05 layer
 normalization's forward pass, which also stores each row's mean and reciprocal standard
-deviation.
+deviation. binary_gemm_kernel is external/bitwise/triton_binary_gemm's XOR-popcount GEMM, its
+popcount ROCm's ockl one, since Triton's HIP libdevice has no popc.
 """
 import triton
 import triton.language as tl
+from triton.language import core
 
 
 @triton.jit
@@ -124,3 +126,29 @@ def layer_norm_fwd_kernel(
         x_hat = (x - mean) * rstd
         y = x_hat * w + b
         tl.store(Y + cols, y, mask=mask)
+
+
+@core.extern
+def popc(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {(core.dtype("int32"),): ("__ockl_popcount_u32", core.dtype("int32"))},
+        is_pure=True, _semantic=_semantic,
+    )
+
+
+@triton.jit
+def binary_gemm_kernel(
+    a_ptr, b_ptr, c_ptr,
+    M, N, KW,
+    stride_am, stride_bn, stride_cm,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    rm = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    rn = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.int32)
+    for w in range(KW):
+        a = tl.load(a_ptr + rm * stride_am + w, mask=rm < M, other=0)
+        b = tl.load(b_ptr + rn * stride_bn + w, mask=rn < N, other=0)
+        acc += popc(a[:, None] ^ b[None, :])
+    c = c_ptr + rm[:, None] * stride_cm + rn[None, :]
+    tl.store(c, acc, mask=(rm[:, None] < M) & (rn[None, :] < N))

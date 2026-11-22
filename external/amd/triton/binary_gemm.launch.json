@@ -1,0 +1,81 @@
+{
+  "description": "Triton XOR-popcount binary GEMM (bitwise/triton_binary_gemm's), c[m, n] = sum_w popc(a[m, w] ^ b[n, w]); M=N=K=256 (8 words per row), workgroup 0's 16x256 tile of C",
+  "kernel": "binary_gemm_kernel",
+  "grid": [
+    16,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "i32",
+      "shape": [
+        256,
+        8
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "i32",
+      "shape": [
+        256,
+        8
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "i32",
+      "shape": [
+        16,
+        256
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "a_ptr",
+      "ptr": "a"
+    },
+    {
+      "name": "b_ptr",
+      "ptr": "b"
+    },
+    {
+      "name": "c_ptr",
+      "ptr": "c"
+    },
+    {
+      "name": "global_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "global_scratch (high word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (low word, null)",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch (high word, null)",
+      "int": 0
+    }
+  ],
+  "spec": "../../bitwise/triton_binary_gemm/binary_gemm.spec",
+  "dims": {
+    "MA": 256,
+    "N": 256,
+    "KW": 8,
+    "TM": 16
+  }
+}
