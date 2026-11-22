@@ -183,7 +183,19 @@ pub(crate) fn initialize_waves(
     let before_kernarg = enabled("user_sgpr_dispatch_ptr")? + enabled("user_sgpr_queue_ptr")?;
     let after_kernarg = enabled("user_sgpr_dispatch_id")?;
     let kernarg_sgprs = if kernarg_enabled { 2 } else { 0 };
-    if user_sgprs != before_kernarg + kernarg_sgprs + after_kernarg {
+    // Preloaded arguments take the last user SGPRs. They stay unwritten: the compatibility
+    // prologue LLVM emits before the kernel body loads the same dwords from the argument buffer.
+    let preloaded = kernel
+        .descriptor
+        .get("user_sgpr_kernarg_preload_length")
+        .copied()
+        .unwrap_or(0);
+    if preloaded != 0 && !kernarg_enabled {
+        return Err(EvalError::Launch {
+            message: "preloaded kernel arguments need the kernarg segment pointer".into(),
+        });
+    }
+    if user_sgprs != before_kernarg + kernarg_sgprs + after_kernarg + preloaded {
         return Err(EvalError::Launch {
             message: ".amdhsa_user_sgpr_count must match the enabled user SGPRs".into(),
         });
@@ -241,10 +253,11 @@ fn reject_unsupported_inputs(descriptor: &BTreeMap<String, u64>) -> Result<(), E
             | "user_sgpr_queue_ptr"
             | "user_sgpr_dispatch_id"
             | "user_sgpr_kernarg_segment_ptr"
+            | "user_sgpr_kernarg_preload_length"
             | "system_sgpr_workgroup_id_x"
             | "system_sgpr_workgroup_id_y"
             | "system_sgpr_workgroup_id_z" => false,
-            // Loads nothing without a preload length, which the last arm rejects.
+            // Only the compatibility prologue reads it, as the offset of the dwords it loads.
             "user_sgpr_kernarg_preload_offset" => false,
             "enable_private_segment" | "wavefront_size32" => true,
             // Every other SGPR input, such as the private segment buffer or workgroup info.
