@@ -1161,6 +1161,30 @@ fn execute_bf16_pair_lane(
             let [_, high] = bf16_pair(registers, lane, value)?;
             Some(registers.write_vgpr(lane, dst, high))
         }
+        // `v_perm_b32 dst, a, b, 0x07060302` packs the high halves of `b` and `a`, the bf16 pair
+        // of two f32 words truncated, which this model packs exactly as `v_cvt_pk_bf16_f32` does.
+        LoweredInstr::TernaryOp {
+            op: crate::ir::TernaryOp::Perm32,
+            dst,
+            srcs: [high_src, low_src, selector],
+        } => {
+            let selector = registers.read_src(arena, lane, selector.src).ok()?;
+            if concrete_word(arena, selector) != Some(0x0706_0302) {
+                return None;
+            }
+            let high_half = |src: ModifiedSrc| -> Option<ExprId> {
+                match registers.read_vgpr_word(lane, plain_vgpr(src)?).ok()? {
+                    Word::Bf16 { high, .. } => Some(high),
+                    Word::Value(value) if concrete_word(arena, value).is_none() => Some(value),
+                    Word::Value(_) => None,
+                }
+            };
+            let word = Word::Bf16 {
+                low: high_half(low_src)?,
+                high: high_half(high_src)?,
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
         // `v_lshlrev_b32 dst, 16, vN` is the low half.
         LoweredInstr::BinOp {
             op: BinOp::LShlRev32,

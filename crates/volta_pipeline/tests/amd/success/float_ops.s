@@ -15,6 +15,7 @@ float_ops:
 	global_load_dword v18, v1, s[4:5]
 	global_load_dword v19, v1, s[6:7]
 	s_mov_b32 s4, 0x7f800000
+	s_mov_b32 s5, 0x7060302
 	s_waitcnt vmcnt(1)
 	v_sqrt_f32_e32 v4, v18
 	s_waitcnt vmcnt(0)
@@ -41,7 +42,7 @@ float_ops:
 	v_cndmask_b32_e32 v16, v3, v18, vcc
 	v_cmp_lg_f32_e32 vcc, v18, v19
 	v_mul_f32_e32 v8, v8, v18
-	v_readfirstlane_b32 s5, v18
+	v_readfirstlane_b32 s6, v18
 	v_cndmask_b32_e32 v17, v3, v18, vcc
 	global_store_dwordx4 v20, v[12:15], s[0:1] offset:56
 	global_store_dwordx2 v20, v[16:17], s[0:1] offset:72
@@ -55,7 +56,7 @@ float_ops:
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1]
 	;;#ASMSTART
-	v_cmp_neq_f32_e64 s[2:3], |v18|, s5
+	v_cmp_neq_f32_e64 s[2:3], |v18|, s6
 	v_cndmask_b32_e64 v0, v18, v19, s[2:3]
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1] offset:80
@@ -80,7 +81,7 @@ float_ops:
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1] offset:92
 	;;#ASMSTART
-	v_fma_f32 v0, s5, v18, -v19
+	v_fma_f32 v0, s6, v18, -v19
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1] offset:96
 	;;#ASMSTART
@@ -121,6 +122,13 @@ float_ops:
 	v_lshlrev_b32_e32 v0, 16, v0
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1] offset:120
+	;;#ASMSTART
+	v_perm_b32 v0, v18, v19, s5
+	v_lshlrev_b32_e32 v1, 16, v0
+	v_and_b32_e32 v2, 0xffff0000, v0
+	v_sub_f32_e32 v0, v2, v1
+	;;#ASMEND
+	global_store_dword v20, v0, s[0:1] offset:124
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -193,6 +201,7 @@ __clang_ocl_kern_imp_float_ops:
 	v_lshl_add_u64 v[16:17], v[4:5], 0, v[6:7]
 	s_mov_b32 s0, -2.0
 	s_mov_b32 s2, 0x7f800000
+	s_mov_b32 s3, 0x7060302
 	s_waitcnt vmcnt(1)
 	v_sqrt_f32_e32 v4, v20
 	v_rsq_f32_e32 v5, v20
@@ -219,7 +228,7 @@ __clang_ocl_kern_imp_float_ops:
 	v_cndmask_b32_e32 v18, v3, v20, vcc
 	v_cmp_lg_f32_e32 vcc, v20, v21
 	v_mul_f32_e32 v8, v8, v20
-	v_readfirstlane_b32 s3, v20
+	v_readfirstlane_b32 s4, v20
 	v_cndmask_b32_e32 v19, v3, v20, vcc
 	global_store_dwordx4 v[16:17], v[12:15], off offset:56
 	global_store_dwordx2 v[16:17], v[18:19], off offset:72
@@ -233,7 +242,7 @@ __clang_ocl_kern_imp_float_ops:
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off
 	;;#ASMSTART
-	v_cmp_neq_f32_e64 s[0:1], |v20|, s3
+	v_cmp_neq_f32_e64 s[0:1], |v20|, s4
 	v_cndmask_b32_e64 v0, v20, v21, s[0:1]
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off offset:80
@@ -258,7 +267,7 @@ __clang_ocl_kern_imp_float_ops:
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off offset:92
 	;;#ASMSTART
-	v_fma_f32 v0, s3, v20, -v21
+	v_fma_f32 v0, s4, v20, -v21
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off offset:96
 	;;#ASMSTART
@@ -299,6 +308,13 @@ __clang_ocl_kern_imp_float_ops:
 	v_lshlrev_b32_e32 v0, 16, v0
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off offset:120
+	;;#ASMSTART
+	v_perm_b32 v0, v20, v21, s3
+	v_lshlrev_b32_e32 v1, 16, v0
+	v_and_b32_e32 v2, 0xffff0000, v0
+	v_sub_f32_e32 v0, v2, v1
+	;;#ASMEND
+	global_store_dword v[16:17], v0, off offset:124
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:

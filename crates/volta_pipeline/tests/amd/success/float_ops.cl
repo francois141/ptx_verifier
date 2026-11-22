@@ -117,4 +117,16 @@ __kernel void float_ops(__global const float *a, __global const float *b, __glob
         "v_lshlrev_b32_e32 %0, 16, %0"
         : "=&v"(result), "=&v"(nan_bits) : "v"(x));
     row[30] = result;
+
+    // v_perm_b32 with selector 0x07060302 packs the high halves of two f32 words, x's above
+    // y's: the low half read back is y and the high half x, so their difference is x - y.
+    float low_half, high_half;
+    __asm__ volatile(
+        "v_perm_b32 %0, %3, %4, %5\n\t"
+        "v_lshlrev_b32_e32 %1, 16, %0\n\t"
+        "v_and_b32_e32 %2, 0xffff0000, %0\n\t"
+        "v_sub_f32_e32 %0, %2, %1"
+        : "=&v"(result), "=&v"(low_half), "=&v"(high_half)
+        : "v"(x), "v"(y), "s"(0x07060302u));
+    row[31] = result;
 }
