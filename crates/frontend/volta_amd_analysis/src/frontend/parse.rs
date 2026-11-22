@@ -272,8 +272,8 @@ pub fn parse_kernel(source: &str, name: &str) -> Result<Kernel, String> {
         if opcode == ".section" || opcode.starts_with(".Lfunc_end") {
             break;
         }
-        // Alignment padding is `s_nop`s, which execute nothing.
-        if opcode == ".p2align" {
+        // Alignment padding is `s_nop`s, which execute nothing; debug-info directives emit no code.
+        if matches!(opcode, ".p2align" | ".file" | ".loc") || opcode.starts_with(".cfi_") {
             continue;
         }
         let label = match line.strip_suffix(':') {
