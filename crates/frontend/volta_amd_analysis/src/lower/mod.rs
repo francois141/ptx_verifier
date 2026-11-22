@@ -913,6 +913,14 @@ fn lower_as_written(
             ),
             address: global_address(vaddr, saddr, offset)?,
         }),
+        ("buffer_store_short", [src, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferStore {
+            src: BufferStoreSrc::Short(lane_reg(src).ok_or("expected one source VGPR or AGPR")?),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
+        ("buffer_load_ushort", [dst, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferLoad {
+            dst: BufferLoadDst::Ushort(vgpr(dst).ok_or("expected one destination VGPR")?),
+            address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
+        }),
         ("buffer_load_dword", [dst, vaddr, rsrc, soffset, modifiers @ ..]) => Ok(BufferLoad {
             dst: BufferLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: buffer_address(vaddr, rsrc, soffset, modifiers)?,
@@ -1010,6 +1018,8 @@ fn lower_as_written(
             | "v_lshl_add_u64"
             | "v_lshlrev_b64"
             | "s_bfe_i64"
+            | "buffer_load_ushort"
+            | "buffer_store_short"
             | "buffer_load_dword"
             | "buffer_load_dwordx2"
             | "buffer_load_dwordx3"

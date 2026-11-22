@@ -9,9 +9,9 @@ use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
-    Addend64, BinOp, BranchCondition, CarryOp, DppBound, DppControl, DppOp, DsReadDst, DsWriteData,
-    InstrId, LaneMask, LdsAccesses, LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp,
-    Vgpr, Vop3Src,
+    Addend64, BinOp, BranchCondition, BufferLoadDst, CarryOp, DppBound, DppControl, DppOp,
+    DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr, LoweredKernel,
+    ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -859,9 +859,17 @@ impl<'a> Interpreter<'a> {
                 &src.regs(),
                 *address,
             ),
+            LoweredInstr::BufferLoad {
+                dst: BufferLoadDst::Ushort(dst),
+                address,
+            } => self.buffer_load_ushort(wave, lane, *address, *dst),
             LoweredInstr::BufferLoad { dst, address } => {
                 self.buffer_load(wave, lane, *address, dst.regs())
             }
+            LoweredInstr::BufferStore {
+                src: crate::ir::BufferStoreSrc::Short(reg),
+                address,
+            } => self.buffer_store_short(wave, lane, *address, *reg),
             LoweredInstr::BufferStore { src, address } => {
                 self.buffer_store(wave, lane, *address, &src.regs())
             }

@@ -493,6 +493,8 @@ impl GlobalStoreSrc {
 /// two, three or four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferLoadDst {
+    /// 16 bits, zero-extended: a bf16 element in the low half and +0 in the high one.
+    Ushort(Vgpr),
     Dword(Vgpr),
     Dwordx2([Vgpr; 2]),
     Dwordx3([Vgpr; 3]),
@@ -502,7 +504,7 @@ pub enum BufferLoadDst {
 impl BufferLoadDst {
     pub fn regs(&self) -> &[Vgpr] {
         match self {
-            Self::Dword(reg) => std::slice::from_ref(reg),
+            Self::Ushort(reg) | Self::Dword(reg) => std::slice::from_ref(reg),
             Self::Dwordx2(regs) => regs,
             Self::Dwordx3(regs) => regs,
             Self::Dwordx4(regs) => regs,
@@ -514,6 +516,8 @@ impl BufferLoadDst {
 /// even-aligned tuple of two, three or four of one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferStoreSrc {
+    /// The low 16 bits: a bf16 element.
+    Short(LaneReg),
     Dword(LaneReg),
     Dwordx2(LaneRegs<2>),
     Dwordx3(LaneRegs<3>),
@@ -523,7 +527,7 @@ pub enum BufferStoreSrc {
 impl BufferStoreSrc {
     pub fn regs(self) -> Vec<LaneReg> {
         match self {
-            Self::Dword(reg) => vec![reg],
+            Self::Short(reg) | Self::Dword(reg) => vec![reg],
             Self::Dwordx2(regs) => regs.regs().to_vec(),
             Self::Dwordx3(regs) => regs.regs().to_vec(),
             Self::Dwordx4(regs) => regs.regs().to_vec(),

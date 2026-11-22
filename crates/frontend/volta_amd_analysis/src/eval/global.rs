@@ -180,6 +180,28 @@ impl GlobalMemory {
         Err(EvalError::GlobalRead { address })
     }
 
+    /// Record one element of a bf16 output at the 2-byte aligned `address`.
+    pub fn store_bf16(&mut self, address: u64, value: ExprId) -> Result<(), EvalError> {
+        let is_bf16_output = |region: &&Region| {
+            matches!(region.kind, ArrayKind::Output(_)) && region.element == Element::Bf16
+        };
+        self.regions
+            .iter()
+            .filter(is_bf16_output)
+            .find_map(|region| region.index_of_element(address))
+            .ok_or(EvalError::GlobalWrite { address })?;
+        let workgroups = match self.selected {
+            Some(workgroup) => workgroup..workgroup + 1,
+            None => 0..self.written.len(),
+        };
+        for workgroup in workgroups {
+            if let Some(written) = self.written.get_mut(workgroup) {
+                written.insert(address, value);
+            }
+        }
+        Ok(())
+    }
+
     /// Interpret a stored word according to the output's elements and record their
     /// mathematical values. Output elements cannot be loaded; a later store replaces them.
     pub fn store_dword(

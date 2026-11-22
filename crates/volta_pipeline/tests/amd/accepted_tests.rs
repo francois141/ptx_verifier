@@ -12,7 +12,8 @@ use volta_amd_analysis::OutputType::{F32, U32};
 use volta_amd_analysis::frontend::ast::Operand;
 use volta_amd_analysis::frontend::parse::parse_kernel;
 use volta_amd_analysis::{
-    ArrayKind, EvalError, InstrId, StoreConflict, Terminal, WaveId, WorkgroupLaunch, analyze_grid,
+    ArrayDef, ArrayKind, Element, EvalError, InstrId, StoreConflict, Terminal, WaveId,
+    WorkgroupLaunch, analyze_grid,
 };
 use volta_expr::SymbolicOutputs;
 use volta_graph_check::{GraphConclusion, check_graph};
@@ -282,6 +283,23 @@ fn the_bf16_ops_kernel_writes_its_expected_outputs() {
             array("a", 0x10000, ArrayKind::Input),
             array("b", 0x20000, ArrayKind::Input),
             array_of("out", 0x30000, 128, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
+// Test 16-bit buffer loads and stores of bf16 elements, either half of a word: the kernel
+// reverses its input against the expected outputs in bf16_buffer.out.
+#[test]
+fn the_bf16_buffer_kernel_writes_its_expected_outputs() {
+    let bf16 = |name: &str, base, kind| ArrayDef {
+        element: Element::Bf16,
+        ..array(name, base, kind)
+    };
+    common::amd::check_run(
+        "success/bf16_buffer",
+        &[
+            bf16("a", 0x10000, ArrayKind::Input),
+            bf16("out", 0x20000, ArrayKind::Output(F32)),
         ],
     );
 }

@@ -3,7 +3,9 @@
 
 use crate::ir::{BufferAddress, BufferLdsWidth, LaneReg, ScalarSrc, Sgpr, Vgpr};
 
-use super::wave::{LoadCounter, WaveId};
+use volta_expr::symbolic_full::Real;
+
+use super::wave::{LoadCounter, WaveId, concrete_word};
 use super::word::Word;
 use super::{EvalError, Interpreter};
 
@@ -68,6 +70,17 @@ impl Interpreter<'_> {
         address: BufferAddress,
         word_count: u64,
     ) -> Result<BufferRange, EvalError> {
+        self.buffer_byte_range(wave, lane, address, 4 * word_count)
+    }
+
+    /// `buffer_range` for an access of `access_size` bytes.
+    fn buffer_byte_range(
+        &self,
+        wave: WaveId,
+        lane: usize,
+        address: BufferAddress,
+        access_size: u64,
+    ) -> Result<BufferRange, EvalError> {
         let resource = self.buffer_resource(wave, address.rsrc)?;
         let registers = &self.waves[wave].registers;
         let vgpr_offset = match address.vgpr_offset {
@@ -80,7 +93,6 @@ impl Interpreter<'_> {
         };
         let buffer_offset =
             u64::from(vgpr_offset) + u64::from(soffset) + address.imm_offset.bytes();
-        let access_size = 4 * word_count;
         let buffer_end = buffer_offset + access_size;
 
         if buffer_end <= resource.size {
@@ -89,11 +101,44 @@ impl Interpreter<'_> {
                 .checked_add(buffer_offset)
                 .ok_or(EvalError::AddressOverflow)?;
             Ok(BufferRange::Inside(start))
-        } else if buffer_offset >= resource.size {
+        } else if buffer_offset >= resource.size || access_size <= 4 {
+            // One word past the end is out of range under either check.
             Ok(BufferRange::Outside)
         } else {
             Err(EvalError::PartialBufferAccess { buffer_offset })
         }
+    }
+
+    /// Load 16 bits zero-extended: a bf16 element as the low half of a word whose high half is
+    /// +0, or the 16 bits of a concrete word; zero outside the buffer.
+    pub(super) fn buffer_load_ushort(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        address: BufferAddress,
+        dst: Vgpr,
+    ) -> Result<(), EvalError> {
+        let value = match self.buffer_byte_range(wave, lane, address, 2)? {
+            BufferRange::Outside => Word::Value(self.arena.int(0)),
+            BufferRange::Inside(start) => {
+                let high_half = start % 4 == 2;
+                match self.global.load_dword(start - start % 4, &mut self.arena)? {
+                    Word::Bf16 { low, high } => Word::Bf16 {
+                        low: if high_half { high } else { low },
+                        high: self.arena.real(Real::zero()),
+                    },
+                    Word::Value(value) => {
+                        let bits =
+                            concrete_word(&self.arena, value).ok_or(EvalError::NotBf16 { lane })?;
+                        let half = if high_half { bits >> 16 } else { bits & 0xffff };
+                        Word::Value(self.arena.int(i64::from(half)))
+                    }
+                }
+            }
+        };
+        self.waves[wave]
+            .registers
+            .start_vector_load(lane, &[dst], &[value], LoadCounter::Vm)
     }
 
     /// Load one word per register of `dst`, zero outside the buffer, pending until `vmcnt`
@@ -160,6 +205,25 @@ impl Interpreter<'_> {
         let words = self.buffer_words(wave, lane, address, u64::from(width.words()))?;
         let lds_address = self.lds_load_address(wave, lane, width)?;
         self.lds.write(lds_address, &words)
+    }
+
+    /// Store the low bf16 half of `src` as one element of a bf16 output; nothing outside the
+    /// buffer.
+    pub(super) fn buffer_store_short(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        address: BufferAddress,
+        src: LaneReg,
+    ) -> Result<(), EvalError> {
+        let BufferRange::Inside(start) = self.buffer_byte_range(wave, lane, address, 2)? else {
+            return Ok(());
+        };
+        let word = self.waves[wave].registers.read_lane_word(lane, src)?;
+        let [low, _] = word
+            .bf16_halves(&mut self.arena)
+            .ok_or(EvalError::InvalidBf16Output { address: start })?;
+        self.global.store_bf16(start, low)
     }
 
     /// Store the word of each register of `src`; a store outside the buffer is dropped.
