@@ -9,16 +9,17 @@ use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
-    BinOp, BranchCondition, CarryOp, DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses,
-    LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr, Vop3Src,
+    BinOp, BranchCondition, CarryOp, DppBound, DppControl, DppOp, DsReadDst, DsWriteData, InstrId,
+    LaneMask, LdsAccesses, LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr,
+    Vop3Src,
 };
 
 use super::EvalError;
 use super::arithm::{
     evaluate_bin_op, evaluate_cmp, evaluate_cmp_e64, evaluate_cmp_f64, evaluate_cmp64,
     evaluate_cndmask, evaluate_cndmask_e64, evaluate_cvt_from_f64, evaluate_cvt_pk_f8_f32,
-    evaluate_cvt_to_f64, evaluate_f64_op, evaluate_ldexp_f32, evaluate_packed_f32,
-    evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
+    evaluate_cvt_to_f64, evaluate_dpp_lane, evaluate_f64_op, evaluate_ldexp_f32,
+    evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
 };
 use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
 use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
@@ -218,6 +219,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::CmpE64 { .. }
             | LoweredInstr::Cmp64 { .. }
             | LoweredInstr::CmpF64 { .. }
+            | LoweredInstr::Dpp { .. }
             | LoweredInstr::CarryOp32 { .. }
             | LoweredInstr::MadU64U32 { .. }
             | LoweredInstr::Mfma16x16x4F32 { .. }
@@ -440,6 +442,13 @@ impl<'a> Interpreter<'a> {
                 let clear = vec![self.arena.bool_val(false); 64];
                 registers.write_lane_mask(&mut self.arena, *scaled, &clear)
             }
+            LoweredInstr::Dpp {
+                op,
+                dst,
+                src0,
+                src1,
+                control,
+            } => self.execute_dpp(wave, *op, *dst, *src0, *src1, *control),
             LoweredInstr::CarryOp32 {
                 op,
                 dst,
@@ -1005,6 +1014,41 @@ impl<'a> Interpreter<'a> {
             carries[lane] = self.arena.bool_val(carry);
         }
         registers.write_lane_mask(&mut self.arena, carry_out, &carries)
+    }
+
+    /// A source lane that is out of range or inactive gives 0 under `bound_ctrl:1`, else its
+    /// reader keeps its destination (CDNA4 ISA §6.3.6).
+    fn execute_dpp(
+        &mut self,
+        wave: WaveId,
+        op: DppOp,
+        dst: Vgpr,
+        src0: ModifiedSrc<Vgpr>,
+        src1: ModifiedSrc,
+        control: DppControl,
+    ) -> Result<(), EvalError> {
+        let exec = self.waves[wave].exec;
+        let active = |lane: usize| exec >> lane & 1 == 1;
+        let registers = &self.waves[wave].registers;
+        let mut results = Vec::new();
+        for lane in (0..64).filter(|&lane| active(lane) && control.writes(lane)) {
+            let source = control
+                .select
+                .source_lane(lane)
+                .filter(|&source| active(source));
+            let word = match (source, control.bound) {
+                (Some(source), _) => registers.read_vgpr_word(source, src0.src)?,
+                (None, DppBound::Zero) => Word::Value(self.arena.int(0)),
+                (None, DppBound::Keep) => continue,
+            };
+            let result = evaluate_dpp_lane(&mut self.arena, registers, lane, op, word, src0, src1)?;
+            results.push((lane, result));
+        }
+        let registers = &mut self.waves[wave].registers;
+        for (lane, word) in results {
+            registers.write_vgpr_word(lane, dst, word)?;
+        }
+        Ok(())
     }
 
     /// Swap each odd group of `width` lanes of `dst` with the even group of `src` before it.

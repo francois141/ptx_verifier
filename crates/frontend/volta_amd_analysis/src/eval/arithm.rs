@@ -7,8 +7,9 @@ use volta_common::float_bits::{F8Format, decode_e4m3_byte, decode_e5m2_byte};
 use volta_expr::symbolic_full::{self, ExprArena, ExprId, ExprNode, Real, RealRepr, Type, Width};
 
 use crate::ir::{
-    BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, F64Op, F64Src, LaneMask, ModifiedSrc,
-    PackedF32Op, Signedness, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src, WordHalf,
+    BinOp, CmpOp, CmpPredicate, CvtFromF64Op, CvtToF64Op, DppOp, F64Op, F64Src, LaneMask,
+    ModifiedSrc, PackedF32Op, Signedness, Src0, TernaryOp, UnaryOp, Vgpr, Vop3BinOp, Vop3Src,
+    WordHalf,
 };
 
 use super::EvalError;
@@ -18,7 +19,8 @@ const F64: Type = Type::Float(Width(64));
 const B32: Type = Type::Bits(Width(32));
 const B64: Type = Type::Bits(Width(64));
 const U32: Type = Type::Int(symbolic_full::Signedness::Unsigned, Width(32));
-use super::wave::{WaveRegisters, apply_modifiers, concrete_word};
+use super::wave::{WaveRegisters, apply_modifiers, as_f32, concrete_word};
+use super::word::Word;
 
 enum OperandType {
     Word,
@@ -85,6 +87,56 @@ pub(super) fn evaluate_bin_op(
             registers.read_modified_src(arena, lane, src1)?,
         ),
     };
+    bin_op_values(arena, lane, op, a, b)
+}
+
+/// One DPP lane's result: `op` of `src0`'s word from the selected lane, its modifiers applied
+/// as a float operation applies them, and of this lane's `src1`.
+pub(super) fn evaluate_dpp_lane(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    op: DppOp,
+    src0: Word,
+    modifiers: ModifiedSrc<Vgpr>,
+    src1: ModifiedSrc,
+) -> Result<Word, EvalError> {
+    let bin_op = match op {
+        DppOp::Mov if modifiers.is_modified() => return Err(EvalError::UnsupportedInstruction),
+        DppOp::Mov => return Ok(src0),
+        DppOp::Bin(bin_op) => bin_op,
+    };
+    let Word::Value(value) = src0 else {
+        return Err(EvalError::Bf16Halves {
+            lane,
+            reg: modifiers.src,
+        });
+    };
+    let (a, b) = match operand_type(bin_op) {
+        OperandType::Word if modifiers.is_modified() || src1.is_modified() => {
+            return Err(EvalError::UnsupportedInstruction);
+        }
+        OperandType::Word => (value, registers.read_src(arena, lane, src1.src)?),
+        OperandType::F32 => {
+            let value = as_f32(arena, value).ok_or(EvalError::InvalidFloatVgpr {
+                lane,
+                reg: modifiers.src,
+            })?;
+            let a = apply_modifiers(arena, F32, value, modifiers.abs, modifiers.neg);
+            (a, registers.read_modified_src(arena, lane, src1)?)
+        }
+    };
+    bin_op_values(arena, lane, bin_op, a, b).map(Word::Value)
+}
+
+/// `op` of two operands already read as `operand_type(op)` reads them.
+fn bin_op_values(
+    arena: &mut ExprArena,
+    lane: usize,
+    op: BinOp,
+    a: ExprId,
+    b: ExprId,
+) -> Result<ExprId, EvalError> {
     if let Some(result) = sign_bit_op(arena, op, a, b) {
         return Ok(result);
     }

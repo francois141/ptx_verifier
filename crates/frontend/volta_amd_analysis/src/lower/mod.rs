@@ -114,11 +114,76 @@ fn encoding_undefined(opcode: &str) -> bool {
     opcode.starts_with("v_") && !opcode.ends_with("_e32") && !opcode.ends_with("_e64")
 }
 
+/// A `<op>_dpp` instruction: the `<op>_e32` it modifies, its first source read from the lane
+/// its DPP operands select.
+fn lower_dpp(
+    instruction: &Instruction,
+    labels: &BTreeMap<String, usize>,
+) -> Result<LoweredInstr, &'static str> {
+    let base = instruction
+        .opcode
+        .strip_suffix("_dpp")
+        .ok_or("expected a DPP opcode")?;
+    let (mut select, mut row_mask, mut bank_mask, mut bound) = (None, 0xf, 0xf, ir::DppBound::Keep);
+    let mut operands = Vec::new();
+    for operand in &instruction.operands {
+        match operand {
+            Operand::DppSelect(s) if select.is_none() => select = Some(*s),
+            Operand::RowMask(mask) => row_mask = *mask,
+            Operand::BankMask(mask) => bank_mask = *mask,
+            Operand::BoundCtrl => bound = ir::DppBound::Zero,
+            Operand::DppSelect(_) => return Err("expected one DPP lane selection"),
+            other => operands.push(other.clone()),
+        }
+    }
+    let control = ir::DppControl {
+        select: select.ok_or("expected a DPP lane selection")?,
+        row_mask,
+        bank_mask,
+        bound,
+    };
+    let inner = Instruction {
+        opcode: format!("{base}_e32"),
+        operands,
+    };
+    let (op, dst, src0, src1) = match lower_as_written(&inner, labels)? {
+        LoweredInstr::UnaryOp {
+            op: ir::UnaryOp::Mov32,
+            dst,
+            src,
+        } => (ir::DppOp::Mov, dst, src, src),
+        LoweredInstr::BinOp {
+            op,
+            dst,
+            src0,
+            src1,
+        } => (ir::DppOp::Bin(op), dst, src0, src1),
+        _ => return Err("unsupported DPP operation: only v_mov_b32 and VOP2 operations"),
+    };
+    let Vop3Src::Vgpr(reg) = src0.src else {
+        return Err("expected a VGPR first source for DPP");
+    };
+    Ok(LoweredInstr::Dpp {
+        op,
+        dst,
+        src0: ModifiedSrc {
+            src: reg,
+            abs: src0.abs,
+            neg: src0.neg,
+        },
+        src1,
+        control,
+    })
+}
+
 fn lower_as_written(
     instruction: &Instruction,
     labels: &BTreeMap<String, usize>,
 ) -> Result<LoweredInstr, &'static str> {
     use LoweredInstr::*;
+    if instruction.opcode.ends_with("_dpp") {
+        return lower_dpp(instruction, labels);
+    }
     use ir::ExecCopy::{Saved, Written};
     use ir::ExecOrder::{ExecSrc, SrcExec};
 

@@ -66,6 +66,10 @@ pub enum Operand {
     Lds,
     /// A lane-permute's `bound_ctrl:1` flag.
     BoundCtrl,
+    /// A DPP instruction's lane selection, and its `row_mask:` and `bank_mask:` write masks.
+    DppSelect(DppSelect),
+    RowMask(u8),
+    BankMask(u8),
     /// A branch target.
     Label(String),
     /// `ds_swizzle_b32`'s `offset:swizzle(SWAP,n)`: each lane reads lane `lane ^ n`.
@@ -92,4 +96,43 @@ pub enum Operand {
     },
     /// A memory instruction's `offset:n` byte offset, which may be negative.
     Offset(i64),
+}
+
+/// The lane each lane of a DPP instruction reads its first source from, within a quad, a row
+/// of 16 lanes, or the wave (CDNA4 ISA §6.3.6, "DPP"); `None` is out of range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DppSelect {
+    QuadPerm([u8; 4]),
+    RowShl(u8),
+    RowShr(u8),
+    RowRor(u8),
+    WaveShl1,
+    WaveRol1,
+    WaveShr1,
+    WaveRor1,
+    RowMirror,
+    RowHalfMirror,
+    RowBcast15,
+    RowBcast31,
+}
+
+impl DppSelect {
+    pub fn source_lane(self, lane: usize) -> Option<usize> {
+        let row = lane & !15;
+        let in_row = lane % 16;
+        match self {
+            Self::QuadPerm(perm) => Some((lane & !3) | usize::from(perm[lane % 4])),
+            Self::RowShl(n) => (in_row + usize::from(n) < 16).then(|| lane + usize::from(n)),
+            Self::RowShr(n) => in_row.checked_sub(usize::from(n)).map(|i| row + i),
+            Self::RowRor(n) => Some(row + (in_row + 16 - usize::from(n)) % 16),
+            Self::WaveShl1 => (lane < 63).then_some(lane + 1),
+            Self::WaveRol1 => Some((lane + 1) % 64),
+            Self::WaveShr1 => lane.checked_sub(1),
+            Self::WaveRor1 => Some((lane + 63) % 64),
+            Self::RowMirror => Some(row + 15 - in_row),
+            Self::RowHalfMirror => Some((lane & !7) + 7 - lane % 8),
+            Self::RowBcast15 => (lane >= 16).then(|| row - 1),
+            Self::RowBcast31 => (lane >= 32).then_some(31),
+        }
+    }
 }

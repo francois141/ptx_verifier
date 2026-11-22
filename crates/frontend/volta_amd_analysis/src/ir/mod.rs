@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use id_collections::{IdVec, id_type};
 use volta_common::float_bits::F8Format;
 
+pub use crate::frontend::ast::DppSelect;
+
 /// An instruction's position in its kernel body.
 #[id_type]
 pub struct InstrId(pub u32);
@@ -739,6 +741,30 @@ impl WordByte {
     }
 }
 
+/// What a DPP lane whose source lane is out of range or inactive does: keep its destination,
+/// or read 0 as its first source (`bound_ctrl:1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DppBound {
+    Keep,
+    Zero,
+}
+
+/// A DPP instruction's lane selection and write masks: a lane writes only when its row
+/// (lanes `16 r ..`) and bank (lanes `4 b ..` of each row) are enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DppControl {
+    pub select: DppSelect,
+    pub row_mask: u8,
+    pub bank_mask: u8,
+    pub bound: DppBound,
+}
+
+impl DppControl {
+    pub fn writes(self, lane: usize) -> bool {
+        self.row_mask >> (lane / 16) & 1 == 1 && self.bank_mask >> (lane / 4 % 4) & 1 == 1
+    }
+}
+
 /// A 32-bit vector add or subtract with a carry (or borrow) out, and for `Addc`, `Subb` and
 /// `SubbRev` a carry in; `Rev` operations subtract `src0` from `src1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -764,6 +790,13 @@ impl CarryOp {
             Self::SubRev | Self::SubbRev => (b.wrapping_sub(a + c) as u32, a + c > b),
         }
     }
+}
+
+/// The VOP1 or VOP2 operation a DPP instruction applies to its permuted first source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DppOp {
+    Mov,
+    Bin(BinOp),
 }
 
 /// A 16-bit half of a 32-bit word.
@@ -1037,6 +1070,15 @@ pub enum LoweredInstr {
         src1: ModifiedSrc,
         mask: LaneMask,
     },
+    /// `dst = op(src0 of the lane `control` selects, src1)` in each active lane `control`
+    /// writes; every source lane is read before any destination is written.
+    Dpp {
+        op: DppOp,
+        dst: Vgpr,
+        src0: ModifiedSrc<Vgpr>,
+        src1: ModifiedSrc,
+        control: DppControl,
+    },
     /// `dst = op(src0, src1, carry_in)` over concrete words in each active lane, its carry
     /// out in `carry_out`, whose inactive lanes' bits are cleared.
     CarryOp32 {
@@ -1253,6 +1295,7 @@ impl LoweredInstr {
             Self::CmpE64 { .. } => "v_cmp (e64)",
             Self::CndMask32 { .. } => "v_cndmask_b32",
             Self::CndMask32E64 { .. } => "v_cndmask_b32 (e64)",
+            Self::Dpp { .. } => "vector op (DPP)",
             Self::CarryOp32 { .. } => "vector add/sub with carry",
             Self::MadU64U32 { .. } => "v_mad_u64_u32",
             Self::ShiftAdd64 { .. } => "64-bit vector shift",

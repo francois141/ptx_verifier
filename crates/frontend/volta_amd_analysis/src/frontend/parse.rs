@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use super::ast::{Counter, Instruction, Kernel, Operand, RegFile};
+use super::ast::{Counter, DppSelect, Instruction, Kernel, Operand, RegFile};
 
 /// A statement's first word and the rest.
 fn word(line: &str) -> (&str, &str) {
@@ -56,6 +56,9 @@ fn operand(text: &str) -> Option<Operand> {
         .filter(|n| n.is_power_of_two() && *n <= 16)
     {
         return Some(Operand::SwizzleSwap(n));
+    }
+    if let Some(operand) = dpp_operand(text) {
+        return Some(operand);
     }
     if let Some(offset) = text.strip_prefix("offset0:") {
         return integer(offset).map(Operand::Offset0);
@@ -135,6 +138,41 @@ fn operand(text: &str) -> Option<Operand> {
         }
     };
     (first <= last).then_some(Operand::Reg { file, first, last })
+}
+
+fn dpp_operand(text: &str) -> Option<Operand> {
+    let select = match text {
+        "wave_shl:1" => DppSelect::WaveShl1,
+        "wave_rol:1" => DppSelect::WaveRol1,
+        "wave_shr:1" => DppSelect::WaveShr1,
+        "wave_ror:1" => DppSelect::WaveRor1,
+        "row_mirror" => DppSelect::RowMirror,
+        "row_half_mirror" => DppSelect::RowHalfMirror,
+        "row_bcast:15" => DppSelect::RowBcast15,
+        "row_bcast:31" => DppSelect::RowBcast31,
+        _ => {
+            let (name, value) = text.split_once(':')?;
+            if name == "quad_perm" {
+                let lanes = value.strip_prefix('[')?.strip_suffix(']')?;
+                let lanes = lanes
+                    .split(',')
+                    .map(|lane| lane.trim().parse::<u8>().ok().filter(|&lane| lane < 4))
+                    .collect::<Option<Vec<_>>>()?;
+                DppSelect::QuadPerm(lanes.try_into().ok()?)
+            } else {
+                let value = u8::try_from(integer(value)?).ok()?;
+                match name {
+                    "row_mask" if value < 16 => return Some(Operand::RowMask(value)),
+                    "bank_mask" if value < 16 => return Some(Operand::BankMask(value)),
+                    "row_shl" if (1..16).contains(&value) => DppSelect::RowShl(value),
+                    "row_shr" if (1..16).contains(&value) => DppSelect::RowShr(value),
+                    "row_ror" if (1..16).contains(&value) => DppSelect::RowRor(value),
+                    _ => return None,
+                }
+            }
+        }
+    };
+    Some(Operand::DppSelect(select))
 }
 
 /// The GNU numeric local labels of inline asm: `N:` may be defined repeatedly, and `Nf` and

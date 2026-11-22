@@ -273,6 +273,16 @@ fn a_workgroup_smaller_than_a_wave_runs_only_its_work_items() {
     assert_eq!(copied, expected);
 }
 
+// Test every DPP lane selection, bound_ctrl, the row and bank masks, a VOP2 operation and
+// inactive source lanes against the expected outputs in dpp_ops.out.
+#[test]
+fn the_dpp_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/dpp_ops",
+        &[array_of("out", 0x10000, 64 * 32, ArrayKind::Output(U32))],
+    );
+}
+
 // Test `off` addresses: a global load through a VGPR address pair with a negative offset reads
 // each lane's input element, and a buffer load without a lane offset reads input[3] everywhere.
 #[test]
