@@ -205,5 +205,10 @@ triton *args:
 # Check the Trainium kernels' .ast, .ir and .out snapshots, expected rejections and spec equivalence,
 # and nkilib's bugs and their fixes (external/trainium/nkilib)
 trainium: python-env nkilib
+# `--verbose` prints each case's log; `python3 external/amd/flydsl/extract.py [CASE...]` recompiles them.
+# Check FlyDSL's kernels in external/amd/flydsl, the bugs Volta found and their fixes
+flydsl *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} flydsl/
+
     cargo test -q -p volta_pipeline --test trainium_tests -- accepted_tests:: rejected_tests::
     cargo test -q --release -p volta_pipeline --test trainium_tests -- equivalence_tests:: nkilib_tests::

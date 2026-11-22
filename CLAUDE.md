@@ -509,6 +509,16 @@ low-word selector, because the high word of its 64-bit source is not established
 Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks (`SymbolicSgpr`).
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
+`ArrayDef.element` is `Word` or `Bf16` (two bf16 reals per word; the pipeline maps a launch's
+2-byte arrays to it). A VGPR or LDS word (`eval/word.rs`, `Word`) holds one value or two exact
+bf16 halves: bf16 inputs load as element pairs, `v_cvt_pk_bf16_f32` packs without rounding, moves,
+concrete-condition selects, `v_permlane32_swap_b32`, LDS and stores keep pairs, `v_and_b32
+0xffff0000`/`v_lshlrev_b32 16` extract a half, and whole-word readers reject them
+(`Bf16Halves`). `v_mfma_f32_32x32x16_bf16`, `ds_read_b64_tr_b16` (Triton's and FlyDSL's lane map;
+full EXEC) and buffer loads to LDS (`lds`, at `M0[17:0] + 4 * words * lane`, recorded as
+`AsyncOpKind::LdsLoad` and completed by `s_waitcnt vmcnt`) are modeled; buffer addresses take an
+SGPR scalar offset. `external/amd/flydsl/` holds FlyDSL's gfx950 flash attention (`extract.py`
+compiles it in Docker), checked by `external/amd/verify.py`.
 Kernel tests in `volta_pipeline/tests/amd/accepted_tests.rs` run each assembly fixture
 `volta_pipeline/tests/amd/success/<name>.s` through `analyze` (`common::amd::check_run`)
 and, once its graph concludes `Verified`, compare its symbolic outputs with `<name>.out`

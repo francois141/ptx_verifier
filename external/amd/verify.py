@@ -1,4 +1,4 @@
-"""Check the Composable Kernel examples, and PyTorch's piecewise activations, against their specs.
+"""Check the Composable Kernel examples, PyTorch's piecewise activations and FlyDSL's attention.
 
     uv run --reinstall-package volta --package volta python external/amd/verify.py \
         [--verbose] [PREFIX]
@@ -10,11 +10,12 @@ kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
 `composable_kernel/activations*/`; PyTorch's continuous piecewise activations are likewise in
 `external/activation/`, the cases named `activation/<case>`, compiled for AMD and, as
 `activation/<case>_ptx`, from CUDA to PTX. Triton's tutorial kernels, compiled for gfx950, are in
-`triton/`, the cases named `triton/<case>`. Each case prints one line when it finishes: PASS
-if its
-kernel verified (ACCEPT, or every output proved in Lean), else FAIL, noting when a verdict
-other than ACCEPT is the case's expected one, such as a known bug's REJECT. `--verbose` also
-prints Volta's log of each case as it runs, then a summary.
+`triton/`, the cases named `triton/<case>`.
+FlyDSL's gfx950 flash attention is in `flydsl/` (cases `flydsl/<case>`, compiled by
+`flydsl/extract.py`), with bf16 arrays. Each case prints one
+line when it finishes: PASS if its kernel verified (ACCEPT, or every output proved in Lean),
+else FAIL, noting when a verdict other than ACCEPT is the case's expected one, such as a known
+bug's REJECT. `--verbose` also prints Volta's log of each case as it runs, then a summary.
 
 Some cases are verified in Lean instead, with no canonical solver. CK's fused GEMM-sigmoid is not
 exactly its formula over the reals (its exp rescales by f32(e^-64) past the underflow bound), so
@@ -39,10 +40,14 @@ from pathlib import Path
 
 import volta
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "flydsl"))
+import cases as flydsl_cases  # noqa: E402
+
 AMD_ROOT = Path(__file__).resolve().parent
 CK_ROOT = AMD_ROOT / "composable_kernel"
 ACTIVATION_ROOT = AMD_ROOT.parent / "activation"
 TRITON_ROOT = AMD_ROOT / "triton"
+FLYDSL_ROOT = AMD_ROOT / "flydsl"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
@@ -51,7 +56,7 @@ LOG = logging.getLogger("verify")
 # out arrays without a `base`: in order from 0x10000, each on the first 64 KiB boundary past
 # the arrays before it.
 ARRAY_ALIGN = 0x10000
-ELEMENT_BYTES = {"f32": 4}
+ELEMENT_BYTES = {"f32": 4, "bf16": 2, "i32": 4}
 ARRAY_KINDS = {"in": volta.ArrayKind.Input, "out": volta.ArrayKind.Output}
 
 
@@ -60,6 +65,18 @@ class Solve:
     """The canonical solver's verdict against the spec must be `expected`."""
 
     expected: str
+
+
+@dataclass(frozen=True)
+class Race:
+    """With no spec, the graph checks alone must conclude `expected` ("VERIFIED" or "REJECTED")."""
+
+    expected: str
+
+
+@dataclass(frozen=True)
+class Abort:
+    """The run must stop with an execution error, such as an access outside every array."""
 
 
 @dataclass(frozen=True)
@@ -79,19 +96,24 @@ class Case:
 
     launch: str
     kernel: str
-    check: Solve | Prove
+    check: Solve | Race | Abort | Prove
     root: Path = CK_ROOT
     extension: str = ".s"
+    sample: int = 0
 
     def name(self) -> str:
         return self.launch if self.root == CK_ROOT else f"{self.root.name}/{self.launch}"
 
     def checker(self) -> str:
-        return "solver" if isinstance(self.check, Solve) else "lean"
+        return "lean" if isinstance(self.check, Prove) else "solver"
 
     def describe(self) -> str:
         if isinstance(self.check, Solve):
             return f"canonical solver, expecting {self.check.expected}"
+        if isinstance(self.check, Race):
+            return f"graph checks, expecting {self.check.expected}"
+        if isinstance(self.check, Abort):
+            return "execution, expecting an execution error"
         return f"Lean proof {self.check.claim()}"
 
 
@@ -102,6 +124,12 @@ class Outcome:
     verified: bool
     expected: bool
     detail: str
+
+
+def flydsl_check(expected: str, spec: str | None) -> "Solve | Race | Abort":
+    if expected == "ABORT":
+        return Abort()
+    return Solve(expected) if spec else Race(expected)
 
 
 # Hardswish is compiled three ways: plain and -funsafe-math-optimizations keep the selects,
@@ -217,6 +245,11 @@ CASES = (
         "math_double/ck_tile_math_double",
         Solve("REJECT"),
     ),
+    # FlyDSL's kernels, as flydsl/cases.py lists them.
+    *(
+        Case(c.name, c.assembly_name(), flydsl_check(c.check, c.spec), FLYDSL_ROOT, sample=c.sample)
+        for c in flydsl_cases.CASES
+    ),
     # PyTorch's continuous piecewise activations, each compiled for AMD and, as `<op>_ptx`, to
     # PTX.
     *(Case(op, op, Solve("ACCEPT"), ACTIVATION_ROOT) for op in PIECEWISE),
@@ -229,7 +262,7 @@ CASES = (
 class Launch:
     kernel: str | None
     config: volta.Config
-    spec: str
+    spec: str | None
     dims: dict[str, int]
 
 
@@ -259,6 +292,8 @@ def load_launch(path: Path) -> Launch:
         else:
             config.add_param(volta.Param.array_ptr(param["ptr"]))
 
+    if "spec" not in launch:
+        return Launch(launch.get("kernel"), config, None, {})
     spec = (path.parent / launch["spec"]).read_text(encoding="utf-8")
     return Launch(launch.get("kernel"), config, spec, launch["dims"])
 
@@ -268,9 +303,10 @@ def dims3(value: int | list[int]) -> tuple[int, int, int]:
     return tuple(dims + [1] * (3 - len(dims)))
 
 
-def solve(kernel: Path, launch: Launch, check: Solve) -> Outcome:
+def solve(kernel: Path, launch: Launch, check: Solve, sample: int = 0) -> Outcome:
     result = volta.solve(
-        kernel, launch.config, kernel=launch.kernel, spec=launch.spec, dims=launch.dims
+        kernel, launch.config, kernel=launch.kernel, spec=launch.spec, dims=launch.dims,
+        sample=sample,
     )
     verified = result.verdict == "ACCEPT"
     expected = result.verdict == check.expected
@@ -285,6 +321,23 @@ def solve(kernel: Path, launch: Launch, check: Solve) -> Outcome:
     if not verified and result.evidence:
         detail += f"; {result.evidence[0]}"
     return Outcome(verified, expected, detail)
+
+
+def race(kernel: Path, launch: Launch, check: Race) -> Outcome:
+    result = volta.solve(kernel, launch.config, kernel=launch.kernel)
+    verdict = {True: "VERIFIED", False: "REJECTED", None: "NOT RECORDED"}[result.race_verified]
+    verified = verdict == "VERIFIED"
+    expected = verdict == check.expected
+    note = "" if verified else (" (expected)" if expected else f" (expected {check.expected})")
+    return Outcome(verified, expected, f"{verdict}{note} by the graph checks")
+
+
+def abort(kernel: Path, launch: Launch) -> Outcome:
+    try:
+        result = volta.solve(kernel, launch.config, kernel=launch.kernel)
+    except volta.VoltaError as error:
+        return Outcome(False, True, f"execution error (expected): {error}")
+    return Outcome(result.race_verified is True, False, "ran to completion (expected an execution error)")
 
 
 def prove(case: Case, kernel: Path, launch: Launch, check: Prove) -> Outcome:
@@ -376,7 +429,11 @@ def main() -> int:
         start = time.monotonic()
         try:
             if isinstance(case.check, Solve):
-                outcome = solve(kernel, launch, case.check)
+                outcome = solve(kernel, launch, case.check, case.sample)
+            elif isinstance(case.check, Race):
+                outcome = race(kernel, launch, case.check)
+            elif isinstance(case.check, Abort):
+                outcome = abort(kernel, launch)
             else:
                 outcome = prove(case, kernel, launch, case.check)
         except volta.VoltaError as error:

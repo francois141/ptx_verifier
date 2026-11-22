@@ -67,11 +67,27 @@ Comparison masks in VCC or SGPR pairs retain per-lane predicates for selects;
 scalar instructions reject symbolic masks.
 Negated f32 comparisons use the opposite ordered comparison because NaN is excluded.
 
-`ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`. Output
+`ArrayDef` marks each global-memory array `Input` or `Output(OutputType)`, and its `element`
+layout: `Word`, one 32-bit word per element, or `Bf16`, two bf16 reals per word, the lower
+address in the low half (a bf16 output must be `F32`). Output
 stores decode `F32` constants into mathematical reals and preserve existing real
 expressions; `U32` outputs require concrete 32-bit words. Invalid values abort at
 the store. Outputs cannot be loaded. On completion, `AnalysisResult.symbolic_outputs`
 holds the interpreted values that execution wrote; an aborted run has none.
+
+A VGPR or LDS word (`eval::word::Word`) holds one value or two bf16 halves, each an exact
+real: a bf16 input word loads as its two element symbols, and `v_cvt_pk_bf16_f32` packs two
+f32s without rounding. Moves, selects under a concrete condition, `v_permlane32_swap_b32`, LDS
+and buffer stores keep either form; `v_and_b32 0xffff0000` and `v_lshlrev_b32 16` read a half
+as its f32, and an instruction that reads whole words rejects halves (`Bf16Halves`). Concrete
+words read as bf16 halves decode their bits. `v_mfma_f32_32x32x16_bf16` follows the CDNA4 ISA's
+layout (§7.1.4); `ds_read_b64_tr_b16` and `v_permlane32_swap_b32` require every lane active,
+the transposing read's lane mapping taken from Triton's and FlyDSL's CDNA4 backends, which
+the ISA describes only in prose (§11.4). A buffer load with `lds` writes each active lane's
+words to LDS at `M0[17:0] + 4 * words * lane` (§9.1.9); the event graph records it as an
+`AsyncOpKind::LdsLoad`, completed by the `s_waitcnt vmcnt` that drains it from every lane.
+Buffer addresses add an SGPR or inline scalar offset. `s_setprio` is a no-op; `expcnt` waits
+are ignored, since no modeled instruction exports.
 
 Supported operand forms follow the [CDNA4 ISA](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/instruction-set-architectures/amd-instinct-cdna4-instruction-set-architecture.pdf)
 (§6.2, §12.6, §12.7, §12.10, §12.11, §12.12); scalar addressing and completion follow §8.2–8.3. Operand checks
