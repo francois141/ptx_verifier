@@ -100,9 +100,10 @@ impl<'a> Interpreter<'a> {
             .descriptor
             .get("group_segment_fixed_size")
             .and_then(|&size| u32::try_from(size).ok())
-            .filter(|&size| size <= 65536)
+            // CDNA4 gives a workgroup up to 160 KiB of LDS.
+            .filter(|&size| size <= 160 * 1024)
             .ok_or_else(|| EvalError::Launch {
-                message: "expected .amdhsa_group_segment_fixed_size of at most 64 KiB".into(),
+                message: "expected .amdhsa_group_segment_fixed_size of at most 160 KiB".into(),
             })?;
         Ok(Self {
             arena,

@@ -273,6 +273,16 @@ fn a_workgroup_smaller_than_a_wave_runs_only_its_work_items() {
     assert_eq!(copied, expected);
 }
 
+// Test a workgroup of 156 KiB of LDS, which CDNA4 allows: each lane reads back its neighbor's
+// word from past the 64 KiB of earlier generations.
+#[test]
+fn the_large_lds_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/large_lds",
+        &[array("out", 0x10000, ArrayKind::Output(U32))],
+    );
+}
+
 // Test every DPP lane selection, bound_ctrl, the row and bank masks, a VOP2 operation and
 // inactive source lanes against the expected outputs in dpp_ops.out.
 #[test]
