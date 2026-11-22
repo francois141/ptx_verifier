@@ -1609,7 +1609,10 @@ fn lower_scalar_op32(
     let (src0, src1) = scalar_sources(src0, src1)?;
     Ok(LoweredInstr::ScalarOp32 {
         op,
-        dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+        dst: match dst {
+            Operand::M0 => Sgpr::M0,
+            _ => sgpr(dst).ok_or("expected one destination SGPR or m0")?,
+        },
         src0,
         src1,
     })

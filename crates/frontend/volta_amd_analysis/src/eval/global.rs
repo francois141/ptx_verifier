@@ -50,7 +50,7 @@ impl Element {
 
 /// An array in global memory: element `i` is at `base + i * element bytes`. An input
 /// element's value is the symbol for element `i` of `name`; output elements start
-/// unwritten, and the kernel can store to them but cannot load them.
+/// unwritten, and the kernel can load only the ones its workgroup has stored.
 #[derive(Debug, Clone)]
 pub struct ArrayDef {
     pub name: String,
@@ -177,7 +177,23 @@ impl GlobalMemory {
                 });
             }
         }
-        Err(EvalError::GlobalRead { address })
+        self.load_written(address)
+            .ok_or(EvalError::GlobalRead { address })
+    }
+
+    /// An output word this workgroup has already stored in full, read back as it was stored.
+    fn load_written(&self, address: u64) -> Option<Word> {
+        let region = self.regions.iter().find(|region| {
+            matches!(region.kind, ArrayKind::Output(_)) && region.element_at(address).is_some()
+        })?;
+        let written = self.written.get(self.selected.unwrap_or(0))?;
+        Some(match region.element {
+            Element::Word => Word::Value(*written.get(&address)?),
+            Element::Bf16 => Word::Bf16 {
+                low: *written.get(&address)?,
+                high: *written.get(&(address + 2))?,
+            },
+        })
     }
 
     /// Record one element of a bf16 output at the 2-byte aligned `address`.

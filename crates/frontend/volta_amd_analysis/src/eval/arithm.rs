@@ -21,6 +21,7 @@ const B64: Type = Type::Bits(Width(64));
 const U32: Type = Type::Int(symbolic_full::Signedness::Unsigned, Width(32));
 use super::wave::{WaveRegisters, apply_modifiers, as_f32, concrete_word};
 use super::word::Word;
+use super::word::compare_bf16_field;
 
 enum OperandType {
     Word,
@@ -1001,6 +1002,11 @@ fn compare(
     a: ExprId,
     b: ExprId,
 ) -> Result<ExprId, EvalError> {
+    if matches!(op, CmpOp::EqU32 | CmpOp::NeU32)
+        && let Some(predicate) = compare_bf16_field(arena, op == CmpOp::EqU32, a, b)
+    {
+        return Ok(predicate);
+    }
     if matches!(op, CmpOp::EqU32 | CmpOp::NeU32)
         && let Some(predicate) = compare_real_words(arena, op == CmpOp::EqU32, a, b)
     {
