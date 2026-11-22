@@ -287,6 +287,19 @@ fn the_bf16_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that selects clamping against a constant are the max or min of their sources, against
+// the expected outputs in clamp_ops.out.
+#[test]
+fn the_clamp_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/clamp_ops",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array_of("out", 0x20000, 4 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test integer word comparisons of symbolic f32 values, which hold exactly when the reals are
 // equal, against the expected outputs in word_compare_ops.out.
 #[test]

@@ -365,6 +365,9 @@ pub(super) fn evaluate_cndmask(
         (None, Some(_)) => (a, registers.read_f32(arena, lane, src1)?),
         _ => (a, b),
     };
+    if let Some(value) = select_extremum(arena, condition, a, b) {
+        return Ok(value);
+    }
     Ok(arena.select(B32, condition, b, a))
 }
 
@@ -399,6 +402,9 @@ pub(super) fn evaluate_cndmask_e64(
         (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1.src)?),
         _ => (a, b),
     };
+    if let Some(value) = select_extremum(arena, condition, a, b) {
+        return Ok(value);
+    }
     Ok(arena.select(B32, condition, b, a))
 }
 
@@ -934,6 +940,48 @@ fn compare_real_words(arena: &mut ExprArena, equal: bool, a: ExprId, b: ExprId) 
     } else {
         arena.ne(F32, a, b)
     })
+}
+
+/// Whether `a` and `b` are one value: one node, or equal constants.
+fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+    a == b
+        || match (arena.value_node(a), arena.value_node(b)) {
+            (ExprNode::RealConst(x), ExprNode::RealConst(y)) => x == y,
+            (ExprNode::IntConst(x), ExprNode::IntConst(y)) => x == y,
+            _ => false,
+        }
+}
+
+/// `condition ? b : a` as the `max` or `min` it is when `condition` orders the two branches and
+/// one is a constant, a clamp such as `0 <= v ? v : 0`; over the reals, ties pick equal values.
+fn select_extremum(
+    arena: &mut ExprArena,
+    condition: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<ExprId> {
+    let constant = |id| {
+        matches!(
+            arena.value_node(id),
+            ExprNode::RealConst(_) | ExprNode::IntConst(_)
+        )
+    };
+    if !constant(a) && !constant(b) {
+        return None;
+    }
+    // `(x, y)` with `condition` meaning `x <= y` (or `x < y`).
+    let (x, y) = match *arena.node(condition) {
+        ExprNode::Le(x, y) | ExprNode::Lt(x, y) => (x, y),
+        ExprNode::Ge(x, y) | ExprNode::Gt(x, y) => (y, x),
+        _ => return None,
+    };
+    if same_value(arena, b, y) && same_value(arena, a, x) {
+        Some(arena.max(F32, a, b))
+    } else if same_value(arena, b, x) && same_value(arena, a, y) {
+        Some(arena.min(F32, a, b))
+    } else {
+        None
+    }
 }
 
 /// `condition ? b : a` when `condition` is `x == y` and the sources are `x` and `y`: whichever
