@@ -11,7 +11,7 @@ address alone, a `Scalar` a 32-bit value. The kernel-argument bytes are laid out
 compiled kernel's own metadata, hidden arguments included.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True)
@@ -559,8 +559,10 @@ HTI = dict(block_m=256, block_n=256, block_k=64, stages=2, m_waves=2, n_waves=4,
            use_half_tile_interleaved=True)
 CASES = (
     flash_attention("flash_attn_gfx950", causal=False, seq=384),
-    flash_attention("flash_attn_gfx950_swapped_qk", causal=False, seq=384, arrays_qk=("K", "Q"),
-                    assembly="flash_attn_gfx950", check="REJECT"),
+    # A REJECT needs only some refuted outputs; refuting all 16384 takes over ten minutes.
+    replace(flash_attention("flash_attn_gfx950_swapped_qk", causal=False, seq=384,
+                            arrays_qk=("K", "Q"), assembly="flash_attn_gfx950", check="REJECT"),
+            sample=64),
     # Not the causal dual-wave kernel: it masks with the finite score -3e38, so over the reals each
     # masked key keeps weight exp(-3e38 - m) > 0 and the output is not exactly causal attention.
     gemm("gemm_nt", "nt"),
@@ -590,7 +592,8 @@ CASES = (
     generic_attention("flash_attn_generic_causal", True, 64),
     # The padding-mask dispatch looks at seq_len only, so 65 keys run unmasked: the 63 padded
     # columns repeat key 64.
-    generic_attention("flash_attn_generic_cross", False, 64, 65, check="REJECT"),
+    replace(generic_attention("flash_attn_generic_cross", False, 64, 65, check="REJECT"),
+            sample=64),
     generic_attention("flash_attn_generic_cross_fixed", False, 64, 65, fixes=(GENERIC_FIX_PAD,),
                       note=", the dispatch checking seq_len_kv too"),
     rmsnorm_small_block("rmsnorm_block4", 8, 4),

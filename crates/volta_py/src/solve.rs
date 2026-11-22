@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use pyo3::prelude::*;
 
 use volta_equivalence::EquivCheckOptions;
+use volta_expr::SymbolicOutputs;
 use volta_graph_check::GraphConclusion;
 use volta_pipeline::{GraphEvidence, Isa, KernelRun, Solver, Spec};
 use volta_ptx_analysis::AnalysisConfig;
@@ -21,9 +22,9 @@ pub struct SolveResultPy {
     /// `"AWS Trainium NKI"`.
     #[pyo3(get)]
     pub isa: String,
-    /// `[(array_name, [(index, pretty_printed_expr), ...]), ...]`; empty when the run wrote none.
-    #[pyo3(get)]
-    pub outputs: Vec<(String, Vec<(u64, String)>)>,
+    /// The run's written outputs, rendered only when `outputs` is read: printing a large
+    /// kernel's expression trees can take far longer than solving them.
+    written: Option<SymbolicOutputs>,
     /// Whether every graph check passed on a completed trace; `None` when the ISA's
     /// interpreter records no memory events, so race freedom is not checked.
     #[pyo3(get)]
@@ -34,6 +35,42 @@ pub struct SolveResultPy {
     /// What the verdict rests on (ACCEPT), its witnesses (REJECT) or what is missing (UNKNOWN).
     #[pyo3(get)]
     pub evidence: Vec<String>,
+}
+
+#[pymethods]
+impl SolveResultPy {
+    /// `[(array_name, [(index, pretty_printed_expr), ...]), ...]`; empty when the run wrote none.
+    #[getter]
+    fn outputs(&self) -> Vec<(String, Vec<(u64, String)>)> {
+        self.written
+            .iter()
+            .flat_map(|exprs| {
+                exprs.outputs.iter().map(|(name, elems)| {
+                    let elems = elems
+                        .iter()
+                        .map(|(index, expr)| (*index, exprs.arena.display_expr(*expr)))
+                        .collect();
+                    (name.clone(), elems)
+                })
+            })
+            .collect()
+    }
+
+    /// `[(array_name, [index, ...]), ...]`: the written elements without their expressions.
+    #[getter]
+    fn output_indices(&self) -> Vec<(String, Vec<u64>)> {
+        self.written
+            .iter()
+            .flat_map(|exprs| {
+                exprs.outputs.iter().map(|(name, elems)| {
+                    (
+                        name.clone(),
+                        elems.iter().map(|(index, _)| *index).collect(),
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 /// Run the kernel in `path` (its ISA chosen by extension) under `config` (none for NKI) and,
@@ -62,21 +99,9 @@ pub fn solve(
     let spec = spec.map(|text| parse_spec(text, dims)).transpose()?;
     let (isa, mut run) = load_kernel(&path, config, kernel)?;
 
-    let outputs = match &run.outputs {
-        Ok(exprs) => exprs
-            .outputs
-            .iter()
-            .map(|(name, elems)| {
-                let elems = elems
-                    .iter()
-                    .map(|(index, expr)| (*index, exprs.arena.display_expr(*expr)))
-                    .collect();
-                (name.clone(), elems)
-            })
-            .collect(),
-        Err(why) if spec.is_none() => return Err(VoltaError::new_err(why.clone())),
-        Err(_) => Vec::new(),
-    };
+    if let (Err(why), None) = (&run.outputs, &spec) {
+        return Err(VoltaError::new_err(why.clone()));
+    }
     let race_verified = race_verified(&run);
 
     let (verdict, evidence) = match &spec {
@@ -90,7 +115,7 @@ pub fn solve(
 
     Ok(SolveResultPy {
         isa: isa.name().to_string(),
-        outputs,
+        written: run.outputs.ok(),
         race_verified,
         verdict,
         evidence,

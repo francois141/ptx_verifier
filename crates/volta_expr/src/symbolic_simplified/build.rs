@@ -1,6 +1,6 @@
 //! `ExprArena`'s constructors, each folding constants eagerly and exactly.
 
-use super::node::{ExprArena, ExprId, ExprNode, NanError, Real, StringId, SymbolId};
+use super::node::{ExprArena, ExprId, ExprNode, NanError, Real, RealRepr, StringId, SymbolId};
 
 impl ExprArena {
     // -----------------------------------------------------------------
@@ -238,6 +238,16 @@ impl ExprArena {
 
     /// Square root: sqrt(a)
     pub fn sqrt(&mut self, a: ExprId) -> ExprId {
+        // Exact only: a rational folds when its numerator and denominator are perfect squares.
+        if let ExprNode::RealConst(x) = self.node(a)
+            && let RealRepr::Rational(q) = x.repr()
+            && q.cmp0() != std::cmp::Ordering::Less
+            && q.numer().is_perfect_square()
+            && q.denom().is_perfect_square()
+        {
+            let root = rug::Rational::from((q.numer().clone().sqrt(), q.denom().clone().sqrt()));
+            return self.real(Real::from_rational(root));
+        }
         self.push(ExprNode::Sqrt(a))
     }
 

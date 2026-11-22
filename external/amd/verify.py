@@ -316,7 +316,7 @@ def solve(kernel: Path, launch: Launch, check: Solve, sample: int = 0) -> Outcom
         note = " (expected)"
     else:
         note = ""
-    outputs = sum(len(elements) for _, elements in result.outputs)
+    outputs = sum(len(indices) for _, indices in result.output_indices)
     detail = f"{result.verdict}{note} by the canonical solver, {outputs} outputs"
     if not verified and result.evidence:
         detail += f"; {result.evidence[0]}"
