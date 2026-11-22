@@ -918,6 +918,24 @@ pub(super) fn evaluate_cmp64(
     }))
 }
 
+/// The bitwise (in)equality of two f32 words of which one is symbolic: over the reals, with no
+/// NaN and no signed zero, two words hold the same bits exactly when they hold the same real.
+fn compare_real_words(arena: &mut ExprArena, equal: bool, a: ExprId, b: ExprId) -> Option<ExprId> {
+    if concrete_word(arena, a).is_some() && concrete_word(arena, b).is_some() {
+        return None;
+    }
+    if a == b {
+        return Some(arena.bool_val(equal));
+    }
+    let a = as_f32(arena, a)?;
+    let b = as_f32(arena, b)?;
+    Some(if equal {
+        arena.eq(F32, a, b)
+    } else {
+        arena.ne(F32, a, b)
+    })
+}
+
 /// `condition ? b : a` when `condition` is `x == y` and the sources are `x` and `y`: whichever
 /// way the condition goes, the result equals `a`.
 fn select_equal(arena: &ExprArena, condition: ExprId, a: ExprId, b: ExprId) -> Option<ExprId> {
@@ -935,6 +953,11 @@ fn compare(
     a: ExprId,
     b: ExprId,
 ) -> Result<ExprId, EvalError> {
+    if matches!(op, CmpOp::EqU32 | CmpOp::NeU32)
+        && let Some(predicate) = compare_real_words(arena, op == CmpOp::EqU32, a, b)
+    {
+        return Ok(predicate);
+    }
     let words = |arena: &ExprArena| match (concrete_word(arena, a), concrete_word(arena, b)) {
         (Some(a), Some(b)) => Ok((a, b)),
         _ => Err(EvalError::SymbolicWord { lane }),

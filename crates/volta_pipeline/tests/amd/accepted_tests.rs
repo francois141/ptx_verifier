@@ -287,6 +287,20 @@ fn the_bf16_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test integer word comparisons of symbolic f32 values, which hold exactly when the reals are
+// equal, against the expected outputs in word_compare_ops.out.
+#[test]
+fn the_word_compare_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/word_compare_ops",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array_of("out", 0x30000, 4 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test 16-bit buffer loads and stores of bf16 elements, either half of a word: the kernel
 // reverses its input against the expected outputs in bf16_buffer.out.
 #[test]
