@@ -1185,6 +1185,28 @@ fn execute_bf16_pair_lane(
             };
             Some(registers.write_vgpr_word(lane, dst, word))
         }
+        // `v_xor_b32 dst, 0x80008000, vN` flips both halves' sign bits: it negates each real.
+        LoweredInstr::BinOp {
+            op: BinOp::Xor32,
+            dst,
+            src0,
+            src1,
+        } => {
+            let value = if is_inline(src0, 0x8000_8000) {
+                src1
+            } else if is_inline(src1, 0x8000_8000) {
+                src0
+            } else {
+                return None;
+            };
+            let [low, high] = bf16_pair(registers, lane, value)?;
+            let bf16 = Type::Float(Width(16));
+            let word = Word::Bf16 {
+                low: arena.neg(bf16, low),
+                high: arena.neg(bf16, high),
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
         // `v_lshlrev_b32 dst, 16, vN` is the low half.
         LoweredInstr::BinOp {
             op: BinOp::LShlRev32,

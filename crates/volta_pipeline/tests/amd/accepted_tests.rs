@@ -273,6 +273,19 @@ fn a_workgroup_smaller_than_a_wave_runs_only_its_work_items() {
     assert_eq!(copied, expected);
 }
 
+// Test the idioms over words of two bf16 halves against the expected outputs in bf16_ops.out.
+#[test]
+fn the_bf16_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/bf16_ops",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array_of("out", 0x30000, 128, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test a workgroup of 156 KiB of LDS, which CDNA4 allows: each lane reads back its neighbor's
 // word from past the 64 KiB of earlier generations.
 #[test]
