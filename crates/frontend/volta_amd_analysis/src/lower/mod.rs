@@ -743,6 +743,16 @@ fn lower_as_written(
                 src_c: mfma_src_c(dst, src_c)?,
             })
         }
+        ("v_mfma_f32_16x16x32_bf16", [dst, src_a, src_b, src_c]) => {
+            let dst =
+                lane_regs(dst).ok_or("expected an aligned four-VGPR or four-AGPR destination")?;
+            Ok(Mfma16x16x32Bf16 {
+                dst,
+                src_a: lane_regs(src_a).ok_or("expected an aligned four-register A source")?,
+                src_b: lane_regs(src_b).ok_or("expected an aligned four-register B source")?,
+                src_c: mfma_src_c(dst, src_c)?,
+            })
+        }
         ("v_mfma_f32_32x32x16_bf16", [dst, src_a, src_b, src_c]) => {
             let dst = lane_regs(dst)
                 .ok_or("expected an aligned sixteen-VGPR or sixteen-AGPR destination")?;
@@ -943,6 +953,7 @@ fn lower_as_written(
             | "s_setprio"
             | "v_mfma_f32_16x16x4_f32"
             | "v_mfma_f32_32x32x16_bf16"
+            | "v_mfma_f32_16x16x32_bf16"
             | "v_cvt_pk_bf16_f32"
             | "v_permlane32_swap_b32_e32"
             | "v_permlane32_swap_b32_e64"

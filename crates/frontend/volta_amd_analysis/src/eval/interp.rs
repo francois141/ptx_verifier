@@ -23,7 +23,9 @@ use super::arithm::{
 use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
 use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
-use super::mfma::{execute_mfma_16x16x4_f32, execute_mfma_32x32x16_bf16};
+use super::mfma::{
+    execute_mfma_16x16x4_f32, execute_mfma_16x16x32_bf16, execute_mfma_32x32x16_bf16,
+};
 use super::scalar::KernargBuffer;
 use super::wave::{
     LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, active_lanes,
@@ -220,6 +222,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::MadU64U32 { .. }
             | LoweredInstr::Mfma16x16x4F32 { .. }
             | LoweredInstr::Mfma32x32x16Bf16 { .. }
+            | LoweredInstr::Mfma16x16x32Bf16 { .. }
             | LoweredInstr::CvtPkBf16F32 { .. }
             | LoweredInstr::Permlane32Swap { .. }
             | LoweredInstr::Permlane16Swap { .. }
@@ -386,6 +389,19 @@ impl<'a> Interpreter<'a> {
                 src_b,
                 src_c,
             } => execute_mfma_16x16x4_f32(
+                &mut self.arena,
+                &mut self.waves[wave].registers,
+                *dst,
+                *src_a,
+                *src_b,
+                *src_c,
+            ),
+            LoweredInstr::Mfma16x16x32Bf16 {
+                dst,
+                src_a,
+                src_b,
+                src_c,
+            } => execute_mfma_16x16x32_bf16(
                 &mut self.arena,
                 &mut self.waves[wave].registers,
                 *dst,

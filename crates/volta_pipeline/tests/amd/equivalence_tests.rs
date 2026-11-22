@@ -34,10 +34,34 @@ fn check_gemm(
     kernarg: &[u8],
     spec: &str,
 ) -> EquivalenceVerdict {
-    let [m, n, k] = dims;
     let arrays = gemm_arrays(dims);
+    check_gemm_arrays(
+        file,
+        source,
+        kernel_name,
+        workitems,
+        dims,
+        &arrays,
+        kernarg,
+        spec,
+    )
+}
+
+/// `check_gemm` with the kernel's `arrays` given, such as bf16 inputs.
+#[allow(clippy::too_many_arguments)]
+fn check_gemm_arrays(
+    file: &str,
+    source: &str,
+    kernel_name: &str,
+    workitems: u32,
+    dims: [u64; 3],
+    arrays: &[ArrayDef],
+    kernarg: &[u8],
+    spec: &str,
+) -> EquivalenceVerdict {
+    let [m, n, k] = dims;
     let actual =
-        check_amd(file, source, kernel_name, workitems, kernarg, &arrays).verified_outputs();
+        check_amd(file, source, kernel_name, workitems, kernarg, arrays).verified_outputs();
 
     // Derive the reference from the specification, independently of the kernel execution.
     let dims = HashMap::from([("M".into(), m), ("N".into(), n), ("K".into(), k)]);
@@ -111,6 +135,43 @@ fn amd_mfma_matmul_matches_its_specification() {
         EquivalenceVerdict::Equivalent {
             checked: 1024,
             total: 1024,
+        }
+    );
+}
+
+// Test one v_mfma_f32_16x16x32_bf16 over bf16 inputs, B stored transposed: all 256 outputs are
+// the 32-term products of the specification.
+#[test]
+fn amd_bf16_mfma_matmul_matches_its_specification() {
+    let [m, n, k] = [16, 16, 32];
+    let arrays = [
+        ("A", A_BASE, m * k, ArrayKind::Input, Element::Bf16),
+        ("B", B_BASE, n * k, ArrayKind::Input, Element::Bf16),
+        ("C", C_BASE, m * n, ArrayKind::Output(F32), Element::Word),
+    ]
+    .map(|(name, base, len, kind, element)| ArrayDef {
+        name: name.into(),
+        base,
+        len,
+        kind,
+        element,
+    });
+    let kernarg = [A_BASE, B_BASE, C_BASE].map(u64::to_le_bytes).concat();
+    let verdict = check_gemm_arrays(
+        "success/mfma_bf16_matmul.s",
+        amd_fixture!("success/mfma_bf16_matmul"),
+        "mfma_bf16_matmul",
+        64,
+        [m, n, k],
+        &arrays,
+        &kernarg,
+        include_str!("../../../backend/volta_equivalence/tests/specs/matmul_transposed.spec"),
+    );
+    assert_eq!(
+        verdict,
+        EquivalenceVerdict::Equivalent {
+            checked: 256,
+            total: 256,
         }
     );
 }

@@ -179,6 +179,65 @@ pub(super) fn execute_mfma_32x32x16_bf16(
     Ok(())
 }
 
+/// `v_mfma_f32_16x16x32_bf16`: D[i][j] = C[i][j] + sum_k A[i][k] * B[k][j], laid out as
+/// `v_mfma_f32_32x32x16_bf16` lays out its operands (eight consecutive K elements per lane) and
+/// as `v_mfma_f32_16x16x4_f32` its accumulator.
+pub(super) fn execute_mfma_16x16x32_bf16(
+    arena: &mut ExprArena,
+    registers: &mut WaveRegisters,
+    dst: LaneRegs<4>,
+    src_a: LaneRegs<4>,
+    src_b: LaneRegs<4>,
+    src_c: MfmaSrcC,
+) -> Result<(), EvalError> {
+    const N: usize = 16;
+    const K: usize = 32;
+    const LANES: usize = 64;
+    const K_PER_LANE: usize = 8;
+
+    let operand_location = |x: usize, k: usize| (x + N * (k / K_PER_LANE), k % K_PER_LANE);
+    let accumulator_location = |i: usize, j: usize| (N * (i / 4) + j, i % 4);
+
+    let a = read_bf16_wave(arena, registers, src_a, LANES)?;
+    let b = read_bf16_wave(arena, registers, src_b, LANES)?;
+    let c = match src_c {
+        MfmaSrcC::Regs(regs) => regs
+            .regs()
+            .into_iter()
+            .map(|reg| read_wave(arena, registers, reg, LANES))
+            .collect::<Result<Vec<_>, _>>()?,
+        MfmaSrcC::Inline(bits) => {
+            let value = f32_from_bits(arena, bits).ok_or(EvalError::InvalidFloatConstant(bits))?;
+            vec![vec![value; LANES]; 4]
+        }
+    };
+
+    let mut results = Vec::with_capacity(N * N);
+    for i in 0..N {
+        for j in 0..N {
+            let (lane, reg) = accumulator_location(i, j);
+            let mut sum = c[reg][lane];
+            for k in 0..K {
+                let (a_lane, a_element) = operand_location(i, k);
+                let (b_lane, b_element) = operand_location(j, k);
+                sum = arena.fma(
+                    Type::Float(Width(32)),
+                    a[a_lane][a_element],
+                    b[b_lane][b_element],
+                    sum,
+                );
+            }
+            results.push((lane, reg, sum));
+        }
+    }
+
+    let dst_regs = dst.regs();
+    for (lane, reg, value) in results {
+        registers.write_lane_reg(lane, dst_regs[reg], value)?;
+    }
+    Ok(())
+}
+
 /// Each lane's eight bf16 values in four registers, low half first.
 fn read_bf16_wave(
     arena: &mut ExprArena,

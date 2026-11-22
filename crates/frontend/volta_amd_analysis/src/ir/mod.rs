@@ -1118,6 +1118,15 @@ pub enum LoweredInstr {
         src_b: LaneReg,
         src_c: MfmaSrcC,
     },
+    /// The wave's `D = A * B + C` for a 16 x 32 bf16 `A`, a 32 x 16 bf16 `B` and 16 x 16 f32 `C`
+    /// and `D`: lane `l` holds `A[l % 16][8 * (l / 16) + j]` and `B[8 * (l / 16) + j][l % 16]` as
+    /// its `j`th bf16, and accumulator register `r` holds `C[4 * (l / 16) + r][l % 16]`.
+    Mfma16x16x32Bf16 {
+        dst: LaneRegs<4>,
+        src_a: LaneRegs<4>,
+        src_b: LaneRegs<4>,
+        src_c: MfmaSrcC,
+    },
     /// The wave's `D = A * B + C` over bf16 `A` and `B` and f32 `C` and `D`, for a 32 x 16 `A`,
     /// a 16 x 32 `B` and 32 x 32 `C` and `D`: lane `l` holds `A[l % 32][8 * (l / 32) + j]` and
     /// `B[8 * (l / 32) + j][l % 32]` as the `j`th bf16 of its source registers, low half first,
@@ -1261,6 +1270,7 @@ impl LoweredInstr {
             Self::PackedF32 { .. } => "packed f32 op",
             Self::Mfma16x16x4F32 { .. } => "v_mfma_f32_16x16x4_f32",
             Self::Mfma32x32x16Bf16 { .. } => "v_mfma_f32_32x32x16_bf16",
+            Self::Mfma16x16x32Bf16 { .. } => "v_mfma_f32_16x16x32_bf16",
             Self::CvtPkBf16F32 { .. } => "v_cvt_pk_bf16_f32",
             Self::Permlane32Swap { .. } => "v_permlane32_swap_b32",
             Self::Permlane16Swap { .. } => "v_permlane16_swap_b32",
