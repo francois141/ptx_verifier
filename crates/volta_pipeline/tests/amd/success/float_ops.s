@@ -115,6 +115,12 @@ float_ops:
 	v_div_fixup_f32 v0, v4, v19, v18
 	;;#ASMEND
 	global_store_dword v20, v0, s[0:1] offset:116
+	;;#ASMSTART
+	v_mov_b32_e32 v1, -1
+	v_cvt_pk_bf16_f32 v0, v18, v1
+	v_lshlrev_b32_e32 v0, 16, v0
+	;;#ASMEND
+	global_store_dword v20, v0, s[0:1] offset:120
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -287,6 +293,12 @@ __clang_ocl_kern_imp_float_ops:
 	v_div_fixup_f32 v0, v4, v21, v20
 	;;#ASMEND
 	global_store_dword v[16:17], v0, off offset:116
+	;;#ASMSTART
+	v_mov_b32_e32 v1, -1
+	v_cvt_pk_bf16_f32 v0, v20, v1
+	v_lshlrev_b32_e32 v0, 16, v0
+	;;#ASMEND
+	global_store_dword v[16:17], v0, off offset:120
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:

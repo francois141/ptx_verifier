@@ -107,4 +107,14 @@ __kernel void float_ops(__global const float *a, __global const float *b, __glob
           "=&v"(quotient), "=&v"(error), "=&s"(scaled)
         : "v"(x), "v"(y) : "vcc");
     row[29] = result;
+
+    // A packed half whose source is no f32, here a NaN pattern, is undefined, which only a
+    // result that uses it rejects: the low half read back as an f32 is x.
+    unsigned nan_bits;
+    __asm__ volatile(
+        "v_mov_b32_e32 %1, -1\n\t"
+        "v_cvt_pk_bf16_f32 %0, %2, %1\n\t"
+        "v_lshlrev_b32_e32 %0, 16, %0"
+        : "=&v"(result), "=&v"(nan_bits) : "v"(x));
+    row[30] = result;
 }
