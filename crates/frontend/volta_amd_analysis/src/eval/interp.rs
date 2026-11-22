@@ -221,6 +221,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::CmpE64 { .. }
             | LoweredInstr::Cmp64 { .. }
             | LoweredInstr::CmpF64 { .. }
+            | LoweredInstr::SdwaWord { .. }
             | LoweredInstr::Dpp { .. }
             | LoweredInstr::CarryOp32 { .. }
             | LoweredInstr::MadU64U32 { .. }
@@ -515,7 +516,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Branch { .. }
             | LoweredInstr::CondBranch { .. }
             | LoweredInstr::WaitCnt { .. }
-            | LoweredInstr::Nop => Err(EvalError::UnsupportedInstruction),
+            | LoweredInstr::Nop
+            | LoweredInstr::SdwaWord { .. } => Err(EvalError::UnsupportedInstruction),
         }
     }
 

@@ -810,6 +810,15 @@ pub enum DppOp {
     Bin(BinOp),
 }
 
+/// The operation of an SDWA instruction on its selected source words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdwaOp {
+    /// `src0 & src1`.
+    And32,
+    /// `VCC ? src1 : src0`.
+    CndMask32,
+}
+
 /// A 16-bit half of a 32-bit word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WordHalf {
@@ -1107,6 +1116,15 @@ pub enum LoweredInstr {
         src1: Vop3Src,
         carry_in: Option<LaneMask>,
     },
+    /// A VOP2 SDWA instruction reading one 16-bit half of `src0`, zero-extended, and all of
+    /// `src1`, writing the whole word (`dst_sel:DWORD`, `dst_unused:UNUSED_PAD`).
+    SdwaWord {
+        op: SdwaOp,
+        dst: Vgpr,
+        src0: Vgpr,
+        half: WordHalf,
+        src1: Vop3Src,
+    },
     /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
     /// carry out of 64 bits in each lane's bit of `carry`.
     MadU64U32 {
@@ -1313,10 +1331,12 @@ impl LoweredInstr {
             Self::CmpE64 { .. } => "v_cmp (e64)",
             Self::CndMask32 { .. } => "v_cndmask_b32",
             Self::CndMask32E64 { .. } => "v_cndmask_b32 (e64)",
+            Self::SdwaWord { .. } => "vector op (SDWA)",
             Self::Dpp { .. } => "vector op (DPP)",
+            Self::DsWriteB16 { .. } => "ds_write_b16",
+            Self::ShiftAdd64 { .. } => "64-bit vector shift",
             Self::CarryOp32 { .. } => "vector add/sub with carry",
             Self::MadU64U32 { .. } => "v_mad_u64_u32",
-            Self::ShiftAdd64 { .. } => "64-bit vector shift",
             Self::AccvgprWrite32 { .. } => "v_accvgpr_write_b32",
             Self::AccvgprRead32 { .. } => "v_accvgpr_read_b32",
             Self::FmaF32 { .. } => "v_fma_f32",
@@ -1342,7 +1362,6 @@ impl LoweredInstr {
             Self::BufferLoad { .. } => "buffer_load",
             Self::BufferStore { .. } => "buffer_store",
             Self::DsWrite { .. } => "ds_write",
-            Self::DsWriteB16 { .. } => "ds_write_b16",
             Self::DsRead { .. } => "ds_read",
             Self::DsBPermute { .. } => "ds_bpermute_b32",
             Self::DsSwizzle { .. } => "ds_swizzle_b32",

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use super::ast::{Counter, DppSelect, Instruction, Kernel, Operand, RegFile};
+use super::ast::{Counter, DppSelect, Instruction, Kernel, Operand, RegFile, SdwaSel};
 
 /// A statement's first word and the rest.
 fn word(line: &str) -> (&str, &str) {
@@ -44,7 +44,23 @@ fn operand(text: &str) -> Option<Operand> {
         "off" => return Some(Operand::Off),
         "lds" => return Some(Operand::Lds),
         "bound_ctrl:1" => return Some(Operand::BoundCtrl),
+        "dst_sel:DWORD" => return Some(Operand::SdwaDstDword),
+        "dst_unused:UNUSED_PAD" => return Some(Operand::SdwaDstUnusedPad),
         _ => {}
+    }
+    for (prefix, make_operand) in [
+        ("src0_sel:", Operand::Src0Sel as fn(SdwaSel) -> Operand),
+        ("src1_sel:", Operand::Src1Sel),
+    ] {
+        if let Some(sel) = text.strip_prefix(prefix) {
+            let sel = match sel {
+                "DWORD" => SdwaSel::Dword,
+                "WORD_0" => SdwaSel::Word0,
+                "WORD_1" => SdwaSel::Word1,
+                _ => return None,
+            };
+            return Some(make_operand(sel));
+        }
     }
     if text.starts_with(".L") {
         return Some(Operand::Label(text.into()));

@@ -96,6 +96,13 @@ pub enum Operand {
     },
     /// A memory instruction's `offset:n` byte offset, which may be negative.
     Offset(i64),
+    /// An SDWA instruction's `dst_sel:DWORD` and `dst_unused:UNUSED_PAD`, the only destination
+    /// form supported: the whole result word is written.
+    SdwaDstDword,
+    SdwaDstUnusedPad,
+    /// An SDWA instruction's `src0_sel:` or `src1_sel:` selector.
+    Src0Sel(SdwaSel),
+    Src1Sel(SdwaSel),
 }
 
 /// The lane each lane of a DPP instruction reads its first source from, within a quad, a row
@@ -135,4 +142,12 @@ impl DppSelect {
             Self::RowBcast31 => (lane >= 32).then_some(31),
         }
     }
+}
+
+/// The part of a source word an SDWA instruction reads, zero-extended to a word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdwaSel {
+    Dword,
+    Word0,
+    Word1,
 }
