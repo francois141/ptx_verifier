@@ -1029,6 +1029,13 @@ pub enum LoweredInstr {
         dst: [Vgpr; 2],
         src: [Src0; 2],
     },
+    /// Store the low bf16 half of `src` at the 2-byte aligned `addr + offset`, keeping the
+    /// other half of its LDS word.
+    DsWriteB16 {
+        addr: Vgpr,
+        offset: u16,
+        src: Vgpr,
+    },
     /// `dst = (src << shift) + addend` over concrete unsigned 64-bit words, the shift taken
     /// modulo 64 (`v_lshlrev_b64` has no addend, `v_lshl_add_u64` a shift of at most 4).
     ShiftAdd64 {
@@ -1335,6 +1342,7 @@ impl LoweredInstr {
             Self::BufferLoad { .. } => "buffer_load",
             Self::BufferStore { .. } => "buffer_store",
             Self::DsWrite { .. } => "ds_write",
+            Self::DsWriteB16 { .. } => "ds_write_b16",
             Self::DsRead { .. } => "ds_read",
             Self::DsBPermute { .. } => "ds_bpermute_b32",
             Self::DsSwizzle { .. } => "ds_swizzle_b32",

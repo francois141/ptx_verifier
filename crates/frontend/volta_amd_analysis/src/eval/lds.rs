@@ -116,6 +116,37 @@ impl Lds {
         Ok(())
     }
 
+    /// Replace the bf16 half at the 2-byte aligned `address`; the other half of a word never
+    /// written is undefined.
+    pub(super) fn write_bf16(
+        &mut self,
+        arena: &mut ExprArena,
+        address: u64,
+        half: ExprId,
+    ) -> Result<(), EvalError> {
+        let word_address = address - address % 4;
+        if !address.is_multiple_of(2) || self.word_addresses(word_address, 1).is_err() {
+            return Err(EvalError::LdsAccess {
+                address,
+                size: self.size,
+            });
+        }
+        let [low, high] = match self.words[self.selected].get(&(word_address as u32)) {
+            Some(word) => word.bf16_halves(arena).ok_or(EvalError::LdsAccess {
+                address,
+                size: self.size,
+            })?,
+            None => [arena.undefined(), arena.undefined()],
+        };
+        let word = if address == word_address {
+            Word::Bf16 { low: half, high }
+        } else {
+            Word::Bf16 { low, high: half }
+        };
+        self.words[self.selected].insert(word_address as u32, word);
+        Ok(())
+    }
+
     /// The bf16 half at the 2-byte aligned `address`: the low half of its word when `address` is
     /// the word's own, else the high half. `lane` names the reader for an error.
     pub(super) fn read_bf16(

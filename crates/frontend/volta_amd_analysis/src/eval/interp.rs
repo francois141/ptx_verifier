@@ -192,6 +192,7 @@ impl<'a> Interpreter<'a> {
                 self.execute_scalar(wave, instruction)?;
             }
             LoweredInstr::DsWrite { .. }
+            | LoweredInstr::DsWriteB16 { .. }
             | LoweredInstr::DsRead { .. }
             | LoweredInstr::DsReadTrB16 { .. }
             | LoweredInstr::DsBPermute { .. }
@@ -462,6 +463,9 @@ impl<'a> Interpreter<'a> {
                 self.ds_read_tr_b16(wave, *dst, *addr, *offset)
             }
             LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses),
+            LoweredInstr::DsWriteB16 { addr, offset, src } => {
+                self.ds_write_b16(wave, *addr, *offset, *src)
+            }
             LoweredInstr::DsSwizzle { dst, src, xor } => {
                 self.execute_ds_swizzle(wave, *dst, *src, *xor)
             }
@@ -928,6 +932,39 @@ impl<'a> Interpreter<'a> {
                 }
                 self.lds.write(start_address, &values)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Each active lane's low half of `src` replaces one half of an LDS word; an unwritten
+    /// word's other half is undefined. Two lanes storing one half race, as in `ds_write`.
+    pub(super) fn ds_write_b16(
+        &mut self,
+        wave: WaveId,
+        address_reg: Vgpr,
+        offset: u16,
+        src: Vgpr,
+    ) -> Result<(), EvalError> {
+        let pc = self.waves[wave].pc;
+        let mut writers: BTreeMap<u64, LdsLaneAccess> = BTreeMap::new();
+        for lane in active_lanes(self.waves[wave].exec) {
+            let access = LdsLaneAccess { wave, lane, pc };
+            let address = self.lds_address(wave, lane, address_reg, u32::from(offset))?;
+            if let Some(earlier) = writers.insert(address, access)
+                && earlier.lane != lane
+            {
+                let address = address as u32;
+                return Err(EvalError::LdsRace(LdsRace {
+                    address,
+                    earlier,
+                    later: access,
+                }));
+            }
+            let word = self.waves[wave].registers.read_vgpr_word(lane, src)?;
+            let [half, _] = word
+                .bf16_halves(&mut self.arena)
+                .ok_or(EvalError::NotBf16 { lane })?;
+            self.lds.write_bf16(&mut self.arena, address, half)?;
         }
         Ok(())
     }

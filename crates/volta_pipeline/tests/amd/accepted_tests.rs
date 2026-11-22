@@ -282,7 +282,7 @@ fn the_bf16_ops_kernel_writes_its_expected_outputs() {
         &[
             array("a", 0x10000, ArrayKind::Input),
             array("b", 0x20000, ArrayKind::Input),
-            array_of("out", 0x30000, 128, ArrayKind::Output(F32)),
+            array_of("out", 0x30000, 256, ArrayKind::Output(F32)),
         ],
     );
 }

@@ -29,6 +29,8 @@ fn point(pc: InstrId) -> ProgramPoint {
 #[derive(Debug, Clone, Copy)]
 struct LdsWord {
     address: u32,
+    /// 4, or 2 for a half-word store.
+    width: u32,
     source: Option<(usize, LaneReg)>,
 }
 
@@ -81,6 +83,7 @@ impl Interpreter<'_> {
                         for (address, reg) in addresses.into_iter().zip(regs) {
                             words.push(LdsWord {
                                 address,
+                                width: 4,
                                 source: Some((lane, reg)),
                             });
                         }
@@ -95,6 +98,7 @@ impl Interpreter<'_> {
                         for address in self.lds.word_addresses(start, count)? {
                             words.push(LdsWord {
                                 address,
+                                width: 4,
                                 source: None,
                             });
                         }
@@ -107,9 +111,20 @@ impl Interpreter<'_> {
                     for address in self.lds.word_addresses(start, 2)? {
                         words.push(LdsWord {
                             address,
+                            width: 4,
                             source: None,
                         });
                     }
+                }
+            }
+            LoweredInstr::DsWriteB16 { addr, offset, src } => {
+                for lane in active_lanes(exec) {
+                    let address = self.lds_address(wave, lane, addr, u32::from(offset))?;
+                    words.push(LdsWord {
+                        address: address as u32,
+                        width: 2,
+                        source: Some((lane, LaneReg::Vgpr(src))),
+                    });
                 }
             }
             LoweredInstr::DsBPermute { .. } | LoweredInstr::DsSwizzle { .. } => {}
@@ -132,7 +147,7 @@ impl Interpreter<'_> {
             space: Space::Shared,
             footprint: Footprint::Bytes {
                 addr: u64::from(word.address),
-                width: 4,
+                width: word.width,
             },
             proxy: Proxy::Generic,
             role: OperandRole::Plain,

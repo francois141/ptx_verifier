@@ -545,6 +545,11 @@ fn lower_as_written(
             shift: vop3_src(shift).ok_or("expected a VGPR, an SGPR or an inline shift")?,
             addend: None,
         }),
+        ("ds_write_b16", [address, data, modifiers @ ..]) => Ok(DsWriteB16 {
+            addr: vgpr(address).ok_or("expected one address VGPR")?,
+            offset: lds_offset(modifiers)?,
+            src: vgpr(data).ok_or("expected one data VGPR")?,
+        }),
         ("v_mov_b64_e32", [dst, src]) => Ok(Mov64 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
             src: src0_words(src)?,
