@@ -29,6 +29,7 @@ fn invalid_workgroup_launches_are_rejected() {
             workgroup_size: (64, 1, 1),
             workgroup_id,
             grid_size,
+            dynamic_lds_bytes: 0,
         };
         let result = analyze(
             &kernel,
@@ -47,6 +48,7 @@ fn invalid_workgroup_launches_are_rejected() {
             workgroup_size: (64, 1, 1),
             workgroup_id: (0, 0, 0),
             grid_size,
+            dynamic_lds_bytes: 0,
         };
         let result = analyze_grid(
             &kernel,
@@ -73,6 +75,7 @@ fn grid_runs_reject_different_lds_addresses() {
         workgroup_size: (64, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (2, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let out = array_of("out", 0x10000, 128, ArrayKind::Output(U32));
     let arrays = std::slice::from_ref(&out);
@@ -106,6 +109,7 @@ fn grid_runs_reject_different_active_lanes() {
         workgroup_size: (64, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (2, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let out = array("out", 0x10000, ArrayKind::Output(U32));
     let arrays = std::slice::from_ref(&out);
@@ -146,6 +150,7 @@ fn grid_runs_do_not_hide_nan_sources_in_later_workgroups() {
         workgroup_size: (64, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (2, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let out = array_of("out", 0x10000, 128, ArrayKind::Output(F32));
     let arrays = std::slice::from_ref(&out);

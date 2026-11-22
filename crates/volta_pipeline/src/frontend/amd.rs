@@ -104,12 +104,9 @@ fn workgroup_launch(
         ));
     }
 
-    if launch.dynamic_shared_bytes != 0 {
-        return Err(FrontendError::Launch(
-            "AMD kernels take their LDS size from their descriptor, not a dynamic shared size"
-                .into(),
-        ));
-    }
+    let dynamic_lds_bytes = u32::try_from(launch.dynamic_shared_bytes).map_err(|_| {
+        FrontendError::Launch("the dynamic shared size does not fit 32 bits".into())
+    })?;
 
     let arrays = launch
         .arrays
@@ -129,6 +126,7 @@ fn workgroup_launch(
         workgroup_size: launch.block_dim,
         workgroup_id: (0, 0, 0),
         grid_size: launch.grid_dim,
+        dynamic_lds_bytes,
     };
     Ok((workgroup, kernarg, arrays))
 }

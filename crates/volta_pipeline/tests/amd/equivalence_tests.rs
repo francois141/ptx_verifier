@@ -281,6 +281,7 @@ fn check_ck_fmha(
         workgroup_size: (256, 1, 1),
         workgroup_id,
         grid_size,
+        dynamic_lds_bytes: 0,
     };
 
     // Each invocation executes one workgroup; its input symbols retain global tensor indices.
@@ -480,6 +481,7 @@ fn check_ck_rmsnorm(rows: u32, row: u32, columns: u32, epsilon: f32) -> Equivale
         workgroup_size: (256, 1, 1),
         workgroup_id: (row, 0, 0),
         grid_size: (rows, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let mut actual = check_amd_launch(
         "ck_rmsnorm2d.s",
@@ -559,6 +561,7 @@ fn launch_ck_avgpool2d(pool: &AvgPool2d, workgroup: u32) -> AmdChecked {
         workgroup_size: (256, 1, 1),
         workgroup_id: (workgroup, 0, 0),
         grid_size: ((pool.output_len() as u32).div_ceil(256), 1, 1),
+        dynamic_lds_bytes: 0,
     };
     check_amd_launch(
         "ck_avgpool2d.s",

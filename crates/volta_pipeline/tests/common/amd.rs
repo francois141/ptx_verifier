@@ -91,6 +91,7 @@ pub fn check_amd(
         workgroup_size: (workitems, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (1, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     check_amd_launch(file, source, kernel, &launch, kernarg, arrays)
 }
@@ -198,6 +199,7 @@ pub fn check_rejected_kernel(
         workgroup_size: (WORKITEMS, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (1, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let result = analyze(&parsed, &launch, &kernarg, arrays);
     let passed = expected(&result);
@@ -262,6 +264,7 @@ fn run_outputs(
         workgroup_size: (workitems, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (1, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let result = analyze(&kernel, &launch, kernarg, arrays).map_err(|e| e.to_string())?;
 

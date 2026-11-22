@@ -24,6 +24,7 @@ fn launch(grid: u32, workgroup: u32, workitems: u32) -> WorkgroupLaunch {
         workgroup_size: (workitems, 1, 1),
         workgroup_id: (workgroup, 0, 0),
         grid_size: (grid, 1, 1),
+        dynamic_lds_bytes: 0,
     }
 }
 

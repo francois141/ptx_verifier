@@ -21,6 +21,9 @@ pub struct WorkgroupLaunch {
     pub workgroup_id: (u32, u32, u32),
     /// Number of workgroups along X, Y, and Z in the grid.
     pub grid_size: (u32, u32, u32),
+    /// LDS bytes the dispatch allocates past the descriptor's fixed group segment, as
+    /// Triton's launcher allocates its kernels' shared memory.
+    pub dynamic_lds_bytes: u32,
 }
 
 /// How many workgroups `grid` launches.

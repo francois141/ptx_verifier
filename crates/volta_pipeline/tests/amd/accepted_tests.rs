@@ -64,6 +64,7 @@ fn run_workgroup_id_kernel(name: &str) -> AmdChecked {
         workgroup_size: (64, 1, 1),
         workgroup_id: (2, 3, 5),
         grid_size: (3, 4, 6),
+        dynamic_lds_bytes: 0,
     };
     let out = array_of("out", 0x10000, 3 * 64, ArrayKind::Output(U32));
     let run = check_amd_launch(
@@ -88,6 +89,7 @@ fn a_grid_run_gives_each_workgroup_its_own_outputs() {
         workgroup_size: (64, 1, 1),
         workgroup_id,
         grid_size,
+        dynamic_lds_bytes: 0,
     };
     let source = amd_fixture!("success/workgroup_ids");
     let kernel = parse_kernel(source, "workgroup_xyz").unwrap();
@@ -159,6 +161,7 @@ fn grid_lds_words_keep_their_integer_bits() {
         workgroup_size: (64, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (2, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let arrays = [
         array_of("out", 0x10000, 2 * 192, ArrayKind::Output(U32)),
@@ -213,6 +216,7 @@ fn grid_branches_compare_taken_paths_not_individual_vcc_bits() {
         workgroup_size: (64, 1, 1),
         workgroup_id: (0, 0, 0),
         grid_size: (2, 1, 1),
+        dynamic_lds_bytes: 0,
     };
     let out = array_of("out", 0x10000, 128, ArrayKind::Output(U32));
     let grid = analyze_grid(&kernel, &launch, &out.base.to_le_bytes(), &[out]).unwrap();
