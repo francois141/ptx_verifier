@@ -231,6 +231,24 @@ __kernel void exec_ops(__global const float *input, __global unsigned *out,
     row[26] = swap_1;
     row[27] = swap_2;
     row[28] = swap_16;
+
+    // An inline addend is sign-extended to 64 bits: -16 adds 2^64 - 16, which carries out
+    // wherever the product i * i is at least 16. The even lanes keep their sum and clear their bit.
+    ulong inline_sum, inline_carries;
+    unsigned inline_carry;
+    __asm__ volatile(
+        "v_mov_b64_e32 %0, %5\n\t"
+        "s_mov_b64 %2, -1\n\t"
+        "s_mov_b64 %3, exec\n\t"
+        "s_mov_b64 exec, %4\n\t"
+        "v_mad_u64_u32 %0, %2, %6, %6, -16\n\t"
+        "s_mov_b64 exec, %3\n\t"
+        "v_cndmask_b32_e64 %1, 0, 1, %2"
+        : "=&v"(inline_sum), "=&v"(inline_carry), "=&s"(inline_carries), "=&s"(saved)
+        : "s"(odd), "v"((ulong)i), "v"(i));
+    row[29] = (unsigned)inline_sum;
+    row[30] = (unsigned)(inline_sum >> 32);
+    row[31] = inline_carry;
 }
 
 // The odd lanes' global load is still in flight when the wait completes the even lanes' LDS

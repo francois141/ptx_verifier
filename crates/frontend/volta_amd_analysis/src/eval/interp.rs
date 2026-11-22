@@ -9,9 +9,9 @@ use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 use volta_graph::{EventGraph, GraphBuilder, Provenance};
 
 use crate::ir::{
-    BinOp, BranchCondition, CarryOp, DppBound, DppControl, DppOp, DsReadDst, DsWriteData, InstrId,
-    LaneMask, LdsAccesses, LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr,
-    Vop3Src,
+    Addend64, BinOp, BranchCondition, CarryOp, DppBound, DppControl, DppOp, DsReadDst, DsWriteData,
+    InstrId, LaneMask, LdsAccesses, LoweredInstr, LoweredKernel, ModifiedSrc, Sgpr, Src0, UnaryOp,
+    Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -578,7 +578,7 @@ impl<'a> Interpreter<'a> {
         carry: [Sgpr; 2],
         src0: Vop3Src,
         src1: Vop3Src,
-        src2: [Vgpr; 2],
+        src2: Addend64,
     ) -> Result<(), EvalError> {
         let exec = self.waves[wave].exec;
         let registers = &mut self.waves[wave].registers;
@@ -587,10 +587,21 @@ impl<'a> Interpreter<'a> {
         for lane in active_lanes(exec) {
             let a = registers.read_src(&mut self.arena, lane, src0)?;
             let b = registers.read_src(&mut self.arena, lane, src1)?;
-            let addend_low = registers.read_vgpr(lane, src2[0])?;
-            let addend_high = match registers.read_vgpr(lane, src2[1]) {
-                Err(EvalError::UninitializedVgpr { .. }) => None,
-                read => Some(read?),
+            let (addend_low, addend_high) = match src2 {
+                Addend64::Vgprs([low, high]) => {
+                    let low = registers.read_vgpr(lane, low)?;
+                    let high = match registers.read_vgpr(lane, high) {
+                        Err(EvalError::UninitializedVgpr { .. }) => None,
+                        read => Some(read?),
+                    };
+                    (low, high)
+                }
+                Addend64::Inline(value) => {
+                    let bits = value as u64;
+                    let low = self.arena.int(i64::from(bits as u32));
+                    let high = self.arena.int(i64::from((bits >> 32) as u32));
+                    (low, Some(high))
+                }
             };
 
             let word =

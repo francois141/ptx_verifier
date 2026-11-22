@@ -7,13 +7,13 @@
 	.type	exec_ops,@function
 exec_ops:
 	s_load_dwordx4 s[4:7], s[0:1], 0x0
-	s_load_dwordx2 s[0:1], s[0:1], 0x10
+	s_load_dwordx2 s[2:3], s[0:1], 0x10
 	v_and_b32_e32 v1, 1, v0
 	;;#ASMSTART
-	v_cmp_ne_u32_e64 s[2:3], 0, v1
+	v_cmp_ne_u32_e64 s[0:1], 0, v1
 	;;#ASMEND
 	v_lshlrev_b32_e32 v6, 7, v0
-	v_mov_b64_e32 v[2:3], s[2:3]
+	v_mov_b64_e32 v[2:3], s[0:1]
 	s_waitcnt lgkmcnt(0)
 	global_store_dwordx2 v6, v[2:3], s[6:7]
 	;;#ASMSTART
@@ -44,7 +44,7 @@ exec_ops:
 	s_mov_b64 vcc, -1
 	s_mov_b64 s[8:9], -1
 	s_mov_b64 s[10:11], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 exec, s[0:1]
 	v_cmp_eq_u32_e32 vcc, v0, v0
 	v_cmp_eq_u32_e64 s[8:9], v0, v0
 	s_mov_b64 exec, s[10:11]
@@ -54,7 +54,7 @@ exec_ops:
 	global_store_dwordx2 v6, v[2:3], s[6:7] offset:24
 	;;#ASMSTART
 	s_mov_b64 s[8:9], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 exec, s[0:1]
 	global_store_dword v6, v0, s[6:7] offset:32
 	s_mov_b64 exec, s[8:9]
 	;;#ASMEND
@@ -62,24 +62,24 @@ exec_ops:
 	;;#ASMSTART
 	v_mov_b32_e32 v2, 0.5
 	s_mov_b64 s[8:9], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 exec, s[0:1]
 	global_load_dword v2, v4, s[4:5]
 	s_mov_b64 exec, s[8:9]
 	s_waitcnt vmcnt(0)
 	;;#ASMEND
-	global_store_dword v4, v2, s[0:1]
+	global_store_dword v4, v2, s[2:3]
 	v_mov_b32_e32 v8, 0x100
 	;;#ASMSTART
 	ds_write_b32 v4, v5
 	s_waitcnt lgkmcnt(0)
 	v_cmp_eq_u32_e32 vcc, 5, v0
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	ds_write_b32 v4, v7
 	s_waitcnt lgkmcnt(0)
 	s_mov_b64 exec, vcc
 	ds_write_b32 v8, v7
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt lgkmcnt(0)
 	ds_read_b32 v2, v4
 	ds_read_b32 v3, v8
@@ -90,10 +90,10 @@ exec_ops:
 	v_lshlrev_b32_e32 v5, 2, v2
 	;;#ASMSTART
 	v_mov_b32_e32 v2, 7
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
-	ds_read_b32 v2, v5
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	ds_read_b32 v2, v5
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt lgkmcnt(0)
 	;;#ASMEND
 	global_store_dword v6, v2, s[6:7] offset:44
@@ -102,32 +102,32 @@ exec_ops:
 	;;#ASMSTART
 	v_mov_b32_e32 v2, 7
 	v_mov_b32_e32 v3, 7
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	ds_bpermute_b32 v2, v5, v7
 	ds_bpermute_b32 v3, v4, v7
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt lgkmcnt(0)
 	;;#ASMEND
 	global_store_dwordx2 v6, v[2:3], s[6:7] offset:48
 	v_add_u32_e32 v2, 0x1f4, v0
 	;;#ASMSTART
 	v_cmp_le_u32_e32 vcc, 5, v0
-	s_mov_b64 s[0:1], exec
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, vcc
 	v_readfirstlane_b32 s4, v2
 	s_mov_b64 exec, 0
 	v_readfirstlane_b32 s5, v2
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
-	s_mov_b64 s[0:1], 0
+	s_mov_b64 s[2:3], 0
 	v_mov_b32_e32 v2, s4
 	v_mov_b32_e32 v3, s5
 	global_store_dwordx2 v6, v[2:3], s[6:7] offset:56
 	;;#ASMSTART
 	s_mov_b32 s8, 1
 	s_mov_b64 s[4:5], exec
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	s_cbranch_execz .Lbranch_taken_0
 	s_mov_b32 s8, 0
 .Lbranch_taken_0:
@@ -139,7 +139,7 @@ exec_ops:
 	;;#ASMSTART
 	s_mov_b32 s8, 1
 	s_mov_b64 s[4:5], exec
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	s_cbranch_execnz .Lbranch_taken_1
 	s_mov_b32 s8, 0
 .Lbranch_taken_1:
@@ -150,65 +150,76 @@ exec_ops:
 	global_store_dword v6, v2, s[6:7] offset:68
 	;;#ASMSTART
 	s_mov_b32 s4, 1
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	s_cbranch_execz .Lbranch_taken_2
 	s_mov_b32 s4, 0
 .Lbranch_taken_2:
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
 	v_mov_b32_e32 v7, -1
 	v_mov_b32_e32 v2, s4
 	global_store_dword v6, v2, s[6:7] offset:72
 	;;#ASMSTART
 	s_mov_b32 s4, 1
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	s_cbranch_execnz .Lbranch_taken_3
 	s_mov_b32 s4, 0
 .Lbranch_taken_3:
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
 	s_nop 0
 	v_mov_b32_e32 v2, s4
 	global_store_dword v6, v2, s[6:7] offset:76
 	;;#ASMSTART
 	v_mov_b64_e32 v[2:3], v[0:1]
-	s_mov_b64 s[0:1], -1
+	s_mov_b64 s[2:3], -1
 	s_mov_b64 s[4:5], exec
-	s_mov_b64 exec, s[2:3]
-	v_mad_u64_u32 v[2:3], s[0:1], v7, v7, v[4:5]
+	s_mov_b64 exec, s[0:1]
+	v_mad_u64_u32 v[2:3], s[2:3], v7, v7, v[4:5]
 	s_mov_b64 exec, s[4:5]
 	;;#ASMEND
-	v_add_u32_e32 v1, 0x258, v0
-	v_mov_b32_e32 v4, s0
-	v_mov_b32_e32 v5, s1
-	global_store_dwordx4 v6, v[2:5], s[6:7] offset:80
 	s_movk_i32 s4, 0x46
+	v_mov_b32_e32 v4, s2
+	v_mov_b32_e32 v5, s3
+	global_store_dwordx4 v6, v[2:5], s[6:7] offset:80
+	s_nop 1
+	v_add_u32_e32 v2, 0x258, v0
 	;;#ASMSTART
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
-	v_readlane_b32 s5, v1, 4
-	v_readlane_b32 s8, v1, s4
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	v_readlane_b32 s5, v2, 4
+	v_readlane_b32 s8, v2, s4
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
-	s_nop 0
+	v_add_u32_e32 v5, 0x2bc, v0
 	v_mov_b32_e32 v2, s5
 	v_mov_b32_e32 v3, s8
 	global_store_dwordx2 v6, v[2:3], s[6:7] offset:96
-	v_add_u32_e32 v3, 0x2bc, v0
 	;;#ASMSTART
-	v_mov_b32_e32 v0, 7
-	v_mov_b32_e32 v1, 7
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[2:3]
-	ds_swizzle_b32 v0, v3 offset:swizzle(SWAP,1)
-	ds_swizzle_b32 v1, v3 offset:swizzle(SWAP,2)
+	v_mov_b32_e32 v2, 7
+	v_mov_b32_e32 v3, 7
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
-	ds_swizzle_b32 v2, v3 offset:swizzle(SWAP,16)
+	ds_swizzle_b32 v2, v5 offset:swizzle(SWAP,1)
+	ds_swizzle_b32 v3, v5 offset:swizzle(SWAP,2)
+	s_mov_b64 exec, s[2:3]
+	ds_swizzle_b32 v4, v5 offset:swizzle(SWAP,16)
 	s_waitcnt lgkmcnt(0)
 	;;#ASMEND
-	global_store_dwordx3 v6, v[0:2], s[6:7] offset:104
+	global_store_dwordx3 v6, v[2:4], s[6:7] offset:104
+	s_nop 1
+	;;#ASMSTART
+	v_mov_b64_e32 v[2:3], v[0:1]
+	s_mov_b64 s[2:3], -1
+	s_mov_b64 s[4:5], exec
+	s_mov_b64 exec, s[0:1]
+	v_mad_u64_u32 v[2:3], s[2:3], v0, v0, -16
+	s_mov_b64 exec, s[4:5]
+	v_cndmask_b32_e64 v4, 0, 1, s[2:3]
+	;;#ASMEND
+	global_store_dwordx3 v6, v[2:4], s[6:7] offset:116
 	s_endpgm
 	.section	.rodata,"a",@progbits
 	.p2align	6, 0x0
@@ -274,15 +285,15 @@ __clang_ocl_kern_imp_exec_ops:
 	v_lshlrev_b32_e32 v8, 7, v6
 	v_mov_b32_e32 v9, 0
 	v_lshl_add_u64 v[10:11], v[2:3], 0, v[8:9]
-	v_readfirstlane_b32 s0, v2
-	v_readfirstlane_b32 s3, v1
-	v_readfirstlane_b32 s2, v0
+	v_readfirstlane_b32 s2, v2
+	v_readfirstlane_b32 s5, v1
+	v_readfirstlane_b32 s4, v0
 	v_and_b32_e32 v2, 1, v6
 	;;#ASMSTART
-	v_cmp_ne_u32_e64 s[4:5], 0, v2
+	v_cmp_ne_u32_e64 s[0:1], 0, v2
 	;;#ASMEND
-	v_readfirstlane_b32 s1, v3
-	v_mov_b64_e32 v[0:1], s[4:5]
+	v_readfirstlane_b32 s3, v3
+	v_mov_b64_e32 v[0:1], s[0:1]
 	global_store_dwordx2 v[10:11], v[0:1], off
 	;;#ASMSTART
 	v_cmp_ne_u32_e32 vcc, 0, v2
@@ -313,7 +324,7 @@ __clang_ocl_kern_imp_exec_ops:
 	s_mov_b64 vcc, -1
 	s_mov_b64 s[6:7], -1
 	s_mov_b64 s[8:9], exec
-	s_mov_b64 exec, s[4:5]
+	s_mov_b64 exec, s[0:1]
 	v_cmp_eq_u32_e32 vcc, v6, v6
 	v_cmp_eq_u32_e64 s[6:7], v6, v6
 	s_mov_b64 exec, s[8:9]
@@ -323,17 +334,17 @@ __clang_ocl_kern_imp_exec_ops:
 	global_store_dwordx2 v[10:11], v[0:1], off offset:24
 	;;#ASMSTART
 	s_mov_b64 s[6:7], exec
-	s_mov_b64 exec, s[4:5]
-	global_store_dword v8, v6, s[0:1] offset:32
+	s_mov_b64 exec, s[0:1]
+	global_store_dword v8, v6, s[2:3] offset:32
 	s_mov_b64 exec, s[6:7]
 	;;#ASMEND
 	v_lshlrev_b32_e32 v8, 2, v6
 	;;#ASMSTART
 	v_mov_b32_e32 v2, 0.5
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
-	global_load_dword v2, v8, s[2:3]
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	global_load_dword v2, v8, s[4:5]
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt vmcnt(0)
 	;;#ASMEND
 	v_lshl_add_u64 v[0:1], v[4:5], 0, v[8:9]
@@ -344,13 +355,13 @@ __clang_ocl_kern_imp_exec_ops:
 	ds_write_b32 v0, v2
 	s_waitcnt lgkmcnt(0)
 	v_cmp_eq_u32_e32 vcc, 5, v6
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	ds_write_b32 v0, v3
 	s_waitcnt lgkmcnt(0)
 	s_mov_b64 exec, vcc
 	ds_write_b32 v0, v3
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt lgkmcnt(0)
 	ds_read_b32 v0, v0
 	ds_read_b32 v1, v0
@@ -361,10 +372,10 @@ __clang_ocl_kern_imp_exec_ops:
 	v_lshlrev_b32_e32 v2, 2, v0
 	;;#ASMSTART
 	v_mov_b32_e32 v0, 7
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
-	ds_read_b32 v0, v0
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	ds_read_b32 v0, v0
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt lgkmcnt(0)
 	;;#ASMEND
 	global_store_dword v[10:11], v0, off offset:44
@@ -373,113 +384,124 @@ __clang_ocl_kern_imp_exec_ops:
 	;;#ASMSTART
 	v_mov_b32_e32 v0, 7
 	v_mov_b32_e32 v1, 7
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	ds_bpermute_b32 v0, v2, v4
 	ds_bpermute_b32 v1, v3, v4
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	s_waitcnt lgkmcnt(0)
 	;;#ASMEND
 	global_store_dwordx2 v[10:11], v[0:1], off offset:48
 	v_add_u32_e32 v0, 0x1f4, v6
 	;;#ASMSTART
 	v_cmp_le_u32_e32 vcc, 5, v6
-	s_mov_b64 s[0:1], exec
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, vcc
-	v_readfirstlane_b32 s2, v0
+	v_readfirstlane_b32 s4, v0
 	s_mov_b64 exec, 0
-	v_readfirstlane_b32 s3, v0
-	s_mov_b64 exec, s[0:1]
+	v_readfirstlane_b32 s5, v0
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
-	s_mov_b64 s[0:1], 0
-	v_mov_b32_e32 v0, s2
-	v_mov_b32_e32 v1, s3
+	s_mov_b64 s[2:3], 0
+	v_mov_b32_e32 v0, s4
+	v_mov_b32_e32 v1, s5
 	global_store_dwordx2 v[10:11], v[0:1], off offset:56
 	;;#ASMSTART
 	s_mov_b32 s6, 1
-	s_mov_b64 s[2:3], exec
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 s[4:5], exec
+	s_mov_b64 exec, s[2:3]
 	s_cbranch_execz .Lbranch_taken_4
 	s_mov_b32 s6, 0
 .Lbranch_taken_4:
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 exec, s[4:5]
 	;;#ASMEND
 	v_mov_b64_e32 v[2:3], -1
 	v_mov_b32_e32 v0, s6
 	global_store_dword v[10:11], v0, off offset:64
 	;;#ASMSTART
 	s_mov_b32 s6, 1
-	s_mov_b64 s[2:3], exec
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 s[4:5], exec
+	s_mov_b64 exec, s[2:3]
 	s_cbranch_execnz .Lbranch_taken_5
 	s_mov_b32 s6, 0
 .Lbranch_taken_5:
-	s_mov_b64 exec, s[2:3]
+	s_mov_b64 exec, s[4:5]
 	;;#ASMEND
 	v_mov_b32_e32 v4, -1
 	v_mov_b32_e32 v0, s6
 	global_store_dword v[10:11], v0, off offset:68
 	;;#ASMSTART
-	s_mov_b32 s2, 1
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
-	s_cbranch_execz .Lbranch_taken_6
-	s_mov_b32 s2, 0
-.Lbranch_taken_6:
+	s_mov_b32 s4, 1
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	s_cbranch_execz .Lbranch_taken_6
+	s_mov_b32 s4, 0
+.Lbranch_taken_6:
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
 	s_nop 0
-	v_mov_b32_e32 v0, s2
+	v_mov_b32_e32 v0, s4
 	global_store_dword v[10:11], v0, off offset:72
 	;;#ASMSTART
-	s_mov_b32 s2, 1
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
-	s_cbranch_execnz .Lbranch_taken_7
-	s_mov_b32 s2, 0
-.Lbranch_taken_7:
+	s_mov_b32 s4, 1
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	s_cbranch_execnz .Lbranch_taken_7
+	s_mov_b32 s4, 0
+.Lbranch_taken_7:
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
 	s_nop 0
-	v_mov_b32_e32 v0, s2
+	v_mov_b32_e32 v0, s4
 	global_store_dword v[10:11], v0, off offset:76
 	;;#ASMSTART
 	v_mov_b64_e32 v[0:1], v[6:7]
-	s_mov_b64 s[0:1], -1
-	s_mov_b64 s[2:3], exec
+	s_mov_b64 s[2:3], -1
+	s_mov_b64 s[4:5], exec
+	s_mov_b64 exec, s[0:1]
+	v_mad_u64_u32 v[0:1], s[2:3], v4, v4, v[2:3]
 	s_mov_b64 exec, s[4:5]
-	v_mad_u64_u32 v[0:1], s[0:1], v4, v4, v[2:3]
-	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
-	s_movk_i32 s2, 0x46
-	v_mov_b32_e32 v2, s0
-	v_mov_b32_e32 v3, s1
+	s_movk_i32 s4, 0x46
+	v_mov_b32_e32 v2, s2
+	v_mov_b32_e32 v3, s3
 	global_store_dwordx4 v[10:11], v[0:3], off offset:80
 	s_nop 1
 	v_add_u32_e32 v0, 0x258, v6
 	;;#ASMSTART
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
-	v_readlane_b32 s3, v0, 4
-	v_readlane_b32 s6, v0, s2
+	s_mov_b64 s[2:3], exec
 	s_mov_b64 exec, s[0:1]
+	v_readlane_b32 s5, v0, 4
+	v_readlane_b32 s6, v0, s4
+	s_mov_b64 exec, s[2:3]
 	;;#ASMEND
 	v_add_u32_e32 v3, 0x2bc, v6
-	v_mov_b32_e32 v0, s3
+	v_mov_b32_e32 v0, s5
 	v_mov_b32_e32 v1, s6
 	global_store_dwordx2 v[10:11], v[0:1], off offset:96
 	;;#ASMSTART
 	v_mov_b32_e32 v0, 7
 	v_mov_b32_e32 v1, 7
-	s_mov_b64 s[0:1], exec
-	s_mov_b64 exec, s[4:5]
+	s_mov_b64 s[2:3], exec
+	s_mov_b64 exec, s[0:1]
 	ds_swizzle_b32 v0, v3 offset:swizzle(SWAP,1)
 	ds_swizzle_b32 v1, v3 offset:swizzle(SWAP,2)
-	s_mov_b64 exec, s[0:1]
+	s_mov_b64 exec, s[2:3]
 	ds_swizzle_b32 v2, v3 offset:swizzle(SWAP,16)
 	s_waitcnt lgkmcnt(0)
 	;;#ASMEND
 	global_store_dwordx3 v[10:11], v[0:2], off offset:104
+	s_nop 1
+	;;#ASMSTART
+	v_mov_b64_e32 v[0:1], v[6:7]
+	s_mov_b64 s[2:3], -1
+	s_mov_b64 s[4:5], exec
+	s_mov_b64 exec, s[0:1]
+	v_mad_u64_u32 v[0:1], s[2:3], v6, v6, -16
+	s_mov_b64 exec, s[4:5]
+	v_cndmask_b32_e64 v2, 0, 1, s[2:3]
+	;;#ASMEND
+	global_store_dwordx3 v[10:11], v[0:2], off offset:116
 	s_waitcnt vmcnt(0)
 	s_setpc_b64 s[30:31]
 .Lfunc_end1:

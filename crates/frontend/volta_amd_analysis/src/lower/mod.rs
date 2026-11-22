@@ -684,7 +684,13 @@ fn lower_as_written(
                 .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
             src1: vop3_src(src1)
                 .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
-            src2: vgprs(src2).ok_or("expected an even-aligned VGPR addend pair")?,
+            src2: match src2 {
+                Operand::Imm(value @ -16..=64) => ir::Addend64::Inline(*value),
+                _ => ir::Addend64::Vgprs(
+                    vgprs(src2)
+                        .ok_or("expected an even-aligned VGPR addend pair or an inline integer")?,
+                ),
+            },
         }),
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;

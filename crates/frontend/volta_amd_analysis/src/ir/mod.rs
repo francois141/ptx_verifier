@@ -792,6 +792,13 @@ impl CarryOp {
     }
 }
 
+/// `v_mad_u64_u32`'s 64-bit addend: a VGPR pair, or an inline integer sign-extended to 64 bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Addend64 {
+    Vgprs([Vgpr; 2]),
+    Inline(i64),
+}
+
 /// The VOP1 or VOP2 operation a DPP instruction applies to its permuted first source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DppOp {
@@ -1096,7 +1103,7 @@ pub enum LoweredInstr {
         carry: [Sgpr; 2],
         src0: Vop3Src,
         src1: Vop3Src,
-        src2: [Vgpr; 2],
+        src2: Addend64,
     },
     /// Copy a VGPR, an SGPR or an inline constant into an AGPR without changing its value.
     AccvgprWrite32 {
