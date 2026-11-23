@@ -463,6 +463,7 @@ impl DsReadDst {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalLoadDst {
     Dword(Vgpr),
+    Dwordx2([Vgpr; 2]),
     Dwordx3([Vgpr; 3]),
     Dwordx4([Vgpr; 4]),
 }
@@ -471,6 +472,7 @@ impl GlobalLoadDst {
     pub fn regs(&self) -> &[Vgpr] {
         match self {
             Self::Dword(reg) => std::slice::from_ref(reg),
+            Self::Dwordx2(regs) => regs,
             Self::Dwordx3(regs) => regs,
             Self::Dwordx4(regs) => regs,
         }

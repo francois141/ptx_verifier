@@ -935,6 +935,12 @@ fn lower_as_written(
             dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
         }),
+        ("global_load_dwordx2", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
+            dst: GlobalLoadDst::Dwordx2(
+                vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            ),
+            address: global_address(vaddr, saddr, offset)?,
+        }),
         ("global_load_dwordx3", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
             dst: GlobalLoadDst::Dwordx3(
                 vgprs(dst).ok_or("expected an even-aligned three-VGPR destination")?,
@@ -1110,6 +1116,7 @@ fn lower_as_written(
             | "s_bitset0_b32"
             | "s_bitset1_b32"
             | "global_load_dword"
+            | "global_load_dwordx2"
             | "global_load_dwordx3"
             | "global_load_dwordx4"
             | "global_store_dword"
