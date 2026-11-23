@@ -209,6 +209,11 @@ triton *args:
 aiter *args:
     uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} aiter/
 
+# `--verbose` prints each case's log; `python3 external/amd/aklr/build.py [CASE...]` recompiles them.
+# Check AKLR's kernels in external/amd/aklr, the bugs Volta found and their fixes
+aklr *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} aklr/
+
 # `--verbose` prints each case's log; `python3 external/amd/opencl/{miopen,clblast}/extract.py [CASE...]` recompiles them.
 # Check MIOpen's and CLBlast's OpenCL kernels for gfx950 in external/amd/opencl, the bugs Volta found and their fixes
 opencl *args:

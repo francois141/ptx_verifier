@@ -13,10 +13,11 @@ kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
 `triton/`, the cases named `triton/<case>`.
 FlyDSL's gfx950 flash attention is in `flydsl/` (cases `flydsl/<case>`, compiled by
 `flydsl/extract.py`), with bf16 arrays, Aiter's kernels in `aiter/` (cases `aiter/<case>`,
-compiled by `aiter/build.py`) and HipKittens' kernels in `hipkittens/` (cases
-`hipkittens/<case>`, compiled by `hipkittens/compile.py`). MIOpen's and CLBlast's OpenCL
-kernels are in `opencl/miopen/` and `opencl/clblast/` (cases `opencl/<library>/<case>`,
-compiled by each folder's `extract.py`). Each case prints one
+compiled by `aiter/build.py`), HipKittens' kernels in `hipkittens/` (cases `hipkittens/<case>`,
+compiled by `hipkittens/compile.py`) and AKLR's in `aklr/` (cases `aklr/<case>`, compiled by
+`aklr/build.py`). MIOpen's and CLBlast's OpenCL kernels are in `opencl/miopen/` and
+`opencl/clblast/` (cases `opencl/<library>/<case>`, compiled by each folder's `extract.py`). Each
+case prints one
 line when it finishes: PASS if its kernel verified (ACCEPT, or every output proved in Lean),
 else FAIL, noting when a verdict other than ACCEPT is the case's expected one, such as a known
 bug's REJECT. `--verbose` also prints Volta's log of each case as it runs, then a summary.
@@ -60,6 +61,11 @@ _hipkittens_spec = importlib.util.spec_from_file_location(
 )
 hipkittens_cases = importlib.util.module_from_spec(_hipkittens_spec)
 _hipkittens_spec.loader.exec_module(hipkittens_cases)
+_aklr_spec = importlib.util.spec_from_file_location(
+    "aklr_cases", Path(__file__).resolve().parent / "aklr" / "cases.py"
+)
+aklr_cases = importlib.util.module_from_spec(_aklr_spec)
+_aklr_spec.loader.exec_module(aklr_cases)
 OPENCL_CASES = {}
 for _library in ("miopen", "clblast"):
     _spec = importlib.util.spec_from_file_location(
@@ -75,14 +81,15 @@ TRITON_ROOT = AMD_ROOT / "triton"
 FLYDSL_ROOT = AMD_ROOT / "flydsl"
 AITER_ROOT = AMD_ROOT / "aiter"
 HIPKITTENS_ROOT = AMD_ROOT / "hipkittens"
+AKLR_ROOT = AMD_ROOT / "aklr"
 OPENCL_ROOT = AMD_ROOT / "opencl"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
 
 # The launch-file subset these cases use, laid out as `volta_ptx_analysis::LaunchFile` lays
-# out arrays without a `base`: in order from 0x10000, each on the first 64 KiB boundary past
-# the arrays before it.
+# out arrays: at their `base` if they give one, else in order from 0x10000, each on the first
+# 64 KiB boundary past the arrays before it.
 ARRAY_ALIGN = 0x10000
 ELEMENT_BYTES = {"f32": 4, "bf16": 2, "i32": 4}
 ARRAY_KINDS = {"in": volta.ArrayKind.Input, "out": volta.ArrayKind.Output}
@@ -291,6 +298,11 @@ CASES = (
         Case(c.name, c.kernel, flydsl_check(c.check, c.spec), HIPKITTENS_ROOT, sample=c.sample)
         for c in hipkittens_cases.CASES
     ),
+    # AKLR's kernels, as aklr/cases.py lists them.
+    *(
+        Case(c.name, c.assembly_name(), flydsl_check(c.check, c.spec), AKLR_ROOT, sample=c.sample)
+        for c in aklr_cases.CASES
+    ),
     # MIOpen's and CLBlast's OpenCL kernels, as opencl/miopen/cases.py and opencl/clblast/cases.py
     # list them.
     *(
@@ -328,10 +340,11 @@ def load_launch(path: Path) -> Launch:
         width = ELEMENT_BYTES[array["dtype"]]
         length = math.prod(array["shape"])
         kind = ARRAY_KINDS[array["kind"]]
-        config.add_array(volta.ArrayDef(array["name"], next_base, width, length, kind))
+        base = int(str(array["base"]), 0) if "base" in array else next_base
+        config.add_array(volta.ArrayDef(array["name"], base, width, length, kind))
         if "contents" in array:
             config.set_contents(array["name"], array["contents"])
-        next_base = -(-(next_base + width * length) // ARRAY_ALIGN) * ARRAY_ALIGN
+        next_base = max(next_base, -(-(base + width * length) // ARRAY_ALIGN) * ARRAY_ALIGN)
 
     for param in launch["params"]:
         if "int" in param:

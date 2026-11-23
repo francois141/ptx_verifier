@@ -1,0 +1,37 @@
+// out = a @ b.T, a [M, K] and b [N, K] row-major: out<r> holds columns 0..C of row r, the
+// tile workgroup 0 computes (16 rows; row_views in cases.py).
+dim M; dim N; dim K; dim C;
+array a[M, K];
+array b[N, K];
+array out0[C];
+array out1[C];
+array out2[C];
+array out3[C];
+array out4[C];
+array out5[C];
+array out6[C];
+array out7[C];
+array out8[C];
+array out9[C];
+array out10[C];
+array out11[C];
+array out12[C];
+array out13[C];
+array out14[C];
+array out15[C];
+out0[j] = sum(k in 0..K, a[0, k] * b[j, k]);
+out1[j] = sum(k in 0..K, a[1, k] * b[j, k]);
+out2[j] = sum(k in 0..K, a[2, k] * b[j, k]);
+out3[j] = sum(k in 0..K, a[3, k] * b[j, k]);
+out4[j] = sum(k in 0..K, a[4, k] * b[j, k]);
+out5[j] = sum(k in 0..K, a[5, k] * b[j, k]);
+out6[j] = sum(k in 0..K, a[6, k] * b[j, k]);
+out7[j] = sum(k in 0..K, a[7, k] * b[j, k]);
+out8[j] = sum(k in 0..K, a[8, k] * b[j, k]);
+out9[j] = sum(k in 0..K, a[9, k] * b[j, k]);
+out10[j] = sum(k in 0..K, a[10, k] * b[j, k]);
+out11[j] = sum(k in 0..K, a[11, k] * b[j, k]);
+out12[j] = sum(k in 0..K, a[12, k] * b[j, k]);
+out13[j] = sum(k in 0..K, a[13, k] * b[j, k]);
+out14[j] = sum(k in 0..K, a[14, k] * b[j, k]);
+out15[j] = sum(k in 0..K, a[15, k] * b[j, k]);
