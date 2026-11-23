@@ -155,17 +155,25 @@ fn operand(text: &str) -> Option<Operand> {
         _ => return None,
     };
     let rest = &text[1..];
+    // Inline asm may name one register in brackets, `v[29]`, or bound a range in hexadecimal.
     let (first, last): (u32, u32) = match rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-        Some(range) => {
-            let (first, last) = range.split_once(':')?;
-            (first.parse().ok()?, last.parse().ok()?)
-        }
+        Some(range) => match range.split_once(':') {
+            Some((first, last)) => (register_index(first)?, register_index(last)?),
+            None => (register_index(range)?, register_index(range)?),
+        },
         None => {
             let index = rest.parse().ok()?;
             (index, index)
         }
     };
     (first <= last).then_some(Operand::Reg { file, first, last })
+}
+
+fn register_index(text: &str) -> Option<u32> {
+    match text.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
 }
 
 fn dpp_operand(text: &str) -> Option<Operand> {
@@ -430,6 +438,8 @@ mod tests {
     fn parses_operand_forms_and_rejects_others() {
         assert_eq!(operand("0x10"), Some(Imm(16)));
         assert_eq!(operand("s[4:5]"), Some(sgpr(4, 5)));
+        assert_eq!(operand("v[29]"), Some(vgpr(29, 29)));
+        assert_eq!(operand("v[0x1e:0x1f]"), Some(vgpr(30, 31)));
         assert_eq!(operand("v7"), Some(vgpr(7, 7)));
         let vm3 = Wait {
             counter: Counter::Vm,
@@ -488,7 +498,6 @@ mod tests {
             "neg_hi:[0,2]",
             "op_sel_hi:[2,0]",
             "s[3:0]",
-            "s[0]",
             "x0",
             "glc",
             "bound_ctrl:0",
