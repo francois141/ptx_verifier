@@ -103,6 +103,16 @@ pub enum Operand {
     /// An SDWA instruction's `src0_sel:` or `src1_sel:` selector.
     Src0Sel(SdwaSel),
     Src1Sel(SdwaSel),
+    /// A memory instruction's `sc0`, `sc1` or `nt` cache-policy bit (CDNA4 ISA §9.1.10).
+    CachePolicy(CachePolicy),
+}
+
+/// The cache-policy bits gfx940 and later print in place of `glc`, `slc` and `dlc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachePolicy {
+    Sc0,
+    Sc1,
+    Nt,
 }
 
 /// The lane each lane of a DPP instruction reads its first source from, within a quad, a row

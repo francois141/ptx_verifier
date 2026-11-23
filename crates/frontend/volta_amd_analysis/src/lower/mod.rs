@@ -378,6 +378,14 @@ fn lower_as_written(
             src: vgpr(src).ok_or("expected one source VGPR")?,
             lane: scalar_source(lane).ok_or("expected an SGPR or constant lane")?,
         }),
+        // Writing back the L2 cache changes no value of a sequentially consistent memory.
+        ("buffer_wbl2", policy)
+            if policy
+                .iter()
+                .all(|bit| matches!(bit, Operand::CachePolicy(_))) =>
+        {
+            Ok(Nop)
+        }
         ("v_div_scale_f32", [dst, scaled, src, denominator, numerator]) => {
             // Over the reals only the first source matters; the others must still be sources.
             for operand in [denominator, numerator] {
@@ -1873,7 +1881,7 @@ fn buffer_address(
         BufferImmOffset::new(*offset).ok_or("expected an unsigned 12-bit byte offset")
     };
     let lane_offset = || vgpr(vaddr).map(Some).ok_or("expected one offset VGPR");
-    let (vgpr_offset, imm_offset) = match (vaddr, modifiers) {
+    let (vgpr_offset, imm_offset) = match (vaddr, without_cache_policy(modifiers)) {
         (Operand::Off, []) => (None, BufferImmOffset::ZERO),
         (Operand::Off, [Operand::Offset(imm)]) => (None, offset(imm)?),
         (_, [Operand::Offen]) => (lane_offset()?, BufferImmOffset::ZERO),
@@ -2298,13 +2306,23 @@ fn expect_vcc(operand: &Operand) -> Result<(), &'static str> {
     }
 }
 
+/// The modifiers before a trailing run of cache-policy bits. The bits choose the caches an
+/// access goes through, which a sequentially consistent global memory does not distinguish.
+fn without_cache_policy(modifiers: &[Operand]) -> &[Operand] {
+    let kept = modifiers
+        .iter()
+        .rposition(|modifier| !matches!(modifier, Operand::CachePolicy(_)))
+        .map_or(0, |last| last + 1);
+    &modifiers[..kept]
+}
+
 /// Global offsets are signed 13-bit before GFX10 (LLVM 21.1.8's `validateFlatOffset`).
 fn global_address(
     vaddr: &Operand,
     saddr: &Operand,
     offset: &[Operand],
 ) -> Result<GlobalAddress, &'static str> {
-    let offset = match offset {
+    let offset = match without_cache_policy(offset) {
         [] => 0,
         [Operand::Offset(offset)] => i16::try_from(*offset)
             .ok()

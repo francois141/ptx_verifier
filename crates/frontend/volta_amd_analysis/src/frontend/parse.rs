@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use super::ast::{Counter, DppSelect, Instruction, Kernel, Operand, RegFile, SdwaSel};
+use super::ast::{CachePolicy, Counter, DppSelect, Instruction, Kernel, Operand, RegFile, SdwaSel};
 
 /// A statement's first word and the rest.
 fn word(line: &str) -> (&str, &str) {
@@ -46,6 +46,9 @@ fn operand(text: &str) -> Option<Operand> {
         "bound_ctrl:1" => return Some(Operand::BoundCtrl),
         "dst_sel:DWORD" => return Some(Operand::SdwaDstDword),
         "dst_unused:UNUSED_PAD" => return Some(Operand::SdwaDstUnusedPad),
+        "sc0" => return Some(Operand::CachePolicy(CachePolicy::Sc0)),
+        "sc1" => return Some(Operand::CachePolicy(CachePolicy::Sc1)),
+        "nt" => return Some(Operand::CachePolicy(CachePolicy::Nt)),
         _ => {}
     }
     for (prefix, make_operand) in [
