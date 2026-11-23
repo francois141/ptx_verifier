@@ -723,6 +723,10 @@ pub enum UnaryOp {
     RndneF32,
     /// The f32 source rounded toward zero, as an f32.
     TruncF32,
+    /// The mantissa `m` of `src = m * 2^e`, `|m|` in [1/2, 1), and `e` as an i32: LLVM's
+    /// denormal-safe f32 division and reciprocal scale through them.
+    FrexpMantF32,
+    FrexpExpI32F32,
 }
 
 /// A byte of a 32-bit word, from the least significant.

@@ -19,6 +19,7 @@ const F64: Type = Type::Float(Width(64));
 const B32: Type = Type::Bits(Width(32));
 const B64: Type = Type::Bits(Width(64));
 const U32: Type = Type::Int(symbolic_full::Signedness::Unsigned, Width(32));
+const I32: Type = Type::Int(symbolic_full::Signedness::Signed, Width(32));
 use super::wave::{WaveRegisters, apply_modifiers, as_f32, concrete_word};
 use super::word::Word;
 use super::word::compare_bf16_field;
@@ -139,6 +140,9 @@ fn bin_op_values(
     b: ExprId,
 ) -> Result<ExprId, EvalError> {
     if let Some(result) = sign_bit_op(arena, op, a, b) {
+        return Ok(result);
+    }
+    if let Some(result) = exponent_op(arena, op, a, b) {
         return Ok(result);
     }
     // Integer operations need concrete words: a symbolic value is a float, without known bits.
@@ -366,6 +370,12 @@ pub(super) fn evaluate_cndmask(
         (None, Some(_)) => (a, registers.read_f32(arena, lane, src1)?),
         _ => (a, b),
     };
+    if let Some(value) = select_exp_range_guard(arena, condition, a, b) {
+        return Ok(value);
+    }
+    if let Some(value) = select_scaled_root(arena, condition, a, b) {
+        return Ok(value);
+    }
     if let Some(value) = select_extremum(arena, condition, a, b) {
         return Ok(value);
     }
@@ -403,6 +413,12 @@ pub(super) fn evaluate_cndmask_e64(
         (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1.src)?),
         _ => (a, b),
     };
+    if let Some(value) = select_exp_range_guard(arena, condition, a, b) {
+        return Ok(value);
+    }
+    if let Some(value) = select_scaled_root(arena, condition, a, b) {
+        return Ok(value);
+    }
     if let Some(value) = select_extremum(arena, condition, a, b) {
         return Ok(value);
     }
@@ -718,10 +734,12 @@ pub(super) fn evaluate_unary_op(
             let value = (non_symbolic_word(arena)? >> byte.shift()) & 0xff;
             arena.real(Real::from_i64(i64::from(value)))
         }
-        UnaryOp::CvtI32F32 => {
-            let truncated = truncate_to_i32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
-            arena.int(i64::from(truncated as u32))
-        }
+        UnaryOp::CvtI32F32 => match (truncate_to_i32(arena, a), arena.value_node(a)) {
+            (Some(truncated), _) => arena.int(i64::from(truncated as u32)),
+            // A rounded real is an integer already: kept as a symbolic i32 for `v_ldexp_f32`.
+            (None, &ExprNode::RoundEven(x)) => arena.round_even(I32, x),
+            (None, _) => return Err(EvalError::SymbolicWord { lane }),
+        },
         UnaryOp::CvtU32F32 => {
             let truncated = truncate_to_u32(arena, a).ok_or(EvalError::SymbolicWord { lane })?;
             arena.int(i64::from(truncated))
@@ -733,7 +751,74 @@ pub(super) fn evaluate_unary_op(
         UnaryOp::RsqF32 => arena.rsqrt(F32, a),
         UnaryOp::RndneF32 => arena.round_even(F32, a),
         UnaryOp::TruncF32 => arena.trunc(F32, a),
+        UnaryOp::FrexpMantF32 => match arena.as_f64(a) {
+            Some(value) => {
+                let (mantissa, _) = frexp(value);
+                arena.real(Real::from_f64(mantissa).expect("a real's mantissa is not a NaN"))
+            }
+            None => {
+                let exponent = frexp_exponent(arena, a);
+                let negated = arena.neg(I32, exponent);
+                scale_by_exponent(arena, a, negated)
+            }
+        },
+        UnaryOp::FrexpExpI32F32 => match arena.as_f64(a) {
+            Some(value) => arena.int(i64::from(frexp(value).1 as u32)),
+            None => frexp_exponent(arena, a),
+        },
     })
+}
+
+/// The hardware's `(m, e)` with `value = m * 2^e` and `|m|` in [1/2, 1); 0, infinities and
+/// NaN give `(value, 0)`. Every f32 is a normal f64, so the f64 exponent field gives `e`.
+fn frexp(value: f64) -> (f64, i32) {
+    if value == 0.0 || !value.is_finite() {
+        return (value, 0);
+    }
+    let exponent = ((value.to_bits() >> 52) & 0x7ff) as i32 - 1022;
+    (value / 2f64.powi(exponent), exponent)
+}
+
+/// frexp's exponent of a symbolic real `x`, `floor(log2 |x|) + 1`, typed i32: with a rounded
+/// real converted to i32, the only symbolic integers this interpreter builds (`exponent_op`,
+/// `evaluate_ldexp_f32`). The solver takes its truncation and select as uninterpreted.
+fn frexp_exponent(arena: &mut ExprArena, x: ExprId) -> ExprId {
+    let magnitude = arena.abs(F32, x);
+    let log = arena.log2(F32, magnitude);
+    let truncated = arena.trunc(F32, log);
+    let below = arena.lt(F32, log, truncated);
+    let (one, zero) = (arena.int(1), arena.int(0));
+    let correction = arena.select(I32, below, one, zero);
+    let floor = arena.sub(I32, truncated, correction);
+    arena.add(I32, floor, one)
+}
+
+/// A symbolic frexp exponent, as `frexp_exponent` types it.
+fn is_symbolic_exponent(arena: &ExprArena, value: ExprId) -> bool {
+    arena.ty(value) == Some(I32) && concrete_word(arena, value).is_none()
+}
+
+/// An integer add or subtract of frexp exponents and concrete words, kept exact: exponents are
+/// within a few hundred of zero, where 32-bit arithmetic does not wrap. `None` unless an
+/// operand is a symbolic exponent and the other one is too or is concrete.
+fn exponent_op(arena: &mut ExprArena, op: BinOp, a: ExprId, b: ExprId) -> Option<ExprId> {
+    if !is_symbolic_exponent(arena, a) && !is_symbolic_exponent(arena, b) {
+        return None;
+    }
+    let mut signed = |value: ExprId| -> Option<ExprId> {
+        if is_symbolic_exponent(arena, value) {
+            return Some(value);
+        }
+        let word = concrete_word(arena, value)?;
+        Some(arena.int(i64::from(word as i32)))
+    };
+    let (a, b) = (signed(a)?, signed(b)?);
+    match op {
+        BinOp::AddU32 => Some(arena.add(I32, a, b)),
+        BinOp::SubU32 => Some(arena.sub(I32, a, b)),
+        BinOp::SubRevU32 => Some(arena.sub(I32, b, a)),
+        _ => None,
+    }
 }
 
 /// `src0 * 2^src1` in `lane`, for a concrete i32 exponent.
@@ -746,11 +831,299 @@ pub(super) fn evaluate_ldexp_f32(
 ) -> Result<ExprId, EvalError> {
     let value = registers.read_modified_src(arena, lane, src0)?;
     let exponent = registers.read_src(arena, lane, src1)?;
-    let exponent = concrete_word(arena, exponent).ok_or(EvalError::SymbolicWord { lane })? as i32;
+    if let Some(exponent) = concrete_word(arena, exponent) {
+        return Ok(scale_by_power_of_two(arena, value, exponent as i32));
+    }
+    if is_symbolic_exponent(arena, exponent) {
+        if let Some(exponential) = undo_exp_range_reduction(arena, value, exponent) {
+            return Ok(exponential);
+        }
+        return Ok(scale_by_exponent(arena, value, exponent));
+    }
+    Err(EvalError::SymbolicWord { lane })
+}
+
+/// LLVM's accurate `expf(x)`: `exp2((h - r) + l) * 2^r`, `r = rndne(h)`, with `h = x * c_hi` and
+/// `l = fma(x, c_lo, fma(x, c_hi, -h))`, which is `exp2(x * (c_hi + c_lo))` over the reals.
+/// `None` unless `value` and the symbolic `exponent` have exactly that form.
+fn undo_exp_range_reduction(
+    arena: &mut ExprArena,
+    value: ExprId,
+    exponent: ExprId,
+) -> Option<ExprId> {
+    let ExprNode::RoundEven(high) = *arena.value_node(exponent) else {
+        return None;
+    };
+    let ExprNode::Exp2(argument) = *arena.value_node(value) else {
+        return None;
+    };
+    let ExprNode::Add(p, q) = *arena.value_node(argument) else {
+        return None;
+    };
+    let low = [(p, q), (q, p)].into_iter().find_map(|(reduced, low)| {
+        let ExprNode::Sub(h, rounded) = *arena.value_node(reduced) else {
+            return None;
+        };
+        let ExprNode::RoundEven(h_rounded) = *arena.value_node(rounded) else {
+            return None;
+        };
+        (h == high && h_rounded == high).then_some(low)
+    })?;
+    let ExprNode::Mul(a, b) = *arena.value_node(high) else {
+        return None;
+    };
+    let (x, c_hi) = [(a, b), (b, a)]
+        .into_iter()
+        .find_map(|(x, c)| Some((x, real_constant(arena, c)?)))?;
+    let ExprNode::Fma(a, b, inner) = *arena.value_node(low) else {
+        return None;
+    };
+    let c_lo = factor_of(arena, a, b, x)?;
+    let ExprNode::Fma(a, b, negated) = *arena.value_node(inner) else {
+        return None;
+    };
+    let ExprNode::Neg(h) = *arena.value_node(negated) else {
+        return None;
+    };
+    if h != high || factor_of(arena, a, b, x)? != c_hi {
+        return None;
+    }
+    let (RealRepr::Rational(hi), RealRepr::Rational(lo)) = (c_hi.repr(), c_lo.repr()) else {
+        return None;
+    };
+    let factor = arena.real(Real::from_rational(hi.clone() + lo));
+    let product = arena.mul(F32, x, factor);
+    Some(arena.exp2(F32, product))
+}
+
+/// The finite real constant `id` holds.
+fn real_constant(arena: &ExprArena, id: ExprId) -> Option<Real> {
+    match arena.value_node(id) {
+        ExprNode::RealConst(real) if matches!(real.repr(), RealRepr::Rational(_)) => {
+            Some(real.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The constant `c` of the product `a * b` when it is `x * c` in either order.
+fn factor_of(arena: &ExprArena, a: ExprId, b: ExprId, x: ExprId) -> Option<Real> {
+    match (a == x, b == x) {
+        (true, _) => real_constant(arena, b),
+        (_, true) => real_constant(arena, a),
+        _ => None,
+    }
+}
+
+/// `condition ? b : a` as the `e^u = exp2(x * ±log2(e))` it guards: LLVM's `expf` gives 0 only
+/// for `u` below a bound under `ln(2^-149)` and +inf above one over `ln(f32::MAX)`, f32 rounding,
+/// which the reals ignore. `None` unless the select has exactly that form.
+fn select_exp_range_guard(
+    arena: &ExprArena,
+    condition: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<ExprId> {
+    // `(x, s)` for the exponential `e^(s x)`.
+    let argument_of = |id: ExprId| {
+        let ExprNode::Exp2(argument) = *arena.value_node(id) else {
+            return None;
+        };
+        let ExprNode::Mul(p, q) = *arena.value_node(argument) else {
+            return None;
+        };
+        [(p, q), (q, p)].into_iter().find_map(|(x, k)| {
+            let k = arena.as_f64(k)?;
+            let log2e = std::f64::consts::LOG2_E;
+            ((k.abs() - log2e).abs() <= log2e * 1e-6).then_some((x, k.signum()))
+        })
+    };
+    // The exponential branch, the constant branch, and the condition value taking the constant.
+    let (exponential, constant, constant_when) = match (argument_of(a), argument_of(b)) {
+        (Some(_), None) => (a, b, true),
+        (None, Some(_)) => (b, a, false),
+        _ => return None,
+    };
+    let (x, sign) = argument_of(exponential)?;
+    // `u = sign_of(operand) * operand` for a comparison operand that is `x` or its negation;
+    // LLVM folds `exp(-y)`'s negation into the guard on `y`.
+    let sign_of = |operand: ExprId| {
+        if same_operand(arena, operand, x) {
+            return Some(sign);
+        }
+        match (arena.value_node(operand), arena.value_node(x)) {
+            (&ExprNode::Neg(inner), _) if same_operand(arena, inner, x) => Some(-sign),
+            (_, &ExprNode::Neg(inner)) if same_operand(arena, inner, operand) => Some(-sign),
+            _ => None,
+        }
+    };
+    let (left, right, at_most) = match *arena.node(condition) {
+        ExprNode::Lt(l, r) | ExprNode::Le(l, r) => (l, r, true),
+        ExprNode::Gt(l, r) | ExprNode::Ge(l, r) => (l, r, false),
+        _ => return None,
+    };
+    // Whether the operand is at most (else at least) `bound` whenever the constant is taken.
+    let (operand_sign, bound, below) = match (sign_of(left), sign_of(right)) {
+        (Some(s), None) => (s, arena.as_f64(right)?, at_most == constant_when),
+        (None, Some(s)) => (s, arena.as_f64(left)?, at_most != constant_when),
+        _ => return None,
+    };
+    let (bound, below) = if operand_sign > 0.0 {
+        (bound, below)
+    } else {
+        (-bound, !below)
+    };
+    let underflow = -149.0 * std::f64::consts::LN_2;
+    let overflow = f64::from(f32::MAX).ln();
+    let guards = match arena.value_node(constant) {
+        ExprNode::RealConst(real) => match real.repr() {
+            RealRepr::Rational(_) => *real == Real::zero() && below && bound <= underflow,
+            RealRepr::PosInf => !below && bound >= overflow,
+            RealRepr::NegInf => false,
+        },
+        _ => false,
+    };
+    guards.then_some(exponential)
+}
+
+/// `condition ? b : a` as `r(v)` for OCML's denormal-safe roots, `c ? k * r(c ? v * s : v) :
+/// r(c ? v * s : v)`, which is `r(v)` over the reals when `k^2 = s` (`r = rsqrt`) or `k^2 s = 1`
+/// (`r = sqrt`). `None` unless the branches have exactly that form.
+fn select_scaled_root(
+    arena: &mut ExprArena,
+    condition: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<ExprId> {
+    // A root node's operand on the side `when` of a select on `condition`, and whether it is
+    // `rsqrt` (else `sqrt`).
+    let root_input = |arena: &ExprArena, id: ExprId, when: bool| {
+        let (operand, reciprocal) = match *arena.value_node(id) {
+            ExprNode::Rsqrt(operand) => (operand, true),
+            ExprNode::Sqrt(operand) => (operand, false),
+            _ => return None,
+        };
+        match *arena.value_node(operand) {
+            ExprNode::Select(selected, then, otherwise) if selected == condition => {
+                Some((if when { then } else { otherwise }, reciprocal))
+            }
+            _ => None,
+        }
+    };
+    for (scaled, scaled_when, plain, plain_when) in [(b, true, a, false), (a, false, b, true)] {
+        let Some((v, reciprocal)) = root_input(arena, plain, plain_when) else {
+            continue;
+        };
+        let ExprNode::Mul(p, q) = *arena.value_node(scaled) else {
+            continue;
+        };
+        let Some((root, k)) = [(p, q), (q, p)]
+            .into_iter()
+            .find_map(|(root, k)| Some((root, real_constant(arena, k)?)))
+        else {
+            continue;
+        };
+        let Some((input, scaled_reciprocal)) = root_input(arena, root, scaled_when) else {
+            continue;
+        };
+        let ExprNode::Mul(p, q) = *arena.value_node(input) else {
+            continue;
+        };
+        let Some(s) = [(p, q), (q, p)].into_iter().find_map(|(x, s)| {
+            same_operand(arena, x, v)
+                .then(|| real_constant(arena, s))
+                .flatten()
+        }) else {
+            continue;
+        };
+        let (RealRepr::Rational(k), RealRepr::Rational(s)) = (k.repr(), s.repr()) else {
+            continue;
+        };
+        let square = k.clone() * k;
+        let exact = if reciprocal {
+            square == *s
+        } else {
+            square * s == 1
+        };
+        if scaled_reciprocal == reciprocal && exact {
+            return Some(if reciprocal {
+                arena.rsqrt(F32, v)
+            } else {
+                arena.sqrt(F32, v)
+            });
+        }
+    }
+    None
+}
+
+/// Whether two operands are one value: the same expression, or the same input modifier of one,
+/// as each read of `|v|` builds its own node.
+fn same_operand(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+    a == b
+        || match (arena.value_node(a), arena.value_node(b)) {
+            (ExprNode::Abs(x), ExprNode::Abs(y)) | (ExprNode::Neg(x), ExprNode::Neg(y)) => x == y,
+            _ => false,
+        }
+}
+
+/// `value * 2^exponent` for a symbolic i32 `exponent`: its integer terms scale exactly, so only
+/// its symbolic terms pass through `exp2`, which lowers through an f32 `ln 2`.
+fn scale_by_exponent(arena: &mut ExprArena, value: ExprId, exponent: ExprId) -> ExprId {
+    let (symbolic, constant) = split_exponent(arena, exponent);
+    let scaled = scale_by_power_of_two(arena, value, constant as i32);
+    match symbolic {
+        Some(symbolic) => {
+            let scale = arena.exp2(F32, symbolic);
+            arena.mul(F32, scaled, scale)
+        }
+        None => scaled,
+    }
+}
+
+/// A symbolic exponent as its symbolic terms (`None` if there are none) plus an integer.
+fn split_exponent(arena: &mut ExprArena, exponent: ExprId) -> (Option<ExprId>, i64) {
+    if let Some(word) = concrete_word(arena, exponent) {
+        return (None, i64::from(word as i32));
+    }
+    if arena.ty(exponent) != Some(I32) {
+        return (Some(exponent), 0);
+    }
+    let combine = |arena: &mut ExprArena,
+                   a: (Option<ExprId>, i64),
+                   b: (Option<ExprId>, i64),
+                   negate_b: bool| {
+        let constant = if negate_b { a.1 - b.1 } else { a.1 + b.1 };
+        let symbolic = match (a.0, b.0) {
+            (a, None) => a,
+            (None, Some(b)) if negate_b => Some(arena.neg(I32, b)),
+            (None, Some(b)) => Some(b),
+            (Some(a), Some(b)) if negate_b => Some(arena.sub(I32, a, b)),
+            (Some(a), Some(b)) => Some(arena.add(I32, a, b)),
+        };
+        (symbolic, constant)
+    };
+    match *arena.node(exponent) {
+        ExprNode::Add(a, b) => {
+            let (a, b) = (split_exponent(arena, a), split_exponent(arena, b));
+            combine(arena, a, b, false)
+        }
+        ExprNode::Sub(a, b) => {
+            let (a, b) = (split_exponent(arena, a), split_exponent(arena, b));
+            combine(arena, a, b, true)
+        }
+        ExprNode::Neg(a) => {
+            let a = split_exponent(arena, a);
+            combine(arena, (None, 0), a, true)
+        }
+        _ => (Some(exponent), 0),
+    }
+}
+
+fn scale_by_power_of_two(arena: &mut ExprArena, value: ExprId, exponent: i32) -> ExprId {
     // Every power of two in f64's range is exact; beyond it an f32 result is 0 or infinite.
     let power = Real::from_f64(2f64.powi(exponent)).expect("a power of two is not a NaN");
     let scale = arena.real(power);
-    Ok(arena.mul(F32, value, scale))
+    arena.mul(F32, value, scale)
 }
 
 /// `v_cvt_pk_{fp8,bf8}_f32` in `lane`: `dst`'s word with `half` replaced by the sources'
@@ -835,7 +1208,9 @@ fn unary_operand_type(op: UnaryOp) -> OperandType {
         | UnaryOp::SqrtF32
         | UnaryOp::RsqF32
         | UnaryOp::RndneF32
-        | UnaryOp::TruncF32 => OperandType::F32,
+        | UnaryOp::TruncF32
+        | UnaryOp::FrexpMantF32
+        | UnaryOp::FrexpExpI32F32 => OperandType::F32,
     }
 }
 

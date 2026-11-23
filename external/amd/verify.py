@@ -14,7 +14,9 @@ kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
 FlyDSL's gfx950 flash attention is in `flydsl/` (cases `flydsl/<case>`, compiled by
 `flydsl/extract.py`), with bf16 arrays, Aiter's kernels in `aiter/` (cases `aiter/<case>`,
 compiled by `aiter/build.py`) and HipKittens' kernels in `hipkittens/` (cases
-`hipkittens/<case>`, compiled by `hipkittens/compile.py`). Each case prints one
+`hipkittens/<case>`, compiled by `hipkittens/compile.py`). MIOpen's and CLBlast's OpenCL
+kernels are in `opencl/miopen/` and `opencl/clblast/` (cases `opencl/<library>/<case>`,
+compiled by each folder's `extract.py`). Each case prints one
 line when it finishes: PASS if its kernel verified (ACCEPT, or every output proved in Lean),
 else FAIL, noting when a verdict other than ACCEPT is the case's expected one, such as a known
 bug's REJECT. `--verbose` also prints Volta's log of each case as it runs, then a summary.
@@ -58,6 +60,13 @@ _hipkittens_spec = importlib.util.spec_from_file_location(
 )
 hipkittens_cases = importlib.util.module_from_spec(_hipkittens_spec)
 _hipkittens_spec.loader.exec_module(hipkittens_cases)
+OPENCL_CASES = {}
+for _library in ("miopen", "clblast"):
+    _spec = importlib.util.spec_from_file_location(
+        f"opencl_{_library}_cases", Path(__file__).resolve().parent / "opencl" / _library / "cases.py"
+    )
+    OPENCL_CASES[_library] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(OPENCL_CASES[_library])
 
 AMD_ROOT = Path(__file__).resolve().parent
 CK_ROOT = AMD_ROOT / "composable_kernel"
@@ -66,6 +75,7 @@ TRITON_ROOT = AMD_ROOT / "triton"
 FLYDSL_ROOT = AMD_ROOT / "flydsl"
 AITER_ROOT = AMD_ROOT / "aiter"
 HIPKITTENS_ROOT = AMD_ROOT / "hipkittens"
+OPENCL_ROOT = AMD_ROOT / "opencl"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
@@ -120,7 +130,10 @@ class Case:
     sample: int = 0
 
     def name(self) -> str:
-        return self.launch if self.root == CK_ROOT else f"{self.root.name}/{self.launch}"
+        if self.root == CK_ROOT:
+            return self.launch
+        folder = self.root.relative_to(AMD_ROOT) if self.root.is_relative_to(AMD_ROOT) else self.root.name
+        return f"{folder}/{self.launch}"
 
     def checker(self) -> str:
         return "lean" if isinstance(self.check, Prove) else "solver"
@@ -277,6 +290,14 @@ CASES = (
     *(
         Case(c.name, c.kernel, flydsl_check(c.check, c.spec), HIPKITTENS_ROOT, sample=c.sample)
         for c in hipkittens_cases.CASES
+    ),
+    # MIOpen's and CLBlast's OpenCL kernels, as opencl/miopen/cases.py and opencl/clblast/cases.py
+    # list them.
+    *(
+        Case(c.name, c.assembly_name(), flydsl_check(c.check, c.spec), OPENCL_ROOT / library,
+             sample=c.sample)
+        for library, registry in OPENCL_CASES.items()
+        for c in registry.CASES
     ),
     # PyTorch's continuous piecewise activations, each compiled for AMD and, as `<op>_ptx`, to
     # PTX.

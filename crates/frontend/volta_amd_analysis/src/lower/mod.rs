@@ -590,6 +590,16 @@ fn lower_as_written(
         ("v_rsq_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RsqF32, operands),
         ("v_rndne_f32_e32", operands) => lower_unary_op(ir::UnaryOp::RndneF32, operands),
         ("v_trunc_f32_e32", operands) => lower_unary_op(ir::UnaryOp::TruncF32, operands),
+        ("v_frexp_mant_f32_e32", operands) => lower_unary_op(ir::UnaryOp::FrexpMantF32, operands),
+        ("v_frexp_exp_i32_f32_e32", operands) => {
+            lower_unary_op(ir::UnaryOp::FrexpExpI32F32, operands)
+        }
+        ("v_frexp_mant_f32_e64", operands) => {
+            lower_unary_op_e64(ir::UnaryOp::FrexpMantF32, operands)
+        }
+        ("v_frexp_exp_i32_f32_e64", operands) => {
+            lower_unary_op_e64(ir::UnaryOp::FrexpExpI32F32, operands)
+        }
         ("v_exp_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::Exp2F32, operands),
         ("v_log_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::Log2F32, operands),
         ("v_rcp_f32_e64", operands) => lower_unary_op_e64(ir::UnaryOp::RcpF32, operands),

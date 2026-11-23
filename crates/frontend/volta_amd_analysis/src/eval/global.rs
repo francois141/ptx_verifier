@@ -92,9 +92,12 @@ impl Region {
 }
 
 /// The arrays of a launch, disjoint from each other and from the argument buffer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct GlobalMemory {
     regions: Vec<Region>,
+    /// The argument buffer's address and bytes: read-only device memory that vector loads may
+    /// also read, as OpenCL's `get_local_size` reads a group size it selects at run time.
+    kernarg: (u64, Vec<u8>),
     /// Each workgroup's written output elements by address; a selected workgroup's run has one.
     written: Vec<BTreeMap<u64, ExprId>>,
     /// The workgroup a store applies to; `None` applies it to every workgroup.
@@ -153,6 +156,7 @@ impl GlobalMemory {
         }
         Ok(Self {
             regions,
+            kernarg: (kernarg.address, kernarg.bytes.to_vec()),
             written: vec![BTreeMap::new(); workgroups],
             selected: None,
         })
@@ -177,8 +181,19 @@ impl GlobalMemory {
                 });
             }
         }
+        if let Some(word) = self.load_kernarg(address) {
+            return Ok(Word::Value(arena.int(i64::from(word))));
+        }
         self.load_written(address)
             .ok_or(EvalError::GlobalRead { address })
+    }
+
+    /// The argument word at `address`, if all four of its bytes are in the argument buffer.
+    fn load_kernarg(&self, address: u64) -> Option<u32> {
+        let (base, bytes) = &self.kernarg;
+        let start = usize::try_from(address.checked_sub(*base)?).ok()?;
+        let word = bytes.get(start..start.checked_add(4)?)?;
+        Some(u32::from_le_bytes(word.try_into().expect("four bytes")))
     }
 
     /// An output word this workgroup has already stored in full, read back as it was stored.
