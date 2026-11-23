@@ -591,6 +591,15 @@ pub enum BinOp {
     MulI32I24,
     /// The high word of that product.
     MulHiI32I24,
+    /// The 16-bit ops below write their 16-bit result zero-extended, as gfx9's VOP2 does:
+    /// `src0 + src1`.
+    AddU16,
+    /// `src0 - src1`.
+    SubU16,
+    /// The logical `src1 >> src0` of the low halves, the count's low four bits.
+    LShrRevB16,
+    /// The arithmetic `src1 >> src0` of the low halves, the count's low four bits.
+    AShrRevI16,
     AddF32,
     /// `src0 - src1`.
     SubF32,

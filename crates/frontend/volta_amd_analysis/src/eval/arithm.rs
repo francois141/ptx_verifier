@@ -48,7 +48,11 @@ fn operand_type(op: BinOp) -> OperandType {
         | BinOp::MulU32U24
         | BinOp::MulHiU32U24
         | BinOp::MulI32I24
-        | BinOp::MulHiI32I24 => OperandType::Word,
+        | BinOp::MulHiI32I24
+        | BinOp::AddU16
+        | BinOp::SubU16
+        | BinOp::LShrRevB16
+        | BinOp::AShrRevI16 => OperandType::Word,
         BinOp::AddF32
         | BinOp::SubF32
         | BinOp::SubRevF32
@@ -194,6 +198,18 @@ fn bin_op_values(
         BinOp::MulHiI32I24 => {
             fold_concrete_words(arena, lane, [a, b], |[a, b]| (mul_i24(a, b) >> 32) as u32)?
         }
+        BinOp::AddU16 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
+            u32::from((a as u16).wrapping_add(b as u16))
+        })?,
+        BinOp::SubU16 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
+            u32::from((a as u16).wrapping_sub(b as u16))
+        })?,
+        BinOp::LShrRevB16 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
+            u32::from((b as u16) >> (a & 15))
+        })?,
+        BinOp::AShrRevI16 => fold_concrete_words(arena, lane, [a, b], |[a, b]| {
+            u32::from(((b as u16 as i16) >> (a & 15)) as u16)
+        })?,
         BinOp::AddF32 => arena.add(F32, a, b),
         BinOp::SubF32 => arena.sub(F32, a, b),
         BinOp::SubRevF32 => arena.sub(F32, b, a),
