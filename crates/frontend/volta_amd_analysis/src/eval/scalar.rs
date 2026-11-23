@@ -439,8 +439,21 @@ fn scalar_op32(
             let mask = ((1_u64 << width) - 1) as u32;
             scc_if_nonzero((a >> (b & 31)) & mask)
         }
+        ScalarOp32::BfeI32 => scc_if_nonzero(bfe_i32(a, b)),
         ScalarOp32::CSelectB32 => (if registers.read_scc()? { a } else { b }, None),
     })
+}
+
+/// The field of `value` at offset `field[4:0]` of width `field[22:16]`, sign-extended from its
+/// top bit (CDNA4 §12.1 `S_BFE_I32`): a field past bit 31 is the arithmetic shift.
+fn bfe_i32(value: u32, field: u32) -> u32 {
+    let (offset, width) = (field & 31, (field >> 16) & 0x7f);
+    let shifted = (value as i32) >> offset;
+    match width {
+        0 => 0,
+        1..32 => ((shifted << (32 - width)) >> (32 - width)) as u32,
+        _ => shifted as u32,
+    }
 }
 
 /// The field of `value` at offset `field[5:0]` of width `field[22:16]`, sign-extended from its

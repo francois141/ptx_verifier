@@ -252,6 +252,8 @@ pub enum ScalarOp32 {
     AShrI32,
     /// The field of `src0` at bit `src1[4:0]`, `src1[22:16]` bits wide.
     BfeU32,
+    /// `BfeU32`'s field, sign-extended from its top bit.
+    BfeI32,
     /// `SCC ? src0 : src1`; SCC is unchanged.
     CSelectB32,
 }

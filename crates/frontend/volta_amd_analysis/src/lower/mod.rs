@@ -256,6 +256,7 @@ fn lower_as_written(
         ("s_lshr_b32", operands) => lower_scalar_op32(ir::ScalarOp32::LShrB32, operands),
         ("s_ashr_i32", operands) => lower_scalar_op32(ir::ScalarOp32::AShrI32, operands),
         ("s_bfe_u32", operands) => lower_scalar_op32(ir::ScalarOp32::BfeU32, operands),
+        ("s_bfe_i32", operands) => lower_scalar_op32(ir::ScalarOp32::BfeI32, operands),
         ("s_bfe_i64", [dst, src, field]) => {
             let (src, field) = scalar_source64_and_word(src, field)?;
             Ok(BfeI64Scalar {
