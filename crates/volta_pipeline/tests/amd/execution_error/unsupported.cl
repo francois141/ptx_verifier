@@ -29,6 +29,33 @@ __kernel void symbolic_select(__global const float *input, __global float *outpu
     output[i] = input[i] > 0.0f ? 1.0f : 2.0f;
 }
 
+// The bits of that select, hidden from the optimizer so the sign-bit operations stay integer.
+static unsigned selected_bits(float x) {
+    unsigned bits = as_uint(x > 0.0f ? 1.0f : 2.0f);
+    __asm__ volatile("" : "+v"(bits));
+    return bits;
+}
+
+// Flipping the selected float's sign bit negates it.
+__kernel void symbolic_select_negate(__global const float *input, __global float *output) {
+    unsigned i = __builtin_amdgcn_workitem_id_x();
+    output[i] = as_float(selected_bits(input[i]) ^ 0x80000000u);
+}
+
+// Clearing the selected float's sign bit takes its absolute value.
+__kernel void symbolic_select_abs(__global const float *input, __global float *output) {
+    unsigned i = __builtin_amdgcn_workitem_id_x();
+    output[i] = as_float(selected_bits(input[i]) & 0x7fffffffu);
+}
+
+// A select between the input and the selected float mixes a real with a word's bits.
+__kernel void symbolic_select_mixed(__global const float *input, __global float *output) {
+    unsigned i = __builtin_amdgcn_workitem_id_x();
+    float x = input[i];
+    float selected = as_float(selected_bits(x));
+    output[i] = x > 3.0f ? x : selected;
+}
+
 // Only lanes with a positive input store. The active-lane mask would come from the input
 // data, so it is not a concrete mask.
 __kernel void divergent_store(__global const float *input, __global float *output) {

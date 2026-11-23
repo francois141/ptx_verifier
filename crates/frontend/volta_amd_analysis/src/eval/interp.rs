@@ -34,6 +34,7 @@ use super::wave::{
     concrete_word, lane_bit, same_value, same_word,
 };
 use super::word::Word;
+use super::word_select::word_select;
 
 /// The selected workgroup's symbolic state: one `WaveState` per wave, holding registers whose
 /// values are expressions of `arena`, plus the workgroup's LDS and the execution's event graph.
@@ -1265,13 +1266,21 @@ fn transpose_source_lane(lane: usize, e: usize) -> usize {
     16 * (lane / 16) + 4 * e + (lane % 16) / 4
 }
 
-/// A word's high half as a bf16 real: a pair's, a concrete word's bits, or a symbolic f32's,
-/// which this model takes exactly, as it takes `v_cvt_pk_bf16_f32`'s rounding.
+/// A word's high half as a bf16 real: a pair's, a concrete word's bits, a word select's per
+/// branch, or a symbolic f32's, which this model takes exactly, as it takes
+/// `v_cvt_pk_bf16_f32`'s rounding.
 fn high_half(arena: &mut ExprArena, word: Word) -> Option<ExprId> {
     match word {
         Word::Bf16 { high, .. } => Some(high),
-        Word::Value(value) if concrete_word(arena, value).is_none() => Some(value),
-        Word::Value(_) => word.bf16_halves(arena).map(|[_, high]| high),
+        Word::Value(value) => match word_select(arena, value) {
+            Some((condition, then, otherwise)) => {
+                let then = high_half(arena, Word::Value(then))?;
+                let otherwise = high_half(arena, Word::Value(otherwise))?;
+                Some(arena.select(Type::Float(Width(16)), condition, then, otherwise))
+            }
+            None if concrete_word(arena, value).is_none() => Some(value),
+            None => word.bf16_halves(arena).map(|[_, high]| high),
+        },
     }
 }
 
@@ -1321,16 +1330,15 @@ fn execute_bf16_pair_lane(
             if concrete_word(arena, selector) != Some(0x0706_0302) {
                 return None;
             }
-            let high_half = |src: ModifiedSrc| -> Option<ExprId> {
+            let mut high_of = |src: ModifiedSrc| -> Option<ExprId> {
                 match registers.read_vgpr_word(lane, plain_vgpr(src)?).ok()? {
-                    Word::Bf16 { high, .. } => Some(high),
-                    Word::Value(value) if concrete_word(arena, value).is_none() => Some(value),
-                    Word::Value(_) => None,
+                    Word::Value(value) if concrete_word(arena, value).is_some() => None,
+                    word => high_half(arena, word),
                 }
             };
             let word = Word::Bf16 {
-                low: high_half(low_src)?,
-                high: high_half(high_src)?,
+                low: high_of(low_src)?,
+                high: high_of(high_src)?,
             };
             Some(registers.write_vgpr_word(lane, dst, word))
         }

@@ -14,6 +14,7 @@ use crate::ir::{
 use super::EvalError;
 use super::global::GlobalMemory;
 use super::word::Word;
+use super::word_select::word_select;
 
 mod scratch;
 
@@ -1365,15 +1366,21 @@ pub(super) fn concrete_word(arena: &ExprArena, value: ExprId) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
-/// `value` as an f32 operand: a concrete word is the float its bits encode, and a symbolic value
-/// is a real; `None` for a NaN or a concrete value wider than 32 bits.
+/// `value` as an f32 operand: a concrete word is the float its bits encode, a word select the
+/// select of its words' floats, and a symbolic value a real; `None` for a NaN or a concrete
+/// value wider than 32 bits.
 pub(super) fn as_f32(arena: &mut ExprArena, value: ExprId) -> Option<ExprId> {
-    match arena.as_int_const(value) {
-        Some(word) => u32::try_from(word)
+    if let Some(word) = arena.as_int_const(value) {
+        return u32::try_from(word)
             .ok()
-            .and_then(|bits| f32_from_bits(arena, bits)),
-        None => Some(value),
+            .and_then(|bits| f32_from_bits(arena, bits));
     }
+    if let Some((condition, then, otherwise)) = word_select(arena, value) {
+        let then = as_f32(arena, then)?;
+        let otherwise = as_f32(arena, otherwise)?;
+        return Some(arena.select(Type::Float(Width(32)), condition, then, otherwise));
+    }
+    Some(value)
 }
 
 /// A float `value` of type `ty` after its input modifiers: the absolute value, then the negation.

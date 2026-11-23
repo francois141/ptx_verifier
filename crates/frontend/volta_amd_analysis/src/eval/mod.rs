@@ -14,6 +14,7 @@ mod scalar;
 mod simplify;
 mod wave;
 mod word;
+mod word_select;
 
 pub use crate::error::EvalError;
 pub use global::{ArrayDef, ArrayKind, Element, OutputType};

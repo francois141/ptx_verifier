@@ -16,6 +16,7 @@ use volta_amd_analysis::{
     WorkgroupLaunch, analyze_grid,
 };
 use volta_expr::SymbolicOutputs;
+use volta_expr::symbolic_simplified::ExprNode;
 use volta_graph_check::{GraphConclusion, check_graph};
 
 // Test nonzero X/Y/Z coordinates in every lane, including descriptors with unused axes.
@@ -879,4 +880,65 @@ fn a_partial_lgkm_wait_completes_all_but_the_last_instructions() {
     common::amd::check_rejected_kernel("success/lgkm_wait", kernel, &arrays, |result| {
         result.as_ref().is_ok_and(|run| run.terminal == expected)
     });
+}
+
+// Test that a float comparison choosing between two constants keeps both, and that the sign-bit
+// `xor` and `and` and the select a compiler applies to the chosen word act on its float: every
+// f32 output stores a select of floats, never of the words' bit patterns read as integers.
+#[test]
+fn selecting_between_constants_under_a_symbolic_condition_selects_their_floats() {
+    let arrays = [
+        array("input", 0x10000, ArrayKind::Input),
+        array("output", 0x20000, ArrayKind::Output(F32)),
+    ];
+    let kernarg: Vec<u8> = arrays.iter().flat_map(|a| a.base.to_le_bytes()).collect();
+    let run = |kernel| {
+        let outputs = check_amd(
+            "execution_error/unsupported",
+            amd_fixture!("execution_error/unsupported"),
+            kernel,
+            64,
+            &kernarg,
+            &arrays,
+        )
+        .verified_outputs();
+        assert_eq!(outputs.outputs[0].1.len(), 64, "{kernel}");
+        outputs
+    };
+    let floats = |outputs: &SymbolicOutputs, value| match *outputs.arena.node(value) {
+        ExprNode::Select(_, then, otherwise) => Some((
+            outputs.arena.as_f64(then)?,
+            outputs.arena.as_f64(otherwise)?,
+        )),
+        _ => None,
+    };
+    for (kernel, expected) in [
+        ("symbolic_select", (1.0, 2.0)),
+        ("symbolic_select_negate", (-1.0, -2.0)),
+        ("symbolic_select_abs", (1.0, 2.0)),
+    ] {
+        let outputs = run(kernel);
+        for &(index, value) in &outputs.outputs[0].1 {
+            assert_eq!(
+                floats(&outputs, value),
+                Some(expected),
+                "{kernel}: output[{index}]"
+            );
+        }
+    }
+    let outputs = run("symbolic_select_mixed");
+    for &(index, value) in &outputs.outputs[0].1 {
+        let ExprNode::Select(_, then, otherwise) = *outputs.arena.node(value) else {
+            panic!("symbolic_select_mixed: output[{index}] is not a select");
+        };
+        assert!(
+            matches!(outputs.arena.node(then), ExprNode::InputElement { .. }),
+            "symbolic_select_mixed: output[{index}] keeps the input above 3"
+        );
+        assert_eq!(
+            floats(&outputs, otherwise),
+            Some((1.0, 2.0)),
+            "output[{index}]"
+        );
+    }
 }

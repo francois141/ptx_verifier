@@ -23,6 +23,7 @@ const I32: Type = Type::Int(symbolic_full::Signedness::Signed, Width(32));
 use super::wave::{WaveRegisters, apply_modifiers, as_f32, concrete_word};
 use super::word::Word;
 use super::word::compare_bf16_field;
+use super::word_select::{distribute, is_word, select_words};
 
 enum OperandType {
     Word,
@@ -143,6 +144,14 @@ fn bin_op_values(
     a: ExprId,
     b: ExprId,
 ) -> Result<ExprId, EvalError> {
+    // An integer op keeps a word select's bits, branch by branch.
+    if matches!(operand_type(op), OperandType::Word)
+        && let Some(result) = distribute(arena, a, b, |arena, a, b| {
+            bin_op_values(arena, lane, op, a, b)
+        })
+    {
+        return result;
+    }
     if let Some(result) = sign_bit_op(arena, op, a, b) {
         return Ok(result);
     }
@@ -378,12 +387,12 @@ pub(super) fn evaluate_cndmask(
     if let Some(word) = select_equal(arena, condition, a, b) {
         return Ok(word);
     }
-    if let Some(word) = select_words(arena, lane, condition, a, b)? {
+    if let Some(word) = select_words(arena, condition, a, b) {
         return Ok(word);
     }
-    let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
-        (Some(_), None) => (registers.read_f32_src0(arena, lane, src0)?, b),
-        (None, Some(_)) => (a, registers.read_f32(arena, lane, src1)?),
+    let (a, b) = match (is_word(arena, a), is_word(arena, b)) {
+        (true, false) => (registers.read_f32_src0(arena, lane, src0)?, b),
+        (false, true) => (a, registers.read_f32(arena, lane, src1)?),
         _ => (a, b),
     };
     if let Some(value) = select_exp_range_guard(arena, condition, a, b) {
@@ -419,14 +428,14 @@ pub(super) fn evaluate_cndmask_e64(
     if let Some(word) = select_equal(arena, condition, a, b) {
         return Ok(word);
     }
-    if let Some(word) = select_words(arena, lane, condition, a, b)? {
+    if let Some(word) = select_words(arena, condition, a, b) {
         return Ok(word);
     }
     // A symbolic source is a real, so a concrete word selected against it must be the f32 its
     // bits encode, or the select would mix raw bits with reals.
-    let (a, b) = match (arena.as_int_const(a), arena.as_int_const(b)) {
-        (Some(_), None) => (registers.read_f32_src(arena, lane, src0.src)?, b),
-        (None, Some(_)) => (a, registers.read_f32_src(arena, lane, src1.src)?),
+    let (a, b) = match (is_word(arena, a), is_word(arena, b)) {
+        (true, false) => (registers.read_f32_src(arena, lane, src0.src)?, b),
+        (false, true) => (a, registers.read_f32_src(arena, lane, src1.src)?),
         _ => (a, b),
     };
     if let Some(value) = select_exp_range_guard(arena, condition, a, b) {
@@ -439,28 +448,6 @@ pub(super) fn evaluate_cndmask_e64(
         return Ok(value);
     }
     Ok(arena.select(B32, condition, b, a))
-}
-
-/// `condition ? b : a` for two concrete words: the word when both agree, else the chosen word
-/// under a concrete condition. A symbolic condition would yield a value that is neither a
-/// concrete integer nor a known float, so it is rejected. `None` unless both are words.
-fn select_words(
-    arena: &mut ExprArena,
-    lane: usize,
-    condition: ExprId,
-    a: ExprId,
-    b: ExprId,
-) -> Result<Option<ExprId>, EvalError> {
-    let (Some(x), Some(y)) = (arena.as_int_const(a), arena.as_int_const(b)) else {
-        return Ok(None);
-    };
-    if x == y {
-        return Ok(Some(a));
-    }
-    match arena.as_bool(condition) {
-        Some(_) => Ok(Some(arena.select(B32, condition, b, a))),
-        None => Err(EvalError::AmbiguousSelect { lane }),
-    }
 }
 
 /// `op(srcs)` in `lane`, each source read as `op`'s operand type.

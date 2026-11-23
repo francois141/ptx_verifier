@@ -325,33 +325,6 @@ fn scalar_operations_on_symbolic_masks_are_rejected() {
         },
     );
 }
-// Test that a float comparison choosing between two constants is rejected, because the
-// chosen words could encode floats or integers.
-#[test]
-fn selecting_between_constants_under_a_symbolic_condition_is_rejected() {
-    let arrays = [
-        array("input", 0x10000, ArrayKind::Input),
-        array("output", 0x20000, ArrayKind::Output(F32)),
-    ];
-    common::amd::check_rejected_kernel(
-        "execution_error/unsupported",
-        "symbolic_select",
-        &arrays,
-        |result| {
-            matches!(
-                result,
-                Ok(AnalysisResult {
-                    terminal: Terminal::Aborted {
-                        error: EvalError::AmbiguousSelect { lane: 0 },
-                        ..
-                    },
-                    symbolic_outputs: None,
-                    ..
-                })
-            )
-        },
-    );
-}
 // Test that a store executed only where the input is positive is rejected: the mask the
 // compiled `s_and_saveexec_b64` reads holds symbolic comparisons, so EXEC would not be concrete.
 #[test]
