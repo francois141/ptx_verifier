@@ -3,6 +3,7 @@
 mod arithm;
 mod buffer;
 mod ds;
+mod exp2_range;
 mod global;
 mod grid;
 mod interp;

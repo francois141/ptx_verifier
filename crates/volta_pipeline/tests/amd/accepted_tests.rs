@@ -476,6 +476,19 @@ fn the_float_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that LLVM's denormal-safe exp2, which shifts small inputs by 64 and scales the result back
+// by a selected exponent, is exp2 of the input over the reals.
+#[test]
+fn the_exp2_range_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/exp2_range",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("out", 0x20000, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that the IEEE division sequence of float_ops' column 29 is x / y over the reals: the
 // decision procedure proves it equal to column 10, Clang's fast-math quotient, in every lane.
 #[test]

@@ -20,10 +20,11 @@ const B32: Type = Type::Bits(Width(32));
 const B64: Type = Type::Bits(Width(64));
 const U32: Type = Type::Int(symbolic_full::Signedness::Unsigned, Width(32));
 const I32: Type = Type::Int(symbolic_full::Signedness::Signed, Width(32));
+use super::exp2_range::undo_exp2_range_shift;
 use super::wave::{WaveRegisters, apply_modifiers, as_f32, concrete_word};
 use super::word::Word;
 use super::word::compare_bf16_field;
-use super::word_select::{distribute, is_word, select_words};
+use super::word_select::{distribute, is_word, select_words, word_select};
 
 enum OperandType {
     Word,
@@ -843,7 +844,20 @@ pub(super) fn evaluate_ldexp_f32(
         }
         return Ok(scale_by_exponent(arena, value, exponent));
     }
-    Err(EvalError::SymbolicWord { lane })
+    let (condition, then, otherwise) =
+        word_select(arena, exponent).ok_or(EvalError::SymbolicWord { lane })?;
+    let (Some(then), Some(otherwise)) =
+        (concrete_word(arena, then), concrete_word(arena, otherwise))
+    else {
+        return Err(EvalError::SymbolicWord { lane });
+    };
+    let exponents = [then as i32, otherwise as i32];
+    if let Some(unshifted) = undo_exp2_range_shift(arena, value, condition, exponents) {
+        return Ok(unshifted);
+    }
+    let then = scale_by_power_of_two(arena, value, exponents[0]);
+    let otherwise = scale_by_power_of_two(arena, value, exponents[1]);
+    Ok(arena.select(F32, condition, then, otherwise))
 }
 
 /// LLVM's accurate `expf(x)`: `exp2((h - r) + l) * 2^r`, `r = rndne(h)`, with `h = x * c_hi` and
