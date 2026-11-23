@@ -125,6 +125,18 @@ impl Interpreter<'_> {
                     {
                         return self.lane_mask_op64(wave, *op, *dst, *src0, *src1);
                     }
+                    (Err(EvalError::UninitializedSgpr(reg)), Ok(b)) => {
+                        let registers = &self.waves[wave].registers;
+                        let a = absorbed(registers, *op, Operand64::First, b)
+                            .ok_or(EvalError::UninitializedSgpr(reg))?;
+                        (a, b)
+                    }
+                    (Ok(a), Err(EvalError::UninitializedSgpr(reg))) => {
+                        let registers = &self.waves[wave].registers;
+                        let b = absorbed(registers, *op, Operand64::Second, a)
+                            .ok_or(EvalError::UninitializedSgpr(reg))?;
+                        (a, b)
+                    }
                     (a, b) => (a?, b?),
                 };
                 let registers = &mut self.waves[wave].registers;
@@ -445,6 +457,31 @@ impl Interpreter<'_> {
             }
         }
     }
+}
+
+/// Which source of a 64-bit operation is uninitialized.
+#[derive(Clone, Copy)]
+enum Operand64 {
+    First,
+    Second,
+}
+
+/// A value to read for the uninitialized source of `op`, when the other source (`known`) alone
+/// fixes the result, as in LLVM's `implicit-def` lane mask merged as `s_andn2_b64 s, undef,
+/// exec` under a full EXEC; `None` when the result depends on the uninitialized source.
+fn absorbed(
+    registers: &WaveRegisters,
+    op: ScalarOp64,
+    uninitialized: Operand64,
+    known: u64,
+) -> Option<u64> {
+    let result = |value| match uninitialized {
+        Operand64::First => scalar_op64(registers, op, value, known),
+        Operand64::Second => scalar_op64(registers, op, known, value),
+    };
+    // Each result bit depends only on the matching bit of each source, so all zeros and all
+    // ones cover every value the uninitialized source could hold.
+    (result(0).ok()? == result(u64::MAX).ok()?).then_some(0)
 }
 
 /// `a op b` over 64-bit words; a select reads SCC.
