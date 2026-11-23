@@ -554,12 +554,21 @@ impl<T: Copy> RegValue<T> {
 }
 
 /// Whether two expressions are the same value: one node, or equal constants, input elements
-/// or parameters, which separate executions create as separate nodes.
+/// or parameters, which separate executions create as separate nodes, or one commutative
+/// operation of the same values in either order (two lanes combining a swapped pair).
 fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+    same_value_within(arena, a, b, COMMUTED_DEPTH)
+}
+
+/// How many commutative operations deep `same_value` looks for swapped operands.
+const COMMUTED_DEPTH: u32 = 4;
+
+fn same_value_within(arena: &ExprArena, a: ExprId, b: ExprId, depth: u32) -> bool {
     let (a, b) = (arena.value(a), arena.value(b));
     if a == b {
         return true;
     }
+    let (a_ty, b_ty) = (arena.ty(a), arena.ty(b));
     let (a, b) = (arena.node(a), arena.node(b));
     let atom = matches!(
         a,
@@ -569,7 +578,19 @@ fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
             | ExprNode::InputElement { .. }
             | ExprNode::ParamSymbol(_)
     );
-    atom && a == b
+    if atom {
+        return a == b;
+    }
+    let operands = match (a, b) {
+        (ExprNode::Add(x, y), ExprNode::Add(u, v))
+        | (ExprNode::Mul(x, y), ExprNode::Mul(u, v))
+        | (ExprNode::Max(x, y), ExprNode::Max(u, v))
+        | (ExprNode::Min(x, y), ExprNode::Min(u, v)) => [*x, *y, *u, *v],
+        _ => return false,
+    };
+    let [x, y, u, v] = operands;
+    let same = |p, q| same_value_within(arena, p, q, depth - 1);
+    depth > 0 && a_ty == b_ty && ((same(x, u) && same(y, v)) || (same(x, v) && same(y, u)))
 }
 
 fn same_word(arena: &ExprArena, a: Word, b: Word) -> bool {
