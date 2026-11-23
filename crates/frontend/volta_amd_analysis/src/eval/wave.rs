@@ -179,12 +179,14 @@ struct LaneRegisters {
     pending_loads: VecDeque<VmLoad>,
 }
 
-/// A lane's pending `vmcnt` load: the VGPRs it writes, or the event graph's operation of a load
-/// to LDS, which completes once no lane that issued it has it pending.
+/// A lane's pending `vmcnt` operation: a load's VGPRs, the event graph's operation of a load to
+/// LDS, which completes once no lane that issued it has it pending, or a store, which gfx9
+/// counts in `vmcnt` too (CDNA4 ISA §4.4) and whose completion writes nothing.
 #[derive(Debug, Clone, PartialEq)]
 enum VmLoad {
     Registers(Vec<Vgpr>),
     Lds(AsyncOpId),
+    Store,
 }
 
 // Initialize the wave with all registers unwritten.
@@ -1204,6 +1206,11 @@ impl WaveRegisters {
         self.count_vm_load(lane, VmLoad::Lds(op));
     }
 
+    /// Count `lane`'s vector store among its `vmcnt` operations.
+    pub(super) fn count_vm_store(&mut self, lane: usize) {
+        self.count_vm_load(lane, VmLoad::Store);
+    }
+
     fn count_vm_load(&mut self, lane: usize, load: VmLoad) {
         // A repeated execution for a later workgroup issues the load the first one counted.
         if !self.repeat
@@ -1245,10 +1252,10 @@ impl WaveRegisters {
         self.assign(slot, Stored::Vector(value));
     }
 
-    /// Wait until at most `outstanding` `vmcnt` loads are in flight per lane, returning the
-    /// loads to LDS this completed in every lane, in issue order. Loads return in issue order,
-    /// so the most recent stay pending; counting neither stores nor the loads EXEC kept from a
-    /// lane keeps more loads pending than the hardware does.
+    /// Wait until at most `outstanding` `vmcnt` operations are in flight per lane, returning the
+    /// loads to LDS this completed in every lane, in issue order. Operations complete in issue
+    /// order, so the most recent stay pending; not counting the ones EXEC kept from a lane keeps
+    /// more pending than the hardware does.
     pub(super) fn finish_vm_loads(&mut self, outstanding: usize) -> Vec<AsyncOpId> {
         let mut lds_loads = Vec::new();
         for lane in 0..self.vector.len() {
@@ -1271,6 +1278,7 @@ impl WaveRegisters {
                             lds_loads.push(op);
                         }
                     }
+                    VmLoad::Store => {}
                 }
             }
         }

@@ -881,13 +881,17 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::GlobalLoad { dst, address } => {
                 registers.global_load(&mut self.arena, &self.global, lane, dst.regs(), *address)
             }
-            LoweredInstr::GlobalStore { src, address } => registers.global_store(
-                &mut self.arena,
-                &mut self.global,
-                lane,
-                &src.regs(),
-                *address,
-            ),
+            LoweredInstr::GlobalStore { src, address } => {
+                registers.global_store(
+                    &mut self.arena,
+                    &mut self.global,
+                    lane,
+                    &src.regs(),
+                    *address,
+                )?;
+                registers.count_vm_store(lane);
+                Ok(())
+            }
             LoweredInstr::BufferLoad {
                 dst: BufferLoadDst::Ushort(dst),
                 address,
@@ -895,12 +899,15 @@ impl<'a> Interpreter<'a> {
             LoweredInstr::BufferLoad { dst, address } => {
                 self.buffer_load(wave, lane, *address, dst.regs())
             }
-            LoweredInstr::BufferStore {
-                src: crate::ir::BufferStoreSrc::Short(reg),
-                address,
-            } => self.buffer_store_short(wave, lane, *address, *reg),
             LoweredInstr::BufferStore { src, address } => {
-                self.buffer_store(wave, lane, *address, &src.regs())
+                match src {
+                    crate::ir::BufferStoreSrc::Short(reg) => {
+                        self.buffer_store_short(wave, lane, *address, *reg)?
+                    }
+                    _ => self.buffer_store(wave, lane, *address, &src.regs())?,
+                }
+                self.waves[wave].registers.count_vm_store(lane);
+                Ok(())
             }
             LoweredInstr::DsRead { addr, accesses } => self.ds_read(wave, lane, *addr, *accesses),
             _ => Err(EvalError::UnsupportedInstruction),
