@@ -727,12 +727,14 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::CvtPkBf16F32 { dst, srcs } => {
                 // A word that is no f32, such as the don't-care register a compiler packs into a
-                // half it never reads, gives an undefined half, an error only if a result uses it.
+                // half it never reads (a lane mask included), gives an undefined half, an error
+                // only if a result uses it.
                 let mut half = |src| match registers.read_modified_src(&mut self.arena, lane, src) {
                     Err(
                         EvalError::InvalidFloatSgpr(_)
                         | EvalError::InvalidFloatVgpr { .. }
-                        | EvalError::InvalidFloatConstant(_),
+                        | EvalError::InvalidFloatConstant(_)
+                        | EvalError::SymbolicSgpr(_),
                     ) => Ok(self.arena.undefined()),
                     read => read,
                 };
