@@ -12,7 +12,8 @@ kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
 `activation/<case>_ptx`, from CUDA to PTX. Triton's tutorial kernels, compiled for gfx950, are in
 `triton/`, the cases named `triton/<case>`.
 FlyDSL's gfx950 flash attention is in `flydsl/` (cases `flydsl/<case>`, compiled by
-`flydsl/extract.py`), with bf16 arrays, and HipKittens' kernels in `hipkittens/` (cases
+`flydsl/extract.py`), with bf16 arrays, Aiter's kernels in `aiter/` (cases `aiter/<case>`,
+compiled by `aiter/build.py`) and HipKittens' kernels in `hipkittens/` (cases
 `hipkittens/<case>`, compiled by `hipkittens/compile.py`). Each case prints one
 line when it finishes: PASS if its kernel verified (ACCEPT, or every output proved in Lean),
 else FAIL, noting when a verdict other than ACCEPT is the case's expected one, such as a known
@@ -45,7 +46,13 @@ import volta
 sys.path.insert(0, str(Path(__file__).resolve().parent / "flydsl"))
 import cases as flydsl_cases  # noqa: E402
 
-# HipKittens' registry is also named `cases`, so it is loaded under a module name of its own.
+# Aiter's and HipKittens' registries are also named `cases`, so each is loaded under a module
+# name of its own.
+_aiter_spec = importlib.util.spec_from_file_location(
+    "aiter_cases", Path(__file__).resolve().parent / "aiter" / "cases.py"
+)
+aiter_cases = importlib.util.module_from_spec(_aiter_spec)
+_aiter_spec.loader.exec_module(aiter_cases)
 _hipkittens_spec = importlib.util.spec_from_file_location(
     "hipkittens_cases", Path(__file__).resolve().parent / "hipkittens" / "cases.py"
 )
@@ -57,6 +64,7 @@ CK_ROOT = AMD_ROOT / "composable_kernel"
 ACTIVATION_ROOT = AMD_ROOT.parent / "activation"
 TRITON_ROOT = AMD_ROOT / "triton"
 FLYDSL_ROOT = AMD_ROOT / "flydsl"
+AITER_ROOT = AMD_ROOT / "aiter"
 HIPKITTENS_ROOT = AMD_ROOT / "hipkittens"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
@@ -259,6 +267,11 @@ CASES = (
     *(
         Case(c.name, c.assembly_name(), flydsl_check(c.check, c.spec), FLYDSL_ROOT, sample=c.sample)
         for c in flydsl_cases.CASES
+    ),
+    # Aiter's kernels, as aiter/cases.py lists them.
+    *(
+        Case(c.name, c.assembly_name(), flydsl_check(c.check, c.spec), AITER_ROOT, sample=c.sample)
+        for c in aiter_cases.CASES
     ),
     # HipKittens' kernels, as hipkittens/cases.py lists them.
     *(

@@ -1,0 +1,232 @@
+{
+ "kernel": "_ZN5aiter32kn_entry_2c_sbhd_cached_indirectINS_11OpCachedFwdELi0ELb1ELb0ELb1ELb1ELb1ELb1ELi2ELb1E12hip_bfloat16S2_xEEvPT9_S4_PKS3_S6_PKT10_S9_PKT11_iiiiiiiiiiiiiiiiiiiiiiii",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": 256,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    2,
+    4,
+    2,
+    2,
+    32
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    2,
+    2,
+    2,
+    2,
+    32
+   ]
+  },
+  {
+   "name": "c",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    4,
+    32
+   ]
+  },
+  {
+   "name": "sn",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    4,
+    32
+   ]
+  },
+  {
+   "name": "pos",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    4
+   ],
+   "contents": [
+    3,
+    0,
+    1,
+    0
+   ]
+  },
+  {
+   "name": "ox",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    2,
+    4,
+    2,
+    2,
+    32
+   ]
+  },
+  {
+   "name": "oy",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    2,
+    2,
+    2,
+    2,
+    32
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "p_output_x",
+   "ptr": "ox"
+  },
+  {
+   "name": "p_output_y",
+   "ptr": "oy"
+  },
+  {
+   "name": "p_input_x",
+   "ptr": "x"
+  },
+  {
+   "name": "p_input_y",
+   "ptr": "y"
+  },
+  {
+   "name": "p_cos",
+   "ptr": "c"
+  },
+  {
+   "name": "p_sin",
+   "ptr": "sn"
+  },
+  {
+   "name": "p_indirect_buffer",
+   "ptr": "pos"
+  },
+  {
+   "name": "max_position",
+   "int": 4
+  },
+  {
+   "name": "size_h_x",
+   "int": 4
+  },
+  {
+   "name": "size_h_y",
+   "int": 2
+  },
+  {
+   "name": "size_d",
+   "int": 128
+  },
+  {
+   "name": "size_f",
+   "int": 32
+  },
+  {
+   "name": "stride_ix_s",
+   "int": 1024
+  },
+  {
+   "name": "stride_ix_b",
+   "int": 512
+  },
+  {
+   "name": "stride_ix_h",
+   "int": 128
+  },
+  {
+   "name": "stride_ix_d",
+   "int": 1
+  },
+  {
+   "name": "stride_iy_s",
+   "int": 512
+  },
+  {
+   "name": "stride_iy_b",
+   "int": 256
+  },
+  {
+   "name": "stride_iy_h",
+   "int": 128
+  },
+  {
+   "name": "stride_iy_d",
+   "int": 1
+  },
+  {
+   "name": "stride_ox_s",
+   "int": 1024
+  },
+  {
+   "name": "stride_ox_b",
+   "int": 512
+  },
+  {
+   "name": "stride_ox_h",
+   "int": 128
+  },
+  {
+   "name": "stride_ox_d",
+   "int": 1
+  },
+  {
+   "name": "stride_oy_s",
+   "int": 512
+  },
+  {
+   "name": "stride_oy_b",
+   "int": 256
+  },
+  {
+   "name": "stride_oy_h",
+   "int": 128
+  },
+  {
+   "name": "stride_oy_d",
+   "int": 1
+  },
+  {
+   "name": "size_s",
+   "int": 1
+  },
+  {
+   "name": "threads_per_sb",
+   "int": 16
+  },
+  {
+   "name": "total_sb",
+   "int": 2
+  }
+ ],
+ "spec": "pos2c_neox.spec",
+ "dims": {
+  "S": 1,
+  "B": 2,
+  "HX": 4,
+  "HY": 2,
+  "T": 2,
+  "Q": 2,
+  "J": 32,
+  "P": 4
+ }
+}

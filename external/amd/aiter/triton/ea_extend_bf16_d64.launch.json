@@ -1,0 +1,269 @@
+{
+ "description": "Aiter extend_attention_fwd bf16 causal, 1 head, D=64, extend 100, prefix 40 gathered from slots 47..8, grid 1",
+ "kernel": "_fwd_kernel_logit_cap_0_Lq_64_Lv_64_BLOCK_DMODEL_64_BLOCK_DPE_0_BLOCK_DV_64_BLOCK_M_128_BLOCK_N_64_USE_CUSTOM_MASK_0_IS_CAUSAL_1_SKIP_PREFIX_CUSTOM_MASK_1_STORE_TRANSPOSE_1_NUM_Q_HEADS_1_NUM_BLOCKS_1_NUM_XCDS_8",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 16384,
+ "arrays": [
+  {
+   "name": "q",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "k_extend",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "v_extend",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "o",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "k_buffer",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    48,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "v_buffer",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    48,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "qo_indptr",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    100
+   ]
+  },
+  {
+   "name": "kv_indptr",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    40
+   ]
+  },
+  {
+   "name": "kv_indices",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    40
+   ],
+   "contents": [
+    47,
+    46,
+    45,
+    44,
+    43,
+    42,
+    41,
+    40,
+    39,
+    38,
+    37,
+    36,
+    35,
+    34,
+    33,
+    32,
+    31,
+    30,
+    29,
+    28,
+    27,
+    26,
+    25,
+    24,
+    23,
+    22,
+    21,
+    20,
+    19,
+    18,
+    17,
+    16,
+    15,
+    14,
+    13,
+    12,
+    11,
+    10,
+    9,
+    8
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "Q_Extend",
+   "ptr": "q"
+  },
+  {
+   "name": "K_Extend",
+   "ptr": "k_extend"
+  },
+  {
+   "name": "V_Extend",
+   "ptr": "v_extend"
+  },
+  {
+   "name": "O_Extend",
+   "ptr": "o"
+  },
+  {
+   "name": "K_Buffer",
+   "ptr": "k_buffer"
+  },
+  {
+   "name": "V_Buffer",
+   "ptr": "v_buffer"
+  },
+  {
+   "name": "qo_indptr",
+   "ptr": "qo_indptr"
+  },
+  {
+   "name": "kv_indptr",
+   "ptr": "kv_indptr"
+  },
+  {
+   "name": "kv_indices",
+   "ptr": "kv_indices"
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 1040187392
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 64
+  },
+  {
+   "name": "bytes 80..83",
+   "int": 64
+  },
+  {
+   "name": "bytes 84..87",
+   "int": 64
+  },
+  {
+   "name": "bytes 88..91",
+   "int": 64
+  },
+  {
+   "name": "bytes 92..95",
+   "int": 64
+  },
+  {
+   "name": "bytes 96..99",
+   "int": 64
+  },
+  {
+   "name": "bytes 100..103",
+   "int": 64
+  },
+  {
+   "name": "bytes 104..107",
+   "int": 64
+  },
+  {
+   "name": "bytes 108..111",
+   "int": 64
+  },
+  {
+   "name": "bytes 112..115",
+   "int": 64
+  },
+  {
+   "name": "bytes 116..119",
+   "int": 64
+  },
+  {
+   "name": "bytes 120..123",
+   "int": 64
+  },
+  {
+   "name": "bytes 124..127",
+   "int": 0
+  },
+  {
+   "name": "bytes 128..131",
+   "int": 0
+  },
+  {
+   "name": "bytes 132..135",
+   "int": 0
+  },
+  {
+   "name": "bytes 136..139",
+   "int": 0
+  },
+  {
+   "name": "bytes 140..143",
+   "int": 0
+  }
+ ],
+ "spec": "specs/ea_extend_causal.spec",
+ "dims": {
+  "E": 100,
+  "P": 40,
+  "NB": 48,
+  "D": 64,
+  "ONE": 1
+ }
+}

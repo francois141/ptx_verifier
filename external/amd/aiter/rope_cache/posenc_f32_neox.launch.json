@@ -1,0 +1,422 @@
+{
+ "kernel": "_ZN5probe23rotary_embedding_kernelIfLb1ELb0EEEvPKxPKT_PS3_S5_S6_S5_S5_ixxiii",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": 128,
+ "arrays": [
+  {
+   "name": "pos",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "base": 65536,
+   "contents": [
+    3,
+    0
+   ]
+  },
+  {
+   "name": "q",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    2,
+    32
+   ],
+   "base": 131072
+  },
+  {
+   "name": "qo",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    2,
+    32
+   ],
+   "base": 196608
+  },
+  {
+   "name": "k",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    2,
+    32
+   ],
+   "base": 262144
+  },
+  {
+   "name": "ko",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    2,
+    2,
+    32
+   ],
+   "base": 327680
+  },
+  {
+   "name": "c",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    32
+   ],
+   "base": 393216
+  },
+  {
+   "name": "sn",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    32
+   ],
+   "base": 458752
+  }
+ ],
+ "params": [
+  {
+   "name": "positions",
+   "ptr": "pos"
+  },
+  {
+   "name": "query",
+   "ptr": "q"
+  },
+  {
+   "name": "query_o",
+   "ptr": "qo"
+  },
+  {
+   "name": "key",
+   "ptr": "k"
+  },
+  {
+   "name": "key_o",
+   "ptr": "ko"
+  },
+  {
+   "name": "cos",
+   "ptr": "c"
+  },
+  {
+   "name": "sin",
+   "ptr": "sn"
+  },
+  {
+   "name": "rot_dim",
+   "int": 64
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "query_stride",
+   "int": 256
+  },
+  {
+   "name": "query_stride",
+   "int": 0
+  },
+  {
+   "name": "key_stride",
+   "int": 128
+  },
+  {
+   "name": "key_stride",
+   "int": 0
+  },
+  {
+   "name": "num_heads",
+   "int": 4
+  },
+  {
+   "name": "num_kv_heads",
+   "int": 2
+  },
+  {
+   "name": "head_size",
+   "int": 64
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "hidden_block_count_x",
+   "int": 1
+  },
+  {
+   "name": "hidden_block_count_y",
+   "int": 1
+  },
+  {
+   "name": "hidden_block_count_z",
+   "int": 1
+  },
+  {
+   "name": "hidden_group_size_x|y",
+   "int": 65664
+  },
+  {
+   "name": "hidden_group_size_z|remainder_x",
+   "int": 1
+  },
+  {
+   "name": "remainder_y|z",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "hidden_grid_dims",
+   "int": 1
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  }
+ ],
+ "spec": "posenc_neox.spec",
+ "dims": {
+  "H": 4,
+  "K": 2,
+  "Q": 2,
+  "J": 32,
+  "P": 4
+ }
+}

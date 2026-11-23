@@ -1,0 +1,266 @@
+{
+ "kernel": "_ZN5aiter48fuse_qk_rope_concat_and_cache_mla_kernel_prefillIfffLN4vllm18Fp8KVCacheDataTypeE0ELS2_0EEEvPKT_S5_S5_S5_PT0_PT1_PKxSB_S5_S5_iiiiiiiiiiiiiiiiiiPKfSD_bb",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": 256,
+ "arrays": [
+  {
+   "name": "q_nope",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    512
+   ]
+  },
+  {
+   "name": "q_pe",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    64
+   ]
+  },
+  {
+   "name": "kv_c",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    512
+   ]
+  },
+  {
+   "name": "k_pe",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    64
+   ]
+  },
+  {
+   "name": "kv_cache",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    576
+   ]
+  },
+  {
+   "name": "q_out",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    576
+   ]
+  },
+  {
+   "name": "slot_mapping",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    0
+   ]
+  },
+  {
+   "name": "positions",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    0
+   ]
+  },
+  {
+   "name": "cos",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    32
+   ]
+  },
+  {
+   "name": "sin",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    32
+   ]
+  },
+  {
+   "name": "k_scale",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  },
+  {
+   "name": "q_scale",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "q_nope",
+   "ptr": "q_nope"
+  },
+  {
+   "name": "q_pe",
+   "ptr": "q_pe"
+  },
+  {
+   "name": "kv_c",
+   "ptr": "kv_c"
+  },
+  {
+   "name": "k_pe",
+   "ptr": "k_pe"
+  },
+  {
+   "name": "kv_cache",
+   "ptr": "kv_cache"
+  },
+  {
+   "name": "q_out",
+   "ptr": "q_out"
+  },
+  {
+   "name": "slot_mapping",
+   "ptr": "slot_mapping"
+  },
+  {
+   "name": "positions",
+   "ptr": "positions"
+  },
+  {
+   "name": "cos",
+   "ptr": "cos"
+  },
+  {
+   "name": "sin",
+   "ptr": "sin"
+  },
+  {
+   "name": "block_stride",
+   "int": 1152
+  },
+  {
+   "name": "entry_stride",
+   "int": 1152
+  },
+  {
+   "name": "kv_cache_stride_h",
+   "int": 576
+  },
+  {
+   "name": "q_nope_stride_0",
+   "int": 1024
+  },
+  {
+   "name": "q_nope_stride_1",
+   "int": 512
+  },
+  {
+   "name": "q_pe_stride_0",
+   "int": 128
+  },
+  {
+   "name": "q_pe_stride_1",
+   "int": 64
+  },
+  {
+   "name": "q_out_stride_0",
+   "int": 1152
+  },
+  {
+   "name": "q_out_stride_1",
+   "int": 576
+  },
+  {
+   "name": "num_heads",
+   "int": 2
+  },
+  {
+   "name": "num_kv_heads",
+   "int": 2
+  },
+  {
+   "name": "kv_c_stride_0",
+   "int": 1024
+  },
+  {
+   "name": "kv_c_stride_1",
+   "int": 512
+  },
+  {
+   "name": "k_pe_stride_0",
+   "int": 128
+  },
+  {
+   "name": "k_pe_stride_1",
+   "int": 64
+  },
+  {
+   "name": "kv_lora_rank",
+   "int": 512
+  },
+  {
+   "name": "pe_dim",
+   "int": 64
+  },
+  {
+   "name": "block_size",
+   "int": 1
+  },
+  {
+   "name": "scale",
+   "ptr": "k_scale"
+  },
+  {
+   "name": "q_scale",
+   "ptr": "q_scale"
+  },
+  {
+   "name": "is_neox|is_nope_first",
+   "int": 257
+  }
+ ],
+ "spec": "mla_prefill.spec",
+ "dims": {
+  "T": 1,
+  "H": 2,
+  "HK": 2,
+  "R": 512,
+  "P": 64,
+  "HALF": 32,
+  "E": 576,
+  "ONE": 1
+ }
+}

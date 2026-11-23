@@ -1,0 +1,166 @@
+{
+ "description": "rope_fwd_3d x [1, 40, 1, 128] fp32, grid_sizes (1,1,1): one valid token, workgroup 0",
+ "kernel": "_rope_fwd_3d_L_40_N_HEADS_1_C_128_c_total_64_sp_size_1_sp_rank_0_max_freq_seq_len_8_s_per_rank_40_pad_freq_val_r_1_pad_freq_val_i_0_BLOCK_L_32_BLOCK_N_4_BLOCK_C_64_C1_22_C2_21",
+ "grid": [
+  1,
+  1,
+  2
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    40,
+    64,
+    2
+   ],
+   "base": "0x10000"
+  },
+  {
+   "name": "fr",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    8,
+    64
+   ],
+   "base": "0x100000"
+  },
+  {
+   "name": "fi",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    8,
+    64
+   ],
+   "base": "0x100800"
+  },
+  {
+   "name": "grid_sizes",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    1,
+    3
+   ],
+   "contents": [
+    1,
+    1,
+    1
+   ],
+   "base": "0x200000"
+  },
+  {
+   "name": "out_lo",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    64,
+    2
+   ],
+   "base": "0x300000"
+  },
+  {
+   "name": "out_p",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    31,
+    64,
+    2
+   ],
+   "base": "0x300200"
+  }
+ ],
+ "params": [
+  {
+   "name": "x_ptr",
+   "ptr": "x"
+  },
+  {
+   "name": "freqs_real_ptr",
+   "ptr": "fr"
+  },
+  {
+   "name": "freqs_imag_ptr",
+   "ptr": "fi"
+  },
+  {
+   "name": "grid_sizes_ptr",
+   "ptr": "grid_sizes"
+  },
+  {
+   "name": "out_ptr",
+   "ptr": "out_lo"
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 5120
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 128
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 128
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 64
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 3
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 5120
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 128
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 128
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 0
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 0
+  },
+  {
+   "name": "bytes 80..83",
+   "int": 0
+  },
+  {
+   "name": "bytes 84..87",
+   "int": 0
+  }
+ ],
+ "spec": "specs/rc_rope3d.spec",
+ "dims": {
+  "CT": 64,
+  "CL": 64,
+  "CH": 0,
+  "TWO": 2,
+  "ONE": 1,
+  "LP": 31,
+  "PM": 8,
+  "LX": 40
+ }
+}

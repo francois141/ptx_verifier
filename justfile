@@ -204,6 +204,11 @@ hipkittens *args:
 triton *args:
     uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} triton/
 
+# `--verbose` prints each case's log; `python3 external/amd/aiter/build.py [CASE...]` recompiles them.
+# Check Aiter's kernels in external/amd/aiter, the bugs Volta found and their fixes
+aiter *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} aiter/
+
 # `--verbose` prints each case's log; `python3 external/amd/flydsl/extract.py [CASE...]` recompiles them.
 # Check FlyDSL's kernels in external/amd/flydsl, the bugs Volta found and their fixes
 flydsl *args:

@@ -1,0 +1,124 @@
+{
+ "description": "gemm_a16w16 bf16 M=20 N=40 K=200 + bias + relu: DEFAULT M_LEQ_32 (BK -> 128), M/N/K tails",
+ "kernel": "_gemm_a16_w16_kernel_BLOCK_SIZE_M_32_BLOCK_SIZE_N_32_BLOCK_SIZE_K_128_GROUP_SIZE_M_1_NUM_KSPLIT_1_SPLITK_BLOCK_SIZE_200_EVEN_K_0_EVEN_MN_0_cache_modifier_CG_activation_JITFUNCTION_AITER_OPS_TRITON__TRITON_KERNELS_COMMON_ACTIVATION__RELU_use_activation_1_ADD_BIAS_1_SKIP_REDUCE_0",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": [
+  512,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 49152,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    20,
+    200
+   ]
+  },
+  {
+   "name": "w",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    24,
+    200
+   ]
+  },
+  {
+   "name": "bias",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    24
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    20,
+    24
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "a_ptr",
+   "ptr": "x"
+  },
+  {
+   "name": "b_ptr",
+   "ptr": "w"
+  },
+  {
+   "name": "bias_ptr",
+   "ptr": "bias"
+  },
+  {
+   "name": "c_ptr",
+   "ptr": "y"
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 20
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 24
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 200
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 200
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 200
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 0
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 24
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 0
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 0
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 0
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 0
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 0
+  }
+ ],
+ "spec": "specs/ng_gemm_bias_relu.spec",
+ "dims": {
+  "M": 20,
+  "N": 24,
+  "K": 200
+ }
+}

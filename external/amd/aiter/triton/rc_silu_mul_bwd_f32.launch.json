@@ -1,0 +1,106 @@
+{
+ "description": "silu_and_mul_backward fp32 rows=3 d=40, gfx950 N_LEQ_64 config (BLOCK_M=4 after cap, BLOCK_N=64)",
+ "kernel": "_silu_and_mul_backward_kernel_BLOCK_M_4_BLOCK_N_64",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "g",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    3,
+    40
+   ]
+  },
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    3,
+    2,
+    40
+   ]
+  },
+  {
+   "name": "dx",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    3,
+    2,
+    40
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "grad_output_ptr",
+   "ptr": "g"
+  },
+  {
+   "name": "input_ptr",
+   "ptr": "x"
+  },
+  {
+   "name": "grad_input_ptr",
+   "ptr": "dx"
+  },
+  {
+   "name": "bytes 24..27",
+   "int": 3
+  },
+  {
+   "name": "bytes 28..31",
+   "int": 40
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 40
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 80
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 80
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 0
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 0
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 0
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 0
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 0
+  }
+ ],
+ "spec": "specs/rc_silu_mul_bwd.spec",
+ "dims": {
+  "R": 3,
+  "TWO": 2,
+  "D": 40
+ }
+}

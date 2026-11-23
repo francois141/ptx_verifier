@@ -1,0 +1,192 @@
+{
+ "description": "thd 2c MHA path h=kh=1, t=4: grid (1, 1, 1)",
+ "kernel": "_rope_kernel_thd_cached_2c_fwd_HAVE_NOPE_0_NOPE_FIRST_0_INPLACE_0_REUSE_FREQS_FRONT_PART_1_IS_NEOX_1_HAVE_POS_1_HAVE_OFFS_0_BLOCK_T_32_SPLIT_H_SIZE_1_BLOCK_D_64_BLOCK_D_HALF_32_num_stages_1",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    1,
+    2,
+    32
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    1,
+    2,
+    32
+   ]
+  },
+  {
+   "name": "cs",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    8,
+    32
+   ]
+  },
+  {
+   "name": "sn",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    8,
+    32
+   ]
+  },
+  {
+   "name": "pos",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    4
+   ],
+   "contents": [
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "name": "out_x",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    1,
+    2,
+    32
+   ]
+  },
+  {
+   "name": "out_y",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    4,
+    1,
+    2,
+    32
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "x_ptr",
+   "ptr": "x"
+  },
+  {
+   "name": "y_ptr",
+   "ptr": "y"
+  },
+  {
+   "name": "cos_ptr",
+   "ptr": "cs"
+  },
+  {
+   "name": "sin_ptr",
+   "ptr": "sn"
+  },
+  {
+   "name": "pos_ptr",
+   "ptr": "pos"
+  },
+  {
+   "name": "out_x_ptr",
+   "ptr": "out_x"
+  },
+  {
+   "name": "out_y_ptr",
+   "ptr": "out_y"
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 64
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 64
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 64
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 64
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 32
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 64
+  },
+  {
+   "name": "bytes 80..83",
+   "int": 64
+  },
+  {
+   "name": "bytes 84..87",
+   "int": 64
+  },
+  {
+   "name": "bytes 88..91",
+   "int": 64
+  },
+  {
+   "name": "bytes 92..95",
+   "int": 4
+  },
+  {
+   "name": "bytes 96..99",
+   "int": 0
+  },
+  {
+   "name": "bytes 100..103",
+   "int": 0
+  },
+  {
+   "name": "bytes 104..107",
+   "int": 0
+  },
+  {
+   "name": "bytes 108..111",
+   "int": 0
+  }
+ ],
+ "spec": "specs/rc_rope_neox.spec",
+ "dims": {
+  "TWO": 2,
+  "T": 4,
+  "H": 1,
+  "KH": 1,
+  "HALF": 32,
+  "P": 2,
+  "PM": 8,
+  "TO": 4,
+  "HO": 1,
+  "HOY": 1
+ }
+}

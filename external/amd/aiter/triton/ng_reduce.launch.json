@@ -1,0 +1,104 @@
+{
+ "description": "_gemm_splitk_reduce_kernel for the split-K case, + bias + silu",
+ "kernel": "_gemm_a16w16_reduce_kernel_BLOCK_SIZE_M_32_BLOCK_SIZE_N_32_ACTUAL_KSPLIT_16_MAX_KSPLIT_16_ADD_BIAS_1_activation_JITFUNCTION_AITER_OPS_TRITON__TRITON_KERNELS_COMMON_ACTIVATION__SILU_use_activation_1",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "pp",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    16,
+    16,
+    32
+   ]
+  },
+  {
+   "name": "bias",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    32
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    16,
+    32
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "c_in_ptr",
+   "ptr": "pp"
+  },
+  {
+   "name": "c_out_ptr",
+   "ptr": "y"
+  },
+  {
+   "name": "bias_ptr",
+   "ptr": "bias"
+  },
+  {
+   "name": "bytes 24..27",
+   "int": 16
+  },
+  {
+   "name": "bytes 28..31",
+   "int": 32
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 512
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 32
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 32
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 0
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 0
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 0
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 0
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 0
+  }
+ ],
+ "spec": "specs/ng_reduce.spec",
+ "dims": {
+  "S": 16,
+  "M": 16,
+  "N": 32
+ }
+}

@@ -1,0 +1,103 @@
+{
+ "description": "rms_norm fp32 8193x100 -> _rmsnorm_kernel_large_m_small_n, BLOCK_M 32, BLOCK_N 128, 8 warps",
+ "kernel": "_rmsnorm_kernel_large_m_small_n_BLOCK_M_32_BLOCK_N_128_NUM_WARPS_8_NUM_STAGES_2",
+ "grid": [
+  257,
+  1,
+  1
+ ],
+ "block": [
+  512,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 256,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    8193,
+    100
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    32,
+    100
+   ]
+  },
+  {
+   "name": "g",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    100
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "X",
+   "ptr": "x"
+  },
+  {
+   "name": "Y",
+   "ptr": "y"
+  },
+  {
+   "name": "W",
+   "ptr": "g"
+  },
+  {
+   "name": "bytes 24..27",
+   "int": 8193
+  },
+  {
+   "name": "bytes 28..31",
+   "int": 100
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 897988541
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 100
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 100
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 0
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 0
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 0
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 0
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 0
+  }
+ ],
+ "spec": "specs/ng_rmsnorm_y.spec",
+ "dims": {
+  "M": 8193,
+  "R": 32,
+  "N": 100
+ }
+}

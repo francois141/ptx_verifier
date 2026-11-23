@@ -1,0 +1,596 @@
+{
+ "kernel": "_ZN5probe38fusedQKNormRopeQuantCacheShuffleKernelIffLi128ELb0ELi1ELN4vllm18Fp8KVCacheDataTypeE0EEEvPT_S4_S4_xxxxxxxxxiiifPKS3_S6_S6_PKxPT0_SA_PxPfSC_iiiiS4_S4_",
+ "grid": [
+  2,
+  1,
+  1
+ ],
+ "block": 64,
+ "arrays": [
+  {
+   "name": "q",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    128
+   ]
+  },
+  {
+   "name": "k",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    128
+   ]
+  },
+  {
+   "name": "v",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    128
+   ]
+  },
+  {
+   "name": "w",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "kw",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    128
+   ]
+  },
+  {
+   "name": "cs",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    64
+   ]
+  },
+  {
+   "name": "pos",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    1,
+    0
+   ]
+  },
+  {
+   "name": "k_cache",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    1,
+    16,
+    8,
+    8
+   ]
+  },
+  {
+   "name": "v_cache",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    1,
+    128,
+    8
+   ]
+  },
+  {
+   "name": "slot",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    0
+   ]
+  },
+  {
+   "name": "k_out",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    128
+   ]
+  },
+  {
+   "name": "q_r0",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    2,
+    2,
+    16
+   ],
+   "base": 2097152
+  },
+  {
+   "name": "q_p0",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    64
+   ],
+   "base": 2097408
+  },
+  {
+   "name": "q_r1",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    2,
+    2,
+    16
+   ],
+   "base": 2097664
+  },
+  {
+   "name": "q_p1",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    64
+   ],
+   "base": 2097920
+  }
+ ],
+ "params": [
+  {
+   "name": "q_act",
+   "ptr": "q"
+  },
+  {
+   "name": "k_act",
+   "ptr": "k"
+  },
+  {
+   "name": "v_act",
+   "ptr": "v"
+  },
+  {
+   "name": "q_st",
+   "int": 256
+  },
+  {
+   "name": "q_st",
+   "int": 0
+  },
+  {
+   "name": "q_sh",
+   "int": 128
+  },
+  {
+   "name": "q_sh",
+   "int": 0
+  },
+  {
+   "name": "q_sd",
+   "int": 1
+  },
+  {
+   "name": "q_sd",
+   "int": 0
+  },
+  {
+   "name": "k_st",
+   "int": 128
+  },
+  {
+   "name": "k_st",
+   "int": 0
+  },
+  {
+   "name": "k_sh",
+   "int": 128
+  },
+  {
+   "name": "k_sh",
+   "int": 0
+  },
+  {
+   "name": "k_sd",
+   "int": 1
+  },
+  {
+   "name": "k_sd",
+   "int": 0
+  },
+  {
+   "name": "v_st",
+   "int": 128
+  },
+  {
+   "name": "v_st",
+   "int": 0
+  },
+  {
+   "name": "v_sh",
+   "int": 128
+  },
+  {
+   "name": "v_sh",
+   "int": 0
+  },
+  {
+   "name": "v_sd",
+   "int": 1
+  },
+  {
+   "name": "v_sd",
+   "int": 0
+  },
+  {
+   "name": "num_heads_q",
+   "int": 2
+  },
+  {
+   "name": "num_heads_k",
+   "int": 1
+  },
+  {
+   "name": "num_heads_v",
+   "int": 1
+  },
+  {
+   "name": "eps",
+   "int": 897581056
+  },
+  {
+   "name": "q_weight",
+   "ptr": "w"
+  },
+  {
+   "name": "k_weight",
+   "ptr": "kw"
+  },
+  {
+   "name": "cos_sin_cache",
+   "ptr": "cs"
+  },
+  {
+   "name": "position_ids",
+   "ptr": "pos"
+  },
+  {
+   "name": "k_cache",
+   "ptr": "k_cache"
+  },
+  {
+   "name": "v_cache",
+   "ptr": "v_cache"
+  },
+  {
+   "name": "slot_mapping",
+   "ptr": "slot"
+  },
+  {
+   "name": "k_scale",
+   "int": 0
+  },
+  {
+   "name": "k_scale",
+   "int": 0
+  },
+  {
+   "name": "v_scale",
+   "int": 0
+  },
+  {
+   "name": "v_scale",
+   "int": 0
+  },
+  {
+   "name": "num_tokens",
+   "int": 1
+  },
+  {
+   "name": "page_size",
+   "int": 8
+  },
+  {
+   "name": "x",
+   "int": 8
+  },
+  {
+   "name": "rotary_dim",
+   "int": 64
+  },
+  {
+   "name": "q_out",
+   "ptr": "q_r0"
+  },
+  {
+   "name": "k_out",
+   "ptr": "k_out"
+  },
+  {
+   "name": "hidden_block_count_x",
+   "int": 2
+  },
+  {
+   "name": "hidden_block_count_y",
+   "int": 1
+  },
+  {
+   "name": "hidden_block_count_z",
+   "int": 1
+  },
+  {
+   "name": "hidden_group_size_x|y",
+   "int": 65600
+  },
+  {
+   "name": "hidden_group_size_z|remainder_x",
+   "int": 1
+  },
+  {
+   "name": "remainder_y|z",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "hidden_grid_dims",
+   "int": 1
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  }
+ ],
+ "spec": "xor_partner_rd64.spec",
+ "dims": {
+  "H": 2,
+  "D": 128,
+  "P": 2,
+  "R": 64,
+  "S": 2,
+  "J": 2,
+  "L": 16,
+  "E": 64
+ }
+}

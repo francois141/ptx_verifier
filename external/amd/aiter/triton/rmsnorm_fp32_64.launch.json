@@ -1,0 +1,371 @@
+{
+ "description": "Aiter rms_norm f32 4x64, grid 4 (one row per workgroup), workgroup 0",
+ "kernel": "_rms_norm_kernel_BLOCK_SIZE_64_USE_BLOCKED_0",
+ "grid": [
+  4,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    64
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    64
+   ]
+  },
+  {
+   "name": "g",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    64
+   ]
+  },
+  {
+   "name": "rsigma",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "input_ptr",
+   "ptr": "x"
+  },
+  {
+   "name": "output_ptr",
+   "ptr": "y"
+  },
+  {
+   "name": "g_ptr",
+   "ptr": "g"
+  },
+  {
+   "name": "rsigma_ptr",
+   "ptr": "rsigma"
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 64
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 64
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 4
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 64
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 897988541
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 0
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 0
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 0
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 0
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 0
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 4
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 1
+  },
+  {
+   "name": "bytes 80..83",
+   "int": 1
+  },
+  {
+   "name": "bytes 84..87",
+   "int": 65792
+  },
+  {
+   "name": "bytes 88..91",
+   "int": 1
+  },
+  {
+   "name": "bytes 92..95",
+   "int": 0
+  },
+  {
+   "name": "bytes 96..99",
+   "int": 0
+  },
+  {
+   "name": "bytes 100..103",
+   "int": 0
+  },
+  {
+   "name": "bytes 104..107",
+   "int": 0
+  },
+  {
+   "name": "bytes 108..111",
+   "int": 0
+  },
+  {
+   "name": "bytes 112..115",
+   "int": 0
+  },
+  {
+   "name": "bytes 116..119",
+   "int": 0
+  },
+  {
+   "name": "bytes 120..123",
+   "int": 0
+  },
+  {
+   "name": "bytes 124..127",
+   "int": 0
+  },
+  {
+   "name": "bytes 128..131",
+   "int": 0
+  },
+  {
+   "name": "bytes 132..135",
+   "int": 0
+  },
+  {
+   "name": "bytes 136..139",
+   "int": 1
+  },
+  {
+   "name": "bytes 140..143",
+   "int": 0
+  },
+  {
+   "name": "bytes 144..147",
+   "int": 0
+  },
+  {
+   "name": "bytes 148..151",
+   "int": 0
+  },
+  {
+   "name": "bytes 152..155",
+   "int": 0
+  },
+  {
+   "name": "bytes 156..159",
+   "int": 0
+  },
+  {
+   "name": "bytes 160..163",
+   "int": 0
+  },
+  {
+   "name": "bytes 164..167",
+   "int": 0
+  },
+  {
+   "name": "bytes 168..171",
+   "int": 0
+  },
+  {
+   "name": "bytes 172..175",
+   "int": 0
+  },
+  {
+   "name": "bytes 176..179",
+   "int": 0
+  },
+  {
+   "name": "bytes 180..183",
+   "int": 0
+  },
+  {
+   "name": "bytes 184..187",
+   "int": 0
+  },
+  {
+   "name": "bytes 188..191",
+   "int": 0
+  },
+  {
+   "name": "bytes 192..195",
+   "int": 0
+  },
+  {
+   "name": "bytes 196..199",
+   "int": 0
+  },
+  {
+   "name": "bytes 200..203",
+   "int": 0
+  },
+  {
+   "name": "bytes 204..207",
+   "int": 0
+  },
+  {
+   "name": "bytes 208..211",
+   "int": 0
+  },
+  {
+   "name": "bytes 212..215",
+   "int": 0
+  },
+  {
+   "name": "bytes 216..219",
+   "int": 0
+  },
+  {
+   "name": "bytes 220..223",
+   "int": 0
+  },
+  {
+   "name": "bytes 224..227",
+   "int": 0
+  },
+  {
+   "name": "bytes 228..231",
+   "int": 0
+  },
+  {
+   "name": "bytes 232..235",
+   "int": 0
+  },
+  {
+   "name": "bytes 236..239",
+   "int": 0
+  },
+  {
+   "name": "bytes 240..243",
+   "int": 0
+  },
+  {
+   "name": "bytes 244..247",
+   "int": 0
+  },
+  {
+   "name": "bytes 248..251",
+   "int": 0
+  },
+  {
+   "name": "bytes 252..255",
+   "int": 0
+  },
+  {
+   "name": "bytes 256..259",
+   "int": 0
+  },
+  {
+   "name": "bytes 260..263",
+   "int": 0
+  },
+  {
+   "name": "bytes 264..267",
+   "int": 0
+  },
+  {
+   "name": "bytes 268..271",
+   "int": 0
+  },
+  {
+   "name": "bytes 272..275",
+   "int": 0
+  },
+  {
+   "name": "bytes 276..279",
+   "int": 0
+  },
+  {
+   "name": "bytes 280..283",
+   "int": 0
+  },
+  {
+   "name": "bytes 284..287",
+   "int": 0
+  },
+  {
+   "name": "bytes 288..291",
+   "int": 0
+  },
+  {
+   "name": "bytes 292..295",
+   "int": 0
+  },
+  {
+   "name": "bytes 296..299",
+   "int": 0
+  },
+  {
+   "name": "bytes 300..303",
+   "int": 0
+  },
+  {
+   "name": "bytes 304..307",
+   "int": 0
+  },
+  {
+   "name": "bytes 308..311",
+   "int": 0
+  },
+  {
+   "name": "bytes 312..315",
+   "int": 0
+  },
+  {
+   "name": "bytes 316..319",
+   "int": 0
+  },
+  {
+   "name": "bytes 320..323",
+   "int": 0
+  },
+  {
+   "name": "bytes 324..327",
+   "int": 0
+  }
+ ],
+ "spec": "specs/rmsnorm.spec",
+ "dims": {
+  "M": 4,
+  "R": 1,
+  "N": 64
+ }
+}

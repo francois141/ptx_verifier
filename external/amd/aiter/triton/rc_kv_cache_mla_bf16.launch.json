@@ -1,0 +1,148 @@
+{
+ "description": "cat_and_cache_mla bf16 b=2 kh=1 d_nope=32 d_pe=16, slot_mapping int64 [0, -1], workgroup 0 (slot 0)",
+ "kernel": "_cat_and_cache_mla_kernel",
+ "grid": [
+  2,
+  1,
+  1
+ ],
+ "block": [
+  64,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "k_nope",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    2,
+    32
+   ],
+   "base": "0x10000"
+  },
+  {
+   "name": "k_pe",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    2,
+    16
+   ],
+   "base": "0x20000"
+  },
+  {
+   "name": "slots",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    4
+   ],
+   "contents": [
+    0,
+    0,
+    4294967295,
+    4294967295
+   ],
+   "base": "0x30000"
+  },
+  {
+   "name": "ks",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1
+   ],
+   "base": "0x40000"
+  },
+  {
+   "name": "kv_nope",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    32
+   ],
+   "base": "0x50000"
+  },
+  {
+   "name": "kv_pe",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    16
+   ],
+   "base": "0x50040"
+  }
+ ],
+ "params": [
+  {
+   "name": "k_nope_ptr",
+   "ptr": "k_nope"
+  },
+  {
+   "name": "k_pe_ptr",
+   "ptr": "k_pe"
+  },
+  {
+   "name": "kv_cache_ptr",
+   "ptr": "kv_nope"
+  },
+  {
+   "name": "slot_mapping_ptr",
+   "ptr": "slots"
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 32
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 32
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 16
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 16
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 48
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 48
+  },
+  {
+   "name": "k_scale_ptr",
+   "ptr": "ks"
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 0
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 0
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 0
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 0
+  }
+ ],
+ "spec": "specs/rc_kv_cache.spec",
+ "dims": {
+  "B": 2,
+  "DN": 32,
+  "DP": 16,
+  "ONE": 1
+ }
+}

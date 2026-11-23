@@ -1,0 +1,204 @@
+{
+ "description": "Aiter _attn_fwd bf16 1 head d64, seqlen_q 100 seqlen_k 100, window0",
+ "kernel": "_attn_fwd_IS_CAUSAL_0_NUM_Q_HEADS_1_NUM_K_HEADS_1_BLOCK_M_128_BLOCK_N_64_BLOCK_DMODEL_64_RETURN_SCORES_0_ENABLE_DROPOUT_0_IS_FP8_0_VARLEN_0_NUM_XCD_8_USE_INT64_STRIDES_0_ENABLE_SINK_0_SLIDING_WINDOW_0",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 32768,
+ "arrays": [
+  {
+   "name": "q",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    64
+   ]
+  },
+  {
+   "name": "k",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    64
+   ]
+  },
+  {
+   "name": "v",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    64
+   ]
+  },
+  {
+   "name": "o",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    100,
+    64
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "q_ptr",
+   "ptr": "q"
+  },
+  {
+   "name": "k_ptr",
+   "ptr": "k"
+  },
+  {
+   "name": "v_ptr",
+   "ptr": "v"
+  },
+  {
+   "name": "out_ptr",
+   "ptr": "o"
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 6400
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 64
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 64
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 6400
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 64
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 64
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 6400
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 64
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 64
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 0
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 0
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 0
+  },
+  {
+   "name": "bytes 80..83",
+   "int": 6400
+  },
+  {
+   "name": "bytes 84..87",
+   "int": 64
+  },
+  {
+   "name": "bytes 88..91",
+   "int": 64
+  },
+  {
+   "name": "bytes 92..95",
+   "int": 0
+  },
+  {
+   "name": "bytes 96..99",
+   "int": 0
+  },
+  {
+   "name": "bytes 100..103",
+   "int": 10000
+  },
+  {
+   "name": "bytes 104..107",
+   "int": 10000
+  },
+  {
+   "name": "bytes 108..111",
+   "int": 100
+  },
+  {
+   "name": "bytes 112..115",
+   "int": 128
+  },
+  {
+   "name": "bytes 116..119",
+   "int": 128
+  },
+  {
+   "name": "bytes 120..123",
+   "int": 1040187392
+  },
+  {
+   "name": "bytes 124..127",
+   "int": 0
+  },
+  {
+   "name": "bytes 128..131",
+   "int": 0
+  },
+  {
+   "name": "bytes 132..135",
+   "int": 0
+  },
+  {
+   "name": "bytes 136..139",
+   "int": 100
+  },
+  {
+   "name": "bytes 140..143",
+   "int": 100
+  },
+  {
+   "name": "bytes 144..147",
+   "int": 0
+  },
+  {
+   "name": "bytes 148..151",
+   "int": 0
+  },
+  {
+   "name": "bytes 152..155",
+   "int": 0
+  },
+  {
+   "name": "bytes 156..159",
+   "int": 0
+  }
+ ],
+ "spec": "specs/mha_window0_noncausal.spec",
+ "dims": {
+  "S": 100,
+  "D": 64
+ }
+}

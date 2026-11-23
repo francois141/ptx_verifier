@@ -1,0 +1,322 @@
+{
+ "kernel": "_ZN5aiter45fused_qk_rope_concat_and_cache_mla_seg_kernelIDF16bDF16bDF16bLi512ELi64ELi0ELb1ELb1ELi8ELi1ELb0ELb1ELb1ELb1ELb1EEEvPKT_xxijiiiS3_S3_S3_PT0_PT1_PKxS9_PKfSB_S3_S3_xxxxxxxxxxiji",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": 64,
+ "arrays": [
+  {
+   "name": "q_nope",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    512
+   ]
+  },
+  {
+   "name": "q_pe",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    64
+   ]
+  },
+  {
+   "name": "kv_c",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    512
+   ]
+  },
+  {
+   "name": "k_pe",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    64
+   ]
+  },
+  {
+   "name": "kv_cache",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    576
+   ]
+  },
+  {
+   "name": "q_out",
+   "kind": "out",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    1,
+    576
+   ]
+  },
+  {
+   "name": "slot_mapping",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    0
+   ]
+  },
+  {
+   "name": "positions",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "contents": [
+    0,
+    0
+   ]
+  },
+  {
+   "name": "q_scale",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  },
+  {
+   "name": "k_scale",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  },
+  {
+   "name": "cos",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    32
+   ]
+  },
+  {
+   "name": "sin",
+   "kind": "in",
+   "dtype": "bf16",
+   "shape": [
+    1,
+    32
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "q_nope",
+   "ptr": "q_nope"
+  },
+  {
+   "name": "q_nope_stride_0.lo",
+   "int": 512
+  },
+  {
+   "name": "q_nope_stride_0.hi",
+   "int": 0
+  },
+  {
+   "name": "q_nope_stride_1.lo",
+   "int": 512
+  },
+  {
+   "name": "q_nope_stride_1.hi",
+   "int": 0
+  },
+  {
+   "name": "num_tokens",
+   "int": 1
+  },
+  {
+   "name": "tok_magic",
+   "int": 1
+  },
+  {
+   "name": "tok_shift",
+   "int": 0
+  },
+  {
+   "name": "max_position",
+   "int": 1
+  },
+  {
+   "name": "num_heads",
+   "int": 1
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "q_pe",
+   "ptr": "q_pe"
+  },
+  {
+   "name": "kv_c",
+   "ptr": "kv_c"
+  },
+  {
+   "name": "k_pe",
+   "ptr": "k_pe"
+  },
+  {
+   "name": "kv_cache",
+   "ptr": "kv_cache"
+  },
+  {
+   "name": "q_out",
+   "ptr": "q_out"
+  },
+  {
+   "name": "slot_mapping",
+   "ptr": "slot_mapping"
+  },
+  {
+   "name": "positions",
+   "ptr": "positions"
+  },
+  {
+   "name": "q_scale",
+   "ptr": "q_scale"
+  },
+  {
+   "name": "k_scale",
+   "ptr": "k_scale"
+  },
+  {
+   "name": "cos",
+   "ptr": "cos"
+  },
+  {
+   "name": "sin",
+   "ptr": "sin"
+  },
+  {
+   "name": "q_pe_stride_0.lo",
+   "int": 64
+  },
+  {
+   "name": "q_pe_stride_0.hi",
+   "int": 0
+  },
+  {
+   "name": "q_pe_stride_1.lo",
+   "int": 64
+  },
+  {
+   "name": "q_pe_stride_1.hi",
+   "int": 0
+  },
+  {
+   "name": "q_out_stride_0.lo",
+   "int": 576
+  },
+  {
+   "name": "q_out_stride_0.hi",
+   "int": 0
+  },
+  {
+   "name": "q_out_stride_1.lo",
+   "int": 576
+  },
+  {
+   "name": "q_out_stride_1.hi",
+   "int": 0
+  },
+  {
+   "name": "kv_c_stride.lo",
+   "int": 512
+  },
+  {
+   "name": "kv_c_stride.hi",
+   "int": 0
+  },
+  {
+   "name": "k_pe_stride.lo",
+   "int": 64
+  },
+  {
+   "name": "k_pe_stride.hi",
+   "int": 0
+  },
+  {
+   "name": "cos_stride0.lo",
+   "int": 32
+  },
+  {
+   "name": "cos_stride0.hi",
+   "int": 0
+  },
+  {
+   "name": "sin_stride0.lo",
+   "int": 32
+  },
+  {
+   "name": "sin_stride0.hi",
+   "int": 0
+  },
+  {
+   "name": "block_stride.lo",
+   "int": 576
+  },
+  {
+   "name": "block_stride.hi",
+   "int": 0
+  },
+  {
+   "name": "entry_stride.lo",
+   "int": 576
+  },
+  {
+   "name": "entry_stride.hi",
+   "int": 0
+  },
+  {
+   "name": "block_size",
+   "int": 1
+  },
+  {
+   "name": "bs_magic",
+   "int": 1
+  },
+  {
+   "name": "bs_shift",
+   "int": 0
+  },
+  {
+   "name": "pad (the compiler reads the last args as one s_load_dwordx4)",
+   "int": 0
+  }
+ ],
+ "spec": "mla_perhead.spec",
+ "dims": {
+  "T": 1,
+  "H": 1,
+  "R": 512,
+  "P": 64,
+  "HALF": 32,
+  "E": 576,
+  "ONE": 1
+ }
+}

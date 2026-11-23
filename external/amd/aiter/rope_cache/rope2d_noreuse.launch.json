@@ -1,0 +1,171 @@
+{
+ "kernel": "_ZN5aiter21kn_entry_1c_2d_cachedINS_11OpCachedFwdELi0ELb0ELb0ELb1ELb1ELi1EffEEvPT6_PKS2_PKT7_S8_S8_S8_iiiiiiiiiiiiii",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": 256,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+   ]
+  },
+  {
+   "name": "ch",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    4
+   ]
+  },
+  {
+   "name": "sh",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    4
+   ]
+  },
+  {
+   "name": "cw",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    4
+   ]
+  },
+  {
+   "name": "sw",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    2,
+    4
+   ]
+  },
+  {
+   "name": "out",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "p_output",
+   "ptr": "out"
+  },
+  {
+   "name": "p_input",
+   "ptr": "x"
+  },
+  {
+   "name": "p_cos_h",
+   "ptr": "ch"
+  },
+  {
+   "name": "p_sin_h",
+   "ptr": "sh"
+  },
+  {
+   "name": "p_cos_w",
+   "ptr": "cw"
+  },
+  {
+   "name": "p_sin_w",
+   "ptr": "sw"
+  },
+  {
+   "name": "img_width",
+   "int": 2
+  },
+  {
+   "name": "size_h",
+   "int": 2
+  },
+  {
+   "name": "size_d",
+   "int": 8
+  },
+  {
+   "name": "stride_i_b",
+   "int": 64
+  },
+  {
+   "name": "stride_i_s",
+   "int": 16
+  },
+  {
+   "name": "stride_i_h",
+   "int": 8
+  },
+  {
+   "name": "stride_i_d",
+   "int": 1
+  },
+  {
+   "name": "stride_o_b",
+   "int": 64
+  },
+  {
+   "name": "stride_o_s",
+   "int": 16
+  },
+  {
+   "name": "stride_o_h",
+   "int": 8
+  },
+  {
+   "name": "stride_o_d",
+   "int": 1
+  },
+  {
+   "name": "size_s_h",
+   "int": 2
+  },
+  {
+   "name": "threads_per_sb",
+   "int": 2
+  },
+  {
+   "name": "total_sb",
+   "int": 4
+  }
+ ],
+ "spec": "rope2d.spec",
+ "dims": {
+  "B": 1,
+  "HH": 2,
+  "WW": 2,
+  "N": 2,
+  "T": 2,
+  "Q": 2,
+  "J": 2,
+  "RH": 2,
+  "RW": 2,
+  "F": 4,
+  "G": 2
+ }
+}

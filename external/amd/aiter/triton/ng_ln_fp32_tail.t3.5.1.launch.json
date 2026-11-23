@@ -1,0 +1,139 @@
+{
+ "description": "layer_norm loop path (wrapper uses it only for N > 16384 fp32) at BLOCK 64, N 200",
+ "kernel": "_layernorm_kernel_BLOCK_SIZE_64",
+ "grid": [
+  4,
+  1,
+  1
+ ],
+ "block": [
+  256,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 0,
+ "arrays": [
+  {
+   "name": "x",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    200
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    200
+   ]
+  },
+  {
+   "name": "w",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    200
+   ]
+  },
+  {
+   "name": "b",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    200
+   ]
+  },
+  {
+   "name": "mean",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  },
+  {
+   "name": "rstd",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "x_ptr",
+   "ptr": "x"
+  },
+  {
+   "name": "y_ptr",
+   "ptr": "y"
+  },
+  {
+   "name": "w_ptr",
+   "ptr": "w"
+  },
+  {
+   "name": "b_ptr",
+   "ptr": "b"
+  },
+  {
+   "name": "mean_ptr",
+   "ptr": "mean"
+  },
+  {
+   "name": "rstd_ptr",
+   "ptr": "rstd"
+  },
+  {
+   "name": "bytes 48..51",
+   "int": 200
+  },
+  {
+   "name": "bytes 52..55",
+   "int": 200
+  },
+  {
+   "name": "bytes 56..59",
+   "int": 4
+  },
+  {
+   "name": "bytes 60..63",
+   "int": 200
+  },
+  {
+   "name": "bytes 64..67",
+   "int": 925353388
+  },
+  {
+   "name": "bytes 68..71",
+   "int": 0
+  },
+  {
+   "name": "bytes 72..75",
+   "int": 0
+  },
+  {
+   "name": "bytes 76..79",
+   "int": 0
+  },
+  {
+   "name": "bytes 80..83",
+   "int": 0
+  },
+  {
+   "name": "bytes 84..87",
+   "int": 0
+  }
+ ],
+ "spec": "specs/ng_layernorm.spec",
+ "dims": {
+  "M": 4,
+  "R": 1,
+  "N": 200
+ }
+}

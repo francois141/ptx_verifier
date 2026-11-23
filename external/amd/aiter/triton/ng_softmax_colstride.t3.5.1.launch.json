@@ -1,0 +1,84 @@
+{
+ "description": "softmax of x = A[:, ::2], A [4, 200]: x.stride() = (200, 2), y contiguous",
+ "kernel": "_softmax_kernel_online_BLOCK_SIZE_128",
+ "grid": [
+  4,
+  1,
+  1
+ ],
+ "block": [
+  512,
+  1,
+  1
+ ],
+ "dynamic_shared_bytes": 8,
+ "arrays": [
+  {
+   "name": "a",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    4,
+    200
+   ]
+  },
+  {
+   "name": "y",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    100
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "output_ptr",
+   "ptr": "y"
+  },
+  {
+   "name": "input_ptr",
+   "ptr": "a"
+  },
+  {
+   "name": "bytes 16..19",
+   "int": 200
+  },
+  {
+   "name": "bytes 20..23",
+   "int": 100
+  },
+  {
+   "name": "bytes 24..27",
+   "int": 100
+  },
+  {
+   "name": "bytes 28..31",
+   "int": 0
+  },
+  {
+   "name": "bytes 32..35",
+   "int": 0
+  },
+  {
+   "name": "bytes 36..39",
+   "int": 0
+  },
+  {
+   "name": "bytes 40..43",
+   "int": 0
+  },
+  {
+   "name": "bytes 44..47",
+   "int": 0
+  }
+ ],
+ "spec": "specs/ng_softmax_colstride.spec",
+ "dims": {
+  "M": 4,
+  "R": 1,
+  "C": 100,
+  "W": 200
+ }
+}

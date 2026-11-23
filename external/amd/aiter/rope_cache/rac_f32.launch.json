@@ -1,0 +1,401 @@
+{
+ "kernel": "_ZN5aiter24reshape_and_cache_kernelIffLN4vllm18Fp8KVCacheDataTypeE0ELb0EEEvPKT_S5_PT0_S7_PKvNS_14SlotIndexWidthEiiiiiiPKfSC_",
+ "grid": [
+  1,
+  1,
+  1
+ ],
+ "block": 16,
+ "arrays": [
+  {
+   "name": "key",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    8
+   ]
+  },
+  {
+   "name": "value",
+   "kind": "in",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    8
+   ]
+  },
+  {
+   "name": "key_cache",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    2,
+    1,
+    4
+   ]
+  },
+  {
+   "name": "value_cache",
+   "kind": "out",
+   "dtype": "f32",
+   "shape": [
+    1,
+    2,
+    8,
+    1
+   ]
+  },
+  {
+   "name": "slot_mapping",
+   "kind": "in",
+   "dtype": "i32",
+   "shape": [
+    1
+   ],
+   "contents": [
+    0
+   ]
+  }
+ ],
+ "params": [
+  {
+   "name": "key",
+   "ptr": "key"
+  },
+  {
+   "name": "value",
+   "ptr": "value"
+  },
+  {
+   "name": "key_cache",
+   "ptr": "key_cache"
+  },
+  {
+   "name": "value_cache",
+   "ptr": "value_cache"
+  },
+  {
+   "name": "slot_mapping",
+   "ptr": "slot_mapping"
+  },
+  {
+   "name": "slot_width(kInt32)",
+   "int": 0
+  },
+  {
+   "name": "key_stride",
+   "int": 16
+  },
+  {
+   "name": "value_stride",
+   "int": 16
+  },
+  {
+   "name": "num_heads",
+   "int": 2
+  },
+  {
+   "name": "head_size",
+   "int": 8
+  },
+  {
+   "name": "block_size",
+   "int": 1
+  },
+  {
+   "name": "x",
+   "int": 4
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "k_scale.lo",
+   "int": 0
+  },
+  {
+   "name": "k_scale.hi",
+   "int": 0
+  },
+  {
+   "name": "v_scale.lo",
+   "int": 0
+  },
+  {
+   "name": "v_scale.hi",
+   "int": 0
+  },
+  {
+   "name": "hidden_block_count_x",
+   "int": 1
+  },
+  {
+   "name": "hidden_block_count_y",
+   "int": 1
+  },
+  {
+   "name": "hidden_block_count_z",
+   "int": 1
+  },
+  {
+   "name": "hidden_group_size_x|y",
+   "int": 65552
+  },
+  {
+   "name": "hidden_group_size_z|remainder_x",
+   "int": 1
+  },
+  {
+   "name": "remainder_y|z",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "hidden_global_offset",
+   "int": 0
+  },
+  {
+   "name": "hidden_global_offset",
+   "int": 0
+  },
+  {
+   "name": "hidden_global_offset",
+   "int": 0
+  },
+  {
+   "name": "hidden_global_offset",
+   "int": 0
+  },
+  {
+   "name": "hidden_global_offset",
+   "int": 0
+  },
+  {
+   "name": "hidden_global_offset",
+   "int": 0
+  },
+  {
+   "name": "hidden_grid_dims",
+   "int": 1
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  },
+  {
+   "name": "pad",
+   "int": 0
+  }
+ ],
+ "spec": "reshape_and_cache.spec",
+ "dims": {
+  "T": 1,
+  "H": 2,
+  "D": 8,
+  "X": 4,
+  "DX": 2,
+  "BS": 1,
+  "NB": 1
+ }
+}
