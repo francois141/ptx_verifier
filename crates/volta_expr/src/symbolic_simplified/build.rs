@@ -503,6 +503,9 @@ impl ExprArena {
             }
             _ => {}
         }
+        if let Some(order) = self.order_against_infinity(a, b) {
+            return self.bool_val(order.is_eq());
+        }
         self.push(ExprNode::Eq(a, b))
     }
 
@@ -518,6 +521,9 @@ impl ExprArena {
                 return self.bool_val(r);
             }
             _ => {}
+        }
+        if let Some(order) = self.order_against_infinity(a, b) {
+            return self.bool_val(order.is_ne());
         }
         self.push(ExprNode::Ne(a, b))
     }
@@ -535,6 +541,9 @@ impl ExprArena {
             }
             _ => {}
         }
+        if let Some(order) = self.order_against_infinity(a, b) {
+            return self.bool_val(order.is_lt());
+        }
         self.push(ExprNode::Lt(a, b))
     }
 
@@ -550,6 +559,9 @@ impl ExprArena {
                 return self.bool_val(r);
             }
             _ => {}
+        }
+        if let Some(order) = self.order_against_infinity(a, b) {
+            return self.bool_val(order.is_le());
         }
         self.push(ExprNode::Le(a, b))
     }
@@ -567,6 +579,9 @@ impl ExprArena {
             }
             _ => {}
         }
+        if let Some(order) = self.order_against_infinity(a, b) {
+            return self.bool_val(order.is_gt());
+        }
         self.push(ExprNode::Gt(a, b))
     }
 
@@ -583,7 +598,59 @@ impl ExprArena {
             }
             _ => {}
         }
+        if let Some(order) = self.order_against_infinity(a, b) {
+            return self.bool_val(order.is_ge());
+        }
         self.push(ExprNode::Ge(a, b))
+    }
+
+    /// How `a` compares with `b` when one is an infinite constant and the other provably
+    /// finite (masked softmax's `m == -inf` of a maximum of real logits); `None` otherwise.
+    fn order_against_infinity(&self, a: ExprId, b: ExprId) -> Option<std::cmp::Ordering> {
+        let infinity = |id: ExprId| match self.node(id) {
+            ExprNode::RealConst(real) if real.is_infinite() => Some(real.is_pos_inf()),
+            _ => None,
+        };
+        let below = |positive: bool| {
+            if positive {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Less
+            }
+        };
+        match (infinity(a), infinity(b)) {
+            (Some(positive), None) if self.is_finite(b) => Some(below(positive)),
+            (None, Some(positive)) if self.is_finite(a) => Some(below(positive).reverse()),
+            _ => None,
+        }
+    }
+
+    /// Whether `id` is finite in every execution: built only from finite constants and the
+    /// launch's real unknowns (inputs, parameters, fresh symbols) by operations that keep reals
+    /// finite. Division, logarithms and undefined values may not be, so they answer `false`.
+    fn is_finite(&self, id: ExprId) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![id];
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            match self.node(id) {
+                ExprNode::IntConst(_)
+                | ExprNode::Symbol(_)
+                | ExprNode::ParamSymbol(_)
+                | ExprNode::InputElement { .. } => {}
+                ExprNode::RealConst(real) if !real.is_infinite() => {}
+                ExprNode::Neg(x) | ExprNode::Abs(x) | ExprNode::Exp(x) => pending.push(*x),
+                ExprNode::Add(x, y)
+                | ExprNode::Sub(x, y)
+                | ExprNode::Mul(x, y)
+                | ExprNode::Max(x, y)
+                | ExprNode::Min(x, y) => pending.extend([*x, *y]),
+                _ => return false,
+            }
+        }
+        true
     }
 
     // =================================================================
