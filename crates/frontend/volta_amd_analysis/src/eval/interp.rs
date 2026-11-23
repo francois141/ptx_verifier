@@ -31,7 +31,7 @@ use super::mfma::{
 use super::scalar::KernargBuffer;
 use super::wave::{
     LgkmInFlight, LoadCounter, Status, WaveId, WaveRegisters, WaveState, active_lanes,
-    concrete_word, lane_bit,
+    concrete_word, lane_bit, same_value, same_word,
 };
 use super::word::Word;
 
@@ -970,7 +970,8 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Store every active lane's accesses, lane after lane and each lane's in order. Two lanes
-    /// storing one word in one instruction land in no specified order, so that is a race.
+    /// storing one word in one instruction land in no specified order, so that is a race unless
+    /// they store the same value (Triton's reductions store a uniform value from every lane).
     pub(super) fn ds_write(
         &mut self,
         wave: WaveId,
@@ -978,7 +979,7 @@ impl<'a> Interpreter<'a> {
         accesses: LdsAccesses<DsWriteData>,
     ) -> Result<(), EvalError> {
         let pc = self.waves[wave].pc;
-        let mut writers: BTreeMap<u32, LdsLaneAccess> = BTreeMap::new();
+        let mut writers: BTreeMap<u32, (LdsLaneAccess, Word)> = BTreeMap::new();
         for lane in active_lanes(self.waves[wave].exec) {
             let access = LdsLaneAccess { wave, lane, pc };
             for (offset, data) in accesses.accesses() {
@@ -989,12 +990,13 @@ impl<'a> Interpreter<'a> {
                     let value = registers.read_lane_word(lane, source_reg)?;
                     values.push(value);
                 }
-                for address in self
+                let addresses = self
                     .lds
-                    .word_addresses(start_address, values.len() as u32)?
-                {
-                    if let Some(earlier) = writers.insert(address, access)
+                    .word_addresses(start_address, values.len() as u32)?;
+                for (address, &value) in addresses.into_iter().zip(&values) {
+                    if let Some((earlier, stored)) = writers.insert(address, (access, value))
                         && earlier.lane != lane
+                        && !same_word(&self.arena, stored, value)
                     {
                         let race = LdsRace {
                             address,
@@ -1011,7 +1013,8 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Each active lane's `half` of `src` replaces one half of an LDS word; an unwritten
-    /// word's other half is undefined. Two lanes storing one half race, as in `ds_write`.
+    /// word's other half is undefined. Two lanes storing one half race, as in `ds_write`, unless
+    /// they store the same value.
     pub(super) fn ds_write_b16(
         &mut self,
         wave: WaveId,
@@ -1021,12 +1024,14 @@ impl<'a> Interpreter<'a> {
         half: WordHalf,
     ) -> Result<(), EvalError> {
         let pc = self.waves[wave].pc;
-        let mut writers: BTreeMap<u64, LdsLaneAccess> = BTreeMap::new();
+        let mut writers: BTreeMap<u64, (LdsLaneAccess, ExprId)> = BTreeMap::new();
         for lane in active_lanes(self.waves[wave].exec) {
             let access = LdsLaneAccess { wave, lane, pc };
             let address = self.lds_address(wave, lane, address_reg, u32::from(offset))?;
-            if let Some(earlier) = writers.insert(address, access)
+            let value = self.stored_half(wave, lane, src, half)?;
+            if let Some((earlier, stored)) = writers.insert(address, (access, value))
                 && earlier.lane != lane
+                && !same_value(&self.arena, stored, value)
             {
                 let address = address as u32;
                 return Err(EvalError::LdsRace(LdsRace {
@@ -1035,14 +1040,13 @@ impl<'a> Interpreter<'a> {
                     later: access,
                 }));
             }
-            let value = self.stored_half(wave, lane, src, half)?;
             self.lds.write_bf16(&mut self.arena, address, value)?;
         }
         Ok(())
     }
 
     /// The bf16 `half` of `lane`'s `src` that a 16-bit LDS store writes.
-    fn stored_half(
+    pub(super) fn stored_half(
         &mut self,
         wave: WaveId,
         lane: usize,

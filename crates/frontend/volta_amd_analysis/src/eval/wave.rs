@@ -556,7 +556,7 @@ impl<T: Copy> RegValue<T> {
 /// Whether two expressions are the same value: one node, or equal constants, input elements
 /// or parameters, which separate executions create as separate nodes, or one commutative
 /// operation of the same values in either order (two lanes combining a swapped pair).
-fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+pub(super) fn same_value(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
     same_value_within(arena, a, b, COMMUTED_DEPTH)
 }
 
@@ -593,7 +593,7 @@ fn same_value_within(arena: &ExprArena, a: ExprId, b: ExprId, depth: u32) -> boo
     depth > 0 && a_ty == b_ty && ((same(x, u) && same(y, v)) || (same(x, v) && same(y, u)))
 }
 
-fn same_word(arena: &ExprArena, a: Word, b: Word) -> bool {
+pub(super) fn same_word(arena: &ExprArena, a: Word, b: Word) -> bool {
     match (a, b) {
         (Word::Value(a), Word::Value(b)) => same_value(arena, a, b),
         (

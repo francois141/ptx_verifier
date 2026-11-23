@@ -7,11 +7,13 @@ use volta_graph::{
     OperandRole, OrdinaryAccess, ProgramPoint, Proxy, Space, StoredValue, ThreadIx,
 };
 
-use crate::ir::{InstrId, LaneReg, LoweredInstr};
+use std::collections::BTreeMap;
+
+use crate::ir::{InstrId, LaneReg, LoweredInstr, WordHalf};
 
 use super::EvalError;
 use super::interp::Interpreter;
-use super::wave::{WaveId, active_lanes};
+use super::wave::{WaveId, active_lanes, same_value, same_word};
 
 /// Graph threads are waves (`ThreadUnit::Wave`).
 fn thread(wave: WaveId) -> ThreadIx {
@@ -47,10 +49,14 @@ impl Interpreter<'_> {
         let words = self.ds_words(wave, instruction)?;
         // The graph uses representative stored values; execution keeps each workgroup's data.
         self.waves[wave].registers.set_view(Some(0));
-        let accesses = words
-            .into_iter()
-            .map(|word| self.lds_access(wave, word))
-            .collect::<Result<Vec<_>, _>>();
+        let accesses = self
+            .distinct_writes(wave, instruction, words)
+            .and_then(|words| {
+                words
+                    .into_iter()
+                    .map(|word| self.lds_access(wave, word))
+                    .collect::<Result<Vec<_>, _>>()
+            });
         self.waves[wave].registers.set_view(None);
         let accesses = accesses?;
         let op = self
@@ -62,6 +68,61 @@ impl Interpreter<'_> {
         }
 
         Ok(op)
+    }
+
+    /// `words` without a lane's write of a word an earlier lane writes with the same value: one
+    /// store of a value, as execution lets it be. Two lanes storing different values both stay.
+    fn distinct_writes(
+        &mut self,
+        wave: WaveId,
+        instruction: &LoweredInstr,
+        words: Vec<LdsWord>,
+    ) -> Result<Vec<LdsWord>, EvalError> {
+        let half = match *instruction {
+            LoweredInstr::DsWriteB16 { src, half, .. } => Some((src, half)),
+            _ => None,
+        };
+        let mut first: BTreeMap<u32, (usize, LaneReg)> = BTreeMap::new();
+        let mut kept = Vec::new();
+        for word in words {
+            if let Some((lane, reg)) = word.source {
+                match first.get(&word.address) {
+                    Some(&(earlier, earlier_reg)) if earlier != lane => {
+                        if self.same_store(wave, half, (earlier, earlier_reg), (lane, reg))? {
+                            continue;
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        first.insert(word.address, (lane, reg));
+                    }
+                }
+            }
+            kept.push(word);
+        }
+        Ok(kept)
+    }
+
+    /// Whether two lanes' sources store the same value: their words, or for a 16-bit store
+    /// (`half`), the halves it takes.
+    fn same_store(
+        &mut self,
+        wave: WaveId,
+        half: Option<(crate::ir::Vgpr, WordHalf)>,
+        (a, a_reg): (usize, LaneReg),
+        (b, b_reg): (usize, LaneReg),
+    ) -> Result<bool, EvalError> {
+        if let Some((src, half)) = half {
+            let a = self.stored_half(wave, a, src, half)?;
+            let b = self.stored_half(wave, b, src, half)?;
+            return Ok(same_value(&self.arena, a, b));
+        }
+        let registers = &self.waves[wave].registers;
+        let (a, b) = (
+            registers.read_lane_word(a, a_reg)?,
+            registers.read_lane_word(b, b_reg)?,
+        );
+        Ok(same_word(&self.arena, a, b))
     }
 
     /// The LDS words the instruction accesses in every active lane, in lane order. A lane
