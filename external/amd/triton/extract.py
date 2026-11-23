@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Compile kernels.py's tutorial kernels and the binary GEMMs offline for AMD gfx950.
 
-The binary GEMMs are external/bitwise's Triton sources, compiled in place: its XOR-popcount
-GEMM and BitDelta's upstream kernels. Run with triton==3.5.1 and torch (which BitDelta imports)
-on Linux (the volta-tritonbench:triton-3.5.1-torch-2.9.0 image; no GPU is needed):
+The binary GEMMs are external/bitwise's Triton sources, written beside their PTX builds: its
+XOR-popcount GEMM and BitDelta's upstream kernels. Run with triton==3.5.1 and torch (which
+BitDelta imports) on Linux (the volta-tritonbench:triton-3.5.1-torch-2.9.0 image; no GPU is
+needed):
     python extract.py [--out DIR] [CASE...]
-writes <case>.s (the AMDGCN assembly), <case>.json (compiler, constants, hashes) and
-<case>.launch.json (workgroup 0 of the grid, checked against the spec it names). Triton
+writes, under DIR as under the repository (its default), <case>.s (the AMDGCN assembly),
+<case>.json (compiler, constants, hashes) and <case>.launch.json (workgroup 0 of the grid,
+checked against the spec beside it), in external/amd/triton unless the case names its files. Triton
 allocates LDS dynamically: a launch's dynamic_shared_bytes is metadata.shared.
 """
 import argparse
@@ -19,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+REPOSITORY = ROOT.parents[2]
 TARGET = ("hip", "gfx950", 64)
 WAVE = 64
 EPS = struct.unpack("f", struct.pack("f", 1e-5))[0]
@@ -29,7 +32,8 @@ class Case:
     """`kernel` names a function of `source` (an autotuned one compiles with the config in
     `constants` and `options`); `pointers` its pointer arguments in order, each an array of
     `arrays`, typed by `pointer_types` (default fp32); `scalars` its other runtime arguments, as
-    launch-file parameters."""
+    launch-file parameters. `files` is its output files' stem in the repository, `spec` beside
+    them."""
 
     kernel: str
     description: str
@@ -44,6 +48,7 @@ class Case:
     options: dict = field(default_factory=lambda: {"num_warps": 4})
     source: str = "kernels.py"
     pointer_types: dict = field(default_factory=dict)
+    files: str | None = None
 
 
 def matmul(activation):
@@ -71,8 +76,7 @@ def matmul(activation):
     )
 
 
-BITWISE = "../../bitwise"
-BITDELTA = f"{BITWISE}/bitdelta_triton/upstream/binary_gemm_kernel.py"
+BITDELTA = "../../bitwise/bitdelta_triton/upstream/binary_gemm_kernel.py"
 
 
 def bitdelta(kernel, num_warps, grid):
@@ -98,11 +102,12 @@ def bitdelta(kernel, num_warps, grid):
             dict(name="c", kind="out", dtype="f32", shape=[16, 256]),
         ],
         grid=grid,
-        spec=f"{BITWISE}/bitdelta_triton/bitdelta",
+        spec="bitdelta",
         dims=dict(M=16, N=256, K=256, KW=8, NB=256, MA=256),
         options={"num_warps": num_warps, "num_stages": 3, "matrix_instr_nonkdim": 16},
         source=BITDELTA,
         pointer_types=dict(b_ptr="*i32"),
+        files=f"external/bitwise/bitdelta_triton/{kernel}_amd",
     )
 
 
@@ -119,10 +124,11 @@ BINARY_GEMM = Case(
         dict(name="c", kind="out", dtype="i32", shape=[16, 256]),
     ],
     grid=[16, 1],
-    spec=f"{BITWISE}/triton_binary_gemm/binary_gemm",
+    spec="binary_gemm",
     dims=dict(MA=256, N=256, KW=8, TM=16),
     options={"num_warps": 4, "num_stages": 1},
     pointer_types=dict(a_ptr="*i32", b_ptr="*i32", c_ptr="*i32"),
+    files="external/bitwise/triton_binary_gemm/kernel_amd",
 )
 
 
@@ -219,7 +225,8 @@ def kernarg_params(case, pointer_names, kernarg_size):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("cases", nargs="*", help="cases to build (default: all)")
-    parser.add_argument("--out", type=Path, default=ROOT, help="directory to write into")
+    parser.add_argument("--out", type=Path, default=REPOSITORY,
+                        help="directory to write into, laid out as the repository")
     args = parser.parse_args()
 
     import triton
@@ -237,8 +244,6 @@ def main() -> int:
             spec.loader.exec_module(modules[source])
         return modules[source]
 
-    args.out.mkdir(parents=True, exist_ok=True)
-
     for name in args.cases or list(CASES):
         case = CASES[name]
         fn = getattr(load(case.source), case.kernel)
@@ -254,7 +259,9 @@ def main() -> int:
             target=GPUTarget(*TARGET), options=case.options,
         )
         asm = kernel.asm["amdgcn"]
-        (args.out / f"{name}.s").write_text(asm)
+        stem = args.out / (case.files or f"external/amd/triton/{name}")
+        stem.parent.mkdir(parents=True, exist_ok=True)
+        stem.with_name(f"{stem.name}.s").write_text(asm)
 
         kernarg_size = next(
             int(line.split()[-1]) for line in asm.splitlines()
@@ -270,7 +277,7 @@ def main() -> int:
             grid=grid, block=block, source_sha256=source_sha256,
             asm_sha256=hashlib.sha256(asm.encode()).hexdigest(),
         )
-        (args.out / f"{name}.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        stem.with_name(f"{stem.name}.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
         launch = dict(
             description=f"Triton {case.description}",
@@ -279,7 +286,7 @@ def main() -> int:
             params=kernarg_params(case, POINTER_NAMES[case.kernel], kernarg_size),
             spec=f"{case.spec}.spec", dims=case.dims,
         )
-        (args.out / f"{name}.launch.json").write_text(json.dumps(launch, indent=2) + "\n")
+        stem.with_name(f"{stem.name}.launch.json").write_text(json.dumps(launch, indent=2) + "\n")
         print(f"{name}: {len(asm)} assembly bytes, {kernel.metadata.shared} LDS bytes")
     return 0
 

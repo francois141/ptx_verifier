@@ -71,7 +71,7 @@
       "int": 0
     }
   ],
-  "spec": "../../bitwise/bitdelta_triton/bitdelta.spec",
+  "spec": "bitdelta.spec",
   "dims": {
     "M": 16,
     "N": 256,

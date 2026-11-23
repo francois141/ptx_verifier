@@ -79,3 +79,31 @@ done
 ```
 
 The `.ptx` files are git-ignored (`/external/**/*.ptx`).
+
+## AMD builds
+
+The two Triton kernels here that compute with packed bits, compiled for gfx950 by
+`external/amd/triton/extract.py` at their PTX builds' sizes (M=N=K=256) and checked against the
+same specs. Volta runs workgroup 0, so each launch file's output is that workgroup's 16 x 256
+tile of C.
+
+| Case | Source | Config | LDS | Spec |
+|---|---|---|---|---|
+| `triton_binary_gemm/kernel_amd.s` | `external/amd/triton/kernels.py`'s `binary_gemm_kernel`, `triton_binary_gemm/kernel.py` with ROCm's `__ockl_popcount_u32` for `libdevice.popc` (absent from Triton's HIP libdevice) | 16 x 256 tile, `num_warps=4`, grid 16 x 1 | none | `triton_binary_gemm/binary_gemm.spec` |
+| `bitdelta_triton/binary_matmul_kernel_amd.s` | BitDelta's `binary_matmul_kernel`, compiled from `bitdelta_triton/upstream/` | its first autotune config: 16 x 256 x 64, `GROUP_SIZE_M=8`, `num_warps=8`, `num_stages=3` | 72 KiB | `bitdelta_triton/bitdelta.spec` |
+| `bitdelta_triton/binary_bmm_kernel_amd.s` | BitDelta's `binary_bmm_kernel`, likewise | the same, `num_warps=4`, grid 16 x 2 (batch 0 checked) | 72 KiB | the same |
+
+The XOR-popcount GEMM is `v_xor_b32` and `v_bcnt_u32_b32` on CUDA-core-style VALU lanes, one per
+output and word. BitDelta's kernels take fp32 activations and output here, where the sm_90a build
+takes f16: the AMD frontend models no f16, and fp32 makes `tl.dot` the f32 MFMA
+(`v_mfma_f32_16x16x4_f32`) the GEMM tutorial already uses. Their `accumulator.to(tl.float16)` stays,
+so the result is rounded to f16 and widened back (`v_cvt_pk_f16_f32`, `v_cvt_f32_f16`) before
+the fp32 store.
+
+None of the three verifies yet. Each stops before running at a Triton feature of the frontend
+(the argument preload of the XOR-popcount GEMM, the dynamic LDS of the BitDelta kernels,
+`src0_sel:BYTE_3` of `binary_bmm_kernel`), and past those their inputs are symbolic packed words:
+the AMD frontend requires integer and bitwise operations on concrete words, and BitDelta's f16
+round trip has no model.
+
+`just bitwise` runs them after the PTX kernels.

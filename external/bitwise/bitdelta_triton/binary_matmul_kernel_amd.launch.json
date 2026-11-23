@@ -1,25 +1,25 @@
 {
-  "description": "Triton XOR-popcount binary GEMM (bitwise/triton_binary_gemm's), c[m, n] = sum_w popc(a[m, w] ^ b[n, w]); M=N=K=256 (8 words per row), workgroup 0's 16x256 tile of C",
-  "kernel": "binary_gemm_kernel",
+  "description": "Triton BitDelta binary_matmul_kernel, fp32 x times signs packed 32 per int32, its fp16 result stored as fp32; M=N=K=256, tile 16x256x64, workgroup 0's 16x256 tile of C",
+  "kernel": "binary_matmul_kernel",
   "grid": [
     16,
     1,
     1
   ],
   "block": [
-    256,
+    512,
     1,
     1
   ],
-  "dynamic_shared_bytes": 0,
+  "dynamic_shared_bytes": 73728,
   "arrays": [
     {
       "name": "a",
       "kind": "in",
-      "dtype": "i32",
+      "dtype": "f32",
       "shape": [
         256,
-        8
+        256
       ]
     },
     {
@@ -27,14 +27,14 @@
       "kind": "in",
       "dtype": "i32",
       "shape": [
-        256,
-        8
+        8,
+        256
       ]
     },
     {
       "name": "c",
       "kind": "out",
-      "dtype": "i32",
+      "dtype": "f32",
       "shape": [
         16,
         256
@@ -71,11 +71,13 @@
       "int": 0
     }
   ],
-  "spec": "../../bitwise/triton_binary_gemm/binary_gemm.spec",
+  "spec": "bitdelta.spec",
   "dims": {
-    "MA": 256,
+    "M": 16,
     "N": 256,
+    "K": 256,
     "KW": 8,
-    "TM": 16
+    "NB": 256,
+    "MA": 256
   }
 }
