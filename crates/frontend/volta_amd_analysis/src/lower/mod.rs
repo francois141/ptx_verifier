@@ -586,6 +586,13 @@ fn lower_as_written(
             addr: vgpr(address).ok_or("expected one address VGPR")?,
             offset: lds_offset(modifiers)?,
             src: vgpr(data).ok_or("expected one data VGPR")?,
+            half: ir::WordHalf::Low,
+        }),
+        ("ds_write_b16_d16_hi", [address, data, modifiers @ ..]) => Ok(DsWriteB16 {
+            addr: vgpr(address).ok_or("expected one address VGPR")?,
+            offset: lds_offset(modifiers)?,
+            src: vgpr(data).ok_or("expected one data VGPR")?,
+            half: ir::WordHalf::High,
         }),
         ("v_mov_b64_e32", [dst, src]) => Ok(Mov64 {
             dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,

@@ -1088,12 +1088,13 @@ pub enum LoweredInstr {
         dst: [Vgpr; 2],
         src: [Src0; 2],
     },
-    /// Store the low bf16 half of `src` at the 2-byte aligned `addr + offset`, keeping the
-    /// other half of its LDS word.
+    /// Store `half` of `src` (`ds_write_b16`: its low bf16, `_d16_hi`: its high one) at the
+    /// 2-byte aligned `addr + offset`, keeping the other half of its LDS word.
     DsWriteB16 {
         addr: Vgpr,
         offset: u16,
         src: Vgpr,
+        half: WordHalf,
     },
     /// `dst = (src << shift) + addend` over concrete unsigned 64-bit words, the shift taken
     /// modulo 64 (`v_lshlrev_b64` has no addend, `v_lshl_add_u64` a shift of at most 4).
@@ -1394,7 +1395,14 @@ impl LoweredInstr {
             Self::CndMask32E64 { .. } => "v_cndmask_b32 (e64)",
             Self::SdwaWord { .. } => "vector op (SDWA)",
             Self::Dpp { .. } => "vector op (DPP)",
-            Self::DsWriteB16 { .. } => "ds_write_b16",
+            Self::DsWriteB16 {
+                half: WordHalf::Low,
+                ..
+            } => "ds_write_b16",
+            Self::DsWriteB16 {
+                half: WordHalf::High,
+                ..
+            } => "ds_write_b16_d16_hi",
             Self::ShiftAdd64 { .. } => "64-bit vector shift",
             Self::CarryOp32 { .. } => "vector add/sub with carry",
             Self::Mad64 { signedness, .. } => match signedness {

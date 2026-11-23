@@ -117,7 +117,9 @@ impl Interpreter<'_> {
                     }
                 }
             }
-            LoweredInstr::DsWriteB16 { addr, offset, src } => {
+            LoweredInstr::DsWriteB16 {
+                addr, offset, src, ..
+            } => {
                 for lane in active_lanes(exec) {
                     let address = self.lds_address(wave, lane, addr, u32::from(offset))?;
                     words.push(LdsWord {

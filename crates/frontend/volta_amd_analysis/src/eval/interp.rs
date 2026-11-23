@@ -11,7 +11,7 @@ use volta_graph::{EventGraph, GraphBuilder, Provenance};
 use crate::ir::{
     Addend64, BinOp, BranchCondition, BufferLoadDst, CarryOp, DppBound, DppControl, DppOp,
     DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr, LoweredKernel,
-    ModifiedSrc, Sgpr, Signedness, Src0, UnaryOp, Vgpr, Vop3Src,
+    ModifiedSrc, Sgpr, Signedness, Src0, UnaryOp, Vgpr, Vop3Src, WordHalf,
 };
 
 use super::EvalError;
@@ -474,9 +474,12 @@ impl<'a> Interpreter<'a> {
                 self.ds_read_tr_b16(wave, *dst, *addr, *offset)
             }
             LoweredInstr::DsWrite { addr, accesses } => self.ds_write(wave, *addr, *accesses),
-            LoweredInstr::DsWriteB16 { addr, offset, src } => {
-                self.ds_write_b16(wave, *addr, *offset, *src)
-            }
+            LoweredInstr::DsWriteB16 {
+                addr,
+                offset,
+                src,
+                half,
+            } => self.ds_write_b16(wave, *addr, *offset, *src, *half),
             LoweredInstr::DsSwizzle { dst, src, xor } => {
                 self.execute_ds_swizzle(wave, *dst, *src, *xor)
             }
@@ -958,7 +961,7 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    /// Each active lane's low half of `src` replaces one half of an LDS word; an unwritten
+    /// Each active lane's `half` of `src` replaces one half of an LDS word; an unwritten
     /// word's other half is undefined. Two lanes storing one half race, as in `ds_write`.
     pub(super) fn ds_write_b16(
         &mut self,
@@ -966,6 +969,7 @@ impl<'a> Interpreter<'a> {
         address_reg: Vgpr,
         offset: u16,
         src: Vgpr,
+        half: WordHalf,
     ) -> Result<(), EvalError> {
         let pc = self.waves[wave].pc;
         let mut writers: BTreeMap<u64, LdsLaneAccess> = BTreeMap::new();
@@ -982,13 +986,26 @@ impl<'a> Interpreter<'a> {
                     later: access,
                 }));
             }
-            let word = self.waves[wave].registers.read_vgpr_word(lane, src)?;
-            let [half, _] = word
-                .bf16_halves(&mut self.arena)
-                .ok_or(EvalError::NotBf16 { lane })?;
-            self.lds.write_bf16(&mut self.arena, address, half)?;
+            let value = self.stored_half(wave, lane, src, half)?;
+            self.lds.write_bf16(&mut self.arena, address, value)?;
         }
         Ok(())
+    }
+
+    /// The bf16 `half` of `lane`'s `src` that a 16-bit LDS store writes.
+    fn stored_half(
+        &mut self,
+        wave: WaveId,
+        lane: usize,
+        src: Vgpr,
+        half: WordHalf,
+    ) -> Result<ExprId, EvalError> {
+        let word = self.waves[wave].registers.read_vgpr_word(lane, src)?;
+        match half {
+            WordHalf::Low => word.bf16_halves(&mut self.arena).map(|[low, _]| low),
+            WordHalf::High => high_half(&mut self.arena, word),
+        }
+        .ok_or(EvalError::NotBf16 { lane })
     }
 
     /// Load every access's words, pending until `lgkmcnt` establishes the read's completion.
@@ -1191,6 +1208,16 @@ impl<'a> Interpreter<'a> {
 /// `4 * e + (lane % 16) / 4` of `lane`'s group of 16.
 fn transpose_source_lane(lane: usize, e: usize) -> usize {
     16 * (lane / 16) + 4 * e + (lane % 16) / 4
+}
+
+/// A word's high half as a bf16 real: a pair's, a concrete word's bits, or a symbolic f32's,
+/// which this model takes exactly, as it takes `v_cvt_pk_bf16_f32`'s rounding.
+fn high_half(arena: &mut ExprArena, word: Word) -> Option<ExprId> {
+    match word {
+        Word::Bf16 { high, .. } => Some(high),
+        Word::Value(value) if concrete_word(arena, value).is_none() => Some(value),
+        Word::Value(_) => word.bf16_halves(arena).map(|[_, high]| high),
+    }
 }
 
 /// One lane of an instruction that moves or selects a word holding two bf16 halves, or takes one
