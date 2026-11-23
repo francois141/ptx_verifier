@@ -78,6 +78,8 @@ pub enum Operand {
     Offen,
     /// A memory instruction's `off` in place of an address register.
     Off,
+    /// `src_shared_base`, the 64-bit base of the flat address space's LDS aperture.
+    SharedBase,
     /// The `offset0:n` and `offset1:n` of a two-address LDS instruction, in units of its size.
     Offset0(u64),
     Offset1(u64),

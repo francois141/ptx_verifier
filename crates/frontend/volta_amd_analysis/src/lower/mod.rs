@@ -1797,6 +1797,7 @@ fn scalar_source64(operand: &Operand) -> Result<ScalarSrc64, &'static str> {
     match operand {
         Operand::Vcc => Ok(ScalarSrc64::Vcc),
         Operand::Exec => Ok(ScalarSrc64::Exec),
+        Operand::SharedBase => Ok(ScalarSrc64::SharedBase),
         Operand::Imm(value) if (-16..=i64::from(i32::MAX)).contains(value) => {
             Ok(ScalarSrc64::Const(*value as u64))
         }

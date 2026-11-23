@@ -166,15 +166,22 @@ pub enum ScalarSrc {
     Const(u32),
 }
 
-/// A 64-bit scalar ALU source: an aligned SGPR pair, VCC or EXEC as lane masks, or a
-/// constant: a sign-extended inline integer, or a 32-bit literal with a clear sign bit.
+/// A 64-bit scalar ALU source: an aligned SGPR pair, VCC or EXEC as lane masks, a constant
+/// (a sign-extended inline integer, or a 32-bit literal with a clear sign bit), or the LDS
+/// aperture's base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarSrc64 {
     Sgprs([Sgpr; 2]),
     Vcc,
     Exec,
     Const(u64),
+    SharedBase,
 }
+
+/// The LDS aperture's base, `src_shared_base`: the shared aperture `SH_MEM_BASES` places at
+/// bits 63:48, its low word 0. Kernels only form generic pointers from it to convert back to
+/// LDS offsets by truncation; the model accesses no memory through it.
+pub const SHARED_APERTURE_BASE: u64 = 0x0001_0000_0000_0000;
 
 /// A 64-bit scalar ALU destination: an aligned SGPR pair, VCC, or EXEC, the wave's mask of
 /// active lanes.

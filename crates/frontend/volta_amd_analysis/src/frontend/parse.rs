@@ -42,6 +42,7 @@ fn operand(text: &str) -> Option<Operand> {
         "m0" => return Some(Operand::M0),
         "offen" => return Some(Operand::Offen),
         "off" => return Some(Operand::Off),
+        "src_shared_base" => return Some(Operand::SharedBase),
         "lds" => return Some(Operand::Lds),
         "bound_ctrl:1" => return Some(Operand::BoundCtrl),
         "dst_sel:DWORD" => return Some(Operand::SdwaDstDword),

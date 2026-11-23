@@ -323,6 +323,7 @@ impl Interpreter<'_> {
             ScalarSrc64::Vcc => registers.read_vcc_mask(&self.arena),
             ScalarSrc64::Exec => Ok(self.waves[wave].exec),
             ScalarSrc64::Const(value) => Ok(value),
+            ScalarSrc64::SharedBase => Ok(crate::ir::SHARED_APERTURE_BASE),
         }
     }
 
