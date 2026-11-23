@@ -211,6 +211,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::MovScalar64 { .. }
             | LoweredInstr::ScalarUnary32 { .. }
             | LoweredInstr::ScalarBitCount64 { .. }
+            | LoweredInstr::ScalarBitSet32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
             | LoweredInstr::ExecOp64 { .. }
@@ -345,6 +346,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::MovScalar64 { .. }
             | LoweredInstr::ScalarUnary32 { .. }
             | LoweredInstr::ScalarBitCount64 { .. }
+            | LoweredInstr::ScalarBitSet32 { .. }
             | LoweredInstr::ScalarOp32 { .. }
             | LoweredInstr::ScalarOp64 { .. }
             | LoweredInstr::ExecOp64 { .. }

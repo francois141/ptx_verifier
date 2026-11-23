@@ -83,6 +83,16 @@ impl Interpreter<'_> {
                 let count = self.read_scalar64(wave, *src)?.count_ones();
                 self.write_scalar_word(wave, *dst, count, Some(count != 0))
             }
+            LoweredInstr::ScalarBitSet32 { dst, bit, value } => {
+                let bit = self.read_scalar_word(wave, *bit)? & 31;
+                let word = self.read_scalar_word(wave, ScalarSrc::Sgpr(*dst))?;
+                let word = if *value {
+                    word | 1 << bit
+                } else {
+                    word & !(1 << bit)
+                };
+                self.write_scalar_word(wave, *dst, word, None)
+            }
             LoweredInstr::ScalarOp32 {
                 op,
                 dst,

@@ -208,6 +208,11 @@ fn lower_as_written(
             dst: sgpr(dst).ok_or("expected one destination SGPR")?,
             src: scalar_source64(src)?,
         }),
+        (mnemonic @ ("s_bitset0_b32" | "s_bitset1_b32"), [dst, bit]) => Ok(ScalarBitSet32 {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            bit: scalar_source(bit).ok_or("expected an SGPR or a 32-bit constant bit index")?,
+            value: mnemonic == "s_bitset1_b32",
+        }),
         ("s_brev_b32", [dst, src]) => lower_scalar_unary32(ir::ScalarUnaryOp32::BRevB32, dst, src),
         // NOT shares XOR's concrete-word evaluation and nonzero-result SCC rule.
         ("s_not_b32", [dst, src]) => Ok(ScalarOp32 {
@@ -1097,6 +1102,8 @@ fn lower_as_written(
             | "v_cvt_pk_bf8_f32"
             | "v_fmac_f32_e32"
             | "s_bcnt1_i32_b64"
+            | "s_bitset0_b32"
+            | "s_bitset1_b32"
             | "global_load_dword"
             | "global_load_dwordx3"
             | "global_load_dwordx4"

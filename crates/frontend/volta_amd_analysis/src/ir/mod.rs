@@ -949,6 +949,12 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: ScalarSrc64,
     },
+    /// Set (`value` true) or clear bit `bit[4:0]` of `dst`, leaving its other bits and SCC.
+    ScalarBitSet32 {
+        dst: Sgpr,
+        bit: ScalarSrc,
+        value: bool,
+    },
     ScalarOp32 {
         op: ScalarOp32,
         dst: Sgpr,
@@ -1340,6 +1346,13 @@ impl LoweredInstr {
             Self::MovScalar64 { .. } => "s_mov_b64",
             Self::ScalarUnary32 { op, .. } => op.name(),
             Self::ScalarBitCount64 { .. } => "s_bcnt1_i32_b64",
+            Self::ScalarBitSet32 { value, .. } => {
+                if *value {
+                    "s_bitset1_b32"
+                } else {
+                    "s_bitset0_b32"
+                }
+            }
             Self::ScalarOp32 { .. } => "scalar op",
             Self::ScalarOp64 { .. } => "scalar op (64-bit)",
             Self::ExecOp64 { .. } => "scalar op (EXEC)",
