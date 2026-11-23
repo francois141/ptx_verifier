@@ -11,7 +11,7 @@ use volta_graph::{EventGraph, GraphBuilder, Provenance};
 use crate::ir::{
     Addend64, BinOp, BranchCondition, BufferLoadDst, CarryOp, DppBound, DppControl, DppOp,
     DsReadDst, DsWriteData, InstrId, LaneMask, LdsAccesses, LoweredInstr, LoweredKernel,
-    ModifiedSrc, Sgpr, Src0, UnaryOp, Vgpr, Vop3Src,
+    ModifiedSrc, Sgpr, Signedness, Src0, UnaryOp, Vgpr, Vop3Src,
 };
 
 use super::EvalError;
@@ -230,7 +230,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::SdwaWord { .. }
             | LoweredInstr::Dpp { .. }
             | LoweredInstr::CarryOp32 { .. }
-            | LoweredInstr::MadU64U32 { .. }
+            | LoweredInstr::Mad64 { .. }
             | LoweredInstr::Mfma16x16x4F32 { .. }
             | LoweredInstr::Mfma32x32x16Bf16 { .. }
             | LoweredInstr::Mfma16x16x32Bf16 { .. }
@@ -389,13 +389,14 @@ impl<'a> Interpreter<'a> {
                     evaluate_cmp(arena, registers, lane, *op, *src0, *src1)
                 })
             }
-            LoweredInstr::MadU64U32 {
+            LoweredInstr::Mad64 {
+                signedness,
                 dst,
                 carry,
                 src0,
                 src1,
                 src2,
-            } => self.execute_mad_u64_u32(wave, *dst, *carry, *src0, *src1, *src2),
+            } => self.execute_mad64(wave, *signedness, *dst, *carry, *src0, *src1, *src2),
             // A matrix multiply runs in every lane, whatever EXEC holds (CDNA4 §7.1).
             LoweredInstr::Mfma16x16x4F32 {
                 dst,
@@ -587,9 +588,11 @@ impl<'a> Interpreter<'a> {
 
     /// Every active lane's result is computed before `dst` and `carry` are written, as either
     /// may overlap a source.
-    fn execute_mad_u64_u32(
+    #[allow(clippy::too_many_arguments)]
+    fn execute_mad64(
         &mut self,
         wave: WaveId,
+        signedness: Signedness,
         dst: [Vgpr; 2],
         carry: [Sgpr; 2],
         src0: Vop3Src,
@@ -622,21 +625,29 @@ impl<'a> Interpreter<'a> {
 
             let word =
                 |value| concrete_word(&self.arena, value).ok_or(EvalError::SymbolicWord { lane });
+            let widen = |word: u32| match signedness {
+                Signedness::Unsigned => i128::from(word),
+                Signedness::Signed => i128::from(word as i32),
+            };
             let product_plus_low =
-                u128::from(word(a)?) * u128::from(word(b)?) + u128::from(word(addend_low)?);
+                widen(word(a)?) * widen(word(b)?) + i128::from(word(addend_low)?);
             // The low result word depends on the low words alone, so a compiler may leave
             // another value, or none, in the addend's high register when it uses only the low word.
             let sum = addend_high
                 .and_then(|high| concrete_word(&self.arena, high))
-                .map(|high| product_plus_low + (u128::from(high) << 32));
+                .map(|high| product_plus_low + (widen(high) << 32));
             results.push((lane, product_plus_low as u32, sum));
         }
 
         // The carry mask is fully written, as VCC is: an inactive lane's bit stays clear
-        // (CDNA4 §3.9). It is unknown if any active lane's carry is.
-        let carries = results.iter().try_fold(0u64, |mask, (lane, _, sum)| {
-            sum.map(|sum| mask | u64::from(sum >> 64 != 0) << lane)
-        });
+        // (CDNA4 §3.9). It is unknown if any active lane's carry is, and always for a signed op,
+        // whose carry out Volta does not model.
+        let carries = match signedness {
+            Signedness::Unsigned => results.iter().try_fold(0u64, |mask, (lane, _, sum)| {
+                sum.map(|sum| mask | u64::from(sum >> 64 != 0) << lane)
+            }),
+            Signedness::Signed => None,
+        };
 
         for (lane, low, sum) in results {
             let low = self.arena.int(i64::from(low));

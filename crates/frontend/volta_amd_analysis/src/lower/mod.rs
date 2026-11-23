@@ -733,21 +733,29 @@ fn lower_as_written(
             | "v_subbrev_co_u32_e64",
             operands,
         ) => lower_carry_op(opcode, operands),
-        ("v_mad_u64_u32", [dst, carry, src0, src1, src2]) => Ok(MadU64U32 {
-            dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
-            carry: sgprs(carry).ok_or("expected an aligned SGPR carry pair")?,
-            src0: vop3_src(src0)
-                .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
-            src1: vop3_src(src1)
-                .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
-            src2: match src2 {
-                Operand::Imm(value @ -16..=64) => ir::Addend64::Inline(*value),
-                _ => ir::Addend64::Vgprs(
-                    vgprs(src2)
-                        .ok_or("expected an even-aligned VGPR addend pair or an inline integer")?,
-                ),
-            },
-        }),
+        (mnemonic @ ("v_mad_u64_u32" | "v_mad_i64_i32"), [dst, carry, src0, src1, src2]) => {
+            Ok(Mad64 {
+                signedness: if mnemonic == "v_mad_i64_i32" {
+                    ir::Signedness::Signed
+                } else {
+                    ir::Signedness::Unsigned
+                },
+                dst: vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+                carry: sgprs(carry).ok_or("expected an aligned SGPR carry pair")?,
+                src0: vop3_src(src0)
+                    .ok_or("expected a VGPR, an SGPR or an inline constant first source")?,
+                src1: vop3_src(src1)
+                    .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
+                src2: match src2 {
+                    Operand::Imm(value @ -16..=64) => ir::Addend64::Inline(*value),
+                    _ => {
+                        ir::Addend64::Vgprs(vgprs(src2).ok_or(
+                            "expected an even-aligned VGPR addend pair or an inline integer",
+                        )?)
+                    }
+                },
+            })
+        }
         ("v_cndmask_b32_e32", [dst, src0, src1, vcc]) => {
             expect_vcc(vcc)?;
             Ok(CndMask32 {
@@ -1077,6 +1085,7 @@ fn lower_as_written(
             | "v_not_b32_e64"
             | "v_cndmask_b32_e64"
             | "v_mad_u64_u32"
+            | "v_mad_i64_i32"
             | "v_lshl_add_u64"
             | "v_lshlrev_b64"
             | "s_bfe_i64"

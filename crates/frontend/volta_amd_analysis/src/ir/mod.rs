@@ -820,7 +820,7 @@ impl CarryOp {
     }
 }
 
-/// `v_mad_u64_u32`'s 64-bit addend: a VGPR pair, or an inline integer sign-extended to 64 bits.
+/// A 64-bit multiply-add's addend: a VGPR pair, or an inline integer sign-extended to 64 bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Addend64 {
     Vgprs([Vgpr; 2]),
@@ -1175,9 +1175,11 @@ pub enum LoweredInstr {
         half: WordHalf,
         src1: Vop3Src,
     },
-    /// `dst = src0 * src1 + src2` over unsigned 64-bit words, with the u32 sources and the
-    /// carry out of 64 bits in each lane's bit of `carry`.
-    MadU64U32 {
+    /// `dst = src0 * src1 + src2` over 64-bit words, the 32-bit sources and the addend of the
+    /// given signedness. An unsigned op writes the carry out of 64 bits in each lane's bit of
+    /// `carry`; a signed op's `carry` is left unknown.
+    Mad64 {
+        signedness: Signedness,
         dst: [Vgpr; 2],
         carry: [Sgpr; 2],
         src0: Vop3Src,
@@ -1395,7 +1397,10 @@ impl LoweredInstr {
             Self::DsWriteB16 { .. } => "ds_write_b16",
             Self::ShiftAdd64 { .. } => "64-bit vector shift",
             Self::CarryOp32 { .. } => "vector add/sub with carry",
-            Self::MadU64U32 { .. } => "v_mad_u64_u32",
+            Self::Mad64 { signedness, .. } => match signedness {
+                Signedness::Unsigned => "v_mad_u64_u32",
+                Signedness::Signed => "v_mad_i64_i32",
+            },
             Self::AccvgprWrite32 { .. } => "v_accvgpr_write_b32",
             Self::AccvgprRead32 { .. } => "v_accvgpr_read_b32",
             Self::FmaF32 { .. } => "v_fma_f32",
