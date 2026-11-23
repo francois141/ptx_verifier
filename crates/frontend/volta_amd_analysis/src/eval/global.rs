@@ -72,9 +72,10 @@ struct Region {
 
 impl Region {
     /// The index of the first element of the word at `address`, if the word lies in the array.
+    /// A bf16 word may start at any element: ROCm runs gfx9 queues in unaligned access mode.
     fn element_at(&self, address: u64) -> Option<u64> {
         let offset = address.checked_sub(self.base)?;
-        if !offset.is_multiple_of(4) {
+        if !offset.is_multiple_of(self.element.bytes()) {
             return None;
         }
         let index = offset / self.element.bytes();
