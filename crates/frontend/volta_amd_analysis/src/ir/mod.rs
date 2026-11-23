@@ -944,6 +944,11 @@ pub enum LoweredInstr {
         dst: Sgpr,
         src: ScalarSrc,
     },
+    /// `dst` = the number of set bits of a 64-bit source; SCC is whether it is nonzero.
+    ScalarBitCount64 {
+        dst: Sgpr,
+        src: ScalarSrc64,
+    },
     ScalarOp32 {
         op: ScalarOp32,
         dst: Sgpr,
@@ -1334,6 +1339,7 @@ impl LoweredInstr {
             Self::MovScalar32 { .. } => "s_mov_b32",
             Self::MovScalar64 { .. } => "s_mov_b64",
             Self::ScalarUnary32 { op, .. } => op.name(),
+            Self::ScalarBitCount64 { .. } => "s_bcnt1_i32_b64",
             Self::ScalarOp32 { .. } => "scalar op",
             Self::ScalarOp64 { .. } => "scalar op (64-bit)",
             Self::ExecOp64 { .. } => "scalar op (EXEC)",

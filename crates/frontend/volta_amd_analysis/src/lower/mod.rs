@@ -204,6 +204,10 @@ fn lower_as_written(
             src: scalar_source64(src)?,
         }),
         ("s_abs_i32", [dst, src]) => lower_scalar_unary32(ir::ScalarUnaryOp32::AbsI32, dst, src),
+        ("s_bcnt1_i32_b64", [dst, src]) => Ok(ScalarBitCount64 {
+            dst: sgpr(dst).ok_or("expected one destination SGPR")?,
+            src: scalar_source64(src)?,
+        }),
         ("s_brev_b32", [dst, src]) => lower_scalar_unary32(ir::ScalarUnaryOp32::BRevB32, dst, src),
         // NOT shares XOR's concrete-word evaluation and nonzero-result SCC rule.
         ("s_not_b32", [dst, src]) => Ok(ScalarOp32 {
@@ -1092,6 +1096,7 @@ fn lower_as_written(
             | "v_cvt_pk_fp8_f32"
             | "v_cvt_pk_bf8_f32"
             | "v_fmac_f32_e32"
+            | "s_bcnt1_i32_b64"
             | "global_load_dword"
             | "global_load_dwordx3"
             | "global_load_dwordx4"

@@ -79,6 +79,10 @@ impl Interpreter<'_> {
                 };
                 self.write_scalar_word(wave, *dst, value, scc)
             }
+            LoweredInstr::ScalarBitCount64 { dst, src } => {
+                let count = self.read_scalar64(wave, *src)?.count_ones();
+                self.write_scalar_word(wave, *dst, count, Some(count != 0))
+            }
             LoweredInstr::ScalarOp32 {
                 op,
                 dst,
