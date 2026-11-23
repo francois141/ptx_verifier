@@ -129,6 +129,15 @@ fn operand(text: &str) -> Option<Operand> {
     if let Some(offset) = text.strip_prefix("offset:") {
         return signed_integer(offset).map(Operand::Offset);
     }
+    if let Some(fields) = text
+        .strip_prefix("hwreg(HW_REG_MODE,")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let (offset, size) = fields.split_once(',')?;
+        let offset = u8::try_from(integer(offset.trim())?).ok()?;
+        let size = u8::try_from(integer(size.trim())?).ok()?;
+        return Some(Operand::ModeField { offset, size });
+    }
     if let Some((name, rest)) = text.split_once('(') {
         let counter = match name {
             "vmcnt" => Counter::Vm,

@@ -471,6 +471,14 @@ fn lower_as_written(
                 src1: ScalarSrc::Const(simm16(src).ok_or("expected a 16-bit integer")?),
             })
         }
+        // MODE bits 7:0 are the FP rounding and denormal modes (LLVM's IEEE division enables
+        // f32 denormals around its Newton steps); over exact reals they change no value.
+        ("s_setreg_imm32_b32", [Operand::ModeField { offset, size }, value]) => {
+            if u32::from(*offset) + u32::from(*size) > 8 || word(value).is_none() {
+                return Err("expected a write of MODE's rounding or denormal bits");
+            }
+            Ok(Nop)
+        }
         // Wave priority changes only the hardware's scheduling, which no result depends on.
         ("s_setprio", [priority]) => {
             immediate(priority, 3).ok_or("expected a priority from 0 to 3")?;

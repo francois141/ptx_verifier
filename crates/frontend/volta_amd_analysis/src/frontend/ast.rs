@@ -105,6 +105,11 @@ pub enum Operand {
     Src1Sel(SdwaSel),
     /// A memory instruction's `sc0`, `sc1` or `nt` cache-policy bit (CDNA4 ISA §9.1.10).
     CachePolicy(CachePolicy),
+    /// `hwreg(HW_REG_MODE, offset, size)`: a bit field of the MODE register (CDNA4 ISA §3.4.2).
+    ModeField {
+        offset: u8,
+        size: u8,
+    },
 }
 
 /// The cache-policy bits gfx940 and later print in place of `glc`, `slc` and `dlc`.
