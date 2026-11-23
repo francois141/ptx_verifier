@@ -117,7 +117,7 @@ impl Lds {
     }
 
     /// Replace the bf16 half at the 2-byte aligned `address`; the other half of a word never
-    /// written is undefined.
+    /// written, or holding a symbolic f32, is undefined.
     pub(super) fn write_bf16(
         &mut self,
         arena: &mut ExprArena,
@@ -131,13 +131,12 @@ impl Lds {
                 size: self.size,
             });
         }
-        let [low, high] = match self.words[self.selected].get(&(word_address as u32)) {
-            Some(word) => word.bf16_halves(arena).ok_or(EvalError::LdsAccess {
-                address,
-                size: self.size,
-            })?,
-            None => [arena.undefined(), arena.undefined()],
-        };
+        // The other half of an unwritten word, or of a symbolic f32 whose bits are unknown, is
+        // undefined: an error only if it reaches an output.
+        let kept = self.words[self.selected]
+            .get(&(word_address as u32))
+            .and_then(|word| word.bf16_halves(arena));
+        let [low, high] = kept.unwrap_or_else(|| [arena.undefined(), arena.undefined()]);
         let word = if address == word_address {
             Word::Bf16 { low: half, high }
         } else {
