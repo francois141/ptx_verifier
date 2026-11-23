@@ -261,6 +261,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::PackedF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
+            | LoweredInstr::ScratchLoad { .. }
+            | LoweredInstr::ScratchStore { .. }
             | LoweredInstr::GlobalStoreHigh16 { .. }
             | LoweredInstr::GlobalLoadUshort { .. }
             | LoweredInstr::GlobalStoreShort { .. }
@@ -517,6 +519,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::PackedF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
+            | LoweredInstr::ScratchLoad { .. }
+            | LoweredInstr::ScratchStore { .. }
             | LoweredInstr::GlobalStoreHigh16 { .. }
             | LoweredInstr::GlobalLoadUshort { .. }
             | LoweredInstr::GlobalStoreShort { .. }
@@ -908,6 +912,14 @@ impl<'a> Interpreter<'a> {
                     .bf16_halves(&mut self.arena)
                     .ok_or(EvalError::InvalidBf16Output { address: start })?;
                 self.global.store_bf16(start, low)?;
+                registers.count_vm_store(lane);
+                Ok(())
+            }
+            LoweredInstr::ScratchLoad { dst, offset } => {
+                registers.scratch_load(lane, dst.regs(), *offset)
+            }
+            LoweredInstr::ScratchStore { src, offset } => {
+                registers.scratch_store(lane, &src.regs(), *offset)?;
                 registers.count_vm_store(lane);
                 Ok(())
             }

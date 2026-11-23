@@ -14,6 +14,11 @@ pub enum EvalError {
         lane: usize,
         reg: Vgpr,
     },
+    /// A scratch load of a dword the lane never stored.
+    UninitializedScratch {
+        lane: usize,
+        offset: u32,
+    },
     UninitializedAgpr {
         lane: usize,
         reg: Agpr,
@@ -132,6 +137,12 @@ impl fmt::Display for EvalError {
             Self::UninitializedSgpr(reg) => write!(f, "uninitialized scalar register s{}", reg.0),
             Self::UninitializedVgpr { lane, reg } => {
                 write!(f, "uninitialized vector register v{} in lane {lane}", reg.0)
+            }
+            Self::UninitializedScratch { lane, offset } => {
+                write!(
+                    f,
+                    "uninitialized scratch dword at byte {offset} in lane {lane}"
+                )
             }
             Self::UninitializedAgpr { lane, reg } => {
                 write!(

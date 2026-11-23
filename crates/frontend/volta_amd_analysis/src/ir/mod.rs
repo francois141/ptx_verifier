@@ -1302,6 +1302,17 @@ pub enum LoweredInstr {
         src: LaneReg,
         address: GlobalAddress,
     },
+    /// Load a lane's private (scratch) dwords at byte `offset`, addressed by the offset alone
+    /// (`vaddr` and `saddr` both `off`), as a compiler's register spills are.
+    ScratchLoad {
+        dst: GlobalLoadDst,
+        offset: u16,
+    },
+    /// Store registers to a lane's private dwords at byte `offset`.
+    ScratchStore {
+        src: GlobalStoreSrc,
+        offset: u16,
+    },
     GlobalStore {
         src: GlobalStoreSrc,
         address: GlobalAddress,
@@ -1448,6 +1459,8 @@ impl LoweredInstr {
             Self::GlobalStoreHigh16 { .. } => "global_store_short_d16_hi",
             Self::GlobalLoadUshort { .. } => "global_load_ushort",
             Self::GlobalStoreShort { .. } => "global_store_short",
+            Self::ScratchLoad { .. } => "scratch_load",
+            Self::ScratchStore { .. } => "scratch_store",
             Self::GlobalStore { .. } => "global_store",
             Self::BufferLoad { .. } => "buffer_load",
             Self::BufferStore { .. } => "buffer_store",

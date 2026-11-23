@@ -15,6 +15,8 @@ use super::EvalError;
 use super::global::GlobalMemory;
 use super::word::Word;
 
+mod scratch;
+
 /// A wave of the selected workgroup, identified by its index.
 /// Wave `w` holds work-items `64w` to `64w + 63`.
 #[id_type]
@@ -121,7 +123,8 @@ pub(crate) struct WaveRegisters {
 /// The SGPRs s0 to s101 and, at its encoding, M0; the encodings between are not storage.
 const SCALAR_SLOTS: usize = Sgpr::M0.0 as usize + 1;
 
-/// A register location: a scalar register, SCC, or one lane's VGPR, AGPR or VCC bit.
+/// A register location: a scalar register, SCC, or one lane's VGPR, AGPR, VCC bit or private
+/// (scratch) dword.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Slot {
     Scalar(u8),
@@ -129,6 +132,7 @@ enum Slot {
     Vector { lane: u8, reg: u8 },
     Agpr { lane: u8, reg: u8 },
     Vcc(u8),
+    Scratch { lane: u8, dword: u16 },
 }
 
 /// The stored state of one location.
@@ -139,6 +143,7 @@ enum Stored {
     Vector(VectorValue),
     Agpr(Option<ExprId>),
     Vcc(Option<ExprId>),
+    Scratch(Option<Word>),
 }
 
 /// What undoing an execution restores: each written location's earlier states, and each
@@ -176,6 +181,8 @@ struct LaneRegisters {
     values: [VectorValue; 256],
     accumulators: [Option<ExprId>; 256],
     vcc: Option<ExprId>,
+    /// The lane's private dwords, by byte offset over 4, each once stored.
+    scratch: Vec<Option<Word>>,
     pending_loads: VecDeque<VmLoad>,
 }
 
@@ -196,6 +203,7 @@ impl Default for WaveRegisters {
             values: [VectorValue::Word(RegValue::Uninitialized); 256],
             accumulators: [None; 256],
             vcc: None,
+            scratch: Vec::new(),
             pending_loads: VecDeque::new(),
         };
         Self {
@@ -434,6 +442,12 @@ impl WaveRegisters {
                     .get(usize::from(lane))
                     .and_then(|registers| registers.vcc),
             ),
+            Slot::Scratch { lane, dword } => Stored::Scratch(
+                self.vector
+                    .get(usize::from(lane))
+                    .and_then(|registers| registers.scratch.get(usize::from(dword)).copied())
+                    .flatten(),
+            ),
         }
     }
 
@@ -459,6 +473,15 @@ impl WaveRegisters {
             (Slot::Vcc(lane), Stored::Vcc(value)) => {
                 if let Some(registers) = self.vector.get_mut(usize::from(lane)) {
                     registers.vcc = value;
+                }
+            }
+            (Slot::Scratch { lane, dword }, Stored::Scratch(value)) => {
+                if let Some(registers) = self.vector.get_mut(usize::from(lane)) {
+                    let dword = usize::from(dword);
+                    if registers.scratch.len() <= dword {
+                        registers.scratch.resize(dword + 1, None);
+                    }
+                    registers.scratch[dword] = value;
                 }
             }
             _ => {}
@@ -599,6 +622,11 @@ fn same_state(arena: &ExprArena, a: &Stored, b: &Stored) -> bool {
             same_value(arena, *a, *b)
         }
         (Stored::Agpr(a), Stored::Agpr(b)) | (Stored::Vcc(a), Stored::Vcc(b)) => same_option(a, b),
+        (Stored::Scratch(a), Stored::Scratch(b)) => match (a, b) {
+            (Some(a), Some(b)) => same_word(arena, *a, *b),
+            (None, None) => true,
+            _ => false,
+        },
         _ => false,
     }
 }

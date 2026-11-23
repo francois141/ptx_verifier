@@ -946,6 +946,38 @@ fn lower_as_written(
                 address: buffer_lds_address(vaddr, rsrc, soffset, modifiers)?,
             })
         }
+        ("scratch_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(ScratchLoad {
+            dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
+            offset: scratch_offset(vaddr, saddr, offset)?,
+        }),
+        ("scratch_load_dwordx2", [dst, vaddr, saddr, offset @ ..]) => Ok(ScratchLoad {
+            dst: GlobalLoadDst::Dwordx2(
+                vgprs(dst).ok_or("expected an even-aligned VGPR destination pair")?,
+            ),
+            offset: scratch_offset(vaddr, saddr, offset)?,
+        }),
+        ("scratch_load_dwordx4", [dst, vaddr, saddr, offset @ ..]) => Ok(ScratchLoad {
+            dst: GlobalLoadDst::Dwordx4(
+                vgprs(dst).ok_or("expected an even-aligned four-VGPR destination")?,
+            ),
+            offset: scratch_offset(vaddr, saddr, offset)?,
+        }),
+        ("scratch_store_dword", [vaddr, src, saddr, offset @ ..]) => Ok(ScratchStore {
+            src: GlobalStoreSrc::Dword(lane_reg(src).ok_or("expected one VGPR or AGPR source")?),
+            offset: scratch_offset(vaddr, saddr, offset)?,
+        }),
+        ("scratch_store_dwordx2", [vaddr, src, saddr, offset @ ..]) => Ok(ScratchStore {
+            src: GlobalStoreSrc::Dwordx2(
+                lane_regs(src).ok_or("expected an even-aligned VGPR or AGPR source pair")?,
+            ),
+            offset: scratch_offset(vaddr, saddr, offset)?,
+        }),
+        ("scratch_store_dwordx4", [vaddr, src, saddr, offset @ ..]) => Ok(ScratchStore {
+            src: GlobalStoreSrc::Dwordx4(
+                lane_regs(src).ok_or("expected an even-aligned four-VGPR or AGPR source")?,
+            ),
+            offset: scratch_offset(vaddr, saddr, offset)?,
+        }),
         ("global_store_short_d16_hi", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreHigh16 {
             src: lane_reg(src).ok_or("expected one VGPR or AGPR source")?,
             address: global_address(vaddr, saddr, offset)?,
@@ -1144,6 +1176,12 @@ fn lower_as_written(
             | "s_bitset0_b32"
             | "s_bitset1_b32"
             | "global_store_short_d16_hi"
+            | "scratch_load_dword"
+            | "scratch_load_dwordx2"
+            | "scratch_load_dwordx4"
+            | "scratch_store_dword"
+            | "scratch_store_dwordx2"
+            | "scratch_store_dwordx4"
             | "global_load_dword"
             | "global_load_dwordx2"
             | "global_load_dwordx3"
@@ -2411,6 +2449,26 @@ fn global_address(
         },
     };
     Ok(GlobalAddress { base, offset })
+}
+
+/// A scratch access's byte offset: only the form addressed by the offset alone, a dword-aligned
+/// one at or above 0, as spills are.
+fn scratch_offset(
+    vaddr: &Operand,
+    saddr: &Operand,
+    offset: &[Operand],
+) -> Result<u16, &'static str> {
+    if !matches!((vaddr, saddr), (Operand::Off, Operand::Off)) {
+        return Err("expected a scratch access addressed by its offset alone (off, off)");
+    }
+    match without_cache_policy(offset) {
+        [] => Ok(0),
+        [Operand::Offset(offset)] => u16::try_from(*offset)
+            .ok()
+            .filter(|offset| *offset <= 4095 && offset % 4 == 0)
+            .ok_or("expected a dword-aligned byte offset from 0 to 4095"),
+        _ => Err("unsupported operand count"),
+    }
 }
 
 /// A 32-bit literal or an inline constant, as the 32 bits of the operand.

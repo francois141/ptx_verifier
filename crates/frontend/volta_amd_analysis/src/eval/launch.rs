@@ -259,7 +259,10 @@ fn reject_unsupported_inputs(descriptor: &BTreeMap<String, u64>) -> Result<(), E
             | "system_sgpr_workgroup_id_z" => false,
             // Only the compatibility prologue reads it, as the offset of the dwords it loads.
             "user_sgpr_kernarg_preload_offset" => false,
-            "enable_private_segment" | "wavefront_size32" => true,
+            // gfx950's flat scratch is architected: the scratch accesses lowering accepts are
+            // addressed by their offset alone, from no SGPR input.
+            "enable_private_segment" => false,
+            "wavefront_size32" => true,
             // Every other SGPR input, such as the private segment buffer or workgroup info.
             other => other.starts_with("user_sgpr_") || other.starts_with("system_sgpr_"),
         };
