@@ -753,6 +753,12 @@ impl WaveRegisters {
         self.scc = Some(scc);
     }
 
+    /// Overwrite SCC with a bit the model does not know, so that reading it is an error.
+    pub fn write_unknown_scc(&mut self) {
+        self.note_write(Slot::Scc);
+        self.scc = None;
+    }
+
     /// VCC as a 64-bit lane mask; every lane's bit must be a concrete boolean.
     pub fn read_vcc_mask(&self, arena: &ExprArena) -> Result<u64, EvalError> {
         let mut mask = 0;

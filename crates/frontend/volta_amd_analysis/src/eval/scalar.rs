@@ -2,10 +2,14 @@
 //! wave, as another `impl Interpreter`. The ALU operates on concrete words.
 
 use crate::ir::{
-    ExecCopy, ExecOrder, LoweredInstr, ScalarCmp64Op, ScalarCmpOp, ScalarDst64, ScalarLoadDst,
-    ScalarOp32, ScalarOp64, ScalarShift64, ScalarSrc, ScalarSrc64, ScalarUnaryOp32, Sgpr,
+    ExecCopy, ExecOrder, LaneMask, LoweredInstr, ScalarCmp64Op, ScalarCmpOp, ScalarDst64,
+    ScalarLoadDst, ScalarOp32, ScalarOp64, ScalarShift64, ScalarSrc, ScalarSrc64, ScalarUnaryOp32,
+    Sgpr,
 };
 
+use volta_expr::symbolic_full::{ExprArena, ExprId};
+
+use super::simplify;
 use super::wave::{LgkmInFlight, WaveId, WaveRegisters};
 use super::word::Word;
 use super::{EvalError, Interpreter};
@@ -110,8 +114,19 @@ impl Interpreter<'_> {
                 src0,
                 src1,
             } => {
-                let a = self.read_scalar64(wave, *src0)?;
-                let b = self.read_scalar64(wave, *src1)?;
+                let (a, b) = match (
+                    self.read_scalar64(wave, *src0),
+                    self.read_scalar64(wave, *src1),
+                ) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(EvalError::SymbolicSgpr(_) | EvalError::SymbolicVcc { .. }), _)
+                    | (_, Err(EvalError::SymbolicSgpr(_) | EvalError::SymbolicVcc { .. }))
+                        if *op != ScalarOp64::CSelectB64 =>
+                    {
+                        return self.lane_mask_op64(wave, *op, *dst, *src0, *src1);
+                    }
+                    (a, b) => (a?, b?),
+                };
                 let registers = &mut self.waves[wave].registers;
                 let value = scalar_op64(registers, *op, a, b)?;
                 if *op != ScalarOp64::CSelectB64 {
@@ -349,6 +364,70 @@ impl Interpreter<'_> {
         }
     }
 
+    /// A bitwise `op` of two lane masks, at least one holding a symbolic comparison, lane by
+    /// lane over predicates. EXEC must stay concrete, and SCC is unknown unless the result is.
+    fn lane_mask_op64(
+        &mut self,
+        wave: WaveId,
+        op: ScalarOp64,
+        dst: ScalarDst64,
+        src0: ScalarSrc64,
+        src1: ScalarSrc64,
+    ) -> Result<(), EvalError> {
+        let a = self.read_lane_predicates(wave, src0)?;
+        let b = self.read_lane_predicates(wave, src1)?;
+        let arena = &mut self.arena;
+        let conditions: Vec<ExprId> = a
+            .into_iter()
+            .zip(b)
+            .map(|(a, b)| lane_op64(arena, op, a, b))
+            .collect();
+        let concrete = conditions
+            .iter()
+            .enumerate()
+            .try_fold(0u64, |mask, (lane, &bit)| {
+                arena.as_bool(bit).map(|bit| mask | u64::from(bit) << lane)
+            });
+        if let Some(value) = concrete {
+            self.waves[wave].registers.write_scc(value != 0);
+            return self.write_scalar64(wave, dst, value);
+        }
+        let mask = match dst {
+            ScalarDst64::Sgprs(pair) => LaneMask::Sgprs(pair),
+            ScalarDst64::Vcc => LaneMask::Vcc,
+            ScalarDst64::Exec => return Err(EvalError::SymbolicExec),
+        };
+        let registers = &mut self.waves[wave].registers;
+        registers.write_lane_mask(&mut self.arena, mask, &conditions)?;
+        registers.write_unknown_scc();
+        Ok(())
+    }
+
+    /// Each lane's bit of a 64-bit source as a predicate, symbolic where a mask holds a
+    /// comparison.
+    fn read_lane_predicates(
+        &mut self,
+        wave: WaveId,
+        src: ScalarSrc64,
+    ) -> Result<Vec<ExprId>, EvalError> {
+        let registers = &self.waves[wave].registers;
+        let concrete = match src {
+            ScalarSrc64::Sgprs(pair) => {
+                let mask = LaneMask::Sgprs(pair);
+                return (0..64)
+                    .map(|lane| registers.read_lane_condition(&mut self.arena, lane, mask))
+                    .collect();
+            }
+            ScalarSrc64::Vcc => return (0..64).map(|lane| registers.read_vcc(lane)).collect(),
+            ScalarSrc64::Exec => self.waves[wave].exec,
+            ScalarSrc64::Const(value) => value,
+            ScalarSrc64::SharedBase => crate::ir::SHARED_APERTURE_BASE,
+        };
+        Ok((0..64)
+            .map(|lane| self.arena.bool_val(concrete >> lane & 1 != 0))
+            .collect())
+    }
+
     /// Write `value` to a 64-bit destination; in EXEC, it is the wave's new set of active lanes.
     fn write_scalar64(
         &mut self,
@@ -392,6 +471,36 @@ fn scalar_op64(
             }
         }
     })
+}
+
+/// One lane's bit of a bitwise `op` over predicates.
+fn lane_op64(arena: &mut ExprArena, op: ScalarOp64, a: ExprId, b: ExprId) -> ExprId {
+    match op {
+        ScalarOp64::AndB64 => simplify::and(arena, a, b),
+        ScalarOp64::OrB64 => simplify::or(arena, a, b),
+        ScalarOp64::XorB64 => simplify::xor(arena, a, b),
+        ScalarOp64::AndN2B64 => {
+            let b = simplify::not(arena, b);
+            simplify::and(arena, a, b)
+        }
+        ScalarOp64::OrN2B64 => {
+            let b = simplify::not(arena, b);
+            simplify::or(arena, a, b)
+        }
+        ScalarOp64::NandB64 => {
+            let both = simplify::and(arena, a, b);
+            simplify::not(arena, both)
+        }
+        ScalarOp64::NorB64 => {
+            let either = simplify::or(arena, a, b);
+            simplify::not(arena, either)
+        }
+        ScalarOp64::XnorB64 => {
+            let differ = simplify::xor(arena, a, b);
+            simplify::not(arena, differ)
+        }
+        ScalarOp64::CSelectB64 => unreachable!("a select reads SCC, not lane predicates"),
+    }
 }
 
 /// `a op b` and the SCC it writes, `None` when the operation leaves SCC unchanged.

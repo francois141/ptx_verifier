@@ -11,6 +11,7 @@ mod lds;
 mod mfma;
 mod record;
 mod scalar;
+mod simplify;
 mod wave;
 mod word;
 

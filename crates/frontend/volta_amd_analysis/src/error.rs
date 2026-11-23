@@ -31,6 +31,8 @@ pub enum EvalError {
     SymbolicVcc {
         lane: usize,
     },
+    /// A write to EXEC of a mask some lane's bit of which is a symbolic comparison.
+    SymbolicExec,
     SymbolicWord {
         lane: usize,
     },
@@ -160,6 +162,7 @@ impl fmt::Display for EvalError {
                     reg.0
                 )
             }
+            Self::SymbolicExec => write!(f, "EXEC would hold a symbolic comparison"),
             Self::SymbolicVcc { lane } => {
                 write!(
                     f,
