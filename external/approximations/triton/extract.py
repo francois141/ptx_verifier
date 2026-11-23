@@ -38,7 +38,9 @@ CASES = {
     "tanh": ("tanh", "tanh.approx.f32"),
     "softplus": ("softplus", "softplus without its threshold, libdevice's log"),
     "softplus_fast": ("softplus", "softplus without its threshold, libdevice's fast_logf"),
-    "softplus_threshold": ("softplus", "PyTorch's softplus with its threshold 20, fast_logf"),
+    "softplus_threshold": (
+        "softplus_threshold", "PyTorch's softplus with its threshold 20, fast_logf"
+    ),
 }
 
 

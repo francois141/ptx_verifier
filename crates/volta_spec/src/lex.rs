@@ -19,6 +19,13 @@ pub enum TokenKind {
     Comma,
     Semicolon,
     Equals,
+    /// The comparisons of a `where` condition: `>`, `>=`, `<`, `<=`, `==`, `!=`.
+    Greater,
+    GreaterEq,
+    Less,
+    LessEq,
+    EqEq,
+    NotEq,
     Plus,
     Minus,
     Star,
@@ -40,6 +47,12 @@ impl fmt::Display for TokenKind {
             TokenKind::Comma => write!(f, "','"),
             TokenKind::Semicolon => write!(f, "';'"),
             TokenKind::Equals => write!(f, "'='"),
+            TokenKind::Greater => write!(f, "'>'"),
+            TokenKind::GreaterEq => write!(f, "'>='"),
+            TokenKind::Less => write!(f, "'<'"),
+            TokenKind::LessEq => write!(f, "'<='"),
+            TokenKind::EqEq => write!(f, "'=='"),
+            TokenKind::NotEq => write!(f, "'!='"),
             TokenKind::Plus => write!(f, "'+'"),
             TokenKind::Minus => write!(f, "'-'"),
             TokenKind::Star => write!(f, "'*'"),
@@ -148,6 +161,29 @@ impl<'a> Lexer<'a> {
         TokenKind::Ident(self.src[start..self.pos].to_string())
     }
 
+    /// `=`, a comparison, or `!` alone (an error): the longest operator at `start`.
+    fn lex_operator(&mut self, start: usize) -> Result<TokenKind, Locate<LexErrorKind>> {
+        let followed_by_equals = self.peek_byte_at(1) == Some(b'=');
+        let (kind, len) = match (self.bytes[start], followed_by_equals) {
+            (b'=', true) => (TokenKind::EqEq, 2),
+            (b'=', false) => (TokenKind::Equals, 1),
+            (b'>', true) => (TokenKind::GreaterEq, 2),
+            (b'>', false) => (TokenKind::Greater, 1),
+            (b'<', true) => (TokenKind::LessEq, 2),
+            (b'<', false) => (TokenKind::Less, 1),
+            (b'!', true) => (TokenKind::NotEq, 2),
+            (other, _) => {
+                return Err(Locate {
+                    path: None,
+                    span: Some(Span::new(start, start + 1)),
+                    error: LexErrorKind::UnexpectedChar(other as char),
+                });
+            }
+        };
+        self.pos += len;
+        Ok(kind)
+    }
+
     /// Tokenize the whole input, ending with one `Eof` token.
     pub fn tokenize(mut self) -> Result<Vec<Token>, Locate<LexErrorKind>> {
         let mut tokens = Vec::new();
@@ -192,10 +228,7 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                     TokenKind::Semicolon
                 }
-                b'=' => {
-                    self.pos += 1;
-                    TokenKind::Equals
-                }
+                b'=' | b'>' | b'<' | b'!' => self.lex_operator(start)?,
                 b'+' => {
                     self.pos += 1;
                     TokenKind::Plus

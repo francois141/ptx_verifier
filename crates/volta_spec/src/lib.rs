@@ -18,7 +18,10 @@ pub mod spec;
 pub use ast::{ArrayDecl, DimDecl, Elements, OutputDecl, Padding, ParamDecl, ParsedSpec};
 pub use instantiate::{InstantiateErrorKind, instantiate, instantiate_with_indices};
 pub use parse::{ParseError, ParseErrorKind, parse_spec};
-pub use spec::{IndexExpr, OutputSpec, ReduceOp, Shape, SpecEnv, SpecError, SpecExpr, unfold};
+pub use spec::{
+    Comparison, Condition, IndexExpr, OutputSpec, ReduceOp, Shape, SpecEnv, SpecError, SpecExpr,
+    unfold,
+};
 
 /// Why a spec's source could not be turned into expressions, by stage.
 #[derive(Debug)]

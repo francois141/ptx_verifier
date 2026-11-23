@@ -69,6 +69,26 @@ pub enum ReduceOp {
     Max,
 }
 
+/// The comparison of a `where` condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Comparison {
+    Greater,
+    GreaterEq,
+    Less,
+    LessEq,
+    Equal,
+    NotEqual,
+}
+
+/// `lhs op rhs`, a `where`'s condition: a truth value, never itself a value, so a spec
+/// cannot add or multiply one.
+#[derive(Debug, Clone)]
+pub struct Condition {
+    pub op: Comparison,
+    pub lhs: SpecExpr,
+    pub rhs: SpecExpr,
+}
+
 /// An index expression: the small integer sublanguage allowed in array index position.
 /// Deliberately not full `SpecExpr` - an index must resolve to one concrete `u64` per
 /// element, as a kernel's own addresses must, so the arrays it reads are index arrays,
@@ -168,6 +188,12 @@ pub enum SpecExpr {
         end: IndexExpr,
         body: Box<SpecExpr>,
     },
+    /// `then` where `condition` holds, else `otherwise`, as a kernel's `selp` of a `setp`.
+    Where {
+        condition: Box<Condition>,
+        then: Box<SpecExpr>,
+        otherwise: Box<SpecExpr>,
+    },
     /// `body` with `name` standing for `value`, which is built once however often `body`
     /// reads it. A let-bound name is a value, never a subscript.
     Let {
@@ -227,6 +253,14 @@ impl SpecExpr {
 
     pub fn erf(self) -> Self {
         SpecExpr::Erf(Box::new(self))
+    }
+
+    pub fn select(condition: Condition, then: Self, otherwise: Self) -> Self {
+        SpecExpr::Where {
+            condition: Box::new(condition),
+            then: Box::new(then),
+            otherwise: Box::new(otherwise),
+        }
     }
 
     pub fn bit_not(self) -> Self {
@@ -625,6 +659,16 @@ fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
             index_free_vars(start, out);
             index_free_vars(end, out);
         }
+        SpecExpr::Where {
+            condition,
+            then,
+            otherwise,
+        } => {
+            free_vars(&condition.lhs, out);
+            free_vars(&condition.rhs, out);
+            free_vars(then, out);
+            free_vars(otherwise, out);
+        }
         SpecExpr::Let { name, value, body } => {
             free_vars(value, out);
             let mut inner = std::collections::HashSet::new();
@@ -839,6 +883,29 @@ fn eval(
                 _ => arena.lshr(WORD, x, y),
             })
         }
+        SpecExpr::Where {
+            condition,
+            then,
+            otherwise,
+        } => {
+            let (lhs, rhs) = (
+                eval(&condition.lhs, env, bindings, arena, array_ids, memo)?,
+                eval(&condition.rhs, env, bindings, arena, array_ids, memo)?,
+            );
+            let holds = match condition.op {
+                Comparison::Greater => arena.gt(Type::Real, lhs, rhs),
+                Comparison::GreaterEq => arena.ge(Type::Real, lhs, rhs),
+                Comparison::Less => arena.lt(Type::Real, lhs, rhs),
+                Comparison::LessEq => arena.le(Type::Real, lhs, rhs),
+                Comparison::Equal => arena.eq(Type::Real, lhs, rhs),
+                Comparison::NotEqual => arena.ne(Type::Real, lhs, rhs),
+            };
+            let (then, otherwise) = (
+                eval(then, env, bindings, arena, array_ids, memo)?,
+                eval(otherwise, env, bindings, arena, array_ids, memo)?,
+            );
+            Ok(arena.select(Type::Real, holds, then, otherwise))
+        }
         SpecExpr::Let { name, value, body } => {
             let value = eval(value, env, bindings, arena, array_ids, memo)?;
             let mut inner = bindings.clone();
@@ -986,6 +1053,20 @@ mod tests {
     /// `Reduce`'s memo: the row max in `out[i,k] = A[i,k] - max(j in 0..N, A[i,j])` is
     /// invariant in `k`, so every element of a row must share one row-max `ExprId`, and
     /// the two rows must not share one.
+    #[test]
+    fn where_unfolds_to_a_select_of_its_comparison() {
+        use volta_expr::symbolic_full::ExprNode;
+        let source = "dim N; array a[N]; array c[N]; c[i] = where(a[i] >= 20, a[i], 0);";
+        let output =
+            crate::extract_expressions_from_spec(source, &HashMap::from([("N".into(), 1)]))
+                .unwrap();
+        let (_, id) = output.outputs[0].1[0];
+        let ExprNode::Select(condition, _, _) = *output.arena.node(id) else {
+            panic!("expected a select, found {:?}", output.arena.node(id));
+        };
+        assert!(matches!(output.arena.node(condition), ExprNode::Ge(..)));
+    }
+
     #[test]
     fn max_reduction_is_memoized_across_output_elements_that_share_its_bindings() {
         use volta_expr::symbolic_full::ExprNode;

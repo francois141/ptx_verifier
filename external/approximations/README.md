@@ -15,10 +15,11 @@ epilogue functor where it has one, and in PyTorch's CUDA formula where it has no
 | [`composable_kernel/`](composable_kernel/README.md) | Composable Kernel rocm-7.0.0, clang 21, `-ffast-math`, gfx950 | `DeviceGemm_Xdl_CShuffleV3` (fp32 MFMA 16x16x4) with its C element-wise operation | workgroup 0's 64 x 256 (16,384 outputs) |
 
 The specs are in [`specs/`](specs/): `c[m, n] = let(x, sum(k in 0..K, a[m, k] * b[n, k]), <act>)`,
-the activation in the `max`/`min`/`exp` form the canonical solver interprets, with PyTorch's f32
-constants where its kernels round one (LeakyReLU's 0.01, `one_sixth`, SELU's coefficients). A
-launch file `<case>.launch.json` beside each kernel names its spec, and `just approximations`
-(`verify.py`) runs every case through `volta solve`.
+the activation in the `max`/`min`/`exp` form the canonical solver interprets (PyTorch's
+thresholded softplus, whose pieces do not meet, as `where(x > 20, x, log(1 + exp(x)))`), with
+PyTorch's f32 constants where its kernels round one (LeakyReLU's 0.01, `one_sixth`, SELU's
+coefficients). A launch file `<case>.launch.json` beside each kernel names its spec, and
+`just approximations` (`verify.py`) runs every case through `volta solve`.
 
 The folder is named for what these kernels contain: the approximations compilers substitute for
 the real functions. Volta computes over the reals, so each verdict says whether it sees through
@@ -26,7 +27,7 @@ one. The kernels are checked as compiled; none is patched.
 
 ## Results
 
-53 kernels: 41 ACCEPT, 11 UNKNOWN, 1 REJECT (`just approximations`, every output of each tile,
+53 kernels: 43 ACCEPT, 9 UNKNOWN, 1 REJECT (`just approximations`, every output of each tile,
 no sampling; the two time columns are Volta's symbolic execution and its solver).
 
 | Compiler | Case | Verdict | Outputs | Execution (s) | Solver (s) |
@@ -82,8 +83,8 @@ no sampling; the two time columns are Volta's symbolic execution and its solver)
 | Triton | `triton/softplus` | UNKNOWN | 16,384 | 1.8 | - |
 | CK | `composable_kernel/softrelu` | ACCEPT | 16,384 | 0.8 | 14.6 |
 | Triton | `triton/softplus_fast` | ACCEPT | 16,384 | 2.0 | 14.1 |
-| CUTLASS | `cutlass/softplus_threshold` | UNKNOWN | 32,768 | 3.1 | 43.6 |
-| Triton | `triton/softplus_threshold` | UNKNOWN | 16,384 | 2.0 | 20.6 |
+| CUTLASS | `cutlass/softplus_threshold` | ACCEPT | 32,768 | 3.2 | 28.5 |
+| Triton | `triton/softplus_threshold` | ACCEPT | 16,384 | 1.9 | 14.2 |
 
 ## What the verdicts mean
 
@@ -113,11 +114,6 @@ GELU with erf, Triton's libdevice tanh and `tl.log`, and CK's `Elu`, `TanH`, `Ge
 between two constant words, which the AMD frontend cannot type as floats or integers. nvcc and clang also
 turn some nested ternaries into branches (CUTLASS's and CK's Softshrink, CUTLASS's ELU family and
 thresholded softplus), which their functors here avoid; see the folders' READMEs.
-
-**UNKNOWN: not proved, not refuted.** PyTorch's softplus returns `x` itself past its threshold 20
-(`softplus_threshold`), where `log(1 + e^x)` exceeds it by `e^-x`, under 1e-8: the two sides do
-not canonicalize equal and the numeric oracle, sampling random inputs, finds no difference it
-counts.
 
 **REJECT: the kernel is not the spec over the reals.** libdevice's `expf` (CUTLASS's
 `sigmoid_precise`, no fast math) splits `x` into an integer multiple of `ln 2` and a remainder with

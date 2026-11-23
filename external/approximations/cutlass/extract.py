@@ -66,7 +66,7 @@ CASES = {
     "tanh": Case(f"{FUNCTORS}::Tanh", "tanh", "CUTLASS's Tanh (tanh.approx)"),
     "softplus": Case("pytorch::Softplus", "softplus", "PyTorch's Softplus without its threshold"),
     "softplus_threshold": Case(
-        "pytorch::SoftplusThreshold", "softplus", "PyTorch's Softplus with its threshold 20"
+        "pytorch::SoftplusThreshold", "softplus_threshold", "PyTorch's Softplus with its threshold 20"
     ),
 }
 

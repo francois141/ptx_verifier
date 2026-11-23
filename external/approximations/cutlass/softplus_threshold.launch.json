@@ -55,7 +55,7 @@
       "ptr": "c"
     }
   ],
-  "spec": "../specs/softplus.spec",
+  "spec": "../specs/softplus_threshold.spec",
   "dims": {
     "M": 256,
     "N": 256,

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::spec::{IndexExpr, ReduceOp, SpecExpr};
+use crate::spec::{Comparison, Condition, IndexExpr, ReduceOp, SpecExpr};
 use volta_common::report::Locate;
 use volta_common::span::Span;
 
@@ -357,6 +357,12 @@ impl Parser {
                 self.expect(TokenKind::RParen, "')'")?;
                 Ok(SpecExpr::Let { name, value, body })
             }
+            "where" => {
+                let condition = self.parse_condition()?;
+                self.expect(TokenKind::Comma, "','")?;
+                let (then, otherwise) = self.parse_binary_call()?;
+                Ok(SpecExpr::select(condition, then, otherwise))
+            }
             "not" => Ok(self.parse_unary_call()?.bit_not()),
             "popc" => Ok(self.parse_unary_call()?.popc()),
             "min" => {
@@ -415,6 +421,23 @@ impl Parser {
         let body = self.parse_expr()?;
         self.expect(TokenKind::RParen, "')'")?;
         Ok((var, [start, end], body))
+    }
+
+    /// `expr op expr`, `op` one comparison: conditions do not chain or combine.
+    fn parse_condition(&mut self) -> Result<Condition, ParseError> {
+        let lhs = self.parse_expr()?;
+        let op = match self.peek().kind {
+            TokenKind::Greater => Comparison::Greater,
+            TokenKind::GreaterEq => Comparison::GreaterEq,
+            TokenKind::Less => Comparison::Less,
+            TokenKind::LessEq => Comparison::LessEq,
+            TokenKind::EqEq => Comparison::Equal,
+            TokenKind::NotEq => Comparison::NotEqual,
+            _ => return Err(self.unexpected("a comparison ('>', '>=', '<', '<=', '==', '!=')")),
+        };
+        self.bump();
+        let rhs = self.parse_expr()?;
+        Ok(Condition { op, lhs, rhs })
     }
 
     fn parse_unary_call(&mut self) -> Result<SpecExpr, ParseError> {

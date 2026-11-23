@@ -41,7 +41,7 @@ through.
 | `silu` | `SiLu` | `Sigmoid`'s code times `x` | `silu` |
 | `tanh` | `Tanh` | `tanh.approx.f32` | `tanh` |
 | `softplus` | `pytorch::Softplus` | `ex2.approx.ftz.f32`, `lg2.approx.ftz.f32` times `ln 2` | `softplus` |
-| `softplus_threshold` | `pytorch::SoftplusThreshold`, threshold 20 | the same, as volatile asm, under a `selp` on `x > 20` | `softplus` |
+| `softplus_threshold` | `pytorch::SoftplusThreshold`, threshold 20 | the same, as volatile asm, under a `selp` on `x > 20` | `softplus_threshold` |
 
 `activations.h` holds the PyTorch activations CUTLASS has no functor for, written as PyTorch's
 CUDA functors write them (`aten/src/ATen/native/cuda/Activation*.cu`) in `activation.h`'s form.

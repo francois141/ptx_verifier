@@ -37,7 +37,7 @@ bits), so to Volta the GEMM is the exact fp32 product.
 | `tanh` | `tanh_approx(x)` | `tanh.approx.f32` | `tanh` |
 | `softplus` | `tl.log(1.0 + tl.exp(x))` | `__nv_logf`: libdevice's range-reduced polynomial | `softplus` |
 | `softplus_fast` | `libdevice.fast_logf(1.0 + tl.exp(x))` | `lg2.approx.ftz.f32` times f32 `ln 2` | `softplus` |
-| `softplus_threshold` | `tl.where(x > 20.0, x, libdevice.fast_logf(1.0 + tl.exp(x)))` | the same under a `selp` | `softplus` |
+| `softplus_threshold` | `tl.where(x > 20.0, x, libdevice.fast_logf(1.0 + tl.exp(x)))` | the same under a `selp` | `softplus_threshold` |
 
 Python's float constants become f32 constants next to the fp32 tiles, so `0.01` and `1.0 / 6.0`
 are PyTorch's `0.01f` and `one_sixth`; the specs state those f32 values. `tl.log` is libdevice's
