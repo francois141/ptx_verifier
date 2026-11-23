@@ -1,6 +1,7 @@
 //! Symbolic execution of AMD instructions.
 
 mod arithm;
+mod bf16;
 mod buffer;
 mod ds;
 mod exp2_range;
