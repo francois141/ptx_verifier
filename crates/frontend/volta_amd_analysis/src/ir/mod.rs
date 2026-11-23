@@ -1287,6 +1287,21 @@ pub enum LoweredInstr {
         dst: GlobalLoadDst,
         address: GlobalAddress,
     },
+    /// `global_store_short_d16_hi`: store the high 16 bits of `src`, one bf16 element.
+    GlobalStoreHigh16 {
+        src: LaneReg,
+        address: GlobalAddress,
+    },
+    /// `global_load_ushort`: 16 bits zero-extended, as `buffer_load_ushort` loads them.
+    GlobalLoadUshort {
+        dst: Vgpr,
+        address: GlobalAddress,
+    },
+    /// `global_store_short`: store the low 16 bits of `src`, one bf16 element.
+    GlobalStoreShort {
+        src: LaneReg,
+        address: GlobalAddress,
+    },
     GlobalStore {
         src: GlobalStoreSrc,
         address: GlobalAddress,
@@ -1430,6 +1445,9 @@ impl LoweredInstr {
             Self::BufferLoadLds { .. } => "buffer_load (to LDS)",
             Self::DsReadTrB16 { .. } => "ds_read_b64_tr_b16",
             Self::GlobalLoad { .. } => "global_load",
+            Self::GlobalStoreHigh16 { .. } => "global_store_short_d16_hi",
+            Self::GlobalLoadUshort { .. } => "global_load_ushort",
+            Self::GlobalStoreShort { .. } => "global_store_short",
             Self::GlobalStore { .. } => "global_store",
             Self::BufferLoad { .. } => "buffer_load",
             Self::BufferStore { .. } => "buffer_store",

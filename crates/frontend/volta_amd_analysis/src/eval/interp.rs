@@ -21,6 +21,7 @@ use super::arithm::{
     evaluate_cvt_to_f64, evaluate_dpp_lane, evaluate_f64_op, evaluate_ldexp_f32,
     evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
 };
+use super::buffer::load_ushort;
 use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
 use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
 use super::lds::{Lds, LdsLaneAccess, LdsRace};
@@ -260,6 +261,9 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::PackedF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
+            | LoweredInstr::GlobalStoreHigh16 { .. }
+            | LoweredInstr::GlobalLoadUshort { .. }
+            | LoweredInstr::GlobalStoreShort { .. }
             | LoweredInstr::BufferLoad { .. }
             | LoweredInstr::BufferStore { .. } => self.execute_for_workgroups(wave, instruction)?,
         }
@@ -513,6 +517,9 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::PackedF32 { .. }
             | LoweredInstr::GlobalLoad { .. }
             | LoweredInstr::GlobalStore { .. }
+            | LoweredInstr::GlobalStoreHigh16 { .. }
+            | LoweredInstr::GlobalLoadUshort { .. }
+            | LoweredInstr::GlobalStoreShort { .. }
             | LoweredInstr::BufferLoad { .. }
             | LoweredInstr::BufferStore { .. }
             | LoweredInstr::BufferLoadLds { .. }
@@ -880,6 +887,29 @@ impl<'a> Interpreter<'a> {
             }
             LoweredInstr::GlobalLoad { dst, address } => {
                 registers.global_load(&mut self.arena, &self.global, lane, dst.regs(), *address)
+            }
+            LoweredInstr::GlobalStoreHigh16 { src, address } => {
+                let start = registers.global_address(&self.arena, lane, *address)?;
+                let high = high_half(&mut self.arena, registers.read_lane_word(lane, *src)?)
+                    .ok_or(EvalError::InvalidBf16Output { address: start })?;
+                self.global.store_bf16(start, high)?;
+                registers.count_vm_store(lane);
+                Ok(())
+            }
+            LoweredInstr::GlobalLoadUshort { dst, address } => {
+                let start = registers.global_address(&self.arena, lane, *address)?;
+                let value = load_ushort(&self.global, &mut self.arena, lane, start)?;
+                registers.start_vector_load(lane, &[*dst], &[value], LoadCounter::Vm)
+            }
+            LoweredInstr::GlobalStoreShort { src, address } => {
+                let start = registers.global_address(&self.arena, lane, *address)?;
+                let [low, _] = registers
+                    .read_lane_word(lane, *src)?
+                    .bf16_halves(&mut self.arena)
+                    .ok_or(EvalError::InvalidBf16Output { address: start })?;
+                self.global.store_bf16(start, low)?;
+                registers.count_vm_store(lane);
+                Ok(())
             }
             LoweredInstr::GlobalStore { src, address } => {
                 registers.global_store(

@@ -3,8 +3,9 @@
 
 use crate::ir::{BufferAddress, BufferLdsWidth, LaneReg, ScalarSrc, Sgpr, Vgpr};
 
-use volta_expr::symbolic_full::Real;
+use volta_expr::symbolic_full::{ExprArena, Real};
 
+use super::global::GlobalMemory;
 use super::wave::{LoadCounter, WaveId, concrete_word};
 use super::word::Word;
 use super::{EvalError, Interpreter};
@@ -120,21 +121,7 @@ impl Interpreter<'_> {
     ) -> Result<(), EvalError> {
         let value = match self.buffer_byte_range(wave, lane, address, 2)? {
             BufferRange::Outside => Word::Value(self.arena.int(0)),
-            BufferRange::Inside(start) => {
-                let high_half = start % 4 == 2;
-                match self.global.load_dword(start - start % 4, &mut self.arena)? {
-                    Word::Bf16 { low, high } => Word::Bf16 {
-                        low: if high_half { high } else { low },
-                        high: self.arena.real(Real::zero()),
-                    },
-                    Word::Value(value) => {
-                        let bits =
-                            concrete_word(&self.arena, value).ok_or(EvalError::NotBf16 { lane })?;
-                        let half = if high_half { bits >> 16 } else { bits & 0xffff };
-                        Word::Value(self.arena.int(i64::from(half)))
-                    }
-                }
-            }
+            BufferRange::Inside(start) => load_ushort(&self.global, &mut self.arena, lane, start)?,
         };
         self.waves[wave]
             .registers
@@ -249,4 +236,26 @@ impl Interpreter<'_> {
         }
         Ok(())
     }
+}
+
+/// The 16 bits at the 2-byte aligned `start`, zero-extended: a bf16 element as the low half of
+/// a word whose high half is +0, or the 16 bits of a concrete word.
+pub(super) fn load_ushort(
+    global: &GlobalMemory,
+    arena: &mut ExprArena,
+    lane: usize,
+    start: u64,
+) -> Result<Word, EvalError> {
+    let high_half = start % 4 == 2;
+    Ok(match global.load_dword(start - start % 4, arena)? {
+        Word::Bf16 { low, high } => Word::Bf16 {
+            low: if high_half { high } else { low },
+            high: arena.real(Real::zero()),
+        },
+        Word::Value(value) => {
+            let bits = concrete_word(arena, value).ok_or(EvalError::NotBf16 { lane })?;
+            let half = if high_half { bits >> 16 } else { bits & 0xffff };
+            Word::Value(arena.int(i64::from(half)))
+        }
+    })
 }

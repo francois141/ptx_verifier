@@ -946,6 +946,18 @@ fn lower_as_written(
                 address: buffer_lds_address(vaddr, rsrc, soffset, modifiers)?,
             })
         }
+        ("global_store_short_d16_hi", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreHigh16 {
+            src: lane_reg(src).ok_or("expected one VGPR or AGPR source")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
+        ("global_load_ushort", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoadUshort {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
+        ("global_store_short", [vaddr, src, saddr, offset @ ..]) => Ok(GlobalStoreShort {
+            src: lane_reg(src).ok_or("expected one VGPR or AGPR source")?,
+            address: global_address(vaddr, saddr, offset)?,
+        }),
         ("global_load_dword", [dst, vaddr, saddr, offset @ ..]) => Ok(GlobalLoad {
             dst: GlobalLoadDst::Dword(vgpr(dst).ok_or("expected one destination VGPR")?),
             address: global_address(vaddr, saddr, offset)?,
@@ -1131,6 +1143,7 @@ fn lower_as_written(
             | "s_bcnt1_i32_b64"
             | "s_bitset0_b32"
             | "s_bitset1_b32"
+            | "global_store_short_d16_hi"
             | "global_load_dword"
             | "global_load_dwordx2"
             | "global_load_dwordx3"
