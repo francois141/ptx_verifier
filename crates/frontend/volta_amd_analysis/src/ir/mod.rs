@@ -1026,6 +1026,12 @@ pub enum LoweredInstr {
         src: Vgpr,
         lane: ScalarSrc,
     },
+    /// Lane `lane % 64` of `dst` = `src`, whether or not that lane is active.
+    WriteLane {
+        dst: Vgpr,
+        src: ScalarSrc,
+        lane: ScalarSrc,
+    },
     /// The IEEE f32 division sequence over the reals, where no operand needs rescaling:
     /// `v_div_scale_f32` is its first source and clears its lane's bit of `scaled`,
     /// `v_div_fmas_f32` is an fma that requires VCC clear, `v_div_fixup_f32` its quotient.
@@ -1366,6 +1372,7 @@ impl LoweredInstr {
             Self::Barrier => "s_barrier",
             Self::ReadFirstLane { .. } => "v_readfirstlane_b32",
             Self::ReadLane { .. } => "v_readlane_b32",
+            Self::WriteLane { .. } => "v_writelane_b32",
             Self::DivScaleF32 { .. } => "v_div_scale_f32",
             Self::DivFmasF32 { .. } => "v_div_fmas_f32",
             Self::DivFixupF32 { .. } => "v_div_fixup_f32",

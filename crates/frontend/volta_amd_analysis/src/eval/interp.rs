@@ -222,6 +222,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::BitCmpScalar64 { .. }
             | LoweredInstr::ReadFirstLane { .. }
             | LoweredInstr::ReadLane { .. }
+            | LoweredInstr::WriteLane { .. }
             | LoweredInstr::DivScaleF32 { .. }
             | LoweredInstr::CmpE64 { .. }
             | LoweredInstr::Cmp64 { .. }
@@ -356,7 +357,8 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::ScalarCmp64 { .. }
             | LoweredInstr::BitCmpScalar64 { .. }
             | LoweredInstr::ReadFirstLane { .. }
-            | LoweredInstr::ReadLane { .. } => self.execute_scalar(wave, instruction),
+            | LoweredInstr::ReadLane { .. }
+            | LoweredInstr::WriteLane { .. } => self.execute_scalar(wave, instruction),
             LoweredInstr::CmpE64 {
                 op,
                 dst,

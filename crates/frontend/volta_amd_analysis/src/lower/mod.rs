@@ -388,6 +388,11 @@ fn lower_as_written(
             src: vgpr(src).ok_or("expected one source VGPR")?,
             lane: scalar_source(lane).ok_or("expected an SGPR or constant lane")?,
         }),
+        ("v_writelane_b32", [dst, src, lane]) => Ok(WriteLane {
+            dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+            src: scalar_source(src).ok_or("expected an SGPR or constant source")?,
+            lane: scalar_source(lane).ok_or("expected an SGPR or constant lane")?,
+        }),
         // Writing back the L2 cache changes no value of a sequentially consistent memory.
         ("buffer_wbl2", policy)
             if policy
