@@ -11,7 +11,8 @@ use super::word::Word;
 use super::{EvalError, Interpreter};
 
 /// The fields of a buffer resource that an untyped raw access uses: the 48-bit base address
-/// and the buffer's size in bytes, its `num_records` when the stride is 0.
+/// and the buffer's size in bytes, its `num_records`. A raw access's address and range check
+/// ignore the stride, whatever it is (CDNA4 ISA §9.1.5).
 struct BufferResource {
     base: u64,
     size: u64,
@@ -25,8 +26,8 @@ enum BufferRange {
 }
 
 impl Interpreter<'_> {
-    /// Decode the resource in four SGPRs, rejecting a strided, swizzled or thread-indexed one,
-    /// whose addressing this model does not cover.
+    /// Decode the resource in four SGPRs, rejecting a swizzled or thread-indexed one, whose
+    /// addressing this model does not cover.
     fn buffer_resource(&self, wave: WaveId, rsrc: [Sgpr; 4]) -> Result<BufferResource, EvalError> {
         let registers = &self.waves[wave].registers;
         let base_low = registers.read_sgpr_word(&self.arena, rsrc[0])?;
@@ -36,15 +37,9 @@ impl Interpreter<'_> {
 
         // Word 1 contains the upper address bits, stride, and swizzle flag.
         let base_high = word1 & 0xffff;
-        let stride = (word1 >> 16) & 0x3fff;
         let swizzle_enabled = (word1 >> 31) != 0;
         let add_tid_enabled = ((word3 >> 23) & 1) != 0;
 
-        if stride != 0 {
-            return Err(EvalError::UnsupportedBufferResource {
-                reason: "a nonzero stride",
-            });
-        }
         if swizzle_enabled {
             return Err(EvalError::UnsupportedBufferResource {
                 reason: "swizzling enabled",
