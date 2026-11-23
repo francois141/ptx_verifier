@@ -194,6 +194,11 @@ opencl_lean *args:
 piecewise *args:
     uv run --reinstall-package volta --package volta python external/amd/verify.py --checker solver {{args}} activation/
 
+# `--verbose` prints each case's log; `python3 external/amd/hipkittens/compile.py` recompiles them.
+# Check HipKittens' kernels in external/amd/hipkittens against their specs (bugs in bug.txt)
+hipkittens *args:
+    uv run --reinstall-package volta --package volta python external/amd/verify.py {{args}} hipkittens/
+
 # `--verbose` prints each case's log.
 # Check Triton's tutorial kernels in external/amd/triton against their specs
 triton *args:

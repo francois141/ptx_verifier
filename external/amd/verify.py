@@ -12,7 +12,8 @@ kernel `composable_kernel/<kernel>.s` (compiled from the `.hip` beside it) and a
 `activation/<case>_ptx`, from CUDA to PTX. Triton's tutorial kernels, compiled for gfx950, are in
 `triton/`, the cases named `triton/<case>`.
 FlyDSL's gfx950 flash attention is in `flydsl/` (cases `flydsl/<case>`, compiled by
-`flydsl/extract.py`), with bf16 arrays. Each case prints one
+`flydsl/extract.py`), with bf16 arrays, and HipKittens' kernels in `hipkittens/` (cases
+`hipkittens/<case>`, compiled by `hipkittens/compile.py`). Each case prints one
 line when it finishes: PASS if its kernel verified (ACCEPT, or every output proved in Lean),
 else FAIL, noting when a verdict other than ACCEPT is the case's expected one, such as a known
 bug's REJECT. `--verbose` also prints Volta's log of each case as it runs, then a summary.
@@ -29,6 +30,7 @@ expected one.
 """
 
 import argparse
+import importlib.util
 import json
 import logging
 import math
@@ -43,11 +45,19 @@ import volta
 sys.path.insert(0, str(Path(__file__).resolve().parent / "flydsl"))
 import cases as flydsl_cases  # noqa: E402
 
+# HipKittens' registry is also named `cases`, so it is loaded under a module name of its own.
+_hipkittens_spec = importlib.util.spec_from_file_location(
+    "hipkittens_cases", Path(__file__).resolve().parent / "hipkittens" / "cases.py"
+)
+hipkittens_cases = importlib.util.module_from_spec(_hipkittens_spec)
+_hipkittens_spec.loader.exec_module(hipkittens_cases)
+
 AMD_ROOT = Path(__file__).resolve().parent
 CK_ROOT = AMD_ROOT / "composable_kernel"
 ACTIVATION_ROOT = AMD_ROOT.parent / "activation"
 TRITON_ROOT = AMD_ROOT / "triton"
 FLYDSL_ROOT = AMD_ROOT / "flydsl"
+HIPKITTENS_ROOT = AMD_ROOT / "hipkittens"
 REPO_ROOT = AMD_ROOT.parents[1]
 LEAN_DIR = REPO_ROOT / "target" / "lean"
 LOG = logging.getLogger("verify")
@@ -249,6 +259,11 @@ CASES = (
     *(
         Case(c.name, c.assembly_name(), flydsl_check(c.check, c.spec), FLYDSL_ROOT, sample=c.sample)
         for c in flydsl_cases.CASES
+    ),
+    # HipKittens' kernels, as hipkittens/cases.py lists them.
+    *(
+        Case(c.name, c.kernel, flydsl_check(c.check, c.spec), HIPKITTENS_ROOT, sample=c.sample)
+        for c in hipkittens_cases.CASES
     ),
     # PyTorch's continuous piecewise activations, each compiled for AMD and, as `<op>_ptx`, to
     # PTX.

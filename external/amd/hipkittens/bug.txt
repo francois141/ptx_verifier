@@ -1,0 +1,124 @@
+HipKittens (HazyResearch/HipKittens at 8cde3dd, kernels/cdna4): bugs found while bringing its
+kernels up in Volta. Line numbers are in the upstream sources. Status says how each finding was
+established: "Volta" means a Volta run decided it; otherwise it comes from reading the source and
+the compiled assembly, and the Volta case that should decide it is named.
+
+1. Lazy rescale scales O after only one of the four P.V chunks (Volta)
+   Where: attn/gqa/kernel.cpp and kernel_d64.cpp lines 266-284 and 338-356;
+          attn/gqa_causal/kernel.cpp and kernel_d64.cpp lines 355-373 and 433-451.
+   The four mma_AtB(o_reg, subtile_inplace<16>(v_reg, k), ...) calls split P_{t-1} V_{t-1} over
+   keys 0-15, 16-31, 32-47 and 48-63. The first runs before the lazy-rescale branch and the other
+   three after it, so when the branch rescales, the code computes
+       O = s (O_old + P[0:16] V[0:16]) + P[16:64] V[16:64],   s = exp2(m_prev - m_new),
+   where every term was computed against the old max and all of them need the factor s. The
+   normaliser is scaled consistently, so numerator and denominator disagree. In the compiled
+   gqa kernel, four MFMAs precede the s_cbranch on the vote and the scaling block jumps back to
+   the remaining twelve.
+   Effect: wrong O for every query row whose running max grows by more than RESCALE_THRESHOLD
+   (8, in log2-scaled score units) at a lazily checked KV tile; 48 keys of that tile are
+   weighted 1/s too much (1/s >= 256 for the triggering row). Random-normal test inputs never
+   take this path, which is why the upstream tests pass.
+   Fix: issue the other three mma_AtB calls before the if/else, with the first.
+   Volta, on workgroup 0 (256 query rows, 512 keys, its first query row compared): with both
+   loop branches forced to rescale, attn_gqa_rescale and attn_gqa_d64_rescale REJECT (numeric
+   counterexample at O[0]); with the fix, attn_gqa_rescale_fixed and attn_gqa_d64_rescale_fixed
+   ACCEPT; forced to keep the max, attn_gqa_skip and attn_gqa_d64_skip ACCEPT. All are race free.
+
+2. Stale scale_vec applied unconditionally to the normaliser in the epilogue (Volta)
+   Where: attn/gqa/kernel.cpp:386 and attn/gqa_causal/kernel.cpp:481, and the same lines of
+   both kernel_d64.cpp files: mul(norm_vec, norm_vec, scale_vec) with no pending_scale guard.
+   The fast path never resets scale_vec, so if the last rescale happened before the loop's
+   final iteration, the normaliser is multiplied by that old factor a second time (the in-loop
+   update is guarded; the compiled loop selects 1.0 with v_cndmask, the epilogue does not).
+   Effect: the denominator is too small by s for the affected rows.
+   Fix: guard the multiply with pending_scale, or ones(scale_vec) in the fast path.
+   Volta, as for 1 and with 1's fix: the loop's first branch forced to rescale and its second to
+   keep the max, attn_gqa_mixed and attn_gqa_d64_mixed REJECT (numeric counterexample at O[0];
+   about 20 and 6 minutes, the solver's attempt before the oracle) and attn_gqa_mixed_fixed and
+   attn_gqa_d64_mixed_fixed, the epilogue's multiply guarded with pending_scale, ACCEPT.
+
+3. Unchecked size preconditions in the forward attention kernels (medium; non-default sizes)
+   The epilogue assumes the loop ended at j = N/64 - 3, i.e. N/64 even and at least 4: for odd
+   N/64 (N = 320) it recomputes QK with the last K tile twice, pairs P(K_{n-1}) with V_{n-2} and
+   counts the last tile twice in the normaliser; N = 128 loads K tile 2 out of range. The grid
+   needs N to be a multiple of 256, else the last workgroup reads Q and writes O/L past N. No
+   static_assert guards either. Same structure in attn/gqa_backwards/attn_fwd_non_causal.cpp and
+   attn/gqa_causal_backwards/attn_fwd_causal.cpp.
+
+4. attn/repro/attn_kernel.cpp is a skeleton that races and does not compile
+   It is the load stage of a chunked linear-attention kernel with its body a TODO. No s_barrier
+   anywhere while every wave reads LDS tiles other waves loaded (read-after-write races), `tic`
+   is never toggled (write-after-read races on the next iteration), waves 2-7 issue no V load so
+   their vmcnt waits wait for the wrong loads, and `uint32_t swizzled_offsets_V[0]` is a
+   zero-length array that is written and read (clang rejects it: "zero-length arrays are not
+   permitted in HIP device code").
+
+5. Build breaks
+   gemm/bf16fp32/micros/producer_consumer/{16x32,32x16}/micro_02_2stage_8c4p.cpp,
+   micro_03_3stage_8c4p.cpp and micro_04_2stage_12c4p.cpp call kittens::warpgroupid, which the
+   library no longer defines.
+
+6. Configuration trap: attn/gqa_causal/kernel_d64.cpp defaults ATTN_D to 128 (low)
+   Its `#ifndef ATTN_D` fallback is 128, unlike gqa/kernel_d64.cpp's 64. Built through its
+   Makefile (which passes -DATTN_D) it is correct; built without it, the "d64" file silently
+   becomes a head-dim-128 kernel (attend_ker<128>) that, given head-dim-64 tensors, reads the
+   neighbouring heads' columns and writes O into them.
+
+7. 256x256 GEMM (16x32 tiles) reads Bs[1][0] one barrier too early: a data race (Volta)
+   Where: gemm/bf16fp32/256_256_64_32_with16x32.cpp, main loop, the fourth MMA phase:
+   `load(B_tile_0, subtile_inplace(Bs[1][0], ...))` before `s_waitcnt vmcnt(6); s_barrier`.
+   Waves 4-7 pass one s_barrier more at the start (`if (warp_row == 1)`), so they trail waves 0-3
+   by one barrier: a tile every wave loads and waits for at a phase's first barrier may be read
+   from the next phase on, as every other tile is. Bs[1][0] is read in the very phase that waits
+   for it, before the wait: a wave's ds_read races with its own pending buffer_load ... lds, and
+   waves 0-3 read waves 4-7's quarter before those waves' wait. The compiled loop has no other
+   vmcnt wait in between. It happens in every iteration (and after the prologue's load).
+   Effect: B_tile_0 may hold stale LDS data, the previous K tile's, for the next C_accum[0][0]
+   MMA; on hardware only when that load takes longer than three MMA phases.
+   Fix: read Bs[1][0] at the start of the fifth phase, before As[1][0].
+   Volta: gemm_256_16x32 REJECT (memory conflict, LDS byte 98304: wave 0's slice of Bs[1][0],
+   its prologue load and the loop's ds_read); gemm_256_16x32_fixed ACCEPT. Moving the read only
+   after the phase's own wait still races (byte 102400, wave 4's slice), as the stagger implies.
+
+8. 192x256 GEMM kernelv2 waits for too few loads on waves 4-7: a data race (Volta)
+   Where: gemm/bf16fp32/micros/192x256/kernelv2.cpp, every `s_waitcnt vmcnt(N)` (4, 6, 2).
+   kernel.cpp waits with vmcnt(0); kernelv2 tightens the waits to the 256x256 kernel's counts,
+   which assume two buffer_load ... lds per tile per wave. A 96x64 bf16 A tile is 12288 bytes:
+   one 8192-byte load across all 512 threads plus a 4096-byte leftover that only waves 0-3
+   issue, so waves 4-7 issue one load per A tile and their vmcnt(N) leaves older loads pending.
+   In the prologue, wave 4's vmcnt(4) completes only Bs[0][0], not its slice of As[0][0], which
+   waves 0-3 read after the next barrier.
+   Effect: stale A data in the first MMAs (and likewise later in the loop).
+   Fix: kernel.cpp's vmcnt(0), or counts per wave from the loads it issues.
+   Volta: gemm_192v2 REJECT (memory conflict, LDS byte 4096: wave 4's slice of As[0][0]);
+   gemm_192 (kernel.cpp) ACCEPT.
+
+Checked and not bugs
+- softmax (Volta): the compiled expf rescales by f32(e^-64) past its underflow bound, so it is
+  not exactly the softmax over the reals; it is within 1/1000 of it: at 32 x 32 (softmax_d32),
+  `volta extract lean --tolerance 1/1000` gives 1024 statements, all proved, accepted by Volta's
+  Lean check and replayed by leanchecker (target/lean/hipkittens_softmax32).
+- rotary (Volta ACCEPT): waits on lgkmcnt after global loads, but the compiler's own vmcnt
+  waits order the loads; all 4096 outputs proved equal to rotary.spec.
+- Forward attention (gqa, head dims 64 and 128; Volta on workgroup 0 for each forced branch path
+  above): race free (LDS double buffering, waits and barriers) and equal to attention_d64.spec /
+  attention_d128.spec on its first query row once bugs 1 and 2 are fixed. Read correct but not run:
+  the causal mask, L_vec (natural-log LSE), the GQA head mapping, and the always-rescale forward
+  kernels of the backward directories (their mul_col follows the whole MMA).
+- GEMMs (Volta ACCEPT on workgroup 0, every output of its tile): 256x256 with32x16 and 192x256
+  kernel.cpp at M = 512 / 384, N = K = 256 (the main loop's K tiles and the epilogue's).
+
+How the global loads are checked
+- The attention kernels' K and V loads and the 16x32 GEMM's A and B loads go through buffer
+  descriptors from make_srsrc(ptr, range, row_stride), which sets the stride, CACHE_SWIZZLE and
+  SWIZZLE_EN (the other GEMMs call it without a row stride: plain raw buffers). The
+  CDNA4 ISA (9.1.5.2) defines a swizzled access's address through an element size that its buffer
+  descriptor (table 48) has no field for, and range-checks only unswizzled raw buffers (9.1.5.1),
+  so it does not define what these accesses read. The kernels compute linear byte offsets and
+  pass HipKittens' tests on MI355X, so cases.py drops the row stride from those calls
+  (`unswizzled`): Volta checks them as linear raw buffers.
+
+Open (not yet run in Volta)
+- The causal attention kernels (gqa_causal) and the backward kernels (buffer loads into AGPRs).
+- producer_consumer micro_05/09_async spin on LDS counters (ds_add_u32), which Volta does not
+  model. The FP8/MXFP8 GEMMs need the f8f6f4 MFMAs.
