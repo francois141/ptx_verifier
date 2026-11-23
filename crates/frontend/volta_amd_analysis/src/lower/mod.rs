@@ -640,6 +640,8 @@ fn lower_as_written(
         ("v_cmp_le_f32_e32", operands) => lower_cmp(ir::CmpOp::LeF32, operands),
         ("v_cmp_eq_f32_e32", operands) => lower_cmp(ir::CmpOp::EqF32, operands),
         ("v_cmp_lg_f32_e32", operands) => lower_cmp(ir::CmpOp::LgF32, operands),
+        ("v_cmp_o_f32_e32", operands) => lower_cmp(ir::CmpOp::OF32, operands),
+        ("v_cmp_u_f32_e32", operands) => lower_cmp(ir::CmpOp::UF32, operands),
         ("v_cmp_gt_f32_e32", operands) => lower_cmp(ir::CmpOp::GtF32, operands),
         ("v_cmp_ge_f32_e32", operands) => lower_cmp(ir::CmpOp::GeF32, operands),
         // Over Volta's NaN-free reals, each negated comparison equals the opposite ordered one.
@@ -667,6 +669,8 @@ fn lower_as_written(
         ("v_cmp_le_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LeF32, operands),
         ("v_cmp_gt_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::GtF32, operands),
         ("v_cmp_lg_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LgF32, operands),
+        ("v_cmp_o_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::OF32, operands),
+        ("v_cmp_u_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::UF32, operands),
         ("v_cmp_ge_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::GeF32, operands),
         // Over Volta's NaN-free reals, each negated comparison equals the opposite ordered one.
         ("v_cmp_nge_f32_e64", operands) => lower_cmp_e64(ir::CmpOp::LtF32, operands),

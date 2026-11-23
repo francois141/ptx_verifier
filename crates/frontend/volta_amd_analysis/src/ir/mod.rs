@@ -878,6 +878,10 @@ pub enum CmpOp {
     EqF32,
     /// Less or greater: an ordered not-equal, which is `!=` for Volta's NaN-free reals.
     LgF32,
+    /// Whether neither source is a NaN: always, for Volta's NaN-free reals.
+    OF32,
+    /// Whether either source is a NaN: never.
+    UF32,
 }
 
 impl CmpOp {
@@ -896,9 +900,14 @@ impl CmpOp {
             | Self::GtU32
             | Self::NeU32
             | Self::GeU32 => false,
-            Self::LtF32 | Self::LeF32 | Self::GtF32 | Self::GeF32 | Self::EqF32 | Self::LgF32 => {
-                true
-            }
+            Self::LtF32
+            | Self::LeF32
+            | Self::GtF32
+            | Self::GeF32
+            | Self::EqF32
+            | Self::LgF32
+            | Self::OF32
+            | Self::UF32 => true,
         }
     }
 }

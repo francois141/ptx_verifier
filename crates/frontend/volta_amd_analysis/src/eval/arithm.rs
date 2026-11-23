@@ -1413,6 +1413,8 @@ fn compare(
         CmpOp::GeF32 => arena.ge(F32, a, b),
         CmpOp::EqF32 => arena.eq(F32, a, b),
         CmpOp::LgF32 => arena.ne(F32, a, b),
+        CmpOp::OF32 => arena.bool_val(true),
+        CmpOp::UF32 => arena.bool_val(false),
     })
 }
 
