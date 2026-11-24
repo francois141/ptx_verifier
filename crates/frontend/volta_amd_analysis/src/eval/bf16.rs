@@ -3,7 +3,7 @@
 //! half out as an f32. Each half stays the real it encodes; an instruction these do not cover is
 //! left to the ordinary evaluation.
 
-use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Type, Width};
 
 use crate::ir::{
     BinOp, LaneMask, LoweredInstr, ModifiedSrc, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src,
@@ -11,8 +11,10 @@ use crate::ir::{
 
 use super::EvalError;
 use super::interp::high_half;
-use super::wave::{WaveRegisters, concrete_word};
+use super::wave::{WaveRegisters, concrete_word, same_value};
 use super::word::{Word, bf16_field, bf16_from_bits, is_zero_half};
+
+const BF16: Type = Type::Float(Width(16));
 
 /// One lane of an instruction that moves or selects a word holding two bf16 halves, or takes one
 /// half out as an f32. `None` leaves the instruction to the ordinary evaluation.
@@ -152,10 +154,9 @@ pub(super) fn execute_bf16_pair_lane(
                 return None;
             };
             let [low, high] = bf16_pair(registers, lane, value)?;
-            let bf16 = Type::Float(Width(16));
             let word = Word::Bf16 {
-                low: arena.neg(bf16, low),
-                high: arena.neg(bf16, high),
+                low: arena.neg(BF16, low),
+                high: arena.neg(BF16, high),
             };
             Some(registers.write_vgpr_word(lane, dst, word))
         }
@@ -404,8 +405,8 @@ fn bf16_pair(registers: &WaveRegisters, lane: usize, src: ModifiedSrc) -> Option
     }
 }
 
-/// `mask ? srcs[1] : srcs[0]` when either source holds a bf16 pair that is no single value. The
-/// lane's mask bit must be concrete, since a symbolic select of two pairs is no single pair.
+/// `mask ? srcs[1] : srcs[0]` when either source holds a bf16 pair that is no single value: the
+/// chosen word under a concrete mask bit, else a select of each half.
 fn select_bf16_pair(
     arena: &mut ExprArena,
     registers: &mut WaveRegisters,
@@ -420,11 +421,56 @@ fn select_bf16_pair(
         .any(|word| matches!(word, Ok(word) if word.value(arena).is_none()));
     holds_pair.then(|| {
         let condition = registers.read_lane_condition(arena, lane, mask)?;
-        let take_src1 = arena
-            .as_bool(condition)
-            .ok_or(EvalError::Bf16Halves { lane, reg: srcs[0] })?;
         let [word0, word1] = words;
-        let word = if take_src1 { word1? } else { word0? };
+        let word = match arena.as_bool(condition) {
+            Some(true) => word1?,
+            Some(false) => word0?,
+            None => select_word(arena, lane, condition, [word0?, word1?])?,
+        };
         registers.write_vgpr_word(lane, dst, word)
     })
+}
+
+/// `condition ? words[1] : words[0]`: the chosen word under a concrete condition, else a
+/// select of each half, which needs both words' halves to be bf16 reals.
+fn select_word(
+    arena: &mut ExprArena,
+    lane: usize,
+    condition: ExprId,
+    words: [Word; 2],
+) -> Result<Word, EvalError> {
+    if let Some(take_src1) = arena.as_bool(condition) {
+        return Ok(words[usize::from(take_src1)]);
+    }
+    if let [Word::Value(a), Word::Value(b)] = words
+        && same_value(arena, a, b)
+    {
+        return Ok(words[0]);
+    }
+    let [Some(a), Some(b)] = words.map(|word| word.bf16_halves(arena)) else {
+        return Err(EvalError::AmbiguousSelect { lane });
+    };
+    Ok(Word::Bf16 {
+        low: select_half(arena, condition, a[0], b[0]),
+        high: select_half(arena, condition, a[1], b[1]),
+    })
+}
+
+/// `condition ? b : a` over two bf16 reals: one of them when they are equal, and the `max` or
+/// `min` it is when `condition` orders the two, as a compiled `__hmax` does.
+fn select_half(arena: &mut ExprArena, condition: ExprId, a: ExprId, b: ExprId) -> ExprId {
+    if same_value(arena, a, b) {
+        return a;
+    }
+    // `(x, y)` with `condition` meaning `x <= y` (or `x < y`).
+    let ordered = match *arena.node(condition) {
+        ExprNode::Le(x, y) | ExprNode::Lt(x, y) => Some((x, y)),
+        ExprNode::Ge(x, y) | ExprNode::Gt(x, y) => Some((y, x)),
+        _ => None,
+    };
+    match ordered {
+        Some((x, y)) if same_value(arena, b, y) && same_value(arena, a, x) => arena.max(BF16, a, b),
+        Some((x, y)) if same_value(arena, b, x) && same_value(arena, a, y) => arena.min(BF16, a, b),
+        _ => arena.select(BF16, condition, b, a),
+    }
 }

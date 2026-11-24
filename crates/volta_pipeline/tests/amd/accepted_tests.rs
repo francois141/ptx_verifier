@@ -354,6 +354,22 @@ fn the_bf16_extract_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that a select of bf16 pairs under a symbolic condition selects each half, the max or min
+// of two halves its condition orders, against the expected outputs in bf16_select.out.
+#[test]
+fn the_bf16_select_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/bf16_select",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array("c", 0x30000, ArrayKind::Input),
+            array("d", 0x40000, ArrayKind::Input),
+            array_of("out", 0x50000, 6 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]
