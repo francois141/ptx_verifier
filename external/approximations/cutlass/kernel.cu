@@ -15,15 +15,15 @@
 // D = ACTIVATION(alpha * accumulator) with alpha = 1 and no source (beta = 0), four fp32 at a time.
 using EpilogueOp = cutlass::epilogue::thread::LinearCombinationGeneric<ACTIVATION, float, 4, float, float>;
 
-// CUTLASS's SM80 TF32 GEMM test configuration 128x256x32_64x64x32 (test/unit/gemm/device/
-// gemm_tf32t_tf32n_f32t_tensor_op_f32_sm80.cu): tf32 operands, fp32 accumulation, 8 warps, 3 stages.
-// A 128 x 256 threadblock tile spans whole rows of C, so CTA 0 writes rows 0..128 of C.
+// The transpose of CUTLASS's SM80 TF32 GEMM test configuration 256x64x32_64x64x32 (test/unit/gemm/
+// device/gemm_tf32t_tf32n_f32t_tensor_op_f32_sm80.cu): tf32 operands, fp32 accumulation, 4 warps,
+// 3 stages. A 64 x 256 threadblock tile spans whole rows of C, so CTA 0 writes rows 0..64 of C.
 using Gemm = cutlass::gemm::device::Gemm<
     cutlass::tfloat32_t, cutlass::layout::RowMajor,
     cutlass::tfloat32_t, cutlass::layout::ColumnMajor,
     float, cutlass::layout::RowMajor,
     float, cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-    cutlass::gemm::GemmShape<128, 256, 32>,
+    cutlass::gemm::GemmShape<64, 256, 32>,
     cutlass::gemm::GemmShape<64, 64, 32>,
     cutlass::gemm::GemmShape<16, 8, 8>,
     EpilogueOp,
@@ -53,7 +53,7 @@ void cutlass_gemm(float const *a, float const *b, float *c) {
   EpilogueOp::Params epilogue(1.0f, 0.0f);
   set_arguments(epilogue, 0);
   Kernel::Params params(
-      {256, 256, 256}, {2, 1, 1},
+      {256, 256, 256}, {4, 1, 1},
       {reinterpret_cast<cutlass::tfloat32_t *>(const_cast<float *>(a)), 256},
       {reinterpret_cast<cutlass::tfloat32_t *>(const_cast<float *>(b)), 256},
       {c, 256}, {c, 256}, epilogue);

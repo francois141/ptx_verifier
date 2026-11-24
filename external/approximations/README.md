@@ -10,7 +10,7 @@ epilogue functor where it has one, and in PyTorch's CUDA formula where it has no
 
 | Folder | Compiler | Kernel | Tile of C checked |
 |---|---|---|---|
-| [`cutlass/`](cutlass/README.md) | CUTLASS v3.9.2, nvcc 12.9, `-use_fast_math`, sm_80 | SM80 TF32 tensor-core GEMM (`mma.sync.m16n8k8.tf32`), `LinearCombinationGeneric<Activation>` epilogue | CTA 0's 128 x 256 (32,768 outputs) |
+| [`cutlass/`](cutlass/README.md) | CUTLASS v3.9.2, nvcc 12.9, `-use_fast_math`, sm_80 | SM80 TF32 tensor-core GEMM (`mma.sync.m16n8k8.tf32`), `LinearCombinationGeneric<Activation>` epilogue | CTA 0's 64 x 256 (16,384 outputs) |
 | [`triton/`](triton/README.md) | Triton 3.5.1, sm_80 | the matmul tutorial's kernel with `tl.dot` (TF32) and a fused `ACTIVATION` | CTA 0's 64 x 256 (16,384 outputs) |
 | [`composable_kernel/`](composable_kernel/README.md) | Composable Kernel rocm-7.0.0, clang 21, `-ffast-math`, gfx950 | `DeviceGemm_Xdl_CShuffleV3` (fp32 MFMA 16x16x4) with its C element-wise operation | workgroup 0's 64 x 256 (16,384 outputs) |
 
@@ -32,58 +32,58 @@ no sampling; the two time columns are Volta's symbolic execution and its solver)
 
 | Compiler | Case | Verdict | Outputs | Execution (s) | Solver (s) |
 |---|---|---|---:|---:|---:|
-| CUTLASS | `cutlass/relu` | ACCEPT | 32,768 | 2.8 | 25.3 |
+| CUTLASS | `cutlass/relu` | ACCEPT | 16,384 | 1.6 | 7.8 |
 | Triton | `triton/relu` | ACCEPT | 16,384 | 2.1 | 13.8 |
 | CK | `composable_kernel/relu` | ACCEPT | 16,384 | 0.7 | 14.4 |
-| CUTLASS | `cutlass/leaky_relu` | ACCEPT | 32,768 | 2.8 | 25.5 |
+| CUTLASS | `cutlass/leaky_relu` | ACCEPT | 16,384 | 1.7 | 8.2 |
 | Triton | `triton/leaky_relu` | ACCEPT | 16,384 | 2.0 | 14.5 |
 | CK | `composable_kernel/leaky_relu` | UNKNOWN | 16,384 | 0.6 | - |
-| CUTLASS | `cutlass/hardtanh` | ACCEPT | 32,768 | 2.8 | 25.0 |
+| CUTLASS | `cutlass/hardtanh` | ACCEPT | 16,384 | 1.6 | 8.7 |
 | Triton | `triton/hardtanh` | ACCEPT | 16,384 | 2.1 | 14.4 |
 | CK | `composable_kernel/hardtanh` | ACCEPT | 16,384 | 0.7 | 14.6 |
-| CUTLASS | `cutlass/hardsigmoid` | ACCEPT | 32,768 | 2.8 | 25.9 |
+| CUTLASS | `cutlass/hardsigmoid` | ACCEPT | 16,384 | 1.7 | 8.2 |
 | Triton | `triton/hardsigmoid` | ACCEPT | 16,384 | 2.1 | 14.4 |
 | CK | `composable_kernel/hardsigmoid` | ACCEPT | 16,384 | 0.8 | 15.1 |
-| CUTLASS | `cutlass/hardswish` | ACCEPT | 32,768 | 2.9 | 34.3 |
+| CUTLASS | `cutlass/hardswish` | ACCEPT | 16,384 | 2.1 | 8.5 |
 | Triton | `triton/hardswish` | ACCEPT | 16,384 | 2.0 | 19.1 |
 | CK | `composable_kernel/hardswish` | ACCEPT | 16,384 | 0.7 | 19.0 |
-| CUTLASS | `cutlass/softshrink` | ACCEPT | 32,768 | 2.9 | 29.4 |
+| CUTLASS | `cutlass/softshrink` | ACCEPT | 16,384 | 1.7 | 8.3 |
 | Triton | `triton/softshrink` | ACCEPT | 16,384 | 1.9 | 15.0 |
 | CK | `composable_kernel/softshrink` | ACCEPT | 16,384 | 0.7 | 15.6 |
-| CUTLASS | `cutlass/elu` | ACCEPT | 32,768 | 2.8 | 25.3 |
+| CUTLASS | `cutlass/elu` | ACCEPT | 16,384 | 1.8 | 8.2 |
 | Triton | `triton/elu` | ACCEPT | 16,384 | 2.1 | 13.9 |
 | CK | `composable_kernel/elu` | UNKNOWN | 16,384 | 0.6 | - |
-| CUTLASS | `cutlass/celu` | ACCEPT | 32,768 | 2.8 | 25.9 |
+| CUTLASS | `cutlass/celu` | ACCEPT | 16,384 | 1.9 | 9.0 |
 | Triton | `triton/celu` | ACCEPT | 16,384 | 2.1 | 14.6 |
 | CK | `composable_kernel/celu` | ACCEPT | 16,384 | 0.8 | 15.0 |
-| CUTLASS | `cutlass/selu` | ACCEPT | 32,768 | 2.9 | 26.2 |
+| CUTLASS | `cutlass/selu` | ACCEPT | 16,384 | 1.8 | 9.1 |
 | Triton | `triton/selu` | ACCEPT | 16,384 | 2.1 | 14.2 |
 | CK | `composable_kernel/selu` | ACCEPT | 16,384 | 0.8 | 15.2 |
-| CUTLASS | `cutlass/gelu_tanh` | ACCEPT | 32,768 | 2.9 | 26.1 |
+| CUTLASS | `cutlass/gelu_tanh` | ACCEPT | 16,384 | 1.7 | 8.8 |
 | Triton | `triton/gelu_tanh` | ACCEPT | 16,384 | 2.0 | 14.5 |
 | CK | `composable_kernel/fast_gelu` | ACCEPT | 16,384 | 0.8 | 15.1 |
 | Triton | `triton/gelu_tanh_libdevice` | UNKNOWN | 16,384 | 1.7 | - |
-| CUTLASS | `cutlass/gelu_erf` | UNKNOWN | 32,768 | 2.4 | - |
+| CUTLASS | `cutlass/gelu_erf` | UNKNOWN | 16,384 | 1.5 | - |
 | Triton | `triton/gelu_erf` | UNKNOWN | 16,384 | 1.8 | - |
 | CK | `composable_kernel/gelu` | UNKNOWN | 16,384 | 0.7 | - |
-| CUTLASS | `cutlass/sigmoid` | ACCEPT | 32,768 | 2.8 | 27.6 |
+| CUTLASS | `cutlass/sigmoid` | ACCEPT | 16,384 | 1.9 | 8.6 |
 | Triton | `triton/sigmoid` | ACCEPT | 16,384 | 2.1 | 13.6 |
 | CK | `composable_kernel/sigmoid` | ACCEPT | 16,384 | 0.8 | 14.8 |
-| CUTLASS | `cutlass/sigmoid_tanh` | ACCEPT | 32,768 | 2.9 | 33.0 |
-| CUTLASS | `cutlass/sigmoid_precise` | REJECT | 32,768 | 2.9 | 41.2 |
+| CUTLASS | `cutlass/sigmoid_tanh` | ACCEPT | 16,384 | 1.7 | 9.7 |
+| CUTLASS | `cutlass/sigmoid_precise` | REJECT | 16,384 | 1.8 | 10.4 |
 | CK | `composable_kernel/sigmoid_precise` | UNKNOWN | 16,384 | 0.6 | - |
-| CUTLASS | `cutlass/silu` | ACCEPT | 32,768 | 2.8 | 28.7 |
+| CUTLASS | `cutlass/silu` | ACCEPT | 16,384 | 1.9 | 9.1 |
 | Triton | `triton/silu` | ACCEPT | 16,384 | 2.0 | 14.8 |
 | CK | `composable_kernel/silu` | ACCEPT | 16,384 | 0.8 | 15.7 |
 | CK | `composable_kernel/swish` | ACCEPT | 16,384 | 0.8 | 16.4 |
-| CUTLASS | `cutlass/tanh` | ACCEPT | 32,768 | 2.9 | 30.6 |
+| CUTLASS | `cutlass/tanh` | ACCEPT | 16,384 | 1.8 | 8.4 |
 | Triton | `triton/tanh` | ACCEPT | 16,384 | 1.9 | 14.0 |
 | CK | `composable_kernel/tanh` | UNKNOWN | 16,384 | 0.6 | - |
-| CUTLASS | `cutlass/softplus` | ACCEPT | 32,768 | 2.8 | 26.1 |
+| CUTLASS | `cutlass/softplus` | ACCEPT | 16,384 | 1.8 | 8.4 |
 | Triton | `triton/softplus` | UNKNOWN | 16,384 | 1.8 | - |
 | CK | `composable_kernel/softrelu` | ACCEPT | 16,384 | 0.8 | 14.6 |
 | Triton | `triton/softplus_fast` | ACCEPT | 16,384 | 2.0 | 14.1 |
-| CUTLASS | `cutlass/softplus_threshold` | ACCEPT | 32,768 | 3.2 | 28.5 |
+| CUTLASS | `cutlass/softplus_threshold` | ACCEPT | 16,384 | 1.6 | 8.3 |
 | Triton | `triton/softplus_threshold` | ACCEPT | 16,384 | 1.9 | 14.2 |
 
 ## What the verdicts mean

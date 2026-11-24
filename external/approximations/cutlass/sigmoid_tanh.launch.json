@@ -1,17 +1,17 @@
 {
-  "description": "CUTLASS v3.9.2 TF32 GEMM with CUTLASS's Sigmoid as 0.5 * tanh(x / 2) + 0.5 fused, M=N=K=256, CTA 0's 128x256 tile",
+  "description": "CUTLASS v3.9.2 TF32 GEMM with CUTLASS's Sigmoid as 0.5 * tanh(x / 2) + 0.5 fused, M=N=K=256, CTA 0's 64x256 tile",
   "kernel": "cutlass_gemm",
   "block": [
-    256,
+    128,
     1,
     1
   ],
   "grid": [
-    2,
+    4,
     1,
     1
   ],
-  "dynamic_shared_bytes": 147456,
+  "dynamic_shared_bytes": 122880,
   "arrays": [
     {
       "name": "a",
@@ -36,7 +36,7 @@
       "kind": "out",
       "dtype": "f32",
       "shape": [
-        128,
+        64,
         256
       ]
     }
@@ -60,6 +60,6 @@
     "M": 256,
     "N": 256,
     "K": 256,
-    "TM": 128
+    "TM": 64
   }
 }

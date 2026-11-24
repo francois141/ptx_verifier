@@ -4,7 +4,7 @@
     python3 extract.py [--cutlass DIR] [--backend auto|local|docker] [CASE...]
 
 Each case is `<case>.ptx`, `<case>.json` (compiler, configuration, hashes) and `<case>.launch.json`
-(M = N = K = 256, CTA 0's 128 x 256 tile of C, the shared spec in ../specs/). CUTLASS v3.9.2 is
+(M = N = K = 256, CTA 0's 64 x 256 tile of C, the shared spec in ../specs/). CUTLASS v3.9.2 is
 downloaded unless `--cutlass` names a clean checkout of it; `nvcc` runs locally when installed,
 else in the nvidia/cuda:12.9.1-devel-ubuntu24.04 image. No GPU is needed.
 """
@@ -26,7 +26,7 @@ TAG = "v3.9.2"
 IMAGE = "nvidia/cuda:12.9.1-devel-ubuntu24.04"
 FUNCTORS = "cutlass::epilogue::thread"
 M = N = K = 256
-TILE_M, TILE_N, TILE_K = 128, 256, 32
+TILE_M, TILE_N, TILE_K = 64, 256, 32
 WARP = (64, 64, 32)
 INSTRUCTION = (16, 8, 8)
 STAGES = 3

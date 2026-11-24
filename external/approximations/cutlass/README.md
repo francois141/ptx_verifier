@@ -2,19 +2,19 @@
 
 NVIDIA CUTLASS's SM80 TF32 tensor-core GEMM at M = N = K = 256 with an activation fused through
 its `LinearCombinationGeneric<Activation>` epilogue, one kernel per activation. `kernel.cu`
-instantiates the configuration of CUTLASS's test `128x256x32_64x64x32`
+instantiates the transpose of the configuration of CUTLASS's test `256x64x32_64x64x32`
 (`test/unit/gemm/device/gemm_tf32t_tf32n_f32t_tensor_op_f32_sm80.cu`): `tfloat32_t` operands,
-fp32 accumulation, a 128 x 256 x 32 threadblock tile over 8 warps of 64 x 64 x 32, the
+fp32 accumulation, a 64 x 256 x 32 threadblock tile over 4 warps of 64 x 64 x 32, the
 `mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32` instruction, 3 `cp.async` stages. The small
 wrapper constructs CUTLASS's `Params` from constant dimensions; the mainloop and epilogue are the
-library's. The 128 x 256 tile spans whole rows of C, so CTA 0 of the 2 x 1 grid, the one Volta
-runs, writes rows 0..128: the launch files' `c` array.
+library's. The 64 x 256 tile, Triton's and Composable Kernel's, spans whole rows of C, so CTA 0 of
+the 4 x 1 grid, the one Volta runs, writes rows 0..64: the launch files' `c` array.
 
 | Setting | Value |
 |---|---|
 | CUTLASS | v3.9.2, commit `ad7b2f5e84fcfa124cb02b91d5bd26d238c0459e` |
 | CUDA compiler | 12.9, V12.9.86, `-O3 -arch=sm_80 -use_fast_math` (`sigmoid_precise` without it) |
-| Launch | 2 x 1 x 1 blocks of 256 threads, 147,456 bytes of dynamic shared memory |
+| Launch | 4 x 1 x 1 blocks of 128 threads, 122,880 bytes of dynamic shared memory |
 | Epilogue | `LinearCombinationGeneric<Activation, float, 4, float, float>`, alpha 1, beta 0 |
 
 The operands are the fp32 words as stored: CUTLASS's `tfloat32_t` path rounds nothing in the
