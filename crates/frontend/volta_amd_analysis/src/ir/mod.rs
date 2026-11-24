@@ -839,8 +839,25 @@ pub enum DppOp {
 pub enum SdwaOp {
     /// `src0 & src1`.
     And32,
+    /// `src0 | src1`.
+    Or32,
+    /// `src0 ^ src1`.
+    Xor32,
     /// `VCC ? src1 : src0`.
     CndMask32,
+    /// `VCC ? src0 : src1`: a `v_cndmask_b32_sdwa` selecting a half of its second source, its
+    /// operands swapped so the selected one comes first.
+    CndMask32Swapped,
+    /// The selected half shifted left by `src1`: `v_lshlrev_b32_sdwa`, its operands swapped so
+    /// the selected one comes first.
+    LShl32,
+}
+
+/// How an SDWA source's selected 16-bit half widens to a word: `sext(...)` sign-extends it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalfExtension {
+    Zero,
+    Sign,
 }
 
 /// A 16-bit half of a 32-bit word.
@@ -1167,13 +1184,14 @@ pub enum LoweredInstr {
         src1: Vop3Src,
         carry_in: Option<LaneMask>,
     },
-    /// A VOP2 SDWA instruction reading one 16-bit half of `src0`, zero-extended, and all of
-    /// `src1`, writing the whole word (`dst_sel:DWORD`, `dst_unused:UNUSED_PAD`).
+    /// A VOP2 SDWA instruction reading one 16-bit half of `src0`, widened by `extension`, and
+    /// all of `src1`, writing the whole word (`dst_sel:DWORD`, `dst_unused:UNUSED_PAD`).
     SdwaWord {
         op: SdwaOp,
         dst: Vgpr,
         src0: Vgpr,
         half: WordHalf,
+        extension: HalfExtension,
         src1: Vop3Src,
     },
     /// `dst = src0 * src1 + src2` over 64-bit words, the 32-bit sources and the addend of the

@@ -115,6 +115,13 @@ fn operand(text: &str) -> Option<Operand> {
         return Some(Operand::Neg(Box::new(source)));
     }
     if let Some(source @ Operand::Reg { .. }) = text
+        .strip_prefix("sext(")
+        .and_then(|s| s.strip_suffix(')'))
+        .and_then(operand)
+    {
+        return Some(Operand::Sext(Box::new(source)));
+    }
+    if let Some(source @ Operand::Reg { .. }) = text
         .strip_prefix('|')
         .and_then(|s| s.strip_suffix('|'))
         .and_then(operand)

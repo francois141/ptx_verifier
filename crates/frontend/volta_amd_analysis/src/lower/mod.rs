@@ -540,7 +540,28 @@ fn lower_as_written(
         ("v_alignbit_b32", operands) => lower_ternary_op(ir::TernaryOp::AlignBit32, operands),
         ("v_perm_b32", operands) => lower_ternary_op(ir::TernaryOp::Perm32, operands),
         ("v_and_b32_sdwa", operands) => lower_sdwa(ir::SdwaOp::And32, operands),
+        ("v_or_b32_sdwa", operands) => lower_sdwa(ir::SdwaOp::Or32, operands),
+        ("v_xor_b32_sdwa", operands) => lower_sdwa(ir::SdwaOp::Xor32, operands),
         ("v_cndmask_b32_sdwa", operands) => lower_sdwa(ir::SdwaOp::CndMask32, operands),
+        ("v_lshlrev_b32_sdwa", [dst, shift, value, selectors @ ..]) => match selectors {
+            [
+                Operand::SdwaDstDword,
+                Operand::SdwaDstUnusedPad,
+                Operand::Src0Sel(SdwaSel::Dword),
+                Operand::Src1Sel(sel @ (SdwaSel::Word0 | SdwaSel::Word1)),
+            ] => Ok(LoweredInstr::SdwaWord {
+                op: ir::SdwaOp::LShl32,
+                dst: vgpr(dst).ok_or("expected one destination VGPR")?,
+                src0: vgpr(value).ok_or("expected one VGPR shifted source")?,
+                half: match sel {
+                    SdwaSel::Word0 => ir::WordHalf::Low,
+                    _ => ir::WordHalf::High,
+                },
+                extension: ir::HalfExtension::Zero,
+                src1: vop3_src(shift).ok_or("expected a VGPR, an SGPR or an inline shift")?,
+            }),
+            _ => Err("expected dst_sel:DWORD dst_unused:UNUSED_PAD src0_sel:DWORD src1_sel:WORD_n"),
+        },
         ("v_alignbyte_b32", operands) => lower_ternary_op(ir::TernaryOp::AlignByte32, operands),
         ("v_mad_u32_u24", operands) => lower_ternary_op(ir::TernaryOp::MadU32U24, operands),
         ("v_mad_i32_i24", operands) => lower_ternary_op(ir::TernaryOp::MadI32I24, operands),
@@ -1301,40 +1322,63 @@ fn bin_op_source(operand: &Operand) -> Option<ModifiedSrc> {
     })
 }
 
-/// An SDWA instruction of the one form supported: `src0`'s selected half and all of `src1`, the
-/// whole word written; a `v_cndmask` names VCC before the selectors.
+/// An SDWA instruction of the one form supported: one source's selected half and all of the
+/// other, the whole word written; a `v_cndmask` names VCC before the selectors.
 fn lower_sdwa(op: ir::SdwaOp, operands: &[Operand]) -> Result<LoweredInstr, &'static str> {
     let (dst, src0, src1, selectors) = match (op, operands) {
-        (ir::SdwaOp::And32, [dst, src0, src1, selectors @ ..]) => (dst, src0, src1, selectors),
+        (
+            ir::SdwaOp::And32 | ir::SdwaOp::Or32 | ir::SdwaOp::Xor32,
+            [dst, src0, src1, selectors @ ..],
+        ) => (dst, src0, src1, selectors),
         (ir::SdwaOp::CndMask32, [dst, src0, src1, vcc, selectors @ ..]) => {
             expect_vcc(vcc)?;
             (dst, src0, src1, selectors)
         }
         _ => return Err("unsupported operand count"),
     };
-    let half = match selectors {
+    let half = |sel: &SdwaSel| match sel {
+        SdwaSel::Word0 => Ok(ir::WordHalf::Low),
+        SdwaSel::Word1 => Ok(ir::WordHalf::High),
+        SdwaSel::Dword => Err("expected src0_sel:WORD_0 or WORD_1"),
+    };
+    // An op selecting a half of its second source is the same op with the operands swapped
+    // (`v_cndmask` its swapped form), so the IR selects only from its first.
+    let swapped = match op {
+        ir::SdwaOp::CndMask32 => ir::SdwaOp::CndMask32Swapped,
+        other => other,
+    };
+    let (op, half, src0, src1) = match selectors {
         [
             Operand::SdwaDstDword,
             Operand::SdwaDstUnusedPad,
             Operand::Src0Sel(sel),
             Operand::Src1Sel(SdwaSel::Dword),
-        ] => match sel {
-            SdwaSel::Word0 => ir::WordHalf::Low,
-            SdwaSel::Word1 => ir::WordHalf::High,
-            SdwaSel::Dword => return Err("expected src0_sel:WORD_0 or WORD_1"),
-        },
+        ] => (op, half(sel)?, src0, src1),
+        [
+            Operand::SdwaDstDword,
+            Operand::SdwaDstUnusedPad,
+            Operand::Src0Sel(SdwaSel::Dword),
+            Operand::Src1Sel(sel @ (SdwaSel::Word0 | SdwaSel::Word1)),
+        ] => (swapped, half(sel)?, src1, src0),
         _ => {
             return Err(
-                "expected dst_sel:DWORD dst_unused:UNUSED_PAD src0_sel:WORD_n \
-                        src1_sel:DWORD",
+                "expected dst_sel:DWORD dst_unused:UNUSED_PAD and one source selecting a half",
             );
         }
     };
+    let (src0, extension) = match src0 {
+        Operand::Sext(source) => (source.as_ref(), ir::HalfExtension::Sign),
+        source => (source, ir::HalfExtension::Zero),
+    };
+    if matches!(src1, Operand::Sext(_)) {
+        return Err("expected sext() on the source selecting a half");
+    }
     Ok(LoweredInstr::SdwaWord {
         op,
         dst: vgpr(dst).ok_or("expected one destination VGPR")?,
         src0: vgpr(src0).ok_or("expected one VGPR first source")?,
         half,
+        extension,
         src1: vop3_src(src1)
             .ok_or("expected a VGPR, an SGPR or an inline constant second source")?,
     })

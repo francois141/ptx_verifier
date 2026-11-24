@@ -56,6 +56,9 @@ pub enum Operand {
     Neg(Box<Operand>),
     /// The absolute value of a floating-point register source.
     Abs(Box<Operand>),
+    /// An SDWA source's `sext(...)`: its selected half is sign-extended rather than
+    /// zero-extended.
+    Sext(Box<Operand>),
     /// The vector condition code, one bit per lane.
     Vcc,
     /// The mask of the wave's active lanes.

@@ -6,8 +6,8 @@
 use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Type, Width};
 
 use crate::ir::{
-    BinOp, LaneMask, LoweredInstr, ModifiedSrc, SdwaOp, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src,
-    WordHalf,
+    BinOp, HalfExtension, LaneMask, LoweredInstr, ModifiedSrc, SdwaOp, Src0, TernaryOp, UnaryOp,
+    Vgpr, Vop3Src, WordHalf,
 };
 
 use super::EvalError;
@@ -225,8 +225,8 @@ pub(super) fn execute_bf16_pair_lane(
     }
 }
 
-/// One lane of a VOP2 SDWA instruction: `src0`'s selected half, zero-extended, with all of
-/// `src1`. A concrete half is its bits; a bf16 half is its real, the low half of a word whose
+/// One lane of a VOP2 SDWA instruction: `src0`'s selected half, zero- or sign-extended, with
+/// all of `src1`. A concrete half is its bits; a bf16 half is its real, the low half of a word whose
 /// high half is zero, so masking it within 16 bits gives a field of it.
 pub(super) fn execute_sdwa_lane(
     arena: &mut ExprArena,
@@ -239,6 +239,7 @@ pub(super) fn execute_sdwa_lane(
         dst,
         src0,
         half,
+        extension,
         src1,
     } = *instruction
     else {
@@ -258,9 +259,16 @@ pub(super) fn execute_sdwa_lane(
                 WordHalf::Low => bits & 0xffff,
                 WordHalf::High => bits >> 16,
             };
+            let bits = match extension {
+                HalfExtension::Zero => bits,
+                HalfExtension::Sign => bits as u16 as i16 as i32 as u32,
+            };
             Word::Value(arena.int(i64::from(bits)))
         }
     };
+    if extension == HalfExtension::Sign && matches!(src0, Word::Bf16 { .. }) {
+        return Err(EvalError::SymbolicWord { lane });
+    }
     match op {
         SdwaOp::And32 => {
             let mask = registers.read_src(arena, lane, src1)?;
@@ -279,14 +287,60 @@ pub(super) fn execute_sdwa_lane(
             };
             registers.write_vgpr(lane, dst, result)
         }
-        SdwaOp::CndMask32 => {
+        SdwaOp::Or32 => {
+            let src1 = match src1 {
+                Vop3Src::Vgpr(reg) => registers.read_vgpr_word(lane, reg)?,
+                other => Word::Value(registers.read_src(arena, lane, other)?),
+            };
+            let word = match [src0, src1] {
+                [Word::Value(a), Word::Value(b)] => {
+                    let bits = |arena: &ExprArena, value| {
+                        concrete_word(arena, value).ok_or(EvalError::SymbolicWord { lane })
+                    };
+                    let bits = bits(arena, a)? | bits(arena, b)?;
+                    Word::Value(arena.int(i64::from(bits)))
+                }
+                words => or_words(arena, words.to_vec()).ok_or(EvalError::SymbolicWord { lane })?,
+            };
+            registers.write_vgpr_word(lane, dst, word)
+        }
+        // A bf16 half moved to the top of the word is the f32 of the same value.
+        SdwaOp::LShl32 => {
+            let shift = registers.read_src(arena, lane, src1)?;
+            let shift = concrete_word(arena, shift).ok_or(EvalError::SymbolicWord { lane })? & 31;
+            let result = match src0 {
+                Word::Value(bits) => {
+                    let bits =
+                        concrete_word(arena, bits).ok_or(EvalError::SymbolicWord { lane })?;
+                    arena.int(i64::from(bits << shift))
+                }
+                Word::Bf16 { low, .. } if shift == 16 => low,
+                Word::Bf16 { .. } => return Err(EvalError::SymbolicWord { lane }),
+            };
+            registers.write_vgpr(lane, dst, result)
+        }
+        SdwaOp::CndMask32 | SdwaOp::CndMask32Swapped => {
             let src1 = match src1 {
                 Vop3Src::Vgpr(reg) => registers.read_vgpr_word(lane, reg)?,
                 other => Word::Value(registers.read_src(arena, lane, other)?),
             };
             let condition = registers.read_vcc(lane)?;
-            let word = select_word(arena, lane, condition, [src0, src1])?;
+            let sources = match op {
+                SdwaOp::CndMask32 => [src0, src1],
+                _ => [src1, src0],
+            };
+            let word = select_word(arena, lane, condition, sources)?;
             registers.write_vgpr_word(lane, dst, word)
+        }
+        // Integer bits only: a bf16 pair has no known bits to flip.
+        SdwaOp::Xor32 => {
+            let other = registers.read_src(arena, lane, src1)?;
+            let other = concrete_word(arena, other).ok_or(EvalError::SymbolicWord { lane })?;
+            let Word::Value(bits) = src0 else {
+                return Err(EvalError::SymbolicWord { lane });
+            };
+            let bits = concrete_word(arena, bits).ok_or(EvalError::SymbolicWord { lane })?;
+            registers.write_vgpr(lane, dst, arena.int(i64::from(bits ^ other)))
         }
     }
 }

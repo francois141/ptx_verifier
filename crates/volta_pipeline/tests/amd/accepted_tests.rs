@@ -386,6 +386,22 @@ fn the_sdwa_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test the SDWA OR, XOR and shift, a half of the second source and sign extension, against the
+// expected outputs in sdwa_forms.out.
+#[test]
+fn the_sdwa_forms_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/sdwa_forms",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array("c", 0x30000, ArrayKind::Input),
+            array("d", 0x40000, ArrayKind::Input),
+            array_of("out", 0x50000, 8 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]
