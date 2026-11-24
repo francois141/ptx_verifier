@@ -717,7 +717,7 @@ impl<'a> Interpreter<'a> {
                     let a = self.read(instr, stationary, [k, row])?;
                     let b = self.read(instr, moving, [k, column])?;
                     let product = self.arena.mul(Type::Real, a, b);
-                    sum = self.arena.add(Type::Real, sum, product);
+                    sum = self.arena.add(Type::Real, product, sum);
                 }
                 writes.push(Write::at(dst, [row, column], sum));
             }
