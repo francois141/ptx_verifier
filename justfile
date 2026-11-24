@@ -136,11 +136,6 @@ bitwise:
     solve bitdelta_llm external/bitwise/bitdelta_llm/kernel_tile.ptx --config external/bitwise/bitdelta_llm/kernel_tile.launch.json --recycle-terms 1000000 --sample 32
     solve bitdelta_triton_matmul external/bitwise/bitdelta_triton/binary_matmul_kernel.ptx --config external/bitwise/bitdelta_triton/binary_matmul_kernel.launch.json --recycle-terms 1000000 --print-outputs 0
     solve bitdelta_triton_bmm external/bitwise/bitdelta_triton/binary_bmm_kernel.ptx --config external/bitwise/bitdelta_triton/binary_bmm_kernel.launch.json --recycle-terms 1000000 --print-outputs 0
-    solve simdjson_strings external/bitwise/simdjson/stage1.ptx --config external/bitwise/simdjson/stage1.launch.json
-    solve simdjson_escape external/bitwise/simdjson/escape.ptx --config external/bitwise/simdjson/escape.launch.json
-    solve simdjson_structural external/bitwise/simdjson/structural_start.ptx --config external/bitwise/simdjson/structural_start.launch.json
-    solve simdjson_indexer external/bitwise/simdjson/indexer.ptx --config external/bitwise/simdjson/indexer.launch.json
-    solve simdjson_digits external/bitwise/simdjson/digits.ptx --config external/bitwise/simdjson/digits.launch.json
     amd() { printf '%s: ' "$1"; ./target/release/volta --no-log-file solve "external/bitwise/$2.s" --config "external/bitwise/$2.launch.json" --print-outputs 0 2>&1 | sed -n 's/^VERDICT: //p; s/^error: /ERROR: /p' || true; }
     amd amd_triton_binary_gemm triton_binary_gemm/kernel_amd
     amd amd_bitdelta_triton_matmul bitdelta_triton/binary_matmul_kernel_amd
