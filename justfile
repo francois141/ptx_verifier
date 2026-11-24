@@ -156,6 +156,12 @@ approximations *args:
     cargo build --release -q -p volta_cli
     python3 external/approximations/verify.py --report external/approximations/REPORT.md {{args}}
 
+# `--no-lean` skips the agent, `--force` measures again, COLUMN... narrows it; Lean needs $VOLTA_LEAN_PROJECT and Claude Code.
+# Fill the paper's GEMM + activation table (rewrites and Lean on the 64 x 256 tile) in external/approximations/table
+approximations-table *args:
+    cargo build --release -q -p volta_cli
+    uv run --reinstall-package volta --package volta python external/approximations/table/table.py {{args}}
+
 # ===== AMD ====================================================================
 
 # Check the AMD kernels' outputs, expected rejections and functional equivalence
