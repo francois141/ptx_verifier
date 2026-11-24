@@ -324,6 +324,20 @@ fn the_bf16_pack_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that a mask within a bf16 half keeps its bit field, whose exponent test folds for a real,
+// against the expected outputs in bf16_fields.out.
+#[test]
+fn the_bf16_fields_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/bf16_fields",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array_of("out", 0x30000, 2 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]

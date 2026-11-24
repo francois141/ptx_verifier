@@ -1,7 +1,7 @@
 //! Instructions on words holding two bf16 halves: moves, selects, moving whole halves between
-//! words, packing halves by OR, negating both halves, and taking one half out as an f32. Each
-//! half stays the real it encodes; an instruction these do not cover is left to the ordinary
-//! evaluation.
+//! words, packing halves by OR, masking a half's bit field, negating both halves, and taking one
+//! half out as an f32. Each half stays the real it encodes; an instruction these do not cover is
+//! left to the ordinary evaluation.
 
 use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 
@@ -12,7 +12,7 @@ use crate::ir::{
 use super::EvalError;
 use super::interp::high_half;
 use super::wave::{WaveRegisters, concrete_word};
-use super::word::{Word, bf16_from_bits, is_zero_half};
+use super::word::{Word, bf16_field, bf16_from_bits, is_zero_half};
 
 /// One lane of an instruction that moves or selects a word holding two bf16 halves, or takes one
 /// half out as an f32. `None` leaves the instruction to the ordinary evaluation.
@@ -32,8 +32,8 @@ pub(super) fn execute_bf16_pair_lane(
             let word = registers.read_vgpr_word(lane, plain_vgpr(src)?);
             Some(word.and_then(|word| registers.write_vgpr_word(lane, dst, word)))
         }
-        // `v_and_b32 dst, mask, vN`, in either operand order, keeps a whole half, zeroing the
-        // other.
+        // `v_and_b32 dst, mask, vN`, in either operand order, keeps a whole half or, for a mask
+        // within the low half such as a bf16's exponent `0x7f80`, a field of the low half.
         LoweredInstr::BinOp {
             op: BinOp::And32,
             dst,
@@ -54,6 +54,7 @@ pub(super) fn execute_bf16_pair_lane(
                     low,
                     high: zero_half(arena),
                 },
+                1..0xffff => Word::Value(bf16_field(arena, low, mask as u16)),
                 _ => return None,
             };
             Some(registers.write_vgpr_word(lane, dst, word))

@@ -87,6 +87,12 @@ pub(crate) fn compare_bf16_field(
     })
 }
 
+/// The bits `mask` keeps of a bf16 half, the field `compare_bf16_field` tests.
+pub(crate) fn bf16_field(arena: &mut ExprArena, half: ExprId, mask: u16) -> ExprId {
+    let mask = arena.int(i64::from(mask));
+    arena.bit_and(BITS16, half, mask)
+}
+
 /// The mask of a `bf16_field`, `None` for any other value.
 fn bf16_field_mask(arena: &ExprArena, value: ExprId) -> Option<u16> {
     let ExprNode::BitAnd(_, mask) = *arena.node(value) else {
