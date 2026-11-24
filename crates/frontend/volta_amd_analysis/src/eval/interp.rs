@@ -21,7 +21,7 @@ use super::arithm::{
     evaluate_cvt_to_f64, evaluate_dpp_lane, evaluate_f64_op, evaluate_ldexp_f32,
     evaluate_packed_f32, evaluate_ternary_op, evaluate_unary_op, evaluate_vop3_bin_op,
 };
-use super::bf16::execute_bf16_pair_lane;
+use super::bf16::{execute_bf16_pair_lane, execute_sdwa_lane};
 use super::buffer::load_ushort;
 use super::global::{ArrayDef, GlobalMemory, OutputArrays, OutputConflict};
 use super::launch::{WorkgroupLaunch, grid_workgroups, initialize_waves, vary_workgroup_ids};
@@ -508,6 +508,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::ShiftAdd64 { .. }
             | LoweredInstr::CndMask32 { .. }
             | LoweredInstr::CndMask32E64 { .. }
+            | LoweredInstr::SdwaWord { .. }
             | LoweredInstr::AccvgprWrite32 { .. }
             | LoweredInstr::AccvgprRead32 { .. }
             | LoweredInstr::FmaF32 { .. }
@@ -542,8 +543,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::Branch { .. }
             | LoweredInstr::CondBranch { .. }
             | LoweredInstr::WaitCnt { .. }
-            | LoweredInstr::Nop
-            | LoweredInstr::SdwaWord { .. } => Err(EvalError::UnsupportedInstruction),
+            | LoweredInstr::Nop => Err(EvalError::UnsupportedInstruction),
         }
     }
 
@@ -718,6 +718,9 @@ impl<'a> Interpreter<'a> {
             return result;
         }
         match instruction {
+            LoweredInstr::SdwaWord { .. } => {
+                execute_sdwa_lane(&mut self.arena, registers, lane, instruction)
+            }
             LoweredInstr::BinOp {
                 op,
                 dst,

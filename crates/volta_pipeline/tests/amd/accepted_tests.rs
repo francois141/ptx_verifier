@@ -370,6 +370,22 @@ fn the_bf16_select_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that SDWA instructions read one half of a bf16 pair or a concrete word, masking and
+// selecting it, against the expected outputs in sdwa_ops.out.
+#[test]
+fn the_sdwa_ops_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/sdwa_ops",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array("c", 0x30000, ArrayKind::Input),
+            array("d", 0x40000, ArrayKind::Input),
+            array_of("out", 0x50000, 5 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]
