@@ -236,6 +236,31 @@ fn amd_ck_gemm_main_loop_with_swapped_input_arguments_is_refuted() {
     );
 }
 
+// Test that the fused GEMM-sigmoid is its formula once LLVM's denormal guard, which rescales a
+// shifted exp by f32(e^-64), is read as the exp it guards.
+#[test]
+fn amd_ck_gemm_sigmoid_matches_its_specification() {
+    let kernarg = ck_gemm_kernarg(A_BASE, B_BASE, C_BASE, [8, 8, 8]);
+    let verdict = check_gemm(
+        "ck_gemm_sigmoid.s",
+        ck_fixture!("ck_gemm_sigmoid"),
+        CK_GEMM_SIGMOID_KERNEL,
+        128,
+        [8, 8, 8],
+        &kernarg,
+        include_str!(
+            "../../../backend/volta_equivalence/tests/specs/sigmoid_matmul_transposed.spec"
+        ),
+    );
+    assert_eq!(
+        verdict,
+        EquivalenceVerdict::Equivalent {
+            checked: 64,
+            total: 64,
+        }
+    );
+}
+
 // Test that swapping the fused GEMM-sigmoid kernel's inputs is refuted in all 56 outputs off
 // the diagonal. A diagonal output keeps its dot product when A and B are exchanged.
 #[test]
