@@ -338,6 +338,22 @@ fn the_bf16_fields_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that a 16-bit v_bfe moves one bf16 half to the low half, zeros or an undefined sign above
+// it, against the expected outputs in bf16_extract.out.
+#[test]
+fn the_bf16_extract_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/bf16_extract",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array("c", 0x30000, ArrayKind::Input),
+            array("d", 0x40000, ArrayKind::Input),
+            array_of("out", 0x50000, 5 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]

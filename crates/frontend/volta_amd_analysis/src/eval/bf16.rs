@@ -71,6 +71,32 @@ pub(super) fn execute_bf16_pair_lane(
                 })?;
             Some(registers.write_vgpr_word(lane, dst, word))
         }
+        // `v_bfe_{u,i}32 dst, vN, 0 or 16, 16` takes one bf16 half to the low half; above it go
+        // zeros, or for the signed form the half's sign bit, unknown for a real, so undefined.
+        LoweredInstr::TernaryOp {
+            op: op @ (TernaryOp::Bfe32 | TernaryOp::BfeI32),
+            dst,
+            srcs: [value, offset, width],
+        } => {
+            if concrete_src(arena, registers, lane, width)? & 31 != 16 {
+                return None;
+            }
+            let [low, high] = bf16_pair(registers, lane, value)?;
+            let field = match concrete_src(arena, registers, lane, offset)? & 31 {
+                0 => low,
+                16 => high,
+                _ => return None,
+            };
+            let above = match op {
+                TernaryOp::Bfe32 => zero_half(arena),
+                _ => arena.undefined(),
+            };
+            let word = Word::Bf16 {
+                low: field,
+                high: above,
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
         // `v_alignbit_b32 dst, a, b, 16` is the middle word of `a:b`: `b`'s high half below
         // `a`'s low half.
         LoweredInstr::TernaryOp {
