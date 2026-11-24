@@ -1,6 +1,6 @@
 //! The value of a 32-bit word as registers and memory hold it.
 
-use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Type, Width};
+use volta_expr::symbolic_full::{ExprArena, ExprId, ExprNode, Real, Type, Width};
 use volta_graph::StoredValue;
 
 /// A word holds one value, which every instruction reads, or two bf16 halves, each a real,
@@ -26,6 +26,17 @@ impl Word {
         }
     }
 
+    /// The single value the word holds: its value, or the f32 a pair with a zero low half
+    /// encodes, its high half widened (`v_lshlrev_b32 16` of a bf16). Volta's reals have no
+    /// signed zero, so a zero half is +0's bits.
+    pub fn value(self, arena: &ExprArena) -> Option<ExprId> {
+        match self {
+            Word::Value(value) => Some(value),
+            Word::Bf16 { low, high } if is_zero_half(arena, low) => Some(high),
+            Word::Bf16 { .. } => None,
+        }
+    }
+
     /// The event graph's record of the word as a store writes it.
     pub fn stored(self) -> StoredValue {
         match self {
@@ -33,6 +44,11 @@ impl Word {
             Word::Bf16 { low, high } => StoredValue::Pair(low, high),
         }
     }
+}
+
+/// Whether a bf16 half is the real 0.
+pub(crate) fn is_zero_half(arena: &ExprArena, half: ExprId) -> bool {
+    matches!(arena.value_node(half), ExprNode::RealConst(real) if *real == Real::zero())
 }
 
 /// The real a bf16 bit pattern encodes, the f32 with those upper bits; `None` for a NaN.

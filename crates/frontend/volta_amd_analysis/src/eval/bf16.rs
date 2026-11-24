@@ -1,6 +1,7 @@
 //! Instructions on words holding two bf16 halves: moves, selects, moving whole halves between
-//! words, negating both halves, and taking one half out as an f32. Each half stays the real it
-//! encodes; an instruction these do not cover is left to the ordinary evaluation.
+//! words, packing halves by OR, negating both halves, and taking one half out as an f32. Each
+//! half stays the real it encodes; an instruction these do not cover is left to the ordinary
+//! evaluation.
 
 use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 
@@ -11,7 +12,7 @@ use crate::ir::{
 use super::EvalError;
 use super::interp::high_half;
 use super::wave::{WaveRegisters, concrete_word};
-use super::word::Word;
+use super::word::{Word, bf16_from_bits, is_zero_half};
 
 /// One lane of an instruction that moves or selects a word holding two bf16 halves, or takes one
 /// half out as an f32. `None` leaves the instruction to the ordinary evaluation.
@@ -31,22 +32,31 @@ pub(super) fn execute_bf16_pair_lane(
             let word = registers.read_vgpr_word(lane, plain_vgpr(src)?);
             Some(word.and_then(|word| registers.write_vgpr_word(lane, dst, word)))
         }
-        // `v_and_b32 dst, 0xffff0000, vN`, in either operand order, is the high half.
+        // `v_and_b32 dst, mask, vN`, in either operand order, keeps a whole half, zeroing the
+        // other.
         LoweredInstr::BinOp {
             op: BinOp::And32,
             dst,
             src0,
             src1,
         } => {
-            let value = if is_inline(src0, 0xffff_0000) {
-                src1
-            } else if is_inline(src1, 0xffff_0000) {
-                src0
-            } else {
-                return None;
+            let (mask, value) = match concrete_src(arena, registers, lane, src0) {
+                Some(mask) => (mask, src1),
+                None => (concrete_src(arena, registers, lane, src1)?, src0),
             };
-            let [_, high] = bf16_pair(registers, lane, value)?;
-            Some(registers.write_vgpr(lane, dst, high))
+            let [low, high] = bf16_pair(registers, lane, value)?;
+            let word = match mask {
+                0xffff_0000 => Word::Bf16 {
+                    low: zero_half(arena),
+                    high,
+                },
+                0xffff => Word::Bf16 {
+                    low,
+                    high: zero_half(arena),
+                },
+                _ => return None,
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
         }
         LoweredInstr::TernaryOp {
             op: TernaryOp::Perm32,
@@ -122,7 +132,8 @@ pub(super) fn execute_bf16_pair_lane(
             };
             Some(registers.write_vgpr_word(lane, dst, word))
         }
-        // `v_lshlrev_b32 dst, 16, vN` is the low half.
+        // `v_lshlrev_b32 dst, 16, vN` moves the low half up, zeroing the low half: the low
+        // half widened to an f32.
         LoweredInstr::BinOp {
             op: BinOp::LShlRev32,
             dst,
@@ -130,7 +141,42 @@ pub(super) fn execute_bf16_pair_lane(
             src1,
         } if is_inline(src0, 16) => {
             let [low, _] = bf16_pair(registers, lane, src1)?;
-            Some(registers.write_vgpr(lane, dst, low))
+            let word = Word::Bf16 {
+                low: zero_half(arena),
+                high: low,
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
+        LoweredInstr::BinOp {
+            op: BinOp::Or32,
+            dst,
+            src0,
+            src1,
+        } => {
+            let word = or_halves(arena, registers, lane, &[src0, src1])?;
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
+        LoweredInstr::TernaryOp {
+            op: TernaryOp::Or3_32,
+            dst,
+            srcs,
+        } => {
+            let word = or_halves(arena, registers, lane, &srcs)?;
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
+        // `v_lshrrev_b32 dst, 16, vN` moves the high half down, zeroing the high half.
+        LoweredInstr::BinOp {
+            op: BinOp::LShrRev32,
+            dst,
+            src0,
+            src1,
+        } if is_inline(src0, 16) => {
+            let [_, high] = bf16_pair(registers, lane, src1)?;
+            let word = Word::Bf16 {
+                low: high,
+                high: zero_half(arena),
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
         }
         LoweredInstr::CndMask32 {
             dst,
@@ -195,6 +241,60 @@ fn permute_halves(
         low: pick(0)?,
         high: pick(1)?,
     })
+}
+
+/// The OR of words each of whose halves is zero in all but at most one of them, as packing
+/// two bf16s does: `(b << 16) | (a & 0xffff)`. A source that is a symbolic value, an f32 of
+/// unknown bits, leaves the instruction to the ordinary evaluation.
+fn or_halves(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    srcs: &[ModifiedSrc],
+) -> Option<Word> {
+    let mut words = Vec::with_capacity(srcs.len());
+    for &src in srcs {
+        words.push(source_word(arena, registers, lane, src)?);
+    }
+    if !words.iter().any(|word| matches!(word, Word::Bf16 { .. })) {
+        return None;
+    }
+    or_words(arena, words)
+}
+
+/// The OR of words whose halves are each zero in all but at most one of them.
+fn or_words(arena: &mut ExprArena, words: Vec<Word>) -> Option<Word> {
+    let mut halves = [None, None];
+    for word in words {
+        let word_halves = match word {
+            Word::Bf16 { low, high } => {
+                [low, high].map(|half| (!is_zero_half(arena, half)).then_some(half))
+            }
+            Word::Value(value) => {
+                let bits = concrete_word(arena, value)?;
+                let mut half = |bits: u32| match bits & 0xffff {
+                    0 => Some(None),
+                    bits => bf16_from_bits(arena, bits as u16).map(Some),
+                };
+                [half(bits)?, half(bits >> 16)?]
+            }
+        };
+        for (half, nonzero) in halves.iter_mut().zip(word_halves) {
+            if let Some(nonzero) = nonzero {
+                if half.is_some() {
+                    return None;
+                }
+                *half = Some(nonzero);
+            }
+        }
+    }
+    let [low, high] = halves.map(|half| half.unwrap_or_else(|| zero_half(arena)));
+    Some(Word::Bf16 { low, high })
+}
+
+/// The bf16 half whose bits are all zero, the real 0.
+fn zero_half(arena: &mut ExprArena) -> ExprId {
+    bf16_from_bits(arena, 0).expect("bf16 zero is no NaN")
 }
 
 /// Each source's bf16 halves, low first, when one holds a bf16 pair and every other is a
@@ -277,8 +377,8 @@ fn bf16_pair(registers: &WaveRegisters, lane: usize, src: ModifiedSrc) -> Option
     }
 }
 
-/// `mask ? srcs[1] : srcs[0]` when either source holds a bf16 pair. The lane's mask bit must be
-/// concrete, since a symbolic select of two pairs is no single pair.
+/// `mask ? srcs[1] : srcs[0]` when either source holds a bf16 pair that is no single value. The
+/// lane's mask bit must be concrete, since a symbolic select of two pairs is no single pair.
 fn select_bf16_pair(
     arena: &mut ExprArena,
     registers: &mut WaveRegisters,
@@ -290,7 +390,7 @@ fn select_bf16_pair(
     let words = srcs.map(|reg| registers.read_vgpr_word(lane, reg));
     let holds_pair = words
         .iter()
-        .any(|word| matches!(word, Ok(Word::Bf16 { .. })));
+        .any(|word| matches!(word, Ok(word) if word.value(arena).is_none()));
     holds_pair.then(|| {
         let condition = registers.read_lane_condition(arena, lane, mask)?;
         let take_src1 = arena

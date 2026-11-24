@@ -261,10 +261,10 @@ impl GlobalMemory {
                     .ok_or(EvalError::InvalidBf16Output { address })?;
                 vec![(address, low), (address + 2, high)]
             }
-            (Element::Word, Word::Bf16 { .. }) => {
-                return Err(EvalError::InvalidFloatOutput { address });
-            }
-            (Element::Word, Word::Value(value)) => {
+            (Element::Word, word) => {
+                let value = word
+                    .value(arena)
+                    .ok_or(EvalError::InvalidFloatOutput { address })?;
                 let value = match output_type {
                     OutputType::F32 => {
                         as_f32(arena, value).ok_or(EvalError::InvalidFloatOutput { address })?

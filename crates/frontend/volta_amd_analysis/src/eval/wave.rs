@@ -875,11 +875,15 @@ impl WaveRegisters {
 
     /// Read a lane's vector register, rejecting an invalid lane, an unwritten register, or a
     /// pending load's destination.
-    pub fn read_vgpr(&self, lane: usize, reg: Vgpr) -> Result<ExprId, EvalError> {
-        match self.read_vgpr_word(lane, reg)? {
-            Word::Value(value) => Ok(value),
-            Word::Bf16 { .. } => Err(EvalError::Bf16Halves { lane, reg }),
-        }
+    pub fn read_vgpr(
+        &self,
+        arena: &ExprArena,
+        lane: usize,
+        reg: Vgpr,
+    ) -> Result<ExprId, EvalError> {
+        self.read_vgpr_word(lane, reg)?
+            .value(arena)
+            .ok_or(EvalError::Bf16Halves { lane, reg })
     }
 
     /// Read a lane's vector register as a word in either form, as moves and stores do.
@@ -923,7 +927,7 @@ impl WaveRegisters {
         lane: usize,
         reg: Vgpr,
     ) -> Result<ExprId, EvalError> {
-        let value = self.read_vgpr(lane, reg)?;
+        let value = self.read_vgpr(arena, lane, reg)?;
         as_f32(arena, value).ok_or(EvalError::InvalidFloatVgpr { lane, reg })
     }
 
@@ -940,7 +944,7 @@ impl WaveRegisters {
         src: Src0,
     ) -> Result<ExprId, EvalError> {
         match src {
-            Src0::Vgpr(reg) => self.read_vgpr(lane, reg),
+            Src0::Vgpr(reg) => self.read_vgpr(arena, lane, reg),
             Src0::Sgpr(reg) => self.read_sgpr(reg),
             Src0::Const(bits) => Ok(arena.int(i64::from(bits))),
         }
@@ -969,7 +973,7 @@ impl WaveRegisters {
         src: Vop3Src,
     ) -> Result<ExprId, EvalError> {
         match src {
-            Vop3Src::Vgpr(reg) => self.read_vgpr(lane, reg),
+            Vop3Src::Vgpr(reg) => self.read_vgpr(arena, lane, reg),
             Vop3Src::Sgpr(reg) => self.read_sgpr(reg),
             Vop3Src::Inline(bits) => Ok(arena.int(i64::from(bits))),
         }
@@ -1028,8 +1032,8 @@ impl WaveRegisters {
                 {
                     return Ok(value);
                 }
-                let low = self.read_vgpr(lane, pair[0])?;
-                let high = self.read_vgpr(lane, pair[1])?;
+                let low = self.read_vgpr(arena, lane, pair[0])?;
+                let high = self.read_vgpr(arena, lane, pair[1])?;
                 let (Some(low), Some(high)) =
                     (concrete_word(arena, low), concrete_word(arena, high))
                 else {
@@ -1094,7 +1098,7 @@ impl WaveRegisters {
         lane: usize,
         reg: Vgpr,
     ) -> Result<u32, EvalError> {
-        let value = self.read_vgpr(lane, reg)?;
+        let value = self.read_vgpr(arena, lane, reg)?;
         concrete_word(arena, value).ok_or(EvalError::InvalidAddressVgpr { lane, reg })
     }
 

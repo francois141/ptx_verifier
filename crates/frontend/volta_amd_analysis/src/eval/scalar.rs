@@ -249,13 +249,13 @@ impl Interpreter<'_> {
                     exec.trailing_zeros() as usize
                 };
                 let registers = &mut self.waves[wave].registers;
-                let value = registers.read_vgpr(lane, *src)?;
+                let value = registers.read_vgpr(&self.arena, lane, *src)?;
                 registers.write_sgpr(*dst, value)
             }
             LoweredInstr::ReadLane { dst, src, lane } => {
                 let lane = self.read_scalar_word(wave, *lane)? as usize % 64;
                 let registers = &mut self.waves[wave].registers;
-                let value = registers.read_vgpr(lane, *src)?;
+                let value = registers.read_vgpr(&self.arena, lane, *src)?;
                 registers.write_sgpr(*dst, value)
             }
             LoweredInstr::WriteLane { dst, src, lane } => {

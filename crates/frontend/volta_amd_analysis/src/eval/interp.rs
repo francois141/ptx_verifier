@@ -624,8 +624,8 @@ impl<'a> Interpreter<'a> {
             let b = registers.read_src(&mut self.arena, lane, src1)?;
             let (addend_low, addend_high) = match src2 {
                 Addend64::Vgprs([low, high]) => {
-                    let low = registers.read_vgpr(lane, low)?;
-                    let high = match registers.read_vgpr(lane, high) {
+                    let low = registers.read_vgpr(&self.arena, lane, low)?;
+                    let high = match registers.read_vgpr(&self.arena, lane, high) {
                         Err(EvalError::UninitializedVgpr { .. }) => None,
                         read => Some(read?),
                     };

@@ -308,6 +308,22 @@ fn the_bf16_moves_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that ANDs and 16-bit shifts keep a zero half, that OR packs such words back into bf16
+// pairs, and that a pair with a zero low half reads as an f32, against bf16_pack.out.
+#[test]
+fn the_bf16_pack_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/bf16_pack",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array("c", 0x30000, ArrayKind::Input),
+            array("d", 0x40000, ArrayKind::Input),
+            array_of("out", 0x50000, 9 * 64, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]

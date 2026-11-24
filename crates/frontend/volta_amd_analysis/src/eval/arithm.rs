@@ -114,7 +114,7 @@ pub(super) fn evaluate_dpp_lane(
         DppOp::Mov => return Ok(src0),
         DppOp::Bin(bin_op) => bin_op,
     };
-    let Word::Value(value) = src0 else {
+    let Some(value) = src0.value(arena) else {
         return Err(EvalError::Bf16Halves {
             lane,
             reg: modifiers.src,
@@ -384,7 +384,7 @@ pub(super) fn evaluate_cndmask(
 ) -> Result<ExprId, EvalError> {
     let condition = registers.read_vcc(lane)?;
     let a = registers.read_src0(arena, lane, src0)?;
-    let b = registers.read_vgpr(lane, src1)?;
+    let b = registers.read_vgpr(arena, lane, src1)?;
     if let Some(word) = select_equal(arena, condition, a, b) {
         return Ok(word);
     }
@@ -1162,7 +1162,7 @@ pub(super) fn evaluate_cvt_pk_f8_f32(
         };
         *code = f8_code(format, real).ok_or(EvalError::UnmodeledFp8 { lane })?;
     }
-    let old = registers.read_vgpr(lane, dst)?;
+    let old = registers.read_vgpr(arena, lane, dst)?;
     let old = word_bits(arena, old).ok_or(EvalError::SymbolicWord { lane })?;
     let packed = u32::from(codes[0]) | (u32::from(codes[1]) << 8);
     let word = match half {
@@ -1251,7 +1251,7 @@ pub(super) fn evaluate_cmp(
     let (a, b) = match cmp_operand_type(op) {
         OperandType::Word => (
             registers.read_src0(arena, lane, src0)?,
-            registers.read_vgpr(lane, src1)?,
+            registers.read_vgpr(arena, lane, src1)?,
         ),
         OperandType::F32 => (
             registers.read_f32_src0(arena, lane, src0)?,
