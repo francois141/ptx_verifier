@@ -305,11 +305,7 @@ pub(crate) fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitC
         let vc_secs = vc_start.elapsed().as_secs_f64();
         match report {
             Some(report) => {
-                let elems = if report.elements_checked == report.elements_total {
-                    format!("{}", report.elements_total)
-                } else {
-                    format!("{}/{}", report.elements_checked, report.elements_total)
-                };
+                let elems = crate::output::element_counts(&report);
                 // Wall clock for the whole phase; the parenthetical is the decision procedure
                 // alone (summed canon checks).
                 println!(

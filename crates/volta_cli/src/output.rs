@@ -155,6 +155,20 @@ pub(crate) fn print_graph_conclusion(report: &GraphReport) -> (Verdict, &'static
 
 /// Print the canonical solver's report on a kernel against a spec, or why it did not run, and
 /// log it under `command`.
+/// Checked elements out of the total (when sampled), and how many the decision procedure
+/// solved when elements equal up to their inputs shared a solve.
+pub(crate) fn element_counts(report: &EquivCheckReport) -> String {
+    let mut counts = if report.elements_checked == report.elements_total {
+        format!("{}", report.elements_total)
+    } else {
+        format!("{}/{}", report.elements_checked, report.elements_total)
+    };
+    if report.elements_solved < report.elements_checked {
+        counts.push_str(&format!(" ({} solved)", report.elements_solved));
+    }
+    counts
+}
+
 pub(crate) fn print_spec_check(
     command: &str,
     verdict: &EquivalenceVerdict,
@@ -170,11 +184,7 @@ pub(crate) fn print_spec_check(
         }
         return;
     };
-    let elems = if report.elements_checked == report.elements_total {
-        format!("{}", report.elements_total)
-    } else {
-        format!("{}/{}", report.elements_checked, report.elements_total)
-    };
+    let elems = element_counts(report);
     println!(
         "VC check: {:.3}s (decision procedure {:.3}s)  elements: {}",
         vc_secs,

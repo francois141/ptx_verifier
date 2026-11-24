@@ -9,6 +9,7 @@ use volta_expr::{ExprId, SymbolicOutputs};
 
 use crate::equiv::{DEFAULT_RECYCLE_TERMS, EquivError, EquivSession};
 use crate::numeric;
+use crate::shape::representatives;
 
 /// A single output element where the two kernels disagree.
 #[derive(Debug, Clone)]
@@ -102,14 +103,17 @@ pub struct EquivCheckReport {
     pub outcome: EquivOutcome,
     /// Elements actually compared (less than total when sampling).
     pub elements_checked: u64,
+    /// Equivalences the decision procedure solved: one per group of checked elements equal up
+    /// to a renaming of their atoms, whose verdict every element of the group takes.
+    pub elements_solved: u64,
     /// Comparable elements in the reference footprints.
     pub elements_total: u64,
     /// Per-iteration summed `EquivSession::check` time and nothing else (pairing and the oracle
     /// excluded), the figure to put beside another backend's solver time. One entry per
     /// `EquivCheckOptions::iterations`, in order; never empty.
     pub check_iters: Vec<Duration>,
-    /// Iteration 1's per-element check durations in `sampled_elements` order: the same
-    /// measurements `check_iters[0]` sums, recorded outside the timed spans.
+    /// Iteration 1's check durations of the solved elements in `sampled_elements` order: the
+    /// same measurements `check_iters[0]` sums, recorded outside the timed spans.
     pub element_checks: Vec<ElementCheckTime>,
     /// Time spent pairing the two footprints (`paired_elements`). Callers
     /// that account "VC generation" as symbolic execution plus pairing
@@ -242,9 +246,10 @@ fn check_iteration_agreement(
     })
 }
 
-/// Check two analysis outputs element by element under `options`. Each solve iteration shares
-/// one `EquivSession` across all elements, so shared structure canonicalizes once; each further
-/// iteration re-solves the same elements from a fresh session.
+/// Check two analysis outputs element by element under `options`. Elements equal up to a
+/// renaming of their atoms are solved once, the first of them standing for the rest. Each solve
+/// iteration shares one `EquivSession` across the solved elements, so shared structure
+/// canonicalizes once; each further iteration re-solves them from a fresh session.
 pub fn check_output_equivalence_with(
     reference: &SymbolicOutputs,
     optimized: &SymbolicOutputs,
@@ -260,11 +265,16 @@ pub fn check_output_equivalence_with(
     // prefix, so "the same sampled elements" holds by construction).
     let elements_total: u64 = paired.iter().map(|(_, common)| common.len() as u64).sum();
     let checked = sampled_elements(&paired, options.sample);
+    let roots: Vec<(ExprId, ExprId)> = checked.iter().map(|&(_, _, r, o)| (r, o)).collect();
+    let representative = representatives(&reference.arena, &optimized.arena, &roots);
+    let solved: Vec<usize> = (0..checked.len())
+        .filter(|&slot| representative[slot] == slot)
+        .collect();
 
     let mut verify_time = options.verify_numeric.then_some(Duration::ZERO);
     let mut check_iters = Vec::with_capacity(options.iterations.get());
-    let mut element_checks = Vec::with_capacity(checked.len());
-    let mut first_verdicts: Vec<bool> = Vec::with_capacity(checked.len());
+    let mut element_checks = Vec::with_capacity(solved.len());
+    let mut first_verdicts: Vec<bool> = Vec::with_capacity(solved.len());
     for iteration in 1..=options.iterations.get() {
         let mut session = EquivSession::with_recycle_terms(
             &reference.arena,
@@ -272,7 +282,8 @@ pub fn check_output_equivalence_with(
             options.recycle_terms,
         );
         let mut iter_time = Duration::ZERO;
-        for (slot, &(name, index, r, o)) in checked.iter().enumerate() {
+        for (position, &slot) in solved.iter().enumerate() {
+            let (name, index, r, o) = checked[slot];
             let check_start = Instant::now();
             let equivalent = session.check(r, o)?;
             let check = check_start.elapsed();
@@ -294,7 +305,7 @@ pub fn check_output_equivalence_with(
                 first_verdicts.push(equivalent);
             } else {
                 check_iteration_agreement(
-                    first_verdicts[slot],
+                    first_verdicts[position],
                     equivalent,
                     name,
                     index,
@@ -305,10 +316,14 @@ pub fn check_output_equivalence_with(
         check_iters.push(iter_time);
     }
 
+    let mut verdicts = vec![false; checked.len()];
+    for (&slot, &equivalent) in solved.iter().zip(&first_verdicts) {
+        verdicts[slot] = equivalent;
+    }
     let mismatches: Vec<Mismatch> = checked
         .iter()
-        .zip(&first_verdicts)
-        .filter(|&(_, &equivalent)| !equivalent)
+        .zip(&representative)
+        .filter(|&(_, &representative)| !verdicts[representative])
         .map(|(&(name, index, _, _), _)| Mismatch {
             array: name.to_string(),
             index,
@@ -322,6 +337,7 @@ pub fn check_output_equivalence_with(
     Ok(EquivCheckReport {
         outcome,
         elements_checked: checked.len() as u64,
+        elements_solved: solved.len() as u64,
         elements_total,
         check_iters,
         element_checks,
@@ -412,20 +428,20 @@ mod tests {
         assert_eq!(report.check_iters.len(), 3);
         assert_eq!(report.check_time(), report.check_iters[0]);
         assert_eq!(report.elements_checked, 3);
+        assert_eq!(report.elements_solved, 1);
         assert_eq!(report.elements_total, 3);
         assert!(matches!(report.outcome, EquivOutcome::Equivalent));
         // Oracle off: no oracle-time bucket, rather than a zero one.
         assert_eq!(report.verify_time, None);
-        // Per-element times: iteration 1 only (no multiplication across
-        // iterations), in `sampled_elements` order, summing to iteration
-        // 1's total.
+        // Per-element times: iteration 1's, of the one element solved for all three
+        // (they differ only in their inputs), summing to iteration 1's total.
         assert_eq!(
             report
                 .element_checks
                 .iter()
                 .map(|e| (e.array.as_str(), e.index))
                 .collect::<Vec<_>>(),
-            vec![("out", 0), ("out", 1), ("out", 2)]
+            vec![("out", 0)]
         );
         assert_eq!(
             report
