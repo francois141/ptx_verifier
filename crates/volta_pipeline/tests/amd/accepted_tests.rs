@@ -292,6 +292,22 @@ fn the_bf16_ops_kernel_writes_its_expected_outputs() {
     );
 }
 
+// Test that alignbit, bfi and perm move whole bf16 halves between words, against the expected
+// outputs in bf16_moves.out.
+#[test]
+fn the_bf16_moves_kernel_writes_its_expected_outputs() {
+    common::amd::check_run(
+        "success/bf16_moves",
+        &[
+            array("a", 0x10000, ArrayKind::Input),
+            array("b", 0x20000, ArrayKind::Input),
+            array("c", 0x30000, ArrayKind::Input),
+            array("d", 0x40000, ArrayKind::Input),
+            array_of("out", 0x50000, 5 * 128, ArrayKind::Output(F32)),
+        ],
+    );
+}
+
 // Test that selects clamping against a constant are the max or min of their sources, against
 // the expected outputs in clamp_ops.out.
 #[test]

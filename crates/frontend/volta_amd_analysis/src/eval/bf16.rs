@@ -1,10 +1,12 @@
-//! Instructions on words holding two bf16 halves: moves, selects, negating both halves, and
-//! taking one half out as an f32. Each half stays the real it encodes; an instruction these do
-//! not cover is left to the ordinary evaluation.
+//! Instructions on words holding two bf16 halves: moves, selects, moving whole halves between
+//! words, negating both halves, and taking one half out as an f32. Each half stays the real it
+//! encodes; an instruction these do not cover is left to the ordinary evaluation.
 
 use volta_expr::symbolic_full::{ExprArena, ExprId, Type, Width};
 
-use crate::ir::{BinOp, LaneMask, LoweredInstr, ModifiedSrc, Src0, UnaryOp, Vgpr, Vop3Src};
+use crate::ir::{
+    BinOp, LaneMask, LoweredInstr, ModifiedSrc, Src0, TernaryOp, UnaryOp, Vgpr, Vop3Src,
+};
 
 use super::EvalError;
 use super::interp::high_half;
@@ -46,26 +48,55 @@ pub(super) fn execute_bf16_pair_lane(
             let [_, high] = bf16_pair(registers, lane, value)?;
             Some(registers.write_vgpr(lane, dst, high))
         }
-        // `v_perm_b32 dst, a, b, 0x07060302` packs the high halves of `b` and `a`, the bf16 pair
-        // of two f32 words truncated, which this model packs exactly as `v_cvt_pk_bf16_f32` does.
         LoweredInstr::TernaryOp {
-            op: crate::ir::TernaryOp::Perm32,
+            op: TernaryOp::Perm32,
             dst,
             srcs: [high_src, low_src, selector],
         } => {
-            let selector = registers.read_src(arena, lane, selector.src).ok()?;
-            if concrete_word(arena, selector) != Some(0x0706_0302) {
+            let selector = concrete_src(arena, registers, lane, selector)?;
+            let word = pack_truncated(arena, registers, lane, selector, [low_src, high_src])
+                .or_else(|| {
+                    permute_halves(arena, registers, lane, selector, [low_src, high_src])
+                })?;
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
+        // `v_alignbit_b32 dst, a, b, 16` is the middle word of `a:b`: `b`'s high half below
+        // `a`'s low half.
+        LoweredInstr::TernaryOp {
+            op: TernaryOp::AlignBit32,
+            dst,
+            srcs: [high_src, low_src, amount],
+        } => {
+            if concrete_src(arena, registers, lane, amount)? & 31 != 16 {
                 return None;
             }
-            let mut high_of = |src: ModifiedSrc| -> Option<ExprId> {
-                match registers.read_vgpr_word(lane, plain_vgpr(src)?).ok()? {
-                    Word::Value(value) if concrete_word(arena, value).is_some() => None,
-                    word => high_half(arena, word),
-                }
-            };
+            let [[_, middle_low], [middle_high, _]] =
+                halves_of(arena, registers, lane, [low_src, high_src])?;
             let word = Word::Bf16 {
-                low: high_of(low_src)?,
-                high: high_of(high_src)?,
+                low: middle_low,
+                high: middle_high,
+            };
+            Some(registers.write_vgpr_word(lane, dst, word))
+        }
+        // `v_bfi_b32 dst, mask, a, b` with a half-word mask takes that half from `a` and the
+        // other from `b`.
+        LoweredInstr::TernaryOp {
+            op: TernaryOp::Bfi32,
+            dst,
+            srcs: [mask, inserted, kept],
+        } => {
+            let mask = concrete_src(arena, registers, lane, mask)?;
+            let [inserted, kept] = halves_of(arena, registers, lane, [inserted, kept])?;
+            let word = match mask {
+                0x0000_ffff => Word::Bf16 {
+                    low: inserted[0],
+                    high: kept[1],
+                },
+                0xffff_0000 => Word::Bf16 {
+                    low: kept[0],
+                    high: inserted[1],
+                },
+                _ => return None,
             };
             Some(registers.write_vgpr_word(lane, dst, word))
         }
@@ -116,6 +147,104 @@ pub(super) fn execute_bf16_pair_lane(
             select_bf16_pair(arena, registers, lane, dst, srcs, mask)
         }
         _ => None,
+    }
+}
+
+/// `v_perm_b32 dst, a, b, 0x07060302` packs the high halves of `b` and `a`, the bf16 pair of
+/// two f32 words truncated, which this model packs exactly as `v_cvt_pk_bf16_f32` does.
+fn pack_truncated(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    selector: u32,
+    [low_src, high_src]: [ModifiedSrc; 2],
+) -> Option<Word> {
+    if selector != 0x0706_0302 {
+        return None;
+    }
+    let high_of = |arena: &mut ExprArena, src: ModifiedSrc| -> Option<ExprId> {
+        match registers.read_vgpr_word(lane, plain_vgpr(src)?).ok()? {
+            Word::Value(value) if concrete_word(arena, value).is_some() => None,
+            word => high_half(arena, word),
+        }
+    };
+    Some(Word::Bf16 {
+        low: high_of(arena, low_src)?,
+        high: high_of(arena, high_src)?,
+    })
+}
+
+/// `v_perm_b32` whose selector picks each result half as a whole, aligned half of `a:b`:
+/// selector bytes `2k, 2k + 1` give half `k` of `b`'s low, `b`'s high, `a`'s low, `a`'s high.
+fn permute_halves(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    selector: u32,
+    srcs: [ModifiedSrc; 2],
+) -> Option<Word> {
+    let [[b_low, b_high], [a_low, a_high]] = halves_of(arena, registers, lane, srcs)?;
+    let halves = [b_low, b_high, a_low, a_high];
+    let pick = |result_half: u32| {
+        let low_byte = (selector >> (16 * result_half)) & 0xff;
+        let high_byte = (selector >> (16 * result_half + 8)) & 0xff;
+        (low_byte.is_multiple_of(2) && high_byte == low_byte + 1 && high_byte <= 7)
+            .then(|| halves[low_byte as usize / 2])
+    };
+    Some(Word::Bf16 {
+        low: pick(0)?,
+        high: pick(1)?,
+    })
+}
+
+/// Each source's bf16 halves, low first, when one holds a bf16 pair and every other is a
+/// concrete word whose halves encode reals.
+fn halves_of<const N: usize>(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    srcs: [ModifiedSrc; N],
+) -> Option<[[ExprId; 2]; N]> {
+    let words = srcs.map(|src| source_word(arena, registers, lane, src));
+    if !words
+        .iter()
+        .any(|word| matches!(word, Some(Word::Bf16 { .. })))
+    {
+        return None;
+    }
+    let halves = words.map(|word| word.and_then(|word| word.bf16_halves(arena)));
+    halves
+        .iter()
+        .all(Option::is_some)
+        .then(|| halves.map(Option::unwrap))
+}
+
+/// An unmodified source as a word in either form.
+fn source_word(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src: ModifiedSrc,
+) -> Option<Word> {
+    if src.is_modified() {
+        return None;
+    }
+    match src.src {
+        Vop3Src::Vgpr(reg) => registers.read_vgpr_word(lane, reg).ok(),
+        other => registers.read_src(arena, lane, other).ok().map(Word::Value),
+    }
+}
+
+/// An unmodified source's concrete word.
+fn concrete_src(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    src: ModifiedSrc,
+) -> Option<u32> {
+    match source_word(arena, registers, lane, src)? {
+        Word::Value(value) => concrete_word(arena, value),
+        Word::Bf16 { .. } => None,
     }
 }
 
