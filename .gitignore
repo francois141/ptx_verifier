@@ -20,8 +20,10 @@
 /external/**/*.json
 !/external/**/*.launch.json
 /external/ptx/output/
-# `just benchmark`'s report
+# `just benchmark`'s report and figure
 /external/benchmark/report.md
+/external/benchmark/solving-speed.pdf
+/external/benchmark/solving-speed.png
 # `just approximations`'s report
 /external/approximations/REPORT.md
 # The Gluon tutorials, downloaded by `external/ptx/extraction/gluon.py`

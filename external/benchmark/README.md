@@ -19,13 +19,21 @@ All outputs are checked against `matmul.spec` (`matmul_nki.spec` for NKI) in two
 
 ```sh
 export VOLTA_LEAN_PROJECT=~/path/to/lake-project-with-mathlib
-just benchmark                                # everything, written to report.md (git-ignored)
+just benchmark                                # everything, 5 runs each, to report.md and the figure
 just benchmark --sizes 128 256 --isa ptx amd
+just benchmark --runs 1                       # one run each, no variance
 just benchmark --no-lean                      # the canonical solver only
 ```
 
-Launch files and results go to `target/benchmark/`: `--resume` reuses `results.json`, `--keep`
-keeps the Lean files, and `--lean-timeout` bounds each Lean check (default 4 hours).
+Each configuration runs `--runs` times (default 5). `report.md` gives each phase's mean ± sample
+standard deviation and the largest peak resident set of `volta solve` over the runs. `plot.py`
+then draws `solving-speed.pdf` and `.png`: execution + canonical seconds per K (mean, ±1 SD error
+bars) above a row of peak memory per ISA. It runs under `uv run --no-project --with matplotlib`, and
+it can redraw from saved results alone. The report and the figure are git-ignored.
+
+Launch files and results go to `target/benchmark/`: `--resume` reuses the runs `results.json`
+holds and adds only the missing ones, `--keep` keeps the Lean files, and `--lean-timeout` bounds
+each Lean check (default 4 hours).
 
 ## Compiling the kernels
 

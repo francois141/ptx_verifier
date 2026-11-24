@@ -1,10 +1,12 @@
 """Time Volta on the 256 x 64 tile of a matrix multiplication for PTX, AMD and Trainium, checking it
-against its spec with the canonical solver and with Lean, and write `report.md`.
+against its spec with the canonical solver and with Lean, and write `report.md` and the
+solving-speed figure (`solving-speed.pdf`, `.png`).
 
-    just benchmark                               # every accelerator and contraction length
+    just benchmark                               # every accelerator and contraction length, 5 runs
     just benchmark --sizes 128 256 --isa ptx amd
+    just benchmark --runs 1                      # one run, no variance
     just benchmark --no-lean                     # the canonical solver only
-    just benchmark --resume                      # reuse the rows target/benchmark/results.json holds
+    just benchmark --resume                      # reuse the runs target/benchmark/results.json holds
 
 Each run computes C = A @ B for A 256 x K and B K x 64 over f32, the tile one block computes, every
 output a sum of K products, so the work grows linearly in K: `matmul.ptx` (from `matmul.cu`) and
@@ -17,9 +19,12 @@ one NeuronCore. Per run:
   (`volta.check_lean_proof`) accepts a proof of each, the same `unfold`, `intros`, `ring`. Past
   K = 128 (`--lean-max-k`) Lean is not run and reported as infinite: its time grows faster than K.
 
-The table reports the times the commands print for those phases, file I/O excluded, and the Lean
-check's wall time. A phase that fails (a rejected run, an exhausted decision procedure, a proof Lean
-does not accept) shows as --- in its cell with its reason as a note, and the exit status is 1.
+Every configuration runs `--runs` times (5 by default). The table reports each phase's mean and
+sample standard deviation over the runs, from the times the commands print, file I/O excluded, and
+the Lean check's wall time; the peak memory is the largest peak resident set of `volta solve` over
+the runs. A phase that fails in any run (a rejected run, an exhausted decision procedure, a proof
+Lean does not accept) shows as --- in its cell with its reason as a note, and the exit status is 1.
+`plot.py` then draws the figure from `results.json`.
 """
 
 import argparse
@@ -27,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -37,9 +43,12 @@ REPO_ROOT = BENCHMARK_ROOT.parent.parent
 VOLTA = REPO_ROOT / "target" / "release" / "volta"
 WORK_DIR = REPO_ROOT / "target" / "benchmark"
 REPORT = BENCHMARK_ROOT / "report.md"
+FIGURE = BENCHMARK_ROOT / "solving-speed"
+PLOT = BENCHMARK_ROOT / "plot.py"
 RESULTS = WORK_DIR / "results.json"
 
 SIZES = (128, 256, 512, 1024, 2048, 4096, 8192)
+RUNS = 5
 TILE_M, TILE_N = 256, 64
 OUTPUTS = TILE_M * TILE_N
 LEAN_MAX_K = 128
@@ -90,11 +99,39 @@ SKIPPED = float("inf")
 
 
 @dataclass(frozen=True)
-class Timing:
+class Run:
+    """One run of a configuration: each phase's seconds, and `volta solve`'s peak resident bytes."""
+
     exec_secs: Phase
     canonical_secs: Phase
     lean_secs: Phase
     peak_bytes: int
+
+    def total_secs(self) -> Phase:
+        """Execution plus the canonical solver, the time the figure plots."""
+        for phase in (self.exec_secs, self.canonical_secs):
+            if isinstance(phase, Failed):
+                return phase
+        return self.exec_secs + self.canonical_secs
+
+
+@dataclass(frozen=True)
+class Spread:
+    mean: float
+    sd: float | None
+
+
+Summary = Spread | Failed
+
+
+def summarize(phases: list[Phase]) -> Summary:
+    """The runs' mean and sample standard deviation (none for one run), or the first failure."""
+    failed = next((phase for phase in phases if isinstance(phase, Failed)), None)
+    if failed is not None:
+        return failed
+    if SKIPPED in phases:
+        return Spread(SKIPPED, None)
+    return Spread(statistics.mean(phases), statistics.stdev(phases) if len(phases) > 1 else None)
 
 
 def compile_ptx() -> None:
@@ -194,7 +231,7 @@ def proof(challenge: str) -> str:
     return f"import challenge\n\nnamespace VoltaProofs\n\n{theorems}end VoltaProofs\n"
 
 
-def lean(isa: Isa, k: int, timeout: float, keep: bool) -> tuple[Phase, int]:
+def lean(isa: Isa, k: int, timeout: float, keep: bool) -> Phase:
     """`volta extract lean` of every output, then Volta's Lean check of the fixed proof."""
     directory = WORK_DIR / "lean" / f"{isa.key}.k{k}"
     shutil.rmtree(directory, ignore_errors=True)
@@ -202,41 +239,41 @@ def lean(isa: Isa, k: int, timeout: float, keep: bool) -> tuple[Phase, int]:
     challenge = directory / "challenge.lean"
     kernel = BENCHMARK_ROOT / isa.kernel_file
     extract = ["extract", "lean", str(kernel), *isa.kernel_args(k)]
-    _, failed, peak = run_volta([*extract, "--print-outputs", "0", "-o", str(challenge)])
+    _, failed, _ = run_volta([*extract, "--print-outputs", "0", "-o", str(challenge)])
     if failed is not None:
-        return failed, peak
+        return failed
     (directory / "proof.lean").write_text(proof(challenge.read_text()))
     command = ["uv", "run", "--no-sync", "--project", str(REPO_ROOT), "python", "-c", LEAN_CHECK, str(directory)]
     checked = run_timed(command, "Lean check", timeout)
     if not keep:
         shutil.rmtree(directory, ignore_errors=True)
     if isinstance(checked, Failed):
-        return checked, peak
-    return seconds(r"lean check: ([0-9.]+)s", checked, "the Lean check"), peak
+        return checked
+    return seconds(r"lean check: ([0-9.]+)s", checked, "the Lean check")
 
 
-def benchmark(isa: Isa, k: int, with_lean: bool, lean_max_k: int, lean_timeout: float, keep: bool) -> Timing:
+def benchmark(isa: Isa, k: int, with_lean: bool, lean_max_k: int, lean_timeout: float, keep: bool) -> Run:
     """Lean past `lean_max_k` is not run and reported as infinite."""
     exec_secs, canonical_secs, peak = canonical(isa, k)
     if not with_lean:
-        lean_secs, lean_peak = NOT_RUN, 0
+        lean_secs = NOT_RUN
     elif k > lean_max_k:
-        lean_secs, lean_peak = SKIPPED, 0
+        lean_secs = SKIPPED
     else:
-        lean_secs, lean_peak = lean(isa, k, lean_timeout, keep)
-    return Timing(exec_secs, canonical_secs, lean_secs, max(peak, lean_peak))
+        lean_secs = lean(isa, k, lean_timeout, keep)
+    return Run(exec_secs, canonical_secs, lean_secs, peak)
 
 
-def cell(phase: Phase, notes: list[str]) -> str:
-    """Seconds, ∞ for a phase not run for taking too long, or a dash marked with the number of
-    the failure's note."""
-    if phase == SKIPPED:
+def cell(summary: Summary, notes: list[str]) -> str:
+    """Mean ± standard deviation in seconds, ∞ for a phase not run for taking too long, or a dash
+    marked with the number of the failure's note."""
+    if isinstance(summary, Failed):
+        if summary.reason not in notes:
+            notes.append(summary.reason)
+        return f"—<sup>{notes.index(summary.reason) + 1}</sup>"
+    if summary.mean == SKIPPED:
         return "∞"
-    if not isinstance(phase, Failed):
-        return f"{phase:.2f}"
-    if phase.reason not in notes:
-        notes.append(phase.reason)
-    return f"—<sup>{notes.index(phase.reason) + 1}</sup>"
+    return f"{summary.mean:.2f}" + ("" if summary.sd is None else f" ± {summary.sd:.2f}")
 
 
 def table(heads: list[str], rows: list[list[str]]) -> list[str]:
@@ -259,49 +296,64 @@ def phase_from_json(value: float | str | dict) -> Phase:
     return Failed(value["failed"]) if isinstance(value, dict) else value
 
 
-def load_results() -> dict[tuple[str, int], Timing]:
-    """The rows earlier runs measured, keyed by ISA and K."""
+def load_results() -> dict[tuple[str, int], list[Run]]:
+    """The runs earlier invocations measured, keyed by ISA and K (rows without runs are dropped)."""
     if not RESULTS.exists():
         return {}
-    rows = json.loads(RESULTS.read_text())
     return {
-        (row["isa"], row["k"]): Timing(
-            *(phase_from_json(row[name]) for name in ("exec", "canonical", "lean")),
-            row["peak_bytes"],
-        )
-        for row in rows
+        (row["isa"], row["k"]): [
+            Run(*(phase_from_json(run[name]) for name in ("exec", "canonical", "lean")), run["peak_bytes"])
+            for run in row["runs"]
+        ]
+        for row in json.loads(RESULTS.read_text())
+        if "runs" in row
     }
 
 
-def save_results(timings: dict[tuple[str, int], Timing]) -> None:
+def save_results(results: dict[tuple[str, int], list[Run]]) -> None:
     rows = [
         {
             "isa": isa,
             "k": k,
-            "exec": phase_json(t.exec_secs),
-            "canonical": phase_json(t.canonical_secs),
-            "lean": phase_json(t.lean_secs),
-            "peak_bytes": t.peak_bytes,
+            "runs": [
+                {
+                    "exec": phase_json(run.exec_secs),
+                    "canonical": phase_json(run.canonical_secs),
+                    "lean": phase_json(run.lean_secs),
+                    "peak_bytes": run.peak_bytes,
+                }
+                for run in runs
+            ],
         }
-        for (isa, k), t in sorted(timings.items())
+        for (isa, k), runs in sorted(results.items())
     ]
     RESULTS.write_text(json.dumps(rows, indent=2) + "\n")
 
 
 def markdown_report(
-    isas: list[Isa], sizes: list[int], timings: dict[tuple[str, int], Timing], lean_max_k: int
+    isas: list[Isa], sizes: list[int], results: dict[tuple[str, int], list[Run]], lean_max_k: int
 ) -> str:
-    heads = ["K", "exec (s)", "canonical (s)", "Lean (s)"]
+    heads = ["K", "exec (s)", "canonical (s)", "exec + canonical (s)", "Lean (s)"]
     notes: list[str] = []
     sections = []
     for isa in isas:
         rows = []
         for k in sizes:
-            t = timings[(isa.key, k)]
-            phases = (t.exec_secs, t.canonical_secs, t.lean_secs)
-            rows.append([str(k), *(cell(phase, notes) for phase in phases)])
+            runs = results[(isa.key, k)]
+            phases = (
+                [run.exec_secs for run in runs],
+                [run.canonical_secs for run in runs],
+                [run.total_secs() for run in runs],
+                [run.lean_secs for run in runs],
+            )
+            rows.append([str(k), *(cell(summarize(phase), notes) for phase in phases)])
         sections += [f"## {isa.title}", "", *table(heads, rows), ""]
-    memory_rows = [[str(k)] + [f"{timings[(isa.key, k)].peak_bytes / 2**30:.1f}" for isa in isas] for k in sizes]
+    memory_rows = [
+        [str(k)] + [f"{max(run.peak_bytes for run in results[(isa.key, k)]) / 2**30:.1f}" for isa in isas]
+        for k in sizes
+    ]
+    runs = sorted({len(results[(isa.key, k)]) for isa in isas for k in sizes})
+    counted = " or ".join(str(n) for n in runs)
     steps = "`, `".join(step.format(name="<name>") for step in PROOF_STEPS)
     return "\n".join(
         [
@@ -319,12 +371,14 @@ def markdown_report(
             "  and the proof, then `leanchecker` replays them in the kernel. Each Lean process imports Mathlib.",
             f"  ∞ marks a K past {lean_max_k}, where Lean is not run: its time grows faster than K.",
             "",
+            f"Each cell is the mean ± the sample standard deviation over {counted} runs.",
+            "",
             *sections,
             *(f"<sup>{i + 1}</sup> {note}  " for i, note in enumerate(notes)),
             *([""] if notes else []),
             "## Peak memory",
             "",
-            "The largest peak resident set of the run's `volta` commands (the Lean check's processes excluded).",
+            "The largest peak resident set of `volta solve` over the runs.",
             "",
             *table(["K"] + [f"{isa.title} (GiB)" for isa in isas], memory_rows),
             "",
@@ -332,10 +386,30 @@ def markdown_report(
     )
 
 
+def plot(isas: list[Isa], sizes: list[int]) -> None:
+    """`plot.py` under an ephemeral matplotlib: the benchmark itself needs only the standard library."""
+    command = [
+        *("uv", "run", "--no-project", "--with", "matplotlib", "python", str(PLOT)),
+        *("--results", str(RESULTS), "--output", str(FIGURE)),
+        *("--isa", *(isa.key for isa in isas), "--sizes", *map(str, sizes)),
+    ]
+    subprocess.run(command, check=True, cwd=REPO_ROOT)
+
+
+def progress(isa: Isa, k: int, index: int, count: int, run: Run) -> str:
+    named = (("exec", run.exec_secs), ("canonical", run.canonical_secs), ("lean", run.lean_secs))
+    phases = "  ".join(
+        f"{name} " + (phase.reason if isinstance(phase, Failed) else f"{phase:7.2f}s".replace("inf", "∞"))
+        for name, phase in named
+    )
+    return f"{isa.title:>8}  K = {k:>4}  run {index}/{count}  {phases}  peak {run.peak_bytes / 2**30:5.1f} GiB"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sizes", type=int, nargs="+", default=list(SIZES), choices=SIZES, metavar="K")
     parser.add_argument("--isa", nargs="+", default=[isa.key for isa in ISAS], choices=[isa.key for isa in ISAS])
+    parser.add_argument("--runs", type=int, default=RUNS, metavar="N", help="runs of each configuration")
     parser.add_argument("--no-lean", action="store_true", help="skip the Lean check")
     parser.add_argument("--lean-timeout", type=float, default=4 * 3600, metavar="SECS", help="per Lean check")
     parser.add_argument(
@@ -343,9 +417,11 @@ def main() -> None:
     )
     parser.add_argument("--keep", action="store_true", help="keep the Lean files in target/benchmark/lean/")
     parser.add_argument(
-        "--resume", action="store_true", help=f"reuse the rows {RESULTS.relative_to(REPO_ROOT)} holds"
+        "--resume", action="store_true", help=f"reuse the runs {RESULTS.relative_to(REPO_ROOT)} holds"
     )
     args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
 
     if not VOLTA.exists():
         sys.exit(f"{VOLTA} is missing: build it with `cargo build --release -p volta_cli`")
@@ -356,28 +432,22 @@ def main() -> None:
     if any(isa.key == "ptx" for isa in isas):
         compile_ptx()
     saved = load_results() if args.resume else {}
-    timings = {}
+    results = {}
     for isa in isas:
         for k in args.sizes:
-            if (isa.key, k) in saved:
-                timing = saved[(isa.key, k)]
-            else:
-                timing = benchmark(isa, k, not args.no_lean, args.lean_max_k, args.lean_timeout, args.keep)
-            timings[(isa.key, k)] = timing
-            save_results({**saved, **timings})
-            named = (
-                ("exec", timing.exec_secs),
-                ("canonical", timing.canonical_secs),
-                ("lean", timing.lean_secs),
-            )
-            phases = "  ".join(
-                f"{name} " + (phase.reason if isinstance(phase, Failed) else f"{phase:7.2f}s".replace("inf", "∞"))
-                for name, phase in named
-            )
-            print(f"{isa.title:>8}  K = {k:>4}  {phases}  peak {timing.peak_bytes / 2**30:5.1f} GiB", file=sys.stderr, flush=True)
-    REPORT.write_text(markdown_report(isas, args.sizes, timings, args.lean_max_k))
-    print(f"Wrote {REPORT.relative_to(REPO_ROOT)}")
-    phases = [p for t in timings.values() for p in (t.exec_secs, t.canonical_secs, t.lean_secs)]
+            runs = saved.get((isa.key, k), [])[: args.runs]
+            while len(runs) < args.runs:
+                run = benchmark(isa, k, not args.no_lean, args.lean_max_k, args.lean_timeout, args.keep)
+                runs = [*runs, run]
+                results[(isa.key, k)] = runs
+                save_results({**saved, **results})
+                print(progress(isa, k, len(runs), args.runs, run), file=sys.stderr, flush=True)
+            results[(isa.key, k)] = runs
+    save_results({**saved, **results})
+    REPORT.write_text(markdown_report(isas, args.sizes, results, args.lean_max_k))
+    print(f"Wrote {REPORT.relative_to(REPO_ROOT)}", flush=True)
+    plot(isas, args.sizes)
+    phases = [p for runs in results.values() for run in runs for p in (run.exec_secs, run.canonical_secs, run.lean_secs)]
     sys.exit(1 if any(isinstance(p, Failed) and p is not NOT_RUN for p in phases) else 0)
 
 
