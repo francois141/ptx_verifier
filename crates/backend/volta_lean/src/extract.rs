@@ -1,10 +1,10 @@
 //! Generate Lean 4 statements that compare candidate outputs with baseline outputs.
 //!
 //! Each output element gets one `Prop`: the values must either be equal or differ by
-//! at most a given tolerance. Proofs belong in a separate module so that proving a
-//! statement does not change what it claims.
+//! at most a given tolerance. Elements whose statements coincide share one definition.
+//! Proofs belong in a separate module so that proving a statement does not change what it claims.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
 use rug::{Integer, Rational};
@@ -54,12 +54,6 @@ pub enum LeanError {
     NegativeTolerance,
     InvalidNamespace(String),
 
-    /// An array or parameter name that would capture a name the statements use.
-    ReservedName(String),
-
-    /// Two inputs that would become the same Lean variable (a parameter `a_0` and `a[0]`).
-    DuplicateName(String),
-
     /// A node Lean is not given: bitwise ops, roundings, `erf`, infinities, undefined values.
     Unsupported {
         side: Side,
@@ -90,14 +84,6 @@ impl fmt::Display for LeanError {
             ),
             Self::NegativeTolerance => write!(f, "the tolerance must be nonnegative"),
             Self::InvalidNamespace(ns) => write!(f, "`{ns}` is not a Lean namespace"),
-            Self::ReservedName(name) => write!(
-                f,
-                "`{name}` would capture a name the Lean statements use; rename it"
-            ),
-            Self::DuplicateName(name) => write!(
-                f,
-                "two inputs would both become the Lean variable `{name}`; rename one"
-            ),
             Self::Unsupported {
                 side,
                 array,
@@ -122,23 +108,31 @@ impl fmt::Display for LeanError {
 
 impl std::error::Error for LeanError {}
 
-/// Generate a Lean module with one `def <array>_<index> : Prop` per output element.
-/// Each definition compares the candidate and baseline using `claim`.
+/// A generated Lean module and the number of `Prop` definitions it states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeanModule {
+    pub text: String,
+    pub statements: usize,
+}
+
+/// Generate a Lean module with one `def : Prop` per distinct output-element statement,
+/// named `<array>_<index>` after the first element it states. Each compares the candidate
+/// and baseline using `claim`.
 ///
-/// Each input element `a[i]` becomes the real variable `a_i`. Repeated
-/// expressions use `let` bindings. The generated code follows Lean's arithmetic
-/// rules, including `x / 0 = 0` and its definitions of `log` and `sqrt`.
+/// Variables are `v0, v1, ...` in order of first use, so elements that differ only in their
+/// inputs share a statement. Repeated expressions use `let` bindings. The generated code
+/// follows Lean's arithmetic rules, including `x / 0 = 0` and its definitions of `log` and `sqrt`.
 pub fn to_lean(
     candidate: &SymbolicOutputs,
     baseline: &SymbolicOutputs,
     arrays: &[String],
     claim: &Claim,
     namespace: &str,
-) -> Result<String, LeanError> {
+) -> Result<LeanModule, LeanError> {
     validate_request(arrays, claim, namespace)?;
 
-    let mut out = String::new();
-    write_module_header(&mut out, claim, namespace);
+    let mut statements: Vec<Statement> = Vec::new();
+    let mut by_definition: HashMap<String, usize> = HashMap::new();
 
     for array in arrays {
         let candidate_elements = find_output_elements(candidate, Side::Candidate, array)?;
@@ -157,7 +151,7 @@ pub fn to_lean(
             candidate_elements.iter().zip(baseline_elements)
         {
             let mut bindings = Vec::new();
-            let mut variables = BTreeSet::new();
+            let mut variables = Variables::default();
 
             let candidate_value = render_expression(
                 &candidate.arena,
@@ -197,13 +191,34 @@ pub fn to_lean(
                 ),
             };
 
-            write_statement(&mut out, array, index, &variables, &bindings, &body)?;
+            let definition = definition(variables.order.len(), &bindings, &body);
+            let element = (array.as_str(), index);
+
+            match by_definition.get(&definition) {
+                Some(&statement) => statements[statement].elements.push(element),
+                None => {
+                    by_definition.insert(definition.clone(), statements.len());
+                    statements.push(Statement {
+                        elements: vec![element],
+                        variables: variables.order,
+                        definition,
+                    });
+                }
+            }
         }
     }
 
-    writeln!(out, "\nend {namespace}\n\nend").unwrap();
+    let mut text = String::new();
+    write_module_header(&mut text, claim, namespace);
+    for statement in &statements {
+        statement.write(&mut text);
+    }
+    writeln!(text, "\nend {namespace}\n\nend").unwrap();
 
-    Ok(out)
+    Ok(LeanModule {
+        text,
+        statements: statements.len(),
+    })
 }
 
 fn validate_request(arrays: &[String], claim: &Claim, namespace: &str) -> Result<(), LeanError> {
@@ -252,8 +267,10 @@ fn write_module_header(out: &mut String, claim: &Claim, namespace: &str) {
         "import Mathlib
 
 /-!
-Generated by Volta: each definition states that one output element of the candidate
-{relation} the same element of the baseline. Each input element `a[i]` is the real `a_i`.
+Generated by Volta: each definition states that every output element of the candidate its
+comment lists {relation} the same element of the baseline. Elements whose statements
+coincide share one definition, named after the first, at which the comment says what each
+variable `vK` is.
 Prove `theorem <name> : {namespace}.<name>` in another module without editing this file.
 -/
 
@@ -268,30 +285,13 @@ namespace {namespace}"
     .unwrap();
 }
 
-fn write_statement(
-    out: &mut String,
-    array: &str,
-    index: u64,
-    variables: &BTreeSet<Variable>,
-    bindings: &[(String, String)],
-    body: &str,
-) -> Result<(), LeanError> {
-    let name = lean_identifier(&format!("{array}_{index}"));
-    writeln!(out, "\n/-- `{array}[{index}]` -/\ndef {name} : Prop :=").unwrap();
-
+/// The text after `def <name> : Prop :=`, the same for statements that coincide.
+fn definition(variables: usize, bindings: &[(String, String)], body: &str) -> String {
+    let mut out = String::new();
     let mut indent = "  ";
 
-    if !variables.is_empty() {
-        let mut names = Vec::new();
-
-        for variable in variables {
-            let name = variable.name()?;
-            if names.contains(&name) {
-                return Err(LeanError::DuplicateName(name));
-            }
-            names.push(name);
-        }
-
+    if variables > 0 {
+        let names: Vec<String> = (0..variables).map(variable_name).collect();
         writeln!(out, "  ∀ ({} : ℝ),", names.join(" ")).unwrap();
         indent = "    ";
     }
@@ -301,8 +301,69 @@ fn write_statement(
     }
 
     writeln!(out, "{indent}{body}").unwrap();
+    out
+}
 
-    Ok(())
+fn variable_name(position: usize) -> String {
+    format!("v{position}")
+}
+
+/// Runs of consecutive elements a statement's comment lists before summarizing the rest.
+const LISTED_RUNS: usize = 8;
+
+/// One definition: the elements it states, in order, and its first element's variables.
+struct Statement<'a> {
+    elements: Vec<(&'a str, u64)>,
+    variables: Vec<Variable>,
+    definition: String,
+}
+
+impl Statement<'_> {
+    fn write(&self, out: &mut String) {
+        let (array, index) = self.elements[0];
+        let name = lean_identifier(&format!("{array}_{index}"));
+
+        let mut runs: Vec<((&str, u64), u64)> = Vec::new();
+        for &(array, index) in &self.elements {
+            match runs.last_mut() {
+                Some(((last_array, start), length))
+                    if *last_array == array && *start + *length == index =>
+                {
+                    *length += 1;
+                }
+                _ => runs.push(((array, index), 1)),
+            }
+        }
+
+        let mut listed: Vec<String> = runs
+            .iter()
+            .take(LISTED_RUNS)
+            .map(|&((array, start), length)| match length {
+                1 => format!("`{array}[{start}]`"),
+                _ => format!("`{array}[{start}]` to `{array}[{}]`", start + length - 1),
+            })
+            .collect();
+        let unlisted: u64 = runs
+            .iter()
+            .skip(LISTED_RUNS)
+            .map(|(_, length)| length)
+            .sum();
+        if unlisted > 0 {
+            listed.push(format!("{unlisted} more"));
+        }
+
+        write!(out, "\n/-- {}", listed.join(", ")).unwrap();
+        if !self.variables.is_empty() {
+            let meanings: Vec<String> = self
+                .variables
+                .iter()
+                .enumerate()
+                .map(|(position, variable)| format!("`{}` is {variable}", variable_name(position)))
+                .collect();
+            write!(out, "; at `{array}[{index}]`, {}", meanings.join(", ")).unwrap();
+        }
+        write!(out, " -/\ndef {name} : Prop :=\n{}", self.definition).unwrap();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -312,21 +373,43 @@ struct OutputElement<'a> {
     index: u64,
 }
 
-/// A statement's universally quantified real variables, input elements first.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// What a statement's universally quantified real variable stands for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Variable {
     Element(String, u64),
     Parameter(String),
     Machine(u64),
 }
 
-impl Variable {
-    fn name(&self) -> Result<String, LeanError> {
+impl fmt::Display for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Variable::Element(array, index) => element_identifier(array, *index),
-            Variable::Parameter(name) => user_identifier(name),
-            Variable::Machine(id) => Ok(machine_name(*id)),
+            Variable::Element(array, index) => write!(f, "`{array}[{index}]`"),
+            Variable::Parameter(name) => write!(f, "the parameter `{name}`"),
+            Variable::Machine(id) => write!(f, "machine symbol {id}"),
         }
+    }
+}
+
+/// One statement's variables in order of first use, the `k`-th named `vk`.
+#[derive(Default)]
+struct Variables {
+    order: Vec<Variable>,
+    positions: HashMap<Variable, usize>,
+}
+
+impl Variables {
+    fn name(&mut self, variable: Variable) -> String {
+        let position = match self.positions.get(&variable) {
+            Some(&position) => position,
+            None => {
+                let position = self.order.len();
+                self.positions.insert(variable.clone(), position);
+                self.order.push(variable);
+                position
+            }
+        };
+        variable_name(position)
     }
 }
 
@@ -387,7 +470,7 @@ fn render_expression(
     root: ExprId,
     element: OutputElement,
     bindings: &mut Vec<(String, String)>,
-    variables: &mut BTreeSet<Variable>,
+    variables: &mut Variables,
 ) -> Result<Term, LeanError> {
     // Visit each reachable node once and count references to its children.
     let mut use_counts: HashMap<ExprId, u32> = HashMap::new();
@@ -463,7 +546,7 @@ fn render_node(
     node: &ExprNode,
     terms: &HashMap<ExprId, Term>,
     element: OutputElement,
-    variables: &mut BTreeSet<Variable>,
+    variables: &mut Variables,
 ) -> Result<Term, LeanError> {
     use ExprNode::*;
     use Precedence::{Application, Atomic, Compound};
@@ -488,21 +571,20 @@ fn render_node(
             if *b { "True" } else { "False" }.into(),
         ),
 
-        Symbol(s) => {
-            variables.insert(Variable::Machine(s.0));
-            Term::new(TermType::Real, Atomic, machine_name(s.0))
-        }
+        Symbol(s) => Term::new(
+            TermType::Real,
+            Atomic,
+            variables.name(Variable::Machine(s.0)),
+        ),
 
         ParamSymbol(name) => {
-            let name = arena.string(*name);
-            variables.insert(Variable::Parameter(name.to_string()));
-            Term::new(TermType::Real, Atomic, user_identifier(name)?)
+            let variable = Variable::Parameter(arena.string(*name).to_string());
+            Term::new(TermType::Real, Atomic, variables.name(variable))
         }
 
         InputElement { array, index } => {
-            let name = arena.string(*array);
-            variables.insert(Variable::Element(name.to_string(), *index));
-            Term::new(TermType::Real, Atomic, element_identifier(name, *index)?)
+            let variable = Variable::Element(arena.string(*array).to_string(), *index);
+            Term::new(TermType::Real, Atomic, variables.name(variable))
         }
 
         SymbolicRead { .. }
@@ -603,7 +685,6 @@ fn render_node(
             );
             Term::new(then_value.term_type, Compound, text)
         }
-
     })
 }
 
@@ -723,31 +804,6 @@ fn short_decimal(numerator: &Integer, denominator: &Integer) -> Option<String> {
     }
 
     Some(decimal)
-}
-
-fn element_identifier(array: &str, index: u64) -> Result<String, LeanError> {
-    user_identifier(&format!("{array}_{index}"))
-}
-
-fn machine_name(id: u64) -> String {
-    format!("sym{id}")
-}
-
-/// Names the statements bind (`x0`, `sym0`, ...) or refer to.
-fn is_reserved_name(name: &str) -> bool {
-    let numbered = |prefix: &str| {
-        name.strip_prefix(prefix)
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-    };
-    numbered("x") || numbered("sym") || ["Real", "min", "max", "True", "False"].contains(&name)
-}
-
-fn user_identifier(name: &str) -> Result<String, LeanError> {
-    if is_reserved_name(name) || name.contains('»') {
-        return Err(LeanError::ReservedName(name.to_string()));
-    }
-
-    Ok(lean_identifier(name))
 }
 
 fn lean_identifier(name: &str) -> String {

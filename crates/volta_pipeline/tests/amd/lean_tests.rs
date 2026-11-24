@@ -11,10 +11,11 @@ use common::amd::array;
 use rug::Rational;
 use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind};
-use volta_lean::{Claim, to_lean};
+use volta_lean::{Claim, LeanModule, to_lean};
 use volta_spec::extract_expressions_from_spec;
 
 /// Within 1/1000 rather than equal: past `a > 87.34` the kernel rescales by f32(e^-64), not e^-64.
+/// Every element states the same proposition of its own input, so one definition states them all.
 #[test]
 fn the_sigmoid_kernel_is_stated_within_a_thousandth_of_its_formula() {
     let arrays = [
@@ -25,14 +26,18 @@ fn the_sigmoid_kernel_is_stated_within_a_thousandth_of_its_formula() {
     let lean = write_challenge("sigmoid", &arrays, &claim)
         .unwrap_or_else(|error| panic!("sigmoid: {error}"));
 
-    let statements = common::amd::WORKITEMS as usize;
-    assert_eq!(lean.matches("\ndef out_").count(), statements);
-    assert_eq!(lean.matches("| ≤ (0.001 : ℝ)\n").count(), statements);
+    let last = common::amd::WORKITEMS - 1;
+    assert_eq!(lean.statements, 1);
+    assert_eq!(lean.text.matches("\ndef out_0 : Prop :=").count(), 1);
+    assert_eq!(lean.text.matches("| ≤ (0.001 : ℝ)\n").count(), 1);
+    assert!(lean.text.contains(&format!(
+        "`out[0]` to `out[{last}]`; at `out[0]`, `v0` is `a[0]`"
+    )));
 }
 
 /// Kernel `name`'s outputs against `amd/success/<name>.spec` (dim `N` = the work-item count),
 /// written to `target/lean/<name>.lean` and returned.
-fn write_challenge(name: &str, arrays: &[ArrayDef], claim: &Claim) -> Result<String, String> {
+fn write_challenge(name: &str, arrays: &[ArrayDef], claim: &Claim) -> Result<LeanModule, String> {
     let fixture = format!("success/{name}");
     let candidate = common::amd::outputs(&fixture, arrays)?;
     let path = common::amd::fixture(&fixture).with_extension("spec");
@@ -52,6 +57,6 @@ fn write_challenge(name: &str, arrays: &[ArrayDef], claim: &Claim) -> Result<Str
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/lean");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(format!("{name}.lean"));
-    std::fs::write(&path, &lean).map_err(|e| format!("write {}: {e}", path.display()))?;
+    std::fs::write(&path, &lean.text).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(lean)
 }

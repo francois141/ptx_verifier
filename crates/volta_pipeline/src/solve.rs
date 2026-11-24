@@ -197,8 +197,8 @@ pub fn state_against_spec(
     Ok(
         match to_lean(kernel, &baseline, &spec.arrays, claim, namespace) {
             Ok(module) => LeanSolution::Stated(LeanChallenge {
-                module,
-                statements: baseline.outputs.iter().map(|(_, e)| e.len()).sum(),
+                module: module.text,
+                statements: module.statements,
             }),
             Err(e) => LeanSolution::Stopped(EquivalenceVerdict::Failed {
                 reason: format!("no Lean statements: {e}"),
@@ -232,7 +232,7 @@ pub enum LeanSolution {
     Stopped(EquivalenceVerdict),
 }
 
-/// A Lean 4 module of one `Prop` per output element.
+/// A Lean 4 module of one `Prop` per distinct output-element statement.
 #[derive(Debug)]
 pub struct LeanChallenge {
     pub module: String,
