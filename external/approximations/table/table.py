@@ -1,20 +1,23 @@
-"""Fill the paper's table of GEMMs fused with activations: kernels verified and mean times.
+"""Fill the paper's table of GEMMs fused with activations: kernels tested and verified per framework.
 
     uv run --reinstall-package volta --package volta python \
-        external/approximations/table/table.py [--force] [--no-lean] [COLUMN...]
+        external/approximations/table/table.py [--force] [--no-lean] [--jobs N] [KERNEL...]
 
-Each column is one kernel of `../` on the same domain, the 64 x 256 tile of C = act(A @ B^T)
-with K = 256 (16,384 outputs), checked two ways against its `../specs/` spec:
+Every kernel of `../` (CUTLASS, Composable Kernel, OpenCL, Triton) is the tile of C = act(A @ B^T)
+its launch file names, checked against its `../specs/` spec three ways:
 
-- Rewrites: `volta.solve`, the canonical solver with the activation rewrites (ACCEPT verifies).
-- Lean: `volta.prove_lean`, every output claimed within TOLERANCE of the spec and proved by a
-  Claude Code agent into `target/lean/approximations-table/<column>/`; timed from extraction to
-  the final check, with the agent's cost in dollars.
+- Volta: `volta.solve` without the activation rewrites (`rewrites=False`), the canonical solver
+  alone, counted only for PTX kernels, the inputs the original Volta reads.
+- Rewrites: `volta.solve` with them; ACCEPT verifies.
+- Lean, only for a kernel the rewrites do not verify: `volta.prove_lean`, every output claimed
+  within TOLERANCE of the spec and proved by a Claude Code agent into
+  `target/lean/approximations-table/<framework>/<kernel>/`.
 
-Results go to `target/approximations-table/results.json`; a later run reuses them and runs only
-the missing measurements, unless `--force` (which also discards the column's earlier proof, so
-the agent starts from scratch). Every run writes `table.md` and `table.tex` beside this file. Lean
-needs Claude Code and `$VOLTA_LEAN_PROJECT` (or the repository's `.env`).
+Ours counts a kernel verified by the rewrites or by Lean once. Results go to
+`target/approximations-table/kernels.json`; a later run reuses them and runs only the missing
+measurements, unless `--force` (which also discards the kernel's earlier proof). Every run writes
+`table.md` and `table.tex` beside this file. Lean needs Claude Code and `$VOLTA_LEAN_PROJECT` (or
+the repository's `.env`).
 """
 
 import argparse
@@ -23,7 +26,9 @@ import math
 import os
 import shutil
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,43 +37,62 @@ import volta
 HERE = Path(__file__).resolve().parent
 APPROXIMATIONS = HERE.parent
 REPO_ROOT = APPROXIMATIONS.parents[1]
-RESULTS = REPO_ROOT / "target" / "approximations-table" / "results.json"
+RESULTS = REPO_ROOT / "target" / "approximations-table" / "kernels.json"
 LEAN_DIR = REPO_ROOT / "target" / "lean" / "approximations-table"
 SAVED_LEAN = HERE / "lean"
 TOLERANCE = "1/1000"
 ARRAY_ALIGN = 0x10000
 ELEMENT_BYTES = {"f32": 4}
 ARRAY_KINDS = {"in": volta.ArrayKind.Input, "out": volta.ArrayKind.Output}
-# The OpenCL kernel takes M, N and K as arguments; one workgroup computes all of C.
+# An OpenCL kernel takes M, N and K as arguments and one workgroup computes all of C: launched at
+# the other frameworks' 64 x 256 tile with K = 256.
 OPENCL_TILE = {"M": 64, "N": 256, "K": 256}
+# Inputs within 1/2 keep a pre-activation, a sum of K = 256 products, within 64: below the 88.7
+# past which an f32 exp overflows, and where f32 ln 2 and 1/ln 2 (a relative error of 1e-8 in
+# log) stay far within TOLERANCE, which they pass over all reals once log(1 + e^x) nears 1e5.
+INPUT_BOUNDS = {"triton/softplus": "1/2", "composable_kernel/softrelu": "1/2",
+                "opencl/softrelu": "1/2"}
 
 
 @dataclass(frozen=True)
-class Column:
-    key: str
-    lines: tuple[str, str]
-    kernel: Path
-    launch: Path
-    # The public Volta release has no spec language and models no cp.async (both PTX GEMMs use
-    # it); AMD's assembly is not its target at all.
-    original_volta: str
+class Framework:
+    folder: str
+    name: str
+    extension: str
+    # The original Volta reads only PTX; `n/a` marks the frameworks compiled to AMD assembly.
+    reads_ptx: bool
     sizes: dict[str, int] | None = None
 
-    @property
-    def header(self) -> str:
-        return " ".join(self.lines)
 
-
-COLUMNS = (
-    Column("cutlass_gelu_tanh", ("CUTLASS GELU", "(tanh)"), APPROXIMATIONS / "cutlass/gelu_tanh.ptx",
-           APPROXIMATIONS / "cutlass/gelu_tanh.launch.json", "unsupported"),
-    Column("amd_sigmoid", ("AMD", "sigmoid"), APPROXIMATIONS / "composable_kernel/sigmoid.s",
-           APPROXIMATIONS / "composable_kernel/sigmoid.launch.json", "n/a"),
-    Column("opencl_silu", ("OpenCL", "SiLU"), APPROXIMATIONS / "opencl/silu.s",
-           APPROXIMATIONS / "opencl/silu.launch.json", "unsupported", OPENCL_TILE),
-    Column("triton_gelu_tanh", ("Triton GELU", "(tanh)"), APPROXIMATIONS / "triton/gelu_tanh.ptx",
-           APPROXIMATIONS / "triton/gelu_tanh.launch.json", "unsupported"),
+FRAMEWORKS = (
+    Framework("cutlass", "CUTLASS", ".ptx", True),
+    Framework("composable_kernel", "AMD", ".s", False),
+    Framework("opencl", "OpenCL", ".s", False, OPENCL_TILE),
+    Framework("triton", "Triton", ".ptx", True),
 )
+
+
+@dataclass(frozen=True)
+class Kernel:
+    framework: Framework
+    name: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.framework.folder}/{self.name}"
+
+    @property
+    def path(self) -> Path:
+        return APPROXIMATIONS / self.framework.folder / (self.name + self.framework.extension)
+
+    @property
+    def launch(self) -> Path:
+        return APPROXIMATIONS / self.framework.folder / f"{self.name}.launch.json"
+
+
+def kernels(framework: Framework) -> list[Kernel]:
+    launches = sorted((APPROXIMATIONS / framework.folder).glob("*.launch.json"))
+    return [Kernel(framework, launch.name[: -len(".launch.json")]) for launch in launches]
 
 
 @dataclass(frozen=True)
@@ -80,10 +104,10 @@ class Launch:
     outputs: int
 
 
-def load_launch(column: Column) -> Launch:
-    launch = json.loads(column.launch.read_text(encoding="utf-8"))
-    if column.sizes is not None:
-        launch = resized(launch, **column.sizes)
+def load_launch(kernel: Kernel) -> Launch:
+    launch = json.loads(kernel.launch.read_text(encoding="utf-8"))
+    if kernel.framework.sizes is not None:
+        launch = resized(launch, **kernel.framework.sizes)
     block = launch["block"] if isinstance(launch["block"], list) else [launch["block"]]
     grid = launch.get("grid", [1])
     config = volta.Config(
@@ -101,9 +125,11 @@ def load_launch(column: Column) -> Launch:
     for param in launch["params"]:
         if "int" in param:
             config.add_param(volta.Param.int(param["int"]))
+        elif "float" in param:
+            config.add_param(volta.Param.float(param["float"]))
         else:
             config.add_param(volta.Param.array_ptr(param["ptr"]))
-    spec = (column.launch.parent / launch["spec"]).read_text(encoding="utf-8")
+    spec = (kernel.launch.parent / launch["spec"]).read_text(encoding="utf-8")
     outputs = sum(math.prod(a["shape"]) for a in launch["arrays"] if a["kind"] == "out")
     return Launch(launch["kernel"], config, spec, launch["dims"], outputs)
 
@@ -121,11 +147,11 @@ def resized(launch: dict, M: int, N: int, K: int) -> dict:
     }
 
 
-def rewrites(column: Column, launch: Launch) -> dict:
+def solve(kernel: Kernel, launch: Launch, rewrites: bool) -> dict:
     start = time.monotonic()
     try:
-        result = volta.solve(column.kernel, launch.config, kernel=launch.kernel,
-                             spec=launch.spec, dims=launch.dims)
+        result = volta.solve(kernel.path, launch.config, kernel=launch.kernel, spec=launch.spec,
+                             dims=launch.dims, rewrites=rewrites)
     except volta.VoltaError as error:
         return {"verdict": "ERROR", "seconds": time.monotonic() - start, "evidence": str(error)}
     return {
@@ -135,37 +161,36 @@ def rewrites(column: Column, launch: Launch) -> dict:
     }
 
 
-def lean(column: Column, launch: Launch) -> dict:
-    directory = LEAN_DIR / column.key
+def lean(kernel: Kernel, launch: Launch) -> dict:
+    directory = LEAN_DIR / kernel.key
     shutil.rmtree(directory, ignore_errors=True)
     start = time.monotonic()
     try:
         result = volta.prove_lean(
-            column.kernel, launch.config, kernel=launch.kernel, spec=launch.spec,
-            dims=launch.dims, tolerance=TOLERANCE, equivalence=False, output_dir=directory,
-            verbose=True,
+            kernel.path, launch.config, kernel=launch.kernel, spec=launch.spec,
+            dims=launch.dims, tolerance=TOLERANCE, input_bound=INPUT_BOUNDS.get(kernel.key),
+            equivalence=False, output_dir=directory,
         )
     except volta.VoltaError as error:
         return {"proved": False, "seconds": time.monotonic() - start, "cost_usd": None,
                 "detail": str(error)}
-    seconds = time.monotonic() - start
-    save_lean(column, directory)
+    if result.proved:
+        save_lean(kernel, directory)
     return {
         "proved": result.proved,
-        "seconds": seconds,
+        "seconds": time.monotonic() - start,
         "agent_seconds": result.duration_seconds,
         "cost_usd": result.cost_usd,
         "turns": result.turns,
-        "statements": result.statements,
-        "proved_statements": result.proved_statements,
+        "input_bound": INPUT_BOUNDS.get(kernel.key),
         "detail": f"{result.proved_statements} of {result.statements} statements proved",
         "proof": str(result.proof),
     }
 
 
-def save_lean(column: Column, directory: Path) -> None:
-    """Keep the column's challenge and proof in the repository, beside this script."""
-    saved = SAVED_LEAN / column.key
+def save_lean(kernel: Kernel, directory: Path) -> None:
+    """Keep a proved kernel's challenge and proof in the repository, beside this script."""
+    saved = SAVED_LEAN / kernel.key
     saved.mkdir(parents=True, exist_ok=True)
     for name in ("challenge.lean", "proof.lean"):
         if (directory / name).exists():
@@ -182,144 +207,172 @@ def load_dotenv(path: Path) -> None:
             os.environ.setdefault(name.strip(), os.path.expanduser(value.strip()))
 
 
-def verified_by_rewrites(entry: dict) -> bool:
-    return entry.get("rewrites", {}).get("verdict") == "ACCEPT"
+def accepted(entry: dict, solver: str) -> bool:
+    return entry.get(solver, {}).get("verdict") == "ACCEPT"
 
 
-def verified_by_lean(entry: dict) -> bool:
+def proved(entry: dict) -> bool:
     return entry.get("lean", {}).get("proved") is True
 
 
-def mean_times(entry: dict) -> tuple[float, float] | None:
-    """Both paths' seconds, when both verified the kernel (the caption's averaging rule)."""
-    if verified_by_rewrites(entry) and verified_by_lean(entry):
-        return entry["rewrites"]["seconds"], entry["lean"]["seconds"]
-    return None
+def needs_lean(entry: dict) -> bool:
+    return "rewrites" in entry and not accepted(entry, "rewrites")
+
+
+def verified_by(entry: dict) -> str:
+    if accepted(entry, "rewrites"):
+        return "rewrites"
+    return "Lean" if proved(entry) else "-"
 
 
 def cells(results: dict) -> dict[str, list[str]]:
-    rows = {"Volta": [], "Ours": [], "Rewrites": [], "Lean": []}
-    for column in COLUMNS:
-        entry = results.get(column.key, {})
-        rows["Volta"].append(column.original_volta)
-        measured = "rewrites" in entry and ("lean" in entry or entry.get("lean_skipped"))
-        verified = verified_by_rewrites(entry) or verified_by_lean(entry)
-        rows["Ours"].append(f"{int(verified)}/1" if measured else "-")
-        times = mean_times(entry)
-        rows["Rewrites"].append(f"{times[0]:.1f}" if times else "-")
-        rows["Lean"].append(f"{times[1]:.0f}" if times else "-")
+    rows = {"Kernels tested": [], "Volta": [], "Ours": []}
+    for framework in FRAMEWORKS:
+        entries = [results.get(k.key, {}) for k in kernels(framework)]
+        rows["Kernels tested"].append(str(len(entries)))
+        if not framework.reads_ptx:
+            rows["Volta"].append("n/a")
+        elif all("plain" in e for e in entries):
+            rows["Volta"].append(str(sum(accepted(e, "plain") for e in entries)))
+        else:
+            rows["Volta"].append("-")
+        settled = all("rewrites" in e and (not needs_lean(e) or "lean" in e
+                                           or e.get("lean_skipped")) for e in entries)
+        verified = sum(verified_by(e) != "-" for e in entries)
+        rows["Ours"].append(str(verified) if settled else "-")
     return rows
 
 
 def write_markdown(results: dict) -> None:
     rows = cells(results)
+    number = lambda value, digits: "-" if value is None else f"{value:.{digits}f}"  # noqa: E731
     lines = [
         "# GEMMs fused with activations",
         "",
-        "Written by `table.py`. Each column is one kernel on the 64 x 256 tile of C = act(A @ B^T),"
-        f" K = 256; Lean claims every output within {TOLERANCE} of the spec.",
+        "Written by `table.py`. Each kernel is its launch file's tile of C = act(A @ B^T) (OpenCL's "
+        f"at M = 64, N = K = 256); Lean claims every output within {TOLERANCE} of the spec.",
         "",
-        "| System / method | " + " | ".join(c.header for c in COLUMNS) + " |",
-        "|---|" + "---:|" * len(COLUMNS),
-        "| **Kernels verified** |" + " |" * len(COLUMNS),
+        "| System / method | " + " | ".join(f.name for f in FRAMEWORKS) + " |",
+        "|---|" + "---:|" * len(FRAMEWORKS),
+        f"| Kernels tested | " + " | ".join(rows["Kernels tested"]) + " |",
+        "| **Kernels verified** |" + " |" * len(FRAMEWORKS),
         *(f"| {name} | " + " | ".join(rows[name]) + " |" for name in ("Volta", "Ours")),
-        "| **Mean verification time (s)** |" + " |" * len(COLUMNS),
-        *(f"| {name} | " + " | ".join(rows[name]) + " |" for name in ("Rewrites", "Lean")),
         "",
-        "`unsupported`: the public Volta release cannot check the kernel (no `.spec` language, no "
-        "`cp.async`, reads only PTX); `n/a`: an AMD-only target. A time is shown only for a kernel both paths "
-        "verified.",
+        "Volta: the canonical solver without the activation rewrites, on PTX inputs only (`n/a`: "
+        "AMD assembly). Ours: verified by the rewrites or, failing them, by Lean, counted once.",
         "",
         "## Each kernel",
         "",
-        "| Column | Kernel | Rewrites | Rewrites (s) | Lean | Lean (s) | Agent (s) | Turns "
-        "| Cost (USD) |",
-        "|---|---|---|---:|---|---:|---:|---:|---:|",
+        "| Kernel | Volta | Rewrites | Rewrites (s) | Lean | Lean (s) | Cost (USD) | Verified by "
+        "| Why not by the rewrites |",
+        "|---|---|---|---:|---|---:|---:|---|---|",
     ]
-    for column in COLUMNS:
-        entry = results.get(column.key, {})
-        solved, proof = entry.get("rewrites", {}), entry.get("lean", {})
-        lean_detail = "skipped" if entry.get("lean_skipped") and not proof else (
-            ("proved" if proof.get("proved") else "not proved") + f": {proof.get('detail', '')}"
-            if proof else "-")
-        number = lambda value, digits: "-" if value is None else f"{value:.{digits}f}"  # noqa: E731
-        kernel = column.kernel.relative_to(APPROXIMATIONS)
-        lines.append(
-            f"| {column.header} | [`{kernel}`](../{kernel}) | {solved.get('verdict', '-')} "
-            f"| {number(solved.get('seconds'), 1)} | {lean_detail} "
-            f"| {number(proof.get('seconds'), 0)} | {number(proof.get('agent_seconds'), 0)} "
-            f"| {proof.get('turns', '-')} | {number(proof.get('cost_usd'), 2)} |"
-        )
-    evidence = [(c.header, results.get(c.key, {}).get("rewrites", {})) for c in COLUMNS]
-    notes = [f"- {header}: {r['evidence']}" for header, r in evidence
-             if r.get("verdict") not in (None, "ACCEPT") and r.get("evidence")]
-    if notes:
-        lines += ["", "Why the rewrites did not verify a kernel:", "", *notes]
+    for framework in FRAMEWORKS:
+        for kernel in kernels(framework):
+            entry = results.get(kernel.key, {})
+            plain, solved, proof = (entry.get(k, {}) for k in ("plain", "rewrites", "lean"))
+            if proof:
+                bound = f", inputs within {proof['input_bound']}" if proof.get("input_bound") else ""
+                lean_cell = ("proved" if proof["proved"] else "not proved") + bound
+            else:
+                lean_cell = "skipped" if entry.get("lean_skipped") and needs_lean(entry) else "-"
+            why = "" if accepted(entry, "rewrites") else solved.get("evidence", "")
+            if proof and not proof["proved"]:
+                why += f" Lean: {proof.get('detail', '')}"
+            path = kernel.path.relative_to(APPROXIMATIONS)
+            lines.append(
+                f"| [`{kernel.key}`](../{path}) | {plain.get('verdict', '-')} "
+                f"| {solved.get('verdict', '-')} | {number(solved.get('seconds'), 1)} "
+                f"| {lean_cell} | {number(proof.get('seconds'), 0)} "
+                f"| {number(proof.get('cost_usd'), 2)} | {verified_by(entry)} "
+                f"| {why.strip().replace('|', '/')} |"
+            )
     (HERE / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_latex(results: dict) -> None:
     rows = cells(results)
-    tex = {"unsupported": r"\ding{55}", "-": "--"}
-    top = " & ".join(c.lines[0] for c in COLUMNS)
-    second = " & ".join(c.lines[1] for c in COLUMNS)
+    tex = {"-": "--"}
     body = lambda name: f"{name} & " + " & ".join(tex.get(v, v) for v in rows[name]) + r" \\"  # noqa: E731
+    columns = len(FRAMEWORKS) + 1
     lines = [
-        r"% Written by external/approximations/table/table.py; \ding needs \usepackage{pifont}.",
-        r"\begin{tabular}{l" + "c" * len(COLUMNS) + "}",
+        r"% Written by external/approximations/table/table.py.",
+        r"\begin{tabular}{l" + "c" * len(FRAMEWORKS) + "}",
         r"\toprule",
-        f" & {top} \\\\",
-        f"System / method & {second} \\\\",
+        "System / method & " + " & ".join(f.name for f in FRAMEWORKS) + r" \\",
         r"\midrule",
-        r"\multicolumn{" + str(len(COLUMNS) + 1) + r"}{l}{\textbf{Kernels verified}} \\",
+        body("Kernels tested"),
+        r"\midrule",
+        r"\multicolumn{" + str(columns) + r"}{l}{\textbf{Kernels verified}} \\",
         body("Volta"),
         body("Ours"),
-        r"\midrule",
-        r"\multicolumn{" + str(len(COLUMNS) + 1) + r"}{l}{\textbf{Mean verification time (s)}} \\",
-        body("Rewrites"),
-        body("Lean"),
         r"\bottomrule",
         r"\end{tabular}",
     ]
     (HERE / "table.tex").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def measure_solvers(kernel: Kernel, entry: dict, force: bool) -> None:
+    launch = load_launch(kernel)
+    if force or "rewrites" not in entry:
+        entry["rewrites"] = solve(kernel, launch, rewrites=True)
+    if kernel.framework.reads_ptx and (force or "plain" not in entry):
+        entry["plain"] = solve(kernel, launch, rewrites=False)
+    plain = entry.get("plain", {}).get("verdict", "n/a")
+    print(f"[{kernel.key}] Volta {plain}, rewrites {entry['rewrites']['verdict']}", flush=True)
+
+
+def measure_lean(kernel: Kernel, entry: dict, save) -> None:
+    print(f"[{kernel.key}] Lean within {TOLERANCE} ...", flush=True)
+    proof = lean(kernel, load_launch(kernel))
+    save(lambda: (entry.__setitem__("lean", proof), entry.pop("lean_skipped", None)))
+    cost = proof.get("cost_usd")
+    print(f"[{kernel.key}] Lean: {'proved' if proof['proved'] else 'not proved'} in "
+          f"{proof['seconds']:.0f} s" + (f", ${cost:.2f}" if cost is not None else "")
+          + f" ({proof['detail'][:200]})", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("columns", nargs="*", help="column keys to run (default: every column)")
-    parser.add_argument("--force", action="store_true", help="measure again what results.json holds")
-    parser.add_argument("--no-lean", action="store_true", help="run the rewrites only")
+    parser.add_argument("kernels", nargs="*", help="kernels to run, as cutlass/gelu_tanh "
+                        "(default: every kernel)")
+    parser.add_argument("--force", action="store_true", help="measure again what kernels.json holds")
+    parser.add_argument("--no-lean", action="store_true", help="run the solvers only")
+    parser.add_argument("--jobs", type=int, default=4, help="Lean proofs run at once")
     args = parser.parse_args()
-    unknown = set(args.columns) - {c.key for c in COLUMNS}
+    every = [k for f in FRAMEWORKS for k in kernels(f)]
+    unknown = set(args.kernels) - {k.key for k in every}
     if unknown:
-        parser.error(f"unknown column(s) {sorted(unknown)}; choose from {[c.key for c in COLUMNS]}")
+        parser.error(f"unknown kernel(s) {sorted(unknown)}")
+    chosen = [k for k in every if not args.kernels or k.key in args.kernels]
     load_dotenv(REPO_ROOT / ".env")
 
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
-    for column in COLUMNS:
-        if args.columns and column.key not in args.columns:
-            continue
-        entry = results.setdefault(column.key, {})
-        launch = load_launch(column)
-        if args.force or "rewrites" not in entry:
-            print(f"[{column.key}] rewrites on {launch.outputs} outputs ...", flush=True)
-            entry["rewrites"] = rewrites(column, launch)
-        print(f"[{column.key}] rewrites: {entry['rewrites']['verdict']} "
-              f"in {entry['rewrites']['seconds']:.1f} s", flush=True)
-        if args.no_lean:
-            entry.setdefault("lean_skipped", True)
-        elif args.force or "lean" not in entry:
-            print(f"[{column.key}] Lean within {TOLERANCE} ...", flush=True)
-            entry["lean"] = lean(column, launch)
-            entry.pop("lean_skipped", None)
-        if "lean" in entry:
-            proof = entry["lean"]
-            cost = proof.get("cost_usd")
-            print(f"[{column.key}] Lean: {'proved' if proof['proved'] else 'not proved'} in "
-                  f"{proof['seconds']:.0f} s" + (f", ${cost:.2f}" if cost is not None else "")
-                  + f" ({proof['detail']})", flush=True)
-        RESULTS.parent.mkdir(parents=True, exist_ok=True)
-        RESULTS.write_text(json.dumps(results, indent=2) + "\n")
+
+    lock = threading.Lock()
+
+    def save(update=lambda: None) -> None:
+        with lock:
+            update()
+            RESULTS.parent.mkdir(parents=True, exist_ok=True)
+            RESULTS.write_text(json.dumps(results, indent=2) + "\n")
+
+    for kernel in chosen:
+        entry = results.setdefault(kernel.key, {})
+        measure_solvers(kernel, entry, args.force)
+        save()
+
+    pending = [k for k in chosen if needs_lean(results[k.key])
+               and (args.force or "lean" not in results[k.key])]
+    if args.no_lean:
+        for kernel in pending:
+            results[kernel.key].setdefault("lean_skipped", True)
+    else:
+        with ThreadPoolExecutor(max(1, args.jobs)) as pool:
+            futures = [pool.submit(measure_lean, k, results[k.key], save) for k in pending]
+        for future in futures:
+            future.result()
+    save()
 
     write_markdown(results)
     write_latex(results)

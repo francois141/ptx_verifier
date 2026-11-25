@@ -17,6 +17,14 @@ pub enum RegClass {
 
 impl RegClass {
     pub const COUNT: usize = 6;
+    pub const ALL: [RegClass; Self::COUNT] = [
+        RegClass::Pred,
+        RegClass::Bits8,
+        RegClass::Bits16,
+        RegClass::Bits32,
+        RegClass::Bits64,
+        RegClass::Bits128,
+    ];
 
     pub fn from_scalar_type(ty: ScalarType) -> Self {
         match ty {

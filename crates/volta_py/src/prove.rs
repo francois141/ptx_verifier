@@ -156,7 +156,7 @@ fn usage_dict(usage: Usage) -> BTreeMap<String, u64> {
 #[pyfunction]
 #[pyo3(signature = (
     path, config=None, *, spec, output_dir, lean_project=None, kernel=None, dims=None,
-    tolerance=None, equivalence=true, model=volta_lean::DEFAULT_MODEL, effort="high",
+    tolerance=None, input_bound=None, equivalence=true, model=volta_lean::DEFAULT_MODEL, effort="high",
     max_turns=60, claude=None, verbose=false
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -170,6 +170,7 @@ pub fn prove_lean(
     kernel: Option<&str>,
     dims: Option<HashMap<String, u64>>,
     tolerance: Option<&str>,
+    input_bound: Option<&str>,
     equivalence: bool,
     model: &str,
     effort: &str,
@@ -213,7 +214,9 @@ pub fn prove_lean(
             args: vec!["-c".to_string(), SERVE_TOOLS.to_string()],
         },
     };
-    let LeanSolution::Attempted { proof, .. } = lean.solve(py, tolerance, Some(prover))? else {
+    let LeanSolution::Attempted { proof, .. } =
+        lean.solve(py, tolerance, input_bound, Some(prover))?
+    else {
         unreachable!("the Lean solver proves what it states when given a prover")
     };
     for line in summary(&proof, started.elapsed()) {

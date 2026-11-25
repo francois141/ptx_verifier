@@ -375,12 +375,26 @@ impl ExprArena {
         }
     }
 
+    /// The greatest integer at most `a`: exact on a constant, the identity on an integer-valued
+    /// node.
+    pub fn floor(&mut self, a: ExprId) -> ExprId {
+        match self.node(a) {
+            ExprNode::RealConst(x) => {
+                let rounded = x.floor();
+                self.real(rounded)
+            }
+            _ if self.is_integer_valued(a) => a,
+            _ => self.push(ExprNode::Floor(a)),
+        }
+    }
+
     fn is_integer_valued(&self, a: ExprId) -> bool {
         matches!(
             self.node(a),
             ExprNode::IntConst(_)
                 | ExprNode::RoundEven(_)
                 | ExprNode::Trunc(_)
+                | ExprNode::Floor(_)
                 | ExprNode::ToFloat(_)
         )
     }

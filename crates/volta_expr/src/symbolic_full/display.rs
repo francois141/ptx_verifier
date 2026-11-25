@@ -57,6 +57,7 @@ fn notation(node: &ExprNode) -> Option<Notation> {
         Sign(_) => Call("sign"),
         RoundEven(_) => Call("rint"),
         Trunc(_) => Call("trunc"),
+        Floor(_) => Call("floor"),
         ToFloat(_) => Call("float"),
         Fma(..) => Call("fma"),
         IntConst(_)

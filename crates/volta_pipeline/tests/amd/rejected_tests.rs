@@ -325,8 +325,8 @@ fn scalar_operations_on_symbolic_masks_are_rejected() {
         },
     );
 }
-// Test that a store executed only where the input is positive is rejected: the mask the
-// compiled `s_and_saveexec_b64` reads holds symbolic comparisons, so EXEC would not be concrete.
+// Test that a store executed only where the input is positive is rejected: after the compiled
+// `s_and_saveexec_b64`, EXEC is a symbolic predicate per lane, which guards register writes only.
 #[test]
 fn data_dependent_divergence_is_rejected() {
     let arrays = [
@@ -342,7 +342,9 @@ fn data_dependent_divergence_is_rejected() {
                 result,
                 Ok(AnalysisResult {
                     terminal: Terminal::Aborted {
-                        error: EvalError::SymbolicVcc { lane: 0 },
+                        error: EvalError::UnderLanePredicate {
+                            instruction: "global_store"
+                        },
                         ..
                     },
                     symbolic_outputs: None,

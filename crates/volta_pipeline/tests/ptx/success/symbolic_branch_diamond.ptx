@@ -1,0 +1,24 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<3>;
+    .reg .b64 %rd<3>;
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %f1, [%rd1];
+    setp.gt.f32 %p1, %f1, 0f00000000;
+    @%p1 bra $POSITIVE;
+    mul.f32 %f2, %f1, 0f40000000;
+    bra.uni $JOIN;
+$POSITIVE:
+    mul.f32 %f2, %f1, %f1;
+$JOIN:
+    st.global.f32 [%rd2], %f2;
+    ret;
+}

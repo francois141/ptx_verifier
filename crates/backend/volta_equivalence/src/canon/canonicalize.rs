@@ -174,6 +174,7 @@ impl Session {
             ExprNode::Gelu(a) => self.uninterp1(side, arena, UninterpOp::Gelu, *a),
             ExprNode::RoundEven(a) => self.uninterp1(side, arena, UninterpOp::RoundEven, *a),
             ExprNode::Trunc(a) => self.uninterp1(side, arena, UninterpOp::Trunc, *a),
+            ExprNode::Floor(a) => self.uninterp1(side, arena, UninterpOp::Floor, *a),
             ExprNode::BitAnd(a, b) => self.uninterp2(side, arena, UninterpOp::BitAnd, *a, *b),
             ExprNode::BitOr(a, b) => self.uninterp2(side, arena, UninterpOp::BitOr, *a, *b),
             ExprNode::BitXor(a, b) => self.uninterp2(side, arena, UninterpOp::BitXor, *a, *b),

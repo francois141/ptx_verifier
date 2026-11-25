@@ -154,6 +154,10 @@ impl ExprArena {
         self.operation(ty, ExprNode::Trunc(a))
     }
 
+    pub fn floor(&mut self, ty: Type, a: ExprId) -> ExprId {
+        self.operation(ty, ExprNode::Floor(a))
+    }
+
     pub fn fma(&mut self, ty: Type, a: ExprId, b: ExprId, c: ExprId) -> ExprId {
         self.operation(ty, ExprNode::Fma(a, b, c))
     }

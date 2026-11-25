@@ -249,6 +249,8 @@ pub struct Interpreter<'p> {
     /// fixed array since `step` bumps it per instruction; `finish` folds it
     /// into `AnalysisResult::op_counts`.
     pub(in crate::eval) op_counts: [u64; crate::ir::KIND_COUNT],
+    /// Each instruction's immediate post-dominator, computed at the first symbolic branch.
+    pub(in crate::eval) joins: std::cell::OnceCell<crate::eval::branch::Joins>,
 }
 
 impl<'p> Interpreter<'p> {
@@ -467,6 +469,7 @@ impl<'p> Interpreter<'p> {
             rec: Recording::default(),
             stats: Stats::default(),
             op_counts: [0; crate::ir::KIND_COUNT],
+            joins: std::cell::OnceCell::new(),
         })
     }
 
@@ -670,9 +673,14 @@ impl<'p> Interpreter<'p> {
             });
         }
 
-        // Predicate guard: must be concrete (structured-CTA).
+        // Predicate guard: concrete (structured-CTA), except a branch's, which if-converts.
         if let Some(pred) = self.program.predicate(pc) {
             let value = self.read_reg(t, pred.reg);
+            if let (LoweredInstr::Bra { target }, Value::Scalar(condition)) = (&instr, value)
+                && self.arena.as_bool(condition).is_none()
+            {
+                return self.if_convert(t, pc, *pred, *target, condition);
+            }
             let cond = self.as_concrete_bool(t, pc, value, "guard predicate")?;
             if cond == pred.negated {
                 self.threads[t].pc = InstrId(pc.0 + 1);

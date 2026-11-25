@@ -140,6 +140,7 @@ pub(crate) fn cmd_verify(args: VerifyArgs, log: &mut run_log::RunLog) -> ExitCod
         verify_numeric: args.verify_numeric,
         recycle_terms: args.recycle_terms,
         iterations: args.iterations,
+        ..EquivCheckOptions::default()
     };
     let vc_start = Instant::now();
     let (equivalence, report) = match check_against_spec(&mut kernel_exprs, &spec, &options) {

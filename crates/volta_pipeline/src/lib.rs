@@ -25,5 +25,5 @@ pub use frontend::{Frontend, FrontendError, GraphEvidence, Isa, KernelRun, Solve
 pub use kernel::{KernelVerification, verify_kernel};
 pub use solve::{
     DEFAULT_LEAN_NAMESPACE, InvalidSpec, LeanChallenge, LeanProver, LeanSolution, Solution, Solver,
-    Spec, check_against_spec, claim, state_against_spec,
+    Spec, check_against_spec, claim, domain, state_against_spec,
 };

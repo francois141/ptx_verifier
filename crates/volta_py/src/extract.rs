@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use volta_equivalence::EquivCheckOptions;
 use volta_pipeline::{
     DEFAULT_LEAN_NAMESPACE, Isa, KernelRun, LeanProver, LeanSolution, Solution, SolveError, Solver,
-    Spec, claim,
+    Spec, claim, domain,
 };
 
 use crate::config::ConfigPy;
@@ -38,13 +38,15 @@ pub struct LeanExtractionPy {
 
 /// Extract Lean proof obligations for a kernel against `spec`. `tolerance` is an optional
 /// absolute error bound such as "1/1000"; without it, propositions state exact equality.
+/// `input_bound` (such as "88") limits the claim to inputs within it in absolute value.
 /// `equivalence=True` first checks exact equality with the canonical solver, as `solve` does,
 /// on the same run. Raises DataRaceError for detected races, DeadlockError for deadlocks, and
 /// VoltaError for other failed or incomplete graph checks or extraction failures. A kernel
 /// whose run records no graph returns race_verified=None.
 #[pyfunction]
 #[pyo3(signature = (
-    path, config=None, *, spec, kernel=None, dims=None, tolerance=None, equivalence=false
+    path, config=None, *, spec, kernel=None, dims=None, tolerance=None, input_bound=None,
+    equivalence=false
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_lean(
@@ -55,10 +57,11 @@ pub fn extract_lean(
     kernel: Option<&str>,
     dims: Option<HashMap<String, u64>>,
     tolerance: Option<&str>,
+    input_bound: Option<&str>,
     equivalence: bool,
 ) -> PyResult<LeanExtractionPy> {
     let mut lean = LeanRun::new(path, config, spec, kernel, dims, equivalence)?;
-    let LeanSolution::Stated(challenge) = lean.solve(py, tolerance, None)? else {
+    let LeanSolution::Stated(challenge) = lean.solve(py, tolerance, input_bound, None)? else {
         unreachable!("the Lean solver proves nothing without a prover")
     };
     Ok(LeanExtractionPy {
@@ -116,10 +119,12 @@ impl LeanRun {
         &mut self,
         py: Python<'_>,
         tolerance: Option<&str>,
+        input_bound: Option<&str>,
         prover: Option<LeanProver>,
     ) -> PyResult<LeanSolution> {
         let solver = Solver::Lean {
             claim: claim(tolerance).map_err(VoltaError::new_err)?,
+            domain: domain(input_bound).map_err(VoltaError::new_err)?,
             namespace: DEFAULT_LEAN_NAMESPACE.to_string(),
             prover,
         };

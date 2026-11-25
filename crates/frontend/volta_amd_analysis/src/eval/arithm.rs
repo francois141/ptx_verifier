@@ -391,6 +391,9 @@ pub(super) fn evaluate_cndmask(
     if let Some(word) = select_words(arena, condition, a, b) {
         return Ok(word);
     }
+    if let Some(exponent) = select_exponent(arena, condition, a, b) {
+        return Ok(exponent);
+    }
     let (a, b) = match (is_word(arena, a), is_word(arena, b)) {
         (true, false) => (registers.read_f32_src0(arena, lane, src0)?, b),
         (false, true) => (a, registers.read_f32(arena, lane, src1)?),
@@ -406,6 +409,19 @@ pub(super) fn evaluate_cndmask(
         return Ok(value);
     }
     Ok(arena.select(B32, condition, b, a))
+}
+
+/// `condition ? b : a` between a symbolic exponent and a concrete word, which is then an integer
+/// too (OCML's `expm1` clamps its exponent so), not the f32 its bits encode.
+fn select_exponent(
+    arena: &mut ExprArena,
+    condition: ExprId,
+    a: ExprId,
+    b: ExprId,
+) -> Option<ExprId> {
+    let exponent_and_word =
+        |e: ExprId, w: ExprId| is_symbolic_exponent(arena, e) && concrete_word(arena, w).is_some();
+    (exponent_and_word(a, b) || exponent_and_word(b, a)).then(|| arena.select(I32, condition, b, a))
 }
 
 /// `mask ? src1 : src0` in `lane`, each source mixed with the other as `evaluate_cndmask` does.
@@ -432,6 +448,9 @@ pub(super) fn evaluate_cndmask_e64(
     if let Some(word) = select_words(arena, condition, a, b) {
         return Ok(word);
     }
+    if let Some(exponent) = select_exponent(arena, condition, a, b) {
+        return Ok(exponent);
+    }
     // A symbolic source is a real, so a concrete word selected against it must be the f32 its
     // bits encode, or the select would mix raw bits with reals.
     let (a, b) = match (is_word(arena, a), is_word(arena, b)) {
@@ -451,6 +470,34 @@ pub(super) fn evaluate_cndmask_e64(
     Ok(arena.select(B32, condition, b, a))
 }
 
+/// `v_bfi_b32 d, mask, a, b` whose mask splits a float's sign bit from the rest: `copysign`, the
+/// magnitude from one float and the sign from the other, `sign < 0 ? -|m| : |m|`. `None` for
+/// another mask or two concrete words, which fold bitwise.
+fn copysign_bfi(
+    arena: &mut ExprArena,
+    registers: &WaveRegisters,
+    lane: usize,
+    mask: ExprId,
+    srcs: [ModifiedSrc; 3],
+) -> Result<Option<ExprId>, EvalError> {
+    let (magnitude, sign) = match concrete_word(arena, mask) {
+        Some(0x7fff_ffff) => (srcs[1], srcs[2]),
+        Some(0x8000_0000) => (srcs[2], srcs[1]),
+        _ => return Ok(None),
+    };
+    let magnitude = registers.read_f32_src(arena, lane, magnitude.src)?;
+    let sign = registers.read_f32_src(arena, lane, sign.src)?;
+    if arena.as_f64(magnitude).is_some() && arena.as_f64(sign).is_some() {
+        return Ok(None);
+    }
+
+    let magnitude = arena.abs(F32, magnitude);
+    let negated = arena.neg(F32, magnitude);
+    let zero = arena.int(0);
+    let negative = arena.lt(Type::Pred, sign, zero);
+    Ok(Some(arena.select(F32, negative, negated, magnitude)))
+}
+
 /// `op(srcs)` in `lane`, each source read as `op`'s operand type.
 pub(super) fn evaluate_ternary_op(
     arena: &mut ExprArena,
@@ -464,6 +511,11 @@ pub(super) fn evaluate_ternary_op(
         OperandType::F32 => registers.read_modified_src(arena, lane, src),
     });
     let (a, b, c) = (a?, b?, c?);
+    if op == TernaryOp::Bfi32
+        && let Some(value) = copysign_bfi(arena, registers, lane, a, srcs)?
+    {
+        return Ok(value);
+    }
     // Integer operations need concrete words: a symbolic value is a float, without known bits.
     if matches!(ternary_operand_type(op), OperandType::Word) {
         concrete_words(arena, lane, [a, b, c])?;
@@ -849,7 +901,16 @@ pub(super) fn evaluate_ldexp_f32(
     let (Some(then), Some(otherwise)) =
         (concrete_word(arena, then), concrete_word(arena, otherwise))
     else {
-        return Err(EvalError::SymbolicWord { lane });
+        // OCML's `expm1` clamps its `rndne` exponent, `n == 128 ? 127 : n`: each side scales.
+        let mut scale = |exponent: ExprId| match concrete_word(arena, exponent) {
+            Some(word) => Ok(scale_by_power_of_two(arena, value, word as i32)),
+            None if is_symbolic_exponent(arena, exponent) => {
+                Ok(scale_by_exponent(arena, value, exponent))
+            }
+            None => Err(EvalError::SymbolicWord { lane }),
+        };
+        let (then, otherwise) = (scale(then)?, scale(otherwise)?);
+        return Ok(arena.select(F32, condition, then, otherwise));
     };
     let exponents = [then as i32, otherwise as i32];
     if let Some(unshifted) = undo_exp2_range_shift(arena, value, condition, exponents) {

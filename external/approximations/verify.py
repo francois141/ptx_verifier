@@ -3,7 +3,7 @@
 
     cargo build --release -p volta_cli
     python3 external/approximations/verify.py [--sample N] [--filter TEXT] [--timeout S] [--markdown]
-                                              [--report FILE]
+                                              [--report FILE] [--no-rewrites]
 
 Each case is a kernel `<compiler>/<case>.ptx` (CUTLASS, Triton) or `.s` (Composable Kernel, OpenCL)
 with the launch file `<compiler>/<case>.launch.json` beside it, run with `volta solve`. A line per
@@ -106,9 +106,12 @@ def cases(text: str):
                 yield compiler, name, launch.with_name(name + extension), launch
 
 
-def solve(kernel: Path, launch: Path, sample: int, timeout: float | None) -> dict:
+def solve(kernel: Path, launch: Path, sample: int, timeout: float | None,
+          rewrites: bool = True) -> dict:
     command = [str(VOLTA), "--no-log-file", "solve", str(kernel), "--config", str(launch),
                "--print-outputs", "0", "--sample", str(sample)]
+    if not rewrites:
+        command.append("--no-rewrites")
     start = time.monotonic()
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
@@ -149,6 +152,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, help="give up on a case after this many seconds")
     parser.add_argument("--markdown", action="store_true", help="also print a markdown table")
     parser.add_argument("--report", type=Path, help="write a markdown report of every case to FILE")
+    parser.add_argument("--no-rewrites", action="store_true",
+                        help="solve without the activation rewrites (EXPECTED no longer applies)")
     args = parser.parse_args()
     if not VOLTA.exists():
         print(f"error: {VOLTA} is missing; run cargo build --release -p volta_cli", file=sys.stderr)
@@ -162,8 +167,8 @@ def main() -> int:
             print(f"{compiler}/{name}: {kernel.name} is missing; run {compiler}/extract.py")
             mismatches += 1
             continue
-        result = solve(kernel, launch, args.sample, args.timeout)
-        expected = EXPECTED.get(f"{compiler}/{name}")
+        result = solve(kernel, launch, args.sample, args.timeout, rewrites=not args.no_rewrites)
+        expected = None if args.no_rewrites else EXPECTED.get(f"{compiler}/{name}")
         if expected is not None and result["verdict"] != expected:
             mismatches += 1
         note = "" if expected in (None, result["verdict"]) else f" (expected {expected})"

@@ -5,6 +5,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
+use volta_expr::rewrite::Rewrites;
 use volta_expr::{ExprId, SymbolicOutputs};
 
 use crate::equiv::{DEFAULT_RECYCLE_TERMS, EquivError, EquivSession};
@@ -75,6 +76,8 @@ pub struct EquivCheckOptions {
     /// (cold-start timings, bounded memory). The verdict is iteration 1's; later ones must agree,
     /// else [`EquivCheckError::IterationDisagreement`]. `verify_numeric` runs on iteration 1 only.
     pub iterations: NonZeroUsize,
+    /// Whether the caller rewrites both sides' activations first (`volta_pipeline` does).
+    pub rewrites: Rewrites,
 }
 
 impl Default for EquivCheckOptions {
@@ -84,6 +87,7 @@ impl Default for EquivCheckOptions {
             verify_numeric: false,
             recycle_terms: DEFAULT_RECYCLE_TERMS,
             iterations: NonZeroUsize::MIN,
+            rewrites: Rewrites::Activations,
         }
     }
 }

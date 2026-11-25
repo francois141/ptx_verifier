@@ -66,7 +66,14 @@ impl Frontend for AmdFrontend {
             .symbolic_outputs
             .ok_or_else(|| match &result.terminal {
                 Terminal::Aborted { wave, pc, error } => {
-                    format!("wave {} aborted at instruction {}: {error}", wave.0, pc.0)
+                    let opcode = parsed
+                        .instructions
+                        .get(pc.0 as usize)
+                        .map_or("?", |instruction| instruction.opcode.as_str());
+                    format!(
+                        "wave {} aborted at instruction {} ({opcode}): {error}",
+                        wave.0, pc.0
+                    )
                 }
                 Terminal::Completed => "the run completed without outputs".into(),
             })

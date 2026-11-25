@@ -1138,6 +1138,20 @@ fn test_float_ops_decode_raw_bit_patterns() {
     );
 }
 
+/// A branch on input data whose arms compute into registers if-converts: the arms' values
+/// merge into a select on the branch condition.
+#[test]
+fn test_symbolic_branch_diamond_if_converts() {
+    analyze!("success/symbolic_branch_diamond", in_out_config(1, 1));
+}
+
+/// libdevice's accurate `expf` shifts the magic-number-rounded `j = fma.rm(sat(t), 252,
+/// 1.5 * 2^23 + 1)` into the exponent: `bits(j) << 23` is the f32 `2^(j - 12583039)`.
+#[test]
+fn test_expf_exponent_scale() {
+    analyze!("success/expf_exponent_scale", in_out_config(1, 1));
+}
+
 /// Mixed precision `fma.rn.f32.f16` decodes its multiplicands as f16 bits
 /// and only its accumulator as f32 bits: `0x3C00 * 0x4000 + 0x3F800000`
 /// is `1 * 2 + 1 = 3`.

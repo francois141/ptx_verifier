@@ -148,6 +148,10 @@ impl Copier<'_> {
                 let a = self.expr(a);
                 self.target.trunc(ty(), a)
             }
+            ExprNode::Floor(a) => {
+                let a = self.expr(a);
+                self.target.floor(ty(), a)
+            }
             ExprNode::BitAnd(a, b) => {
                 let (a, b) = self.pair(a, b);
                 self.target.bit_and(ty(), a, b)

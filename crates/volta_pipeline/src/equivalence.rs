@@ -8,7 +8,7 @@ use volta_equivalence::check::{
 };
 use volta_equivalence::numeric::verify_verdict;
 use volta_expr::SymbolicOutputs;
-use volta_expr::rewrite;
+use volta_expr::rewrite::{self, Rewrites};
 
 /// An output element: its array and index.
 pub type Element = (String, u64);
@@ -36,7 +36,8 @@ pub enum EquivalenceVerdict {
 
 /// Compare `reference` and `optimized` on `arrays` with the decision procedure, then confirm
 /// each claimed difference with the numeric oracle before it counts as a refutation. Both
-/// sides are first rewritten by [`rewrite::rewrite_activations`].
+/// sides are first rewritten by [`rewrite::rewrite_activations`], unless `options.rewrites` is
+/// [`Rewrites::Disabled`].
 pub fn check_equivalence(
     reference: &SymbolicOutputs,
     optimized: &SymbolicOutputs,
@@ -45,10 +46,11 @@ pub fn check_equivalence(
 ) -> (EquivalenceVerdict, Option<EquivCheckReport>) {
     info!("[equivalence] checking arrays {}", arrays.join(", "));
     let start = Instant::now();
-    let (reference_rewritten, optimized_rewritten) = (
-        rewrite::rewrite_activations(reference),
-        rewrite::rewrite_activations(optimized),
-    );
+    let rewritten = |outputs| match options.rewrites {
+        Rewrites::Activations => rewrite::rewrite_activations(outputs),
+        Rewrites::Disabled => None,
+    };
+    let (reference_rewritten, optimized_rewritten) = (rewritten(reference), rewritten(optimized));
     let reference = reference_rewritten.as_ref().unwrap_or(reference);
     let optimized = optimized_rewritten.as_ref().unwrap_or(optimized);
     let (verdict, report) = decide_outputs(reference, optimized, arrays, options);

@@ -1,0 +1,29 @@
+.version 8.6
+.target sm_80
+.address_size 64
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<12>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<3>;
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    ld.global.f32 %f1, [%rd1];
+    fma.rn.f32 %f2, %f1, 0f3BBB989D, 0f3F000000;
+    cvt.sat.f32.f32 %f3, %f2;
+    fma.rm.f32 %f4, %f3, 0f437C0000, 0f4B400001;
+    add.f32 %f5, %f4, 0fCB40007F;
+    neg.f32 %f6, %f5;
+    fma.rn.f32 %f7, %f1, 0f3FB8AA3B, %f6;
+    fma.rn.f32 %f8, %f1, 0f32A57060, %f7;
+    mov.b32 %r1, %f4;
+    shl.b32 %r2, %r1, 23;
+    mov.b32 %f9, %r2;
+    ex2.approx.ftz.f32 %f10, %f8;
+    mul.f32 %f11, %f10, %f9;
+    st.global.f32 [%rd2], %f11;
+    ret;
+}

@@ -117,6 +117,7 @@ fn eval_inner(
         }
         ExprNode::RoundEven(a) => ev(*a, memo)?.round_ties_even(),
         ExprNode::Trunc(a) => ev(*a, memo)?.trunc(),
+        ExprNode::Floor(a) => ev(*a, memo)?.floor(),
 
         ExprNode::Max(a, b) => ev(*a, memo)?.max(ev(*b, memo)?),
         ExprNode::Min(a, b) => ev(*a, memo)?.min(ev(*b, memo)?),

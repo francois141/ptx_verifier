@@ -4,10 +4,12 @@
 
 mod arithm;
 mod async_bulk;
+mod branch;
 mod cluster_launch_control;
 mod cp_async;
 mod error;
 mod float_bits;
+mod float_fields;
 mod fragments;
 mod im2col;
 mod interp;

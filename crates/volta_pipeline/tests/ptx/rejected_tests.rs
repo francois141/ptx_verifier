@@ -1288,14 +1288,19 @@ fn test_pair_sub_width_store_rejected() {
     );
 }
 
-/// Branching on input data violates structured-CTA.
+/// A branch on input data if-converts only when its arms compute into registers: one around a
+/// store is rejected, since the path not taken would record an access.
 #[test]
 fn test_symbolic_branch_rejected() {
     let module = ptx!(parse "execution_error/symbolic_branch_rejected");
     let err = run_kernel(&module, None, in_out_config(1, 1)).unwrap_err();
     assert!(
-        matches!(err, AnalysisError::Eval(EvalError::NotConcrete { .. })),
-        "expected structured-CTA violation, got: {}",
+        matches!(
+            &err,
+            AnalysisError::Eval(EvalError::Unsupported { what, .. })
+                if what.contains("branch on a symbolic predicate")
+        ),
+        "expected a symbolic branch around a store to be rejected, got: {}",
         err
     );
 }

@@ -203,9 +203,11 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::DsReadTrB16 { .. }
             | LoweredInstr::DsBPermute { .. }
             | LoweredInstr::DsSwizzle { .. } => {
+                self.reject_under_predicate(wave, instruction)?;
                 self.execute_ds(wave, pc, instruction)?;
             }
             LoweredInstr::BufferLoadLds { width, address } => {
+                self.reject_under_predicate(wave, instruction)?;
                 self.execute_buffer_load_lds(wave, pc, *width, *address)?;
             }
             // Every other instruction computes register values or accesses global memory.
@@ -269,7 +271,7 @@ impl<'a> Interpreter<'a> {
             | LoweredInstr::GlobalLoadUshort { .. }
             | LoweredInstr::GlobalStoreShort { .. }
             | LoweredInstr::BufferLoad { .. }
-            | LoweredInstr::BufferStore { .. } => self.execute_for_workgroups(wave, instruction)?,
+            | LoweredInstr::BufferStore { .. } => self.execute_guarded(wave, instruction)?,
         }
         self.waves[wave].pc = next;
         Ok(())
@@ -278,7 +280,7 @@ impl<'a> Interpreter<'a> {
     /// Execute a value instruction. One that reads no workgroup-dependent location runs
     /// once; otherwise it runs once per workgroup from the same registers, and each location it
     /// writes keeps every workgroup's result.
-    fn execute_for_workgroups(
+    pub(super) fn execute_for_workgroups(
         &mut self,
         wave: WaveId,
         instruction: &LoweredInstr,

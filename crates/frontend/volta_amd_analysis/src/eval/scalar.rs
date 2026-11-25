@@ -119,10 +119,22 @@ impl Interpreter<'_> {
                     self.read_scalar64(wave, *src1),
                 ) {
                     (Ok(a), Ok(b)) => (a, b),
-                    (Err(EvalError::SymbolicSgpr(_) | EvalError::SymbolicVcc { .. }), _)
-                    | (_, Err(EvalError::SymbolicSgpr(_) | EvalError::SymbolicVcc { .. }))
-                        if *op != ScalarOp64::CSelectB64 =>
-                    {
+                    (
+                        Err(
+                            EvalError::SymbolicSgpr(_)
+                            | EvalError::SymbolicVcc { .. }
+                            | EvalError::SymbolicExec,
+                        ),
+                        _,
+                    )
+                    | (
+                        _,
+                        Err(
+                            EvalError::SymbolicSgpr(_)
+                            | EvalError::SymbolicVcc { .. }
+                            | EvalError::SymbolicExec,
+                        ),
+                    ) if *op != ScalarOp64::CSelectB64 => {
                         return self.lane_mask_op64(wave, *op, *dst, *src0, *src1);
                     }
                     (Err(EvalError::UninitializedSgpr(reg)), Ok(b)) => {
@@ -153,6 +165,14 @@ impl Interpreter<'_> {
                 dst,
                 src,
             } => {
+                if self.waves[wave].conditions.is_some()
+                    || matches!(
+                        self.read_scalar64(wave, *src),
+                        Err(EvalError::SymbolicSgpr(_) | EvalError::SymbolicVcc { .. })
+                    )
+                {
+                    return self.lane_exec_op64(wave, *op, *order, *copy, *dst, *src);
+                }
                 let saved = self.waves[wave].exec;
                 let src = self.read_scalar64(wave, *src)?;
                 let (a, b) = match order {
@@ -363,21 +383,24 @@ impl Interpreter<'_> {
         Ok(())
     }
 
-    /// A 64-bit source's concrete value. A mask that holds a symbolic comparison is rejected,
-    /// which keeps every value written to EXEC concrete.
+    /// A 64-bit source's concrete value. A mask that holds a symbolic comparison, EXEC's
+    /// included, is rejected, so the caller computes lane by lane instead.
     fn read_scalar64(&self, wave: WaveId, src: ScalarSrc64) -> Result<u64, EvalError> {
         let registers = &self.waves[wave].registers;
         match src {
             ScalarSrc64::Sgprs(pair) => registers.read_sgpr_pair(&self.arena, pair),
             ScalarSrc64::Vcc => registers.read_vcc_mask(&self.arena),
-            ScalarSrc64::Exec => Ok(self.waves[wave].exec),
+            ScalarSrc64::Exec => match self.waves[wave].conditions {
+                Some(_) => Err(EvalError::SymbolicExec),
+                None => Ok(self.waves[wave].exec),
+            },
             ScalarSrc64::Const(value) => Ok(value),
             ScalarSrc64::SharedBase => Ok(crate::ir::SHARED_APERTURE_BASE),
         }
     }
 
     /// A bitwise `op` of two lane masks, at least one holding a symbolic comparison, lane by
-    /// lane over predicates. EXEC must stay concrete, and SCC is unknown unless the result is.
+    /// lane over predicates; SCC is unknown unless the result is concrete.
     fn lane_mask_op64(
         &mut self,
         wave: WaveId,
@@ -404,15 +427,78 @@ impl Interpreter<'_> {
             self.waves[wave].registers.write_scc(value != 0);
             return self.write_scalar64(wave, dst, value);
         }
-        let mask = match dst {
-            ScalarDst64::Sgprs(pair) => LaneMask::Sgprs(pair),
-            ScalarDst64::Vcc => LaneMask::Vcc,
-            ScalarDst64::Exec => return Err(EvalError::SymbolicExec),
+        self.write_lane_predicates(wave, dst, conditions)?;
+        self.waves[wave].registers.write_unknown_scc();
+        Ok(())
+    }
+
+    /// An EXEC operation (`s_and_saveexec_b64` and its family) lane by lane over predicates,
+    /// once EXEC or its source holds a symbolic comparison.
+    fn lane_exec_op64(
+        &mut self,
+        wave: WaveId,
+        op: ScalarOp64,
+        order: ExecOrder,
+        copy: ExecCopy,
+        dst: ScalarDst64,
+        src: ScalarSrc64,
+    ) -> Result<(), EvalError> {
+        let saved = self.exec_predicates(wave);
+        let src = self.read_lane_predicates(wave, src)?;
+        let arena = &mut self.arena;
+        let exec: Vec<ExprId> = saved
+            .iter()
+            .zip(&src)
+            .map(|(&saved, &src)| match order {
+                ExecOrder::SrcExec => lane_op64(arena, op, src, saved),
+                ExecOrder::ExecSrc => lane_op64(arena, op, saved, src),
+            })
+            .collect();
+        let copied = match copy {
+            ExecCopy::Saved => saved,
+            ExecCopy::Written => exec.clone(),
+        };
+
+        // The destination is written first, so a rejected write leaves EXEC as it was.
+        self.write_lane_predicates(wave, dst, copied)?;
+        let concrete = exec.iter().all(|&bit| self.arena.as_bool(bit).is_some());
+        let any = exec
+            .iter()
+            .any(|&bit| self.arena.as_bool(bit) == Some(true));
+        self.set_exec_predicates(wave, exec)?;
+        let registers = &mut self.waves[wave].registers;
+        if concrete {
+            registers.write_scc(any);
+        } else {
+            registers.write_unknown_scc();
+        }
+        Ok(())
+    }
+
+    /// Write one predicate per lane to a 64-bit destination: packed into a word when every one
+    /// is known, else kept per lane; in EXEC, the wave's new active lanes.
+    fn write_lane_predicates(
+        &mut self,
+        wave: WaveId,
+        dst: ScalarDst64,
+        predicates: Vec<ExprId>,
+    ) -> Result<(), EvalError> {
+        let concrete = predicates
+            .iter()
+            .enumerate()
+            .try_fold(0u64, |mask, (lane, &bit)| {
+                self.arena
+                    .as_bool(bit)
+                    .map(|bit| mask | u64::from(bit) << lane)
+            });
+        let mask = match (dst, concrete) {
+            (ScalarDst64::Exec, _) => return self.set_exec_predicates(wave, predicates),
+            (_, Some(value)) => return self.write_scalar64(wave, dst, value),
+            (ScalarDst64::Sgprs(pair), None) => LaneMask::Sgprs(pair),
+            (ScalarDst64::Vcc, None) => LaneMask::Vcc,
         };
         let registers = &mut self.waves[wave].registers;
-        registers.write_lane_mask(&mut self.arena, mask, &conditions)?;
-        registers.write_unknown_scc();
-        Ok(())
+        registers.write_lane_mask(&mut self.arena, mask, &predicates)
     }
 
     /// Each lane's bit of a 64-bit source as a predicate, symbolic where a mask holds a
@@ -431,7 +517,7 @@ impl Interpreter<'_> {
                     .collect();
             }
             ScalarSrc64::Vcc => return (0..64).map(|lane| registers.read_vcc(lane)).collect(),
-            ScalarSrc64::Exec => self.waves[wave].exec,
+            ScalarSrc64::Exec => return Ok(self.exec_predicates(wave)),
             ScalarSrc64::Const(value) => value,
             ScalarSrc64::SharedBase => crate::ir::SHARED_APERTURE_BASE,
         };
@@ -453,6 +539,7 @@ impl Interpreter<'_> {
             ScalarDst64::Vcc => registers.write_vcc_mask(&mut self.arena, value),
             ScalarDst64::Exec => {
                 self.waves[wave].exec = value;
+                self.waves[wave].conditions = None;
                 Ok(())
             }
         }

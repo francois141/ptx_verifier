@@ -19,6 +19,14 @@ use id_collections::{Count, IdVec};
 
 use crate::{ExprArena, ExprId, SymbolicOutputs};
 
+/// Whether an equivalence check first applies [`rewrite_activations`] to both sides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Rewrites {
+    #[default]
+    Activations,
+    Disabled,
+}
+
 /// `outputs` with the first applicable rewrite applied to each node reachable from an output,
 /// children first; `None` when none applies, so the arena is copied only for a match.
 pub fn rewrite_activations(outputs: &SymbolicOutputs) -> Option<SymbolicOutputs> {

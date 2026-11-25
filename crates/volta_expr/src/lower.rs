@@ -267,6 +267,7 @@ pub(crate) fn lower_operation(
         Sign(a) => target.sign(child(a)),
         RoundEven(a) => target.round_even(child(a)),
         Trunc(a) => target.trunc(child(a)),
+        Floor(a) => target.floor(child(a)),
         BitAnd(a, b) => {
             let (a, b) = (child(a), child(b));
             match float_under_mask(target, ty, a, b, SignMask::Clear) {

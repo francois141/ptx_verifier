@@ -61,4 +61,27 @@ impl RegFile {
     pub fn write(&mut self, reg: RegId, value: Value) {
         self.classes[reg.class as usize][reg.index.0 as usize] = Some(value);
     }
+
+    /// `a` where it agrees with `b`, and `merge(class, a, b)` at each register where they differ;
+    /// `None` when `merge` gives up on one.
+    pub fn merged(
+        a: &Self,
+        b: &Self,
+        mut merge: impl FnMut(RegClass, Option<Value>, Option<Value>) -> Option<Value>,
+    ) -> Option<Self> {
+        let mut out = a.clone();
+
+        for (class, (mine, theirs)) in RegClass::ALL
+            .into_iter()
+            .zip(a.classes.iter().zip(&b.classes))
+        {
+            for (index, (x, y)) in mine.iter().zip(theirs).enumerate() {
+                if x != y {
+                    out.classes[class as usize][index] = Some(merge(class, *x, *y)?);
+                }
+            }
+        }
+
+        Some(out)
+    }
 }

@@ -18,7 +18,7 @@ mod workspace;
 
 pub use claude_code::{AgentRun, ClaudeCode, ToolServer, Usage, find_claude};
 pub use error::Error;
-pub use extract::{Claim, LeanError, LeanModule, Side, to_lean};
+pub use extract::{Claim, Domain, LeanError, LeanModule, Side, to_lean};
 pub use mcp::{SERVER_NAME, serve, serve_stdio};
 pub use progress::{Observer, Progress};
 pub use prove::{DEFAULT_MODEL, LeanProof, TRANSCRIPT, check_lean_proof, prove, skeleton};

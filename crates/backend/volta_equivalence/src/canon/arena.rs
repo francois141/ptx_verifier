@@ -79,6 +79,7 @@ pub enum UninterpOp {
     Gelu,
     RoundEven,
     Trunc,
+    Floor,
     BitAnd,
     BitOr,
     BitXor,

@@ -299,6 +299,7 @@ pub(crate) fn cmd_compare(args: CompareArgs, log: &mut run_log::RunLog) -> ExitC
             verify_numeric: args.verify_numeric,
             recycle_terms: args.recycle_terms,
             iterations: args.iterations,
+            ..EquivCheckOptions::default()
         };
         let vc_start = Instant::now();
         let (verdict, report) = check_equivalence(&reference, &optimized, check_arrays, &options);

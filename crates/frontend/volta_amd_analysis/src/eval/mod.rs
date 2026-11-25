@@ -3,6 +3,7 @@
 mod arithm;
 mod bf16;
 mod buffer;
+mod divergence;
 mod ds;
 mod exp2_range;
 mod global;

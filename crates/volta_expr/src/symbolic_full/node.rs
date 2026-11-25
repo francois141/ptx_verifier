@@ -212,6 +212,7 @@ pub enum ExprNode {
     Sign(ExprId),
     RoundEven(ExprId),
     Trunc(ExprId),
+    Floor(ExprId),
 
     BitAnd(ExprId, ExprId),
     BitOr(ExprId, ExprId),
@@ -285,6 +286,7 @@ impl ExprNode {
             | Sign(a)
             | RoundEven(a)
             | Trunc(a)
+            | Floor(a)
             | BitNot(a)
             | Popc(a)
             | Not(a)

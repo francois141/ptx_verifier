@@ -33,6 +33,11 @@ pub enum EvalError {
     },
     /// A write to EXEC of a mask some lane's bit of which is a symbolic comparison.
     SymbolicExec,
+    /// An instruction whose effect a symbolic lane predicate cannot guard: a memory access, or
+    /// a read of the first active lane.
+    UnderLanePredicate {
+        instruction: &'static str,
+    },
     SymbolicWord {
         lane: usize,
     },
@@ -163,6 +168,11 @@ impl fmt::Display for EvalError {
                 )
             }
             Self::SymbolicExec => write!(f, "EXEC would hold a symbolic comparison"),
+            Self::UnderLanePredicate { instruction } => write!(
+                f,
+                "{instruction} runs while EXEC holds a symbolic comparison, which only register \
+                 writes can follow"
+            ),
             Self::SymbolicVcc { lane } => {
                 write!(
                     f,

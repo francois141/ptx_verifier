@@ -1,0 +1,68 @@
+{
+  "description": "activations.cl's elu (OCML) over c[0, n] = elu(a[0] * b[n]), 64 work-items: a GEMM at M = 1, N = 64, K = 1",
+  "kernel": "elu",
+  "block": 64,
+  "arrays": [
+    {
+      "name": "a",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "b",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        64,
+        1
+      ]
+    },
+    {
+      "name": "c",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        1,
+        64
+      ]
+    }
+  ],
+  "params": [
+    {
+      "ptr": "a"
+    },
+    {
+      "ptr": "b"
+    },
+    {
+      "ptr": "c"
+    },
+    {
+      "name": "M",
+      "int": 1
+    },
+    {
+      "name": "N",
+      "int": 64
+    },
+    {
+      "name": "K",
+      "int": 1
+    },
+    {
+      "name": "padding",
+      "int": 0
+    }
+  ],
+  "spec": "../../approximations/specs/elu.spec",
+  "dims": {
+    "M": 1,
+    "N": 64,
+    "K": 1,
+    "TM": 1
+  }
+}

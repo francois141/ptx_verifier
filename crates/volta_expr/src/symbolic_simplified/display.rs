@@ -115,6 +115,11 @@ impl ExprArena {
                 self.fmt_expr(*a, f)?;
                 write!(f, ")")
             }
+            ExprNode::Floor(a) => {
+                write!(f, "floor(")?;
+                self.fmt_expr(*a, f)?;
+                write!(f, ")")
+            }
             ExprNode::BitAnd(a, b) => {
                 write!(f, "(")?;
                 self.fmt_expr(*a, f)?;

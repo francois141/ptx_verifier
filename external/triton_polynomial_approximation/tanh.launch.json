@@ -1,0 +1,55 @@
+{
+  "description": "Triton 3.5.1, libdevice's tanh, over 64 f32 elements",
+  "kernel": "activation_kernel",
+  "block": [
+    64,
+    1,
+    1
+  ],
+  "grid": [
+    1,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 0,
+  "arrays": [
+    {
+      "name": "x",
+      "kind": "in",
+      "dtype": "f32",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "name": "y",
+      "kind": "out",
+      "dtype": "f32",
+      "shape": [
+        64
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "x_ptr",
+      "ptr": "x"
+    },
+    {
+      "name": "y_ptr",
+      "ptr": "y"
+    },
+    {
+      "name": "global_scratch",
+      "int": 0
+    },
+    {
+      "name": "profile_scratch",
+      "int": 0
+    }
+  ],
+  "spec": "tanh.spec",
+  "dims": {
+    "N": 64
+  }
+}

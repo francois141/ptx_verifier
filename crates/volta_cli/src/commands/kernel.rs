@@ -11,9 +11,10 @@ use volta_common::report::{Report, report_error};
 use volta_common::run_log;
 use volta_equivalence::EquivCheckOptions;
 use volta_equivalence::equiv::DEFAULT_RECYCLE_TERMS;
+use volta_expr::rewrite::Rewrites;
 use volta_pipeline::{
     DEFAULT_LEAN_NAMESPACE, FrontendError, GraphEvidence, Isa, LeanSolution, Solution, Solver,
-    claim,
+    claim, domain,
 };
 use volta_ptx_analysis::LaunchFile;
 
@@ -75,6 +76,10 @@ pub(crate) struct SolveArgs {
     /// Run the solve phase N times (fresh session each; later iterations must agree)
     #[arg(long, default_value_t = NonZeroUsize::MIN)]
     iterations: NonZeroUsize,
+
+    /// Compare the outputs as extracted, without the activation rewrites
+    #[arg(long)]
+    no_rewrites: bool,
 }
 
 #[derive(Args)]
@@ -87,6 +92,11 @@ pub(crate) struct ExtractLeanArgs {
     #[arg(long, value_name = "Q")]
     tolerance: Option<String>,
 
+    /// Claim only the inputs within this bound in absolute value, a rational such as 88
+    /// (default: every real input)
+    #[arg(long, value_name = "Q")]
+    input_bound: Option<String>,
+
     /// Lean module to write (default: FILE's stem, `.lean`, in the current directory)
     #[arg(short, long, alias = "lean-out", value_name = "FILE")]
     output: Option<PathBuf>,
@@ -96,6 +106,7 @@ enum KernelAction {
     Solve(EquivCheckOptions),
     ExtractLean {
         tolerance: Option<String>,
+        input_bound: Option<String>,
         output: Option<PathBuf>,
     },
 }
@@ -106,6 +117,11 @@ pub(crate) fn cmd_solve(args: SolveArgs, log: &mut run_log::RunLog) -> ExitCode 
         verify_numeric: args.verify_numeric,
         recycle_terms: args.recycle_terms,
         iterations: args.iterations,
+        rewrites: if args.no_rewrites {
+            Rewrites::Disabled
+        } else {
+            Rewrites::Activations
+        },
     };
     cmd_run(args.input, KernelAction::Solve(options), log)
 }
@@ -115,6 +131,7 @@ pub(crate) fn cmd_extract_lean(args: ExtractLeanArgs, log: &mut run_log::RunLog)
         args.input,
         KernelAction::ExtractLean {
             tolerance: args.tolerance,
+            input_bound: args.input_bound,
             output: args.output,
         },
         log,
@@ -222,10 +239,16 @@ fn cmd_run(args: KernelArgs, action: KernelAction, log: &mut run_log::RunLog) ->
 
     // Build the whole module only after the shared extraction guard accepts the run.
     // In particular, a rejected kernel must not create or overwrite an output file.
-    let extracted = if let KernelAction::ExtractLean { tolerance, .. } = &action {
+    let extracted = if let KernelAction::ExtractLean {
+        tolerance,
+        input_bound,
+        ..
+    } = &action
+    {
         let stated = claim(tolerance.as_deref()).and_then(|claim| {
             let solver = Solver::Lean {
                 claim,
+                domain: domain(input_bound.as_deref())?,
                 namespace: DEFAULT_LEAN_NAMESPACE.to_string(),
                 prover: None,
             };

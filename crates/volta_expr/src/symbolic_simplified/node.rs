@@ -155,6 +155,14 @@ impl Real {
         }
     }
 
+    /// A finite real rounded down; an infinity is its own rounding.
+    pub fn floor(&self) -> Real {
+        match self.repr() {
+            RealRepr::Rational(q) => Real::from_rational(q.clone().floor()),
+            _ => self.clone(),
+        }
+    }
+
     pub fn is_one(&self) -> bool {
         matches!(self.repr(), RealRepr::Rational(q) if *q == 1)
     }
@@ -404,6 +412,8 @@ pub enum ExprNode {
     RoundEven(ExprId),
     /// `a` rounded toward zero (`truncf`).
     Trunc(ExprId),
+    /// The greatest integer at most `a`.
+    Floor(ExprId),
 
     // =====================================================================
     // Bitwise operations
@@ -509,6 +519,7 @@ impl ExprNode {
             | ExprNode::Gelu(a)
             | ExprNode::RoundEven(a)
             | ExprNode::Trunc(a)
+            | ExprNode::Floor(a)
             | ExprNode::BitNot(a)
             | ExprNode::Popc(a)
             | ExprNode::Not(a)
@@ -570,6 +581,7 @@ impl ExprNode {
             Gelu(a) => Gelu(f(a)),
             RoundEven(a) => RoundEven(f(a)),
             Trunc(a) => Trunc(f(a)),
+            Floor(a) => Floor(f(a)),
             BitNot(a) => BitNot(f(a)),
             Popc(a) => Popc(f(a)),
             Not(a) => Not(f(a)),
@@ -894,6 +906,7 @@ fn structurally_equal_inner(
         | (Gelu(a1), Gelu(b1))
         | (RoundEven(a1), RoundEven(b1))
         | (Trunc(a1), Trunc(b1))
+        | (Floor(a1), Floor(b1))
         | (BitNot(a1), BitNot(b1))
         | (Popc(a1), Popc(b1))
         | (Not(a1), Not(b1))

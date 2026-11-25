@@ -106,7 +106,7 @@ fn placeholder(
             scratch.push(simplified::ExprNode::RealConst(real))
         }
         ExprNode::BoolConst(v) => scratch.push(simplified::ExprNode::BoolConst(*v)),
-        ExprNode::RoundEven(_) | ExprNode::Trunc(_) | ExprNode::ToFloat(_) => {
+        ExprNode::RoundEven(_) | ExprNode::Trunc(_) | ExprNode::Floor(_) | ExprNode::ToFloat(_) => {
             let symbol = opaque(scratch);
             scratch.push(simplified::ExprNode::ToFloat(symbol))
         }

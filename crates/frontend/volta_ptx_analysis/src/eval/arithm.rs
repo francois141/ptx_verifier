@@ -13,7 +13,7 @@ use crate::ir::symbols::RegId;
 use crate::ir::types::ScalarTypeExt;
 use crate::ir::{BinOp, Clamp, CmpOp, InstrId, Operand, UnaryOp};
 use volta_common::logging::warn;
-use volta_expr::symbolic_full::{ExprId, Real, Signedness, Type, Width};
+use volta_expr::symbolic_full::{ExprId, ExprNode, Real, Signedness, Type, Width};
 
 /// The `lop3` truth table of `(a & b) ^ c`.
 const LOP3_AND_XOR: u32 = 0x6a;
@@ -77,6 +77,16 @@ impl<'p> Interpreter<'p> {
             });
         }
 
+        let field = match op {
+            BinOp::And => self.exponent_field(ty, a, b),
+            BinOp::Sub if ty.is_integer() => self.mantissa(ty, a, b),
+            BinOp::Shl => self.exponent_scale(ty, a, b),
+            _ => None,
+        };
+        if let Some(field) = field {
+            return Ok(field);
+        }
+
         Ok(match op {
             BinOp::Add => self.arena.add(expr_type(ty), a, b),
             BinOp::Sub => self.arena.sub(expr_type(ty), a, b),
@@ -84,7 +94,7 @@ impl<'p> Interpreter<'p> {
             BinOp::Div => self.arena.div(expr_type(ty), a, b),
             BinOp::Rem => self.arena.rem(expr_type(ty), a, b),
             BinOp::And => self.arena.bit_and(expr_type(ty), a, b),
-            BinOp::Or => self.arena.bit_or(expr_type(ty), a, b),
+            BinOp::Or => self.eval_or(ty, a, b),
             BinOp::Xor => self.eval_xor(ty, a, b),
             BinOp::Shl => self.arena.shl(expr_type(ty), a, b),
             BinOp::Shr => {
@@ -97,6 +107,60 @@ impl<'p> Interpreter<'p> {
             BinOp::Min => self.arena.min(expr_type(ty), a, b),
             BinOp::Max => self.arena.max(expr_type(ty), a, b),
         })
+    }
+
+    /// A symbolic `or` in the instruction's type, reading libdevice's sign transfer `(x & sign) |
+    /// y` of two floats as the value it gives.
+    fn eval_or(&mut self, ty: ScalarType, a: ExprId, b: ExprId) -> ExprId {
+        let transferred = self
+            .sign_transfer(ty, a, b)
+            .or_else(|| self.sign_transfer(ty, b, a));
+
+        transferred.unwrap_or_else(|| self.arena.bit_or(expr_type(ty), a, b))
+    }
+
+    /// `(x & sign) | y` for floats `x` and `y`: or-ing in `x`'s sign bit leaves `y` where `x` is
+    /// non-negative and makes it `-|y|` where `x` is negative, `x < 0 ? -|y| : y`.
+    fn sign_transfer(&mut self, ty: ScalarType, masked: ExprId, y: ExprId) -> Option<ExprId> {
+        let bits = ty.bits();
+        if !(16..=64).contains(&bits) {
+            return None;
+        }
+        let sign = 1u64 << (bits - 1);
+        let is_sign = |e: ExprId| {
+            self.arena
+                .as_int_const(e)
+                .is_some_and(|c| (c as u64) & (u64::MAX >> (64 - bits)) == sign)
+        };
+
+        let ExprNode::BitAnd(p, q) = *self.arena.node(masked) else {
+            return None;
+        };
+        let x = if is_sign(q) {
+            p
+        } else if is_sign(p) {
+            q
+        } else {
+            return None;
+        };
+
+        if !self.is_float_value(x) || !self.is_float_value(y) {
+            return None;
+        }
+
+        let float = Type::Float(Width(bits as u16));
+        let zero = self.arena.int(0);
+        let negative = self.arena.lt(Type::Pred, x, zero);
+        let magnitude = self.arena.abs(float, y);
+        let negated = self.arena.neg(float, magnitude);
+
+        Some(self.arena.select(float, negative, negated, y))
+    }
+
+    /// Whether `e` is a float's value rather than a word: a float operation's result or an input.
+    pub(in crate::eval) fn is_float_value(&self, e: ExprId) -> bool {
+        matches!(self.arena.ty(e), Some(Type::Float(_) | Type::Real))
+            || matches!(self.arena.node(e), ExprNode::InputElement { .. })
     }
 
     /// A symbolic `xor` in the instruction's type. Lowering negates a float's sign-bit flip,
@@ -649,6 +713,10 @@ impl<'p> Interpreter<'p> {
                 }
             };
             return Ok(self.arena.bool_val(r));
+        }
+
+        if let Some(below) = self.below_bits(cmp, ty, a, b) {
+            return Ok(below);
         }
 
         // Symbolic: reinterpret a concrete side at the instruction type (like

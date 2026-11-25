@@ -42,6 +42,10 @@ pub(crate) struct WaveState {
     /// instructions and branches run whatever it holds (CDNA4 §3.3). It is a concrete mask,
     /// the same in every workgroup of the run.
     pub exec: u64,
+    /// Inside an if/else on a symbolic comparison, each lane's predicate of being active; a lane
+    /// runs only where its EXEC bit is set and its predicate holds, and EXEC's set bits are the
+    /// lanes whose predicate is not false. `None` while every lane's activity is concrete.
+    pub conditions: Option<Box<[ExprId]>>,
     /// The instructions `lgkmcnt` counts that no wait has completed, oldest first.
     pub lgkm_in_flight: VecDeque<LgkmInFlight>,
 }
@@ -54,6 +58,7 @@ impl WaveState {
             registers,
             status: Status::Ready,
             exec: u64::MAX,
+            conditions: None,
             lgkm_in_flight: VecDeque::new(),
         }
     }
@@ -175,6 +180,14 @@ pub(super) enum LoadCounter {
     Lgkm,
 }
 
+/// The registers a vector instruction may change in the lanes a symbolic EXEC predicate guards,
+/// as they were before it ran.
+pub(crate) struct GuardedLanes {
+    /// Each guarded lane, its registers before the instruction, and as the instruction read them.
+    lanes: Vec<(usize, LaneRegisters, LaneRegisters)>,
+    scalar: Box<[ScalarValue]>,
+}
+
 /// One lane's vector and accumulation registers, its VCC bit as a boolean expression, and each
 /// of its `vmcnt` loads still pending, oldest first.
 #[derive(Debug, Clone)]
@@ -224,6 +237,101 @@ impl WaveRegisters {
     /// Whether any location holds a different state in different workgroups.
     pub(super) fn has_varying(&self) -> bool {
         !self.varying.is_empty()
+    }
+
+    /// The state of `lanes`' registers and of the SGPRs before a guarded vector instruction.
+    /// Where the lane is active an earlier guarded write `select(q, x, y)` holds `x` if `q` is
+    /// its predicate and `y` if `q` is the predicate's negation, so the instruction reads that.
+    pub(super) fn guard(
+        &mut self,
+        arena: &ExprArena,
+        lanes: &[usize],
+        conditions: &[ExprId],
+    ) -> GuardedLanes {
+        let mut guarded = Vec::new();
+        for &lane in lanes {
+            let before = self.vector[lane].clone();
+            for value in &mut self.vector[lane].values {
+                if let VectorValue::Word(RegValue::Ready(Word::Value(v))) = *value
+                    && let ExprNode::Select(q, x, y) = *arena.node(v)
+                {
+                    let condition = conditions[lane];
+                    let read = if super::simplify::same(arena, q, condition) {
+                        x
+                    } else if super::simplify::complements(arena, q, condition) {
+                        y
+                    } else {
+                        continue;
+                    };
+                    *value = VectorValue::Word(RegValue::Ready(Word::Value(read)));
+                }
+            }
+            guarded.push((lane, before, self.vector[lane].clone()));
+        }
+        GuardedLanes {
+            lanes: guarded,
+            scalar: self.scalar.clone().into(),
+        }
+    }
+
+    /// Keep what the instruction wrote in each guarded lane only where its predicate holds: a
+    /// register becomes `select(p, new, old)`, and a comparison's bit `p && new`, as an inactive
+    /// lane's bit is clear. 64-bit SGPR operands are even-aligned, so an even SGPR holds a mask's
+    /// lanes 0-31.
+    pub(super) fn apply_guard(
+        &mut self,
+        arena: &mut ExprArena,
+        before: GuardedLanes,
+        conditions: &[ExprId],
+    ) -> Result<(), EvalError> {
+        for (lane, old, read) in &before.lanes {
+            let condition = conditions[*lane];
+            let now = &mut self.vector[*lane];
+
+            for ((new, old), read) in now.values.iter_mut().zip(&old.values).zip(&read.values) {
+                *new = if new == read {
+                    *old
+                } else {
+                    guarded_vector(arena, condition, *old, *new)?
+                };
+            }
+            for (new, old) in now.accumulators.iter_mut().zip(&old.accumulators) {
+                if let (Some(n), true) = (*new, new != old) {
+                    let o = old.unwrap_or_else(|| arena.undefined());
+                    *new = Some(arena.select(Type::Bits(Width(32)), condition, n, o));
+                }
+            }
+            if let (Some(n), true) = (now.vcc, now.vcc != old.vcc) {
+                now.vcc = Some(super::simplify::and(arena, condition, n));
+            }
+        }
+
+        for (slot, old) in before.scalar.iter().enumerate() {
+            if self.scalar[slot] == *old {
+                continue;
+            }
+            let first = if slot % 2 == 0 { 0 } else { 32 };
+            let mut bits: Vec<ExprId> = match &self.scalar[slot] {
+                ScalarValue::LaneMask(bits) => bits.to_vec(),
+                ScalarValue::Word(RegValue::Ready(word)) => {
+                    let Some(word) = concrete_word(arena, *word) else {
+                        continue;
+                    };
+                    (0..32)
+                        .map(|i| arena.bool_val(word >> i & 1 == 1))
+                        .collect()
+                }
+                ScalarValue::Word(_) => continue,
+            };
+            for (lane, _, _) in &before.lanes {
+                if (first..first + 32).contains(lane) {
+                    let bit = &mut bits[lane - first];
+                    *bit = super::simplify::and(arena, conditions[*lane], *bit);
+                }
+            }
+            self.scalar[slot] = ScalarValue::LaneMask(bits.into());
+        }
+        Ok(())
     }
 
     /// Give `reg` one word per workgroup, such as each workgroup's own coordinate.
@@ -1402,6 +1510,65 @@ pub(super) fn apply_modifiers(
 /// The f32 that `bits` encode, as an exact real; `None` for a NaN.
 pub(super) fn f32_from_bits(arena: &mut ExprArena, bits: u32) -> Option<ExprId> {
     arena.float_from_f64(f64::from(f32::from_bits(bits))).ok()
+}
+
+/// `select(condition, new, old)` of a vector register's value; an unwritten old value stays
+/// undefined where the predicate fails.
+fn guarded_vector(
+    arena: &mut ExprArena,
+    condition: ExprId,
+    old: VectorValue,
+    new: VectorValue,
+) -> Result<VectorValue, EvalError> {
+    let word = Type::Bits(Width(32));
+    // The else arm over the then arm's write: `select(!p, n, select(p, m, old))` is
+    // `select(p, m, n)`, which no longer carries `old`, an undefined value perhaps.
+    let mut select = |n: ExprId, o: Option<ExprId>| {
+        let Some(o) = o else {
+            let undefined = arena.undefined();
+            return arena.select(word, condition, n, undefined);
+        };
+        if let ExprNode::Select(p, m, _) = *arena.node(o)
+            && super::simplify::complements(arena, condition, p)
+        {
+            return arena.select(word, p, m, n);
+        }
+        arena.select(word, condition, n, o)
+    };
+    let old_value = |old: VectorValue| match old {
+        VectorValue::Word(RegValue::Ready(Word::Value(o))) => Ok(Some(o)),
+        VectorValue::Word(RegValue::Uninitialized) => Ok(None),
+        _ => Err(EvalError::UnderLanePredicate {
+            instruction: "a write over a pending, paired or bf16 register",
+        }),
+    };
+    Ok(match new {
+        VectorValue::Word(RegValue::Ready(Word::Value(n))) => {
+            VectorValue::Word(RegValue::Ready(Word::Value(select(n, old_value(old)?))))
+        }
+        VectorValue::Word(RegValue::Ready(Word::Bf16 { low, high })) => {
+            let (low_old, high_old) = match old {
+                VectorValue::Word(RegValue::Ready(Word::Bf16 { low, high })) => {
+                    (Some(low), Some(high))
+                }
+                VectorValue::Word(RegValue::Uninitialized) => (None, None),
+                _ => {
+                    return Err(EvalError::UnderLanePredicate {
+                        instruction: "a bf16 write over a word",
+                    });
+                }
+            };
+            VectorValue::Word(RegValue::Ready(Word::Bf16 {
+                low: select(low, low_old),
+                high: select(high, high_old),
+            }))
+        }
+        _ => {
+            return Err(EvalError::UnderLanePredicate {
+                instruction: "a load or an f64 write",
+            });
+        }
+    })
 }
 
 /// Whether `lane`'s bit of a 64-bit lane mask is set.

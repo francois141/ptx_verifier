@@ -98,13 +98,13 @@ def verdict (env : Environment) (statement : Name) : StateM AxiomCache String :=
 
 /-! ## Entry point -/
 
-/-- The statements to prove: the definitions of `challenge` in namespace `VoltaChallenge`,
-sorted by name. -/
+/-- The statements to prove: the propositions `challenge` defines in namespace `VoltaChallenge`,
+sorted by name; a function it defines for them, such as `erf`, is not one. -/
 def challengeStatements (env : Environment) : IO (Array Name) := do
   let some challenge := env.getModuleIdx? `challenge
     | throw <| IO.userError "proof does not import challenge"
   let names := env.header.moduleData[challenge.toNat]!.constNames.filter fun n =>
-    (`VoltaChallenge).isPrefixOf n && (env.find? n).any (·.isDefinition)
+    (`VoltaChallenge).isPrefixOf n && (env.find? n).any (fun ci => ci.isDefinition && ci.type == .sort .zero)
   return names.qsort Name.lt
 
 def main : IO Unit := do

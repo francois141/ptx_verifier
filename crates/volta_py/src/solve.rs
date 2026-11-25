@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 
 use volta_equivalence::EquivCheckOptions;
 use volta_expr::SymbolicOutputs;
+use volta_expr::rewrite::Rewrites;
 use volta_graph_check::GraphConclusion;
 use volta_pipeline::{GraphEvidence, Isa, KernelRun, Solver, Spec};
 use volta_ptx_analysis::AnalysisConfig;
@@ -79,7 +80,7 @@ impl SolveResultPy {
 #[pyfunction]
 #[pyo3(signature = (
     path, config=None, kernel=None, spec=None, dims=None, sample=0,
-    verify_numeric=false
+    verify_numeric=false, rewrites=true
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn solve(
@@ -90,10 +91,16 @@ pub fn solve(
     dims: Option<HashMap<String, u64>>,
     sample: u64,
     verify_numeric: bool,
+    rewrites: bool,
 ) -> PyResult<SolveResultPy> {
     let solver = Solver::Canonical(EquivCheckOptions {
         sample,
         verify_numeric,
+        rewrites: if rewrites {
+            Rewrites::Activations
+        } else {
+            Rewrites::Disabled
+        },
         ..EquivCheckOptions::default()
     });
     let spec = spec.map(|text| parse_spec(text, dims)).transpose()?;

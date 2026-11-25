@@ -10,7 +10,7 @@ use rug::Rational;
 use volta_common::logging::info;
 use volta_equivalence::check::{EquivCheckOptions, EquivCheckReport};
 use volta_expr::SymbolicOutputs;
-use volta_lean::{Claim, ClaudeCode, LeanProof, ToolServer, to_lean};
+use volta_lean::{Claim, ClaudeCode, Domain, LeanProof, ToolServer, to_lean};
 use volta_spec::{InstantiateErrorKind, OutputSpec, ParsedSpec, SpecEnv, SpecError};
 
 use crate::equivalence::{EquivalenceVerdict, check_equivalence};
@@ -25,10 +25,11 @@ pub enum Solver {
     /// The canonicalizing decision procedure of `volta_equivalence`, each claimed difference
     /// confirmed by the numeric oracle.
     Canonical(EquivCheckOptions),
-    /// Lean 4 statements of `claim` for every element, in namespace `namespace`, proved by
-    /// `prover` when given, else left to the caller.
+    /// Lean 4 statements of `claim` for every element over `domain`, in namespace `namespace`,
+    /// proved by `prover` when given, else left to the caller.
     Lean {
         claim: Claim,
+        domain: Domain,
         namespace: String,
         prover: Option<LeanProver>,
     },
@@ -44,6 +45,17 @@ pub struct LeanProver {
     pub agent: ClaudeCode,
     /// The command serving the proving tools to the agent.
     pub server: ToolServer,
+}
+
+/// `Domain::InputsWithin` the rational `bound` (`88`), or `Domain::AllReals` without one.
+pub fn domain(bound: Option<&str>) -> Result<Domain, String> {
+    match bound {
+        None => Ok(Domain::AllReals),
+        Some(text) => text
+            .parse::<Rational>()
+            .map(Domain::InputsWithin)
+            .map_err(|_| format!("input bound `{text}` is not a rational such as 88")),
+    }
 }
 
 /// `Claim::Within` the rational `tolerance` (`1/1000`), or `Claim::Equal` without one.
@@ -188,6 +200,7 @@ pub fn state_against_spec(
     kernel: &SymbolicOutputs,
     spec: &Spec,
     claim: &Claim,
+    domain: &Domain,
     namespace: &str,
 ) -> Result<LeanSolution, SpecError> {
     if let Some(mismatch) = spec.index_set_mismatch(kernel) {
@@ -195,7 +208,7 @@ pub fn state_against_spec(
     }
     let baseline = volta_spec::unfold(&spec.outputs, &spec.env, 0)?.lower()?;
     Ok(
-        match to_lean(kernel, &baseline, &spec.arrays, claim, namespace) {
+        match to_lean(kernel, &baseline, &spec.arrays, claim, domain, namespace) {
             Ok(module) => LeanSolution::Stated(LeanChallenge {
                 module: module.text,
                 statements: module.statements,
@@ -291,11 +304,12 @@ pub(crate) fn solve(
         }
         Solver::Lean {
             claim,
+            domain,
             namespace,
             prover,
         } => {
-            let stated =
-                state_against_spec(kernel, spec, claim, namespace).map_err(SolveError::Spec)?;
+            let stated = state_against_spec(kernel, spec, claim, domain, namespace)
+                .map_err(SolveError::Spec)?;
             match (stated, prover) {
                 (LeanSolution::Stated(challenge), Some(prover)) => {
                     prove(challenge, claim, prover).map(Solution::Lean)

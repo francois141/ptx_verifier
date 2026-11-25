@@ -11,7 +11,7 @@ use common::amd::array;
 use rug::Rational;
 use volta_amd_analysis::OutputType::F32;
 use volta_amd_analysis::{ArrayDef, ArrayKind};
-use volta_lean::{Claim, LeanModule, to_lean};
+use volta_lean::{Claim, Domain, LeanModule, to_lean};
 use volta_spec::extract_expressions_from_spec;
 
 /// Within 1/1000 rather than equal: past `a > 87.34` the kernel rescales by f32(e^-64), not e^-64.
@@ -51,8 +51,15 @@ fn write_challenge(name: &str, arrays: &[ArrayDef], claim: &Claim) -> Result<Lea
 
     let checked: Vec<String> = baseline.outputs.iter().map(|(a, _)| a.clone()).collect();
 
-    let lean = to_lean(&candidate, &baseline, &checked, claim, "VoltaChallenge")
-        .map_err(|e| e.to_string())?;
+    let lean = to_lean(
+        &candidate,
+        &baseline,
+        &checked,
+        claim,
+        &Domain::AllReals,
+        "VoltaChallenge",
+    )
+    .map_err(|e| e.to_string())?;
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/lean");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
