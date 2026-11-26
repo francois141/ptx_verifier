@@ -567,6 +567,16 @@ fn test_tcgen05_mma_every_reader_waiting_is_accepted() {
     );
 }
 
+/// A second commit of an MMA's issuer still tracks it after the issuer observed the first: a
+/// reader waiting only on the second is ordered after the MMA.
+#[test]
+fn test_tcgen05_commit_tracks_an_mma_another_thread_observed() {
+    analyze!(
+        "success/tcgen05_commit_tracks_an_mma_another_thread_observed",
+        AnalysisConfig::new((64, 1, 1))
+    );
+}
+
 /// The same kernel without `tcgen05.fence::after_thread_sync`: warp 1's default `.acquire` wait
 /// on `mma_bar` pairs with the commit's release, which orders the MMA before its read
 /// (<https://github.com/NVIDIA/cutlass/issues/2974>).

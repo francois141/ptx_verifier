@@ -72,7 +72,7 @@ pub(in crate::eval) struct Recording {
     warps: HashMap<u32, CollectiveObject>,
     forming_warp_ops: HashMap<(u32, InstrId, u32), FormingCollective>,
     mbarriers: HashMap<MbarrierId, MbarrierRecord>,
-    unobserved_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
+    issued_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
     tcgen05_pending: HashMap<(u32, Tcgen05Wait), Vec<AsyncOpId>>,
 }
 
@@ -579,20 +579,6 @@ impl Interpreter<'_> {
             completed => record.phases[completed as usize - 1],
         };
         self.graph.resume(tix(t), point(pc), phase);
-        let observed: Vec<AsyncOpId> = self
-            .graph
-            .graph_so_far()
-            .generation(phase)
-            .contributions
-            .iter()
-            .filter_map(|c| match c.kind {
-                ContributionKind::AsyncCompletion { op, .. } => Some(op),
-                _ => None,
-            })
-            .collect();
-        for list in self.rec.unobserved_mmas.values_mut() {
-            list.retain(|op| !observed.contains(op));
-        }
     }
 
     /// The blocked-thread record of `t` for a stuck terminal state.
@@ -676,20 +662,17 @@ impl Interpreter<'_> {
         self.graph.track(op, phase, tx_bytes);
     }
 
-    /// A new `tcgen05.mma` of `t` awaits a commit.
+    /// A new `tcgen05.mma` (or `.cp`) of `t`: every later commit of `t` tracks it, even once
+    /// some thread observed it complete (PTX ISA 9.7.16.12.1: a commit tracks "all the prior
+    /// asynchronous tcgen05 operations ... initiated by the executing thread").
     pub(in crate::eval) fn record_mma_issued(&mut self, t: ThreadId, op: AsyncOpId) {
-        self.rec.unobserved_mmas.entry(t).or_default().push(op);
+        self.rec.issued_mmas.entry(t).or_default().push(op);
     }
 
-    /// `tcgen05.commit` by `t` on `id`: the phase forming now tracks `t`'s unobserved MMAs.
+    /// `tcgen05.commit` by `t` on `id`: the phase forming now tracks every MMA `t` issued.
     pub(in crate::eval) fn record_mma_commit(&mut self, t: ThreadId, id: MbarrierId) {
         let phase = self.forming_phase(id);
-        let ops = self
-            .rec
-            .unobserved_mmas
-            .get(&t)
-            .cloned()
-            .unwrap_or_default();
+        let ops = self.rec.issued_mmas.get(&t).cloned().unwrap_or_default();
         for op in ops {
             self.graph.track(op, phase, 0);
         }
