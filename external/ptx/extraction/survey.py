@@ -117,7 +117,7 @@ SUITES = [
         ("csrc/*.cu", "csrc/attention/**/*.cu", "csrc/moe/*.cu", "csrc/quantization/**/*.cu", "csrc/core/*.cu",
          "csrc/mamba/**/*.cu"),
         ("csrc", "../cutlass/include", "../cutlass/tools/util/include"),
-        ("-DENABLE_FP8", "-DENABLE_NVFP4_SM100=1", "-DENABLE_SCALED_MM_SM100=1"),
+        ("-DENABLE_FP8", "-DENABLE_NVFP4_SM100=1", "-DENABLE_SCALED_MM_SM100=1", "-DUSE_CUDA"),
         torch=True,
         std="c++20",
         exclude=("csrc/rocm/", "csrc/cpu/", "custom_all_reduce", "custom_all_gather"),
@@ -289,6 +289,11 @@ def main() -> None:
             names = demangle([k for k, _, _ in lowered])
             rows += [[suite.framework, rel, name, status, detail] for name, (_, status, detail) in zip(names, lowered)]
 
+    surveyed = {s.framework for s in suites}
+    if args.csv.exists():
+        with args.csv.open(newline="") as f:
+            kept = [r for r in csv.reader(f)][1:]
+        rows = [r for r in kept if r and r[0] not in surveyed] + rows
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with args.csv.open("w", newline="") as f:
         writer = csv.writer(f)
