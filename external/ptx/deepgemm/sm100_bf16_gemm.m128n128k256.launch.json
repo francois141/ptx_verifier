@@ -1,0 +1,147 @@
+{
+  "description": "DeepGEMM sm100_bf16_gemm (normal GEMM, D = A @ B^T), M = N = 128, K = 256, bf16 in and out, the heuristics' config (BLOCK 128x16x64, 12 stages, cluster 1), persistent grid 148. Generated from external/extraction/deepgemm.py's JSON; races only.",
+  "kernel": "_ZN9deep_gemm20sm100_bf16_gemm_implILN4cute4UMMA5MajorE0ELS3_0ELj0ELj128ELj256ELj128ELj16ELj64ELj1ELj128ELj128ELj32ELj12ELj128ELj128ELj1ELb0ELj148ELj128ELb0ELb1ELNS_8GemmTypeE0ELb0EN7cutlass10bfloat16_tENS_8epilogue9operators8IdentityELm100EEEvPijjjNS_20EpilogueOperatorArgsE14CUtensorMap_stSC_SC_",
+  "grid": [
+    148,
+    1,
+    1
+  ],
+  "block": 256,
+  "cluster": [
+    1,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 230204,
+  "arrays": [
+    {
+      "name": "tensor_map_a",
+      "kind": "in",
+      "dtype": "bf16",
+      "shape": [
+        128,
+        256
+      ]
+    },
+    {
+      "name": "tensor_map_b",
+      "kind": "in",
+      "dtype": "bf16",
+      "shape": [
+        128,
+        256
+      ]
+    },
+    {
+      "name": "tensor_map_cd",
+      "kind": "out",
+      "dtype": "bf16",
+      "shape": [
+        128,
+        128
+      ]
+    }
+  ],
+  "params": [
+    {
+      "name": "grouped_layout (nullptr)",
+      "int": 0
+    },
+    {
+      "name": "shape_m",
+      "int": 128
+    },
+    {
+      "name": "shape_n",
+      "int": 128
+    },
+    {
+      "name": "shape_k",
+      "int": 256
+    },
+    {
+      "name": "epilogue args (alpha = 1.0f at 20)",
+      "struct": [
+        {
+          "offset": 20,
+          "u32": 1065353216
+        }
+      ]
+    },
+    {
+      "name": "tensor_map_a",
+      "struct": [
+        {
+          "name": "tensor_map_a tensor map",
+          "offset": 0,
+          "tensor_map": {
+            "array": "tensor_map_a",
+            "dtype": "bf16",
+            "dims": [
+              256,
+              128
+            ],
+            "strides": [
+              512
+            ],
+            "box": [
+              64,
+              128
+            ],
+            "swizzle": "128B"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tensor_map_b",
+      "struct": [
+        {
+          "name": "tensor_map_b tensor map",
+          "offset": 0,
+          "tensor_map": {
+            "array": "tensor_map_b",
+            "dtype": "bf16",
+            "dims": [
+              256,
+              128
+            ],
+            "strides": [
+              512
+            ],
+            "box": [
+              64,
+              16
+            ],
+            "swizzle": "128B"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tensor_map_cd",
+      "struct": [
+        {
+          "name": "tensor_map_cd tensor map",
+          "offset": 0,
+          "tensor_map": {
+            "array": "tensor_map_cd",
+            "dtype": "bf16",
+            "dims": [
+              128,
+              128
+            ],
+            "strides": [
+              256
+            ],
+            "box": [
+              16,
+              128
+            ],
+            "swizzle": "32B"
+          }
+        }
+      ]
+    }
+  ]
+}

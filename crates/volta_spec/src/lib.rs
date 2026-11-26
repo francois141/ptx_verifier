@@ -20,7 +20,7 @@ pub use instantiate::{InstantiateErrorKind, instantiate, instantiate_with_indice
 pub use parse::{ParseError, ParseErrorKind, parse_spec};
 pub use spec::{
     Comparison, Condition, IndexExpr, OutputSpec, ReduceOp, Shape, SpecEnv, SpecError, SpecExpr,
-    unfold,
+    footprint, unfold,
 };
 
 /// Why a spec's source could not be turned into expressions, by stage.

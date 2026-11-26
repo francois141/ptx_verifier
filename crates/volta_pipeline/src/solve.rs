@@ -121,16 +121,20 @@ impl Spec {
     }
 
     /// The first array `kernel` does not write exactly the spec's indices of: each spec
-    /// output defines every flat index of its shape.
-    fn index_set_mismatch(&self, kernel: &SymbolicOutputs) -> Option<EquivalenceVerdict> {
-        self.arrays.iter().find_map(|name| {
-            let expected = self
-                .outputs
+    /// output defines every flat index of its shape but its `unwritten` elements.
+    fn index_set_mismatch(
+        &self,
+        kernel: &SymbolicOutputs,
+    ) -> Result<Option<EquivalenceVerdict>, SpecError> {
+        let footprint = volta_spec::footprint(&self.outputs, &self.env)?;
+        Ok(self.arrays.iter().find_map(|name| {
+            let mut expected: Vec<u64> = footprint
                 .iter()
-                .filter(|s| &s.array == name)
-                .map(|s| s.shape.size())
-                .max()
-                .unwrap_or(0);
+                .filter(|(array, _)| array == name)
+                .flat_map(|(_, indices)| indices.iter().copied())
+                .collect();
+            expected.sort_unstable();
+            expected.dedup();
             let written: Vec<u64> = kernel
                 .outputs
                 .iter()
@@ -138,10 +142,16 @@ impl Spec {
                 .map_or_else(Vec::new, |(_, elems)| {
                     elems.iter().map(|&(index, _)| index).collect()
                 });
-            let unwritten: Vec<u64> = (0..expected)
+            let unwritten: Vec<u64> = expected
+                .iter()
+                .copied()
                 .filter(|index| written.binary_search(index).is_err())
                 .collect();
-            let unexpected: Vec<u64> = written.iter().copied().filter(|&i| i >= expected).collect();
+            let unexpected: Vec<u64> = written
+                .iter()
+                .copied()
+                .filter(|i| expected.binary_search(i).is_err())
+                .collect();
             (!unwritten.is_empty() || !unexpected.is_empty()).then(|| {
                 EquivalenceVerdict::IndexSetMismatch {
                     array: name.clone(),
@@ -149,7 +159,7 @@ impl Spec {
                     unexpected,
                 }
             })
-        })
+        }))
     }
 }
 
@@ -162,7 +172,7 @@ pub fn check_against_spec(
     options: &EquivCheckOptions,
 ) -> Result<(EquivalenceVerdict, Option<EquivCheckReport>), SpecError> {
     // Before sampling truncates either side, so a sampled prefix cannot hide an unwritten element.
-    if let Some(mismatch) = spec.index_set_mismatch(kernel) {
+    if let Some(mismatch) = spec.index_set_mismatch(kernel)? {
         return Ok((mismatch, None));
     }
     let untruncated: u64 = kernel
@@ -203,7 +213,7 @@ pub fn state_against_spec(
     domain: &Domain,
     namespace: &str,
 ) -> Result<LeanSolution, SpecError> {
-    if let Some(mismatch) = spec.index_set_mismatch(kernel) {
+    if let Some(mismatch) = spec.index_set_mismatch(kernel)? {
         return Ok(LeanSolution::Stopped(mismatch));
     }
     let baseline = volta_spec::unfold(&spec.outputs, &spec.env, 0)?.lower()?;

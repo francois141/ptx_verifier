@@ -315,6 +315,7 @@ impl Parser {
                         self.bump();
                         self.parse_call(&name)
                     }
+                    _ if name == "unwritten" => Ok(SpecExpr::Unwritten),
                     _ => Ok(SpecExpr::var(name)),
                 }
             }

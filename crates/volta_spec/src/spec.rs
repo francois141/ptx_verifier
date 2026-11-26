@@ -194,6 +194,9 @@ pub enum SpecExpr {
         then: Box<SpecExpr>,
         otherwise: Box<SpecExpr>,
     },
+    /// An output element the kernel does not write: only as the whole value of an element,
+    /// chosen by a `where` on index values, which leaves the element out of the footprint.
+    Unwritten,
     /// `body` with `name` standing for `value`, which is built once however often `body`
     /// reads it. A let-bound name is a value, never a subscript.
     Let {
@@ -363,6 +366,11 @@ pub struct SpecEnv {
 #[derive(Debug)]
 pub enum SpecError {
     UnboundVar(String),
+    /// `unwritten` read inside an expression rather than as an element's whole value.
+    UnwrittenInExpression {
+        array: String,
+        index: u64,
+    },
     UnknownArray(String),
     ShapeVarMismatch {
         array: String,
@@ -399,6 +407,10 @@ impl fmt::Display for SpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnboundVar(name) => write!(f, "unbound variable '{}'", name),
+            Self::UnwrittenInExpression { array, index } => write!(
+                f,
+                "'unwritten' inside an expression of {array}[{index}] (it must be the element's value)"
+            ),
             Self::NegativeRangeStart { var, start } => {
                 write!(f, "the range of '{var}' starts at {start}, below 0")
             }
@@ -500,11 +512,95 @@ pub fn unfold(specs: &[OutputSpec], env: &SpecEnv, sample: u64) -> Result<FullOu
                 &mut array_ids,
                 &mut memo,
             )?;
-            elems.push((flat, value));
+            if !arena.is_undefined(value) {
+                elems.push((flat, value));
+            }
         }
         outputs.push((spec.array.clone(), elems));
     }
+    let dependence = arena.undefined_dependence();
+    for (array, elems) in &outputs {
+        if let Some(&(flat, _)) = elems.iter().find(|&&(_, value)| dependence[value]) {
+            return Err(SpecError::UnwrittenInExpression {
+                array: array.clone(),
+                index: flat,
+            });
+        }
+    }
     Ok(FullOutputs { arena, outputs })
+}
+
+/// The flat indices each output writes: every element of its shape but those whose value is
+/// `unwritten`, as the `where`s on index values decide without building any value.
+pub fn footprint(
+    specs: &[OutputSpec],
+    env: &SpecEnv,
+) -> Result<Vec<(String, Vec<u64>)>, SpecError> {
+    let mut out = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let mut written = Vec::new();
+        for idx in spec.shape.indices() {
+            let bindings: Bindings = spec
+                .vars
+                .iter()
+                .cloned()
+                .zip(idx.iter().map(|&i| Bound::Index(i)))
+                .collect();
+            if writes(&spec.body, env, &bindings)? {
+                written.push(spec.shape.flatten(&idx));
+            }
+        }
+        out.push((spec.array.clone(), written));
+    }
+    Ok(out)
+}
+
+/// Whether `expr` is a written value here: not `unwritten`, nor a `where` on index values that
+/// takes an `unwritten` branch.
+fn writes(expr: &SpecExpr, env: &SpecEnv, bindings: &Bindings) -> Result<bool, SpecError> {
+    match expr {
+        SpecExpr::Unwritten => Ok(false),
+        SpecExpr::Where {
+            condition,
+            then,
+            otherwise,
+        } => match (
+            index_value(&condition.lhs, env, bindings),
+            index_value(&condition.rhs, env, bindings),
+        ) {
+            (Some(a), Some(b)) => {
+                let holds = match condition.op {
+                    Comparison::Greater => a > b,
+                    Comparison::GreaterEq => a >= b,
+                    Comparison::Less => a < b,
+                    Comparison::LessEq => a <= b,
+                    Comparison::Equal => a == b,
+                    Comparison::NotEqual => a != b,
+                };
+                writes(if holds { then } else { otherwise }, env, bindings)
+            }
+            _ => Ok(true),
+        },
+        _ => Ok(true),
+    }
+}
+
+/// `expr`'s integer value when it is built from index variables, dims and integers alone.
+fn index_value(expr: &SpecExpr, env: &SpecEnv, bindings: &Bindings) -> Option<i64> {
+    match expr {
+        SpecExpr::Int(v) => Some(*v),
+        SpecExpr::Var(name) => resolve_var(name, env, bindings).ok().map(|v| v as i64),
+        SpecExpr::Add(a, b) => {
+            Some(index_value(a, env, bindings)? + index_value(b, env, bindings)?)
+        }
+        SpecExpr::Sub(a, b) => {
+            Some(index_value(a, env, bindings)? - index_value(b, env, bindings)?)
+        }
+        SpecExpr::Mul(a, b) => {
+            Some(index_value(a, env, bindings)? * index_value(b, env, bindings)?)
+        }
+        _ => None,
+    }
 }
 
 /// Resolve a bare name in expression/index position: a bound variable (output index or
@@ -610,7 +706,7 @@ type Bindings = HashMap<String, Bound>;
 /// (standard capture), but anything else propagates up.
 fn free_vars(expr: &SpecExpr, out: &mut std::collections::HashSet<String>) {
     match expr {
-        SpecExpr::Int(_) | SpecExpr::Real(_) => {}
+        SpecExpr::Int(_) | SpecExpr::Real(_) | SpecExpr::Unwritten => {}
         SpecExpr::Var(name) => {
             out.insert(name.clone());
         }
@@ -769,6 +865,7 @@ fn eval(
 ) -> Result<ExprId, SpecError> {
     match expr {
         SpecExpr::Int(v) => Ok(arena.int(*v)),
+        SpecExpr::Unwritten => Ok(arena.undefined()),
         SpecExpr::Real(v) => Ok(arena.float_from_f64(*v)?),
         SpecExpr::Var(name) if let Some(&Bound::Value(value)) = bindings.get(name) => Ok(value),
         SpecExpr::Var(name) if env.params.contains(name) && !bindings.contains_key(name) => {
