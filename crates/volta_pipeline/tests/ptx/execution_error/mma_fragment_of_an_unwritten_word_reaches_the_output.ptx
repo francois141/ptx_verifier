@@ -1,0 +1,37 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// A's first fragment register loads a never-written shared word: Undefined halves, which the
+// stored accumulators then depend on, so the run fails at the output
+// (B holds 1.0s: a zero B would make the product 0 whatever A is).
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .b16 %rs<4>;
+    .reg .b32 %r<9>;
+    .reg .f32 %f<5>;
+    .reg .b64 %rd<4>;
+    .shared .align 4 .b8 tile[4];
+
+    mov.u16 %rs1, 0;
+    mov.u16 %rs2, 0;
+    ld.shared.b32 %r1, [tile];
+    mov.b32 %r2, {%rs1, %rs2};
+    mov.b32 %r3, {%rs1, %rs2};
+    mov.b32 %r4, {%rs1, %rs2};
+    mov.u16 %rs3, 0x3C00;
+    mov.b32 %r5, {%rs3, %rs3};
+    mov.b32 %r6, {%rs1, %rs2};
+
+    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%f1, %f2, %f3, %f4}, {%r1, %r2, %r3, %r4}, {%r5, %r6}, {0f3F800000, 0f00000000, 0f00000000, 0f00000000};
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.u32 %r7, %tid.x;
+    mul.lo.u32 %r8, %r7, 16;
+    cvt.u64.u32 %rd2, %r8;
+    add.s64 %rd3, %rd1, %rd2;
+    st.global.v4.f32 [%rd3], {%f1, %f2, %f3, %f4};
+    ret;
+}

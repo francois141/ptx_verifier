@@ -1355,13 +1355,23 @@ impl Interpreter<'_> {
         grid: &mut Grid,
     ) -> EvalResult<()> {
         for elem in elems {
-            let v = self.read_reg(m, regs[elem.reg_idx]);
-            let Value::Pair(lo, hi) = v else {
-                return Err(EvalError::ValueKindMismatch {
-                    thread: m,
-                    pc,
-                    what: "matrix fragment register does not hold a packed f16 pair",
-                });
+            let (lo, hi) = match self.read_reg(m, regs[elem.reg_idx]) {
+                Value::Pair(lo, hi) => (lo, hi),
+                // A never-written shared word (FlashAttention's unloaded tail rows) is two
+                // undefined halves, an error only if it reaches an output; an all-zero word
+                // (a zero-filled tile) is +0 in both halves, as f16 or bf16.
+                Value::Scalar(e) if self.arena.is_undefined(e) => (e, e),
+                Value::Scalar(e) if self.arena.as_int_const(e) == Some(0) => {
+                    let zero = self.arena.real(volta_expr::symbolic_full::Real::zero());
+                    (zero, zero)
+                }
+                _ => {
+                    return Err(EvalError::ValueKindMismatch {
+                        thread: m,
+                        pc,
+                        what: "matrix fragment register does not hold a packed f16 pair",
+                    });
+                }
             };
             let e = if elem.high_half == Some(true) { hi } else { lo };
             grid.set(elem.row, elem.col, e);

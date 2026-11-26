@@ -1054,6 +1054,21 @@ fn test_mma_bf16() {
 /// `mma.sync`'s accumulator may be an immediate (nvcc's `{0f00000000, ...}`
 /// first-tile idiom): with all-zero packed A/B, `D = C`, so thread 0's
 /// registers get the literal `{1.0, 0, 0, 0}`.
+/// A fragment register holding a zero-filled shared word (a scalar 0) is +0 in both halves.
+#[test]
+fn test_mma_fragment_of_a_zero_filled_word() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 128,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    analyze!("success/mma_fragment_of_a_zero_filled_word", config);
+}
+
 #[test]
 fn test_mma_with_immediate_accumulator() {
     let mut config = AnalysisConfig::new((32, 1, 1));

@@ -318,12 +318,10 @@ def convert_dq(name, sq=256, b=1, h=1, cta=(0, 0, 0), check="VERIFIED", note="")
     )
 
 
-# Volta gaps: UNDEF_FRAG, the kernel leaves sQ rows past seqlen_q and sK rows past seqlen_k
-# unloaded ("We don't need to clear the sQ/sK smem tiles", flash_fwd_kernel.h:257, :276) and masks
-# their scores afterwards; `ldmatrix` reads those never-written bytes as Undefined and `mma.sync`
-# aborts on a fragment that is no packed pair. BF16_SHIFT, `flash::convert_type` of bf16 to f32 by
-# `shl.b32 16` / `and.b32 0xffff0000` of a packed pair.
-UNDEF_FRAG = " (ABORT: Volta gap, mma.sync on Undefined fragments of unloaded tail rows)"
+# Tail blocks leave sQ rows past seqlen_q and sK rows past seqlen_k unloaded ("We don't need to
+# clear the sQ/sK smem tiles", flash_fwd_kernel.h:257, :276) and mask their scores: their mma.sync
+# fragments are Undefined, which no stored output reaches. Volta gap BF16_SHIFT:
+# `flash::convert_type` of bf16 to f32 by `shl.b32 16` / `and.b32 0xffff0000` of a packed pair.
 BF16_SHIFT = " (ABORT: Volta gap, bf16 -> f32 by shl/and of a packed pair)"
 
 CASES = [
@@ -331,37 +329,37 @@ CASES = [
     fwd("fwd_d128_s256", sq=256, sk=256),
     fwd("fwd_d128_s256_cta1_h2", sq=256, sk=256, h=2, cta=(1, 0, 1)),
     fwd("fwd_d128_q200_k256_cta0", sq=200, sk=256, cta=(0, 0, 0), note=" (!Is_even_MN, all rows valid)"),
-    fwd("fwd_d128_q200_k256_tail", sq=200, sk=256, cta=(1, 0, 0), check="ABORT", note=UNDEF_FRAG),
-    fwd("fwd_d128_q256_k200", sq=256, sk=200, cta=(0, 0, 0), check="ABORT", note=UNDEF_FRAG),
-    fwd("fwd_d128_s200_tail", sq=200, sk=200, cta=(1, 0, 0), check="ABORT", note=UNDEF_FRAG),
-    fwd("fwd_d128_s200_cta0", sq=200, sk=200, cta=(0, 0, 0), check="ABORT", note=UNDEF_FRAG),
+    fwd("fwd_d128_q200_k256_tail", sq=200, sk=256, cta=(1, 0, 0), check="VERIFIED"),
+    fwd("fwd_d128_q256_k200", sq=256, sk=200, cta=(0, 0, 0), check="VERIFIED"),
+    fwd("fwd_d128_s200_tail", sq=200, sk=200, cta=(1, 0, 0), check="VERIFIED"),
+    fwd("fwd_d128_s200_cta0", sq=200, sk=200, cta=(0, 0, 0), check="VERIFIED"),
     fwd("fwd_d128_local", sq=256, sk=256, window=(64, 0), cta=(1, 0, 0), note=" (sliding window)"),
-    fwd("fwd_d128_local_q200", sq=200, sk=256, window=(32, 32), cta=(1, 0, 0), check="ABORT",
-        note=UNDEF_FRAG),
+    fwd("fwd_d128_local_q200", sq=200, sk=256, window=(32, 32), cta=(1, 0, 0), check="VERIFIED",
+        note=""),
     fwd("fwd_d128_local_q200_cta0", sq=200, sk=256, window=(32, 32), cta=(0, 0, 0), note=" (sliding window)"),
     # Causal forward.
     fwd("fwd_causal_d128_s256_cta1", sq=256, sk=256, causal=True, cta=(1, 0, 0)),
     fwd("fwd_causal_d128_s256_cta0", sq=256, sk=256, causal=True, cta=(0, 0, 0)),
     fwd("fwd_causal_d128_q200_k256_cta0", sq=200, sk=256, causal=True, cta=(0, 0, 0)),
-    fwd("fwd_causal_d128_q200_k256_tail", sq=200, sk=256, causal=True, cta=(1, 0, 0), check="ABORT",
-        note=UNDEF_FRAG),
-    fwd("fwd_causal_d128_q100_k256", sq=100, sk=256, causal=True, cta=(0, 0, 0), check="ABORT",
-        note=UNDEF_FRAG),
-    fwd("fwd_causal_d128_s200_tail", sq=200, sk=200, causal=True, cta=(1, 0, 0), check="ABORT", note=UNDEF_FRAG),
+    fwd("fwd_causal_d128_q200_k256_tail", sq=200, sk=256, causal=True, cta=(1, 0, 0), check="VERIFIED",
+        note=""),
+    fwd("fwd_causal_d128_q100_k256", sq=100, sk=256, causal=True, cta=(0, 0, 0), check="VERIFIED",
+        note=""),
+    fwd("fwd_causal_d128_s200_tail", sq=200, sk=200, causal=True, cta=(1, 0, 0), check="VERIFIED"),
     # d=64 fp16, traits 128 x 128 (run_mha_fwd_hdim64 :212).
     fwd("fwd_d64_f16_s256", d=64, block_m=128, block_n=128, sq=256, sk=256, dtype="f16", cta=(1, 0, 0)),
     fwd("fwd_d64_f16_q200_k256_cta0", d=64, block_m=128, block_n=128, sq=200, sk=256, dtype="f16"),
     fwd("fwd_d64_f16_s200_tail", d=64, block_m=128, block_n=128, sq=200, sk=200, dtype="f16", cta=(1, 0, 0),
-        check="ABORT", note=UNDEF_FRAG),
+        check="VERIFIED"),
     # Split-KV forward and its combine.
     splitkv("splitkv_s128_k256_split0", cta=(0, 0, 0)),
     splitkv("splitkv_s128_k256_split1", cta=(1, 1, 0)),
     splitkv("splitkv_q100_k256_cta0", sq=100, sk=256, cta=(0, 1, 0), note=" (!Is_even_MN, all rows valid)"),
-    splitkv("splitkv_q100_k256_tail", sq=100, sk=256, cta=(1, 1, 0), check="ABORT", note=UNDEF_FRAG),
+    splitkv("splitkv_q100_k256_tail", sq=100, sk=256, cta=(1, 1, 0), check="VERIFIED"),
     splitkv("splitkv_s128_k512_splits3", sq=128, sk=512, num_splits=3, cta=(1, 1, 0)),
     splitkv("splitkv_s128_k512_splits3_empty", sq=128, sk=512, num_splits=3, cta=(1, 2, 0),
             note=" (split past the last block: the early-exit store)"),
-    splitkv("splitkv_s100_k200_tail", sq=100, sk=200, cta=(1, 1, 0), check="ABORT", note=UNDEF_FRAG),
+    splitkv("splitkv_s100_k200_tail", sq=100, sk=200, cta=(1, 1, 0), check="VERIFIED"),
     combine("combine_splits2", num_splits=2, cta=(3, 0, 0)),
     combine("combine_splits3", num_splits=3, cta=(0, 0, 0)),
     combine("combine_splits2_bhs8", sq=8, num_splits=2, cta=(1, 0, 0), note=" (b*h*seqlen_q a multiple of 4)"),

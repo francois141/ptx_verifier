@@ -1741,3 +1741,25 @@ fn test_tcgen05_mma_kind_mxf8f6f4_rejects_idesc_fields() {
         expect_unsupported(run_block_scaled_mma(Some(idesc)), needle);
     }
 }
+
+/// An mma.sync fragment from a never-written shared word is Undefined, not an abort: the run
+/// fails once the accumulators depending on it are stored.
+#[test]
+fn test_mma_fragment_of_an_unwritten_word_reaches_the_output() {
+    let mut config = AnalysisConfig::new((32, 1, 1));
+    config.arrays = vec![ArrayDef {
+        name: "out".to_string(),
+        base: 0x20000,
+        elem_width: 4,
+        len: 128,
+        kind: ArrayKind::Output,
+    }];
+    config.params = vec![ParamValue::ArrayPtr("out".to_string())];
+    let module = ptx!(parse "execution_error/mma_fragment_of_an_unwritten_word_reaches_the_output");
+    match run_kernel(&module, None, config) {
+        Err(AnalysisError::Eval(EvalError::UndefinedOutput { array, .. })) => {
+            assert_eq!(array, "out")
+        }
+        other => panic!("expected an undefined output, got {other:?}"),
+    }
+}
