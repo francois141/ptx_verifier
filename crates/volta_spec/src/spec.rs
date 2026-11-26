@@ -411,7 +411,10 @@ impl fmt::Display for SpecError {
                 write!(f, "index array '{name}' is read outside a subscript")
             }
             Self::LetInSubscript(name) => {
-                write!(f, "let-bound '{name}' is a value, but it is read in a subscript")
+                write!(
+                    f,
+                    "let-bound '{name}' is a value, but it is read in a subscript"
+                )
             }
             Self::ShapeVarMismatch {
                 array,
@@ -521,11 +524,7 @@ fn resolve_var(name: &str, env: &SpecEnv, bindings: &Bindings) -> Result<u64, Sp
 
 /// Signed, so a zero-padded array's out-of-shape taps (e.g. `4 * h + kh - 2` near the
 /// border) can go negative; the read site decides whether that is an error.
-fn eval_index(
-    expr: &IndexExpr,
-    env: &SpecEnv,
-    bindings: &Bindings,
-) -> Result<i64, SpecError> {
+fn eval_index(expr: &IndexExpr, env: &SpecEnv, bindings: &Bindings) -> Result<i64, SpecError> {
     match expr {
         IndexExpr::Int(v) => Ok(*v as i64),
         IndexExpr::Var(name) => resolve_var(name, env, bindings).map(|v| v as i64),
@@ -900,6 +899,12 @@ fn eval(
                 Comparison::Equal => arena.eq(Type::Real, lhs, rhs),
                 Comparison::NotEqual => arena.ne(Type::Real, lhs, rhs),
             };
+            // A condition on index values is decided while unfolding: only the branch it takes
+            // is built, so the other may read past an array (a partial rotation's partner).
+            if let Some(decided) = arena.as_bool(holds) {
+                let taken = if decided { then } else { otherwise };
+                return eval(taken, env, bindings, arena, array_ids, memo);
+            }
             let (then, otherwise) = (
                 eval(then, env, bindings, arena, array_ids, memo)?,
                 eval(otherwise, env, bindings, arena, array_ids, memo)?,
