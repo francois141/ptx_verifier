@@ -424,7 +424,7 @@ racing another thread's use of the object keeps its witness.
 ### Analysis stage (`analysis.rs`, `config.rs`)
 
 - `config.rs` - `AnalysisConfig`: launch dims, positional `ParamValue`s (int/float/symbolic-float/array-pointer), `ArrayDef`s (`Input`/`Output`/`InputOutput`/`IndexInput`), module-global values, dynamic shared size
-- `launch_file.rs` - `LaunchFile::from_json`: the JSON launch file (`volta analyze --config FILE`) to the kernel it names + a validated `AnalysisConfig`; arrays by `dtype`/`shape`, auto-laid out on 64 KiB boundaries unless given a `base`; params `{"int"|"float"|"sym"|"ptr": ...}` with an optional reader-only `name`; unknown keys are errors
+- `launch_file.rs` - `LaunchFile::from_json`: the JSON launch file (`volta analyze --config FILE`) to the kernel it names + a validated `AnalysisConfig`; an optional `cluster` must be 1x1x1 (the PTX of a cluster launch need not declare it); arrays by `dtype`/`shape`, auto-laid out on 64 KiB boundaries unless given a `base`; params `{"int"|"float"|"sym"|"ptr": ...}` with an optional reader-only `name`; unknown keys are errors
 - No behavior depends on the module's `.target` directive (recorded in the
   graph's `Provenance` only): every kernel is analyzed and checked as on
   Blackwell, so the proxy-order check always runs

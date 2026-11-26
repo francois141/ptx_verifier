@@ -7,6 +7,7 @@
 //!   "kernel": "add_kernel",
 //!   "block": 128,
 //!   "grid": [4, 1, 1],
+//!   "cluster": [1, 1, 1],
 //!   "dynamic_shared_bytes": 0,
 //!   "arrays": [
 //!     {"name": "x",   "kind": "in",  "dtype": "f32", "shape": [16]},
@@ -27,8 +28,10 @@
 //! }
 //! ```
 //!
-//! Only `block` is required. `block` and `grid` are a number or one to
-//! three numbers (missing ones are 1). An array's `kind` is `in`, `out`,
+//! Only `block` is required. `block`, `grid` and `cluster` are a number or one to
+//! three numbers (missing ones are 1). A `cluster` of several CTAs is rejected:
+//! Volta models one CTA per cluster, and the PTX of a kernel launched with
+//! cluster dimensions need not declare them. An array's `kind` is `in`, `out`,
 //! `inout` or `index`; its element size is a `dtype` (`f32`, `bf16`, `u8`,
 //! `e4m3`, ...) or an `elem_width` in bytes, its length a `shape` or a
 //! `len`. Arrays without a `base` (a number or a `"0x..."` string) are laid
@@ -95,6 +98,14 @@ impl LaunchFile {
 
         if let Some(grid) = raw.grid {
             config.grid_dim = grid.resolve("grid")?;
+        }
+        if let Some(cluster) = raw.cluster {
+            let (x, y, z) = cluster.resolve("cluster")?;
+            if (x, y, z) != (1, 1, 1) {
+                return Err(format!(
+                    "`cluster` [{x}, {y}, {z}] has several CTAs; Volta models one CTA per cluster"
+                ));
+            }
         }
 
         config.dynamic_shared_bytes = raw.dynamic_shared_bytes;
@@ -194,6 +205,7 @@ struct RawLaunch {
     kernel: Option<String>,
     block: RawDims,
     grid: Option<RawDims>,
+    cluster: Option<RawDims>,
     #[serde(default)]
     dynamic_shared_bytes: u64,
     max_instructions: Option<u64>,
@@ -789,6 +801,8 @@ mod tests {
         let error = |text: &str| LaunchFile::from_json(text).unwrap_err();
 
         assert!(error(r#"{"block": 32, "grids": 2}"#).contains("unknown field `grids`"));
+        assert!(error(r#"{"block": 32, "cluster": [2, 1, 1]}"#).contains("one CTA per cluster"));
+        assert!(LaunchFile::from_json(r#"{"block": 32, "cluster": [1, 1, 1]}"#).is_ok());
 
         assert!(
             error(r#"{"block": 32, "params": [{"int": 1, "float": 1.0}]}"#)
