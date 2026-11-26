@@ -18,7 +18,9 @@ pub use config::{
     AnalysisConfig, ArrayDef, ArrayKind, FieldValue, IntWidth, ParamValue, StructField,
     TensorMapMode, TensorMapValue,
 };
-pub use eval::{ClcMisuse, EvalError, OutputsUnavailable, Stats, ThreadId, TmaMisuse};
+pub use eval::{
+    ClcMisuse, ClusterBarrierMisuse, EvalError, OutputsUnavailable, Stats, ThreadId, TmaMisuse,
+};
 pub use ir::tensor_map::{
     Im2colBox, TensorElemType, TensorFillMode, TensorInterleaveLayout, TensorSwizzleAtomicity,
     TensorSwizzleMode,

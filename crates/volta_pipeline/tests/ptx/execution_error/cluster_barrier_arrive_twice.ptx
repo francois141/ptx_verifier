@@ -1,0 +1,13 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Two barrier.cluster.arrive with no wait between them: "Each thread must arrive at the barrier
+// only once before the barrier completes" (PTX ISA 9.7.13.3).
+.visible .entry k()
+{
+    barrier.cluster.arrive;
+    barrier.cluster.arrive;
+    barrier.cluster.wait;
+    ret;
+}

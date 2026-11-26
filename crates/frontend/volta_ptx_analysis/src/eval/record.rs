@@ -74,6 +74,23 @@ pub(in crate::eval) struct Recording {
     mbarriers: HashMap<MbarrierId, MbarrierRecord>,
     issued_mmas: HashMap<ThreadId, Vec<AsyncOpId>>,
     tcgen05_pending: HashMap<(u32, Tcgen05Wait), Vec<AsyncOpId>>,
+    cluster: Option<ClusterRecord>,
+    /// Each thread's latest release fence since its last cluster arrival: the event before it.
+    cluster_fences: HashMap<ThreadId, EventId>,
+}
+
+/// The cluster barrier's graph identity: its object and its phases by index, the last forming.
+#[derive(Debug)]
+struct ClusterRecord {
+    object: SyncObjectId,
+    phases: Vec<GenerationId>,
+}
+
+impl Recording {
+    /// `t`'s thread fence after event `before` releases what precedes it.
+    pub(in crate::eval) fn note_cluster_fence(&mut self, t: ThreadId, before: EventId) {
+        self.cluster_fences.insert(t, before);
+    }
 }
 
 pub(in crate::eval) fn tix(t: ThreadId) -> ThreadIx {
@@ -581,6 +598,74 @@ impl Interpreter<'_> {
         self.graph.resume(tix(t), point(pc), phase);
     }
 
+    // =====================================================================
+    // Cluster barrier
+    // =====================================================================
+
+    /// The cluster barrier's forming phase, creating the object on first use.
+    fn forming_cluster_phase(&mut self) -> GenerationId {
+        if self.rec.cluster.is_none() {
+            let object = self.graph.sync_object(SyncObjectKind::ClusterBarrier);
+            let phase0 = self
+                .graph
+                .open_generation(object, 0, GenerationKind::ClusterBarrierPhase);
+            self.rec.cluster = Some(ClusterRecord {
+                object,
+                phases: vec![phase0],
+            });
+        }
+        let record = self.rec.cluster.as_ref().expect("created above");
+        *record.phases.last().expect("a forming phase")
+    }
+
+    /// `t` arrives at the cluster barrier, releasing what `ordering` says; a relaxed arrival
+    /// also releases what precedes `t`'s latest release fence since its last arrival.
+    pub(in crate::eval) fn record_cluster_arrival(
+        &mut self,
+        t: ThreadId,
+        pc: InstrId,
+        ordering: ArrivalOrdering,
+    ) {
+        let phase = self.forming_cluster_phase();
+        let fence = self.rec.cluster_fences.remove(&t);
+        if let (ArrivalOrdering::Relaxed, Some(before)) = (ordering, fence) {
+            self.graph.contribute_fence_release(phase, before);
+        }
+        let arrival = ContributionKind::Arrival {
+            count: 1,
+            expect_tx: 0,
+            ordering,
+        };
+        self.graph.contribute(tix(t), point(pc), phase, arrival);
+    }
+
+    /// The forming phase completes, `exited` (exited threads that did not arrive) counted as
+    /// arrived, and the next one opens.
+    pub(in crate::eval) fn record_cluster_phase_complete(&mut self, exited: &[ThreadId]) {
+        let phase = self.forming_cluster_phase();
+        self.graph
+            .contribute_exited_threads(phase, exited.iter().map(|&t| tix(t)));
+        self.graph
+            .complete_generation(phase, GenerationEvidence::default());
+        let record = self.rec.cluster.as_mut().expect("a forming phase exists");
+        let index = record.phases.len() as u32;
+        let next =
+            self.graph
+                .open_generation(record.object, index, GenerationKind::ClusterBarrierPhase);
+        record.phases.push(next);
+    }
+
+    /// `t`'s `barrier.cluster.wait` returns, released by completed `phase`.
+    pub(in crate::eval) fn record_cluster_wake(&mut self, t: ThreadId, pc: InstrId, phase: u64) {
+        let record = self
+            .rec
+            .cluster
+            .as_ref()
+            .expect("a waited phase was arrived at");
+        let generation = record.phases[phase as usize];
+        self.graph.resume(tix(t), point(pc), generation);
+    }
+
     /// The blocked-thread record of `t` for a stuck terminal state.
     pub(in crate::eval) fn blocked_record(&self, t: ThreadId) -> BlockedThread {
         let state = &self.threads[t];
@@ -611,6 +696,14 @@ impl Interpreter<'_> {
                     missing,
                 }
             }
+            Status::AtClusterBarrier { phase } => BlockedOn::Barrier {
+                generation: self
+                    .rec
+                    .cluster
+                    .as_ref()
+                    .expect("an arrived cluster barrier")
+                    .phases[phase as usize],
+            },
             Status::AtMbarrier { id, phase_parity } => {
                 let (completed_phases, arrived, expected, pending_tx) =
                     self.mbarriers.forming_state(id);

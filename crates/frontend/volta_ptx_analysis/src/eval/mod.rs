@@ -5,6 +5,7 @@
 mod arithm;
 mod async_bulk;
 mod branch;
+mod cluster_barrier;
 mod cluster_launch_control;
 mod cp_async;
 mod error;
@@ -43,5 +44,5 @@ impl std::fmt::Display for ThreadId {
 /// Number of threads in a warp.
 pub const WARP_SIZE: u32 = 32;
 
-pub use error::{ClcMisuse, EvalError, TmaMisuse};
+pub use error::{ClcMisuse, ClusterBarrierMisuse, EvalError, TmaMisuse};
 pub use interp::{Interpreter, OutputsUnavailable, RunArtifacts, Stats};

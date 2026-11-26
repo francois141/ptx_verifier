@@ -3277,6 +3277,9 @@ fn parse_barrier_cluster(
     _operands: Vec<Operand>,
 ) -> Result<ParsedInstruction, InstrParseError> {
     let arrive = mp.try_consume(ascii("arrive"));
+    if !arrive && !mp.try_consume(ascii("wait")) {
+        return Err(InstrParseError::MissingModifier(ascii("arrive or wait")));
+    }
     let sem = mp.try_parse::<MemSemantics>();
     let aligned = mp.try_consume(ascii("aligned"));
 

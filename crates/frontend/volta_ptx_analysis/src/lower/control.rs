@@ -4,7 +4,10 @@
 use crate::frontend::ast::{self, BarMode, BraInstr, CallInstr, Operand as AstOperand};
 use id_collections::Id;
 
-use crate::ir::{BarrierAlignment, InstrId, LoweredInstr, MemSpace, Predicate};
+use crate::ir::{
+    BarrierAlignment, ClusterArriveOrdering, FenceRelease, InstrId, LoweredInstr, MemSpace,
+    Predicate,
+};
 
 use super::context::{LocalParamSlot, LoweringContext, unsupported};
 use super::error::{LowerError, LowerResult};
@@ -194,7 +197,14 @@ pub(super) fn lower_fence(
 ) -> LowerResult<()> {
     match fence.proxy {
         None | Some(ast::FenceProxyKind::Alias) => {
-            ctx.emit(LoweredInstr::Fence, predicate)?;
+            let release = match (fence.proxy, fence.op_restrict, fence.sem) {
+                (Some(_), _, _) | (None, None, Some(ast::FenceSem::Acquire)) => {
+                    FenceRelease::Nothing
+                }
+                (None, Some(ast::FenceOpRestrict::MbarrierInit), _) => FenceRelease::MbarrierInits,
+                (None, None, _) => FenceRelease::Everything,
+            };
+            ctx.emit(LoweredInstr::Fence { release }, predicate)?;
         }
         Some(ast::FenceProxyKind::Async(restrict)) => {
             let restrict = restrict.map(|r| match r {
@@ -204,5 +214,34 @@ pub(super) fn lower_fence(
             ctx.emit(LoweredInstr::FenceProxyAsync { restrict }, predicate)?;
         }
     }
+    Ok(())
+}
+
+/// Lower `barrier.cluster.arrive{.release|.relaxed}` and `barrier.cluster.wait{.acquire}`
+/// (PTX ISA 9.7.13.3). Every cluster holds one CTA, so the barrier is the CTA's own.
+pub(super) fn lower_barrier_cluster(
+    ctx: &mut LoweringContext,
+    instr: &ast::BarrierClusterInstr,
+    predicate: Option<Predicate>,
+) -> LowerResult<()> {
+    use ast::MemSemantics;
+    let lowered = match (instr.arrive, instr.sem) {
+        (true, None | Some(MemSemantics::Release)) => LoweredInstr::ClusterBarrierArrive {
+            ordering: ClusterArriveOrdering::Release,
+        },
+        (true, Some(MemSemantics::Relaxed)) => LoweredInstr::ClusterBarrierArrive {
+            ordering: ClusterArriveOrdering::Relaxed,
+        },
+        (false, None | Some(MemSemantics::Acquire)) => LoweredInstr::ClusterBarrierWait,
+        (arrive, Some(sem)) => {
+            let what = if arrive { "arrive" } else { "wait" };
+            return Err(LowerError::InvalidOperand {
+                instruction: format!("barrier.cluster.{what}"),
+                operand: format!("{sem:?}"),
+                reason: "barrier.cluster.arrive takes .release or .relaxed, .wait only .acquire",
+            });
+        }
+    };
+    ctx.emit(lowered, predicate)?;
     Ok(())
 }

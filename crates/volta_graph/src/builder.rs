@@ -350,6 +350,17 @@ impl GraphBuilder {
         id
     }
 
+    /// The thread fence after `event`, a thread event, releases through a later relaxed
+    /// arrival at `generation` what precedes it.
+    pub fn contribute_fence_release(&mut self, generation: GenerationId, event: EventId) {
+        self.graph.generations[generation]
+            .contributions
+            .push(Contribution {
+                event,
+                kind: ContributionKind::FenceRelease,
+            });
+    }
+
     /// An exited thread (its `Exit` event `exit`) counts as arrived at `generation`.
     pub fn contribute_exited(&mut self, generation: GenerationId, exit: EventId) {
         self.graph.generations[generation]

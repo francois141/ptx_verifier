@@ -59,6 +59,7 @@ impl EventGraph {
                 SyncObjectKind::Dependency { producer } => {
                     write!(out, "dependency t{}", producer.0)?
                 }
+                SyncObjectKind::ClusterBarrier => write!(out, "cluster-barrier")?,
             }
             writeln!(
                 out,
@@ -119,6 +120,7 @@ impl EventGraph {
                     }
                 )?,
                 GenerationKind::Dependency => write!(out, "dependency")?,
+                GenerationKind::ClusterBarrierPhase => write!(out, "cluster-barrier-phase")?,
             }
             writeln!(
                 out,
@@ -143,6 +145,7 @@ impl EventGraph {
                         match ordering {
                             ArrivalOrdering::Release => "release",
                             ArrivalOrdering::AsyncTracked => "async-tracked",
+                            ArrivalOrdering::Relaxed => "relaxed",
                         }
                     )?,
                     ContributionKind::Exited => writeln!(out, "exited")?,
@@ -153,6 +156,7 @@ impl EventGraph {
                         writeln!(out, "complete-tx {}", bytes)?
                     }
                     ContributionKind::ExpectTx { bytes } => writeln!(out, "expect-tx {}", bytes)?,
+                    ContributionKind::FenceRelease => writeln!(out, "fence-release")?,
                 }
             }
             if !genr.releases.is_empty() {

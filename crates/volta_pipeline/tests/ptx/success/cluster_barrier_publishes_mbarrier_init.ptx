@@ -1,0 +1,41 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// CUTLASS's sm100 prologue: thread 0 initializes an mbarrier, fence.mbarrier_init.release.cluster
+// and every thread's barrier.cluster.arrive.relaxed release the init, barrier.cluster.wait
+// acquires it, and each thread then arrives on the mbarrier and waits for its phase 0.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<3>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<7>;
+    .shared .align 8 .b8 bar[8];
+
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, bar;
+    setp.eq.u32 %p1, %r1, 0;
+    @%p1 mbarrier.init.shared::cta.b64 [%r2], 2;
+    fence.mbarrier_init.release.cluster;
+    barrier.cluster.arrive.relaxed.aligned;
+    barrier.cluster.wait.aligned;
+    mbarrier.arrive.shared::cta.b64 _, [%r2];
+WAIT:
+    mbarrier.try_wait.parity.shared::cta.b64 %p2, [%r2], 0;
+    @!%p2 bra WAIT;
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    shl.b32 %r3, %r1, 2;
+    cvt.u64.u32 %rd3, %r3;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    add.s64 %rd5, %rd2, %rd3;
+    st.global.f32 [%rd5], %f1;
+    ret;
+}

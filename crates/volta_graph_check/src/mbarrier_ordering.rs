@@ -111,7 +111,11 @@ impl Update {
             ContributionKind::AsyncCompletion { tx_bytes, .. } => {
                 (0, i64::try_from(tx_bytes).map(|b| -b))
             }
-            ContributionKind::Blocking | ContributionKind::Exited => return None,
+            ContributionKind::Blocking
+            | ContributionKind::Exited
+            | ContributionKind::FenceRelease => {
+                return None;
+            }
         };
         Some(Update {
             event,

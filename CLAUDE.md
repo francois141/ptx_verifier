@@ -260,11 +260,14 @@ crate-level docs in `lib.rs` are the contract.
   `Footprint` (byte range, or TMEM lane x column rectangle), attributed
   thread, stored value for writes.
 - Sync objects (named barrier, mbarrier lifetime, warp/warpgroup collective,
-  a thread's cp.async group waits) with logical `Generation`s: typed
+  a thread's cp.async group waits, the one-CTA cluster's `ClusterBarrier`) with logical
+  `Generation`s: typed
   `Contribution`s (`Blocking`, `Arrival`, `Exited`, `AsyncCompletion`,
-  `CompleteTx`, `ExpectTx`; an `Arrival`'s `ArrivalOrdering` says whether it
-  is the thread's release or an async-tracked arrive-on), releases (`Resume`
-  events), completion event, evidence.
+  `CompleteTx`, `ExpectTx`, `FenceRelease`; an `Arrival`'s `ArrivalOrdering` says whether it
+  is the thread's release, an async-tracked arrive-on, or a `barrier.cluster.arrive.relaxed`
+  (`Relaxed`, joining `G0` only); a `FenceRelease` is what a thread fence before a relaxed
+  arrival releases through it, its event the thread's last before the fence), releases
+  (`Resume` events), completion event, evidence.
   Collective instances have an `Entry` and an `Exit` generation around the
   op's effects; their `MemberOrdering` is `Synchronizing` only for
   `bar.warp.sync`, else `ExecutionOnly` (`tcgen05.alloc` included): the
@@ -374,6 +377,7 @@ instruction family, each file depending only on `context` and `error`:
 - `activemask` is unsupported for now: the interpreter does not model warp divergence, so inside a divergent branch it would report the other side's lanes as active too and hide, e.g., two sides each electing a leader that stores to the same address
 - `lower/scopes.rs` renames each `.reg` declared in a nested `{}` block whose name another declaration already uses (`name#k`), with its uses in the block, before declarations are collected: PTX block scoping over the flat register table
 - Three-input `min.f32`/`max.f32` (sm_100) lower to two `BinOp`s; a TMA store may carry `.L2::cache_hint` (its policy operand changes no data)
+- `barrier.cluster.arrive{.release|.relaxed}`/`wait{.acquire}` (PTX ISA 9.7.13.3) are the one-CTA cluster's barrier (`eval/cluster_barrier.rs`, `Status::AtClusterBarrier`): a wait blocks until every non-exited thread arrived in the phase of the thread's own arrival; a double arrive or an arrive-less wait is `EvalError::ClusterBarrierMisuse`. A `.relaxed` arrival orders no memory; a release fence before it (`LoweredInstr::Fence { release }`, `membar`) releases what precedes the fence through a `FenceRelease` (`fence.mbarrier_init` only when everything earlier in the thread is an `mbarrier.init` or an execution-only collective)
 - `griddepcontrol.wait`/`launch_dependents` (PDL) lower to `Nop`s and set `LoweredProgram::grid_dependency`, which adds `Assumption::PrerequisiteGridsComplete` to the run's provenance: Volta runs one grid, as if its prerequisite grids had completed before launch
 - `mbarrier.arrive`/`expect_tx`/`complete_tx` accept `.shared::cluster`: every cluster holds one CTA, so the address (from `mapa` to rank 0) names this CTA's own object, as for TMA destinations
 - `wgmma` is unsupported for now: every form (`mma_async{.sp}`, `fence`, `commit_group`, `wait_group`) is a lowering error, though the frontend still parses it

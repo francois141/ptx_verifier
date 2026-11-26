@@ -22,6 +22,17 @@ pub enum ClcMisuse {
     },
 }
 
+/// Why a `barrier.cluster` use is undefined behavior (PTX ISA 9.7.13.3: "Each thread must
+/// arrive at the barrier only once before the barrier completes"; a wait observes the phase
+/// of the thread's own preceding arrival).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterBarrierMisuse {
+    /// A second `barrier.cluster.arrive` with no `wait` since the first.
+    ArriveTwice,
+    /// A `barrier.cluster.wait` with no `arrive` since the thread's last wait.
+    WaitWithoutArrive,
+}
+
 /// Errors of one candidate execution: structured-CTA violations or implementation limits, which
 /// the paper models as raised exceptions. Data races, async hazards and deadlocks are not
 /// errors here: they are graph check failures or the graph's stuck terminal state.
@@ -150,6 +161,12 @@ pub enum EvalError {
         thread: ThreadId,
         pc: InstrId,
         misuse: ClcMisuse,
+    },
+    /// A `barrier.cluster` use the ISA leaves undefined.
+    ClusterBarrierMisuse {
+        thread: ThreadId,
+        pc: InstrId,
+        misuse: ClusterBarrierMisuse,
     },
     /// `query_cancel` decoded a value other than the declined `try_cancel`
     /// response: a successful cancel, which the never-steal assumption excludes.
@@ -435,6 +452,20 @@ impl fmt::Display for EvalError {
                     thread, pc, observer, observed_at
                 ),
             },
+            Self::ClusterBarrierMisuse { thread, pc, misuse } => match misuse {
+                ClusterBarrierMisuse::ArriveTwice => write!(
+                    f,
+                    "{}: barrier.cluster.arrive at {} arrives again before waiting for its \
+                     previous arrival, which is undefined behavior",
+                    thread, pc
+                ),
+                ClusterBarrierMisuse::WaitWithoutArrive => write!(
+                    f,
+                    "{}: barrier.cluster.wait at {} has no preceding barrier.cluster.arrive \
+                     of its own to wait for, which is undefined behavior",
+                    thread, pc
+                ),
+            },
             Self::ClusterLaunchControlUndeclinedResponse { thread, pc } => write!(
                 f,
                 "{}: clusterlaunchcontrol.query_cancel at {} decodes a value that is not a \
@@ -611,6 +642,7 @@ impl EvalError {
             | Self::MbarrierTxCountOutOfRange { thread, pc, .. }
             | Self::TrapReached { thread, pc }
             | Self::ClusterLaunchControlMisuse { thread, pc, .. }
+            | Self::ClusterBarrierMisuse { thread, pc, .. }
             | Self::ClusterLaunchControlUndeclinedResponse { thread, pc }
             | Self::MapaRankOutsideCluster { thread, pc, .. }
             | Self::Tcgen05InvalidColumnCount { thread, pc, .. }

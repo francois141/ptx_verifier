@@ -1,0 +1,44 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Two cluster-barrier phases: each thread stores, syncs, reads its neighbour's slot, stores
+// again into a second slot after the second sync, and reads the neighbour's again. Each
+// thread's k-th arrival is phase k.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .f32 %f<5>;
+    .reg .b32 %r<9>;
+    .reg .b64 %rd<7>;
+    .shared .align 8 .b8 sdata[64];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    shl.b32 %r2, %r1, 2;
+    cvt.u64.u32 %rd3, %r2;
+    add.s64 %rd4, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd4];
+    mov.u32 %r3, sdata;
+    add.s32 %r4, %r3, %r2;
+    st.shared.f32 [%r4], %f1;
+    barrier.cluster.arrive;
+    barrier.cluster.wait;
+    xor.b32 %r5, %r1, 1;
+    shl.b32 %r5, %r5, 2;
+    add.s32 %r6, %r3, %r5;
+    ld.shared.f32 %f2, [%r6];
+    add.f32 %f3, %f2, %f1;
+    st.shared.f32 [%r4+32], %f3;
+    barrier.cluster.arrive;
+    barrier.cluster.wait;
+    ld.shared.f32 %f4, [%r6+32];
+    add.s64 %rd5, %rd2, %rd3;
+    st.global.f32 [%rd5], %f4;
+    ret;
+}

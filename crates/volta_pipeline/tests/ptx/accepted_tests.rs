@@ -2475,3 +2475,45 @@ fn test_mma_fragment_of_a_constant_word() {
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
     analyze!("success/mma_fragment_of_a_constant_word", config);
 }
+
+/// `barrier.cluster.arrive` (`.release`) and `wait` order a shared exchange.
+#[test]
+fn test_cluster_sync_orders_shared_exchange() {
+    analyze!(
+        "success/cluster_sync_orders_shared_exchange",
+        in_out_config(2, 2)
+    );
+}
+
+/// A fence before `barrier.cluster.arrive.relaxed` releases the store through it.
+#[test]
+fn test_cluster_arrive_relaxed_after_fence_orders_exchange() {
+    analyze!(
+        "success/cluster_arrive_relaxed_after_fence_orders_exchange",
+        in_out_config(2, 2)
+    );
+}
+
+/// Two cluster-barrier phases; each thread's k-th arrival is phase k.
+#[test]
+fn test_cluster_barrier_two_phases() {
+    analyze!("success/cluster_barrier_two_phases", in_out_config(2, 2));
+}
+
+/// A thread that exits without arriving counts as arrived.
+#[test]
+fn test_cluster_barrier_counts_an_exited_thread() {
+    analyze!(
+        "success/cluster_barrier_counts_an_exited_thread",
+        in_out_config(2, 2)
+    );
+}
+
+/// CUTLASS's prologue: `fence.mbarrier_init` and a relaxed cluster arrival publish the init.
+#[test]
+fn test_cluster_barrier_publishes_mbarrier_init() {
+    analyze!(
+        "success/cluster_barrier_publishes_mbarrier_init",
+        in_out_config(2, 2)
+    );
+}

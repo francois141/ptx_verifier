@@ -1,0 +1,30 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// Thread 1 exits without arriving: the cluster barrier completes on the non-exited threads
+// (PTX ISA 9.7.13.3), so thread 0's wait returns.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<2>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<5>;
+
+    mov.u32 %r1, %tid.x;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra DONE;
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    barrier.cluster.arrive;
+    barrier.cluster.wait;
+    ld.global.f32 %f1, [%rd1];
+    st.global.f32 [%rd2], %f1;
+DONE:
+    ret;
+}

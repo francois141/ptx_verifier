@@ -53,6 +53,10 @@ impl<'p> Interpreter<'p> {
                 any = true;
                 continue;
             }
+            if self.try_fire_cluster_barrier()? {
+                any = true;
+                continue;
+            }
             return Ok(any);
         }
     }

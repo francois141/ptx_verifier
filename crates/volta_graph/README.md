@@ -92,8 +92,9 @@ SyncObject ──has many──► Generation ◄──contributions── Contr
   named barrier `bar 0..15`, **one lifetime** of an mbarrier (a re-init
   creates a new object), the warp collectives of one warp, the
   warpgroup collectives of one warpgroup, one thread's `cp.async` wait
-  groups, or the `Dependency` of one NKI instruction (the semaphore the Neuron
-  compiler would signal when it finishes).
+  groups, the `Dependency` of one NKI instruction (the semaphore the Neuron
+  compiler would signal when it finishes), or the `ClusterBarrier` of a
+  one-CTA cluster (`barrier.cluster.arrive`/`wait`).
 - A `Generation` is one round of that object: a named barrier's k-th firing, an
   mbarrier's k-th phase, one warp op instance. It stores its `index`, its
   `kind` (`GenerationKind`), its `contributions`, its `releases` (the `Resume`
@@ -103,7 +104,12 @@ SyncObject ──has many──► Generation ◄──contributions── Contr
   - `Blocking`: the thread waits here (`bar.sync`, a warp collective)
   - `Arrival { count, expect_tx, ordering }`: a non-blocking arrive. `ordering`
     is `Release` for a thread's own arrive, `AsyncTracked` for an arrive-on
-    the hardware performs (`cp.async.mbarrier.arrive`, `tcgen05.commit`)
+    the hardware performs (`cp.async.mbarrier.arrive`, `tcgen05.commit`),
+    `Relaxed` for `barrier.cluster.arrive.relaxed` (execution order only)
+  - `FenceRelease`: what a thread fence before a relaxed arrival releases
+    through it (PTX ISA 9.7.13.3's `fence; barrier.cluster.arrive.relaxed`); its
+    event is the thread's last one before the fence, any kind, and it counts no
+    arrival
   - `Exited`: an exited thread counts as arrived (the paper's Sync' rule)
   - `AsyncCompletion { op, tx_bytes }`: an async op's completion counts
     toward this generation
@@ -121,6 +127,10 @@ Special generation kinds:
   `Exit` (they leave after). `ordering` is `Synchronizing` only for
   `bar.warp.sync`, which orders its members' memory. Every other collective is
   `ExecutionOnly`: the lanes wait for each other, nothing more.
+- `ClusterBarrierPhase`: a phase of the `ClusterBarrier`, complete once every
+  non-exited thread arrived (`Exited` contributions for the rest); its releases
+  are the `barrier.cluster.wait`s that observed it. Each thread arrives once per
+  phase, so no barrier-epoch family includes it.
 - `Dependency`: a `Dependency` object's one generation. Its producer
   instruction's `Arrival { Release }` completes it at once, and each instruction
   ordered after the producer resumes from it. No check matches it by kind: it

@@ -580,13 +580,23 @@ pub enum LoweredInstr {
     /// Its effect on the warp's register count is not modeled.
     Setmaxnreg,
 
-    /// Memory fence
+    /// `membar.{cta,gl,sys}`: a `fence.sc` (PTX ISA 9.7.13.4), a release through a later
+    /// relaxed cluster-barrier arrival.
     Membar,
 
-    /// `fence{.sem}.scope` or `fence.proxy.alias{.sem}.scope`: a pure
-    /// ordering fence with no data effect to model. `fence.proxy.async` is
-    /// the separate `FenceProxyAsync`, which has one.
-    Fence,
+    /// `fence{.sem}.scope`, `fence.mbarrier_init.release.cluster` or
+    /// `fence.proxy.alias{.sem}.scope`: an ordering fence with no data effect. What it
+    /// releases matters only through a later `barrier.cluster.arrive.relaxed`.
+    /// `fence.proxy.async` is the separate `FenceProxyAsync`.
+    Fence { release: FenceRelease },
+
+    /// `barrier.cluster.arrive{.release|.relaxed}{.aligned}` (PTX ISA 9.7.13.3): the thread's
+    /// non-blocking arrival at the one-CTA cluster's barrier.
+    ClusterBarrierArrive { ordering: ClusterArriveOrdering },
+
+    /// `barrier.cluster.wait{.acquire}{.aligned}`: block until every non-exited thread
+    /// arrived in the phase of the thread's own preceding arrival.
+    ClusterBarrierWait,
 
     /// `fence.proxy.async{.space}`: a generic/async proxy fence by this thread
     /// within `restrict` (`None` = all; both `.shared::` spaces map to
@@ -983,6 +993,28 @@ pub enum LoweredInstr {
 /// Generates `KIND_COUNT`, `KIND_NAMES`, `kind_index` and `kind_name` from
 /// one variant list; `kind_list_is_exhaustive` makes a missing or misspelled
 /// `LoweredInstr` variant a compile error.
+/// What a thread fence releases through a later relaxed cluster-barrier arrival.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceRelease {
+    /// Nothing: an `.acquire` fence, or a proxy fence.
+    Nothing,
+    /// Every earlier access of the thread: `fence.{sc,acq_rel,release}` at CTA scope or wider
+    /// (every cluster thread is a CTA thread).
+    Everything,
+    /// The thread's earlier `mbarrier.init`s only (`fence.mbarrier_init.release.cluster`).
+    MbarrierInits,
+}
+
+/// The memory ordering of a `barrier.cluster.arrive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterArriveOrdering {
+    /// `.release` (the default): the thread's earlier accesses, before every waiter's later
+    /// ones.
+    Release,
+    /// `.relaxed`: execution order only.
+    Relaxed,
+}
+
 macro_rules! define_instr_kinds {
     ($($variant:ident),+ $(,)?) => {
         /// Number of distinct `LoweredInstr` kinds.
@@ -1063,6 +1095,8 @@ define_instr_kinds!(
     Setmaxnreg,
     Membar,
     Fence,
+    ClusterBarrierArrive,
+    ClusterBarrierWait,
     FenceProxyAsync,
     CpAsyncCommitGroup,
     CpAsyncWaitGroup,

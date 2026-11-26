@@ -54,6 +54,8 @@ decides each contribution kind:
 |-------------------------------------------------|:----:|:----:|
 | `Blocking`, `Arrival { Release }`               | yes  | yes  |
 | `Arrival { AsyncTracked }` (`tcgen05.commit`, `cp.async.mbarrier.arrive`) | yes | no |
+| `Arrival { Relaxed }` (`barrier.cluster.arrive.relaxed`) | yes | no |
+| `FenceRelease` (a thread fence before a relaxed arrival, from its event) | yes | yes |
 | `Exited` (Sync' only)                           | yes  | no   |
 | `AsyncCompletion` into an mbarrier phase        | no (not yet validated) | yes |
 | `AsyncCompletion` into a wait collective / wait-group | yes | yes |

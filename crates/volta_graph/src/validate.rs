@@ -308,6 +308,9 @@ impl EventGraph {
                 ) | (
                     GenerationKind::Dependency,
                     SyncObjectKind::Dependency { .. }
+                ) | (
+                    GenerationKind::ClusterBarrierPhase,
+                    SyncObjectKind::ClusterBarrier
                 )
             );
             if !kind_ok {
@@ -354,6 +357,7 @@ impl EventGraph {
                     ContributionKind::Exited => {
                         ev.kind == EventKind::Exit && matches!(ev.ctx, ExecContext::Thread(_))
                     }
+                    ContributionKind::FenceRelease => matches!(ev.ctx, ExecContext::Thread(_)),
                     ContributionKind::AsyncCompletion { op, .. } => {
                         ev.kind == EventKind::AsyncComplete(op)
                             && self

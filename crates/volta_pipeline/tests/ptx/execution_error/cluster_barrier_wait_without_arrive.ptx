@@ -1,0 +1,10 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// barrier.cluster.wait with no preceding barrier.cluster.arrive of the thread: undefined.
+.visible .entry k()
+{
+    barrier.cluster.wait;
+    ret;
+}

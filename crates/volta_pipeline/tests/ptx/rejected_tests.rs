@@ -8,8 +8,8 @@ use crate::common;
 use volta_equivalence::check_output_equivalence;
 use volta_graph_check::{Deadlock, GraphConclusion};
 use volta_ptx_analysis::{
-    AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, ClcMisuse, EvalError, LowerError,
-    ParamValue, ThreadId, TmaMisuse,
+    AnalysisConfig, AnalysisError, ArrayDef, ArrayKind, ClcMisuse, ClusterBarrierMisuse, EvalError,
+    LowerError, ParamValue, ThreadId, TmaMisuse,
 };
 
 use common::*;
@@ -1761,5 +1761,30 @@ fn test_mma_fragment_of_an_unwritten_word_reaches_the_output() {
             assert_eq!(array, "out")
         }
         other => panic!("expected an undefined output, got {other:?}"),
+    }
+}
+
+/// `barrier.cluster.wait` with no arrival of the thread to wait for is undefined behavior.
+#[test]
+fn test_cluster_barrier_wait_without_arrive() {
+    let module = ptx!(parse "execution_error/cluster_barrier_wait_without_arrive");
+    match analyze_one_thread(&module) {
+        Err(AnalysisError::Eval(EvalError::ClusterBarrierMisuse { misuse, .. })) => {
+            assert_eq!(misuse, ClusterBarrierMisuse::WaitWithoutArrive);
+        }
+        other => panic!("expected ClusterBarrierMisuse, got {other:?}"),
+    }
+}
+
+/// A second `barrier.cluster.arrive` before the thread waited for its first is undefined
+/// behavior.
+#[test]
+fn test_cluster_barrier_arrive_twice() {
+    let module = ptx!(parse "execution_error/cluster_barrier_arrive_twice");
+    match run_kernel(&module, None, AnalysisConfig::new((2, 1, 1))) {
+        Err(AnalysisError::Eval(EvalError::ClusterBarrierMisuse { misuse, .. })) => {
+            assert_eq!(misuse, ClusterBarrierMisuse::ArriveTwice);
+        }
+        other => panic!("expected ClusterBarrierMisuse, got {other:?}"),
     }
 }

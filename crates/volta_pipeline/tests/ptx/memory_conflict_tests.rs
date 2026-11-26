@@ -711,3 +711,49 @@ fn test_mbarrier_inval_races_another_threads_wait() {
     );
     assert_any(&witnesses, "a conflict on the mbarrier's bytes", on_shared);
 }
+
+/// Thread `a`'s shared store, read by thread `b`: the pair the cluster-barrier fixtures race on.
+fn assert_exchange_races(ws: &[Witness]) {
+    assert_any(
+        ws,
+        "a shared store of one thread and the other's load",
+        |w| {
+            on_shared(w)
+                && w.kind == ConflictKind::WriteRead
+                && w.earlier.mode == Write
+                && w.later.mode == Read
+                && w.earlier.thread != w.later.thread
+        },
+    );
+}
+
+/// A `barrier.cluster.arrive.relaxed` releases nothing: the other thread's load after its wait
+/// races the store.
+#[test]
+fn test_cluster_arrive_relaxed_does_not_release_a_store() {
+    let ws = conflicts(
+        &ptx!(parse "check_failure/cluster_arrive_relaxed_does_not_release_a_store"),
+        in_out_config(2, 2),
+    );
+    assert_exchange_races(&ws);
+}
+
+/// A fence before the relaxed arrival releases only what precedes the fence.
+#[test]
+fn test_cluster_store_after_fence_is_not_released() {
+    let ws = conflicts(
+        &ptx!(parse "check_failure/cluster_store_after_fence_is_not_released"),
+        in_out_config(2, 2),
+    );
+    assert_exchange_races(&ws);
+}
+
+/// `fence.mbarrier_init` releases only `mbarrier.init`s, not thread 0's earlier store.
+#[test]
+fn test_cluster_mbarrier_init_fence_releases_no_store() {
+    let ws = conflicts(
+        &ptx!(parse "check_failure/cluster_mbarrier_init_fence_releases_no_store"),
+        in_out_config(2, 2),
+    );
+    assert_exchange_races(&ws);
+}

@@ -104,6 +104,22 @@ CTAs is a `LowerError`, and `.explicitcluster` (or `.reqnctapercluster`) makes t
 kernel entry of a module without running it (`volta parse --lower`).
 `griddepcontrol` lowers to `Nop`s and marks the program's `GridDependency`, so the run assumes
 its prerequisite grids completed (`Assumption::PrerequisiteGridsComplete`).
+`barrier.cluster.arrive{.release|.relaxed}` and `barrier.cluster.wait{.acquire}` (PTX ISA
+9.7.13.3) are the one-CTA cluster's barrier (`eval/cluster_barrier.rs`): an arrive is
+non-blocking, a wait blocks until every non-exited thread arrived in the phase of the thread's
+own arrival, and arriving twice before waiting, or waiting without arriving, is
+`EvalError::ClusterBarrierMisuse`. A `.relaxed` arrival orders no memory; a release thread
+fence before it (`fence.{sc,acq_rel,release}`, `membar`: `FenceRelease::Everything`) releases
+what precedes the fence through it, and `fence.mbarrier_init.release.cluster`
+(`FenceRelease::MbarrierInits`) does only when everything before it in the thread is an
+`mbarrier.init` (or an execution-only collective such as `elect.sync`), else nothing.
+`.aligned`'s warp convergence is not modeled (it adds no memory ordering). Tests:
+`cluster_sync_orders_shared_exchange`, `cluster_arrive_relaxed_after_fence_orders_exchange`,
+`cluster_barrier_two_phases`, `cluster_barrier_counts_an_exited_thread`,
+`cluster_barrier_publishes_mbarrier_init`; the races
+`cluster_arrive_relaxed_does_not_release_a_store`, `cluster_store_after_fence_is_not_released`,
+`cluster_mbarrier_init_fence_releases_no_store`; and the misuses
+`cluster_barrier_wait_without_arrive`, `cluster_barrier_arrive_twice`.
 
 ### 2. Evaluation (`eval/`)
 

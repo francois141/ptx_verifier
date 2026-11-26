@@ -705,6 +705,7 @@ fn object_name(graph: &EventGraph, object: SyncObjectId) -> String {
         SyncObjectKind::AsyncGroupWait { thread } => format!("cp.async groups t{}", thread.0),
         SyncObjectKind::BulkGroupWait { thread } => format!("bulk groups t{}", thread.0),
         SyncObjectKind::Dependency { producer } => format!("dependency on i{}", producer.0),
+        SyncObjectKind::ClusterBarrier => "cluster barrier".to_string(),
     }
 }
 
@@ -763,6 +764,7 @@ fn generation_kind(kind: GenerationKind) -> String {
             BulkWaitScope::Complete => format!("cp.async.bulk.wait_group {keep_pending}"),
         },
         GenerationKind::Dependency => "instruction dependency".to_string(),
+        GenerationKind::ClusterBarrierPhase => "cluster barrier phase".to_string(),
     }
 }
 
@@ -781,6 +783,7 @@ fn contribution(kind: ContributionKind) -> String {
             let how = match ordering {
                 ArrivalOrdering::Release => "",
                 ArrivalOrdering::AsyncTracked => " once its tracked ops complete",
+                ArrivalOrdering::Relaxed => ", relaxed",
             };
             format!("arrive ×{count}{tx}{how}")
         }
@@ -790,6 +793,7 @@ fn contribution(kind: ContributionKind) -> String {
         }
         ContributionKind::CompleteTx { bytes } => format!("complete_tx {bytes}"),
         ContributionKind::ExpectTx { bytes } => format!("expect_tx {bytes}"),
+        ContributionKind::FenceRelease => "release by the fence after this event".to_string(),
     }
 }
 

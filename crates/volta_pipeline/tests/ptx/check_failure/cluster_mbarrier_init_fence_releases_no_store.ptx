@@ -1,0 +1,39 @@
+.version 8.6
+.target sm_100a
+.address_size 64
+
+// fence.mbarrier_init releases only mbarrier.init operations: thread 0's earlier shared store
+// is not released through the relaxed arrival, so thread 1's load after its wait races it.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<3>;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<7>;
+    .shared .align 8 .b8 bar[8];
+    .shared .align 4 .b8 slot[4];
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    cvta.to.global.u64 %rd1, %rd1;
+    cvta.to.global.u64 %rd2, %rd2;
+    mov.u32 %r1, %tid.x;
+    mov.u32 %r2, bar;
+    mov.u32 %r3, slot;
+    setp.eq.u32 %p1, %r1, 0;
+    ld.global.f32 %f1, [%rd1];
+    @%p1 st.shared.f32 [%r3], %f1;
+    @%p1 mbarrier.init.shared::cta.b64 [%r2], 2;
+    fence.mbarrier_init.release.cluster;
+    barrier.cluster.arrive.relaxed.aligned;
+    barrier.cluster.wait.aligned;
+    ld.shared.f32 %f2, [%r3];
+    shl.b32 %r4, %r1, 2;
+    cvt.u64.u32 %rd3, %r4;
+    add.s64 %rd5, %rd2, %rd3;
+    st.global.f32 [%rd5], %f2;
+    ret;
+}

@@ -8,6 +8,8 @@
 //! * `E_sync`: each generation's joins: a thread contribution (`Blocking`, `Arrival`, and an
 //!   exit only under the Sync' assumption, `Assumption::ExitedThreadsArrive`) or a tracked
 //!   async completion before the generation completes, the completion before each release.
+//!   A `barrier.cluster.arrive.relaxed` joins `G0` only; a thread fence before it joins through
+//!   a `FenceRelease` from the thread's last event before the fence.
 //!   A relaxed `expect_tx` or `complete_tx` joins nothing, and neither do the members of a
 //!   collective other than `bar.warp.sync` (`MemberOrdering::ExecutionOnly`): only its tracked
 //!   async completions join it.
@@ -104,9 +106,10 @@ impl Admission {
                 ..
             } => members_join,
             ContributionKind::Arrival {
-                ordering: ArrivalOrdering::AsyncTracked,
+                ordering: ArrivalOrdering::AsyncTracked | ArrivalOrdering::Relaxed,
                 ..
             } => self.projection == Projection::Independent && members_join,
+            ContributionKind::FenceRelease => members_join,
             ContributionKind::Exited => {
                 self.exited_threads && self.projection == Projection::Independent && members_join
             }
@@ -263,6 +266,8 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
     let mut state = SweepState::default();
 
     let mut thread_joins: HashMap<EventId, GenerationId> = HashMap::new();
+    // A fence release's event may be any thread event, another generation's join included.
+    let mut fence_joins: HashMap<EventId, Vec<GenerationId>> = HashMap::new();
     let mut joined_ops: HashMap<GenerationId, Vec<AsyncOpId>> = HashMap::new();
     let mut unreleased: HashMap<GenerationId, usize> = HashMap::new();
     for (g, generation) in graph.generations().iter() {
@@ -278,6 +283,7 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
                 ContributionKind::Blocking | ContributionKind::Arrival { .. } => {
                     thread_joins.insert(c.event, g);
                 }
+                ContributionKind::FenceRelease => fence_joins.entry(c.event).or_default().push(g),
                 ContributionKind::Exited
                 | ContributionKind::CompleteTx { .. }
                 | ContributionKind::ExpectTx { .. } => {}
@@ -326,6 +332,10 @@ fn sweep(graph: &EventGraph, admission: Admission, mut visit: impl FnMut(EventId
                         issue_clock.insert(op, clocks[ti].clone());
                     }
                     _ => {}
+                }
+                for &g in fence_joins.get(&id).map_or(&[][..], Vec::as_slice) {
+                    let acc = generation_clock.entry(g).or_insert_with(|| vec![0; n]);
+                    join(acc, &clocks[ti]);
                 }
                 let view = HbView {
                     point: Point::Thread(ThreadPoint {

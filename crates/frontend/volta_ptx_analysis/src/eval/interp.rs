@@ -12,6 +12,7 @@ use crate::frontend::ast::ScalarType;
 use crate::config::{AnalysisConfig, ParamValue};
 use crate::eval::arithm::{expr_type, wide_type};
 use crate::eval::async_bulk::{BulkStore, complete_bulk_groups};
+use crate::eval::cluster_barrier::ClusterBarrier;
 use crate::eval::cluster_launch_control::ObservedDecline;
 use crate::eval::cp_async::PendingCopy;
 use crate::eval::error::{EvalError, EvalResult};
@@ -28,8 +29,8 @@ use crate::ir::symbols::{MODULE_GLOBAL_BASE, ParamId, ParamLayout, RegId, Specia
 use crate::ir::tcgen05::Tcgen05FenceDirection;
 use crate::ir::types::{RegClass, ScalarTypeExt};
 use crate::ir::{
-    BarrierAlignment, BinOp, Clamp, ClusterLaunch, CpAsyncSrcSize, InstrId, LoweredInstr,
-    LoweredProgram, MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand,
+    BarrierAlignment, BinOp, Clamp, ClusterLaunch, CpAsyncSrcSize, FenceRelease, InstrId,
+    LoweredInstr, LoweredProgram, MBARRIER_COUNT_RANGE, MBARRIER_TX_COUNT_RANGE, MemSpace, Operand,
     TensormapFence,
 };
 use volta_common::logging::{info, warn};
@@ -163,6 +164,11 @@ pub(in crate::eval) enum Status {
         id: MbarrierId,
         phase_parity: bool,
     },
+    /// Blocked at `barrier.cluster.wait` for cluster-barrier phase `phase`, the phase of the
+    /// thread's own preceding arrival.
+    AtClusterBarrier {
+        phase: u64,
+    },
     Exited,
 }
 
@@ -237,6 +243,7 @@ pub struct Interpreter<'p> {
     pub(in crate::eval) deferred_error: Option<EvalError>,
     regions: MemRegions,
     pub(in crate::eval) mbarriers: MbarrierTable,
+    pub(in crate::eval) cluster_barrier: ClusterBarrier,
     /// Pending `bar.arrive` arrivals, indexed by barrier id.
     pub(in crate::eval) barriers: [PendingArrivals; NUM_BARRIERS],
     /// Each barrier id's arrival count, pinned by its first arrival of the run.
@@ -460,6 +467,7 @@ impl<'p> Interpreter<'p> {
             deferred_error: None,
             regions,
             mbarriers: MbarrierTable::default(),
+            cluster_barrier: ClusterBarrier::default(),
             barriers: std::array::from_fn(|_| PendingArrivals::default()),
             barrier_counts: [None; NUM_BARRIERS],
             tensor_maps,
@@ -1617,7 +1625,17 @@ impl<'p> Interpreter<'p> {
                 return Ok(());
             }
 
-            LoweredInstr::Membar | LoweredInstr::Fence | LoweredInstr::Nop => {}
+            LoweredInstr::Nop => {}
+            LoweredInstr::Membar => self.note_release_fence(t, FenceRelease::Everything),
+            LoweredInstr::Fence { release } => self.note_release_fence(t, *release),
+            LoweredInstr::ClusterBarrierArrive { ordering } => {
+                self.cluster_barrier_arrive(t, pc, *ordering)?;
+            }
+            LoweredInstr::ClusterBarrierWait => {
+                if !self.cluster_barrier_wait(t, pc)? {
+                    return Ok(()); // pc advances when the phase completes
+                }
+            }
 
             LoweredInstr::FenceProxyAsync { restrict } => {
                 let space = restrict.map(|s| match s {

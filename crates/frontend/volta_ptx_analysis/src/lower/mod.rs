@@ -40,7 +40,7 @@ use arith::{
 };
 use clc::{lower_clc_query_cancel, lower_clc_try_cancel};
 use context::{LocalParamSlot, LoweringContext, unsupported};
-use control::{lower_bar, lower_branch, lower_call, lower_fence};
+use control::{lower_bar, lower_barrier_cluster, lower_branch, lower_call, lower_fence};
 use error::MbarrierWaitKind;
 pub use error::{LowerError, LowerResult};
 use idioms::{MbarrierWaitLoop, match_mbarrier_wait_loop, statement_span};
@@ -433,6 +433,7 @@ fn lower_parsed_instruction(
             "membar.proxy is not implemented yet",
         )),
         ParsedInstruction::Fence(fence) => lower_fence(ctx, fence, predicate),
+        ParsedInstruction::BarrierCluster(instr) => lower_barrier_cluster(ctx, instr, predicate),
         ParsedInstruction::Call(call) => lower_call(ctx, call, predicate),
         // The interpreter does not model warp divergence, so inside a divergent branch
         // `activemask` would report the other side's lanes as active too.

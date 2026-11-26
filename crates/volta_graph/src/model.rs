@@ -305,6 +305,9 @@ pub enum SyncObjectKind {
     /// The completion of `producer`, an NKI instruction, that the instructions ordered after
     /// it wait for (the semaphore the Neuron compiler would signal).
     Dependency { producer: ThreadIx },
+    /// The cluster barrier (`barrier.cluster.arrive`/`wait`) of a one-CTA cluster: every CTA
+    /// thread arrives once per phase, so a thread's k-th arrival is phase k by construction.
+    ClusterBarrier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,6 +377,9 @@ pub enum GenerationKind {
     /// A `Dependency` object's one generation: its producer's release, which every
     /// instruction ordered after the producer resumes from.
     Dependency,
+    /// A phase of the cluster barrier, complete once every non-exited thread arrived; its
+    /// releases are the `barrier.cluster.wait`s that observed it.
+    ClusterBarrierPhase,
 }
 
 /// What a `cp.async.bulk.wait_group` waits for: with `.read`, only that the
@@ -407,6 +413,10 @@ pub enum ContributionKind {
     /// An `mbarrier.expect_tx` of `bytes`, an announcement with no arrival: `.relaxed`, so it
     /// orders nothing.
     ExpectTx { bytes: u64 },
+    /// The release a thread fence performs through a later `.relaxed` arrival (PTX ISA
+    /// 9.7.13.3's `fence; barrier.cluster.arrive.relaxed`): its event is the thread's last one
+    /// before the fence, so it releases exactly what precedes the fence. Counts no arrival.
+    FenceRelease,
 }
 
 /// What an arrival releases of the thread it is attributed to.
@@ -419,6 +429,9 @@ pub enum ArrivalOrdering {
     /// (`cp.async.mbarrier.arrive`, `tcgen05.commit`): ordered with those operations' accesses
     /// alone (PTX ISA, asynchronous operations), so it releases nothing else of the thread.
     AsyncTracked,
+    /// `barrier.cluster.arrive.relaxed`: execution order only, "no memory ordering and
+    /// visibility guarantees" for the thread's earlier accesses (PTX ISA 9.7.13.3).
+    Relaxed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
