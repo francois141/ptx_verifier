@@ -1434,14 +1434,17 @@ impl<'p> Interpreter<'p> {
                 src_lo,
                 dst_half_ty,
                 src_ty,
+                clamp,
             } => {
                 // Each half converts independently (same identity-over-
                 // reals policy as `Cvt`), then packs as a `Value::Pair` -
                 // never bit-encoded, per every other packed-f16 producer.
                 let hi = self.scalar_operand(t, pc, src_hi)?;
                 let hi = self.eval_cvt(pc, *dst_half_ty, *src_ty, hi)?;
+                let hi = self.apply_clamp(*clamp, *dst_half_ty, hi);
                 let lo = self.scalar_operand(t, pc, src_lo)?;
                 let lo = self.eval_cvt(pc, *dst_half_ty, *src_ty, lo)?;
+                let lo = self.apply_clamp(*clamp, *dst_half_ty, lo);
                 self.write_reg(t, *dst, Value::Pair(lo, hi));
             }
 

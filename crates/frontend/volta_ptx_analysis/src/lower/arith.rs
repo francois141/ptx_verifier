@@ -1998,6 +1998,7 @@ pub(super) fn lower_cvt(
         }
         CvtInstr::PackHalves {
             rnd,
+            relu,
             dst_type,
             src_type,
             dst,
@@ -2044,6 +2045,7 @@ pub(super) fn lower_cvt(
                     src_lo,
                     dst_half_ty,
                     src_ty: *src_type,
+                    clamp: relu.then_some(Clamp::Relu),
                 },
                 predicate,
             )?;

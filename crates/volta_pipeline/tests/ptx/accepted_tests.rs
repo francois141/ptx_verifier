@@ -1518,6 +1518,16 @@ fn test_add_sat_f32_concrete_clamps() {
     analyze!("success/add_sat_f32_concrete_clamps", config);
 }
 
+/// The two-source `cvt.rn.relu.bf16x2.f32 d, a, b` clamps each half at zero, `a` going to
+/// the high half (DeepGEMM's MQA logits).
+#[test]
+fn test_cvt_pack_halves_relu_symbolic_is_max() {
+    analyze!(
+        "success/cvt_pack_halves_relu_symbolic_is_max",
+        f32_in_f16_out_config(1, 2)
+    );
+}
+
 /// nvcc's fused-ReLU epilogue `cvt.rn.relu.f16.f32` is the exact value
 /// transformation max(x, 0) on a symbolic input.
 #[test]

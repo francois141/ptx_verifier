@@ -2155,6 +2155,8 @@ pub enum CvtInstr {
     /// to `mov.b32 d, {lo, hi}`'s brace order - hence `src_hi`/`src_lo`.
     PackHalves {
         rnd: Option<CvtRounding>,
+        /// `.relu`: each half clamps at zero
+        relu: bool,
         dst_type: ScalarType,
         src_type: ScalarType,
         dst: Operand,

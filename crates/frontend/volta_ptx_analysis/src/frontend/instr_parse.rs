@@ -2996,12 +2996,6 @@ fn parse_cvt(
                         ty: dst_type,
                     });
                 }
-                if relu {
-                    return Err(InstrParseError::InvalidModifierForType {
-                        modifier: "relu",
-                        ty: dst_type,
-                    });
-                }
                 if satfinite {
                     return Err(InstrParseError::InvalidModifierForType {
                         modifier: "satfinite",
@@ -3010,6 +3004,7 @@ fn parse_cvt(
                 }
                 CvtInstr::PackHalves {
                     rnd,
+                    relu,
                     dst_type,
                     src_type,
                     dst,

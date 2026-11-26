@@ -482,6 +482,8 @@ pub enum LoweredInstr {
         /// `bf16x2`), precomputed at lowering time.
         dst_half_ty: ScalarType,
         src_ty: ScalarType,
+        /// `.relu`, applied to each converted half
+        clamp: Option<Clamp>,
     },
 
     /// Vector-destination unpack `mov.bN {lo, hi}, src`, decided by `src`'s

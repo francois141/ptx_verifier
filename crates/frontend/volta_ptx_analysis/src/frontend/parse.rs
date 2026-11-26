@@ -4453,6 +4453,23 @@ DONE:
     }
 
     #[test]
+    fn test_cvt_pack_halves_bf16x2_relu() {
+        let src = wrap_in_module(
+            ".reg .f32 %f<3>;
+    .reg .b32 %r<2>;
+    cvt.rn.relu.bf16x2.f32 %r0, %f1, %f2;",
+        );
+        let module = parse_ok(&src);
+        match parse_instr(get_first_instruction(&module)) {
+            ParsedInstruction::Cvt(CvtInstr::PackHalves { dst_type, relu, .. }) => {
+                assert_eq!(dst_type, ScalarType::Bf16x2);
+                assert!(relu);
+            }
+            other => panic!("Expected CvtInstr::PackHalves, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_cvt_pack_halves_bf16x2() {
         let src = wrap_in_module(
             ".reg .f32 %f<3>;
@@ -4489,14 +4506,13 @@ DONE:
         );
     }
 
-    /// `.sat`/`.ftz`/`.relu`/`.satfinite` are not modeled on the two-source
-    /// pack form - rejected loudly rather than silently dropped.
+    /// `.sat`/`.ftz`/`.satfinite` are not modeled on the two-source pack form
+    /// (`.relu` is) - rejected loudly rather than silently dropped.
     #[test]
     fn test_cvt_pack_halves_rejects_unmodeled_modifiers() {
         for src_instr in [
             "cvt.rn.sat.f16x2.f32 %r0, %f1, %f2;",
             "cvt.rn.ftz.f16x2.f32 %r0, %f1, %f2;",
-            "cvt.rn.relu.f16x2.f32 %r0, %f1, %f2;",
         ] {
             let src = wrap_in_module(&format!(".reg .f32 %f<3>;\n.reg .b32 %r<2>;\n{src_instr}"));
             let ascii = src.as_bytes().as_ascii_slice().expect("ascii source");
