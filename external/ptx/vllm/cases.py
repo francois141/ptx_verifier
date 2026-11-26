@@ -50,7 +50,7 @@ class Case:
     description: str
     source: str
     unit: str
-    symbol: str
+    symbol: str | tuple  # substring(s) of the kernel's mangled name, all of them
     args: tuple
     arrays: tuple
     grid: tuple
@@ -117,6 +117,40 @@ def fused_add_rms_norm(name, hidden, width=8, check="ACCEPT", note=""):
     )
 
 
+# ===== Gated activations (csrc/activation_kernels.cu) =====
+
+ACTIVATION = "csrc/activation_kernels.cu"
+
+
+def act_and_mul(name, d, tokens=1, act_first=True, check="ACCEPT", note=""):
+    """`silu_and_mul(out, input)` (`mul_and_silu` without `act_first`) on bf16 rows [x | y]:
+    the 128-bit vector path when d % 8 == 0 (block min(d / 8, 1024)), the 256-bit one with
+    more than 128 tokens on sm_100 (d % 16, block min(d / 16, 1024)), else the scalar path
+    (block min(d, 1024)); dispatch :244. Workgroup 0 computes token 0."""
+    b256 = tokens > 128 and d % 16 == 0
+    vec = 16 if b256 else 8
+    use_vec = d % vec == 0
+    path = "256-bit" if b256 else "128-bit" if use_vec else "scalar"
+    return Case(
+        name=name,
+        description=f"{'silu_and_mul' if act_first else 'mul_and_silu'}, bf16, {tokens} "
+                    f"token(s) of d={d}, {path} path{note}",
+        source=f"{ACTIVATION}:110 (act_and_mul_kernel), dispatch :244",
+        unit=ACTIVATION,
+        symbol=(f"18act_and_mul_kernelI{DTYPE_MANGLED['bf16']}",
+                f"11silu_kernelIS2_EET_RKS5_fEEXadL_ZNS_18packed_silu_kernelIS3_EES5_S7_fEE"
+                f"Lb{int(act_first)}ELb{int(use_vec)}ELb0ELb{int(b256)}E"),
+        args=(Ptr("out"), Ptr("input"), Int(d, "d"), Float(0.0, "limit"), Float(1.0, "alpha"),
+              Float(0.0, "beta")),
+        arrays=(Array("input", "in", "bf16", (tokens, 2, d)), Array("out", "out", "bf16", (1, d))),
+        grid=(tokens, 1, 1),
+        block=min(d // vec if use_vec else d, 1024),
+        check=check,
+        spec="silu_and_mul.spec" if act_first else "mul_and_silu.spec",
+        dims={"T": 1, "S": 2, "D": d},
+    )
+
+
 CASES = (
     rms_norm("rms_norm_4096", 4096),
     rms_norm("rms_norm_100", 100, note=" (25 threads)"),
@@ -124,4 +158,8 @@ CASES = (
     rms_norm("rms_norm_f16_2048", 2048, dtype="f16"),
     fused_add_rms_norm("fused_add_rms_norm_4096", 4096),
     fused_add_rms_norm("fused_add_rms_norm_generic_100", 100, width=0),
+    act_and_mul("silu_and_mul_4096", 4096),
+    act_and_mul("silu_and_mul_256b_4096", 4096, tokens=129, note=" (token 0 of 129)"),
+    act_and_mul("silu_and_mul_scalar_100", 100),
+    act_and_mul("mul_and_silu_4096", 4096, act_first=False),
 )

@@ -45,8 +45,9 @@ def ptx_of(framework: str, unit: str) -> Path:
     return SURVEY_DIR / framework / Path(unit).with_suffix(".ptx")
 
 
-def kernel_of(ptx: Path, symbol: str) -> str:
-    names = [n for n in ENTRY.findall(ptx.read_text()) if symbol in n]
+def kernel_of(ptx: Path, symbol: str | tuple) -> str:
+    parts = (symbol,) if isinstance(symbol, str) else symbol
+    names = [n for n in ENTRY.findall(ptx.read_text()) if all(p in n for p in parts)]
     if len(names) != 1:
         raise LookupError(f"{len(names)} kernels of {ptx.name} contain {symbol!r}: {names[:4]}")
     return names[0]
