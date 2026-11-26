@@ -413,11 +413,16 @@ Key semantics: input-array symbols materialize lazily on first read; a read of a
 never-written register yields `Undefined` (an error only if it reaches an output
 or a concreteness point) - nvcc's `selp` accumulator-init idiom relies on this. A
 read of never-written memory is an error: local memory aborts at the read, while
-shared and global bytes (outside the inputs) and Tensor Memory cells read
-`Undefined` and the run aborts with the first such read
-(`UninitializedMemory`/`Tcgen05UninitializedRead`) once every thread exited, so a
-read racing a later write (the paper's race example) keeps its race witness in
-the complete graph. An `mbarrier.init` of a live object (UB without
+global bytes (outside the inputs) and Tensor Memory cells read `Undefined` and the
+run aborts with the first such read (`UninitializedMemory`/`Tcgen05UninitializedRead`)
+once every thread exited, so a read racing a later write (the paper's race example)
+keeps its race witness in the complete graph. A never-written shared byte reads
+`Undefined` without aborting (CUB's partial-tile reductions load every warp's slot and
+`selp` away the unwritten ones): the run fails only once the value reaches an output,
+however nested (`ExprArena::undefined_dependence`, following folded values), or a
+concreteness point, and a read racing a write is still a memory conflict. A warp op's
+mask lanes past the CTA's last thread (a partial warp) count as arrived, like exited
+lanes, and supply no data. An `mbarrier.init` of a live object (UB without
 `mbarrier.inval`) ends the run the same way (`MbarrierReinit`), so a re-init
 racing another thread's use of the object keeps its witness.
 

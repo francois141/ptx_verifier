@@ -42,26 +42,26 @@ fn expect_invalid_instruction(module: &Ptx, needle: &str) {
     }
 }
 
-/// Assert running `module` under `config` ends with its first read of never-written memory, at
-/// `addr`.
-fn expect_uninitialized_read(module: &Ptx, config: AnalysisConfig, addr: u64) {
+/// A never-written shared byte reads `Undefined`, and the run fails once that value reaches
+/// output `out[index]`, however deeply nested.
+fn expect_undefined_output(module: &Ptx, config: AnalysisConfig, index: u64) {
     match run_kernel(module, None, config) {
-        Err(AnalysisError::Eval(EvalError::UninitializedMemory { addr: read, .. })) => {
-            assert_eq!(read, addr, "the first uninitialized read");
+        Err(AnalysisError::Eval(EvalError::UndefinedOutput { array, index: at })) => {
+            assert_eq!((array.as_str(), at), ("out", index), "the undefined output");
         }
-        Err(other) => panic!("expected an uninitialized read at {addr:#x}, got: {other}"),
-        Ok(_) => panic!("expected an uninitialized read at {addr:#x}, got Ok"),
+        Err(other) => panic!("expected out[{index}] to be undefined, got: {other}"),
+        Ok(_) => panic!("expected out[{index}] to be undefined, got Ok"),
     }
 }
 
 /// A store through the `.extern .shared` window must not be visible through a
 /// static `.shared` variable (the dynamic segment follows all static ones),
-/// so the `lut` read at shared address 0 reads never-written memory.
+/// so the `lut` read at shared address 0 reads never-written memory, which reaches `out`.
 #[test]
 fn test_extern_shared_store_invisible_through_static_shared() {
     let mut config = in_out_config(1, 1);
     config.dynamic_shared_bytes = 16;
-    expect_uninitialized_read(
+    expect_undefined_output(
         &ptx!(parse "execution_error/extern_shared_store_invisible_through_static_shared"),
         config,
         0,
@@ -948,19 +948,19 @@ fn test_mbarrier_shared_cluster_validity() {
     }
 }
 
-/// A read of never-written shared memory aborts the run once its trace completes: the abort
-/// waits so that a read racing a later write (the paper's race example) keeps its race witness.
+/// A read of never-written shared memory reads `Undefined`, which fails the run once it
+/// reaches an output (a read racing a later write is still a memory conflict).
 #[test]
 fn test_uninitialized_shared_read_flows_to_output() {
-    expect_uninitialized_read(
+    expect_undefined_output(
         &ptx!(parse "execution_error/uninitialized_shared_read_flows_to_output"),
         in_out_config(1, 1),
         0,
     );
 }
 
-/// The read aborts the run even when its value reaches the output only nested in an
-/// expression (`out[0] = undefined + 1`), which the output check alone does not catch.
+/// The run fails even when the value reaches the output only nested in an expression
+/// (`out[0] = undefined + 1`): the output check follows every operand.
 #[test]
 fn test_undefined_value_nested_in_output() {
     let mut config = AnalysisConfig::new((1, 1, 1));
@@ -972,7 +972,7 @@ fn test_undefined_value_nested_in_output() {
         kind: ArrayKind::Output,
     }];
     config.params = vec![ParamValue::ArrayPtr("out".to_string())];
-    expect_uninitialized_read(
+    expect_undefined_output(
         &ptx!(parse "execution_error/undefined_value_nested_in_output"),
         config,
         0,

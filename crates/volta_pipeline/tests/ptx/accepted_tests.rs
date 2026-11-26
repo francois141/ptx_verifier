@@ -1555,6 +1555,30 @@ fn test_add_sat_f32_concrete_clamps() {
     analyze!("success/add_sat_f32_concrete_clamps", config);
 }
 
+/// A never-written shared slot loaded and then selected away by a concrete `selp` (CUB's
+/// partial-tile reduction) reaches no output.
+#[test]
+fn test_unwritten_shared_slot_selected_away() {
+    analyze!(
+        "success/unwritten_shared_slot_selected_away",
+        out_only_config(4, 1)
+    );
+}
+
+/// A full-mask `shfl.sync` in a 25-thread CTA: the missing lanes count as arrived.
+#[test]
+fn test_full_mask_shfl_in_partial_warp() {
+    let mut config = AnalysisConfig::new((25, 1, 1));
+    config.arrays = vec![
+        array("in", 0x10000, 4, 25, ArrayKind::Input),
+        array("out", 0x20000, 4, 2, ArrayKind::Output),
+    ];
+    config.params = ["in", "out"]
+        .map(|name| ParamValue::ArrayPtr(name.to_string()))
+        .to_vec();
+    analyze!("success/full_mask_shfl_in_partial_warp", config);
+}
+
 /// A `.reg` redeclared in a `{}` block (another type) shadows the outer register only there.
 #[test]
 fn test_nested_block_register_shadows_outer() {

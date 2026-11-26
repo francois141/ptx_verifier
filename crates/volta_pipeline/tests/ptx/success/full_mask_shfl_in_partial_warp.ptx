@@ -1,0 +1,32 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+// A 25-thread CTA's one partial warp reduces with full-mask `shfl.sync.down` (CUB's
+// WarpReduce with valid items): lanes 25-31 do not exist, so they count as arrived and
+// supply no data, and the `@p` guard keeps out-of-range sources out of the sum.
+.visible .entry k(
+    .param .u64 k_param_0,
+    .param .u64 k_param_1
+)
+{
+    .reg .pred %p<3>;
+    .reg .f32 %f<4>;
+    .reg .b32 %r<3>;
+    .reg .b64 %rd<4>;
+
+    ld.param.u64 %rd1, [k_param_0];
+    ld.param.u64 %rd2, [k_param_1];
+    mov.u32 %r1, %tid.x;
+    mul.wide.u32 %rd3, %r1, 4;
+    add.s64 %rd3, %rd1, %rd3;
+    ld.global.f32 %f1, [%rd3];
+    // Lane i adds lane i + 1 when that lane is below 25.
+    shfl.sync.down.b32 %f2|%p1, %f1, 1, 24, -1;
+    @%p1 add.f32 %f1, %f1, %f2;
+    setp.eq.u32 %p2, %r1, 23;
+    @%p2 st.global.f32 [%rd2], %f1;
+    setp.eq.u32 %p2, %r1, 24;
+    @%p2 st.global.f32 [%rd2+4], %f1;
+    ret;
+}

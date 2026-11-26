@@ -109,14 +109,10 @@ impl<'p> Interpreter<'p> {
                     continue;
                 }
                 let tid = warp_base + lane;
+                // A lane past the CTA's last thread (a partial warp) never runs: like an
+                // exited lane, it counts as arrived and supplies no data.
                 if tid >= self.n_threads {
-                    return Err(EvalError::WarpMismatch {
-                        pc,
-                        reason: format!(
-                            "mask {:#010x} includes lane {} but the CTA has only {} threads",
-                            mask, lane, self.n_threads
-                        ),
-                    });
+                    continue;
                 }
                 let member = &self.threads[ThreadId(tid)];
                 match member.status {

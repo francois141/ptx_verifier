@@ -537,6 +537,25 @@ impl ExprArena {
         matches!(self.value_node(id), ExprNode::Undefined)
     }
 
+    /// For every node, whether its value is or is built from `Undefined`: a node that folds to
+    /// an earlier one (`select` of a concrete condition) depends as that one does. One pass,
+    /// since children and values are pushed before the nodes that use them.
+    pub fn undefined_dependence(&self) -> IdVec<ExprId, bool> {
+        let mut depends: IdVec<ExprId, bool> = IdVec::new();
+        for (id, node) in self.nodes.iter() {
+            let value = self.value(id);
+            let any = if value != id {
+                depends[value]
+            } else {
+                let mut any = matches!(node, ExprNode::Undefined);
+                node.for_each_child(|child| any |= depends[child]);
+                any
+            };
+            let _ = depends.push(any);
+        }
+        depends
+    }
+
     pub fn is_discarded(&self, id: ExprId) -> bool {
         matches!(self.value_node(id), ExprNode::Discarded)
     }

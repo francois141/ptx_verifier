@@ -561,6 +561,9 @@ impl<'p> Interpreter<'p> {
     /// program actually wrote, keyed by index so two kernels' footprints
     /// compare exactly.
     pub fn extract_outputs(&mut self) -> EvalResult<OutputFootprints> {
+        // Nodes pushed while extracting (recombined integer halves) are constants.
+        let dependence = self.arena.undefined_dependence();
+        let undefined = |e: ExprId| dependence.get(e).copied().unwrap_or(false);
         let mut outputs = Vec::new();
         for array in &self.config.arrays {
             if !array.kind.is_output() {
@@ -606,7 +609,7 @@ impl<'p> Interpreter<'p> {
                 };
                 match (value, width == array.elem_width) {
                     (Value::Scalar(e), true) => {
-                        if self.arena.is_undefined(e) {
+                        if undefined(e) {
                             return Err(EvalError::UndefinedOutput {
                                 array: array.name.clone(),
                                 index,
@@ -617,7 +620,7 @@ impl<'p> Interpreter<'p> {
                     // A packed pair granule over two adjacent narrow elements.
                     (Value::Pair(lo, hi), false) if width == 2 * array.elem_width => {
                         for (k, e) in [(0, lo), (1, hi)] {
-                            if self.arena.is_undefined(e) {
+                            if undefined(e) {
                                 return Err(EvalError::UndefinedOutput {
                                     array: array.name.clone(),
                                     index: index + k,
@@ -2547,6 +2550,12 @@ impl<'p> Interpreter<'p> {
                 self.global
                     .read(addr, width)
                     .map_err(|e| EvalError::from_mem_access(t, pc, space, e))
+            }
+            // A never-written shared byte reads `Undefined`, an error only once it reaches an
+            // output or a concreteness point: CUB's partial-tile reductions load every warp's
+            // slot and select away the unwritten ones. A read racing a write still conflicts.
+            Err(MemAccessError::Uninitialized { .. }) if space == MemSpace::Shared => {
+                Ok(Value::Scalar(self.arena.undefined()))
             }
             Err(MemAccessError::Uninitialized { addr }) if space != MemSpace::Local => {
                 self.deferred_error

@@ -132,7 +132,15 @@ impl Interpreter<'_> {
     /// Record `t`'s mbarrier operation on the 8-byte object at shared address `addr`.
     pub(in crate::eval) fn record_mbarrier_access(&mut self, t: ThreadId, pc: InstrId, addr: u64) {
         let effect = Effect::Mbarrier;
-        self.record_access(t, pc, MemSpace::Shared, addr, 8, effect, AccessOrigin::Thread);
+        self.record_access(
+            t,
+            pc,
+            MemSpace::Shared,
+            addr,
+            8,
+            effect,
+            AccessOrigin::Thread,
+        );
     }
 
     /// Record `t`'s write of an object Volta keeps outside the byte memory (a tensor map)
@@ -387,10 +395,13 @@ impl Interpreter<'_> {
             .forming_warp_ops
             .remove(&(warp, pc, mask))
             .expect("a firing warp op was arrived at");
-        let base = warp * WARP_SIZE;
+        let (base, n_threads) = (warp * WARP_SIZE, self.n_threads);
+        // Lanes past the CTA's last thread are no graph threads: they never ran, so never
+        // exited either.
         let lanes = (0..WARP_SIZE)
             .filter(move |lane| mask & (1 << lane) != 0)
-            .map(move |lane| base + lane);
+            .map(move |lane| base + lane)
+            .filter(move |&tid| tid < n_threads);
         self.record_collective_entry(forming, (pc, mask), members, lanes)
     }
 

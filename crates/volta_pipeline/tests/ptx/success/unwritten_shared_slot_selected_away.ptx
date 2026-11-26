@@ -1,0 +1,29 @@
+.version 8.7
+.target sm_100a
+.address_size 64
+
+// CUB's partial-tile block reduction: every warp's slot is loaded, the unwritten ones
+// included, and a `selp` on the valid count keeps only the written ones, so the value of
+// the never-written slot reaches nothing.
+.visible .entry k(
+    .param .u64 k_param_0
+)
+{
+    .reg .pred %p<2>;
+    .reg .f32 %f<5>;
+    .reg .b32 %r<2>;
+    .reg .b64 %rd<2>;
+    .shared .align 4 .b8 slots[8];
+
+    ld.param.u64 %rd1, [k_param_0];
+    mov.f32 %f1, 0f40000000;
+    st.shared.f32 [slots], %f1;
+    ld.shared.f32 %f2, [slots];
+    ld.shared.f32 %f3, [slots+4];
+    add.f32 %f4, %f2, %f3;
+    mov.u32 %r1, 32;
+    setp.gt.u32 %p1, %r1, 32;
+    selp.f32 %f4, %f4, %f2, %p1;
+    st.global.f32 [%rd1], %f4;
+    ret;
+}
